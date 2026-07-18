@@ -1746,6 +1746,13 @@ fn is_placeholder_tool_response_content(content: &str) -> bool {
         return true;
     }
 
+    // 廉价预筛:占位 JSON 必然包含 `"unavailable"`(见下方结构校验)。本函数
+    // 每轮请求对历史里每条 ToolResponse 都会调用,长对话下逐条 serde parse
+    // 是纯浪费;substring 命中再做完整解析,误命中只是多一次 parse,不影响结果。
+    if !content.contains("unavailable") {
+        return false;
+    }
+
     let Ok(Value::Object(object)) = serde_json::from_str::<Value>(content) else {
         return false;
     };
@@ -2932,7 +2939,83 @@ fn normalize_endpoint_url(api_type: AgentProviderApiType, base_url: &str) -> Str
 /// 构造 genai Client。每次请求新建(开销低 — Client 内部只是 reqwest::Client + adapter 表)。
 /// `ServiceTargetResolver` capture 当前请求的 endpoint/key/api_type 后,把每次 exec_chat_stream
 /// 都强制路由到指定 AdapterKind,完全绕过 genai 默认的"按模型名识别"。
+/// `build_client` 的小容量 LRU 缓存。
+///
+/// BYOP 每轮对话都会走 `build_client`;之前每次都重建 Client,底层 reqwest
+/// 连接池随之丢弃,导致每条消息都对 provider 重做 TCP+TLS 握手(经代理时
+/// 延迟更明显)。key 覆盖全部影响构建结果的输入,任一变更(切 provider /
+/// 改 API key / 改代理设置)都会 miss 并重建。
+///
+/// 容量 >1:主对话模型与 title_model / oneshot(见 `oneshot.rs`)可能是
+/// 不同 provider,单槽会在两者交替时反复互踢。
+const BYOP_CLIENT_CACHE_CAP: usize = 4;
+
+struct CachedByopClient {
+    api_type: AgentProviderApiType,
+    base_url: String,
+    api_key: String,
+    proxy_fingerprint: String,
+    client: Client,
+}
+
+static BYOP_CLIENT_CACHE: std::sync::Mutex<Vec<CachedByopClient>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn proxy_fingerprint(cfg: &http_client::ProxyConfig) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        cfg.mode.as_str(),
+        cfg.url,
+        cfg.username,
+        cfg.password,
+        cfg.no_proxy
+    )
+}
+
 pub(super) fn build_client(
+    api_type: AgentProviderApiType,
+    base_url: &str,
+    api_key: String,
+) -> Client {
+    let proxy_fp = proxy_fingerprint(&current_proxy_config());
+    {
+        let mut cache = BYOP_CLIENT_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(pos) = cache.iter().position(|c| {
+            c.api_type == api_type
+                && c.base_url == base_url
+                && c.api_key == api_key
+                && c.proxy_fingerprint == proxy_fp
+        }) {
+            // move-to-front 维持 LRU 序。
+            let hit = cache.remove(pos);
+            let client = hit.client.clone();
+            cache.insert(0, hit);
+            return client;
+        }
+    }
+    let client = build_client_uncached(api_type, base_url, api_key.clone());
+    {
+        let mut cache = BYOP_CLIENT_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.insert(
+            0,
+            CachedByopClient {
+                api_type,
+                base_url: base_url.to_owned(),
+                api_key,
+                proxy_fingerprint: proxy_fp,
+                client: client.clone(),
+            },
+        );
+        cache.truncate(BYOP_CLIENT_CACHE_CAP);
+    }
+    client
+}
+
+fn build_client_uncached(
     api_type: AgentProviderApiType,
     base_url: &str,
     api_key: String,
@@ -4777,13 +4860,19 @@ fn make_append_event(task_id: &str, message_id: &str, kind: AppendKind) -> api::
 /// 让模型看到标准 tool_result。
 async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str) -> Value {
     use tools::web_runtime;
-    // 为 webfetch 构建带 SSRF 防护的 client：自定义重定向策略会校验每一跳目标。
-    let client = match web_runtime::build_ssrf_safe_client() {
-        Ok(c) => c,
-        Err(e) => {
-            log::warn!("[byop] reqwest client build failed: {e:#}");
-            return web_runtime::error_to_json(tool_name, &anyhow::anyhow!(e.to_string()));
-        }
+    // SSRF 防护 client(自定义 DNS resolver + 重定向策略校验每一跳目标)。
+    // 进程级复用:每次调用重建会丢弃连接池,连续 websearch/webfetch 都要
+    // 重做 TCP+TLS 握手。构建不依赖运行时可变配置,静态缓存安全。
+    static WEB_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = match WEB_CLIENT.get() {
+        Some(c) => c.clone(),
+        None => match web_runtime::build_ssrf_safe_client() {
+            Ok(c) => WEB_CLIENT.get_or_init(|| c).clone(),
+            Err(e) => {
+                log::warn!("[byop] reqwest client build failed: {e:#}");
+                return web_runtime::error_to_json(tool_name, &anyhow::anyhow!(e.to_string()));
+            }
+        },
     };
     if tool_name == tools::webfetch::TOOL_NAME {
         match serde_json::from_str::<web_runtime::FetchArgs>(args_str) {

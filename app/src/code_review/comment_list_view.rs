@@ -1087,9 +1087,9 @@ impl CommentListView {
             .with_on_select_action(CommentListAction::EditComment);
         if is_file_level || is_outdated {
             let tooltip_text = if is_file_level {
-                crate::t_static!("code-review-file-level-comment-cannot-edit")
+                crate::t!("code-review-file-level-comment-cannot-edit")
             } else {
-                crate::t_static!("code-review-outdated-comment-cannot-edit")
+                crate::t!("code-review-outdated-comment-cannot-edit")
             };
             edit_item = edit_item.with_disabled(true).with_tooltip(tooltip_text);
         }

@@ -1019,7 +1019,7 @@ impl CodeReviewView {
         let maximize_button = ctx.add_typed_action_view(move |_| {
             // Since the view isn't part of a pane group yet, default to not-maximized. The button will be updated
             //when focus state changes.
-            let (icon, tooltip_text) = (Icon::Maximize, crate::t_static!("common-maximize"));
+            let (icon, tooltip_text) = (Icon::Maximize, crate::t!("common-maximize"));
 
             ActionButton::new("", NakedTheme)
                 .with_icon(icon)
@@ -1293,10 +1293,12 @@ impl CodeReviewView {
         };
 
         let is_maximized = focus_handle.is_maximized(ctx);
+        // t!(非 t_static!):本函数在每次 focus/maximize 状态变化时都会跑,
+        // t_static! 的 Box::leak 会随切换次数持续泄漏。
         let (icon, tooltip) = if is_maximized {
-            (Icon::Minimize, crate::t_static!("common-restore"))
+            (Icon::Minimize, crate::t!("common-restore"))
         } else {
-            (Icon::Maximize, crate::t_static!("common-maximize"))
+            (Icon::Maximize, crate::t!("common-maximize"))
         };
 
         self.maximize_button.update(ctx, |button, ctx| {

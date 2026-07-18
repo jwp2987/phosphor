@@ -98,7 +98,7 @@ where
                 },
                 ctx,
             );
-            editor.set_placeholder_text(crate::t_static!("common-search"), ctx);
+            editor.set_placeholder_text(crate::t!("common-search"), ctx);
             editor
         });
         ctx.subscribe_to_view(&filter_editor, |me, _, event, ctx| {

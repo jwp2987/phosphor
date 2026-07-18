@@ -151,7 +151,13 @@ fn is_ipv6_documentation(v6: Ipv6Addr) -> bool {
     v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8
 }
 
-/// 校验 URL 的 SSRF 安全性：解析 DNS 后拒绝 private/internal IP 范围。
+/// 校验 URL 的 SSRF 安全性:拒绝 IP 字面量形式的 private/internal 地址。
+///
+/// 仅做同步、无 I/O 的字面量检查。hostname 的 DNS 结果由 `SsrfSafeResolver`
+/// 在解析阶段过滤(连接时强制执行,无 TOCTOU 间隙)。早前版本在这里还做了一次
+/// 阻塞式 `to_socket_addrs` 预解析 —— 它跑在 async 运行时线程上(包括
+/// redirect policy 闭包内,hyper 每一跳都会调),慢 DNS 时会卡住整个 worker;
+/// 且在 wasm32 上 `to_socket_addrs` 本来就不可用,等于从未生效。
 fn validate_url_not_internal(url_str: &str) -> Result<()> {
     let parsed = url::Url::parse(url_str).context("invalid URL")?;
     let host = parsed.host_str().context("URL has no host")?;
@@ -160,16 +166,6 @@ fn validate_url_not_internal(url_str: &str) -> Result<()> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_blocked_ip(ip) {
             bail!("URL targets a blocked IP address range");
-        }
-    }
-
-    // 额外解析 hostname，尽早发现指向内部 IP 的 DNS 结果。这里使用端口 0，
-    // 因为只需要地址本身。
-    if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, 0)) {
-        for addr in addrs {
-            if is_blocked_ip(addr.ip()) {
-                bail!("URL resolves to a blocked IP address range");
-            }
         }
     }
 
@@ -427,45 +423,47 @@ fn html_to_markdown(html: &str) -> String {
 }
 
 /// 删 `<script>...</script>` / `<style>...</style>` / `<noscript>...</noscript>` /
-/// `<iframe>...</iframe>` 整段(大小写不敏感,允许 attribute)。
+/// `<iframe>...</iframe>` 等整段(大小写不敏感,允许 attribute)。
+///
+/// 单趟实现:整份文档只 lowercase 一次、只产出一个 String。早前按 tag 逐趟
+/// 处理,每趟都 lowercase + 重建整份文档(5 MB 上限 × 6 tag ≈ 12 次大分配)。
 fn strip_unsafe_blocks(html: &str) -> String {
-    let mut out = html.to_owned();
-    for tag in &["script", "style", "noscript", "iframe", "object", "embed"] {
-        out = strip_tag_block(&out, tag);
-    }
-    out
-}
-
-fn strip_tag_block(html: &str, tag: &str) -> String {
+    const STRIP_TAGS: &[&str] = &["script", "style", "noscript", "iframe", "object", "embed"];
     let lower = html.to_ascii_lowercase();
-    let open = format!("<{tag}");
-    let close = format!("</{tag}>");
     let mut out = String::with_capacity(html.len());
     let mut cursor = 0;
-    while let Some(rel_open) = lower[cursor..].find(&open) {
-        let abs_open = cursor + rel_open;
-        // 必须接着 `>` 或空白(避免误吞 <scriptlike>)
-        let after = abs_open + open.len();
-        match html.as_bytes().get(after) {
-            Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') | Some(b'/') => {}
-            _ => {
-                out.push_str(&html[cursor..=abs_open]);
-                cursor = abs_open + 1;
-                continue;
+    'scan: while cursor < html.len() {
+        let Some(rel_lt) = lower[cursor..].find('<') else {
+            break;
+        };
+        let lt = cursor + rel_lt;
+        out.push_str(&html[cursor..lt]);
+        cursor = lt;
+        for tag in STRIP_TAGS {
+            if lower[lt + 1..].starts_with(tag) {
+                // 必须接着 `>` / 空白 / `/`(避免误吞 <scriptlike>)
+                let after = lt + 1 + tag.len();
+                match lower.as_bytes().get(after) {
+                    Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
+                    | Some(b'/') => {}
+                    _ => continue,
+                }
+                let close = format!("</{tag}>");
+                match lower[after..].find(&close) {
+                    Some(rel_close) => {
+                        cursor = after + rel_close + close.len();
+                    }
+                    None => {
+                        // 没闭合 → 整段丢弃
+                        cursor = html.len();
+                    }
+                }
+                continue 'scan;
             }
         }
-        out.push_str(&html[cursor..abs_open]);
-        // 找闭合
-        match lower[after..].find(&close) {
-            Some(rel_close) => {
-                cursor = after + rel_close + close.len();
-            }
-            None => {
-                // 没闭合 → 整段丢弃
-                cursor = html.len();
-                break;
-            }
-        }
+        // 不是要剥的 tag:原样保留 `<`,继续扫描。
+        out.push('<');
+        cursor += 1;
     }
     out.push_str(&html[cursor..]);
     out
@@ -553,26 +551,30 @@ fn strip_pattern(s: &str, start: &str, end: &str) -> String {
 }
 
 /// `[text](url)` → `text`
+///
+/// 只在 str 边界上切片拼接(`find` 返回的都是合法 UTF-8 边界)。早前实现逐字节
+/// `push(bytes[i] as char)`,多字节 UTF-8 会被逐字节转成 Latin-1 码点,非 ASCII
+/// 文本(CJK 等)全部乱码。
 fn unwrap_links(s: &str) -> String {
-    let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'[' {
-            // 找 ]( 然后 )
-            if let Some(close_text) = s[i + 1..].find("](") {
-                let text_end = i + 1 + close_text;
-                if let Some(close_url) = s[text_end + 2..].find(')') {
-                    let url_end = text_end + 2 + close_url;
-                    out.push_str(&s[i + 1..text_end]);
-                    i = url_end + 1;
-                    continue;
-                }
+    let mut rest = s;
+    while let Some(open) = rest.find('[') {
+        // 找 ]( 然后 )
+        if let Some(close_text) = rest[open + 1..].find("](") {
+            let text = &rest[open + 1..open + 1 + close_text];
+            let after_paren = &rest[open + 1 + close_text + 2..];
+            if let Some(close_url) = after_paren.find(')') {
+                out.push_str(&rest[..open]);
+                out.push_str(text);
+                rest = &after_paren[close_url + 1..];
+                continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // 非链接形态的 `[`:原样保留,继续向后扫。
+        out.push_str(&rest[..=open]);
+        rest = &rest[open + 1..];
     }
+    out.push_str(rest);
     out
 }
 
