@@ -135,7 +135,7 @@ pub struct RenderedRequest {
 
 pub mod prompt_suggestions {
     use super::*;
-    use crate::settings::language::{Language, LanguageSettings};
+    use crate::settings::language::LanguageSettings;
     use warpui::{AppContext, EntityId, SingletonEntity};
 
     pub struct Input {
@@ -151,27 +151,7 @@ pub mod prompt_suggestions {
         input: Input,
     ) -> Option<RenderedRequest> {
         let cfg = resolve_active_ai_oneshot(app, terminal_view_id)?;
-        let language = match *LanguageSettings::as_ref(app).language {
-            Language::English => "English",
-            Language::SimplifiedChinese => "Simplified Chinese",
-            Language::Japanese => "Japanese",
-            // Language::System follows the OS locale; resolve via the active i18n loader
-            // so Chinese/Japanese system-locale users still get CJK suggestions.
-            Language::System => {
-                let locale = crate::i18n::current_languages()
-                    .into_iter()
-                    .next()
-                    .map(|l| l.to_string())
-                    .unwrap_or_default();
-                if locale.starts_with("zh") {
-                    "Simplified Chinese"
-                } else if locale.starts_with("ja") {
-                    "Japanese"
-                } else {
-                    "English"
-                }
-            }
-        };
+        let language = (*LanguageSettings::as_ref(app).language).prompt_language_name();
         let system = render("prompt_suggestions_system.j2", context! { language => language });
         let user = render(
             "prompt_suggestions_user.j2",

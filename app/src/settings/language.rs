@@ -65,6 +65,32 @@ impl Language {
             Language::Japanese => Some("ja"),
         }
     }
+
+    /// 注入 prompt 模板用的英文语言名("English" / "Simplified Chinese" / "Japanese")。
+    ///
+    /// `System` 经 i18n loader 的当前 locale 解析 — 中/日系统 locale 且未显式
+    /// override 的用户仍应得到 CJK 输出(见 #276/#277 的修复历史)。
+    pub fn prompt_language_name(self) -> &'static str {
+        match self {
+            Language::English => "English",
+            Language::SimplifiedChinese => "Simplified Chinese",
+            Language::Japanese => "Japanese",
+            Language::System => {
+                let locale = crate::i18n::current_languages()
+                    .into_iter()
+                    .next()
+                    .map(|l| l.to_string())
+                    .unwrap_or_default();
+                if locale.starts_with("zh") {
+                    "Simplified Chinese"
+                } else if locale.starts_with("ja") {
+                    "Japanese"
+                } else {
+                    "English"
+                }
+            }
+        }
+    }
 }
 
 define_settings_group!(LanguageSettings, settings: [

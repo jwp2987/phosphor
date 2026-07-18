@@ -70,6 +70,9 @@ pub(crate) struct TitleGenParams {
     pub model_id: String,
     pub api_type: crate::settings::AgentProviderApiType,
     pub reasoning_effort: crate::settings::ReasoningEffortSetting,
+    /// UI 语言名,替换 title_system.md 里的 `{{ language }}` 占位
+    /// (输入语言不明时的标题语言兜底,对齐 #277 的 prompt 语言注入)。
+    pub ui_language: &'static str,
 }
 
 fn byop_dispatch_info(
@@ -117,6 +120,9 @@ fn byop_dispatch_info(
                     model_id: t_model_id,
                     api_type: t_provider.api_type,
                     reasoning_effort: t_effort,
+                    ui_language: (*crate::settings::language::LanguageSettings::as_ref(ctx)
+                        .language)
+                        .prompt_language_name(),
                 }
             },
         )
@@ -181,6 +187,7 @@ fn pending_title_generation_from_byop(
             model_id: title_gen.model_id.clone(),
             api_type: title_gen.api_type,
             reasoning_effort: title_gen.reasoning_effort,
+            ui_language: title_gen.ui_language,
         },
         user_query,
         task_id: byop.root_task_id.clone(),

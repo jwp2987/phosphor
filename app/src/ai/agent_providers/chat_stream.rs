@@ -3298,6 +3298,9 @@ pub struct TitleGenInput {
     pub model_id: String,
     pub api_type: AgentProviderApiType,
     pub reasoning_effort: crate::settings::ReasoningEffortSetting,
+    /// UI 语言名("English" / "Simplified Chinese" / …),替换 title_system.md
+    /// 的 `{{ language }}` 占位,作为输入语言不明时的标题语言兜底。
+    pub ui_language: &'static str,
 }
 
 pub struct ByopOutputInput {
@@ -4549,7 +4552,10 @@ pub(crate) async fn generate_title_via_byop(
         api_type: tg.api_type,
         reasoning_effort: tg.reasoning_effort,
     };
-    let system = include_str!("prompts/tasks/title_system.md");
+    // include_str 静态模板,仅替换 `{{ language }}` 占位(不走 minijinja,
+    // 避免为单一变量引入模板渲染)。
+    let system = include_str!("prompts/tasks/title_system.md")
+        .replace("{{ language }}", tg.ui_language);
     let user_prompt = format!(
         "Generate a title for this conversation:\n<user>{}</user>",
         user_query
@@ -4559,7 +4565,7 @@ pub(crate) async fn generate_title_via_byop(
         temperature: Some(0.5),
         ..Default::default()
     };
-    let raw = super::oneshot::byop_oneshot_completion(&cfg, system, &user_prompt, &opts).await?;
+    let raw = super::oneshot::byop_oneshot_completion(&cfg, &system, &user_prompt, &opts).await?;
     Ok(sanitize_title(&raw))
 }
 
