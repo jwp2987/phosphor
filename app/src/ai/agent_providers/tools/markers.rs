@@ -44,8 +44,9 @@ fn open_code_review_result_to_json(
 
 pub static OPEN_CODE_REVIEW: OpenAiTool = OpenAiTool {
     name: "open_code_review",
-    description: "打开当前项目的 Code Review 面板(client UI 信号,无参数)。\
-                  当用户明确要求开 code review,或上下文显示要开始审查阶段时使用。",
+    description: "Open the Code Review panel for the current project (client UI signal, no \
+                  parameters). Use when the user explicitly asks for a code review, or context \
+                  shows the review phase is starting.",
     parameters: empty_parameters,
     from_args: open_code_review_from_args,
     result_to_json: open_code_review_result_to_json,
@@ -68,7 +69,7 @@ fn transfer_parameters() -> Value {
         "properties": {
             "reason": {
                 "type": "string",
-                "description": "向用户解释为什么需要把控制权交还(例如「现在需要你手动登录交互」)。"
+                "description": "Explanation shown to the user for why control is being handed back (e.g. \"you need to log in interactively now\"). Write it in the same language as the user's messages."
             }
         },
         "additionalProperties": false
@@ -120,10 +121,11 @@ fn transfer_result_to_json(result: &api::message::tool_call_result::Result) -> O
 
 pub static TRANSFER_SHELL_CONTROL: OpenAiTool = OpenAiTool {
     name: "transfer_shell_command_control_to_user",
-    description: "把当前长运行 shell 命令的 PTY 控制权交还给用户。\
-                  适用场景:命令需要用户手动交互且场景不适合用 write_to_long_running_shell_command\
-                  (如交互式登录、需要看终端实时回显才能决定下一步操作等)。\
-                  reason 字段会展示给用户,用于解释为什么要交还。",
+    description: "Hand PTY control of the current long-running shell command back to the user. \
+                  Use when the command needs manual interaction and \
+                  write_to_long_running_shell_command is a poor fit (interactive logins, cases \
+                  where the user must watch live terminal output to decide the next step, etc.). \
+                  The reason field is shown to the user to explain the handback.",
     parameters: transfer_parameters,
     from_args: transfer_from_args,
     result_to_json: transfer_result_to_json,
