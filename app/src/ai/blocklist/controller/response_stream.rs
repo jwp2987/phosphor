@@ -387,8 +387,12 @@ impl ResponseStream {
         self.current_request_id = Some(request_id);
         let params = self.params.clone();
         let byop_dispatch = byop_dispatch_info(&params, &self.ai_identifiers, ctx);
+        // 指数退避:0.5s / 1s / 2s。此前无任何间隔,秒级重试同一 payload
+        // 三连败(确定性失败如请求超限时纯属白打),还会加剧单机 LLM 的排队。
+        let backoff = std::time::Duration::from_millis(500u64 << (self.retry_count - 1).min(4));
         let _ = ctx.spawn(
             async move {
+                warpui::r#async::Timer::after(backoff).await;
                 if let Some(byop) = byop_dispatch {
                     crate::ai::agent_providers::chat_stream::generate_byop_output(
                         crate::ai::agent_providers::chat_stream::ByopOutputInput {

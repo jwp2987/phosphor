@@ -116,8 +116,8 @@ fn glob_parameters() -> Value {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of results; 0 or omitted means unlimited.",
-                "default": 0
+                "description": "Maximum number of results; 0 or omitted uses the default cap (200). Values above 2000 are clamped. Prefer narrow patterns/search_dir over raising the limit.",
+                "default": 200
             }
         },
         "required": ["patterns"],
@@ -125,8 +125,20 @@ fn glob_parameters() -> Value {
     })
 }
 
+/// `limit` 缺省/0 时的结果条数上限。此前 0 = 无限制:小模型爱用
+/// `patterns=["*.sh"], search_dir="."` 扫全家目录,几千条路径进 tool result
+/// 后请求直接超出小上下文本地模型(如 32K)的承受范围,流被瞬时掐断。
+const DEFAULT_GLOB_LIMIT: i32 = 200;
+/// 显式传入 limit 的硬上限。
+const MAX_GLOB_LIMIT: i32 = 2000;
+
 fn glob_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
     let parsed: GlobArgs = serde_json::from_str(args)?;
+    let max_matches = if parsed.limit <= 0 {
+        DEFAULT_GLOB_LIMIT
+    } else {
+        parsed.limit.min(MAX_GLOB_LIMIT)
+    };
     Ok(api::message::tool_call::Tool::FileGlobV2(
         api::message::tool_call::FileGlobV2 {
             patterns: parsed.patterns,
@@ -135,7 +147,7 @@ fn glob_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
             } else {
                 parsed.search_dir
             },
-            max_matches: parsed.limit,
+            max_matches,
             max_depth: 0, // 不限深度
             min_depth: 0,
         },
