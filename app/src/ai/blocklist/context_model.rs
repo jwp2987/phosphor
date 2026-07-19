@@ -795,7 +795,22 @@ impl BlocklistAIContextModel {
         home_dir: Option<String>,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.directory_context = DirectoryContext { pwd, home_dir };
+        // 粘性更新:并非每条 block metadata 都带 cwd(无执行块 / 某些 shell hook
+        // 就不带)。此前无条件整体替换,任何一条不带 cwd 的 metadata 都会把已知的
+        // 目录上下文清空,后果有三:
+        //   1. system prompt 的 <env> 段在对话中途变成 "Working directory: none",
+        //      模型丢失当前目录,后续 tool call 更容易用错相对路径;
+        //   2. system 段逐轮变化 → 上游 prompt cache(以及本地 LLM 的 KV cache)
+        //      在 message[0] 就失配,每轮全量 re-prefill;
+        //   3. `list_skills` 依赖 cwd,一并静默降级。
+        // 因此只在新值存在时覆盖;代价是会话真正结束时可能短暂展示上一次的目录,
+        // 这远好于告诉模型 "none"。
+        if pwd.is_some() {
+            self.directory_context.pwd = pwd;
+        }
+        if home_dir.is_some() {
+            self.directory_context.home_dir = home_dir;
+        }
         ctx.emit(BlocklistAIContextEvent::UpdatedPendingContext {
             previous_block_ids: self.pending_context_block_ids.clone(),
             requires_block_resync: true,

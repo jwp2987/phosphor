@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::sync::Arc;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle};
 
@@ -19,6 +20,15 @@ pub struct ActiveSession {
 
     /// The current working directory of the terminal session.
     current_working_directory: Option<String>,
+
+    /// 最近一次成功解析出的执行环境(shell / os)。
+    ///
+    /// `session()` 会在 active session id 缺失或 id 查不到 session 时返回 `None`
+    /// (焦点切换、session 重建期间都可能短暂发生)。此时若直接返回 `None`,
+    /// `input_context_for_request` 就不会 push `ExecutionEnvironment`,
+    /// system prompt 的 <env> 段会整段丢掉 Shell/Platform 两行 —— 模型丢失环境
+    /// 信息,且 system 段逐轮变化击穿 prompt cache。缓存最后一次已知值兜底。
+    last_execution_environment: RefCell<Option<WarpAiExecutionContext>>,
 }
 
 impl ActiveSession {
@@ -29,11 +39,15 @@ impl ActiveSession {
     ) -> Self {
         ctx.subscribe_to_model(&model_event_dispatcher, move |me, event, ctx| {
             if let ModelEvent::BlockMetadataReceived(block_metadata_received_event) = event {
+                // 粘性更新:不带 cwd 的 block metadata 不应清空已知目录。
+                // 详见 `BlocklistAIContextModel::update_directory_context` 的注释 ——
+                // 此处若被置空,`list_skills` 会静默降级(见
+                // `controller/input_context.rs` 中按 cwd 发现 skills 的调用)。
                 let new_pwd = block_metadata_received_event
                     .block_metadata
                     .current_working_directory()
                     .map(|cwd| cwd.to_owned());
-                if me.current_working_directory != new_pwd {
+                if new_pwd.is_some() && me.current_working_directory != new_pwd {
                     me.current_working_directory = new_pwd;
                     ctx.emit(ActiveSessionEvent::UpdatedPwd);
                 }
@@ -54,6 +68,7 @@ impl ActiveSession {
             sessions,
             model_event_dispatcher,
             current_working_directory: None,
+            last_execution_environment: RefCell::new(None),
         }
     }
 
@@ -85,8 +100,17 @@ impl ActiveSession {
     }
 
     /// Returns the `WarpAiExecutionContext` for the active session.
+    ///
+    /// active session 解析失败时回退到最近一次已知值(见
+    /// [`Self::last_execution_environment`]),避免 system prompt 的 <env> 段
+    /// 在对话中途丢失 Shell/Platform 行。
     pub fn ai_execution_environment(&self, app: &AppContext) -> Option<WarpAiExecutionContext> {
-        self.session(app).as_ref().map(WarpAiExecutionContext::new)
+        if let Some(session) = self.session(app).as_ref() {
+            let env = WarpAiExecutionContext::new(session);
+            *self.last_execution_environment.borrow_mut() = Some(env.clone());
+            return Some(env);
+        }
+        self.last_execution_environment.borrow().clone()
     }
 }
 
