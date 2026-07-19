@@ -135,6 +135,20 @@ pub(super) fn input_context_for_request(
         context.push(AIAgentContext::ExecutionEnvironment(env));
     }
 
+    // 诊断:定位 <env> 段为何仍在逐轮变化。三次修复(sticky / 会话级兜底 / 冻结)
+    // 都没能稳住 message[0],说明前提假设有误 —— 先测量再改。
+    // 关注点:conversation_id 是否为 None(那样缓存整条链路都不会生效)、
+    // 两次请求的 id 是否相同、缓存是否命中。
+    log::info!(
+        "[byop-diag] env_context conversation_id={:?} cache_hit={} resolved_pwd={:?} \
+         resolved_env={} is_user_query={}",
+        conversation_id.map(|id| id.to_string()),
+        cached.is_some(),
+        resolved_pwd,
+        resolved_env.is_some(),
+        is_user_query,
+    );
+
     // 记下本轮解析出的值供同会话后续请求兜底(只存非空值)。
     if let Some(id) = conversation_id {
         if resolved_pwd.is_some() || resolved_home.is_some() || resolved_env.is_some() {
