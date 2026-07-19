@@ -98,17 +98,28 @@ pub(super) fn input_context_for_request(
             .cloned()
     });
 
-    // Directory:本轮解析不出 pwd/home 时,用本会话上次的值补齐。
-    // `pending_context` 保证总会 push 一条 Directory(见 context_model.rs 注释)。
+    // Directory / ExecutionEnvironment:一旦本会话见过一次有效值,就**冻结**它。
+    //
+    // 只做"缺失时补齐"是不够的(实测 2026-07-19 仍然失败):会话早期的请求可能
+    // 本来就解析不出 pwd(终端尚未收到任何 block metadata),此时缓存里也没有可
+    // 回填的值,于是渲染成 `none`;等终端跑过命令之后又变成真实路径 —— system 段
+    // 依旧在变。缓存只能救"曾经有过好值"的情况。
+    //
+    // 因此改为:见到有效值就锁定,之后整个会话都复用同一份,保证 message[0]
+    // 逐字节稳定(FLM 的 checksum 比较在 message[0] 失配就直接 matched=0)。
+    //
+    // 代价:会话中途 `cd` 之后,system 段里的 cwd 会保持旧值。模型仍能从
+    // `<attached_context>` 里的已执行命令看到真实的目录变化,而 10K token 全量
+    // re-prefill(本地 9B 上约 33s/轮)的代价远高于这点陈旧性。
     let mut resolved_pwd = None;
     let mut resolved_home = None;
     for item in context.iter_mut() {
         if let AIAgentContext::Directory { pwd, home_dir, .. } = item {
-            if pwd.is_none() {
-                *pwd = cached.as_ref().and_then(|c| c.pwd.clone());
+            if let Some(frozen) = cached.as_ref().and_then(|c| c.pwd.clone()) {
+                *pwd = Some(frozen);
             }
-            if home_dir.is_none() {
-                *home_dir = cached.as_ref().and_then(|c| c.home_dir.clone());
+            if let Some(frozen) = cached.as_ref().and_then(|c| c.home_dir.clone()) {
+                *home_dir = Some(frozen);
             }
             resolved_pwd = pwd.clone();
             resolved_home = home_dir.clone();
@@ -116,9 +127,10 @@ pub(super) fn input_context_for_request(
         }
     }
 
-    let resolved_env = active_session
-        .ai_execution_environment(app)
-        .or_else(|| cached.as_ref().and_then(|c| c.execution_environment.clone()));
+    let resolved_env = cached
+        .as_ref()
+        .and_then(|c| c.execution_environment.clone())
+        .or_else(|| active_session.ai_execution_environment(app));
     if let Some(env) = resolved_env.clone() {
         context.push(AIAgentContext::ExecutionEnvironment(env));
     }
