@@ -236,3 +236,94 @@ fn referenced_document_content_renders_full_payload() {
     assert!(out.contains("document_id=\"doc-1\""));
     assert!(out.contains("plan body"));
 }
+
+// ---------------------------------------------------------------------------
+// <environment_context> 尾块
+// ---------------------------------------------------------------------------
+
+#[test]
+fn environment_context_renders_cwd_git_and_date() {
+    let ctx = vec![
+        AIAgentContext::Directory {
+            pwd: Some("/home/winters".into()),
+            home_dir: Some("/home/winters".into()),
+            are_file_symbols_indexed: false,
+        },
+        AIAgentContext::Git {
+            head: "abc123".into(),
+            branch: Some("main".into()),
+        },
+    ];
+
+    let out = render_environment_context(&ctx).expect("应当渲染");
+    assert!(out.starts_with("<environment_context>"), "{out}");
+    assert!(out.ends_with("</environment_context>"), "{out}");
+    assert!(out.contains("Working directory: /home/winters"), "{out}");
+    assert!(out.contains("Is directory a git repo: yes"), "{out}");
+    assert!(out.contains("Git branch: main"), "{out}");
+}
+
+#[test]
+fn environment_context_reports_no_git_when_absent() {
+    let ctx = vec![AIAgentContext::Directory {
+        pwd: Some("/tmp".into()),
+        home_dir: None,
+        are_file_symbols_indexed: false,
+    }];
+
+    let out = render_environment_context(&ctx).expect("应当渲染");
+    assert!(out.contains("Is directory a git repo: no"), "{out}");
+    assert!(!out.contains("Git branch:"), "{out}");
+}
+
+/// 没有任何可用字段时返回 `None` —— 不要发出一整块 `(unknown)`。
+#[test]
+fn environment_context_is_none_when_nothing_resolvable() {
+    assert!(render_environment_context(&[]).is_none());
+    let only_shell = vec![AIAgentContext::ExecutionEnvironment(
+        crate::ai_assistant::execution_context::WarpAiExecutionContext {
+            os: crate::ai_assistant::execution_context::WarpAiOsContext {
+                category: Some("linux".into()),
+                distribution: None,
+            },
+            shell_name: "bash".into(),
+            shell_version: None,
+        },
+    )];
+    assert!(render_environment_context(&only_shell).is_none());
+}
+
+/// 缓存匹配依赖逐字节一致:同样的输入必须产出同样的字节。
+#[test]
+fn environment_context_is_deterministic() {
+    let ctx = vec![
+        AIAgentContext::Directory {
+            pwd: Some("/home/winters".into()),
+            home_dir: None,
+            are_file_symbols_indexed: false,
+        },
+        AIAgentContext::Git {
+            head: "abc".into(),
+            branch: Some("main".into()),
+        },
+    ];
+    assert_eq!(
+        render_environment_context(&ctx),
+        render_environment_context(&ctx)
+    );
+}
+
+/// cwd 变化必须体现在尾块里 —— 这正是 system prompt 冻结方案丢掉的正确性。
+#[test]
+fn environment_context_reflects_cwd_change() {
+    let at = |pwd: &str| {
+        render_environment_context(&[AIAgentContext::Directory {
+            pwd: Some(pwd.into()),
+            home_dir: None,
+            are_file_symbols_indexed: false,
+        }])
+        .expect("应当渲染")
+    };
+    assert!(at("/home/winters").contains("Working directory: /home/winters"));
+    assert!(at("/etc").contains("Working directory: /etc"));
+}

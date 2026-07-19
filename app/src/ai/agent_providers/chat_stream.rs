@@ -1786,6 +1786,33 @@ fn build_chat_request(
         )?;
     }
 
+    // `<environment_context>` 尾块:cwd / git 分支 / 日期。
+    //
+    // 这几个字段以前在 system prompt 的 <env> 段里,`cd` 一次就让 message[0] 变化,
+    // FLM 逐条比对时第一条就失配 → 整轮全量 re-prefill(实测 ~10K token / 33s)。
+    // 挂到末尾后 system prompt 逐字节恒定,首个分歧点落在最后一条消息上,
+    // 需要重新 prefill 的正好是本轮新增内容。
+    //
+    // 关键:这里用 `agent_ctx`(而非 params.input),所以 tool result / auto-resume
+    // 这类 `params.input` 为空的轮次同样能拿到环境状态 —— 那恰恰是 agent 在工具
+    // 循环里自己 `cd` 之后最需要正确 cwd 的场景。
+    //
+    // Summarize 轮跳过:压缩提示词必须是最后一条,否则摘要格式指令会被稀释。
+    let is_summarize_turn = params
+        .input
+        .iter()
+        .any(|i| matches!(i, AIAgentInput::SummarizeConversation { .. }));
+    if !is_summarize_turn {
+        if let Some(env_block) = user_context::render_environment_context(agent_ctx) {
+            log::info!(
+                "[byop-diag] env_tail: len={} inputs={}",
+                env_block.len(),
+                params.input.len(),
+            );
+            push_environment_context_message(&mut messages, env_block);
+        }
+    }
+
     // 防御性 sanitize: 确保 messages 末尾不是 assistant。
     // Anthropic / 部分网关不接受末尾为 assistant 的请求(prefill 仅特定模型支持),
     // 而 warp 的 `AIAgentInput::ResumeConversation`(handoff/auto-resume after error 等)
@@ -2478,6 +2505,36 @@ fn ensure_ends_with_user(messages: &mut Vec<ChatMessage>) {
             messages.push(ChatMessage::user("Continue."));
         }
     }
+}
+
+/// 把 `<environment_context>` 块挂到消息列表末尾。
+///
+/// 末尾若已经是 user message,就**并入**它;否则单独追加一条 user message。
+///
+/// 为什么要并入而不是无脑追加:tool result 轮里末尾是 `ToolResponse`(Anthropic
+/// 侧表示为 user role 的 tool_result content block),再追加一条 user message 会
+/// 产生连续两条 user turn。`lib/rust-genai` 的 Anthropic adapter 里没有找到
+/// 合并同 role 相邻消息的逻辑,能否被接受没有验证过。并入策略让普通提问轮退化成
+/// "query 后缀"(与 P1-10 的 LRC 后缀同形),只有确实没有 user message 可挂时才
+/// 单独发一条,规避了这个兼容性问题。
+fn push_environment_context_message(messages: &mut Vec<ChatMessage>, env_block: String) {
+    use genai::chat::{ChatRole, MessageContent};
+
+    if let Some(last) = messages.last_mut() {
+        // 只并入"纯单段文本"的 user message。带 binary(图片 / PDF)或多段内容的
+        // 消息不动它 —— 重建 parts 有丢附件的风险,单独追加一条更安全。
+        let is_plain_text_user = last.role == ChatRole::User
+            && last.content.parts().len() == 1
+            && last.content.first_text().is_some();
+        if is_plain_text_user {
+            if let Some(existing) = last.content.first_text() {
+                let merged = format!("{existing}\n\n{env_block}");
+                last.content = MessageContent::from_text(merged);
+                return;
+            }
+        }
+    }
+    messages.push(ChatMessage::user(env_block));
 }
 
 /// 反向: 把内部 `tool_call::Tool` variant 序列化成 (function name, arguments JSON Value)

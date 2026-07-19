@@ -158,6 +158,81 @@ pub fn collect_user_attachments(ctx: &[AIAgentContext]) -> UserAttachments {
     out
 }
 
+/// 渲染 `<environment_context>` 块 —— 会变的环境状态(cwd / git 分支 / 日期)。
+///
+/// ## 为什么不在 system prompt 里
+///
+/// FLM 等本地推理服务按 message 逐条比对缓存,**第一条不匹配就停**。cwd 会随
+/// `cd` 合法变化,只要它待在 system prompt(message[0])里,任何一次 `cd` 都会
+/// 让整轮对话全量 re-prefill(实测本地 9B 上约 10K token / 33s)。
+///
+/// 曾经的补救是把 cwd 在会话内**冻结**,message[0] 是稳住了,但模型被告知了错误
+/// 的目录,得自己跑 `pwd` 才知道身在何处 —— 用正确性换缓存,不划算。
+///
+/// 现在把这几个字段挪到消息列表**末尾**的临时块里:system prompt 逐字节恒定,
+/// 而环境状态每轮重新生成,永远是最新的。首个分歧点落在最后一条消息上,
+/// 需要重新 prefill 的正好就是本轮新增的内容 —— 这是理论最优。
+///
+/// 放末尾还有个附带好处:它是模型生成前读到的最后一段内容,显著性比埋在 9KB
+/// system prompt 里更高(回应 `prompt_renderer.rs` P1-7 注释对"模型一看就知道
+/// 当前分支"的担忧)。
+///
+/// 无可用字段时返回 `None`,避免发出一整块 `(unknown)`。
+pub fn render_environment_context(ctx: &[AIAgentContext]) -> Option<String> {
+    let mut cwd: Option<&str> = None;
+    let mut git_branch: Option<&str> = None;
+    let mut has_git = false;
+    let mut current_time: Option<String> = None;
+
+    for c in ctx {
+        match c {
+            AIAgentContext::Directory { pwd, .. } => {
+                if cwd.is_none() {
+                    cwd = pwd.as_deref().filter(|p| !p.is_empty());
+                }
+            }
+            AIAgentContext::Git { branch, .. } => {
+                has_git = true;
+                if git_branch.is_none() {
+                    git_branch = branch.as_deref().filter(|b| !b.is_empty());
+                }
+            }
+            AIAgentContext::CurrentTime { current_time: t } => {
+                // 与旧模板一致:只保留自然日粒度。
+                current_time = Some(t.format("%Y-%m-%d").to_string());
+            }
+            _ => {}
+        }
+    }
+
+    if cwd.is_none() && !has_git && current_time.is_none() {
+        return None;
+    }
+
+    let mut out = String::with_capacity(160);
+    out.push_str("<environment_context>\n");
+    if let Some(pwd) = cwd {
+        out.push_str("  Working directory: ");
+        out.push_str(pwd);
+        out.push('\n');
+    }
+    if has_git {
+        out.push_str("  Is directory a git repo: yes\n");
+        out.push_str("  Git branch: ");
+        out.push_str(git_branch.unwrap_or("(detached)"));
+        out.push('\n');
+    } else {
+        out.push_str("  Is directory a git repo: no\n");
+    }
+    if let Some(t) = current_time {
+        out.push_str("  Today's date: ");
+        out.push_str(&t);
+        out.push('\n');
+    }
+    out.push_str("</environment_context>");
+    Some(out)
+}
+
 pub fn render_referenced_attachments(
     referenced_attachments: &HashMap<String, AIAgentAttachment>,
 ) -> Option<String> {

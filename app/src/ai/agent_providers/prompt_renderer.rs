@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn render_includes_env_block_with_cwd_and_shell() {
+    fn render_includes_static_env_block_without_volatile_fields() {
         let ctx = vec![
             AIAgentContext::Directory {
                 pwd: Some("/home/user/project".into()),
@@ -568,14 +568,55 @@ mod tests {
             false,
             &[],
         );
-        assert!(
-            out.contains("Working directory: /home/user/project"),
-            "{out}"
-        );
+        // 稳定字段仍留在 system prompt 里。
         assert!(out.contains("Shell: bash 5.1"), "{out}");
         assert!(out.contains("linux (Ubuntu 22.04)"), "{out}");
         // home 字段已对齐 opencode 砍掉,不再渲染
         assert!(!out.contains("Home directory:"), "{out}");
+        // cwd 会随 `cd` 变化,已移到消息末尾的 <environment_context> 块 ——
+        // system prompt(message[0])里出现任何会变的字段都会让缓存整段失效。
+        assert!(!out.contains("Working directory:"), "{out}");
+        assert!(!out.contains("/home/user/project"), "{out}");
+    }
+
+    /// 回归:system prompt 必须对 cwd 变化**逐字节不变**。
+    ///
+    /// 这条断言正是当初那个 bug 的直接反例:cwd 待在 <env> 里时,一次 `cd` 就让
+    /// message[0] 改变,FLM 逐条比对在第一条就失配 → matched=0 → 整轮重新 prefill。
+    #[test]
+    fn system_prompt_is_byte_stable_across_cwd_change() {
+        let render_with = |pwd: &str| {
+            let ctx = vec![
+                AIAgentContext::Directory {
+                    pwd: Some(pwd.into()),
+                    home_dir: Some("/home/user".into()),
+                    are_file_symbols_indexed: false,
+                },
+                AIAgentContext::ExecutionEnvironment(WarpAiExecutionContext {
+                    os: WarpAiOsContext {
+                        category: Some("linux".into()),
+                        distribution: Some("Ubuntu 22.04".into()),
+                    },
+                    shell_name: "bash".into(),
+                    shell_version: Some("5.1".into()),
+                }),
+            ];
+            render_system(
+                AgentProviderApiType::OpenAi,
+                &LLMId::from("byop:p:deepseek-chat"),
+                &ctx,
+                &[],
+                false,
+                &[],
+            )
+        };
+
+        let before = render_with("/home/winters");
+        let after = render_with("/etc");
+        assert_eq!(
+            before, after,
+            "system prompt must not change when the working directory changes"
+        );
     }
 
     #[test]
