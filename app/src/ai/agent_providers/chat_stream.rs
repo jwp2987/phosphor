@@ -89,10 +89,22 @@ use super::user_context;
 use crate::ai::agent::AIAgentContext;
 
 /// 从 input 中抽出最近一条 `UserQuery.context`(等价 warp `convert_to.rs::convert_input` 取的那条)。
+/// 取最近一条**带有非空 context** 的 input。
+///
+/// 此前只判断 `context()` 是否为 `Some`,但空 `Vec` 也是 `Some(&[])` —— 一旦最后
+/// 一条 input 的 context 为空就立刻返回空切片,更早那条带着完整 env 的 context
+/// 根本不会被看到。后果:`collect_prompt_context` 拿到空切片,system prompt 的
+/// <env> 段整段退化成默认值(`Working directory: none`,且没有 Shell/Platform 行),
+/// 与用户提问轮的 9370 字节版本不一致 → message[0] 逐轮变化 → 上游 prompt cache
+/// 与本地 KV cache 必然 miss(实测本地 9B 上每轮多花约 33s 全量 re-prefill)。
+///
+/// 空 context 不携带任何信息,跳过它继续往前找永远不会更差。
 fn latest_input_context(input: &[AIAgentInput]) -> &[AIAgentContext] {
     for i in input.iter().rev() {
         if let Some(ctx) = i.context() {
-            return ctx;
+            if !ctx.is_empty() {
+                return ctx;
+            }
         }
     }
     &[]
@@ -1230,6 +1242,19 @@ fn build_chat_request(
     attachment_caps: attachment_caps::AttachmentCaps,
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
     let agent_ctx = latest_input_context(&params.input);
+    // 诊断:确认 <env> 段拿到的 context 到底是什么。inputs=0 或 ctx_len=0 都会让
+    // system prompt 退化成默认 env,进而击穿 prompt cache。
+    log::info!(
+        "[byop-diag] system_ctx inputs={} ctx_len={} has_directory={} has_exec_env={}",
+        params.input.len(),
+        agent_ctx.len(),
+        agent_ctx
+            .iter()
+            .any(|c| matches!(c, AIAgentContext::Directory { .. })),
+        agent_ctx
+            .iter()
+            .any(|c| matches!(c, AIAgentContext::ExecutionEnvironment(_))),
+    );
     let plan_mode = is_plan_mode_turn(&params.input);
     let tool_names = available_tool_names(params);
     let mut system_text = prompt_renderer::render_system(
