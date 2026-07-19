@@ -89,6 +89,25 @@ use super::user_context;
 use crate::ai::agent::AIAgentContext;
 
 /// 从 input 中抽出最近一条 `UserQuery.context`(等价 warp `convert_to.rs::convert_input` 取的那条)。
+/// 会话级的"最后一次已知有效 env context"。
+///
+/// tool result / auto-resume 这类请求的 `params.input` 是**空的**(实测
+/// `system_ctx inputs=0 ctx_len=0`),整轮请求完全靠持久化历史驱动,没有任何
+/// input 能携带 context。`latest_input_context` 因此只能返回空切片,
+/// `collect_prompt_context` 拿空切片渲染出的 <env> 段全是默认值
+/// (`Working directory: none`,且没有 Shell/Platform 行,9303 字节),
+/// 而用户提问轮渲染出的是完整版(9370 字节)—— message[0] 在两者之间反复横跳,
+/// FLM 的逐条 checksum 比较在第 0 条就失配,`matched 0`,每轮全量 re-prefill。
+///
+/// controller 侧其实已经算出了正确的 env(见
+/// `controller/input_context.rs::input_context_for_request`,日志里
+/// `env_context ... resolved_pwd=Some("/home/winters")` 每轮都对),只是没有
+/// 载体能把它带到这里。这里按 conversation 记住最后一次非空 context,
+/// 在 input 为空时兜底,使 message[0] 逐字节稳定。
+static CONVERSATION_SYSTEM_CTX: std::sync::Mutex<
+    Option<(crate::ai::agent::conversation::AIConversationId, Vec<AIAgentContext>)>,
+> = std::sync::Mutex::new(None);
+
 /// 取最近一条**带有非空 context** 的 input。
 ///
 /// 此前只判断 `context()` 是否为 `Some`,但空 `Vec` 也是 `Some(&[])` —— 一旦最后
@@ -1241,13 +1260,33 @@ fn build_chat_request(
     api_type: AgentProviderApiType,
     attachment_caps: attachment_caps::AttachmentCaps,
 ) -> Result<ChatRequest, ConvertToAPITypeError> {
-    let agent_ctx = latest_input_context(&params.input);
-    // 诊断:确认 <env> 段拿到的 context 到底是什么。inputs=0 或 ctx_len=0 都会让
-    // system prompt 退化成默认 env,进而击穿 prompt cache。
+    // input 里有非空 context 时:直接用,并记住它供本会话后续的无 input 请求兜底。
+    // input 为空(tool result / auto-resume)时:回退到本会话上次记住的值,
+    // 避免 <env> 段退化成默认值而击穿 prompt cache。
+    let input_ctx = latest_input_context(&params.input);
+    let fallback_ctx: Option<Vec<AIAgentContext>> = if input_ctx.is_empty() {
+        params.byop_conversation_id.and_then(|id| {
+            CONVERSATION_SYSTEM_CTX
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .filter(|(cached_id, _)| *cached_id == id)
+                .map(|(_, ctx)| ctx.clone())
+        })
+    } else {
+        if let Some(id) = params.byop_conversation_id {
+            *CONVERSATION_SYSTEM_CTX
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some((id, input_ctx.to_vec()));
+        }
+        None
+    };
+    let agent_ctx: &[AIAgentContext] = fallback_ctx.as_deref().unwrap_or(input_ctx);
     log::info!(
-        "[byop-diag] system_ctx inputs={} ctx_len={} has_directory={} has_exec_env={}",
+        "[byop-diag] system_ctx inputs={} ctx_len={} used_fallback={} has_directory={} has_exec_env={}",
         params.input.len(),
         agent_ctx.len(),
+        fallback_ctx.is_some(),
         agent_ctx
             .iter()
             .any(|c| matches!(c, AIAgentContext::Directory { .. })),
