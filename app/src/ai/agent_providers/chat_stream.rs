@@ -569,6 +569,14 @@ struct SerializerProjectionBuilder {
     pending_task_id: Option<String>,
     pending_assistant_message_id: Option<String>,
     skipped_tool_results: HashSet<(String, String)>,
+    /// `(task_id, tool_call_id)` → 发起该调用的 assistant message id。
+    ///
+    /// 投影构建时是**按顺序遍历真实消息**的,谁发起了哪个 tool call 是已知事实,
+    /// 不需要事后猜。`normalize_projection` 的回溯推断遇到 boundary 就会放弃
+    /// (那是它有意的保守设计),而 assistant 的纯文本 `AgentOutput` 恰好可能被
+    /// 持久化在 ToolCall 与 ToolCallResult 之间,于是结果失去归属、被判
+    /// `OutOfOrderToolResult` 并永久阻断对话。这里直接记下事实供结果查表。
+    tool_call_owner: HashMap<(String, String), String>,
 }
 
 impl SerializerProjectionBuilder {
@@ -579,7 +587,15 @@ impl SerializerProjectionBuilder {
             pending_task_id: None,
             pending_assistant_message_id: None,
             skipped_tool_results: HashSet::new(),
+            tool_call_owner: HashMap::new(),
         }
+    }
+
+    /// 查已记录的 tool call 归属(供 `push_tool_result` 精确填充,而非依赖推断)。
+    fn owner_of(&self, task_id: &str, tool_call_id: &str) -> Option<String> {
+        self.tool_call_owner
+            .get(&(task_id.to_owned(), tool_call_id.to_owned()))
+            .cloned()
     }
 
     fn push_user_boundary(&mut self, task_id: String, message_id: String) {
@@ -625,6 +641,10 @@ impl SerializerProjectionBuilder {
             .pending_assistant_message_id
             .clone()
             .unwrap_or_else(|| message_id.to_owned());
+        self.tool_call_owner.insert(
+            (task_id.to_owned(), tool_call.tool_call_id.clone()),
+            assistant_message_id.clone(),
+        );
         self.pending_tool_calls.push(ProjectedToolCall::new(
             task_id,
             assistant_message_id,
@@ -671,6 +691,32 @@ fn redacted_tool_kind_for_tool_call(tool_call: &api::message::ToolCall) -> Redac
         .as_ref()
         .map(|tool| RedactedToolKind::new(tool.name()))
         .unwrap_or_default()
+}
+
+/// 出站 ToolResponse content 的上限(字符)。
+///
+/// 防御异常庞大的工具输出(如无上限 file_glob 扫全家目录、超长命令输出)把
+/// 请求撑爆:小上下文本地模型(如 32K)的 server 会直接拒收/瞬时掐断流;
+/// 更糟的是该内容一旦持久化,这个对话的**每个后续请求**都超限,对话永久不可用。
+/// 截断只发生在请求构建层(发给上游的投影),持久化历史保持原样 ——
+/// 因此已被大结果毒化的历史对话在此层被"解毒",可以继续使用。
+const MAX_TOOL_RESPONSE_CHARS: usize = 40_000;
+
+fn cap_tool_response_content(content: String) -> String {
+    // 字节数 >= 字符数,先用便宜的字节长度短路。
+    if content.len() <= MAX_TOOL_RESPONSE_CHARS {
+        return content;
+    }
+    let total_chars = content.chars().count();
+    if total_chars <= MAX_TOOL_RESPONSE_CHARS {
+        return content;
+    }
+    let truncated: String = content.chars().take(MAX_TOOL_RESPONSE_CHARS).collect();
+    format!(
+        "{truncated}\n…[tool output truncated: sent {MAX_TOOL_RESPONSE_CHARS} of \
+         {total_chars} chars; narrow the tool's scope (patterns/limit/path) and retry \
+         if you need the rest]"
+    )
 }
 
 fn current_input_result_kind(result: &AIAgentActionResult) -> TerminalResultKind {
@@ -779,10 +825,11 @@ fn build_serializer_readiness_projection(
                 if builder.should_skip_tool_result(&msg.task_id, &tool_call_result.tool_call_id) {
                     continue;
                 }
+                let owner = builder.owner_of(&msg.task_id, &tool_call_result.tool_call_id);
                 builder.push_tool_result(ProjectedToolResult::new(
                     msg.task_id.clone(),
                     msg.id.clone(),
-                    None,
+                    owner,
                     tool_call_result.tool_call_id.clone(),
                     RedactedToolKind::default(),
                     ToolResultSource::PersistedHistory,
@@ -821,10 +868,11 @@ fn build_serializer_readiness_projection(
             }
             AIAgentInput::ActionResult { result, .. } => {
                 let tool_call_id = result.id.to_string();
+                let owner = builder.owner_of(&result.task_id.to_string(), &tool_call_id);
                 builder.push_tool_result(ProjectedToolResult::new(
                     result.task_id.to_string(),
                     format!("current_input:{idx}:{tool_call_id}"),
-                    None,
+                    owner,
                     tool_call_id,
                     RedactedToolKind::default(),
                     ToolResultSource::CurrentInput,
@@ -943,10 +991,11 @@ fn build_controller_readiness_projection(
                 if builder.should_skip_tool_result(&msg.task_id, &tool_call_result.tool_call_id) {
                     continue;
                 }
+                let owner = builder.owner_of(&msg.task_id, &tool_call_result.tool_call_id);
                 builder.push_tool_result(ProjectedToolResult::new(
                     msg.task_id.clone(),
                     msg.id.clone(),
-                    None,
+                    owner,
                     tool_call_result.tool_call_id.clone(),
                     RedactedToolKind::default(),
                     ToolResultSource::PersistedHistory,
@@ -990,10 +1039,11 @@ fn build_controller_readiness_projection(
                 {
                     continue;
                 }
+                let owner = builder.owner_of(&result.task_id.to_string(), &tool_call_id);
                 builder.push_tool_result(ProjectedToolResult::new(
                     result.task_id.to_string(),
                     format!("current_input:{idx}:{tool_call_id}"),
-                    None,
+                    owner,
                     tool_call_id,
                     RedactedToolKind::default(),
                     ToolResultSource::CurrentInput,
@@ -1490,7 +1540,7 @@ fn build_chat_request(
                 };
                 messages.push(ChatMessage::from(ToolResponse::new(
                     tcr.tool_call_id.clone(),
-                    content,
+                    cap_tool_response_content(content),
                 )));
             }
             _ => {
@@ -1591,7 +1641,10 @@ fn build_chat_request(
                 let content = tools::serialize_action_result(result).unwrap_or_else(|| {
                     serde_json::json!({ "result": result.result.to_string() }).to_string()
                 });
-                messages.push(ChatMessage::from(ToolResponse::new(tool_call_id, content)));
+                messages.push(ChatMessage::from(ToolResponse::new(
+                    tool_call_id,
+                    cap_tool_response_content(content),
+                )));
             }
             AIAgentInput::InvokeSkill {
                 skill, user_query, ..
@@ -2941,10 +2994,10 @@ fn normalize_endpoint_url(api_type: AgentProviderApiType, base_url: &str) -> Str
 /// 都强制路由到指定 AdapterKind,完全绕过 genai 默认的"按模型名识别"。
 /// `build_client` 的小容量 LRU 缓存。
 ///
-/// BYOP 每轮对话都会走 `build_client`;之前每次都重建 Client,底层 reqwest
-/// 连接池随之丢弃,导致每条消息都对 provider 重做 TCP+TLS 握手(经代理时
-/// 延迟更明显)。key 覆盖全部影响构建结果的输入,任一变更(切 provider /
-/// 改 API key / 改代理设置)都会 miss 并重建。
+/// BYOP 每轮对话都会走 `build_client`;不缓存的话每次都重建 Client,底层 reqwest
+/// 连接池随之丢弃,导致每条消息都对 provider 重做 TCP+TLS 握手(OpenRouter 等
+/// 云端 provider 上约 100–300ms/轮,经代理更明显)。key 覆盖全部影响构建结果的
+/// 输入,任一变更(切 provider / 改 API key / 改代理设置)都会 miss 并重建。
 ///
 /// 容量 >1:主对话模型与 title_model / oneshot(见 `oneshot.rs`)可能是
 /// 不同 provider,单槽会在两者交替时反复互踢。

@@ -655,3 +655,57 @@ fn smoke_blocked_readiness_error_uses_user_facing_copy() {
         "blocked readiness must surface the stable user-facing copy"
     );
 }
+
+/// 回归:assistant 纯文本落在 ToolCall 与 ToolCallResult **之间**时,
+/// 不能打断二者的配对。
+///
+/// 真实触发场景(Qwen3.5 + FastFlowLM):模型在 tool_call 之外多吐了一个 "\n",
+/// Zap 把它持久化成一条独立的 `AgentOutput`,顺序为
+/// `UserQuery → ToolCall → AgentOutput → ToolCallResult`。
+/// 此前 AssistantBoundary 会重置 tool-call 组,导致结果推断不出归属的
+/// assistant message,被判成 `OutOfOrderToolResult` 并永久阻断该对话。
+#[test]
+fn assistant_text_between_call_and_result_does_not_break_pairing() {
+    let report = classify(vec![
+        ProjectionItem::user_boundary("task-1", "user-1"),
+        assistant_with_one_call(),
+        // 模型多吐的那一个 "\n" —— 落在 tool call 之后、结果之前。
+        ProjectionItem::assistant_boundary("task-1", "assistant-text-1"),
+        // 归属由投影构建方(`build_controller_readiness_projection`)直接填好,
+        // 不依赖 normalize 的跨 boundary 推断。
+        ProjectionItem::tool_result(ProjectedToolResult::new(
+            "task-1",
+            "result-1",
+            Some("assistant-1".to_string()),
+            "call-1",
+            kind("shell"),
+            ToolResultSource::PersistedHistory,
+            TerminalResultKind::Real,
+        )),
+    ]);
+
+    assert_eq!(
+        report.state,
+        ReadinessState::Ready,
+        "assistant text between a tool call and its result must not orphan the result"
+    );
+}
+
+/// 反向保证:UserBoundary 仍然终止 tool-call 组 —— 用户已经再次发言却仍无结果的
+/// tool call,确实是缺失,必须继续被 readiness 捕获而不是被上面的放宽掩盖。
+#[test]
+fn user_boundary_still_terminates_group() {
+    let report = classify(vec![
+        assistant_with_one_call(),
+        ProjectionItem::user_boundary("task-1", "user-2"),
+    ]);
+
+    assert!(
+        matches!(
+            report.state,
+            ReadinessState::MissingResultWithoutRepairSource { .. }
+        ),
+        "a tool call with no result before the next user turn must still be flagged: {:?}",
+        report.state
+    );
+}

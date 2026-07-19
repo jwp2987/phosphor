@@ -897,6 +897,11 @@ pub fn normalize_projection(mut items: Vec<ProjectionItem>) -> Vec<ProjectionIte
                     }
                 }
             }
+            // 注意:这里**故意**不跨 boundary 推断归属(见
+            // `projection_does_not_infer_backref_across_boundary`)。readiness 的职责是
+            // 拦截配对不上的历史,猜错归属等于把损坏的历史放行给 provider。
+            // 需要精确归属时应由投影构建方直接填 `assistant_tool_call_message_id`
+            // (见 `chat_stream::build_controller_readiness_projection`),而不是在这里猜。
             ProjectionItemKind::UserBoundary
             | ProjectionItemKind::AssistantBoundary
             | ProjectionItemKind::SystemBoundary
@@ -926,8 +931,11 @@ pub fn classify_projection(
                 finished
             }
             ProjectionItemKind::ToolResult(result) => classifier.handle_tool_result(result),
+            // 与 `normalize_projection` 同址注释:assistant 纯文本不终止 tool-call 组,
+            // 否则它后面的 ToolCallResult 会失去归属。真正缺结果的场景仍会在
+            // 下一个 UserBoundary / AssistantToolCalls / 末尾的 finish 里被捕获。
+            ProjectionItemKind::AssistantBoundary => None,
             ProjectionItemKind::UserBoundary
-            | ProjectionItemKind::AssistantBoundary
             | ProjectionItemKind::SystemBoundary
             | ProjectionItemKind::OtherBoundary => classifier.finish_active_group(true),
         };
