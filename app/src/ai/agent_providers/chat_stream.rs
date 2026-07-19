@@ -1486,14 +1486,22 @@ fn build_chat_request(
                     })
                     .unwrap_or_default();
                 let mut history_prefixes: Vec<String> = Vec::new();
-                // 回放时也要重建 `<attached_context>`(自动附上的已执行命令块)。
+                // 回放时重建 `<attached_context>`(自动附上的已执行命令块)。
                 //
-                // 这些块在发出那一轮由 `collect_user_attachments` 从 live context 渲染
-                // 成 user message 的前缀,但**回放时以前完全没有重建**,同一条消息就从
-                // "带 attached_context 的长文本"缩成了"裸 query"。消息内容逐轮变化,
-                // prompt cache 在那条消息上失配 —— 与 <env> 那个 bug 同构,只是位置更
-                // 靠后。数据本身一直都持久化着(`InputContext.executed_shell_commands`),
-                // 只是没人读回来。
+                // 这些块在发出那一轮由 `collect_user_attachments` 从 live context 渲染成
+                // user message 前缀,回放时若不重建,同一条消息就从"带 attached_context
+                // 的长文本"缩成"裸 query" —— 与 <env> 那个 bug 同构,只是位置更靠后。
+                //
+                // ⚠️ 但下面这段目前**基本上是空转**,别被它骗了:
+                // `make_user_query_message` 落库时只把 binaries 塞进 `InputContext`
+                // (见本文件 `let context = if proto_binaries.is_empty() { None } else {...}`),
+                // Directory / Git / CurrentTime / Block 一个都没写。`convert_context`
+                // (`convert_to.rs:673`)确实会序列化它们,但只在 **request** 路径上被调用,
+                // 从不用于构造持久化的 message。所以 `convert_input_context` 实际只能还原出
+                // `[Image, ...]`,这里的 prefix 至多是个 image 块。
+                //
+                // 保留这段代码是因为它本身是对的:等哪天 `make_user_query_message` 真把
+                // 完整 context 落库了(见 plan 的 follow-up),它就自动生效,无需再改。
                 //
                 // 顺序必须与 live 路径一致(先 attachments 再 referenced),否则拼出来的
                 // 文本还是对不上。
@@ -1663,15 +1671,17 @@ fn build_chat_request(
                 // 模型行为差别微小：指令在前还是 context 在前，模型都能正确理解。
                 // user_attachments 的 prefix（如 SelectedText / Block）仍放前缀位，因为
                 // 它们对应用户“明确选中”的内容，应作为问题背景而非实例补充。
-                let mut suffixes: Vec<String> = Vec::new();
-                let request_running_command = running_command
-                    .as_ref()
-                    .or(params.lrc_running_command.as_ref());
-                if let Some(rc) = request_running_command {
-                    suffixes.push(render_running_command_context(rc));
-                } else if let Some(command_id) = params.lrc_command_id.as_deref() {
-                    suffixes.push(render_running_command_id_context(command_id));
-                }
+                // LRC(长运行命令)上下文已移到消息列表末尾的临时块,不再作为 user
+                // message 的后缀。原因见 `push_environment_context_message` 上方注释:
+                //
+                // `grid_contents` 是每秒都在变的 PTY 快照,而它挂上去的那条 user message
+                // **不会**连着 LRC 一起持久化(`convert_conversation.rs` 回放时
+                // `running_command: None`,持久化的 message proto 里也没有这个字段)。
+                // 于是同一条消息"发出那轮"带着 LRC 快照、"回放时"变回裸 query —— 内容
+                // 逐轮漂移,缓存在那条消息上失配。这与 <env> 是同一个 bug,只是字段不同。
+                //
+                // 它本来就是"当下的环境状态",和 cwd 同类,理应每轮重新生成、放在末尾。
+                let suffixes: Vec<String> = Vec::new();
                 let mut prefixes: Vec<String> = Vec::new();
                 let user_attachments = user_context::collect_user_attachments(context);
                 if let Some(p) = &user_attachments.prefix {
@@ -1692,10 +1702,12 @@ fn build_chat_request(
                     ),
                 };
                 log::info!(
+                    // running_command 现在只是"这轮输入带没带 LRC"的观测值,它的内容
+                    // 已经不进这条 message 了(改由末尾 environment_context 块承载)。
                     "[byop-diag] build_chat_request UserQuery: query_len={} \
-                     running_command={} prefixes={} suffixes={} full_text_len={} binaries={}",
+                     running_command={}(→tail) prefixes={} suffixes={} full_text_len={} binaries={}",
                     query.len(),
-                    match request_running_command {
+                    match running_command.as_ref() {
                         Some(rc) => format!(
                             "Some(grid_len={} alt={})",
                             rc.grid_contents.len(),
@@ -1819,23 +1831,48 @@ fn build_chat_request(
         .input
         .iter()
         .any(|i| matches!(i, AIAgentInput::SummarizeConversation { .. }));
-    if !is_summarize_turn {
-        if let Some(env_block) = user_context::render_environment_context(agent_ctx) {
-            log::info!(
-                "[byop-diag] env_tail: len={} inputs={}",
-                env_block.len(),
-                params.input.len(),
-            );
-            push_environment_context_message(&mut messages, env_block);
-        }
-    }
-
     // 防御性 sanitize: 确保 messages 末尾不是 assistant。
     // Anthropic / 部分网关不接受末尾为 assistant 的请求(prefill 仅特定模型支持),
     // 而 warp 的 `AIAgentInput::ResumeConversation`(handoff/auto-resume after error 等)
     // 不附加新 user 消息,会让序列末尾停在历史 assistant 上。
     // 这里统一兜底:末尾若是 assistant,追加一条隐式 user 消息让上游继续。
     ensure_ends_with_user(&mut messages);
+
+    if !is_summarize_turn {
+        let mut tail_blocks: Vec<String> = Vec::new();
+        if let Some(env_block) = user_context::render_environment_context(agent_ctx) {
+            tail_blocks.push(env_block);
+        }
+        // LRC 快照同样属于"当下环境状态":PTY 内容每秒都在变,且无法随消息持久化,
+        // 所以和 <env> 一起放在末尾每轮重建,而不是挂到某条 user message 上。
+        let tail_running_command = params
+            .input
+            .iter()
+            .find_map(|i| match i {
+                AIAgentInput::UserQuery {
+                    running_command, ..
+                } => running_command.as_ref(),
+                _ => None,
+            })
+            .or(params.lrc_running_command.as_ref());
+        if let Some(rc) = tail_running_command {
+            tail_blocks.push(render_running_command_context(rc));
+        } else if let Some(command_id) = params.lrc_command_id.as_deref() {
+            tail_blocks.push(render_running_command_id_context(command_id));
+        }
+
+        if !tail_blocks.is_empty() {
+            let tail = tail_blocks.join("\n\n");
+            log::info!(
+                "[byop-diag] env_tail: len={} blocks={} inputs={}",
+                tail.len(),
+                tail_blocks.len(),
+                params.input.len(),
+            );
+            push_environment_context_message(&mut messages, tail);
+        }
+    }
+
 
     let mut tools_array = build_tools_array(params);
 
@@ -2524,16 +2561,21 @@ fn ensure_ends_with_user(messages: &mut Vec<ChatMessage>) {
     }
 }
 
-/// 把 `<environment_context>` 块挂到消息列表末尾。
+/// 把 `<environment_context>`(以及 LRC 快照)作为**独立的一条 user message**
+/// 追加到消息列表末尾。绝不并入前面那条 user query —— 理由见函数体内注释。
 ///
-/// 末尾若已经是 user message,就**并入**它;否则单独追加一条 user message。
+/// 这条消息是**每轮重建、从不持久化**的:它承载的是"此刻"的环境状态,历史回放时
+/// 不应该、也无法复现。代价是它占的那一格下一轮必然被真实内容顶掉,即必然产生一次
+/// 分歧;收益是它前面的所有消息逐字节恒定。
 ///
-/// 为什么要并入而不是无脑追加:tool result 轮里末尾是 `ToolResponse`(Anthropic
-/// 侧表示为 user role 的 tool_result content block),再追加一条 user message 会
-/// 产生连续两条 user turn。`lib/rust-genai` 的 Anthropic adapter 里没有找到
-/// 合并同 role 相邻消息的逻辑,能否被接受没有验证过。并入策略让普通提问轮退化成
-/// "query 后缀"(与 P1-10 的 LRC 后缀同形),只有确实没有 user message 可挂时才
-/// 单独发一条,规避了这个兼容性问题。
+/// 这个取舍**依赖推理引擎能从分歧点续算**(KV truncation)。实测 2026-07-19:
+///
+///   qwen3-it:4b(纯文本引擎)  分歧后 prefill 81–183 tok / 1 chunk,TTFT ~2s
+///   qwen3.5:9b(VL 引擎)      分歧后 prefill ~10,300 tok / 3 chunks,TTFT 33–43s
+///
+/// 差别不在 Zap 而在模型:FLM 的 VL / MoE 引擎没实现 `set_context_length`
+/// (见 FastFlowLM `automodel.cpp:499` 的 `truncate_context` 及 `:503` 的注释),
+/// 一旦分歧就整段重算,本设计在那类引擎上是净负收益。跑本地模型时须选纯文本引擎。
 fn push_environment_context_message(messages: &mut Vec<ChatMessage>, env_block: String) {
     // **永远单独追加一条**,绝不并入末尾的 user message。
     //

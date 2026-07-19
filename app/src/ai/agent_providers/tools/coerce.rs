@@ -142,6 +142,35 @@ fn coerce_object(value: &mut Value, props: &Value, parent_schema: &Value, change
     let Some(props_map) = props.as_object() else {
         return;
     };
+
+    // 显式 null == 没填(仅限非 required 字段)。
+    //
+    // 模型很爱把"这个可选字段我不填"写成显式 null 而不是省略 key。serde 的
+    // `#[serde(default)]` 只兜得住"字段整个缺失",显式 null 照样 reject,白白烧掉
+    // 一轮 tool call。实测 2026-07-19,qwen3-it:4b 第一次调 read_files:
+    //
+    //   {"files":[{"line_ranges":null,"path":"./start_flm.sh"}]}  → invalid type: null
+    //   {"files":[{"line_ranges":[],"path":"./start_flm.sh"}]}    → ok(模型自己重试)
+    //
+    // 两者语义完全一样。删掉这个 key 让 serde 走 default,等价且不需要重试。
+    //
+    // required 字段的 null 一律保留原样:那是模型真的漏了必填值,这里不该替它编一个,
+    // 应该让原始解析错误透出去(与本模块"不能 coerce 的字段保留原值"一致)。
+    let required: std::collections::HashSet<&str> = parent_schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    let null_optional: Vec<String> = obj
+        .iter()
+        .filter(|(k, v)| v.is_null() && !required.contains(k.as_str()))
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in null_optional {
+        obj.remove(&k);
+        *changed = true;
+    }
+
     for (key, prop_schema) in props_map {
         if let Some(field) = obj.get_mut(key) {
             coerce_value(field, prop_schema, changed);
@@ -284,5 +313,59 @@ mod tests {
         let out = coerce_args_against_schema(args, &schema).expect("coerced");
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["config"]["enabled"], json!(true));
+    }
+
+    /// read_files 的真实 schema 片段:`path` 必填,`line_ranges` 可选。
+    fn read_files_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "line_ranges": {"type": "array", "items": {"type": "object"}}
+                        },
+                        "required": ["path"]
+                    }
+                }
+            },
+            "required": ["files"]
+        })
+    }
+
+    /// 实测回归(2026-07-19,qwen3-it:4b 首次 read_files 调用)。
+    /// 显式 null 的可选字段应被删掉,让 serde 的 `#[serde(default)]` 生效。
+    #[test]
+    fn explicit_null_optional_field_is_dropped() {
+        let args = r#"{"files":[{"line_ranges":null,"path":"./start_flm.sh"}]}"#;
+        let out = coerce_args_against_schema(args, &read_files_schema()).expect("coerced");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["files"][0]["path"], json!("./start_flm.sh"));
+        assert!(
+            v["files"][0].get("line_ranges").is_none(),
+            "null 的可选字段应被删除,实际: {}",
+            v["files"][0]
+        );
+    }
+
+    /// required 字段为 null 时**不能**被删:那是模型漏了必填值,
+    /// 应该让原始解析错误透出,而不是在这里悄悄编一个默认值。
+    #[test]
+    fn explicit_null_required_field_is_preserved() {
+        let args = r#"{"files":[{"path":null,"line_ranges":[]}]}"#;
+        match coerce_args_against_schema(args, &read_files_schema()) {
+            None => {}
+            Some(out) => {
+                let v: Value = serde_json::from_str(&out).unwrap();
+                assert!(
+                    v["files"][0].get("path").is_some_and(Value::is_null),
+                    "required 的 null 字段不应被删除,实际: {}",
+                    v["files"][0]
+                );
+            }
+        }
     }
 }
