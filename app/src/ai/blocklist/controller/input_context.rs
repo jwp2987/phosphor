@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use chrono::Local;
 use lazy_static::lazy_static;
@@ -7,6 +11,7 @@ use warp_core::features::FeatureFlag;
 use warpui::{AppContext, SingletonEntity};
 
 use crate::{
+    ai_assistant::execution_context::WarpAiExecutionContext,
     ai::{
         agent::{
             conversation::AIConversationId, AIAgentAttachment, AIAgentContext,
@@ -45,13 +50,36 @@ lazy_static! {
 // Returns the context to be attached to the AIAgentInput sent in a request.
 // If `is_user_query` is true, includes selected blocks, text, and images from the context model.
 // Always includes base context like current time, execution environment, and codebase info.
+/// 每个 conversation 最近一次成功解析出的环境上下文。
+///
+/// `BlocklistAIContextModel` 与 `ActiveSession` 都是 **per terminal view** 创建的
+/// (见 `terminal/view.rs::ActiveSession::new`)。同一个 conversation 的后续请求
+/// 有可能由另一个、尚未收到过任何 block metadata 的实例来装配 —— 那个实例的
+/// `pwd` 从未被赋值,`ai_execution_environment` 的缓存也是空的。此时 <env> 段会
+/// 渲染成 `Working directory: none` 并整段丢掉 Shell/Platform 行。
+///
+/// 实测后果(2026-07-18,同一个 task 内):
+///   23:04 `/home/winters` → 23:05 `none` → 23:06 `/home/winters`
+/// system 段逐轮变化,上游 prompt cache 与本地 KV cache 在 message[0] 就失配,
+/// 每轮都全量 re-prefill(本地 9B 模型上约 37s/轮)。
+///
+/// 实例级的"非空才覆盖"防护解决不了这个问题 —— 新实例根本没有旧值可保留。
+/// 因此按 conversation 记住最后一次已知值:同一对话稳定复用,不同对话互不污染。
+static CONVERSATION_ENV_FALLBACK: LazyLock<Mutex<HashMap<AIConversationId, CachedEnv>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Clone, Default)]
+struct CachedEnv {
+    pwd: Option<String>,
+    home_dir: Option<String>,
+    execution_environment: Option<WarpAiExecutionContext>,
+}
+
 pub(super) fn input_context_for_request(
     is_user_query: bool,
     context_model: &BlocklistAIContextModel,
     active_session: &ActiveSession,
-    // 保留参数:多个上层调用方的签名暂不动;list_skills 不再需要会话 id 去重,
-    // 但其他潜在用法可能仍需要 → 留 _ 前缀避免 unused 警告。
-    _conversation_id: Option<AIConversationId>,
+    conversation_id: Option<AIConversationId>,
     additional_context: Vec<AIAgentContext>,
     app: &AppContext,
 ) -> Arc<[AIAgentContext]> {
@@ -61,8 +89,57 @@ pub(super) fn input_context_for_request(
         current_time: Local::now(),
     });
 
-    if let Some(env) = active_session.ai_execution_environment(app) {
+    // 取出本会话上次已知的环境值(若有)。
+    let cached = conversation_id.and_then(|id| {
+        CONVERSATION_ENV_FALLBACK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&id)
+            .cloned()
+    });
+
+    // Directory:本轮解析不出 pwd/home 时,用本会话上次的值补齐。
+    // `pending_context` 保证总会 push 一条 Directory(见 context_model.rs 注释)。
+    let mut resolved_pwd = None;
+    let mut resolved_home = None;
+    for item in context.iter_mut() {
+        if let AIAgentContext::Directory { pwd, home_dir, .. } = item {
+            if pwd.is_none() {
+                *pwd = cached.as_ref().and_then(|c| c.pwd.clone());
+            }
+            if home_dir.is_none() {
+                *home_dir = cached.as_ref().and_then(|c| c.home_dir.clone());
+            }
+            resolved_pwd = pwd.clone();
+            resolved_home = home_dir.clone();
+            break;
+        }
+    }
+
+    let resolved_env = active_session
+        .ai_execution_environment(app)
+        .or_else(|| cached.as_ref().and_then(|c| c.execution_environment.clone()));
+    if let Some(env) = resolved_env.clone() {
         context.push(AIAgentContext::ExecutionEnvironment(env));
+    }
+
+    // 记下本轮解析出的值供同会话后续请求兜底(只存非空值)。
+    if let Some(id) = conversation_id {
+        if resolved_pwd.is_some() || resolved_home.is_some() || resolved_env.is_some() {
+            let mut store = CONVERSATION_ENV_FALLBACK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = store.entry(id).or_default();
+            if resolved_pwd.is_some() {
+                entry.pwd = resolved_pwd;
+            }
+            if resolved_home.is_some() {
+                entry.home_dir = resolved_home;
+            }
+            if resolved_env.is_some() {
+                entry.execution_environment = resolved_env;
+            }
+        }
     }
 
     if FeatureFlag::ListSkills.is_enabled() {
