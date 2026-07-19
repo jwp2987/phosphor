@@ -2535,22 +2535,24 @@ fn ensure_ends_with_user(messages: &mut Vec<ChatMessage>) {
 /// "query 后缀"(与 P1-10 的 LRC 后缀同形),只有确实没有 user message 可挂时才
 /// 单独发一条,规避了这个兼容性问题。
 fn push_environment_context_message(messages: &mut Vec<ChatMessage>, env_block: String) {
-    use genai::chat::{ChatRole, MessageContent};
-
-    if let Some(last) = messages.last_mut() {
-        // 只并入"纯单段文本"的 user message。带 binary(图片 / PDF)或多段内容的
-        // 消息不动它 —— 重建 parts 有丢附件的风险,单独追加一条更安全。
-        let is_plain_text_user = last.role == ChatRole::User
-            && last.content.parts().len() == 1
-            && last.content.first_text().is_some();
-        if is_plain_text_user {
-            if let Some(existing) = last.content.first_text() {
-                let merged = format!("{existing}\n\n{env_block}");
-                last.content = MessageContent::from_text(merged);
-                return;
-            }
-        }
-    }
+    // **永远单独追加一条**,绝不并入末尾的 user message。
+    //
+    // 曾经这里做过"末尾是 user message 就并入"的优化,目的是避免 tool result 轮
+    // 出现连续两条 user turn。实测(2026-07-19)那是个反效果:
+    //
+    //   轮 1(live) message[1] = "What folder am I in?\n\n<environment_context>…"  158 字节
+    //   轮 2(回放) message[1] = "What folder am I in?"                             20 字节
+    //
+    // 并入的那份 env **不会**跟着 query 一起持久化,所以下一轮回放时同一条消息缩回
+    // 裸 query —— 消息内容逐轮变化,FLM 在 message[1] 就失配。这正是我们一路在消灭
+    // 的漂移,只不过这次是那个"优化"自己造成的。
+    //
+    // 单独成条则让 user query 逐字节恒定,分歧点落到末尾 env 那一格(下一轮那个位置
+    // 换成别的消息,必然不同 —— 但那是尾部,重算代价就是本轮新增内容,是理论最优)。
+    //
+    // 连续两条 user turn 的顾虑:FLM 侧 `normalize_messages` 会把相邻同 role 合并,
+    // 无害。Anthropic adapter 未验证,但当前 BYOP 主路径是 OpenAI-compatible;
+    // 真要上 Anthropic 再按 api_type 分支即可 —— 绝不能为此牺牲消息稳定性。
     messages.push(ChatMessage::user(env_block));
 }
 
