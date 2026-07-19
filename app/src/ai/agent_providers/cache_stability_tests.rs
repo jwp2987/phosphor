@@ -320,3 +320,117 @@ fn full_tools_array_with_mcp_is_stable() {
     let pos_zeta = a.find("mcp__server-a__zeta").expect("应含 zeta");
     assert!(pos_alpha < pos_zeta, "P0-3 排序保证 alpha < zeta");
 }
+
+// ---------------------------------------------------------------------------
+// 消息内容跨轮稳定性(live 渲染 vs 历史回放)
+// ---------------------------------------------------------------------------
+//
+// 本节针对的是一整类真实 bug:**同一条逻辑消息,在"发出那一轮"和"作为历史被回放"
+// 时渲染出不同的文本**。
+//
+// 为什么致命:FLM 之类的本地推理服务按 message 逐条比对缓存,**第一条不匹配就停**
+// (日志里表现为 `matched 0 of N` + `first divergence at message [i]`)。任何一条历史
+// 消息内容漂移,它后面的全部内容都要重新 prefill —— 实测本地 9B 上约 10K token / 33s。
+//
+// 已知踩过的坑:
+//   1. `<env>` 待在 system prompt 里,`cd` 一次就让 message[0] 变化(全量重算)。
+//      → 已移到消息末尾的 `<environment_context>` 块。
+//   2. `<attached_context>`(自动附上的已执行命令)只在 live 轮渲染,回放时完全没
+//      重建,消息从长文本缩成裸 query。
+//   3. 回放时 `command_id` 被填成默认值,即便重建了内容也对不上。
+//
+// 下面的断言就是这三件事的护栏。
+
+use crate::ai::agent::api::convert_conversation::convert_input_context;
+use crate::ai::agent::AIAgentContext;
+use crate::ai::block_context::BlockContext;
+use crate::ai::agent_providers::user_context;
+
+fn sample_block(id: &str) -> BlockContext {
+    BlockContext {
+        id: id.to_string().into(),
+        index: 0.into(),
+        command: "ls -la".to_string(),
+        output: "total 0\ndrwxr-xr-x 1 winters winters 0 Jul 19 13:00 .".to_string(),
+        exit_code: 0.into(),
+        is_auto_attached: true,
+        started_ts: None,
+        finished_ts: None,
+        pwd: None,
+        shell: None,
+        username: None,
+        hostname: None,
+        git_branch: None,
+        os: None,
+        session_id: None,
+    }
+}
+
+/// **核心护栏**:自动附上的命令块,live 渲染与"持久化→回放"渲染必须逐字节一致。
+///
+/// 这条断言直接对应 bug #2/#3。若有人再把 `command_id` 之类的字段在回放侧填成默认值,
+/// 或者忘了在回放路径重建 `<attached_context>`,这里立刻失败。
+#[test]
+fn attached_context_survives_persist_replay_byte_identical() {
+    let block = sample_block("precmd-17844818512123-1");
+
+    // live:直接从内存中的 AIAgentContext 渲染
+    let live_ctx = vec![AIAgentContext::Block(Box::new(block.clone()))];
+    let live = user_context::collect_user_attachments(&live_ctx)
+        .prefix
+        .expect("live 应当渲染出 attached_context");
+
+    // 回放:走一遍持久化 proto 再转回来
+    let api_context = api::InputContext {
+        executed_shell_commands: vec![block.into()],
+        ..Default::default()
+    };
+    let replayed_ctx = convert_input_context(Some(&api_context));
+    let replayed = user_context::collect_user_attachments(&replayed_ctx)
+        .prefix
+        .expect("回放应当渲染出 attached_context");
+
+    assert_eq!(
+        live, replayed,
+        "attached_context 在 live 与回放之间发生了漂移 —— \
+         这会让 prompt cache 在该条消息上失配,后续内容全部重新 prefill"
+    );
+}
+
+/// `command_id` 必须原样穿过持久化,而不是被填成默认值。
+#[test]
+fn block_command_id_round_trips_through_persistence() {
+    let block = sample_block("precmd-abc-42");
+    let api_context = api::InputContext {
+        executed_shell_commands: vec![block.into()],
+        ..Default::default()
+    };
+
+    let restored = convert_input_context(Some(&api_context));
+    let AIAgentContext::Block(b) = &restored[0] else {
+        panic!("期望还原出 Block,实际是 {:?}", restored[0]);
+    };
+    assert_eq!(b.id.to_string(), "precmd-abc-42");
+}
+
+/// `<environment_context>` 必须**随 cwd 变化**(与 system prompt 的恒定性互补)。
+///
+/// 两条不变量缺一不可:system 段恒定保证缓存能命中,尾块跟随保证模型看到的目录是
+/// 真的。曾经的"冻结 cwd"方案满足前者、违反后者 —— 模型被告知了错误的目录。
+#[test]
+fn environment_tail_tracks_cwd_while_staying_deterministic() {
+    let at = |pwd: &str| {
+        user_context::render_environment_context(&[AIAgentContext::Directory {
+            pwd: Some(pwd.into()),
+            home_dir: None,
+            are_file_symbols_indexed: false,
+        }])
+        .expect("应当渲染")
+    };
+
+    // 同输入 → 同字节
+    assert_eq!(at("/home/winters"), at("/home/winters"));
+    // 不同 cwd → 内容确实跟着变
+    assert_ne!(at("/home/winters"), at("/etc"));
+    assert!(at("/etc").contains("Working directory: /etc"));
+}

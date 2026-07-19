@@ -56,7 +56,16 @@ pub(crate) fn convert_input_context(context: Option<&api::InputContext>) -> Arc<
     for executed_shell_command in &context.executed_shell_commands {
         if !executed_shell_command.command.is_empty() {
             result.push(AIAgentContext::Block(Box::new(BlockContext {
-                id: BlockId::default(),
+                // command_id 是持久化过来的(见 `convert_to.rs` 的
+                // `impl From<BlockContext> for api::ExecutedShellCommand`,
+                // `command_id: block.id.into()`),必须还原而不是丢成默认值。
+                //
+                // `user_context::render_block` 会把它渲染成
+                // `<executed_shell_command command_id="...">`。以前这里填默认值,
+                // 导致同一条 user message 在"发出那一轮"和"作为历史回放"时渲染出
+                // 不同的 command_id —— 消息内容逐轮变化,prompt cache 在那条消息上
+                // 失配。还原 id 后,live 与 replay 的渲染结果逐字节一致。
+                id: BlockId::from(executed_shell_command.command_id.clone()),
                 index: BlockIndex::from(0),
                 command: executed_shell_command.command.clone(),
                 output: executed_shell_command.output.clone(),

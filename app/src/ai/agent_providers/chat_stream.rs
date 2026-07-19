@@ -1486,6 +1486,23 @@ fn build_chat_request(
                     })
                     .unwrap_or_default();
                 let mut history_prefixes: Vec<String> = Vec::new();
+                // 回放时也要重建 `<attached_context>`(自动附上的已执行命令块)。
+                //
+                // 这些块在发出那一轮由 `collect_user_attachments` 从 live context 渲染
+                // 成 user message 的前缀,但**回放时以前完全没有重建**,同一条消息就从
+                // "带 attached_context 的长文本"缩成了"裸 query"。消息内容逐轮变化,
+                // prompt cache 在那条消息上失配 —— 与 <env> 那个 bug 同构,只是位置更
+                // 靠后。数据本身一直都持久化着(`InputContext.executed_shell_commands`),
+                // 只是没人读回来。
+                //
+                // 顺序必须与 live 路径一致(先 attachments 再 referenced),否则拼出来的
+                // 文本还是对不上。
+                let history_ctx = crate::ai::agent::api::convert_conversation::convert_input_context(
+                    u.context.as_ref(),
+                );
+                if let Some(prefix) = user_context::collect_user_attachments(&history_ctx).prefix {
+                    history_prefixes.push(prefix);
+                }
                 if let Some(prefix) =
                     user_context::render_api_referenced_attachments(&u.referenced_attachments)
                 {
