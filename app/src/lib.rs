@@ -469,7 +469,24 @@ impl LaunchMode {
             // Proxy must log to stderr because stdout is the protocol channel.
             LaunchMode::RemoteServerProxy => Some(LogDestination::Stderr),
             LaunchMode::RemoteServerDaemon => Some(LogDestination::File),
-            LaunchMode::App { .. } | LaunchMode::Test { .. } => None,
+            // GUI 一律写日志文件,不跟着 stdout 是不是 tty 走。
+            //
+            // 传 None 时 `warp_logging` 的判据是
+            // `!stdout_is_a_tty && !in_ci && !integration_test`
+            // (crates/warp_logging/src/native.rs:517)。从终端 `./script/run` 启动时
+            // stdout 就是 tty,于是全部日志糊在终端上,跟前台程序的输出混在一起没法看。
+            // GUI 应用本来就不该把日志当界面输出。
+            //
+            // 想临时看实时日志:`ZAP_LOG_STDOUT=1 ./script/run`。
+            LaunchMode::App { .. } => {
+                if std::env::var_os("ZAP_LOG_STDOUT").is_some() {
+                    Some(LogDestination::Stderr)
+                } else {
+                    Some(LogDestination::File)
+                }
+            }
+            // 测试保持 None:CI / integration 分支的判据要照旧生效。
+            LaunchMode::Test { .. } => None,
         }
     }
 
