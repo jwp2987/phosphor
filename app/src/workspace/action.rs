@@ -264,6 +264,9 @@ pub enum WorkspaceAction {
     ZapDrive,
     /// Toggles the right panel. This happens as an explicit action from the user.
     ToggleRightPanel,
+    /// Toggles the BYOP wire inspector pop-out. Capturing is only active while it
+    /// is open.
+    ToggleWireInspector,
     /// Opens the code review panel (right panel) without toggling. If already open,
     /// switches to the target pane's repo. Used by vertical tabs diff stats chip.
     OpenCodeReviewPanel(PaneViewLocator),
@@ -764,6 +767,7 @@ impl WorkspaceAction {
             | ZapDrive
             | ClosePanel
             | ToggleRightPanel
+            | ToggleWireInspector
             | OpenCodeReviewPanel(..)
             | ToggleVerticalTabsSettingsPopup
             | SetVerticalTabsDisplayGranularity(_)

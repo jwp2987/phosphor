@@ -59,6 +59,7 @@ async fn byop_generate_input_suggestions(
     byop_cfg: Option<OneshotConfig>,
     request: &GenerateAIInputSuggestionsRequest,
     user_rules: Vec<(Option<String>, String)>,
+    prompt_override: Option<crate::ai::execution_profiles::PromptSource>,
 ) -> Result<GenerateAIInputSuggestionsResponseV2, AIApiError> {
     let Some(cfg) = byop_cfg else {
         // Zap 已剥云,无 BYOP 配置时不再 fallback ServerApi —— 返回空响应,
@@ -81,6 +82,7 @@ async fn byop_generate_input_suggestions(
         prefix: request.prefix.clone(),
         rejected_suggestions: request.rejected_suggestions.clone(),
         user_rules,
+        prompt_override,
     };
     let suggestion = byop_next_command::run_with(cfg, input).await;
     match suggestion {
@@ -406,6 +408,10 @@ impl NextCommandModel {
         } else {
             Vec::new()
         };
+        // The profile's per-prompt override for the next-command system prompt must
+        // also be resolved pre-spawn (the render runs where `&AppContext` is gone).
+        let next_command_prompt_override =
+            byop_next_command::resolve_prompt_override(ctx, None);
 
         let completion_context = completer_data.completion_session_context(ctx);
         // This is only needed if we have a prefix.
@@ -527,7 +533,7 @@ impl NextCommandModel {
                     // For zero-state next command suggestions, return the result immediately.
                     let Some(prefix) = prefix else {
                         return (
-                            byop_generate_input_suggestions(byop_cfg.clone(), &request, user_rules.clone()).await,
+                            byop_generate_input_suggestions(byop_cfg.clone(), &request, user_rules.clone(), next_command_prompt_override.clone()).await,
                             request,
                             true,
                             start_ts_ms,
@@ -608,7 +614,7 @@ impl NextCommandModel {
                     };
 
                     // Only if we have no commands from history and no completions, use the LLM to generate a partial suggestion.
-                    let response = byop_generate_input_suggestions(byop_cfg, &request, user_rules).await;
+                    let response = byop_generate_input_suggestions(byop_cfg, &request, user_rules, next_command_prompt_override).await;
                     (
                         response,
                         request,

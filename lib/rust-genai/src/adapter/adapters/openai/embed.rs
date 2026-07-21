@@ -136,6 +136,7 @@ pub fn to_embed_response(
 		total_tokens: Some(openai_res.usage.total_tokens as i32),
 		prompt_tokens_details: None,
 		completion_tokens_details: None,
+		extra: Default::default(),
 	};
 
 	// Create provider model identifier

@@ -214,6 +214,7 @@ use crate::menu::{
     Event as MenuEvent, Menu, MenuItem, MenuItemFields, MenuSelectionSource,
     DEFAULT_WIDTH as MENU_DEFAULT_WIDTH,
 };
+use crate::ai::agent_providers::wire_inspector::{WireInspectorModal, WireInspectorModalEvent};
 use crate::modal::{Modal, ModalEvent, ModalViewState};
 use crate::network::{NetworkStatus, NetworkStatusEvent};
 use crate::notebooks::manager::{NotebookManager, NotebookSource};
@@ -904,6 +905,7 @@ pub struct Workspace {
     model_event_sender: Option<mpsc::SyncSender<ModelEvent>>,
     launch_config_save_modal: ModalViewState<LaunchConfigSaveModal>,
     tab_config_params_modal: ModalViewState<Modal<TabConfigParamsModal>>,
+    wire_inspector_modal: ModalViewState<WireInspectorModal>,
     session_config_modal: ModalViewState<Modal<SessionConfigModal>>,
     pending_session_config_replacement: Option<PendingSessionConfigReplacement>,
     /// When set, the guided onboarding tutorial will start after the session
@@ -1733,6 +1735,49 @@ impl Workspace {
         ModalViewState::new(launch_config_save_modal)
     }
 
+    fn build_wire_inspector_modal(
+        ctx: &mut ViewContext<Self>,
+    ) -> ModalViewState<WireInspectorModal> {
+        let wire_inspector_modal = ctx.add_typed_action_view(WireInspectorModal::new);
+        ctx.subscribe_to_view(&wire_inspector_modal, move |me, _, event, ctx| {
+            me.handle_wire_inspector_modal_event(event, ctx);
+        });
+
+        ModalViewState::new(wire_inspector_modal)
+    }
+
+    fn handle_wire_inspector_modal_event(
+        &mut self,
+        event: &WireInspectorModalEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            WireInspectorModalEvent::Close => self.close_wire_inspector(ctx),
+        }
+    }
+
+    fn toggle_wire_inspector(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.wire_inspector_modal.is_open() {
+            self.close_wire_inspector(ctx);
+        } else {
+            // Arm capture when the window is first opened. Because this modal steals
+            // focus, no traffic can flow while it is open — the intended flow is
+            // open (arm) → close → send a message → reopen to view. So capture must
+            // survive the window closing; it is only turned off via the in-panel
+            // pause control (or app exit).
+            crate::ai::agent_providers::wire_log::set_enabled(true);
+            self.wire_inspector_modal.open();
+            ctx.notify();
+        }
+    }
+
+    fn close_wire_inspector(&mut self, ctx: &mut ViewContext<Self>) {
+        // Intentionally leave capture running so messages sent while the window is
+        // closed are still recorded and visible on reopen.
+        self.wire_inspector_modal.close();
+        ctx.notify();
+    }
+
     fn build_tab_config_params_modal(
         ctx: &mut ViewContext<Self>,
     ) -> ModalViewState<Modal<TabConfigParamsModal>> {
@@ -2534,6 +2579,7 @@ impl Workspace {
         });
 
         let launch_config_save_modal = Self::build_launch_config_save_modal(ctx);
+        let wire_inspector_modal = Self::build_wire_inspector_modal(ctx);
 
         let tab_config_params_modal = Self::build_tab_config_params_modal(ctx);
         let new_worktree_modal = Self::build_new_worktree_modal(ctx);
@@ -2891,6 +2937,7 @@ impl Workspace {
             previous_workspace_state: None,
             model_event_sender,
             launch_config_save_modal,
+            wire_inspector_modal,
             tab_config_params_modal,
             session_config_modal,
             pending_session_config_replacement: None,
@@ -19279,6 +19326,9 @@ impl TypedActionView for Workspace {
                 let pane_group_handle = self.active_tab_pane_group().clone();
                 self.toggle_right_panel(&pane_group_handle, ctx);
             }
+            ToggleWireInspector => {
+                self.toggle_wire_inspector(ctx);
+            }
             #[cfg(feature = "local_fs")]
             OpenCodeReviewPanel(locator) => {
                 let pane_group_handle = self
@@ -21232,6 +21282,10 @@ impl View for Workspace {
 
         if self.launch_config_save_modal.is_open() {
             stack.add_child(self.launch_config_save_modal.render());
+        }
+
+        if self.wire_inspector_modal.is_open() {
+            stack.add_child(self.wire_inspector_modal.render());
         }
 
         if self.tab_config_params_modal.is_open() {

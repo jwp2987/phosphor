@@ -22,6 +22,8 @@ pub mod reasoning;
 pub mod secrets;
 pub mod tools;
 pub mod user_context;
+pub mod wire_inspector;
+pub mod wire_log;
 
 #[cfg(test)]
 #[path = "mod_test.rs"]
@@ -179,4 +181,23 @@ pub fn lookup_byop(app: &AppContext, id: &ai::LLMId) -> Option<(AgentProvider, S
         .map(str::to_owned)
         .unwrap_or_default();
     Some((provider, api_key, model_id))
+}
+
+/// The configured context window (tokens) for the currently active BYOP base
+/// model, or `None` if the model is unset or its context window is 0/blank.
+///
+/// Mirrors the gating on the send path (see `response_stream.rs`), so the wire
+/// inspector can tell the user *why* it will not capture: capture is only
+/// meaningful when the active model has a context window defined.
+pub fn active_context_window(app: &AppContext) -> Option<u32> {
+    let active = crate::ai::llms::LLMPreferences::as_ref(app).get_active_base_model(app, None);
+    let (provider_id, model_id) = llm_id::decode(&active.id)?;
+    let providers = AISettings::as_ref(app).agent_providers.value().clone();
+    let provider = providers.into_iter().find(|p| p.id == provider_id)?;
+    provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.context_window)
+        .filter(|n| *n > 0)
 }

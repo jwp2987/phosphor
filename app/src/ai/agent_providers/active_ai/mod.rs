@@ -14,9 +14,8 @@
 //! 没有 BYOP 配置(`active_ai_model` 解码失败)→ `dispatch::*` 返回 `None`,
 //! 调用方静默 no-op(Zap 已剥云,不再 fallback ServerApi)。
 
-use minijinja::{context, Environment};
+use minijinja::context;
 use serde::Serialize;
-use std::sync::OnceLock;
 
 use super::oneshot::{
     byop_oneshot_completion, resolve_active_ai_oneshot, resolve_next_command_oneshot,
@@ -30,75 +29,45 @@ pub mod parsing;
 // 模板
 // ---------------------------------------------------------------------------
 
-static ENV: OnceLock<Environment<'static>> = OnceLock::new();
+// The active-ai templates now live in `prompt_renderer`'s EMBEDDED table (names
+// prefixed with `active_ai/`) and share that hot-reload env — dropping an
+// `active_ai/<name>.j2` into the Prompt template directory overrides the built-in,
+// live, no rebuild. All that remains here is a thin prefix-adding wrapper.
 
-fn build_env() -> Environment<'static> {
-    let mut env = Environment::new();
-    env.add_template(
-        "prompt_suggestions_system.j2",
-        include_str!("../prompts/active_ai/prompt_suggestions_system.j2"),
-    )
-    .expect("prompt_suggestions_system parses");
-    env.add_template(
-        "prompt_suggestions_user.j2",
-        include_str!("../prompts/active_ai/prompt_suggestions_user.j2"),
-    )
-    .expect("prompt_suggestions_user parses");
-    env.add_template(
-        "nld_predict_system.j2",
-        include_str!("../prompts/active_ai/nld_predict_system.j2"),
-    )
-    .expect("nld_predict_system parses");
-    env.add_template(
-        "nld_predict_user.j2",
-        include_str!("../prompts/active_ai/nld_predict_user.j2"),
-    )
-    .expect("nld_predict_user parses");
-    env.add_template(
-        "relevant_files_system.j2",
-        include_str!("../prompts/active_ai/relevant_files_system.j2"),
-    )
-    .expect("relevant_files_system parses");
-    env.add_template(
-        "relevant_files_user.j2",
-        include_str!("../prompts/active_ai/relevant_files_user.j2"),
-    )
-    .expect("relevant_files_user parses");
-    env.add_template(
-        "next_command_system.j2",
-        include_str!("../prompts/active_ai/next_command_system.j2"),
-    )
-    .expect("next_command_system parses");
-    env.add_template(
-        "next_command_user.j2",
-        include_str!("../prompts/active_ai/next_command_user.j2"),
-    )
-    .expect("next_command_user parses");
-    env.add_template(
-        "workflow_metadata_system.j2",
-        include_str!("../prompts/active_ai/workflow_metadata_system.j2"),
-    )
-    .expect("workflow_metadata_system parses");
-    env.add_template(
-        "workflow_metadata_user.j2",
-        include_str!("../prompts/active_ai/workflow_metadata_user.j2"),
-    )
-    .expect("workflow_metadata_user parses");
-    env
-}
-
-fn env() -> &'static Environment<'static> {
-    ENV.get_or_init(build_env)
-}
-
+/// Render an active-ai template (`template` without the `active_ai/` prefix, e.g.
+/// `nld_predict_system.j2`) through [`prompt_renderer`]'s hot-reload env.
 fn render(template: &str, ctx: minijinja::Value) -> String {
-    env()
-        .get_template(template)
-        .and_then(|t| t.render(ctx))
-        .unwrap_or_else(|e| {
-            log::warn!("[active_ai] render {template} failed: {e}");
-            String::new()
-        })
+    super::prompt_renderer::render_template(&format!("active_ai/{template}"), ctx)
+}
+
+/// Like [`render`], but additionally applies the profile's per-prompt override for
+/// this prompt (only `CustomFile` takes effect; `None` / `Builtin` fall back to the
+/// built-in `template`).
+fn render_with_override(
+    template: &str,
+    prompt_override: Option<&crate::ai::execution_profiles::PromptSource>,
+    ctx: minijinja::Value,
+) -> String {
+    super::prompt_renderer::render_template_with_override(
+        &format!("active_ai/{template}"),
+        prompt_override,
+        ctx,
+    )
+}
+
+/// Fetch the active profile's per-prompt override table (the picker results for the
+/// active-ai sub-prompts). Each dispatch reads it once pre-spawn (while it still
+/// holds `&AppContext`) and passes the relevant slot to [`render_with_override`].
+fn active_prompt_overrides(
+    app: &warpui::AppContext,
+    terminal_view_id: Option<warpui::EntityId>,
+) -> crate::ai::execution_profiles::ProfilePromptOverrides {
+    use warpui::SingletonEntity;
+    crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::as_ref(app)
+        .active_profile(terminal_view_id, app)
+        .data()
+        .prompt_overrides
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +121,12 @@ pub mod prompt_suggestions {
     ) -> Option<RenderedRequest> {
         let cfg = resolve_active_ai_oneshot(app, terminal_view_id)?;
         let language = (*LanguageSettings::as_ref(app).language).prompt_language_name();
-        let system = render("prompt_suggestions_system.j2", context! { language => language });
+        let overrides = active_prompt_overrides(app, terminal_view_id);
+        let system = render_with_override(
+            "prompt_suggestions_system.j2",
+            overrides.prompt_suggestions.as_ref(),
+            context! { language => language },
+        );
         let user = render(
             "prompt_suggestions_user.j2",
             context! {
@@ -210,7 +184,12 @@ pub mod nld_predict {
         input: Input,
     ) -> Option<RenderedRequest> {
         let cfg = resolve_active_ai_oneshot(app, terminal_view_id)?;
-        let system = render("nld_predict_system.j2", context! {});
+        let overrides = active_prompt_overrides(app, terminal_view_id);
+        let system = render_with_override(
+            "nld_predict_system.j2",
+            overrides.nld_predict.as_ref(),
+            context! {},
+        );
         let user = render(
             "nld_predict_user.j2",
             context! {
@@ -274,7 +253,12 @@ pub mod relevant_files {
     ) -> Option<Prepared> {
         let cfg = resolve_active_ai_oneshot(app, terminal_view_id)?;
         let input_paths: Vec<String> = input.files.iter().map(|f| f.path.clone()).collect();
-        let system = render("relevant_files_system.j2", context! {});
+        let overrides = active_prompt_overrides(app, terminal_view_id);
+        let system = render_with_override(
+            "relevant_files_system.j2",
+            overrides.relevant_files.as_ref(),
+            context! {},
+        );
         let user = render(
             "relevant_files_user.j2",
             context! {
@@ -337,7 +321,12 @@ pub mod workflow_metadata {
         input: Input,
     ) -> Option<RenderedRequest> {
         let cfg = resolve_active_ai_oneshot(app, terminal_view_id)?;
-        let system = render("workflow_metadata_system.j2", context! {});
+        let overrides = active_prompt_overrides(app, terminal_view_id);
+        let system = render_with_override(
+            "workflow_metadata_system.j2",
+            overrides.workflow_metadata.as_ref(),
+            context! {},
+        );
         let user = render(
             "workflow_metadata_user.j2",
             context! {
@@ -396,26 +385,46 @@ pub mod next_command {
         pub prefix: Option<String>,
         /// 之前已 reject 的建议(避免重复)。
         pub rejected_suggestions: Vec<String>,
-        /// 用户在 设置 → Agents → Rules 中配置的全局规则快照。
+        /// Snapshot of the global Rules configured in Settings → Agents → Rules.
         pub user_rules: Vec<(Option<String>, String)>,
+        /// Per-prompt override for `next_command_system.j2`, resolved from the
+        /// active profile before spawn (the render runs where `&AppContext` is
+        /// gone). `None` = Auto (built-in / hot-reloaded template).
+        pub prompt_override: Option<crate::ai::execution_profiles::PromptSource>,
     }
 
-    /// Pre-spawn:解 BYOP 配置(需要 `&AppContext`)。`None` ⇒ 静默 no-op。
+    /// Pre-spawn: resolve the BYOP config (needs `&AppContext`). `None` ⇒ silent no-op.
     pub fn resolve(app: &AppContext, terminal_view_id: Option<EntityId>) -> Option<OneshotConfig> {
         resolve_next_command_oneshot(app, terminal_view_id)
     }
 
-    /// In-spawn:用 cfg + Input 渲染 prompt 并发请求。
-    /// 模板渲染不依赖 AppContext,可在 spawn 内同步调用。
+    /// Pre-spawn: resolve this profile's override for the next-command system
+    /// prompt, to be carried into [`Input`] (the render happens in-spawn where the
+    /// `&AppContext` is no longer available).
+    pub fn resolve_prompt_override(
+        app: &AppContext,
+        terminal_view_id: Option<EntityId>,
+    ) -> Option<crate::ai::execution_profiles::PromptSource> {
+        active_prompt_overrides(app, terminal_view_id)
+            .next_command
+            .clone()
+    }
+
+    /// In-spawn: render the prompt from cfg + Input and send the request.
+    /// Template rendering does not depend on AppContext, so it can run in-spawn.
     pub async fn run_with(cfg: OneshotConfig, input: Input) -> Option<String> {
         let user_rule_ctxs: Vec<UserRuleCtx> = input
             .user_rules
             .into_iter()
             .map(|(name, content)| UserRuleCtx { name, content })
             .collect();
-        let system = render("next_command_system.j2", context! {
-            user_rules => user_rule_ctxs,
-        });
+        let system = render_with_override(
+            "next_command_system.j2",
+            input.prompt_override.as_ref(),
+            context! {
+                user_rules => user_rule_ctxs,
+            },
+        );
         let user = render(
             "next_command_user.j2",
             context! {

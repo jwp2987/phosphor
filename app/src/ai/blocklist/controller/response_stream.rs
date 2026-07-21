@@ -70,9 +70,13 @@ pub(crate) struct TitleGenParams {
     pub model_id: String,
     pub api_type: crate::settings::AgentProviderApiType,
     pub reasoning_effort: crate::settings::ReasoningEffortSetting,
-    /// UI 语言名,替换 title_system.md 里的 `{{ language }}` 占位
-    /// (输入语言不明时的标题语言兜底,对齐 #277 的 prompt 语言注入)。
+    /// UI language name substituted for the `{{ language }}` placeholder in
+    /// title_system.md (the title-language fallback when the input language is
+    /// ambiguous; aligns with the #277 prompt-language injection).
     pub ui_language: &'static str,
+    /// Per-prompt override for the title system prompt, resolved from the active
+    /// profile. `None` = Auto (built-in / hot-reloaded template).
+    pub prompt_override: Option<crate::ai::execution_profiles::PromptSource>,
 }
 
 fn byop_dispatch_info(
@@ -110,6 +114,16 @@ fn byop_dispatch_info(
     let llm_prefs = crate::ai::llms::LLMPreferences::as_ref(ctx);
     let title_gen = if needs_create_task {
         let title_id = llm_prefs.get_active_title_model(ctx, None).id.clone();
+        // The profile's per-prompt override for the title system prompt.
+        let title_prompt_override = {
+            use warpui::SingletonEntity;
+            crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::as_ref(ctx)
+                .active_profile(None, ctx)
+                .data()
+                .prompt_overrides
+                .title
+                .clone()
+        };
         crate::ai::agent_providers::lookup_byop(ctx, &title_id).map(
             |(t_provider, t_api_key, t_model_id)| {
                 let t_effort =
@@ -123,6 +137,7 @@ fn byop_dispatch_info(
                     ui_language: (*crate::settings::language::LanguageSettings::as_ref(ctx)
                         .language)
                         .prompt_language_name(),
+                    prompt_override: title_prompt_override.clone(),
                 }
             },
         )
@@ -188,6 +203,7 @@ fn pending_title_generation_from_byop(
             api_type: title_gen.api_type,
             reasoning_effort: title_gen.reasoning_effort,
             ui_language: title_gen.ui_language,
+            prompt_override: title_gen.prompt_override.clone(),
         },
         user_query,
         task_id: byop.root_task_id.clone(),

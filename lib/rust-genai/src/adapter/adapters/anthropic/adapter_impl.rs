@@ -583,6 +583,7 @@ impl AnthropicAdapter {
 			completion_tokens_details: None,
 
 			total_tokens: Some(total_tokens),
+			extra: Default::default(),
 		}
 	}
 

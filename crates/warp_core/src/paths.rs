@@ -72,6 +72,15 @@ pub fn warp_home_skills_dir() -> Option<PathBuf> {
     warp_home_config_dir().map(|warp_config_dir| warp_config_dir.join("skills"))
 }
 
+/// Zap:system prompt 模板热加载目录的推荐位置(`~/.zap/prompts`)。
+///
+/// 只是设置面板给出的**默认建议路径**,不是隐式生效的位置 —— 设置留空时
+/// 依然走编进二进制的内置模板(零运行时 IO)。用户点「导出内置模板」后
+/// 才会把模板落到这里并把路径填进设置。
+pub fn warp_home_prompts_dir() -> Option<PathBuf> {
+    warp_home_config_dir().map(|warp_config_dir| warp_config_dir.join("prompts"))
+}
+
 pub fn warp_home_mcp_config_file_path() -> Option<PathBuf> {
     warp_home_config_dir().map(|warp_config_dir| warp_config_dir.join(".mcp.json"))
 }

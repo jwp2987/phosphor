@@ -227,6 +227,7 @@ pub fn to_embed_response(
 			.map(|t| t as i32),
 		prompt_tokens_details: None,
 		completion_tokens_details: None,
+		extra: Default::default(),
 	};
 
 	// Create provider model identifier

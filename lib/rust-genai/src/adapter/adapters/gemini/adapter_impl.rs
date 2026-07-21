@@ -539,6 +539,7 @@ impl GeminiAdapter {
 			completion_tokens_details,
 
 			total_tokens,
+			extra: Default::default(),
 		}
 	}
 

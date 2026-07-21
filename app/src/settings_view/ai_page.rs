@@ -1,4 +1,5 @@
 #[cfg(not(target_family = "wasm"))]
+use crate::ai::agent_providers::prompt_renderer;
 use crate::ai::aws_credentials::refresh_aws_credentials;
 use crate::ai::blocklist::agent_view::agent_input_footer::editor::{
     AgentToolbarEditorMode, AgentToolbarInlineEditor,
@@ -20,7 +21,7 @@ use crate::cloud_object::ObjectType;
 use crate::editor::{EditorOptions, InteractionState, SingleLineEditorOptions, TextColors};
 use crate::settings::InputSettings;
 use crate::settings::{
-    AIAutoDetectionEnabled, AICommandDenylist, AISettingsChangedEvent,
+    AIAutoDetectionEnabled, AICommandDenylist, AISettingsChangedEvent, PromptTemplateDir,
     AgentModeCodingPermissionsType, AgentModeCommandExecutionDenylist,
     AgentModeCommandExecutionPredicate, AgentModeQuerySuggestionsEnabled, AwsBedrockAutoLogin,
     AwsBedrockCredentialsEnabled, FileBasedMcpEnabled, GitOperationsAutogenEnabled,
@@ -326,6 +327,10 @@ pub struct AISettingsPageView {
     voice_input_toggle_key_dropdown: ViewHandle<Dropdown<AISettingsPageAction>>,
     local_only_icon_tooltip_states: RefCell<HashMap<String, MouseStateHandle>>,
     autodetection_denylist_editor: ViewHandle<EditorView>,
+    /// Zap:system prompt 模板热加载目录(设置 → AI → Other)。
+    /// 空 = 用内置模板;填目录 = 每次渲染从该目录重读,详见
+    /// `ai::agent_providers::prompt_renderer::PROMPT_DIR_ENV`。
+    prompt_template_dir_editor: ViewHandle<EditorView>,
     autonomy_dropdown_menu: ViewHandle<Dropdown<AISettingsPageAction>>,
 
     code_read_autonomy_dropdown_menu: ViewHandle<Dropdown<AISettingsPageAction>>,
@@ -381,6 +386,7 @@ pub struct AISettingsPageView {
     // Profile views
     profile_views: Vec<ViewHandle<ExecutionProfileView>>,
     add_profile_button: ViewHandle<ActionButton>,
+    seed_prompt_templates_button: ViewHandle<ActionButton>,
 }
 
 impl AISettingsPageView {
@@ -597,6 +603,50 @@ impl AISettingsPageView {
             me.handle_detection_denylist_editor_event(event, ctx);
         });
 
+        // Zap:模板热加载目录输入框。等宽字体(是文件系统路径),不做校验 ——
+        // 目录不存在时 `build_env_from_dir` 会逐个回退内置模板并记日志,
+        // 这里再拦一道只会在用户还没建好目录时碍事。
+        let prompt_template_dir_editor = ctx.add_typed_action_view(|ctx| {
+            let appearance = Appearance::as_ref(ctx);
+            let options = EditorOptions {
+                autogrow: true,
+                soft_wrap: true,
+                text: TextOptions {
+                    font_size_override: Some(appearance.ui_font_size()),
+                    font_family_override: Some(appearance.monospace_font_family()),
+                    text_colors_override: Some(TextColors {
+                        default_color: appearance.theme().active_ui_text_color(),
+                        disabled_color: appearance.theme().disabled_ui_text_color(),
+                        hint_color: appearance.theme().disabled_ui_text_color(),
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut editor = EditorView::new(options, ctx);
+            // 占位符直接显示默认导出路径,空状态下也能看出「导出内置模板」会写到哪。
+            editor.set_placeholder_text(
+                prompt_renderer::default_prompts_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| {
+                        crate::t!("settings-ai-prompt-template-dir-placeholder").to_string()
+                    }),
+                ctx,
+            );
+            let current_value = AISettings::as_ref(ctx).prompt_template_dir.value().clone();
+            editor.set_buffer_text(current_value.as_str(), ctx);
+            editor
+        });
+        Self::update_editor_interaction_state(
+            prompt_template_dir_editor.clone(),
+            is_any_ai_enabled,
+            ctx,
+        );
+
+        ctx.subscribe_to_view(&prompt_template_dir_editor, move |me, _, event, ctx| {
+            me.handle_prompt_template_dir_editor_event(event, ctx);
+        });
+
         let command_execution_allowlist_editor = ctx.add_typed_action_view(|ctx| {
             let mut input =
                 SubmittableTextInput::new(ctx).validate_on_edit(|s| Regex::new(s).is_ok());
@@ -785,12 +835,26 @@ impl AISettingsPageView {
                         editor.set_buffer_text(denylist_value, ctx);
                     });
                 }
+                // Zap:这里只回填输入框(设置可能被 TOML 手改或别处改动)。
+                // 推给 prompt_renderer 的活由 `settings::init` 里的全局订阅做 ——
+                // 设置页可能整个会话都没打开过,生效逻辑不能挂在它身上。
+                AISettingsChangedEvent::PromptTemplateDir { .. } => {
+                    let dir = AISettings::as_ref(ctx).prompt_template_dir.value().clone();
+                    me.prompt_template_dir_editor.update(ctx, |editor, ctx| {
+                        editor.set_buffer_text(&dir, ctx);
+                    });
+                }
                 AISettingsChangedEvent::IsAnyAIEnabled { .. } => {
                     let is_enabled = AISettings::as_ref(ctx).is_any_ai_enabled(ctx);
                     let ai_autonomy_settings = UserWorkspaces::as_ref(ctx).ai_autonomy_settings();
 
                     Self::update_editor_interaction_state(
                         me.autodetection_denylist_editor.clone(),
+                        is_enabled,
+                        ctx,
+                    );
+                    Self::update_editor_interaction_state(
+                        me.prompt_template_dir_editor.clone(),
                         is_enabled,
                         ctx,
                     );
@@ -1292,6 +1356,18 @@ impl AISettingsPageView {
         add_profile_button.update(ctx, |button, ctx| {
             button.set_disabled(!is_any_ai_enabled, ctx);
         });
+
+        let seed_prompt_templates_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new(crate::t!("settings-ai-prompt-template-seed"), SecondaryTheme)
+                .with_icon(Icon::Download)
+                .with_size(ButtonSize::Small)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(AISettingsPageAction::SeedPromptTemplates);
+                })
+        });
+        seed_prompt_templates_button.update(ctx, |button, ctx| {
+            button.set_disabled(!is_any_ai_enabled, ctx);
+        });
         let agent_toolbar_inline_editor = ctx.add_typed_action_view(|ctx| {
             AgentToolbarInlineEditor::new(AgentToolbarEditorMode::AgentView, ctx)
         });
@@ -1339,6 +1415,7 @@ impl AISettingsPageView {
             active_subpage: None,
             voice_input_toggle_key_dropdown,
             autodetection_denylist_editor,
+            prompt_template_dir_editor,
             local_only_icon_tooltip_states: Default::default(),
             command_execution_allowlist_editor,
             command_execution_denylist_editor,
@@ -1378,6 +1455,7 @@ impl AISettingsPageView {
             conversation_layout_dropdown,
             profile_views,
             add_profile_button,
+            seed_prompt_templates_button,
         }
     }
 
@@ -1651,6 +1729,33 @@ impl AISettingsPageView {
         }
     }
 
+    /// Zap:模板热加载目录提交。写回设置即可 —— `set_override_dir` 由
+    /// `AISettingsChangedEvent::PromptTemplateDir` 的订阅方推给 prompt_renderer,
+    /// 这里不直接调,避免设置写入和生效走两条路而漂移。
+    fn handle_prompt_template_dir_editor_event(
+        &mut self,
+        event: &EditorEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            EditorEvent::Blurred | EditorEvent::Enter => {
+                let buffer_text = self
+                    .prompt_template_dir_editor
+                    .as_ref(ctx)
+                    .buffer_text(ctx)
+                    .trim()
+                    .to_owned();
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    if let Err(e) = settings.prompt_template_dir.set_value(buffer_text, ctx) {
+                        log::warn!("Failed to set prompt template directory: {e:?}");
+                    }
+                })
+            }
+            EditorEvent::Escape => ctx.emit(AISettingsPageEvent::FocusModal),
+            _ => {}
+        }
+    }
+
     fn update_editor_interaction_state(
         editor: ViewHandle<EditorView>,
         is_enabled: bool,
@@ -1829,6 +1934,9 @@ impl AISettingsPageView {
 
         let is_any_ai_enabled = AISettings::as_ref(ctx).is_any_ai_enabled(ctx);
         self.add_profile_button.update(ctx, |button, ctx| {
+            button.set_disabled(!is_any_ai_enabled, ctx);
+        });
+        self.seed_prompt_templates_button.update(ctx, |button, ctx| {
             button.set_disabled(!is_any_ai_enabled, ctx);
         });
     }
@@ -2220,6 +2328,9 @@ pub enum AISettingsPageAction {
     OpenAIFactCollection,
     OpenMCPServerCollection,
     OpenExecutionProfileEditor(ClientProfileId),
+    /// Zap:把内置 system prompt 模板 / tool 描述导出到默认目录
+    /// (`~/.zap/prompts`,或用户已填的路径),并把路径写回设置 —— 一键开启热加载。
+    SeedPromptTemplates,
     SetBaseModel(LLMId),
     SetCodingModel(LLMId),
     /// Called while the user is actively dragging the context window slider.
@@ -2780,6 +2891,37 @@ impl TypedActionView for AISettingsPageView {
             }
             AISettingsPageAction::OpenExecutionProfileEditor(profile_id) => {
                 ctx.emit(AISettingsPageEvent::OpenExecutionProfileEditor(*profile_id))
+            }
+            // Zap:一键导出内置模板并开启热加载。
+            // 目标目录 = 用户已填的路径,没填就用 `~/.zap/prompts`。
+            // seed 本身「补齐不覆盖」,所以重复点安全(升级后可用来补新模板)。
+            AISettingsPageAction::SeedPromptTemplates => {
+                let configured = AISettings::as_ref(ctx).prompt_template_dir.value().clone();
+                let target = if configured.is_empty() {
+                    prompt_renderer::default_prompts_dir()
+                } else {
+                    Some(std::path::PathBuf::from(configured))
+                };
+                let Some(target) = target else {
+                    log::error!("[byop prompt] 拿不到 home 目录,无法确定默认模板导出路径");
+                    return;
+                };
+                match prompt_renderer::seed_dir(&target) {
+                    Ok(_) => {
+                        // 写回设置 → `settings::init` 的订阅会把它推给 prompt_renderer,
+                        // 输入框也会在 PromptTemplateDir 事件里被回填。
+                        let path = target.to_string_lossy().into_owned();
+                        AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                            if let Err(e) = settings.prompt_template_dir.set_value(path, ctx) {
+                                log::warn!("Failed to set prompt template directory: {e:?}");
+                            }
+                        });
+                    }
+                    Err(e) => log::error!(
+                        "[byop prompt] 导出内置模板到 {} 失败: {e}",
+                        target.display()
+                    ),
+                }
             }
             AISettingsPageAction::SetBaseModel(id) => {
                 AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles_model, ctx| {
@@ -5940,7 +6082,7 @@ impl SettingsWidget for OtherAIWidget {
     type View = AISettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "other use agent footer toolbar layout chip chips rearrange re-arrange thinking expanded reasoning collapse never show hide conversation history"
+        "other use agent footer toolbar layout chip chips rearrange re-arrange thinking expanded reasoning collapse never show hide conversation history prompt template directory hot reload system prompt templates"
     }
 
     fn render(
@@ -6003,6 +6145,98 @@ impl SettingsWidget for OtherAIWidget {
             &view.local_only_icon_tooltip_states,
             app,
         ));
+
+        // Zap:system prompt 模板热加载目录。空 = 内置模板(默认)。
+        // 环境变量 ZAP_PROMPT_DIR 优先级更高,设了会盖过这里填的值。
+        let prompt_template_dir_input_field = appearance
+            .ui_builder()
+            .text_input(view.prompt_template_dir_editor.clone())
+            .with_style(UiComponentStyles {
+                width: Some(280.),
+                padding: Some(Coords {
+                    top: appearance.ui_font_size() / 3.,
+                    bottom: appearance.ui_font_size() / 3.,
+                    left: appearance.ui_font_size() / 2.,
+                    right: appearance.ui_font_size() / 2.,
+                }),
+                ..Default::default()
+            })
+            .build()
+            .finish();
+
+        column.add_child(render_ai_setting_label::<PromptTemplateDir>(
+            crate::t!("settings-ai-prompt-template-dir"),
+            is_toggleable,
+            &view.local_only_icon_tooltip_states,
+            app,
+        ));
+        column.add_child(render_ai_setting_description(
+            crate::t!("settings-ai-prompt-template-dir-description"),
+            is_toggleable,
+            app,
+        ));
+        column.add_child(
+            Container::new(prompt_template_dir_input_field)
+                .with_margin_bottom(styles::DESCRIPTION_MARGIN_BOTTOM)
+                .finish(),
+        );
+        column.add_child(
+            Container::new(view.seed_prompt_templates_button.as_ref(app).render(app))
+                .with_margin_bottom(styles::DESCRIPTION_MARGIN_BOTTOM)
+                .finish(),
+        );
+
+        // Zap:热加载状态指示。默认关闭 / 设了目录却没文件 都是静默态,
+        // 这里显式告诉用户改动到底会不会生效。
+        let (status_text, status_color): (String, pathfinder_color::ColorU) =
+            match prompt_renderer::override_status() {
+                prompt_renderer::OverrideStatus::Inactive => (
+                    crate::t!("settings-ai-prompt-template-status-inactive"),
+                    styles::description_font_color(is_toggleable, app).into(),
+                ),
+                prompt_renderer::OverrideStatus::Active {
+                    dir,
+                    from_env,
+                    on_disk,
+                    total,
+                } => {
+                    let dir = dir.display().to_string();
+                    let text = if from_env {
+                        crate::t!(
+                            "settings-ai-prompt-template-status-active-env",
+                            on_disk = on_disk,
+                            total = total,
+                            dir = dir
+                        )
+                    } else {
+                        crate::t!(
+                            "settings-ai-prompt-template-status-active",
+                            on_disk = on_disk,
+                            total = total,
+                            dir = dir
+                        )
+                    };
+                    (text, appearance.theme().ui_green_color())
+                }
+            };
+        column.add_child(
+            appearance
+                .ui_builder()
+                .paragraph(status_text)
+                .with_style(UiComponentStyles {
+                    font_size: Some(appearance.ui_font_size()),
+                    font_color: Some(status_color),
+                    margin: Some(
+                        Coords::default()
+                            .top(styles::DESCRIPTION_NEGATIVE_MARGIN_OFFSET)
+                            .bottom(styles::DESCRIPTION_MARGIN_BOTTOM)
+                            .right(styles::TOGGLE_WIDTH_MARGIN),
+                    ),
+                    ..Default::default()
+                })
+                .build()
+                .finish(),
+        );
 
         column.add_child(render_dropdown_item(
             appearance,

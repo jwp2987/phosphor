@@ -1,4 +1,4 @@
-use crate::ai::execution_profiles::{AIExecutionProfile, ActionPermission};
+use crate::ai::execution_profiles::{AIExecutionProfile, ActionPermission, PromptSlot};
 use crate::editor::EditorView;
 use crate::settings::AISettings;
 use crate::ui_components::icons::Icon;
@@ -277,6 +277,81 @@ pub fn render_models_section(
             &cu_desc,
             &view.computer_use_model_dropdown,
         ));
+    }
+
+    Container::new(column.finish())
+        .with_margin_bottom(12.)
+        .finish()
+}
+
+/// Human label for a prompt-override slot in the editor.
+fn prompt_slot_label(slot: PromptSlot) -> String {
+    match slot {
+        PromptSlot::Base => crate::t!("settings-exec-profile-editor-prompt-base"),
+        PromptSlot::Coding => crate::t!("settings-exec-profile-editor-prompt-coding"),
+        PromptSlot::CliAgent => crate::t!("settings-exec-profile-editor-prompt-cli-agent"),
+        PromptSlot::ComputerUse => crate::t!("settings-exec-profile-editor-prompt-computer-use"),
+        PromptSlot::Title => crate::t!("settings-exec-profile-editor-prompt-title"),
+        PromptSlot::PromptSuggestions => {
+            crate::t!("settings-exec-profile-editor-prompt-suggestions")
+        }
+        PromptSlot::NldPredict => crate::t!("settings-exec-profile-editor-prompt-nld-predict"),
+        PromptSlot::RelevantFiles => {
+            crate::t!("settings-exec-profile-editor-prompt-relevant-files")
+        }
+        PromptSlot::WorkflowMetadata => {
+            crate::t!("settings-exec-profile-editor-prompt-workflow-metadata")
+        }
+        PromptSlot::NextCommand => crate::t!("settings-exec-profile-editor-prompt-next-command"),
+    }
+}
+
+/// A labeled row wrapping a menu [`Dropdown`] (the per-prompt override picker).
+fn render_menu_dropdown_row(
+    appearance: &Appearance,
+    label: &str,
+    dropdown: &ViewHandle<Dropdown<ExecutionProfileEditorViewAction>>,
+) -> Box<dyn Element> {
+    let label_elem = Text::new(label.to_string(), appearance.ui_font_family(), 13.)
+        .with_color(appearance.theme().active_ui_text_color().into())
+        .finish();
+    Container::new(
+        Flex::column()
+            .with_child(Container::new(label_elem).with_margin_bottom(4.).finish())
+            .with_child(Container::new(ChildView::new(dropdown).finish()).finish())
+            .finish(),
+    )
+    .with_margin_bottom(12.)
+    .finish()
+}
+
+/// The "System Prompts" section: one override picker (Auto / built-in / custom
+/// file) per prompt slot, mirroring the model slots above.
+pub fn render_prompts_section(
+    appearance: &Appearance,
+    view: &ExecutionProfileEditorView,
+) -> Box<dyn Element> {
+    let section_label = crate::t!("settings-exec-profile-editor-section-prompts");
+    let desc = crate::t!("settings-exec-profile-editor-prompts-desc");
+
+    let mut column = Flex::column()
+        .with_child(render_separator(appearance))
+        .with_child(render_section_label(&section_label, appearance))
+        .with_child(
+            Container::new(render_info_section(&desc, None, appearance))
+                .with_margin_bottom(8.)
+                .finish(),
+        );
+
+    for (slot, dropdown) in PromptSlot::ALL
+        .iter()
+        .zip(view.prompt_override_dropdowns.iter())
+    {
+        if matches!(slot, PromptSlot::ComputerUse) && !FeatureFlag::LocalComputerUse.is_enabled() {
+            continue;
+        }
+        let label = prompt_slot_label(*slot);
+        column.add_child(render_menu_dropdown_row(appearance, &label, dropdown));
     }
 
     Container::new(column.finish())

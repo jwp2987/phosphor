@@ -88,6 +88,12 @@ pub struct RequestParams {
     pub coding_model: LLMId,
     pub cli_agent_model: LLMId,
     pub computer_use_model: LLMId,
+    /// Zap BYOP: this turn's agent system-prompt slot override (Settings →
+    /// Profiles → per-model-slot Prompt). Resolved in `new()` from the active
+    /// profile by the slot that owns `model`, then plumbed to `chat_stream`'s
+    /// `render_system_with_override`. `None` = Auto (pick the built-in by model
+    /// family, the historical behavior).
+    pub prompt_override: Option<crate::ai::execution_profiles::PromptSource>,
     pub is_memory_enabled: bool,
     /// Zap BYOP 专用:用户在 设置 → Agents → Rules 创建的全局 Rules
     /// (`AIFact::Memory`)的快照,在 `new()` 中从 `ObjectStoreModel` 一次性拉取
@@ -210,6 +216,7 @@ impl RequestParams {
             coding_model: LLMId::from("byop:test"),
             cli_agent_model: LLMId::from("byop:test"),
             computer_use_model: LLMId::from("byop:test"),
+            prompt_override: None,
             is_memory_enabled: false,
             user_rules: Vec::new(),
             warp_drive_context_enabled: false,
@@ -383,19 +390,25 @@ impl RequestParams {
         // last. If the active model isn't configurable or has been removed
         // server-side, drop the override; otherwise clamp it to the model's
         // current `[min, max]` range.
-        let context_window_limit = {
-            let profile_data = AIExecutionProfilesModel::as_ref(app)
-                .active_profile(terminal_view_id, app)
-                .data()
-                .clone();
-            profile_data
-                .configurable_context_window(app)
-                .and_then(|cw| {
-                    profile_data
-                        .context_window_limit
-                        .map(|v| v.clamp(cw.min, cw.max))
-                })
-        };
+        let profile_data = AIExecutionProfilesModel::as_ref(app)
+            .active_profile(terminal_view_id, app)
+            .data()
+            .clone();
+
+        let context_window_limit = profile_data
+            .configurable_context_window(app)
+            .and_then(|cw| {
+                profile_data
+                    .context_window_limit
+                    .map(|v| v.clamp(cw.min, cw.max))
+            });
+
+        // Resolve the per-slot system-prompt override for the model this request
+        // will actually run (`request_input.model_id`), so `chat_stream` can pass it
+        // to `render_system_with_override`. `None` = Auto.
+        let prompt_override = profile_data
+            .agent_prompt_override_for_model(&request_input.model_id)
+            .cloned();
 
         Self {
             input: request_input.all_inputs().cloned().collect(),
@@ -411,6 +424,7 @@ impl RequestParams {
             coding_model: request_input.coding_model_id.clone(),
             cli_agent_model: request_input.cli_agent_model_id.clone(),
             computer_use_model: request_input.computer_use_model_id.clone(),
+            prompt_override,
             is_memory_enabled,
             user_rules,
             warp_drive_context_enabled,

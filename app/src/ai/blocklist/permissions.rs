@@ -212,6 +212,7 @@ impl BlocklistAIPermissions {
             context_window_limit: profile_data.context_window_limit,
             autosync_plans_to_warp_drive: profile_data.autosync_plans_to_warp_drive,
             web_search_enabled: profile_data.web_search_enabled,
+            prompt_overrides: profile_data.prompt_overrides.clone(),
         }
     }
 

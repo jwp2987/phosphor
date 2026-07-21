@@ -21,6 +21,7 @@ use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent};
 use warpui::{AppContext, EntityId, SingletonEntity as _};
 
 use super::chat_stream;
+use super::wire_log;
 use crate::ai::llms::LLMPreferences;
 use crate::settings::{AgentProviderApiType, ReasoningEffortSetting};
 
@@ -46,6 +47,9 @@ pub struct OneshotOptions {
     pub response_format_json: bool,
     /// 是否允许触发 reasoning。默认 `false`(主动 AI 都是低延迟轻量调用)。
     pub allow_reasoning: bool,
+    /// Wire-inspector category for this call. `None` -> `Kind::Oneshot`; title
+    /// generation sets `Kind::TitleGen` so it is filterable in the inspector.
+    pub wire_kind: Option<super::wire_log::Kind>,
 }
 
 const DEFAULT_MAX_CHARS: usize = 8000;
@@ -101,12 +105,66 @@ pub async fn byop_oneshot_completion(
     let client = chat_stream::build_client(cfg.api_type, &cfg.base_url, cfg.api_key.clone());
     let (chat_req, chat_opts) = build_oneshot_request(cfg, system, user, opts);
 
+    wire_capture_out(cfg, system, &chat_req, opts);
+
     let resp = client
         .exec_chat(&cfg.model_id, chat_req, Some(&chat_opts))
         .await
         .with_context(|| format!("byop oneshot exec_chat failed (model={})", cfg.model_id))?;
 
-    Ok(resp.first_text().unwrap_or("").to_owned())
+    let text = resp.first_text().unwrap_or("").to_owned();
+    wire_capture_in(cfg, &text, opts);
+    Ok(text)
+}
+
+/// Endpoint label matching the main path's `wire_adapter_label`.
+fn wire_adapter(cfg: &OneshotConfig) -> String {
+    format!("{:?} @ {}", cfg.api_type, cfg.base_url)
+}
+
+/// Outbound capture for a one-shot call. Gated on the inspector being armed only
+/// (not a context window): these auxiliary calls — title generation, next-command,
+/// etc. — have no usage meter, but the user still wants to see them go out.
+fn wire_capture_out(
+    cfg: &OneshotConfig,
+    system: &str,
+    chat_req: &ChatRequest,
+    opts: &OneshotOptions,
+) {
+    if !wire_log::is_enabled() {
+        return;
+    }
+    let kind = opts.wire_kind.unwrap_or(wire_log::Kind::Oneshot);
+    let payload = match serde_json::to_string_pretty(&chat_req.messages) {
+        Ok(s) => wire_log::Payload::Json(s),
+        Err(e) => wire_log::Payload::Flagged(format!("serialize failed: {e}")),
+    };
+    wire_log::capture_out(
+        kind,
+        cfg.model_id.clone(),
+        wire_adapter(cfg),
+        payload,
+        Some(wire_log::ContextSnapshot {
+            system: (!system.is_empty()).then(|| system.to_owned()),
+            ..Default::default()
+        }),
+    );
+}
+
+/// Inbound capture for a one-shot call: the model's reply text. No token usage —
+/// one-shots do not report context occupancy.
+fn wire_capture_in(cfg: &OneshotConfig, text: &str, opts: &OneshotOptions) {
+    if !wire_log::is_enabled() {
+        return;
+    }
+    let kind = opts.wire_kind.unwrap_or(wire_log::Kind::Oneshot);
+    wire_log::capture_in(
+        kind,
+        cfg.model_id.clone(),
+        wire_adapter(cfg),
+        wire_log::Payload::Json(text.to_owned()),
+        None,
+    );
 }
 
 /// 发送一次 BYOP 流式 chat completion,聚合所有文本 chunk 后返回。
@@ -121,6 +179,7 @@ pub async fn byop_oneshot_streaming_completion(
 ) -> anyhow::Result<String> {
     let client = chat_stream::build_client(cfg.api_type, &cfg.base_url, cfg.api_key.clone());
     let (chat_req, chat_opts) = build_oneshot_request(cfg, system, user, opts);
+    wire_capture_out(cfg, system, &chat_req, opts);
     let mut resp = client
         .exec_chat_stream(&cfg.model_id, chat_req, Some(&chat_opts))
         .await
@@ -151,6 +210,7 @@ pub async fn byop_oneshot_streaming_completion(
         }
     }
 
+    wire_capture_in(cfg, &text, opts);
     Ok(text)
 }
 

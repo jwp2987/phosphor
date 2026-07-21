@@ -35,7 +35,8 @@ use super::{
     cloud_preferences::PreferencesSettings, cloud_sync::CloudSyncSettings,
     initializer::SettingsInitializer,
     language::LanguageSettings, native_preference::NativePreferenceSettings,
-    network::NetworkSettings, AISettings, AccessibilitySettings, AliasExpansionSettings,
+    network::NetworkSettings, AISettings, AISettingsChangedEvent, AccessibilitySettings,
+    AliasExpansionSettings,
     AppEditorSettings, AutoupdateSettings, BlockVisibilitySettings, CodeSettings, DebugSettings,
     EmacsBindingsSettings, FontSettings, FontSettingsChangedEvent, GPUSettings, InputBoxType,
     InputModeSettings, InputSettings, PaneSettings, SameLinePromptBlockSettings, ScrollSettings,
@@ -223,6 +224,17 @@ pub fn init(
         crate::settings::reapply_network_settings_preserving_password(ctx);
     });
 
+    // Zap:system prompt 模板热加载目录。`prompt_renderer` 是一组自由函数,
+    // 拿不到 AppContext,所以和上面的代理设置一样走“推进全局槽”的路子。
+    // 必须在这里推一次(而不是只靠设置页订阅):设置页可能整个会话都没打开过,
+    // 那样存盘的目录就永远不会生效。
+    apply_prompt_template_dir_to_global_slot(ctx);
+    ctx.subscribe_to_model(&AISettings::handle(ctx), |_model, event, ctx| {
+        if matches!(event, AISettingsChangedEvent::PromptTemplateDir { .. }) {
+            apply_prompt_template_dir_to_global_slot(ctx);
+        }
+    });
+
     // Set up hot-reload for the settings file. When the WarpConfig watcher
     // detects a change to settings.toml, reload preferences from disk and
     // push changed values into setting models.
@@ -270,6 +282,22 @@ pub(crate) fn apply_network_settings_to_global_slots(ctx: &mut AppContext, passw
         password: password.to_string(),
         no_proxy,
     });
+}
+
+/// Zap:把 设置 → AI → System prompt template directory 推进 `prompt_renderer`
+/// 的全局槽。
+///
+/// `prompt_renderer` 是一组自由函数(拿不到 `AppContext`),所以和上面的全局代理
+/// 设置一样走“settings 读出来 → 推进全局槽”的路子。
+///
+/// 空串 = 关闭热加载,回到 `include_str!` 编进二进制的内置模板。
+/// 注意环境变量 `ZAP_PROMPT_DIR` 在 `prompt_renderer` 那侧优先级更高,
+/// 设了会盖过这里推的值。
+pub(crate) fn apply_prompt_template_dir_to_global_slot(ctx: &AppContext) {
+    let dir = AISettings::as_ref(ctx).prompt_template_dir.value().clone();
+    crate::ai::agent_providers::prompt_renderer::set_override_dir(
+        (!dir.is_empty()).then(|| std::path::PathBuf::from(dir)),
+    );
 }
 
 /// 在 `initialize_app` 之后(`ProxyCredentials` 已注册)调用:读当前密码后重推

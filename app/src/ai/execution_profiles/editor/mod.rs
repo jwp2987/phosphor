@@ -2,7 +2,8 @@ use crate::ai::blocklist::BlocklistAIPermissions;
 use crate::ai::execution_profiles::model_menu_items::available_model_menu_items;
 use crate::ai::execution_profiles::{
     profiles::{AIExecutionProfilesModel, AIExecutionProfilesModelEvent, ClientProfileId},
-    AIExecutionProfile, ActionPermission, WriteToPtyPermission,
+    AIExecutionProfile, ActionPermission, ProfilePromptOverrides, PromptSlot, PromptSource,
+    WriteToPtyPermission, BUILTIN_PROMPT_TEMPLATES,
 };
 use crate::ai::llms::{LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent};
 use crate::ai::paths::host_native_absolute_path;
@@ -38,6 +39,66 @@ use warpui::{
 };
 
 const MODEL_MENU_WIDTH: f32 = 250.;
+
+/// Subfolder under the prompt template directory where user-authored custom prompt
+/// files live. Any `.j2` / `.md` there is offered in every slot's picker, as
+/// `CustomFile("custom/<name>")`. A single flat folder keeps discovery unambiguous
+/// (no mixing with the built-in `system/` / `active_ai/` templates).
+const CUSTOM_PROMPT_SUBDIR: &str = "custom";
+
+/// List the custom prompt files (relative paths like `custom/foo.j2`) found under
+/// the prompt template dir. Empty when no dir is configured or the folder is absent.
+fn discover_custom_prompt_files(dir: Option<&Path>) -> Vec<String> {
+    let Some(dir) = dir else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir.join(CUSTOM_PROMPT_SUBDIR)) else {
+        return Vec::new();
+    };
+    let mut files: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".j2") || n.ends_with(".md"))
+        .map(|n| format!("{CUSTOM_PROMPT_SUBDIR}/{n}"))
+        .collect();
+    files.sort();
+    files
+}
+
+/// Build the menu items for one prompt slot: Auto, then (agent slots only) each
+/// built-in family, then every discovered custom file.
+fn prompt_override_items(
+    slot: PromptSlot,
+    custom_files: &[String],
+) -> Vec<DropdownItem<ExecutionProfileEditorViewAction>> {
+    let mut items = vec![DropdownItem::new(
+        crate::t!("settings-exec-profile-editor-prompt-auto"),
+        ExecutionProfileEditorViewAction::SetPromptOverride { slot, source: None },
+    )];
+    if slot.is_agent_slot() {
+        for family in BUILTIN_PROMPT_TEMPLATES {
+            items.push(DropdownItem::new(
+                format!("Built-in: {family}"),
+                ExecutionProfileEditorViewAction::SetPromptOverride {
+                    slot,
+                    source: Some(PromptSource::Builtin((*family).to_string())),
+                },
+            ));
+        }
+    }
+    for rel in custom_files {
+        // `rel` is `custom/<name>`; show just the name, keep the full path in the value.
+        let name = rel.strip_prefix("custom/").unwrap_or(rel);
+        items.push(DropdownItem::new(
+            format!("Custom: {name}"),
+            ExecutionProfileEditorViewAction::SetPromptOverride {
+                slot,
+                source: Some(PromptSource::CustomFile(rel.clone())),
+            },
+        ));
+    }
+    items
+}
 
 // 去中心化分支:原 `render_upgrade_footer` 用于在模型下拉菜单底部展示 "前沿模型
 // 需要升级到付费计划" 的 banner;本地模式下不再有付费 / 免费区分,整段已删除。
@@ -154,6 +215,12 @@ pub enum ExecutionProfileEditorViewAction {
     SetWebSearchEnabled {
         enabled: bool,
     },
+    /// Set (or clear, with `source: None` = Auto) the system-prompt override for
+    /// one prompt slot of this profile.
+    SetPromptOverride {
+        slot: PromptSlot,
+        source: Option<PromptSource>,
+    },
 }
 
 pub struct ExecutionProfileEditorView {
@@ -169,6 +236,9 @@ pub struct ExecutionProfileEditorView {
     active_ai_model_dropdown: ViewHandle<FilterableDropdown<ExecutionProfileEditorViewAction>>,
     next_command_model_dropdown: ViewHandle<FilterableDropdown<ExecutionProfileEditorViewAction>>,
     computer_use_model_dropdown: ViewHandle<FilterableDropdown<ExecutionProfileEditorViewAction>>,
+    /// One menu dropdown per prompt slot, aligned with [`PromptSlot::ALL`]. Items
+    /// (Auto / built-in families / discovered custom files) are rebuilt on refresh.
+    prompt_override_dropdowns: Vec<ViewHandle<Dropdown<ExecutionProfileEditorViewAction>>>,
     apply_code_diffs_dropdown: ViewHandle<Dropdown<ExecutionProfileEditorViewAction>>,
     read_files_dropdown: ViewHandle<Dropdown<ExecutionProfileEditorViewAction>>,
     execute_commands_dropdown: ViewHandle<Dropdown<ExecutionProfileEditorViewAction>>,
@@ -455,6 +525,14 @@ impl ExecutionProfileEditorView {
             dropdown.set_menu_width(MODEL_MENU_WIDTH, ctx);
             dropdown
         });
+        let mut prompt_override_dropdowns = Vec::with_capacity(PromptSlot::ALL.len());
+        for _ in PromptSlot::ALL {
+            prompt_override_dropdowns.push(ctx.add_typed_action_view(|ctx| {
+                let mut dropdown = Dropdown::new(ctx);
+                dropdown.set_menu_width(MODEL_MENU_WIDTH, ctx);
+                dropdown
+            }));
+        }
         let command_allowlist_editor = ctx.add_typed_action_view(|ctx| {
             let mut input =
                 SubmittableTextInput::new(ctx).validate_on_edit(|s| Regex::new(s).is_ok());
@@ -540,6 +618,7 @@ impl ExecutionProfileEditorView {
             active_ai_model_dropdown,
             next_command_model_dropdown,
             computer_use_model_dropdown,
+            prompt_override_dropdowns,
             apply_code_diffs_dropdown,
             read_files_dropdown,
             execute_commands_dropdown,
@@ -929,6 +1008,12 @@ impl ExecutionProfileEditorView {
             ctx,
         );
 
+        Self::refresh_prompt_override_dropdowns(
+            &self.prompt_override_dropdowns,
+            &current_permissions.prompt_overrides,
+            ctx,
+        );
+
         Self::refresh_execution_profile_dropdown_menu(
             &self.apply_code_diffs_dropdown,
             current_permissions.apply_code_diffs,
@@ -1187,6 +1272,40 @@ impl ExecutionProfileEditorView {
         ctx.notify();
     }
 
+    /// Rebuild every prompt-override menu (Auto / built-in families / discovered
+    /// custom files) and reflect the profile's current selection. Rebuilt on each
+    /// refresh so newly-added `custom/` files show up without restarting.
+    fn refresh_prompt_override_dropdowns(
+        dropdowns: &[ViewHandle<Dropdown<ExecutionProfileEditorViewAction>>],
+        overrides: &ProfilePromptOverrides,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let ai_disabled = !AISettings::as_ref(ctx).is_any_ai_enabled(ctx);
+        let dir = crate::ai::agent_providers::prompt_renderer::active_prompt_dir();
+        let custom_files = discover_custom_prompt_files(dir.as_deref());
+        for (slot, handle) in PromptSlot::ALL.iter().zip(dropdowns.iter()) {
+            let items = prompt_override_items(*slot, &custom_files);
+            let current = slot.get(overrides).clone();
+            handle.update(ctx, |dropdown, ctx| {
+                if ai_disabled {
+                    dropdown.set_disabled(ctx);
+                } else {
+                    dropdown.set_enabled(ctx);
+                }
+                dropdown.set_items(items.clone(), ctx);
+                dropdown.set_selected_by_action(
+                    ExecutionProfileEditorViewAction::SetPromptOverride {
+                        slot: *slot,
+                        source: current.clone(),
+                    },
+                    ctx,
+                );
+                ctx.notify();
+            });
+        }
+        ctx.notify();
+    }
+
     fn refresh_mcp_dropdown<F>(
         dropdown: &ViewHandle<FilterableDropdown<ExecutionProfileEditorViewAction>>,
         action_creator: F,
@@ -1337,6 +1456,7 @@ impl View for ExecutionProfileEditorView {
                 profile_data.is_default_profile,
             ))
             .with_child(render_models_section(appearance, self))
+            .with_child(render_prompts_section(appearance, self))
             .with_child(render_permissions_section(
                 appearance,
                 self,
@@ -1536,6 +1656,17 @@ impl TypedActionView for ExecutionProfileEditorView {
                 });
                 ctx.notify();
             }
+            ExecutionProfileEditorViewAction::SetPromptOverride { slot, source } => {
+                AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles_model, ctx| {
+                    profiles_model.set_prompt_override(
+                        self.profile_id,
+                        *slot,
+                        source.clone(),
+                        ctx,
+                    );
+                });
+                ctx.notify();
+            }
         }
     }
 }
@@ -1585,5 +1716,48 @@ impl BackingView for ExecutionProfileEditorView {
 
     fn set_focus_handle(&mut self, focus_handle: PaneFocusHandle, _ctx: &mut ViewContext<Self>) {
         self.focus_handle = Some(focus_handle);
+    }
+}
+
+#[cfg(test)]
+mod prompt_picker_tests {
+    use super::*;
+
+    #[test]
+    fn discover_custom_prompt_files_filters_and_prefixes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom = tmp.path().join(CUSTOM_PROMPT_SUBDIR);
+        std::fs::create_dir_all(&custom).unwrap();
+        std::fs::write(custom.join("b.j2"), "x").unwrap();
+        std::fs::write(custom.join("a.md"), "x").unwrap();
+        std::fs::write(custom.join("ignore.txt"), "x").unwrap();
+
+        let files = discover_custom_prompt_files(Some(tmp.path()));
+        // Only .j2/.md, sorted, prefixed with the subdir.
+        assert_eq!(files, vec!["custom/a.md", "custom/b.j2"]);
+    }
+
+    #[test]
+    fn discover_custom_prompt_files_empty_without_dir_or_folder() {
+        assert!(discover_custom_prompt_files(None).is_empty());
+        let tmp = tempfile::tempdir().unwrap();
+        // No `custom/` folder present.
+        assert!(discover_custom_prompt_files(Some(tmp.path())).is_empty());
+    }
+
+    #[test]
+    fn prompt_override_items_agent_slot_has_auto_families_and_custom() {
+        let custom = vec!["custom/mine.j2".to_string()];
+        let items = prompt_override_items(PromptSlot::Base, &custom);
+        // Auto + every built-in family + each custom file.
+        assert_eq!(items.len(), 1 + BUILTIN_PROMPT_TEMPLATES.len() + custom.len());
+    }
+
+    #[test]
+    fn prompt_override_items_aux_slot_has_auto_and_custom_only() {
+        let custom = vec!["custom/mine.j2".to_string()];
+        let items = prompt_override_items(PromptSlot::Title, &custom);
+        // Auxiliary prompts have no built-in family list: Auto + custom files only.
+        assert_eq!(items.len(), 1 + custom.len());
     }
 }

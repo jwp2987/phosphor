@@ -1296,13 +1296,26 @@ fn build_chat_request(
     );
     let plan_mode = is_plan_mode_turn(&params.input);
     let tool_names = available_tool_names(params);
-    let mut system_text = prompt_renderer::render_system(
+    // The `# Available Tools` text list (tool_aliases.j2, driven by this slice) is
+    // redundant with the structured `tools` array we send via `with_tools`:
+    // `build_tools_array` and `available_tool_names` share the exact same gating,
+    // so a non-empty name list means the native tools array is also going out.
+    // Pass an empty slice in that case to suppress the duplicate text block and
+    // save prompt tokens; only surface the text list if we are NOT sending
+    // structured tools (no such path today, but keeps the behavior principled).
+    let prompt_tool_names: &[String] = if tool_names.is_empty() {
+        &tool_names
+    } else {
+        &[]
+    };
+    let mut system_text = prompt_renderer::render_system_with_override(
         api_type,
         &params.model,
         agent_ctx,
-        &tool_names,
+        prompt_tool_names,
         plan_mode,
         &params.user_rules,
+        params.prompt_override.as_ref(),
     );
     // Zap:legacy SSH 会话画像补丁。`render_system` 走 AIAgentContext,
     // 拿到的 OS/shell 是本地客户端;legacy SSH 下 PTY 实际在远端,
@@ -2996,10 +3009,13 @@ fn build_tools_array(params: &RequestParams) -> Vec<GenaiTool> {
             true
         })
         .map(|t| {
-            let description = if t.description.contains("{{year}}") {
-                t.description.replace("{{year}}", &current_year)
+            // Zap:开了模板热加载时,`tool_descriptions/{name}.md` 的覆盖版优先。
+            // 没开(默认)直接借用 registry 里的 &'static str,零额外开销。
+            let raw = prompt_renderer::tool_description(t.name, t.description);
+            let description = if raw.contains("{{year}}") {
+                raw.replace("{{year}}", &current_year)
             } else {
-                t.description.to_owned()
+                raw.into_owned()
             };
             GenaiTool::new(t.name)
                 .with_description(description)
@@ -3616,9 +3632,13 @@ pub struct TitleGenInput {
     pub model_id: String,
     pub api_type: AgentProviderApiType,
     pub reasoning_effort: crate::settings::ReasoningEffortSetting,
-    /// UI 语言名("English" / "Simplified Chinese" / …),替换 title_system.md
-    /// 的 `{{ language }}` 占位,作为输入语言不明时的标题语言兜底。
+    /// UI language name ("English" / "Simplified Chinese" / …) substituted for the
+    /// `{{ language }}` placeholder in title_system.md; the title-language fallback
+    /// when the input language is ambiguous.
     pub ui_language: &'static str,
+    /// Per-prompt override for the title system prompt, resolved from the active
+    /// profile. `None` = Auto (built-in / hot-reloaded `tasks/title_system.md`).
+    pub prompt_override: Option<crate::ai::execution_profiles::PromptSource>,
 }
 
 pub struct ByopOutputInput {
@@ -3639,6 +3659,112 @@ pub struct ByopOutputInput {
     /// ユーザー設定 (image/pdf/audio の三態 Override) を反映済みの attachment caps。
     /// `resolve_for_model` で計算され、UI 表示と runtime 動作を一致させる。
     pub attachment_caps: attachment_caps::AttachmentCaps,
+}
+
+// ---------------------------------------------------------------------------
+// Wire inspector capture helpers (see wire_log)
+// ---------------------------------------------------------------------------
+
+/// Endpoint/adapter label shown in the inspector, e.g. "Ollama @ http://host/v1".
+fn wire_adapter_label(api_type: AgentProviderApiType, base_url: &str) -> String {
+    format!("{api_type:?} @ {base_url}")
+}
+
+/// The messages that are new this turn: the trailing run after the last assistant
+/// message. ZAP re-sends the whole history every turn, so the delta is everything
+/// past the last assistant message; system messages are dropped.
+fn wire_outbound_delta(messages: &[ChatMessage]) -> Vec<&ChatMessage> {
+    let start = messages
+        .iter()
+        .rposition(|m| m.role == ChatRole::Assistant)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    messages[start..]
+        .iter()
+        .filter(|m| m.role != ChatRole::System)
+        .collect()
+}
+
+/// The system prompt actually going out this turn. Most adapters carry it in
+/// `chat_req.system`; under Anthropic shaping it is moved into system-role
+/// messages instead, so fall back to concatenating those.
+fn wire_system_text(chat_req: &ChatRequest) -> Option<String> {
+    if let Some(sys) = &chat_req.system {
+        if !sys.is_empty() {
+            return Some(sys.clone());
+        }
+    }
+    let joined: String = chat_req
+        .messages
+        .iter()
+        .filter(|m| m.role == ChatRole::System)
+        .filter_map(|m| m.content.first_text())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// Structured skills/env for the diff view, read from the same agent context
+/// `build_chat_request` used (the turn's input context, or the cached fallback for
+/// tool-result turns). Read-only: `build_chat_request` already refreshed the cache
+/// for this turn before we reach here.
+fn wire_skills_env(params: &RequestParams) -> (Vec<String>, Vec<(String, String)>) {
+    let input_ctx = latest_input_context(&params.input);
+    let fallback;
+    let ctx: &[AIAgentContext] = if !input_ctx.is_empty() {
+        input_ctx
+    } else if let Some(id) = params.byop_conversation_id {
+        fallback = CONVERSATION_SYSTEM_CTX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .filter(|(cid, _)| *cid == id)
+            .map(|(_, c)| c.clone());
+        fallback.as_deref().unwrap_or(&[])
+    } else {
+        &[]
+    };
+
+    let mut skills = Vec::new();
+    let mut env = Vec::new();
+    for c in ctx {
+        match c {
+            AIAgentContext::Directory { pwd, .. } => {
+                if let Some(p) = pwd {
+                    env.push(("cwd".to_string(), p.clone()));
+                }
+            }
+            AIAgentContext::ExecutionEnvironment(e) => {
+                let shell = match &e.shell_version {
+                    Some(v) => format!("{} {}", e.shell_name, v),
+                    None => e.shell_name.clone(),
+                };
+                env.push(("shell".to_string(), shell));
+                if let Some(cat) = &e.os.category {
+                    let os = match &e.os.distribution {
+                        Some(d) => format!("{cat} ({d})"),
+                        None => cat.clone(),
+                    };
+                    env.push(("os".to_string(), os));
+                }
+            }
+            AIAgentContext::Git { head, branch } => {
+                env.push(("git.head".to_string(), head.clone()));
+                if let Some(b) = branch {
+                    env.push(("git.branch".to_string(), b.clone()));
+                }
+            }
+            AIAgentContext::Skills { skills: sk } => {
+                for s in sk {
+                    skills.push(s.name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    skills.sort();
+    env.sort();
+    (skills, env)
 }
 
 /// `task_id`: conversation 的 root task id(controller 端从 history model 取)。
@@ -3813,6 +3939,33 @@ pub async fn generate_byop_output(
         if let Some(t) = m.content.first_text() {
             scan_suspicious_backslash(&format!("msg[{idx}]"), t);
         }
+    }
+
+    // Wire inspector: computed unconditionally (one format!/request) so the stream
+    // generator below can reuse it for the inbound capture; base_url is not in the
+    // generator's captured scope.
+    let wire_adapter = wire_adapter_label(api_type, &base_url);
+    // Outbound capture: this turn's delta, before the stream opens. Gated on the
+    // inspector being open AND a defined context window.
+    if super::wire_log::should_capture(context_window) {
+        let delta = wire_outbound_delta(&chat_req.messages);
+        let payload = match serde_json::to_string_pretty(&delta) {
+            Ok(s) => super::wire_log::Payload::Json(s),
+            Err(e) => super::wire_log::Payload::Flagged(format!("serialize failed: {e}")),
+        };
+        let (skills, env) = wire_skills_env(&params);
+        super::wire_log::capture_out(
+            super::wire_log::Kind::UserDelta,
+            model_id.clone(),
+            wire_adapter.clone(),
+            payload,
+            Some(super::wire_log::ContextSnapshot {
+                tools: tool_names_for_extract.clone(),
+                skills,
+                env,
+                system: wire_system_text(&chat_req),
+            }),
+        );
     }
 
     let stream = async_stream::stream! {
@@ -4078,6 +4231,13 @@ pub async fn generate_byop_output(
         // 依然保持 0。
         let mut captured_cache_read_tokens: i32 = 0;
         let mut captured_cache_create_tokens: i32 = 0;
+        // Some Ollama-compatible servers report the real KV-cache occupancy
+        // (`active_kv_tokens`) as a non-standard usage field, captured generically
+        // via `Usage.extra`. Standard providers (OpenAI / OpenRouter / Anthropic)
+        // report the full `prompt_tokens` and omit this, so it stays None there.
+        // When present it is the true "context used" — Ollama's `prompt_tokens`
+        // only counts the newly-evaluated (KV-cache-excluded) tokens.
+        let mut captured_active_kv_tokens: Option<i32> = None;
 
         while let Some(item) = sdk_stream.next().await {
             let event = match item {
@@ -4345,6 +4505,17 @@ pub async fn generate_byop_output(
                         }
                         if let Some(c) = usage.completion_tokens {
                             captured_completion_tokens = captured_completion_tokens.max(c);
+                        }
+                        // Real KV occupancy from Ollama-compatible servers, if present.
+                        // Non-standard field, read generically from `Usage.extra`.
+                        if let Some(kv) = usage
+                            .extra
+                            .get("active_kv_tokens")
+                            .and_then(|v| v.as_i64())
+                        {
+                            let kv = kv as i32;
+                            captured_active_kv_tokens =
+                                Some(captured_active_kv_tokens.unwrap_or(0).max(kv));
                         }
                         // P0-6 prompt cache 命中率监控:Anthropic / OpenAI / Gemini 在
                         // `prompt_tokens_details` 中分别返回 `cache_read_input_tokens`
@@ -4812,21 +4983,66 @@ pub async fn generate_byop_output(
             yield Ok(make_add_messages_event(&current_task_id, final_messages));
         }
 
+        // Wire inspector: capture the model's response for this turn (text +
+        // token/context usage). Gated on the inspector being open AND a defined
+        // context window.
+        if super::wire_log::should_capture(context_window) {
+            let text = captured_assistant_text
+                .clone()
+                .unwrap_or_else(|| streamed_assistant_text.clone());
+            let payload = match serde_json::to_string_pretty(&json!({ "text": text })) {
+                Ok(s) => super::wire_log::Payload::Json(s),
+                Err(e) => super::wire_log::Payload::Flagged(format!("serialize failed: {e}")),
+            };
+            let usage = context_window.map(|cw| {
+                super::wire_log::TokenUsage::new(
+                    captured_prompt_tokens,
+                    captured_completion_tokens,
+                    captured_active_kv_tokens,
+                    cw,
+                )
+            });
+            super::wire_log::capture_in(
+                super::wire_log::Kind::Response,
+                model_id.clone(),
+                wire_adapter.clone(),
+                payload,
+                usage,
+            );
+        }
+
         // 把 captured token usage 折算成 ConversationUsageMetadata.context_window_usage
         // 注入 StreamFinished — controller 的 handle_response_stream_finished 会把它写到
         // conversation.conversation_usage_metadata,footer 监听 UpdatedStreamingExchange/
         // AppendedExchange 事件即在每轮末实时刷新 "X% context remaining" 工具提示。
         let usage_metadata = context_window.and_then(|cw| {
-            if cw == 0 || (captured_prompt_tokens == 0 && captured_completion_tokens == 0) {
+            if cw == 0 {
                 return None;
             }
-            let used = (captured_prompt_tokens + captured_completion_tokens).max(0) as f32;
-            let pct = (used / cw as f32).clamp(0.0, 1.0);
+            // Prefer the server's real KV occupancy when it reports it: some
+            // Ollama-compatible servers set `prompt_tokens` to only the newly
+            // evaluated (KV-cache-excluded) count, which makes the meter read ~1%.
+            // `active_kv_tokens` is the true context in the cache. Standard
+            // providers (OpenAI / OpenRouter / Anthropic) report the full prompt
+            // and omit `active_kv_tokens`, so the fallback is correct for them.
+            // Divide by the CONFIGURED window either way — that is the budget ZAP
+            // compacts against (the user wants compaction to trigger at their
+            // configured limit, not the server's raw KV capacity).
+            let used = match captured_active_kv_tokens {
+                Some(kv) if kv > 0 => kv,
+                _ => (captured_prompt_tokens + captured_completion_tokens).max(0),
+            };
+            if used == 0 {
+                return None;
+            }
+            let pct = (used as f32 / cw as f32).clamp(0.0, 1.0);
             log::info!(
-                "[byop] context usage: prompt={} completion={} window={} → {:.1}%",
+                "[byop] context usage: active_kv={:?} prompt={} completion={} window={} used={} → {:.1}%",
+                captured_active_kv_tokens,
                 captured_prompt_tokens,
                 captured_completion_tokens,
                 cw,
+                used,
                 pct * 100.0
             );
             Some(api::response_event::stream_finished::ConversationUsageMetadata {
@@ -4870,10 +5086,18 @@ pub(crate) async fn generate_title_via_byop(
         api_type: tg.api_type,
         reasoning_effort: tg.reasoning_effort,
     };
-    // include_str 静态模板,仅替换 `{{ language }}` 占位(不走 minijinja,
-    // 避免为单一变量引入模板渲染)。
-    let system = include_str!("prompts/tasks/title_system.md")
-        .replace("{{ language }}", tg.ui_language);
+    // Static template with only the `{{ language }}` placeholder substituted (no
+    // minijinja — not worth a template engine for a single variable). A profile
+    // custom-file override, if set, replaces the whole prompt; otherwise use the
+    // built-in (which itself picks up a hot-reloaded copy from the prompt dir).
+    let base = match tg.prompt_override.as_ref() {
+        Some(crate::ai::execution_profiles::PromptSource::CustomFile(rel)) => {
+            prompt_renderer::custom_prompt_raw(rel)
+                .unwrap_or_else(|| prompt_renderer::title_system_prompt().into_owned())
+        }
+        _ => prompt_renderer::title_system_prompt().into_owned(),
+    };
+    let system = base.replace("{{ language }}", tg.ui_language);
     let user_prompt = format!(
         "Generate a title for this conversation:\n<user>{}</user>",
         user_query
@@ -4881,6 +5105,7 @@ pub(crate) async fn generate_title_via_byop(
     let opts = super::oneshot::OneshotOptions {
         max_chars: Some(1000),
         temperature: Some(0.5),
+        wire_kind: Some(super::wire_log::Kind::TitleGen),
         ..Default::default()
     };
     let raw = super::oneshot::byop_oneshot_completion(&cfg, &system, &user_prompt, &opts).await?;

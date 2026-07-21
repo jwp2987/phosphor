@@ -697,6 +697,29 @@ impl AIExecutionProfilesModel {
         }
     }
 
+    /// Set (or clear, with `None`) the per-prompt system-prompt override for one
+    /// slot of a profile. Persists like the model setters.
+    pub fn set_prompt_override(
+        &mut self,
+        profile_id: ClientProfileId,
+        slot: super::PromptSlot,
+        source: Option<super::PromptSource>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.edit_profile_internal(
+            profile_id,
+            |profile| {
+                let target = slot.select_mut(&mut profile.prompt_overrides);
+                if *target != source {
+                    *target = source.clone();
+                    return true;
+                }
+                false
+            },
+            ctx,
+        );
+    }
+
     pub fn set_context_window_limit(
         &mut self,
         profile_id: ClientProfileId,

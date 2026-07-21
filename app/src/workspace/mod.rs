@@ -669,6 +669,14 @@ pub fn init(app: &mut AppContext) {
         .with_mac_key_binding("cmd-shift-+")
         .with_linux_or_windows_key_binding("ctrl-shift-+"),
         EditableBinding::new(
+            "workspace:toggle_wire_inspector",
+            BindingDescription::new(crate::t!("keybinding-desc-workspace-toggle-wire-inspector")),
+            WorkspaceAction::ToggleWireInspector,
+        )
+        .with_context_predicate(id!("Workspace"))
+        .with_mac_key_binding("cmd-ctrl-i")
+        .with_linux_or_windows_key_binding("ctrl-alt-i"),
+        EditableBinding::new(
             TOGGLE_VERTICAL_TABS_PANEL_BINDING_NAME,
             BindingDescription::new(crate::t!("keybinding-desc-workspace-toggle-vertical-tabs"))
                 .with_custom_description(

@@ -25,6 +25,15 @@ pub struct Usage {
 	/// Total tokens as reported by the API, or computed as prompt + completion
 	/// (including cache read/creation tokens when applicable).
 	pub total_tokens: Option<i32>,
+
+	/// Provider-specific usage fields not modeled above, captured generically via
+	/// serde flatten. For example, some Ollama-compatible servers report
+	/// `active_kv_tokens` / `max_kv_token_capacity` / `kv_token_occupancy_rate_percentage`
+	/// alongside the standard counts. Empty for providers that only return the
+	/// standard fields (OpenAI, Anthropic, OpenRouter, ...), so this never changes
+	/// their behavior.
+	#[serde(flatten)]
+	pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 impl Usage {

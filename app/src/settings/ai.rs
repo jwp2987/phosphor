@@ -1932,6 +1932,28 @@ define_settings_group!(AISettings, settings: [
         description: "Optional dedicated model id for compaction LLM calls.",
     }
 
+    // Zap:system prompt 模板热加载目录。
+    // 空串 = 用 `include_str!` 编进二进制的内置模板(默认,零运行时 IO)。
+    // 填了目录 = 每次渲染从该目录按模板名(`system/local.j2` 这种相对路径)重读,
+    // 改完模板存盘即生效,不用重编 `app` crate(80w 行,改一行提示词也要全量重链)。
+    // 缺文件 / 语法错逐个回退内置版本,不 panic。
+    //
+    // sync_to_cloud 取 Never:这是本机文件系统路径,同步到别的机器只会指向不存在的
+    // 目录然后静默回退;同时避免把“提示词来源路径”这种可写入口带进云端配置。
+    // private 取 false:和相邻 byop_* 一致,落进 settings.toml 便于直接手改
+    // (private: true 会改存 PrivatePreferences 并被 TOML 枚举过滤掉)。
+    // 环境变量 `ZAP_PROMPT_DIR` 优先级高于本设置(临时调试盖过持久配置)。
+    // 消费方见 `ai::agent_providers::prompt_renderer::set_override_dir`。
+    prompt_template_dir: PromptTemplateDir {
+        type: String,
+        default: String::new(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.prompt_template_dir",
+        description: "Directory to hot-load system prompt templates from. Empty uses the built-in templates.",
+    }
+
     // Zap BYOP 模型 + 思考深度持久化(picker 切换后立即写入,新 tab/重启沿用)。
     // 模型用 LLMId 字符串形式;空串 = 没有 last_used,落回 profile 默认。
     byop_last_used_model_id: ByopLastUsedModelId {

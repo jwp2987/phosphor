@@ -80,6 +80,7 @@ struct MouseStateHandles {
     ssh_manager_button: MouseStateHandle,
     server_file_browser_button: MouseStateHandle,
     skill_manager_button: MouseStateHandle,
+    wire_inspector_button: MouseStateHandle,
 }
 
 #[derive(Clone, Debug)]
@@ -1010,6 +1011,65 @@ impl LeftPanelView {
         .finish()
     }
 
+    /// Toolbelt button that opens the BYOP wire inspector (capture) window. Not a
+    /// tool-panel view — it dispatches `WorkspaceAction::ToggleWireInspector` and
+    /// lights up (active state) while capture is armed.
+    fn wire_inspector_button(&self, appearance: &Appearance, app: &AppContext) -> Box<dyn Element> {
+        let capturing = crate::ai::agent_providers::wire_log::is_enabled();
+        let ui_builder = appearance.ui_builder().clone();
+        let tooltip_keybinding =
+            keybinding_name_to_display_string("workspace:toggle_wire_inspector", app);
+        let tooltip = if let Some(keybinding) = tooltip_keybinding {
+            ui_builder
+                .tool_tip_with_sublabel(crate::t!("workspace-left-panel-wire-inspector"), keybinding)
+                .build()
+                .finish()
+        } else {
+            ui_builder
+                .tool_tip(crate::t!("workspace-left-panel-wire-inspector"))
+                .build()
+                .finish()
+        };
+
+        let icon_color = if capturing {
+            appearance.theme().foreground().into_solid()
+        } else {
+            appearance
+                .theme()
+                .sub_text_color(appearance.theme().background())
+                .into_solid()
+        };
+
+        icon_button(
+            appearance,
+            icons::Icon::Eye,
+            capturing,
+            self.mouse_state_handles.wire_inspector_button.clone(),
+        )
+        .with_tooltip(move || tooltip)
+        .with_style(UiComponentStyles {
+            font_color: Some(icon_color),
+            height: Some(24.),
+            width: Some(24.),
+            padding: Some(Coords::uniform(4.)),
+            ..Default::default()
+        })
+        .with_active_styles(UiComponentStyles {
+            font_color: Some(icon_color),
+            height: Some(24.),
+            width: Some(24.),
+            padding: Some(Coords::uniform(4.)),
+            background: Some(internal_colors::fg_overlay_3(appearance.theme()).into()),
+            ..Default::default()
+        })
+        .build()
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(WorkspaceAction::ToggleWireInspector);
+        })
+        .with_cursor(Cursor::PointingHand)
+        .finish()
+    }
+
     fn update_button_active_states(&mut self) {
         for button in &mut self.toolbelt_buttons {
             button.render_with_active_state = match &button.action {
@@ -1399,6 +1459,9 @@ impl View for LeftPanelView {
                         .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
                         .with_cross_axis_alignment(CrossAxisAlignment::Center)
                         .with_child(Shrinkable::new(1.0, header_left).finish())
+                        // Inspect (wire capture) button sits immediately left of the
+                        // close button, which stays the last button in the header.
+                        .with_child(self.wire_inspector_button(appearance, app))
                         .with_child(self.close_button(appearance, app))
                         .finish(),
                 )

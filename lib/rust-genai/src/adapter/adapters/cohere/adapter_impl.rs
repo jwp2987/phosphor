@@ -231,6 +231,7 @@ impl CohereAdapter {
 			completion_tokens_details: None,
 
 			total_tokens,
+			extra: Default::default(),
 		}
 	}
 

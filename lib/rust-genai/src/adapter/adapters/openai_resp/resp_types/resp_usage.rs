@@ -119,6 +119,7 @@ impl From<RespUsage> for Usage {
 			completion_tokens: value.output_tokens,
 			completion_tokens_details: value.output_tokens_details.map(Into::into),
 			total_tokens: value.total_tokens,
+			extra: Default::default(),
 		}
 	}
 }
