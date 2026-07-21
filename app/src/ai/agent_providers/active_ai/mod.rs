@@ -1,18 +1,23 @@
-//! 主动式 AI(active AI)子链路的 BYOP 适配。
+//! BYOP adaptation for the active-AI sub-flows.
 //!
-//! 涵盖三类:
-//! - `prompt_suggestions`:命令完成后给出"问问 Agent"建议(Simple/Coding)
-//! - `nld_predict`:Agent 输入框打字时实时补全
-//! - `relevant_files`:从给定文件列表中筛选与 query 相关的子集
+//! Covers three kinds:
+//! - `prompt_suggestions`: after a command finishes, offer "ask the Agent"
+//!   suggestions (Simple/Coding).
+//! - `nld_predict`: real-time completion as you type in the Agent input box.
+//! - `relevant_files`: filter a given file list down to the subset relevant to the query.
 //!
-//! 共同模式:
-//! 1. 调用方在 spawn 之前(还有 `&AppContext`)调 `dispatch::*` 系列 helper,
-//!    解出 `OneshotConfig` + 渲染好的 system/user prompt → `RenderedRequest`
-//! 2. spawn 闭包内调 `run_*(req)` 发请求 + 解析,返回各子链路对应的 response 类型
-//! 3. UI 回调里直接消费返回的 response,与原 `ServerApi` 路径完全等价
+//! Common pattern:
+//! 1. Before spawn (while `&AppContext` is still available), the caller calls the
+//!    `dispatch::*` helpers to resolve an `OneshotConfig` + rendered system/user
+//!    prompt → `RenderedRequest`.
+//! 2. Inside the spawn closure, `run_*(req)` sends the request + parses it, returning
+//!    the response type for each sub-flow.
+//! 3. The UI callback consumes the returned response directly — fully equivalent to
+//!    the original `ServerApi` path.
 //!
-//! 没有 BYOP 配置(`active_ai_model` 解码失败)→ `dispatch::*` 返回 `None`,
-//! 调用方静默 no-op(Zap 已剥云,不再 fallback ServerApi)。
+//! With no BYOP config (`active_ai_model` fails to decode), `dispatch::*` returns
+//! `None` and the caller silently no-ops (Zap has stripped the cloud and no longer
+//! falls back to ServerApi).
 
 use minijinja::context;
 use serde::Serialize;
@@ -26,7 +31,7 @@ use crate::ai::predict::generate_am_query_suggestions::GenerateAMQuerySuggestion
 pub mod parsing;
 
 // ---------------------------------------------------------------------------
-// 模板
+// Templates
 // ---------------------------------------------------------------------------
 
 // The active-ai templates now live in `prompt_renderer`'s EMBEDDED table (names
@@ -71,10 +76,10 @@ fn active_prompt_overrides(
 }
 
 // ---------------------------------------------------------------------------
-// 公共上下文片段
+// Shared context fragments
 // ---------------------------------------------------------------------------
 
-/// 单条已完成命令块的精简上下文(供 prompt_suggestions / nld_predict 消费)。
+/// Slim context for a single finished command block (consumed by prompt_suggestions / nld_predict).
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct BlockSnippet {
     pub command: String,
@@ -90,7 +95,7 @@ pub struct LastBlockSnippet {
     pub pwd: String,
 }
 
-/// 已渲染好 prompt + 解析好 OneshotConfig 的请求 — 跨 spawn 边界传递。
+/// A request with the prompt already rendered + OneshotConfig already resolved — passed across the spawn boundary.
 pub struct RenderedRequest {
     pub cfg: OneshotConfig,
     pub system: String,
@@ -113,7 +118,7 @@ pub mod prompt_suggestions {
         pub last_exit_code: i32,
     }
 
-    /// Spawn 前调用:解 BYOP 配置 + 渲染 prompt。`None` ⇒ 静默 no-op。
+    /// Called before spawn: resolve BYOP config + render prompt. `None` ⇒ silent no-op.
     pub fn dispatch(
         app: &AppContext,
         terminal_view_id: Option<EntityId>,
@@ -147,7 +152,7 @@ pub mod prompt_suggestions {
         })
     }
 
-    /// Spawn 内执行:发请求 + 解析。失败 → `None`(调用方映射为 Error)。
+    /// Runs inside the spawn: send request + parse. On failure → `None` (caller maps to Error).
     pub async fn run(req: RenderedRequest) -> Option<GenerateAMQuerySuggestionsResponse> {
         let raw = match byop_oneshot_completion(&req.cfg, &req.system, &req.user, &req.opts).await {
             Ok(s) => s,
@@ -301,7 +306,7 @@ pub mod relevant_files {
 }
 
 // ---------------------------------------------------------------------------
-// workflow_metadata(Workflow Editor 的 Autofill 按钮:命令 → 参数化 metadata)
+// workflow_metadata (the Workflow Editor's Autofill button: command → parameterized metadata)
 // ---------------------------------------------------------------------------
 
 pub mod workflow_metadata {
@@ -314,7 +319,7 @@ pub mod workflow_metadata {
         pub command: String,
     }
 
-    /// Spawn 前调用:解 BYOP 配置 + 渲染 prompt。`None` ⇒ 调用方提示用户配置 BYOP。
+    /// Called before spawn: resolve BYOP config + render prompt. `None` ⇒ caller prompts the user to configure BYOP.
     pub fn dispatch(
         app: &AppContext,
         terminal_view_id: Option<EntityId>,
@@ -345,7 +350,7 @@ pub mod workflow_metadata {
         })
     }
 
-    /// Spawn 内执行:发请求 + 解析。失败 → `None`(调用方映射为 BadCommand)。
+    /// Runs inside the spawn: send request + parse. On failure → `None` (caller maps to BadCommand).
     pub async fn run(req: RenderedRequest) -> Option<WorkflowMetadataDto> {
         let raw = match byop_oneshot_completion(&req.cfg, &req.system, &req.user, &req.opts).await {
             Ok(s) => s,
@@ -363,7 +368,7 @@ pub mod workflow_metadata {
 }
 
 // ---------------------------------------------------------------------------
-// next_command(灰色补全 / zero-state 建议)
+// next_command (grey autocompletion / zero-state suggestions)
 // ---------------------------------------------------------------------------
 
 pub mod next_command {
@@ -378,12 +383,12 @@ pub mod next_command {
 
     pub struct Input {
         pub recent_blocks: Vec<BlockSnippet>,
-        /// 已在 client 端从历史 DB 选出的相似命令上下文(可选)。
+        /// Similar-command context already selected client-side from the history DB (optional).
         pub history_context: String,
         pub system_context: Option<String>,
-        /// 用户已输入的前缀(必须用作输出前缀)。
+        /// The prefix the user has already typed (must be used as the output prefix).
         pub prefix: Option<String>,
-        /// 之前已 reject 的建议(避免重复)。
+        /// Previously rejected suggestions (to avoid repeats).
         pub rejected_suggestions: Vec<String>,
         /// Snapshot of the global Rules configured in Settings → Agents → Rules.
         pub user_rules: Vec<(Option<String>, String)>,

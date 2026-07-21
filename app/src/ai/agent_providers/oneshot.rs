@@ -1,19 +1,23 @@
-//! BYOP one-shot 非流式补全适配层。
+//! BYOP one-shot (non-streaming) completion adapter.
 //!
-//! 用于"主动式 AI"子链路(prompt suggestions / NLD predict / relevant files /
-//! 会话标题生成等):需要发一次短请求拿到一段文本,**不需要 tool calling、
-//! 不需要流式、不需要持久化到 task.messages**。
+//! Used by the "active AI" sub-flows (prompt suggestions / NLD predict / relevant
+//! files / conversation-title generation, etc.): send one short request to get back
+//! a piece of text — **no tool calling, no streaming, no persistence to
+//! task.messages**.
 //!
-//! 与 `chat_stream::generate_byop_output`(主对话流)的差别:
-//! - 这里走 `Client::exec_chat`(非流式),一次性拿 `ChatResponse::first_text()`。
-//! - 不接 `RequestParams` / `ResponseEvent` / `task_store`,纯字符串入字符串出。
-//! - reasoning 默认禁(主动 AI 不应触发思考链 — 浪费 token + 慢),
-//!   仅当 `OneshotOptions.allow_reasoning = true` 才按 capability gate 注入。
+//! Differences from `chat_stream::generate_byop_output` (the main conversation flow):
+//! - This goes through `Client::exec_chat` (non-streaming) and takes
+//!   `ChatResponse::first_text()` in one shot.
+//! - It doesn't touch `RequestParams` / `ResponseEvent` / `task_store` — pure
+//!   string in, string out.
+//! - Reasoning is off by default (active AI shouldn't trigger a chain of thought —
+//!   wastes tokens and is slow); it's only injected, subject to the capability gate,
+//!   when `OneshotOptions.allow_reasoning = true`.
 //!
-//! 模型选择由调用方决定:`resolve_active_ai_oneshot()` 把 `active_ai_model`
-//! (profile fallback 到 base_model)解码为 BYOP `OneshotConfig`,
-//! 解码失败(没配 BYOP / 模型不在 BYOP 编码空间)→ 返回 `None`,
-//! 调用方静默 no-op。
+//! Model selection is up to the caller: `resolve_active_ai_oneshot()` decodes
+//! `active_ai_model` (falling back to base_model at the profile level) into a BYOP
+//! `OneshotConfig`. If decoding fails (BYOP not configured / model not in the BYOP
+//! encoding space) it returns `None` and the caller silently no-ops.
 
 use anyhow::Context as _;
 use futures::StreamExt;
@@ -25,7 +29,7 @@ use super::wire_log;
 use crate::ai::llms::LLMPreferences;
 use crate::settings::{AgentProviderApiType, ReasoningEffortSetting};
 
-/// BYOP one-shot 请求所需的 provider/model 信息。
+/// Provider/model info needed for a BYOP one-shot request.
 #[derive(Debug, Clone)]
 pub struct OneshotConfig {
     pub base_url: String,
@@ -35,17 +39,20 @@ pub struct OneshotConfig {
     pub reasoning_effort: ReasoningEffortSetting,
 }
 
-/// One-shot 调用的可选参数。
+/// Optional parameters for a one-shot call.
 #[derive(Debug, Clone, Default)]
 pub struct OneshotOptions {
-    /// user message 字符截断上限(按 char,保护 CJK)。`None` = 默认 8000。
+    /// Character truncation cap for the user message (by char, to protect CJK).
+    /// `None` = default 8000.
     pub max_chars: Option<usize>,
-    /// 温度(genai `ChatOptions::temperature`),`None` = provider 默认。
+    /// Temperature (genai `ChatOptions::temperature`); `None` = provider default.
     pub temperature: Option<f32>,
-    /// 是否要求 JSON 输出(OpenAI 兼容 provider 走 response_format)。
-    /// 注意:不支持的 adapter 会忽略此参数,系统提示词需要自身要求 JSON。
+    /// Whether to require JSON output (OpenAI-compatible providers use
+    /// response_format). Note: adapters that don't support it ignore this, so the
+    /// system prompt must ask for JSON itself.
     pub response_format_json: bool,
-    /// 是否允许触发 reasoning。默认 `false`(主动 AI 都是低延迟轻量调用)。
+    /// Whether reasoning may be triggered. Default `false` (active AI is all
+    /// low-latency lightweight calls).
     pub allow_reasoning: bool,
     /// Wire-inspector category for this call. `None` -> `Kind::Oneshot`; title
     /// generation sets `Kind::TitleGen` so it is filterable in the inspector.
@@ -93,9 +100,10 @@ fn build_oneshot_request(
     (chat_req, chat_opts)
 }
 
-/// 发送一次 BYOP 非流式 chat completion,返回模型 reply 的纯文本。
+/// Send one BYOP non-streaming chat completion and return the model reply's plain text.
 ///
-/// 错误吞由调用方决定 — 此处只 propagate `anyhow::Error`,不做日志。
+/// Whether to swallow errors is up to the caller — this only propagates
+/// `anyhow::Error` and does no logging.
 pub async fn byop_oneshot_completion(
     cfg: &OneshotConfig,
     system: &str,
@@ -167,10 +175,11 @@ fn wire_capture_in(cfg: &OneshotConfig, text: &str, opts: &OneshotOptions) {
     );
 }
 
-/// 发送一次 BYOP 流式 chat completion,聚合所有文本 chunk 后返回。
+/// Send one BYOP streaming chat completion, aggregate all text chunks, and return them.
 ///
-/// 给只接受 `stream=true` 的 OpenAI Responses 兼容代理使用。调用方仍然拿到完整
-/// 字符串,因此可以继续复用 one-shot 的标题清洗 / JSON 解析逻辑。
+/// For OpenAI Responses-compatible proxies that only accept `stream=true`. The caller
+/// still gets the full string, so it can keep reusing the one-shot title-cleaning /
+/// JSON-parsing logic.
 pub async fn byop_oneshot_streaming_completion(
     cfg: &OneshotConfig,
     system: &str,
@@ -214,8 +223,9 @@ pub async fn byop_oneshot_streaming_completion(
     Ok(text)
 }
 
-/// 解析当前 active profile 的 `active_ai_model`(fallback 到 `base_model`),
-/// 若解码为合法 BYOP 编码 → 返回 `OneshotConfig`,否则 `None`(调用方静默 no-op)。
+/// Resolve the active profile's `active_ai_model` (falling back to `base_model`);
+/// if it decodes to a valid BYOP encoding, return an `OneshotConfig`, otherwise
+/// `None` (the caller silently no-ops).
 pub fn resolve_active_ai_oneshot(
     app: &AppContext,
     terminal_view_id: Option<EntityId>,
@@ -237,8 +247,8 @@ pub fn resolve_active_ai_oneshot(
     })
 }
 
-/// 解析当前 active profile 的 `next_command_model`(fallback 到 `base_model`),
-/// 若解码为合法 BYOP 编码 → 返回 `OneshotConfig`,否则 `None`。
+/// Resolve the active profile's `next_command_model` (falling back to `base_model`);
+/// if it decodes to a valid BYOP encoding, return an `OneshotConfig`, otherwise `None`.
 pub fn resolve_next_command_oneshot(
     app: &AppContext,
     terminal_view_id: Option<EntityId>,

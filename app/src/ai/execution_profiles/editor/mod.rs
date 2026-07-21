@@ -100,8 +100,9 @@ fn prompt_override_items(
     items
 }
 
-// 去中心化分支:原 `render_upgrade_footer` 用于在模型下拉菜单底部展示 "前沿模型
-// 需要升级到付费计划" 的 banner;本地模式下不再有付费 / 免费区分,整段已删除。
+// Decentralized branch: the original `render_upgrade_footer` showed an "upgrade to a
+// paid plan for frontier models" banner at the bottom of the model dropdown. Local
+// mode has no paid/free distinction, so the whole thing was removed.
 
 #[derive(Default)]
 struct TooltipMouseStateHandles {
@@ -775,7 +776,7 @@ impl ExecutionProfileEditorView {
                         &me.upgrade_footer_mouse_state,
                         ctx,
                     );
-                    // title / active_ai 模型 fallback 到 base,base 变更时也要刷新展示。
+                    // title / active_ai models fall back to base, so refresh the display when base changes.
                     Self::refresh_filterable_model_dropdown(
                         &me.title_model_dropdown,
                         current_permissions.title_model.clone(),
@@ -1201,7 +1202,7 @@ impl ExecutionProfileEditorView {
             let llm_prefs = llm_prefs.as_ref(ctx);
             let choices = get_choices(llm_prefs);
 
-            // 去中心化分支:不再根据 RequiresUpgrade 状态展示升级 footer。
+            // Decentralized branch: no longer show an upgrade footer based on RequiresUpgrade state.
             let _ = upgrade_mouse_state;
             let items = available_model_menu_items(
                 choices,
