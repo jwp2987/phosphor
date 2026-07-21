@@ -42,6 +42,10 @@ All experimental, all on the `fix/title-language-bias` branch. Roughly in order
 of how much fun they were:
 
 ### Prompts & providers
+_Same FastFlowLM motivation as above, from the other direction: small models
+served by FLM have tight context windows, and a bloated built-in system prompt
+eats budget the actual conversation needs. Being able to hot-swap a leaner prompt
+per model — live, without a rebuild — is the whole point here._
 - **Per-profile, per-prompt system prompt overrides.** Every prompt slot in a
   profile can be set to **Auto** (pick a built-in by model family), a specific
   **built-in** family (`default` / `anthropic` / `lean` / `gpt` / `beast` /
@@ -60,7 +64,9 @@ of how much fun they were:
   input-completion / relevant-files / next-command / workflow-metadata templates
   used to be baked into a separate environment; they now hot-reload from the
   prompt directory like everything else.
-- **`lean.j2`** — a trimmed agent system prompt to A/B against the verbose default.
+- **`lean.j2`** — a trimmed agent system prompt to A/B against the verbose
+  default, for exactly this: keeping the system prompt small enough that a
+  small FLM model doesn't blow its context window before the conversation starts.
 - **Tool-list dedup** — when structured tools are sent, the redundant
   `# Available Tools` text block is suppressed to save prompt tokens.
 
