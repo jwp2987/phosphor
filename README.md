@@ -17,6 +17,11 @@
 > are experimental and may change, break, or get thrown away. If you want the real
 > thing, go upstream: [zerx-lab/zap](https://github.com/zerx-lab/zap). Everything
 > below the upstream overview is what this fork has been messing with.
+>
+> Most of it is being tested against **FastFlowLM (FLM)** as a local BYOP
+> endpoint, and several of the changes below exist specifically to play nicer
+> with it — especially the prompt-cache / environment-context work, which is
+> tuned for FLM's text-only partial-prefill (KV-cache) behavior.
 
 Zap is an open, local-first terminal with first-class AI and agent support. Plug in any AI provider, bring in any CLI agent, manage SSH hosts inside the terminal — with keys, history and agent state staying on your machine by default.
 
@@ -66,6 +71,10 @@ of how much fun they were:
   left panel header. Handy for seeing what actually goes over the wire.
 
 ### Prompt-cache & environment-context stability
+_Mostly driven by testing against FastFlowLM (FLM): it partial-prefills a stable
+prefix, so anything volatile near the front of the prompt tanks the cache. Note
+this assumes a **text-only** FLM model — VL/MoE engines that can't partial-prefill
+don't benefit from the tail-block design._
 - Volatile environment context moved **out of the system prompt into a tail
   block** (and appended as a standalone message) so upstream KV-cache breakpoints
   stay stable instead of being invalidated every turn.
