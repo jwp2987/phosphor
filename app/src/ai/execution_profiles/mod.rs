@@ -168,7 +168,18 @@ impl AskUserQuestionPermission {
 /// table in [`crate::ai::agent_providers::prompt_renderer`]. `default` is the
 /// generic fallback; `local`/`lean` are the short prompts for small local models.
 pub const BUILTIN_PROMPT_TEMPLATES: &[&str] = &[
-    "default", "anthropic", "gpt", "beast", "codex", "gemini", "kimi", "trinity", "local", "lean",
+    "default",
+    "anthropic",
+    "gpt",
+    "beast",
+    "codex",
+    "gemini",
+    "kimi",
+    "trinity",
+    "local",
+    "lean",
+    // Example task-oriented prompt (not auto-picked by model family; opt in per slot).
+    "troubleshooting",
 ];
 
 /// Where a model slot's system prompt comes from when it is not left on `Auto`.

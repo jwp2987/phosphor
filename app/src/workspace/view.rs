@@ -5371,11 +5371,37 @@ impl Workspace {
                 terminal_view_id,
             } => {
                 self.show_delete_conversation_confirmation_dialog(
-                    DeleteConversationDialogSource {
+                    DeleteConversationDialogSource::Single {
                         conversation_id: *conversation_id,
                         conversation_title: conversation_title.clone(),
                         terminal_view_id: *terminal_view_id,
                     },
+                    ctx,
+                );
+            }
+            LeftPanelEvent::ShowDeleteAllConfirmationDialog => {
+                // Only finished conversations can be deleted; count those so the
+                // prompt is accurate (and skip the dialog entirely if there are none).
+                let count = BlocklistAIHistoryModel::as_ref(ctx)
+                    .all_live_conversations()
+                    .iter()
+                    .filter(|(_, c)| c.status().is_done())
+                    .count();
+                if count == 0 {
+                    let window_id = ctx.window_id();
+                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast(
+                            DismissibleToast::success(crate::t!(
+                                "workspace-toast-no-conversations-to-delete"
+                            )),
+                            window_id,
+                            ctx,
+                        );
+                    });
+                    return;
+                }
+                self.show_delete_conversation_confirmation_dialog(
+                    DeleteConversationDialogSource::All { count },
                     ctx,
                 );
             }
@@ -9488,13 +9514,27 @@ impl Workspace {
             DeleteConversationConfirmationEvent::Confirm { source } => {
                 self.current_workspace_state
                     .is_delete_conversation_confirmation_dialog_open = false;
-                self.handle_action(
-                    &WorkspaceAction::ExecuteDeleteConversation {
-                        conversation_id: source.conversation_id,
-                        terminal_view_id: source.terminal_view_id,
-                    },
-                    ctx,
-                );
+                match source {
+                    DeleteConversationDialogSource::Single {
+                        conversation_id,
+                        terminal_view_id,
+                        ..
+                    } => {
+                        self.handle_action(
+                            &WorkspaceAction::ExecuteDeleteConversation {
+                                conversation_id: *conversation_id,
+                                terminal_view_id: *terminal_view_id,
+                            },
+                            ctx,
+                        );
+                    }
+                    DeleteConversationDialogSource::All { .. } => {
+                        self.handle_action(
+                            &WorkspaceAction::ExecuteDeleteAllConversations,
+                            ctx,
+                        );
+                    }
+                }
                 ctx.focus(&self.left_panel_view);
                 ctx.notify();
             }
@@ -20480,6 +20520,34 @@ impl TypedActionView for Workspace {
                     toast_stack.add_ephemeral_toast(
                         DismissibleToast::success(crate::t!(
                             "workspace-toast-conversation-deleted"
+                        )),
+                        window_id,
+                        ctx,
+                    );
+                });
+            }
+            ExecuteDeleteAllConversations => {
+                // Snapshot the (id, terminal_view_id) of every finished conversation
+                // first — we can't hold the history-model borrow while deleting.
+                let targets: Vec<(AIConversationId, Option<EntityId>)> =
+                    BlocklistAIHistoryModel::as_ref(ctx)
+                        .all_live_conversations()
+                        .iter()
+                        .filter(|(_, c)| c.status().is_done())
+                        .map(|(terminal_view_id, c)| (c.id(), Some(*terminal_view_id)))
+                        .collect();
+
+                let deleted = targets.len();
+                for (conversation_id, terminal_view_id) in targets {
+                    conversation_utils::delete_conversation(conversation_id, terminal_view_id, ctx);
+                    send_telemetry_from_ctx!(TelemetryEvent::ConversationListItemDeleted, ctx);
+                }
+
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::success(crate::t!(
+                            "workspace-toast-all-conversations-deleted",
+                            count = deleted
                         )),
                         window_id,
                         ctx,

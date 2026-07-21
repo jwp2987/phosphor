@@ -39,10 +39,15 @@ pub fn init(app: &mut AppContext) {
 const DIALOG_WIDTH: f32 = 460.;
 
 #[derive(Clone)]
-pub struct DeleteConversationDialogSource {
-    pub conversation_id: AIConversationId,
-    pub conversation_title: String,
-    pub terminal_view_id: Option<warpui::EntityId>,
+pub enum DeleteConversationDialogSource {
+    /// Delete a single conversation.
+    Single {
+        conversation_id: AIConversationId,
+        conversation_title: String,
+        terminal_view_id: Option<warpui::EntityId>,
+    },
+    /// Delete every (finished) conversation. `count` is shown in the prompt.
+    All { count: usize },
 }
 
 pub struct DeleteConversationConfirmationDialog {
@@ -100,18 +105,29 @@ impl View for DeleteConversationConfirmationDialog {
             .with_margin_right(12.)
             .finish();
 
-        let title = self
-            .source
-            .as_ref()
-            .map(|s| format!("Delete '{}'?", s.conversation_title))
-            .unwrap_or_else(|| "Delete conversation?".into());
+        let (title, body) = match self.source.as_ref() {
+            Some(DeleteConversationDialogSource::Single {
+                conversation_title, ..
+            }) => (
+                format!("Delete '{conversation_title}'?"),
+                "This conversation will be permanently deleted. This action cannot be undone."
+                    .to_string(),
+            ),
+            Some(DeleteConversationDialogSource::All { count }) => (
+                format!("Delete all {count} conversations?"),
+                "All finished conversations will be permanently deleted. This action cannot be undone."
+                    .to_string(),
+            ),
+            None => (
+                "Delete conversation?".to_string(),
+                "This conversation will be permanently deleted. This action cannot be undone."
+                    .to_string(),
+            ),
+        };
 
         let dialog = Dialog::new(
             title,
-            Some(
-                "This conversation will be permanently deleted. This action cannot be undone."
-                    .into(),
-            ),
+            Some(body),
             UiComponentStyles {
                 width: Some(DIALOG_WIDTH),
                 ..dialog_styles(appearance)

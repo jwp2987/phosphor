@@ -559,6 +559,8 @@ pub enum WorkspaceAction {
         conversation_id: AIConversationId,
         terminal_view_id: Option<EntityId>,
     },
+    /// Execute deletion of all finished conversations after confirmation.
+    ExecuteDeleteAllConversations,
     /// Open an ambient agent session by joining its shared session.
     /// Used when the sandbox is running or when we need to view a live session.
     OpenAmbientAgentSession {
@@ -844,6 +846,7 @@ impl WorkspaceAction {
             | ShowRewindConfirmationDialog { .. }
             | ExecuteRewindAIConversation { .. }
             | ExecuteDeleteConversation { .. }
+            | ExecuteDeleteAllConversations
             | OpenAmbientAgentSession { .. }
             | OpenConversationTranscriptViewer { .. }
             | OpenLightbox { .. }

@@ -306,18 +306,65 @@ fn prompt_slot_label(slot: PromptSlot) -> String {
     }
 }
 
-/// A labeled row wrapping a menu [`Dropdown`] (the per-prompt override picker).
+/// One-line description of what a prompt slot drives, shown under its picker.
+fn prompt_slot_desc(slot: PromptSlot) -> String {
+    match slot {
+        PromptSlot::Base => crate::t!("settings-exec-profile-editor-prompt-base-desc"),
+        PromptSlot::Coding => crate::t!("settings-exec-profile-editor-prompt-coding-desc"),
+        PromptSlot::CliAgent => crate::t!("settings-exec-profile-editor-prompt-cli-agent-desc"),
+        PromptSlot::ComputerUse => {
+            crate::t!("settings-exec-profile-editor-prompt-computer-use-desc")
+        }
+        PromptSlot::Title => crate::t!("settings-exec-profile-editor-prompt-title-desc"),
+        PromptSlot::PromptSuggestions => {
+            crate::t!("settings-exec-profile-editor-prompt-suggestions-desc")
+        }
+        PromptSlot::NldPredict => {
+            crate::t!("settings-exec-profile-editor-prompt-nld-predict-desc")
+        }
+        PromptSlot::RelevantFiles => {
+            crate::t!("settings-exec-profile-editor-prompt-relevant-files-desc")
+        }
+        PromptSlot::WorkflowMetadata => {
+            crate::t!("settings-exec-profile-editor-prompt-workflow-metadata-desc")
+        }
+        PromptSlot::NextCommand => {
+            crate::t!("settings-exec-profile-editor-prompt-next-command-desc")
+        }
+    }
+}
+
+/// A labeled row (with a one-line description) wrapping a menu [`Dropdown`] — the
+/// per-prompt override picker. Mirrors [`render_filterable_dropdown_row`] used by
+/// the model rows.
 fn render_menu_dropdown_row(
     appearance: &Appearance,
     label: &str,
+    desc: &str,
     dropdown: &ViewHandle<Dropdown<ExecutionProfileEditorViewAction>>,
 ) -> Box<dyn Element> {
     let label_elem = Text::new(label.to_string(), appearance.ui_font_family(), 13.)
         .with_color(appearance.theme().active_ui_text_color().into())
         .finish();
+    let desc_elem = Text::new(desc.to_string(), appearance.ui_font_family(), 11.)
+        .with_color(
+            appearance
+                .theme()
+                .sub_text_color(appearance.theme().surface_1())
+                .into(),
+        )
+        .finish();
+    let label_desc_column = Flex::column()
+        .with_child(label_elem)
+        .with_child(desc_elem)
+        .finish();
     Container::new(
         Flex::column()
-            .with_child(Container::new(label_elem).with_margin_bottom(4.).finish())
+            .with_child(
+                Container::new(label_desc_column)
+                    .with_margin_bottom(4.)
+                    .finish(),
+            )
             .with_child(Container::new(ChildView::new(dropdown).finish()).finish())
             .finish(),
     )
@@ -334,11 +381,31 @@ pub fn render_prompts_section(
     let section_label = crate::t!("settings-exec-profile-editor-section-prompts");
     let desc = crate::t!("settings-exec-profile-editor-prompts-desc");
 
+    // Show where prompt files actually live so you don't have to dig through
+    // Settings → AI to find the directory. `custom/` is where user files go;
+    // the built-ins are seeded directly under the prompt template dir.
+    let dir = crate::ai::agent_providers::prompt_renderer::active_prompt_dir();
+    let location = match &dir {
+        Some(d) => format!(
+            "{} {}  •  {} {}",
+            crate::t!("settings-exec-profile-editor-prompts-custom-location"),
+            d.join("custom").display(),
+            crate::t!("settings-exec-profile-editor-prompts-builtin-location"),
+            d.display(),
+        ),
+        None => crate::t!("settings-exec-profile-editor-prompts-no-dir"),
+    };
+
     let mut column = Flex::column()
         .with_child(render_separator(appearance))
         .with_child(render_section_label(&section_label, appearance))
         .with_child(
             Container::new(render_info_section(&desc, None, appearance))
+                .with_margin_bottom(4.)
+                .finish(),
+        )
+        .with_child(
+            Container::new(render_info_section(&location, None, appearance))
                 .with_margin_bottom(8.)
                 .finish(),
         );
@@ -351,7 +418,10 @@ pub fn render_prompts_section(
             continue;
         }
         let label = prompt_slot_label(*slot);
-        column.add_child(render_menu_dropdown_row(appearance, &label, dropdown));
+        let desc = prompt_slot_desc(*slot);
+        column.add_child(render_menu_dropdown_row(
+            appearance, &label, &desc, dropdown,
+        ));
     }
 
     Container::new(column.finish())

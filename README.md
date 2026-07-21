@@ -49,7 +49,8 @@ per model — live, without a rebuild — is the whole point here._
 - **Per-profile, per-prompt system prompt overrides.** Every prompt slot in a
   profile can be set to **Auto** (pick a built-in by model family), a specific
   **built-in** family (`default` / `anthropic` / `lean` / `gpt` / `beast` /
-  `codex` / `gemini` / `kimi` / `trinity` / `local`), or a **custom file**. This
+  `codex` / `gemini` / `kimi` / `trinity` / `local` / `troubleshooting`), or a
+  **custom file**. This
   covers the agent slots (base / coding / full-terminal-use / computer-use) and
   the auxiliary prompts (title generation, prompt suggestions, input completion,
   relevant files, workflow metadata, next command) — each picked independently in
@@ -67,6 +68,10 @@ per model — live, without a rebuild — is the whole point here._
 - **`lean.j2`** — a trimmed agent system prompt to A/B against the verbose
   default, for exactly this: keeping the system prompt small enough that a
   small FLM model doesn't blow its context window before the conversation starts.
+- **`troubleshooting.j2`** — a built-in example of a task-focused prompt: a
+  diagnose-and-fix agent (observe the failure, one hypothesis at a time, change
+  one thing, verify). Pair it with a "Troubleshooting" profile. It's opt-in per
+  slot, never auto-picked by model family — a template to copy and riff on.
 - **Tool-list dedup** — when structured tools are sent, the redundant
   `# Available Tools` text block is suppressed to save prompt tokens.
 

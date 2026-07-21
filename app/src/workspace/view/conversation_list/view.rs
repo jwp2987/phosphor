@@ -128,6 +128,8 @@ pub enum ConversationListViewAction {
         conversation_id: ConversationOrTaskId,
         destination: ForkedConversationDestination,
     },
+    /// Ask to delete every finished conversation (opens a confirmation).
+    DeleteAllConversations,
 }
 
 pub enum Event {
@@ -137,6 +139,7 @@ pub enum Event {
         conversation_title: String,
         terminal_view_id: Option<EntityId>,
     },
+    ShowDeleteAllConfirmationDialog,
 }
 
 pub struct ConversationListView {
@@ -145,6 +148,7 @@ pub struct ConversationListView {
     view_model: ModelHandle<ConversationListViewModel>,
     query_editor: ViewHandle<EditorView>,
     toggle_view_all_button: ViewHandle<ActionButton>,
+    delete_all_button: ViewHandle<ActionButton>,
     item_overflow_menu: ViewHandle<Menu<ConversationListViewAction>>,
     /// Tracks the overflow menu state (which item it's open for and where to position it).
     overflow_menu_state: Option<OverflowMenuState>,
@@ -225,6 +229,17 @@ impl ConversationListView {
             })
         });
 
+        let delete_all_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new(
+                crate::t!("workspace-conversation-list-delete-all"),
+                SecondaryTheme,
+            )
+            .with_size(ButtonSize::Small)
+            .on_click(|ctx| {
+                ctx.dispatch_typed_action(ConversationListViewAction::DeleteAllConversations);
+            })
+        });
+
         let item_overflow_menu = ctx.add_typed_action_view(|_| {
             Menu::new()
                 .prevent_interaction_with_other_elements()
@@ -248,6 +263,7 @@ impl ConversationListView {
             view_model,
             query_editor,
             toggle_view_all_button,
+            delete_all_button,
             item_overflow_menu,
             overflow_menu_state: None,
             selected_index: None,
@@ -965,6 +981,9 @@ impl TypedActionView for ConversationListView {
             ConversationListViewAction::NewConversationInNewTab => {
                 ctx.emit(Event::NewConversationInNewTab);
             }
+            ConversationListViewAction::DeleteAllConversations => {
+                ctx.emit(Event::ShowDeleteAllConfirmationDialog);
+            }
             ConversationListViewAction::ToggleSection(section) => {
                 self.toggle_section_collapse(*section, ctx);
             }
@@ -1182,6 +1201,7 @@ impl View for ConversationListView {
 
         if has_conversations {
             column = column.with_child(render_search_box(&self.query_editor, app));
+            column = column.with_child(render_list_action_button(&self.delete_all_button));
         }
 
         let column_element = column

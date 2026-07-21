@@ -110,6 +110,10 @@ const EMBEDDED: &[(&str, &str)] = &[
     ("system/trinity.j2", include_str!("prompts/system/trinity.j2")),
     ("system/local.j2", include_str!("prompts/system/local.j2")),
     ("system/lean.j2", include_str!("prompts/system/lean.j2")),
+    (
+        "system/troubleshooting.j2",
+        include_str!("prompts/system/troubleshooting.j2"),
+    ),
     // Active-AI prompts (command suggestions / input completion / relevant files /
     // next command / workflow metadata). These used to be `include_str!`'d into a
     // separate Environment in the active_ai module with no hot-reload; they now live
@@ -237,7 +241,7 @@ fn raw_asset(name: &str) -> Option<Cow<'static, str>> {
             Ok(s) => return Some(Cow::Owned(s)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => log::warn!(
-                "[byop prompt] read {} failed: {e} — 用内置版本",
+                "[byop prompt] read {} failed: {e} — using built-in version",
                 path.display()
             ),
         }
@@ -261,7 +265,7 @@ pub fn tool_description(tool_name: &str, fallback: &'static str) -> Cow<'static,
 /// 内置版就在 [`EMBEDDED_RAW`] 里,调用方不用再传 fallback。
 pub fn title_system_prompt() -> Cow<'static, str> {
     raw_asset("tasks/title_system.md")
-        .expect("tasks/title_system.md 已登记在 EMBEDDED_RAW 中")
+        .expect("tasks/title_system.md is registered in EMBEDDED_RAW")
 }
 
 /// Read a user-supplied raw prompt file (path relative to the prompt template
@@ -322,7 +326,7 @@ pub fn seed_dir(dir: &Path) -> std::io::Result<usize> {
         written += 1;
     }
     log::info!(
-        "[byop prompt] 导出内置模板到 {} — 新写 {written} 个文件(已存在的已跳过)",
+        "[byop prompt] exported built-in templates to {} — wrote {written} new file(s) (existing ones skipped)",
         dir.display()
     );
     Ok(written)
@@ -395,7 +399,7 @@ fn build_env_from_dir(dir: &Path) -> Environment<'static> {
             Ok(s) => Some(s),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {
-                log::warn!("[byop prompt] read {} failed: {e} — 用内置版本", path.display());
+                log::warn!("[byop prompt] read {} failed: {e} — using built-in version", path.display());
                 None
             }
         };
@@ -407,7 +411,7 @@ fn build_env_from_dir(dir: &Path) -> Environment<'static> {
                 Ok(()) => overridden += 1,
                 Err(e) => {
                     log::error!(
-                        "[byop prompt] {} 语法错误,回退内置版本: {e}",
+                        "[byop prompt] {} has a syntax error, falling back to built-in: {e}",
                         path.display()
                     );
                     env.add_template(name, embedded)
@@ -421,7 +425,7 @@ fn build_env_from_dir(dir: &Path) -> Environment<'static> {
     }
 
     log::debug!(
-        "[byop prompt] 热加载 {}: {overridden}/{} 个模板来自磁盘",
+        "[byop prompt] hot-reload {}: {overridden}/{} template(s) loaded from disk",
         dir.display(),
         EMBEDDED.len()
     );
@@ -465,13 +469,13 @@ pub fn set_override_dir(dir: Option<PathBuf>) {
         Ok(mut slot) => {
             if *slot != dir {
                 match &dir {
-                    Some(p) => log::info!("[byop prompt] 模板热加载目录 → {}", p.display()),
-                    None => log::info!("[byop prompt] 模板热加载已关闭,使用内置模板"),
+                    Some(p) => log::info!("[byop prompt] template hot-reload dir → {}", p.display()),
+                    None => log::info!("[byop prompt] template hot-reload disabled, using built-in templates"),
                 }
                 *slot = dir;
             }
         }
-        Err(e) => log::error!("[byop prompt] OVERRIDE_DIR 锁中毒,忽略本次设置: {e}"),
+        Err(e) => log::error!("[byop prompt] OVERRIDE_DIR lock poisoned, ignoring this update: {e}"),
     }
 }
 
@@ -550,7 +554,7 @@ fn env() -> EnvHandle {
                 env: Arc::clone(&env),
             })
         }
-        Err(e) => log::error!("[byop prompt] 模板缓存锁中毒,本次不缓存: {e}"),
+        Err(e) => log::error!("[byop prompt] template cache lock poisoned, skipping cache this time: {e}"),
     }
     EnvHandle::Cached(env)
 }

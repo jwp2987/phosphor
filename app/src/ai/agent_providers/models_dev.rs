@@ -198,7 +198,7 @@ pub fn load_from_disk() -> bool {
             true
         }
         Err(e) => {
-            log::warn!("[models.dev] 解析磁盘缓存失败 ({path:?}): {e}");
+            log::warn!("[models.dev] failed to parse disk cache ({path:?}): {e}");
             false
         }
     }
@@ -227,7 +227,7 @@ pub async fn fetch_and_cache(client: Client) -> Result<(), String> {
         .timeout(FETCH_TIMEOUT)
         .send()
         .await
-        .map_err(|e| format!("HTTP 请求失败: {e}"))?;
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
 
     let status = resp.status();
     if !status.is_success() {
@@ -236,10 +236,10 @@ pub async fn fetch_and_cache(client: Client) -> Result<(), String> {
     let bytes = resp
         .bytes()
         .await
-        .map_err(|e| format!("读响应体失败: {e}"))?;
+        .map_err(|e| format!("failed to read response body: {e}"))?;
 
     let catalog: Catalog =
-        serde_json::from_slice(&bytes).map_err(|e| format!("JSON 解析失败: {e}"))?;
+        serde_json::from_slice(&bytes).map_err(|e| format!("JSON parse failed: {e}"))?;
 
     // 写盘 — 失败不算致命,只 log。
     let path = cache_path();
@@ -247,7 +247,7 @@ pub async fn fetch_and_cache(client: Client) -> Result<(), String> {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Err(e) = std::fs::write(&path, &bytes) {
-        log::warn!("[models.dev] 写磁盘缓存失败 ({path:?}): {e}");
+        log::warn!("[models.dev] failed to write disk cache ({path:?}): {e}");
     }
 
     if let Ok(mut s) = state().write() {

@@ -124,6 +124,7 @@ pub enum LeftPanelEvent {
         conversation_title: String,
         terminal_view_id: Option<warpui::EntityId>,
     },
+    ShowDeleteAllConfirmationDialog,
     /// 用户从 SSH 管理器树点击 server / 双击 / 右键 "编辑" → 主窗口应在中央
     /// 区开/聚焦 `SshServerPane`(具体 `WorkspaceView::open_ssh_server`)。
     OpenSshServerEditor {
@@ -326,6 +327,9 @@ impl LeftPanelView {
                     conversation_title: conversation_title.clone(),
                     terminal_view_id: *terminal_view_id,
                 });
+            }
+            ConversationListViewEvent::ShowDeleteAllConfirmationDialog => {
+                ctx.emit(LeftPanelEvent::ShowDeleteAllConfirmationDialog);
             }
         });
 
