@@ -11,7 +11,7 @@ traces = []
 # Headless terminal-UI (ratatui) rendering runtime, used by the warp_tui
 # front-end. Off by default; the GUI build never pulls ratatui or the runtime
 # module. See specs/warp-oss-sync/SCOPE.md (workstream B).
-tui = ["dep:ratatui"]
+tui = ["dep:ratatui", "dep:libc"]
 # Feature enabled only when app is compiled for integration tests.
 integration_tests = ["dep:minimp4", "dep:openh264"]
 # If enabled, writes named telemetry events to the info log.  Should never be
@@ -65,6 +65,10 @@ rangemap.workspace = true
 ratatui = { version = "0.30", optional = true, features = [
     "unstable-rendered-line-info",
 ] }
+# Used by the tui runtime module (terminal_probe) for raw-mode termios calls.
+libc = { workspace = true, optional = true }
+# Used by the tui element system for grapheme segmentation.
+unicode-segmentation = "1.11.0"
 raw-window-handle = "0.6.2"
 resvg.workspace = true
 rstar = "0.12.2"

@@ -2,6 +2,10 @@ use super::{elements::Axis, Event};
 use crate::assets::asset_cache::AssetHandle;
 use crate::elements::{DropTargetPosition, Selection};
 
+// TUI presenter, feature-gated. See specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+pub mod tui;
+
 use crate::fonts;
 use crate::zoom::Scale;
 use crate::{
