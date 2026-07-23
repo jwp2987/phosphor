@@ -472,18 +472,16 @@ absent app-side TUI types are recoverable from it (mostly `app/src/tui/`,
 `app/src/terminal/input/slash_commands/data_source/`, `app/src/ai/blocklist/`,
 `app/src/ai/orchestration/snapshots.rs`).
 
-**FOUNDATIONAL BLOCKER — the app-side TUI runtime spine (`run_tui`).** `session.rs`
-needs `warp::run_tui`, `warp::run_tui_worker_if_requested`, `warp::TuiMountFn`.
-These are NOT a self-contained port: in `warp/master` they hang off a
-`LaunchMode::Tui { mount, api_key }` variant threaded through **28 `LaunchMode`
-match arms in `app/src/lib.rs`**, and cascade into two OTHER crates —
-`SettingsMode::Tui` (`crates/settings/src/lib.rs:188`) and `ExecutionMode::Tui`
-(`crates/warp_core/src/execution_mode.rs`) — each with its own match-arm fan-out,
-plus `run_worker_command` + `warp_cli::is_worker_invocation` worker dispatch. This
-is a high-blast-radius port of the critical launch path; do it as its own focused
-effort (add the three enum variants + arms, then `run_tui`/mount dispatch), not
-squeezed onto other work. Until it lands, `session.rs` cannot compile regardless
-of facade progress.
+**✅ DONE — the app-side TUI runtime spine (`run_tui`).** Ported (commit on
+`josh/warp-oss-sync`, GUI gate green, warp_tui 51→49): `ExecutionMode::Tui`
+(warp_core), `warp_cli::is_worker_invocation`, `LaunchMode::Tui { mount, api_key }`
++ `TuiMountFn` + Tui arms through all 10 `LaunchMode` methods + the
+execution-profiles/`launch()`/api_key match sites, `run_worker_command` extracted
+and shared, `run_tui`/`run_tui_worker_if_requested`, and the `run_internal`
+dispatch to `crate::tui::init(mount, ctx)`. `run_tui`/`run_tui_worker_if_requested`/
+`TuiMountFn` now fully resolve. Note: `SettingsMode::Tui` was NOT needed — that's a
+Warp-only concept and Zap's `LaunchMode` has no `settings_mode()` method, so the
+cascade was smaller than warp/master's 28 arms.
 
 **Key finding — the mechanical facade is largely exhausted.** The remaining ~53
 errors are dominated by app-side TUI types **genuinely absent from Zap** (Warp had
