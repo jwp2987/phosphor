@@ -326,3 +326,31 @@ decision above. Phases 1-2 (the framework foundation) are complete and GUI-safe.
 + excise the cloud/orchestration modules + rewire the agent surfaces to BYOP.
 Multi-session.** The default GUI build stays green throughout (warp_tui is a
 non-default workspace member).
+
+### Phase 3c probe result — tui_export needs ~half its surface BUILT, not just cloud dropped
+
+Imported warp's `tui_export` (gated) and built `warp --features tui`: **55 errors
+across 33 re-export groups**. The probe was reverted to keep `warp --features tui`
+green; the finding is the deliverable. The facade splits ~50/50:
+
+- **RESOLVES in Zap (≈half — keep in the eventual Zap facade):** terminal
+  model/grid/blocks, themes, throttle, `tui` MCP types, `util::image`,
+  repo_detection, appearance, llms, conversation core, and the core agent
+  action/context/output types. So the terminal/rendering/MCP surface warp_tui
+  needs is largely available.
+- **MISSING — cloud (drop):** `orchestration*`, `RunAgents*`, `StartAgent*`,
+  `server_api`, `connected_self_hosted_workers`, `ambient_agents`, `harness*`,
+  oz child-launch.
+- **MISSING — Zap app-crate diverged (must build or drop the consuming feature):**
+  slash-command mixer/model, skills selection, model picker,
+  `conversation_selection`/`conversation_restoration`, `diff_storage`,
+  `git_repo_model`. These are NOT cloud — they are app-crate features warp added
+  that Zap never built or structured differently.
+
+**Reframed scope:** the warp_tui port is multi-session not because of one seam but
+because warp_tui depends on ~half of warp's app-crate feature surface Zap lacks
+(cloud + diverged app infra). The path forward is per-feature: for each MISSING
+group, either build the Zap equivalent or drop the warp_tui feature that uses it
+(and its cloud modules). A minimal first target = keep only the RESOLVES surface,
+stub every MISSING one, and drop the slash-command / skills / orchestration TUI
+features for a v0 terminal+agent skeleton.
