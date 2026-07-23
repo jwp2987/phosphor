@@ -3,6 +3,14 @@ members = [
   "crates/*",
   "app",
 ]
+# warp_tui is staged for the TUI port (see specs/warp-oss-sync/SCOPE.md) but is
+# not yet wired into the build: it depends on a `tui` feature that must first be
+# grafted into Zap's diverged warpui_core / warp crates, and its agent surfaces
+# still call Warp's cloud stack. Excluded so the workspace keeps compiling while
+# the port proceeds incrementally.
+exclude = [
+  "crates/warp_tui",
+]
 resolver = "2"
 
 # Include all members except serve-wasm (since it's a helper helper for serving

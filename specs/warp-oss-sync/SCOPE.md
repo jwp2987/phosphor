@@ -193,3 +193,56 @@ than requiring new infrastructure.
 2. Decide whether the core TUI is worth the multi-day port in Workstream B.
 3. If yes, do the mechanical import (steps 1–2), then BYOP rewiring (step 3),
    then hooks (step 4), building incrementally.
+
+---
+
+## Progress log
+
+### Sync-source finding (important)
+
+Two upstreams, split by purpose:
+
+- **General fixes -> `zerx-lab/zap` (upstream/*), not Warp OSS.** Their feature
+  branches share our exact lineage and are BYOP-native, so they cherry-pick
+  cleanly (~2 files each). Warp OSS, by contrast, is 1,683 commits ahead with
+  architecture rewrites and yielded ~50% with heavy conflicts. Prefer zerx-lab
+  as the fix source. Candidates: `fix/issue-260-home-dir-file-tree`,
+  `fix/issue-276-ai-suggestions-language`, `fix/issue-145-models-dev-loading-stuck`,
+  `fix/issue-193-multimodal-caps-override`. (`issue/116-rules-agent-context` is
+  already in our tree.)
+- **TUI -> only Warp OSS has it.** zerx-lab/zap has no `warp_tui`/`ratatui` in any
+  branch, so there is no BYOP-native TUI to adopt. The port + cloud->BYOP rewire
+  is the only path.
+
+### Workstream A cherry-pick results (from warp/master)
+
+Landed 12 of 23 candidates on `josh/warp-oss-sync`:
+
+- `repo_metadata`: 2/8. Rest skipped — tails of an upstream `entry.rs`
+  NodeBuilder rewrite and a `watcher.rs` git-routing refactor Zap never took.
+- `warp_editor`: 1/4. `bf14cbec` (non-ASCII find/replace) intentionally dropped:
+  Zap already implements the same reverse-DFA fix.
+- `context_chips`: 9/11. Plus one adaptation commit — a pick referenced
+  `FeatureFlag::RemoteCodeReview` (a cloud feature Zap stripped); remote sessions
+  now return false for code-review support.
+
+Verified with `cargo check` on `repo_metadata`, `warp_editor`, and
+`warp --features gui`. Tests not yet run.
+
+### Workstream B TUI port — phase plan and status
+
+- **Phase 0 (done): stage the crate.** `crates/warp_tui` imported from
+  `warp/master` (143 files) and added to workspace `exclude` so the build is
+  unaffected while porting proceeds.
+- **Phase 1 (next): graft the `tui` feature into `warpui_core`.** `warpui_core`
+  itself diverged heavily between the forks (e.g. `core/app.rs` is ~404+/723-
+  different), so the `#[cfg(feature = "tui")]` hooks must be extracted hunk-by-hunk
+  from warp/master and grafted onto Zap's versions of the 7 present files; the 2
+  absent files (`elements.rs`, `elements/gui/hoverable.rs`) need Zap equivalents.
+  Goal: `cargo check -p warpui_core --features tui` green.
+- **Phase 2: graft the `tui` feature into the `warp` app crate** (`tui =
+  ["warpui_core/tui"]` plus ~23 present hook sites; skip the ~10 absent
+  cloud/orchestration ones).
+- **Phase 3: bring `warp_tui` into the build**, dropping orchestration/cloud-run
+  files and rewiring the agent surfaces to the BYOP layer.
+- **Phase 4: entry bins + workspace wiring + full build.**
