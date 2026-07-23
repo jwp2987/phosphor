@@ -1,58 +1,24 @@
-//! Telemetry for the `warp-tui` front-end.
+//! Telemetry event types for the `warp-tui` front-end.
+//!
+//! Zap has physically removed telemetry sending (see the compatibility shims in
+//! `warp_core::telemetry`), so these types no longer implement the upstream
+//! `TelemetryEvent`/`TelemetryEventDesc` framework. They are retained only as
+//! the payloads named by the no-op `send_telemetry_*!` macros at their call
+//! sites, keeping those call sites (and their type inference) unchanged while no
+//! event is ever emitted.
 
-use serde_json::{Value, json};
-use strum_macros::{EnumDiscriminants, EnumIter};
-use warp_core::telemetry::{EnablementState, TelemetryEvent, TelemetryEventDesc};
+/// Marks that the headless TUI has launched. Named by the startup send-telemetry
+/// call in `session::init`; emits nothing.
 #[derive(Debug)]
 pub(crate) struct TuiStartupTelemetryEvent;
 
-impl TelemetryEvent for TuiStartupTelemetryEvent {
-    fn name(&self) -> &'static str {
-        "TUI.Startup"
-    }
-
-    fn payload(&self) -> Option<Value> {
-        None
-    }
-
-    fn description(&self) -> &'static str {
-        "The headless Warp TUI is launched"
-    }
-
-    fn enablement_state(&self) -> EnablementState {
-        EnablementState::Always
-    }
-
-    fn contains_ugc(&self) -> bool {
-        false
-    }
-
-    fn event_descs() -> impl Iterator<Item = Box<dyn TelemetryEventDesc>> {
-        std::iter::once(Box::new(Self) as Box<dyn TelemetryEventDesc>)
-    }
-}
-
-impl TelemetryEventDesc for TuiStartupTelemetryEvent {
-    fn name(&self) -> &'static str {
-        "TUI.Startup"
-    }
-
-    fn description(&self) -> &'static str {
-        "The headless Warp TUI is launched"
-    }
-
-    fn enablement_state(&self) -> EnablementState {
-        EnablementState::Always
-    }
-}
-
-warp_core::register_telemetry_event!(TuiStartupTelemetryEvent);
-
-/// Health signals for the TUI auto-updater. Sent when the outcome of a
-/// background update check *changes* (not on every poll), so repeated
-/// `up_to_date` checks or repeated failures don't spam events.
-#[derive(Debug, EnumDiscriminants)]
-#[strum_discriminants(derive(EnumIter))]
+/// Health signals for the TUI auto-updater, named by the auto-updater's
+/// send-telemetry call. Constructed to describe a check outcome; emits nothing.
+///
+/// The fields are retained so the construction sites keep their shape, even
+/// though Zap sends no telemetry.
+#[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum TuiAutoupdateTelemetryEvent {
     /// A background update check completed.
     CheckCompleted {
@@ -65,73 +31,3 @@ pub(crate) enum TuiAutoupdateTelemetryEvent {
     /// A background update check failed (e.g. network or install errors).
     CheckFailed { error: String },
 }
-
-impl TelemetryEvent for TuiAutoupdateTelemetryEvent {
-    fn name(&self) -> &'static str {
-        TuiAutoupdateTelemetryEventDiscriminants::from(self).name()
-    }
-
-    fn payload(&self) -> Option<Value> {
-        match self {
-            TuiAutoupdateTelemetryEvent::CheckCompleted { outcome, version } => Some(json!({
-                "outcome": outcome,
-                "version": version,
-            })),
-            TuiAutoupdateTelemetryEvent::CheckFailed { error } => Some(json!({
-                "error": error,
-            })),
-        }
-    }
-
-    fn description(&self) -> &'static str {
-        TuiAutoupdateTelemetryEventDiscriminants::from(self).description()
-    }
-
-    fn enablement_state(&self) -> EnablementState {
-        TuiAutoupdateTelemetryEventDiscriminants::from(self).enablement_state()
-    }
-
-    fn contains_ugc(&self) -> bool {
-        match self {
-            TuiAutoupdateTelemetryEvent::CheckCompleted { .. } => false,
-            // Error messages can embed install paths (which include the
-            // user's home directory).
-            TuiAutoupdateTelemetryEvent::CheckFailed { .. } => true,
-        }
-    }
-
-    fn event_descs() -> impl Iterator<Item = Box<dyn TelemetryEventDesc>> {
-        warp_core::telemetry::enum_events::<Self>()
-    }
-}
-
-impl TelemetryEventDesc for TuiAutoupdateTelemetryEventDiscriminants {
-    fn name(&self) -> &'static str {
-        match self {
-            TuiAutoupdateTelemetryEventDiscriminants::CheckCompleted => {
-                "TUI Autoupdate Check Completed"
-            }
-            TuiAutoupdateTelemetryEventDiscriminants::CheckFailed => "TUI Autoupdate Check Failed",
-        }
-    }
-
-    fn description(&self) -> &'static str {
-        match self {
-            TuiAutoupdateTelemetryEventDiscriminants::CheckCompleted => {
-                "A warp-tui background update check completed with a new outcome"
-            }
-            TuiAutoupdateTelemetryEventDiscriminants::CheckFailed => {
-                "A warp-tui background update check failed"
-            }
-        }
-    }
-
-    fn enablement_state(&self) -> EnablementState {
-        match self {
-            TuiAutoupdateTelemetryEventDiscriminants::CheckCompleted
-            | TuiAutoupdateTelemetryEventDiscriminants::CheckFailed => EnablementState::Always,
-        }
-    }
-}
-
-warp_core::register_telemetry_event!(TuiAutoupdateTelemetryEvent);

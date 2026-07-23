@@ -9,7 +9,6 @@ use clap::Parser;
 use clap::error::ErrorKind;
 use warp::tui_export::{Appearance, ServerConversationToken};
 use warp::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase};
-use warp_core::telemetry::TelemetryEvent as _;
 use crate::report_error::report_error;
 use warpui::SingletonEntity as _;
 use warpui_core::platform::{TerminationMode, WindowStyle};
