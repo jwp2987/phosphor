@@ -341,11 +341,12 @@ green; the finding is the deliverable. The facade splits ~50/50:
 - **MISSING — cloud (drop):** `orchestration*`, `RunAgents*`, `StartAgent*`,
   `server_api`, `connected_self_hosted_workers`, `ambient_agents`, `harness*`,
   oz child-launch.
-- **MISSING — Zap app-crate diverged (must build or drop the consuming feature):**
-  slash-command mixer/model, skills selection, model picker,
-  `conversation_selection`/`conversation_restoration`, `diff_storage`,
-  `git_repo_model`. These are NOT cloud — they are app-crate features warp added
-  that Zap never built or structured differently.
+- **MISSING — Zap app-crate diverged (must repath/adapt or build):**
+  slash-command mixer/model, skills selection, model picker, `git_repo_model`
+  (repath: exists in Zap under different names — see below),
+  `conversation_selection`/`conversation_restoration`, `diff_storage` (adapt onto
+  Zap's different edit-persistence model). These are NOT cloud — they are
+  app-crate features warp added that Zap never built or structured differently.
 
 **Reframed scope:** the warp_tui port is multi-session not because of one seam but
 because warp_tui depends on ~half of warp's app-crate feature surface Zap lacks
@@ -365,9 +366,22 @@ superseded. Per-feature plan for the MISSING groups:
     `query_selectable_skills`, …)
   - model picker → `app/src/terminal/input/models` (add `ModelPickerChoice`,
     `query_model_picker_choices`)
+  - `git_repo_model` → **exists in Zap, just renamed.** `GitRepoModels` ↔ Zap's
+    `GitStatusUpdateModel` (same `.subscribe(&repo_path, ctx)` shape),
+    `GitRepoStatusModel`/`GitStatusMetadata` ↔ same names, all in
+    `app/src/code_review/git_status_update.rs`; `detect_possible_git_repo` in
+    `crates/repo_metadata`. Facade re-export + a `GitRepoModels = GitStatusUpdateModel`
+    alias — mechanical, no build.
+- **Adapt onto Zap's different architecture:**
+  - `diff_storage` → warp_tui's `TuiDiffStorage` implements warp's surface-agnostic
+    `DiffStorage` trait (persist `RequestFileEdits` diffs; the TUI applies deltas to
+    base content and writes through `FileModel` since it has no editor buffers).
+    Zap has the pieces (`FileDiff`, `DiffSessionType`, `ai::diff_validation`) but
+    **not** the `DiffStorage` trait — it persists edits via `ApplyDiffModel::apply_diffs`
+    (`app/src/ai/blocklist/action_model/execute/request_file_edits/`). Either port the
+    trait or re-target `TuiDiffStorage` onto `ApplyDiffModel`.
 - **Genuinely absent in Zap → build the local equivalent for parity (or confirm
-  cloud-adjacent, then drop):** `conversation_selection`, `conversation_restoration`,
-  `diff_storage`, `git_repo_model`.
+  cloud-adjacent, then drop):** `conversation_selection`, `conversation_restoration`.
 - **Cloud → drop (and drop the warp_tui modules that consume them):**
   orchestration*, RunAgents*, StartAgent*, server_api, connected_self_hosted_workers,
   ambient_agents, harness*, oz child-launch.
@@ -438,15 +452,22 @@ The ~74 errors fall into:
 - **`warp::editor::CodeEditorModel` (+Event)** — 13+ sites. Repath or re-export
   in `tui_export` (Zap has `warp_editor::model::CoreEditorModel`; confirm the
   right type/alias).
-- **Un-exported `tui_export` items** — the 22 staged-out items (promote
-  pub(crate)→pub in the app crate + re-add to the facade): e.g.
-  BlocklistAIActionModel/Event, FailedOutputPresentation, InputType/InputConfig,
-  TuiMcpManager/Action, ConversationSelection(+Handle/Event), Harness, the
-  OptionRow/OptionSnapshot ask-question types, ShellCommandExecutor(+Event),
-  block_context_from_terminal_model, TranscriptScope, PtyIntent(+Event), etc.
+- **Un-exported `tui_export` items — repath/re-export, incl. renames** (promote
+  pub(crate)→pub + re-add, or alias): e.g. BlocklistAIActionModel/Event,
+  FailedOutputPresentation, InputType/InputConfig, TuiMcpManager/Action,
+  ConversationSelection(+Handle/Event), Harness, the OptionRow/OptionSnapshot
+  ask-question types, ShellCommandExecutor(+Event), block_context_from_terminal_model,
+  TranscriptScope, PtyIntent(+Event), and **`GitRepoModels`** — which is just Zap's
+  `GitStatusUpdateModel` renamed (`GitRepoStatusModel`/`GitStatusMetadata`/
+  `detect_possible_git_repo` all exist in Zap; add a `GitRepoModels =
+  GitStatusUpdateModel` alias). Mechanical, no build.
+- **Adapt onto Zap's different architecture:** `DiffStorage`/`RegisteredDiffStorage`/
+  `SaveFuture`/`changed_lines_from_op` (diff_storage) — Zap has `FileDiff`/
+  `DiffSessionType`/`ai::diff_validation` but not the `DiffStorage` trait; it persists
+  file edits via `ApplyDiffModel::apply_diffs`. Port the trait or re-target
+  `TuiDiffStorage` onto `ApplyDiffModel`.
 - **Genuinely-absent (build/port or confirm cloud-adjacent):**
-  CloudConversationData + conversation restoration, DiffStorage/FileDiff family
-  (diff_storage), GitRepoModels/GitRepoStatusModel (git_repo_model),
+  CloudConversationData + conversation restoration,
   RunAgentsAgentOutcome/RunAgentsResult (drop — orchestration result types),
   format_credits/ConversationUsageTotals, TuiAutoupdateSettings, telemetry
   register_telemetry_event/TelemetryEvent, warp_util::local_or_remote_path,
