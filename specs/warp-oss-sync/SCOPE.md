@@ -404,3 +404,34 @@ Done this session:
 interconnected referencing modules) — clears ~43; (2) promote visibility for the
 22 non-cloud staged items; (3) repath/port the ~15 API gaps; (4) rewire agent
 surfaces to BYOP; (5) phase 4 bins.
+
+### Phase 3c excision progress + cascade map
+
+- **DONE:** deleted the pure-cloud warp_tui modules (cloud_run, cloud_run_view,
+  orchestration_block +dir, orchestration_model, orchestration_tab_bar,
+  orchestrated_agent_identity_styling). Stripped cloud refs from `session.rs` and
+  `keybindings.rs` (both now cloud-free).
+- **Referrer cleanup remaining (the deep, cascading part):**
+  - `agent_message.rs` — DROP (renders inter-agent orchestration-participant
+    messages; Zap has no multi-agent orchestration). Cascades: remove
+    `TuiAIBlockSection::AgentMessage` variant + match arm in `agent_block.rs` and
+    wherever AgentMessage sections are constructed.
+  - `tui_builder.rs` — remove `agent_identity_palette()` (+ its import from the
+    deleted styling module) and the now-unused cloud styling helpers
+    (`cloud_run_mark_styles`, `orchestration_*` styles, `CloudRunMarkStyles`).
+  - `agent_block.rs` (~23 cloud lines) — remove the `Orchestration` /
+    `OrchestrationBlock` TuiToolCallView variants + match arms + orchestration-card
+    update logic.
+  - `session_registry.rs` (~51 cloud lines, heaviest) — KEEP TuiSessions but strip
+    the `Cloud(ViewHandle<TuiCloudRunView>)` session variant, `cloud_run_state`,
+    `wire_orchestration`, and `refresh/set_orchestration_tab_*`. Keep Terminal path.
+  - `terminal_session_view.rs` (~30 touchpoints, deepest) — strip the orchestration
+    tab bar + cloud-session handling from the main view.
+- **Then:** remove cloud `tui_export` imports from warp_tui files, promote
+  visibility for the 22 non-cloud staged items + re-add to the facade, repath/port
+  the ~15 API gaps (esp. `warp::editor::CodeEditorModel`, 13+ sites), rewire agent
+  surfaces to BYOP.
+
+**Reality:** the orchestration excision is deeply woven and cascades file-to-file;
+completing warp_tui to compile is multi-session. Default GUI build stays green
+throughout (warp_tui non-default).
