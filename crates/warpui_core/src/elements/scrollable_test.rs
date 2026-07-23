@@ -596,7 +596,7 @@ fn test_ignores_clicks_outside_scrollbar_bounds(axis: Axis) {
                 // Define a macro to help us determine which actions would be
                 // produced if we dispatched the given event.
                 macro_rules! actions_for_dispatched_event {
-                    ($event:expr) => {{
+                    ($event:expr_2021) => {{
                         let result = presenter
                             .borrow_mut()
                             .dispatch_event($event, ctx);

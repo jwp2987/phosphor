@@ -270,7 +270,7 @@ impl<'a> EventContext<'a> {
 
     /// Returns an iterator of `DropTargetPosition`s. Used to determine if a draggable element
     /// was dropped on a `DropTarget`.
-    pub(crate) fn drop_target_data(&self) -> impl Iterator<Item = DropTargetPosition> + 'a {
+    pub(crate) fn drop_target_data(&self) -> impl Iterator<Item = DropTargetPosition> + 'a + use<'a> {
         self.position_cache.drop_target_data()
     }
 }
@@ -672,15 +672,15 @@ impl EventContext<'_> {
         event: &DispatchedEvent,
         app: &AppContext,
     ) -> bool {
-        if let Some(mut element) = self.rendered_views.remove(&view_id) {
+        match self.rendered_views.remove(&view_id) { Some(mut element) => {
             self.view_stack.push(view_id);
             let handled = element.dispatch_event(event, self, app);
             self.rendered_views.insert(view_id, element);
             self.view_stack.pop();
             handled
-        } else {
+        } _ => {
             false
-        }
+        }}
     }
 
     pub fn dispatch_action<A: 'static + Any>(&mut self, name: &'static str, arg: A) {

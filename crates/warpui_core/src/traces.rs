@@ -33,7 +33,7 @@ struct TraceEvent {
 
 #[macro_export]
 macro_rules! start_trace {
-    ($name:expr) => {
+    ($name:expr_2021) => {
         #[cfg(feature = "traces")]
         $crate::traces::start_trace($name)
     };
@@ -41,7 +41,7 @@ macro_rules! start_trace {
 
 #[macro_export]
 macro_rules! record_trace_event {
-    ($name:expr) => {
+    ($name:expr_2021) => {
         #[cfg(feature = "traces")]
         $crate::traces::record_event($name)
     };
@@ -49,7 +49,7 @@ macro_rules! record_trace_event {
 
 #[macro_export]
 macro_rules! end_trace_after_next {
-    ($name:expr) => {
+    ($name:expr_2021) => {
         #[cfg(feature = "traces")]
         $crate::traces::end_trace_after_next($name)
     };
