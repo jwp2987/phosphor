@@ -5,6 +5,7 @@ use warpui::keymap::Keystroke;
 use warpui::platform::OperatingSystem;
 
 use super::{
+    indexing::Point,
     mouse::{MouseAction, MouseButton, MouseState},
     TermMode,
 };
@@ -289,6 +290,42 @@ impl<T: ModeProvider> ToEscapeSequence<T> for MouseState {
         .repeat(repeats);
         Some(msg.into_bytes())
     }
+}
+
+/// Builds the PTY bytes for a scroll-wheel event while the terminal is in the
+/// alternate screen. When mouse reporting is on, encodes a wheel event at
+/// `point`; otherwise falls back to arrow-key presses (SS3 up/down repeated),
+/// which is how full-screen programs without mouse reporting expect to scroll.
+///
+/// Returns `None` for a zero-line scroll.
+pub fn alt_screen_scroll_to_pty_bytes<T: ModeProvider>(
+    lines_to_scroll: i32,
+    point: Point,
+    report_mouse: bool,
+    mode_provider: &T,
+) -> Option<Vec<u8>> {
+    if lines_to_scroll == 0 {
+        return None;
+    }
+    if report_mouse {
+        return MouseState::new(
+            MouseButton::Wheel,
+            MouseAction::Scrolled {
+                delta: lines_to_scroll,
+            },
+            Default::default(),
+        )
+        .set_point(point)
+        .to_escape_sequence(mode_provider);
+    }
+
+    let arrow = if lines_to_scroll > 0 {
+        EscCodes::ARROW_UP
+    } else {
+        EscCodes::ARROW_DOWN
+    };
+    let sequence = EscCodes::build_escape_sequence_with_c1(C1::SS3, &[arrow]);
+    Some(sequence.repeat(lines_to_scroll.unsigned_abs() as usize))
 }
 
 pub trait ToModifierEscapeByte {
