@@ -3,14 +3,6 @@ members = [
   "crates/*",
   "app",
 ]
-# warp_tui is staged for the TUI port (see specs/warp-oss-sync/SCOPE.md) but is
-# not yet wired into the build: it depends on a `tui` feature that must first be
-# grafted into Zap's diverged warpui_core / warp crates, and its agent surfaces
-# still call Warp's cloud stack. Excluded so the workspace keeps compiling while
-# the port proceeds incrementally.
-exclude = [
-  "crates/warp_tui",
-]
 resolver = "2"
 
 # Include all members except serve-wasm (since it's a helper helper for serving
@@ -85,6 +77,7 @@ warp_js = { path = "crates/warp_js" }
 warp_logging = { path = "crates/warp_logging" }
 warp_managed_secrets = { path = "crates/managed_secrets" }
 warp_ripgrep = { path = "crates/warp_ripgrep" }
+warp_search_core = { path = "crates/warp_search_core" }
 warp_ssh_manager = { path = "crates/warp_ssh_manager" }
 warp_terminal = { path = "crates/warp_terminal" }
 warp_util = { path = "crates/warp_util" }

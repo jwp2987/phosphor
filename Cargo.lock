@@ -15807,6 +15807,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "warp_tui"
+version = "0.0.0"
+dependencies = [
+ "ai",
+ "anyhow",
+ "arboard",
+ "async-channel",
+ "async-fs",
+ "base64 0.22.1",
+ "blocking",
+ "channel_versions",
+ "clap",
+ "command",
+ "dirs 6.0.0",
+ "fs4",
+ "futures",
+ "futures-lite 1.13.0",
+ "http_client",
+ "instant",
+ "itertools 0.14.0",
+ "log",
+ "markdown_parser",
+ "num-traits",
+ "parking_lot",
+ "pathfinder_color",
+ "pathfinder_geometry",
+ "rangemap",
+ "serde_json",
+ "shell-words",
+ "similar",
+ "string-offset",
+ "strum 0.27.2",
+ "strum_macros 0.27.2",
+ "sum_tree",
+ "tempfile",
+ "tokio",
+ "unicode-segmentation",
+ "unicode-width 0.1.14",
+ "uuid",
+ "vec1",
+ "warp",
+ "warp_core",
+ "warp_editor",
+ "warp_files",
+ "warp_logging",
+ "warp_search_core",
+ "warp_terminal",
+ "warp_util",
+ "warpui",
+ "warpui_core",
+]
+
+[[package]]
 name = "warp_util"
 version = "0.1.0"
 dependencies = [

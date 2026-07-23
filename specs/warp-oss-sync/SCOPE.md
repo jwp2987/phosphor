@@ -294,3 +294,35 @@ from warp's cloud inference/agent calls to the Zap BYOP layer.
 
 **Assessment:** Phase 3 is multi-session and gated on the search_core topology
 decision above. Phases 1-2 (the framework foundation) are complete and GUI-safe.
+
+### Phase 3a-3b done + 3c error map
+
+- **3a (done):** imported the trimmed `warp_search_core` (inline_menu subset, no
+  Tantivy), vendored `debounce` locally. Compiles clean.
+- **3b (done):** `warp_tui` manifest now resolves and the crate is a workspace
+  member (NOT in `default-members`, so the default build is unaffected even while
+  its lib is uncompiled). Manifest work: dropped the 5 per-channel bins (need
+  `warp_channel_config`, deferred to phase 4), dropped `warp_errors` +
+  `warp_channel_config` deps, fixed `fs4`/`unicode-segmentation` to direct
+  versions, added `warp_search_core` to `[workspace.dependencies]`.
+- **3c (mapped, not done):** `cargo check -p warp_tui --lib` = **95 errors**,
+  almost all unresolved imports. Breakdown:
+  - **49 = `warp::tui_export`** — THE seam. warp's app crate exposes a
+    `tui_export` facade module (276 lines, 79 `pub use` re-exports) that hands
+    types to warp_tui. Zap lacks it. Grafting is per-export triage: ~60% are
+    types Zap has (keep, fix path), **~40% re-export cloud/orchestration types Zap
+    stripped** (`orchestration_config`, `ambient_agents`, `RunAgentsRequest`,
+    `Harness`, `orchestration_event_streamer`, `connected_self_hosted_workers`,
+    …) — drop those, and drop the warp_tui modules that consume them.
+  - 3 = `warp_errors` (adapt to `log::error!` as elsewhere)
+  - ~10 = smaller API-path gaps (`warp::editor::CodeEditorModel`,
+    `warp_util::local_or_remote_path`, `warp::settings::Tui*`, a few `ai::agent`
+    types)
+  - Plus: 7 cloud/orchestration modules (`cloud_run*`, `orchestration_*`,
+    `session_registry`, `orchestrated_agent_identity_styling`) woven into 3-6
+    other modules each — excision touches ~15 interconnected modules.
+
+**Remaining Phase 3 = graft a Zap-adapted `tui_export` (cloud re-exports removed)
++ excise the cloud/orchestration modules + rewire the agent surfaces to BYOP.
+Multi-session.** The default GUI build stays green throughout (warp_tui is a
+non-default workspace member).

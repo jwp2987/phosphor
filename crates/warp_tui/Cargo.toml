@@ -6,31 +6,10 @@ authors.workspace = true
 publish.workspace = true
 license.workspace = true
 autobins = false
-default-run = "warp-tui-oss"
 
-# One binary per channel, mirroring the GUI app's `app/src/bin/*` layout. The
-# OSS bin is the `default-run` so bare `cargo run -p warp_tui` builds without
-# the internal `warp-channel-config` generator; `./script/run-tui` selects the
-# local bin when the generator is available.
-[[bin]]
-name = "warp-tui-oss"
-path = "src/bin/oss.rs"
-
-[[bin]]
-name = "warp-tui"
-path = "src/bin/local.rs"
-
-[[bin]]
-name = "warp-tui-dev"
-path = "src/bin/dev.rs"
-
-[[bin]]
-name = "warp-tui-preview"
-path = "src/bin/preview.rs"
-
-[[bin]]
-name = "warp-tui-stable"
-path = "src/bin/stable.rs"
+# Zap: library-only for now. The 5 per-channel bins depend on warp_channel_config
+# (absent in Zap) and are deferred to phase 4 (entry bins). See
+# specs/warp-oss-sync/SCOPE.md.
 
 [dependencies]
 ai.workspace = true
@@ -45,7 +24,7 @@ command.workspace = true
 dirs.workspace = true
 futures.workspace = true
 futures-lite.workspace = true
-fs4.workspace = true
+fs4 = { version = "0.13.1", features = ["sync"] }
 http_client.workspace = true
 instant.workspace = true
 itertools.workspace = true
@@ -64,13 +43,11 @@ strum.workspace = true
 strum_macros.workspace = true
 sum_tree.workspace = true
 tokio.workspace = true
-unicode-segmentation.workspace = true
+unicode-segmentation = "1.11.0"
 unicode-width.workspace = true
 vec1.workspace = true
 warp = { workspace = true, features = ["image_as_context", "tui"] }
-warp_channel_config.workspace = true
 warp_core.workspace = true
-warp_errors.workspace = true
 warp_editor.workspace = true
 warp_files.workspace = true
 warp_logging.workspace = true
@@ -106,7 +83,7 @@ warp_editor = { workspace = true, features = ["test-util"] }
 # Process-level worker-dispatch regression test.
 command.workspace = true
 pathfinder_color.workspace = true
-warp = { workspace = true, features = ["tui", "test-util"] }
+warp = { workspace = true, features = ["tui"] }
 
 [features]
 # Declared so the `warp_channel_config::load_config!` macro's
