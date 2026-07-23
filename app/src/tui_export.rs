@@ -11,6 +11,9 @@
 
 pub use ::ai::agent::action::{AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType};
 pub use ::ai::agent::action_result::AskUserQuestionAnswerItem;
+pub use ::ai::agent::ask_user_question_session::{
+    AskUserQuestionAction, AskUserQuestionEffect, AskUserQuestionPhase, AskUserQuestionSession,
+};
 pub use repo_metadata::repositories::RepoDetectionSource;
 use warp_completer::completer::{CompletionContext as _, TopLevelCommandCaseSensitivity};
 use warp_completer::signatures::CommandRegistry;
