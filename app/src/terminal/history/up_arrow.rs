@@ -5,6 +5,7 @@ use warpui::{AppContext, EntityId, SingletonEntity};
 
 use crate::ai::blocklist::BlocklistAIHistoryModel;
 use crate::ai::blocklist::InputConfig;
+use crate::ai::blocklist::history_model::AIQueryHistory;
 use crate::input_suggestions::HistoryInputSuggestion;
 use crate::settings::AISettings;
 use crate::suggestions::ignored_suggestions_model::{IgnoredSuggestionsModel, SuggestionType};
@@ -129,4 +130,31 @@ impl History {
 
         sort_and_dedupe_suggestions(suggestions, session_id, &all_live_session_ids)
     }
+}
+
+/// Returns the AI-query prompt history for a terminal view, most-recent first,
+/// with ignored and empty prompts filtered out. Used by the `warp_tui`
+/// prompt-history menu (which lists only prior prompts, not shell commands).
+pub fn prompt_history_for_terminal_view(
+    terminal_view_id: EntityId,
+    app: &AppContext,
+) -> Vec<AIQueryHistory> {
+    let ignored_suggestions = IgnoredSuggestionsModel::handle(app);
+    let ignored_suggestions = ignored_suggestions.as_ref(app);
+    let suggestions = BlocklistAIHistoryModel::handle(app)
+        .as_ref(app)
+        .all_ai_queries(Some(terminal_view_id))
+        .filter(|entry| !entry.query_text.trim().is_empty())
+        .filter(|entry| !ignored_suggestions.is_ignored(&entry.query_text, SuggestionType::AIQuery))
+        .map(|entry| HistoryInputSuggestion::AIQuery { entry })
+        .collect();
+    let sorted = sort_and_dedupe_suggestions(suggestions, None, &HashSet::new());
+
+    sorted
+        .into_iter()
+        .filter_map(|suggestion| match suggestion {
+            HistoryInputSuggestion::AIQuery { entry } => Some(entry),
+            HistoryInputSuggestion::Command { .. } => None,
+        })
+        .collect()
 }
