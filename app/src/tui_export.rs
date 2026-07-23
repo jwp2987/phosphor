@@ -43,7 +43,8 @@ pub use crate::ai::blocklist::agent_view::{
     EphemeralMessageModel,
 };
 pub use crate::ai::blocklist::block::cli_controller::{
-    CLISubagentController, CLISubagentEvent, LongRunningCommandControlState, UserTakeOverReason,
+    CLISubagentController, CLISubagentEvent, CLISubagentTarget, LongRunningCommandControlState,
+    UserTakeOverReason,
 };
 pub use crate::ai::blocklist::context_model::{
     AttachmentType, BlocklistAIContextEvent, BlocklistAIContextModel, PendingQueryState,

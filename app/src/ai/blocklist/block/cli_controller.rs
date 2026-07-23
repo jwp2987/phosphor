@@ -118,6 +118,23 @@ impl LongRunningCommandControlState {
     }
 }
 
+/// Read-only identity and control state for a terminal command currently
+/// associated with a CLI subagent.
+///
+/// The terminal block remains the canonical owner of this state. Front-ends
+/// use this snapshot to keep rendering and input routing in agreement without
+/// exposing mutable block internals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CLISubagentTarget {
+    pub block_id: BlockId,
+    pub task_id: TaskId,
+    pub conversation_id: AIConversationId,
+    pub requested_command_action_id: Option<AIAgentActionId>,
+    pub control_state: LongRunningCommandControlState,
+    pub last_snapshot_at: Option<Instant>,
+    pub latest_instruction: Option<String>,
+}
+
 /// Responsible for managing 'control' (e.g. write permissions) for the active long running
 /// agent-requested command.
 ///
