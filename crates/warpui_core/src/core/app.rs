@@ -87,6 +87,19 @@ lazy_static! {
 #[derive(Clone)]
 pub struct App(Rc<RefCell<AppContext>>);
 
+/// A weak handle to the app, used by the TUI runtime's draw/input loop to reach
+/// the [`AppContext`] without keeping it alive. See specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+pub struct WeakApp(rc::Weak<RefCell<AppContext>>);
+
+#[cfg(feature = "tui")]
+impl WeakApp {
+    /// Upgrades to a strong [`App`] handle if the app is still alive.
+    pub fn upgrade(&self) -> Option<App> {
+        self.0.upgrade().map(App)
+    }
+}
+
 impl App {
     pub fn test<A: assets::AssetProvider, T: 'static, F: Future<Output = T> + 'static>(
         asset_provider: A,
@@ -708,6 +721,12 @@ pub struct AppContext {
     /// and cleaned up in `remove_dropped_items` when views are dropped.
     structural_child_to_parent: HashMap<EntityId, EntityId>,
 
+    /// Neutral child-view → parent-view embeddings per window, written by the TUI
+    /// render path (`report_view_embeddings`) and read by its ancestry queries.
+    /// The GUI does not use this map (it relies on `structural_*` above); it stays
+    /// empty there, so the field is additive and harmless for GUI builds.
+    view_parents: HashMap<WindowId, FxHashMap<EntityId, EntityId>>,
+
     /// Reverse of `structural_child_to_parent`: maps parent view → set of child views.
     /// Enables efficient traversal in `transfer_structural_children` without iterating
     /// all views in the source window.
@@ -814,6 +833,7 @@ impl AppContext {
             zoom_factor: ZoomFactor::default(),
             view_to_window: Default::default(),
             structural_child_to_parent: Default::default(),
+            view_parents: Default::default(),
             structural_parent_to_children: Default::default(),
             suppress_focus_for_window: None,
             fallback_font_source_provider: None,
@@ -1207,7 +1227,7 @@ impl AppContext {
     /// View + Action combination.
     fn add_typed_action<V>(&mut self)
     where
-        V: TypedActionView + View,
+        V: TypedActionView + Entity,
     {
         let handler = Box::new(
             |view: &mut dyn AnyView,
@@ -2862,6 +2882,78 @@ impl AppContext {
         F: FnOnce(&mut ViewContext<V>) -> V,
     {
         self.add_typed_action_view_internal(window_id, build_view, Some(parent_view_id))
+    }
+
+    /// Returns a weak handle to this app for the TUI runtime loop.
+    #[cfg(feature = "tui")]
+    pub fn weak_app(&self) -> WeakApp {
+        WeakApp(self.weak_self.clone())
+    }
+
+    /// Records a neutral child-view → parent-view embedding for the TUI ancestry
+    /// map. Only the TUI path uses `view_parents`. See specs/warp-oss-sync/SCOPE.md.
+    #[cfg(feature = "tui")]
+    pub fn record_view_parent(
+        &mut self,
+        window_id: WindowId,
+        view_id: EntityId,
+        parent_view_id: EntityId,
+    ) {
+        self.view_parents
+            .entry(window_id)
+            .or_default()
+            .insert(view_id, parent_view_id);
+    }
+
+    /// Render-time hook: merges the child-view → parent-view embeddings discovered
+    /// while presenting a TUI frame into `view_parents`.
+    #[cfg(feature = "tui")]
+    pub fn report_view_embeddings(
+        &mut self,
+        window_id: WindowId,
+        embeddings: crate::EntityIdMap<EntityId>,
+    ) {
+        self.view_parents
+            .entry(window_id)
+            .or_default()
+            .extend(embeddings);
+    }
+
+    /// Registers an already-built TUI view (view is Entity, not View, and has
+    /// already been inserted into the window as `StoredView::Tui`). The TUI
+    /// counterpart of `add_typed_action_view_internal`, which builds a GUI view.
+    #[cfg(feature = "tui")]
+    fn register_typed_action_view_internal<V>(
+        &mut self,
+        window_id: WindowId,
+        view_id: EntityId,
+        parent_view_id: Option<EntityId>,
+    ) -> ViewHandle<V>
+    where
+        V: TypedActionView + Entity,
+    {
+        self.view_to_window.insert(view_id, window_id);
+
+        if let Some(parent_view_id) = parent_view_id {
+            self.record_view_parent(window_id, view_id, parent_view_id);
+            self.structural_child_to_parent
+                .insert(view_id, parent_view_id);
+            self.structural_parent_to_children
+                .entry(parent_view_id)
+                .or_default()
+                .insert(view_id);
+        }
+
+        self.add_typed_action::<V>();
+        self.window_invalidations
+            .entry(window_id)
+            .or_default()
+            .updated
+            .insert(view_id);
+
+        let handle = ViewHandle::new(window_id, view_id, &self.ref_counts);
+        self.flush_effects();
+        handle
     }
 
     /// Add a view that implements the `TypedAction` trait

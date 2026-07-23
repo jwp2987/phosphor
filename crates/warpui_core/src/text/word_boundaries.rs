@@ -20,6 +20,20 @@ pub enum WordBoundariesPolicy {
     OnlyWhitespace,
 }
 
+impl WordBoundariesPolicy {
+    /// Returns whether `c` is a word-boundary (separator) character under this
+    /// policy. Used by `TextBuffer::semantic_expansion_target` (TUI selection).
+    pub fn is_word_boundary(&self, c: char) -> bool {
+        match self {
+            WordBoundariesPolicy::Default => is_default_word_boundary(c),
+            WordBoundariesPolicy::Custom(boundary_chars) => {
+                c.is_whitespace() || boundary_chars.contains(&c)
+            }
+            WordBoundariesPolicy::OnlyWhitespace => c.is_whitespace(),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum WordBoundariesApproach {
     ForwardWordStarts,
