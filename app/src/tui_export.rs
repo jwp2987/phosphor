@@ -61,6 +61,9 @@ pub use crate::ai::blocklist::history_model::{
     AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
 };
 pub use crate::ai::llms::{LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent};
+pub use crate::ai::option_snapshot::{
+    OptionBadge, OptionFooter, OptionRow, OptionSnapshot, OptionSourceStatus,
+};
 pub use crate::ai::skills::{SkillManager, SkillReference};
 pub use crate::appearance::Appearance;
 pub use crate::tui::log_out_tui;
