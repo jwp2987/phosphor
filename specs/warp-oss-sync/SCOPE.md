@@ -446,113 +446,154 @@ The cloud/orchestration excision cascade is done. All of the following landed
 facade-population / API-path gaps — zero orchestration errors.** The excision
 achieved its goal: the real remaining surface is now visible.
 
-### Phase 3d — facade population + API-gap resolution (NEXT)
+### Phase 3d — facade population + subsystem ports (IN PROGRESS)
 
-**Progress (84 → 51 errors, all GUI-gated green):**
-- ✅ `warp::editor::CodeEditorModel(+Event)` (13 sites) — `#[cfg(feature="tui")]`
-  re-export on the public `editor` path (Zap keeps the code editor under the
-  private `code::editor`). Committed.
-- ✅ **blocklist model cluster** — promoted `action_model`/`context_model`/
-  `controller`/`input_model`/`view_util`/`block::view_impl::common` to `pub mod`
-  (the `pub mod block` pattern) + facade re-exports: BlocklistAIActionModel/Event,
-  AIActionStatus, ShellCommandExecutor(+Event), NewConversationDecision,
-  BlocklistAIContextModel/Event, AttachmentType, block_context_from_terminal_model,
-  PendingQueryState, BlocklistAIController, BlocklistAIInputModel, InputConfig,
-  InputType, format_credits, format_elapsed_seconds. Committed.
-- ✅ **BYOP `app/src/tui/` module** — Zap dropped upstream's `tui` module (its
-  login drives Warp-cloud device authorization). Added a BYOP `tui/mod.rs`: the
-  `TuiLoginModel`/`TuiLoginPhase`/`TuiLoginEvent` shapes verbatim (root view
-  renders them) but a trivial always-`LoggedIn` model + no-op `log_out_tui` — no
-  auth, no cloud. Wired crate-root re-exports + `log_out_tui` in the facade.
-  Committed.
+**CURRENT STATE: `cargo check -p warp_tui` = 32 errors** (down from 84), GUI gate
+green at every commit, all pushed to `origin/josh/warp-oss-sync` (tip commit
+`document_action_presentation`). Build the TUI check with plain
+`cargo check -p warp_tui` (the crate has no `tui` feature of its own); the app
+crate carries it via `cargo check -p warp --features tui`, and the guardrail is
+`cargo check -p warp --features gui` after any shared-crate change.
 
-**Where each remaining symbol lives in `warp/master`** (mapped — see the port
-list below). The `warp` remote is `warpdotdev/warp`, branch `warp/master`; the
-absent app-side TUI types are recoverable from it (mostly `app/src/tui/`,
-`app/src/terminal/input/slash_commands/data_source/`, `app/src/ai/blocklist/`,
-`app/src/ai/orchestration/snapshots.rs`).
+**Two reusable techniques (use these):**
+1. **git-extract** a self-contained warp/master file straight into Zap's tree at
+   the same relative path so its `super::`/`crate::` imports resolve unchanged:
+   `git show warp/master:PATH | sed '/#\[cfg(test)\]/,/mod tests;/d' > destPATH`
+   (drops the trailing test module). Then add the `pub mod` + facade re-export.
+2. **wildcard-adapt** — warp's big `match AIAgentActionType {…}` blocks enumerate
+   variants Zap lacks (`UploadArtifact`, `SearchCodebase`, `UseComputer`,
+   `RequestComputerUse`, `StartRecording`/`StopRecording`, `FetchConversation`,
+   `StartAgent`, `SendMessageToAgent`, `RunAgents`, `WaitForEvents`, …). Replace the
+   catch-all enumeration with `_` so the match stays exhaustive over Zap's subset.
 
-**✅ DONE — the app-side TUI runtime spine (`run_tui`).** Ported (commit on
-`josh/warp-oss-sync`, GUI gate green, warp_tui 51→49): `ExecutionMode::Tui`
-(warp_core), `warp_cli::is_worker_invocation`, `LaunchMode::Tui { mount, api_key }`
-+ `TuiMountFn` + Tui arms through all 10 `LaunchMode` methods + the
-execution-profiles/`launch()`/api_key match sites, `run_worker_command` extracted
-and shared, `run_tui`/`run_tui_worker_if_requested`, and the `run_internal`
-dispatch to `crate::tui::init(mount, ctx)`. `run_tui`/`run_tui_worker_if_requested`/
-`TuiMountFn` now fully resolve. Note: `SettingsMode::Tui` was NOT needed — that's a
-Warp-only concept and Zap's `LaunchMode` has no `settings_mode()` method, so the
-cascade was smaller than warp/master's 28 arms.
+**Workflow that works:** for each still-erroring file, read its *full* `use
+warp::tui_export::{…}` set; port only files whose entire missing set is satisfiable
+now; GUI-gate; commit; push. Files clear one at a time; the error count is a rough
+proxy (some groups share types).
 
-**Key finding — the mechanical facade is largely exhausted.** The remaining ~53
-errors are dominated by app-side TUI types **genuinely absent from Zap** (Warp had
-them in its app crate; Zap never built them, having no TUI). Isolated facade
-re-exports no longer reduce the count because each present item is grouped in a
-`use {…}` block alongside absent ones — a group resolves only once its whole
-subsystem is ported. So the next phase is **porting these app-side subsystems from
-the `warp` remote**, each largely independent:
+**✅ DONE (foundational + this run):**
+- `warp::editor::CodeEditorModel(+Event)` — `#[cfg(feature="tui")]` re-export on the
+  public `editor` path (Zap keeps the code editor under private `code::editor`).
+- **blocklist model cluster** — promoted `action_model`/`context_model`/`controller`/
+  `input_model`/`view_util`/`block::view_impl::common` to `pub mod` (the `pub mod
+  block` pattern) + facade re-exports (BlocklistAIActionModel/Event, AIActionStatus,
+  ShellCommandExecutor(+Event), NewConversationDecision, BlocklistAIContextModel/Event,
+  AttachmentType, block_context_from_terminal_model, PendingQueryState,
+  BlocklistAIController, BlocklistAIInputModel, InputConfig, InputType, format_credits,
+  format_elapsed_seconds).
+- **BYOP `app/src/tui/` module** — always-`LoggedIn` `TuiLoginModel`/`Phase`/`Event`
+  + no-op `log_out_tui`, no auth/cloud; crate-root re-exports + facade `log_out_tui`.
+- **`run_tui` runtime spine** — `ExecutionMode::Tui` (warp_core),
+  `warp_cli::is_worker_invocation`, `LaunchMode::Tui { mount, api_key }` + `TuiMountFn`
+  + Tui arms through all 10 `LaunchMode` methods + execution-profiles/`launch()`/api_key
+  sites, shared `run_worker_command`, `run_tui`/`run_tui_worker_if_requested`, and the
+  `run_internal` dispatch to `crate::tui::init(mount, ctx)`. (`SettingsMode::Tui` NOT
+  needed — Zap's `LaunchMode` has no `settings_mode()`.)
+- **inert telemetry** — stripped warp_tui `telemetry.rs` to plain event types (Zap's
+  `warp_core::telemetry` is no-op shims); `session.rs` fully unblocked.
+- **workspace-crate ports:** `LocalOrRemotePath`/`RemotePath`/`HostId` → warp_util;
+  `alt_screen_scroll_to_pty_bytes` → warp_terminal.
+- **facade + promotions:** `should_intercept_mouse/scroll` (promoted
+  `terminal::alt_screen` to `pub(crate)`), `SlashCommandDataSource`/
+  `AcceptSlashCommandOrSavedPrompt`/`UpdatedActiveCommands` (via `slash_commands`'
+  `pub use data_source::*`), `FileDiff`/`DiffSessionType`.
+- **type ports:** `Option*` plain-data types → new `app/src/ai/option_snapshot.rs`
+  (lifted out of warp's cloud `orchestration/snapshots.rs`; builders left behind);
+  `CLISubagentTarget` → cli_controller; `prompt_history_for_terminal_view` →
+  `terminal/history/up_arrow` (promoted `up_arrow` to `pub(crate)`);
+  **`AskUserQuestionSession`** + **`document_action_presentation`** git-extracted into
+  `crates/ai/src/agent/` (the latter wildcard-adapted; added
+  `DEFAULT_PLANNING_DOCUMENT_TITLE` to `ai/document.rs`).
+- **Files cleared:** terminal_content_element, input_detection, tui_file_edits_view,
+  tui_permission_prompt, option_selector, tui_cli_subagent_view, prompt_history_menu,
+  tui_ask_question_view, tui_plan_view (plus session.rs, root_view, etc. earlier).
 
-1. **MCP menu data source** — `TuiMcpManager(+Event)`, `TuiMcpAction`,
-   `TuiMcpConfigState`, `TuiMcpServerStatus`, `TuiMcpTransport`, `TuiMcpSnapshot`.
-2. **Slash-command TUI data source** — `TuiSlashCommandDataSource(+Args)`,
-   `SlashCommandMixer`, `ParsedSlashCommandInput`, `SlashCommandKind`,
-   `SlashCommandSelectionBehavior`, `build_slash_command_mixer`,
+**REMAINING — the big-subsystem ports + cloud-adjacent items.** Isolated facade
+re-exports no longer reduce the count: every still-erroring file mixes present with
+genuinely-absent types, so a file clears only when its whole subsystem lands. Port
+each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
+`app/src/tui/`, `app/src/terminal/input/slash_commands/data_source/`,
+`app/src/ai/orchestration/snapshots.rs`, `app/src/ai/blocklist/`):
+
+1. **MCP menu data source** (files: mcp_menu, zero_state, inline_menu, input/view,
+   terminal_session_view) — `TuiMcpManager(+Event)`, `TuiMcpAction`, `TuiMcpConfigState`,
+   `TuiMcpServerStatus`, `TuiMcpTransport`, `TuiMcpSnapshot`. Source: warp
+   `app/src/tui/mcp.rs`. **Cascade:** Zap's `FileBasedMCPManager` diverged — adapt
+   `global_warp_servers`→`file_based_servers`, and it lacks `config_diagnostic` /
+   `global_warp_installation_by_hash` (adapt via `get_hash_by_uuid`/`get_installation_by_uuid`)
+   + needs the `MCPServerExt` trait (warp `ai/mcp/mod.rs`) + `active_mcp_config_file_path`
+   (warp `warp_managed_paths_watcher.rs`, which uses `SettingsMode` — adapt to the TUI
+   config path only). Register `TuiMcpManager` in `crate::tui::init` once ported.
+2. **Slash-command TUI mixer** (files: slash_commands, skills_menu) —
+   `TuiSlashCommandDataSource(+Args)`, `SlashCommandMixer`, `ParsedSlashCommandInput`,
+   `SlashCommandKind`, `SlashCommandSelectionBehavior`, `build_slash_command_mixer`,
    `slash_command_query`, `should_close_slash_command_menu_for_exact_match`,
-   `slash_command_selection_behavior`. (`SlashCommandDataSource`,
-   `AcceptSlashCommandOrSavedPrompt`, `UpdatedActiveCommands` already exist in
-   `app/src/terminal/input/slash_commands/` — promote+re-export those.)
-3. **Ask-question option model** — `OptionRow`, `OptionSnapshot`, `OptionFooter`,
-   `OptionSourceStatus`, `OptionBadge`, `AskUserQuestion{Action,Effect,Phase,Session}`.
-4. **Conversation selection/management** — `ConversationSelection(+Event/Handle)`,
-   `AgentConversationEntry(+Id)`, `AgentConversationListEntryState`,
-   `AgentConversationListPolicy`, `query_conversation_entries`. (conversation_selection)
-5. **Zero-state data source** — `TuiZeroStateDataSource`.
-6. **Conversation restoration** — `CloudConversationData`,
-   `ConversationBlockRestorationPlan`, `prepare_conversation_block_restoration`,
-   `ConversationFileExport`, `export_conversation_markdown`. (conversation_restoration)
-7. **Diff storage adapter** — `DiffStorage`/`DiffStorageHelper`/`RegisteredDiffStorage`/
-   `SaveFuture`/`UpdatedFileState`/`changed_lines_from_op`: adapt `TuiDiffStorage`
-   onto Zap's `ApplyDiffModel` (Zap has `FileDiff`/`DiffSessionType`/`ai::diff_validation`).
+   `slash_command_selection_behavior`, plus the `record_*`/`saved_prompt_text_for_id`
+   helpers and skills (`AcceptSkill`, `query_selectable_skills`). Zap's
+   `search/slash_command_menu` + `terminal/input/slash_commands` diverged — expect
+   adaptation. (`slash_commands.rs` also has an internal `AUTO_APPROVE` scope error.)
+3. **Conversation selection/management** (files: conversation_selection,
+   conversation_menu, input_mode_policy, inline_menu, input/view, terminal_session_view)
+   — `ConversationSelection(+Event/Handle)`, `AgentConversationEntry(+Id)`,
+   `AgentConversationListEntryState`, `AgentConversationListPolicy`,
+   `query_conversation_entries`, `InputModePolicy`, `PolicyConfigUpdate`,
+   `InputTypeAutoDetectionSource`, `PendingAttachmentSummary`. Source: warp
+   `app/src/ai/blocklist/conversation_selection.rs` + `agent_conversations_model/`.
+   (`AgentManagementFilters`/`AgentRunDisplayStatus`/`HarnessFilter` already present in
+   Zap's `agent_conversations_model` — facade them when the group unblocks.)
+4. **Model picker** (file: model_menu) — `query_model_picker_choices`/`ModelPickerChoice`.
+   Zap's `terminal/input/models/data_source.rs` diverged — port/adapt.
+5. **Zero-state data source** (file: zero_state) — `TuiZeroStateDataSource` (warp
+   `terminal/input/slash_commands/data_source/zero_state.rs`).
+6. **Conversation restoration** (file: terminal_session_view) — `CloudConversationData`
+   (cloud — likely DROP/adapt), `ConversationBlockRestorationPlan`,
+   `prepare_conversation_block_restoration`, `ConversationFileExport`,
+   `export_conversation_markdown`, `maybe_build_ai_query_upsert_event`,
+   `GetRelevantFilesController`, `TranscriptScope`, `PtyIntent(+Event)`,
+   `TerminalSurface(+Init/Result)`, `RepoDetectionSessionType`,
+   `LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE`.
+7. **Diff storage adapter** (file: tui_diff_storage) —
+   `DiffStorage`/`DiffStorageHelper`/`RegisteredDiffStorage`/`SaveFuture`/
+   `UpdatedFileState`/`changed_lines_from_op`/`FileSnapshot`: adapt `TuiDiffStorage`
+   onto Zap's `ApplyDiffModel` (Zap has `FileDiff`/`DiffSessionType`/`ai::diff_validation`
+   but not the `DiffStorage` trait; persists via
+   `blocklist/action_model/execute/request_file_edits/apply_diff_model.rs`).
+8. **Editor char-cell rendering** (files: editor_element, editor_interaction) —
+   `warp_editor::render::model::{DisplayLattice, DisplayRow, DisplayRowKind,
+   CharCellState, CharCellTemporaryBlock}` (warp `crates/editor/src/render/model/
+   char_cell_display.rs` + `mod.rs`). Zap's editor crate lacks char-cell rendering —
+   deeper editor port.
+9. **tool_call_labels drop-adaptation** (file: tool_call_labels) — big
+   `match AIAgentActionType` with absent `SearchCodebase`/`RunAgents`/`StartAgentExecutionMode`
+   arms + `RunAgents*`/`SearchCodebase*` result types. Remove the absent-variant arms
+   (wildcard-adapt) + drop the cloud result-type imports.
+10. **Cloud-adjacent (DESIGN CALL — decide keep-BYOP-inert vs port):**
+    `usage.rs` (`ConversationUsageTotals`, `TuiUsageDisplayMode` = credits/cost billing;
+    BYOP has no billing), `agent_block.rs` `FailedOutputPresentation` family (cascades
+    into `QuotaLimit`/`OutOfCredits`/`AIRequestUsageModel`), `autoupdate.rs`
+    `TuiAutoupdateSettings`, `attachment_bar/image_processing` `infer_mime_type`/
+    `MIME_SNIFF_BYTES` (+ `warpui::platform::create_system_clipboard`),
+    `transcript_view` `BlockSpacing`/`should_show_task_in_blocklist`,
+    `tui_cli_subagent_view`/`terminal_session_view` `CLISubagentTarget` (now present —
+    facade when group unblocks), `session_registry` `TerminalSurfaceResult`.
 
-**Also absent — diverged WORKSPACE crates (not just the app crate).** Zap's
-`warp_editor`, `warp_util`, `warp_terminal` also dropped the TUI-supporting types
-warp_tui imports directly (not via `tui_export`); these must be ported into those
-crates, each with its own cascade:
-- `warp_editor::render::model::{DisplayLattice, DisplayRow, DisplayRowKind,
-  CharCellState, CharCellTemporaryBlock}` (warp/master `crates/editor/src/render/model/`)
-  — blocks the editor element/view files.
-- `warp_util::local_or_remote_path` (`LocalOrRemotePath`).
-- `warp_terminal::model::escape_sequences::alt_screen_scroll_to_pty_bytes` — blocks
-  `terminal_content_element.rs` even though `should_intercept_mouse/scroll` are present.
+`terminal_session_view.rs` is the last file to clear (imports ~35 symbols across
+subsystems 1/3/6 + 4 internal `builder` scope errors) — expect it to fall only after
+MCP + conversation-selection + restoration land.
 
-**Also absent (app crate, smaller):** `FailedOutputPresentation`/
-`failed_output_presentation`/`FAILED_OUTPUT_USAGE_NOTICE_TEXT`/
-`should_show_failed_output_usage_notice` (warp `ai/blocklist/view_util.rs`; Zap's
-view_util diverged), `infer_mime_type`/`MIME_SNIFF_BYTES` (warp `util/image.rs`),
-`ConversationUsageTotals`, `CLISubagentTarget`, `SlashCommandKind` (Zap's
-`search/slash_command_menu` diverged), the `record_*`/`saved_prompt_text_for_id`
-slash helpers, `TuiUsageDisplayMode`/`TuiAutoupdateSettings` (warp::settings),
-`ParsedSlashCommandInput`, `query_model_picker_choices`,
-`prompt_history_for_terminal_view`, `document_action_presentation`.
+**Still-present-in-Zap items to facade when their group unblocks** (mechanical, no
+build; VERIFIED present, but each shares a `use {…}` with absent types so none
+clears a file alone yet): `GitRepoStatusModel`/`GitStatusMetadata`
+(`code_review/git_status_update.rs`; `code_review` is a private `mod` — promote) +
+`detect_possible_git_repo` (`repo_metadata`) + a `GitRepoModels`=`GitStatusUpdateModel`
+alias; `AgentManagementFilters`/`AgentRunDisplayStatus`/`HarnessFilter`
+(`agent_conversations_model`, already facade-reachable); `AcceptSkill`
+(`terminal/input/skills/data_source`); `Harness` (`warp_cli`); `CLISubagentTarget`
+(now ported). These belong to subsystems 2/3/6 above.
 
-**Present-in-Zap, promote+re-export when their group unblocks** (mechanical, no
-build; VERIFIED present): `GitRepoStatusModel`/`GitStatusMetadata`
-(`code_review/git_status_update.rs`, `code_review` is a private `mod` — promote) +
-`detect_possible_git_repo` (`repo_metadata`), `GitRepoModels`=`GitStatusUpdateModel`
-alias, `FileDiff`/`DiffSessionType` (`blocklist/inline_action/code_diff_view`),
-`SlashCommandDataSource`/`AcceptSlashCommandOrSavedPrompt`/`UpdatedActiveCommands`
-(`terminal/input/slash_commands/`), `AgentManagementFilters`/`AgentRunDisplayStatus`/
-`HarnessFilter` (`agent_conversations_model`, already facade-reachable), `AcceptSkill`
-(`terminal/input/skills/data_source`), `Harness` (`warp_cli`),
-`should_intercept_mouse/scroll` (`terminal/alt_screen`, private `mod` — promote).
-
-**Drop (cloud/orchestration remnants):** `RunAgents*`, `StartAgentExecutionMode`,
-`SearchCodebase*` (confirm orchestration-only), `CloudConversationData` /
-`agent_conversations_cloud_metadata_load_failed` (cloud sync).
-
-**No error-reducing quick wins remain (verified 2026-07 at 44 errors).** Every
-remaining warp_tui file's `use {…}` group mixes present items with genuinely-absent
-subsystem/workspace types, so adding isolated present re-exports clears no file —
-progress now requires completing a whole subsystem port (app-side module + its
-absent method/trait sub-deps + any absent workspace-crate types it pulls in). Treat
-each numbered subsystem above as its own focused effort, like `run_tui` was. Default
-GUI build stays green throughout (warp_tui non-default).
+**Reminder — no isolated quick wins remain.** Every still-erroring file mixes
+present with genuinely-absent types, so a file clears only when its whole numbered
+subsystem lands. Keep GUI green (`cargo check -p warp --features gui`) after every
+shared-crate change; warp_tui stays a non-default workspace member so the default
+build is unaffected regardless. After all subsystems compile: Phase 4 = entry bins +
+workspace wiring, then wire the agent surfaces to BYOP end-to-end.
