@@ -349,8 +349,28 @@ green; the finding is the deliverable. The facade splits ~50/50:
 
 **Reframed scope:** the warp_tui port is multi-session not because of one seam but
 because warp_tui depends on ~half of warp's app-crate feature surface Zap lacks
-(cloud + diverged app infra). The path forward is per-feature: for each MISSING
-group, either build the Zap equivalent or drop the warp_tui feature that uses it
-(and its cloud modules). A minimal first target = keep only the RESOLVES surface,
-stub every MISSING one, and drop the slash-command / skills / orchestration TUI
-features for a v0 terminal+agent skeleton.
+(cloud + diverged app infra).
+
+**Direction (per the "match Warp minus cloud" north star — see
+`docs/DESIGN-ZAP-FORK.md`): BUILD/PORT the non-cloud missing features for parity;
+drop ONLY cloud.** So the earlier "minimal v0, stub/drop slash+skills" idea is
+superseded. Per-feature plan for the MISSING groups:
+
+- **Already in Zap at diverged paths → port warp's newer types in (adapt, not
+  build):**
+  - slash commands → `app/src/search/slash_command_menu` +
+    `app/src/terminal/input/slash_command_model.rs` (add `SlashCommandMixer`,
+    `TuiSlashCommandDataSource`, `SlashCommandKind/Surfaces`, the record_* fns, …)
+  - skills selection → `app/src/terminal/input/skills` (add `SelectableSkill`,
+    `query_selectable_skills`, …)
+  - model picker → `app/src/terminal/input/models` (add `ModelPickerChoice`,
+    `query_model_picker_choices`)
+- **Genuinely absent in Zap → build the local equivalent for parity (or confirm
+  cloud-adjacent, then drop):** `conversation_selection`, `conversation_restoration`,
+  `diff_storage`, `git_repo_model`.
+- **Cloud → drop (and drop the warp_tui modules that consume them):**
+  orchestration*, RunAgents*, StartAgent*, server_api, connected_self_hosted_workers,
+  ambient_agents, harness*, oz child-launch.
+
+Then rewire warp_tui's agent surfaces to the BYOP layer. The default GUI build
+stays green throughout (warp_tui is a non-default workspace member).

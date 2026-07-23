@@ -17,6 +17,15 @@ the way it is and where it is heading, before making architectural changes.
   stripped; the agent talks **directly to a user-configured OpenAI-compatible /
   Anthropic / Gemini / Ollama / Vertex endpoint** via the vendored `lib/rust-genai`.
   Primary test target: **FastFlowLM (FLM)**, a local small-model server.
+- **North star — match Warp minus cloud.** Zap should stay as close to
+  feature-parity with upstream Warp as possible, dropping **only genuinely
+  cloud-dependent** features. When a Warp feature is missing from Zap, the default
+  is to **build or port it for parity**, not stub or drop it. Drop only cloud:
+  orchestration, remote/RunAgents/StartAgent child agents, `server_api`,
+  connected self-hosted workers, ambient agents, cloud harness, oz child-launch,
+  Drive sync, auth/billing. If a feature is cloud-*adjacent* (e.g. conversation
+  restoration/selection may tie to cloud sync), check whether a local-only version
+  is viable before dropping.
 - **Direction:** started as personal tinkering; now moving toward a **real,
   distributable product**. This raises the bar: source-disclosure discipline
   (AGPL — see §6), upstream convergence, and maintainability all matter now.
