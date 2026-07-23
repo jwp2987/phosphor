@@ -448,32 +448,57 @@ achieved its goal: the real remaining surface is now visible.
 
 ### Phase 3d — facade population + API-gap resolution (NEXT)
 
-The ~74 errors fall into:
-- **`warp::editor::CodeEditorModel` (+Event)** — 13+ sites. Repath or re-export
-  in `tui_export` (Zap has `warp_editor::model::CoreEditorModel`; confirm the
-  right type/alias).
-- **Un-exported `tui_export` items — repath/re-export, incl. renames** (promote
-  pub(crate)→pub + re-add, or alias): e.g. BlocklistAIActionModel/Event,
-  FailedOutputPresentation, InputType/InputConfig, TuiMcpManager/Action,
-  ConversationSelection(+Handle/Event), Harness, the OptionRow/OptionSnapshot
-  ask-question types, ShellCommandExecutor(+Event), block_context_from_terminal_model,
-  TranscriptScope, PtyIntent(+Event), and **`GitRepoModels`** — which is just Zap's
-  `GitStatusUpdateModel` renamed (`GitRepoStatusModel`/`GitStatusMetadata`/
-  `detect_possible_git_repo` all exist in Zap; add a `GitRepoModels =
-  GitStatusUpdateModel` alias). Mechanical, no build.
-- **Adapt onto Zap's different architecture:** `DiffStorage`/`RegisteredDiffStorage`/
-  `SaveFuture`/`changed_lines_from_op` (diff_storage) — Zap has `FileDiff`/
-  `DiffSessionType`/`ai::diff_validation` but not the `DiffStorage` trait; it persists
-  file edits via `ApplyDiffModel::apply_diffs`. Port the trait or re-target
-  `TuiDiffStorage` onto `ApplyDiffModel`.
-- **Genuinely-absent (build/port or confirm cloud-adjacent):**
-  CloudConversationData + conversation restoration,
-  RunAgentsAgentOutcome/RunAgentsResult (drop — orchestration result types),
-  format_credits/ConversationUsageTotals, TuiAutoupdateSettings, telemetry
-  register_telemetry_event/TelemetryEvent, warp_util::local_or_remote_path,
-  warp_editor::render::model::* (DisplayLattice/DisplayRow/CharCell*).
-- **Then:** rewire agent surfaces to BYOP; Phase 4 (entry bins + workspace).
+**Progress (74 → 53 errors, all GUI-gated green):**
+- ✅ `warp::editor::CodeEditorModel(+Event)` (13 sites) — `#[cfg(feature="tui")]`
+  re-export on the public `editor` path (Zap keeps the code editor under the
+  private `code::editor`). Committed.
+- ✅ **blocklist model cluster** — promoted `action_model`/`context_model`/
+  `controller`/`input_model`/`view_util`/`block::view_impl::common` to `pub mod`
+  (the `pub mod block` pattern) + facade re-exports: BlocklistAIActionModel/Event,
+  AIActionStatus, ShellCommandExecutor(+Event), NewConversationDecision,
+  BlocklistAIContextModel/Event, AttachmentType, block_context_from_terminal_model,
+  PendingQueryState, BlocklistAIController, BlocklistAIInputModel, InputConfig,
+  InputType, format_credits, format_elapsed_seconds. Committed.
 
-Approach: work the facade first (mechanical, unblocks the most), then the
-repaths, then decide build-vs-drop per absent item against the north star
-(match Warp minus cloud). Default GUI build stays green (warp_tui non-default).
+**Key finding — the mechanical facade is largely exhausted.** The remaining ~53
+errors are dominated by app-side TUI types **genuinely absent from Zap** (Warp had
+them in its app crate; Zap never built them, having no TUI). Isolated facade
+re-exports no longer reduce the count because each present item is grouped in a
+`use {…}` block alongside absent ones — a group resolves only once its whole
+subsystem is ported. So the next phase is **porting these app-side subsystems from
+the `warp` remote**, each largely independent:
+
+1. **MCP menu data source** — `TuiMcpManager(+Event)`, `TuiMcpAction`,
+   `TuiMcpConfigState`, `TuiMcpServerStatus`, `TuiMcpTransport`, `TuiMcpSnapshot`.
+2. **Slash-command TUI data source** — `TuiSlashCommandDataSource(+Args)`,
+   `SlashCommandMixer`, `ParsedSlashCommandInput`, `SlashCommandKind`,
+   `SlashCommandSelectionBehavior`, `build_slash_command_mixer`,
+   `slash_command_query`, `should_close_slash_command_menu_for_exact_match`,
+   `slash_command_selection_behavior`. (`SlashCommandDataSource`,
+   `AcceptSlashCommandOrSavedPrompt`, `UpdatedActiveCommands` already exist in
+   `app/src/terminal/input/slash_commands/` — promote+re-export those.)
+3. **Ask-question option model** — `OptionRow`, `OptionSnapshot`, `OptionFooter`,
+   `OptionSourceStatus`, `OptionBadge`, `AskUserQuestion{Action,Effect,Phase,Session}`.
+4. **Conversation selection/management** — `ConversationSelection(+Event/Handle)`,
+   `AgentConversationEntry(+Id)`, `AgentConversationListEntryState`,
+   `AgentConversationListPolicy`, `query_conversation_entries`. (conversation_selection)
+5. **Zero-state data source** — `TuiZeroStateDataSource`.
+6. **Conversation restoration** — `CloudConversationData`,
+   `ConversationBlockRestorationPlan`, `prepare_conversation_block_restoration`,
+   `ConversationFileExport`, `export_conversation_markdown`. (conversation_restoration)
+7. **Diff storage adapter** — `DiffStorage`/`DiffStorageHelper`/`RegisteredDiffStorage`/
+   `SaveFuture`/`UpdatedFileState`/`changed_lines_from_op`: adapt `TuiDiffStorage`
+   onto Zap's `ApplyDiffModel` (Zap has `FileDiff`/`DiffSessionType`/`ai::diff_validation`).
+
+**Present-in-Zap, promote+re-export when their group unblocks** (mechanical, no
+build): `GitRepoModels`=`GitStatusUpdateModel` alias (`GitRepoStatusModel`/
+`GitStatusMetadata`/`detect_possible_git_repo` exist), `FileDiff`/`DiffSessionType`
+(blocklist inline_action), `Harness`/`HarnessFilter` (warp_cli /
+agent_conversations_model), `AgentManagementFilters`/`AgentRunDisplayStatus`,
+`AcceptSkill`, `FileSnapshot`, `BlockSpacing`, `should_intercept_mouse/scroll`
+(terminal/alt_screen).
+
+**Drop (cloud/orchestration remnants):** `RunAgents*`, `StartAgentExecutionMode`,
+`SearchCodebase*` (if orchestration-only — confirm).
+
+Default GUI build stays green throughout (warp_tui non-default).
