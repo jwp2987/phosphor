@@ -513,15 +513,46 @@ the `warp` remote**, each largely independent:
    `SaveFuture`/`UpdatedFileState`/`changed_lines_from_op`: adapt `TuiDiffStorage`
    onto Zap's `ApplyDiffModel` (Zap has `FileDiff`/`DiffSessionType`/`ai::diff_validation`).
 
+**Also absent — diverged WORKSPACE crates (not just the app crate).** Zap's
+`warp_editor`, `warp_util`, `warp_terminal` also dropped the TUI-supporting types
+warp_tui imports directly (not via `tui_export`); these must be ported into those
+crates, each with its own cascade:
+- `warp_editor::render::model::{DisplayLattice, DisplayRow, DisplayRowKind,
+  CharCellState, CharCellTemporaryBlock}` (warp/master `crates/editor/src/render/model/`)
+  — blocks the editor element/view files.
+- `warp_util::local_or_remote_path` (`LocalOrRemotePath`).
+- `warp_terminal::model::escape_sequences::alt_screen_scroll_to_pty_bytes` — blocks
+  `terminal_content_element.rs` even though `should_intercept_mouse/scroll` are present.
+
+**Also absent (app crate, smaller):** `FailedOutputPresentation`/
+`failed_output_presentation`/`FAILED_OUTPUT_USAGE_NOTICE_TEXT`/
+`should_show_failed_output_usage_notice` (warp `ai/blocklist/view_util.rs`; Zap's
+view_util diverged), `infer_mime_type`/`MIME_SNIFF_BYTES` (warp `util/image.rs`),
+`ConversationUsageTotals`, `CLISubagentTarget`, `SlashCommandKind` (Zap's
+`search/slash_command_menu` diverged), the `record_*`/`saved_prompt_text_for_id`
+slash helpers, `TuiUsageDisplayMode`/`TuiAutoupdateSettings` (warp::settings),
+`ParsedSlashCommandInput`, `query_model_picker_choices`,
+`prompt_history_for_terminal_view`, `document_action_presentation`.
+
 **Present-in-Zap, promote+re-export when their group unblocks** (mechanical, no
-build): `GitRepoModels`=`GitStatusUpdateModel` alias (`GitRepoStatusModel`/
-`GitStatusMetadata`/`detect_possible_git_repo` exist), `FileDiff`/`DiffSessionType`
-(blocklist inline_action), `Harness`/`HarnessFilter` (warp_cli /
-agent_conversations_model), `AgentManagementFilters`/`AgentRunDisplayStatus`,
-`AcceptSkill`, `FileSnapshot`, `BlockSpacing`, `should_intercept_mouse/scroll`
-(terminal/alt_screen).
+build; VERIFIED present): `GitRepoStatusModel`/`GitStatusMetadata`
+(`code_review/git_status_update.rs`, `code_review` is a private `mod` — promote) +
+`detect_possible_git_repo` (`repo_metadata`), `GitRepoModels`=`GitStatusUpdateModel`
+alias, `FileDiff`/`DiffSessionType` (`blocklist/inline_action/code_diff_view`),
+`SlashCommandDataSource`/`AcceptSlashCommandOrSavedPrompt`/`UpdatedActiveCommands`
+(`terminal/input/slash_commands/`), `AgentManagementFilters`/`AgentRunDisplayStatus`/
+`HarnessFilter` (`agent_conversations_model`, already facade-reachable), `AcceptSkill`
+(`terminal/input/skills/data_source`), `Harness` (`warp_cli`),
+`should_intercept_mouse/scroll` (`terminal/alt_screen`, private `mod` — promote).
 
 **Drop (cloud/orchestration remnants):** `RunAgents*`, `StartAgentExecutionMode`,
-`SearchCodebase*` (if orchestration-only — confirm).
+`SearchCodebase*` (confirm orchestration-only), `CloudConversationData` /
+`agent_conversations_cloud_metadata_load_failed` (cloud sync).
 
-Default GUI build stays green throughout (warp_tui non-default).
+**No error-reducing quick wins remain (verified 2026-07 at 44 errors).** Every
+remaining warp_tui file's `use {…}` group mixes present items with genuinely-absent
+subsystem/workspace types, so adding isolated present re-exports clears no file —
+progress now requires completing a whole subsystem port (app-side module + its
+absent method/trait sub-deps + any absent workspace-crate types it pulls in). Treat
+each numbered subsystem above as its own focused effort, like `run_tui` was. Default
+GUI build stays green throughout (warp_tui non-default).
