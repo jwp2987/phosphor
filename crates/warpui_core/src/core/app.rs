@@ -75,6 +75,11 @@ use super::{
     TypedActionCallback, ViewType,
 };
 
+// TUI AppContext extensions (add_tui_view / render_tui_view / …), feature-gated.
+// See specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+mod tui;
+
 lazy_static! {
     static ref LAST_USER_ACTION_UNIX_TIMESTAMP: AtomicI64 = AtomicI64::new(0);
 }
@@ -1888,7 +1893,7 @@ impl AppContext {
     /// The "responder chain" is the view hierarchy to match against with bindings.
     /// This prefers the focused view and its ancestors; if no view is focused it
     /// dispatches to the root view.
-    fn get_responder_chain(&self, window_id: WindowId) -> Vec<EntityId> {
+    pub(crate) fn get_responder_chain(&self, window_id: WindowId) -> Vec<EntityId> {
         if let Some(focused) = self.focused_view_id(window_id) {
             match self.presenter(window_id) { Some(presenter) => {
                 presenter.borrow().ancestors(focused)
@@ -3196,7 +3201,7 @@ impl AppContext {
     ///
     /// This operation is destructive: It will clear the caches for both manual and autotracked
     /// invalidations.
-    pub(super) fn take_all_invalidations_for_window(
+    pub(crate) fn take_all_invalidations_for_window(
         &mut self,
         window_id: WindowId,
     ) -> WindowInvalidation {
@@ -3792,7 +3797,7 @@ impl AppContext {
         }
     }
 
-    fn notify_view_observers(&mut self, window_id: WindowId, view_id: EntityId) {
+    pub(crate) fn notify_view_observers(&mut self, window_id: WindowId, view_id: EntityId) {
         self.window_invalidations
             .entry(window_id)
             .or_default()
