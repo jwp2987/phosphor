@@ -18,7 +18,9 @@
 //! —————————————————————————————————
 //! ```
 
-pub(super) mod common;
+// `pub` (not `pub(super)`) so `tui_export` can re-export `format_elapsed_seconds`
+// for the warp_tui warping indicator.
+pub mod common;
 pub use common::FindContext;
 mod comments;
 mod header;

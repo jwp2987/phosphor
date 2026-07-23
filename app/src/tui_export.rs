@@ -34,6 +34,10 @@ pub use crate::ai::agent::{
 pub use crate::ai::agent_conversations_model::{
     AgentConversationsModel, AgentConversationsModelEvent,
 };
+pub use crate::ai::blocklist::action_model::{
+    AIActionStatus, BlocklistAIActionEvent, BlocklistAIActionModel, NewConversationDecision,
+    ShellCommandExecutor, ShellCommandExecutorEvent,
+};
 pub use crate::ai::blocklist::agent_view::{
     AgentViewController, AgentViewDisplayMode, AgentViewEntryOrigin, EnterAgentViewError,
     EphemeralMessageModel,
@@ -41,6 +45,14 @@ pub use crate::ai::blocklist::agent_view::{
 pub use crate::ai::blocklist::block::cli_controller::{
     CLISubagentController, CLISubagentEvent, LongRunningCommandControlState, UserTakeOverReason,
 };
+pub use crate::ai::blocklist::context_model::{
+    AttachmentType, BlocklistAIContextEvent, BlocklistAIContextModel, PendingQueryState,
+    block_context_from_terminal_model,
+};
+pub use crate::ai::blocklist::block::view_impl::common::format_elapsed_seconds;
+pub use crate::ai::blocklist::controller::BlocklistAIController;
+pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, InputType};
+pub use crate::ai::blocklist::view_util::format_credits;
 pub use crate::ai::blocklist::block::model::{
     AIBlockModel, AIBlockModelHelper, AIBlockModelImpl, AIBlockOutputStatus, AIRequestType,
     OutputStatusUpdateCallback,
