@@ -44,7 +44,10 @@ pub struct ViewContext<'a, T: ?Sized> {
     view_type: PhantomData<T>,
 }
 
-impl<'a, T: View> ViewContext<'a, T> {
+// `new` is Entity-generic so the TUI view path (TuiView: Entity) can construct a
+// ViewContext; View-specific methods stay in the `T: View` block below. Mirrors
+// warpui_core upstream.
+impl<'a, T: Entity> ViewContext<'a, T> {
     pub(in crate::core) fn new(
         app: &'a mut AppContext,
         window_id: WindowId,
@@ -57,6 +60,9 @@ impl<'a, T: View> ViewContext<'a, T> {
             view_type: PhantomData,
         }
     }
+}
+
+impl<'a, T: View> ViewContext<'a, T> {
 
     /// Adds a callback that will be invoked immediately after the next frame is drawn.
     /// Note that the callback is only invoked once and is discarded after it is called.
@@ -883,11 +889,11 @@ impl<V: View> UpdateModel for ViewContext<'_, V> {
 }
 
 impl<V: View> ViewAsRef for ViewContext<'_, V> {
-    fn view<T: View>(&self, handle: &ViewHandle<T>) -> &T {
+    fn view<T: Entity>(&self, handle: &ViewHandle<T>) -> &T {
         self.app.view(handle)
     }
 
-    fn try_view<T: View>(&self, handle: &ViewHandle<T>) -> Option<&T> {
+    fn try_view<T: Entity>(&self, handle: &ViewHandle<T>) -> Option<&T> {
         self.app.try_view(handle)
     }
 }
@@ -895,7 +901,7 @@ impl<V: View> ViewAsRef for ViewContext<'_, V> {
 impl<V: View> UpdateView for ViewContext<'_, V> {
     fn update_view<T, F, S>(&mut self, handle: &ViewHandle<T>, update: F) -> S
     where
-        T: View,
+        T: Entity,
         F: FnOnce(&mut T, &mut ViewContext<T>) -> S,
     {
         self.app.update_view(handle, update)
@@ -905,7 +911,7 @@ impl<V: View> UpdateView for ViewContext<'_, V> {
 impl<V: View> ReadView for ViewContext<'_, V> {
     fn read_view<T, F, S>(&self, handle: &ViewHandle<T>, read: F) -> S
     where
-        T: View,
+        T: Entity,
         F: FnOnce(&T, &AppContext) -> S,
     {
         self.app.read_view(handle, read)

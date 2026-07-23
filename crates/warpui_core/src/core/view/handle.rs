@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use crate::{core::RefCounts, AppContext, EntityId, WindowId};
 
 use super::{context::ViewContext, View};
+use crate::Entity;
 
 /// A strong reference to a particular [`View`] instance within the application.
 ///
@@ -25,7 +26,10 @@ pub struct ViewHandle<T> {
     ref_counts: Weak<Mutex<RefCounts>>,
 }
 
-impl<T: View> ViewHandle<T> {
+// Entity-generic (was `T: View`) so the TUI view path (TuiView: Entity) can use
+// ViewHandle. Safe now that the ViewAsRef/ReadView/UpdateView path is Entity-bounded;
+// widening only (View: Entity). Mirrors warpui_core upstream.
+impl<T: Entity> ViewHandle<T> {
     pub(in crate::core) fn new(
         window_id: WindowId,
         view_id: EntityId,
@@ -241,7 +245,7 @@ pub struct WeakViewHandle<T> {
     view_type: PhantomData<T>,
 }
 
-impl<T: View> WeakViewHandle<T> {
+impl<T: Entity> WeakViewHandle<T> {
     pub(super) fn new(view_id: EntityId) -> Self {
         Self {
             view_id,
@@ -296,23 +300,23 @@ unsafe impl<T> Send for WeakViewHandle<T> {}
 unsafe impl<T> Sync for WeakViewHandle<T> {}
 
 pub trait ViewAsRef {
-    fn view<T: View>(&self, handle: &ViewHandle<T>) -> &T;
+    fn view<T: Entity>(&self, handle: &ViewHandle<T>) -> &T;
 
     /// Try to get a reference to the view. Returns `None` if the view is
     /// currently borrowed (e.g., during a circular reference scenario).
-    fn try_view<T: View>(&self, handle: &ViewHandle<T>) -> Option<&T>;
+    fn try_view<T: Entity>(&self, handle: &ViewHandle<T>) -> Option<&T>;
 }
 
 pub trait ReadView: ViewAsRef {
     fn read_view<T, F, S>(&self, handle: &ViewHandle<T>, read: F) -> S
     where
-        T: View,
+        T: Entity,
         F: FnOnce(&T, &AppContext) -> S;
 }
 
 pub trait UpdateView: ReadView {
     fn update_view<T, F, S>(&mut self, handle: &ViewHandle<T>, update: F) -> S
     where
-        T: View,
+        T: Entity,
         F: FnOnce(&mut T, &mut ViewContext<T>) -> S;
 }
