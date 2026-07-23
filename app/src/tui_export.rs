@@ -71,8 +71,12 @@ pub use crate::changelog_model::{
 pub use crate::code::DiffResult;
 pub use crate::completer::SessionContext;
 pub use crate::persistence::PersistenceWriter;
+pub use crate::ai::blocklist::inline_action::code_diff_view::{DiffSessionType, FileDiff};
 pub use crate::search::slash_command_menu::static_commands::commands::{
     self as slash_commands, COMMAND_REGISTRY,
+};
+pub use crate::terminal::input::slash_commands::{
+    AcceptSlashCommandOrSavedPrompt, SlashCommandDataSource, UpdatedActiveCommands,
 };
 pub use crate::search::slash_command_menu::{SlashCommandId, StaticCommand};
 pub use crate::terminal::alt_screen::{should_intercept_mouse, should_intercept_scroll};
