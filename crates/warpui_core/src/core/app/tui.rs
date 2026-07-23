@@ -4,8 +4,7 @@
 use anyhow::{Result, anyhow};
 
 use super::{
-    AddWindowOptions, AppContext, StoredView, TypedActionView, ViewContext, ViewHandle, Window,
-    autotracking,
+    AddWindowOptions, AppContext, TypedActionView, ViewContext, ViewHandle, Window, autotracking,
 };
 use crate::keymap::{BindingLens, IsBindingValid};
 use crate::{EntityId, WindowId};
@@ -52,8 +51,8 @@ impl AppContext {
             .get_mut(&window_id)
             .expect("Window does not exist");
         window
-            .views
-            .insert(view_id, StoredView::Tui(Box::new(view)));
+            .tui_views
+            .insert(view_id, Box::new(view));
         self.view_to_window.insert(view_id, window_id);
         self.window_invalidations
             .entry(window_id)
@@ -113,8 +112,8 @@ impl AppContext {
             .get_mut(&window_id)
             .expect("Window does not exist");
         window
-            .views
-            .insert(view_id, StoredView::Tui(Box::new(view)));
+            .tui_views
+            .insert(view_id, Box::new(view));
 
         self.register_typed_action_view_internal::<V>(window_id, view_id, parent_view_id)
     }
@@ -175,13 +174,10 @@ impl AppContext {
             .windows
             .get(&window_id)
             .ok_or_else(|| anyhow!("window not found"))?;
-        match window.views.get(&view_id) {
-            Some(StoredView::Tui(view)) => {
-                Ok(autotracking::render_view(window_id, view_id, || {
-                    view.render(self)
-                }))
-            }
-            Some(StoredView::Gui(_)) => Err(anyhow!("view is not a TUI view")),
+        match window.tui_views.get(&view_id) {
+            Some(view) => Ok(autotracking::render_view(window_id, view_id, || {
+                view.render(self)
+            })),
             None => Err(anyhow!("view not found")),
         }
     }

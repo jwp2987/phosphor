@@ -207,7 +207,7 @@ impl Clone for AnyViewHandle {
     }
 }
 
-impl<T: View> From<&ViewHandle<T>> for AnyViewHandle {
+impl<T: Entity> From<&ViewHandle<T>> for AnyViewHandle {
     fn from(handle: &ViewHandle<T>) -> Self {
         if let Some(ref_counts) = handle.ref_counts.upgrade() {
             ref_counts.lock().inc_entity(handle.view_id);
@@ -221,7 +221,7 @@ impl<T: View> From<&ViewHandle<T>> for AnyViewHandle {
     }
 }
 
-impl<T: View> From<ViewHandle<T>> for AnyViewHandle {
+impl<T: Entity> From<ViewHandle<T>> for AnyViewHandle {
     fn from(handle: ViewHandle<T>) -> Self {
         (&handle).into()
     }
