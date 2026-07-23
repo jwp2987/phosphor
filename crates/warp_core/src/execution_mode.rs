@@ -9,6 +9,8 @@ static GLOBAL_EXECUTION_MODE: OnceLock<ExecutionMode> = OnceLock::new();
 pub enum ExecutionMode {
     /// Zap is running as a normal desktop app.
     App,
+    /// Zap is running as the headless terminal UI.
+    Tui,
     /// Zap is running as a CLI.
     Sdk,
 }
@@ -19,6 +21,7 @@ impl ExecutionMode {
     pub fn client_id(&self) -> &'static str {
         match self {
             ExecutionMode::App => "warp-app",
+            ExecutionMode::Tui => "warp-tui",
             ExecutionMode::Sdk => "warp-cli",
         }
     }
@@ -40,9 +43,14 @@ impl AppExecutionMode {
         Self { mode, is_sandboxed }
     }
 
-    /// True if running as the full desktop app.
+    /// True if running as an interactive app client (desktop app or headless TUI).
     fn is_app(&self) -> bool {
-        matches!(self.mode, ExecutionMode::App)
+        matches!(self.mode, ExecutionMode::App | ExecutionMode::Tui)
+    }
+
+    /// Whether Zap is running as the headless terminal UI.
+    pub fn is_tui(&self) -> bool {
+        matches!(self.mode, ExecutionMode::Tui)
     }
 
     /// Whether Active AI features are allowed in this execution mode.

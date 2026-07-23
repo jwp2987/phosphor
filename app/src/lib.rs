@@ -353,7 +353,25 @@ pub enum LaunchMode {
     /// Remote server daemon — long-lived headless process serving remote
     /// connections via a Unix domain socket.
     RemoteServerDaemon,
+
+    /// Run the headless terminal UI (the `warp-tui` binary in the `warp_tui`
+    /// crate). Reuses the full `initialize_app` bootstrap, then mounts the TUI
+    /// instead of the GUI.
+    Tui {
+        /// Builds the root TUI view and starts the TUI driver. Runs after
+        /// `initialize_app`; supplied by [`run_tui`]. Carried in the variant so
+        /// it stays scoped to this mode.
+        mount: TuiMountFn,
+        /// API key for server authentication, if provided via `--api-key` or
+        /// `WARP_API_KEY`. Only used on dogfood channels.
+        api_key: Option<String>,
+    },
 }
+
+/// The headless TUI front-end's mount callback, carried by [`LaunchMode::Tui`].
+/// Supplied to [`run_tui`] by the `warp_tui` crate; it runs after
+/// `initialize_app` to build the root TUI view and start the TUI driver.
+pub type TuiMountFn = Box<dyn FnOnce(&mut warpui::AppContext)>;
 
 impl LaunchMode {
     fn args(&self) -> Cow<'_, warp_cli::AppArgs> {
@@ -362,7 +380,8 @@ impl LaunchMode {
             LaunchMode::CommandLine { .. }
             | LaunchMode::Test { .. }
             | LaunchMode::RemoteServerProxy
-            | LaunchMode::RemoteServerDaemon => Cow::Owned(warp_cli::AppArgs::default()),
+            | LaunchMode::RemoteServerDaemon
+            | LaunchMode::Tui { .. } => Cow::Owned(warp_cli::AppArgs::default()),
         }
     }
 
@@ -376,7 +395,8 @@ impl LaunchMode {
             LaunchMode::App { .. }
             | LaunchMode::CommandLine { .. }
             | LaunchMode::RemoteServerProxy
-            | LaunchMode::RemoteServerDaemon => false,
+            | LaunchMode::RemoteServerDaemon
+            | LaunchMode::Tui { .. } => false,
         }
     }
 
@@ -386,7 +406,8 @@ impl LaunchMode {
             LaunchMode::App { .. }
             | LaunchMode::CommandLine { .. }
             | LaunchMode::RemoteServerProxy
-            | LaunchMode::RemoteServerDaemon => None,
+            | LaunchMode::RemoteServerDaemon
+            | LaunchMode::Tui { .. } => None,
         }
     }
 
@@ -403,6 +424,7 @@ impl LaunchMode {
             LaunchMode::App { .. } => ExecutionMode::App,
             LaunchMode::CommandLine { .. } => ExecutionMode::Sdk,
             LaunchMode::Test { .. } => ExecutionMode::App,
+            LaunchMode::Tui { .. } => ExecutionMode::Tui,
             // RemoteServerProxy and RemoteServerDaemon don't use execution
             // mode, but Sdk is the closest match (headless, no GUI).
             LaunchMode::RemoteServerProxy | LaunchMode::RemoteServerDaemon => ExecutionMode::Sdk,
@@ -415,18 +437,24 @@ impl LaunchMode {
             LaunchMode::App { .. }
             | LaunchMode::Test { .. }
             | LaunchMode::RemoteServerProxy
-            | LaunchMode::RemoteServerDaemon => false,
+            | LaunchMode::RemoteServerDaemon
+            | LaunchMode::Tui { .. } => false,
         }
     }
 
     /// Returns `true` if Zap should run headlessly, without a visible UI.
+    ///
+    /// The TUI is headless in this sense (no GUI window): it builds a headless
+    /// app and then mounts its own terminal-UI driver.
     fn is_headless(&self) -> bool {
         match self {
             LaunchMode::CommandLine { command, .. } => match command {
                 CliCommand::Agent(AgentCommand::Run(args)) => !args.gui,
                 _ => true,
             },
-            LaunchMode::RemoteServerProxy | LaunchMode::RemoteServerDaemon => true,
+            LaunchMode::RemoteServerProxy
+            | LaunchMode::RemoteServerDaemon
+            | LaunchMode::Tui { .. } => true,
             LaunchMode::App { .. } | LaunchMode::Test { .. } => false,
         }
     }
@@ -439,7 +467,8 @@ impl LaunchMode {
             LaunchMode::CommandLine { .. }
             | LaunchMode::Test { .. }
             | LaunchMode::RemoteServerProxy
-            | LaunchMode::RemoteServerDaemon => false,
+            | LaunchMode::RemoteServerDaemon
+            | LaunchMode::Tui { .. } => false,
         }
     }
 
@@ -451,7 +480,8 @@ impl LaunchMode {
             | LaunchMode::CommandLine { .. }
             | LaunchMode::Test { .. }
             | LaunchMode::RemoteServerDaemon
-            | LaunchMode::RemoteServerProxy => true,
+            | LaunchMode::RemoteServerProxy
+            | LaunchMode::Tui { .. } => true,
         }
     }
 
@@ -462,7 +492,8 @@ impl LaunchMode {
             | LaunchMode::CommandLine { .. }
             | LaunchMode::Test { .. }
             | LaunchMode::RemoteServerDaemon
-            | LaunchMode::RemoteServerProxy => true,
+            | LaunchMode::RemoteServerProxy
+            | LaunchMode::Tui { .. } => true,
         }
     }
 
@@ -497,6 +528,10 @@ impl LaunchMode {
             }
             // 测试保持 None:CI / integration 分支的判据要照旧生效。
             LaunchMode::Test { .. } => None,
+            // The TUI uses the alt screen (stdout is hidden), so it logs to a
+            // file like the GUI; the warp_tui front-end has its own stdout
+            // escape hatch (ZAP_LOG_STDOUT).
+            LaunchMode::Tui { .. } => Some(LogDestination::File),
         }
     }
 
@@ -587,72 +622,10 @@ pub fn run() -> Result<()> {
             warp_util::windows::attach_to_parent_console();
         }
         match command {
-            #[cfg(all(feature = "local_tty", unix))]
-            warp_cli::Command::Worker(warp_cli::WorkerCommand::TerminalServer(args)) => {
-                // If we were asked to run as a terminal server (as opposed to the main
-                // GUI application), do so immediately.  Ideally, the terminal server would
-                // be a separate binary, but it's much easier to distribute a single binary,
-                // so starting the terminal server event loop immediately is the closest
-                // approximation we can get to running a separate binary.
-                crate::terminal::local_tty::server::run_terminal_server(args);
-                return Ok(());
-            }
-            #[cfg(feature = "plugin_host")]
-            warp_cli::Command::Worker(warp_cli::WorkerCommand::PluginHost { .. }) => {
-                return crate::run_plugin_host();
-            }
-            #[cfg(feature = "local_tty")]
-            warp_cli::Command::Worker(warp_cli::WorkerCommand::MinidumpServer { socket_name }) => {
-                cfg_if::cfg_if! {
-                    if #[cfg(all(linux_or_windows, feature = "crash_reporting"))] {
-                        return crate::crash_reporting::run_minidump_server(socket_name);
-                    } else {
-                        let _ = socket_name;
-                        panic!("The minidump server is not supported on this platform");
-                    }
-                }
-            }
-            #[cfg(not(target_family = "wasm"))]
-            warp_cli::Command::Worker(warp_cli::WorkerCommand::RemoteServerProxy(args)) => {
-                init_common(&LaunchMode::RemoteServerProxy, None)?;
-                return crate::remote_server::run_proxy(args.identity_key.clone());
-            }
-            #[cfg(not(target_family = "wasm"))]
-            warp_cli::Command::Worker(warp_cli::WorkerCommand::RemoteServerDaemon(args)) => {
-                init_common(&LaunchMode::RemoteServerDaemon, None)?;
-                return crate::remote_server::run_daemon(args.identity_key.clone());
-            }
-            #[cfg(not(target_family = "wasm"))]
-            warp_cli::Command::Worker(warp_cli::WorkerCommand::RipgrepSearch {
-                parent,
-                ignore_case,
-                multiline,
-                pattern,
-                paths,
-            }) => {
-                warp_ripgrep::search::run_search_subprocess(
-                    std::slice::from_ref(pattern),
-                    paths.clone(),
-                    *ignore_case,
-                    *multiline,
-                    parent.pid,
-                )
-                .map_err(|err| anyhow!(err.to_string()))?;
-                return Ok(());
-            }
-            #[cfg(not(any(
-                feature = "local_tty",
-                feature = "plugin_host",
-                not(target_family = "wasm")
-            )))]
-            warp_cli::Command::Worker(worker) => {
-                // Need this case to handle platforms where there are no enum variants in
-                // warp_cli::WorkerCommand, as we still need to check Command::Worker.
-
-                // On wasm, specifically, we should fail spectacularly if we get here.
-                #[cfg(target_family = "wasm")]
-                panic!("Worker process not supported on WASM: {worker:?}")
-            }
+            // Worker re-execs (terminal server, plugin host, remote server, …)
+            // are dispatched by the shared helper so the headless TUI front-end
+            // can reuse it via `run_tui_worker_if_requested`.
+            warp_cli::Command::Worker(worker) => return run_worker_command(worker),
             warp_cli::Command::Completions { shell } => {
                 return warp_cli::completions::generate_to_stdout(*shell);
             }
@@ -707,6 +680,110 @@ pub fn run_integration_test(driver: TestDriver) -> Result<()> {
         is_integration_test,
     };
     run_internal(launch)
+}
+
+/// Dispatches a worker re-exec (terminal server, plugin host, remote server,
+/// minidump server, ripgrep search). Shared by [`run`] and the headless TUI's
+/// [`run_tui_worker_if_requested`]: the single binary may be re-exec'd as a
+/// worker and must run it instead of starting the main app / another TUI.
+fn run_worker_command(worker: &warp_cli::WorkerCommand) -> Result<()> {
+    match worker {
+        #[cfg(all(feature = "local_tty", unix))]
+        warp_cli::WorkerCommand::TerminalServer(args) => {
+            // Ideally the terminal server would be a separate binary, but a
+            // single binary is easier to distribute, so we run its event loop
+            // here as the closest approximation.
+            crate::terminal::local_tty::server::run_terminal_server(args);
+            Ok(())
+        }
+        #[cfg(feature = "plugin_host")]
+        warp_cli::WorkerCommand::PluginHost { .. } => crate::run_plugin_host(),
+        #[cfg(feature = "local_tty")]
+        warp_cli::WorkerCommand::MinidumpServer { socket_name } => {
+            cfg_if::cfg_if! {
+                if #[cfg(all(linux_or_windows, feature = "crash_reporting"))] {
+                    crate::crash_reporting::run_minidump_server(socket_name)
+                } else {
+                    let _ = socket_name;
+                    panic!("The minidump server is not supported on this platform");
+                }
+            }
+        }
+        #[cfg(not(target_family = "wasm"))]
+        warp_cli::WorkerCommand::RemoteServerProxy(args) => {
+            init_common(&LaunchMode::RemoteServerProxy, None)?;
+            crate::remote_server::run_proxy(args.identity_key.clone())
+        }
+        #[cfg(not(target_family = "wasm"))]
+        warp_cli::WorkerCommand::RemoteServerDaemon(args) => {
+            init_common(&LaunchMode::RemoteServerDaemon, None)?;
+            crate::remote_server::run_daemon(args.identity_key.clone())
+        }
+        #[cfg(not(target_family = "wasm"))]
+        warp_cli::WorkerCommand::RipgrepSearch {
+            parent,
+            ignore_case,
+            multiline,
+            pattern,
+            paths,
+        } => {
+            warp_ripgrep::search::run_search_subprocess(
+                std::slice::from_ref(pattern),
+                paths.clone(),
+                *ignore_case,
+                *multiline,
+                parent.pid,
+            )
+            .map_err(|err| anyhow!(err.to_string()))?;
+            Ok(())
+        }
+        #[cfg(not(any(
+            feature = "local_tty",
+            feature = "plugin_host",
+            not(target_family = "wasm")
+        )))]
+        worker => {
+            // On wasm, specifically, we should fail spectacularly if we get here.
+            #[cfg(target_family = "wasm")]
+            panic!("Worker process not supported on WASM: {worker:?}")
+        }
+    }
+}
+
+/// Runs the headless TUI front-end (the `warp-tui` binary in the `warp_tui`
+/// crate). Bootstraps the real (headless) app and then runs `mount`, which
+/// builds the root TUI view and starts the non-blocking TUI driver.
+///
+/// `mount` is supplied by the `warp_tui` crate (which owns the concrete root
+/// view plus the window/driver bootstrap), so `warp` never depends on
+/// `warp_tui`.
+#[cfg(feature = "tui")]
+pub fn run_tui(api_key: Option<String>, mount: TuiMountFn) -> Result<()> {
+    run_internal(LaunchMode::Tui { mount, api_key })
+}
+
+/// Dispatches a worker command when the current executable was re-invoked for
+/// one. The TUI's single binary may be re-exec'd as a worker (e.g. the terminal
+/// server); this runs it instead of recursively launching another TUI.
+#[cfg(feature = "tui")]
+pub fn run_tui_worker_if_requested() -> Option<Result<()>> {
+    // Worker spawners always put the worker mode in argv[1]. Do not scan later
+    // arguments because a TUI prompt value may legitimately match a worker name.
+    let is_worker = std::env::args()
+        .nth(1)
+        .is_some_and(|arg| warp_cli::is_worker_invocation(&arg));
+    if !is_worker {
+        return None;
+    }
+
+    init_feature_flags();
+    let args = warp_cli::Args::from_env();
+    let Some(warp_cli::Command::Worker(worker)) = args.command() else {
+        return Some(Err(anyhow!(
+            "Recognized a Zap worker invocation, but failed to parse its worker command"
+        )));
+    };
+    Some(run_worker_command(worker))
 }
 
 /// Shared early initialization for **every** process type (app, CLI, proxy,
@@ -1020,7 +1097,18 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
             FeatureFlag::UseTantivySearch.set_enabled(true);
         }
 
-        launch(ctx, app_state, launch_mode);
+        // The TUI front-end reuses the full `initialize_app` bootstrap above (so
+        // Appearance, settings, MCP, etc. exist), then mounts the TUI (via
+        // `crate::tui::init`) instead of the GUI/CLI `launch()` path.
+        match launch_mode {
+            #[cfg(feature = "tui")]
+            LaunchMode::Tui { mount, .. } => crate::tui::init(mount, ctx),
+            #[cfg(not(feature = "tui"))]
+            LaunchMode::Tui { .. } => {
+                unreachable!("the `tui` launch mode requires the `tui` feature")
+            }
+            other => launch(ctx, app_state, other),
+        }
     })
 }
 
@@ -1075,6 +1163,7 @@ fn initialize_app(
     let api_key = match launch_mode {
         LaunchMode::CommandLine { global_options, .. } => global_options.api_key.clone(),
         LaunchMode::App { api_key, .. } if ChannelState::channel().is_dogfood() => api_key.clone(),
+        LaunchMode::Tui { api_key, .. } if ChannelState::channel().is_dogfood() => api_key.clone(),
         _ => None,
     };
     let api_key = if FeatureFlag::APIKeyAuthentication.is_enabled() {
@@ -2252,6 +2341,9 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
         LaunchMode::RemoteServerProxy | LaunchMode::RemoteServerDaemon => {
             log::error!("Proxy/Daemon modes should not use the launch() path");
             std::process::exit(1);
+        }
+        LaunchMode::Tui { .. } => {
+            unreachable!("LaunchMode::Tui is dispatched to crate::tui before launch()")
         }
     }
 }

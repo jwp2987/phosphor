@@ -310,6 +310,21 @@ pub enum WorkerCommand {
     },
 }
 
+/// Returns whether an argument requests one of Zap's hidden worker modes.
+///
+/// Used by the headless TUI front-end, whose single binary may be re-exec'd as
+/// a worker (e.g. the terminal server); it must dispatch the worker instead of
+/// starting another TUI. Matches a worker subcommand name or its long flag.
+pub fn is_worker_invocation(arg: &str) -> bool {
+    let command = WorkerCommand::augment_subcommands(clap::Command::new("worker"));
+    command.find_subcommand(arg).is_some()
+        || arg.strip_prefix("--").is_some_and(|long_flag| {
+            command
+                .get_subcommands()
+                .any(|subcommand| subcommand.get_long_flag() == Some(long_flag))
+        })
+}
+
 /// CLI-related subcommands. The command-line interface to Zap isn't a full SDK (e.g. with language bindings),
 /// but it allows scripting some Zap functionality.
 #[derive(Debug, Clone, Subcommand)]

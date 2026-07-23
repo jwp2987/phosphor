@@ -10,6 +10,8 @@
 
 use warpui::{AppContext, Entity, SingletonEntity};
 
+use crate::TuiMountFn;
+
 /// Login state of the headless TUI, observed by the `warp_tui` root view to
 /// decide whether to show the login placeholder or the input UI.
 ///
@@ -57,14 +59,18 @@ impl Entity for TuiLoginModel {
 
 impl SingletonEntity for TuiLoginModel {}
 
-/// Registers the always-`LoggedIn` [`TuiLoginModel`] singleton. Called from the
-/// TUI mount path. BYOP performs no authentication, so the model is ready
-/// immediately and the `warp_tui` root view goes straight to the input UI.
+/// Entry point invoked from `run_internal` for [`crate::LaunchMode::Tui`], after
+/// `initialize_app`. Registers the always-`LoggedIn` [`TuiLoginModel`] singleton
+/// (BYOP performs no authentication, so the TUI is ready immediately) and then
+/// runs `mount`, which builds the root TUI view and starts the TUI driver.
 #[cfg(feature = "tui")]
-pub(crate) fn init(ctx: &mut AppContext) {
+pub(crate) fn init(mount: TuiMountFn, ctx: &mut AppContext) {
     ctx.add_singleton_model(|_| TuiLoginModel {
         phase: TuiLoginPhase::LoggedIn,
     });
+    // Mount the TUI now that the login model exists; the root view goes straight
+    // to the input UI since the phase is already `LoggedIn`.
+    mount(ctx);
 }
 
 /// Logs out the current TUI user. BYOP has no account to log out of, so this is
