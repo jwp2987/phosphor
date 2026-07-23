@@ -405,33 +405,54 @@ interconnected referencing modules) — clears ~43; (2) promote visibility for t
 22 non-cloud staged items; (3) repath/port the ~15 API gaps; (4) rewire agent
 surfaces to BYOP; (5) phase 4 bins.
 
-### Phase 3c excision progress + cascade map
+### Phase 3c excision — COMPLETE
 
-- **DONE:** deleted the pure-cloud warp_tui modules (cloud_run, cloud_run_view,
+The cloud/orchestration excision cascade is done. All of the following landed
+(each a separate commit, default GUI build green throughout):
+
+- Deleted the pure-cloud warp_tui modules (cloud_run, cloud_run_view,
   orchestration_block +dir, orchestration_model, orchestration_tab_bar,
-  orchestrated_agent_identity_styling). Stripped cloud refs from `session.rs` and
-  `keybindings.rs` (both now cloud-free).
-- **Referrer cleanup remaining (the deep, cascading part):**
-  - `agent_message.rs` — DROP (renders inter-agent orchestration-participant
-    messages; Zap has no multi-agent orchestration). Cascades: remove
-    `TuiAIBlockSection::AgentMessage` variant + match arm in `agent_block.rs` and
-    wherever AgentMessage sections are constructed.
-  - `tui_builder.rs` — remove `agent_identity_palette()` (+ its import from the
-    deleted styling module) and the now-unused cloud styling helpers
-    (`cloud_run_mark_styles`, `orchestration_*` styles, `CloudRunMarkStyles`).
-  - `agent_block.rs` (~23 cloud lines) — remove the `Orchestration` /
-    `OrchestrationBlock` TuiToolCallView variants + match arms + orchestration-card
-    update logic.
-  - `session_registry.rs` (~51 cloud lines, heaviest) — KEEP TuiSessions but strip
-    the `Cloud(ViewHandle<TuiCloudRunView>)` session variant, `cloud_run_state`,
-    `wire_orchestration`, and `refresh/set_orchestration_tab_*`. Keep Terminal path.
-  - `terminal_session_view.rs` (~30 touchpoints, deepest) — strip the orchestration
-    tab bar + cloud-session handling from the main view.
-- **Then:** remove cloud `tui_export` imports from warp_tui files, promote
-  visibility for the 22 non-cloud staged items + re-add to the facade, repath/port
-  the ~15 API gaps (esp. `warp::editor::CodeEditorModel`, 13+ sites), rewire agent
-  surfaces to BYOP.
+  orchestrated_agent_identity_styling); cloud-free `session.rs`/`keybindings.rs`.
+- `agent_message.rs` dropped; `agent_block.rs` stripped of the AgentMessage
+  section, the RunAgents/OrchestrationBlock tool-call view + card logic, and the
+  TuiBlockingChild::Orchestration variant. MessagesReceivedFromAgents /
+  EventsFromAgents output variants are now transcript no-ops.
+- `tui_builder.rs` stripped of CloudRunMarkStyles + the orchestration_* /
+  cloud_run styles + agent_identity_palette.
+- `session_registry.rs` reduced to the terminal-only path (dropped the
+  TuiSessionView::Cloud variant, create_cloud_run_session,
+  create_remote_child_session, register_cloud_session, wire_orchestration,
+  RemoteChildSession, and the orchestration teardown); root_view Cloud arm gone.
+- `terminal_session_view.rs` (deepest): orchestration tab bar + StartAgent
+  executor + orchestrated-child + tab-focus actions removed; focus state machine
+  collapsed; ctrl-c->Interrupt binding preserved directly. Orchestration test
+  cluster removed, terminal-only tests kept.
 
-**Reality:** the orchestration excision is deeply woven and cascades file-to-file;
-completing warp_tui to compile is multi-session. Default GUI build stays green
-throughout (warp_tui non-default).
+**Result:** `cargo check -p warp_tui` now surfaces **~74 errors, all
+facade-population / API-path gaps — zero orchestration errors.** The excision
+achieved its goal: the real remaining surface is now visible.
+
+### Phase 3d — facade population + API-gap resolution (NEXT)
+
+The ~74 errors fall into:
+- **`warp::editor::CodeEditorModel` (+Event)** — 13+ sites. Repath or re-export
+  in `tui_export` (Zap has `warp_editor::model::CoreEditorModel`; confirm the
+  right type/alias).
+- **Un-exported `tui_export` items** — the 22 staged-out items (promote
+  pub(crate)→pub in the app crate + re-add to the facade): e.g.
+  BlocklistAIActionModel/Event, FailedOutputPresentation, InputType/InputConfig,
+  TuiMcpManager/Action, ConversationSelection(+Handle/Event), Harness, the
+  OptionRow/OptionSnapshot ask-question types, ShellCommandExecutor(+Event),
+  block_context_from_terminal_model, TranscriptScope, PtyIntent(+Event), etc.
+- **Genuinely-absent (build/port or confirm cloud-adjacent):**
+  CloudConversationData + conversation restoration, DiffStorage/FileDiff family
+  (diff_storage), GitRepoModels/GitRepoStatusModel (git_repo_model),
+  RunAgentsAgentOutcome/RunAgentsResult (drop — orchestration result types),
+  format_credits/ConversationUsageTotals, TuiAutoupdateSettings, telemetry
+  register_telemetry_event/TelemetryEvent, warp_util::local_or_remote_path,
+  warp_editor::render::model::* (DisplayLattice/DisplayRow/CharCell*).
+- **Then:** rewire agent surfaces to BYOP; Phase 4 (entry bins + workspace).
+
+Approach: work the facade first (mechanical, unblocks the most), then the
+repaths, then decide build-vs-drop per absent item against the north star
+(match Warp minus cloud). Default GUI build stays green (warp_tui non-default).
