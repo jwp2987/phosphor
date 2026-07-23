@@ -75,6 +75,7 @@ pub use crate::search::slash_command_menu::static_commands::commands::{
     self as slash_commands, COMMAND_REGISTRY,
 };
 pub use crate::search::slash_command_menu::{SlashCommandId, StaticCommand};
+pub use crate::terminal::alt_screen::{should_intercept_mouse, should_intercept_scroll};
 pub use crate::terminal::color::{Colors as TerminalColors, List as TerminalColorList};
 pub use crate::terminal::event::AfterBlockCompletedEvent;
 pub use crate::terminal::input::CommandExecutionSource;
