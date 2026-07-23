@@ -105,7 +105,6 @@ impl TuiView for RootTuiView {
                 .focused_session_view(ctx)
                 .map(|view| match view {
                     TuiSessionView::Terminal(view) => TuiChildView::new(&view).finish(),
-                    TuiSessionView::Cloud(view) => TuiChildView::new(&view).finish(),
                 })
                 .unwrap_or_else(terminal_starting),
         }
