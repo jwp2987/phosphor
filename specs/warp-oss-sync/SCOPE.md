@@ -448,7 +448,7 @@ achieved its goal: the real remaining surface is now visible.
 
 ### Phase 3d — facade population + API-gap resolution (NEXT)
 
-**Progress (74 → 53 errors, all GUI-gated green):**
+**Progress (84 → 51 errors, all GUI-gated green):**
 - ✅ `warp::editor::CodeEditorModel(+Event)` (13 sites) — `#[cfg(feature="tui")]`
   re-export on the public `editor` path (Zap keeps the code editor under the
   private `code::editor`). Committed.
@@ -459,6 +459,31 @@ achieved its goal: the real remaining surface is now visible.
   BlocklistAIContextModel/Event, AttachmentType, block_context_from_terminal_model,
   PendingQueryState, BlocklistAIController, BlocklistAIInputModel, InputConfig,
   InputType, format_credits, format_elapsed_seconds. Committed.
+- ✅ **BYOP `app/src/tui/` module** — Zap dropped upstream's `tui` module (its
+  login drives Warp-cloud device authorization). Added a BYOP `tui/mod.rs`: the
+  `TuiLoginModel`/`TuiLoginPhase`/`TuiLoginEvent` shapes verbatim (root view
+  renders them) but a trivial always-`LoggedIn` model + no-op `log_out_tui` — no
+  auth, no cloud. Wired crate-root re-exports + `log_out_tui` in the facade.
+  Committed.
+
+**Where each remaining symbol lives in `warp/master`** (mapped — see the port
+list below). The `warp` remote is `warpdotdev/warp`, branch `warp/master`; the
+absent app-side TUI types are recoverable from it (mostly `app/src/tui/`,
+`app/src/terminal/input/slash_commands/data_source/`, `app/src/ai/blocklist/`,
+`app/src/ai/orchestration/snapshots.rs`).
+
+**FOUNDATIONAL BLOCKER — the app-side TUI runtime spine (`run_tui`).** `session.rs`
+needs `warp::run_tui`, `warp::run_tui_worker_if_requested`, `warp::TuiMountFn`.
+These are NOT a self-contained port: in `warp/master` they hang off a
+`LaunchMode::Tui { mount, api_key }` variant threaded through **28 `LaunchMode`
+match arms in `app/src/lib.rs`**, and cascade into two OTHER crates —
+`SettingsMode::Tui` (`crates/settings/src/lib.rs:188`) and `ExecutionMode::Tui`
+(`crates/warp_core/src/execution_mode.rs`) — each with its own match-arm fan-out,
+plus `run_worker_command` + `warp_cli::is_worker_invocation` worker dispatch. This
+is a high-blast-radius port of the critical launch path; do it as its own focused
+effort (add the three enum variants + arms, then `run_tui`/mount dispatch), not
+squeezed onto other work. Until it lands, `session.rs` cannot compile regardless
+of facade progress.
 
 **Key finding — the mechanical facade is largely exhausted.** The remaining ~53
 errors are dominated by app-side TUI types **genuinely absent from Zap** (Warp had
