@@ -246,3 +246,51 @@ Verified with `cargo check` on `repo_metadata`, `warp_editor`, and
 - **Phase 3: bring `warp_tui` into the build**, dropping orchestration/cloud-run
   files and rewiring the agent surfaces to the BYOP layer.
 - **Phase 4: entry bins + workspace wiring + full build.**
+
+### Status update — Phases 1 & 2 DONE
+
+- **Phase 1 (done):** `cargo check -p warpui_core --features tui` compiles; GUI
+  build verified unaffected. Key moves: edition 2021 -> 2024, imported ratatui
+  runtime + element system (gated), relaxed the view read/update trait path
+  `View` -> `Entity` (the central change), and — instead of the upstream
+  `StoredView` enum (~83 GUI hot-path sites) — isolated TUI views in a separate
+  gated `Window.tui_views` map (zero GUI blast radius).
+- **Phase 2 (done):** `tui = ["warpui/tui"]` on the app crate (routed through the
+  warpui umbrella crate, since Zap's app depends on warpui not warpui_core
+  directly). `cargo check -p warp --features tui` and `--features gui,tui` both
+  green. The ~40 app-crate hook sites were NOT needed to compile; they are only
+  required where warp_tui calls specific APIs, so graft on demand in Phase 3.
+
+### Phase 3 wall — crate-topology mismatch (needs a decision)
+
+warp_tui is built on warp's crate topology, which Zap never adopted. Three crates
+it depends on are missing from Zap:
+
+- **`warp_channel_config`** (~113 lines, 1 file): used only by the 5 per-channel
+  bins via `load_config!`. Small — import it, or ship only the `oss` bin (which
+  uses the runtime generator, not the macro).
+- **`warp_errors`** (~606 lines): used for `report_error!` / `ReportErrorLogMode`
+  in ~4-6 sites (some in cloud-drop files). Adapt away to `log::error!` as already
+  done in warpui_core; don't import.
+- **`warp_search_core`** (~4256 lines, 11 files): THE WALL. warp extracted the
+  `inline_menu` system into this shared crate so the GUI app and TUI could share
+  it. **Zap kept its inline_menu inside the app crate**
+  (`app/src/terminal/input/inline_menu/`). warp_tui's slash-command / inline-menu
+  / mcp-menu / option-selector (4 files) import `warp_search_core::inline_menu::*`.
+  Reconciling this is a real decision, not mechanical:
+  - (a) extract Zap's inline_menu into a shared `warp_search_core` crate (large
+    app-crate refactor), or
+  - (b) import warp's `warp_search_core` (a second, parallel ~4000-line menu
+    implementation, likely incompatible with Zap's), or
+  - (c) rewire warp_tui's 4 menu files onto Zap's app-crate inline_menu (if the
+    types are pub-accessible through the `warp` crate), or
+  - (d) stub the TUI menu system for a first cut (no slash commands / inline menus)
+    to reach a running skeleton, then revisit.
+
+Then, still remaining after the crates are resolved: drop the ~11
+orchestration/cloud_run files, and rewire the agent surfaces (agent_block,
+agent_message, input/view, terminal_session_view, conversation_menu, tui_builder)
+from warp's cloud inference/agent calls to the Zap BYOP layer.
+
+**Assessment:** Phase 3 is multi-session and gated on the search_core topology
+decision above. Phases 1-2 (the framework foundation) are complete and GUI-safe.
