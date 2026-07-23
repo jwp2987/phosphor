@@ -9,6 +9,14 @@ mod view;
 pub use view::*;
 pub use warpui::text::point::Point;
 
+// The headless TUI front-end (`warp_tui`) imports the code editor via
+// `warp::editor` to match upstream Warp's module layout. Zap keeps the code
+// editor under the private `code::editor` module, so this widening re-exports
+// it on the public `editor` path the TUI expects. Gated on `tui` so the GUI
+// build's public surface is unchanged.
+#[cfg(feature = "tui")]
+pub use crate::code::editor::model::{CodeEditorModel, CodeEditorModelEvent};
+
 use std::{cmp, ops::Range};
 use warpui::AppContext;
 
