@@ -20,7 +20,7 @@ use warp::tui_export::{
     AIBlockModelHelper, AIBlockOutputStatus, AIConversationId, BlockId, BlocklistAIActionEvent,
     BlocklistAIActionModel, BlocklistAIHistoryModel, CancellationReason,
     FAILED_OUTPUT_USAGE_NOTICE_TEXT, FailedOutputPresentation, MessageId, ModelEvent,
-    ModelEventDispatcher, ReceivedMessageDisplay, SummarizationType, TerminalModel, TodoOperation,
+    ModelEventDispatcher, SummarizationType, TerminalModel, TodoOperation,
     TodoStatus, failed_output_presentation, should_show_failed_output_usage_notice,
 };
 use warpui::SingletonEntity;
@@ -43,8 +43,6 @@ use crate::agent_block_sections::{
     render_completed_todos_section, render_fallback_tool_call_section, render_input_section,
     render_summarization_section, render_thinking_section, render_todo_list_section,
 };
-use crate::agent_message::render_agent_message;
-use crate::orchestration_block::{TuiOrchestrationBlock, TuiOrchestrationBlockEvent};
 use crate::transcript_view::BLOCK_TOP_PADDING_ROWS;
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_cli_subagent_view::TuiCLISubagentView;
@@ -73,8 +71,6 @@ pub(super) enum TuiBlockingChild {
     AskQuestion(ViewHandle<TuiAskQuestionView>),
     /// A standard Yes/No/Other permission request.
     Permission(ViewHandle<TuiPermissionPrompt>),
-    /// The specialized orchestration configuration request.
-    Orchestration(ViewHandle<TuiOrchestrationBlock>),
 }
 
 impl TuiBlockingChild {
@@ -83,7 +79,6 @@ impl TuiBlockingChild {
         match self {
             Self::AskQuestion(view) => view.id(),
             Self::Permission(view) => view.id(),
-            Self::Orchestration(view) => view.id(),
         }
     }
 }
@@ -131,8 +126,6 @@ enum TuiAIBlockSection {
     CompletedTodos {
         completed: Vec<AIAgentTodo>,
     },
-    /// A message delivered by another agent in the orchestration.
-    AgentMessage(ReceivedMessageDisplay),
     Failure(FailedOutputPresentation),
     UsageNotice,
 }
@@ -328,7 +321,6 @@ enum TuiToolCallView {
     Generic(ViewHandle<TuiGenericToolCallView>),
     Plan(ViewHandle<TuiPlanView>),
     ShellCommand(ViewHandle<TuiShellCommandView>),
-    OrchestrationBlock(ViewHandle<TuiOrchestrationBlock>),
 }
 
 impl TuiToolCallView {
@@ -340,7 +332,6 @@ impl TuiToolCallView {
             Self::Generic(view) => view.id(),
             Self::Plan(view) => view.id(),
             Self::ShellCommand(view) => view.id(),
-            Self::OrchestrationBlock(view) => view.id(),
         }
     }
 
@@ -352,7 +343,6 @@ impl TuiToolCallView {
             Self::Generic(view) => TuiChildView::new(view),
             Self::Plan(view) => TuiChildView::new(view),
             Self::ShellCommand(view) => TuiChildView::new(view),
-            Self::OrchestrationBlock(view) => TuiChildView::new(view),
         }
     }
 }
@@ -517,7 +507,6 @@ impl TuiAIBlock {
         let mut generic_actions = Vec::new();
         let mut plan_actions = Vec::new();
         let mut shell_command_actions = Vec::new();
-        let mut run_agents_actions = Vec::new();
         if let Some(output) = status.output_to_render() {
             for message in &output.get().messages {
                 if matches!(&message.message, AIAgentOutputMessageType::TodoOperation(_)) {
@@ -542,8 +531,6 @@ impl TuiAIBlock {
                     AIAgentActionType::RequestCommandOutput { .. }
                 ) {
                     shell_command_actions.push(action.clone());
-                } else if matches!(&action.action, AIAgentActionType::RunAgents(_)) {
-                    run_agents_actions.push(action.clone());
                 } else if action_model
                     .as_ref(ctx)
                     .get_action_status(&action.id)
@@ -563,8 +550,7 @@ impl TuiAIBlock {
                     TuiToolCallView::FileEdits(_)
                     | TuiToolCallView::Generic(_)
                     | TuiToolCallView::Plan(_)
-                    | TuiToolCallView::ShellCommand(_)
-                    | TuiToolCallView::OrchestrationBlock(_),
+                    | TuiToolCallView::ShellCommand(_),
                 )
                 | None => true,
             };
@@ -713,72 +699,6 @@ impl TuiAIBlock {
                 .insert(action_id, TuiToolCallView::ShellCommand(view));
             ctx.notify();
         }
-
-        // Create or update the interactive orchestration card for each
-        // streamed RunAgents tool call.
-        for action in run_agents_actions {
-            let AIAgentActionType::RunAgents(request) = &action.action else {
-                continue;
-            };
-
-            // Existing block: re-sync its edit state from the latest streamed
-            // chunk (the request may have grown since the view was created).
-            if let Some(TuiToolCallView::OrchestrationBlock(view)) =
-                self.action_views.get(&action.id)
-            {
-                let request = request.clone();
-                view.update(ctx, |view, ctx| view.update_request(&request, ctx));
-                continue;
-            }
-            // Read the active orchestration config for plan-inherited
-            // resolution from the conversation, mirroring the GUI's
-            // `ensure_run_agents_card_view`.
-            let active_config = if request.plan_id.is_empty() {
-                None
-            } else {
-                BlocklistAIHistoryModel::as_ref(ctx)
-                    .conversation(&self.conversation_id)
-                    .and_then(|conversation| {
-                        conversation
-                            .orchestration_config_for_plan(&request.plan_id)
-                            .map(|(config, status)| (config.clone(), status))
-                    })
-            };
-
-            let action_id = action.id.clone();
-            let request = request.clone();
-            let card_action_model = action_model.clone();
-            let run_agents_executor = action_model.as_ref(ctx).run_agents_executor(ctx);
-            let fallback_base_model_id = self.block_model.base_model(ctx).map(|id| id.to_string());
-            let is_restored = self.block_model.is_restored();
-            let view = ctx.add_typed_action_tui_view(move |ctx| {
-                TuiOrchestrationBlock::new(
-                    action,
-                    &request,
-                    active_config,
-                    card_action_model,
-                    run_agents_executor,
-                    fallback_base_model_id,
-                    is_restored,
-                    ctx,
-                )
-            });
-
-            let action_id_for_events = action_id.clone();
-            ctx.subscribe_to_view(&view, move |me, _, event, ctx| match event {
-                TuiOrchestrationBlockEvent::RejectRequested => {
-                    me.cancel_action(&action_id_for_events, ctx);
-                }
-                TuiOrchestrationBlockEvent::BlockingStateChanged => {
-                    ctx.emit(TuiAIBlockEvent::BlockingStateChanged);
-                    me.invalidate_layout(ctx);
-                }
-                TuiOrchestrationBlockEvent::LayoutInvalidated => me.invalidate_layout(ctx),
-            });
-            self.action_views
-                .insert(action_id, TuiToolCallView::OrchestrationBlock(view));
-            ctx.notify();
-        }
     }
 
     /// Cancels a pending or running action as manually cancelled — the
@@ -818,10 +738,6 @@ impl TuiAIBlock {
                 .as_ref(ctx)
                 .is_awaiting_answers(ctx)
                 .then(|| TuiBlockingChild::AskQuestion(view.clone())),
-            TuiToolCallView::OrchestrationBlock(view) => view
-                .as_ref(ctx)
-                .is_awaiting_confirmation(ctx)
-                .then(|| TuiBlockingChild::Orchestration(view.clone())),
             TuiToolCallView::Generic(view) => view
                 .as_ref(ctx)
                 .active_permission_prompt(ctx)
@@ -1036,8 +952,7 @@ impl TuiAIBlock {
                 TuiToolCallView::AskQuestion(_)
                 | TuiToolCallView::FileEdits(_)
                 | TuiToolCallView::Generic(_)
-                | TuiToolCallView::Plan(_)
-                | TuiToolCallView::OrchestrationBlock(_) => false,
+                | TuiToolCallView::Plan(_) => false,
                 TuiToolCallView::ShellCommand(view) => {
                     view.as_ref(app).needs_continuous_height_measurement()
                 }
@@ -1188,8 +1103,7 @@ impl TuiAIBlock {
                         | TuiToolCallView::FileEdits(_)
                         | TuiToolCallView::Generic(_)
                         | TuiToolCallView::Plan(_)
-                        | TuiToolCallView::ShellCommand(_)
-                        | TuiToolCallView::OrchestrationBlock(_) => return None,
+                        | TuiToolCallView::ShellCommand(_) => return None,
                     }
                 }
                 let status = self.action_model.as_ref(app).get_action_status(&action.id);
@@ -1246,7 +1160,6 @@ impl TuiAIBlock {
                     app,
                 )
             }
-            TuiAIBlockSection::AgentMessage(_) => return None,
             TuiAIBlockSection::Failure(presentation) => render_failure_section(
                 presentation,
                 &self.compare_plans_hover_state,
@@ -1367,14 +1280,10 @@ impl TuiAIBlock {
                         TodoOperation::UpdateTodos { .. }
                         | TodoOperation::MarkAsCompleted { .. } => {}
                     },
-                    AIAgentOutputMessageType::MessagesReceivedFromAgents { messages } => {
-                        for received in messages {
-                            sections.push(TuiAIBlockSection::AgentMessage(received.clone()));
-                        }
-                    }
-                    // Event IDs contain no display detail. The sender's live
-                    // conversation status is shown on rich message rows.
-                    AIAgentOutputMessageType::EventsFromAgents { .. } => {}
+                    // Inter-agent messages/events are orchestration (cloud)
+                    // surfaces Zap does not render.
+                    AIAgentOutputMessageType::MessagesReceivedFromAgents { .. }
+                    | AIAgentOutputMessageType::EventsFromAgents { .. } => {}
                     // Other message kinds are not rendered by the TUI transcript yet.
                     AIAgentOutputMessageType::Summarization { .. }
                     | AIAgentOutputMessageType::Subagent(_)
@@ -1429,8 +1338,7 @@ impl TuiAIBlock {
                 TuiToolCallView::AskQuestion(_)
                 | TuiToolCallView::FileEdits(_)
                 | TuiToolCallView::Generic(_)
-                | TuiToolCallView::Plan(_)
-                | TuiToolCallView::OrchestrationBlock(_) => false,
+                | TuiToolCallView::Plan(_) => false,
             })
     }
 
@@ -1621,12 +1529,6 @@ impl TuiAIBlock {
                         app,
                     )
                 }
-                TuiAIBlockSection::AgentMessage(message) => render_agent_message(
-                    &self.collapsible_states,
-                    message,
-                    self.conversation_id,
-                    app,
-                ),
                 TuiAIBlockSection::Failure(presentation) => render_failure_section(
                     presentation,
                     &self.compare_plans_hover_state,
@@ -1697,8 +1599,7 @@ fn section_logical_text(section: &TuiAIBlockSection) -> Option<String> {
         | TuiAIBlockSection::Thinking { .. }
         | TuiAIBlockSection::Summarization { .. }
         | TuiAIBlockSection::TodoList { .. }
-        | TuiAIBlockSection::CompletedTodos { .. }
-        | TuiAIBlockSection::AgentMessage(_) => None,
+        | TuiAIBlockSection::CompletedTodos { .. } => None,
         TuiAIBlockSection::Failure(presentation) => Some(failure_text(presentation)),
         TuiAIBlockSection::UsageNotice => Some(FAILED_OUTPUT_USAGE_NOTICE_TEXT.to_owned()),
     }
