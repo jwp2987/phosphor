@@ -1219,10 +1219,9 @@ impl DisplayChip {
             .as_ref()
             .map(|ctx| match ctx.session.session_type() {
                 SessionType::Local => true,
-                SessionType::WarpifiedRemote { host_id: Some(_) } => {
-                    FeatureFlag::RemoteCodeReview.is_enabled()
-                }
-                SessionType::WarpifiedRemote { host_id: None } => false,
+                // Remote code review is a cloud feature not present in Zap, so
+                // remote sessions never support the code-review affordance here.
+                SessionType::WarpifiedRemote { .. } => false,
             })
             .unwrap_or(false);
 
