@@ -40,7 +40,7 @@ use warp::tui_export::{
 use warp_core::features::FeatureFlag;
 use warp_core::settings::Setting;
 use warp_editor::model::CoreEditorModel;
-use warp_errors::report_error;
+use crate::report_error::report_error;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::SingletonEntity;
 use warpui_core::r#async::{SpawnedFutureHandle, Timer};
@@ -1615,7 +1615,7 @@ impl TuiTerminalSessionView {
             report_error!(
                 anyhow::Error::new(error)
                     .context("Failed to update orchestration tab bar configuration"),
-                warp_errors::ReportErrorLogMode::OncePerRun
+                crate::report_error::ReportErrorLogMode::OncePerRun
             );
         }
     }

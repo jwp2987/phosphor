@@ -7,6 +7,7 @@
 //!   and starts the transcript-capable TUI draw + input driver.
 //! - Binary entry points under `src/bin/`.
 
+mod report_error;
 mod agent_block;
 mod agent_block_sections;
 mod agent_message;
