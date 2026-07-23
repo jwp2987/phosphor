@@ -15,6 +15,8 @@ enable-metal-frame-capture = []
 # Enables the font-kit rasterizer on Windows.
 fontkit-rasterizer = []
 traces = ["warpui_core/traces"]
+# Headless terminal-UI (ratatui) backend passthrough. See specs/warp-oss-sync/SCOPE.md.
+tui = ["warpui_core/tui"]
 # Feature enabled only when app is compiled for integration tests.
 integration_tests = ["warpui_core/integration_tests"]
 # If enabled, writes named telemetry events to the info log.  Should never be

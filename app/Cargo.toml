@@ -599,6 +599,10 @@ grep_tool = []
 # For the most part, including GUI code in headless builds is fine; the main use case is
 # for things that pull in external dependencies.
 gui = ["voice_input"]
+# Headless terminal-UI front-end support. Enables warpui_core's ratatui backend
+# (via the warpui umbrella crate). The warp_tui crate builds `warp` with this
+# feature. See specs/warp-oss-sync/SCOPE.md.
+tui = ["warpui/tui"]
 msys2_shells = []
 onekey_prompt = []
 file_retrieval_tools = []
