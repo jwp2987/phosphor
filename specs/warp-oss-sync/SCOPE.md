@@ -374,3 +374,33 @@ superseded. Per-feature plan for the MISSING groups:
 
 Then rewire warp_tui's agent surfaces to the BYOP layer. The default GUI build
 stays green throughout (warp_tui is a non-default workspace member).
+
+### Phase 3c progress — facade + report_error shim landed; warp_tui 95 -> 84 (categorized)
+
+Done this session:
+- **Zap-adapted `tui_export` facade** (`app/src/tui_export.rs`, gated) compiles;
+  `warp --features tui` + GUI both green.
+- **Local `report_error!` shim** in warp_tui (Zap has no warp_errors crate). This
+  unblocked a compilation-cascade that was masking the real error surface.
+
+`cargo check -p warp_tui --lib` is now **84 real errors**, cleanly categorized:
+- **43 = CLOUD `tui_export` items** (AmbientAgent, CloudAgent*, Orchestration*,
+  RunAgents*/StartAgent*, remote-child/host/env snapshots, auth-secret picker, oz
+  run url, self-hosted workers). These vanish when warp_tui's cloud modules
+  (cloud_run*, orchestration_*, session_registry, orchestrated_agent_identity)
+  are dropped. **Next step — biggest single unlock, and it's the drop-cloud side
+  of the north star.**
+- **22 = non-cloud STAGED-OUT items** — Zap has them but they are pub(crate)/
+  private (blocklist controller/input/action/context types, view_util,
+  alt_screen, blocklist_filter, failed-output presentation). Promote
+  pub(crate)->pub + re-add to the facade.
+- **~15 = API-path gaps** — Zap named/pathed differently or lacks: `CodeEditorModel(+Event)`,
+  `TuiAutoupdateSettings`, `TuiUsageDisplayMode`, mime helpers
+  (MIME_SNIFF_BYTES/infer_mime_type), `format_elapsed_seconds`,
+  `prompt_history_for_terminal_view`, model-picker + slash-command fns,
+  `warp_util::local_or_remote_path`, a couple `ai::agent` types. Repath or port.
+
+**Next session order:** (1) drop warp_tui cloud modules (+ fix the ~15
+interconnected referencing modules) — clears ~43; (2) promote visibility for the
+22 non-cloud staged items; (3) repath/port the ~15 API gaps; (4) rewire agent
+surfaces to BYOP; (5) phase 4 bins.
