@@ -136,6 +136,11 @@ pub mod terminal;
 // specs/warp-oss-sync/SCOPE.md.
 #[cfg(feature = "tui")]
 pub mod tui_export;
+// App-side support for the headless warp_tui front-end (BYOP login model, etc.).
+#[cfg(feature = "tui")]
+pub mod tui;
+#[cfg(feature = "tui")]
+pub use crate::tui::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase, log_out_tui};
 pub mod themes;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::aws_credentials::AwsCredentialRefresher as _;
