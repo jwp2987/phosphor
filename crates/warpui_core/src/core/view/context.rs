@@ -1,3 +1,7 @@
+// TUI view-context helpers, feature-gated. See specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+mod tui;
+
 use std::{any::Any, marker::PhantomData, rc::Rc, sync::Arc};
 
 use futures::future::{AbortHandle, Abortable};

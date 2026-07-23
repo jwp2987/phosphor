@@ -1,5 +1,8 @@
 mod context;
 mod handle;
+// TUI view trait (TuiView) + helpers, feature-gated. See specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+mod tui;
 
 use crate::{
     accessibility::{AccessibilityContent, ActionAccessibilityContent},
@@ -7,6 +10,8 @@ use crate::{
 };
 
 pub use self::{context::*, handle::*};
+#[cfg(feature = "tui")]
+pub use self::tui::*;
 
 use super::EntityId;
 

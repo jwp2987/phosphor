@@ -13,6 +13,15 @@ pub mod point;
 pub mod word_boundaries;
 pub mod words;
 
+/// A row/column position in rendered character-cell content. Used by the TUI
+/// element system; feature-gated. See specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TuiGridPoint {
+    pub row: usize,
+    pub col: u16,
+}
+
 pub use header::BlockHeaderSize;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
