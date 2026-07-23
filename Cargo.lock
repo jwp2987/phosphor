@@ -15720,6 +15720,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "warp_search_core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "async-trait",
+ "enum-iterator",
+ "futures",
+ "futures-lite 1.13.0",
+ "futures-util",
+ "itertools 0.14.0",
+ "lazy_static",
+ "log",
+ "ordered-float 3.9.2",
+ "parking_lot",
+ "pathfinder_color",
+ "pin-project",
+ "serde",
+ "serde_json",
+ "strum_macros 0.27.2",
+ "warp_core",
+ "warpui_core",
+]
+
+[[package]]
 name = "warp_ssh_manager"
 version = "0.1.0"
 dependencies = [
