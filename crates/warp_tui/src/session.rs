@@ -16,7 +16,6 @@ use warpui_core::platform::{TerminationMode, WindowStyle};
 use warpui_core::runtime::spawn_tui_driver;
 use warpui_core::{AddWindowOptions, AppContext, ModelHandle, ViewHandle};
 
-use crate::orchestration_model::TuiOrchestrationModel;
 use crate::resume::TuiExitSummaryHandle;
 use crate::root_view::RootTuiView;
 use crate::session_registry::{TuiSessions, TuiSessionsEvent};
@@ -125,8 +124,6 @@ fn init(
                     TuiSessionsEvent::FocusChanged(_) => ctx.notify(),
                 });
             });
-            let orchestration = TuiOrchestrationModel::register(ctx);
-            TuiSessions::wire_orchestration(&sessions, &orchestration, ctx);
             let sessions_for_login = sessions.clone();
             let root_for_login = root.clone();
             let login_model = TuiLoginModel::handle(ctx);
