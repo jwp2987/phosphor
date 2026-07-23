@@ -131,6 +131,11 @@ pub mod settings;
 pub mod settings_view;
 pub mod tab_configs;
 pub mod terminal;
+// Facade re-exporting app-crate + workspace types to the warp_tui front-end.
+// Feature-gated; Zap-adapted subset (cloud re-exports removed). See
+// specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+pub mod tui_export;
 pub mod themes;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::aws_credentials::AwsCredentialRefresher as _;
