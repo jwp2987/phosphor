@@ -96,8 +96,9 @@ pub use crate::search::slash_command_menu::static_commands::commands::{
 pub use crate::terminal::input::slash_commands::{
     AcceptSlashCommandOrSavedPrompt, SlashCommandDataSource, SlashCommandMixer,
     SlashCommandSelectionBehavior, TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs,
-    UpdatedActiveCommands, build_slash_command_mixer, record_autodetection_toggle_from_slash_command,
-    record_saved_prompt_accepted, record_static_slash_command_accepted, saved_prompt_text_for_id,
+    TuiZeroStateDataSource, UpdatedActiveCommands, build_slash_command_mixer,
+    record_autodetection_toggle_from_slash_command, record_saved_prompt_accepted,
+    record_static_slash_command_accepted, saved_prompt_text_for_id,
     should_close_slash_command_menu_for_exact_match, slash_command_query,
     slash_command_selection_behavior,
 };
