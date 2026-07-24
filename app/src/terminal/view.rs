@@ -290,6 +290,7 @@ use crate::terminal::warpify::{
     render::render_subshell_separator, settings::WarpifySettings, SubshellSource,
 };
 use crate::terminal::ShellLaunchData;
+use crate::terminal::writeable_pty::{PtyIntent, PtyIntentEvent, TerminalSurface};
 use crate::terminal::{element_size_at_last_frame, HistoryEntry};
 use crate::terminal::{height_in_range_approx, heights_approx_gt, SizeUpdate};
 use crate::terminal::{heights_approx_eq, CellSizeAndWindowPadding};
@@ -23342,6 +23343,123 @@ impl TerminalView {
 
 impl Entity for TerminalView {
     type Event = Event;
+}
+
+impl PtyIntentEvent for Event {
+    fn pty_intent(&self) -> Option<PtyIntent> {
+        match self {
+            Event::CtrlD => Some(PtyIntent::CtrlD),
+            Event::ShutdownPty => Some(PtyIntent::ShutdownPty),
+            Event::WriteBytesToPty { bytes } => Some(PtyIntent::WriteBytes(bytes.clone())),
+            Event::WriteAgentInputToPty { bytes, mode } => Some(PtyIntent::WriteAgentInput {
+                bytes: bytes.clone(),
+                mode: *mode,
+            }),
+            Event::Resize { size_update } => Some(PtyIntent::Resize(*size_update)),
+            Event::ExecuteCommand(event) => Some(PtyIntent::ExecuteCommand(event.clone())),
+            Event::RunNativeShellCompletions {
+                buffer_text,
+                results_tx,
+            } => Some(PtyIntent::RunNativeShellCompletions {
+                buffer_text: buffer_text.clone(),
+                results_tx: results_tx.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// `TerminalView` is the GUI terminal surface driven by the local
+/// [`TerminalManager`](crate::terminal::local_tty::TerminalManager). The
+/// lifecycle hooks delegate to the existing inherent methods of the same name
+/// via the explicit `TerminalView::` path (which resolves to the inherent
+/// method rather than this trait method, so the delegation is not recursive),
+/// while the Unix password-prompt hooks carry the notification/SSH-upload logic
+/// that the manager's attribute poller drives.
+impl TerminalSurface for TerminalView {
+    #[cfg(feature = "local_tty")]
+    fn on_shell_determined(&mut self, ctx: &mut ViewContext<Self>) {
+        TerminalView::on_shell_determined(self, ctx);
+    }
+
+    fn on_active_shell_launch_data_updated(
+        &mut self,
+        shell_launch_data: Option<ShellLaunchData>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        TerminalView::on_active_shell_launch_data_updated(self, shell_launch_data, ctx);
+    }
+
+    #[cfg(feature = "local_tty")]
+    fn on_pty_spawn_failed(&mut self, error: anyhow::Error, ctx: &mut ViewContext<Self>) {
+        TerminalView::on_pty_spawn_failed(self, error, ctx);
+    }
+
+    #[cfg(unix)]
+    fn should_start_password_prompt_polling(&self, _command: &str, ctx: &AppContext) -> bool {
+        password_notifications_enabled(ctx)
+            || (self.is_ssh_uploader() && FeatureFlag::SshDragAndDrop.is_enabled())
+    }
+
+    #[cfg(unix)]
+    fn should_stop_password_prompt_polling(&self, completed: &AfterBlockCompletedEvent) -> bool {
+        matches!(
+            &completed.block_type,
+            BlockType::User(_) | BlockType::BootstrapVisible(_) | BlockType::Background(_)
+        )
+    }
+
+    #[cfg(unix)]
+    fn on_possible_password_prompt(
+        &mut self,
+        block_index: Option<BlockIndex>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if FeatureFlag::SshDragAndDrop.is_enabled() {
+            self.propagate_password_request(ctx);
+        }
+
+        // Only notify if the user has navigated away from the window when the
+        // password prompt appears; otherwise they already know it is there.
+        let is_navigated_away_from_window = self.is_navigated_away_from_window(ctx);
+        if is_navigated_away_from_window && password_notifications_enabled(ctx) {
+            if let Some(block_index) = block_index {
+                self.maybe_send_password_notification(block_index, ctx);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn on_polled_block_completed(
+        &mut self,
+        completed: &AfterBlockCompletedEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !self.is_ssh_uploader() {
+            return;
+        }
+        // Only user-executed (and bootstrap/background) blocks carry a serialized
+        // block with an exit code; other block types don't terminate an upload.
+        let exit_code = match &completed.block_type {
+            BlockType::User(user) => user.serialized_block.exit_code,
+            BlockType::BootstrapVisible(block) | BlockType::Background(block) => block.exit_code,
+            BlockType::BootstrapHidden
+            | BlockType::Restored
+            | BlockType::InBandCommand
+            | BlockType::Static => return,
+        };
+        self.propagate_upload_finished_event(exit_code, ctx);
+    }
+}
+
+/// Whether "needs attention" password notifications are enabled (or unset,
+/// which defaults to on). Shared by the [`TerminalSurface`] Unix hooks.
+#[cfg(unix)]
+fn password_notifications_enabled(ctx: &AppContext) -> bool {
+    let notification_settings = &SessionSettings::as_ref(ctx).notifications;
+    matches!(notification_settings.mode, NotificationsMode::Unset)
+        || (matches!(notification_settings.mode, NotificationsMode::Enabled)
+            && notification_settings.is_needs_attention_enabled)
 }
 
 impl TypedActionView for TerminalView {

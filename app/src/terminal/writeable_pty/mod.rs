@@ -7,10 +7,14 @@ pub mod pty_controller;
 pub mod remote_server_controller;
 pub mod terminal_manager_util;
 // The `TerminalSurface` trait + `PtyIntent` vocabulary + `TerminalSurfaceInit`/
-// `TerminalSurfaceResult` live here as the first, additive step of the
-// terminal-manager surface abstraction. The convenience re-export is added
-// when the local manager is genericized to consume them.
+// `TerminalSurfaceResult` live here as the surface abstraction seam that lets a
+// single `TerminalManager` drive both the GUI `TerminalView` and the headless
+// TUI surface.
 pub mod terminal_surface;
 
 pub use message::Message;
 pub use pty_controller::{PtyController, PtyControllerEvent};
+pub use terminal_surface::{PtyIntent, PtyIntentEvent, TerminalSurface};
+// `TerminalSurfaceInit` / `TerminalSurfaceResult` are re-exported when the local
+// manager is genericized to consume them (they are otherwise unused in the GUI
+// build); reach them via `terminal_surface::` until then.

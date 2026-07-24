@@ -135,6 +135,10 @@ pub use crate::terminal::model::terminal_model::BlockIndex;
 pub use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 pub use crate::terminal::shared_session::IsSharedSessionCreator;
 pub use crate::terminal::view::{ExecuteCommandEvent, WAKEUP_THROTTLE_PERIOD};
+pub use crate::terminal::writeable_pty::{PtyIntent, PtyIntentEvent, TerminalSurface};
+pub use crate::terminal::writeable_pty::terminal_surface::{
+    TerminalSurfaceInit, TerminalSurfaceResult,
+};
 pub use crate::terminal::{
     BlockPadding, ShellLaunchData, SizeInfo, SizeUpdate,
     TerminalManager as TerminalManagerTrait, TerminalModel,
