@@ -5461,6 +5461,9 @@ impl TerminalView {
                 }
             }
             CLISubagentEvent::ToggledHideResponses => {}
+            CLISubagentEvent::UpdatedInstruction { .. } => {
+                // TUI-only affordance (pending-instruction indicator); no GUI surface.
+            }
             CLISubagentEvent::UpdatedLastSnapshot { .. } => {
                 // 仅更新内存中的 last_snapshot_at（已在 controller 内完成），
                 // 不触发全量落盘。落盘由低频的 SpawnedSubagent / FinishedSubagent 承担，
