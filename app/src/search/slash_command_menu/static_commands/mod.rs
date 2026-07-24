@@ -76,6 +76,14 @@ impl Argument {
     }
 }
 
+/// A hint describing a slash command's argument, surfaced inline as the user types.
+#[derive(Debug, Clone)]
+pub struct SlashCommandArgumentHint {
+    /// The command name plus a trailing space; callers match this against the current input.
+    pub input_prefix: String,
+    pub text: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticCommand {
     pub name: &'static str,
@@ -173,6 +181,16 @@ impl StaticCommand {
 
     pub fn is_active(&self, session_context: Availability) -> bool {
         session_context.contains(self.availability)
+    }
+
+    /// The argument hint for this command, if it declares one. The `input_prefix` is the
+    /// command name plus a trailing space, so callers can match it against the current input.
+    pub fn argument_hint(&self) -> Option<SlashCommandArgumentHint> {
+        let text = self.argument.as_ref()?.hint_text?;
+        Some(SlashCommandArgumentHint {
+            input_prefix: format!("{} ", self.name),
+            text,
+        })
     }
 
     /// Classifies this command for TUI dispatch. Derived from the command name (Warp OSS carries
