@@ -327,16 +327,20 @@ fn render_project_section(
     let mut rule_files: Vec<String> = Vec::new();
     if let Some(rules) = &rules {
         for rule in &rules.active_rules {
-            if let Some(name) = rule.path.file_name()
-                && !rule_files.iter().any(|file| file == name)
+            if let Some(name) = rule.path.file_name().map(|n| n.to_string_lossy().into_owned())
+                && !rule_files.iter().any(|file| *file == name)
             {
-                rule_files.push(name.to_owned());
+                rule_files.push(name);
             }
         }
     }
 
+    let cwd_local_path = match &cwd_path {
+        LocalOrRemotePath::Local(path) => Some(path.as_path()),
+        LocalOrRemotePath::Remote(_) => None,
+    };
     let project_skill_count = SkillManager::as_ref(app)
-        .get_skills_for_working_directory(Some(&cwd_path), app)
+        .get_skills_for_working_directory(cwd_local_path, app)
         .iter()
         .filter(|skill| skill.is_project_skill())
         .count();

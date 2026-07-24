@@ -2298,10 +2298,11 @@ impl TuiTerminalSessionView {
             report_error!("TUI prompt submitted without an eagerly selected conversation");
             return;
         };
-        let dispatched = self.ai_controller.update(ctx, |controller, ctx| {
+        // Zap's send_user_query_in_conversation returns (), not a dispatched bool.
+        self.ai_controller.update(ctx, |controller, ctx| {
             controller.send_user_query_in_conversation(prompt.clone(), conversation_id, None, ctx)
         });
-        if dispatched && let Some(block_id) = active_long_running_block_id {
+        if let Some(block_id) = active_long_running_block_id {
             self.cli_subagent_controller.update(ctx, |controller, ctx| {
                 controller.set_latest_instruction(block_id, prompt, ctx);
             });
