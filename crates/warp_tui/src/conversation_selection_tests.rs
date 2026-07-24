@@ -192,10 +192,10 @@ fn tui_selection_eagerly_owns_session_conversation() {
             terminal_model.lock().block_list().active_conversation_id(),
             Some(conversation_id)
         );
-        assert_eq!(
+        assert!(matches!(
             terminal_model.lock().block_list().agent_view_state(),
-            &AgentViewState::Inactive
-        );
+            AgentViewState::Inactive
+        ));
 
         terminal_model
             .lock()
@@ -239,10 +239,10 @@ fn tui_selection_eagerly_owns_session_conversation() {
             terminal_model.lock().block_list().active_conversation_id(),
             Some(new_conversation_id)
         );
-        assert_eq!(
+        assert!(matches!(
             terminal_model.lock().block_list().agent_view_state(),
-            &AgentViewState::Inactive
-        );
+            AgentViewState::Inactive
+        ));
     });
 }
 
