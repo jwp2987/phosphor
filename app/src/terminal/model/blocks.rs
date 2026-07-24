@@ -836,6 +836,36 @@ impl BlockList {
         (self.blocks.len() - 1).into()
     }
 
+    /// The display-row range (in whole lines) currently occupied by the rich-content item for
+    /// `view_id`, or `None` if it is not laid out. Used by the TUI viewport source.
+    pub fn rich_content_row_range(&self, view_id: EntityId) -> Option<Range<usize>> {
+        let index = self
+            .removable_blocklist_item_positions
+            .get(&RemovableBlocklistItem::RichContent(view_id))?;
+        let mut cursor = self
+            .block_heights
+            .cursor::<TotalIndex, BlockHeightSummary>();
+        cursor.seek(index, SeekBias::Right);
+        let BlockHeightItem::RichContent(item) = cursor.item()? else {
+            return None;
+        };
+        let start = cursor.start().height.as_f64().floor().max(0.0) as usize;
+        let height = item.last_laid_out_height.as_f64().ceil().max(0.0) as usize;
+        Some(start..start.saturating_add(height))
+    }
+
+    /// Updates the laid-out heights of rich-content items and rebuilds the height sum-tree.
+    pub fn update_rich_content_heights_in_lines(
+        &mut self,
+        updated_heights: &HashMap<EntityId, BlockHeight>,
+    ) {
+        let heights: HashMap<EntityId, f64> = updated_heights
+            .iter()
+            .map(|(view_id, height)| (*view_id, height.as_f64()))
+            .collect();
+        self.update_blocks_and_sumtree(None, Some(&heights), |_| {}, |_| {});
+    }
+
     pub fn active_block(&self) -> &Block {
         self.blocks.last().expect("at least one block should exist")
     }

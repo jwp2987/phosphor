@@ -232,6 +232,20 @@ pub struct SizeUpdate {
 }
 
 impl SizeUpdate {
+    /// Builds a post-layout `SizeUpdate` from char-cell dimensions (TUI path), with no font
+    /// metrics.
+    pub fn from_cell_dimensions(last_size: SizeInfo, rows: usize, columns: usize) -> Self {
+        let new_size = SizeInfo::new_without_font_metrics(rows, columns);
+        Self {
+            update_reason: SizeUpdateReason::AfterLayout,
+            last_size,
+            new_size,
+            new_gap_height: None,
+            natural_rows: new_size.rows(),
+            natural_cols: new_size.columns(),
+        }
+    }
+
     /// Whether the reason for the update is a refresh.
     pub fn is_refresh(&self) -> bool {
         matches!(self.update_reason, SizeUpdateReason::Refresh)
