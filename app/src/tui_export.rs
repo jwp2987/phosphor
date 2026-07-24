@@ -15,6 +15,7 @@ pub use ::ai::agent::ask_user_question_session::{
     AskUserQuestionAction, AskUserQuestionEffect, AskUserQuestionPhase, AskUserQuestionSession,
 };
 pub use repo_metadata::repositories::RepoDetectionSource;
+pub use crate::util::repo_detection::{detect_possible_git_repo, RepoDetectionSessionType};
 use warp_completer::completer::{CompletionContext as _, TopLevelCommandCaseSensitivity};
 use warp_completer::signatures::CommandRegistry;
 
