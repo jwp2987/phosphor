@@ -1725,6 +1725,37 @@ impl RenderState {
             Pixels::zero(),
             Pixels::zero(),
             hidden_lines,
+            LayoutMode::Pixels,
+        )
+    }
+
+    /// Create a new `RenderState` in TUI char-cell mode. Soft-wrap layout uses
+    /// character-count arithmetic instead of font shaping. `hidden_lines` backs
+    /// [`CharCellState::hidden_line_ranges`]. `styles` is stored for API compatibility
+    /// but is not used for rendering in CharCell mode; callers supply a minimal stub.
+    pub fn new_tui(
+        terminal_width: u16,
+        styles: RichTextStyles,
+        hidden_lines: ModelHandle<HiddenLinesModel>,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
+        let (element_tx, element_rx) = async_channel::unbounded();
+        ctx.spawn_stream_local(element_rx, Self::apply_element_update, |_, _| {});
+
+        let (layout_tx, layout_rx) = async_channel::unbounded();
+        ctx.spawn_stream_local(layout_rx, Self::handle_layout_action, |_, _| {});
+
+        Self::new_internal(
+            ctx.model_id(),
+            element_tx,
+            layout_tx,
+            styles,
+            false,
+            Pixels::zero(),
+            Pixels::zero(),
+            // Char-cell consumers read hidden lines from CharCellState, not RenderState.
+            None,
+            LayoutMode::CharCell(CharCellState::new(terminal_width, Some(hidden_lines))),
         )
     }
 
@@ -1753,6 +1784,7 @@ impl RenderState {
     /// Create a new `RenderState` with the given configuration.
     /// The initial content will be a single **trailing newline**.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn new_internal(
         entity_id: EntityId,
         element_tx: async_channel::Sender<ElementUpdate>,
@@ -1762,6 +1794,7 @@ impl RenderState {
         viewport_width: Pixels,
         viewport_height: Pixels,
         hidden_lines: Option<ModelHandle<HiddenLinesModel>>,
+        layout_mode: LayoutMode,
     ) -> Self {
         let content = SumTree::from_item(Self::final_trailing_newline_cursor(&styles));
         Self {
@@ -1785,7 +1818,7 @@ impl RenderState {
             layout_options: Default::default(),
             document_path: None,
             hidden_lines,
-            layout_mode: LayoutMode::Pixels,
+            layout_mode,
         }
     }
 

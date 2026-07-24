@@ -417,6 +417,165 @@ impl CodeEditorModel {
         }
     }
 
+    /// Creates an editor backed by a TUI char-cell `RenderState` (monospace layout, no GPU
+    /// rendering). Shares all of `CodeEditorModel`'s non-render features. Reads syntax-highlight
+    /// colors from the `Appearance` singleton, like [`Self::new`].
+    pub fn new_tui(terminal_width: u16, ctx: &mut ModelContext<Self>) -> Self {
+        let content =
+            ctx.add_model(|_| Buffer::new(Box::new(|_, _| IndentBehavior::Ignore)));
+        ctx.subscribe_to_model(&content, |me, event, ctx| {
+            me.handle_content_model_event(event, ctx);
+        });
+
+        let selection_model = ctx.add_model(|_ctx| BufferSelectionModel::new(content.clone()));
+
+        let color_map = Self::syntax_highlighting_color_map(ctx);
+        let buffer_version = content.as_ref(ctx).buffer_version();
+        let buffer_handle = content.downgrade();
+        let syntax_tree =
+            ctx.add_model(|_ctx| SyntaxTreeState::new(buffer_handle, buffer_version, color_map));
+        ctx.subscribe_to_model(&syntax_tree, |me, event, ctx| {
+            me.handle_syntax_tree_model_event(event, ctx);
+        });
+
+        let diff = ctx.add_model(|_ctx| DiffModel::new());
+        ctx.subscribe_to_model(&diff, |me, event, ctx| {
+            me.handle_diff_model_event(event, ctx);
+        });
+
+        let hidden_lines =
+            ctx.add_model(|_| HiddenLinesModel::new(content.clone(), selection_model.clone()));
+
+        let render_state = ctx.add_model(|ctx| {
+            // CharCell layout never consults `RichTextStyles`, so pass a stub.
+            RenderState::new_tui(
+                terminal_width,
+                Self::tui_stub_text_styles(),
+                hidden_lines.clone(),
+                ctx,
+            )
+            .with_width_setting(WidthSetting::InfiniteWidth)
+        });
+        ctx.subscribe_to_model(&render_state, |me, event, ctx| {
+            me.handle_render_state_model_event(event, ctx);
+        });
+        let selection = ctx.add_model(|ctx| {
+            SelectionModel::new(
+                content.clone(),
+                render_state.clone(),
+                selection_model.clone(),
+                Some(hidden_lines.clone()),
+                ctx,
+            )
+            .with_disable_hidden_navigation()
+        });
+
+        let comments = ctx.add_model(|_| EditorCommentsModel {
+            pending_comment: PendingComment::Closed,
+        });
+
+        Self {
+            render_state,
+            diff,
+            content,
+            selection_model,
+            selection,
+            syntax_tree,
+            comments,
+            hidden_lines,
+            diff_navigation_state: DiffNavigationState::Collapsed,
+            interaction_state: InteractionState::Editable,
+            show_current_line_highlights: false,
+            delay_rendering: None,
+            vim_visual_tails: vec![],
+            hovered_symbol_range: None,
+            hide_lines_outside_of_active_diff: None,
+            lazy_layout_enabled: false,
+            lazy_layout_initialized: true,
+            pending_syntax_tree_bootstrap: false,
+        }
+    }
+
+    /// A minimal `RichTextStyles` for CharCell mode, where styles are never consulted for
+    /// rendering. All colors are transparent and sizes zero.
+    fn tui_stub_text_styles() -> RichTextStyles {
+        use warp_editor::render::model::{
+            BlockSpacings, BrokenLinkStyle, CheckBoxStyle, HorizontalRuleStyle, InlineCodeStyle,
+            ParagraphStyles, TableStyle,
+        };
+        use warpui::color::ColorU;
+        use warpui::elements::{Border, Fill};
+        use warpui::fonts::{FamilyId, Weight};
+
+        const TRANSPARENT: ColorU = ColorU {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 0,
+        };
+        let paragraph = |fixed_width_tab_size| ParagraphStyles {
+            font_family: FamilyId(0),
+            font_size: 10.,
+            font_weight: Weight::Normal,
+            line_height_ratio: 1.,
+            text_color: TRANSPARENT,
+            baseline_ratio: 0.7,
+            fixed_width_tab_size,
+        };
+        RichTextStyles {
+            base_text: paragraph(None),
+            code_text: paragraph(Some(4)),
+            code_background: Fill::None,
+            embedding_background: Fill::None,
+            embedding_text: paragraph(None),
+            code_border: Border::new(0.),
+            placeholder_color: TRANSPARENT,
+            selection_fill: Fill::None,
+            cursor_fill: Fill::None,
+            inline_code_style: InlineCodeStyle {
+                font_family: FamilyId(0),
+                background: TRANSPARENT,
+                font_color: TRANSPARENT,
+            },
+            check_box_style: CheckBoxStyle {
+                border_width: 0.,
+                border_color: TRANSPARENT,
+                icon_path: "",
+                background: TRANSPARENT,
+                hover_background: TRANSPARENT,
+            },
+            horizontal_rule_style: HorizontalRuleStyle {
+                rule_height: 0.,
+                color: TRANSPARENT,
+            },
+            broken_link_style: BrokenLinkStyle {
+                icon_path: "",
+                icon_color: TRANSPARENT,
+            },
+            block_spacings: BlockSpacings::default(),
+            minimum_paragraph_height: None,
+            show_placeholder_text_on_empty_block: false,
+            cursor_width: 0.,
+            highlight_urls: false,
+            table_style: TableStyle {
+                border_color: TRANSPARENT,
+                header_background: TRANSPARENT,
+                cell_background: TRANSPARENT,
+                alternate_row_background: None,
+                text_color: TRANSPARENT,
+                header_text_color: TRANSPARENT,
+                scrollbar_nonactive_thumb_color: TRANSPARENT,
+                scrollbar_active_thumb_color: TRANSPARENT,
+                font_family: FamilyId(0),
+                font_size: 10.,
+                cell_padding: 0.,
+                outer_border: false,
+                column_dividers: false,
+                row_dividers: false,
+            },
+        }
+    }
+
     fn should_defer_syntax_tree_parsing(&self) -> bool {
         self.lazy_layout_enabled && !self.lazy_layout_initialized
     }
