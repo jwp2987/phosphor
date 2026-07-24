@@ -8,7 +8,7 @@ use warp::terminal::model::ansi::{Handler, InputBufferValue};
 use warp::tui_export::{
     AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId, AgentViewEntryOrigin,
     BlockPadding, BlocklistAIHistoryModel, ConversationStatus, Harness,
-    LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, TranscriptScope,
+    LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, AgentViewState,
     export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
@@ -880,7 +880,7 @@ fn agent_hint_tracks_transcript_emptiness_without_input_invalidation() {
             let mut model = view.terminal_model.lock();
             model
                 .block_list_mut()
-                .set_transcript_scope(TranscriptScope::Unfiltered);
+                .set_agent_view_state(AgentViewState::Inactive);
             model.simulate_block("echo hi", "hi\r\n");
         });
         let lines = app.update(|ctx| {

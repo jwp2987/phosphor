@@ -5,7 +5,7 @@ use warp::tui_export::{
     AIConversationAutoexecuteMode, AIConversationId, AgentConversationListEntryState,
     AgentRunDisplayStatus, AgentViewEntryOrigin, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
     ConversationSelection, ConversationSelectionEvent, ConversationSelectionHandle, Harness,
-    TerminalModel, TranscriptScope,
+    TerminalModel, AgentViewState,
 };
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warpui::{App, EntityId, ModelHandle};
@@ -125,7 +125,7 @@ fn tui_terminal_model() -> Arc<FairMutex<TerminalModel>> {
     let mut terminal_model = TerminalModel::mock(None, None);
     terminal_model
         .block_list_mut()
-        .set_transcript_scope(TranscriptScope::Unfiltered);
+        .set_agent_view_state(AgentViewState::Inactive);
     Arc::new(FairMutex::new(terminal_model))
 }
 
@@ -193,8 +193,8 @@ fn tui_selection_eagerly_owns_session_conversation() {
             Some(conversation_id)
         );
         assert_eq!(
-            terminal_model.lock().block_list().transcript_scope(),
-            &TranscriptScope::Unfiltered
+            terminal_model.lock().block_list().agent_view_state(),
+            &AgentViewState::Inactive
         );
 
         terminal_model
@@ -240,8 +240,8 @@ fn tui_selection_eagerly_owns_session_conversation() {
             Some(new_conversation_id)
         );
         assert_eq!(
-            terminal_model.lock().block_list().transcript_scope(),
-            &TranscriptScope::Unfiltered
+            terminal_model.lock().block_list().agent_view_state(),
+            &AgentViewState::Inactive
         );
     });
 }
@@ -376,10 +376,9 @@ fn tui_restoration_wins_over_deferred_replacement() {
         app.update(|ctx| {
             history.update(ctx, |_, ctx| {
                 ctx.emit(
-                    BlocklistAIHistoryEvent::ClearedConversationsForTerminalSurface {
-                        terminal_surface_id,
+                    BlocklistAIHistoryEvent::ClearedConversationsInTerminalView {
+                        terminal_view_id: terminal_surface_id,
                         active_conversation_id: Some(provisional_conversation_id),
-                        cleared_conversation_ids: vec![provisional_conversation_id],
                     },
                 );
             });

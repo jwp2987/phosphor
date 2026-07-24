@@ -44,9 +44,7 @@ fn terminal_use_status_covers_control_and_lifecycle_states() {
     );
 
     let stopped = LongRunningCommandControlState::User {
-        reason: UserTakeOverReason::Stop {
-            should_auto_resume: true,
-        },
+        reason: UserTakeOverReason::Stop,
     };
     assert_eq!(
         terminal_use_status_text(&stopped, false, false),

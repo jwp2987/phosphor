@@ -167,10 +167,9 @@ fn transcript_clear_event_removes_only_named_conversations() {
 
         transcript.update(&mut app, |view, ctx| {
             view.handle_history_event(
-                &BlocklistAIHistoryEvent::ClearedConversationsForTerminalSurface {
-                    terminal_surface_id,
+                &BlocklistAIHistoryEvent::ClearedConversationsInTerminalView {
+                    terminal_view_id: terminal_surface_id,
                     active_conversation_id: Some(provisional_conversation_id),
-                    cleared_conversation_ids: vec![provisional_conversation_id],
                 },
                 ctx,
             );

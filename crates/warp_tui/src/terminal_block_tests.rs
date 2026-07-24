@@ -3,7 +3,7 @@ use std::sync::Arc;
 use parking_lot::FairMutex;
 use warp::tui_export::{
     AIAgentActionId, AIConversationId, AgentInteractionMetadata, Appearance, BlockId,
-    TerminalModel, TranscriptScope,
+    TerminalModel, AgentViewState,
 };
 use warpui::App;
 use warpui_core::elements::tui::{Color, Modifier, TuiBufferExt, TuiElement, TuiRect, TuiSize};
@@ -20,7 +20,7 @@ fn model_with_finished_block(command: &str) -> (TerminalModel, BlockId) {
     let mut model = TerminalModel::mock(None, None);
     model
         .block_list_mut()
-        .set_transcript_scope(TranscriptScope::Unfiltered);
+        .set_agent_view_state(AgentViewState::Inactive);
     model.simulate_block(command, "output\r\n");
     let block_id = model
         .block_list()
@@ -69,7 +69,7 @@ fn agent_monitored_command_block_is_not_rendered_at_top_level() {
     // Sanity: this is an agent-requested command whose hide flag is off, so it
     // is otherwise "visible" and would leak into the top-level transcript.
     assert!(block.is_agent_requested_command());
-    assert!(block.is_visible(block_list.transcript_scope()));
+    assert!(block.is_visible(block_list.agent_view_state()));
 
     // Regression: an agent's command is rendered inline inside its agent
     // block's shell-command view, so it must NOT also appear as a standalone

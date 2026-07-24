@@ -6,7 +6,7 @@ use std::sync::Arc;
 use parking_lot::FairMutex;
 use warp::tui_export::{
     AIAgentActionId, AIConversationId, AgentInteractionMetadata, BlockId,
-    LongRunningCommandControlState, TaskId, TerminalModel, TranscriptScope, UserTakeOverReason,
+    LongRunningCommandControlState, TaskId, TerminalModel, AgentViewState, UserTakeOverReason,
 };
 use warpui::EntityIdMap;
 use warpui_core::App;
@@ -23,7 +23,7 @@ fn model_with_finished_block(command: &str) -> (TerminalModel, BlockId) {
     let mut model = TerminalModel::mock(None, None);
     model
         .block_list_mut()
-        .set_transcript_scope(TranscriptScope::Unfiltered);
+        .set_agent_view_state(AgentViewState::Inactive);
     model.simulate_block(command, "output\r\n");
     let block_id = model
         .block_list()
@@ -154,7 +154,7 @@ fn spawned_agent_requested_command_has_zero_top_level_height() {
         let block = block_list
             .block_with_id(&block_id)
             .expect("block should exist");
-        assert!(block.is_visible(block_list.transcript_scope()));
+        assert!(block.is_visible(block_list.agent_view_state()));
         assert!(block_list.block_heights().summary().height.as_f64() > 0.0);
     }
 
@@ -168,7 +168,7 @@ fn spawned_agent_requested_command_has_zero_top_level_height() {
     let block = block_list
         .block_with_id(&block_id)
         .expect("block should exist");
-    assert!(!block.is_visible(block_list.transcript_scope()));
+    assert!(!block.is_visible(block_list.agent_view_state()));
     assert_eq!(block_list.block_heights().summary().height.as_f64(), 0.0);
 }
 
@@ -191,7 +191,7 @@ fn spawned_user_command_keeps_its_top_level_height() {
     let block = block_list
         .block_with_id(&block_id)
         .expect("block should exist");
-    assert!(block.is_visible(block_list.transcript_scope()));
+    assert!(block.is_visible(block_list.agent_view_state()));
     assert_eq!(
         block_list.block_heights().summary().height.as_f64(),
         height_before
@@ -236,7 +236,7 @@ fn hidden_agent_requested_command_leaves_no_viewport_gap() {
                 block_list
                     .block_with_id(&user_block_id)
                     .expect("user block should exist")
-                    .height(block_list.transcript_scope())
+                    .height(block_list.agent_view_state())
                     .as_f64()
                     .ceil() as usize
             };
@@ -275,9 +275,7 @@ fn terminal_use_interrupt_follows_takeover_then_process_interrupt_policy() {
     );
 
     let stopped = LongRunningCommandControlState::User {
-        reason: UserTakeOverReason::Stop {
-            should_auto_resume: true,
-        },
+        reason: UserTakeOverReason::Stop,
     };
     assert_eq!(
         terminal_use_interrupt_action(Some(&stopped), true),
@@ -326,9 +324,7 @@ fn completed_user_controlled_requested_command_resumes_unless_tearing_down() {
             .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
             .expect("command should become agent monitored");
         block
-            .take_over_control_for_user(UserTakeOverReason::Stop {
-                should_auto_resume: true,
-            })
+            .take_over_control_for_user(UserTakeOverReason::Stop)
             .expect("user takeover should succeed");
         block.id().clone()
     };
