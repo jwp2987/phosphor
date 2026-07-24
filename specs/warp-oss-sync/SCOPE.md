@@ -648,23 +648,29 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    `TerminalSurface(+Init/Result)`, `RepoDetectionSessionType`,
    `LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE`.
 
-   **Terminal-manager (STAGED, user chose "Stage it"): STEP 1 DONE (dd359e0c) —**
-   added `terminal/writeable_pty/terminal_surface.rs` with `TerminalSurface` trait +
-   `PtyIntent`/`PtyIntentEvent` + `TerminalSurfaceInit`/`TerminalSurfaceResult` (additive, no
-   impls, no behavior change; GUI+tui gates green). **STEP 2 (the risky commit, NOT started):**
-   genericize `TerminalManager` → `TerminalManager<S: TerminalSurface>` (`view` → `surface:
-   ViewHandle<S>`); `impl TerminalSurface for TerminalView` (Zap already has the callback methods
-   inherent — mostly a move) + `impl PtyIntentEvent for terminal::view::Event` (warp view.rs
-   25782/25806); restructure `create_model` to the closure-inversion (`create_surface:
-   FnOnce(TerminalSurfaceInit) -> TerminalSurfaceResult<S,PostWire>`) via shared
-   `create_model_with_manager`, moving GUI view params (resources/prompt_type/
-   conversation_restoration/initial_input_config) into the GUI call site's closure; add
-   `create_tui_model` + `TuiTerminalManager<S>` erasure wrapper; genericize `wire_up_*_with_view`
-   → `_with_surface`; add `TerminalSurfaceInit::new_for_test` (adapt to 9-arg
-   `TerminalModel::new_for_test`); tui_export the 5 types; thread the ~3 GUI call sites
-   (pane_group 4837, docker_sandbox 68). Warp's manager also has pty_controller/
-   remote_server_controller so struct divergence is modest. Do a GUI terminal smoke-run (shell
-   spawn / password prompt / resize) — cargo-check won't catch runtime PTY regressions.
+   **Terminal-manager: ✅ DONE (mirrors upstream Warp #13013 / b15bdd3a, which Zap forked ~2mo
+   before — the divergence is "Zap is behind," not a Zap refactor).** Step 2a (e394c12e, additive):
+   `impl PtyIntentEvent for terminal::view::Event` + `impl TerminalSurface for TerminalView`
+   (lifecycle hooks delegate to the inherent methods via the explicit `TerminalView::` path — plain
+   `self.method()` RECURSES when inherent is `&self` and the trait is `&mut self`; Unix password
+   hooks carry the notification/SSH logic) + tui_export the 5 surface types. Step 2b (2f287c40,
+   11 files): `TerminalManager`→`TerminalManager<S>`; GUI `create_model` keeps its signature but
+   delegates through the closure-based `create_model_with_manager<PostWire,BoxManager>` (GUI view
+   params captured in the `create_surface` closure + `post_wire`); added `create_tui_model`,
+   `TerminalManagerInit<S>`, `TuiTerminalManager<S>` (its `as_any_mut`→`&mut self.0` keeps the
+   downcast target `TerminalManager<S>` in both paths); **removed `view()` from the object-safe
+   trait** → all THREE constructors (local/remote/mock) return `(surface, boxed manager)` and every
+   GUI call site (pane_group ×4, docker_sandbox) destructures; PTY wiring `_with_view`→
+   `_with_surface<T,S>` (via `event.pty_intent()`; Zap keeps its ExecuteCommand order; `Interrupt`
+   is a no-op — no `write_interrupt`); poller rewired view-events→model-events through the
+   `TerminalSurface` Unix hooks. **warpui_core `subscribe_to_view` relaxed `S: View`→`S: Entity`**
+   (matches warp; required for generic-surface subscription). **`writeable_pty` is a PRIVATE
+   module** → surface vocab re-exported at the PUBLIC `terminal` module, tui_export via
+   `crate::terminal::` (private-module path = E0603 caught ONLY by `cargo check -p warp_tui`, NOT
+   the gui `--lib` gate). App crate green on gui + tui; warp_tui 15→14.
+   **⚠ RUNTIME-UNVERIFIED:** poller's model-event switch needs a GUI smoke test (sudo/ssh password
+   prompt + navigate away → needs-attention notification). `TerminalSurfaceInit::new_for_test`
+   still deferred (warp_tui test_fixtures only).
 7. **Diff storage adapter** (file: tui_diff_storage) —
    `DiffStorage`/`DiffStorageHelper`/`RegisteredDiffStorage`/`SaveFuture`/
    `UpdatedFileState`/`changed_lines_from_op`/`FileSnapshot`: adapt `TuiDiffStorage`
