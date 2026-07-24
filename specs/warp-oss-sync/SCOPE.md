@@ -448,11 +448,14 @@ achieved its goal: the real remaining surface is now visible.
 
 ### Phase 3d — facade population + subsystem ports (IN PROGRESS)
 
-**CURRENT STATE: `cargo check -p warp_tui` = 10 errors** (down from 84; terminal-manager
-+ 4 small self-contained ports this run: TuiAutoupdateSettings, model picker,
-infer_mime_type/MIME_SNIFF_BYTES, create_system_clipboard — 14→10), GUI gate green at
-every commit, all pushed to `origin/josh/warp-oss-sync` (tip commit `56f65d6a`). The
-remaining 10 errors are the DEEP/CLOUD-ADJACENT cluster only — see items 6/7/8 + the
+**CURRENT STATE: `cargo check -p warp_tui` = 4 errors** (down from 84; tip `002841ca`,
+GUI+tui green, all pushed). This run: the 4 small ports (14→10) THEN the whole
+**conversation-restoration hub + FailedOutputPresentation (10→4)**. The hub did NOT unmask
+~200 errors as feared — terminal_session_view's body type-checked cleanly; only a `builder`
+E0425 cascade (missing `let builder = TuiUiBuilder::from_app(ctx)` in render) needed fixing.
+**REMAINING 4 errors = 2 subsystems ONLY: char-cell editor (item 8) + diff-storage (item 7).**
+Once both land, warp_tui compiles and is testable. (Older note, still useful context below.) The
+earlier "remaining 10" were the DEEP/CLOUD-ADJACENT cluster — see items 6/7/8 + the
 `FailedOutputPresentation` design call: char-cell editor port (warp_editor), diff-storage,
 conversation-restoration hub (cascades the 4 `builder` E0425s), and the BYOP error-surface
 product decision. No further small wins remain. **⚠ diff-storage (item 7) was ATTEMPTED &
