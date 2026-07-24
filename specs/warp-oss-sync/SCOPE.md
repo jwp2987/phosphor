@@ -546,18 +546,23 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    - pt.3 (`SlashCommandSelectionBehavior`+`slash_command_selection_behavior`+
      `should_close_slash_command_menu_for_exact_match` in `slash_commands/mod.rs`) + tui_export
      re-exports of the whole landed surface.
-   **REMAINING (the big cascade + leaves) — a fresh-session effort:**
-   - **`SlashCommandKind` (BIG):** warp carries it as a `pub kind` FIELD on EVERY `StaticCommand`
-     (~55 variants). Zap's `StaticCommand` has no `kind` field → porting means adding the enum
-     AND assigning a `kind` to all ~50 command definitions in `static_commands/commands.rs`
-     (per-command judgment; some warp kinds are cloud — CloudAgent/MoveToCloud/RemoteControl —
-     that Zap may not have). warp_tui's `terminal_session_view.rs:2560+` dispatches on it.
-   - **`query_selectable_skills`** (warp `terminal/input/skills/core.rs`) — skills query.
-   - **`record_autodetection_toggle_from_slash_command`/`record_saved_prompt_accepted`/
-     `record_static_slash_command_accepted`** — inert-telemetry stubs (BYOP); **`saved_prompt_text_for_id`**.
-   - warp_tui rewrites: construct via `new_tui`/`TuiSlashCommandDataSourceArgs` (drop warp's
-     `terminal_model` arg), drop the now-inherent `SlashCommandDataSource as _` trait import.
-   - (`slash_commands.rs` also has an internal `AUTO_APPROVE` scope error.)
+   **✅ SUBSYSTEM COMPLETE (commits f1173e23→0f898a38, GUI-green + pushed). All slash-command
+   and skills symbols resolve; warp_tui 29→27 (remaining errors are unrelated subsystems).**
+   - pt.4 `SlashCommandKind`: avoided the ~50-site field cascade — warp carries `kind` as a
+     per-command FIELD, but it's a TUI-only need Zap's GUI never reads, so instead added a
+     name-derived `StaticCommand::kind()` + `supports_tui()` (one match each). Enum = warp's
+     full variant set + `Other` (for `/pr-comments`, gated out by `supports_tui()`). Adapted
+     warp_tui's exhaustive `match command.kind` → `command.kind()` + `Other` arm.
+     **Reusable pattern: a TUI-only per-item field on a large GUI collection → derive it from an
+     existing key (name) via a method, don't add the field to every literal.**
+   - pt.5 `query_selectable_skills`+`SelectableSkill` → ported into `skills/data_source.rs`
+     (Zap's `SkillDescriptor` has every field; adapted cwd from `LocalOrRemotePath`→`&Path`;
+     added `ActiveSession::current_working_directory_location`).
+   - pt.6 telemetry `record_*` (verbatim; added `AgentModeAutoDetectionSettingOrigin::SlashCommand`)
+     + `saved_prompt_text_for_id` (adapted `CloudModel`→`ObjectStoreModel`).
+   - pt.7 warp_tui wiring: `new_tui`/`TuiSlashCommandDataSourceArgs` (dropped `terminal_model`),
+     removed the now-inherent `SlashCommandDataSource as _` imports, matched auto-approve on the
+     literal `"/auto-approve"` (Zap registers no AUTO_APPROVE const).
 3. **Conversation selection/management** (files: conversation_selection,
    conversation_menu, input_mode_policy, inline_menu, input/view, terminal_session_view)
    — `ConversationSelection(+Event/Handle)`, `AgentConversationEntry(+Id)`,
