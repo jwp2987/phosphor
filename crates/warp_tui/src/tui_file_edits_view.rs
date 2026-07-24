@@ -209,7 +209,7 @@ impl TuiFileEditsView {
             let executor = action_model.as_ref(ctx).request_file_edits_executor(ctx);
             executor.update(ctx, |executor, _| {
                 let handle = TuiDiffStorageHandle::new(storage.clone());
-                executor.register_requested_edits(&action_id, Box::new(handle));
+                executor.register_requested_edits_storage(&action_id, Box::new(handle));
             });
         }
 
