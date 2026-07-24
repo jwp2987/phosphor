@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use anyhow::{anyhow, Result};
 use chrono::{Local, TimeDelta};
 use history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
-use warpui::{AppContext, SingletonEntity, View, ViewContext};
+use warpui::{AppContext, Entity, SingletonEntity, View, ViewContext};
 
 use crate::terminal::shared_session::ParticipantId;
 
@@ -32,7 +32,7 @@ pub struct AIBlockModelImpl<V> {
 
 impl<V> AIBlockModelImpl<V>
 where
-    V: View,
+    V: Entity,
 {
     pub fn new(
         exchange_id: AIAgentExchangeId,
@@ -86,7 +86,7 @@ where
 
 impl<V> AIBlockModel for AIBlockModelImpl<V>
 where
-    V: View,
+    V: Entity,
 {
     type View = V;
 
