@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use warp::tui_export::{
-    InputType, SlashCommandDataSource as _, parse_current_commands_and_tokens,
+    InputType, parse_current_commands_and_tokens,
     tui_completion_context_has_exact_command, tui_completion_session_context,
 };
 use warp_editor::model::CoreEditorModel;

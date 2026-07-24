@@ -12,9 +12,8 @@ use warp::search::data_source::QueryResult;
 use warp::search::mixer::SearchMixerEvent;
 use warp::tui_export::{
     AcceptSlashCommandOrSavedPrompt, ConversationSelectionHandle, ParsedSlashCommandInput,
-    SlashCommandDataSource as _, SlashCommandMixer, TuiSlashCommandDataSource,
-    UpdatedActiveCommands, should_close_slash_command_menu_for_exact_match, slash_command_query,
-    slash_commands,
+    SlashCommandMixer, TuiSlashCommandDataSource, UpdatedActiveCommands,
+    should_close_slash_command_menu_for_exact_match, slash_command_query,
 };
 use warp_editor::model::CoreEditorModel;
 use warp_search_core::inline_menu::{InlineMenuResultsUpdate, InputDrivenInlineMenuLifecycle};
@@ -265,7 +264,9 @@ impl TuiSlashCommandModel {
                 .map(|row| TuiInlineMenuRow {
                     title: row.title.clone(),
                     description: row.description.clone(),
-                    state_suffix: (row.title == slash_commands::AUTO_APPROVE.name).then(|| {
+                    // BYOP: Zap does not register an /auto-approve command constant, so match
+                    // on the literal name; the row only appears if the command is present.
+                    state_suffix: (row.title == "/auto-approve").then(|| {
                         format!(
                             "(currently {})",
                             if self.auto_approve_enabled(ctx) {

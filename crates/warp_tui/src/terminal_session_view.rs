@@ -26,7 +26,7 @@ use warp::tui_export::{
     LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, ModelEvent, ParsedSlashCommandInput,
     PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
     ServerConversationToken, ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference,
-    SlashCommandDataSource as _, SlashCommandKind, SlashCommandSelectionBehavior,
+    SlashCommandKind, SlashCommandSelectionBehavior,
     StaticCommand, TerminalModel, TerminalSurface,
     TerminalSurfaceInit, TranscriptScope, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
     TuiSlashCommandDataSourceArgs, TuiZeroStateDataSource, UserTakeOverReason,
@@ -911,12 +911,11 @@ impl TuiTerminalSessionView {
             ctx.add_model(|ctx| CodeEditorModel::new_tui(INITIAL_INPUT_WIDTH, ctx));
         let suggestions_mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
         let slash_commands_source = ctx.add_model(|ctx| {
-            TuiSlashCommandDataSource::new(
+            TuiSlashCommandDataSource::new_tui(
                 TuiSlashCommandDataSourceArgs {
                     active_session: active_session.clone(),
                     cli_subagent_controller: cli_subagent_controller.clone(),
                     terminal_view_id: terminal_surface_id,
-                    terminal_model: model.clone(),
                 },
                 ctx,
             )
