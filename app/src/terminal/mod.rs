@@ -261,6 +261,11 @@ impl SizeUpdate {
             || self.last_size.rows() != self.new_size.rows()
     }
 
+    /// The new size info this update carries.
+    pub fn new_size(&self) -> SizeInfo {
+        self.new_size
+    }
+
     /// Returns whether the pane size changed with this update
     pub fn pane_size_changed(&self) -> bool {
         // It's fine for this to be a near-exact comparison because pane size

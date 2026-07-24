@@ -138,11 +138,11 @@ impl TuiCLISubagentView {
             move |view, _, event, ctx| match event {
                 BlocklistAIHistoryEvent::UpgradedTask {
                     optimistic_id,
-                    server_id,
+                    confirmed_task_id,
                     ..
                 } if *optimistic_id == task_id_for_events => {
-                    task_id_for_events = server_id.clone();
-                    view.task_id = server_id.clone();
+                    task_id_for_events = confirmed_task_id.clone();
+                    view.task_id = confirmed_task_id.clone();
                 }
                 BlocklistAIHistoryEvent::AppendedExchange {
                     exchange_id,

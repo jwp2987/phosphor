@@ -697,7 +697,7 @@ impl TuiTerminalSessionView {
             }
             CLISubagentEvent::UpdatedControl { .. }
             | CLISubagentEvent::UpdatedInstruction { .. }
-            | CLISubagentEvent::UpdatedLastSnapshot
+            | CLISubagentEvent::UpdatedLastSnapshot { .. }
             | CLISubagentEvent::ToggledHideResponses => {}
             CLISubagentEvent::ControlHandedBackAfterTransfer => {
                 let executor = self.ai_action_model.as_ref(ctx).shell_command_executor(ctx);
@@ -726,9 +726,8 @@ impl TuiTerminalSessionView {
             TerminalUseInterruptAction::TakeControl => {
                 self.cli_subagent_controller.update(ctx, |controller, ctx| {
                     controller.switch_control_to_user(
-                        UserTakeOverReason::Stop {
-                            should_auto_resume: true,
-                        },
+                        // Zap's Stop is a unit variant (no should_auto_resume flag).
+                        UserTakeOverReason::Stop,
                         ctx,
                     );
                 });
@@ -782,19 +781,12 @@ impl TuiTerminalSessionView {
         self.input_view.update(ctx, |input, ctx| input.clear(ctx));
         ctx.notify();
 
-        let dispatched = self.ai_controller.update(ctx, |controller, ctx| {
+        // Zap's send_user_query_in_conversation returns () and always dispatches, so there is
+        // no failure path to undo (Warp restored the instruction / input text on failure here).
+        let _ = previous_instruction;
+        self.ai_controller.update(ctx, |controller, ctx| {
             controller.send_user_query_in_conversation(prompt.clone(), conversation_id, None, ctx)
         });
-        if !dispatched {
-            self.cli_subagent_controller.update(ctx, |controller, ctx| {
-                controller.restore_latest_instruction(block_id, previous_instruction, ctx);
-            });
-            if self.input_view.as_ref(ctx).is_empty(ctx) {
-                self.input_view.update(ctx, |input, ctx| {
-                    input.set_text(&prompt, ctx);
-                });
-            }
-        }
         true
     }
 
@@ -2591,7 +2583,9 @@ impl TuiTerminalSessionView {
                 ctx.spawn(
                     async move {
                         tokio::task::spawn_blocking(|| {
-                            let path = warp_logging::create_log_bundle_zip()?;
+                            let path = warp_logging::create_log_bundle_zip(
+                                warp_logging::LogBundleExtras::default(),
+                            )?;
                             reveal_path_in_file_manager(&path);
                             Ok::<_, anyhow::Error>(path)
                         })
