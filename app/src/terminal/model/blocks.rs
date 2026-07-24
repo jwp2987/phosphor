@@ -1246,7 +1246,7 @@ impl BlockList {
     }
 
     /// Takes and clears the set of dirty rich content view IDs.
-    pub(in crate::terminal) fn take_dirty_rich_content_items(&mut self) -> HashSet<EntityId> {
+    pub fn take_dirty_rich_content_items(&mut self) -> HashSet<EntityId> {
         std::mem::take(&mut self.dirty_rich_content_items)
     }
 
@@ -3399,7 +3399,7 @@ impl BlockList {
         }
     }
 
-    pub(in crate::terminal) fn insert_rich_content_before_block_index(
+    pub fn insert_rich_content_before_block_index(
         &mut self,
         item: RichContentItem,
         block_index: BlockIndex,

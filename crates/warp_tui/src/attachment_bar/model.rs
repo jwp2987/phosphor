@@ -387,7 +387,7 @@ impl TuiAttachmentModel {
                     if autodetection_enabled {
                         input_mode.enable_autodetection(InputType::AI, ctx);
                     } else {
-                        input_mode.set_input_config(AI_LOCKED_CONFIG, input_is_empty, None, ctx);
+                        input_mode.set_input_config(AI_LOCKED_CONFIG, input_is_empty, ctx);
                     }
                 });
                 if request_detection {

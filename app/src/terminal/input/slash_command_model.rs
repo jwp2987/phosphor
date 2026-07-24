@@ -510,7 +510,7 @@ impl SlashCommandDataSource {
     /// Ported from Warp OSS's `SlashCommandDataSource::parse_skill_command`, using Zap's
     /// `ActiveSession::current_working_directory` (Zap has no CLI-agent provider filtering on
     /// this path).
-    fn parse_skill_command(&self, buffer: &str, ctx: &AppContext) -> Option<DetectedSkillCommand> {
+    pub fn parse_skill_command(&self, buffer: &str, ctx: &AppContext) -> Option<DetectedSkillCommand> {
         let (possible_command, possible_argument) =
             if let Some((command, argument)) = buffer.split_once(' ') {
                 (command, Some(argument.to_owned()))

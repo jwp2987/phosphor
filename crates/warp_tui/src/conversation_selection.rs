@@ -49,7 +49,7 @@ impl TuiConversationSelection {
             let conversation_id = history.start_new_conversation(
                 terminal_surface_id,
                 is_autoexecute_override,
-                false,
+                // Zap's start_new_conversation takes only is_viewing_shared_session (false).
                 false,
                 ctx,
             );

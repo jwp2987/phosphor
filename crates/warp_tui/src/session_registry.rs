@@ -122,13 +122,12 @@ impl TuiSessions {
         let manager = LocalTtyTerminalManager::<TuiTerminalSessionView>::create_tui_model(
             startup_directory,
             HashMap::<OsString, OsString>::from_iter(std::env::vars_os()),
-            IsSharedSessionCreator::No,
+            // Zap's create_tui_model has no shared-session-creator or block-spacing params.
             None,
             banner.clone(),
             Vector2F::new(120., 24.),
             None,
             None,
-            TRANSCRIPT_BLOCK_SPACING,
             ctx,
             move |surface_init, ctx| {
                 let surface = ctx.add_typed_action_tui_view(window_id, |ctx| {

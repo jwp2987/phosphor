@@ -726,7 +726,7 @@ impl TuiInputView {
     pub(crate) fn exit_shell_mode(&mut self, ctx: &mut ViewContext<Self>) {
         let is_input_buffer_empty = self.plain_text(ctx).is_empty();
         self.input_mode.clone().update(ctx, |input_mode, ctx| {
-            input_mode.set_input_config(AI_LOCKED_CONFIG, is_input_buffer_empty, None, ctx);
+            input_mode.set_input_config(AI_LOCKED_CONFIG, is_input_buffer_empty, ctx);
         });
     }
 
@@ -739,7 +739,7 @@ impl TuiInputView {
             if is_autodetection_enabled {
                 input_mode.enable_autodetection(InputType::AI, ctx);
             } else {
-                input_mode.set_input_config(AI_LOCKED_CONFIG, true, None, ctx);
+                input_mode.set_input_config(AI_LOCKED_CONFIG, true, ctx);
             }
         });
     }
