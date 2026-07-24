@@ -2952,6 +2952,7 @@ impl TuiView for TuiTerminalSessionView {
             }
             ConversationRestoreState::Idle => {}
         }
+        let builder = TuiUiBuilder::from_app(ctx);
         // While a full-screen (alt-screen) app is active, hand the whole pane to
         // it: render its grid and forward input, instead of the block UI.
         let (alt_screen_active, input_target, user_owns_running_command) = {

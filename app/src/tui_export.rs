@@ -76,6 +76,10 @@ pub use crate::ai::blocklist::block::view_impl::common::format_elapsed_seconds;
 pub use crate::ai::blocklist::controller::BlocklistAIController;
 pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, InputType};
 pub use crate::ai::blocklist::view_util::format_credits;
+pub use crate::ai::blocklist::view_util::{
+    failed_output_presentation, should_show_failed_output_usage_notice, FailedOutputPresentation,
+    FAILED_OUTPUT_USAGE_NOTICE_TEXT,
+};
 pub use crate::ai::blocklist::block::model::{
     AIBlockModel, AIBlockModelHelper, AIBlockModelImpl, AIBlockOutputStatus, AIRequestType,
     OutputStatusUpdateCallback,
