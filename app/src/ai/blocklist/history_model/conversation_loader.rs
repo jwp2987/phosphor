@@ -148,6 +148,19 @@ impl BlocklistAIHistoryModel {
         }
     }
 
+    /// Loads a conversation by its server token.
+    ///
+    /// BYOP has no cloud server and no server conversation tokens, so there is
+    /// nothing to load by token — always resolves to `None`. (warp loads these
+    /// from the cloud server; the `warp_tui` `Server` restore target never fires
+    /// in a BYOP build.)
+    pub fn load_conversation_by_server_token(
+        &self,
+        _server_token: &ServerConversationToken,
+    ) -> warpui::r#async::BoxFuture<'static, Option<LoadedConversationData>> {
+        box_future(futures::future::ready(None))
+    }
+
     /// Loads a conversation from local DB and returns it.
     /// This is a private helper method. Use `get_load_conversation_data_future` instead.
     ///

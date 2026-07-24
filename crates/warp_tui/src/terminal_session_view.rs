@@ -19,7 +19,7 @@ use warp::tui_export::{
     BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
     CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, CancellationReason, ChangelogModel,
-    ChangelogRequestType, CloudConversationData, CommandExecutionSource, ConversationFileExport,
+    ChangelogRequestType, LoadedConversationData, CommandExecutionSource, ConversationFileExport,
     ConversationSelection, ConversationSelectionHandle,
     ExecuteCommandEvent, GitRepoModels, GitRepoStatusModel,
     GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
@@ -1399,10 +1399,10 @@ impl TuiTerminalSessionView {
         let future =
             BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| match &target {
                 TuiConversationRestoreTarget::Local(conversation_id) => {
-                    history.load_conversation_data(*conversation_id, ctx)
+                    history.load_conversation_data(*conversation_id)
                 }
                 TuiConversationRestoreTarget::Server(server_token) => {
-                    history.load_conversation_by_server_token(server_token, ctx)
+                    history.load_conversation_by_server_token(server_token)
                 }
             });
 
@@ -1429,7 +1429,7 @@ impl TuiTerminalSessionView {
         target: TuiConversationRestoreTarget,
         origin: TuiConversationRestoreOrigin,
         request_id: u64,
-        result: Option<CloudConversationData>,
+        result: Option<LoadedConversationData>,
         ctx: &mut ViewContext<Self>,
     ) {
         if !self.is_current_restore_request(request_id) {
@@ -1437,8 +1437,8 @@ impl TuiTerminalSessionView {
         }
 
         let conversation = match result {
-            Some(CloudConversationData::Oz(conversation)) => conversation,
-            Some(CloudConversationData::CLIAgent(_)) => {
+            Some(LoadedConversationData::Oz(conversation)) => conversation,
+            Some(LoadedConversationData::CLIAgent(_)) => {
                 self.fail_conversation_restore(
                     request_id,
                     "The Warp TUI only supports Oz/Warp conversations.".to_owned(),

@@ -81,7 +81,7 @@ pub use crate::ai::blocklist::block::model::{
     OutputStatusUpdateCallback,
 };
 pub use crate::ai::blocklist::history_model::{
-    AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
+    AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, LoadedConversationData,
 };
 pub use crate::ai::blocklist::persistence::maybe_build_ai_query_upsert_event;
 pub use crate::ai::llms::{LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent};
