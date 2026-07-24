@@ -201,7 +201,7 @@ impl TuiTranscriptView {
         ctx: &mut ViewContext<Self>,
     ) {
         if event
-            .terminal_surface_id()
+            .terminal_view_id()
             .is_some_and(|id| id != self.terminal_surface_id)
         {
             return;
