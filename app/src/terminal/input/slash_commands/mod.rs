@@ -48,6 +48,42 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::{ForkedConversationDestination, ToastStack, WorkspaceAction};
 use crate::TelemetryEvent;
 
+/// What happens when a slash command is selected from the menu.
+///
+/// Ported from Warp OSS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlashCommandSelectionBehavior {
+    /// Insert the command text (with a trailing space) so the user can type an argument.
+    InsertCommandText(String),
+    /// Execute the command immediately.
+    Execute,
+}
+
+/// Returns whether selecting `command` inserts its text (to await an argument) or executes it.
+///
+/// Ported verbatim from Warp OSS.
+pub fn slash_command_selection_behavior(command: &StaticCommand) -> SlashCommandSelectionBehavior {
+    if command
+        .argument
+        .as_ref()
+        .is_some_and(|argument| !argument.should_execute_on_selection)
+    {
+        SlashCommandSelectionBehavior::InsertCommandText(format!("{} ", command.name))
+    } else {
+        SlashCommandSelectionBehavior::Execute
+    }
+}
+
+/// Whether the slash-command menu should close after an exact command match.
+///
+/// Ported verbatim from Warp OSS.
+pub fn should_close_slash_command_menu_for_exact_match(
+    result_count: usize,
+    argument_started: bool,
+) -> bool {
+    result_count < 2 || argument_started
+}
+
 #[derive(Debug, Clone)]
 pub enum AcceptSlashCommandOrSavedPrompt {
     SlashCommand {

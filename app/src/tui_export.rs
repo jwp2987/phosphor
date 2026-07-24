@@ -93,8 +93,12 @@ pub use crate::search::slash_command_menu::static_commands::commands::{
     self as slash_commands, COMMAND_REGISTRY,
 };
 pub use crate::terminal::input::slash_commands::{
-    AcceptSlashCommandOrSavedPrompt, SlashCommandDataSource, UpdatedActiveCommands,
+    AcceptSlashCommandOrSavedPrompt, SlashCommandDataSource, SlashCommandMixer,
+    SlashCommandSelectionBehavior, TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs,
+    UpdatedActiveCommands, build_slash_command_mixer, should_close_slash_command_menu_for_exact_match,
+    slash_command_query, slash_command_selection_behavior,
 };
+pub use crate::terminal::input::slash_command_model::ParsedSlashCommandInput;
 pub use crate::search::slash_command_menu::{SlashCommandId, StaticCommand};
 pub use crate::terminal::alt_screen::{should_intercept_mouse, should_intercept_scroll};
 pub use crate::terminal::color::{Colors as TerminalColors, List as TerminalColorList};
