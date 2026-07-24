@@ -30,6 +30,23 @@ pub use warpui_core::platform::*;
 
 pub use app::AppBuilder;
 
+/// Creates a handle to the OS clipboard for the current platform.
+///
+/// Returns an error on platforms without a system clipboard (e.g. wasm/headless).
+pub fn create_system_clipboard() -> anyhow::Result<Box<dyn crate::Clipboard + Send>> {
+    cfg_if::cfg_if! {
+        if #[cfg(target_os = "macos")] {
+            Ok(Box::new(mac::clipboard::Clipboard::new()?))
+        } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
+            Ok(Box::new(crate::windowing::winit::linux::LinuxClipboard::new()?))
+        } else if #[cfg(target_os = "windows")] {
+            Ok(Box::new(crate::windowing::winit::windows::WindowsClipboard::new()?))
+        } else {
+            anyhow::bail!("System clipboard is unavailable on this platform")
+        }
+    }
+}
+
 /// Returns whether the current device is a mobile device with touch input.
 ///
 /// This is a cross-platform wrapper around the platform-specific implementation.
