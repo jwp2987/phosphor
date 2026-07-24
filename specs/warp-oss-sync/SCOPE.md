@@ -448,9 +448,15 @@ achieved its goal: the real remaining surface is now visible.
 
 ### Phase 3d — facade population + subsystem ports (IN PROGRESS)
 
-**CURRENT STATE: `cargo check -p warp_tui` = 32 errors** (down from 84), GUI gate
-green at every commit, all pushed to `origin/josh/warp-oss-sync` (tip commit
-`document_action_presentation`). Build the TUI check with plain
+**CURRENT STATE: `cargo check -p warp_tui` = 10 errors** (down from 84; terminal-manager
++ 4 small self-contained ports this run: TuiAutoupdateSettings, model picker,
+infer_mime_type/MIME_SNIFF_BYTES, create_system_clipboard — 14→10), GUI gate green at
+every commit, all pushed to `origin/josh/warp-oss-sync` (tip commit `56f65d6a`). The
+remaining 10 errors are the DEEP/CLOUD-ADJACENT cluster only — see items 6/7/8 + the
+`FailedOutputPresentation` design call: char-cell editor port (warp_editor), diff-storage
+(needs `compute_unified_diff` or an ApplyDiffModel rewrite), conversation-restoration hub
+(cascades the 4 `builder` E0425s), and the BYOP error-surface product decision. No further
+small wins remain. Build the TUI check with plain
 `cargo check -p warp_tui` (the crate has no `tui` feature of its own); the app
 crate carries it via `cargo check -p warp --features tui`, and the guardrail is
 `cargo check -p warp --features gui` after any shared-crate change.
@@ -636,8 +642,16 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    NOTE: `InputModePolicy`/`PolicyConfigUpdate` (input_mode_policy.rs) and
    `InputTypeAutoDetectionSource`/`PendingAttachmentSummary` (attachment) are SEPARATE
    subsystems from the menu — do not conflate.
-4. **Model picker** (file: model_menu) — `query_model_picker_choices`/`ModelPickerChoice`.
-   Zap's `terminal/input/models/data_source.rs` diverged — port/adapt.
+4. **Model picker** (file: model_menu) — **✅ DONE (7cf47c69, warp_tui 13→12, GUI-green + pushed).**
+   Added `ModelPickerChoice` + `query_model_picker_choices` to
+   `terminal/input/models/data_source.rs` ADDITIVELY (GUI's richer `ModelSearchItem`
+   `run_query` path untouched). Zap adaptations: uses `is_using_api_key_for_provider`
+   (the helper Zap's own run_query already uses to clear a `RequiresUpgrade` gate under
+   BYOK) in place of warp's `should_show_key_icon_for_model`; DROPS warp's ambient-agent
+   `order_model_choices` ordering step (Zap physically removed the ambient-agent
+   subsystem) — final `sort_by_key(priority_tier, score)` gives sensible order. Adapted
+   warp_tui call site: Zap's `get_base_llm_choices_for_agent_mode()` takes NO `ctx`
+   (warp/master's does). Re-exported via `models/mod.rs` + tui_export.
 5. **Zero-state data source** (file: zero_state) — `TuiZeroStateDataSource` (warp
    `terminal/input/slash_commands/data_source/zero_state.rs`).
 6. **Conversation restoration** (file: terminal_session_view) — `CloudConversationData`
@@ -702,11 +716,29 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
     dollars). Swapped in `AIConversation::context_window_usage()` (0–1 fraction Zap already
     derives) rendered as an informational "N% context" footer entry; dropped the
     credits⇄cost toggle, `usage_display_mode` setting, `ToggleUsageDisplay` action, and
-    UsageToggle hover machinery. Remaining cloud-adjacent design calls:
-    `agent_block.rs` `FailedOutputPresentation` family (cascades
-    into `QuotaLimit`/`OutOfCredits`/`AIRequestUsageModel`), `autoupdate.rs`
-    `TuiAutoupdateSettings`, `attachment_bar/image_processing` `infer_mime_type`/
-    `MIME_SNIFF_BYTES` (+ `warpui::platform::create_system_clipboard`),
+    UsageToggle hover machinery.
+    - `autoupdate.rs` `TuiAutoupdateSettings` — **✅ DONE (3e02b5e0, warp_tui 14→13).**
+      Ported warp `app/src/settings/tui_autoupdate.rs` → same path; DROPPED the newer
+      `surface: SettingSurfaces::TUI` marker (Zap's settings macro predates the surface
+      concept; no `SettingSurfaces` type exists) and added a `storage_key` per Zap
+      convention. Registered in settings init next to the GUI `AutoupdateSettings`.
+    - `attachment_bar/image_processing` `infer_mime_type`/`MIME_SNIFF_BYTES` — **✅ DONE
+      (ab110e43, warp_tui 12→11).** Clean extract from warp `util/image.rs` (`infer` 0.19 +
+      `mime_guess` 2.0 already app deps). Its companion
+      `warpui::platform::create_system_clipboard` — **✅ DONE (56f65d6a, warp_tui 11→10).**
+      Ported into warpui `platform/mod.rs` (MIT→MIT); dispatches to the existing
+      mac/`LinuxClipboard`/`WindowsClipboard` impls Zap's warpui already ships.
+    Remaining cloud-adjacent design calls:
+    `agent_block.rs`/`agent_block_tests.rs` `FailedOutputPresentation` family — **NOT a
+    clean port (investigated 2026-07-24):** warp's `failed_output_presentation` reads
+    billing/credit state Zap lacks (`UserWorkspaces` paid-plan `billing_metadata`,
+    `AIRequestUsageModel::next_refresh_time` credit reset, `OutOfCredits`/"Subscribe" CTA,
+    `FAILED_OUTPUT_USAGE_NOTICE_TEXT` "won't count towards your usage"); Zap has NO
+    `FailedOutputPresentation` enum and its `RenderableAIError::QuotaLimit` is a UNIT
+    variant (warp's carries `user_display_message`) — enum diverged. Only a TEST file
+    consumes it. This is a BYOP product decision (what does a BYOP error surface show?),
+    not a mechanical port — defer to the user.
+    Also still open:
     `transcript_view` `BlockSpacing`/`should_show_task_in_blocklist`,
     `tui_cli_subagent_view`/`terminal_session_view` `CLISubagentTarget` (now present —
     facade when group unblocks), `session_registry` `TerminalSurfaceResult`.
