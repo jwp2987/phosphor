@@ -79,6 +79,7 @@ pub use crate::ai::option_snapshot::{
     OptionBadge, OptionFooter, OptionRow, OptionSnapshot, OptionSourceStatus,
 };
 pub use crate::ai::skills::{SkillManager, SkillReference};
+pub use crate::terminal::input::skills::{AcceptSkill, SelectableSkill, query_selectable_skills};
 pub use crate::appearance::Appearance;
 pub use crate::tui::log_out_tui;
 pub use crate::banner::BannerState;
