@@ -1266,6 +1266,25 @@ impl BlocklistAIController {
         self.send_slash_command_request(SlashCommandRequest::CreateNewProject { query }, ctx);
     }
 
+    /// Resolves a skill reference to a concrete skill and dispatches its invocation as a slash
+    /// command. Returns an error message if the reference does not resolve to a known skill.
+    pub fn send_invoke_skill_request(
+        &mut self,
+        reference: crate::ai::skills::SkillReference,
+        user_query: Option<String>,
+        ctx: &mut ModelContext<Self>,
+    ) -> Result<(), String> {
+        let skill = crate::ai::skills::SkillManager::as_ref(ctx)
+            .skill_by_reference(&reference)
+            .cloned()
+            .ok_or_else(|| format!("Skill not found: {}", reference.display_label()))?;
+        self.send_slash_command_request(
+            SlashCommandRequest::InvokeSkill { skill, user_query },
+            ctx,
+        );
+        Ok(())
+    }
+
     pub fn send_slash_command_request(
         &mut self,
         slash_command: SlashCommandRequest,
