@@ -21,7 +21,7 @@ use warp::tui_export::{
     CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, CancellationReason, ChangelogModel,
     ChangelogRequestType, CloudConversationData, CommandExecutionSource, ConversationFileExport,
     ConversationSelection, ConversationSelectionHandle,
-    ExecuteCommandEvent, GetRelevantFilesController, GitRepoModels, GitRepoStatusModel,
+    ExecuteCommandEvent, GitRepoModels, GitRepoStatusModel,
     GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
     LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, ModelEvent, ParsedSlashCommandInput,
     PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
@@ -850,13 +850,15 @@ impl TuiTerminalSessionView {
                 ctx,
             )
         });
-        let get_relevant_files_controller = ctx.add_model(GetRelevantFilesController::new);
+        // Zap's BlocklistAIActionModel does not use a GetRelevantFilesController
+        // (that controller is cloud/embedding-backed — "search codebase" via the
+        // server embedding index — which BYOP Zap does not have). Dropped here to
+        // match Zap's action-model constructor.
         let action_model = ctx.add_model(|ctx| {
             BlocklistAIActionModel::new(
                 model.clone(),
                 active_session.clone(),
                 &model_events,
-                get_relevant_files_controller,
                 terminal_surface_id,
                 ctx,
             )
