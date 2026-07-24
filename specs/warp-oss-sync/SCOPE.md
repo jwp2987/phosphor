@@ -453,9 +453,20 @@ GUI+tui green, all pushed). This run: the 4 small ports (14→10) THEN the whole
 **conversation-restoration hub + FailedOutputPresentation (10→4)**. The hub did NOT unmask
 ~200 errors as feared — terminal_session_view's body type-checked cleanly; only a `builder`
 E0425 cascade (missing `let builder = TuiUiBuilder::from_app(ctx)` in render) needed fixing.
-**REMAINING 4 errors = 2 subsystems ONLY: char-cell editor (item 8) + diff-storage (item 7).**
-Once both land, warp_tui compiles and is testable. (Older note, still useful context below.) The
-earlier "remaining 10" were the DEEP/CLOUD-ADJACENT cluster — see items 6/7/8 + the
+**⚠ CORRECTION (tip 7a98e3b9): the "4 errors" was IMPORT-MASKED — not almost-testable.** Landed the
+diff-storage subsystem (app-side traits + compute_unified_diff GUI-green; TuiDiffStorage rewritten
+onto Zap's event-based FileModel; FileSaveError::Other added). But resolving the DiffStorage import
+KEYSTONE unmasked terminal_session_view + the whole frontend → **warp_tui 4 → 606 real type errors**
+(always present, import-masked; the diff-storage work itself is correct + GUI-green). **The 606 collapse
+to a FEW systematic root causes, NOT 606 bugs:** (1) ~166 = `TuiAIBlock`/TUI views don't impl
+`warpui::View`, but ViewHandle/ViewContext methods (as_ref/update/notify/emit/spawn/focus_self/view_id)
+are gated on `View` — the systematic warpui_core TUI-enablement (same class as the terminal-manager
+`subscribe_to_view: View→Entity` relaxation, across MANY methods; DEEP + GUI-risky). (2) ~81 = 3-vs-4-arg
+subscribe closures. (3) ~20-30 individual method adaptations. Plus char-cell editor (item 8) still
+unported. **TRUE remaining work = warpui_core View→Entity context-method refactor (biggest lever) + the
+closure-arg pass + char-cell editor + individual methods — genuinely multi-session; start with the
+warpui_core relaxation on a fresh context.** (Older note below.) The earlier "remaining 10" were the
+DEEP/CLOUD-ADJACENT cluster — see items 6/7/8 + the
 `FailedOutputPresentation` design call: char-cell editor port (warp_editor), diff-storage,
 conversation-restoration hub (cascades the 4 `builder` E0425s), and the BYOP error-surface
 product decision. No further small wins remain. **⚠ diff-storage (item 7) was ATTEMPTED &
