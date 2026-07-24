@@ -844,11 +844,9 @@ impl TuiTerminalSessionView {
             )
         });
         let ai_input_model = ctx.add_model(|ctx| {
-            BlocklistAIInputModel::new(
+            BlocklistAIInputModel::new_tui(
                 model.clone(),
-                conversation_selection.clone(),
                 context_model.clone(),
-                Rc::new(TuiInputModePolicy),
                 terminal_surface_id,
                 ctx,
             )
