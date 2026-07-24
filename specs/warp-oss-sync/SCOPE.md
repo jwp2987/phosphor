@@ -552,6 +552,29 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    This is cloud-adjacent (the agent-run list panel). Plan: reconcile with Zap's
    existing model (add just the entry/policy types the TUI needs onto Zap's version,
    or make the TUI conversation menu BYOP-local), not a straight extract.
+
+   **BYOP-local build plan (chosen approach; investigated in depth):** Zap has NONE
+   of warp's list types (`AgentConversationEntry`/`AgentConversationEntryId`/
+   `AgentConversationListEntryState`/`query_conversation_entries`); its
+   `agent_conversations_model` (1040 lines) models conversations as
+   `AgentConversationsModel`/`ConversationMetadata` instead. warp_tui's
+   `conversation_menu.rs` uses only `entry.id` + `entry.display.title`, `classify_entry`,
+   `query_conversation_entries`, plus cloud `agent_conversations_cloud_metadata_load_failed`
+   (DROP). So build a small BYOP-local module (e.g. `app/src/ai/conversation_entry.rs`):
+   `AgentConversationEntryId` (wrap `AIConversationId`), `AgentConversationEntry { id,
+   display: { title } }`, `AgentConversationListEntryState` enum (Selected/OpenElsewhere/
+   Available/Unavailable — verbatim from warp), `AgentConversationListPolicy` trait
+   (`classify_entry`), `query_conversation_entries` (fuzzy filter — port warp's fn),
+   backed by `BlocklistAIHistoryModel` local conversations. Then git-extract the app
+   `conversation_selection.rs` (191 lines: `ConversationSelection` trait +
+   `ConversationSelectionHandle`/`ConversationSelectionEvent`/`PendingQueryState`
+   +Noop impl — note it re-defines `PendingQueryState`, may collide with the
+   context_model one already faceted; alias or reconcile). Rewrite warp_tui
+   `conversation_menu.rs`/`conversation_selection.rs` to source entries from this local
+   model, dropping the cloud metadata load. `InputModePolicy`/`PolicyConfigUpdate`
+   (input_mode_policy.rs) and `InputTypeAutoDetectionSource`/`PendingAttachmentSummary`
+   (attachment) are SEPARATE from the menu — split them out. This is a multi-commit
+   build, not an extract; do it in a dedicated session.
 4. **Model picker** (file: model_menu) — `query_model_picker_choices`/`ModelPickerChoice`.
    Zap's `terminal/input/models/data_source.rs` diverged — port/adapt.
 5. **Zero-state data source** (file: zero_state) — `TuiZeroStateDataSource` (warp
