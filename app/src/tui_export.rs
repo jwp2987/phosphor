@@ -88,6 +88,10 @@ pub use crate::code_review::git_status_update::{
 };
 pub use crate::appearance::Appearance;
 pub use crate::tui::log_out_tui;
+pub use crate::tui::{
+    TuiMcpAction, TuiMcpConfigState, TuiMcpManager, TuiMcpManagerEvent, TuiMcpServerId,
+    TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTransport,
+};
 pub use crate::banner::BannerState;
 pub use crate::changelog_model::{
     ChangelogModel, ChangelogRequestType, ChangelogState, Event as ChangelogModelEvent,

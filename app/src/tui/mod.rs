@@ -8,6 +8,12 @@
 //! so `warp_tui` (which renders a login placeholder for the non-`LoggedIn`
 //! phases) compiles and behaves correctly — those phases simply never occur.
 
+mod mcp;
+
+pub use mcp::{
+    TuiMcpAction, TuiMcpConfigState, TuiMcpManager, TuiMcpManagerEvent, TuiMcpServerId,
+    TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTransport,
+};
 use warpui::{AppContext, Entity, SingletonEntity};
 
 use crate::TuiMountFn;
@@ -68,6 +74,7 @@ pub(crate) fn init(mount: TuiMountFn, ctx: &mut AppContext) {
     ctx.add_singleton_model(|_| TuiLoginModel {
         phase: TuiLoginPhase::LoggedIn,
     });
+    ctx.add_singleton_model(TuiMcpManager::new);
     // Mount the TUI now that the login model exists; the root view goes straight
     // to the input UI since the phase is already `LoggedIn`.
     mount(ctx);
