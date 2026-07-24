@@ -1053,7 +1053,10 @@ impl AppContext {
     /// Subscribes to a [`ViewHandle`] for changes, calling `callback` with the emitted event whenever the view is invalidated.
     pub fn subscribe_to_view<S, F>(&mut self, handle: &ViewHandle<S>, mut callback: F)
     where
-        S: View,
+        // Bounded by `Entity` rather than `View` so a manager can subscribe to a
+        // terminal surface event stream without knowing the concrete UI type
+        // (see `TerminalSurface`). The body only needs the entity's event stream.
+        S: Entity,
         S::Event: 'static,
         F: 'static + FnMut(ViewHandle<S>, &S::Event, &mut AppContext),
     {

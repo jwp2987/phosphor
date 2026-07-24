@@ -14,7 +14,6 @@ pub mod terminal_surface;
 
 pub use message::Message;
 pub use pty_controller::{PtyController, PtyControllerEvent};
-pub use terminal_surface::{PtyIntent, PtyIntentEvent, TerminalSurface};
-// `TerminalSurfaceInit` / `TerminalSurfaceResult` are re-exported when the local
-// manager is genericized to consume them (they are otherwise unused in the GUI
-// build); reach them via `terminal_surface::` until then.
+pub use terminal_surface::{
+    PtyIntent, PtyIntentEvent, TerminalSurface, TerminalSurfaceInit, TerminalSurfaceResult,
+};

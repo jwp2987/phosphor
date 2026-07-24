@@ -18,6 +18,8 @@ use super::{
 
 pub struct MockTerminalManager {
     model: Arc<FairMutex<TerminalModel>>,
+    /// Retained to keep the terminal surface alive for the manager's lifetime.
+    #[allow(dead_code)]
     view: ViewHandle<TerminalView>,
 }
 
@@ -30,7 +32,10 @@ impl MockTerminalManager {
         initial_size: Vector2F,
         window_id: WindowId,
         ctx: &mut AppContext,
-    ) -> ModelHandle<Box<dyn crate::terminal::TerminalManager>> {
+    ) -> (
+        ViewHandle<TerminalView>,
+        ModelHandle<Box<dyn crate::terminal::TerminalManager>>,
+    ) {
         // Create all the necessary channels we need for communication.
         let (wakeups_tx, wakeups_rx) = async_channel::unbounded();
         let (events_tx, events_rx) = async_channel::unbounded();
@@ -90,21 +95,20 @@ impl MockTerminalManager {
             });
         });
 
+        let terminal_view = view.clone();
         let terminal_manager = Self { model, view };
-        ctx.add_model(|_ctx| {
+        let manager_model = ctx.add_model(|_ctx| {
             let manager: Box<dyn crate::terminal::TerminalManager> = Box::new(terminal_manager);
             manager
-        })
+        });
+
+        (terminal_view, manager_model)
     }
 }
 
 impl TerminalManager for MockTerminalManager {
     fn model(&self) -> Arc<FairMutex<TerminalModel>> {
         self.model.clone()
-    }
-
-    fn view(&self) -> ViewHandle<TerminalView> {
-        self.view.clone()
     }
 
     fn on_view_detached(
@@ -168,7 +172,7 @@ mod testing {
                     tips_completed: tips_model,
                     model_event_sender: None,
                 };
-                let terminal_manager = MockTerminalManager::create_model(
+                let (terminal_view, _terminal_manager) = MockTerminalManager::create_model(
                     ShellLaunchState::ShellSpawned {
                         available_shell: None,
                         display_name: ShellName::blank(),
@@ -182,9 +186,7 @@ mod testing {
                     ctx,
                 );
 
-                TerminalRootView {
-                    terminal_view: terminal_manager.as_ref(ctx).view(),
-                }
+                TerminalRootView { terminal_view }
             });
 
             app.views_of_type::<TerminalView>(window_id)

@@ -121,6 +121,7 @@ pub use crate::terminal::event::AfterBlockCompletedEvent;
 pub use crate::terminal::input::CommandExecutionSource;
 pub use crate::terminal::input::decorations::parse_current_commands_and_tokens;
 pub use crate::terminal::local_tty::TerminalManager as LocalTtyTerminalManager;
+pub use crate::terminal::local_tty::terminal_manager::TerminalManagerInit;
 pub use crate::terminal::model::block::{AgentInteractionMetadata, Block, BlockId};
 pub use crate::terminal::model::blockgrid::BlockGrid;
 pub use crate::terminal::model::blocks::{
@@ -135,9 +136,8 @@ pub use crate::terminal::model::terminal_model::BlockIndex;
 pub use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 pub use crate::terminal::shared_session::IsSharedSessionCreator;
 pub use crate::terminal::view::{ExecuteCommandEvent, WAKEUP_THROTTLE_PERIOD};
-pub use crate::terminal::writeable_pty::{PtyIntent, PtyIntentEvent, TerminalSurface};
-pub use crate::terminal::writeable_pty::terminal_surface::{
-    TerminalSurfaceInit, TerminalSurfaceResult,
+pub use crate::terminal::{
+    PtyIntent, PtyIntentEvent, TerminalSurface, TerminalSurfaceInit, TerminalSurfaceResult,
 };
 pub use crate::terminal::{
     BlockPadding, ShellLaunchData, SizeInfo, SizeUpdate,

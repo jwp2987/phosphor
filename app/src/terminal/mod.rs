@@ -80,6 +80,9 @@ pub mod view;
 pub mod warpify;
 mod waterfall_gap_element;
 mod writeable_pty;
+pub use writeable_pty::{
+    PtyIntent, PtyIntentEvent, TerminalSurface, TerminalSurfaceInit, TerminalSurfaceResult,
+};
 #[cfg(windows)]
 pub mod wsl;
 
