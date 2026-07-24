@@ -2556,7 +2556,7 @@ impl TuiTerminalSessionView {
             return;
         }
 
-        match command.kind {
+        match command.kind() {
             SlashCommandKind::Agent | SlashCommandKind::New => {
                 if !self
                     .ai_context_model
@@ -2797,7 +2797,10 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::Usage
             | SlashCommandKind::RemoteControl
             | SlashCommandKind::Prompts
-            | SlashCommandKind::Rewind => {
+            | SlashCommandKind::Rewind
+            // BYOP: Zap commands with no upstream kind (e.g. /pr-comments) are not
+            // TUI-executable (`supports_tui()` gates them out before this match).
+            | SlashCommandKind::Other => {
                 debug_assert!(
                     false,
                     "Attempted to execute GUI-only slash command in the TUI: {}",

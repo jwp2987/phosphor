@@ -99,7 +99,7 @@ pub use crate::terminal::input::slash_commands::{
     slash_command_query, slash_command_selection_behavior,
 };
 pub use crate::terminal::input::slash_command_model::ParsedSlashCommandInput;
-pub use crate::search::slash_command_menu::{SlashCommandId, StaticCommand};
+pub use crate::search::slash_command_menu::{SlashCommandId, SlashCommandKind, StaticCommand};
 pub use crate::terminal::alt_screen::{should_intercept_mouse, should_intercept_scroll};
 pub use crate::terminal::color::{Colors as TerminalColors, List as TerminalColorList};
 pub use crate::terminal::history::up_arrow::prompt_history_for_terminal_view;
