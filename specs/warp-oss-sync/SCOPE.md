@@ -530,25 +530,34 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    (Zap's `search` module already has `SearchMixer`/`SyncDataSource`/
    `QueryFilter::StaticSlashCommands`/`AddAsyncSourceOptions`/`Query`/
    `saved_prompts_data_source()`; `AcceptSlashCommandOrSavedPrompt: warpui::Action` holds).
-   **REMAINING = a genuine ARCHITECTURAL-divergence build, not an extract.** Root cause:
-   warp's `SlashCommandDataSource` is a **trait** with a 754-line shared `data_source/core.rs`
-   (`subscribe_to_shared_dependencies`, `SlashCommandDataSourceState`) plus `gui.rs`/`tui.rs`
-   impls; **Zap's `SlashCommandDataSource` is a concrete monolithic struct** (`data_source/mod.rs`,
-   464 lines, the GUI's single source — has `DataSourceArgs`/`InlineItem`/`UpdatedActiveCommands`
-   but NO trait, NO `SlashCommandDataSourceState`, NO `core.rs`). So `TuiSlashCommandDataSource`
-   (`data_source/tui.rs`, 142 lines, whose `parse_input` PRODUCES `ParsedSlashCommandInput`)
-   can't be extracted — it needs `super::core::*`. Two paths: (a) refactor Zap's concrete
-   struct into warp's trait + core/gui/tui split (touches GUI hot path — risky), or (b)
-   build a BYOP-local `TuiSlashCommandDataSource` that reuses Zap's existing concrete
-   machinery (like the conversation-menu approach). Still-missing leaf types:
-   `ParsedSlashCommandInput` (Zap has `SlashCommandEntryState` = same 4 variants + a 5th
-   `DisabledUntilEmptyBuffer` — add `ParsedSlashCommandInput` as the 4-variant type or
-   convert), `SlashCommandKind` (warp `search/slash_command_menu/static_commands/mod.rs`),
-   `SlashCommandSelectionBehavior`/`slash_command_selection_behavior`/
-   `should_close_slash_command_menu_for_exact_match` (warp `slash_commands/mod.rs`),
-   `query_selectable_skills` (warp `terminal/input/skills/core.rs`), `record_*`/
-   `saved_prompt_text_for_id`. (`slash_commands.rs` also has an internal `AUTO_APPROVE`
-   scope error.)
+   **DATA-SOURCE REBUILD — core DONE via approach (b) BYOP-local (commits 9e48ec77→9e3adec5,
+   GUI-green + pushed).** The architectural divergence (warp trait+core/gui/tui vs Zap concrete
+   monolith) was resolved WITHOUT a trait refactor, because warp_tui calls exactly ONE
+   data-source method (`parse_input`), and Zap's concrete struct already impls
+   `SyncDataSource`+`Entity` (works with the mixer):
+   - pt.1 (`ParsedSlashCommandInput` + `slash_command_composition_filter` in
+     `slash_command_model.rs`; `parse_input`+`parse_skill_command`+`active_session()` accessor
+     on the concrete data source, mirroring warp's trait defaults, reusing Zap's
+     `parse_slash_command`/`ActiveSession` cwd).
+   - pt.2 (**the integration crux**): the TUI has no `AgentViewController` that Zap's data source
+     required → made `agent_view_controller` an `Option` (None = always-agent-view TUI,
+     `is_agent_view_active()`→true), added `new_tui(TuiSlashCommandDataSourceArgs)` +
+     `TuiSlashCommandDataSource` type alias. Single GUI caller unchanged.
+   - pt.3 (`SlashCommandSelectionBehavior`+`slash_command_selection_behavior`+
+     `should_close_slash_command_menu_for_exact_match` in `slash_commands/mod.rs`) + tui_export
+     re-exports of the whole landed surface.
+   **REMAINING (the big cascade + leaves) — a fresh-session effort:**
+   - **`SlashCommandKind` (BIG):** warp carries it as a `pub kind` FIELD on EVERY `StaticCommand`
+     (~55 variants). Zap's `StaticCommand` has no `kind` field → porting means adding the enum
+     AND assigning a `kind` to all ~50 command definitions in `static_commands/commands.rs`
+     (per-command judgment; some warp kinds are cloud — CloudAgent/MoveToCloud/RemoteControl —
+     that Zap may not have). warp_tui's `terminal_session_view.rs:2560+` dispatches on it.
+   - **`query_selectable_skills`** (warp `terminal/input/skills/core.rs`) — skills query.
+   - **`record_autodetection_toggle_from_slash_command`/`record_saved_prompt_accepted`/
+     `record_static_slash_command_accepted`** — inert-telemetry stubs (BYOP); **`saved_prompt_text_for_id`**.
+   - warp_tui rewrites: construct via `new_tui`/`TuiSlashCommandDataSourceArgs` (drop warp's
+     `terminal_model` arg), drop the now-inherent `SlashCommandDataSource as _` trait import.
+   - (`slash_commands.rs` also has an internal `AUTO_APPROVE` scope error.)
 3. **Conversation selection/management** (files: conversation_selection,
    conversation_menu, input_mode_policy, inline_menu, input/view, terminal_session_view)
    — `ConversationSelection(+Event/Handle)`, `AgentConversationEntry(+Id)`,
