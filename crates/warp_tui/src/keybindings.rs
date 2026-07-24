@@ -121,6 +121,12 @@ fn context_for_editor_binding(
     key: &str,
     default_context: &ContextPredicate,
 ) -> Option<ContextPredicate> {
+    // `cmd-` keys are macOS-only; on other platforms `cmd` has no portable meaning and the
+    // cross-platform binding validator (is_binding_cross_platform) rejects it. Every such key
+    // has a ctrl-based alias in the same spec, so drop the cmd variant off macOS.
+    if key.starts_with("cmd-") && !warpui::platform::OperatingSystem::get().is_mac() {
+        return None;
+    }
     match (target, command, key) {
         // The input editor reserves ctrl-d for session-level EOF and exit handling.
         (TuiEditorBindingTarget::Input, TuiEditorCommand::DeleteForward, "ctrl-d") => None,
