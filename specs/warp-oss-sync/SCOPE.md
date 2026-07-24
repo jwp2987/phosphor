@@ -453,10 +453,18 @@ achieved its goal: the real remaining surface is now visible.
 infer_mime_type/MIME_SNIFF_BYTES, create_system_clipboard — 14→10), GUI gate green at
 every commit, all pushed to `origin/josh/warp-oss-sync` (tip commit `56f65d6a`). The
 remaining 10 errors are the DEEP/CLOUD-ADJACENT cluster only — see items 6/7/8 + the
-`FailedOutputPresentation` design call: char-cell editor port (warp_editor), diff-storage
-(needs `compute_unified_diff` or an ApplyDiffModel rewrite), conversation-restoration hub
-(cascades the 4 `builder` E0425s), and the BYOP error-surface product decision. No further
-small wins remain. Build the TUI check with plain
+`FailedOutputPresentation` design call: char-cell editor port (warp_editor), diff-storage,
+conversation-restoration hub (cascades the 4 `builder` E0425s), and the BYOP error-surface
+product decision. No further small wins remain. **⚠ diff-storage (item 7) was ATTEMPTED &
+REVERTED 2026-07-24 — do NOT re-attempt as a small port:** its app-side traits +
+`compute_unified_diff` exposure port cleanly (GUI-green), BUT (a) Zap's `FileModel` is
+EVENT-based (`FileModelEvent::FileSaved`), not future-based, so warp's `SaveFuture`/
+`start_saving` contract needs a real rewrite of `tui_diff_storage.rs` onto Zap's
+`ApplyDiffModel`, and (b) `TuiDiffStorage` is a KEYSTONE whose import resolution UNMASKS the
+`terminal_session_view` hub (warp_tui jumped 10→623 — those latent errors need the
+conversation-restoration subsystem). **The warp_tui error count is import-resolution-gated,
+NOT linear — near the hub it spikes as keystones resolve, it does not fall.** Land
+diff-storage WITH conversation-restoration. Build the TUI check with plain
 `cargo check -p warp_tui` (the crate has no `tui` feature of its own); the app
 crate carries it via `cargo check -p warp --features tui`, and the guardrail is
 `cargo check -p warp --features gui` after any shared-crate change.
@@ -691,15 +699,42 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    onto Zap's `ApplyDiffModel` (Zap has `FileDiff`/`DiffSessionType`/`ai::diff_validation`
    but not the `DiffStorage` trait; persists via
    `blocklist/action_model/execute/request_file_edits/apply_diff_model.rs`).
-   **⚠ NOT a clean git-extract (investigated):** warp `diff_storage.rs` (280 lines,
-   the DiffStorage/Helper/RegisteredDiffStorage traits + FileSnapshot/UpdatedFileState/
-   SaveFuture) imports `crate::code::editor::compute_unified_diff` which is **absent
-   from Zap** (would cascade into porting the unified-diff algorithm), and
-   `crate::ai::blocklist::diff_types` (Zap keeps FileDiff/DiffSessionType in
-   `inline_action/code_diff_view` instead). `changed_lines_from_op` IS portable (small
-   fn over Zap's `diff_validation::DiffType`). Plan: either port `compute_unified_diff`
-   too, or rewrite `TuiDiffStorage` to persist through Zap's `ApplyDiffModel` directly
-   (drop the DiffStorage trait dependency on the warp_tui side).
+   **⚠ NOT a quick win — ATTEMPTED & REVERTED 2026-07-24; the real blockers are now
+   precisely known (do NOT re-attempt as a "small port"):**
+   - **CORRECTION to the earlier note:** `compute_unified_diff` is NOT absent — Zap has
+     the byte-identical algorithm as `DiffModel::retrieve_unified_diff_internal`
+     (`app/src/code/editor/diff.rs`). Trivially exposable as a free `pub async fn`. And
+     the app-side traits port CLEANLY: every dependency matches (RequestFileEditsResult/
+     FileContext/FileLocations/UpdatedFileContext/AnyFileContent all exist at
+     `crate::ai::agent::*` with warp's exact field shapes; `DiffResult` has `Default`+
+     `AddAssign<&DiffResult>`; FileDiff/DiffSessionType at `inline_action::code_diff_view`;
+     `changed_lines_from_op`+helpers port verbatim over `ai::diff_validation::DiffType`,
+     whose Create{delta}/Update{deltas}/Delete + DiffDelta{replacement_line_range,insertion}
+     match warp exactly). The app-side `diff_storage.rs` compiled GUI-green.
+   - **REAL BLOCKER #1 — Zap's `FileModel` is EVENT-based, not future-based.**
+     `FileModel::{save,delete,rename_and_save}` (crates/warp_files) return
+     `Result<(), FileSaveError>` IMMEDIATELY after `ctx.spawn(...)`; write completion is
+     reported via `FileModelEvent::{FileSaved,FailedToSave}` EVENTS. warp's entire
+     `SaveFuture`/`start_saving()->Vec<SaveFuture>` contract assumes the write returns a
+     future that resolves on completion. So `tui_diff_storage.rs`'s `dispatch_write`
+     (returns `Result<SaveFuture,_>`) does NOT compile against Zap's FileModel, and there
+     is no `FileSaveError::Other` variant (Zap has NoFilePath/IOError{error,path}/
+     RemoteError(String)). Faithful impl needs a per-file event→oneshot bridge OR a rewrite
+     onto Zap's `ApplyDiffModel` (which already subscribes to FileModelEvent). This is a
+     genuine rewrite of the warp_tui side, NOT an adaptation.
+   - **REAL BLOCKER #2 — `TuiDiffStorage` is a KEYSTONE that unmasks the hub.** Resolving
+     its tui_export import group makes `terminal_session_view.rs` (+ agent_block, input/view,
+     transcript_view, …) type-check their bodies for the first time, surfacing ~600 latent
+     errors that were masked behind the failing import wall (warp_tui 10→623). Those need
+     the conversation-restoration subsystem (item 6) to compile. **LESSON: the warp_tui
+     "error count" is import-resolution-gated, NOT a true count — crossing a keystone import
+     (diff_storage, and likely conversation-restoration) unmasks the hub and the count
+     jumps. Don't treat count drops near the end as linear progress.**
+   - **Plan:** land diff-storage together with the conversation-restoration hub, and rewrite
+     `TuiDiffStorage.start_saving` onto Zap's event-based persistence (ApplyDiffModel or an
+     event→future bridge) — not as an isolated port. The clean pieces (expose
+     `compute_unified_diff`; the app-side traits; `changed_lines_from_op`) are all validated
+     and ready to re-land verbatim when the hub is tackled.
 8. **Editor char-cell rendering** (files: editor_element, editor_interaction) —
    `warp_editor::render::model::{DisplayLattice, DisplayRow, DisplayRowKind,
    CharCellState, CharCellTemporaryBlock}` (warp `crates/editor/src/render/model/
