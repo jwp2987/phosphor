@@ -1262,6 +1262,10 @@ impl BlocklistAIController {
         )
     }
 
+    pub fn send_create_new_project_request(&mut self, query: String, ctx: &mut ModelContext<Self>) {
+        self.send_slash_command_request(SlashCommandRequest::CreateNewProject { query }, ctx);
+    }
+
     pub fn send_slash_command_request(
         &mut self,
         slash_command: SlashCommandRequest,
