@@ -322,24 +322,25 @@ impl ConversationSelection for TuiConversationSelection {
         event: &BlocklistAIHistoryEvent,
         ctx: &mut ModelContext<Box<dyn ConversationSelection>>,
     ) {
+        // BYOP adaptation: Zap names this `terminal_view_id` (Warp renamed it to
+        // `terminal_surface_id` upstream). Same semantics.
         if event
-            .terminal_surface_id()
+            .terminal_view_id()
             .is_some_and(|id| id != self.terminal_surface_id)
         {
             return;
         }
         match event {
-            BlocklistAIHistoryEvent::ClearedConversationsForTerminalSurface {
+            // BYOP adaptation: Zap's variant is `ClearedConversationsInTerminalView` and
+            // carries only `active_conversation_id` (no `cleared_conversation_ids` list), so
+            // the "was cleared" test reduces to the active-conversation check.
+            BlocklistAIHistoryEvent::ClearedConversationsInTerminalView {
                 active_conversation_id,
-                cleared_conversation_ids,
                 ..
             } => {
                 let selected_conversation_id = self.selected_id();
-                let selected_conversation_was_cleared =
-                    selected_conversation_id.is_some_and(|conversation_id| {
-                        active_conversation_id == &Some(conversation_id)
-                            || cleared_conversation_ids.contains(&conversation_id)
-                    });
+                let selected_conversation_was_cleared = selected_conversation_id
+                    .is_some_and(|conversation_id| active_conversation_id == &Some(conversation_id));
                 if selected_conversation_was_cleared {
                     self.defer_replacement_conversation(
                         selected_conversation_id
@@ -359,15 +360,13 @@ impl ConversationSelection for TuiConversationSelection {
                     ctx,
                 );
             }
+            // Upstream also matches `ConversationTransferredBetweenTerminalSurfaces` here;
+            // BYOP has no cross-surface transfer, so Zap lacks that variant and it is dropped.
             BlocklistAIHistoryEvent::RemoveConversation {
                 conversation_id, ..
             }
             | BlocklistAIHistoryEvent::DeletedConversation {
                 conversation_id, ..
-            }
-            | BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalSurfaces {
-                conversation_id,
-                ..
             } if self.selected_id() == Some(*conversation_id) => {
                 self.defer_replacement_conversation(*conversation_id, ctx);
             }

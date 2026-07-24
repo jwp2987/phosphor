@@ -1643,6 +1643,45 @@ impl BlockList {
         self.update_blocks_and_sumtree(None, None, |_| {}, |_| {});
     }
 
+    /// Associates the active command block with a conversation.
+    ///
+    /// Ported from Warp OSS `BlockList::set_active_conversation_context`. Zap models the
+    /// richer agent-view activation through [`set_agent_view_state`]; the TUI conversation
+    /// selection only needs command-block provenance, so this mirrors upstream's block-tagging
+    /// path directly. BYOP has no cloud runs, so the upstream `is_cloud` bit is dropped.
+    ///
+    /// [`set_agent_view_state`]: Self::set_agent_view_state
+    pub fn set_active_conversation_context(
+        &mut self,
+        conversation_id: AIConversationId,
+        _is_cloud: bool,
+        attach_to_terminal: bool,
+    ) {
+        if !self.active_block().finished() {
+            if attach_to_terminal {
+                self.active_block_mut()
+                    .add_attached_conversation_id(conversation_id);
+            } else {
+                self.active_block_mut().set_conversation_id(conversation_id);
+            }
+        }
+    }
+
+    /// Clears the active command block's conversation association.
+    ///
+    /// Ported from Warp OSS `BlockList::clear_active_conversation_context`. Only clears blocks
+    /// created inside the agent view; terminal blocks keep their associations.
+    pub fn clear_active_conversation_context(&mut self) {
+        if !self.active_block().finished()
+            && matches!(
+                self.active_block().agent_view_visibility(),
+                &AgentViewVisibility::Agent { .. }
+            )
+        {
+            self.active_block_mut().clear_conversation_id();
+        }
+    }
+
     /// Marks AI / agent-view rich content as dirty so heights get re-laid out. Call this after
     /// any change that affects which rich content is visible for the current agent view state.
     fn mark_agent_view_rich_content_dirty(&mut self) {

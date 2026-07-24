@@ -186,6 +186,9 @@ pub enum AgentViewEntryOrigin {
     ContinueConversationButton,
     ViewPassiveCodeDiffDetails,
     ResumeConversationButton,
+
+    /// Entered/selected a conversation from the ratatui TUI front-end (`warp_tui`).
+    Tui,
 }
 
 /// Controls when `try_enter_agent_view` is allowed to auto-submit an initial prompt
