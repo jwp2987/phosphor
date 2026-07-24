@@ -515,15 +515,19 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
 `app/src/tui/`, `app/src/terminal/input/slash_commands/data_source/`,
 `app/src/ai/orchestration/snapshots.rs`, `app/src/ai/blocklist/`):
 
-1. **MCP menu data source** (files: mcp_menu, zero_state, inline_menu, input/view,
-   terminal_session_view) — `TuiMcpManager(+Event)`, `TuiMcpAction`, `TuiMcpConfigState`,
-   `TuiMcpServerStatus`, `TuiMcpTransport`, `TuiMcpSnapshot`. Source: warp
-   `app/src/tui/mcp.rs`. **Cascade:** Zap's `FileBasedMCPManager` diverged — adapt
-   `global_warp_servers`→`file_based_servers`, and it lacks `config_diagnostic` /
-   `global_warp_installation_by_hash` (adapt via `get_hash_by_uuid`/`get_installation_by_uuid`)
-   + needs the `MCPServerExt` trait (warp `ai/mcp/mod.rs`) + `active_mcp_config_file_path`
-   (warp `warp_managed_paths_watcher.rs`, which uses `SettingsMode` — adapt to the TUI
-   config path only). Register `TuiMcpManager` in `crate::tui::init` once ported.
+1. **MCP menu data source** — **DONE (5d7e6803, warp_tui 20→15).** Ported warp
+   `app/src/tui/mcp.rs` → `app/src/tui/mcp.rs` (TuiMcpManager singleton + all Tui* types),
+   registered in `crate::tui::init`, re-exported via tui_export; cleared mcp_menu/zero_state/
+   inline_menu/input-view + the terminal_session_view MCP imports. Zap-divergence adaptations:
+   `global_warp_servers`→`file_based_servers()`; `global_warp_installation_by_hash`→ inline
+   hash lookup; NO `config_diagnostic` → config_state Missing/Ready by file-existence (Invalid
+   kept for front-end compat, never produced); `active_mcp_config_file_path`→
+   `warp_core::paths::warp_home_mcp_config_file_path()`; `MCPServerExt` DROPPED (from_user_json
+   is inherent in Zap); OAuth creds via `has_oauth_credentials_for_file_based_server`, no
+   reopenable auth URL → authorization_url None; resource_count=0; ReloadConfig dropped.
+   NOTE for future app-side ports: app-crate `subscribe_to_model` closure is **3-arg**
+   (warp/master source is 4-arg — drop emitter); warp_tui builds warp withOUT local_fs so
+   FileBasedMCPManager is the dummy (Event=`()`) in the gate — use wildcard `_` event params.
 2. **Slash-command TUI mixer** (files: slash_commands, skills_menu) — PARTIAL.
    **DONE (commit f142b5f8, GUI-green + pushed):** `SlashCommandMixer` +
    `build_slash_command_mixer` + `slash_command_query` — git-extracted `mixer.rs` cleanly
