@@ -343,7 +343,7 @@ fn render_project_section(
 
     let header = rules
         .as_ref()
-        .map(|rules| rules.root_path.display_path())
+        .map(|rules| rules.root_path.display().to_string())
         .unwrap_or_else(|| cwd.to_owned());
     column = column.child(blank_row()).child(
         TuiText::new(abbreviate_home_prefix(&header))

@@ -1667,6 +1667,11 @@ impl TerminalModel {
         &self.block_list
     }
 
+    pub fn clear_blocks(&mut self) {
+        self.block_list
+            .clear_screen(super::ansi::ClearMode::ResetAndClear);
+    }
+
     pub fn take_typeahead_for_input(&mut self) -> Option<(String, string_offset::CharOffset)> {
         let completed_block_index = self.block_list.prev_matching_block_from_index(
             super::blocks::BlockFilter {
