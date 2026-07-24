@@ -853,7 +853,7 @@ impl<V> ReadModel for ViewContext<'_, V> {
     }
 }
 
-impl<V: View> UpdateModel for ViewContext<'_, V> {
+impl<V: Entity> UpdateModel for ViewContext<'_, V> {
     fn update_model<T, F, S>(&mut self, handle: &ModelHandle<T>, update: F) -> S
     where
         T: Entity,
@@ -863,7 +863,7 @@ impl<V: View> UpdateModel for ViewContext<'_, V> {
     }
 }
 
-impl<V: View> ViewAsRef for ViewContext<'_, V> {
+impl<V: Entity> ViewAsRef for ViewContext<'_, V> {
     fn view<T: Entity>(&self, handle: &ViewHandle<T>) -> &T {
         self.app.view(handle)
     }
@@ -873,7 +873,7 @@ impl<V: View> ViewAsRef for ViewContext<'_, V> {
     }
 }
 
-impl<V: View> UpdateView for ViewContext<'_, V> {
+impl<V: Entity> UpdateView for ViewContext<'_, V> {
     fn update_view<T, F, S>(&mut self, handle: &ViewHandle<T>, update: F) -> S
     where
         T: Entity,
@@ -883,7 +883,7 @@ impl<V: View> UpdateView for ViewContext<'_, V> {
     }
 }
 
-impl<V: View> ReadView for ViewContext<'_, V> {
+impl<V: Entity> ReadView for ViewContext<'_, V> {
     fn read_view<T, F, S>(&self, handle: &ViewHandle<T>, read: F) -> S
     where
         T: Entity,
