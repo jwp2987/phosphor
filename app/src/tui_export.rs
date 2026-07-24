@@ -120,6 +120,7 @@ pub use crate::terminal::history::up_arrow::prompt_history_for_terminal_view;
 pub use crate::terminal::event::AfterBlockCompletedEvent;
 pub use crate::terminal::input::CommandExecutionSource;
 pub use crate::terminal::input::decorations::parse_current_commands_and_tokens;
+pub use crate::terminal::input::models::{query_model_picker_choices, ModelPickerChoice};
 pub use crate::terminal::local_tty::TerminalManager as LocalTtyTerminalManager;
 pub use crate::terminal::local_tty::terminal_manager::TerminalManagerInit;
 pub use crate::terminal::model::block::{AgentInteractionMetadata, Block, BlockId};

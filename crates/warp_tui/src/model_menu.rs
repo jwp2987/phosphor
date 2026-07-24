@@ -203,7 +203,8 @@ impl TuiModelMenuModel {
         let active_id = preferences.get_active_base_model(ctx, None).id.clone();
         let choices = query_model_picker_choices(
             preferences,
-            preferences.get_base_llm_choices_for_agent_mode(ctx),
+            // Zap's `get_base_llm_choices_for_agent_mode` takes no `ctx` (warp/master's does).
+            preferences.get_base_llm_choices_for_agent_mode(),
             &query,
             ctx,
         );
