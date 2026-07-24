@@ -147,8 +147,8 @@ pub use crate::terminal::{
 pub use crate::themes::default_themes::{dark_theme, light_theme};
 pub use crate::throttle::throttle;
 pub use crate::util::image::{
-    MAX_IMAGE_COUNT_FOR_QUERY, MAX_IMAGE_SIZE_BYTES, ProcessImageResult,
-    is_supported_image_mime_type, process_image_for_agent,
+    MAX_IMAGE_COUNT_FOR_QUERY, MAX_IMAGE_SIZE_BYTES, MIME_SNIFF_BYTES, ProcessImageResult,
+    infer_mime_type, is_supported_image_mime_type, process_image_for_agent,
 };
 
 /// Builds the live-shell completion context used to parse TUI input for NLD.
