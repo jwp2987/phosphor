@@ -358,6 +358,17 @@ impl BlocklistAIInputModel {
         matches!(self.input_config.input_type, InputType::AI)
     }
 
+    pub fn is_terminal_use_active_or_pending(&self) -> bool {
+        let model = self.model.lock();
+        let active_block = model.block_list().active_block();
+        // Keep AI input locked while an agent-requested command is waiting for its
+        // CLI subagent, while the user has tagged the agent in, or while the user
+        // can hand control of an active monitored command back to the agent.
+        active_block.is_agent_driving_command()
+            || active_block.is_agent_tagged_in()
+            || active_block.is_eligible_for_agent_handoff()
+    }
+
     pub fn input_config(&self) -> InputConfig {
         self.input_config
     }

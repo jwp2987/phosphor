@@ -1126,6 +1126,11 @@ impl BlocklistAIActionModel {
     }
 
     /// Returns all finished action results from the given conversation, moving them to the
+    /// Clears the results restored from a previous session's persisted conversation.
+    pub fn clear_restored_action_results(&mut self) {
+        self.past_action_results.clear();
+    }
+
     /// `past_action_results` in the process.
     pub(super) fn drain_finished_action_results(
         &mut self,

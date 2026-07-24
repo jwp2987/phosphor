@@ -287,6 +287,16 @@ impl SlashCommandDataSource {
             .is_none_or(|controller| controller.as_ref(ctx).is_active())
     }
 
+    /// Returns whether this surface routes AI work (and thus local skills) to a local
+    /// execution host. Remote (e.g. SSH) sessions cannot run local skills. A BYOP fork
+    /// with no active session defaults to local.
+    pub fn local_skills_available(&self, ctx: &AppContext) -> bool {
+        self.active_session
+            .as_ref(ctx)
+            .session(ctx)
+            .is_none_or(|session| session.is_local())
+    }
+
     /// Returns `true` if the CLI agent rich input is currently open for this terminal.
     pub fn is_cli_agent_input_open(&self, ctx: &AppContext) -> bool {
         CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id)

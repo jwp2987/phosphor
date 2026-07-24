@@ -1206,7 +1206,7 @@ impl TuiAIBlock {
             .block_model
             .inputs_to_render(app)
             .iter()
-            .filter_map(|input| input.display_query())
+            .filter_map(|input| input.user_query())
             .join("\n");
         if !input.is_empty() {
             sections.push(TuiAIBlockSection::Input(input));

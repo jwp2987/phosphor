@@ -4704,6 +4704,12 @@ impl GetSingletonModelHandle for AppContext {
 }
 
 impl AppContext {
+    /// Returns whether a singleton model of type `T` has been registered.
+    pub fn has_singleton_model<T: SingletonEntity>(&self) -> bool {
+        self.singleton_models
+            .contains_key(&std::any::TypeId::of::<T>())
+    }
+
     pub(super) fn get_singleton_model_as_ref<T: SingletonEntity>(&self) -> &T {
         match self.singleton_models.get(&std::any::TypeId::of::<T>()) {
             Some(model_handle) => model_handle
