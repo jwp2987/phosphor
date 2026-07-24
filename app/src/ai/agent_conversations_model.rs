@@ -1021,6 +1021,51 @@ impl AgentConversationsModel {
         entries
     }
 
+    /// Returns the single entry for `id`, if it is currently in memory. A narrow projection of
+    /// [`Self::get_entries`] for consumers that already hold an entry id.
+    pub fn get_entry_by_id(
+        &self,
+        id: &AgentConversationEntryId,
+        app: &AppContext,
+    ) -> Option<AgentConversationEntry> {
+        match id {
+            AgentConversationEntryId::Conversation(conversation_id) => {
+                let metadata = self.conversations.get(conversation_id)?;
+                let wrapper = ConversationOrTask::Conversation(metadata);
+                Some(AgentConversationEntry {
+                    id: AgentConversationEntryId::Conversation(*conversation_id),
+                    identity: AgentConversationIdentity {
+                        local_conversation_id: Some(*conversation_id),
+                        server_conversation_token: None,
+                    },
+                    display: AgentConversationDisplayData {
+                        title: wrapper.title(app),
+                        last_updated: wrapper.last_updated(),
+                        status: wrapper.display_status(app),
+                        harness: wrapper.harness(),
+                    },
+                })
+            }
+            AgentConversationEntryId::AmbientRun(task_id) => {
+                let task = self.tasks.get(task_id)?;
+                let wrapper = ConversationOrTask::Task(task);
+                Some(AgentConversationEntry {
+                    id: AgentConversationEntryId::AmbientRun(*task_id),
+                    identity: AgentConversationIdentity {
+                        local_conversation_id: None,
+                        server_conversation_token: None,
+                    },
+                    display: AgentConversationDisplayData {
+                        title: wrapper.title(app),
+                        last_updated: wrapper.last_updated(),
+                        status: wrapper.display_status(app),
+                        harness: wrapper.harness(),
+                    },
+                })
+            }
+        }
+    }
+
     /// Returns all (name, uid) pairs for creators of tasks in the model.
     ///
     /// We use this function to populate the available creator filter list
