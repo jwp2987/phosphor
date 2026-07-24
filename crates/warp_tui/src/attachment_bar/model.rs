@@ -76,7 +76,7 @@ impl TuiAttachmentModel {
     ) -> Self {
         let initial_attachment_count = context_model.as_ref(ctx).pending_attachments().len();
         let had_locking_attachment = context_model.as_ref(ctx).has_locking_attachment();
-        ctx.subscribe_to_model(&context_model, |model, _, event, ctx| {
+        ctx.subscribe_to_model(&context_model, |model, event, ctx| {
             if matches!(event, BlocklistAIContextEvent::UpdatedPendingContext { .. }) {
                 model.sync_from_context(ctx);
             }

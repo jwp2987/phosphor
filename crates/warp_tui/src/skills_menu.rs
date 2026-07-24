@@ -53,12 +53,12 @@ impl TuiSkillMenuModel {
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
-        ctx.subscribe_to_model(&input_editor, |model, _, event, ctx| {
+        ctx.subscribe_to_model(&input_editor, |model, event, ctx| {
             if model.is_open(ctx) && matches!(event, CodeEditorModelEvent::ContentChanged { .. }) {
                 model.refresh_rows(ctx);
             }
         });
-        ctx.subscribe_to_model(&active_session, |model, _, event, ctx| {
+        ctx.subscribe_to_model(&active_session, |model, event, ctx| {
             if model.is_open(ctx)
                 && matches!(
                     event,

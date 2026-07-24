@@ -76,14 +76,14 @@ impl TuiPromptHistoryMenuModel {
         terminal_surface_id: EntityId,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
-        ctx.subscribe_to_model(&input_editor, |model, _, event, ctx| {
+        ctx.subscribe_to_model(&input_editor, |model, event, ctx| {
             if model.is_open(ctx) && matches!(event, CodeEditorModelEvent::ContentChanged { .. }) {
                 model.on_content_changed(ctx);
             }
         });
         ctx.subscribe_to_model(
             &BlocklistAIHistoryModel::handle(ctx),
-            |model, _, _: &BlocklistAIHistoryEvent, ctx| {
+            |model, _: &BlocklistAIHistoryEvent, ctx| {
                 if model.is_open(ctx) {
                     model.refresh_rows(ctx);
                 }

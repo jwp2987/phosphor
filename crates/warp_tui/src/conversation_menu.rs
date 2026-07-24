@@ -63,14 +63,14 @@ impl TuiConversationMenuModel {
         window_id: WindowId,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
-        ctx.subscribe_to_model(&input_editor, |model, _, event, ctx| {
+        ctx.subscribe_to_model(&input_editor, |model, event, ctx| {
             if model.is_open(ctx) && matches!(event, CodeEditorModelEvent::ContentChanged { .. }) {
                 model.refresh_rows(ctx);
             }
         });
         ctx.subscribe_to_model(
             &AgentConversationsModel::handle(ctx),
-            |model, _, _: &AgentConversationsModelEvent, ctx| {
+            |model, _: &AgentConversationsModelEvent, ctx| {
                 if model.is_open(ctx) {
                     model.refresh_rows(ctx);
                 }

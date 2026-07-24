@@ -99,18 +99,18 @@ impl TuiSlashCommandModel {
         conversation_selection: ConversationSelectionHandle,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
-        ctx.subscribe_to_model(&input_editor, |me, _, event, ctx| {
+        ctx.subscribe_to_model(&input_editor, |me, event, ctx| {
             if matches!(event, CodeEditorModelEvent::ContentChanged { .. }) {
                 me.update_from_input(false, ctx);
             }
         });
         ctx.subscribe_to_model(
             &slash_commands_source,
-            |me, _, _: &UpdatedActiveCommands, ctx| {
+            |me, _: &UpdatedActiveCommands, ctx| {
                 me.update_from_input(true, ctx);
             },
         );
-        ctx.subscribe_to_model(&mixer, |me, _, event, ctx| {
+        ctx.subscribe_to_model(&mixer, |me, event, ctx| {
             if matches!(event, SearchMixerEvent::ResultsChanged) {
                 me.refresh_rows(ctx);
             }

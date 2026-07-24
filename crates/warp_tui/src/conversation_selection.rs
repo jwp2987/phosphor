@@ -30,7 +30,7 @@ impl TuiConversationSelection {
             .set_active_conversation_context(conversation_id, false, false);
         ctx.subscribe_to_model(
             &BlocklistAIHistoryModel::handle(ctx),
-            |selection, _, event, ctx| selection.handle_history_event(event, ctx),
+            |selection, event, ctx| selection.handle_history_event(event, ctx),
         );
         Self {
             terminal_surface_id,

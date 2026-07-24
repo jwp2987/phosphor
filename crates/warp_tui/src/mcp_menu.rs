@@ -49,7 +49,7 @@ impl TuiMcpMenuModel {
     ) -> Self {
         ctx.subscribe_to_model(
             &TuiMcpManager::handle(ctx),
-            |model, _, _: &TuiMcpManagerEvent, ctx| {
+            |model, _: &TuiMcpManagerEvent, ctx| {
                 if model.is_open(ctx) {
                     model.refresh_rows(ctx);
                 }
