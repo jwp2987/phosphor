@@ -1276,6 +1276,13 @@ impl AgentOutputText {
         self.markdown_text.as_str()
     }
 
+    /// Returns the cached parsed Markdown, if parsing succeeded.
+    pub fn formatted_text_arc(&self) -> Option<Arc<FormattedText>> {
+        self.formatted_lines
+            .as_ref()
+            .map(FormattedTextWrapper::formatted_text_arc)
+    }
+
     /// Note that mutating the returned string will not automatically reparse the text and update `formatted_lines`.
     pub fn mut_text(&mut self) -> &mut String {
         &mut self.markdown_text
@@ -2915,6 +2922,13 @@ impl AIAgentExchange {
     pub fn duration(&self) -> Option<TimeDelta> {
         self.finish_time
             .map(|finish_time| finish_time.signed_duration_since(self.start_time))
+    }
+
+    pub fn time_since_start(&self) -> Option<std::time::Duration> {
+        Local::now()
+            .signed_duration_since(self.start_time)
+            .to_std()
+            .ok()
     }
 }
 

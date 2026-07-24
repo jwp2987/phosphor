@@ -1305,7 +1305,7 @@ impl TuiAIBlock {
             if should_show_failed_output_usage_notice(
                 error,
                 self.block_model
-                    .is_latest_visible_exchange_in_root_task(app),
+                    .is_latest_non_passive_exchange_in_root_task(app),
                 self.has_expanded_last_requested_command(app),
                 self.block_model.is_restored(),
             ) {
