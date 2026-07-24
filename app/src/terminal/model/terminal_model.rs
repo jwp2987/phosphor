@@ -1027,7 +1027,7 @@ impl TerminalModel {
     pub fn set_is_input_dirty(&mut self, value: bool) {
         self.is_input_dirty = value;
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     #[allow(clippy::too_many_arguments)]
     /// Returns a bootstrapped `TerminalModel` with no restored blocks
     /// and just one default block to avoid any side effects of being

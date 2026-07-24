@@ -1123,7 +1123,7 @@ impl Block {
     }
 
     /// Replaces the block's lprompt and command combined grid with the given one.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn set_prompt_and_command_grid(&mut self, prompt_and_command_grid: BlockGrid) {
         self.header_grid
             .set_prompt_and_command_grid(prompt_and_command_grid);
@@ -1142,14 +1142,14 @@ impl Block {
     }
 
     /// Replaces the block's rprompt grid with the given one.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub(super) fn set_rprompt_grid(&mut self, rprompt_grid: BlockGrid) {
         self.rprompt_grid = rprompt_grid;
     }
 
     /// Replaces the block's output grid with the given one.
     /// Useful for test functions.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn set_output_grid(&mut self, output_grid: BlockGrid) {
         self.output_grid = output_grid;
     }
@@ -1731,7 +1731,7 @@ impl Block {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn set_was_long_running(&mut self, was_long_running: AtomicBool) {
         self.was_long_running = was_long_running;
     }

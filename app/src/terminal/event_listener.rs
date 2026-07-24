@@ -75,7 +75,7 @@ impl ChannelEventListener {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 mod testing;
 
 use crate::terminal::model::terminal_model::HandlerEvent;
