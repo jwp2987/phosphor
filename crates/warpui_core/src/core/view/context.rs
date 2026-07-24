@@ -62,7 +62,12 @@ impl<'a, T: Entity> ViewContext<'a, T> {
     }
 }
 
-impl<'a, T: View> ViewContext<'a, T> {
+// Mirrors warpui_core upstream's TUI-enablement: these context methods are
+// `T: Entity`, not `T: View`, so the headless TUI view path (TuiView: Entity,
+// not View) can call notify/emit/spawn/focus_self/subscribe/etc. The only
+// genuinely View-only method (`element_position_by_id`, GUI presenter) stays in
+// the `T: View` block below.
+impl<'a, T: Entity> ViewContext<'a, T> {
 
     /// Adds a callback that will be invoked immediately after the next frame is drawn.
     /// Note that the callback is only invoked once and is discarded after it is called.
@@ -466,36 +471,6 @@ impl<'a, T: View> ViewContext<'a, T> {
                 window_id: self.window_id,
                 view_id: self.view_id,
             });
-    }
-
-    /// Requests permissions to send desktop notifications. The `on_completion callback` can be invoked to
-    /// propagate the outcome of the request (accepted/denied/other) back to the app.
-    ///
-    /// ## Platform-Specific
-    /// * Linux: Always calls the `on_completion_callback` with a value of [`RequestPermissionsOutcome::Accepted`].
-    pub fn request_desktop_notification_permissions<F>(&mut self, on_completion_callback: F)
-    where
-        F: 'static + Send + Sync + FnOnce(&mut T, RequestPermissionsOutcome, &mut ViewContext<T>),
-    {
-        let view_id = self.view_id;
-        let window_id = self.window_id;
-        self.app.request_desktop_notification_permissions(
-            view_id,
-            window_id,
-            on_completion_callback,
-        );
-    }
-
-    /// Sends a desktop notification. The `on_error_callback` can be invoked to
-    /// propagate an error to the view that initiated the notification send.
-    pub fn send_desktop_notification<F>(&mut self, content: UserNotification, on_error_callback: F)
-    where
-        F: 'static + Send + Sync + FnOnce(&mut T, NotificationSendError, &mut ViewContext<T>),
-    {
-        let view_id = self.view_id;
-        let window_id = self.window_id;
-        self.app
-            .send_desktop_notification(content, view_id, window_id, on_error_callback);
     }
 
     /// Schedules a future to run on the main thread, invoking a callback on the
@@ -921,6 +896,41 @@ impl<V: View> ReadView for ViewContext<'_, V> {
 impl<V: View> GetSingletonModelHandle for ViewContext<'_, V> {
     fn get_singleton_model_handle<T: crate::SingletonEntity>(&self) -> ModelHandle<T> {
         self.app.get_singleton_model_handle()
+    }
+}
+
+// GUI-only context methods that genuinely require `T: View` (the underlying
+// `AppContext` desktop-notification APIs are View-bound). The headless TUI has no
+// desktop notifications, so these stay out of the `T: Entity` block above.
+impl<'a, T: View> ViewContext<'a, T> {
+    /// Requests permissions to send desktop notifications. The `on_completion callback` can be invoked to
+    /// propagate the outcome of the request (accepted/denied/other) back to the app.
+    ///
+    /// ## Platform-Specific
+    /// * Linux: Always calls the `on_completion_callback` with a value of [`RequestPermissionsOutcome::Accepted`].
+    pub fn request_desktop_notification_permissions<F>(&mut self, on_completion_callback: F)
+    where
+        F: 'static + Send + Sync + FnOnce(&mut T, RequestPermissionsOutcome, &mut ViewContext<T>),
+    {
+        let view_id = self.view_id;
+        let window_id = self.window_id;
+        self.app.request_desktop_notification_permissions(
+            view_id,
+            window_id,
+            on_completion_callback,
+        );
+    }
+
+    /// Sends a desktop notification. The `on_error_callback` can be invoked to
+    /// propagate an error to the view that initiated the notification send.
+    pub fn send_desktop_notification<F>(&mut self, content: UserNotification, on_error_callback: F)
+    where
+        F: 'static + Send + Sync + FnOnce(&mut T, NotificationSendError, &mut ViewContext<T>),
+    {
+        let view_id = self.view_id;
+        let window_id = self.window_id;
+        self.app
+            .send_desktop_notification(content, view_id, window_id, on_error_callback);
     }
 }
 
