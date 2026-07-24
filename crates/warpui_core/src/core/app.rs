@@ -1916,6 +1916,24 @@ impl AppContext {
     /// The "responder chain" is the view hierarchy to match against with bindings.
     /// This prefers the focused view and its ancestors; if no view is focused it
     /// dispatches to the root view.
+    /// Returns the view id chain from the root down to `view_id` (root first), using the
+    /// `view_parents` map. Only meaningful for the TUI path, which populates `view_parents`.
+    pub fn view_ancestors(&self, window_id: WindowId, mut view_id: EntityId) -> Vec<EntityId> {
+        let mut chain = vec![view_id];
+        if let Some(parents) = self.view_parents.get(&window_id) {
+            while let Some(parent_id) = parents.get(&view_id) {
+                if chain.contains(parent_id) {
+                    log::error!("Cycle detected in the view hierarchy at {parent_id:?}");
+                    break;
+                }
+                view_id = *parent_id;
+                chain.push(view_id);
+            }
+        }
+        chain.reverse();
+        chain
+    }
+
     pub(crate) fn get_responder_chain(&self, window_id: WindowId) -> Vec<EntityId> {
         if let Some(focused) = self.focused_view_id(window_id) {
             match self.presenter(window_id) { Some(presenter) => {
