@@ -524,14 +524,31 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    + needs the `MCPServerExt` trait (warp `ai/mcp/mod.rs`) + `active_mcp_config_file_path`
    (warp `warp_managed_paths_watcher.rs`, which uses `SettingsMode` — adapt to the TUI
    config path only). Register `TuiMcpManager` in `crate::tui::init` once ported.
-2. **Slash-command TUI mixer** (files: slash_commands, skills_menu) —
-   `TuiSlashCommandDataSource(+Args)`, `SlashCommandMixer`, `ParsedSlashCommandInput`,
-   `SlashCommandKind`, `SlashCommandSelectionBehavior`, `build_slash_command_mixer`,
-   `slash_command_query`, `should_close_slash_command_menu_for_exact_match`,
-   `slash_command_selection_behavior`, plus the `record_*`/`saved_prompt_text_for_id`
-   helpers and skills (`AcceptSkill`, `query_selectable_skills`). Zap's
-   `search/slash_command_menu` + `terminal/input/slash_commands` diverged — expect
-   adaptation. (`slash_commands.rs` also has an internal `AUTO_APPROVE` scope error.)
+2. **Slash-command TUI mixer** (files: slash_commands, skills_menu) — PARTIAL.
+   **DONE (commit f142b5f8, GUI-green + pushed):** `SlashCommandMixer` +
+   `build_slash_command_mixer` + `slash_command_query` — git-extracted `mixer.rs` cleanly
+   (Zap's `search` module already has `SearchMixer`/`SyncDataSource`/
+   `QueryFilter::StaticSlashCommands`/`AddAsyncSourceOptions`/`Query`/
+   `saved_prompts_data_source()`; `AcceptSlashCommandOrSavedPrompt: warpui::Action` holds).
+   **REMAINING = a genuine ARCHITECTURAL-divergence build, not an extract.** Root cause:
+   warp's `SlashCommandDataSource` is a **trait** with a 754-line shared `data_source/core.rs`
+   (`subscribe_to_shared_dependencies`, `SlashCommandDataSourceState`) plus `gui.rs`/`tui.rs`
+   impls; **Zap's `SlashCommandDataSource` is a concrete monolithic struct** (`data_source/mod.rs`,
+   464 lines, the GUI's single source — has `DataSourceArgs`/`InlineItem`/`UpdatedActiveCommands`
+   but NO trait, NO `SlashCommandDataSourceState`, NO `core.rs`). So `TuiSlashCommandDataSource`
+   (`data_source/tui.rs`, 142 lines, whose `parse_input` PRODUCES `ParsedSlashCommandInput`)
+   can't be extracted — it needs `super::core::*`. Two paths: (a) refactor Zap's concrete
+   struct into warp's trait + core/gui/tui split (touches GUI hot path — risky), or (b)
+   build a BYOP-local `TuiSlashCommandDataSource` that reuses Zap's existing concrete
+   machinery (like the conversation-menu approach). Still-missing leaf types:
+   `ParsedSlashCommandInput` (Zap has `SlashCommandEntryState` = same 4 variants + a 5th
+   `DisabledUntilEmptyBuffer` — add `ParsedSlashCommandInput` as the 4-variant type or
+   convert), `SlashCommandKind` (warp `search/slash_command_menu/static_commands/mod.rs`),
+   `SlashCommandSelectionBehavior`/`slash_command_selection_behavior`/
+   `should_close_slash_command_menu_for_exact_match` (warp `slash_commands/mod.rs`),
+   `query_selectable_skills` (warp `terminal/input/skills/core.rs`), `record_*`/
+   `saved_prompt_text_for_id`. (`slash_commands.rs` also has an internal `AUTO_APPROVE`
+   scope error.)
 3. **Conversation selection/management** (files: conversation_selection,
    conversation_menu, input_mode_policy, inline_menu, input/view, terminal_session_view)
    — `ConversationSelection(+Event/Handle)`, `AgentConversationEntry(+Id)`,
