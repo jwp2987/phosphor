@@ -225,6 +225,12 @@ impl SlashCommandDataSource {
         self.active_commands_by_id.iter()
     }
 
+    /// Returns the active session handle. Used by the input-parsing helpers to resolve the
+    /// current working directory for skill matching.
+    pub fn active_session(&self) -> &ModelHandle<ActiveSession> {
+        &self.active_session
+    }
+
     pub fn is_agent_view_active(&self, ctx: &AppContext) -> bool {
         self.agent_view_controller.as_ref(ctx).is_active()
     }
