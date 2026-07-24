@@ -4,6 +4,10 @@ use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::ambient_agents::{AgentSource, AmbientAgentTask, AmbientAgentTaskState};
 use crate::ai::artifacts::Artifact;
 use crate::ai::blocklist::{format_credits, BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
+use crate::ai::conversation_entry::{
+    AgentConversationDisplayData, AgentConversationEntry, AgentConversationEntryId,
+    AgentConversationIdentity,
+};
 use crate::ai::conversation_navigation::ConversationNavigationData;
 use crate::auth::{AuthStateProvider, UserUid};
 use crate::ui_components::icons::Icon;
@@ -979,6 +983,42 @@ impl AgentConversationsModel {
         self.conversations
             .get(conversation_id)
             .map(ConversationOrTask::Conversation)
+    }
+
+    /// Returns normalized conversation-list entries for list/selection surfaces.
+    ///
+    /// BYOP-local projection of upstream's `get_entries`: there are no ambient cloud runs,
+    /// so this emits one entry per local conversation. `filters` is accepted for call-site
+    /// parity; local conversations are all Oz-harness and pass the menu's harness filter, so
+    /// no server-side filtering is required here — surfaces apply their own selection policy.
+    pub fn get_entries(
+        &self,
+        _filters: &AgentManagementFilters,
+        app: &AppContext,
+    ) -> Vec<AgentConversationEntry> {
+        let mut entries: Vec<AgentConversationEntry> = self
+            .conversations
+            .values()
+            .map(|metadata| {
+                let conversation_id = metadata.nav_data.id;
+                let wrapper = ConversationOrTask::Conversation(metadata);
+                AgentConversationEntry {
+                    id: AgentConversationEntryId::Conversation(conversation_id),
+                    identity: AgentConversationIdentity {
+                        local_conversation_id: Some(conversation_id),
+                        server_conversation_token: None,
+                    },
+                    display: AgentConversationDisplayData {
+                        title: wrapper.title(app),
+                        last_updated: wrapper.last_updated(),
+                        status: wrapper.display_status(app),
+                        harness: wrapper.harness(),
+                    },
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| b.display.last_updated.cmp(&a.display.last_updated));
+        entries
     }
 
     /// Returns all (name, uid) pairs for creators of tasks in the model.

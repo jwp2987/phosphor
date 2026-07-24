@@ -35,8 +35,15 @@ pub use crate::ai::agent::{
     SuggestNewConversationResult, SummarizationType, TodoOperation, UserQueryMode,
 };
 pub use crate::ai::agent_conversations_model::{
-    AgentConversationsModel, AgentConversationsModelEvent,
+    AgentConversationsModel, AgentConversationsModelEvent, AgentManagementFilters,
+    AgentRunDisplayStatus, HarnessFilter,
 };
+pub use crate::ai::conversation_entry::{
+    AgentConversationDisplayData, AgentConversationEntry, AgentConversationEntryId,
+    AgentConversationIdentity, AgentConversationListEntryState, AgentConversationListPolicy,
+    AgentConversationQueryResult, query_conversation_entries,
+};
+pub use warp_cli::agent::Harness;
 pub use crate::ai::blocklist::action_model::{
     AIActionStatus, BlocklistAIActionEvent, BlocklistAIActionModel, NewConversationDecision,
     ShellCommandExecutor, ShellCommandExecutorEvent,
@@ -169,4 +176,12 @@ pub fn tui_completion_context_has_exact_command(
             .signature_from_line(command, case_sensitivity)
             .is_some()
     }
+}
+
+/// Returns whether cloud conversation metadata failed to load.
+///
+/// BYOP has no cloud conversation metadata, so this is always `false` — the conversation
+/// menu never surfaces a cloud-metadata warning.
+pub fn agent_conversations_cloud_metadata_load_failed(_app: &warpui::AppContext) -> bool {
+    false
 }

@@ -20,6 +20,7 @@ pub(crate) mod blocklist;
 pub(crate) mod byop_compaction;
 pub(crate) mod byop_readiness;
 pub mod control_code_parser;
+pub(crate) mod conversation_entry;
 pub(crate) mod conversation_navigation;
 pub(crate) mod conversation_status_ui;
 pub(crate) mod conversation_utils;
