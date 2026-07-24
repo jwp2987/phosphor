@@ -3184,7 +3184,7 @@ impl TerminalView {
                 &model_events_handle,
                 model.clone(),
                 terminal_view_id,
-                agent_view_controller.clone(),
+                Some(agent_view_controller.clone()),
                 ctx,
             )
         });
@@ -3222,7 +3222,7 @@ impl TerminalView {
                 ai_context_model.clone(),
                 ai_action_model.clone(),
                 active_session.clone(),
-                agent_view_controller.clone(),
+                Some(agent_view_controller.clone()),
                 model.clone(),
                 terminal_view_id,
                 ctx,

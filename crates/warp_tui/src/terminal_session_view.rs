@@ -831,7 +831,8 @@ impl TuiTerminalSessionView {
                 &model_events,
                 model.clone(),
                 terminal_surface_id,
-                conversation_selection.clone(),
+                // The TUI has no agent-view controller.
+                None,
                 ctx,
             )
         });
@@ -860,9 +861,10 @@ impl TuiTerminalSessionView {
             BlocklistAIController::new(
                 ai_input_model.clone(),
                 context_model.clone(),
-                conversation_selection.clone(),
                 action_model.clone(),
                 active_session.clone(),
+                // The TUI has no agent-view controller.
+                None,
                 model.clone(),
                 terminal_surface_id,
                 ctx,
