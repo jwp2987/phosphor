@@ -3,12 +3,10 @@
 
 use std::path::Path;
 
-use ai::agent::action_result::RunAgentsAgentOutcome;
 use warp::tui_export::{
     AIActionStatus, AIAgentAction, AIAgentActionResultType, AIAgentActionType,
     AskUserQuestionResult, FileGlobV2Result, GrepResult, RequestCommandOutputResult,
-    RunAgentsAgentOutcomeKind, RunAgentsResult, SearchCodebaseFailureReason, SearchCodebaseResult,
-    StartAgentExecutionMode, SuggestNewConversationResult,
+    SuggestNewConversationResult,
 };
 use warp_core::command::ExitCode;
 use warpui_core::elements::tui::TuiStyle;
@@ -237,58 +235,8 @@ fn label_for_action(
                 State::Cancelled => format!("Cancelled reading {files}"),
             }
         }
-        AIAgentActionType::UploadArtifact(request) => {
-            let file = single_line(&request.file_path);
-            match state {
-                State::Constructing => "Preparing upload…".to_owned(),
-                State::Pending | State::Blocked => format!("Upload {file}"),
-                State::Running => format!("Uploading {file}"),
-                State::Succeeded => format!("Uploaded {file}"),
-                State::Failed => format!("Upload of {file} failed"),
-                State::Cancelled => format!("Upload of {file} cancelled"),
-            }
-        }
-        AIAgentActionType::SearchCodebase(request) => {
-            let query = single_line(&request.query);
-            let scope = request
-                .codebase_path
-                .as_deref()
-                .map(|path| format!(" in {}", base_name(path)))
-                .unwrap_or_default();
-            match state {
-                State::Constructing => "Searching codebase…".to_owned(),
-                State::Pending | State::Blocked => {
-                    format!("Search for \"{query}\"{scope}")
-                }
-                State::Running => format!("Searching for \"{query}\"{scope}"),
-                State::Succeeded => match result {
-                    Some(AIAgentActionResultType::SearchCodebase(
-                        SearchCodebaseResult::Success { files },
-                    )) if files.is_empty() => {
-                        format!("Searched for \"{query}\"{scope}, no results")
-                    }
-                    Some(AIAgentActionResultType::SearchCodebase(
-                        SearchCodebaseResult::Success { files },
-                    )) => format!(
-                        "Searched for \"{query}\"{scope}, {}",
-                        count_label(files.len(), "result", "results")
-                    ),
-                    _ => format!("Searched for \"{query}\"{scope}"),
-                },
-                State::Failed => match result {
-                    Some(AIAgentActionResultType::SearchCodebase(
-                        SearchCodebaseResult::Failed {
-                            reason: SearchCodebaseFailureReason::CodebaseNotIndexed,
-                            ..
-                        },
-                    )) => format!(
-                        "Search for \"{query}\"{scope} failed because the codebase isn't indexed"
-                    ),
-                    _ => format!("Search for \"{query}\"{scope} failed"),
-                },
-                State::Cancelled => format!("Search for \"{query}\"{scope} cancelled"),
-            }
-        }
+        // BYOP: UploadArtifact and SearchCodebase are cloud-only AIAgentActionType variants
+        // that Zap does not have, so their label arms are dropped.
         // Rendered by its own stateful child view (`TuiFileEditsView`); the
         // label path should never be reached for it.
         AIAgentActionType::RequestFileEdits { .. } => {
@@ -376,9 +324,9 @@ fn label_for_action(
             },
             State::Cancelled => "New conversation suggestion cancelled".to_owned(),
         },
-        AIAgentActionType::SuggestPrompt(_)
-        | AIAgentActionType::InitProject
-        | AIAgentActionType::OpenCodeReview => fallback_label(action, state),
+        AIAgentActionType::SuggestPrompt(_) | AIAgentActionType::OpenCodeReview => {
+            fallback_label(action, state)
+        }
         AIAgentActionType::ReadDocuments(request) => {
             let documents = count_label(request.document_ids.len(), "document", "documents");
             match state {
@@ -421,7 +369,6 @@ fn label_for_action(
             State::Failed => "Failed to read command output".to_owned(),
             State::Cancelled => "Read command output cancelled".to_owned(),
         },
-        AIAgentActionType::UseComputer(request) => summary_label(&request.action_summary, state),
         AIAgentActionType::InsertCodeReviewComments { comments, .. } => {
             let comments = count_label(comments.len(), "review comment", "review comments");
             match state {
@@ -433,23 +380,6 @@ fn label_for_action(
                 State::Cancelled => "Insert review comments cancelled".to_owned(),
             }
         }
-        AIAgentActionType::RequestComputerUse(request) => {
-            summary_label(&request.task_summary, state)
-        }
-        AIAgentActionType::StartRecording { .. } => match state {
-            State::Pending | State::Blocked => "Start recording".to_owned(),
-            State::Constructing | State::Running => "Starting recording…".to_owned(),
-            State::Succeeded => "Started screen recording".to_owned(),
-            State::Failed => "Recording failed to start".to_owned(),
-            State::Cancelled => "Start recording cancelled".to_owned(),
-        },
-        AIAgentActionType::StopRecording { .. } => match state {
-            State::Pending | State::Blocked => "Stop recording".to_owned(),
-            State::Constructing | State::Running => "Stopping recording…".to_owned(),
-            State::Succeeded => "Saved screen recording".to_owned(),
-            State::Failed => "Failed to save recording".to_owned(),
-            State::Cancelled => "Stop recording cancelled".to_owned(),
-        },
         AIAgentActionType::ReadSkill(request) => {
             let skill = single_line(&request.skill.display_label());
             match state {
@@ -462,48 +392,8 @@ fn label_for_action(
                 State::Cancelled => format!("Cancelled reading skill {skill}"),
             }
         }
-        AIAgentActionType::FetchConversation { .. } => match state {
-            State::Pending | State::Blocked => "Fetch conversation".to_owned(),
-            State::Constructing | State::Running => "Fetching conversation…".to_owned(),
-            State::Succeeded => "Fetched conversation".to_owned(),
-            State::Failed => "Fetch conversation failed".to_owned(),
-            State::Cancelled => "Fetch conversation cancelled".to_owned(),
-        },
-        AIAgentActionType::StartAgent {
-            name,
-            execution_mode,
-            ..
-        } => {
-            let agent = if matches!(execution_mode, StartAgentExecutionMode::Remote { .. }) {
-                format!("remote agent {name}")
-            } else {
-                format!("agent {name}")
-            };
-            match state {
-                State::Constructing => "Configuring agent…".to_owned(),
-                State::Pending | State::Blocked => format!("Start {agent}"),
-                State::Running => format!("Starting {agent}…"),
-                State::Succeeded => format!("Started agent {name}"),
-                State::Failed => format!("Failed to start agent {name}"),
-                State::Cancelled => format!("Start agent {name} cancelled"),
-            }
-        }
-        AIAgentActionType::SendMessageToAgent {
-            addresses, subject, ..
-        } => {
-            let subject = single_line(subject);
-            match state {
-                State::Constructing => "Composing message…".to_owned(),
-                State::Pending | State::Blocked => format!("Send message: {subject}"),
-                State::Running => format!(
-                    "Sending message to {}: {subject}",
-                    count_label(addresses.len(), "agent", "agents")
-                ),
-                State::Succeeded => format!("Sent message: {subject}"),
-                State::Failed => format!("Failed to send message: {subject}"),
-                State::Cancelled => "Send message cancelled".to_owned(),
-            }
-        }
+        // BYOP: FetchConversation, StartAgent, and SendMessageToAgent are cloud/orchestration
+        // AIAgentActionType variants absent from Zap; their label arms are dropped.
         AIAgentActionType::TransferShellCommandControlToUser { reason } => match state {
             State::Constructing => "Handing control to you…".to_owned(),
             State::Pending | State::Blocked | State::Running => {
@@ -543,65 +433,11 @@ fn label_for_action(
             State::Failed => "Questions failed".to_owned(),
             State::Cancelled => "Questions cancelled".to_owned(),
         },
-        AIAgentActionType::RunAgents(request) => {
-            let total = request.agent_run_configs.len();
-            match state {
-                State::Constructing | State::Pending | State::Blocked => {
-                    "Configuring agents…".to_owned()
-                }
-                State::Running => {
-                    format!("Spawning {}…", count_label(total, "agent", "agents"))
-                }
-                State::Succeeded => match result {
-                    Some(AIAgentActionResultType::RunAgents(RunAgentsResult::Launched {
-                        agents,
-                        ..
-                    })) => launched_agents_label(agents),
-                    _ => format!("Spawned {}", count_label(total, "agent", "agents")),
-                },
-                State::Failed => match result {
-                    Some(AIAgentActionResultType::RunAgents(RunAgentsResult::Launched {
-                        agents,
-                        ..
-                    })) => launched_agents_label(agents),
-                    Some(AIAgentActionResultType::RunAgents(RunAgentsResult::Denied {
-                        ..
-                    })) => "Orchestration disabled — agents not launched".to_owned(),
-                    Some(AIAgentActionResultType::RunAgents(RunAgentsResult::Failure {
-                        error,
-                    })) if !error.is_empty() => {
-                        format!("Failed to start orchestration: {}", single_line(error))
-                    }
-                    _ => "Failed to start orchestration".to_owned(),
-                },
-                State::Cancelled => "Spawn agents cancelled".to_owned(),
-            }
-        }
-        AIAgentActionType::WaitForEvents { .. } => match state {
-            State::Constructing | State::Pending | State::Blocked | State::Running => {
-                "Waiting for agent events…".to_owned()
-            }
-            State::Succeeded => "Done waiting for agent events".to_owned(),
-            State::Failed => "Waiting for agent events failed".to_owned(),
-            State::Cancelled => "Wait for events cancelled".to_owned(),
-        },
+        // BYOP: RunAgents and WaitForEvents are cloud-orchestration AIAgentActionType variants
+        // absent from Zap; their label arms are dropped.
     }
 }
 
-fn launched_agents_label(agents: &[RunAgentsAgentOutcome]) -> String {
-    let launched = agents
-        .iter()
-        .filter(|agent| matches!(agent.kind, RunAgentsAgentOutcomeKind::Launched { .. }))
-        .count();
-    let total = agents.len();
-    if launched == total {
-        format!("Spawned {}", count_label(total, "agent", "agents"))
-    } else if launched == 0 {
-        format!("Failed to spawn {}", count_label(total, "agent", "agents"))
-    } else {
-        format!("Spawned {launched} of {total} agents")
-    }
-}
 /// Shared label body for both file-glob action versions; only V2 results
 /// carry a match count.
 fn file_glob_label(
