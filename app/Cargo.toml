@@ -407,6 +407,10 @@ embed-resource = "3.0"
 [features]
 ai_resume_button = []
 autoupdate = []
+# Exposes the app's test helpers (terminal/model/test_utils, model mock ctors, …)
+# to other crates' test builds (e.g. warp_tui tests). The app's deps already enable
+# their own test-util unconditionally, so this only gates the app's own helpers.
+test-util = []
 figma_detection = []
 bundled_skills = []
 windows_high_performance_gpu_default = []
