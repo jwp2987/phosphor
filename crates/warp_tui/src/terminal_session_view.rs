@@ -1502,7 +1502,7 @@ impl TuiTerminalSessionView {
             });
 
             BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
-                history.clear_conversations_for_terminal_surface(self.terminal_surface_id, ctx);
+                history.clear_conversations_in_terminal_view(self.terminal_surface_id, ctx);
             });
         }
 
@@ -2555,7 +2555,7 @@ impl TuiTerminalSessionView {
                     transcript.clear_for_new_conversation(ctx);
                 });
                 BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
-                    history.clear_conversations_for_terminal_surface(terminal_surface_id, ctx);
+                    history.clear_conversations_in_terminal_view(terminal_surface_id, ctx);
                 });
                 self.conversation_selection.update(ctx, |selection, ctx| {
                     selection.select_new_conversation(AgentViewEntryOrigin::Tui, ctx);

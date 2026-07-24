@@ -293,7 +293,7 @@ impl TuiSessions {
             .iter()
             .flat_map(|session| {
                 history
-                    .all_live_conversations_for_terminal_surface(session.id.surface_id())
+                    .all_live_conversations_for_terminal_view(session.id.surface_id())
                     .map(move |conversation| (conversation.id(), session.id))
             })
             .collect()

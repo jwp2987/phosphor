@@ -182,7 +182,7 @@ fn tui_selection_eagerly_owns_session_conversation() {
             );
             assert_eq!(
                 history
-                    .all_live_conversations_for_terminal_surface(terminal_surface_id)
+                    .all_live_conversations_for_terminal_view(terminal_surface_id)
                     .map(|conversation| conversation.id())
                     .collect::<Vec<_>>(),
                 vec![conversation_id]
@@ -270,7 +270,7 @@ fn tui_selection_creates_and_selects_terminal_surface_scoped_conversation() {
         });
         history.read(&app, |history, _| {
             let conversation_ids = history
-                .all_live_conversations_for_terminal_surface(terminal_surface_id)
+                .all_live_conversations_for_terminal_view(terminal_surface_id)
                 .map(|conversation| conversation.id())
                 .collect::<Vec<_>>();
             assert!(conversation_ids.contains(&initial_conversation_id));
