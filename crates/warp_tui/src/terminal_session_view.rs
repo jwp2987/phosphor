@@ -2099,8 +2099,16 @@ impl TuiTerminalSessionView {
             ctx.notify();
             return;
         };
+        // Zap's git-status singleton keys on a local `&Path` (BYOP has no remote repos).
+        let local_repo_path = match &repo_path {
+            LocalOrRemotePath::Local(path) => path.clone(),
+            LocalOrRemotePath::Remote(_) => {
+                ctx.notify();
+                return;
+            }
+        };
         match GitRepoModels::handle(ctx)
-            .update(ctx, |models, ctx| models.subscribe(&repo_path, ctx))
+            .update(ctx, |models, ctx| models.subscribe(&local_repo_path, ctx))
         {
             Ok(handle) => {
                 ctx.subscribe_to_model(&handle, |_, _, _, ctx| ctx.notify());
@@ -2114,7 +2122,7 @@ impl TuiTerminalSessionView {
     }
 
     fn git_status_metadata<'a>(&self, ctx: &'a AppContext) -> Option<&'a GitStatusMetadata> {
-        self.git_repo_status.as_ref()?.as_ref(ctx).metadata(ctx)
+        self.git_repo_status.as_ref()?.as_ref(ctx).metadata()
     }
 
     /// Flips the footer usage entry's persisted credits⇄cost display mode.

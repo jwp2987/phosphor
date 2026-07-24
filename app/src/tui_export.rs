@@ -80,6 +80,9 @@ pub use crate::ai::option_snapshot::{
 };
 pub use crate::ai::skills::{SkillManager, SkillReference};
 pub use crate::terminal::input::skills::{AcceptSkill, SelectableSkill, query_selectable_skills};
+pub use crate::code_review::git_status_update::{
+    GitRepoModels, GitRepoStatusModel, GitStatusMetadata,
+};
 pub use crate::appearance::Appearance;
 pub use crate::tui::log_out_tui;
 pub use crate::banner::BannerState;
