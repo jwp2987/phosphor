@@ -131,7 +131,7 @@ impl<'a, T: Entity> ViewContext<'a, T> {
         }
     }
 
-    pub fn focus<S: View>(&mut self, handle: &ViewHandle<S>) {
+    pub fn focus<S: Entity>(&mut self, handle: &ViewHandle<S>) {
         let handle: AnyViewHandle = handle.into();
         self.app.pending_effects.push_back(Effect::Focus {
             window_id: handle.window_id(self.app),
