@@ -465,8 +465,16 @@ are gated on `View` — the systematic warpui_core TUI-enablement (same class as
 subscribe closures. (3) ~20-30 individual method adaptations. Plus char-cell editor (item 8) still
 unported. **TRUE remaining work = warpui_core View→Entity context-method refactor (biggest lever) + the
 closure-arg pass + char-cell editor + individual methods — genuinely multi-session; start with the
-warpui_core relaxation on a fresh context.** (Older note below.) The earlier "remaining 10" were the
-DEEP/CLOUD-ADJACENT cluster — see items 6/7/8 + the
+warpui_core relaxation on a fresh context.**
+**⚡ UPDATE (tip 032a180f): the warpui_core View→Entity relaxation LANDED — warp_tui 606 → 205,
+GUI-green.** Two commits in `warpui_core/src/core/view/context.rs`: moved the large ViewContext method
+set View→Entity (606→365), then relaxed the UpdateModel/ViewAsRef/UpdateView/ReadView impls for
+ViewContext<V> View→Entity (365→205). GUI-safe throughout. **REMAINING 205 = the long tail (no longer
+systematic):** ~92 E0599 individual method-not-found (~30+ distinct Zap API divergences + char_cell×6
+= char-cell editor), ~57 E0277 residual bounds, ~14 E0593 (3-vs-4-arg subscribe closures — drop the
+emitter arg per site), ~16 E0282 cascade, misc. Next: grind the E0599 long tail + E0593 batch +
+char-cell editor (item 8). (Older note below.) The earlier "remaining 10" were the DEEP/CLOUD-ADJACENT
+cluster — see items 6/7/8 + the
 `FailedOutputPresentation` design call: char-cell editor port (warp_editor), diff-storage,
 conversation-restoration hub (cascades the 4 `builder` E0425s), and the BYOP error-surface
 product decision. No further small wins remain. **⚠ diff-storage (item 7) was ATTEMPTED &
