@@ -634,6 +634,18 @@ impl BlocklistAIContextModel {
         &self.pending_attachments
     }
 
+    pub fn pending_attachment_summaries(&self) -> Vec<PendingAttachmentSummary> {
+        self.pending_attachments
+            .iter()
+            .enumerate()
+            .map(|(index, attachment)| PendingAttachmentSummary {
+                index,
+                attachment_type: attachment.attachment_type(),
+                file_name: attachment.file_name().to_owned(),
+            })
+            .collect()
+    }
+
     /// Returns only the pending images for the next query.
     pub fn pending_images(&self) -> Vec<&ImageContext> {
         self.pending_attachments

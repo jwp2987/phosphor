@@ -628,6 +628,39 @@ impl LLMPreferences {
         self.get_preferred_base_model(app, terminal_view_id)
     }
 
+    /// Sets the active execution profile's base model to `preferred_llm_id`, clearing any
+    /// context-window override. Returns whether the change was persisted.
+    pub fn update_active_profile_base_model(
+        &self,
+        preferred_llm_id: &LLMId,
+        terminal_view_id: Option<EntityId>,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let profiles = AIExecutionProfilesModel::handle(ctx);
+        let profile_id = *profiles.as_ref(ctx).active_profile(terminal_view_id, ctx).id();
+        let (persisted, changed) = profiles.update(ctx, |profiles, ctx| {
+            let profile = profiles
+                .get_profile_by_id(profile_id, ctx)
+                .expect("active execution profile should exist");
+            if profile.data().base_model.as_ref() == Some(preferred_llm_id) {
+                return (true, false);
+            }
+            profiles.set_base_model(profile_id, Some(preferred_llm_id.clone()), ctx);
+            profiles.set_context_window_limit(profile_id, None, ctx);
+            let persisted = profiles
+                .get_profile_by_id(profile_id, ctx)
+                .is_some_and(|profile| {
+                    profile.data().base_model.as_ref() == Some(preferred_llm_id)
+                        && profile.data().context_window_limit.is_none()
+                });
+            (persisted, persisted)
+        });
+        if changed {
+            ctx.emit(LLMPreferencesEvent::UpdatedActiveAgentModeLLM);
+        }
+        persisted
+    }
+
     /// Returns `LLMInfo` for the currently selected LLM to be used for Agent Mode.
     ///
     /// 优先级:terminal-view override > AISettings.byop_last_used_model_id(全局
