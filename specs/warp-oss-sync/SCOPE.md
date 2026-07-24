@@ -472,9 +472,16 @@ set View→Entity (606→365), then relaxed the UpdateModel/ViewAsRef/UpdateView
 ViewContext<V> View→Entity (365→205). GUI-safe throughout. **REMAINING 205 = the long tail (no longer
 systematic):** ~92 E0599 individual method-not-found (~30+ distinct Zap API divergences + char_cell×6
 = char-cell editor), ~57 E0277 residual bounds, ~14 E0593 (3-vs-4-arg subscribe closures — drop the
-emitter arg per site), ~16 E0282 cascade, misc. Next: grind the E0599 long tail + E0593 batch +
-char-cell editor (item 8). (Older note below.) The earlier "remaining 10" were the DEEP/CLOUD-ADJACENT
-cluster — see items 6/7/8 + the
+emitter arg per site), ~16 E0282 cascade, misc.
+**⚡ FURTHER (tip 26c1bfd3): 205 → 191** — fixed the E0593 batch (dropped the unused emitter arg from
+14 subscribe_to_model closures). **REMAINING 191 + KEY INSIGHT:** ~92 E0599 method-not-found = the
+REAL work (~30+ Zap API divergences incl. char-cell editor); the ~57 E0277 `TuiXXX: View` + ~16 E0282
+are almost certainly CASCADE artifacts from the E0599s (verified TuiTerminalSessionView impls Entity +
+ViewContext::subscribe_to_model has no View bound post-relaxation — the residual View errors can't be
+real). **So TRUE remaining ≈ the ~92 E0599 (each = find Zap's moved/renamed method) + char-cell editor
+(item 8); fix E0599s first — the View/E0282 cascade should largely evaporate.** Session arc:
+masked-10 → 606 (true unmask) → 191, GUI-green + all pushed. (Older note below.) The earlier
+"remaining 10" were the DEEP/CLOUD-ADJACENT cluster — see items 6/7/8 + the
 `FailedOutputPresentation` design call: char-cell editor port (warp_editor), diff-storage,
 conversation-restoration hub (cascades the 4 `builder` E0425s), and the BYOP error-surface
 product decision. No further small wins remain. **⚠ diff-storage (item 7) was ATTEMPTED &
