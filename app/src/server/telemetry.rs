@@ -882,6 +882,10 @@ pub enum AgentModeAutoDetectionSettingOrigin {
     /// The AI settings page.
     #[serde(rename = "settings_page")]
     SettingsPage,
+
+    /// A natural-language-detection toggle slash command (TUI).
+    #[serde(rename = "slash_command")]
+    SlashCommand,
 }
 
 /// Payload for the [`AgentModePotentialAutodetectionFalsePositive`] event.
