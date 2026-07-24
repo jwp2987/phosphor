@@ -296,6 +296,15 @@ pub enum AttachmentType {
     File,
 }
 
+/// A flattened, display-oriented summary of one pending attachment. Ported from Warp OSS for
+/// the TUI attachment bar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingAttachmentSummary {
+    pub index: usize,
+    pub attachment_type: AttachmentType,
+    pub file_name: String,
+}
+
 /// A pending attachment — either an image (base64 in memory) or a file (path reference).
 #[derive(Clone, Debug)]
 pub enum PendingAttachment {

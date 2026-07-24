@@ -57,8 +57,8 @@ pub use crate::ai::blocklist::block::cli_controller::{
     UserTakeOverReason,
 };
 pub use crate::ai::blocklist::context_model::{
-    AttachmentType, BlocklistAIContextEvent, BlocklistAIContextModel, PendingQueryState,
-    block_context_from_terminal_model,
+    AttachmentType, BlocklistAIContextEvent, BlocklistAIContextModel, PendingAttachmentSummary,
+    PendingQueryState, block_context_from_terminal_model,
 };
 pub use crate::ai::blocklist::conversation_selection::{
     ConversationSelection, ConversationSelectionEvent, ConversationSelectionHandle,

@@ -26,8 +26,7 @@ use std::rc::Rc;
 use string_offset::CharOffset;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
-    AcceptSlashCommandOrSavedPrompt, BlocklistAIInputModel, InputType,
-    InputTypeAutoDetectionSource, LLMId, TuiMcpAction,
+    AcceptSlashCommandOrSavedPrompt, BlocklistAIInputModel, InputType, LLMId, TuiMcpAction,
 };
 use warp_editor::model::CoreEditorModel;
 use warpui_core::elements::MouseStateHandle;
@@ -716,12 +715,8 @@ impl TuiInputView {
     fn enter_shell_mode(&mut self, ctx: &mut ViewContext<Self>) {
         let is_input_buffer_empty = self.plain_text(ctx).is_empty();
         self.input_mode.clone().update(ctx, |input_mode, ctx| {
-            input_mode.set_input_config(
-                SHELL_LOCKED_CONFIG,
-                is_input_buffer_empty,
-                Some(InputTypeAutoDetectionSource::ShellPrefix),
-                ctx,
-            );
+            // BYOP: Zap's set_input_config takes no decision-source arg (inert telemetry upstream).
+            input_mode.set_input_config(SHELL_LOCKED_CONFIG, is_input_buffer_empty, ctx);
         });
     }
 

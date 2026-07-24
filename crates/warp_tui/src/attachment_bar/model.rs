@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use warp::editor::CodeEditorModel;
 use warp::tui_export::{
     ActiveSession, BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIInputModel,
-    InputType, InputTypeAutoDetectionSource, LLMPreferences, MAX_IMAGE_COUNT_FOR_QUERY,
-    PendingAttachmentSummary,
+    InputType, LLMPreferences, MAX_IMAGE_COUNT_FOR_QUERY, PendingAttachmentSummary,
 };
 use warp_core::features::FeatureFlag;
 use warp_editor::model::CoreEditorModel;
@@ -377,12 +376,9 @@ impl TuiAttachmentModel {
         ) {
             AttachmentModeTransition::LockAgent => {
                 self.input_mode.update(ctx, |input_mode, ctx| {
-                    input_mode.set_input_config(
-                        AI_LOCKED_CONFIG,
-                        input_is_empty,
-                        Some(InputTypeAutoDetectionSource::AttachmentForcedAi),
-                        ctx,
-                    );
+                    // BYOP: Zap's set_input_config takes no decision-source (that is inert
+                    // telemetry upstream), so the source arg is dropped.
+                    input_mode.set_input_config(AI_LOCKED_CONFIG, input_is_empty, ctx);
                 });
                 ctx.emit(TuiAttachmentModelEvent::AbortInputDetection);
             }
