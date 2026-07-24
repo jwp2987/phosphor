@@ -4444,42 +4444,58 @@ impl UpdateView for AppContext {
         let window_id = handle.window_id(self);
         let view_id = handle.id();
 
-        // GUI views live in `window.views`; Zap keeps TUI views in a separate
-        // `window.tui_views` map (rather than upstream's `StoredView` enum), so
-        // remove from whichever map actually holds this view.
+        // GUI views live in `window.views`; Zap keeps TUI views in a separate,
+        // `tui`-feature-gated `window.tui_views` map (rather than upstream's
+        // `StoredView` enum), so remove from whichever map actually holds this view.
         let mut gui_view: Option<Box<dyn AnyView>> = None;
+        #[cfg(feature = "tui")]
         let mut tui_view: Option<Box<dyn crate::core::view::AnyTuiView>> = None;
-        match self.windows.get_mut(&window_id) {
-            Some(window) => {
-                if let Some(view) = window.views.remove(&view_id) {
-                    gui_view = Some(view);
-                } else if let Some(view) = window.tui_views.remove(&view_id) {
-                    tui_view = Some(view);
-                } else {
-                    panic!("Circular view update");
-                }
+        {
+            let window = self
+                .windows
+                .get_mut(&window_id)
+                .unwrap_or_else(|| panic!("Window does not exist"));
+            gui_view = window.views.remove(&view_id);
+            #[cfg(feature = "tui")]
+            if gui_view.is_none() {
+                tui_view = window.tui_views.remove(&view_id);
             }
-            None => panic!("Window does not exist"),
+        }
+        #[cfg(feature = "tui")]
+        let is_tui = tui_view.is_some();
+        #[cfg(not(feature = "tui"))]
+        let is_tui = false;
+        if gui_view.is_none() && !is_tui {
+            panic!("Circular view update");
         }
 
         let mut ctx = ViewContext::new(self, window_id, view_id);
-        let any: &mut dyn std::any::Any = match (gui_view.as_mut(), tui_view.as_mut()) {
-            (Some(view), _) => view.as_any_mut(),
-            (_, Some(view)) => view.as_any_mut(),
-            _ => unreachable!(),
+        let any: &mut dyn std::any::Any = if let Some(view) = gui_view.as_mut() {
+            view.as_any_mut()
+        } else {
+            #[cfg(feature = "tui")]
+            {
+                tui_view.as_mut().expect("view present").as_any_mut()
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                unreachable!("no view to update")
+            }
         };
         let result = update(any.downcast_mut().expect("Downcast is type safe"), &mut ctx);
 
-        let is_tui = tui_view.is_some();
         if let Some(window) = self.windows.get_mut(&window_id) {
             if let Some(view) = gui_view {
                 window.views.insert(view_id, view);
-            } else if let Some(view) = tui_view {
+            }
+            #[cfg(feature = "tui")]
+            if let Some(view) = tui_view {
                 window.tui_views.insert(view_id, view);
             }
         }
         // A mutated TUI view must be re-rendered by the driver, so mark it dirty
         // (mirrors `add_tui_view`). GUI invalidation flows through effects.
+        #[cfg(feature = "tui")]
         if is_tui {
             self.window_invalidations
                 .entry(window_id)
@@ -4690,26 +4706,28 @@ impl ReadModel for AppContext {
 impl ViewAsRef for AppContext {
     fn view<T: Entity>(&self, handle: &ViewHandle<T>) -> &T {
         let window_id = handle.window_id(self);
-        if let Some(window) = self.windows.get(&window_id) {
-            // GUI views live in `window.views`; Zap keeps TUI views in a separate
-            // `window.tui_views` map, so read from whichever holds this view.
-            if let Some(view) = window.views.get(&handle.id()) {
-                view.as_any()
-                    .downcast_ref()
-                    .expect("downcast should be type safe")
-            } else if let Some(view) = window.tui_views.get(&handle.id()) {
-                view.as_any()
-                    .downcast_ref()
-                    .expect("downcast should be type safe")
-            } else {
-                panic!(
-                    "circular view reference for view type {}",
-                    std::any::type_name::<T>()
-                );
-            }
-        } else {
+        let Some(window) = self.windows.get(&window_id) else {
             panic!("window does not exist");
+        };
+        // GUI views live in `window.views`; Zap keeps TUI views in a separate
+        // `tui`-feature-gated `window.tui_views` map, so read from whichever holds it.
+        if let Some(view) = window.views.get(&handle.id()) {
+            return view
+                .as_any()
+                .downcast_ref()
+                .expect("downcast should be type safe");
         }
+        #[cfg(feature = "tui")]
+        if let Some(view) = window.tui_views.get(&handle.id()) {
+            return view
+                .as_any()
+                .downcast_ref()
+                .expect("downcast should be type safe");
+        }
+        panic!(
+            "circular view reference for view type {}",
+            std::any::type_name::<T>()
+        );
     }
 
     /// Returns the backing view, or None if materializing the view would
@@ -4718,10 +4736,13 @@ impl ViewAsRef for AppContext {
         let window_id = handle.window_id(self);
         let window = self.windows.get(&window_id)?;
         if let Some(view) = window.views.get(&handle.id()) {
-            view.as_any().downcast_ref()
-        } else {
-            window.tui_views.get(&handle.id())?.as_any().downcast_ref()
+            return view.as_any().downcast_ref();
         }
+        #[cfg(feature = "tui")]
+        if let Some(view) = window.tui_views.get(&handle.id()) {
+            return view.as_any().downcast_ref();
+        }
+        None
     }
 }
 
