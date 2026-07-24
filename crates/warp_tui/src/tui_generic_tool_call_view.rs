@@ -183,12 +183,6 @@ impl TuiGenericToolCallView {
     fn permission_question(&self) -> String {
         match &self.action.action {
             AIAgentActionType::ReadFiles(_) => "Is it OK if I read these files?".to_owned(),
-            AIAgentActionType::UploadArtifact(_) => {
-                "Is it OK if I upload this artifact?".to_owned()
-            }
-            AIAgentActionType::SearchCodebase(_) => {
-                "Is it OK if I search this codebase?".to_owned()
-            }
             AIAgentActionType::Grep { .. } => "Is it OK if I search these files?".to_owned(),
             AIAgentActionType::FileGlob { .. } | AIAgentActionType::FileGlobV2 { .. } => {
                 "Is it OK if I find files matching these patterns?".to_owned()
@@ -196,9 +190,6 @@ impl TuiGenericToolCallView {
             AIAgentActionType::CallMCPTool { .. } => "Is it OK if I call this MCP tool?".to_owned(),
             AIAgentActionType::ReadMCPResource { .. } => {
                 "Is it OK if I read this MCP resource?".to_owned()
-            }
-            AIAgentActionType::RequestComputerUse(_) => {
-                "Is it OK if I use the computer?".to_owned()
             }
             AIAgentActionType::WriteToLongRunningShellCommand { .. } => {
                 "Is it OK if I write this input to the running command?".to_owned()
@@ -222,14 +213,6 @@ impl TuiGenericToolCallView {
                 .map(|location| format!("  - {}", location.name))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            AIAgentActionType::UploadArtifact(request) => match &request.description {
-                Some(description) => format!("{}\n{}", request.file_path, description),
-                None => request.file_path.clone(),
-            },
-            AIAgentActionType::SearchCodebase(request) => match &request.codebase_path {
-                Some(path) => format!("{}\n  in {path}", request.query),
-                None => request.query.clone(),
-            },
             AIAgentActionType::Grep { queries, path } => {
                 format!("{}\n  in {path}", queries.join("\n"))
             }
@@ -256,7 +239,6 @@ impl TuiGenericToolCallView {
             AIAgentActionType::ReadMCPResource { name, uri, .. } => {
                 uri.clone().unwrap_or_else(|| name.clone())
             }
-            AIAgentActionType::RequestComputerUse(request) => request.task_summary.clone(),
             AIAgentActionType::WriteToLongRunningShellCommand { input, .. } => {
                 String::from_utf8_lossy(input).into_owned()
             }

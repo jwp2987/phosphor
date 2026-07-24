@@ -64,6 +64,15 @@ impl UserTakeOverReason {
             _ => None,
         }
     }
+
+    /// Whether a completing user-controlled command should auto-resume the conversation.
+    /// Zap's `Stop` carries no explicit flag (unlike Warp), so it never auto-resumes.
+    pub fn should_auto_resume(&self) -> bool {
+        match self {
+            Self::Manual | Self::TransferFromAgent { .. } => true,
+            Self::Stop => false,
+        }
+    }
 }
 
 /// Represents which party is in control of the active long running command.
@@ -99,6 +108,14 @@ impl LongRunningCommandControlState {
 
     pub fn is_user_in_control(&self) -> bool {
         matches!(self, Self::User { .. })
+    }
+
+    /// Whether a completing user-controlled command should auto-resume the conversation.
+    pub fn should_auto_resume(&self) -> bool {
+        match self {
+            Self::Agent { .. } => false,
+            Self::User { reason } => reason.should_auto_resume(),
+        }
     }
 
     pub fn should_hide_responses(&self) -> bool {

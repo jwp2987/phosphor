@@ -1195,7 +1195,6 @@ impl TuiTerminalSessionView {
             }
             ModelEvent::Typeahead => view.handle_typeahead_event(ctx),
             ModelEvent::BlockMetadataReceived(_)
-            | ModelEvent::BlockWorkingDirectoryUpdated(_)
             | ModelEvent::BackgroundBlockStarted
             | ModelEvent::TerminalClear
             | ModelEvent::PromptUpdated
@@ -1264,25 +1263,8 @@ impl TuiTerminalSessionView {
             }
             ActiveSessionEvent::Bootstrapped => {}
         });
-        // The footer's usage entry shows the selected conversation's token/cost
-        // totals: re-render when that conversation's usage metadata updates.
-        ctx.subscribe_to_model(
-            &BlocklistAIHistoryModel::handle(ctx),
-            |view, _, event, ctx| {
-                if let BlocklistAIHistoryEvent::ConversationUsageMetadataUpdated {
-                    conversation_id,
-                } = event
-                {
-                    let selected = view
-                        .conversation_selection
-                        .as_ref(ctx)
-                        .selected_conversation_id(ctx);
-                    if selected == Some(*conversation_id) {
-                        ctx.notify();
-                    }
-                }
-            },
-        );
+        // (Zap has no ConversationUsageMetadataUpdated event — the footer shows a local
+        // context-% instead of cloud usage totals, so no usage-metadata subscription.)
 
         // A wakeup is also how a running block becomes visible: its height is 0
         // until the long-running render-delay timer fires and sends a wakeup
@@ -1705,8 +1687,7 @@ impl TuiTerminalSessionView {
 
         if matches!(
             event,
-            BlocklistAIHistoryEvent::ConversationServerTokenAssigned { .. }
-                | BlocklistAIHistoryEvent::RestoredConversations { .. }
+            BlocklistAIHistoryEvent::RestoredConversations { .. }
         ) {
             self.refresh_exit_summary(ctx);
         }
