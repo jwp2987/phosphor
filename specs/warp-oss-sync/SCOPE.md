@@ -574,22 +574,30 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
      imports now resolve; those files show no errors (partly MASKED by unrelated crate-level
      `E0432`s in `inline_menu`/mcp/slash — see below).
 
-   **REMAINING subsystem-2 work = blocklist/terminal-model DIVERGENCE the warp_tui
-   `conversation_selection.rs` body depends on (confirmed ABSENT in Zap; GUI-verifiable
-   independently even while warp_tui stays masked):**
-   1. `BlockList::set_active_conversation_context(conversation_id, is_cloud, attach_to_terminal)`
-      + `clear_active_conversation_context()` — warp `app/src/terminal/model/blocks.rs:1673-1704`.
-      Needs a new `ActiveConversationContext { conversation_id, is_cloud }` field on BlockList
-      AND block-level `set_conversation_id`/`clear_conversation_id`/`add_attached_conversation_id`
-      on `Block` (Zap's `Block` lacks these — deeper layer; check `terminal/model/block.rs`).
-      Hot-path file ⇒ GUI-regression risk; gate carefully.
-   2. `BlocklistAIHistoryEvent::terminal_surface_id() -> Option<EntityId>` accessor — ABSENT.
-   3. Two `BlocklistAIHistoryEvent` variants the TUI matches — ABSENT:
-      `ClearedConversationsForTerminalSurface { active_conversation_id, cleared_conversation_ids, .. }`
-      and `ConversationTransferredBetweenTerminalSurfaces { conversation_id, .. }`. Adding
-      variants needs emit sites + exhaustive-match updates. If BYOP never clears/transfers
-      per-surface, the pragmatic adaptation is to DROP those two match arms from warp_tui's
-      selection body rather than add dead variants — decide when unmasking.
+   **Blocklist/terminal-model divergence — RECONCILED (commit bb0e1278, GUI-green + pushed).
+   Turned out simpler than feared: Zap already had equivalents under different names.**
+   1. `BlockList::set/clear_active_conversation_context` — PORTED into `blocks.rs`, mirroring
+      upstream's exact block-tagging (`set_conversation_id`/`add_attached_conversation_id`/
+      `clear_conversation_id`, which Zap's `Block` already has). Dropped the cloud `is_cloud`
+      bit; no new field (Zap's richer activation lives in `agent_view_state`).
+   2. `terminal_surface_id()` — NO Zap change: Zap already exposes `terminal_view_id()`
+      (upstream just renamed it). Adapted warp_tui to call `terminal_view_id()`.
+   3. Event variants — NO Zap enum change: warp's `ClearedConversationsForTerminalSurface`
+      is Zap's `ClearedConversationsInTerminalView` (no `cleared_conversation_ids` — the
+      "was cleared" test reduces to the active-conversation check), and
+      `ConversationTransferredBetweenTerminalSurfaces` has no BYOP analog (dropped that arm).
+      Both handled by rewriting warp_tui's `handle_history_event` onto Zap's names.
+   4. `AgentViewEntryOrigin::Tui` — ADDED the variant (only one exhaustive match cascaded:
+      the inert-telemetry `From` conversion → mapped to `Cli`).
+
+   **SUBSYSTEM 2 STATUS: app-side complete.** All conversation-menu/selection app types, the
+   `get_entries` bridge, the policy trait, and every blocklist divergence are built + pushed
+   (commits 56bfc47c, cbed5772, bb0e1278). warp_tui's `conversation_menu.rs`/
+   `conversation_selection.rs`/`terminal_session_view.rs` compile past every conversation
+   symbol. Full end-to-end verification of these files is still MASKED behind unrelated
+   crate-level `E0432`s in `inline_menu`/mcp/slash — they will type-check once those other
+   subsystems land. Each API was matched against Zap's actual definitions by grep, so residual
+   risk is low (signature-level at most).
    NOTE: `InputModePolicy`/`PolicyConfigUpdate` (input_mode_policy.rs) and
    `InputTypeAutoDetectionSource`/`PendingAttachmentSummary` (attachment) are SEPARATE
    subsystems from the menu — do not conflate.
