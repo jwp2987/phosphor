@@ -553,28 +553,46 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    existing model (add just the entry/policy types the TUI needs onto Zap's version,
    or make the TUI conversation menu BYOP-local), not a straight extract.
 
-   **BYOP-local build plan (chosen approach; investigated in depth):** Zap has NONE
-   of warp's list types (`AgentConversationEntry`/`AgentConversationEntryId`/
-   `AgentConversationListEntryState`/`query_conversation_entries`); its
-   `agent_conversations_model` (1040 lines) models conversations as
-   `AgentConversationsModel`/`ConversationMetadata` instead. warp_tui's
-   `conversation_menu.rs` uses only `entry.id` + `entry.display.title`, `classify_entry`,
-   `query_conversation_entries`, plus cloud `agent_conversations_cloud_metadata_load_failed`
-   (DROP). So build a small BYOP-local module (e.g. `app/src/ai/conversation_entry.rs`):
-   `AgentConversationEntryId` (wrap `AIConversationId`), `AgentConversationEntry { id,
-   display: { title } }`, `AgentConversationListEntryState` enum (Selected/OpenElsewhere/
-   Available/Unavailable — verbatim from warp), `AgentConversationListPolicy` trait
-   (`classify_entry`), `query_conversation_entries` (fuzzy filter — port warp's fn),
-   backed by `BlocklistAIHistoryModel` local conversations. Then git-extract the app
-   `conversation_selection.rs` (191 lines: `ConversationSelection` trait +
-   `ConversationSelectionHandle`/`ConversationSelectionEvent`/`PendingQueryState`
-   +Noop impl — note it re-defines `PendingQueryState`, may collide with the
-   context_model one already faceted; alias or reconcile). Rewrite warp_tui
-   `conversation_menu.rs`/`conversation_selection.rs` to source entries from this local
-   model, dropping the cloud metadata load. `InputModePolicy`/`PolicyConfigUpdate`
-   (input_mode_policy.rs) and `InputTypeAutoDetectionSource`/`PendingAttachmentSummary`
-   (attachment) are SEPARATE from the menu — split them out. This is a multi-commit
-   build, not an extract; do it in a dedicated session.
+   **BYOP-local build — app-side foundation DONE (commits 56bfc47c + cbed5772,
+   warp_tui 33→29, GUI-green + pushed):**
+   - `app/src/ai/conversation_entry.rs` (NEW): minimal faithful entry projection
+     `AgentConversationEntry{Id,Identity,DisplayData}` (identity keeps
+     `local_conversation_id` + always-`None` `server_conversation_token`; display keeps
+     `title`/`last_updated`/`status`/`harness`), `AgentConversationListEntryState`,
+     `AgentConversationListPolicy` trait, `AgentConversationQueryResult`, and
+     `query_conversation_entries` ported verbatim (recency + fuzzy via `fuzzy_match`).
+   - `AgentConversationsModel::get_entries(&filters, app)` — the model→entries BRIDGE;
+     emits one entry per local conversation via existing `ConversationOrTask` accessors
+     (local convos always report `harness=Some(Oz)` + terminal status ⇒ classify Available).
+   - `agent_conversations_cloud_metadata_load_failed` — BYOP stub (always `false`).
+   - `app/src/ai/blocklist/conversation_selection.rs` (NEW): the `ConversationSelection`
+     trait (: `AgentConversationListPolicy`), `ConversationSelectionHandle`,
+     `ConversationSelectionEvent`, test-only `MockConversationSelection`. BYOP adaptation:
+     REUSE Zap's existing `context_model::PendingQueryState` (identical shape — do NOT
+     redefine); entry/policy types from `conversation_entry`.
+   - All re-exported via `tui_export`. warp_tui `conversation_menu.rs`/`conversation_selection.rs`
+     imports now resolve; those files show no errors (partly MASKED by unrelated crate-level
+     `E0432`s in `inline_menu`/mcp/slash — see below).
+
+   **REMAINING subsystem-2 work = blocklist/terminal-model DIVERGENCE the warp_tui
+   `conversation_selection.rs` body depends on (confirmed ABSENT in Zap; GUI-verifiable
+   independently even while warp_tui stays masked):**
+   1. `BlockList::set_active_conversation_context(conversation_id, is_cloud, attach_to_terminal)`
+      + `clear_active_conversation_context()` — warp `app/src/terminal/model/blocks.rs:1673-1704`.
+      Needs a new `ActiveConversationContext { conversation_id, is_cloud }` field on BlockList
+      AND block-level `set_conversation_id`/`clear_conversation_id`/`add_attached_conversation_id`
+      on `Block` (Zap's `Block` lacks these — deeper layer; check `terminal/model/block.rs`).
+      Hot-path file ⇒ GUI-regression risk; gate carefully.
+   2. `BlocklistAIHistoryEvent::terminal_surface_id() -> Option<EntityId>` accessor — ABSENT.
+   3. Two `BlocklistAIHistoryEvent` variants the TUI matches — ABSENT:
+      `ClearedConversationsForTerminalSurface { active_conversation_id, cleared_conversation_ids, .. }`
+      and `ConversationTransferredBetweenTerminalSurfaces { conversation_id, .. }`. Adding
+      variants needs emit sites + exhaustive-match updates. If BYOP never clears/transfers
+      per-surface, the pragmatic adaptation is to DROP those two match arms from warp_tui's
+      selection body rather than add dead variants — decide when unmasking.
+   NOTE: `InputModePolicy`/`PolicyConfigUpdate` (input_mode_policy.rs) and
+   `InputTypeAutoDetectionSource`/`PendingAttachmentSummary` (attachment) are SEPARATE
+   subsystems from the menu — do not conflate.
 4. **Model picker** (file: model_menu) — `query_model_picker_choices`/`ModelPickerChoice`.
    Zap's `terminal/input/models/data_source.rs` diverged — port/adapt.
 5. **Zero-state data source** (file: zero_state) — `TuiZeroStateDataSource` (warp
