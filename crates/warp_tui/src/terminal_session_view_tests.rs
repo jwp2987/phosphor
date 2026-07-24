@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use instant::Instant;
 use warp::appearance::Appearance;
-use warp::settings::{AISettings, TuiUsageDisplayMode};
+use warp::settings::AISettings;
 use warp::terminal::model::ansi::{Handler, InputBufferValue};
 use warp::tui_export::{
     AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId, AgentViewEntryOrigin,
-    BlockPadding, BlocklistAIHistoryModel, ConversationStatus, ConversationUsageTotals, Harness,
+    BlockPadding, BlocklistAIHistoryModel, ConversationStatus, Harness,
     LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, TranscriptScope,
     export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
 };
@@ -52,7 +52,7 @@ use crate::terminal_use::TuiInputTarget;
 use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_session};
 use crate::transcript_view::TRANSCRIPT_BLOCK_SPACING;
 use crate::tui_builder::TuiUiBuilder;
-use crate::usage::UsageToggle;
+use crate::usage::render_context_usage_entry;
 
 struct FocusTestFixture {
     window_id: warpui_core::WindowId,
@@ -338,12 +338,11 @@ fn cost_command_uses_the_gui_eligibility_rules() {
 }
 
 /// Renders the agent-mode footer row (`render_status_footer_row` + the real
-/// `UsageToggle::render_entry`) to text lines with fixed totals.
-fn render_usage_footer_row(app: &mut App, totals: ConversationUsageTotals) -> Vec<String> {
+/// `render_context_usage_entry`) to text lines at a fixed context fraction.
+fn render_usage_footer_row(app: &mut App, context_fraction: f32) -> Vec<String> {
     app.update(|ctx| {
         let builder = TuiUiBuilder::from_app(ctx);
-        let mode = AISettings::as_ref(ctx).usage_display_mode;
-        let usage = UsageToggle::default().render_entry(mode, totals, ctx, |_, _| {});
+        let usage = render_context_usage_entry(context_fraction, ctx);
         let row = render_status_footer_row(
             FooterSegments {
                 shell_mode: false,
@@ -367,22 +366,15 @@ fn render_usage_footer_row(app: &mut App, totals: ConversationUsageTotals) -> Ve
 }
 
 #[test]
-fn response_summary_visibility_is_independent_from_the_footer_usage_mode() {
+fn response_summary_visibility_is_independent_from_the_footer_usage_entry() {
     App::test((), |mut app| async move {
         let fixture = focus_test_fixture(&mut app);
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
         let exchange_id = AIAgentExchangeId::new();
 
-        let totals = ConversationUsageTotals {
-            credits_spent: 2.5,
-            cost_in_cents: 3.2,
-        };
+        let context_fraction = 0.42_f32;
 
-        assert_eq!(
-            app.read(|ctx| AISettings::as_ref(ctx).usage_display_mode),
-            TuiUsageDisplayMode::Credits,
-        );
-        let footer_before = render_usage_footer_row(&mut app, totals);
+        let footer_before = render_usage_footer_row(&mut app, context_fraction);
         let summary_before = view.read(&app, |view, ctx| {
             view.render_response_summary_for_exchange(
                 exchange_id,
@@ -407,13 +399,9 @@ fn response_summary_visibility_is_independent_from_the_footer_usage_mode() {
         });
         assert!(summary_hidden.is_none());
         assert_eq!(
-            app.read(|ctx| AISettings::as_ref(ctx).usage_display_mode),
-            TuiUsageDisplayMode::Credits,
-        );
-        assert_eq!(
-            render_usage_footer_row(&mut app, totals),
+            render_usage_footer_row(&mut app, context_fraction),
             footer_before,
-            "hiding the response summary must not change the persistent footer",
+            "hiding the response summary must not change the footer usage entry",
         );
 
         view.update(&mut app, |view, _| {
@@ -1216,15 +1204,7 @@ fn footer_renders_agent_sections_left_aligned() {
         app.update(|ctx| {
             ctx.add_singleton_model(|_| Appearance::mock());
             let builder = TuiUiBuilder::from_app(ctx);
-            let usage = UsageToggle::default().render_entry(
-                TuiUsageDisplayMode::default(),
-                ConversationUsageTotals {
-                    credits_spent: 2.5,
-                    cost_in_cents: 0.0,
-                },
-                ctx,
-                |_, _| {},
-            );
+            let usage = render_context_usage_entry(0.18, ctx);
             let row = render_status_footer_row(
                 FooterSegments {
                     shell_mode: false,
@@ -1248,7 +1228,7 @@ fn footer_renders_agent_sections_left_aligned() {
 
             assert_eq!(
                 lines,
-                vec!["TestModel /home/user/warp ↬ main • 2.5 credits • +3 -1"],
+                vec!["TestModel /home/user/warp ↬ main • 18% context • +3 -1"],
                 "agent footer is left-aligned in order model → cwd/branch → usage → diff"
             );
             assert!(
@@ -1285,15 +1265,7 @@ fn footer_renders_bash_sections_without_model_or_usage() {
         app.update(|ctx| {
             ctx.add_singleton_model(|_| Appearance::mock());
             let builder = TuiUiBuilder::from_app(ctx);
-            let usage = UsageToggle::default().render_entry(
-                TuiUsageDisplayMode::default(),
-                ConversationUsageTotals {
-                    credits_spent: 2.5,
-                    cost_in_cents: 0.0,
-                },
-                ctx,
-                |_, _| {},
-            );
+            let usage = render_context_usage_entry(0.18, ctx);
             let row = render_status_footer_row(
                 FooterSegments {
                     shell_mode: true,
@@ -1329,7 +1301,7 @@ fn footer_renders_bash_sections_without_model_or_usage() {
                 "model segment is hidden in bash mode"
             );
             assert!(
-                !line.contains("2.5 credits"),
+                !line.contains("18% context"),
                 "usage segment is hidden in bash mode"
             );
         });

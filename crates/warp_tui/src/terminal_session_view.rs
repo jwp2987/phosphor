@@ -20,7 +20,7 @@ use warp::tui_export::{
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
     CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, CancellationReason, ChangelogModel,
     ChangelogRequestType, CloudConversationData, CommandExecutionSource, ConversationFileExport,
-    ConversationSelection, ConversationSelectionHandle, ConversationUsageTotals,
+    ConversationSelection, ConversationSelectionHandle,
     ExecuteCommandEvent, GetRelevantFilesController, GitRepoModels, GitRepoStatusModel,
     GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
     LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, ModelEvent, ParsedSlashCommandInput,
@@ -97,7 +97,7 @@ use crate::transient_hint::{TransientHint, TransientHintTone};
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_cli_subagent_view::{HAND_BACK_KEY_BINDING, TuiCLISubagentView};
 use crate::ui::{compact_footer_path, conversation_restore_failed, conversation_restoring};
-use crate::usage::UsageToggle;
+use crate::usage::render_context_usage_entry;
 use crate::warping_indicator::{render_response_summary, render_warping_indicator_row};
 use crate::zero_state::TuiZeroStateView;
 mod input_detection;
@@ -362,9 +362,6 @@ pub(crate) enum TuiTerminalSessionAction {
     CancelRestore,
     /// Return a user-controlled terminal-use command to the agent.
     HandBackTerminalUseControl,
-    /// Click on the footer's usage entry: flips the persisted credits⇄cost
-    /// display-mode setting.
-    ToggleUsageDisplay,
     /// Toggle the completed-response summary for the selected conversation.
     ToggleResponseSummaryVisibility,
     /// Click on the footer's active-model label: toggles the inline model
@@ -414,15 +411,13 @@ pub(crate) struct TuiTerminalSessionView {
     /// Armed by a ctrl-c press; a second press while armed exits the TUI.
     /// The footer shows [`CTRL_C_EXIT_HINT`] while armed.
     exit_confirmation: ExitConfirmation,
-    /// Credits⇄cost display state for the footer's clickable usage entry.
-    usage_toggle: UsageToggle,
     /// Last-response exchanges whose completed summary has been hidden with
     /// `/cost`. A later response has a new exchange ID and starts visible,
     /// matching the GUI's per-last-block state.
     hidden_response_summary_exchange_ids: HashSet<AIAgentExchangeId>,
     /// Hover state for the footer's clickable active-model label, owned here
-    /// (not created inline during render) so it survives element-tree rebuilds
-    /// — the same `MouseStateHandle` pattern as [`UsageToggle`].
+    /// (not created inline during render) so it survives element-tree rebuilds,
+    /// following the GUI's `MouseStateHandle` pattern.
     model_label_hover: MouseStateHandle,
     keyboard_enhancement_supported: bool,
     ai_context_model: ModelHandle<BlocklistAIContextModel>,
@@ -1203,14 +1198,11 @@ impl TuiTerminalSessionView {
             | ModelEvent::FinishUpdate(_) => ctx.notify(),
             _ => {}
         });
-        // The footer shows the active model, working directory, and usage
-        // entry: re-render when the usage-display-mode setting changes (click
-        // or settings-file hot reload), when the active model or its display
-        // name changes, or when the session's working directory changes.
+        // The footer shows the active model and working directory: re-render
+        // when the active model or its display name changes, or when the
+        // session's working directory changes. (The context-usage entry
+        // re-renders via the conversation-model events above.)
         ctx.subscribe_to_model(&AISettings::handle(ctx), |view, _, event, ctx| {
-            if matches!(event, AISettingsChangedEvent::TuiUsageDisplayMode { .. }) {
-                ctx.notify();
-            }
             if matches!(event, AISettingsChangedEvent::AIAutoDetectionEnabled { .. }) {
                 view.schedule_input_detection(ctx);
             }
@@ -1325,7 +1317,6 @@ impl TuiTerminalSessionView {
             git_repo_status: None,
             terminal_surface_id,
             exit_confirmation: ExitConfirmation::default(),
-            usage_toggle: UsageToggle::default(),
             hidden_response_summary_exchange_ids: HashSet::new(),
             model_label_hover: MouseStateHandle::default(),
             keyboard_enhancement_supported,
@@ -2040,22 +2031,16 @@ impl TuiTerminalSessionView {
             .current_working_directory(ctx)
             .map(|cwd| compact_footer_path(&cwd));
         let branch = git_metadata.map(|metadata| metadata.current_branch_name.clone());
-        // Usage entry: the selected conversation's credits/cost totals, hidden
-        // until any usage has been reported (and hidden in shell mode, where it
-        // is stale AI-conversation metadata). The displayed unit is the
-        // persisted `agents.usage_display_mode` setting; a click dispatches the
-        // toggle action (the element pass cannot write settings directly).
+        // Usage entry: the selected conversation's context-window occupancy,
+        // hidden until any usage has been reported (and hidden in shell mode,
+        // where it is stale AI-conversation metadata). BYOP has no cloud
+        // credits/cost, so this is the informational context-% indicator
+        // (see `crate::usage`) rather than Warp's clickable credits⇄cost entry.
         let usage = if shell_mode {
             None
         } else {
-            self.selected_conversation_usage_totals(ctx).map(|totals| {
-                let mode = AISettings::as_ref(ctx).usage_display_mode;
-                self.usage_toggle
-                    .render_entry(mode, totals, ctx, |event_ctx, _| {
-                        event_ctx
-                            .dispatch_typed_action(TuiTerminalSessionAction::ToggleUsageDisplay);
-                    })
-            })
+            self.selected_conversation_context_usage(ctx)
+                .map(|fraction| render_context_usage_entry(fraction, ctx))
         };
         let (diff_additions, diff_deletions) = git_metadata
             .filter(|metadata| {
@@ -2125,19 +2110,8 @@ impl TuiTerminalSessionView {
         self.git_repo_status.as_ref()?.as_ref(ctx).metadata()
     }
 
-    /// Flips the footer usage entry's persisted credits⇄cost display mode.
-    /// The settings-changed event re-renders every subscribed surface.
-    fn toggle_usage_display(&mut self, ctx: &mut ViewContext<Self>) {
-        let next = AISettings::as_ref(ctx).usage_display_mode.toggled();
-        AISettings::handle(ctx).update(ctx, |settings, ctx| {
-            if let Err(error) = settings.usage_display_mode.set_value(next, ctx) {
-                report_error!("failed to persist the TUI usage display mode: {error:#}");
-            }
-        });
-    }
     /// Mirrors the GUI `/cost` eligibility checks, then toggles the selected
-    /// conversation's completed-response summary without changing the
-    /// persistent footer's independent credits⇄cost setting.
+    /// conversation's completed-response summary.
     fn toggle_response_summary_visibility(&mut self, ctx: &mut ViewContext<Self>) {
         let selected_conversation = self
             .conversation_selection
@@ -2199,18 +2173,15 @@ impl TuiTerminalSessionView {
         });
     }
 
-    /// The selected conversation's accumulated usage totals, or `None` (entry
-    /// hidden) until any usage has been reported.
-    fn selected_conversation_usage_totals(
-        &self,
-        ctx: &AppContext,
-    ) -> Option<ConversationUsageTotals> {
-        let totals = self
+    /// The selected conversation's context-window occupancy (0.0–1.0), or
+    /// `None` (entry hidden) until any usage has been reported.
+    fn selected_conversation_context_usage(&self, ctx: &AppContext) -> Option<f32> {
+        let fraction = self
             .conversation_selection
             .as_ref(ctx)
             .selected_conversation(ctx)?
-            .usage_totals();
-        (totals != ConversationUsageTotals::default()).then_some(totals)
+            .context_window_usage();
+        (fraction > 0.0).then_some(fraction)
     }
 
     /// The session's working directory. The cwd only arrives once shell
@@ -3213,7 +3184,6 @@ impl TypedActionView for TuiTerminalSessionView {
             TuiTerminalSessionAction::HandBackTerminalUseControl => {
                 self.hand_back_terminal_use_control(ctx)
             }
-            TuiTerminalSessionAction::ToggleUsageDisplay => self.toggle_usage_display(ctx),
             TuiTerminalSessionAction::ToggleResponseSummaryVisibility => {
                 self.toggle_response_summary_visibility(ctx)
             }
