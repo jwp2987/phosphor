@@ -72,7 +72,7 @@ use warpui::elements::{
     XAxisAnchor, YAxisAnchor,
 };
 use warpui::text::{point::Point, TextBuffer};
-use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
+use warpui::{AppContext, Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity};
 
 use super::super::DiffResult;
 use super::comments::{EditorCommentsModel, PendingComment, PendingCommentEvent};
@@ -574,6 +574,102 @@ impl CodeEditorModel {
                 row_dividers: false,
             },
         }
+    }
+
+    fn primary_cursor_gap(&self, ctx: &impl ModelAsRef) -> CharOffset {
+        *self.selection.as_ref(ctx).cursors(ctx).first()
+    }
+
+    /// The soft-wrapped visual row containing 0-based `cursor_offset`, as 0-based character
+    /// offsets; `None` outside char-cell (TUI) mode.
+    fn char_cell_visual_row_range(
+        &self,
+        cursor_offset: CharOffset,
+        ctx: &impl ModelAsRef,
+    ) -> Option<Range<CharOffset>> {
+        let render = self.render_state.as_ref(ctx);
+        Some(render.char_cell()?.visual_row_char_range(cursor_offset))
+    }
+
+    /// Deletes `range` (1-indexed gap offsets) as a user edit, returning the deleted text.
+    fn delete_range_returning_text(
+        &mut self,
+        range: Range<CharOffset>,
+        ctx: &mut ModelContext<Self>,
+    ) -> String {
+        let deleted = self
+            .content()
+            .as_ref(ctx)
+            .text_in_range(range.clone())
+            .into_string();
+        let selection_model = self.selection_model.clone();
+        self.update_content(
+            |mut content, ctx| {
+                content.apply_edit(
+                    BufferEditAction::Delete(vec1![range]),
+                    EditOrigin::UserInitiated,
+                    selection_model,
+                    ctx,
+                );
+            },
+            ctx,
+        );
+        deleted
+    }
+
+    /// Kills from the cursor to the start of its char-cell visual row (Ctrl-U in the TUI input).
+    pub fn kill_to_char_cell_visual_row_start(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<String> {
+        let cursor_gap = self.primary_cursor_gap(ctx);
+        let cursor_offset = CharOffset::from(cursor_gap.as_usize().saturating_sub(1));
+        let row = self.char_cell_visual_row_range(cursor_offset, ctx)?;
+        if row.start >= cursor_offset {
+            return None;
+        }
+        Some(self.delete_range_returning_text(row.start + 1..cursor_gap, ctx))
+    }
+
+    /// Kills from the cursor to the end of its char-cell visual row (Ctrl-K in the TUI input).
+    pub fn kill_to_char_cell_visual_row_end(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<String> {
+        let cursor_gap = self.primary_cursor_gap(ctx);
+        let cursor_offset = CharOffset::from(cursor_gap.as_usize().saturating_sub(1));
+        let row = self.char_cell_visual_row_range(cursor_offset, ctx)?;
+        if row.end <= cursor_offset {
+            return None;
+        }
+        Some(self.delete_range_returning_text(cursor_gap..row.end + 1, ctx))
+    }
+
+    /// Replaces the first `n` characters of the buffer with `text` (used to reconcile a
+    /// typeahead prefix in the TUI input).
+    pub fn replace_first_n_characters(
+        &mut self,
+        n: CharOffset,
+        text: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let selection_model = self.selection_model.clone();
+        self.update_content(
+            |mut content, ctx| {
+                let start = CharOffset::from(1);
+                let end = std::cmp::min(start + n.as_usize(), content.buffer().max_charoffset());
+                content.apply_edit(
+                    BufferEditAction::InsertAtCharOffsetRanges {
+                        edits: &vec1![(text.to_owned(), start..end)],
+                    },
+                    EditOrigin::UserInitiated,
+                    selection_model,
+                    ctx,
+                );
+            },
+            ctx,
+        );
+        self.validate(ctx);
     }
 
     fn should_defer_syntax_tree_parsing(&self) -> bool {
