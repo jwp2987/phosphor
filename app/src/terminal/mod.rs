@@ -467,6 +467,18 @@ pub enum ClipboardType {
 
 /// The padding around each block, represented in fractional lines.
 ///
+/// Per-block spacing/layout inputs shared with the `warp_tui` transcript.
+///
+/// Ported from warp/master `terminal/terminal_manager.rs` (Zap forked before it
+/// was introduced). `warp_prompt_height_lines`/`show_memory_stats` are carried
+/// for parity; the TUI transcript sets them to `0.0`/`false`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BlockSpacing {
+    pub block_padding: BlockPadding,
+    pub warp_prompt_height_lines: f32,
+    pub show_memory_stats: bool,
+}
+
 /// TODO(vorporeal): Change this to hold `Lines` instead of `f32`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BlockPadding {

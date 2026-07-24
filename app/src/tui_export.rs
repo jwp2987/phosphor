@@ -87,7 +87,9 @@ pub use crate::ai::option_snapshot::{
     OptionBadge, OptionFooter, OptionRow, OptionSnapshot, OptionSourceStatus,
 };
 pub use crate::ai::skills::{SkillManager, SkillReference};
-pub use crate::terminal::input::skills::{AcceptSkill, SelectableSkill, query_selectable_skills};
+pub use crate::terminal::input::skills::{
+    AcceptSkill, SelectableSkill, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, query_selectable_skills,
+};
 pub use crate::code_review::git_status_update::{
     GitRepoModels, GitRepoStatusModel, GitStatusMetadata,
 };
@@ -146,7 +148,7 @@ pub use crate::terminal::{
     PtyIntent, PtyIntentEvent, TerminalSurface, TerminalSurfaceInit, TerminalSurfaceResult,
 };
 pub use crate::terminal::{
-    BlockPadding, ShellLaunchData, SizeInfo, SizeUpdate,
+    BlockPadding, BlockSpacing, ShellLaunchData, SizeInfo, SizeUpdate,
     TerminalManager as TerminalManagerTrait, TerminalModel,
 };
 pub use crate::themes::default_themes::{dark_theme, light_theme};
