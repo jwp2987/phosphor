@@ -539,8 +539,19 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    `query_conversation_entries`, `InputModePolicy`, `PolicyConfigUpdate`,
    `InputTypeAutoDetectionSource`, `PendingAttachmentSummary`. Source: warp
    `app/src/ai/blocklist/conversation_selection.rs` + `agent_conversations_model/`.
-   (`AgentManagementFilters`/`AgentRunDisplayStatus`/`HarnessFilter` already present in
-   Zap's `agent_conversations_model` — facade them when the group unblocks.)
+   **⚠ NOT a clean git-extract (investigated):** the app-side
+   `conversation_selection.rs` (191 lines) is fairly clean — for the non-test build it
+   needs only `AgentConversationListPolicy` beyond present types — BUT the warp_tui-side
+   `conversation_selection.rs` also needs `AgentConversationEntry`/
+   `AgentConversationListEntryState`/`AgentRunDisplayStatus`, which live in
+   `agent_conversations_model` (warp's `AgentConversationEntry` is a **690-line**
+   cloud-agent-run type in `agent_conversations_model/entry.rs`). **Zap's
+   `agent_conversations_model` is deeply diverged** — it already defines its OWN
+   `HarnessFilter`/`AgentManagementFilters` + a different filter model (SessionStatus/
+   StatusFilter/SourceFilter/CreatorFilter/…), so a faithful port would CONFLICT.
+   This is cloud-adjacent (the agent-run list panel). Plan: reconcile with Zap's
+   existing model (add just the entry/policy types the TUI needs onto Zap's version,
+   or make the TUI conversation menu BYOP-local), not a straight extract.
 4. **Model picker** (file: model_menu) — `query_model_picker_choices`/`ModelPickerChoice`.
    Zap's `terminal/input/models/data_source.rs` diverged — port/adapt.
 5. **Zero-state data source** (file: zero_state) — `TuiZeroStateDataSource` (warp
@@ -558,6 +569,15 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    onto Zap's `ApplyDiffModel` (Zap has `FileDiff`/`DiffSessionType`/`ai::diff_validation`
    but not the `DiffStorage` trait; persists via
    `blocklist/action_model/execute/request_file_edits/apply_diff_model.rs`).
+   **⚠ NOT a clean git-extract (investigated):** warp `diff_storage.rs` (280 lines,
+   the DiffStorage/Helper/RegisteredDiffStorage traits + FileSnapshot/UpdatedFileState/
+   SaveFuture) imports `crate::code::editor::compute_unified_diff` which is **absent
+   from Zap** (would cascade into porting the unified-diff algorithm), and
+   `crate::ai::blocklist::diff_types` (Zap keeps FileDiff/DiffSessionType in
+   `inline_action/code_diff_view` instead). `changed_lines_from_op` IS portable (small
+   fn over Zap's `diff_validation::DiffType`). Plan: either port `compute_unified_diff`
+   too, or rewrite `TuiDiffStorage` to persist through Zap's `ApplyDiffModel` directly
+   (drop the DiffStorage trait dependency on the warp_tui side).
 8. **Editor char-cell rendering** (files: editor_element, editor_interaction) —
    `warp_editor::render::model::{DisplayLattice, DisplayRow, DisplayRowKind,
    CharCellState, CharCellTemporaryBlock}` (warp `crates/editor/src/render/model/
