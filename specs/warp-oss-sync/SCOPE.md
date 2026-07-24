@@ -647,6 +647,24 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    `GetRelevantFilesController`, `TranscriptScope`, `PtyIntent(+Event)`,
    `TerminalSurface(+Init/Result)`, `RepoDetectionSessionType`,
    `LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE`.
+
+   **Terminal-manager (STAGED, user chose "Stage it"): STEP 1 DONE (dd359e0c) —**
+   added `terminal/writeable_pty/terminal_surface.rs` with `TerminalSurface` trait +
+   `PtyIntent`/`PtyIntentEvent` + `TerminalSurfaceInit`/`TerminalSurfaceResult` (additive, no
+   impls, no behavior change; GUI+tui gates green). **STEP 2 (the risky commit, NOT started):**
+   genericize `TerminalManager` → `TerminalManager<S: TerminalSurface>` (`view` → `surface:
+   ViewHandle<S>`); `impl TerminalSurface for TerminalView` (Zap already has the callback methods
+   inherent — mostly a move) + `impl PtyIntentEvent for terminal::view::Event` (warp view.rs
+   25782/25806); restructure `create_model` to the closure-inversion (`create_surface:
+   FnOnce(TerminalSurfaceInit) -> TerminalSurfaceResult<S,PostWire>`) via shared
+   `create_model_with_manager`, moving GUI view params (resources/prompt_type/
+   conversation_restoration/initial_input_config) into the GUI call site's closure; add
+   `create_tui_model` + `TuiTerminalManager<S>` erasure wrapper; genericize `wire_up_*_with_view`
+   → `_with_surface`; add `TerminalSurfaceInit::new_for_test` (adapt to 9-arg
+   `TerminalModel::new_for_test`); tui_export the 5 types; thread the ~3 GUI call sites
+   (pane_group 4837, docker_sandbox 68). Warp's manager also has pty_controller/
+   remote_server_controller so struct divergence is modest. Do a GUI terminal smoke-run (shell
+   spawn / password prompt / resize) — cargo-check won't catch runtime PTY regressions.
 7. **Diff storage adapter** (file: tui_diff_storage) —
    `DiffStorage`/`DiffStorageHelper`/`RegisteredDiffStorage`/`SaveFuture`/
    `UpdatedFileState`/`changed_lines_from_op`/`FileSnapshot`: adapt `TuiDiffStorage`
