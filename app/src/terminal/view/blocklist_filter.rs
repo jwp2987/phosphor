@@ -3,7 +3,7 @@
 use crate::ai::agent::{conversation::AIConversation, task::Task, AIAgentExchange};
 
 /// Returns whether a task's exchanges should be shown in the blocklist.
-pub(super) fn should_show_task_in_blocklist(task: &Task) -> bool {
+pub fn should_show_task_in_blocklist(task: &Task) -> bool {
     // All tasks are visible in the blocklist aside from CLI (long-running command),
     // Zap documentation search, and conversation search subtasks.
     !task.is_cli_subagent()
@@ -32,7 +32,7 @@ pub(crate) fn conversation_would_render_in_blocklist(conversation: &AIConversati
 
 /// Returns all exchanges from a conversation that should be displayed in the blocklist.
 /// Filters by task type using `should_show_task_in_blocklist`.
-pub(super) fn exchanges_for_blocklist(conversation: &AIConversation) -> Vec<&AIAgentExchange> {
+pub(crate) fn exchanges_for_blocklist(conversation: &AIConversation) -> Vec<&AIAgentExchange> {
     conversation
         .all_exchanges_by_task()
         .into_iter()

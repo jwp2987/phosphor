@@ -63,6 +63,11 @@ pub use crate::ai::blocklist::context_model::{
 pub use crate::ai::blocklist::conversation_selection::{
     ConversationSelection, ConversationSelectionEvent, ConversationSelectionHandle,
 };
+pub use crate::ai::conversation_export::{export_conversation_markdown, ConversationFileExport};
+pub use crate::terminal::conversation_restoration::{
+    prepare_conversation_block_restoration, ConversationBlockRestorationPlan,
+};
+pub use crate::terminal::view::blocklist_filter::should_show_task_in_blocklist;
 pub use crate::ai::blocklist::input_mode_policy::{
     InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate,
 };
