@@ -1716,15 +1716,11 @@ impl TuiTerminalSessionView {
             }
             | BlocklistAIHistoryEvent::DeletedConversation {
                 conversation_id, ..
-            }
-            | BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalSurfaces {
-                conversation_id,
-                ..
             } => {
                 self.cli_subagent_views
                     .retain(|_, view| view.as_ref(ctx).conversation_id() != *conversation_id);
             }
-            BlocklistAIHistoryEvent::ClearedConversationsForTerminalSurface { .. } => {
+            BlocklistAIHistoryEvent::ClearedConversationsInTerminalView { .. } => {
                 self.cli_subagent_views.clear();
             }
             _ => {}

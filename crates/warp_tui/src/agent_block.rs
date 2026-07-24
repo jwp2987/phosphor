@@ -1225,10 +1225,9 @@ impl TuiAIBlock {
                         );
                     }
                     AIAgentOutputMessageType::Action(action) => {
-                        // WaitForEvents renders nothing, matching the GUI.
-                        if !matches!(action.action, AIAgentActionType::WaitForEvents { .. }) {
-                            sections.push(TuiAIBlockSection::ToolCall(Box::new(action.clone())));
-                        }
+                        // Zap has no WaitForEvents action (cloud orchestration), so every
+                        // action renders as a tool call.
+                        sections.push(TuiAIBlockSection::ToolCall(Box::new(action.clone())));
                     }
                     AIAgentOutputMessageType::Reasoning {
                         text,

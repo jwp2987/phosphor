@@ -254,42 +254,11 @@ impl TuiTranscriptView {
             }
             | BlocklistAIHistoryEvent::DeletedConversation {
                 conversation_id, ..
-            }
-            | BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalSurfaces {
-                conversation_id,
-                ..
             } => self.remove_conversation(*conversation_id, ctx),
-            BlocklistAIHistoryEvent::ClearedConversationsForTerminalSurface {
-                active_conversation_id,
-                cleared_conversation_ids,
-                ..
-            } => {
-                let mut conversation_ids = cleared_conversation_ids.clone();
-                if let Some(active_conversation_id) = active_conversation_id
-                    && !conversation_ids.contains(active_conversation_id)
-                {
-                    conversation_ids.push(*active_conversation_id);
-                }
-                for conversation_id in conversation_ids {
-                    self.remove_conversation(conversation_id, ctx);
-                }
-            }
-            BlocklistAIHistoryEvent::StartedNewConversation { .. }
-            | BlocklistAIHistoryEvent::CreatedSubtask { .. }
-            | BlocklistAIHistoryEvent::UpgradedTask { .. }
-            | BlocklistAIHistoryEvent::SetActiveConversation { .. }
-            | BlocklistAIHistoryEvent::ClearedActiveConversation { .. }
-            | BlocklistAIHistoryEvent::UpdatedAutoexecuteOverride { .. }
-            | BlocklistAIHistoryEvent::SplitConversation { .. }
-            | BlocklistAIHistoryEvent::RestoredConversations { .. }
-            | BlocklistAIHistoryEvent::UpdatedConversationMetadata { .. }
-            | BlocklistAIHistoryEvent::UpdatedConversationTitle { .. }
-            | BlocklistAIHistoryEvent::UpdatedConversationArtifacts { .. }
-            | BlocklistAIHistoryEvent::ConversationServerTokenAssigned { .. }
-            | BlocklistAIHistoryEvent::NewConversationRequestComplete { .. }
-            | BlocklistAIHistoryEvent::OrchestrationConfigUpdated { .. }
-            | BlocklistAIHistoryEvent::ConversationUsageMetadataUpdated { .. }
-            | BlocklistAIHistoryEvent::LocalSharedSessionEstablished { .. } => {}
+            // Zap dropped Warp's cross-surface transfer + cloud/orchestration history
+            // events, and its ClearedConversationsInTerminalView carries no cleared-id
+            // list; the transcript ignores the remaining events.
+            _ => {}
         }
     }
 

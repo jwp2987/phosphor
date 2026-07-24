@@ -239,7 +239,7 @@ impl TuiCLISubagentView {
                 .inputs_to_render(app)
                 .iter()
                 .rev()
-                .find_map(AIAgentInput::display_query)
+                .find_map(AIAgentInput::user_query)
         });
         resolve_latest_instruction(target.latest_instruction.clone(), exchange_instruction)
     }

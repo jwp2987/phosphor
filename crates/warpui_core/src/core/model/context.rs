@@ -130,7 +130,9 @@ impl<'a, T: Entity> ModelContext<'a, T> {
 
     pub fn subscribe_to_view<V, F>(&mut self, handle: &ViewHandle<V>, mut callback: F)
     where
-        V: View,
+        // Bounded by `Entity` rather than `View` so a model can subscribe to a TUI view's
+        // event stream (a `TuiView: Entity`, not `warpui::View`). GUI-safe: `View: Entity`.
+        V: Entity,
         V::Event: 'static,
         F: 'static + FnMut(&mut T, &V::Event, &mut ModelContext<T>),
     {
