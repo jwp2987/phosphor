@@ -662,13 +662,48 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    (warp/master's does). Re-exported via `models/mod.rs` + tui_export.
 5. **Zero-state data source** (file: zero_state) — `TuiZeroStateDataSource` (warp
    `terminal/input/slash_commands/data_source/zero_state.rs`).
-6. **Conversation restoration** (file: terminal_session_view) — `CloudConversationData`
-   (cloud — likely DROP/adapt), `ConversationBlockRestorationPlan`,
-   `prepare_conversation_block_restoration`, `ConversationFileExport`,
-   `export_conversation_markdown`, `maybe_build_ai_query_upsert_event`,
-   `GetRelevantFilesController`, `TranscriptScope`, `PtyIntent(+Event)`,
-   `TerminalSurface(+Init/Result)`, `RepoDetectionSessionType`,
-   `LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE`.
+6. **Conversation restoration** (file: terminal_session_view, ~2700-line HUB) — IN PROGRESS
+   (2026-07-24). **⚠ This file only compiles once its ENTIRE ~35-symbol import group resolves,
+   at which point it UNMASKS ~200 latent body errors (+ transcript_view/agent_block/input_view)
+   — see the diff-storage keystone note. So the count won't move until the whole hub lands.**
+   - **✅ DONE + pushed this run:** `ConversationBlockRestorationPlan`+
+     `prepare_conversation_block_restoration` (git-extract → `terminal/conversation_restoration.rs`,
+     all deps present; `exchanges_for_blocklist` widened pub(super)→pub(crate)); `ConversationFileExport`+
+     `export_conversation_markdown` (clean std+chrono extract → `ai/conversation_export.rs`);
+     `should_show_task_in_blocklist` (widened pub(super)→**pub** — a `pub use` facade needs a
+     genuinely-pub item, E0364 otherwise); `BlockSpacing` (→ terminal/mod.rs next to BlockPadding);
+     `LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE` (→ skills/mod.rs); **`GetRelevantFilesController`
+     DROPPED** — it's cloud/embedding ("search codebase" via server index), and Zap's
+     `BlocklistAIActionModel::new` is 5-arg with NO such param, so adapted the warp_tui call to
+     drop it (avoids porting 459 lines of cloud code). All GUI+tui-lib green.
+   - **🔲 REMAINING hub symbols:**
+     - `maybe_build_ai_query_upsert_event` — all deps present in Zap (PersistedAIInput fields MATCH
+       exactly; PersistedAIInputType/AIQueryHistoryOutputStatus/is_entirely_passive present), fn
+       itself absent → port into `blocklist/persistence.rs`. **⚠ DISAMBIGUATION: it returns the
+       PERSISTENCE `ModelEvent` (crate::persistence, what `PersistenceWriter::sender()` accepts),
+       NOT the terminal `ModelEvent` that tui_export currently re-exports.** Resolve the name clash
+       (tui_export may need to expose the persistence ModelEvent under a distinct alias, or the fn
+       returns the persistence path directly).
+     - `CloudConversationData` — the conversation loader RESULT (warp
+       `history_model/conversation_loader.rs`, 680 lines). Used in `handle_conversation_restore_result`:
+       enum `Oz(Box<AIConversation>) | CLIAgent(_)`. BYOP has no cloud loader → define a BYOP-local
+       `CloudConversationData` (just the `Oz(Box<AIConversation>)` arm the TUI unwraps) or adapt the
+       restore path to load Zap-locally. Investigate how the restore is TRIGGERED (what produces the
+       `Option<CloudConversationData>`) before choosing.
+     - `TranscriptScope` — **Zap has the equivalent as `AgentViewState`** (warp renamed it in the
+       refactor; Zap: `AgentViewState::{Active{...},Inactive}` in `agent_view/controller.rs`; Block
+       already has `is_visible(&AgentViewState)`/`should_hide_block`/`height(&AgentViewState)`, and
+       BlockList stores `agent_view_state`). warp_tui uses TranscriptScope in only 3 spots, ALL
+       `Unfiltered`: `set_transcript_scope(Unfiltered)` (×2) + `block.is_visible(block_list.transcript_scope())`
+       (terminal_block/terminal_use). **PLAN: adapt warp_tui to Zap's AgentViewState API** (map
+       Unfiltered→Inactive, `transcript_scope()`→`agent_view_state()` accessor, add a BlockList
+       `agent_view_state()` getter + `set_agent_view_state` if absent) rather than threading a
+       parallel enum through Zap's core `height()`. Same "Zap already has it, adapt warp_tui" pattern
+       as terminal_view_id/ClearedConversationsInTerminalView.
+     - `RepoDetectionSessionType` — Zap has `detect_possible_git_repo` in `repo_metadata`; add/adapt
+       `RepoDetectionSessionType` (Local/Remote) at the warp_tui call site (`detect_possible_git_repo(..,
+       RepoDetectionSessionType::Local)`).
+   - Then fix the ~200 unmasked errors in terminal_session_view/transcript_view/agent_block/input/view.
 
    **Terminal-manager: ✅ DONE (mirrors upstream Warp #13013 / b15bdd3a, which Zap forked ~2mo
    before — the divergence is "Zap is behind," not a Zap refactor).** Step 2a (e394c12e, additive):
