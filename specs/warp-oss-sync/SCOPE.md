@@ -668,8 +668,14 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    arms + `RunAgents*`/`SearchCodebase*` result types. Remove the absent-variant arms
    (wildcard-adapt) + drop the cloud result-type imports.
 10. **Cloud-adjacent (DESIGN CALL — decide keep-BYOP-inert vs port):**
-    `usage.rs` (`ConversationUsageTotals`, `TuiUsageDisplayMode` = credits/cost billing;
-    BYOP has no billing), `agent_block.rs` `FailedOutputPresentation` family (cascades
+    `usage.rs` — **DONE (22c1704d): REPLACED cloud credits/cost with BYOP context-%.**
+    Both `ConversationUsageTotals` fields (credits_spent/cost_in_cents) are structurally
+    zero in BYOP (chat_stream hardwires 0 + empty token_usage; providers give tokens not
+    dollars). Swapped in `AIConversation::context_window_usage()` (0–1 fraction Zap already
+    derives) rendered as an informational "N% context" footer entry; dropped the
+    credits⇄cost toggle, `usage_display_mode` setting, `ToggleUsageDisplay` action, and
+    UsageToggle hover machinery. Remaining cloud-adjacent design calls:
+    `agent_block.rs` `FailedOutputPresentation` family (cascades
     into `QuotaLimit`/`OutOfCredits`/`AIRequestUsageModel`), `autoupdate.rs`
     `TuiAutoupdateSettings`, `attachment_bar/image_processing` `infer_mime_type`/
     `MIME_SNIFF_BYTES` (+ `warpui::platform::create_system_clipboard`),
