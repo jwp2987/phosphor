@@ -63,6 +63,9 @@ pub use crate::ai::blocklist::context_model::{
 pub use crate::ai::blocklist::conversation_selection::{
     ConversationSelection, ConversationSelectionEvent, ConversationSelectionHandle,
 };
+pub use crate::ai::blocklist::input_mode_policy::{
+    InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate,
+};
 pub use crate::ai::blocklist::block::view_impl::common::format_elapsed_seconds;
 pub use crate::ai::blocklist::controller::BlocklistAIController;
 pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, InputType};
