@@ -7,7 +7,7 @@ use warp::tui_export::{
     ActiveSession, Appearance, BlocklistAIActionModel, BlocklistAIHistoryModel,
     ConversationSelection, ConversationSelectionHandle, GetRelevantFilesController,
     ModelEventDispatcher, Sessions, TerminalManagerTrait, TerminalModel, TerminalSurfaceInit,
-    TranscriptScope,
+    AgentViewState,
 };
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warp_core::semantic_selection::SemanticSelection;
@@ -72,7 +72,7 @@ pub(crate) fn add_test_conversation_selection(ctx: &mut AppContext) -> Conversat
     let mut terminal_model = TerminalModel::mock(None, None);
     terminal_model
         .block_list_mut()
-        .set_transcript_scope(TranscriptScope::Unfiltered);
+        .set_agent_view_state(AgentViewState::Inactive);
     let terminal_model = Arc::new(FairMutex::new(terminal_model));
     ctx.add_model(|ctx| {
         Box::new(TuiConversationSelection::new(

@@ -50,8 +50,8 @@ pub use crate::ai::blocklist::action_model::{
     ShellCommandExecutor, ShellCommandExecutorEvent,
 };
 pub use crate::ai::blocklist::agent_view::{
-    AgentViewController, AgentViewDisplayMode, AgentViewEntryOrigin, EnterAgentViewError,
-    EphemeralMessageModel,
+    AgentViewController, AgentViewDisplayMode, AgentViewEntryOrigin, AgentViewState,
+    EnterAgentViewError, EphemeralMessageModel,
 };
 pub use crate::ai::blocklist::block::cli_controller::{
     CLISubagentController, CLISubagentEvent, CLISubagentTarget, LongRunningCommandControlState,

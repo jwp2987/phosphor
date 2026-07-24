@@ -28,7 +28,7 @@ use warp::tui_export::{
     ServerConversationToken, ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference,
     SlashCommandKind, SlashCommandSelectionBehavior,
     StaticCommand, TerminalModel, TerminalSurface,
-    TerminalSurfaceInit, TranscriptScope, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
+    AgentViewState, TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
     TuiSlashCommandDataSourceArgs, TuiZeroStateDataSource, UserTakeOverReason,
     WAKEUP_THROTTLE_PERIOD, block_context_from_terminal_model, build_slash_command_mixer,
     detect_possible_git_repo, export_conversation_markdown, log_out_tui,
@@ -817,7 +817,10 @@ impl TuiTerminalSessionView {
         model
             .lock()
             .block_list_mut()
-            .set_transcript_scope(TranscriptScope::Unfiltered);
+            // Zap models transcript scoping as AgentViewState (warp renamed it
+            // TranscriptScope in a later refactor). warp's Unfiltered ("show all
+            // blocks") maps to Zap's Inactive (no conversation filtering).
+            .set_agent_view_state(AgentViewState::Inactive);
 
         let terminal_surface_id: EntityId = ctx.view_id();
         let active_session =
