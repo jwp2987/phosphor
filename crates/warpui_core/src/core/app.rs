@@ -4442,25 +4442,50 @@ impl UpdateView for AppContext {
     {
         self.pending_flushes += 1;
         let window_id = handle.window_id(self);
-        let mut view = if let Some(window) = self.windows.get_mut(&window_id) {
-            match window.views.remove(&handle.id()) { Some(view) => {
-                view
-            } _ => {
-                panic!("Circular view update");
-            }}
-        } else {
-            panic!("Window does not exist");
-        };
+        let view_id = handle.id();
 
-        let mut ctx = ViewContext::new(self, window_id, handle.id());
-        let result = update(
-            view.as_any_mut()
-                .downcast_mut()
-                .expect("Downcast is type safe"),
-            &mut ctx,
-        );
+        // GUI views live in `window.views`; Zap keeps TUI views in a separate
+        // `window.tui_views` map (rather than upstream's `StoredView` enum), so
+        // remove from whichever map actually holds this view.
+        let mut gui_view: Option<Box<dyn AnyView>> = None;
+        let mut tui_view: Option<Box<dyn crate::core::view::AnyTuiView>> = None;
+        match self.windows.get_mut(&window_id) {
+            Some(window) => {
+                if let Some(view) = window.views.remove(&view_id) {
+                    gui_view = Some(view);
+                } else if let Some(view) = window.tui_views.remove(&view_id) {
+                    tui_view = Some(view);
+                } else {
+                    panic!("Circular view update");
+                }
+            }
+            None => panic!("Window does not exist"),
+        }
+
+        let mut ctx = ViewContext::new(self, window_id, view_id);
+        let any: &mut dyn std::any::Any = match (gui_view.as_mut(), tui_view.as_mut()) {
+            (Some(view), _) => view.as_any_mut(),
+            (_, Some(view)) => view.as_any_mut(),
+            _ => unreachable!(),
+        };
+        let result = update(any.downcast_mut().expect("Downcast is type safe"), &mut ctx);
+
+        let is_tui = tui_view.is_some();
         if let Some(window) = self.windows.get_mut(&window_id) {
-            window.views.insert(handle.id(), view);
+            if let Some(view) = gui_view {
+                window.views.insert(view_id, view);
+            } else if let Some(view) = tui_view {
+                window.tui_views.insert(view_id, view);
+            }
+        }
+        // A mutated TUI view must be re-rendered by the driver, so mark it dirty
+        // (mirrors `add_tui_view`). GUI invalidation flows through effects.
+        if is_tui {
+            self.window_invalidations
+                .entry(window_id)
+                .or_default()
+                .updated
+                .insert(view_id);
         }
         self.flush_effects();
         result
@@ -4666,7 +4691,13 @@ impl ViewAsRef for AppContext {
     fn view<T: Entity>(&self, handle: &ViewHandle<T>) -> &T {
         let window_id = handle.window_id(self);
         if let Some(window) = self.windows.get(&window_id) {
+            // GUI views live in `window.views`; Zap keeps TUI views in a separate
+            // `window.tui_views` map, so read from whichever holds this view.
             if let Some(view) = window.views.get(&handle.id()) {
+                view.as_any()
+                    .downcast_ref()
+                    .expect("downcast should be type safe")
+            } else if let Some(view) = window.tui_views.get(&handle.id()) {
                 view.as_any()
                     .downcast_ref()
                     .expect("downcast should be type safe")
@@ -4685,12 +4716,12 @@ impl ViewAsRef for AppContext {
     /// otherwise produce a circular view reference.
     fn try_view<T: Entity>(&self, handle: &ViewHandle<T>) -> Option<&T> {
         let window_id = handle.window_id(self);
-        self.windows
-            .get(&window_id)?
-            .views
-            .get(&handle.id())?
-            .as_any()
-            .downcast_ref()
+        let window = self.windows.get(&window_id)?;
+        if let Some(view) = window.views.get(&handle.id()) {
+            view.as_any().downcast_ref()
+        } else {
+            window.tui_views.get(&handle.id())?.as_any().downcast_ref()
+        }
     }
 }
 
