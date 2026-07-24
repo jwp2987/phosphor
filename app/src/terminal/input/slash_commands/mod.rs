@@ -1,8 +1,10 @@
 mod data_source;
+mod mixer;
 mod search_item;
 mod view;
 
 pub use data_source::*;
+pub use mixer::*;
 pub use view::*;
 
 #[cfg(feature = "local_fs")]
