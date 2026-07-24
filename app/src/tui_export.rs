@@ -60,6 +60,9 @@ pub use crate::ai::blocklist::context_model::{
     AttachmentType, BlocklistAIContextEvent, BlocklistAIContextModel, PendingQueryState,
     block_context_from_terminal_model,
 };
+pub use crate::ai::blocklist::conversation_selection::{
+    ConversationSelection, ConversationSelectionEvent, ConversationSelectionHandle,
+};
 pub use crate::ai::blocklist::block::view_impl::common::format_elapsed_seconds;
 pub use crate::ai::blocklist::controller::BlocklistAIController;
 pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, InputType};

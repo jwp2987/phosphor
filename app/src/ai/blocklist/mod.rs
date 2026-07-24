@@ -8,6 +8,7 @@ pub mod agent_view;
 pub mod block;
 pub mod code_block;
 pub mod context_model;
+pub mod conversation_selection;
 pub mod controller;
 mod passive_suggestions;
 pub(super) use controller::RequestInput;
