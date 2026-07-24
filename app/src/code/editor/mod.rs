@@ -18,5 +18,6 @@ pub use comment_editor::{CommentEditor, CommentEditorEvent};
 pub use comments::EditorCommentsModel;
 pub use comments::EditorReviewComment;
 pub(crate) use diff::{add_color, remove_color};
+pub use diff::compute_unified_diff;
 pub use element::GutterHoverTarget;
 pub use nav_bar::NavBarBehavior;

@@ -69,6 +69,10 @@ pub use crate::terminal::conversation_restoration::{
     prepare_conversation_block_restoration, ConversationBlockRestorationPlan,
 };
 pub use crate::terminal::view::blocklist_filter::should_show_task_in_blocklist;
+pub use crate::ai::blocklist::diff_storage::{
+    changed_lines_from_op, DiffStorage, DiffStorageHelper, FileSnapshot, RegisteredDiffStorage,
+    SaveFuture, UpdatedFileState,
+};
 pub use crate::ai::blocklist::input_mode_policy::{
     InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate,
 };

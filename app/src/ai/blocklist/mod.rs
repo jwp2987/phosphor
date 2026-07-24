@@ -10,6 +10,7 @@ pub mod code_block;
 pub mod context_model;
 pub mod conversation_selection;
 pub mod controller;
+pub mod diff_storage;
 pub mod input_mode_policy;
 mod passive_suggestions;
 pub(super) use controller::RequestInput;

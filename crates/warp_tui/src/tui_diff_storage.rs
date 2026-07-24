@@ -131,6 +131,13 @@ fn dispatch_write(
 ) -> Result<SaveFuture, FileSaveError> {
     let file_id = register_file(file_model, session_type, path, ctx)?;
     let version = ContentVersion::new();
+    // Zap's FileModel is EVENT-based, not future-based: save/delete/
+    // rename_and_save dispatch the write on a spawned task and return
+    // `Result<(), FileSaveError>` for the SYNCHRONOUS setup errors only
+    // (completion is reported later via FileModelEvent). warp's contract wants a
+    // SaveFuture that resolves on completion, so we resolve on successful
+    // DISPATCH — an already-ready Ok future. Async write failures surface as
+    // FileModelEvent::FailedToSave rather than through this future.
     let dispatch = match action {
         PersistAction::Delete => file_model.delete(file_id, version, ctx),
         PersistAction::Rename(to) => {
@@ -138,10 +145,10 @@ fn dispatch_write(
         }
         PersistAction::Write => file_model.save(file_id, final_content, version, ctx),
     };
-    // The write future captures its target path up front; release the temporary
-    // registration either way so FileModel state doesn't grow unboundedly.
+    // Release the temporary registration either way so FileModel state doesn't
+    // grow unboundedly.
     file_model.unsubscribe(file_id, ctx);
-    dispatch
+    dispatch.map(|()| ready_save_ok())
 }
 
 /// Builds a file's report state and result-diff inputs to mirror the write
@@ -194,6 +201,12 @@ fn persist_outcome(
 /// A save future that fails immediately with `error`.
 fn ready_save_failure(error: FileSaveError) -> SaveFuture {
     futures::future::ready(Err(Arc::new(error))).boxed()
+}
+
+/// A save future that succeeds immediately — used once a write has been
+/// successfully dispatched to Zap's event-based `FileModel` (see `dispatch_write`).
+fn ready_save_ok() -> SaveFuture {
+    futures::future::ready(Ok(())).boxed()
 }
 
 /// Events emitted by [`TuiDiffStorage`].
