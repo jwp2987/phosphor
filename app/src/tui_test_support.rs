@@ -88,9 +88,9 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
     app.update(|ctx| {
         warpui_extras::secure_storage::register_noop("test", ctx);
     });
-    app.update(AISettings::register_and_subscribe_to_events);
-    // Registers all `define_settings_group!` settings (TuiAutoupdate/Input/Code/Font/…),
-    // read across the session-view subtree and by `TuiAutoupdater::register`.
+    // Registers all `define_settings_group!` settings (TuiAutoupdate/Input/Code/Font/…,
+    // and AISettings itself), read across the session-view subtree and by
+    // `TuiAutoupdater::register`.
     app.update(crate::settings::register_all_settings);
     app.add_singleton_model(ApiKeyManager::new);
 
@@ -120,6 +120,11 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
         crate::GlobalResourceHandlesProvider::new(global_resources.clone())
     });
 
+    app.add_singleton_model(|_| {
+        crate::changelog_model::ChangelogModel::new(std::sync::Arc::new(
+            http_client::Client::new(),
+        ))
+    });
     app.add_singleton_model(crate::tui::TuiMcpManager::new_for_test);
     app.add_singleton_model(|_| ::ai::project_context::model::ProjectContextModel::default());
 

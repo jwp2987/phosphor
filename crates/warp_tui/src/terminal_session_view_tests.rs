@@ -475,7 +475,7 @@ fn footer_model_label_is_a_bounded_click_target() {
 
 fn focus_test_fixture(app: &mut App) -> FocusTestFixture {
     register_tui_session_view_test_singletons(app);
-    add_test_semantic_selection(app);
+    app.update(|ctx| add_test_semantic_selection(ctx));
     app.update(TuiAutoupdater::register);
     let (window_id, _) = app.update(|ctx| {
         ctx.add_tui_window(

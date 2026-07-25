@@ -57,10 +57,17 @@ impl TypedActionView for TestHostView {
     type Action = ();
 }
 /// Registers the singletons the editor-backed TUI views read during render:
-/// semantic-selection settings and the ignored-suggestions model.
-pub(crate) fn add_test_semantic_selection(ctx: &mut impl AddSingletonModel) {
-    ctx.add_singleton_model(|_| SemanticSelection::mock(true, ""));
-    ctx.add_singleton_model(|_| IgnoredSuggestionsModel::new(Vec::new()));
+/// semantic-selection settings and the ignored-suggestions model. Idempotent, so
+/// it composes with `register_tui_session_view_test_singletons` (whose
+/// `register_all_settings` also registers `SemanticSelection`) without
+/// double-registration panics.
+pub(crate) fn add_test_semantic_selection(ctx: &mut AppContext) {
+    if !ctx.has_singleton_model::<SemanticSelection>() {
+        ctx.add_singleton_model(|_| SemanticSelection::mock(true, ""));
+    }
+    if !ctx.has_singleton_model::<IgnoredSuggestionsModel>() {
+        ctx.add_singleton_model(|_| IgnoredSuggestionsModel::new(Vec::new()));
+    }
 }
 
 pub(crate) fn add_test_conversation_selection(ctx: &mut AppContext) -> ConversationSelectionHandle {
@@ -100,7 +107,7 @@ pub(crate) fn add_test_action_model_and_events(
     if !app.read(|ctx| ctx.has_singleton_model::<Appearance>()) {
         app.add_singleton_model(|_| Appearance::mock());
     }
-    add_test_semantic_selection(app);
+    app.update(|ctx| add_test_semantic_selection(ctx));
     // Read as a singleton by the action model's executors.
     app.add_singleton_model(|_| BlocklistAIHistoryModel::default());
     let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));

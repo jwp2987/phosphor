@@ -23,7 +23,7 @@ fn add_root(app: &mut App) -> (WindowId, warpui_core::ViewHandle<RootTuiView>) {
 fn root_projects_only_the_focused_retained_session_view() {
     App::test((), |mut app| async move {
         register_tui_session_view_test_singletons(&mut app);
-        add_test_semantic_selection(&mut app);
+        app.update(|ctx| add_test_semantic_selection(ctx));
         app.update(crate::autoupdate::TuiAutoupdater::register);
         let (window_id, root) = add_root(&mut app);
         let sessions = app.add_singleton_model(|_| TuiSessions::new_for_test());

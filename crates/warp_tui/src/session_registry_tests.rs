@@ -27,7 +27,7 @@ fn capture_events(app: &mut App) -> CapturedEvents {
 fn focus_drives_events() {
     App::test((), |mut app| async move {
         register_tui_session_view_test_singletons(&mut app);
-        add_test_semantic_selection(&mut app);
+        app.update(|ctx| add_test_semantic_selection(ctx));
         app.update(crate::autoupdate::TuiAutoupdater::register);
         let window_id = app.update(|ctx| {
             ctx.add_tui_window(
