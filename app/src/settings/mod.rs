@@ -6,7 +6,7 @@ pub mod app_installation_detection;
 mod autoupdate;
 mod block_visibility;
 pub mod cloud_preferences;
-mod cloud_sync;
+pub(crate) mod cloud_sync;
 mod cloud_sync_secrets;
 mod code;
 mod debug;

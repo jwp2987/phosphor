@@ -1,11 +1,8 @@
-use std::any::Any;
 use std::cell::RefCell;
 use std::pin::pin;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use crate::ai::agent::conversation::ConversationStatus;
-use parking_lot::FairMutex;
 use warp_multi_agent_api as api;
 use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PASTE_START};
 use warpui::{notification::UserNotification, Presenter, WindowInvalidation};
@@ -66,34 +63,11 @@ use crate::test_util::ai_agent_tasks::{
     create_api_subtask, create_api_task, create_message, create_subagent_tool_call_message,
 };
 
-use crate::terminal::{MockTerminalManager, TerminalManager, TerminalModel};
+use crate::terminal::{MockTerminalManager, TerminalModel};
 use crate::test_util::terminal::initialize_app_for_terminal_view;
 use crate::test_util::{add_window_with_terminal, assert_eventually};
 
 use super::*;
-
-struct TestTerminalManager {
-    model: Arc<FairMutex<TerminalModel>>,
-    view: ViewHandle<TerminalView>,
-}
-
-impl TerminalManager for TestTerminalManager {
-    fn model(&self) -> Arc<FairMutex<TerminalModel>> {
-        self.model.clone()
-    }
-
-    fn view(&self) -> ViewHandle<TerminalView> {
-        self.view.clone()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
 
 fn tool_call_message_with_tool_for_test(
     id: &str,

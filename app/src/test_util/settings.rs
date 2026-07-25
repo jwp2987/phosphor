@@ -47,10 +47,12 @@ pub fn initialize_settings_for_tests_with_mode(
     AccessibilitySettings::register(app);
     app.update(AISettings::register_and_subscribe_to_events);
     AliasExpansionSettings::register(app);
-    // Zap Wave 7-3:`AmbientAgentSettings` 随 ambient-agent UI 子系统物理删。
+    // Zap Wave 7-3: `AmbientAgentSettings` was physically removed along with the
+    // ambient-agent UI subsystem.
     AppEditorSettings::register(app);
     BlockVisibilitySettings::register(app);
     BlockListSettings::register(app);
+    crate::settings::language::LanguageSettings::register(app);
     PreferencesSettings::register(app);
     CommandSearchSettings::register(app);
     DebugSettings::register(app);
@@ -97,6 +99,11 @@ pub fn initialize_settings_for_tests_with_mode(
     SharedSessionSettings::register(app);
     CodeSettings::register(app);
     SemanticSelection::register(app);
+    // Settings that `register_all_settings` registers but this test helper had
+    // drifted from; needed by the workspace-view tests.
+    crate::settings::network::NetworkSettings::register(app);
+    crate::settings::cloud_sync::CloudSyncSettings::register(app);
+    crate::settings::AutoupdateSettings::register(app);
 
     app.update(|ctx| {
         // Register a no-op secure storage provider for testing.
