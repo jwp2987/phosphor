@@ -59,6 +59,13 @@ pub fn init(override_locale: Option<&str>) {
         log::warn!("[i18n] select() failed: {e} — running with fallback only");
     }
 
+    // Don't wrap `{$variable}` interpolations in Unicode bidi isolates (FSI/PDI).
+    // Those marks matter for RTL scripts, but Zap ships only en / zh-CN / ja
+    // (all LTR), where they just inject invisible U+2068/U+2069 into displayed
+    // text (and break exact-match assertions). Applies to the bundles loaded
+    // above.
+    loader.set_use_isolating(false);
+
     log::info!(
         "[i18n] initialized; current_languages={:?}, fallback={}",
         loader.current_languages(),
