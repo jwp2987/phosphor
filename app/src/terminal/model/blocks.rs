@@ -1735,6 +1735,20 @@ impl BlockList {
         }
     }
 
+    /// The conversation owning the active command block, if any.
+    ///
+    /// Ported from Warp OSS `BlockList::active_conversation_id`. Upstream reads a single
+    /// `active_conversation_context` field; Zap instead tags the active block (see
+    /// [`set_active_conversation_context`]), so this reads the block's agent-view
+    /// conversation directly.
+    ///
+    /// [`set_active_conversation_context`]: Self::set_active_conversation_context
+    pub fn active_conversation_id(&self) -> Option<AIConversationId> {
+        self.active_block()
+            .agent_view_visibility()
+            .agent_view_conversation_id()
+    }
+
     /// Clears the active command block's conversation association.
     ///
     /// Ported from Warp OSS `BlockList::clear_active_conversation_context`. Only clears blocks

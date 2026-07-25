@@ -189,11 +189,7 @@ fn tui_selection_eagerly_owns_session_conversation() {
             );
         });
         assert_eq!(
-            terminal_model
-                .lock()
-                .block_list()
-                .agent_view_state()
-                .active_conversation_id(),
+            terminal_model.lock().block_list().active_conversation_id(),
             Some(conversation_id)
         );
         assert!(matches!(
@@ -240,11 +236,7 @@ fn tui_selection_eagerly_owns_session_conversation() {
             );
         });
         assert_eq!(
-            terminal_model
-                .lock()
-                .block_list()
-                .agent_view_state()
-                .active_conversation_id(),
+            terminal_model.lock().block_list().active_conversation_id(),
             Some(new_conversation_id)
         );
         assert!(matches!(

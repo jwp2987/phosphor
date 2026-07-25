@@ -560,7 +560,7 @@ fn agent_block_renders_tool_calls_in_message_order() {
                     .into_iter()
                     .map(|line| line.trim_end().to_owned())
                     .collect::<Vec<_>>(),
-                vec!["", "before", "", "○ Init project", "", "after"],
+                vec!["", "before", "", "○ Open code review", "", "after"],
             );
             // A pending tool call renders a dim grey glyph and a dim label.
             assert_eq!(
@@ -616,7 +616,7 @@ fn agent_block_renders_multiple_tool_calls_in_order() {
                     .into_iter()
                     .map(|line| line.trim_end().to_owned())
                     .collect::<Vec<_>>(),
-                vec!["", "○ Init project", "", "○ Init project"],
+                vec!["", "○ Open code review", "", "○ Open code review"],
             );
         });
     });
@@ -652,7 +652,7 @@ fn tool_call_row_glyph_and_colors_reflect_state() {
             let frame = render(&action, Some(&succeeded));
             assert_eq!(
                 frame.buffer.to_lines()[0].trim_end(),
-                "✓ Init project — done"
+                "✓ Open code review — done"
             );
             assert_eq!(frame.buffer[(0, 0)].fg, green);
             assert_eq!(frame.buffer[(2, 0)].fg, primary);
@@ -660,7 +660,7 @@ fn tool_call_row_glyph_and_colors_reflect_state() {
 
             // Running: yellow dot.
             let frame = render(&action, Some(&AIActionStatus::RunningAsync));
-            assert_eq!(frame.buffer.to_lines()[0].trim_end(), "● Init project…");
+            assert_eq!(frame.buffer.to_lines()[0].trim_end(), "● Open code review…");
             assert_eq!(frame.buffer[(0, 0)].fg, yellow);
             assert_eq!(frame.buffer[(2, 0)].fg, primary);
 
