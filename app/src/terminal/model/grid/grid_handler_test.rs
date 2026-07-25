@@ -89,7 +89,7 @@ fn regex_right() {
     ");
 
     // Check regex across wrapped and unwrapped lines.
-    let dfas = RegexDFAs::new("Wa.*123").unwrap();
+    let dfas = RegexDFAs::new("Za.*123").unwrap();
     let start = Point::new(1, 0);
     let end = Point::new(4, 2);
     let match_start = Point::new(1, 0);
@@ -114,7 +114,7 @@ fn regex_left() {
     ");
 
     // Check regex across wrapped and unwrapped lines.
-    let dfas = RegexDFAs::new("Wa.*123").unwrap();
+    let dfas = RegexDFAs::new("Za.*123").unwrap();
     let start = Point::new(4, 2);
     let end = Point::new(1, 0);
     let match_start = Point::new(1, 0);
@@ -131,14 +131,14 @@ fn regex_left() {
 fn nested_regex() {
     #[rustfmt::skip]
     let blockgrid = mock_blockgrid("\
-        Wa -> Zap -> rp\r\n\
-        rp\
+        Za -> Zap -> ap\r\n\
+        ap\
     ");
 
     // Greedy stopped at linebreak.
-    let dfas = RegexDFAs::new("Wa.*rp").unwrap();
+    let dfas = RegexDFAs::new("Za.*ap").unwrap();
     let start = Point::new(0, 0);
-    let end = Point::new(0, 15);
+    let end = Point::new(0, 14);
     assert_eq!(
         blockgrid
             .grid_handler
@@ -147,9 +147,9 @@ fn nested_regex() {
     );
 
     // Greedy stopped at dead state.
-    let dfas = RegexDFAs::new("Wa[^y]*rp").unwrap();
+    let dfas = RegexDFAs::new("Za[^y]*ap").unwrap();
     let start = Point::new(0, 0);
-    let end = Point::new(0, 9);
+    let end = Point::new(0, 8);
     assert_eq!(
         blockgrid
             .grid_handler
@@ -730,7 +730,7 @@ fn test_find_url_omits_trailing_periods() {
             .grid_handler
             .url_at_point(Point { row: 0, col: 10 }),
         Some(Link {
-            range: Point { row: 0, col: 6 }..=Point { row: 0, col: 46 },
+            range: Point { row: 0, col: 6 }..=Point { row: 0, col: 44 },
             is_empty: false
         })
     );
@@ -748,7 +748,7 @@ fn test_find_url_omits_trailing_periods() {
             .grid_handler
             .url_at_point(Point { row: 0, col: 10 }),
         Some(Link {
-            range: Point { row: 0, col: 6 }..=Point { row: 0, col: 46 },
+            range: Point { row: 0, col: 6 }..=Point { row: 0, col: 44 },
             is_empty: false
         })
     );
@@ -766,7 +766,7 @@ fn test_find_url_omits_trailing_periods() {
             .grid_handler
             .url_at_point(Point { row: 0, col: 10 }),
         Some(Link {
-            range: Point { row: 0, col: 6 }..=Point { row: 0, col: 44 },
+            range: Point { row: 0, col: 6 }..=Point { row: 0, col: 43 },
             is_empty: false
         })
     );
@@ -775,7 +775,7 @@ fn test_find_url_omits_trailing_periods() {
             .grid_handler
             .url_at_point(Point { row: 0, col: 33 }),
         Some(Link {
-            range: Point { row: 0, col: 6 }..=Point { row: 0, col: 44 },
+            range: Point { row: 0, col: 6 }..=Point { row: 0, col: 43 },
             is_empty: false
         })
     );

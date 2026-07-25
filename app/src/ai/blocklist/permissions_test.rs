@@ -123,6 +123,7 @@ fn test_can_read_files_empty_paths() {
 }
 
 #[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_can_read_files_workspace_settings_override_profile() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
@@ -189,6 +190,7 @@ fn test_can_read_files_workspace_settings_override_profile() {
 }
 
 #[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_can_read_files_profile_workspace_allowlist_interaction() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
@@ -397,6 +399,7 @@ fn test_can_write_files() {
 }
 
 #[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_can_write_files_workspace_settings_override_profile() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
@@ -503,6 +506,7 @@ fn test_can_write_files_mcp_config_always_denied() {
 }
 
 #[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_can_autoexecute_command_workspace_settings_override_profile() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
@@ -577,6 +581,7 @@ fn test_can_autoexecute_command_workspace_settings_override_profile() {
 }
 
 #[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_can_autoexecute_command_denylist_precedence() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
@@ -673,6 +678,7 @@ fn test_can_autoexecute_command_denylist_precedence() {
 }
 
 #[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_can_autoexecute_command_allowlist_precedence() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
@@ -860,6 +866,7 @@ fn test_can_autoexecute_command_run_to_completion_allows_non_denylisted() {
 }
 
 #[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_can_write_to_pty() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
@@ -1225,6 +1232,7 @@ fn test_sandboxed_mode_allows_read_write_files() {
 }
 
 #[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_sandboxed_denylist_used_in_sandboxed_mode() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
