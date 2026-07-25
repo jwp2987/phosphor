@@ -19,7 +19,7 @@ use warp::tui_export::{
     BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
     CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, FORK_PREFIX, PRE_REWIND_PREFIX,
-    CancellationReason, ChangelogModel,
+    CancellationReason, ChangelogModel, tui_conversation_actions_in_order,
     ChangelogRequestType, LoadedConversationData, CommandExecutionSource, ConversationFileExport,
     ConversationSelection, ConversationSelectionHandle,
     ExecuteCommandEvent, GitRepoModels, GitRepoStatusModel,
@@ -85,7 +85,11 @@ use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
 use crate::completions_menu::{
     TuiAcceptedCompletion, TuiCompletionsMenuEvent, TuiCompletionsMenuModel,
 };
+use ai::agent::action_result::RequestFileEditsResult;
+
 use crate::exchange_menu::{TuiExchangeMenuAction, TuiExchangeMenuEvent, TuiExchangeMenuModel};
+use crate::tui_diff_storage::revert_file_diffs;
+use crate::tui_revert_registry::TuiFileEditRevertRegistry;
 use crate::profile_menu::{TuiProfileMenuEvent, TuiProfileMenuModel};
 use crate::prompts_menu::{TuiPromptsMenuEvent, TuiPromptsMenuModel};
 use crate::model_menu::{TuiModelMenuEvent, TuiModelMenuModel};
@@ -177,10 +181,9 @@ const FORK_FAILED_HINT: &str = "Failed to fork the conversation";
 const FORKED_HINT: &str = "Forked conversation";
 const EXCHANGE_MENU_REQUIRES_CONVERSATION_HINT: &str = "No active conversation to choose from";
 const REWIND_FAILED_HINT: &str = "Failed to rewind the conversation";
-// The TUI has no per-block file-diff revert, so a rewind truncates the
-// conversation but leaves any file edits in place. A pre-rewind backup
-// conversation is saved so the full history can be recovered.
-const REWOUND_HINT: &str = "Rewound conversation (file changes not reverted)";
+// A rewind truncates the conversation, reverts file edits made this session
+// back to their pre-edit content, and saves a pre-rewind backup conversation.
+const REWOUND_HINT: &str = "Rewound conversation and reverted file edits";
 
 /// Footer label shown while the input is in `!` shell mode. The how-to-exit
 /// guidance lives in the input's placeholder ghost text, so the footer only
@@ -1843,6 +1846,11 @@ impl TuiTerminalSessionView {
                 {
                     self.queued_follow_up = None;
                 }
+                // Drop any recorded file-edit diffs for the gone conversation.
+                let removed_conversation_id = *conversation_id;
+                TuiFileEditRevertRegistry::handle(ctx).update(ctx, |registry, _| {
+                    registry.forget_conversation(&removed_conversation_id);
+                });
                 self.cli_subagent_views
                     .retain(|_, view| view.as_ref(ctx).conversation_id() != *conversation_id);
             }
@@ -2891,9 +2899,11 @@ impl TuiTerminalSessionView {
     /// conversation history at that point and re-renders the surface. A
     /// pre-rewind backup conversation is saved first so nothing is lost.
     ///
-    /// Unlike the GUI, the TUI has no per-block file-diff revert, so this does
-    /// NOT undo file edits the agent made after the rewind point — it rewinds
-    /// the conversation only (see [`REWOUND_HINT`]).
+    /// File edits made after the rewind point are undone by writing each edit's
+    /// pre-edit content back (see [`crate::tui_revert_registry`]), for edits made
+    /// in the current session. Edits from a restored conversation carry no base
+    /// content and cannot be reverted (same limitation as the GUI); the pre-rewind
+    /// backup preserves the full history either way.
     fn rewind_to_exchange(
         &mut self,
         exchange_id: AIAgentExchangeId,
@@ -2906,6 +2916,32 @@ impl TuiTerminalSessionView {
         else {
             self.show_transient_hint(EXCHANGE_MENU_REQUIRES_CONVERSATION_HINT.to_owned(), ctx);
             return;
+        };
+        // Before truncating (which removes the exchanges), snapshot the applied
+        // file-edit actions in chronological order — those that were recorded in
+        // the revert registry this session AND resolved successfully — paired
+        // with the exchange they belong to.
+        let revert_candidates: Vec<(AIAgentActionId, AIAgentExchangeId)> = {
+            let registered: HashSet<AIAgentActionId> = TuiFileEditRevertRegistry::as_ref(ctx)
+                .action_ids_for(&conversation_id)
+                .into_iter()
+                .collect();
+            let action_model = self.ai_action_model.as_ref(ctx);
+            tui_conversation_actions_in_order(ctx, conversation_id)
+                .into_iter()
+                .filter(|entry| registered.contains(&entry.action_id))
+                .filter(|entry| {
+                    matches!(
+                        action_model
+                            .get_action_result(&entry.action_id)
+                            .map(|result| &result.result),
+                        Some(AIAgentActionResultType::RequestFileEdits(
+                            RequestFileEditsResult::Success { .. }
+                        ))
+                    )
+                })
+                .map(|entry| (entry.action_id, entry.exchange_id))
+                .collect()
         };
         // Interrupt any in-progress turn on this conversation before truncating.
         self.ai_controller.update(ctx, |controller, ctx| {
@@ -2926,15 +2962,35 @@ impl TuiTerminalSessionView {
             }
         });
         // Truncate the conversation at the chosen exchange.
-        let truncate_result = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
-            history.truncate_conversation_from_exchange(conversation_id, exchange_id, ctx)
-        });
-        if let Err(error) = truncate_result {
-            log::warn!("Failed to truncate conversation {conversation_id} for rewind: {error}");
-            self.show_transient_hint(REWIND_FAILED_HINT.to_owned(), ctx);
-            return;
+        let removed_exchange_ids = match BlocklistAIHistoryModel::handle(ctx)
+            .update(ctx, |history, ctx| {
+                history.truncate_conversation_from_exchange(conversation_id, exchange_id, ctx)
+            }) {
+            Ok(removed) => removed,
+            Err(error) => {
+                log::warn!("Failed to truncate conversation {conversation_id} for rewind: {error}");
+                self.show_transient_hint(REWIND_FAILED_HINT.to_owned(), ctx);
+                return;
+            }
+        };
+        // Revert the file edits in the removed exchanges, newest-first so that
+        // repeated edits to the same file unwind back to the original content.
+        let mut actions_to_revert: Vec<AIAgentActionId> = revert_candidates
+            .into_iter()
+            .filter(|(_, exchange)| removed_exchange_ids.contains(exchange))
+            .map(|(action_id, _)| action_id)
+            .collect();
+        actions_to_revert.reverse();
+        for action_id in &actions_to_revert {
+            let diffs = TuiFileEditRevertRegistry::handle(ctx)
+                .update(ctx, |registry, _| registry.take_diffs(&conversation_id, action_id));
+            if let Some(diffs) = diffs {
+                revert_file_diffs(&diffs, ctx);
+            }
         }
         // Re-render the (now truncated) conversation on the surface.
+        // `replace_conversation_surface` re-restores action results from the
+        // truncated exchanges, so no separate action-result cleanup is needed.
         let Some(truncated) = BlocklistAIHistoryModel::as_ref(ctx)
             .conversation(&conversation_id)
             .cloned()
@@ -2942,8 +2998,6 @@ impl TuiTerminalSessionView {
             self.show_transient_hint(REWIND_FAILED_HINT.to_owned(), ctx);
             return;
         };
-        // `replace_conversation_surface` re-restores action results from the
-        // truncated exchanges, so no separate action-result cleanup is needed.
         self.replace_conversation_surface(truncated, TuiConversationRestoreOrigin::Fork, ctx);
         self.show_success_hint(REWOUND_HINT.to_owned(), ctx);
     }

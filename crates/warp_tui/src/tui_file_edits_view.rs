@@ -37,7 +37,8 @@ use warpui_core::elements::tui::{
     tui_collapsible,
 };
 use warpui_core::{
-    AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext, ViewHandle,
+    AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TuiView, TypedActionView,
+    ViewContext, ViewHandle,
 };
 
 use crate::editor_element::{TuiEditorElement, TuiEditorStyles};
@@ -184,7 +185,10 @@ impl TuiFileEditsView {
         let storage = ctx.add_model(|_| TuiDiffStorage::new(Vec::new(), DiffSessionType::Local));
 
         ctx.subscribe_to_model(&storage, |me, _, event, ctx| match event {
-            TuiDiffStorageEvent::CandidateDiffsSet => me.rebuild_sections(ctx),
+            TuiDiffStorageEvent::CandidateDiffsSet => {
+                me.record_applied_diffs(ctx);
+                me.rebuild_sections(ctx);
+            }
         });
 
         // Failed and cancelled actions never seed the storage; re-render on
@@ -242,6 +246,26 @@ impl TuiFileEditsView {
             sections: Vec::new(),
             section_states: SectionStates::default(),
         }
+    }
+
+    /// Records this action's resolved diffs in the session revert registry so
+    /// `/rewind` can restore the files. Diffs resolve once (at preprocess time)
+    /// and carry the base (pre-edit) content; edits that are later rejected or
+    /// cancelled are filtered out at rewind time by their action result, so
+    /// recording eagerly here is safe.
+    fn record_applied_diffs(&self, ctx: &mut ViewContext<Self>) {
+        let diffs = self.storage.as_ref(ctx).diffs().to_vec();
+        if diffs.is_empty() {
+            return;
+        }
+        let conversation_id = self.conversation_id;
+        let action_id = self.action_id.clone();
+        crate::tui_revert_registry::TuiFileEditRevertRegistry::handle(ctx).update(
+            ctx,
+            move |registry, _| {
+                registry.record(conversation_id, action_id, diffs);
+            },
+        );
     }
 
     /// Rebuilds one [`FileSection`] per stored diff. Called when the executor

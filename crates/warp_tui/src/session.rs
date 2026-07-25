@@ -98,6 +98,10 @@ fn init(
     // `autoupdate` module docs).
     crate::autoupdate::TuiAutoupdater::register(ctx);
 
+    // Register the session-scoped file-edit revert registry so `/rewind` can
+    // restore files edited during this session (see tui_revert_registry).
+    crate::tui_revert_registry::TuiFileEditRevertRegistry::register(ctx);
+
     // Theme the transcript to match the host terminal. Keep this scoped to
     // the TUI process by overriding the already-initialized Appearance theme at
     // mount time, without changing normal GUI theme selection or font settings.

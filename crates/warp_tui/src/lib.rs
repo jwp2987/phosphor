@@ -59,6 +59,7 @@ mod tool_call_labels;
 mod transcript_view;
 mod transient_hint;
 mod tui_block_list_viewport_source;
+mod tui_revert_registry;
 mod tui_cli_subagent_view;
 mod tui_code_block_view;
 mod tui_column_layout;

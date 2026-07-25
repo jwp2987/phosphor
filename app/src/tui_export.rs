@@ -411,6 +411,44 @@ pub fn tui_list_conversation_exchanges(
         .collect()
 }
 
+/// One agent action paired with the exchange it belongs to.
+pub struct TuiActionExchange {
+    pub action_id: crate::ai::agent::AIAgentActionId,
+    pub exchange_id: crate::ai::agent::AIAgentExchangeId,
+}
+
+/// Lists every action in `conversation_id` paired with its exchange, in
+/// chronological order (oldest first, grouped by task). Used by `/rewind` to
+/// find — and revert, newest-first — the file-edit actions in the exchanges it
+/// truncates. Empty if the conversation is not in memory.
+pub fn tui_conversation_actions_in_order(
+    app: &warpui::AppContext,
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) -> Vec<TuiActionExchange> {
+    use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
+    use warpui::SingletonEntity as _;
+    let Some(conversation) = BlocklistAIHistoryModel::as_ref(app).conversation(&conversation_id)
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (_task_id, exchanges) in conversation.all_exchanges_by_task() {
+        for exchange in exchanges {
+            let exchange_id = exchange.id;
+            let Some(output) = exchange.output_status.output() else {
+                continue;
+            };
+            for action in output.get().actions() {
+                out.push(TuiActionExchange {
+                    action_id: action.id.clone(),
+                    exchange_id,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Returns whether cloud conversation metadata failed to load.
 ///
 /// BYOP has no cloud conversation metadata, so this is always `false` — the conversation

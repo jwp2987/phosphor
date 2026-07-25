@@ -198,6 +198,59 @@ fn persist_outcome(
     }
 }
 
+/// Restores the pre-edit state of each applied diff, undoing a file edit — the
+/// inverse of [`TuiDiffStorage::start_saving`]. For an `Update`/`Delete` it
+/// writes the diff's base (pre-edit) content back; for a `Create` it removes the
+/// file the edit added; for a rename it restores the original path and removes
+/// the renamed file. Best-effort: per-file failures are logged, not fatal.
+///
+/// Used by `/rewind` (via [`crate::tui_revert_registry`]). The TUI surface is
+/// always local, so writes go through the local [`FileModel`] backend.
+pub(crate) fn revert_file_diffs(diffs: &[FileDiff], app: &mut AppContext) {
+    let session_type = DiffSessionType::Local;
+    let file_model = FileModel::handle(app);
+    for diff in diffs {
+        let path = diff.file_path();
+        for (write_path, action, content) in revert_plan(diff, &path) {
+            let result = file_model.update(app, |file_model, ctx| {
+                dispatch_write(file_model, &session_type, &action, &write_path, content, ctx)
+            });
+            if let Err(error) = result {
+                log::warn!("Failed to revert file edit at {write_path}: {error}");
+            }
+        }
+    }
+}
+
+/// The write(s) that undo `diff`, as `(path, action, content)` tuples applied in
+/// order.
+fn revert_plan(diff: &FileDiff, path: &str) -> Vec<(String, PersistAction, String)> {
+    match &diff.diff_type {
+        // The edit created the file; delete it to revert.
+        DiffType::Create { .. } => vec![(path.to_owned(), PersistAction::Delete, String::new())],
+        // The edit deleted the file; re-create it with the base content.
+        DiffType::Delete { .. } => {
+            vec![(path.to_owned(), PersistAction::Write, diff.base.content.clone())]
+        }
+        // The edit renamed `path` → `to`; restore the base content at the
+        // original path and remove the renamed file.
+        DiffType::Update {
+            rename: Some(to), ..
+        } if to.to_string_lossy() != path => vec![
+            (path.to_owned(), PersistAction::Write, diff.base.content.clone()),
+            (
+                to.to_string_lossy().to_string(),
+                PersistAction::Delete,
+                String::new(),
+            ),
+        ],
+        // In-place update; write the base content back.
+        DiffType::Update { .. } => {
+            vec![(path.to_owned(), PersistAction::Write, diff.base.content.clone())]
+        }
+    }
+}
+
 /// A save future that fails immediately with `error`.
 fn ready_save_failure(error: FileSaveError) -> SaveFuture {
     futures::future::ready(Err(Arc::new(error))).boxed()
