@@ -164,25 +164,13 @@ impl BlocklistAIInputModel {
         policy: super::input_mode_policy::InputModePolicyHandle,
         ctx: &mut AppContext,
     ) -> ModelHandle<Self> {
-        use crate::terminal::model::session::Sessions;
-        use crate::terminal::model_events::ModelEventDispatcher;
-
         let model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
         let terminal_view_id = EntityId::new();
-        let sessions = ctx.add_model(|_| Sessions::new_for_test());
-        let (_events_tx, events_rx) = async_channel::unbounded();
-        let model_events =
-            ctx.add_model(|ctx| ModelEventDispatcher::new(events_rx, sessions.clone(), ctx));
-        let ai_context_model = ctx.add_model(|ctx| {
-            BlocklistAIContextModel::new(
-                sessions.clone(),
-                &model_events,
-                model.clone(),
-                terminal_view_id,
-                // The TUI has no agent-view controller.
-                None,
-                ctx,
-            )
+        // Use the singleton-free, agent-view-less context model so `mock` does not
+        // depend on the `BlocklistAIHistoryModel`/`LLMPreferences`/`AISettings`
+        // singleton web that `BlocklistAIContextModel::new` subscribes to.
+        let ai_context_model = ctx.add_model(|_| {
+            BlocklistAIContextModel::mock_agent_view_less(model.clone(), terminal_view_id)
         });
         let input_config = policy.initial_config(ctx);
         ctx.add_model(|_| Self {

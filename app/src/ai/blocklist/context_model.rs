@@ -598,7 +598,33 @@ impl BlocklistAIContextModel {
             pending_attachments: Default::default(),
             pending_query_state: PendingQueryState::default(),
             terminal_view_id,
-            agent_view_controller,
+            agent_view_controller: Some(agent_view_controller),
+            pending_inline_diff_hunk_attachments: Default::default(),
+            pending_inline_at_context_attachments: Default::default(),
+            pending_document_id: None,
+            auto_attached_agent_view_user_block_ids: Vec::new(),
+            queue_next_prompt_enabled: false,
+        }
+    }
+
+    /// Builds an agent-view-less context model for tests without registering or
+    /// subscribing to any singletons (unlike [`Self::new`], which subscribes to
+    /// `BlocklistAIHistoryModel`/`LLMPreferences`). Mirrors the real TUI surface,
+    /// which has no agent-view controller. Used by `BlocklistAIInputModel::mock`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn mock_agent_view_less(
+        terminal_model: Arc<FairMutex<TerminalModel>>,
+        terminal_view_id: EntityId,
+    ) -> Self {
+        Self {
+            terminal_model,
+            directory_context: Default::default(),
+            pending_context_block_ids: HashSet::new(),
+            pending_context_selected_text: None,
+            pending_attachments: Default::default(),
+            pending_query_state: PendingQueryState::default(),
+            terminal_view_id,
+            agent_view_controller: None,
             pending_inline_diff_hunk_attachments: Default::default(),
             pending_inline_at_context_attachments: Default::default(),
             pending_document_id: None,
