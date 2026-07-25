@@ -14,7 +14,14 @@ fn main() -> Result<()> {
     let mut state = ChannelState::new(
         Channel::Oss,
         ChannelConfig {
-            app_id: AppId::new("dev", "zap", "ZapTui"),
+            // Share the GUI's application identity ("Zap"), NOT a separate
+            // "ZapTui", so the TUI reads the same config/secrets: BYOP
+            // providers, models, and API keys live in the app-id-based
+            // user_preferences.json + keychain. A distinct app_id would point
+            // the TUI at an empty config dir, so `/model` would show none of
+            // the providers configured in the GUI. The log stays separate via
+            // `logfile_name` (a distinct field from the app id).
+            app_id: AppId::new("dev", "zap", "Zap"),
             logfile_name: "zap-tui.log".into(),
             autoupdate_config: None,
             mcp_static_config: None,
