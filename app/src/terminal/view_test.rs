@@ -113,7 +113,7 @@ fn tool_call_result_message_with_result_for_test(
 fn run_shell_command_tool_for_test(command: &str) -> api::message::tool_call::Tool {
     use api::message::tool_call::run_shell_command::WaitUntilCompleteValue;
 
-    // CLI subagent 会挂在这条 shell command block 上；字段只保留序列化所需的最小值。
+    // The CLI subagent attaches to this shell command block; the field keeps only the minimum needed for serialization.
     api::message::tool_call::Tool::RunShellCommand(api::message::tool_call::RunShellCommand {
         command: command.to_string(),
         is_read_only: true,
@@ -130,7 +130,7 @@ fn build_restored_conversation_with_cli_subagent_for_test(
     block_id: BlockId,
     task_id: TaskId,
 ) -> AIConversation {
-    // 构造包含 CLI subagent tool call 的历史 conversation，模拟普通 /agent 历史恢复数据。
+    // Build a historical conversation containing a CLI subagent tool call, simulating normal /agent history-restore data.
     let root_task_id = "root-task";
     let block_id_string = String::from(block_id);
     let task_id_string = String::from(task_id);
@@ -207,7 +207,7 @@ fn cli_subagent_snapshot_json_for_test(
     block_id: &BlockId,
     output: &[u8],
 ) -> String {
-    // 模拟关闭标签后随 conversation_data 留存的完整终端 block 快照。
+    // Simulate the full terminal block snapshot retained with conversation_data after the tab is closed.
     let mut block = SerializedBlock::new_for_test(b"ssh jump".to_vec(), output.to_vec());
     block.id = block_id.clone();
     block.ai_metadata = serde_json::to_string(&Some(Into::<SerializedAIMetadata>::into(
@@ -247,7 +247,7 @@ fn build_restored_conversation_with_cli_subagent_snapshot_for_test(
         cli_subagent_snapshot_json_for_test(conversation_id, &task_id, &block_id, snapshot_output),
     );
 
-    // task result 故意保留短输出，确保测试验证的是 snapshot 恢复而不是 task fallback。
+    // The task result deliberately keeps short output, so the test verifies snapshot restore rather than task fallback.
     let root_task_id = "root-task";
     let block_id_string = String::from(block_id);
     let task_id_string = String::from(task_id);
@@ -304,7 +304,7 @@ fn build_restored_conversation_with_cli_subagent_snapshot_for_test(
 }
 
 fn build_restored_conversation_without_cli_subagent_for_test() -> AIConversation {
-    // 构造普通 /agent 历史 conversation，用于确认没有 CLI subagent 时不会误建浮窗。
+    // Build a normal /agent history conversation, to confirm no floating window is mistakenly created when there is no CLI subagent.
     let root_task_id = "root-task";
     let root_task = create_api_task(
         root_task_id,
@@ -318,7 +318,7 @@ fn build_restored_conversation_without_cli_subagent_for_test() -> AIConversation
 fn serialized_blocks_for_restored_cli_subagent_for_test(
     conversation: &AIConversation,
 ) -> Vec<SerializedBlockListItem> {
-    // 走真实持久化序列化路径，避免测试只验证内存中的临时 view 状态。
+    // Go through the real persistence serialization path, to avoid the test only verifying transient in-memory view state.
     let serialized_blocks = conversation.to_serialized_blocklist_items();
     assert_eq!(
         serialized_blocks.len(),
@@ -329,7 +329,7 @@ fn serialized_blocks_for_restored_cli_subagent_for_test(
 }
 
 fn clear_ai_metadata_for_serialized_blocks_for_test(blocks: &mut [SerializedBlockListItem]) {
-    // 模拟旧历史记录或损坏记录缺少 ai_metadata 的情况，恢复逻辑应安全跳过。
+    // Simulate old or corrupted history records missing ai_metadata; the restore logic should skip them safely.
     for item in blocks {
         match item {
             SerializedBlockListItem::Command { block } => block.ai_metadata = None,
@@ -436,8 +436,8 @@ fn restores_cli_subagent_snapshot_when_history_blocks_are_not_preloaded() {
 
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
-            // 历史列表进入已有 terminal 时不会像新 pane 初始化那样预置 restored blocks；
-            // restore_conversation_after_view_creation 必须自己补回 CLI subagent 的终端快照。
+            // Entering an existing terminal from the history list does not preseed restored blocks the way new-pane init does;
+            // restore_conversation_after_view_creation must re-add the CLI subagent's terminal snapshot itself.
             view.restore_conversation_after_view_creation(
                 RestoredAIConversation::new(conversation),
                 true,
@@ -448,7 +448,7 @@ fn restores_cli_subagent_snapshot_when_history_blocks_are_not_preloaded() {
         terminal.read(&app, |view, _| {
             assert!(
                 view.cli_subagent_views.contains_key(&block_id),
-                "未预置 restored blocks 时也应恢复 CLI subagent 只读卡片"
+                "should restore the CLI subagent read-only card even when restored blocks are not preseeded"
             );
             let model = view.model.lock();
             let block = model
@@ -459,7 +459,7 @@ fn restores_cli_subagent_snapshot_when_history_blocks_are_not_preloaded() {
             let output = String::from_utf8_lossy(&serialized_block.stylized_output);
             assert!(
                 output.contains("analyzer-runtime"),
-                "历史入口恢复时应显示持久化的 SSH 终端输出: {output}"
+                "history-entry restore should show the persisted SSH terminal output: {output}"
             );
         });
     });
@@ -501,11 +501,11 @@ fn exiting_restored_cli_subagent_agent_view_inserts_entry_card() {
         terminal.read(&app, |view, _| {
             assert!(
                 view.last_visible_item_is_agent_view_block_for_conversation(conversation_id),
-                "ESC 返回终端后应保留 restored CLI subagent 的折叠入口卡片"
+                "should keep the restored CLI subagent's collapsed entry card after ESC back to terminal"
             );
             assert!(
                 view.cli_subagent_views.contains_key(&block_id),
-                "CLI subagent 只读卡片仍应可展开"
+                "CLI subagent read-only card should still be expandable"
             );
             let model = view.model.lock();
             let block = model
@@ -516,7 +516,7 @@ fn exiting_restored_cli_subagent_agent_view_inserts_entry_card() {
             let output = String::from_utf8_lossy(&serialized_block.stylized_output);
             assert!(
                 output.contains("analyzer-runtime"),
-                "退出 AgentView 后仍应保留 SSH snapshot 输出: {output}"
+                "should keep the SSH snapshot output after exiting AgentView: {output}"
             );
         });
     });
@@ -533,8 +533,8 @@ fn assert_exiting_restored_ordinary_agent_view_inserts_entry_card(
         let conversation_id = conversation.id();
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
-            // 普通 restored 会话只是在 AgentView 中查看，没有新增 exchange；
-            // ESC 回到 terminal 后仍需要保留一个可再次进入的折叠入口。
+            // A normal restored session is only viewed in AgentView, with no new exchange added;
+            // after ESC back to terminal, a collapsed entry that can be re-entered must still be kept.
             view.restore_conversation_after_view_creation(
                 RestoredAIConversation::new(conversation),
                 true,
@@ -547,11 +547,11 @@ fn assert_exiting_restored_ordinary_agent_view_inserts_entry_card(
         terminal.read(&app, |view, _| {
             assert!(
                 view.last_visible_item_is_agent_view_block_for_conversation(conversation_id),
-                "ESC 返回 terminal 后应保留普通 restored /agent 会话的折叠入口卡片"
+                "should keep the collapsed entry card of a normal restored /agent session after ESC back to terminal"
             );
             assert!(
                 view.cli_subagent_views.is_empty(),
-                "普通 restored /agent 会话不应创建 CLI subagent view"
+                "a normal restored /agent session should not create a CLI subagent view"
             );
         });
     });
@@ -640,13 +640,13 @@ fn ordinary_agent_restore_does_not_create_cli_subagent_views() {
 fn finished_cli_subagent_keeps_read_only_card_when_metadata_matches() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
-        // FinishedSubagent 会触发 sidecar 持久化，需要 GlobalResourceHandlesProvider。
+        // FinishedSubagent triggers sidecar persistence, which needs GlobalResourceHandlesProvider.
         let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
         app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resource_handles));
 
-        // 先恢复一个带 CLI subagent 的历史会话，建立带匹配 metadata 的 command block
-        // 和一个 RestoredReadOnly 视图，模拟 SSH 会话在 agent view 里展开后的状态。
-        // 用带 snapshot 的构造函数，确保 conversation_id 可控且与 block metadata 一致。
+        // First restore a history session with a CLI subagent, establishing a command block with matching metadata
+        // and a RestoredReadOnly view, simulating the state after an SSH session is expanded in the agent view.
+        // Use the constructor with a snapshot, to keep conversation_id controlled and consistent with the block metadata.
         let block_id = BlockId::from("cli-block-finished".to_string());
         let task_id = TaskId::new("cli-task-finished".to_string());
         let conversation_id = AIConversationId::new();
@@ -667,7 +667,7 @@ fn finished_cli_subagent_keeps_read_only_card_when_metadata_matches() {
             );
         });
 
-        // 恢复后应存在 CLI subagent 视图。
+        // A CLI subagent view should exist after restore.
         terminal.read(&app, |view, _| {
             assert!(
                 view.cli_subagent_views.contains_key(&block_id),
@@ -675,9 +675,9 @@ fn finished_cli_subagent_keeps_read_only_card_when_metadata_matches() {
             );
         });
 
-        // 模拟 SSH 会话结束触发的 FinishedSubagent 事件。
-        // 修复前：live 视图被 remove 后不再重建，卡片消失；
-        // 修复后：在 block 仍持有匹配 metadata 时以 RestoredReadOnly 重建折叠卡片。
+        // Simulate the FinishedSubagent event triggered when the SSH session ends.
+        // Before the fix: once the live view was removed it was not rebuilt, so the card disappeared;
+        // After the fix: rebuild the collapsed card as RestoredReadOnly while the block still holds matching metadata.
         terminal.update(&mut app, |view, ctx| {
             view.handle_cli_subagent_controller_event(
                 view.cli_subagent_controller.clone(),
@@ -705,8 +705,8 @@ fn finished_cli_subagent_skips_rebuild_when_block_missing() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
 
-        // 用一个不存在于 block_list 的 block_id 触发 FinishedSubagent，
-        // 模拟 block 已被回收 / metadata 无法匹配的情况，重建前置检查应不通过。
+        // Trigger FinishedSubagent with a block_id not present in block_list,
+        // simulating a block already reclaimed / metadata that cannot match; the rebuild precondition check should fail.
         let block_id = BlockId::from("cli-block-gone".to_string());
         let task_id = TaskId::new("cli-task-gone".to_string());
         let conversation_id = AIConversationId::new();
@@ -752,7 +752,7 @@ fn restored_cli_subagent_windows_ctrl_c_does_not_write_to_pty() {
         });
 
         terminal.update(&mut app, |view, ctx| {
-            // 让 Ctrl-C 的 live 路径具备可观察副作用：如果被转发，会写 ETX 到 PTY。
+            // Give the Ctrl-C live path an observable side effect: if forwarded, it writes ETX to the PTY.
             view.model
                 .lock()
                 .simulate_long_running_block("sleep 10", "running");
@@ -4019,7 +4019,7 @@ fn exiting_lrc_user_takeover_does_not_insert_agent_view_entry_card() {
 
             assert!(
                 !view.has_agent_view_entry_block_for_conversation(conversation_id),
-                "LRC 用户接管退出时不应重复插入 AgentView 入口卡片"
+                "should not insert a duplicate AgentView entry card when the LRC user takeover exits"
             );
         });
     })
@@ -4180,7 +4180,7 @@ fn exiting_agent_view_removes_empty_conversations() {
         });
         assert!(
             !has_entry_card_after_exit,
-            "新建但未修改的空会话退出后不应留下 restored 入口卡片"
+            "a new but unmodified empty session should not leave a restored entry card after exit"
         );
     })
 }
@@ -4452,9 +4452,9 @@ fn cli_agent_rich_input_open_sets_terminal_keymap_context() {
     })
 }
 
-// 行为测试：当 rich input 已打开时，再次触发 OpenCLIAgentRichInput action
-// （即 Ctrl-G 实际命中绑定后被 dispatch 的 handler）应当关闭 rich input。
-// 这覆盖了本次修复的核心 toggle 路径。
+// Behavior test: when the rich input is already open, triggering the OpenCLIAgentRichInput action again
+// (i.e. the handler dispatched after Ctrl-G actually hits the binding) should close the rich input.
+// This covers the core toggle path of this fix.
 #[test]
 fn ctrl_g_action_closes_open_cli_agent_rich_input() {
     use crate::settings::import::model::ImportedConfigModel;
@@ -5491,11 +5491,11 @@ fn linear_deeplink_via_default_entrypoint_does_not_auto_submit_in_fullscreen() {
     })
 }
 
-// ---- OneKey 搜索过滤 pure 函数测试 ----
+// ---- OneKey search-filter pure-function tests ----
 //
-// 这些测试只针对 `filter_and_sort_onekey_candidates` 这条 pure 路径,
-// 不需要构造 TerminalView / ctx。skim 算法的 Unicode 处理由 fuzzy_match
-// crate 负责,这里只验证我们在 view.rs 中对它的使用是否符合预期。
+// These tests target only the `filter_and_sort_onekey_candidates` pure path,
+// with no need to build a TerminalView / ctx. The skim algorithm's Unicode handling is owned by the
+// fuzzy_match crate; here we only verify that our use of it in view.rs behaves as expected.
 
 use super::filter_and_sort_onekey_candidates;
 use super::OnekeyMenuRows;
@@ -5528,9 +5528,9 @@ fn onekey_empty_query_after_trim_returns_full_set() {
 #[test]
 fn onekey_query_filters_out_non_matches() {
     let candidates = vec![("apple", "x"), ("banana", "x"), ("apricot", "x")];
-    // "ap" 应该命中 apple / apricot,banana 不命中。
-    // 这里不断言 apple / apricot 之间的相对顺序——具体打分由 skim 决定,
-    // 我们只保证 banana 被过滤掉。
+    // "ap" should match apple / apricot, not banana.
+    // We don't assert the relative order of apple / apricot here — the exact scoring is decided by skim,
+    // we only guarantee banana is filtered out.
     let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "ap");
     let indices = rows_indices(result);
     assert!(indices.contains(&0)); // apple
@@ -5546,7 +5546,7 @@ fn onekey_query_matches_subtitle() {
     ];
     let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "prod");
     let indices = rows_indices(result);
-    // 只有 server-1 的 subtitle 含 prod。
+    // Only server-1's subtitle contains prod.
     assert_eq!(indices, vec![0]);
 }
 
@@ -5559,7 +5559,7 @@ fn onekey_query_no_match_returns_no_matches() {
 
 #[test]
 fn onekey_query_matches_chinese_characters() {
-    // 中文字符序列匹配:skim 算法按 Unicode char 处理。
+    // Chinese character-sequence matching: the skim algorithm processes by Unicode char.
     let candidates = vec![
         ("生产数据库", "ops@db.example.com:22"),
         ("测试服务器", "qa@test.example.com:22"),
