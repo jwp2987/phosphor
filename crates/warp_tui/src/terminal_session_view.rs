@@ -163,7 +163,6 @@ const SWITCH_CONVERSATION_RUNNING_HINT: &str =
 const SWITCH_LOADING_HINT: &str = "Another conversation is already loading.";
 const SWITCH_UNAVAILABLE_HINT: &str = "That conversation is no longer available.";
 const LOADING_CONVERSATION_HINT: &str = "Loading conversation…";
-const MODEL_PERSISTENCE_FAILED_HINT: &str = "Could not save the selected model.";
 
 /// Footer label shown while the input is in `!` shell mode. The how-to-exit
 /// guidance lives in the input's placeholder ghost text, so the footer only
@@ -2582,13 +2581,15 @@ impl TuiTerminalSessionView {
 
     fn handle_accepted_model(&mut self, id: &LLMId, ctx: &mut ViewContext<Self>) {
         let terminal_view_id = ctx.view_id();
-        let persisted = LLMPreferences::handle(ctx).update(ctx, |preferences, ctx| {
-            preferences.update_active_profile_base_model(id, Some(terminal_view_id), ctx)
+        // Mirror the GUI's model picker: set the pane-level Agent-Mode LLM
+        // override AND write byop_last_used_model_id. The active-model
+        // resolution (`get_preferred_base_model`) prioritizes the terminal
+        // override + last_used over the profile's base_model, so updating only
+        // the profile (the previous behavior via `update_active_profile_base_model`)
+        // was silently masked and the selection never took effect.
+        LLMPreferences::handle(ctx).update(ctx, |preferences, ctx| {
+            preferences.update_preferred_agent_mode_llm(id, terminal_view_id, ctx);
         });
-        if !persisted {
-            self.show_transient_hint(MODEL_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
-            return;
-        }
         self.model_menu.update(ctx, |menu, ctx| menu.dismiss(ctx));
     }
     fn handle_accepted_mcp_action(&mut self, action: TuiMcpAction, ctx: &mut ViewContext<Self>) {
