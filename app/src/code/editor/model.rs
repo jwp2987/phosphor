@@ -4072,6 +4072,14 @@ impl CoreEditorModel for CodeEditorModel {
         self.hidden_lines.update(ctx, |hidden_lines_model, ctx| {
             hidden_lines_model.materialize_hidden_range_offsets(buffer_version, ctx);
         });
+        // In TUI char-cell mode the async font-shaping pipeline is bypassed entirely (the
+        // LayoutAction::BufferEdit arm is a no-op for CharCell). Refresh the char-cell line
+        // index synchronously here so cursor positioning and, crucially, the display lattice
+        // see up-to-date text in the same frame — without this, typed text never renders.
+        if let Some(char_cell) = self.render_state.as_ref(ctx).char_cell() {
+            let text = self.content.as_ref(ctx).text().into_string();
+            char_cell.update_text(&text);
+        }
     }
 
     fn content(&self) -> &ModelHandle<Buffer> {

@@ -356,6 +356,10 @@ impl TuiEditorElement {
         }
         let render_state = self.model.as_ref(app).render_state().clone();
         let render_state = render_state.as_ref(app);
+        // Flush queued buffer edits into the char-cell index at layout time, exactly
+        // like the GUI editor element (render/element/mod.rs). Without this, lazy
+        // layout leaves the char-cell text index empty and typed text never renders.
+        render_state.try_layout_pending_edits(app);
         let Some(char_cell) = render_state.char_cell() else {
             self.column = TuiFlex::column();
             return;

@@ -256,13 +256,16 @@ impl<T: Entity> WeakViewHandle<T> {
     pub fn upgrade(&self, app: &AppContext) -> Option<ViewHandle<T>> {
         // Look up the current window for this view
         let window_id = app.view_to_window.get(&self.view_id).copied()?;
+        let window = app.windows.get(&window_id)?;
 
-        if app
-            .windows
-            .get(&window_id)
-            .and_then(|w| w.views.get(&self.view_id))
-            .is_some()
-        {
+        // GUI views live in `views`; Zap TUI views live in `tui_views`. Checking only
+        // `views` makes weak handles to TUI views fail to upgrade, which silently
+        // drops event-subscription callbacks that guard on `emitter.upgrade(app)`.
+        let exists = window.views.contains_key(&self.view_id);
+        #[cfg(feature = "tui")]
+        let exists = exists || window.tui_views.contains_key(&self.view_id);
+
+        if exists {
             Some(ViewHandle::new(window_id, self.view_id, &app.ref_counts))
         } else {
             None

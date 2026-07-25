@@ -1233,7 +1233,7 @@ impl AppContext {
         V: TypedActionView + Entity,
     {
         let handler = Box::new(
-            |view: &mut dyn AnyView,
+            |view: &mut dyn Any,
              action: &dyn Any,
              app: &mut AppContext,
              window_id: WindowId,
@@ -1248,7 +1248,6 @@ impl AppContext {
                     .downcast_ref()
                     .expect("Handlers are hashed by action type");
                 let view = view
-                    .as_any_mut()
                     .downcast_mut()
                     .expect("Handlers are hashed by view type");
                 let mut ctx = ViewContext::new(app, window_id, view_id);
@@ -1291,7 +1290,7 @@ impl AppContext {
         let name = name.into();
         let name_clone = name.clone();
         let handler = Box::new(
-            move |view: &mut dyn AnyView,
+            move |view: &mut dyn Any,
                   arg: &dyn Any,
                   app: &mut AppContext,
                   window_id: WindowId,
@@ -1300,9 +1299,7 @@ impl AppContext {
                     Some(arg) => {
                         let mut ctx = ViewContext::new(app, window_id, view_id);
                         handler(
-                            view.as_any_mut()
-                                .downcast_mut()
-                                .expect("downcast is type safe"),
+                            view.downcast_mut().expect("downcast is type safe"),
                             arg,
                             &mut ctx,
                         )
@@ -1416,10 +1413,12 @@ impl AppContext {
         view_id: EntityId,
         action: &dyn Action,
     ) {
-        if let Some(presenter) = self.presenter(window_id) {
-            let responder_chain = presenter.borrow().ancestors(view_id);
-            self.dispatch_typed_action(window_id, &responder_chain, action, log::Level::Info);
-        }
+        let responder_chain = match self.presenter(window_id) {
+            Some(presenter) => presenter.borrow().ancestors(view_id),
+            // TUI path: no GUI presenter; use the `view_parents` hierarchy.
+            None => self.view_ancestors(window_id, view_id),
+        };
+        self.dispatch_typed_action(window_id, &responder_chain, action, log::Level::Info);
     }
 
     pub fn dispatch_action(
@@ -1437,12 +1436,31 @@ impl AppContext {
         let mut dispatched_actions = HashSet::<String>::new();
 
         for view_id in responder_chain.iter().rev() {
-            if let Some(mut view) = self
+            // GUI view (`views`); fall back to Zap TUI view (`tui_views`). The
+            // action-handler invocation is identical — only the view's home map and
+            // the `&mut dyn Any` it hands the handler differ.
+            let mut view_any: Option<&mut dyn Any> = None;
+            let mut gui_view = self
                 .windows
                 .get_mut(&window_id)
-                .and_then(|w| w.views.remove(view_id))
-            {
-                let type_id = view.as_any().type_id();
+                .and_then(|w| w.views.remove(view_id));
+            #[cfg(feature = "tui")]
+            let mut tui_view = if gui_view.is_none() {
+                self.windows
+                    .get_mut(&window_id)
+                    .and_then(|w| w.tui_views.remove(view_id))
+            } else {
+                None
+            };
+            if let Some(view) = gui_view.as_mut() {
+                view_any = Some(view.as_any_mut());
+            }
+            #[cfg(feature = "tui")]
+            if let Some(view) = tui_view.as_mut() {
+                view_any = Some(view.as_any_mut());
+            }
+            if let Some(view_any) = view_any {
+                let type_id = (*view_any).type_id();
 
                 if let Some((name, mut handlers)) = self
                     .actions
@@ -1453,7 +1471,7 @@ impl AppContext {
                     // child view determined it should be propagated to the parent view.
                     if !dispatched_actions.contains(name.as_str()) {
                         for handler in handlers.iter_mut().rev() {
-                            let handled = handler(view.as_mut(), arg, self, window_id, *view_id);
+                            let handled = handler(view_any, arg, self, window_id, *view_id);
                             any_action_handled |= handled;
                             if handled {
                                 dispatched_actions.insert(name.clone());
@@ -1467,9 +1485,15 @@ impl AppContext {
                         .unwrap()
                         .insert(name, handlers);
                 }
+            }
 
-                if let Some(window) = self.windows.get_mut(&window_id) {
+            if let Some(window) = self.windows.get_mut(&window_id) {
+                if let Some(view) = gui_view {
                     window.views.insert(*view_id, view);
+                }
+                #[cfg(feature = "tui")]
+                if let Some(view) = tui_view {
+                    window.tui_views.insert(*view_id, view);
                 }
             }
         }
@@ -1516,31 +1540,46 @@ impl AppContext {
         // We stop on the first View that handles the action, we explicitly do not propagate to
         // parent views
         let handled = responder_chain.iter().rev().any(|view_id| {
-            let mut view = match self
+            // GUI view (`views`).
+            if let Some(mut view) = self
                 .windows
                 .get_mut(&window_id)
                 .and_then(|w| w.views.remove(view_id))
             {
-                Some(view) => view,
-                None => return false,
-            };
-
-            // Check to see if we have a handler for this action on the view
-            let view_type = ViewType(view.as_any().type_id());
-            let found = match handlers.get_mut(&view_type) {
-                Some(handler) => {
-                    handler(view.as_mut(), action.as_any(), self, window_id, *view_id);
-                    true
+                let view_type = ViewType(view.as_any().type_id());
+                let found = match handlers.get_mut(&view_type) {
+                    Some(handler) => {
+                        handler(view.as_any_mut(), action.as_any(), self, window_id, *view_id);
+                        true
+                    }
+                    None => false,
+                };
+                if let Some(window) = self.windows.get_mut(&window_id) {
+                    window.views.insert(*view_id, view);
                 }
-                None => false,
-            };
-
-            // Reinsert the view before moving on to the next link in the responder chain
-            if let Some(window) = self.windows.get_mut(&window_id) {
-                window.views.insert(*view_id, view);
+                return found;
             }
-
-            found
+            // Zap TUI view (`tui_views`).
+            #[cfg(feature = "tui")]
+            if let Some(mut view) = self
+                .windows
+                .get_mut(&window_id)
+                .and_then(|w| w.tui_views.remove(view_id))
+            {
+                let view_type = ViewType(view.as_any().type_id());
+                let found = match handlers.get_mut(&view_type) {
+                    Some(handler) => {
+                        handler(view.as_any_mut(), action.as_any(), self, window_id, *view_id);
+                        true
+                    }
+                    None => false,
+                };
+                if let Some(window) = self.windows.get_mut(&window_id) {
+                    window.tui_views.insert(*view_id, view);
+                }
+                return found;
+            }
+            false
         });
 
         // Reinsert the action handlers for this action type
@@ -1865,22 +1904,44 @@ impl AppContext {
     ) -> Result<Vec<Context>> {
         let mut context_chain = Vec::new();
         for view_id in responder_chain {
-            if let Some(view) = self
+            // GUI view (`views`); fall back to Zap TUI view (`tui_views`). Without the
+            // TUI fallback this errors for TUI responder chains, so no keybinding
+            // (submit/escape/arrows/…) ever matches.
+            let mut context = if let Some(view) = self
                 .windows
                 .get(&window_id)
                 .and_then(|w| w.views.get(view_id))
             {
-                let mut context = view.keymap_context(self);
-                if self.platform_delegate.is_ime_open() {
-                    context.set.insert("IMEOpen");
-                }
-                context_chain.push(context);
+                view.keymap_context(self)
             } else {
-                return Err(anyhow!(
-                    "View {} in responder chain does not exist",
-                    view_id
-                ));
+                #[cfg(feature = "tui")]
+                {
+                    match self
+                        .windows
+                        .get(&window_id)
+                        .and_then(|w| w.tui_views.get(view_id))
+                    {
+                        Some(view) => view.keymap_context(self),
+                        None => {
+                            return Err(anyhow!(
+                                "View {} in responder chain does not exist",
+                                view_id
+                            ));
+                        }
+                    }
+                }
+                #[cfg(not(feature = "tui"))]
+                {
+                    return Err(anyhow!(
+                        "View {} in responder chain does not exist",
+                        view_id
+                    ));
+                }
+            };
+            if self.platform_delegate.is_ime_open() {
+                context.set.insert("IMEOpen");
             }
+            context_chain.push(context);
         }
         Ok(context_chain)
     }
@@ -1936,11 +1997,13 @@ impl AppContext {
 
     pub(crate) fn get_responder_chain(&self, window_id: WindowId) -> Vec<EntityId> {
         if let Some(focused) = self.focused_view_id(window_id) {
-            match self.presenter(window_id) { Some(presenter) => {
-                presenter.borrow().ancestors(focused)
-            } _ => {
-                vec![]
-            }}
+            match self.presenter(window_id) {
+                Some(presenter) => presenter.borrow().ancestors(focused),
+                // TUI windows have no GUI presenter; their view hierarchy lives in
+                // `view_parents`. Without this the responder chain is empty and no
+                // keystroke/typed-action reaches the focused TUI view.
+                None => self.view_ancestors(window_id, focused),
+            }
         } else if let Some(root) = self.root_view_id(window_id) {
             vec![root]
         } else {
@@ -3786,11 +3849,11 @@ impl AppContext {
                             .get(view_id)
                             .copied()
                             .unwrap_or(*stored_window_id);
-                        match self
+                        if let Some(mut view) = self
                             .windows
                             .get_mut(&current_window_id)
                             .and_then(|window| window.views.remove(view_id))
-                        { Some(mut view) => {
+                        {
                             callback(
                                 view.as_any_mut(),
                                 payload.as_ref(),
@@ -3809,9 +3872,39 @@ impl AppContext {
                             } else {
                                 false
                             }
-                        } _ => {
-                            false
-                        }}
+                        } else {
+                            // Zap TUI view subscriber (lives in `tui_views`). Without this
+                            // branch the callback never fires and the subscription is dropped,
+                            // so e.g. an editor's `ContentChanged` never re-renders the view.
+                            #[cfg(feature = "tui")]
+                            {
+                                if let Some(mut view) = self
+                                    .windows
+                                    .get_mut(&current_window_id)
+                                    .and_then(|window| window.tui_views.remove(view_id))
+                                {
+                                    callback(
+                                        view.as_any_mut(),
+                                        payload.as_ref(),
+                                        self,
+                                        current_window_id,
+                                        *view_id,
+                                    );
+                                    if let Some(window) = self.windows.get_mut(&current_window_id) {
+                                        window.tui_views.insert(*view_id, view);
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            }
+                            #[cfg(not(feature = "tui"))]
+                            {
+                                false
+                            }
+                        }
                     }
                     Subscription::FromApp { callback } => {
                         callback(payload.as_ref(), self, entity_id);
@@ -3928,38 +4021,61 @@ impl AppContext {
         }
         self.pending_flushes += 1;
 
-        if let Some((blurred_id, mut blurred)) = self.windows.get_mut(&window_id).and_then(|w| {
-            let blurred_view = w.focused_view;
+        // Update the focused view and capture the previously-focused id. Done
+        // unconditionally so focus tracking stays correct even when the previously
+        // focused view is a Zap TUI view (stored in `tui_views`, not `views`).
+        let blurred_id = self.windows.get_mut(&window_id).and_then(|w| {
+            let prev = w.focused_view;
             w.focused_view = Some(focused_id);
-            blurred_view.and_then(|id| w.views.remove(&id).map(|view| (id, view)))
-        }) {
-            blurred.on_blur(&BlurContext::SelfBlurred, self, window_id, blurred_id);
-            self.windows
+            prev
+        });
+        if let Some(blurred_id) = blurred_id {
+            if let Some(mut blurred) = self
+                .windows
                 .get_mut(&window_id)
-                .unwrap()
-                .views
-                .insert(blurred_id, blurred);
+                .and_then(|w| w.views.remove(&blurred_id))
+            {
+                blurred.on_blur(&BlurContext::SelfBlurred, self, window_id, blurred_id);
+                self.windows
+                    .get_mut(&window_id)
+                    .unwrap()
+                    .views
+                    .insert(blurred_id, blurred);
 
-            if let Some(presenter) = self.presenter(window_id) {
-                let blur_ctx = BlurContext::DescendentBlurred(blurred_id);
-                // Skip the last entry, it is the blurred view itself.
-                for view_id in presenter
-                    .borrow()
-                    .ancestors(blurred_id)
-                    .into_iter()
-                    .rev()
-                    .skip(1)
-                {
-                    if let Some(mut view) = self
-                        .windows
-                        .get_mut(&window_id)
-                        .and_then(|w| w.views.remove(&view_id))
+                if let Some(presenter) = self.presenter(window_id) {
+                    let blur_ctx = BlurContext::DescendentBlurred(blurred_id);
+                    // Skip the last entry, it is the blurred view itself.
+                    for view_id in presenter
+                        .borrow()
+                        .ancestors(blurred_id)
+                        .into_iter()
+                        .rev()
+                        .skip(1)
                     {
-                        view.on_blur(&blur_ctx, self, window_id, view_id);
-                        self.windows
+                        if let Some(mut view) = self
+                            .windows
                             .get_mut(&window_id)
-                            .and_then(|w| w.views.insert(view_id, view));
+                            .and_then(|w| w.views.remove(&view_id))
+                        {
+                            view.on_blur(&blur_ctx, self, window_id, view_id);
+                            self.windows
+                                .get_mut(&window_id)
+                                .and_then(|w| w.views.insert(view_id, view));
+                        }
                     }
+                }
+            } else {
+                // The blurred view is a TUI view (in `tui_views`).
+                #[cfg(feature = "tui")]
+                if let Some(mut blurred) = self
+                    .windows
+                    .get_mut(&window_id)
+                    .and_then(|w| w.tui_views.remove(&blurred_id))
+                {
+                    blurred.on_blur(&BlurContext::SelfBlurred, self, window_id, blurred_id);
+                    self.windows
+                        .get_mut(&window_id)
+                        .and_then(|w| w.tui_views.insert(blurred_id, blurred));
                 }
             }
         }
@@ -4004,6 +4120,21 @@ impl AppContext {
                             .and_then(|w| w.views.insert(view_id, view));
                     }
                 }
+            }
+        } else {
+            // The newly focused view is a Zap TUI view (in `tui_views`). Without
+            // this branch `on_focus` is never delivered, so the view's `focused`
+            // flag stays false and it ignores keyboard input / paints no cursor.
+            #[cfg(feature = "tui")]
+            if let Some(mut focused) = self
+                .windows
+                .get_mut(&window_id)
+                .and_then(|w| w.tui_views.remove(&focused_id))
+            {
+                focused.on_focus(&FocusContext::SelfFocused, self, window_id, focused_id);
+                self.windows
+                    .get_mut(&window_id)
+                    .and_then(|w| w.tui_views.insert(focused_id, focused));
             }
         }
 
