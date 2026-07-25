@@ -89,6 +89,9 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
         warpui_extras::secure_storage::register_noop("test", ctx);
     });
     app.update(AISettings::register_and_subscribe_to_events);
+    // Registers all `define_settings_group!` settings (TuiAutoupdate/Input/Code/Font/…),
+    // read across the session-view subtree and by `TuiAutoupdater::register`.
+    app.update(crate::settings::register_all_settings);
     app.add_singleton_model(ApiKeyManager::new);
 
     app.add_singleton_model(|_| NetworkStatus::new());
@@ -99,8 +102,11 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
     app.add_singleton_model(|_| crate::appearance::Appearance::mock());
 
     app.add_singleton_model(|_| TemplatableMCPServerManager::default());
+    app.add_singleton_model(crate::ai::agent_providers::AgentProviderSecrets::new);
     app.add_singleton_model(LLMPreferences::new);
     app.add_singleton_model(BlocklistAIPermissions::new);
+    // Registered before AIExecutionProfilesModel, whose `new` reads this singleton.
+    app.add_singleton_model(crate::cloud_object::model::persistence::ObjectStoreModel::mock);
     app.add_singleton_model(|ctx| {
         AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
     });

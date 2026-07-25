@@ -5,7 +5,7 @@ use std::sync::Arc;
 use parking_lot::FairMutex;
 use warp::tui_export::{
     ActiveSession, Appearance, BlocklistAIActionModel, BlocklistAIHistoryModel,
-    ConversationSelection, ConversationSelectionHandle,
+    ConversationSelection, ConversationSelectionHandle, IgnoredSuggestionsModel,
     ModelEventDispatcher, Sessions, TerminalManagerTrait, TerminalModel, TerminalSurfaceInit,
     AgentViewState,
 };
@@ -56,9 +56,11 @@ impl TuiView for TestHostView {
 impl TypedActionView for TestHostView {
     type Action = ();
 }
-/// Registers semantic-selection settings shared by selectable TUI test views.
+/// Registers the singletons the editor-backed TUI views read during render:
+/// semantic-selection settings and the ignored-suggestions model.
 pub(crate) fn add_test_semantic_selection(ctx: &mut impl AddSingletonModel) {
     ctx.add_singleton_model(|_| SemanticSelection::mock(true, ""));
+    ctx.add_singleton_model(|_| IgnoredSuggestionsModel::new(Vec::new()));
 }
 
 pub(crate) fn add_test_conversation_selection(ctx: &mut AppContext) -> ConversationSelectionHandle {

@@ -11,6 +11,8 @@
 
 // Test-only helpers for the `warp_tui` test suite (BYOP-adapted; cloud singletons dropped).
 #[cfg(any(test, feature = "test-util"))]
+pub use crate::suggestions::ignored_suggestions_model::IgnoredSuggestionsModel;
+#[cfg(any(test, feature = "test-util"))]
 pub use crate::tui_test_support::{
     blocklist_ai_history_model_with_queries, queue_tui_permission_action,
     register_tui_session_view_test_singletons,

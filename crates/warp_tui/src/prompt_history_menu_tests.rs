@@ -26,6 +26,7 @@ fn setup(
     ModelHandle<TuiPromptHistoryMenuModel>,
 ) {
     ctx.add_singleton_model(|_| Appearance::mock());
+    ctx.add_singleton_model(|_| warp::tui_export::IgnoredSuggestionsModel::new(Vec::new()));
     ctx.add_singleton_model(|_| {
         blocklist_ai_history_model_with_queries(
             prompts.iter().map(|prompt| (*prompt).to_owned()).collect(),
