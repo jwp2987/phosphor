@@ -2302,17 +2302,16 @@ fn test_unified_new_session_menu_uses_new_worktree_config_label_and_order() {
 
             assert!(!labels.iter().any(|label| label == "Worktree in"));
 
-            let separator_index = labels
+            // "New worktree config" is immediately followed by "New tab config"
+            // (see the documented order on unified_new_session_menu_items). Anchor
+            // on the worktree-config item itself — the menu has several separators
+            // and Agent / coding-agent items come after the first one.
+            let worktree_index = labels
                 .iter()
-                .position(|label| label == "---")
-                .expect("expected a separator in the new-session menu");
-
+                .position(|label| label == "New worktree config")
+                .expect("expected New worktree config in the new-session menu");
             assert_eq!(
-                labels.get(separator_index + 1),
-                Some(&"New worktree config".to_string())
-            );
-            assert_eq!(
-                labels.get(separator_index + 2),
+                labels.get(worktree_index + 1),
                 Some(&"New tab config".to_string())
             );
         });

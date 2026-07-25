@@ -659,6 +659,7 @@ fn test_shared_team_object() {
 }
 
 #[test]
+#[ignore = "team-owned cloud objects: UserWorkspaces::current_team() is stubbed None in the BYOP fork (no cloud teams), so a team object resolves to Shared, not Team"]
 fn test_unshared_team_object() {
     let _guard = FeatureFlag::SharedWithMe.override_enabled(true);
     App::test((), |mut app| async move {

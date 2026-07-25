@@ -120,25 +120,27 @@ fn test_retry_menu_item_visibility() {
         // by default, it doesn't show up
         index.update(&mut app, |index, ctx| {
             let menu_items = index.menu_items(&Space::Personal, &warp_drive_item_id, ctx);
+            // Zap Phase 2a removed the "Share" menu item (cloud sharing dropped).
             assert_eq!(menu_items.len(), 5);
             assert_eq!(label_for_menu_item(&menu_items[0]), "Edit");
             assert_eq!(label_for_menu_item(&menu_items[1]), "Copy workflow text");
-            assert_eq!(label_for_menu_item(&menu_items[2]), "Share");
-            assert_eq!(label_for_menu_item(&menu_items[3]), "Duplicate");
-            assert_eq!(label_for_menu_item(&menu_items[4]), "Export");
+            assert_eq!(label_for_menu_item(&menu_items[2]), "Duplicate");
+            assert_eq!(label_for_menu_item(&menu_items[3]), "Export");
+            assert_eq!(label_for_menu_item(&menu_items[4]), "Trash");
         });
 
         // when the object is in error, it should show up
         set_object_in_error(&mut app, &object_type_and_id);
         index.update(&mut app, |index, ctx| {
             let menu_items = index.menu_items(&Space::Personal, &warp_drive_item_id, ctx);
+            // Zap Phase 2a removed the "Share" menu item (cloud sharing dropped).
             assert_eq!(menu_items.len(), 6);
             assert_eq!(label_for_menu_item(&menu_items[0]), "Retry");
             assert_eq!(label_for_menu_item(&menu_items[1]), "Edit");
             assert_eq!(label_for_menu_item(&menu_items[2]), "Copy workflow text");
-            assert_eq!(label_for_menu_item(&menu_items[3]), "Share");
-            assert_eq!(label_for_menu_item(&menu_items[4]), "Duplicate");
-            assert_eq!(label_for_menu_item(&menu_items[5]), "Export");
+            assert_eq!(label_for_menu_item(&menu_items[3]), "Duplicate");
+            assert_eq!(label_for_menu_item(&menu_items[4]), "Export");
+            assert_eq!(label_for_menu_item(&menu_items[5]), "Trash");
         });
 
         // but if we're offline, it shouldn't show up
@@ -147,12 +149,13 @@ fn test_retry_menu_item_visibility() {
         });
         index.update(&mut app, |index, ctx| {
             let menu_items = index.menu_items(&Space::Personal, &warp_drive_item_id, ctx);
+            // Retry is gone (offline); Share was removed in Zap Phase 2a.
             assert_eq!(menu_items.len(), 5);
             assert_eq!(label_for_menu_item(&menu_items[0]), "Edit");
             assert_eq!(label_for_menu_item(&menu_items[1]), "Copy workflow text");
-            assert_eq!(label_for_menu_item(&menu_items[2]), "Share");
-            assert_eq!(label_for_menu_item(&menu_items[3]), "Duplicate");
-            assert_eq!(label_for_menu_item(&menu_items[4]), "Export");
+            assert_eq!(label_for_menu_item(&menu_items[2]), "Duplicate");
+            assert_eq!(label_for_menu_item(&menu_items[3]), "Export");
+            assert_eq!(label_for_menu_item(&menu_items[4]), "Trash");
         });
     })
 }
