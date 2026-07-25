@@ -167,6 +167,9 @@ const SWITCH_LOADING_HINT: &str = "Another conversation is already loading.";
 const SWITCH_UNAVAILABLE_HINT: &str = "That conversation is no longer available.";
 const LOADING_CONVERSATION_HINT: &str = "Loading conversation…";
 const COMPACT_AND_REQUIRES_CONVERSATION_HINT: &str = "/compact-and requires an active conversation";
+const QUEUE_REQUIRES_CONVERSATION_HINT: &str = "/queue requires an active conversation";
+const QUEUE_REQUIRES_PROMPT_HINT: &str = "/queue requires a prompt argument";
+const QUEUE_QUEUED_HINT: &str = "Queued — will send when the current turn finishes";
 
 /// Footer label shown while the input is in `!` shell mode. The how-to-exit
 /// guidance lives in the input's placeholder ghost text, so the footer only
@@ -339,11 +342,15 @@ pub(crate) enum TuiConversationRestoreTarget {
     Server(ServerConversationToken),
 }
 
-/// A follow-up prompt queued by `/compact-and`: after triggering a summarize,
-/// the follow-up is held until that conversation's summarize turn finishes, then
-/// submitted (mirrors the GUI's `send_user_query_after_next_conversation_finished`
-/// callback). `seen_in_progress` guards against firing on the pre-summarize idle
-/// state — we only send once the turn has actually started and then completed.
+/// A prompt held to be submitted after a conversation's current turn finishes.
+/// Used by `/compact-and` (after the summarize turn) and `/queue` (after the
+/// in-flight turn). Mirrors the GUI's
+/// `send_user_query_after_next_conversation_finished` callback.
+///
+/// `seen_in_progress` gates the send on having actually observed the turn
+/// running: `/compact-and` arms it `false` and waits for the summarize turn it
+/// just triggered to start; `/queue` arms it `true` because the target turn is
+/// already in progress.
 #[derive(Clone, Debug)]
 struct TuiQueuedFollowUp {
     conversation_id: AIConversationId,
@@ -3027,6 +3034,49 @@ impl TuiTerminalSessionView {
                 );
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
+            SlashCommandKind::Queue => {
+                // `/queue <prompt>`: if the conversation is mid-turn, hold <prompt>
+                // and send it after that turn finishes; otherwise send it now.
+                // Mirrors the GUI's /queue (input/slash_commands/mod.rs). The GUI
+                // also renders an interactive pending block with a "Send now"
+                // button; the TUI conveys the same intent with a transient hint.
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                let Some(conversation_id) = self
+                    .conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+                else {
+                    self.show_transient_hint(QUEUE_REQUIRES_CONVERSATION_HINT.to_owned(), ctx);
+                    return;
+                };
+                let prompt = argument
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|prompt| !prompt.is_empty());
+                let Some(prompt) = prompt else {
+                    self.show_transient_hint(QUEUE_REQUIRES_PROMPT_HINT.to_owned(), ctx);
+                    return;
+                };
+                let is_in_progress = BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&conversation_id)
+                    .is_some_and(|conversation| {
+                        let status = conversation.status();
+                        status.is_in_progress() || status.is_blocked()
+                    });
+                if is_in_progress {
+                    // Target turn is already running, so arm `seen_in_progress`
+                    // true — the next terminal status triggers the send.
+                    self.queued_follow_up = Some(TuiQueuedFollowUp {
+                        conversation_id,
+                        prompt: prompt.to_owned(),
+                        seen_in_progress: true,
+                    });
+                    self.show_success_hint(QUEUE_QUEUED_HINT.to_owned(), ctx);
+                } else {
+                    self.send_prompt(prompt.to_owned(), ctx);
+                }
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
             SlashCommandKind::EnableNaturalLanguageDetection => {
                 self.set_nld_enabled(true, command.name, ctx);
             }
@@ -3059,7 +3109,6 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::Harness
             | SlashCommandKind::Environment
             | SlashCommandKind::Orchestrate
-            | SlashCommandKind::Queue
             | SlashCommandKind::ForkAndCompact
             | SlashCommandKind::ForkFrom
             | SlashCommandKind::ContinueLocally

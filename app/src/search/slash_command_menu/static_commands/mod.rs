@@ -254,6 +254,7 @@ impl StaticCommand {
                 | "/prompts"
                 | "/compact"
                 | "/compact-and"
+                | "/queue"
                 | "/conversations"
                 | "/export-to-clipboard"
                 | "/export-to-file"
