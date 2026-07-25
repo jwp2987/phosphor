@@ -2886,7 +2886,12 @@ impl TuiTerminalSessionView {
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
-            SlashCommandKind::Compact | SlashCommandKind::Plan => {
+            SlashCommandKind::Compact | SlashCommandKind::Plan | SlashCommandKind::Init => {
+                // These are handled server-side by `SlashCommandRequest::from_query`:
+                // sending the literal command (plus any argument) as a user query lets
+                // the BYOP controller intercept and expand it (`/compact` → summarize,
+                // `/init` → render the init-project prompt). Mirrors the GUI, which
+                // routes the same text through the same `from_query` path.
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
                 let command_name = command.name;
                 let prompt = argument
@@ -2922,7 +2927,6 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::MoveToCloud
             | SlashCommandKind::OpenCodeReview
             | SlashCommandKind::Index
-            | SlashCommandKind::Init
             | SlashCommandKind::OpenProjectRules
             | SlashCommandKind::OpenMcpServers
             | SlashCommandKind::OpenSettingsFile

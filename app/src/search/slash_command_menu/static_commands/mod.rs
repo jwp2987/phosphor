@@ -248,6 +248,7 @@ impl StaticCommand {
                 | "/create-new-project"
                 | "/skills"
                 | "/new"
+                | "/init"
                 | "/model"
                 | "/profile"
                 | "/prompts"
