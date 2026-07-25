@@ -166,6 +166,7 @@ const SWITCH_CONVERSATION_RUNNING_HINT: &str =
 const SWITCH_LOADING_HINT: &str = "Another conversation is already loading.";
 const SWITCH_UNAVAILABLE_HINT: &str = "That conversation is no longer available.";
 const LOADING_CONVERSATION_HINT: &str = "Loading conversation…";
+const COMPACT_AND_REQUIRES_CONVERSATION_HINT: &str = "/compact-and requires an active conversation";
 
 /// Footer label shown while the input is in `!` shell mode. The how-to-exit
 /// guidance lives in the input's placeholder ghost text, so the footer only
@@ -338,6 +339,18 @@ pub(crate) enum TuiConversationRestoreTarget {
     Server(ServerConversationToken),
 }
 
+/// A follow-up prompt queued by `/compact-and`: after triggering a summarize,
+/// the follow-up is held until that conversation's summarize turn finishes, then
+/// submitted (mirrors the GUI's `send_user_query_after_next_conversation_finished`
+/// callback). `seen_in_progress` guards against firing on the pre-summarize idle
+/// state — we only send once the turn has actually started and then completed.
+#[derive(Clone, Debug)]
+struct TuiQueuedFollowUp {
+    conversation_id: AIConversationId,
+    prompt: String,
+    seen_in_progress: bool,
+}
+
 #[derive(Default)]
 enum ConversationRestoreState {
     #[default]
@@ -404,6 +417,10 @@ pub(crate) struct TuiTerminalSessionView {
     completions_menu: ModelHandle<TuiCompletionsMenuModel>,
     profile_menu: ModelHandle<TuiProfileMenuModel>,
     prompts_menu: ModelHandle<TuiPromptsMenuModel>,
+    /// A follow-up prompt queued by `/compact-and`, submitted once the
+    /// summarize exchange on its conversation completes. See
+    /// [`Self::maybe_send_queued_follow_up`].
+    queued_follow_up: Option<TuiQueuedFollowUp>,
     /// In-flight Tab-completion fetch from the shared completer engine.
     completions_fetch: Option<SpawnedFutureHandle>,
     skills_menu: ModelHandle<TuiSkillMenuModel>,
@@ -1349,6 +1366,7 @@ impl TuiTerminalSessionView {
             completions_menu,
             profile_menu,
             prompts_menu,
+            queued_follow_up: None,
             completions_fetch: None,
             skills_menu,
             mcp_menu,
@@ -1751,12 +1769,25 @@ impl TuiTerminalSessionView {
             self.refresh_exit_summary(ctx);
         }
         match event {
+            BlocklistAIHistoryEvent::UpdatedConversationStatus {
+                conversation_id, ..
+            } => {
+                self.maybe_send_queued_follow_up(*conversation_id, ctx);
+            }
             BlocklistAIHistoryEvent::RemoveConversation {
                 conversation_id, ..
             }
             | BlocklistAIHistoryEvent::DeletedConversation {
                 conversation_id, ..
             } => {
+                // Drop a queued /compact-and follow-up if its conversation is gone.
+                if self
+                    .queued_follow_up
+                    .as_ref()
+                    .is_some_and(|f| f.conversation_id == *conversation_id)
+                {
+                    self.queued_follow_up = None;
+                }
                 self.cli_subagent_views
                     .retain(|_, view| view.as_ref(ctx).conversation_id() != *conversation_id);
             }
@@ -1765,6 +1796,60 @@ impl TuiTerminalSessionView {
             }
             _ => {}
         }
+    }
+
+    /// Drives the `/compact-and` follow-up state machine on each conversation
+    /// status change. Once the summarize turn has been observed running
+    /// (`seen_in_progress`), the next terminal status submits the follow-up on
+    /// success, or restores it to the input on error/cancel so it isn't lost.
+    fn maybe_send_queued_follow_up(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(follow_up) = self.queued_follow_up.as_ref() else {
+            return;
+        };
+        if follow_up.conversation_id != conversation_id {
+            return;
+        }
+        let Some(status) = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .map(|conversation| conversation.status().clone())
+        else {
+            return;
+        };
+        if status.is_in_progress() || status.is_blocked() {
+            // The summarize turn (or a blocked action within it) is running.
+            if let Some(follow_up) = self.queued_follow_up.as_mut() {
+                follow_up.seen_in_progress = true;
+            }
+            return;
+        }
+        // Terminal status. Ignore the pre-summarize idle state we may see before
+        // the turn starts; only fire once we've actually observed it in progress.
+        if !follow_up.seen_in_progress {
+            return;
+        }
+        let follow_up = self.queued_follow_up.take().expect("checked above");
+        if status.is_error() || status.is_cancelled() {
+            // Don't lose the prompt: drop it back into the input for the user,
+            // but never clobber whatever they may have started typing.
+            let input_is_empty = self.input_view.as_ref(ctx).is_empty(ctx);
+            if input_is_empty {
+                self.input_view.update(ctx, |input, ctx| {
+                    input.set_text(&follow_up.prompt, ctx);
+                });
+            }
+            return;
+        }
+        // We're inside a BlocklistAIHistoryModel event dispatch; `send_prompt`
+        // updates that same model, so defer it to the next tick to avoid a
+        // reentrant update.
+        let prompt = follow_up.prompt;
+        ctx.spawn(Timer::after(Duration::ZERO), move |view, _, ctx| {
+            view.send_prompt(prompt, ctx);
+        });
     }
 
     fn show_auto_approve_feedback(&mut self, ctx: &mut ViewContext<Self>) {
@@ -2906,6 +2991,42 @@ impl TuiTerminalSessionView {
                 self.send_prompt(prompt, ctx);
                 record_static_slash_command_accepted(command_name, true, ctx);
             }
+            SlashCommandKind::CompactAnd => {
+                // `/compact-and <prompt>`: summarize the conversation, then send
+                // <prompt> once the summarize turn finishes. Mirrors the GUI's
+                // `summarize_active_ai_conversation(prompt: None, initial_prompt)`.
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                let Some(conversation_id) = self
+                    .conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+                else {
+                    self.show_transient_hint(
+                        COMPACT_AND_REQUIRES_CONVERSATION_HINT.to_owned(),
+                        ctx,
+                    );
+                    return;
+                };
+                // Arm the follow-up before triggering the summarize so the turn's
+                // InProgress transition is observed (see maybe_send_queued_follow_up).
+                let follow_up = argument
+                    .map(String::as_str)
+                    .map(str::trim)
+                    .filter(|prompt| !prompt.is_empty());
+                self.queued_follow_up = follow_up.map(|prompt| TuiQueuedFollowUp {
+                    conversation_id,
+                    prompt: prompt.to_owned(),
+                    seen_in_progress: false,
+                });
+                // A bare "/compact" routes through SlashCommandRequest::from_query
+                // to a summarize with no custom instruction (prompt: None), exactly
+                // the summarize half of the GUI's /compact-and.
+                self.send_prompt(
+                    warp::tui_export::slash_commands::COMPACT.name.to_owned(),
+                    ctx,
+                );
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
             SlashCommandKind::EnableNaturalLanguageDetection => {
                 self.set_nld_enabled(true, command.name, ctx);
             }
@@ -2938,7 +3059,6 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::Harness
             | SlashCommandKind::Environment
             | SlashCommandKind::Orchestrate
-            | SlashCommandKind::CompactAnd
             | SlashCommandKind::Queue
             | SlashCommandKind::ForkAndCompact
             | SlashCommandKind::ForkFrom

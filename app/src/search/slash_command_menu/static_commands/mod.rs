@@ -253,6 +253,7 @@ impl StaticCommand {
                 | "/profile"
                 | "/prompts"
                 | "/compact"
+                | "/compact-and"
                 | "/conversations"
                 | "/export-to-clipboard"
                 | "/export-to-file"
