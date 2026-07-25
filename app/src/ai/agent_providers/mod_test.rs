@@ -32,6 +32,18 @@ fn init_byop_test_app(app: &mut warpui::App) {
     app.add_singleton_model(AuthManager::new_for_test);
     app.add_singleton_model(UserWorkspaces::default_mock);
     app.add_singleton_model(LLMPreferences::new);
+    // AIExecutionProfilesModel::new reads ObjectStoreModel + the templatable MCP
+    // manager, so register those first.
+    app.add_singleton_model(crate::cloud_object::model::persistence::ObjectStoreModel::mock);
+    app.add_singleton_model(|_| {
+        crate::ai::mcp::templatable_manager::TemplatableMCPServerManager::default()
+    });
+    app.add_singleton_model(|ctx| {
+        crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::new(
+            &crate::LaunchMode::new_for_unit_test(),
+            ctx,
+        )
+    });
 }
 
 #[test]

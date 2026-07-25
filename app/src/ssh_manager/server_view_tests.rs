@@ -269,6 +269,9 @@ fn selecting_onekey_dropdown_item_does_not_rebuild_dropdown_while_it_is_borrowed
         initialize_settings_for_tests(&mut app);
         app.add_singleton_model(|_| Appearance::mock());
         app.add_singleton_model(|_| SshTreeChangedNotifier::new());
+        app.add_singleton_model(|_| {
+            crate::settings_view::keybindings::KeybindingChangedNotifier::new()
+        });
 
         let (window_id, view) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
             let mut view = SshServerView::new("server-1".to_string(), ctx);

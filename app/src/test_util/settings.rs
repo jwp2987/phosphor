@@ -38,6 +38,13 @@ pub fn initialize_settings_for_tests_with_mode(
         workspace::tab_settings::TabSettings,
     };
     use warp_core::{execution_mode::AppExecutionMode, semantic_selection::SemanticSelection};
+
+    // Load the i18n bundle so tests that assert on displayed text see resolved
+    // English strings, not raw fluent keys. `init` is a global OnceLock, so pin
+    // English here for determinism; `fallback_chain_works` uses a local loader to
+    // avoid poisoning this shared global.
+    crate::i18n::init(Some("en"));
+
     app.add_singleton_model(|ctx| AppExecutionMode::new(mode, is_sandboxed, ctx));
 
     app.update(init_and_register_user_preferences);

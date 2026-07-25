@@ -956,6 +956,7 @@ fn test_close_pane_confirmation_dialog() {
 }
 
 #[test]
+#[ignore = "shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_reopen_closed_shared_tab() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
@@ -1376,6 +1377,7 @@ fn test_open_or_toggle_warp_drive() {
 }
 
 #[test]
+#[ignore = "shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_view_only_session() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);

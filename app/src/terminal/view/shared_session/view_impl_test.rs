@@ -15,6 +15,7 @@ use crate::test_util::terminal::initialize_app_for_terminal_view;
 use super::*;
 
 #[test]
+#[ignore = "shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_prompt_context_menu_items_shared_session_viewer_no_edit_prompt() {
     App::test((), |mut app| async move {
         let terminal = terminal_view_for_viewer(&mut app);
@@ -201,6 +202,7 @@ fn test_shared_session_banners() {
 }
 
 #[test]
+#[ignore = "shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_resize_shared_session_viewer_from_server() {
     App::test((), |mut app| async move {
         let terminal = terminal_view_for_viewer(&mut app);
@@ -271,6 +273,7 @@ fn test_resize_shared_session_viewer_from_server() {
 }
 
 #[test]
+#[ignore = "shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_resize_shared_session_viewer_independent_of_sharer() {
     App::test((), |mut app| async move {
         let terminal = terminal_view_for_viewer(&mut app);
@@ -385,6 +388,7 @@ fn test_on_session_share_ended_restores_size_after_viewer_driven_resize() {
 }
 
 #[test]
+#[ignore = "shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_on_session_share_ended_inserts_tombstone_for_ambient_session_under_ambient_agent_setup_v2()
 {
     App::test((), |mut app| async move {
@@ -410,6 +414,7 @@ fn test_on_session_share_ended_inserts_tombstone_for_ambient_session_under_ambie
 }
 
 #[test]
+#[ignore = "shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_on_session_share_ended_does_not_insert_tombstone_for_non_ambient_session_under_ambient_agent_setup_v2(
 ) {
     App::test((), |mut app| async move {

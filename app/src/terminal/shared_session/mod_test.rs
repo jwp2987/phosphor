@@ -20,6 +20,7 @@ use warpui::units::Lines;
 pub const MAX_BYTES_SHAREABLE: usize = 5000;
 
 #[test]
+#[ignore = "shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn maybe_rewrite_web_url_to_shared_session_intent_rewrites_matching_web_url() {
     let web_url = Url::parse(
         "warp://shared_session/00000000-0000-0000-0000-000000000000?pwd=secret&preview=true",

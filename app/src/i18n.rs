@@ -270,11 +270,19 @@ mod tests {
 
     #[test]
     fn fallback_chain_works() {
-        init(Some("zh-CN"));
-        let loader = loader().unwrap();
-        // common-ok 中文已译
+        // Build a LOCAL loader instead of `init()`'s global `OnceLock`: this test
+        // selects a non-default locale (zh-CN), and going through the global would
+        // poison the process-wide loader that every other test shares (and would
+        // itself be order-dependent on whoever initialized the global first).
+        let loader = fluent_language_loader!();
+        loader
+            .load_fallback_language(&Localizations)
+            .expect("load fallback (en) bundle");
+        i18n_embed::select(&loader, &Localizations, &["zh-CN".parse().unwrap()])
+            .expect("select zh-CN");
+        // common-ok is translated in Chinese.
         assert_eq!(loader.get("common-ok"), "确定");
-        // 不存在的 key — fluent 会返回 key 本身或带 marker 的字符串
+        // A missing key: fluent returns the key itself or a marked string.
         let missing = loader.get("definitely-does-not-exist");
         assert!(missing.contains("definitely-does-not-exist"));
     }
