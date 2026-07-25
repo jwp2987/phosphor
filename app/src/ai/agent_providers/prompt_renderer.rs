@@ -1404,23 +1404,25 @@ mod tests {
 
     #[test]
     fn seed_dir_omits_non_overridable_prompts() {
-        // active_ai/* 和 tasks/compaction_* 改了不生效,导出反而误导。
+        // tasks/compaction_* is in neither EMBEDDED nor EMBEDDED_RAW: editing it
+        // has no effect, so exporting it would be misleading. (active_ai/* IS
+        // exported now — it moved into EMBEDDED to be overridable + hot-reloaded.)
         let tmp = tempfile::tempdir().unwrap();
         seed_dir(tmp.path()).unwrap();
 
-        assert!(!tmp.path().join("active_ai").exists(), "active_ai 不该导出");
         assert!(!tmp.path().join("tasks/compaction_system.j2").exists());
-        // 但可覆盖的 tasks/title_system.md 要在
+        // But the overridable tasks/title_system.md must be present.
         assert!(tmp.path().join("tasks/title_system.md").is_file());
     }
 
     #[test]
     fn embedded_table_covers_every_template_file() {
-        // 防回归:有人往 prompts/ 加了模板但忘了登记进 EMBEDDED,
-        // 会同时丢掉热加载覆盖能力和 include 解析。
+        // Regression guard: if someone adds a template under prompts/ but forgets
+        // to register it in EMBEDDED, it loses both hot-reload override and include
+        // resolution.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ai/agent_providers/prompts");
         let mut on_disk = Vec::new();
-        for sub in ["partials", "commands", "system"] {
+        for sub in ["partials", "commands", "system", "active_ai"] {
             for entry in std::fs::read_dir(root.join(sub)).unwrap() {
                 let entry = entry.unwrap();
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -1436,7 +1438,7 @@ mod tests {
 
         assert_eq!(
             on_disk, registered,
-            "prompts/ 下的 .j2 与 EMBEDDED 名字表不一致"
+            "prompts/ .j2 files and the EMBEDDED name table disagree"
         );
     }
 
