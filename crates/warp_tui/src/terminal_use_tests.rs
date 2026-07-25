@@ -337,6 +337,6 @@ fn completed_user_controlled_requested_command_resumes_unless_tearing_down() {
     model
         .block_list_mut()
         .active_block_mut()
-        .set_user_control_for_teardown();
+        .set_user_control_with_stop_reason();
     assert_eq!(terminal_use_conversation_to_resume(&model, &block_id), None);
 }

@@ -1097,3 +1097,33 @@ impl EventLoopSender for mio_channel::Sender<Message> {
         })
     }
 }
+
+impl TerminalSurfaceInit {
+    /// Creates mock terminal surface inputs without spawning a PTY.
+    ///
+    /// Ported from Warp OSS (`terminal_manager.rs`) for the `warp_tui` test suite;
+    /// gated on `test-util` so it never enters the shipping build.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new_for_test(ctx: &mut AppContext) -> Self {
+        let (_wakeups_tx, wakeups_rx) = async_channel::unbounded();
+        let (_events_tx, events_rx) = async_channel::unbounded();
+        let (pty_reads_tx, pty_reads_rx) =
+            async_broadcast::broadcast(PTY_READS_BROADCAST_CHANNEL_SIZE);
+        drop(pty_reads_tx);
+        let sessions = ctx.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            ctx.add_model(|ctx| ModelEventDispatcher::new(events_rx, sessions.clone(), ctx));
+        let model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        let colors = model.lock().colors();
+        let size_info = model.lock().block_list().size().to_owned();
+        Self {
+            wakeups_rx,
+            model_events,
+            model,
+            sessions,
+            size_info,
+            colors,
+            inactive_pty_reads_rx: pty_reads_rx.deactivate(),
+        }
+    }
+}

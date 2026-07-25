@@ -56,7 +56,11 @@ fn agent_block_renders_generic_failure_after_partial_output() {
                 inputs: vec![query_input("hello")],
                 status: failed_output(
                     vec![plain_text_message("message-1", "partial response")],
-                    RenderableAIError::other("backend failed", false),
+                    RenderableAIError::Other {
+                        error_message: "backend failed".to_owned(),
+                        will_attempt_resume: false,
+                        waiting_for_network: false,
+                    },
                 ),
             },
         );
@@ -143,7 +147,6 @@ fn agent_block_suppresses_recovery_pending_failure() {
                         error_message: "temporary failure".to_owned(),
                         will_attempt_resume: true,
                         waiting_for_network: false,
-                        is_user_error: false,
                     },
                 ),
             },
@@ -314,14 +317,16 @@ fn out_of_credits_failure_uses_shared_copy_warning_style_and_tui_actions() {
 
 #[test]
 fn failed_output_usage_notice_matches_gui_conditions() {
-    let error = RenderableAIError::other("failed", false);
+    let error = RenderableAIError::Other {
+        error_message: "failed".to_owned(),
+        will_attempt_resume: false,
+        waiting_for_network: false,
+    };
     assert!(should_show_failed_output_usage_notice(
         &error, true, false, false
     ));
     assert!(should_show_failed_output_usage_notice(
-        &RenderableAIError::QuotaLimit {
-            user_display_message: Some("You've reached your credit limit.".to_owned()),
-        },
+        &RenderableAIError::QuotaLimit,
         true,
         false,
         false,
@@ -643,7 +648,7 @@ fn tool_call_row_glyph_and_colors_reflect_state() {
 
             // Succeeded: green check in the gutter, normal-foreground label.
             let action = test_action("action-1");
-            let succeeded = finished_status(&action, AIAgentActionResultType::InitProject);
+            let succeeded = finished_status(&action, AIAgentActionResultType::OpenCodeReview);
             let frame = render(&action, Some(&succeeded));
             assert_eq!(
                 frame.buffer.to_lines()[0].trim_end(),
@@ -2055,7 +2060,7 @@ fn test_action(id: &str) -> AIAgentAction {
     AIAgentAction {
         id: AIAgentActionId::from(id.to_owned()),
         task_id: TaskId::new("task-1".to_owned()),
-        action: AIAgentActionType::InitProject,
+        action: AIAgentActionType::OpenCodeReview,
         requires_result: true,
     }
 }

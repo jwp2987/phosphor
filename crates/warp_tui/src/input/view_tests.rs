@@ -2113,7 +2113,6 @@ fn autodetected_unlocked_shell_uses_shell_mode_ui() {
                         is_locked: false,
                     },
                     false,
-                    None,
                     ctx,
                 );
             });

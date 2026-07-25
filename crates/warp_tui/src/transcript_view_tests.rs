@@ -6,7 +6,7 @@ use warp::tui_export::{
     AIAgentExchangeId, AIAgentInput, AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType,
     AIAgentText, AIAgentTextSection, AIAgentTodo, AIBlockModel, AIBlockOutputStatus,
     AIConversationId, AIRequestType, Appearance, BlockHeightItem, BlocklistAIHistoryEvent,
-    ConversationStatus, ConversationStatusUpdate, LLMId, MessageId, OutputStatusUpdateCallback,
+    LLMId, MessageId, OutputStatusUpdateCallback,
     RichContentItem, RichContentType, ServerOutputId, Shared, TerminalModel, TodoOperation,
     UserQueryMode,
 };
@@ -357,7 +357,7 @@ fn todo_and_conversation_status_events_dirty_affected_agent_blocks() {
         transcript.update(&mut app, |view, ctx| {
             view.handle_history_event(
                 &BlocklistAIHistoryEvent::UpdatedTodoList {
-                    terminal_surface_id,
+                    terminal_view_id: terminal_surface_id,
                 },
                 ctx,
             );
@@ -372,11 +372,8 @@ fn todo_and_conversation_status_events_dirty_affected_agent_blocks() {
             view.handle_history_event(
                 &BlocklistAIHistoryEvent::UpdatedConversationStatus {
                     conversation_id: first_conversation_id,
-                    terminal_surface_id,
-                    update: ConversationStatusUpdate::Changed {
-                        prev_status: ConversationStatus::InProgress,
-                    },
-                    new_status: ConversationStatus::Success,
+                    terminal_view_id: terminal_surface_id,
+                    is_restored: false,
                 },
                 ctx,
             );
@@ -391,11 +388,8 @@ fn todo_and_conversation_status_events_dirty_affected_agent_blocks() {
             view.handle_history_event(
                 &BlocklistAIHistoryEvent::UpdatedConversationStatus {
                     conversation_id: second_conversation_id,
-                    terminal_surface_id,
-                    update: ConversationStatusUpdate::Changed {
-                        prev_status: ConversationStatus::InProgress,
-                    },
-                    new_status: ConversationStatus::Success,
+                    terminal_view_id: terminal_surface_id,
+                    is_restored: false,
                 },
                 ctx,
             );

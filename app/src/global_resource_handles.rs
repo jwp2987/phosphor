@@ -52,7 +52,7 @@ pub struct GlobalResourceHandles {
 }
 
 impl GlobalResourceHandles {
-    #[cfg(any(test, feature = "integration_tests"))]
+    #[cfg(any(test, feature = "integration_tests", feature = "test-util"))]
     pub fn mock(app: &mut warpui::App) -> Self {
         let user_default_shell_unsupported_banner_model_handle =
             app.add_model(|_| BannerState::default());

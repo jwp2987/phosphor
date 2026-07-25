@@ -136,6 +136,11 @@ pub mod terminal;
 // specs/warp-oss-sync/SCOPE.md.
 #[cfg(feature = "tui")]
 pub mod tui_export;
+// Test-only app initialization used by the external `warp_tui` crate's test suite.
+// Gated on `test-util` so it only compiles into dev/test builds (never the GUI or
+// the shipping TUI binary). See specs/warp-oss-sync/SCOPE.md.
+#[cfg(all(feature = "tui", any(test, feature = "test-util")))]
+pub mod tui_test_support;
 // App-side support for the headless warp_tui front-end (BYOP login model, etc.).
 #[cfg(feature = "tui")]
 pub mod tui;
@@ -535,7 +540,7 @@ impl LaunchMode {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn new_for_unit_test() -> Self {
         LaunchMode::Test {
             driver: Box::new(None),

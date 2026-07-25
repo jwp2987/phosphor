@@ -874,6 +874,19 @@ impl BlocklistAIActionModel {
         })
     }
 
+    /// Test-only: queues a single action through the normal dispatch pipeline so
+    /// confirmation-requiring actions surface as a pending permission prompt.
+    /// Exposed for the `warp_tui` test suite via `tui_test_support`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn queue_action_for_test(
+        &mut self,
+        action: AIAgentAction,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.queue_actions(vec![action], conversation_id, ctx);
+    }
+
     /// Queues the `actions` in the given iterator for the given conversation,
     /// to be dispatched in the order in which they appear in the iterator.
     pub(super) fn queue_actions(

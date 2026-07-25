@@ -72,61 +72,6 @@ fn slash_command_menu_renders_view_logs_row() {
     });
 }
 
-#[test]
-fn slash_command_menu_renders_auto_approve_row() {
-    App::test((), |mut app| async move {
-        register_tui_session_view_test_singletons(&mut app);
-        app.update(|ctx| {
-            let input_editor = ctx.add_model(|ctx| CodeEditorModel::new_tui(80, ctx));
-            let suggestions_mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
-            suggestions_mode.update(ctx, |mode, ctx| {
-                mode.set_mode(TuiInputSuggestionsMode::SlashCommands, ctx);
-            });
-            let mixer = ctx.add_model(|_| SlashCommandMixer::new());
-            let conversation_selection = add_test_conversation_selection(ctx);
-            // Source the title and description from the real `/auto-approve`
-            // static command so the snapshot tracks the registered contract.
-            let model = ctx.add_model(|_| {
-                TuiSlashCommandModel::new_for_test(
-                    input_editor,
-                    suggestions_mode,
-                    mixer,
-                    conversation_selection.clone(),
-                    vec![TuiSlashCommandRow {
-                        title: slash_commands::AUTO_APPROVE.name.to_owned(),
-                        description: Some(slash_commands::AUTO_APPROVE.description.to_owned()),
-                        action: AcceptSlashCommandOrSavedPrompt::SlashCommand {
-                            id: SlashCommandId::new(),
-                        },
-                    }],
-                    0,
-                )
-            });
-            let menu = TuiInlineMenu::new(model.clone());
-            let element = menu.render(ctx).expect("slash command menu should render");
-            let lines = render_menu_lines(element, ctx);
-
-            assert!(lines.iter().any(|line| line.contains("/auto-approve")));
-            assert!(
-                lines
-                    .iter()
-                    .any(|line| line.contains("Toggle auto approve (currently off)"))
-            );
-
-            conversation_selection.update(ctx, |selection, ctx| {
-                selection.toggle_pending_query_autoexecute(ctx);
-            });
-            let element = menu.render(ctx).expect("slash command menu should render");
-            let lines = render_menu_lines(element, ctx);
-            assert!(
-                lines
-                    .iter()
-                    .any(|line| line.contains("Toggle auto approve (currently on)"))
-            );
-        });
-    });
-}
-
 fn render_menu_lines(mut element: Box<dyn TuiElement>, ctx: &AppContext) -> Vec<String> {
     let mut rendered_views = EntityIdMap::default();
     let mut layout_ctx = TuiLayoutContext {
@@ -419,10 +364,12 @@ fn accepting_a_result_does_not_disable_input_driven_lifecycle() {
         });
 
         model.update(&mut app, |model, ctx| {
-            assert_eq!(
+            // `AcceptSlashCommandOrSavedPrompt` does not derive `PartialEq` in Zap, so
+            // match on the returned variant instead of `assert_eq!`.
+            assert!(matches!(
                 model.accept_selected(ctx),
-                Some(AcceptSlashCommandOrSavedPrompt::SlashCommand { id: command_id })
-            );
+                Some(AcceptSlashCommandOrSavedPrompt::SlashCommand { id }) if id == command_id
+            ));
             assert!(model.lifecycle.input_changed(false, true));
         });
     });

@@ -1,0 +1,128 @@
+//! Test-only app initialization used by the external `warp_tui` crate.
+//!
+//! Zap-adapted port of upstream warp's `tui_test_support`: the cloud/orchestration
+//! singletons (telemetry, `ServerApiProvider`, `AuthManager` cloud state,
+//! `CloudModel`, harness/self-hosted-worker/orchestration models, codebase index)
+//! are dropped because Zap is BYOP and has no cloud agent. The BYOP-relevant
+//! singletons the TUI session view subtree constructs are kept, using Zap's
+//! constructors. See specs/warp-oss-sync/SCOPE.md.
+
+use ai::api_keys::ApiKeyManager;
+use chrono::{Duration, Local};
+use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
+use warpui::ModelContext;
+
+use crate::LaunchMode;
+use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::agent::{AIAgentAction, AIAgentExchangeId};
+use crate::ai::agent_conversations_model::AgentConversationsModel;
+use crate::ai::blocklist::history_model::AIQueryHistoryOutputStatus;
+use crate::ai::blocklist::persistence::{PersistedAIInput, PersistedAIInputType};
+use crate::ai::blocklist::{
+    BlocklistAIActionModel, BlocklistAIHistoryModel, BlocklistAIPermissions,
+};
+use crate::ai::document::ai_document_model::AIDocumentModel;
+use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
+use crate::ai::llms::{LLMId, LLMPreferences};
+use crate::ai::mcp::TemplatableMCPServerManager;
+use crate::ai::skills::SkillManager;
+use crate::auth::{AuthManager, AuthStateProvider};
+use crate::network::NetworkStatus;
+use crate::settings::manager::SettingsManager;
+use crate::settings::{AISettings, PrivacySettings, init_and_register_user_preferences};
+use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
+use crate::user_config::WarpConfig;
+use crate::workspaces::user_workspaces::UserWorkspaces;
+
+/// Builds a history model with persisted AI queries for TUI tests.
+pub fn blocklist_ai_history_model_with_queries(queries: Vec<String>) -> BlocklistAIHistoryModel {
+    let start_time = Local::now();
+    let persisted_queries = queries
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| PersistedAIInput {
+            exchange_id: AIAgentExchangeId::new(),
+            conversation_id: AIConversationId::new(),
+            start_ts: start_time + Duration::milliseconds(index as i64),
+            inputs: vec![PersistedAIInputType::Query {
+                text,
+                context: Default::default(),
+                referenced_attachments: Default::default(),
+            }],
+            output_status: AIQueryHistoryOutputStatus::Completed,
+            working_directory: None,
+            model_id: LLMId::from("test-model"),
+            coding_model_id: LLMId::from("test-model"),
+        })
+        .collect();
+
+    // Zap's `new` takes `(persisted_queries, multi_agent_conversations)` (no cloud
+    // sync-state arg that upstream passes as `Vec::new()`).
+    BlocklistAIHistoryModel::new(persisted_queries, &[])
+}
+
+/// Queues an action as the active confirmation request for a TUI view test.
+///
+/// Zap has no `queue_confirmation_action`; the equivalent is `queue_actions`,
+/// which runs the preprocess→dispatch pipeline and leaves confirmation-requiring
+/// actions in a pending-confirmation state. Exposed for tests via
+/// [`BlocklistAIActionModel::queue_action_for_test`].
+pub fn queue_tui_permission_action(
+    action_model: &mut BlocklistAIActionModel,
+    action: AIAgentAction,
+    conversation_id: AIConversationId,
+    ctx: &mut ModelContext<BlocklistAIActionModel>,
+) {
+    action_model.queue_action_for_test(action, conversation_id, ctx);
+}
+
+/// Registers the app models required to construct full TUI session views in tests.
+///
+/// Registration order mirrors model subscription dependencies. Cloud/orchestration
+/// singletons present upstream are dropped (Zap is BYOP).
+pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
+    app.add_singleton_model(|ctx| AppExecutionMode::new(ExecutionMode::App, false, ctx));
+    app.update(init_and_register_user_preferences);
+    app.add_singleton_model(|_| SettingsManager::default());
+    app.add_singleton_model(WarpConfig::mock);
+    app.update(|ctx| {
+        warpui_extras::secure_storage::register_noop("test", ctx);
+    });
+    app.update(AISettings::register_and_subscribe_to_events);
+    app.add_singleton_model(ApiKeyManager::new);
+
+    app.add_singleton_model(|_| NetworkStatus::new());
+    app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+    app.add_singleton_model(AuthManager::new_for_test);
+    app.add_singleton_model(PrivacySettings::mock);
+    app.add_singleton_model(|ctx| UserWorkspaces::mock(vec![], ctx));
+    app.add_singleton_model(|_| crate::appearance::Appearance::mock());
+
+    app.add_singleton_model(|_| TemplatableMCPServerManager::default());
+    app.add_singleton_model(LLMPreferences::new);
+    app.add_singleton_model(BlocklistAIPermissions::new);
+    app.add_singleton_model(|ctx| {
+        AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+    });
+    app.add_singleton_model(|_| AIDocumentModel::new_for_test());
+
+    app.add_singleton_model(|_| BlocklistAIHistoryModel::default());
+    app.add_singleton_model(|_| CLIAgentSessionsModel::new());
+    app.add_singleton_model(AgentConversationsModel::new);
+    let global_resources = crate::GlobalResourceHandles::mock(app);
+    app.add_singleton_model(move |_| {
+        crate::GlobalResourceHandlesProvider::new(global_resources.clone())
+    });
+
+    app.add_singleton_model(crate::tui::TuiMcpManager::new_for_test);
+    app.add_singleton_model(|_| ::ai::project_context::model::ProjectContextModel::default());
+
+    app.add_singleton_model(|_| repo_metadata::repositories::DetectedRepositories::default());
+    app.add_singleton_model(watcher::HomeDirectoryWatcher::new_for_test);
+    app.add_singleton_model(repo_metadata::watcher::DirectoryWatcher::new);
+    #[cfg(feature = "local_fs")]
+    app.add_singleton_model(repo_metadata::RepoMetadataModel::new);
+    app.add_singleton_model(crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing);
+    app.add_singleton_model(crate::workflows::local_workflows::LocalWorkflows::new);
+    app.add_singleton_model(SkillManager::new);
+}

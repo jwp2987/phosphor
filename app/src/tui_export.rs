@@ -9,6 +9,13 @@
 //! those non-cloud gaps are to be built/ported and re-added here — not left out
 //! permanently. See specs/warp-oss-sync/SCOPE.md.
 
+// Test-only helpers for the `warp_tui` test suite (BYOP-adapted; cloud singletons dropped).
+#[cfg(any(test, feature = "test-util"))]
+pub use crate::tui_test_support::{
+    blocklist_ai_history_model_with_queries, queue_tui_permission_action,
+    register_tui_session_view_test_singletons,
+};
+
 pub use ::ai::agent::action::{AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType};
 pub use ::ai::agent::action_result::AskUserQuestionAnswerItem;
 pub use ::ai::agent::ask_user_question_session::{

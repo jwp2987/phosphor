@@ -7,7 +7,7 @@ fn dispatches_worker_invocation_instead_of_tui_frontend() {
         std::env::temp_dir().join(format!("warp-tui-worker-dispatch-{}", std::process::id()));
     std::fs::write(&empty_file, []).expect("failed to create empty worker-dispatch fixture");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_warp-tui-oss"))
+    let output = Command::new(env!("CARGO_BIN_EXE_zap-tui-oss"))
         .arg("ripgrep-search")
         .arg("__warp_tui_worker_dispatch_probe__")
         .arg(&empty_file)

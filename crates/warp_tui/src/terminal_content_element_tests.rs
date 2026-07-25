@@ -140,13 +140,17 @@ fn input_matching_model() -> Arc<FairMutex<TerminalModel>> {
         None,
         None,
         None,
+        false,
         None,
     )
-    .merge_from_bootstrapped_value(ansi::BootstrappedValue {
-        shell: "bash".into(),
-        shell_version: Some("3.2".into()),
-        ..Default::default()
-    });
+    .merge_from_bootstrapped_value(
+        ansi::BootstrappedValue {
+            shell: "bash".into(),
+            shell_version: Some("3.2".into()),
+            ..Default::default()
+        },
+        false,
+    );
     model
         .block_list_mut()
         .early_output_mut()

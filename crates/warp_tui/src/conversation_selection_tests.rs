@@ -189,7 +189,11 @@ fn tui_selection_eagerly_owns_session_conversation() {
             );
         });
         assert_eq!(
-            terminal_model.lock().block_list().active_conversation_id(),
+            terminal_model
+                .lock()
+                .block_list()
+                .agent_view_state()
+                .active_conversation_id(),
             Some(conversation_id)
         );
         assert!(matches!(
@@ -236,7 +240,11 @@ fn tui_selection_eagerly_owns_session_conversation() {
             );
         });
         assert_eq!(
-            terminal_model.lock().block_list().active_conversation_id(),
+            terminal_model
+                .lock()
+                .block_list()
+                .agent_view_state()
+                .active_conversation_id(),
             Some(new_conversation_id)
         );
         assert!(matches!(
@@ -295,7 +303,7 @@ fn tui_selection_reconciles_split_and_removed_selection() {
         });
         history.update(&mut app, |_, ctx| {
             ctx.emit(BlocklistAIHistoryEvent::SplitConversation {
-                terminal_surface_id,
+                terminal_view_id: terminal_surface_id,
                 old_conversation_id,
                 new_conversation_id,
             });
@@ -328,9 +336,8 @@ fn tui_selection_reconciles_split_and_removed_selection() {
 
         history.update(&mut app, |_, ctx| {
             ctx.emit(BlocklistAIHistoryEvent::RemoveConversation {
-                terminal_surface_id,
+                terminal_view_id: terminal_surface_id,
                 conversation_id: new_conversation_id,
-                run_id: None,
             });
         });
         selection.read(&app, |selection, ctx| {
