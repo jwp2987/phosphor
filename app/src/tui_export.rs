@@ -102,7 +102,7 @@ pub use crate::ai::blocklist::block::model::{
 };
 pub use crate::ai::blocklist::history_model::{
     AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, LoadedConversationData,
-    FORK_PREFIX,
+    FORK_PREFIX, PRE_REWIND_PREFIX,
 };
 pub use crate::ai::blocklist::persistence::maybe_build_ai_query_upsert_event;
 pub use crate::ai::llms::{LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent};
@@ -375,6 +375,38 @@ pub fn tui_list_prompts(app: &warpui::AppContext) -> Vec<TuiPromptEntry> {
                 name: data.name().to_owned(),
                 content: data.content().to_owned(),
             }
+        })
+        .collect()
+}
+
+/// One user-query exchange for the TUI `/fork-from` and `/rewind` exchange
+/// pickers.
+pub struct TuiConversationExchange {
+    pub id: crate::ai::agent::AIAgentExchangeId,
+    /// The user's query text for this exchange, used as the picker row label.
+    pub query_text: String,
+}
+
+/// Lists the user-query exchanges of `conversation_id` in chronological order
+/// (oldest first), mirroring the GUI `UserQueryDataSource`. Only root-task
+/// exchanges that carry a user query are included. Empty if the conversation is
+/// not in memory.
+pub fn tui_list_conversation_exchanges(
+    app: &warpui::AppContext,
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) -> Vec<TuiConversationExchange> {
+    use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
+    use warpui::SingletonEntity as _;
+    let Some(conversation) = BlocklistAIHistoryModel::as_ref(app).conversation(&conversation_id)
+    else {
+        return Vec::new();
+    };
+    conversation
+        .root_task_exchanges()
+        .filter(|exchange| exchange.has_user_query())
+        .map(|exchange| TuiConversationExchange {
+            id: exchange.id,
+            query_text: exchange.format_input_for_copy(),
         })
         .collect()
 }

@@ -26,8 +26,8 @@ use std::rc::Rc;
 use string_offset::CharOffset;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
-    AcceptSlashCommandOrSavedPrompt, BlocklistAIInputModel, ClientProfileId, InputType, LLMId,
-    TuiMcpAction,
+    AIAgentExchangeId, AcceptSlashCommandOrSavedPrompt, BlocklistAIInputModel, ClientProfileId,
+    InputType, LLMId, TuiMcpAction,
 };
 use warp_editor::model::CoreEditorModel;
 use warpui_core::elements::MouseStateHandle;
@@ -45,6 +45,7 @@ use crate::editor_interaction::{
     apply_editor_action, follow_editor_cursor,
 };
 use crate::completions_menu::TuiAcceptedCompletion;
+use crate::exchange_menu::TuiExchangeMenuAction;
 use crate::inline_menu::{TuiInlineMenu, TuiInlineMenuAccepted, active_inline_menu};
 use crate::input_hints;
 use crate::input_mode_policy::{self, AI_LOCKED_CONFIG, SHELL_LOCKED_CONFIG};
@@ -134,6 +135,8 @@ pub enum TuiInputViewEvent {
     /// The user selected a saved prompt from the `/prompts` picker. Carries the
     /// prompt's query text to insert into the input.
     AcceptedPrompt(String),
+    /// The user selected an exchange from the `/fork-from` or `/rewind` picker.
+    AcceptedExchange(AIAgentExchangeId, TuiExchangeMenuAction),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -820,6 +823,9 @@ impl TuiInputView {
                         }
                         TuiInlineMenuAccepted::Prompt(text) => {
                             ctx.emit(TuiInputViewEvent::AcceptedPrompt(text));
+                        }
+                        TuiInlineMenuAccepted::Exchange(exchange_id, action) => {
+                            ctx.emit(TuiInputViewEvent::AcceptedExchange(exchange_id, action));
                         }
                     }
                 }

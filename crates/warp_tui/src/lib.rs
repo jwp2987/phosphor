@@ -28,6 +28,7 @@ mod conversation_selection;
 mod editor_element;
 mod editor_interaction;
 mod editor_view;
+mod exchange_menu;
 mod exit_confirmation;
 mod inline_menu;
 mod input_hints;

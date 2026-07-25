@@ -18,8 +18,8 @@ use warp::tui_export::{
     AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, BlockId,
     BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
-    CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, FORK_PREFIX, CancellationReason,
-    ChangelogModel,
+    CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, FORK_PREFIX, PRE_REWIND_PREFIX,
+    CancellationReason, ChangelogModel,
     ChangelogRequestType, LoadedConversationData, CommandExecutionSource, ConversationFileExport,
     ConversationSelection, ConversationSelectionHandle,
     ExecuteCommandEvent, GitRepoModels, GitRepoStatusModel,
@@ -85,6 +85,7 @@ use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
 use crate::completions_menu::{
     TuiAcceptedCompletion, TuiCompletionsMenuEvent, TuiCompletionsMenuModel,
 };
+use crate::exchange_menu::{TuiExchangeMenuAction, TuiExchangeMenuEvent, TuiExchangeMenuModel};
 use crate::profile_menu::{TuiProfileMenuEvent, TuiProfileMenuModel};
 use crate::prompts_menu::{TuiPromptsMenuEvent, TuiPromptsMenuModel};
 use crate::model_menu::{TuiModelMenuEvent, TuiModelMenuModel};
@@ -174,6 +175,12 @@ const QUEUE_QUEUED_HINT: &str = "Queued — will send when the current turn fini
 const FORK_REQUIRES_CONVERSATION_HINT: &str = "/fork requires an active conversation";
 const FORK_FAILED_HINT: &str = "Failed to fork the conversation";
 const FORKED_HINT: &str = "Forked conversation";
+const EXCHANGE_MENU_REQUIRES_CONVERSATION_HINT: &str = "No active conversation to choose from";
+const REWIND_FAILED_HINT: &str = "Failed to rewind the conversation";
+// The TUI has no per-block file-diff revert, so a rewind truncates the
+// conversation but leaves any file edits in place. A pre-rewind backup
+// conversation is saved so the full history can be recovered.
+const REWOUND_HINT: &str = "Rewound conversation (file changes not reverted)";
 
 /// Footer label shown while the input is in `!` shell mode. The how-to-exit
 /// guidance lives in the input's placeholder ghost text, so the footer only
@@ -450,6 +457,7 @@ pub(crate) struct TuiTerminalSessionView {
     completions_menu: ModelHandle<TuiCompletionsMenuModel>,
     profile_menu: ModelHandle<TuiProfileMenuModel>,
     prompts_menu: ModelHandle<TuiPromptsMenuModel>,
+    exchange_menu: ModelHandle<TuiExchangeMenuModel>,
     /// A follow-up prompt queued by `/compact-and`, submitted once the
     /// summarize exchange on its conversation completes. See
     /// [`Self::maybe_send_queued_follow_up`].
@@ -1084,6 +1092,12 @@ impl TuiTerminalSessionView {
         ctx.subscribe_to_model(&prompts_menu, |_, _, _: &TuiPromptsMenuEvent, ctx| {
             ctx.notify();
         });
+        let exchange_menu = ctx.add_model(|ctx| {
+            TuiExchangeMenuModel::new(input_editor_model.clone(), suggestions_mode.clone(), ctx)
+        });
+        ctx.subscribe_to_model(&exchange_menu, |_, _, _: &TuiExchangeMenuEvent, ctx| {
+            ctx.notify();
+        });
         // The footer's conversations callout depends on whether the input is
         // empty, so content changes must invalidate this parent view as well as
         // the input child. Typing after ctrl-c also disarms the pending exit
@@ -1136,6 +1150,7 @@ impl TuiTerminalSessionView {
             TuiInlineMenu::new(completions_menu.clone()),
             TuiInlineMenu::new(profile_menu.clone()),
             TuiInlineMenu::new(prompts_menu.clone()),
+            TuiInlineMenu::new(exchange_menu.clone()),
         ];
         let inline_menus_for_input = inline_menus.clone();
         let suggestions_mode_for_input = suggestions_mode.clone();
@@ -1235,6 +1250,9 @@ impl TuiTerminalSessionView {
             }
             TuiInputViewEvent::AcceptedPrompt(text) => {
                 view.handle_accepted_prompt(text.clone(), ctx);
+            }
+            TuiInputViewEvent::AcceptedExchange(exchange_id, action) => {
+                view.handle_accepted_exchange(*exchange_id, *action, ctx);
             }
             // No orchestration tab bar in Zap: nothing above the input to focus.
             TuiInputViewEvent::MoveFocusUp => {}
@@ -1399,6 +1417,7 @@ impl TuiTerminalSessionView {
             completions_menu,
             profile_menu,
             prompts_menu,
+            exchange_menu,
             queued_follow_up: None,
             completions_fetch: None,
             skills_menu,
@@ -2740,6 +2759,7 @@ impl TuiTerminalSessionView {
     /// present, is sent to the fork after switching.
     fn fork_current_conversation(
         &mut self,
+        fork_from_exchange: Option<AIAgentExchangeId>,
         post_fork: PostForkAction,
         ctx: &mut ViewContext<Self>,
     ) {
@@ -2777,10 +2797,18 @@ impl TuiTerminalSessionView {
             self.show_transient_hint(FORK_REQUIRES_CONVERSATION_HINT.to_owned(), ctx);
             return;
         };
-        // `fork_conversation` copies the tasks under a new conversation id and
-        // inserts the fork into the history model in memory.
-        let fork_result = BlocklistAIHistoryModel::handle(ctx)
-            .update(ctx, |history, ctx| history.fork_conversation(&source, FORK_PREFIX, ctx));
+        // `fork_conversation[_at_exchange]` copies the tasks under a new
+        // conversation id and inserts the fork into the history model in memory.
+        // `/fork-from` forks up to the chosen exchange (fork_from_exact_exchange
+        // = false extends through the selected response, matching the GUI).
+        let fork_result = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            match fork_from_exchange {
+                Some(exchange_id) => {
+                    history.fork_conversation_at_exchange(&source, exchange_id, false, FORK_PREFIX, ctx)
+                }
+                None => history.fork_conversation(&source, FORK_PREFIX, ctx),
+            }
+        });
         let forked = match fork_result {
             Ok(forked) => forked,
             Err(error) => {
@@ -2815,6 +2843,109 @@ impl TuiTerminalSessionView {
                 );
             }
         }
+    }
+
+    /// Opens the exchange picker for `/fork-from` or `/rewind` over the selected
+    /// conversation's user queries.
+    fn open_exchange_menu(
+        &mut self,
+        action: TuiExchangeMenuAction,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(conversation_id) = self
+            .conversation_selection
+            .as_ref(ctx)
+            .selected_conversation_id(ctx)
+        else {
+            self.show_transient_hint(EXCHANGE_MENU_REQUIRES_CONVERSATION_HINT.to_owned(), ctx);
+            return;
+        };
+        self.exchange_menu
+            .update(ctx, |menu, ctx| menu.open(action, conversation_id, ctx));
+    }
+
+    /// Routes an accepted exchange from the picker to the fork or rewind path.
+    fn handle_accepted_exchange(
+        &mut self,
+        exchange_id: AIAgentExchangeId,
+        action: TuiExchangeMenuAction,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.exchange_menu.update(ctx, |menu, ctx| menu.dismiss(ctx));
+        match action {
+            TuiExchangeMenuAction::ForkFrom => {
+                // Fork up to the chosen exchange; no initial prompt (matches the GUI).
+                self.fork_current_conversation(
+                    Some(exchange_id),
+                    PostForkAction::SendPrompt(None),
+                    ctx,
+                );
+            }
+            TuiExchangeMenuAction::Rewind => {
+                self.rewind_to_exchange(exchange_id, ctx);
+            }
+        }
+    }
+
+    /// Rewinds the selected conversation back to `exchange_id`: truncates the
+    /// conversation history at that point and re-renders the surface. A
+    /// pre-rewind backup conversation is saved first so nothing is lost.
+    ///
+    /// Unlike the GUI, the TUI has no per-block file-diff revert, so this does
+    /// NOT undo file edits the agent made after the rewind point — it rewinds
+    /// the conversation only (see [`REWOUND_HINT`]).
+    fn rewind_to_exchange(
+        &mut self,
+        exchange_id: AIAgentExchangeId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(conversation_id) = self
+            .conversation_selection
+            .as_ref(ctx)
+            .selected_conversation_id(ctx)
+        else {
+            self.show_transient_hint(EXCHANGE_MENU_REQUIRES_CONVERSATION_HINT.to_owned(), ctx);
+            return;
+        };
+        // Interrupt any in-progress turn on this conversation before truncating.
+        self.ai_controller.update(ctx, |controller, ctx| {
+            controller.cancel_conversation_progress(
+                conversation_id,
+                CancellationReason::Reverted,
+                ctx,
+            );
+        });
+        // Save a pre-rewind backup so the full history can be recovered later.
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            if let Some(conversation) = history.conversation(&conversation_id).cloned() {
+                if let Err(error) =
+                    history.fork_conversation(&conversation, PRE_REWIND_PREFIX, ctx)
+                {
+                    log::warn!("Failed to save pre-rewind backup of {conversation_id}: {error}");
+                }
+            }
+        });
+        // Truncate the conversation at the chosen exchange.
+        let truncate_result = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            history.truncate_conversation_from_exchange(conversation_id, exchange_id, ctx)
+        });
+        if let Err(error) = truncate_result {
+            log::warn!("Failed to truncate conversation {conversation_id} for rewind: {error}");
+            self.show_transient_hint(REWIND_FAILED_HINT.to_owned(), ctx);
+            return;
+        }
+        // Re-render the (now truncated) conversation on the surface.
+        let Some(truncated) = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .cloned()
+        else {
+            self.show_transient_hint(REWIND_FAILED_HINT.to_owned(), ctx);
+            return;
+        };
+        // `replace_conversation_surface` re-restores action results from the
+        // truncated exchanges, so no separate action-result cleanup is needed.
+        self.replace_conversation_surface(truncated, TuiConversationRestoreOrigin::Fork, ctx);
+        self.show_success_hint(REWOUND_HINT.to_owned(), ctx);
     }
 
     fn handle_accepted_model(&mut self, id: &LLMId, ctx: &mut ViewContext<Self>) {
@@ -3154,7 +3285,11 @@ impl TuiTerminalSessionView {
                 // /fork (input/slash_commands/mod.rs) with the single-surface
                 // CurrentPane destination.
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
-                self.fork_current_conversation(PostForkAction::SendPrompt(argument.cloned()), ctx);
+                self.fork_current_conversation(
+                    None,
+                    PostForkAction::SendPrompt(argument.cloned()),
+                    ctx,
+                );
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
             SlashCommandKind::ForkAndCompact => {
@@ -3163,9 +3298,24 @@ impl TuiTerminalSessionView {
                 // GUI's /fork-and-compact (fork with summarize_after_fork: true).
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
                 self.fork_current_conversation(
+                    None,
                     PostForkAction::CompactThenPrompt(argument.cloned()),
                     ctx,
                 );
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            SlashCommandKind::ForkFrom => {
+                // `/fork-from`: pick an earlier exchange to fork the conversation
+                // from. Opens the exchange picker; the fork happens on accept.
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                self.open_exchange_menu(TuiExchangeMenuAction::ForkFrom, ctx);
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            SlashCommandKind::Rewind => {
+                // `/rewind`: pick an earlier exchange to roll the conversation
+                // back to. Opens the exchange picker; the rewind happens on accept.
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                self.open_exchange_menu(TuiExchangeMenuAction::Rewind, ctx);
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
             SlashCommandKind::Queue => {
@@ -3242,11 +3392,9 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::Harness
             | SlashCommandKind::Environment
             | SlashCommandKind::Orchestrate
-            | SlashCommandKind::ForkFrom
             | SlashCommandKind::ContinueLocally
             | SlashCommandKind::Usage
             | SlashCommandKind::RemoteControl
-            | SlashCommandKind::Rewind
             // BYOP: Zap commands with no upstream kind (e.g. /pr-comments) are not
             // TUI-executable (`supports_tui()` gates them out before this match).
             | SlashCommandKind::Other => {

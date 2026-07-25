@@ -866,6 +866,7 @@ fn multiline_paste_emits_once_and_fallback_inserts_without_submitting() {
                 | TuiInputViewEvent::AcceptedCompletion(_)
                 | TuiInputViewEvent::AcceptedProfile(_)
                 | TuiInputViewEvent::AcceptedPrompt(_)
+                | TuiInputViewEvent::AcceptedExchange(..)
                 | TuiInputViewEvent::BackspaceAtEmptyInput
                 | TuiInputViewEvent::MoveFocusUp => {}
             });

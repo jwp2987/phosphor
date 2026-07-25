@@ -4,7 +4,8 @@ use std::rc::Rc;
 
 use string_offset::CharOffset;
 use warp::tui_export::{
-    AcceptSlashCommandOrSavedPrompt, AgentConversationEntryId, ClientProfileId, LLMId, TuiMcpAction,
+    AIAgentExchangeId, AcceptSlashCommandOrSavedPrompt, AgentConversationEntryId, ClientProfileId,
+    LLMId, TuiMcpAction,
 };
 use warp_search_core::inline_menu::{InlineMenuResultsUpdate, InlineMenuSelection};
 use warpui_core::elements::CrossAxisAlignment;
@@ -17,6 +18,7 @@ use warpui_core::{AppContext, ModelHandle};
 
 use crate::completions_menu::{TuiAcceptedCompletion, TuiCompletionsMenuModel};
 use crate::conversation_menu::TuiConversationMenuModel;
+use crate::exchange_menu::{TuiExchangeMenuAction, TuiExchangeMenuModel};
 use crate::input_suggestions_mode::TuiInputSuggestionsMode;
 use crate::mcp_menu::TuiMcpMenuModel;
 use crate::model_menu::TuiModelMenuModel;
@@ -283,6 +285,9 @@ pub(crate) enum TuiInlineMenuAccepted {
     Profile(ClientProfileId),
     /// The query text of a saved prompt accepted from the `/prompts` picker.
     Prompt(String),
+    /// An exchange accepted from the `/fork-from` or `/rewind` picker, with the
+    /// action the picker was opened for.
+    Exchange(AIAgentExchangeId, TuiExchangeMenuAction),
 }
 
 /// Type-erased operations shared by TUI inline-menu model handles.
@@ -593,6 +598,48 @@ impl TuiInlineMenuHandle for ModelHandle<TuiPromptsMenuModel> {
         self.as_ref(ctx)
             .accept_selected(ctx)
             .map(TuiInlineMenuAccepted::Prompt)
+    }
+
+    fn dismiss(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.dismiss(ctx));
+    }
+
+    fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
+        self.as_ref(ctx).snapshot(ctx)
+    }
+}
+
+impl TuiInlineMenuHandle for ModelHandle<TuiExchangeMenuModel> {
+    fn mode(&self) -> TuiInputSuggestionsMode {
+        TuiInputSuggestionsMode::ExchangeMenu
+    }
+    fn is_open(&self, ctx: &AppContext) -> bool {
+        self.as_ref(ctx).is_open(ctx)
+    }
+    // No `open`: the exchange picker is opened explicitly by the /fork-from and
+    // /rewind dispatch arms (with an action + conversation), not via the generic
+    // slash-menu auto-open path.
+
+    fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
+        None
+    }
+
+    fn input_argument_hint_text(&self, _ctx: &AppContext) -> Option<&'static str> {
+        None
+    }
+
+    fn select_previous(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_previous(ctx));
+    }
+
+    fn select_next(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_next(ctx));
+    }
+
+    fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        self.as_ref(ctx)
+            .accept_selected(ctx)
+            .map(|(exchange_id, action)| TuiInlineMenuAccepted::Exchange(exchange_id, action))
     }
 
     fn dismiss(&self, ctx: &mut AppContext) {

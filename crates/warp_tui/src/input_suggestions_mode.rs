@@ -24,6 +24,8 @@ pub(crate) enum TuiInputSuggestionsMode {
     ProfileSelector,
     /// Saved-prompt library picker (the `/prompts` menu).
     PromptsMenu,
+    /// Conversation user-query exchange picker (`/fork-from`, `/rewind`).
+    ExchangeMenu,
 }
 
 impl TuiInputSuggestionsMode {
@@ -84,7 +86,8 @@ impl TuiInputSuggestionsModeModel {
             | TuiInputSuggestionsMode::PromptHistory
             | TuiInputSuggestionsMode::Completions
             | TuiInputSuggestionsMode::ProfileSelector
-            | TuiInputSuggestionsMode::PromptsMenu => false,
+            | TuiInputSuggestionsMode::PromptsMenu
+            | TuiInputSuggestionsMode::ExchangeMenu => false,
         }
     }
 
