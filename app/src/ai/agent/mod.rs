@@ -660,19 +660,56 @@ impl RenderableAIError {
 
 impl From<&AIApiError> for RenderableAIError {
     fn from(value: &AIApiError) -> Self {
-        match value {
-            AIApiError::QuotaLimit => Self::QuotaLimit,
-            AIApiError::ServerOverloaded => Self::ServerOverloaded,
-            AIApiError::Other(error) => Self::Other {
-                error_message: error.to_string(),
-                will_attempt_resume: false,
-                waiting_for_network: false,
+        // BYOP talks directly to the user's own provider, so map the common
+        // failures (auth, unreachable provider, HTTP status, bad response) to
+        // actionable messages instead of a raw `{:?}` debug dump.
+        let error_message = match value {
+            AIApiError::QuotaLimit => return Self::QuotaLimit,
+            AIApiError::ServerOverloaded => return Self::ServerOverloaded,
+            // A non-2xx surfaced through reqwest keeps the status but not the body.
+            AIApiError::Transport(err) => match err.status() {
+                Some(status) if matches!(status.as_u16(), 401 | 403) => format!(
+                    "Your AI provider rejected the request as unauthorized (HTTP {}). Check that \
+                     the provider's API key is set and correct.",
+                    status.as_u16()
+                ),
+                Some(status) if status.as_u16() == 404 => format!(
+                    "Your AI provider returned HTTP 404 — the model id or base URL may be wrong.\n\n{err}"
+                ),
+                Some(status) => {
+                    format!("Your AI provider returned HTTP {}.\n\n{err}", status.as_u16())
+                }
+                None => format!(
+                    "Couldn't reach your AI provider. Check that it's running and its base URL is \
+                     correct.\n\n{err}"
+                ),
             },
-            _ => Self::Other {
-                error_message: format!("Request failed with error: {value:?}"),
-                will_attempt_resume: false,
-                waiting_for_network: false,
-            },
+            // A status error read with its response body (often the provider's
+            // own error text, e.g. "model 'x' not found").
+            AIApiError::ErrorStatus(status, body) if matches!(status.as_u16(), 401 | 403) => {
+                format!(
+                    "Your AI provider rejected the request as unauthorized (HTTP {}). Check that \
+                     the provider's API key is set and correct.\n\n{body}",
+                    status.as_u16()
+                )
+            }
+            AIApiError::ErrorStatus(status, body) => {
+                format!("Your AI provider returned HTTP {}.\n\n{body}", status.as_u16())
+            }
+            AIApiError::Deserialization(err) => {
+                format!("Zap couldn't parse the response from your AI provider.\n\n{err}")
+            }
+            AIApiError::Stream {
+                stream_type,
+                source,
+            } => format!("Streaming error from your AI provider ({stream_type}).\n\n{source:#}"),
+            AIApiError::NoContextFound => "No context found for the request.".to_string(),
+            AIApiError::Other(error) => error.to_string(),
+        };
+        Self::Other {
+            error_message,
+            will_attempt_resume: false,
+            waiting_for_network: false,
         }
     }
 }

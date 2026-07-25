@@ -149,19 +149,19 @@ pub fn failed_output_presentation(
 }
 
 /// Whether a failed Agent Mode response should explain that it will not count
-/// towards usage. Ported verbatim (uses Zap's `will_attempt_resume()` in place
-/// of warp's `should_suppress_during_recovery()`).
+/// towards usage.
+///
+/// BYOP has no Warp usage or credits — requests go straight to the user's own
+/// provider — so "This response won't count towards your usage" is meaningless
+/// and misleading here. Zap never shows the notice. (Parameters are kept so the
+/// call sites match warp's, in case the notice is ever reintroduced.)
 pub fn should_show_failed_output_usage_notice(
-    error: &crate::ai::agent::RenderableAIError,
-    is_latest_visible_exchange_in_root_task: bool,
-    has_expanded_last_requested_command: bool,
-    is_restored: bool,
+    _error: &crate::ai::agent::RenderableAIError,
+    _is_latest_visible_exchange_in_root_task: bool,
+    _has_expanded_last_requested_command: bool,
+    _is_restored: bool,
 ) -> bool {
-    !error.will_attempt_resume()
-        && is_latest_visible_exchange_in_root_task
-        && !has_expanded_last_requested_command
-        && !is_restored
-        && !error.is_invalid_api_key()
+    false
 }
 
 /// Returns the AI icon element to be rendered in AI output blocks and the terminal input when in

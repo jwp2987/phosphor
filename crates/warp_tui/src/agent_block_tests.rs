@@ -316,29 +316,23 @@ fn out_of_credits_failure_uses_shared_copy_warning_style_and_tui_actions() {
 }
 
 #[test]
-fn failed_output_usage_notice_matches_gui_conditions() {
+fn failed_output_usage_notice_never_shown_in_byop() {
+    // BYOP has no Warp usage/credits, so "this response won't count towards your
+    // usage" is meaningless — the notice is never shown, regardless of position,
+    // expansion, restore state, or error kind.
     let error = RenderableAIError::Other {
         error_message: "failed".to_owned(),
         will_attempt_resume: false,
         waiting_for_network: false,
     };
-    assert!(should_show_failed_output_usage_notice(
+    assert!(!should_show_failed_output_usage_notice(
         &error, true, false, false
     ));
-    assert!(should_show_failed_output_usage_notice(
+    assert!(!should_show_failed_output_usage_notice(
         &RenderableAIError::QuotaLimit,
         true,
         false,
         false,
-    ));
-    assert!(!should_show_failed_output_usage_notice(
-        &error, false, false, false
-    ));
-    assert!(!should_show_failed_output_usage_notice(
-        &error, true, true, false
-    ));
-    assert!(!should_show_failed_output_usage_notice(
-        &error, true, false, true
     ));
     assert!(!should_show_failed_output_usage_notice(
         &RenderableAIError::InvalidApiKey {
