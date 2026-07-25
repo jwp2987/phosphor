@@ -17,6 +17,16 @@ git-fetch-with-cli = true
 [target.'cfg(target_family = "wasm")']
 rustflags = ["--cfg=web_sys_unstable_apis"]
 
+# 本机开发用 mold 链接器,大幅加快大型 debug 二进制(如 zap-tui-oss)的链接。
+# target 专属 rustflags 会整体覆盖 [build].rustflags,所以这里保留通用的
+# symbol-mangling 设置,并去掉 [build] 里 macOS 专用的
+# `-headerpad_max_install_names`(在 Linux 上无意义)。
+# 需要先安装 mold 并确保在 PATH 中,否则链接会失败:
+#   sudo apt-get install -y mold      # 或把预编译 mold 解到 ~/.local
+# gcc 12+ / clang 均支持 `-fuse-ld=mold`。
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "symbol-mangling-version=v0", "-C", "link-arg=-fuse-ld=mold"]
+
 # 静态 musl 构建(CLI / remote-server tarball)。
 # `[build].rustflags` 里的 `-Wl,-headerpad_max_install_names` 是 macOS
 # 专用 linker flag,会让 musl-gcc 报错;target-specific rustflags 会整体
