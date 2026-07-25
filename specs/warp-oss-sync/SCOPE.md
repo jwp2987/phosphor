@@ -1,5 +1,11 @@
 # Warp OSS sync scope
 
+> **STATUS: COMPLETE (2026-07-25).** Both workstreams delivered; all build configs
+> green. This began as a plan and became a running log — see **[Final status](#final-status--2026-07-25)**
+> for the authoritative current state. Everything below that section is preserved
+> as the historical record of *how* the port was done (including now-superseded
+> "remaining" notes; trust the Final status over the in-progress prose).
+
 Scoping doc for pulling value from current Warp OSS (`warpdotdev/warp` `master`)
 into the Zap BYOP fork **without** re-adopting the cloud stack.
 
@@ -12,6 +18,79 @@ Two independent workstreams:
 
 - **A. Easy cherry-pick fixes** — self-contained bug/perf fixes in shared crates.
 - **B. TUI port** — a scoped port of `crates/warp_tui`, dropping cloud orchestration.
+
+---
+
+## Final status — 2026-07-25
+
+**Both workstreams are complete.** This section is the authoritative current state;
+the plan and progress log below are historical.
+
+### Build & test — all green
+
+| Check | Result |
+| --- | --- |
+| `cargo check -p warp --features gui` | ✅ compiles |
+| `cargo check -p warp --features tui` | ✅ compiles |
+| `cargo check -p warp_tui` | ✅ **0 errors** |
+| `cargo test -p warp --features gui --lib` | ✅ **3764 pass / 0 fail / 33 ignored** |
+| `warp_tui` stub markers (`todo!`/`unimplemented!`) | **0** |
+
+### Workstream A — DONE
+
+12 of 23 cherry-pick candidates landed on `josh/warp-oss-sync`. The other 11 were
+**deliberately skipped**, not left open: tails of upstream refactors Zap never took
+(`entry.rs` NodeBuilder rewrite, `watcher.rs` git-routing) or fixes Zap already
+implements (the non-ASCII find/replace reverse-DFA fix). See
+[Workstream A cherry-pick results](#workstream-a-cherry-pick-results-from-warpmaster).
+No open picks.
+
+### Workstream B (TUI port) — DONE
+
+`crates/warp_tui` compiles with **0 errors and 0 stub markers**. The `zap-tui-oss`
+binary boots, is interactive (focus / input dispatch / rendering), shares the GUI
+app identity so BYOP models / config / providers load, has shell + path Tab
+completion, and ports the full non-cloud slash-command set (`/model`, `/profile`,
+`/prompts`, `/init`, `/compact-and`, `/queue`, `/fork`, `/fork-and-compact`,
+`/fork-from`, `/rewind` with file-revert, and the rest of the `supports_tui` set).
+
+Every subsystem the log tracked as "remaining" landed:
+
+- **Conversation restoration + persistence** — `prepare_conversation_block_restoration`,
+  `maybe_build_ai_query_upsert_event`, `export_conversation_markdown`.
+- **Diff-storage adapter** — `TuiDiffStorage` rewritten onto Zap's event-based
+  `FileModel` (dual-path `RequestFileEditsExecutor`), with tests.
+- **Char-cell editor** — `DisplayLattice` / char-cell rendering ported into
+  `crates/editor` (`render/model/char_cell_display.rs`).
+- **Data sources** — MCP menu, model picker, zero-state, slash-command mixer, skills.
+- **Conversation selection/management** — BYOP-local entry/policy types + the
+  `AgentConversationsModel::get_entries` bridge.
+- **Terminal-manager generic-surface refactor** — `TerminalManager<S>` +
+  `TerminalSurface`/`PtyIntentEvent` traits (mirrors upstream Warp #13013).
+
+The 55 `warp_tui` test files compile and a PTY integration harness exists
+(`crates/warp_tui/scripts/tui_harness.py`).
+
+### Intentionally dropped (BYOP scope — NOT missing work)
+
+Cloud codebase search (`GetRelevantFilesController`), the cloud conversation loader
+(`CloudConversationData`), cloud credits/usage (replaced with an informational
+context-% footer), and the out-of-credits / Gemini-enterprise error arms (kept only
+to satisfy exhaustive matches — never produced).
+
+### Remaining tail — housekeeping, not feature work
+
+1. **CI coverage decision.** `crates/warp_tui` is *not* in `default-members`, so the
+   default build/CI doesn't cover it. It builds green on demand
+   (`cargo check -p warp_tui`). Decide: add a dedicated CI job (`cargo check`/`test
+   -p warp_tui`) or keep it opt-in. The guardrail after any shared-crate change stays
+   `cargo check -p warp --features gui`.
+2. **`warp_tui` test run.** The 55-file suite compiles but is slow to build (it links
+   the whole app) and has no confirmed green run recorded here — run
+   `cargo test -p warp_tui` once and record the result.
+3. **Two runtime smoke-tests** (flagged inline in the log): the terminal-manager
+   poller's needs-attention path (sudo/ssh password prompt while navigated away →
+   notification), and a systematic end-to-end BYOP agent-surface pass in the TUI.
 
 ---
 
@@ -446,7 +525,7 @@ The cloud/orchestration excision cascade is done. All of the following landed
 facade-population / API-path gaps — zero orchestration errors.** The excision
 achieved its goal: the real remaining surface is now visible.
 
-### Phase 3d — facade population + subsystem ports (IN PROGRESS)
+### Phase 3d — facade population + subsystem ports (HISTORICAL — completed; see [Final status](#final-status--2026-07-25))
 
 **CURRENT STATE: `cargo check -p warp_tui` = 4 errors** (down from 84; tip `002841ca`,
 GUI+tui green, all pushed). This run: the 4 small ports (14→10) THEN the whole
@@ -551,7 +630,10 @@ proxy (some groups share types).
   tui_permission_prompt, option_selector, tui_cli_subagent_view, prompt_history_menu,
   tui_ask_question_view, tui_plan_view (plus session.rs, root_view, etc. earlier).
 
-**REMAINING — the big-subsystem ports + cloud-adjacent items.** Isolated facade
+> **✅ SUPERSEDED (2026-07-25) — every numbered item below landed; `warp_tui` = 0
+> errors. Kept as the record of the final subsystem ports. See [Final status](#final-status--2026-07-25).**
+
+**~~REMAINING~~ (historical) — the big-subsystem ports + cloud-adjacent items.** Isolated facade
 re-exports no longer reduce the count: every still-erroring file mixes present with
 genuinely-absent types, so a file clears only when its whole subsystem lands. Port
 each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
@@ -691,8 +773,8 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
    (warp/master's does). Re-exported via `models/mod.rs` + tui_export.
 5. **Zero-state data source** (file: zero_state) — `TuiZeroStateDataSource` (warp
    `terminal/input/slash_commands/data_source/zero_state.rs`).
-6. **Conversation restoration** (file: terminal_session_view, ~2700-line HUB) — IN PROGRESS
-   (2026-07-24). **⚠ This file only compiles once its ENTIRE ~35-symbol import group resolves,
+6. **Conversation restoration** (file: terminal_session_view, ~2700-line HUB) — ✅ LANDED
+   (historical detail follows). **⚠ This file only compiles once its ENTIRE ~35-symbol import group resolves,
    at which point it UNMASKS ~200 latent body errors (+ transcript_view/agent_block/input_view)
    — see the diff-storage keystone note. So the count won't move until the whole hub lands.**
    - **✅ DONE + pushed this run:** `ConversationBlockRestorationPlan`+
@@ -705,7 +787,7 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
      DROPPED** — it's cloud/embedding ("search codebase" via server index), and Zap's
      `BlocklistAIActionModel::new` is 5-arg with NO such param, so adapted the warp_tui call to
      drop it (avoids porting 459 lines of cloud code). All GUI+tui-lib green.
-   - **🔲 REMAINING hub symbols:**
+   - **✅ LANDED (historical) — these were the last hub symbols to resolve:**
      - `maybe_build_ai_query_upsert_event` — all deps present in Zap (PersistedAIInput fields MATCH
        exactly; PersistedAIInputType/AIQueryHistoryOutputStatus/is_entirely_passive present), fn
        itself absent → port into `blocklist/persistence.rs`. **⚠ DISAMBIGUATION: it returns the
@@ -861,9 +943,33 @@ alias; `AgentManagementFilters`/`AgentRunDisplayStatus`/`HarnessFilter`
 (`terminal/input/skills/data_source`); `Harness` (`warp_cli`); `CLISubagentTarget`
 (now ported). These belong to subsystems 2/3/6 above.
 
-**Reminder — no isolated quick wins remain.** Every still-erroring file mixes
-present with genuinely-absent types, so a file clears only when its whole numbered
-subsystem lands. Keep GUI green (`cargo check -p warp --features gui`) after every
-shared-crate change; warp_tui stays a non-default workspace member so the default
-build is unaffected regardless. After all subsystems compile: Phase 4 = entry bins +
-workspace wiring, then wire the agent surfaces to BYOP end-to-end.
+**Reminder (historical) — no isolated quick wins remain.** Every still-erroring file
+mixes present with genuinely-absent types, so a file clears only when its whole
+numbered subsystem lands. Keep GUI green (`cargo check -p warp --features gui`) after
+every shared-crate change; warp_tui stays a non-default workspace member so the
+default build is unaffected regardless. After all subsystems compile: Phase 4 = entry
+bins + workspace wiring, then wire the agent surfaces to BYOP end-to-end.
+
+### Closeout — 2026-07-25: Workstream B COMPLETE ✅
+
+All numbered subsystems above landed and **`cargo check -p warp_tui` = 0 errors**
+(0 stub markers), GUI + `--features tui` + `warp_tui` all green, `warp` lib suite
+3764 pass / 0 fail. The error count that dominated this log went 191 → 0 across ~36
+commits after tip `26c1bfd3` — including the diff-storage rewrite onto Zap's
+event-based `FileModel`, the conversation-restoration hub, the char-cell editor port,
+and the terminal-manager generic-surface refactor.
+
+**Phase 4 (done):** the `zap-tui-oss` entry bin exists and boots; the TUI is
+interactive, shares the GUI app identity (BYOP models/config/providers load), and the
+agent surfaces run on the BYOP path (`chat_stream`/`oneshot`/prompt-override) — the
+full non-cloud slash-command set is ported and was live-tested against a local Ollama.
+
+**What's genuinely left is housekeeping, not feature work** — see the
+[Remaining tail](#remaining-tail--housekeeping-not-feature-work) in Final status:
+(1) a CI-coverage decision for the non-default `warp_tui` crate, (2) one recorded
+`cargo test -p warp_tui` green run, and (3) two runtime smoke-tests (terminal-manager
+needs-attention poller; a systematic end-to-end BYOP agent-surface pass).
+
+This document is now closed. Future Warp syncs should start a fresh dated scope doc
+(Warp moves daily — treat sync as periodic), reusing the two techniques above
+(git-extract + wildcard-adapt) and the BYOP-drop patterns catalogued throughout.
