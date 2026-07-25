@@ -250,6 +250,7 @@ impl StaticCommand {
                 | "/new"
                 | "/model"
                 | "/profile"
+                | "/prompts"
                 | "/compact"
                 | "/conversations"
                 | "/export-to-clipboard"

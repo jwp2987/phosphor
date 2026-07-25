@@ -345,6 +345,39 @@ pub fn tui_set_active_profile(
     });
 }
 
+/// One saved prompt for the TUI `/prompts` picker.
+pub struct TuiPromptEntry {
+    /// The prompt's display name.
+    pub name: String,
+    /// The prompt's query text, inserted into the input on acceptance.
+    pub content: String,
+}
+
+/// Lists the user's saved prompts (Zap Drive "Agent Mode" workflows), newest
+/// list order preserved. Command workflows are excluded — they belong to the
+/// command palette, not the prompt library — mirroring the GUI
+/// `PromptsMenuDataSource`.
+///
+/// The GUI opens a workflow info box on selection so arguments can be filled in;
+/// the TUI port inserts the raw query text instead, leaving any `{{argument}}`
+/// placeholders in place for the user to edit. See
+/// `TuiTerminalSessionView::handle_accepted_prompt`.
+pub fn tui_list_prompts(app: &warpui::AppContext) -> Vec<TuiPromptEntry> {
+    use crate::cloud_object::model::persistence::ObjectStoreModel;
+    use warpui::SingletonEntity as _;
+    ObjectStoreModel::as_ref(app)
+        .get_all_active_workflows()
+        .filter(|workflow| !workflow.model().data.is_command_workflow())
+        .map(|workflow| {
+            let data = &workflow.model().data;
+            TuiPromptEntry {
+                name: data.name().to_owned(),
+                content: data.content().to_owned(),
+            }
+        })
+        .collect()
+}
+
 /// Returns whether cloud conversation metadata failed to load.
 ///
 /// BYOP has no cloud conversation metadata, so this is always `false` — the conversation

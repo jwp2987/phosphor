@@ -22,6 +22,7 @@ use crate::mcp_menu::TuiMcpMenuModel;
 use crate::model_menu::TuiModelMenuModel;
 use crate::profile_menu::TuiProfileMenuModel;
 use crate::prompt_history_menu::TuiPromptHistoryMenuModel;
+use crate::prompts_menu::TuiPromptsMenuModel;
 use crate::skills_menu::TuiSkillMenuModel;
 use crate::slash_commands::TuiSlashCommandModel;
 use crate::tui_builder::TuiUiBuilder;
@@ -280,6 +281,8 @@ pub(crate) enum TuiInlineMenuAccepted {
     Completion(TuiAcceptedCompletion),
     /// An agent execution profile accepted from the `/profile` picker.
     Profile(ClientProfileId),
+    /// The query text of a saved prompt accepted from the `/prompts` picker.
+    Prompt(String),
 }
 
 /// Type-erased operations shared by TUI inline-menu model handles.
@@ -548,6 +551,48 @@ impl TuiInlineMenuHandle for ModelHandle<TuiProfileMenuModel> {
         self.as_ref(ctx)
             .accept_selected(ctx)
             .map(TuiInlineMenuAccepted::Profile)
+    }
+
+    fn dismiss(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.dismiss(ctx));
+    }
+
+    fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
+        self.as_ref(ctx).snapshot(ctx)
+    }
+}
+
+impl TuiInlineMenuHandle for ModelHandle<TuiPromptsMenuModel> {
+    fn mode(&self) -> TuiInputSuggestionsMode {
+        TuiInputSuggestionsMode::PromptsMenu
+    }
+    fn is_open(&self, ctx: &AppContext) -> bool {
+        self.as_ref(ctx).is_open(ctx)
+    }
+    fn open(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.open(ctx));
+    }
+
+    fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
+        None
+    }
+
+    fn input_argument_hint_text(&self, _ctx: &AppContext) -> Option<&'static str> {
+        None
+    }
+
+    fn select_previous(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_previous(ctx));
+    }
+
+    fn select_next(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_next(ctx));
+    }
+
+    fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        self.as_ref(ctx)
+            .accept_selected(ctx)
+            .map(TuiInlineMenuAccepted::Prompt)
     }
 
     fn dismiss(&self, ctx: &mut AppContext) {

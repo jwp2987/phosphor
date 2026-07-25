@@ -131,6 +131,9 @@ pub enum TuiInputViewEvent {
     AcceptedCompletion(TuiAcceptedCompletion),
     /// The user selected an agent execution profile from the `/profile` picker.
     AcceptedProfile(ClientProfileId),
+    /// The user selected a saved prompt from the `/prompts` picker. Carries the
+    /// prompt's query text to insert into the input.
+    AcceptedPrompt(String),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -814,6 +817,9 @@ impl TuiInputView {
                         }
                         TuiInlineMenuAccepted::Profile(profile_id) => {
                             ctx.emit(TuiInputViewEvent::AcceptedProfile(profile_id));
+                        }
+                        TuiInlineMenuAccepted::Prompt(text) => {
+                            ctx.emit(TuiInputViewEvent::AcceptedPrompt(text));
                         }
                     }
                 }

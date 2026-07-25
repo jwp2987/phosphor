@@ -85,6 +85,7 @@ use crate::completions_menu::{
     TuiAcceptedCompletion, TuiCompletionsMenuEvent, TuiCompletionsMenuModel,
 };
 use crate::profile_menu::{TuiProfileMenuEvent, TuiProfileMenuModel};
+use crate::prompts_menu::{TuiPromptsMenuEvent, TuiPromptsMenuModel};
 use crate::model_menu::{TuiModelMenuEvent, TuiModelMenuModel};
 use crate::platform::reveal_path_in_file_manager;
 use crate::prompt_history_menu::{TuiPromptHistoryMenuEvent, TuiPromptHistoryMenuModel};
@@ -402,6 +403,7 @@ pub(crate) struct TuiTerminalSessionView {
     model_menu: ModelHandle<TuiModelMenuModel>,
     completions_menu: ModelHandle<TuiCompletionsMenuModel>,
     profile_menu: ModelHandle<TuiProfileMenuModel>,
+    prompts_menu: ModelHandle<TuiPromptsMenuModel>,
     /// In-flight Tab-completion fetch from the shared completer engine.
     completions_fetch: Option<SpawnedFutureHandle>,
     skills_menu: ModelHandle<TuiSkillMenuModel>,
@@ -1026,6 +1028,12 @@ impl TuiTerminalSessionView {
         ctx.subscribe_to_model(&profile_menu, |_, _, _: &TuiProfileMenuEvent, ctx| {
             ctx.notify();
         });
+        let prompts_menu = ctx.add_model(|ctx| {
+            TuiPromptsMenuModel::new(input_editor_model.clone(), suggestions_mode.clone(), ctx)
+        });
+        ctx.subscribe_to_model(&prompts_menu, |_, _, _: &TuiPromptsMenuEvent, ctx| {
+            ctx.notify();
+        });
         // The footer's conversations callout depends on whether the input is
         // empty, so content changes must invalidate this parent view as well as
         // the input child. Typing after ctrl-c also disarms the pending exit
@@ -1077,6 +1085,7 @@ impl TuiTerminalSessionView {
             TuiInlineMenu::new(prompt_history_menu.clone()),
             TuiInlineMenu::new(completions_menu.clone()),
             TuiInlineMenu::new(profile_menu.clone()),
+            TuiInlineMenu::new(prompts_menu.clone()),
         ];
         let inline_menus_for_input = inline_menus.clone();
         let suggestions_mode_for_input = suggestions_mode.clone();
@@ -1173,6 +1182,9 @@ impl TuiTerminalSessionView {
             }
             TuiInputViewEvent::AcceptedProfile(profile_id) => {
                 view.handle_accepted_profile(*profile_id, ctx);
+            }
+            TuiInputViewEvent::AcceptedPrompt(text) => {
+                view.handle_accepted_prompt(text.clone(), ctx);
             }
             // No orchestration tab bar in Zap: nothing above the input to focus.
             TuiInputViewEvent::MoveFocusUp => {}
@@ -1336,6 +1348,7 @@ impl TuiTerminalSessionView {
             model_menu,
             completions_menu,
             profile_menu,
+            prompts_menu,
             completions_fetch: None,
             skills_menu,
             mcp_menu,
@@ -2640,6 +2653,18 @@ impl TuiTerminalSessionView {
         self.handle_submitted(text, ctx);
     }
 
+    /// Inserts the accepted saved prompt's query text into the input for the
+    /// user to edit and submit. Unlike prompt-history (which submits
+    /// immediately), this mirrors the GUI's `/prompts` flow of dropping the
+    /// prompt into the composer so any `{{argument}}` placeholders can be filled
+    /// in before sending. Dismiss first — it clears the input buffer — then fill.
+    fn handle_accepted_prompt(&mut self, text: String, ctx: &mut ViewContext<Self>) {
+        self.prompts_menu.update(ctx, |menu, ctx| menu.dismiss(ctx));
+        self.input_view.update(ctx, |input, ctx| {
+            input.set_text(&text, ctx);
+        });
+    }
+
     fn select_tui_slash_command(&mut self, command: &StaticCommand, ctx: &mut ViewContext<Self>) {
         match slash_command_selection_behavior(command) {
             SlashCommandSelectionBehavior::InsertCommandText(text) => {
@@ -2720,6 +2745,10 @@ impl TuiTerminalSessionView {
             }
             SlashCommandKind::Profile => {
                 self.profile_menu.update(ctx, |menu, ctx| menu.open(ctx));
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            SlashCommandKind::Prompts => {
+                self.prompts_menu.update(ctx, |menu, ctx| menu.open(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
             SlashCommandKind::InvokeSkill => {
@@ -2912,7 +2941,6 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::ContinueLocally
             | SlashCommandKind::Usage
             | SlashCommandKind::RemoteControl
-            | SlashCommandKind::Prompts
             | SlashCommandKind::Rewind
             // BYOP: Zap commands with no upstream kind (e.g. /pr-comments) are not
             // TUI-executable (`supports_tui()` gates them out before this match).

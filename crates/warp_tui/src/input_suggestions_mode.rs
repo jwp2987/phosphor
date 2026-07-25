@@ -22,6 +22,8 @@ pub(crate) enum TuiInputSuggestionsMode {
     Completions,
     /// Agent execution-profile picker (the `/profile` menu).
     ProfileSelector,
+    /// Saved-prompt library picker (the `/prompts` menu).
+    PromptsMenu,
 }
 
 impl TuiInputSuggestionsMode {
@@ -81,7 +83,8 @@ impl TuiInputSuggestionsModeModel {
             | TuiInputSuggestionsMode::Mcp
             | TuiInputSuggestionsMode::PromptHistory
             | TuiInputSuggestionsMode::Completions
-            | TuiInputSuggestionsMode::ProfileSelector => false,
+            | TuiInputSuggestionsMode::ProfileSelector
+            | TuiInputSuggestionsMode::PromptsMenu => false,
         }
     }
 
