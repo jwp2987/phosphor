@@ -248,6 +248,16 @@ fn test_migration_does_not_rerun_when_marker_present() {
     warpui::App::test((), |mut app| async move {
         let _guard = FeatureFlag::SettingsFile.override_enabled(true);
 
+        // Point the settings-TOML path at a fresh temp dir so the file-existence
+        // check in `needs_settings_file_migration` is hermetic. Without this the
+        // check reads the real `config_local_dir()/settings.toml`, which exists
+        // on any machine that already has Zap settings and would short-circuit
+        // the migration guard to `false`, failing the pre-migration assertion
+        // below (the test passes only in a clean env otherwise).
+        let tmp = tempfile::tempdir().expect("should create temp dir");
+        let _toml_path_guard =
+            crate::settings::TomlPathOverrideGuard::new(tmp.path().join("settings.toml"));
+
         app.update(init_test_app);
 
         // Seed the native store with a public setting.
