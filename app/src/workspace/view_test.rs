@@ -837,6 +837,7 @@ fn setup_session_sharing_test(workspace: &ViewHandle<Workspace>, app: &mut App) 
 }
 
 #[test]
+#[ignore = "close-confirmation for shared-session tabs; shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_close_tab_confirmation_dialog() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
@@ -902,6 +903,7 @@ fn test_close_tab_confirmation_dialog() {
 }
 
 #[test]
+#[ignore = "close-confirmation for shared-session tabs; shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_close_pane_confirmation_dialog() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
@@ -984,6 +986,7 @@ fn test_reopen_closed_shared_tab() {
 }
 
 #[test]
+#[ignore = "close-confirmation for shared-session tabs; shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_close_other_tabs_confirmation_dialog() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
@@ -1022,6 +1025,7 @@ fn test_close_other_tabs_confirmation_dialog() {
 }
 
 #[test]
+#[ignore = "close-confirmation for shared-session tabs; shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_close_tabs_right_confirmation_dialog() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
@@ -1063,6 +1067,7 @@ fn test_close_tabs_right_confirmation_dialog() {
 }
 
 #[test]
+#[ignore = "close-confirmation for shared-session tabs; shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_confirmation_dialog_dont_show_again() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
@@ -1119,6 +1124,7 @@ fn test_confirmation_dialog_dont_show_again() {
 }
 
 #[test]
+#[ignore = "close-confirmation for shared-session tabs; shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_close_last_tab_skip_confirmation() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
