@@ -236,6 +236,12 @@ impl SlashCommandDataSource {
             session_context |= Availability::AI_ENABLED;
         }
 
+        // The ratatui TUI surface (no agent-view controller) can only execute the
+        // commands gated by `supports_tui`. Filtering here keeps the TUI slash
+        // menu honest — it stops advertising GUI-only commands that would no-op
+        // (or just insert text) when selected. As commands are ported to the TUI
+        // and added to `supports_tui`, they appear here automatically.
+        let is_tui_surface = self.agent_view_controller.is_none();
         let old_active_command_count = self.active_commands_by_id.len();
         self.active_commands_by_id = HashMap::from_iter(
             COMMAND_REGISTRY
@@ -246,6 +252,8 @@ impl SlashCommandDataSource {
                     !is_cli_agent_input
                         || Self::CLI_AGENT_INPUT_ALLOWED_COMMANDS.contains(&command.name)
                 })
+                // On the TUI, only surface commands that actually execute there.
+                .filter(|(_, command)| !is_tui_surface || command.supports_tui())
                 .map(|(id, command)| (id, command.clone())),
         );
 
