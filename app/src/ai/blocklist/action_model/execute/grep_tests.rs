@@ -1,6 +1,12 @@
 use super::*;
 use crate::terminal::{model::secrets::regexes::FIREBASE_AUTH_DOMAIN, shell::ShellType};
+use serial_test::serial;
 
+// This test mutates the process-global secret regexes via
+// `set_user_and_enterprise_secret_regexes`, shared with the other `#[serial]`
+// secret-redaction tests; it must be serial so a concurrent test can't clobber
+// the regexes mid-run.
+#[serial]
 #[test]
 fn test_create_redacted_grep_error_event() {
     crate::terminal::model::set_user_and_enterprise_secret_regexes(

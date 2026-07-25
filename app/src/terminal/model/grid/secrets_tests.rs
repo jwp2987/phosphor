@@ -10,6 +10,7 @@ use crate::terminal::{
 };
 
 use super::*;
+use serial_test::serial;
 
 fn secret_ranges(grid_handler: &GridHandler) -> Vec<RangeInclusive<Point>> {
     grid_handler
@@ -34,6 +35,7 @@ fn empty_blockgrid(
     )
 }
 
+#[serial]
 #[test]
 fn test_secret_redacted_after_byte_processing() {
     crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
@@ -68,6 +70,7 @@ fn test_secret_redacted_after_byte_processing() {
     assert!(secret_ranges(grid_handler).is_empty());
 }
 
+#[serial]
 #[test]
 fn test_secret_redacted_after_multiple_byte_processing() {
     crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
@@ -108,6 +111,7 @@ fn test_secret_redacted_after_multiple_byte_processing() {
     );
 }
 
+#[serial]
 #[test]
 fn test_secret_redaction_unobfuscated_secret_remains_after_byte_processing() -> anyhow::Result<()> {
     crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
@@ -166,6 +170,7 @@ fn test_secret_redaction_unobfuscated_secret_remains_after_byte_processing() -> 
     Ok(())
 }
 
+#[serial]
 #[test]
 fn test_secret_redaction_secret_remains_after_resize() {
     crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
@@ -203,6 +208,7 @@ fn test_secret_redaction_secret_remains_after_resize() {
     );
 }
 
+#[serial]
 #[test]
 fn test_bytes_processed_for_secrets_after_turning_redaction() {
     crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
@@ -234,6 +240,7 @@ fn test_bytes_processed_for_secrets_after_turning_redaction() {
     assert!(!grid_handler.all_bytes_scanned_for_secrets());
 }
 
+#[serial]
 #[test]
 fn test_bytes_processed_for_secrets_after_turning_redaction_on() {
     crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
@@ -260,6 +267,7 @@ fn test_bytes_processed_for_secrets_after_turning_redaction_on() {
     assert!(!grid_handler.all_bytes_scanned_for_secrets());
 }
 
+#[serial]
 #[test]
 fn test_bytes_processed_for_secrets_after_turning_redaction_off_then_on() {
     crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
@@ -295,6 +303,7 @@ fn test_bytes_processed_for_secrets_after_turning_redaction_off_then_on() {
     assert!(!grid_handler.all_bytes_scanned_for_secrets());
 }
 
+#[serial]
 #[test]
 fn test_bytes_processed_for_secrets_after_turning_redaction_on_then_off() {
     crate::terminal::model::secrets::set_user_and_enterprise_secret_regexes(
