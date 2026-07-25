@@ -313,6 +313,13 @@ app/  (主二进制:装配、入口、平台粘合、持久化迁移、UI 视图
 - 大任务拆分为**写入域不重叠**的子任务并行下发;信息收集类任务可以并行。
 - 简单任务直接做,不要过度拆分。
 
+### 5.9 TUI / GUI slash-command parity (strong constraint)
+- **TUI and GUI slash commands MUST stay at feature parity**: every **non-cloud** slash command that works in the GUI should also work in the TUI. Only genuinely cloud-only / GUI-only commands (cloud/orchestration, or commands that open a GUI editor / settings panel) may be absent from the TUI, and the reason must be noted in code.
+- Gate points: `StaticCommand::supports_tui()` (`app/src/search/slash_command_menu/static_commands/mod.rs`) decides which commands are executable in the TUI AND whether they appear in the TUI slash menu (the menu is filtered by `supports_tui` — see `SlashCommandDataSource::recompute_active_commands`). Execution is dispatched in `TuiTerminalSessionView::execute_tui_slash_command` (`crates/warp_tui/src/terminal_session_view.rs`); unsupported kinds fall into the GUI-only `debug_assert(false)` catch-all.
+- **Steps to port a command**: (1) add a TUI handler in `execute_tui_slash_command` (menu commands: follow `model_menu` / `profile_menu`; prompt commands: follow `Compact | Plan`); (2) add the command name to `supports_tui()`; (3) the menu surfaces it automatically.
+- Gotcha: `slash_command_selection_behavior` — a command with an argument whose `should_execute_on_selection == false` (e.g. `/mcp`, `/plan`) **inserts `/cmd ` text on selection instead of executing**; submitting `/cmd` then routes through `handle_submitted_input`. Porting these requires handling the select/submit routing, not just adding `supports_tui`.
+- Current state and gap list: see memory `tui-slash-command-parity`.
+
 ---
 
 ## 6. 常用入口速查
