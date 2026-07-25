@@ -43,9 +43,11 @@ fn test_decorations_with_multibyte_chars() {
             terminal_view
                 .sessions_model()
                 .update(ctx, |sessions, _ctx| {
-                    // Wait until external commands have been loaded.
+                    // Seed the external command list directly. load_external_commands
+                    // shells out (compgen/ls) via a real PTY, which doesn't run in the
+                    // mocked unit-test env, so "echo" would never be recognized.
                     let session = sessions.get(session_id).expect("session should exist");
-                    warpui::r#async::block_on(session.load_external_commands());
+                    session.set_external_commands(["echo"]);
                 });
             session_id
         });
