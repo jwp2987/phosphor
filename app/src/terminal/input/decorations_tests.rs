@@ -1,7 +1,9 @@
-use warpui::{text_layout::TextStyle, App};
+use settings::Setting as _;
+use warpui::{text_layout::TextStyle, App, SingletonEntity as _};
 
 use crate::{
     appearance::Appearance,
+    settings::InputSettings,
     terminal::{
         input::{
             decorations::InputBackgroundJobOptions,
@@ -20,6 +22,16 @@ use warp_completer::completer::SuggestionTypeName;
 fn test_decorations_with_multibyte_chars() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+
+        // Syntax highlighting and error underlining both default to `true`, but
+        // they are persisted/synced settings; force them on for this app so the
+        // test doesn't depend on ambient settings state that a concurrent test
+        // could have toggled off (which would leave the input undecorated and
+        // fail the assertions below).
+        InputSettings::handle(&app).update(&mut app, |input_settings, ctx| {
+            let _ = input_settings.syntax_highlighting.set_value(true, ctx);
+            let _ = input_settings.error_underlining.set_value(true, ctx);
+        });
 
         let terminal_colors_normal = app
             .get_singleton_model_handle::<Appearance>()
