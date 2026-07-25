@@ -102,6 +102,7 @@ pub use crate::ai::blocklist::block::model::{
 };
 pub use crate::ai::blocklist::history_model::{
     AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, LoadedConversationData,
+    FORK_PREFIX,
 };
 pub use crate::ai::blocklist::persistence::maybe_build_ai_query_upsert_event;
 pub use crate::ai::llms::{LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent};

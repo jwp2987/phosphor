@@ -18,7 +18,8 @@ use warp::tui_export::{
     AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, BlockId,
     BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
-    CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, CancellationReason, ChangelogModel,
+    CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, FORK_PREFIX, CancellationReason,
+    ChangelogModel,
     ChangelogRequestType, LoadedConversationData, CommandExecutionSource, ConversationFileExport,
     ConversationSelection, ConversationSelectionHandle,
     ExecuteCommandEvent, GitRepoModels, GitRepoStatusModel,
@@ -170,6 +171,9 @@ const COMPACT_AND_REQUIRES_CONVERSATION_HINT: &str = "/compact-and requires an a
 const QUEUE_REQUIRES_CONVERSATION_HINT: &str = "/queue requires an active conversation";
 const QUEUE_REQUIRES_PROMPT_HINT: &str = "/queue requires a prompt argument";
 const QUEUE_QUEUED_HINT: &str = "Queued — will send when the current turn finishes";
+const FORK_REQUIRES_CONVERSATION_HINT: &str = "/fork requires an active conversation";
+const FORK_FAILED_HINT: &str = "Failed to fork the conversation";
+const FORKED_HINT: &str = "Forked conversation";
 
 /// Footer label shown while the input is in `!` shell mode. The how-to-exit
 /// guidance lives in the input's placeholder ghost text, so the footer only
@@ -324,12 +328,15 @@ fn render_status_footer_row(segments: FooterSegments, builder: &TuiUiBuilder) ->
 pub(crate) enum TuiConversationRestoreOrigin {
     Startup,
     ConversationList,
+    /// Switching the surface to a newly forked conversation (`/fork`).
+    Fork,
 }
 
 impl TuiConversationRestoreOrigin {
     fn agent_view_origin(self) -> AgentViewEntryOrigin {
         match self {
-            Self::Startup | Self::ConversationList => {
+            // RestoreExistingConversation explicitly covers startup restore and forking.
+            Self::Startup | Self::ConversationList | Self::Fork => {
                 AgentViewEntryOrigin::RestoreExistingConversation
             }
         }
@@ -1660,7 +1667,10 @@ impl TuiTerminalSessionView {
             TuiConversationRestoreOrigin::Startup => {
                 self.conversation_restore_state = ConversationRestoreState::Failed(message);
             }
-            TuiConversationRestoreOrigin::ConversationList => {
+            // Fork switches the surface synchronously (no async restore load), so
+            // this failure path is not reached for it; handle it like the list
+            // switch for completeness.
+            TuiConversationRestoreOrigin::ConversationList | TuiConversationRestoreOrigin::Fork => {
                 self.conversation_restore_state = ConversationRestoreState::Idle;
                 self.show_transient_hint(message, ctx);
                 self.focus_input_if_active(ctx);
@@ -2703,6 +2713,74 @@ impl TuiTerminalSessionView {
         self.restore_conversation(target, TuiConversationRestoreOrigin::ConversationList, ctx);
     }
 
+    /// Forks the selected conversation and switches the surface to the fork
+    /// (`/fork`). Because the TUI is single-surface, this always replaces the
+    /// visible conversation — the equivalent of the GUI's `CurrentPane`
+    /// destination, not its split-pane/new-tab options. The source conversation
+    /// stays in history (reachable via `/conversations`). `initial_prompt`, if
+    /// present, is sent to the fork after switching.
+    fn fork_current_conversation(
+        &mut self,
+        initial_prompt: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.is_conversation_restore_loading() {
+            self.show_transient_hint(SWITCH_LOADING_HINT.to_owned(), ctx);
+            return;
+        }
+        if !self
+            .ai_context_model
+            .as_ref(ctx)
+            .can_start_new_conversation()
+        {
+            self.show_transient_hint(SWITCH_COMMAND_RUNNING_HINT.to_owned(), ctx);
+            return;
+        }
+        // Forking replaces the surface, so refuse while the source turn is live
+        // (mirrors the conversation-switch guard).
+        let current_conversation_is_busy = self
+            .conversation_selection
+            .as_ref(ctx)
+            .selected_conversation(ctx)
+            .is_some_and(|conversation| {
+                !conversation.is_empty() && !conversation.status().is_done()
+            });
+        if current_conversation_is_busy {
+            self.show_transient_hint(SWITCH_CONVERSATION_RUNNING_HINT.to_owned(), ctx);
+            return;
+        }
+        let Some(source) = self
+            .conversation_selection
+            .as_ref(ctx)
+            .selected_conversation(ctx)
+            .cloned()
+        else {
+            self.show_transient_hint(FORK_REQUIRES_CONVERSATION_HINT.to_owned(), ctx);
+            return;
+        };
+        // `fork_conversation` copies the tasks under a new conversation id and
+        // inserts the fork into the history model in memory.
+        let fork_result = BlocklistAIHistoryModel::handle(ctx)
+            .update(ctx, |history, ctx| history.fork_conversation(&source, FORK_PREFIX, ctx));
+        let forked = match fork_result {
+            Ok(forked) => forked,
+            Err(error) => {
+                log::error!("TUI conversation forking failed: {error}");
+                self.show_transient_hint(FORK_FAILED_HINT.to_owned(), ctx);
+                return;
+            }
+        };
+        self.replace_conversation_surface(forked, TuiConversationRestoreOrigin::Fork, ctx);
+        self.show_success_hint(FORKED_HINT.to_owned(), ctx);
+        // The fork is now the selected conversation, so `send_prompt` targets it.
+        if let Some(prompt) = initial_prompt
+            .map(|prompt| prompt.trim().to_owned())
+            .filter(|prompt| !prompt.is_empty())
+        {
+            self.send_prompt(prompt, ctx);
+        }
+    }
+
     fn handle_accepted_model(&mut self, id: &LLMId, ctx: &mut ViewContext<Self>) {
         let terminal_view_id = ctx.view_id();
         // Mirror the GUI's model picker: set the pane-level Agent-Mode LLM
@@ -3034,6 +3112,15 @@ impl TuiTerminalSessionView {
                 );
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
+            SlashCommandKind::Fork => {
+                // `/fork [prompt]`: branch the current conversation and switch to
+                // the copy, optionally seeding it with [prompt]. Mirrors the GUI's
+                // /fork (input/slash_commands/mod.rs) with the single-surface
+                // CurrentPane destination.
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                self.fork_current_conversation(argument.cloned(), ctx);
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
             SlashCommandKind::Queue => {
                 // `/queue <prompt>`: if the conversation is mid-turn, hold <prompt>
                 // and send it after that turn finishes; otherwise send it now.
@@ -3094,7 +3181,6 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::RenameTab
             | SlashCommandKind::RenameConversation
             | SlashCommandKind::SetTabColor
-            | SlashCommandKind::Fork
             | SlashCommandKind::MoveToCloud
             | SlashCommandKind::OpenCodeReview
             | SlashCommandKind::Index
@@ -3278,7 +3364,9 @@ impl TuiView for TuiTerminalSessionView {
                 ..
             } => return conversation_restoring(ctx),
             ConversationRestoreState::Loading {
-                origin: TuiConversationRestoreOrigin::ConversationList,
+                origin:
+                    TuiConversationRestoreOrigin::ConversationList
+                    | TuiConversationRestoreOrigin::Fork,
                 ..
             } => {}
             ConversationRestoreState::Failed(message) => {
