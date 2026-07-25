@@ -256,6 +256,7 @@ impl StaticCommand {
                 | "/compact-and"
                 | "/queue"
                 | "/fork"
+                | "/fork-and-compact"
                 | "/conversations"
                 | "/export-to-clipboard"
                 | "/export-to-file"

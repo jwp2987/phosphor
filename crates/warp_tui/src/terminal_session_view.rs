@@ -365,6 +365,25 @@ struct TuiQueuedFollowUp {
     seen_in_progress: bool,
 }
 
+/// What to do on the freshly forked conversation after switching to it.
+#[derive(Clone, Debug)]
+enum PostForkAction {
+    /// `/fork`: send the optional initial prompt immediately.
+    SendPrompt(Option<String>),
+    /// `/fork-and-compact`: summarize the fork, then send the optional prompt
+    /// once the summarize turn finishes (reusing the `/compact-and` machinery).
+    CompactThenPrompt(Option<String>),
+}
+
+/// Trims a slash-command argument and drops it when empty, so a bare command
+/// (or one with only whitespace) doesn't seed a forked conversation with an
+/// empty query.
+fn normalize_optional_prompt(prompt: Option<String>) -> Option<String> {
+    prompt
+        .map(|prompt| prompt.trim().to_owned())
+        .filter(|prompt| !prompt.is_empty())
+}
+
 #[derive(Default)]
 enum ConversationRestoreState {
     #[default]
@@ -2721,7 +2740,7 @@ impl TuiTerminalSessionView {
     /// present, is sent to the fork after switching.
     fn fork_current_conversation(
         &mut self,
-        initial_prompt: Option<String>,
+        post_fork: PostForkAction,
         ctx: &mut ViewContext<Self>,
     ) {
         if self.is_conversation_restore_loading() {
@@ -2770,14 +2789,31 @@ impl TuiTerminalSessionView {
                 return;
             }
         };
+        let forked_id = forked.id();
         self.replace_conversation_surface(forked, TuiConversationRestoreOrigin::Fork, ctx);
         self.show_success_hint(FORKED_HINT.to_owned(), ctx);
         // The fork is now the selected conversation, so `send_prompt` targets it.
-        if let Some(prompt) = initial_prompt
-            .map(|prompt| prompt.trim().to_owned())
-            .filter(|prompt| !prompt.is_empty())
-        {
-            self.send_prompt(prompt, ctx);
+        match post_fork {
+            PostForkAction::SendPrompt(initial_prompt) => {
+                if let Some(prompt) = normalize_optional_prompt(initial_prompt) {
+                    self.send_prompt(prompt, ctx);
+                }
+            }
+            PostForkAction::CompactThenPrompt(initial_prompt) => {
+                // Arm the follow-up before triggering the summarize so its
+                // InProgress transition is observed (see maybe_send_queued_follow_up).
+                self.queued_follow_up = normalize_optional_prompt(initial_prompt).map(|prompt| {
+                    TuiQueuedFollowUp {
+                        conversation_id: forked_id,
+                        prompt,
+                        seen_in_progress: false,
+                    }
+                });
+                self.send_prompt(
+                    warp::tui_export::slash_commands::COMPACT.name.to_owned(),
+                    ctx,
+                );
+            }
         }
     }
 
@@ -3118,7 +3154,18 @@ impl TuiTerminalSessionView {
                 // /fork (input/slash_commands/mod.rs) with the single-surface
                 // CurrentPane destination.
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
-                self.fork_current_conversation(argument.cloned(), ctx);
+                self.fork_current_conversation(PostForkAction::SendPrompt(argument.cloned()), ctx);
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            SlashCommandKind::ForkAndCompact => {
+                // `/fork-and-compact [prompt]`: branch, then summarize the fork,
+                // then send [prompt] after the summarize finishes. Mirrors the
+                // GUI's /fork-and-compact (fork with summarize_after_fork: true).
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                self.fork_current_conversation(
+                    PostForkAction::CompactThenPrompt(argument.cloned()),
+                    ctx,
+                );
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
             SlashCommandKind::Queue => {
@@ -3195,7 +3242,6 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::Harness
             | SlashCommandKind::Environment
             | SlashCommandKind::Orchestrate
-            | SlashCommandKind::ForkAndCompact
             | SlashCommandKind::ForkFrom
             | SlashCommandKind::ContinueLocally
             | SlashCommandKind::Usage
