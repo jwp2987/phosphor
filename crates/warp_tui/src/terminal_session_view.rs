@@ -37,6 +37,7 @@ use warp::tui_export::{
     record_static_slash_command_accepted, saved_prompt_text_for_id,
     slash_command_selection_behavior, throttle,
     tui_completion_session_context, tui_fetch_completions,
+    ClientProfileId, tui_set_active_profile,
 };
 use warp_core::features::FeatureFlag;
 use warp_core::settings::Setting;
@@ -83,6 +84,7 @@ use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
 use crate::completions_menu::{
     TuiAcceptedCompletion, TuiCompletionsMenuEvent, TuiCompletionsMenuModel,
 };
+use crate::profile_menu::{TuiProfileMenuEvent, TuiProfileMenuModel};
 use crate::model_menu::{TuiModelMenuEvent, TuiModelMenuModel};
 use crate::platform::reveal_path_in_file_manager;
 use crate::prompt_history_menu::{TuiPromptHistoryMenuEvent, TuiPromptHistoryMenuModel};
@@ -399,6 +401,7 @@ pub(crate) struct TuiTerminalSessionView {
     conversation_menu: ModelHandle<TuiConversationMenuModel>,
     model_menu: ModelHandle<TuiModelMenuModel>,
     completions_menu: ModelHandle<TuiCompletionsMenuModel>,
+    profile_menu: ModelHandle<TuiProfileMenuModel>,
     /// In-flight Tab-completion fetch from the shared completer engine.
     completions_fetch: Option<SpawnedFutureHandle>,
     skills_menu: ModelHandle<TuiSkillMenuModel>,
@@ -1012,6 +1015,17 @@ impl TuiTerminalSessionView {
         ctx.subscribe_to_model(&completions_menu, |_, _, _: &TuiCompletionsMenuEvent, ctx| {
             ctx.notify();
         });
+        let profile_menu = ctx.add_model(|ctx| {
+            TuiProfileMenuModel::new(
+                input_editor_model.clone(),
+                suggestions_mode.clone(),
+                terminal_surface_id,
+                ctx,
+            )
+        });
+        ctx.subscribe_to_model(&profile_menu, |_, _, _: &TuiProfileMenuEvent, ctx| {
+            ctx.notify();
+        });
         // The footer's conversations callout depends on whether the input is
         // empty, so content changes must invalidate this parent view as well as
         // the input child. Typing after ctrl-c also disarms the pending exit
@@ -1062,6 +1076,7 @@ impl TuiTerminalSessionView {
             TuiInlineMenu::new(mcp_menu.clone()),
             TuiInlineMenu::new(prompt_history_menu.clone()),
             TuiInlineMenu::new(completions_menu.clone()),
+            TuiInlineMenu::new(profile_menu.clone()),
         ];
         let inline_menus_for_input = inline_menus.clone();
         let suggestions_mode_for_input = suggestions_mode.clone();
@@ -1155,6 +1170,9 @@ impl TuiTerminalSessionView {
             }
             TuiInputViewEvent::AcceptedCompletion(completion) => {
                 view.handle_accepted_completion(completion.clone(), ctx);
+            }
+            TuiInputViewEvent::AcceptedProfile(profile_id) => {
+                view.handle_accepted_profile(*profile_id, ctx);
             }
             // No orchestration tab bar in Zap: nothing above the input to focus.
             TuiInputViewEvent::MoveFocusUp => {}
@@ -1317,6 +1335,7 @@ impl TuiTerminalSessionView {
             conversation_menu,
             model_menu,
             completions_menu,
+            profile_menu,
             completions_fetch: None,
             skills_menu,
             mcp_menu,
@@ -2592,6 +2611,18 @@ impl TuiTerminalSessionView {
         });
         self.model_menu.update(ctx, |menu, ctx| menu.dismiss(ctx));
     }
+
+    fn handle_accepted_profile(
+        &mut self,
+        profile_id: ClientProfileId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let terminal_view_id = ctx.view_id();
+        // Mirror the GUI's inline profile selector: switch the active profile
+        // and drop the pane LLM override so the new profile's model applies.
+        tui_set_active_profile(ctx, terminal_view_id, profile_id);
+        self.profile_menu.update(ctx, |menu, ctx| menu.dismiss(ctx));
+    }
     fn handle_accepted_mcp_action(&mut self, action: TuiMcpAction, ctx: &mut ViewContext<Self>) {
         TuiMcpManager::handle(ctx).update(ctx, |model, ctx| {
             model.apply_action(action, ctx);
@@ -2685,6 +2716,10 @@ impl TuiTerminalSessionView {
             }
             SlashCommandKind::Model => {
                 self.model_menu.update(ctx, |menu, ctx| menu.open(ctx));
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            SlashCommandKind::Profile => {
+                self.profile_menu.update(ctx, |menu, ctx| menu.open(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
             SlashCommandKind::InvokeSkill => {
@@ -2869,7 +2904,6 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::Host
             | SlashCommandKind::Harness
             | SlashCommandKind::Environment
-            | SlashCommandKind::Profile
             | SlashCommandKind::Orchestrate
             | SlashCommandKind::CompactAnd
             | SlashCommandKind::Queue

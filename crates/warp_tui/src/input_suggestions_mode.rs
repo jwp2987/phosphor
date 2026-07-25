@@ -20,6 +20,8 @@ pub(crate) enum TuiInputSuggestionsMode {
     /// modes it does not treat the input buffer as a search query; it completes
     /// the token under the cursor and replaces a span in the existing buffer.
     Completions,
+    /// Agent execution-profile picker (the `/profile` menu).
+    ProfileSelector,
 }
 
 impl TuiInputSuggestionsMode {
@@ -78,7 +80,8 @@ impl TuiInputSuggestionsModeModel {
             | TuiInputSuggestionsMode::SkillMenu
             | TuiInputSuggestionsMode::Mcp
             | TuiInputSuggestionsMode::PromptHistory
-            | TuiInputSuggestionsMode::Completions => false,
+            | TuiInputSuggestionsMode::Completions
+            | TuiInputSuggestionsMode::ProfileSelector => false,
         }
     }
 

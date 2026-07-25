@@ -26,7 +26,8 @@ use std::rc::Rc;
 use string_offset::CharOffset;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
-    AcceptSlashCommandOrSavedPrompt, BlocklistAIInputModel, InputType, LLMId, TuiMcpAction,
+    AcceptSlashCommandOrSavedPrompt, BlocklistAIInputModel, ClientProfileId, InputType, LLMId,
+    TuiMcpAction,
 };
 use warp_editor::model::CoreEditorModel;
 use warpui_core::elements::MouseStateHandle;
@@ -128,6 +129,8 @@ pub enum TuiInputViewEvent {
     /// The user accepted a shell command/path completion from the Tab-completion
     /// popup. The session view applies the replacement to the input buffer.
     AcceptedCompletion(TuiAcceptedCompletion),
+    /// The user selected an agent execution profile from the `/profile` picker.
+    AcceptedProfile(ClientProfileId),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -808,6 +811,9 @@ impl TuiInputView {
                         }
                         TuiInlineMenuAccepted::Completion(completion) => {
                             ctx.emit(TuiInputViewEvent::AcceptedCompletion(completion));
+                        }
+                        TuiInlineMenuAccepted::Profile(profile_id) => {
+                            ctx.emit(TuiInputViewEvent::AcceptedProfile(profile_id));
                         }
                     }
                 }

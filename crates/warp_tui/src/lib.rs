@@ -39,6 +39,7 @@ mod mcp_menu;
 mod model_menu;
 mod option_selector;
 mod platform;
+mod profile_menu;
 mod prompt_history_menu;
 mod resume;
 mod session_registry;

@@ -291,6 +291,60 @@ pub async fn tui_fetch_completions(
     })
 }
 
+pub use crate::ai::execution_profiles::profiles::ClientProfileId;
+
+/// One agent execution profile for the TUI `/profile` picker.
+pub struct TuiProfileEntry {
+    pub id: ClientProfileId,
+    pub display_name: String,
+    pub is_active: bool,
+}
+
+/// Lists the agent execution profiles, marking the one active for
+/// `terminal_view_id`. The default profile is always first (per
+/// `get_all_profile_ids`).
+pub fn tui_list_profiles(
+    app: &warpui::AppContext,
+    terminal_view_id: warpui::EntityId,
+) -> Vec<TuiProfileEntry> {
+    use crate::cloud_object::model::generic_string_model::StringModel;
+    use warpui::SingletonEntity as _;
+    let profiles = crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::as_ref(app);
+    let active_id = *profiles.active_profile(Some(terminal_view_id), app).id();
+    profiles
+        .get_all_profile_ids()
+        .into_iter()
+        .filter_map(|id| {
+            let info = profiles.get_profile_by_id(id, app)?;
+            Some(TuiProfileEntry {
+                id,
+                display_name: info.data().display_name(),
+                is_active: id == active_id,
+            })
+        })
+        .collect()
+}
+
+/// Switches the active agent execution profile for `terminal_view_id`, mirroring
+/// the GUI's inline profile selector: set the active profile AND drop the
+/// pane-level LLM override so the newly-active profile's model can take effect.
+pub fn tui_set_active_profile(
+    ctx: &mut warpui::AppContext,
+    terminal_view_id: warpui::EntityId,
+    profile_id: ClientProfileId,
+) {
+    use warpui::SingletonEntity as _;
+    crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::handle(ctx).update(
+        ctx,
+        |profiles, ctx| {
+            profiles.set_active_profile(terminal_view_id, profile_id, ctx);
+        },
+    );
+    crate::ai::llms::LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+        prefs.remove_llm_override(terminal_view_id, ctx);
+    });
+}
+
 /// Returns whether cloud conversation metadata failed to load.
 ///
 /// BYOP has no cloud conversation metadata, so this is always `false` — the conversation

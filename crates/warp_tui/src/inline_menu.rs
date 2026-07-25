@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use string_offset::CharOffset;
 use warp::tui_export::{
-    AcceptSlashCommandOrSavedPrompt, AgentConversationEntryId, LLMId, TuiMcpAction,
+    AcceptSlashCommandOrSavedPrompt, AgentConversationEntryId, ClientProfileId, LLMId, TuiMcpAction,
 };
 use warp_search_core::inline_menu::{InlineMenuResultsUpdate, InlineMenuSelection};
 use warpui_core::elements::CrossAxisAlignment;
@@ -20,6 +20,7 @@ use crate::conversation_menu::TuiConversationMenuModel;
 use crate::input_suggestions_mode::TuiInputSuggestionsMode;
 use crate::mcp_menu::TuiMcpMenuModel;
 use crate::model_menu::TuiModelMenuModel;
+use crate::profile_menu::TuiProfileMenuModel;
 use crate::prompt_history_menu::TuiPromptHistoryMenuModel;
 use crate::skills_menu::TuiSkillMenuModel;
 use crate::slash_commands::TuiSlashCommandModel;
@@ -277,6 +278,8 @@ pub(crate) enum TuiInlineMenuAccepted {
     PromptHistory(String),
     /// A shell command/path completion accepted from the Tab-completion popup.
     Completion(TuiAcceptedCompletion),
+    /// An agent execution profile accepted from the `/profile` picker.
+    Profile(ClientProfileId),
 }
 
 /// Type-erased operations shared by TUI inline-menu model handles.
@@ -503,6 +506,48 @@ impl TuiInlineMenuHandle for ModelHandle<TuiCompletionsMenuModel> {
     fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
         self.update(ctx, |model, ctx| model.accept_selected(ctx))
             .map(TuiInlineMenuAccepted::Completion)
+    }
+
+    fn dismiss(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.dismiss(ctx));
+    }
+
+    fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
+        self.as_ref(ctx).snapshot(ctx)
+    }
+}
+
+impl TuiInlineMenuHandle for ModelHandle<TuiProfileMenuModel> {
+    fn mode(&self) -> TuiInputSuggestionsMode {
+        TuiInputSuggestionsMode::ProfileSelector
+    }
+    fn is_open(&self, ctx: &AppContext) -> bool {
+        self.as_ref(ctx).is_open(ctx)
+    }
+    fn open(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.open(ctx));
+    }
+
+    fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
+        None
+    }
+
+    fn input_argument_hint_text(&self, _ctx: &AppContext) -> Option<&'static str> {
+        None
+    }
+
+    fn select_previous(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_previous(ctx));
+    }
+
+    fn select_next(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_next(ctx));
+    }
+
+    fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        self.as_ref(ctx)
+            .accept_selected(ctx)
+            .map(TuiInlineMenuAccepted::Profile)
     }
 
     fn dismiss(&self, ctx: &mut AppContext) {
