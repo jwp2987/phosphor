@@ -16,6 +16,10 @@ pub(crate) enum TuiInputSuggestionsMode {
     SkillMenu,
     Mcp,
     PromptHistory,
+    /// Shell command/path completion popup (Tab-completion). Unlike the other
+    /// modes it does not treat the input buffer as a search query; it completes
+    /// the token under the cursor and replaces a span in the existing buffer.
+    Completions,
 }
 
 impl TuiInputSuggestionsMode {
@@ -73,7 +77,8 @@ impl TuiInputSuggestionsModeModel {
             | TuiInputSuggestionsMode::ModelSelector
             | TuiInputSuggestionsMode::SkillMenu
             | TuiInputSuggestionsMode::Mcp
-            | TuiInputSuggestionsMode::PromptHistory => false,
+            | TuiInputSuggestionsMode::PromptHistory
+            | TuiInputSuggestionsMode::Completions => false,
         }
     }
 

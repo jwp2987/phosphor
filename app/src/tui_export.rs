@@ -25,7 +25,10 @@ pub use ::ai::agent::ask_user_question_session::{
 };
 pub use repo_metadata::repositories::RepoDetectionSource;
 pub use crate::util::repo_detection::{detect_possible_git_repo, RepoDetectionSessionType};
-use warp_completer::completer::{CompletionContext as _, TopLevelCommandCaseSensitivity};
+use warp_completer::completer::{
+    suggestions as completer_suggestions, CompleterOptions, CompletionContext as _,
+    TopLevelCommandCaseSensitivity,
+};
 use warp_completer::signatures::CommandRegistry;
 
 pub use crate::ai::agent::api::ServerConversationToken;
@@ -230,6 +233,62 @@ pub fn tui_completion_context_has_exact_command(
             .signature_from_line(command, case_sensitivity)
             .is_some()
     }
+}
+
+/// One shell command/path completion candidate for the TUI Tab-completion popup.
+pub struct TuiCompletionCandidate {
+    pub display: String,
+    pub replacement: String,
+    pub description: Option<String>,
+}
+
+/// The result of a TUI completion fetch: candidates plus the byte span in the
+/// (pre-cursor) input line that an accepted candidate replaces.
+pub struct TuiCompletionResults {
+    pub candidates: Vec<TuiCompletionCandidate>,
+    pub replacement_span: std::ops::Range<usize>,
+}
+
+/// Fetches shell command/path completion candidates from the shared completer
+/// engine for `line` at byte offset `pos`. Async and potentially I/O-bound (it
+/// may hit the filesystem / shell), so callers must run it off the UI thread.
+///
+/// Mirrors the GUI's completion fetch: the engine already matches candidates
+/// against the token under the cursor, so the returned list is ready to display.
+pub async fn tui_fetch_completions(
+    line: String,
+    pos: usize,
+    completion_context: SessionContext,
+) -> Option<TuiCompletionResults> {
+    let results = completer_suggestions(
+        &line,
+        pos,
+        None,
+        CompleterOptions::default(),
+        &completion_context,
+    )
+    .await?;
+    if results.suggestions.is_empty() {
+        return None;
+    }
+    let replacement_span: std::ops::Range<usize> = results.replacement_span.into();
+    let candidates = results
+        .suggestions
+        .into_iter()
+        .filter(|matched| !matched.suggestion.is_hidden)
+        .map(|matched| TuiCompletionCandidate {
+            display: matched.display().to_string(),
+            replacement: matched.replacement().to_string(),
+            description: matched.description(),
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    Some(TuiCompletionResults {
+        candidates,
+        replacement_span,
+    })
 }
 
 /// Returns whether cloud conversation metadata failed to load.

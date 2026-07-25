@@ -43,6 +43,7 @@ use crate::editor_interaction::{
     TuiEditorBehavior, TuiEditorCommand, TuiEditorInteractionOutcome, TuiEditorState,
     apply_editor_action, follow_editor_cursor,
 };
+use crate::completions_menu::TuiAcceptedCompletion;
 use crate::inline_menu::{TuiInlineMenu, TuiInlineMenuAccepted, active_inline_menu};
 use crate::input_hints;
 use crate::input_mode_policy::{self, AI_LOCKED_CONFIG, SHELL_LOCKED_CONFIG};
@@ -124,6 +125,9 @@ pub enum TuiInputViewEvent {
     /// The user accepted a prompt from the up-arrow prompt-history menu. Carries
     /// the prompt text to fill into the input and submit.
     AcceptedPromptHistory(String),
+    /// The user accepted a shell command/path completion from the Tab-completion
+    /// popup. The session view applies the replacement to the input buffer.
+    AcceptedCompletion(TuiAcceptedCompletion),
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -801,6 +805,9 @@ impl TuiInputView {
                         }
                         TuiInlineMenuAccepted::PromptHistory(text) => {
                             ctx.emit(TuiInputViewEvent::AcceptedPromptHistory(text));
+                        }
+                        TuiInlineMenuAccepted::Completion(completion) => {
+                            ctx.emit(TuiInputViewEvent::AcceptedCompletion(completion));
                         }
                     }
                 }

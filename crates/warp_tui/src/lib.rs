@@ -22,6 +22,7 @@ mod tui_ask_question_view;
 mod tui_builder;
 mod ui;
 
+mod completions_menu;
 mod conversation_menu;
 mod conversation_selection;
 mod editor_element;
