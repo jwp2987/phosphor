@@ -1,6 +1,6 @@
-//! 右键上下文菜单渲染组件
+//! Right-click context menu rendering component
 //!
-//! 提供文件条目的右键菜单渲染，包括打开、下载、重命名、删除、详情等操作。
+//! Renders the right-click menu for a file entry, including open, download, rename, delete, and details actions.
 //! author: logic
 //! date: 2026-05-26
 
@@ -13,36 +13,36 @@ use warpui::elements::{
 use warpui::platform::Cursor;
 use warpui::Element;
 
-/// 右键菜单宽度
+/// Context menu width
 const CONTEXT_MENU_WIDTH: f32 = 150.0;
 
 use crate::sftp_manager::browser::SftpBrowserAction;
 
-/// 右键菜单状态
+/// Context menu state
 #[derive(Debug)]
 pub struct ContextMenuState {
-    /// 关联的文件条目索引
+    /// Index of the associated file entry
     pub entry_index: usize,
-    /// 菜单弹出位置
+    /// Menu popup position
     pub position: Vector2F,
 }
 
 impl ContextMenuState {
-    /// 创建新的右键菜单状态
+    /// Create a new context menu state
     pub fn new(entry_index: usize, position: Vector2F) -> Self {
         Self { entry_index, position }
     }
 }
 
-/// 菜单项定义
+/// Menu item definition
 struct MenuItem {
-    /// 显示标签
+    /// Display label
     label: String,
-    /// 关联动作
+    /// Associated action
     action: SftpBrowserAction,
 }
 
-/// 构建文件右键菜单项列表
+/// Build the list of file right-click menu items
 fn build_file_menu_items(entry_index: usize) -> Vec<MenuItem> {
     vec![
         MenuItem {
@@ -68,7 +68,7 @@ fn build_file_menu_items(entry_index: usize) -> Vec<MenuItem> {
     ]
 }
 
-/// 渲染单个菜单项
+/// Render a single menu item
 fn render_menu_item(
     label: &str,
     action: SftpBrowserAction,
@@ -110,7 +110,7 @@ fn render_menu_item(
     SavePosition::new(item_el, position_id).finish()
 }
 
-/// 渲染右键上下文菜单
+/// Render the right-click context menu
 pub fn render_context_menu(state: &ContextMenuState, appearance: &Appearance) -> Box<dyn Element> {
     let theme = appearance.theme();
     let menu_items = build_file_menu_items(state.entry_index);
@@ -186,10 +186,10 @@ mod tests {
     use warpui::TypedActionView;
 
     // ============================================================
-    // ContextMenuState 测试
+    // ContextMenuState tests
     // ============================================================
 
-    /// 测试 ContextMenuState 构造函数正确设置字段
+    /// Test that the ContextMenuState constructor sets fields correctly
     #[test]
     fn test_context_menu_state_new() {
         let position = Vector2F::new(100.0, 200.0);
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(state.position, position);
     }
 
-    /// 测试 ContextMenuState 在 index=0 时正确构造
+    /// Test that ContextMenuState constructs correctly when index=0
     #[test]
     fn test_context_menu_state_zero_index() {
         let position = Vector2F::new(0.0, 0.0);
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(state.position, position);
     }
 
-    /// 测试 ContextMenuState 大索引值
+    /// Test ContextMenuState with a large index value
     #[test]
     fn test_context_menu_state_large_index() {
         let position = Vector2F::new(500.0, 600.0);
@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(state.entry_index, usize::MAX);
     }
 
-    /// 测试 ContextMenuState 负坐标（Vector2F 支持负值）
+    /// Test ContextMenuState with negative coordinates (Vector2F supports negatives)
     #[test]
     fn test_context_menu_state_negative_position() {
         let position = Vector2F::new(-50.0, -100.0);
@@ -224,27 +224,27 @@ mod tests {
     }
 
     // ============================================================
-    // build_file_menu_items 测试
+    // build_file_menu_items tests
     // ============================================================
 
-    /// 测试菜单项数量为 5
+    /// Test that there are 5 menu items
     #[test]
     fn test_build_file_menu_items_count() {
         let items = build_file_menu_items(0);
-        assert_eq!(items.len(), 5, "应有 5 个菜单项");
+        assert_eq!(items.len(), 5, "should have 5 menu items");
     }
 
-    /// 测试菜单项标签正确
+    /// Test that the menu item labels are correct
     #[test]
     fn test_build_file_menu_items_labels() {
         let items = build_file_menu_items(0);
         let expected_labels = ["Open", "Download", "Rename", "Delete", "Details"];
         for (item, expected) in items.iter().zip(expected_labels.iter()) {
-            assert_eq!(&item.label.as_str(), expected, "标签应为 {}", expected);
+            assert_eq!(&item.label.as_str(), expected, "label should be {}", expected);
         }
     }
 
-    /// 测试菜单项动作绑定正确的 index
+    /// Test that menu item actions bind the correct index
     #[test]
     fn test_build_file_menu_items_actions_index() {
         let index = 7;
@@ -257,7 +257,7 @@ mod tests {
         assert!(matches!(&items[4].action, SftpBrowserAction::DetailsEntry(7)));
     }
 
-    /// 测试 index=0 时菜单项动作正确
+    /// Test that menu item actions are correct when index=0
     #[test]
     fn test_build_file_menu_items_zero_index() {
         let items = build_file_menu_items(0);
@@ -267,10 +267,10 @@ mod tests {
     }
 
     // ============================================================
-    // render_context_menu 渲染测试（通过 browser 视图验证）
+    // render_context_menu render test (verified through the browser view)
     // ============================================================
 
-    /// 通过 browser 视图触发 ContextMenu 后渲染不 panic
+    /// Rendering after triggering ContextMenu through the browser view should not panic
     #[test]
     fn test_render_context_menu_via_browser() {
         use crate::settings_view::keybindings::KeybindingChangedNotifier;
@@ -282,6 +282,9 @@ mod tests {
             app.add_singleton_model(|_| Appearance::mock());
             app.add_singleton_model(|_| KeybindingChangedNotifier::mock());
             app.add_singleton_model(|_| crate::workspace::ToastStack);
+            // Rendering a SftpBrowserView drives the window render path
+            // (root_view), which reads the UserWorkspaces singleton.
+            app.add_singleton_model(crate::workspaces::user_workspaces::UserWorkspaces::default_mock);
 
             let temp_db = std::env::temp_dir().join("warp_sftp_ctx_test.sqlite");
             let _ = warp_ssh_manager::set_database_path(temp_db);
@@ -291,7 +294,7 @@ mod tests {
                 |ctx| crate::sftp_manager::browser::SftpBrowserView::new("test-node".to_string(), ctx),
             );
 
-            // 触发右键菜单
+            // Trigger the context menu
             view.update(&mut app, |view, ctx| {
                 view.handle_action(
                     &SftpBrowserAction::ContextMenu {
@@ -302,9 +305,9 @@ mod tests {
                 );
             });
 
-            // 渲染不应 panic（视图会自动重新渲染）
+            // Rendering should not panic (the view re-renders automatically)
             view.read(&app, |view, _| {
-                assert!(view.context_menu.is_some(), "菜单应已打开");
+                assert!(view.context_menu.is_some(), "the menu should be open");
             });
         });
     }
