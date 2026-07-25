@@ -504,8 +504,8 @@ impl<'a, T: Entity> ViewContext<'a, T> {
             TaskCallback::ViewFromFuture {
                 window_id: self.window_id,
                 view_id: self.view_id,
-                callback: Box::new(move |view, output, app, window_id, view_id| {
-                    let view = view.as_any_mut().downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
+                callback: Box::new(move |view: &mut dyn std::any::Any, output, app, window_id, view_id| {
+                    let view = view.downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let output = *output.downcast().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let result =
                         callback(view, output, &mut ViewContext::new(app, window_id, view_id));
@@ -649,14 +649,14 @@ impl<'a, T: Entity> ViewContext<'a, T> {
             TaskCallback::ViewFromStream {
                 window_id: self.window_id,
                 view_id: self.view_id,
-                on_item: Box::new(move |view, output, app, window_id, view_id| {
-                    let view = view.as_any_mut().downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
+                on_item: Box::new(move |view: &mut dyn std::any::Any, output, app, window_id, view_id| {
+                    let view = view.downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let output = *output.downcast().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let mut ctx = ViewContext::new(app, window_id, view_id);
                     on_item(view, output, &mut ctx);
                 }),
-                on_done: Box::new(move |view, app, window_id, view_id| {
-                    let view = view.as_any_mut().downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
+                on_done: Box::new(move |view: &mut dyn std::any::Any, app, window_id, view_id| {
+                    let view = view.downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let mut ctx = ViewContext::new(app, window_id, view_id);
                     on_done(view, &mut ctx);
                 }),
@@ -769,9 +769,8 @@ impl<'a, T: Entity> ViewContext<'a, T> {
             TaskCallback::ViewFromStream {
                 window_id: self.window_id,
                 view_id: self.view_id,
-                on_item: Box::new(move |view, task, app, window_id, view_id| {
+                on_item: Box::new(move |view: &mut dyn std::any::Any, task, app, window_id, view_id| {
                     let view = view
-                        .as_any_mut()
                         .downcast_mut()
                         .expect("unexpected view type");
                     let task: ViewTask<T> = *task
