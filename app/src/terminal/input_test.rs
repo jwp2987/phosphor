@@ -341,10 +341,16 @@ pub async fn add_window_with_bootstrapped_terminal_and_window_id(
         .expect("Could not create a shell starter source");
     let shell_type = shell_starter_source.shell_type();
 
-    let session_info = session_info
-        .unwrap_or_else(SessionInfo::new_for_test)
-        .with_session_type(BootstrapSessionType::Local)
-        .with_shell_type(shell_type);
+    // A caller-supplied SessionInfo keeps its own shell_type — some tests need a
+    // specific shell regardless of the machine's (e.g. Zsh for histignorespace,
+    // and the multibyte-decorations test). Only the defaulted SessionInfo picks
+    // up the detected machine shell.
+    let session_info = match session_info {
+        Some(info) => info.with_session_type(BootstrapSessionType::Local),
+        None => SessionInfo::new_for_test()
+            .with_session_type(BootstrapSessionType::Local)
+            .with_shell_type(shell_type),
+    };
     let history_file_commands = history_file_commands.unwrap_or_default();
 
     let (window_id, terminal) = app.add_window(WindowStyle::NotStealFocus, move |ctx| {
