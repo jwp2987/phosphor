@@ -827,16 +827,21 @@ each from `warp/master` (remote `warpdotdev/warp`; app-side TUI types mostly in
       `warpui::platform::create_system_clipboard` — **✅ DONE (56f65d6a, warp_tui 11→10).**
       Ported into warpui `platform/mod.rs` (MIT→MIT); dispatches to the existing
       mac/`LinuxClipboard`/`WindowsClipboard` impls Zap's warpui already ships.
-    Remaining cloud-adjacent design calls:
-    `agent_block.rs`/`agent_block_tests.rs` `FailedOutputPresentation` family — **NOT a
-    clean port (investigated 2026-07-24):** warp's `failed_output_presentation` reads
-    billing/credit state Zap lacks (`UserWorkspaces` paid-plan `billing_metadata`,
-    `AIRequestUsageModel::next_refresh_time` credit reset, `OutOfCredits`/"Subscribe" CTA,
-    `FAILED_OUTPUT_USAGE_NOTICE_TEXT` "won't count towards your usage"); Zap has NO
-    `FailedOutputPresentation` enum and its `RenderableAIError::QuotaLimit` is a UNIT
-    variant (warp's carries `user_display_message`) — enum diverged. Only a TEST file
-    consumes it. This is a BYOP product decision (what does a BYOP error surface show?),
-    not a mechanical port — defer to the user.
+    `FailedOutputPresentation` family — **✅ RESOLVED (2026-07-25).** (Was flagged
+    2026-07-24 as a deferred BYOP product decision — "what does a BYOP error surface
+    show?".) The `FailedOutputPresentation` enum + BYOP-adapted
+    `failed_output_presentation` (`app/src/ai/blocklist/view_util.rs`) already dropped
+    warp's cloud billing branches (out-of-credits / "Subscribe" CTA / credit-reset from
+    `UserWorkspaces`/`AIRequestUsageModel`) and are rendered by both the GUI and the
+    `warp_tui` renderer. The two remaining rough edges were then fixed:
+    (1) `should_show_failed_output_usage_notice` now returns `false` — BYOP has no Warp
+    usage/credits, so `FAILED_OUTPUT_USAGE_NOTICE_TEXT` ("won't count towards your usage")
+    was misleading; (2) `From<&AIApiError> for RenderableAIError` (`app/src/ai/agent/mod.rs`)
+    now maps 401/403 → unauthorized/check-key, 404 → bad model id or base URL, other HTTP
+    status → status + response body, transport-with-no-status → can't-reach-provider, and
+    deserialization/stream/other → the provider's own error text — instead of a raw `{:?}`
+    debug dump. The dead `OutOfCredits`/`GeminiEnterpriseCredentialsExpiredOrInvalid` enum
+    arms remain only for the TUI exhaustive-match and are never produced.
     Also still open:
     `transcript_view` `BlockSpacing`/`should_show_task_in_blocklist`,
     `tui_cli_subagent_view`/`terminal_session_view` `CLISubagentTarget` (now present —
