@@ -6,7 +6,9 @@
 #   (macOS builds a single-arch DMG and CLI tarball per architecture; Linux
 #    produces AppImage/deb/rpm plus a best-effort Arch package; doesn't
 #    publish upstream Zap repo source or signing keys)
-# - Single channel: preview (configured via release_configurations.json)
+# - Build channel is always "oss" (release_configurations.json's separate
+#   "oss"/"beta" release-metadata channels only affect the GitHub Release's
+#   prerelease flag / name / body, not what gets built)
 # - Unsigned: doesn't pass --read-passwords-from-env (macOS) / doesn't set
 #   SIGN_TOOL_CMD (Windows)
 # - Doesn't upload to GCS / third-party crash platforms / Slack / changelog,
@@ -29,6 +31,19 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_channel:
+        description: >-
+          Release-metadata channel (see release_configurations.json). Only
+          affects the GitHub Release's prerelease flag / body / name — the
+          app itself always builds as the "oss" Channel regardless. Ignored
+          on tag-push triggers, where this is inferred from the tag name
+          instead (a tag containing "beta" uses the beta channel).
+        type: choice
+        options:
+          - oss
+          - beta
+        default: oss
 
 # Creating a release + uploading assets needs write permission. The default
 # GITHUB_TOKEN is read-only on forks/restricted repos, so we explicitly
@@ -58,6 +73,7 @@ jobs:
       release_tag: ${{ steps.compute_tag.outputs.tag }}
       release_branch: ${{ steps.compute_tag.outputs.branch }}
       release_name: ${{ steps.get-config.outputs.release_base_name }} ${{ steps.compute_tag.outputs.tag }}
+      is_prerelease: ${{ steps.get-config.outputs.is_prerelease }}
     steps:
       # fetch-depth: 0 lets git-cliff see the full tag/commit history;
       # under a shallow clone, `git describe` can't find the previous tag and
@@ -66,12 +82,31 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Release-metadata channel (release_configurations.json), decoupled from
+      # the app's build CHANNEL below: on a tag push, a tag containing "beta"
+      # (case-insensitive, e.g. v2026.08.01-beta.1) selects the beta channel
+      # (prerelease, not marked "latest"); everything else defaults to oss.
+      # workflow_dispatch runs use the release_channel input directly.
+      - name: Compute release-metadata channel
+        id: release_channel
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.release_channel }}" ]]; then
+            CHANNEL="${{ inputs.release_channel }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* && "${GITHUB_REF#refs/tags/}" =~ [Bb][Ee][Tt][Aa] ]]; then
+            CHANNEL="beta"
+          else
+            CHANNEL="oss"
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Release-metadata channel: $CHANNEL"
+
       - name: Get channel configuration
         id: get-config
         uses: ./.github/actions/get_channel_config/
         with:
           config_file: ${{ env.CONFIG_FILE }}
-          channel: ${{ env.CHANNEL }}
+          channel: ${{ steps.release_channel.outputs.channel }}
 
       - name: Compute release tag and branch
         id: compute_tag
@@ -605,6 +640,8 @@ jobs:
         run: ls -lh dist
         shell: bash
 
+      # A beta/prerelease build must never take over "Latest" from the most
+      # recent stable release, so make_latest tracks is_prerelease inversely.
       - name: Create GitHub release with all assets
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
         with:
@@ -612,8 +649,8 @@ jobs:
           tag_name: ${{ needs.prepare_metadata.outputs.release_tag }}
           body_path: ./release-body.md
           draft: false
-          prerelease: false
-          make_latest: "true"
+          prerelease: ${{ needs.prepare_metadata.outputs.is_prerelease == 'true' }}
+          make_latest: ${{ needs.prepare_metadata.outputs.is_prerelease == 'true' && 'false' || 'true' }}
           files: dist/*
           token: ${{ secrets.GITHUB_TOKEN }}
 

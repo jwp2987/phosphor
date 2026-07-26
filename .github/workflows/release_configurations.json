@@ -11,6 +11,17 @@
             "changelog_slack_channel": "",
             "gcs_cache_control_value": "",
             "web_gcs_bucket_prefix": ""
+        },
+        {
+            "channel": "beta",
+            "type": "nightly",
+            "is_prerelease": true,
+            "is_autopush": false,
+            "release_base_name": "Phosphor Beta",
+            "release_body_text": "Phosphor beta build (fork of Zap Terminal, oss channel) — pre-release, not fully vetted. The app itself still builds as the regular oss Channel; only this GitHub Release is flagged as a prerelease.",
+            "changelog_slack_channel": "",
+            "gcs_cache_control_value": "",
+            "web_gcs_bucket_prefix": ""
         }
     ]
 }
