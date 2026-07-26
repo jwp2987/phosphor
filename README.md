@@ -94,6 +94,19 @@ don't benefit from the tail-block design._
 - Tolerate null optional tool args; resolve tool-call ownership so assistant text
   can't orphan results.
 
+### Terminal UI (TUI)
+- **`zap-tui-oss` — a keyboard-driven terminal frontend**, ported from upstream
+  Warp's `warp_tui` crate and rewired onto the BYOP stack (no cloud
+  orchestration). It shares the GUI's app identity, so your models, config and
+  providers load unchanged; it boots interactive with shell/path Tab-completion
+  and the full non-cloud slash-command set (`/model`, `/profile`, `/prompts`,
+  `/init`, `/compact-and`, `/queue`, `/fork`, `/fork-and-compact`, `/fork-from`,
+  `/rewind` with file-revert, …). Cloud-only surfaces (codebase search, cloud
+  conversation history, credits/usage) are intentionally dropped for BYOP.
+- Build/run it with `cargo run -p warp_tui` (the crate is a non-default
+  workspace member; the GUI build is unaffected). Agent runs go through the same
+  BYOP path as the GUI (`chat_stream` / `oneshot` / the prompt-override system).
+
 ### Odds and ends
 - **Title-generation language fix** (this branch's namesake) — stop Chinese-biased
   few-shot examples leaking into tab titles.

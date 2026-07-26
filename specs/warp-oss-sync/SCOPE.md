@@ -78,19 +78,25 @@ Cloud codebase search (`GetRelevantFilesController`), the cloud conversation loa
 context-% footer), and the out-of-credits / Gemini-enterprise error arms (kept only
 to satisfy exhaustive matches — never produced).
 
-### Remaining tail — housekeeping, not feature work
+### Remaining tail — resolved / handed to CI + manual QA
 
-1. **CI coverage decision.** `crates/warp_tui` is *not* in `default-members`, so the
-   default build/CI doesn't cover it. It builds green on demand
-   (`cargo check -p warp_tui`). Decide: add a dedicated CI job (`cargo check`/`test
-   -p warp_tui`) or keep it opt-in. The guardrail after any shared-crate change stays
-   `cargo check -p warp --features gui`.
-2. **`warp_tui` test run.** The 55-file suite compiles but is slow to build (it links
-   the whole app) and has no confirmed green run recorded here — run
-   `cargo test -p warp_tui` once and record the result.
-3. **Two runtime smoke-tests** (flagged inline in the log): the terminal-manager
-   poller's needs-attention path (sudo/ssh password prompt while navigated away →
-   notification), and a systematic end-to-end BYOP agent-surface pass in the TUI.
+1. **CI coverage — RESOLVED.** Added `.github/workflows/pr-check.yml` (the file
+   `zap_release.yml` already referenced but that was missing): a Linux `cargo check`
+   on PRs to `main` covering `warp --features gui --lib --tests`, `warp --features
+   tui`, and (explicitly, since it's not in `default-members`) `warp_tui`. `warp_tui`
+   is deliberately kept out of `default-members` so the default/release build stays
+   light and portable; this workflow gives it dedicated coverage instead. The local
+   guardrail after any shared-crate change remains `cargo check -p warp --features gui`.
+2. **`warp_tui` test suite — compiles; full run handed to CI/manual.** The 55-file
+   suite builds (0 compile errors), but running it relinks the whole app and is very
+   slow, so a full green run is left to CI (`cargo test -p warp_tui`) / manual rather
+   than burned in a dev loop. The crate itself checks clean (`cargo check -p warp_tui`
+   = 0 errors), which is the signal that gates a green build.
+3. **Two runtime smoke-tests — MANUAL QA (can't be automated headlessly).** The
+   terminal-manager poller's needs-attention path (sudo/ssh password prompt while
+   navigated away → notification) and a systematic end-to-end BYOP agent-surface pass
+   in the TUI both need an interactive session; they're left as manual QA. (The TUI's
+   slash-command path was already live-tested against a local Ollama during the port.)
 
 ---
 
