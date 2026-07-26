@@ -39,6 +39,9 @@ if [[ "$(source /etc/os-release; echo $ID $ID_LIKE)" = *"debian"* ]]; then
     libclang-dev
     # Required by script/presubmit's clang-format check on C/C++/Obj-C sources.
     clang-format
+    # .cargo/config.toml hardcodes -fuse-ld=mold for x86_64-unknown-linux-gnu;
+    # without this installed, linking fails with a misleading "cannot find 'ld'".
+    mold
   )
   sudo apt-get install -y "${PACKAGES[@]}"
 
