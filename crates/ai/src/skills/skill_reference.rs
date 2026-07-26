@@ -10,6 +10,18 @@ pub enum SkillReference {
     BundledSkillId(String),
 }
 
+impl SkillReference {
+    /// A user-facing label for the skill. Unlike [`Display`](fmt::Display), which renders the
+    /// canonical `@warp-skill:<id>` reference form for bundled skills, this omits the internal
+    /// `@warp-skill:` prefix so bundled-skill copy reads the same way as path-based skill copy.
+    pub fn display_label(&self) -> String {
+        match self {
+            SkillReference::Path(path) => path.display().to_string(),
+            SkillReference::BundledSkillId(id) => id.clone(),
+        }
+    }
+}
+
 impl fmt::Display for SkillReference {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {

@@ -70,7 +70,7 @@ pub struct CreateTeamResponse {
 }
 
 impl UserWorkspaces {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn mock(cached_workspaces: Vec<Workspace>, _ctx: &mut ModelContext<Self>) -> Self {
         Self {
             current_workspace_uid: cached_workspaces.first().map(|w| w.uid).into(),

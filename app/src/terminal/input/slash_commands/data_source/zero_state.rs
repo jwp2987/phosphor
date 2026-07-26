@@ -9,6 +9,12 @@ use crate::terminal::input::slash_commands::{
     AcceptSlashCommandOrSavedPrompt, InlineItem, SlashCommandDataSource,
 };
 
+/// The TUI reuses the same zero-state data source as the GUI: both build the ordered
+/// zero-state command list from the shared [`SlashCommandDataSource`] (Warp OSS keeps
+/// separate `GuiZeroStateDataSource`/`TuiZeroStateDataSource` only because its data source is
+/// a trait split into GUI/TUI impls; Zap's is one concrete type).
+pub type TuiZeroStateDataSource = ZeroStateDataSource;
+
 pub struct ZeroStateDataSource {
     slash_command_data_source: ModelHandle<SlashCommandDataSource>,
 }

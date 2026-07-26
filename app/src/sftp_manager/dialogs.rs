@@ -155,7 +155,7 @@ fn render_button(
 
 /// 渲染取消按钮
 fn render_cancel_button(appearance: &Appearance, mouse_state: MouseStateHandle) -> Box<dyn Element> {
-    render_button("取消", false, appearance, SftpBrowserAction::CloseDialog, mouse_state, Some("sftp_btn:dialog_cancel"))
+    render_button("Cancel", false, appearance, SftpBrowserAction::CloseDialog, mouse_state, Some("sftp_btn:dialog_cancel"))
 }
 
 /// 渲染描述性确认对话框（标题 + 描述 + 确认/取消按钮）
@@ -237,15 +237,15 @@ fn render_delete_confirm(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| paths[0].display().to_string());
-        format!("确定要删除 \"{name}\" 吗？此操作不可撤销。")
+        format!("Delete \"{name}\"? This action cannot be undone.")
     } else {
-        format!("确定要删除 {count} 个项目吗？此操作不可撤销。")
+        format!("Delete {count} items? This action cannot be undone.")
     };
 
     render_confirm_dialog(
-        "确认删除",
+        "Confirm Delete",
         &desc,
-        "删除",
+        "Delete",
         SftpBrowserAction::ConfirmDelete,
         appearance,
         confirm_btn_state,
@@ -269,10 +269,10 @@ fn render_rename(
     let ui_font_size = appearance.ui_font_size();
 
     // 标题行
-    let title_bar = render_title_bar("重命名", appearance, close_btn_state);
+    let title_bar = render_title_bar("Rename", appearance, close_btn_state);
 
     // 当前名称提示
-    let hint = format!("当前名称: {original_name}");
+    let hint = format!("Current name: {original_name}");
     let hint_el = Shrinkable::new(
         1.0,
         Text::new(hint, ui_font, ui_font_size)
@@ -299,7 +299,7 @@ fn render_rename(
 
     // 按钮
     let confirm_btn = render_button(
-        "确定",
+        "OK",
         true,
         appearance,
         SftpBrowserAction::ConfirmRename,
@@ -344,7 +344,7 @@ fn render_create_folder(
     let theme = appearance.theme();
 
     // 标题行
-    let title_bar = render_title_bar("新建文件夹", appearance, close_btn_state);
+    let title_bar = render_title_bar("New Folder", appearance, close_btn_state);
 
     // 编辑器
     let editor_el = Container::new(
@@ -364,7 +364,7 @@ fn render_create_folder(
 
     // 按钮
     let confirm_btn = render_button(
-        "创建",
+        "Create",
         true,
         appearance,
         SftpBrowserAction::ConfirmNewFolder,
@@ -437,14 +437,14 @@ fn render_file_details(
     close_btn_state: MouseStateHandle,
 ) -> Box<dyn Element> {
     // 标题行
-    let title_bar = render_title_bar("文件详情", appearance, close_btn_state);
+    let title_bar = render_title_bar("File Details", appearance, close_btn_state);
 
     // 类型
     let type_str = match entry.file_type {
-        crate::sftp_manager::types::FileEntryType::File => "文件",
-        crate::sftp_manager::types::FileEntryType::Directory => "目录",
-        crate::sftp_manager::types::FileEntryType::Symlink => "符号链接",
-        crate::sftp_manager::types::FileEntryType::Other => "其他",
+        crate::sftp_manager::types::FileEntryType::File => "File",
+        crate::sftp_manager::types::FileEntryType::Directory => "Directory",
+        crate::sftp_manager::types::FileEntryType::Symlink => "Symlink",
+        crate::sftp_manager::types::FileEntryType::Other => "Other",
     };
 
     // 构建属性行
@@ -452,13 +452,13 @@ fn render_file_details(
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_spacing(8.0);
 
-    rows.add_child(detail_row("类型", type_str, appearance));
-    rows.add_child(detail_row("大小", &format_size(entry.size), appearance));
+    rows.add_child(detail_row("Type", type_str, appearance));
+    rows.add_child(detail_row("Size", &format_size(entry.size), appearance));
     let modified = entry.modified.as_deref().unwrap_or("--");
-    rows.add_child(detail_row("修改时间", modified, appearance));
+    rows.add_child(detail_row("Modified", modified, appearance));
     let permissions = entry.permissions.as_deref().unwrap_or("--");
-    rows.add_child(detail_row("权限", permissions, appearance));
-    rows.add_child(detail_row("路径", &entry.path.display().to_string(), appearance));
+    rows.add_child(detail_row("Permissions", permissions, appearance));
+    rows.add_child(detail_row("Path", &entry.path.display().to_string(), appearance));
 
     // 关闭按钮
     let close_btn = render_cancel_button(appearance, cancel_btn_state);
@@ -494,13 +494,13 @@ fn render_move_dialog(
         .unwrap_or_default();
     let target_display = target_dir.display();
     let desc = format!(
-        "将 \"{source_name}\" 移动到 {target_display}"
+        "Move \"{source_name}\" to {target_display}"
     );
 
     render_confirm_dialog(
-        "移动文件",
+        "Move File",
         &desc,
-        "移动",
+        "Move",
         SftpBrowserAction::ConfirmMove,
         appearance,
         confirm_btn_state,
@@ -525,14 +525,14 @@ fn render_overwrite_confirm(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let desc = match direction {
-        TransferDirection::Upload => format!("远程文件 {target_name} 已存在，是否覆盖？"),
-        TransferDirection::Download => format!("目标文件 {target_name} 已存在，是否覆盖？"),
+        TransferDirection::Upload => format!("Remote file {target_name} already exists. Overwrite?"),
+        TransferDirection::Download => format!("Target file {target_name} already exists. Overwrite?"),
     };
 
     render_confirm_dialog(
-        "确认覆盖",
+        "Confirm Overwrite",
         &desc,
-        "覆盖",
+        "Overwrite",
         SftpBrowserAction::ConfirmOverwrite,
         appearance,
         confirm_btn_state,
@@ -575,9 +575,9 @@ pub fn render_dialog(
         }
         Dialog::CloseTransferPanelConfirm => {
             render_confirm_dialog(
-                "关闭传输面板",
-                "有正在进行的传输任务，关闭将中断所有传输并清空记录。确定要关闭吗？",
-                "关闭",
+                "Close Transfer Panel",
+                "Transfers are in progress. Closing will interrupt all transfers and clear the records. Close anyway?",
+                "Close",
                 SftpBrowserAction::ConfirmCloseTransferPanel,
                 appearance,
                 confirm_btn_state,

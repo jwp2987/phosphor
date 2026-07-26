@@ -27,7 +27,7 @@ use crate::{
     },
 };
 
-mod up_arrow;
+pub(crate) mod up_arrow;
 pub(crate) use up_arrow::UpArrowHistoryConfig;
 
 /// Data model for a history command persisted to sqlite, used as an intermediate representation

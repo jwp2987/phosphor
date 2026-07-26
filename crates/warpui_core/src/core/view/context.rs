@@ -1,3 +1,7 @@
+// TUI view-context helpers, feature-gated. See specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+mod tui;
+
 use std::{any::Any, marker::PhantomData, rc::Rc, sync::Arc};
 
 use futures::future::{AbortHandle, Abortable};
@@ -40,7 +44,10 @@ pub struct ViewContext<'a, T: ?Sized> {
     view_type: PhantomData<T>,
 }
 
-impl<'a, T: View> ViewContext<'a, T> {
+// `new` is Entity-generic so the TUI view path (TuiView: Entity) can construct a
+// ViewContext; View-specific methods stay in the `T: View` block below. Mirrors
+// warpui_core upstream.
+impl<'a, T: Entity> ViewContext<'a, T> {
     pub(in crate::core) fn new(
         app: &'a mut AppContext,
         window_id: WindowId,
@@ -53,6 +60,14 @@ impl<'a, T: View> ViewContext<'a, T> {
             view_type: PhantomData,
         }
     }
+}
+
+// Mirrors warpui_core upstream's TUI-enablement: these context methods are
+// `T: Entity`, not `T: View`, so the headless TUI view path (TuiView: Entity,
+// not View) can call notify/emit/spawn/focus_self/subscribe/etc. The only
+// genuinely View-only method (`element_position_by_id`, GUI presenter) stays in
+// the `T: View` block below.
+impl<'a, T: Entity> ViewContext<'a, T> {
 
     /// Adds a callback that will be invoked immediately after the next frame is drawn.
     /// Note that the callback is only invoked once and is discarded after it is called.
@@ -116,7 +131,7 @@ impl<'a, T: View> ViewContext<'a, T> {
         }
     }
 
-    pub fn focus<S: View>(&mut self, handle: &ViewHandle<S>) {
+    pub fn focus<S: Entity>(&mut self, handle: &ViewHandle<S>) {
         let handle: AnyViewHandle = handle.into();
         self.app.pending_effects.push_back(Effect::Focus {
             window_id: handle.window_id(self.app),
@@ -192,7 +207,9 @@ impl<'a, T: View> ViewContext<'a, T> {
 
     pub fn subscribe_to_view<V, F>(&mut self, handle: &ViewHandle<V>, mut callback: F)
     where
-        V: View,
+        // Bounded by `Entity` rather than `View` so a view can subscribe to a TUI view's
+        // event stream (a `TuiView: Entity`, not `warpui::View`). GUI-safe: `View: Entity`.
+        V: Entity,
         V::Event: 'static,
         F: 'static + FnMut(&mut T, ViewHandle<V>, &V::Event, &mut ViewContext<T>),
     {
@@ -458,36 +475,6 @@ impl<'a, T: View> ViewContext<'a, T> {
             });
     }
 
-    /// Requests permissions to send desktop notifications. The `on_completion callback` can be invoked to
-    /// propagate the outcome of the request (accepted/denied/other) back to the app.
-    ///
-    /// ## Platform-Specific
-    /// * Linux: Always calls the `on_completion_callback` with a value of [`RequestPermissionsOutcome::Accepted`].
-    pub fn request_desktop_notification_permissions<F>(&mut self, on_completion_callback: F)
-    where
-        F: 'static + Send + Sync + FnOnce(&mut T, RequestPermissionsOutcome, &mut ViewContext<T>),
-    {
-        let view_id = self.view_id;
-        let window_id = self.window_id;
-        self.app.request_desktop_notification_permissions(
-            view_id,
-            window_id,
-            on_completion_callback,
-        );
-    }
-
-    /// Sends a desktop notification. The `on_error_callback` can be invoked to
-    /// propagate an error to the view that initiated the notification send.
-    pub fn send_desktop_notification<F>(&mut self, content: UserNotification, on_error_callback: F)
-    where
-        F: 'static + Send + Sync + FnOnce(&mut T, NotificationSendError, &mut ViewContext<T>),
-    {
-        let view_id = self.view_id;
-        let window_id = self.window_id;
-        self.app
-            .send_desktop_notification(content, view_id, window_id, on_error_callback);
-    }
-
     /// Schedules a future to run on the main thread, invoking a callback on the
     /// main thread upon completion.
     ///
@@ -502,7 +489,7 @@ impl<'a, T: View> ViewContext<'a, T> {
     ///
     /// TODO(vorporeal): Determine how best to eliminate this function and move
     ///     the relevant logic into `spawn()`.
-    fn spawn_local<S, F, U>(&mut self, future: S, callback: F) -> impl Future<Output = ()>
+    fn spawn_local<S, F, U>(&mut self, future: S, callback: F) -> impl Future<Output = ()> + use<S, F, U, T>
     where
         S: 'static + Future,
         F: 'static + FnOnce(&mut T, S::Output, &mut ViewContext<T>) -> U,
@@ -517,8 +504,8 @@ impl<'a, T: View> ViewContext<'a, T> {
             TaskCallback::ViewFromFuture {
                 window_id: self.window_id,
                 view_id: self.view_id,
-                callback: Box::new(move |view, output, app, window_id, view_id| {
-                    let view = view.as_any_mut().downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
+                callback: Box::new(move |view: &mut dyn std::any::Any, output, app, window_id, view_id| {
+                    let view = view.downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let output = *output.downcast().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let result =
                         callback(view, output, &mut ViewContext::new(app, window_id, view_id));
@@ -662,14 +649,14 @@ impl<'a, T: View> ViewContext<'a, T> {
             TaskCallback::ViewFromStream {
                 window_id: self.window_id,
                 view_id: self.view_id,
-                on_item: Box::new(move |view, output, app, window_id, view_id| {
-                    let view = view.as_any_mut().downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
+                on_item: Box::new(move |view: &mut dyn std::any::Any, output, app, window_id, view_id| {
+                    let view = view.downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let output = *output.downcast().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let mut ctx = ViewContext::new(app, window_id, view_id);
                     on_item(view, output, &mut ctx);
                 }),
-                on_done: Box::new(move |view, app, window_id, view_id| {
-                    let view = view.as_any_mut().downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
+                on_done: Box::new(move |view: &mut dyn std::any::Any, app, window_id, view_id| {
+                    let view = view.downcast_mut().expect("this downcast should never fail, as correct typing is statically enforced via the generic parameters on spawn_local");
                     let mut ctx = ViewContext::new(app, window_id, view_id);
                     on_done(view, &mut ctx);
                 }),
@@ -782,9 +769,8 @@ impl<'a, T: View> ViewContext<'a, T> {
             TaskCallback::ViewFromStream {
                 window_id: self.window_id,
                 view_id: self.view_id,
-                on_item: Box::new(move |view, task, app, window_id, view_id| {
+                on_item: Box::new(move |view: &mut dyn std::any::Any, task, app, window_id, view_id| {
                     let view = view
-                        .as_any_mut()
                         .downcast_mut()
                         .expect("unexpected view type");
                     let task: ViewTask<T> = *task
@@ -868,7 +854,7 @@ impl<V> ReadModel for ViewContext<'_, V> {
     }
 }
 
-impl<V: View> UpdateModel for ViewContext<'_, V> {
+impl<V: Entity> UpdateModel for ViewContext<'_, V> {
     fn update_model<T, F, S>(&mut self, handle: &ModelHandle<T>, update: F) -> S
     where
         T: Entity,
@@ -878,39 +864,74 @@ impl<V: View> UpdateModel for ViewContext<'_, V> {
     }
 }
 
-impl<V: View> ViewAsRef for ViewContext<'_, V> {
-    fn view<T: View>(&self, handle: &ViewHandle<T>) -> &T {
+impl<V: Entity> ViewAsRef for ViewContext<'_, V> {
+    fn view<T: Entity>(&self, handle: &ViewHandle<T>) -> &T {
         self.app.view(handle)
     }
 
-    fn try_view<T: View>(&self, handle: &ViewHandle<T>) -> Option<&T> {
+    fn try_view<T: Entity>(&self, handle: &ViewHandle<T>) -> Option<&T> {
         self.app.try_view(handle)
     }
 }
 
-impl<V: View> UpdateView for ViewContext<'_, V> {
+impl<V: Entity> UpdateView for ViewContext<'_, V> {
     fn update_view<T, F, S>(&mut self, handle: &ViewHandle<T>, update: F) -> S
     where
-        T: View,
+        T: Entity,
         F: FnOnce(&mut T, &mut ViewContext<T>) -> S,
     {
         self.app.update_view(handle, update)
     }
 }
 
-impl<V: View> ReadView for ViewContext<'_, V> {
+impl<V: Entity> ReadView for ViewContext<'_, V> {
     fn read_view<T, F, S>(&self, handle: &ViewHandle<T>, read: F) -> S
     where
-        T: View,
+        T: Entity,
         F: FnOnce(&T, &AppContext) -> S,
     {
         self.app.read_view(handle, read)
     }
 }
 
-impl<V: View> GetSingletonModelHandle for ViewContext<'_, V> {
+impl<V: Entity> GetSingletonModelHandle for ViewContext<'_, V> {
     fn get_singleton_model_handle<T: crate::SingletonEntity>(&self) -> ModelHandle<T> {
         self.app.get_singleton_model_handle()
+    }
+}
+
+// GUI-only context methods that genuinely require `T: View` (the underlying
+// `AppContext` desktop-notification APIs are View-bound). The headless TUI has no
+// desktop notifications, so these stay out of the `T: Entity` block above.
+impl<'a, T: View> ViewContext<'a, T> {
+    /// Requests permissions to send desktop notifications. The `on_completion callback` can be invoked to
+    /// propagate the outcome of the request (accepted/denied/other) back to the app.
+    ///
+    /// ## Platform-Specific
+    /// * Linux: Always calls the `on_completion_callback` with a value of [`RequestPermissionsOutcome::Accepted`].
+    pub fn request_desktop_notification_permissions<F>(&mut self, on_completion_callback: F)
+    where
+        F: 'static + Send + Sync + FnOnce(&mut T, RequestPermissionsOutcome, &mut ViewContext<T>),
+    {
+        let view_id = self.view_id;
+        let window_id = self.window_id;
+        self.app.request_desktop_notification_permissions(
+            view_id,
+            window_id,
+            on_completion_callback,
+        );
+    }
+
+    /// Sends a desktop notification. The `on_error_callback` can be invoked to
+    /// propagate an error to the view that initiated the notification send.
+    pub fn send_desktop_notification<F>(&mut self, content: UserNotification, on_error_callback: F)
+    where
+        F: 'static + Send + Sync + FnOnce(&mut T, NotificationSendError, &mut ViewContext<T>),
+    {
+        let view_id = self.view_id;
+        let window_id = self.window_id;
+        self.app
+            .send_desktop_notification(content, view_id, window_id, on_error_callback);
     }
 }
 

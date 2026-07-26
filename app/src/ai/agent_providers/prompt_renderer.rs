@@ -1,31 +1,31 @@
-//! BYOP system prompt 模板渲染。
+//! BYOP system prompt template rendering.
 //!
-//! 把 warp 客户端已经收集好的 `AIAgentContext`(env / git / skills / project_rules / current_time)
-//! 渲染为 OpenAI 兼容 endpoint 的 `system` message 字符串。
+//! Renders the `AIAgentContext` (env / git / skills / project_rules / current_time) that the
+//! warp client already collected into the `system` message string for an OpenAI-compatible endpoint.
 //!
-//! ## 工作流
+//! ## Workflow
 //!
-//! 1. 从 `params.input` 抽出最近一条 `UserQuery.context: Arc<[AIAgentContext]>`
-//!    (warp `convert_to.rs::convert_input` 取的也是同一份)
-//! 2. `collect_prompt_context` 把每个 enum variant 拍成扁平 `PromptContext` struct
-//! 3. `pick_template` 按 model id 子串匹配选 `system/{anthropic,gpt,beast,codex,
-//!    gemini,kimi,trinity,default}.j2`(对齐 opencode
+//! 1. Extract the most recent `UserQuery.context: Arc<[AIAgentContext]>` from `params.input`
+//!    (warp's `convert_to.rs::convert_input` reads the same one)
+//! 2. `collect_prompt_context` flattens each enum variant into a flat `PromptContext` struct
+//! 3. `pick_template` selects `system/{anthropic,gpt,beast,codex,
+//!    gemini,kimi,trinity,default}.j2` by model-id substring match (mirrors opencode
 //!    `packages/opencode/src/session/system.ts::provider`)
-//! 4. minijinja 渲染
+//! 4. minijinja rendering
 //!
-//! ## 模板加载
+//! ## Template loading
 //!
-//! 全部模板 `include_str!` 编进二进制(零运行时 IO),改模板需重编。
+//! All templates are `include_str!`'d into the binary (zero runtime IO); changing a template requires a rebuild.
 //!
-//! 例外:设了 `ZAP_PROMPT_DIR`(或 设置 → AI → Prompt template directory)后,
-//! 改为从该目录按名字重读,存盘即生效,不用重编。缺文件 / 语法错逐个回退内置
-//! 版本。详见 [`PROMPT_DIR_ENV`]。
+//! Exception: once `ZAP_PROMPT_DIR` (or Settings -> AI -> Prompt template directory) is set,
+//! templates are re-read from that directory by name; saving takes effect immediately, no rebuild. Missing files / syntax errors fall back per-file to the built-in
+//! version. See [`PROMPT_DIR_ENV`].
 //!
-//! 可覆盖的东西分两张表:
-//! - [`EMBEDDED`] —— 走 minijinja 的 `.j2` 模板(system prompt 及其 partials)。
-//!   有 mtime 缓存,没改过就复用已解析的 Environment。
-//! - [`EMBEDDED_RAW`] —— 直接喂给模型的纯文本(13 个 tool description +
-//!   会话标题 prompt)。**不过** minijinja,详见该常量的注释。
+//! Overridable assets live in two tables:
+//! - [`EMBEDDED`] -- the minijinja `.j2` templates (the system prompt and its partials).
+//!   Has an mtime cache; if nothing changed, the parsed Environment is reused.
+//! - [`EMBEDDED_RAW`] -- plain text fed directly to the model (13 tool descriptions +
+//!   the conversation-title prompt). Does **not** go through minijinja; see that constant's comment.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -44,22 +44,22 @@ use crate::settings::AgentProviderApiType;
 
 static ENV: OnceLock<Environment<'static>> = OnceLock::new();
 
-/// 模板热加载覆盖目录的环境变量名。
+/// Name of the environment variable for the template hot-reload override directory.
 ///
-/// 不设 → 走 [`ENV`] 里 `include_str!` 编进二进制的那份,零运行时 IO(默认行为不变)。
-/// 设了 → 每次渲染都从该目录按模板名(`system/local.j2` 这种相对路径)重读,
-/// 改完模板存盘即生效,不用重编 `app` crate(80w 行,改一行提示词也要全量重链)。
+/// Unset -> use the `include_str!`'d copy in [`ENV`] compiled into the binary, zero runtime IO (default behavior unchanged).
+/// Set -> every render re-reads from that directory by template name (relative paths like `system/local.j2`),
+/// so editing a template and saving takes effect immediately, without rebuilding the `app` crate (800k lines, where changing one line of a prompt otherwise forces a full relink).
 ///
-/// 目录下缺文件 / 读失败 / 语法错都**逐个回退到内置版本**,不 panic —— 热加载是
-/// 开发期便利,不该让一次手滑的模板编辑打断正在进行的会话。
+/// A missing file / read failure / syntax error each **falls back per-file to the built-in version**, never panicking -- hot-reload is a
+/// dev-time convenience and should not let one fat-fingered template edit interrupt an in-progress session.
 const PROMPT_DIR_ENV: &str = "ZAP_PROMPT_DIR";
 
-/// 全部模板的 (名字, 内置源码) 表。名字同时是 `ZAP_PROMPT_DIR` 下的相对路径。
+/// Table of (name, built-in source) for all templates. The name is also the relative path under `ZAP_PROMPT_DIR`.
 ///
-/// 按 model id 子串匹配分发 system prompt(对齐 opencode
-/// `packages/opencode/src/session/system.ts::provider`)。OpenRouter 路径形如
+/// Dispatches the system prompt by model-id substring match (mirrors opencode
+/// `packages/opencode/src/session/system.ts::provider`). OpenRouter paths like
 /// `anthropic/claude-3.5-sonnet` / `google/gemini-2.5-flash` / `openai/gpt-4o`
-/// 也能正确命中。识别不到家族就走 default.j2 兜底,所以自定义 model id 安全。
+/// also match correctly. An unrecognized family falls back to default.j2, so custom model ids are safe.
 const EMBEDDED: &[(&str, &str)] = &[
     // Partials
     ("partials/env.j2", include_str!("prompts/partials/env.j2")),
@@ -161,15 +161,15 @@ const EMBEDDED: &[(&str, &str)] = &[
     ),
 ];
 
-/// 纯文本资产表(不过 minijinja)。名字同样是 `ZAP_PROMPT_DIR` 下的相对路径。
+/// Table of plain-text assets (not run through minijinja). The name is likewise the relative path under `ZAP_PROMPT_DIR`.
 ///
-/// 和 [`EMBEDDED`] 分开是**故意**的:这些是直接喂给模型的 markdown,不是模板。
-/// 塞进 Environment 会被当 jinja 解析 —— `websearch.md` 里就有字面量 `{{year}}`
-/// (由 `chat_stream::build_tools_array` 自己做替换),jinja 解析会直接毁掉它。
+/// Kept separate from [`EMBEDDED`] **on purpose**: these are markdown fed directly to the model, not templates.
+/// Putting them in the Environment would have jinja parse them -- `websearch.md` contains the literal `{{year}}`
+/// (substituted by `chat_stream::build_tools_array` itself), which jinja parsing would destroy.
 ///
-/// tool description 按 **tool name** 查:`tool_descriptions/{name}.md`。
-/// 目前 13 个有独立文件的 tool 其 name 与文件名一一对应;
-/// documents / markers / suggest 那几个描述写在代码里,不参与覆盖。
+/// Tool descriptions are looked up by **tool name**: `tool_descriptions/{name}.md`.
+/// The 13 tools that currently have their own file map name-to-filename one-to-one;
+/// the documents / markers / suggest descriptions live in code and are not overridable.
 const EMBEDDED_RAW: &[(&str, &str)] = &[
     (
         "tool_descriptions/run_shell_command.md",
@@ -225,10 +225,10 @@ const EMBEDDED_RAW: &[(&str, &str)] = &[
     ),
 ];
 
-/// 查一份纯文本资产:覆盖目录里有就用覆盖版,否则用内置版。
+/// Look up a plain-text asset: use the override version if present in the override dir, otherwise the built-in.
 ///
-/// 返回 `Cow` 而不是 `&'static str`:覆盖版是运行时读出来的 owned String。
-/// 未登记的 asset 名返回 `None`(调用方应传编译期常量,不会走到)。
+/// Returns `Cow` rather than `&'static str`: the override version is an owned String read at runtime.
+/// An unregistered asset name returns `None` (callers should pass compile-time constants, so this shouldn't happen).
 fn raw_asset(name: &str) -> Option<Cow<'static, str>> {
     let embedded = EMBEDDED_RAW
         .iter()
@@ -249,11 +249,11 @@ fn raw_asset(name: &str) -> Option<Cow<'static, str>> {
     Some(Cow::Borrowed(embedded))
 }
 
-/// 取某个 tool 的描述:覆盖目录里的 `tool_descriptions/{tool_name}.md` 优先,
-/// 否则用 `fallback`(即 registry 里 `include_str!` 进来的那份)。
+/// Get a tool's description: `tool_descriptions/{tool_name}.md` in the override dir takes priority,
+/// otherwise use `fallback` (the copy `include_str!`'d in from the registry).
 ///
-/// 没走 [`CACHE`] 的 mtime 缓存:一次请求只查这十来个文件、每个几 KB,
-/// 而且只在开了热加载时才读盘;为它单独再建一套缓存不划算。
+/// Skips the [`CACHE`] mtime cache: a single request only looks up these dozen-odd files, each a few KB,
+/// and only reads from disk when hot-reload is on; building a separate cache for it isn't worth it.
 pub fn tool_description(tool_name: &str, fallback: &'static str) -> Cow<'static, str> {
     if active_override_dir().is_none() {
         return Cow::Borrowed(fallback);
@@ -261,8 +261,8 @@ pub fn tool_description(tool_name: &str, fallback: &'static str) -> Cow<'static,
     raw_asset(&format!("tool_descriptions/{tool_name}.md")).unwrap_or(Cow::Borrowed(fallback))
 }
 
-/// 取会话标题生成用的 system prompt(`tasks/title_system.md`)。
-/// 内置版就在 [`EMBEDDED_RAW`] 里,调用方不用再传 fallback。
+/// Get the system prompt used for conversation-title generation (`tasks/title_system.md`).
+/// The built-in version lives in [`EMBEDDED_RAW`], so callers don't need to pass a fallback.
 pub fn title_system_prompt() -> Cow<'static, str> {
     raw_asset("tasks/title_system.md")
         .expect("tasks/title_system.md is registered in EMBEDDED_RAW")
@@ -301,11 +301,11 @@ pub fn custom_prompt_raw(rel: &str) -> Option<String> {
     }
 }
 
-/// 把内置模板 + 纯文本资产导出到 `dir`,返回实际写出的文件数。
+/// Export the built-in templates + plain-text assets to `dir`, returning the number of files actually written.
 ///
-/// 语义是「补齐,不覆盖」:
-/// - 已存在的文件一律跳过 —— 用户改过的东西不能被这个动作抹掉。
-/// - 因此可以重复点:升级后新增的模板会被补进去,老的改动原样保留。
+/// The semantics are "fill in the gaps, don't overwrite":
+/// - Existing files are always skipped -- user edits must not be wiped out by this action.
+/// - So it's safe to click repeatedly: templates added by an upgrade get filled in, old edits are kept as-is.
 ///
 /// Only exports what is **actually overridable** — i.e. everything in `EMBEDDED`
 /// and `EMBEDDED_RAW`. `active_ai/*.j2` are now part of `EMBEDDED` (they share the
@@ -332,31 +332,31 @@ pub fn seed_dir(dir: &Path) -> std::io::Result<usize> {
     Ok(written)
 }
 
-/// 设置面板给出的默认建议路径(`~/.zap/prompts`)。拿不到 home 时返回 `None`。
+/// The default suggested path shown by the settings panel (`~/.zap/prompts`). Returns `None` when home can't be resolved.
 pub fn default_prompts_dir() -> Option<PathBuf> {
     warp_core::paths::warp_home_prompts_dir()
 }
 
-/// 模板热加载的当前状态,供设置面板展示一个可见指示 ——
-/// 否则“设了目录却没生效”“忘了设目录”都是静默态,用户只会看到内置模板照旧发出去。
+/// The current template hot-reload status, so the settings panel can show a visible indicator --
+/// otherwise "set a dir but it didn't take effect" and "forgot to set a dir" are both silent states, and the user just sees the built-in templates go out as usual.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverrideStatus {
-    /// 没有生效的覆盖目录(设置为空且没设 `ZAP_PROMPT_DIR`)→ 走内置模板。
+    /// No effective override dir (setting empty and `ZAP_PROMPT_DIR` unset) -> use built-in templates.
     Inactive,
-    /// 覆盖生效中。
+    /// Override is active.
     Active {
-        /// 实际生效的目录。
+        /// The directory actually in effect.
         dir: PathBuf,
-        /// 是否来自 `ZAP_PROMPT_DIR` 环境变量(优先级高于设置面板)。
+        /// Whether it comes from the `ZAP_PROMPT_DIR` environment variable (higher priority than the settings panel).
         from_env: bool,
-        /// 覆盖目录里实际存在的可覆盖文件数。
+        /// Number of overridable files that actually exist in the override dir.
         on_disk: usize,
-        /// 可覆盖文件总数(`EMBEDDED` + `EMBEDDED_RAW`)。
+        /// Total number of overridable files (`EMBEDDED` + `EMBEDDED_RAW`).
         total: usize,
     },
 }
 
-/// 计算 [`OverrideStatus`]。只 stat 文件是否存在,不读内容。
+/// Compute the [`OverrideStatus`]. Only stats whether files exist; does not read contents.
 pub fn override_status() -> OverrideStatus {
     let Some(dir) = active_override_dir() else {
         return OverrideStatus::Inactive;
@@ -387,13 +387,13 @@ fn build_env() -> Environment<'static> {
     env
 }
 
-/// 从 `dir` 覆盖构建一份 Environment。逐模板尝试读盘,失败就用内置源码兜底。
+/// Build an Environment overridden from `dir`. Tries to read each template from disk, falling back to the built-in source on failure.
 fn build_env_from_dir(dir: &Path) -> Environment<'static> {
     let mut env = Environment::new();
     let mut overridden = 0usize;
 
     for (name, embedded) in EMBEDDED {
-        // name 是编译期常量(`system/local.j2` 这类),不含用户输入,join 无穿越风险。
+        // name is a compile-time constant (like `system/local.j2`), contains no user input, so join has no traversal risk.
         let path = dir.join(name);
         let src = match std::fs::read_to_string(&path) {
             Ok(s) => Some(s),
@@ -405,8 +405,8 @@ fn build_env_from_dir(dir: &Path) -> Environment<'static> {
         };
 
         match src {
-            // 读到了但语法错:回退内置,并把错误报出来(否则用户只会看到
-            // “改了模板但没生效”,查不到原因)。
+            // Read but has a syntax error: fall back to built-in and report the error (otherwise the user only sees
+            // "edited the template but it didn't take effect" with no way to find the cause).
             Some(s) => match env.add_template_owned(*name, s) {
                 Ok(()) => overridden += 1,
                 Err(e) => {
@@ -432,11 +432,11 @@ fn build_env_from_dir(dir: &Path) -> Environment<'static> {
     env
 }
 
-/// 渲染用的 Environment 句柄。
+/// Environment handle used for rendering.
 ///
-/// 默认路径返回 `OnceLock` 里那份 `&'static`(和热加载引入前完全一致,零运行时 IO);
-/// 开了热加载才走 [`CACHE`]:每次渲染只 stat 一遍模板对 mtime,没变就复用
-/// 已解析好的那份,改动过才重新解析。
+/// The default path returns the `&'static` in the `OnceLock` (identical to before hot-reload was introduced, zero runtime IO);
+/// only with hot-reload on does it go through [`CACHE`]: each render stats the templates' mtimes once and, if unchanged, reuses
+/// the already-parsed copy, re-parsing only when something changed.
 enum EnvHandle {
     Static(&'static Environment<'static>),
     Cached(Arc<Environment<'static>>),
@@ -453,16 +453,16 @@ impl std::ops::Deref for EnvHandle {
     }
 }
 
-/// 设置面板(设置 → AI → Prompt template directory)写进来的覆盖目录。
+/// The override dir written in by the settings panel (Settings -> AI -> Prompt template directory).
 ///
-/// `prompt_renderer` 是一组自由函数,拿不到 `warpui::AppContext`,没法直接读
-/// `AISettings`;所以由 settings 层在启动 / 设置变更时调 [`set_override_dir`]
-/// 把值推过来。优先级低于 [`PROMPT_DIR_ENV`] —— 环境变量是临时调试用的,
-/// 应该盖过持久化配置。
+/// `prompt_renderer` is a set of free functions with no access to `warpui::AppContext`, so it can't read
+/// `AISettings` directly; instead the settings layer calls [`set_override_dir`] at startup / on settings change
+/// to push the value in. Lower priority than [`PROMPT_DIR_ENV`] -- the env var is for temporary debugging and
+/// should override the persisted config.
 static OVERRIDE_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
 
-/// 由 settings 层调用,推送 设置 → AI → Prompt template directory 的当前值。
-/// 传 `None` / 空串表示关闭热加载(回到内置模板)。
+/// Called by the settings layer to push the current value of Settings -> AI -> Prompt template directory.
+/// Passing `None` / an empty string disables hot-reload (back to built-in templates).
 pub fn set_override_dir(dir: Option<PathBuf>) {
     let dir = dir.filter(|p| !p.as_os_str().is_empty());
     match OVERRIDE_DIR.write() {
@@ -486,24 +486,24 @@ pub fn active_prompt_dir() -> Option<PathBuf> {
     active_override_dir()
 }
 
-/// 解析本次渲染要用的覆盖目录:环境变量优先,其次设置面板。
+/// Resolve the override dir to use for this render: env var first, then the settings panel.
 fn active_override_dir() -> Option<PathBuf> {
-    // 每次读环境变量(而不是启动时缓存一次),这样改完环境重开会话即生效。
-    // 开销是一次 getenv,相对一次 LLM 请求可忽略。
+    // Read the env var every time (rather than caching once at startup), so changing the env and reopening a session takes effect.
+    // The cost is one getenv, negligible relative to an LLM request.
     if let Some(dir) = std::env::var_os(PROMPT_DIR_ENV) {
         if !dir.is_empty() {
             return Some(PathBuf::from(dir));
         }
     }
-    // 锁中毒时退化为“无覆盖”,而不是 panic —— 热加载不该拖垮会话。
+    // On a poisoned lock, degrade to "no override" rather than panicking -- hot-reload shouldn't take down a session.
     OVERRIDE_DIR.read().ok().and_then(|slot| slot.clone())
 }
 
-/// 覆盖目录下每个模板的 mtime 快照。`None` = 该文件当前不存在
-/// (记下来是必要的:新建一个原本缺失的覆盖文件同样得触发重建)。
+/// mtime snapshot of each template in the override dir. `None` = that file currently doesn't exist
+/// (recording this is necessary: creating a previously-missing override file must also trigger a rebuild).
 type Stamps = Vec<Option<SystemTime>>;
 
-/// 已解析的覆盖 Environment + 其来源目录 + 当时的 mtime 快照。
+/// A parsed override Environment + its source directory + the mtime snapshot at that time.
 struct CachedEnv {
     dir: PathBuf,
     stamps: Stamps,
@@ -512,7 +512,7 @@ struct CachedEnv {
 
 static CACHE: RwLock<Option<CachedEnv>> = RwLock::new(None);
 
-/// stat 覆盖目录下的每个模板,取 mtime 快照。只 stat 不读内容。
+/// stat each template in the override dir to take an mtime snapshot. Only stats, doesn't read contents.
 fn stamp_dir(dir: &Path) -> Stamps {
     EMBEDDED
         .iter()
@@ -529,12 +529,12 @@ fn env() -> EnvHandle {
         return EnvHandle::Static(ENV.get_or_init(build_env));
     };
 
-    // 命中判定:目录没换 + 每个模板的 mtime 都没变。
-    // 常见路径(没改模板)只有 ~20 次 stat + 一次 Arc clone,不重新解析。
+    // Hit condition: the directory didn't change + every template's mtime is unchanged.
+    // The common path (no template edits) is only ~20 stats + one Arc clone, no re-parse.
     //
-    // 注意 mtime 在部分文件系统上只有 1 秒粒度:同一秒内的连续两次编辑可能
-    // 认不出来。手改模板不会撞上;真撞上了也只是那一次渲染用旧模板,
-    // 下一次就正常。为此上 hash 不划算。
+    // Note mtime has only 1-second granularity on some filesystems: two consecutive edits within the same second may
+    // go unnoticed. Hand-editing templates won't hit this; even if it does, only that one render uses the old template,
+    // and the next one is fine. Hashing to avoid this isn't worth it.
     let stamps = stamp_dir(&dir);
     if let Ok(cache) = CACHE.read() {
         if let Some(cached) = cache.as_ref() {
@@ -545,7 +545,7 @@ fn env() -> EnvHandle {
     }
 
     let env = Arc::new(build_env_from_dir(&dir));
-    // 写缓存失败(锁中毒)不影响本次渲染,只是下次还得重解析。
+    // A failed cache write (poisoned lock) doesn't affect this render, it just means the next one re-parses again.
     match CACHE.write() {
         Ok(mut slot) => {
             *slot = Some(CachedEnv {
@@ -560,14 +560,14 @@ fn env() -> EnvHandle {
 }
 
 // ---------------------------------------------------------------------------
-// 模板选择
+// Template selection
 // ---------------------------------------------------------------------------
 
-/// 按 model id 子串匹配选模板(对齐 opencode
+/// Select a template by model-id substring match (mirrors opencode
 /// `packages/opencode/src/session/system.ts::provider`)。
 ///
-/// Ollama / 本地 BYOP 走 [`pick_template`] 的 `local.j2` 短模板(见 `api_type` 参数),
-/// 避免 9k+ 的 default.j2 淹没小模型的对话上下文。
+/// Ollama / local BYOP uses [`pick_template`]'s short `local.j2` template (see the `api_type` parameter),
+/// to avoid the 9k+ default.j2 drowning a small model's conversation context.
 pub fn pick_template(model_id: &str, api_type: AgentProviderApiType) -> &'static str {
     if api_type == AgentProviderApiType::Ollama {
         return "system/local.j2";
@@ -575,7 +575,7 @@ pub fn pick_template(model_id: &str, api_type: AgentProviderApiType) -> &'static
     pick_template_by_model(model_id)
 }
 
-/// 按 model id 子串匹配选模板(不含 provider 级 override)。
+/// Select a template by model-id substring match (without provider-level override).
 fn pick_template_by_model(model_id: &str) -> &'static str {
     let id = model_id.to_ascii_lowercase();
 
@@ -604,8 +604,8 @@ fn pick_template_by_model(model_id: &str) -> &'static str {
     "system/default.j2"
 }
 
-/// 从 `LLMId` 中抽取模型 id 字串。BYOP 编码会取 model 部分,
-/// 否则原样返回(理论上 BYOP 路径只会传 BYOP id,但兜底一下)。
+/// Extract the model-id string from an `LLMId`. BYOP encoding takes the model part,
+/// otherwise returns it as-is (in theory the BYOP path only passes BYOP ids, but this is a fallback).
 fn model_id_from_llm_id(id: &LLMId) -> String {
     if let Some((_pid, mid)) = super::llm_id::decode(id) {
         mid
@@ -615,7 +615,7 @@ fn model_id_from_llm_id(id: &LLMId) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// AIAgentContext → 扁平模板上下文
+// AIAgentContext -> flat template context
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, Serialize)]
@@ -653,8 +653,8 @@ struct ProjectRuleCtx {
     content: String,
 }
 
-/// Zap BYOP 修复 Issue #116:全局 Rules(用户在 设置 → Agents → Rules 创建)
-/// 的扁平视图,喂给 `partials/user_rules.j2` 渲染进 system prompt。
+/// Zap BYOP fix for Issue #116: a flat view of the global Rules (created by the user in
+/// Settings -> Agents -> Rules), fed to `partials/user_rules.j2` to render into the system prompt.
 #[derive(Debug, Serialize)]
 struct UserRuleCtx {
     name: Option<String>,
@@ -674,33 +674,33 @@ struct PromptContext {
     git: Option<GitCtx>,
     skills: Vec<SkillCtx>,
     project_rules: Vec<ProjectRuleCtx>,
-    /// Zap BYOP 修复 Issue #116:由 caller(`render_system`)从
-    /// `RequestParams.user_rules` 注入,经 `partials/user_rules.j2` 渲染。
+    /// Zap BYOP fix for Issue #116: injected by the caller (`render_system`) from
+    /// `RequestParams.user_rules`, rendered via `partials/user_rules.j2`.
     user_rules: Vec<UserRuleCtx>,
     current_time: String,
     model_id: String,
-    /// 本轮真正喂给上游模型的 tool name 列表(由 `chat_stream::available_tool_names`
-    /// 计算,含 gating 后的内置 tools 和当前 MCP tools)。
-    /// 模板按此动态渲染白名单,不再硬编码。
+    /// The list of tool names actually fed to the upstream model this turn (computed by `chat_stream::available_tool_names`,
+    /// including the gated built-in tools and the current MCP tools).
+    /// The template renders the whitelist dynamically from this, no longer hardcoded.
     available_tools: Vec<String>,
-    /// 本轮是否处于 `/plan` 触发的 Plan Mode(只读研究模式)。
-    /// 由 `chat_stream::is_plan_mode_turn` 计算,模板按此 include
-    /// `partials/plan_mode.j2` 注入只读约束 + 计划产出引导。
+    /// Whether this turn is in the `/plan`-triggered Plan Mode (read-only research mode).
+    /// Computed by `chat_stream::is_plan_mode_turn`; the template uses it to include
+    /// `partials/plan_mode.j2`, injecting the read-only constraints + plan-output guidance.
     plan_mode: bool,
 }
 
 fn collect_prompt_context(model_id: &str, ctx: &[AIAgentContext]) -> PromptContext {
     let mut out = PromptContext {
-        // P0-1 prompt cache 优化:`current_time` 只保留到自然日粒度,
-        // 不再精确到秒。原因:
-        // - system prompt 中任何每请求都变的内容都会让 Anthropic 的第 1 个
-        //   system breakpoint 写入的 hash 独一无二 → 写完即废,永不命中。
-        //   OpenAI 前 256 token 路由哈希同理,会被分散到不同机器。
-        // - 模型实际只需要知道“今天是哪天”就够了,跳越自然日那一次
-        //   miss 成本可接受(一天 × 所有活跃对话 × system tokens)。
-        // - 跨年同理成本与跨日一致,不需额外处理。
-        // 后续可考虑进一步把“当前时间”移到 user message 末尾(P0-1 方案 C),
-        // 让 system 段 100% 稳定;本步先取低风险的方案 B。
+        // P0-1 prompt cache optimization: `current_time` is kept only to calendar-day granularity,
+        // no longer down to the second. Reasons:
+        // - Any per-request-changing content in the system prompt makes the hash written by
+        //   Anthropic's first system breakpoint unique -> discarded as soon as written, never a hit.
+        //   OpenAI's first-256-token routing hash is the same, scattering requests across different machines.
+        // - The model really only needs to know "what day it is today", so the one miss when crossing
+        //   a calendar day is acceptable (one day x all active conversations x system tokens).
+        // - Crossing a year has the same cost as crossing a day, no extra handling needed.
+        // A later step could move "current time" to the end of the user message (P0-1 option C),
+        // making the system section 100% stable; this step takes the lower-risk option B first.
         current_time: Local::now().format("%Y-%m-%d").to_string(),
         model_id: model_id.to_owned(),
         ..Default::default()
@@ -727,22 +727,22 @@ fn collect_prompt_context(model_id: &str, ctx: &[AIAgentContext]) -> PromptConte
                 }
             }
             AIAgentContext::CurrentTime { current_time } => {
-                // P0-1:与默认值保持一致,只保留自然日粒度。
-                // 上游 Zap 有可能传入精确到秒的 timestamp,这里统一压到“当前日期”。
+                // P0-1: consistent with the default, keep only calendar-day granularity.
+                // Upstream Zap may pass a second-precise timestamp; here we uniformly collapse it to "current date".
                 out.current_time = current_time.format("%Y-%m-%d").to_string();
             }
-            // 代码索引功能未实现,Codebase 上下文不进 system prompt。
+            // Code indexing is not implemented, so Codebase context does not go into the system prompt.
             AIAgentContext::Codebase { .. } => {}
-            // P1-7 prompt cache 说明:`Git { head, branch }` 取决于当前仓库状态,
-            // 用户切分支会让渲染出的 system 段变化,导致所有上游供应商
-            // (Anthropic / OpenAI / DeepSeek)的 system+messages cache 全部失效。
-            // 这是**预期行为**:
-            //   - 指令模型在新分支上不能认为是老 git context;
-            //   - 作为代价用户在新分支上首请求 100% miss、写入新 cache,之后该
-            //     分支会复用。跨分支跳转频繁的开发者会看到最多的 miss。
-            // 考虑过的替代:把 git 状态移到 user message 末尾(同 P0-1 方案 C),
-            // 但那样 system 段会丢失“模型一看就知道当前分支”的上下文意义,
-            // 需要依赖它进行推理的模型会变差。本补丁维持现状。
+            // P1-7 prompt cache note: `Git { head, branch }` depends on the current repo state,
+            // so switching branches changes the rendered system section, invalidating the system+messages
+            // cache of all upstream providers (Anthropic / OpenAI / DeepSeek).
+            // This is **expected behavior**:
+            //   - the model must not treat the old git context as valid on a new branch;
+            //   - as the cost, the first request on a new branch is a 100% miss and writes a new cache, after which that
+            //     branch reuses it. Developers who jump between branches often will see the most misses.
+            // Considered alternative: move git state to the end of the user message (same as P0-1 option C),
+            // but then the system section loses the contextual meaning of "the model sees the current branch at a glance",
+            // and models that rely on it for reasoning get worse. This patch keeps the status quo.
             AIAgentContext::Git { head, branch } => {
                 out.git = Some(GitCtx {
                     head: head.clone(),
@@ -786,12 +786,12 @@ fn collect_prompt_context(model_id: &str, ctx: &[AIAgentContext]) -> PromptConte
                     out.project_rules.push(ProjectRuleCtx { path, content });
                 }
             }
-            // 用户附件类 context(File / Image / SelectedText / Block)不进 system prompt,
-            // 由 `user_context::render_user_attachments` 在 chat_stream 的 UserQuery 分支
-            // 注入到当前轮 user message。这跟 warp 自家路径分两类的语义对齐:
-            // - 环境型 → InputContext.{directory,shell,git,...} → 后端注入 system 区
-            // - 附件型 → InputContext.{executed_shell_commands,selected_text,files,images}
-            //            → 后端注入 user 区
+            // User-attachment context (File / Image / SelectedText / Block) does not go into the system prompt;
+            // it's injected into the current turn's user message by `user_context::render_user_attachments`
+            // in chat_stream's UserQuery branch. This mirrors warp's own two-category split:
+            // - environment type -> InputContext.{directory,shell,git,...} -> backend injects into the system section
+            // - attachment type -> InputContext.{executed_shell_commands,selected_text,files,images}
+            //            -> backend injects into the user section
             AIAgentContext::File(_)
             | AIAgentContext::Image(_)
             | AIAgentContext::SelectedText(_)
@@ -803,7 +803,7 @@ fn collect_prompt_context(model_id: &str, ctx: &[AIAgentContext]) -> PromptConte
 }
 
 // ---------------------------------------------------------------------------
-// 公共 API
+// Public API
 // ---------------------------------------------------------------------------
 
 pub fn render_init_project_command(arguments: Option<&str>) -> String {
@@ -831,15 +831,15 @@ pub fn render_init_project_command(arguments: Option<&str>) -> String {
     }
 }
 
-/// 渲染最终发给上游模型的 system message 字符串。
+/// Render the final system message string sent to the upstream model.
 ///
-/// `ctx` 一般来自 `params.input` 中最近一条 `AIAgentInput::UserQuery.context`。
-/// 拿不到 context(空数组)也 OK — 模板会用 default 占位渲染。
+/// `ctx` usually comes from the most recent `AIAgentInput::UserQuery.context` in `params.input`.
+/// No context (empty array) is fine too -- the template renders with default placeholders.
 ///
-/// `available_tools` 由 `chat_stream::available_tool_names` 计算,本轮实际暴露给
-/// 上游 LLM 的工具名列表(内置 + MCP,已应用 gating)。模板按此动态渲染白名单,
-/// 不要再硬编码"unavailable tools"黑名单 —— 模型看不到的工具自然不会调,
-/// 反过来用文本黑名单会让模型连真实可用的工具也不敢调。
+/// `available_tools` is computed by `chat_stream::available_tool_names`: the list of tool names actually exposed
+/// to the upstream LLM this turn (built-in + MCP, gating already applied). The template renders the whitelist dynamically from this,
+/// no longer hardcoding an "unavailable tools" blacklist -- the model naturally won't call tools it can't see,
+/// whereas a text blacklist would make the model afraid to call even genuinely-available tools.
 pub fn render_system(
     api_type: AgentProviderApiType,
     model: &LLMId,
@@ -1028,7 +1028,7 @@ fn fallback_init_project_command(arguments: &str) -> String {
     )
 }
 
-/// 渲染兜底 system(只在模板加载/渲染失败时用,不应在正常路径触发)。
+/// Fallback system render (only used when template loading/rendering fails; should never trigger on the normal path).
 fn fallback_system(model_id: &str) -> String {
     format!(
         "You are the AI coding agent inside Zap, an AI Development Environment (ADE). \
@@ -1044,14 +1044,14 @@ mod tests {
     use crate::ai::agent::AIAgentContext;
     use crate::ai_assistant::execution_context::{WarpAiExecutionContext, WarpAiOsContext};
 
-    // -- 模板热加载(ZAP_PROMPT_DIR)-----------------------------------------
+    // -- Template hot-reload (ZAP_PROMPT_DIR) --------------------------------
     //
-    // 都直接测 `build_env_from_dir`(纯函数,入参是路径),不走 `env()`。
-    // 因为 `env()` 读进程级环境变量,而 cargo test 默认多线程跑,
-    // set_var/remove_var 会跨测试互相打架。`env()` 本身只是
-    // “读 var → 二选一”,逻辑薄到不值得为它引 serial_test。
+    // All tests hit `build_env_from_dir` directly (a pure function taking a path), not `env()`.
+    // Because `env()` reads a process-level env var, and cargo test runs multi-threaded by default,
+    // set_var/remove_var would fight across tests. `env()` itself is just
+    // "read var -> pick one of two", logic too thin to be worth pulling in serial_test for.
 
-    /// 在 dir 下按模板名写一份覆盖文件(自动建父目录)。
+    /// Write an override file under dir by template name (creating parent dirs automatically).
     fn write_override(dir: &Path, name: &str, content: &str) {
         let path = dir.join(name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1062,10 +1062,10 @@ mod tests {
     fn hot_reload_empty_dir_falls_back_to_embedded() {
         let tmp = tempfile::tempdir().unwrap();
         let env = build_env_from_dir(tmp.path());
-        // 一个模板都没覆盖 → 渲染结果应和内置版本一致
+        // No template overridden -> the rendered result should match the built-in version
         let embedded = build_env();
         for (name, _) in EMBEDDED {
-            assert!(env.get_template(name).is_ok(), "{name} 应存在");
+            assert!(env.get_template(name).is_ok(), "{name} should exist");
         }
         let ctx = Value::from_serialize(&PromptContext {
             model_id: "test-model".into(),
@@ -1104,7 +1104,7 @@ mod tests {
 
     #[test]
     fn hot_reload_overrides_are_per_file() {
-        // 只覆盖 local.j2,其他模板必须仍是内置版本 —— 覆盖不是“全有或全无”。
+        // Only local.j2 is overridden; other templates must still be the built-in version -- overriding is not "all or nothing".
         let tmp = tempfile::tempdir().unwrap();
         write_override(tmp.path(), "system/local.j2", "OVERRIDDEN");
 
@@ -1118,7 +1118,7 @@ mod tests {
                 .unwrap(),
             "OVERRIDDEN"
         );
-        // anthropic.j2 没覆盖 → 仍应渲染出内置内容
+        // anthropic.j2 is not overridden -> it should still render the built-in content
         let anthropic = env
             .get_template("system/anthropic.j2")
             .unwrap()
@@ -1130,8 +1130,8 @@ mod tests {
 
     #[test]
     fn hot_reload_overridden_partial_reaches_including_template() {
-        // include 链要走覆盖版:local.j2 include 了 partials/env.j2,
-        // 只覆盖 partial 也应体现在最终 system prompt 里。
+        // The include chain must use the override version: local.j2 includes partials/env.j2,
+        // so overriding just the partial should also show up in the final system prompt.
         let tmp = tempfile::tempdir().unwrap();
         write_override(tmp.path(), "partials/env.j2", "PARTIAL-OVERRIDE");
 
@@ -1143,13 +1143,13 @@ mod tests {
             .unwrap();
 
         assert!(out.contains("PARTIAL-OVERRIDE"), "{out}");
-        // 内置 local.j2 的正文仍在(只换了 partial)
+        // The built-in local.j2 body is still there (only the partial was swapped)
         assert!(out.contains("run_shell_command"), "{out}");
     }
 
     #[test]
     fn hot_reload_bad_syntax_falls_back_to_embedded() {
-        // 手滑写坏模板不该 panic,也不该让该模板消失 —— 回退内置版本。
+        // A fat-fingered broken template should not panic, nor make the template disappear -- fall back to the built-in version.
         let tmp = tempfile::tempdir().unwrap();
         write_override(tmp.path(), "system/local.j2", "{% if unclosed %}");
 
@@ -1160,12 +1160,12 @@ mod tests {
             .render(Value::from_serialize(&PromptContext::default()))
             .unwrap();
 
-        assert!(out.contains("run_shell_command"), "回退到内置 local.j2: {out}");
+        assert!(out.contains("run_shell_command"), "should fall back to the built-in local.j2: {out}");
     }
 
     #[test]
     fn hot_reload_unrelated_files_in_dir_are_ignored() {
-        // 覆盖目录里的杂项文件不参与加载(只按 EMBEDDED 的名字表查)。
+        // Miscellaneous files in the override dir do not participate in loading (only names in the EMBEDDED table are looked up).
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("README.md"), "noise").unwrap();
         write_override(tmp.path(), "system/nonexistent.j2", "noise");
@@ -1177,7 +1177,7 @@ mod tests {
 
     #[test]
     fn hot_reload_rereads_after_edit() {
-        // 热加载的核心承诺:改完存盘,下一次渲染就是新的(不缓存)。
+        // The core promise of hot-reload: edit and save, and the next render is the new one (no caching).
         let tmp = tempfile::tempdir().unwrap();
         write_override(tmp.path(), "system/local.j2", "V1");
         let ctx = Value::from_serialize(&PromptContext::default());
@@ -1200,7 +1200,7 @@ mod tests {
 
     #[test]
     fn hot_reload_missing_dir_falls_back_to_embedded() {
-        // 配了个不存在的目录(打错路径 / 外置盘没挂)→ 全量回退,不 panic。
+        // Configured a nonexistent directory (typo'd path / unmounted external drive) -> full fallback, no panic.
         let env = build_env_from_dir(Path::new("/nonexistent/zap-prompts-xyz"));
         let out = env
             .get_template("system/local.j2")
@@ -1215,14 +1215,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let stamps = stamp_dir(tmp.path());
         assert_eq!(stamps.len(), EMBEDDED.len());
-        // 空目录 → 每个都是 None(文件不存在)
+        // Empty dir -> every entry is None (files don't exist)
         assert!(stamps.iter().all(|s| s.is_none()));
     }
 
     #[test]
     fn stamp_dir_marks_present_files_and_only_those() {
-        // 新建一个原本缺失的覆盖文件必须让快照从 None 变 Some,
-        // 否则“第一次放进覆盖文件”这一步不会触发重建。
+        // Creating a previously-missing override file must flip the snapshot from None to Some,
+        // otherwise "putting in an override file for the first time" wouldn't trigger a rebuild.
         let tmp = tempfile::tempdir().unwrap();
         write_override(tmp.path(), "system/local.j2", "X");
 
@@ -1232,17 +1232,17 @@ mod tests {
             .position(|(n, _)| *n == "system/local.j2")
             .unwrap();
 
-        assert!(stamps[idx].is_some(), "已写入的模板应有 mtime");
+        assert!(stamps[idx].is_some(), "a written template should have an mtime");
         assert_eq!(
             stamps.iter().filter(|s| s.is_some()).count(),
             1,
-            "只有写过的那个模板有 mtime"
+            "only the template that was written has an mtime"
         );
     }
 
     #[test]
     fn stamp_dir_distinguishes_directories() {
-        // 缓存命中要求 dir 相同;不同目录即使内容一样也不该复用。
+        // A cache hit requires the same dir; different dirs shouldn't reuse each other even with identical content.
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
         write_override(a.path(), "system/local.j2", "X");
@@ -1250,23 +1250,23 @@ mod tests {
         assert_ne!(stamp_dir(a.path()), stamp_dir(b.path()));
     }
 
-    // -- 纯文本资产(tool descriptions / title)-------------------------------
+    // -- Plain-text assets (tool descriptions / title) -----------------------
     //
-    // 这几个要经 `active_override_dir()`,即读进程级环境变量,所以不能像上面
-    // 那样纯靠传路径绕开。默认(没设 ZAP_PROMPT_DIR、没推 set_override_dir)
-    // 时行为是确定的,只测这一侧;覆盖生效的路径由 `raw_asset_*` 直接测。
+    // These go through `active_override_dir()`, i.e. read a process-level env var, so they can't be
+    // bypassed purely by passing a path like above. The default (ZAP_PROMPT_DIR unset, set_override_dir not pushed)
+    // behavior is deterministic, so we only test that side; the override-active path is tested directly by `raw_asset_*`.
 
     #[test]
     fn tool_description_without_override_borrows_fallback() {
         let out = tool_description("grep", "FALLBACK");
         assert_eq!(out, "FALLBACK");
-        assert!(matches!(out, Cow::Borrowed(_)), "默认路径不该有分配");
+        assert!(matches!(out, Cow::Borrowed(_)), "the default path should not allocate");
     }
 
     #[test]
     fn tool_description_unknown_tool_falls_back() {
-        // documents / markers / suggest 那几个没有 .md 文件,必须回退到
-        // registry 里写死的描述,而不是变成空串。
+        // documents / markers / suggest have no .md file, so they must fall back to
+        // the hardcoded description in the registry, not become an empty string.
         assert_eq!(
             raw_asset("tool_descriptions/read_documents.md").as_deref(),
             None
@@ -1277,15 +1277,15 @@ mod tests {
     fn raw_asset_returns_embedded_for_registered_names() {
         let out = raw_asset("tool_descriptions/websearch.md").unwrap();
         assert!(!out.is_empty());
-        // websearch.md 里有字面量 {{year}},由 chat_stream 自己替换。
-        // 这里顺带确认它没被 jinja 吃掉(EMBEDDED_RAW 不过 minijinja)。
+        // websearch.md contains the literal {{year}}, substituted by chat_stream itself.
+        // Here we also confirm it wasn't eaten by jinja (EMBEDDED_RAW does not go through minijinja).
         assert!(out.contains("{{year}}"), "{out}");
     }
 
     #[test]
     fn raw_asset_unregistered_name_is_none() {
         assert!(raw_asset("tool_descriptions/not_a_tool.md").is_none());
-        assert!(raw_asset("system/local.j2").is_none(), "模板不在 RAW 表里");
+        assert!(raw_asset("system/local.j2").is_none(), "templates are not in the RAW table");
     }
 
     #[test]
@@ -1293,13 +1293,13 @@ mod tests {
         let out = title_system_prompt();
         assert!(
             out.contains("{{ language }}"),
-            "chat_stream 依赖这个占位做替换: {out}"
+            "chat_stream relies on this placeholder for substitution: {out}"
         );
     }
 
     #[test]
     fn embedded_raw_covers_every_tool_description_file() {
-        // 防回归:新增 tool_descriptions/*.md 但忘了登记 → 该 tool 不可热加载。
+        // Regression guard: adding a tool_descriptions/*.md but forgetting to register it -> that tool can't be hot-reloaded.
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/ai/agent_providers/prompts/tool_descriptions");
         let mut on_disk: Vec<String> = std::fs::read_dir(&root)
@@ -1316,13 +1316,13 @@ mod tests {
             .collect();
         registered.sort();
 
-        assert_eq!(on_disk, registered, "tool_descriptions/ 与 EMBEDDED_RAW 不一致");
+        assert_eq!(on_disk, registered, "tool_descriptions/ and EMBEDDED_RAW disagree");
     }
 
     #[test]
     fn embedded_raw_names_match_tool_names() {
-        // 覆盖是按 tool name 查 `tool_descriptions/{name}.md` 的,
-        // 名字对不上就静默失效 —— 这里钉死这个契约。
+        // Overrides are looked up by tool name as `tool_descriptions/{name}.md`,
+        // so a name mismatch fails silently -- this pins that contract.
         for (name, _) in EMBEDDED_RAW
             .iter()
             .filter(|(n, _)| n.starts_with("tool_descriptions/"))
@@ -1332,12 +1332,12 @@ mod tests {
                 .trim_end_matches(".md");
             assert!(
                 super::super::tools::REGISTRY.iter().any(|t| t.name == stem),
-                "{stem} 没有同名 tool,覆盖查不到"
+                "{stem} has no tool of the same name, so the override can't be found"
             );
         }
     }
 
-    // -- 导出内置模板(一键 seed)--------------------------------------------
+    // -- Export built-in templates (one-click seed) --------------------------
 
     #[test]
     fn seed_dir_writes_every_overridable_file() {
@@ -1347,15 +1347,15 @@ mod tests {
         assert_eq!(n, EMBEDDED.len() + EMBEDDED_RAW.len());
         for (name, content) in EMBEDDED.iter().chain(EMBEDDED_RAW.iter()) {
             let path = tmp.path().join(name);
-            assert!(path.is_file(), "{name} 应被导出");
+            assert!(path.is_file(), "{name} should be exported");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), *content);
         }
     }
 
     #[test]
     fn seed_dir_output_is_loadable() {
-        // 导出的树必须能被 build_env_from_dir 原样吃回去 —— 否则用户点了按钮
-        // 拿到一堆加载不了的文件。
+        // The exported tree must be readable back by build_env_from_dir as-is -- otherwise the user clicks the button
+        // and gets a pile of files that won't load.
         let tmp = tempfile::tempdir().unwrap();
         seed_dir(tmp.path()).unwrap();
 
@@ -1370,7 +1370,7 @@ mod tests {
 
     #[test]
     fn seed_dir_never_overwrites_existing_files() {
-        // 用户改过的模板不能被再次导出抹掉。
+        // A template the user edited must not be wiped by re-exporting.
         let tmp = tempfile::tempdir().unwrap();
         write_override(tmp.path(), "system/local.j2", "MINE");
 
@@ -1380,7 +1380,7 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("system/local.j2")).unwrap(),
             "MINE"
         );
-        assert_eq!(n, EMBEDDED.len() + EMBEDDED_RAW.len() - 1, "只补齐缺的");
+        assert_eq!(n, EMBEDDED.len() + EMBEDDED_RAW.len() - 1, "only fills in the missing ones");
     }
 
     #[test]
@@ -1390,7 +1390,7 @@ mod tests {
         let second = seed_dir(tmp.path()).unwrap();
 
         assert!(first > 0);
-        assert_eq!(second, 0, "第二次点没有新文件要写");
+        assert_eq!(second, 0, "the second click has no new files to write");
     }
 
     #[test]
@@ -1404,23 +1404,25 @@ mod tests {
 
     #[test]
     fn seed_dir_omits_non_overridable_prompts() {
-        // active_ai/* 和 tasks/compaction_* 改了不生效,导出反而误导。
+        // tasks/compaction_* is in neither EMBEDDED nor EMBEDDED_RAW: editing it
+        // has no effect, so exporting it would be misleading. (active_ai/* IS
+        // exported now — it moved into EMBEDDED to be overridable + hot-reloaded.)
         let tmp = tempfile::tempdir().unwrap();
         seed_dir(tmp.path()).unwrap();
 
-        assert!(!tmp.path().join("active_ai").exists(), "active_ai 不该导出");
         assert!(!tmp.path().join("tasks/compaction_system.j2").exists());
-        // 但可覆盖的 tasks/title_system.md 要在
+        // But the overridable tasks/title_system.md must be present.
         assert!(tmp.path().join("tasks/title_system.md").is_file());
     }
 
     #[test]
     fn embedded_table_covers_every_template_file() {
-        // 防回归:有人往 prompts/ 加了模板但忘了登记进 EMBEDDED,
-        // 会同时丢掉热加载覆盖能力和 include 解析。
+        // Regression guard: if someone adds a template under prompts/ but forgets
+        // to register it in EMBEDDED, it loses both hot-reload override and include
+        // resolution.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ai/agent_providers/prompts");
         let mut on_disk = Vec::new();
-        for sub in ["partials", "commands", "system"] {
+        for sub in ["partials", "commands", "system", "active_ai"] {
             for entry in std::fs::read_dir(root.join(sub)).unwrap() {
                 let entry = entry.unwrap();
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -1436,7 +1438,7 @@ mod tests {
 
         assert_eq!(
             on_disk, registered,
-            "prompts/ 下的 .j2 与 EMBEDDED 名字表不一致"
+            "prompts/ .j2 files and the EMBEDDED name table disagree"
         );
     }
 
@@ -1462,7 +1464,7 @@ mod tests {
 
     #[test]
     fn pick_template_dispatches_by_model_family() {
-        // 直连形式
+        // Direct form
         for (id, want) in [
             ("claude-sonnet-4-5", "system/anthropic.j2"),
             ("claude-opus-4-1", "system/anthropic.j2"),
@@ -1478,7 +1480,7 @@ mod tests {
             ("gemini-2.5-pro", "system/gemini.j2"),
             ("kimi-k2", "system/kimi.j2"),
             ("trinity-v1", "system/trinity.j2"),
-            // 兜底
+            // Fallback
             ("deepseek-chat", "system/default.j2"),
             ("qwen2.5-coder", "system/default.j2"),
             ("glm-4", "system/default.j2"),
@@ -1495,7 +1497,7 @@ mod tests {
 
     #[test]
     fn pick_template_handles_openrouter_path_form() {
-        // OpenRouter 形式 `provider/model`,子串匹配仍命中正确家族
+        // OpenRouter form `provider/model`; substring matching still hits the correct family
         for (id, want) in [
             ("anthropic/claude-3.5-sonnet", "system/anthropic.j2"),
             ("anthropic/claude-opus-4", "system/anthropic.j2"),
@@ -1555,21 +1557,21 @@ mod tests {
             false,
             &[],
         );
-        // 稳定字段仍留在 system prompt 里。
+        // Stable fields remain in the system prompt.
         assert!(out.contains("Shell: bash 5.1"), "{out}");
         assert!(out.contains("linux (Ubuntu 22.04)"), "{out}");
-        // home 字段已对齐 opencode 砍掉,不再渲染
+        // The home field was cut to match opencode, no longer rendered
         assert!(!out.contains("Home directory:"), "{out}");
-        // cwd 会随 `cd` 变化,已移到消息末尾的 <environment_context> 块 ——
-        // system prompt(message[0])里出现任何会变的字段都会让缓存整段失效。
+        // cwd changes with `cd`, so it was moved to the <environment_context> block at the end of the message --
+        // any changing field in the system prompt (message[0]) would invalidate the whole cached section.
         assert!(!out.contains("Working directory:"), "{out}");
         assert!(!out.contains("/home/user/project"), "{out}");
     }
 
-    /// 回归:system prompt 必须对 cwd 变化**逐字节不变**。
+    /// Regression: the system prompt must be **byte-for-byte unchanged** across cwd changes.
     ///
-    /// 这条断言正是当初那个 bug 的直接反例:cwd 待在 <env> 里时,一次 `cd` 就让
-    /// message[0] 改变,FLM 逐条比对在第一条就失配 → matched=0 → 整轮重新 prefill。
+    /// This assertion is the direct counterexample to the original bug: when cwd lived in <env>, one `cd` made
+    /// message[0] change, FLM's item-by-item compare mismatched on the first item -> matched=0 -> the whole turn re-prefills.
     #[test]
     fn system_prompt_is_byte_stable_across_cwd_change() {
         let render_with = |pwd: &str| {
@@ -1608,7 +1610,7 @@ mod tests {
 
     #[test]
     fn render_produces_non_empty_for_all_families() {
-        // 任意 model id 都能渲染出非空字符串(包含 Zap 自我标识)。
+        // Any model id renders a non-empty string (containing Zap's self-identifier).
         for id in [
             "claude-sonnet-4-5",
             "gpt-4o",
@@ -1644,15 +1646,15 @@ mod tests {
             false,
             &[],
         );
-        // 没 skills 时 skills 区块不应出现
+        // With no skills, the skills block should not appear
         assert!(
             !out.contains("Skills provide specialized instructions"),
             "{out}"
         );
     }
 
-    /// Issue #169 回归:系统 prompt 中的 skill 区块必须包含 skill_path(绝对路径),
-    /// 而非仅 name/description,否则模型无法正确调用 read_skill 工具。
+    /// Issue #169 regression: the skill block in the system prompt must include skill_path (absolute path),
+    /// not just name/description, otherwise the model can't call the read_skill tool correctly.
     #[test]
     fn render_includes_skill_path_for_read_skill_tool() {
         use crate::ai::skills::SkillDescriptor;
@@ -1684,9 +1686,9 @@ mod tests {
         );
     }
 
-    /// Issue #169 后续:bundled skill 的 BundledSkillId 变体在 BYOP 路径下不可通过
-    /// read_skill 加载(走 InvokeSkill),因此 system prompt 中不应输出 <skill_path>
-    /// 以避免模型使用必然失败的 @warp-skill:{id} 值。
+    /// Issue #169 follow-up: the BundledSkillId variant of a bundled skill can't be loaded via
+    /// read_skill on the BYOP path (it goes through InvokeSkill), so the system prompt should not emit <skill_path>,
+    /// to avoid the model using the @warp-skill:{id} value that is bound to fail.
     #[test]
     fn render_omits_skill_path_for_bundled_skill() {
         use crate::ai::skills::SkillDescriptor;
@@ -1728,7 +1730,7 @@ mod tests {
 
     #[test]
     fn fallback_does_not_panic() {
-        // render_system 永远不会 panic,失败也走 fallback_system
+        // render_system never panics; on failure it goes through fallback_system
         let out = render_system(
             AgentProviderApiType::OpenAi,
             &LLMId::from("byop:p:any"),
@@ -1742,7 +1744,7 @@ mod tests {
 
     #[test]
     fn render_lists_available_tools_dynamically() {
-        // 传入的 tool 名字必须出现在 system prompt 里(动态白名单)
+        // The passed-in tool names must appear in the system prompt (dynamic whitelist)
         let tools: Vec<String> = vec![
             "run_shell_command".into(),
             "webfetch".into(),
@@ -1763,14 +1765,14 @@ mod tests {
                 "expected `{name}` in prompt, got: {out}"
             );
         }
-        // 不应再出现旧黑名单措辞
+        // The old blacklist wording should no longer appear
         assert!(
             !out.contains("Do not call unavailable tools"),
-            "黑名单段已删除: {out}"
+            "the blacklist section was removed: {out}"
         );
     }
 
-    // -- 每个模型槽的 system prompt 覆盖(PromptSource)-----------------------
+    // -- Per-model-slot system prompt override (PromptSource) ----------------
 
     #[test]
     fn builtin_template_name_maps_family_to_path() {
@@ -1786,11 +1788,11 @@ mod tests {
 
     #[test]
     fn builtin_override_redirects_template_selection() {
-        // claude-* 自动命中 anthropic.j2。
+        // claude-* automatically hits anthropic.j2.
         let model = LLMId::from("byop:p:claude-sonnet-4-5");
         let auto = render_system(AgentProviderApiType::OpenAi, &model, &[], &[], false, &[]);
 
-        // 显式 Builtin("anthropic") 等价于自动命中(同模板、同模型)。
+        // An explicit Builtin("anthropic") is equivalent to the auto hit (same template, same model).
         let forced_anthropic = render_system_with_override(
             AgentProviderApiType::OpenAi,
             &model,
@@ -1802,7 +1804,7 @@ mod tests {
         );
         assert_eq!(auto, forced_anthropic);
 
-        // 强制换成 default.j2 时,输出必须变化 —— 证明覆盖真的改了模板选择。
+        // Forcing default.j2 must change the output -- proving the override really changed the template selection.
         let forced_default = render_system_with_override(
             AgentProviderApiType::OpenAi,
             &model,
@@ -1812,13 +1814,13 @@ mod tests {
             &[],
             Some(&PromptSource::Builtin("default".into())),
         );
-        assert_ne!(auto, forced_default, "覆盖为 default 应改变输出");
+        assert_ne!(auto, forced_default, "overriding to default should change the output");
     }
 
     #[test]
     fn unknown_builtin_override_falls_back_to_auto() {
-        // 拼错的内置名(system/does-not-exist.j2 不存在)不该发出坏 prompt,
-        // 而是回退到按 model family 的自动命中。
+        // A misspelled built-in name (system/does-not-exist.j2 doesn't exist) should not send a broken prompt,
+        // but fall back to the auto hit by model family.
         let model = LLMId::from("byop:p:claude-sonnet-4-5");
         let auto = render_system(AgentProviderApiType::OpenAi, &model, &[], &[], false, &[]);
         let bogus = render_system_with_override(
@@ -1835,7 +1837,7 @@ mod tests {
 
     #[test]
     fn custom_file_override_renders_with_shared_partials() {
-        // 自定义 prompt 文件可以 include 内置 partials(共用同一个 env)。
+        // A custom prompt file can include the built-in partials (sharing the same env).
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("mine.j2"),
@@ -1849,8 +1851,8 @@ mod tests {
             ..Default::default()
         };
         let out = render_custom_file_from(&env, tmp.path(), "mine.j2", &ctx).unwrap();
-        assert!(out.starts_with("CUSTOM my-model"), "自定义正文应生效: {out}");
-        // footer.j2 的内容应被 include 进来(与内置 default 渲染共享该 partial)。
+        assert!(out.starts_with("CUSTOM my-model"), "the custom body should take effect: {out}");
+        // footer.j2's content should be included (sharing that partial with the built-in default render).
         let footer = env
             .get_template("partials/footer.j2")
             .unwrap()
@@ -1858,7 +1860,7 @@ mod tests {
             .unwrap();
         assert!(
             !footer.trim().is_empty() && out.contains(footer.trim()),
-            "footer partial 应被 include: out={out}"
+            "the footer partial should be included: out={out}"
         );
     }
 
@@ -1869,15 +1871,15 @@ mod tests {
         let dir = Path::new("/tmp/prompts");
         assert!(
             render_custom_file_from(&env, dir, "../etc/passwd", &ctx).is_err(),
-            ".. 路径必须被拒绝"
+            "a .. path must be rejected"
         );
         assert!(
             render_custom_file_from(&env, dir, "/etc/passwd", &ctx).is_err(),
-            "绝对路径必须被拒绝"
+            "an absolute path must be rejected"
         );
         assert!(
             render_custom_file_from(&env, dir, "sub/../../escape.j2", &ctx).is_err(),
-            "夹带 .. 的多段路径必须被拒绝"
+            "a multi-segment path smuggling in .. must be rejected"
         );
     }
 
@@ -1946,7 +1948,7 @@ mod tests {
 
     #[test]
     fn render_omits_tool_list_when_empty() {
-        // tool_names 为空(理论上不会发生,兜底:不渲染白名单段)
+        // tool_names empty (shouldn't happen in theory; fallback: don't render the whitelist section)
         let out = render_system(
             AgentProviderApiType::OpenAi,
             &LLMId::from("byop:p:deepseek-chat"),
@@ -1970,7 +1972,7 @@ mod tests {
         );
         assert!(
             !out.contains("Plan Mode (Read-Only)"),
-            "plan_mode=false 不应包含 Plan Mode 段: {out}"
+            "plan_mode=false should not contain the Plan Mode section: {out}"
         );
     }
 
@@ -1996,17 +1998,17 @@ mod tests {
             );
             assert!(
                 out.contains("Plan Mode (Read-Only)"),
-                "id={id} plan_mode=true 应包含 Plan Mode 段: {out}"
+                "id={id} plan_mode=true should contain the Plan Mode section: {out}"
             );
             assert!(
                 out.contains("Stop and wait"),
-                "id={id} plan_mode=true 应包含 Stop and wait 引导: {out}"
+                "id={id} plan_mode=true should contain the Stop and wait guidance: {out}"
             );
         }
     }
 
-    // Issue #116:全局 Rules(用户在 设置 → Agents → Rules 创建)必须注入 system prompt。
-    // 下面三个用例覆盖 `partials/user_rules.j2` 的关键分支。
+    // Issue #116: global Rules (created by the user in Settings -> Agents -> Rules) must be injected into the system prompt.
+    // The three cases below cover the key branches of `partials/user_rules.j2`.
 
     #[test]
     fn render_omits_user_rules_block_when_empty() {
@@ -2020,7 +2022,7 @@ mod tests {
         );
         assert!(
             !out.contains("# User rules"),
-            "user_rules 为空时不应渲染 user rules 区块: {out}"
+            "when user_rules is empty the user rules block should not render: {out}"
         );
     }
 
@@ -2040,21 +2042,21 @@ mod tests {
         );
         assert!(
             out.contains("# User rules"),
-            "应渲染 user rules 区块: {out}"
+            "the user rules block should render: {out}"
         );
-        assert!(out.contains("## My rule"), "应包含规则名: {out}");
+        assert!(out.contains("## My rule"), "should contain the rule name: {out}");
         assert!(
             out.contains("Always use snake_case in Rust."),
-            "应包含规则内容: {out}"
+            "should contain the rule content: {out}"
         );
     }
 
     #[test]
     fn render_includes_user_rules_across_all_template_families() {
-        // user_rules.j2 经 footer.j2 注入,所有 system 模板族都引用了 footer。
-        // 这个回归用例确保 anthropic / beast / codex / gemini / kimi / trinity /
-        // default 任一模板族都会渲染 user rules,不会因为某条家族没拉 footer 而漏注入。
-        let rules = vec![(Some("家族覆盖".to_string()), "snake_case only.".to_string())];
+        // user_rules.j2 is injected via footer.j2, and every system template family references footer.
+        // This regression case ensures anthropic / beast / codex / gemini / kimi / trinity /
+        // default -- any template family renders user rules, and none miss injection because a family didn't pull in footer.
+        let rules = vec![(Some("family override".to_string()), "snake_case only.".to_string())];
         for id in [
             "claude-sonnet-4-5",
             "gpt-4o",
@@ -2075,14 +2077,14 @@ mod tests {
             );
             assert!(
                 out.contains("snake_case only."),
-                "id={id} 应包含 user rule 内容: {out}"
+                "id={id} should contain the user rule content: {out}"
             );
         }
     }
 
     #[test]
     fn render_user_rules_separates_multiple_rules_with_blank_line() {
-        // 多条规则之间应有空行分隔(`{% if not loop.last %}`),最后一条之后不留空行。
+        // Multiple rules should be separated by a blank line (`{% if not loop.last %}`), with no blank line after the last one.
         let rules = vec![
             (Some("R1".to_string()), "first content".to_string()),
             (Some("R2".to_string()), "second content".to_string()),
@@ -2097,23 +2099,23 @@ mod tests {
             &rules,
         );
 
-        // 两条规则之间应至少包含一个 "blank line"(两个相邻换行)。
-        // 不写死具体换行数,因为 minijinja 的 trim_blocks/lstrip_blocks 默认行为
-        // 决定的具体换行数容易随模板微调而变(reviewer 实测出过 3 个换行的形态)。
-        // 我们要的契约是"有视觉空行 + 顺序正确"。
-        let pos_r1 = out.find("first content").expect("找不到 R1 content");
-        let pos_r2 = out.find("## R2").expect("找不到 R2 标题");
-        let pos_r3 = out.find("## R3").expect("找不到 R3 标题");
-        assert!(pos_r1 < pos_r2 && pos_r2 < pos_r3, "顺序应保持: {out}");
+        // Between two rules there should be at least one "blank line" (two adjacent newlines).
+        // We don't hardcode the exact newline count, because minijinja's default trim_blocks/lstrip_blocks behavior
+        // makes the exact count prone to change with template tweaks (a reviewer observed a 3-newline form in practice).
+        // The contract we want is "a visual blank line + correct ordering".
+        let pos_r1 = out.find("first content").expect("R1 content not found");
+        let pos_r2 = out.find("## R2").expect("R2 heading not found");
+        let pos_r3 = out.find("## R3").expect("R3 heading not found");
+        assert!(pos_r1 < pos_r2 && pos_r2 < pos_r3, "ordering should be preserved: {out}");
         let between_r1_r2 = &out[pos_r1 + "first content".len()..pos_r2];
         let between_r2_r3 = &out[pos_r2..pos_r3];
         assert!(
             between_r1_r2.contains("\n\n"),
-            "R1 与 R2 之间应有空行,实际:{between_r1_r2:?}"
+            "there should be a blank line between R1 and R2, actual: {between_r1_r2:?}"
         );
         assert!(
             between_r2_r3.contains("\n\n"),
-            "R2 与 R3 之间应有空行,实际:{between_r2_r3:?}"
+            "there should be a blank line between R2 and R3, actual: {between_r2_r3:?}"
         );
     }
 
@@ -2130,19 +2132,19 @@ mod tests {
         );
         assert!(out.contains("# User rules"), "{out}");
         assert!(out.contains("Be terse."), "{out}");
-        // 无 name 时不应渲染空的 `## ` 标题行
+        // With no name, an empty `## ` heading line should not render
         assert!(
             !out.contains("## \n"),
-            "无 name 时不应渲染空的 '## ' 标题: {out}"
+            "with no name, an empty '## ' heading should not render: {out}"
         );
     }
 
     #[test]
     fn render_includes_thinking_language_across_all_template_families() {
-        // thinking_language.j2 经 footer.j2 注入,所有 system 模板族都引用了 footer。
-        // 回归用例确保 8 族模板都会渲染 thinking_language,不会因为某条家族没拉 footer
-        // 而漏注入,导致 LLM 在中文用户提问时仍用英文思考。
-        // 8 族对应: anthropic / gpt / beast / codex / gemini / kimi / trinity / default
+        // thinking_language.j2 is injected via footer.j2, and every system template family references footer.
+        // This regression case ensures all 8 template families render thinking_language, and none miss injection because a family didn't pull in footer,
+        // which would make the LLM still think in English when a user asks in Chinese.
+        // The 8 families are: anthropic / gpt / beast / codex / gemini / kimi / trinity / default
         for id in [
             "claude-sonnet-4-5",
             "gpt-3.5-turbo",
@@ -2163,19 +2165,19 @@ mod tests {
             );
             assert!(
                 out.contains("# Thinking language"),
-                "id={id} 应渲染 thinking_language 区块: {out}"
+                "id={id} should render the thinking_language block: {out}"
             );
             assert!(
                 out.contains("internal reasoning"),
-                "id={id} 应包含 thinking_language 锚点: {out}"
+                "id={id} should contain the thinking_language anchor: {out}"
             );
         }
     }
 
     #[test]
     fn render_thinking_language_precedes_tool_aliases() {
-        // meta-rule 应在工具列表之前,不被 user_rules / project_rules 覆盖。
-        // 需要传一个非空 tool 列表,否则 tool_aliases.j2 整个块被 {% if available_tools %} 跳过。
+        // The meta-rule should come before the tool list and not be overridden by user_rules / project_rules.
+        // A non-empty tool list must be passed, otherwise the whole tool_aliases.j2 block is skipped by {% if available_tools %}.
         let tools = vec!["read_files".to_string()];
         let out = render_system(
             AgentProviderApiType::OpenAi,
@@ -2187,11 +2189,11 @@ mod tests {
         );
         let pos_thinking = out
             .find("# Thinking language")
-            .expect("应包含 thinking_language");
-        let pos_tools = out.find("# Available Tools").expect("应包含 tool_aliases");
+            .expect("should contain thinking_language");
+        let pos_tools = out.find("# Available Tools").expect("should contain tool_aliases");
         assert!(
             pos_thinking < pos_tools,
-            "thinking_language 应在 tool_aliases 之前: thinking={pos_thinking}, tools={pos_tools}\n{out}"
+            "thinking_language should come before tool_aliases: thinking={pos_thinking}, tools={pos_tools}\n{out}"
         );
     }
 }

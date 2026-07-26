@@ -874,6 +874,19 @@ impl BlocklistAIActionModel {
         })
     }
 
+    /// Test-only: queues a single action through the normal dispatch pipeline so
+    /// confirmation-requiring actions surface as a pending permission prompt.
+    /// Exposed for the `warp_tui` test suite via `tui_test_support`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn queue_action_for_test(
+        &mut self,
+        action: AIAgentAction,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.queue_actions(vec![action], conversation_id, ctx);
+    }
+
     /// Queues the `actions` in the given iterator for the given conversation,
     /// to be dispatched in the order in which they appear in the iterator.
     pub(super) fn queue_actions(
@@ -1032,7 +1045,7 @@ impl BlocklistAIActionModel {
         self.handle_action_result(conversation_id, Arc::new(action_result), None, ctx);
     }
 
-    pub(super) fn cancel_action_with_id(
+    pub fn cancel_action_with_id(
         &mut self,
         conversation_id: AIConversationId,
         action_id: &AIAgentActionId,
@@ -1126,6 +1139,11 @@ impl BlocklistAIActionModel {
     }
 
     /// Returns all finished action results from the given conversation, moving them to the
+    /// Clears the results restored from a previous session's persisted conversation.
+    pub fn clear_restored_action_results(&mut self) {
+        self.past_action_results.clear();
+    }
+
     /// `past_action_results` in the process.
     pub(super) fn drain_finished_action_results(
         &mut self,

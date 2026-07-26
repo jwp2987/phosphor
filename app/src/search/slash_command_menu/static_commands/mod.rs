@@ -76,6 +76,14 @@ impl Argument {
     }
 }
 
+/// A hint describing a slash command's argument, surfaced inline as the user types.
+#[derive(Debug, Clone)]
+pub struct SlashCommandArgumentHint {
+    /// The command name plus a trailing space; callers match this against the current input.
+    pub input_prefix: String,
+    pub text: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticCommand {
     pub name: &'static str,
@@ -87,6 +95,74 @@ pub struct StaticCommand {
     /// If true, AI mode will be activated when the command is accepted.
     pub auto_enter_ai_mode: bool,
     pub argument: Option<Argument>,
+}
+
+/// Stable classification of a static slash command, used by the TUI to dispatch a selected
+/// command to its handler.
+///
+/// Ported from Warp OSS, where it is a `kind` field on every `StaticCommand`. Zap derives it
+/// from the command name via [`StaticCommand::kind`] instead, so GUI command definitions do
+/// not need to carry a TUI-only field. `Other` covers Zap commands with no upstream kind
+/// (e.g. `/pr-comments`); such commands are not TUI-executable so their kind is never consumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlashCommandKind {
+    Agent,
+    CloudAgent,
+    AddMcp,
+    AutoApprove,
+    Mcp,
+    ViewLogs,
+    EnableNaturalLanguageDetection,
+    DisableNaturalLanguageDetection,
+    Exit,
+    Logout,
+    CreateEnvironment,
+    CreateDockerSandbox,
+    CreateNewProject,
+    EditSkill,
+    InvokeSkill,
+    AddPrompt,
+    AddRule,
+    Edit,
+    RenameTab,
+    RenameConversation,
+    SetTabColor,
+    Fork,
+    MoveToCloud,
+    OpenCodeReview,
+    Index,
+    Init,
+    OpenProjectRules,
+    OpenMcpServers,
+    OpenSettingsFile,
+    Changelog,
+    Feedback,
+    OpenRepo,
+    OpenRules,
+    New,
+    Model,
+    Host,
+    Harness,
+    Environment,
+    Profile,
+    Plan,
+    Orchestrate,
+    Compact,
+    CompactAnd,
+    Queue,
+    ForkAndCompact,
+    ForkFrom,
+    ContinueLocally,
+    Usage,
+    RemoteControl,
+    Cost,
+    Conversations,
+    Prompts,
+    Rewind,
+    ExportToClipboard,
+    ExportToFile,
+    /// A Zap command with no upstream `SlashCommandKind` (e.g. `/pr-comments`).
+    Other,
 }
 
 impl StaticCommand {
@@ -105,6 +181,88 @@ impl StaticCommand {
 
     pub fn is_active(&self, session_context: Availability) -> bool {
         session_context.contains(self.availability)
+    }
+
+    /// The argument hint for this command, if it declares one. The `input_prefix` is the
+    /// command name plus a trailing space, so callers can match it against the current input.
+    pub fn argument_hint(&self) -> Option<SlashCommandArgumentHint> {
+        let text = self.argument.as_ref()?.hint_text?;
+        Some(SlashCommandArgumentHint {
+            input_prefix: format!("{} ", self.name),
+            text,
+        })
+    }
+
+    /// Classifies this command for TUI dispatch. Derived from the command name (Warp OSS carries
+    /// this as a per-command `kind` field; Zap keeps it out of GUI definitions). Unmapped Zap
+    /// commands return [`SlashCommandKind::Other`].
+    pub fn kind(&self) -> SlashCommandKind {
+        match self.name {
+            "/agent" => SlashCommandKind::Agent,
+            "/add-mcp" => SlashCommandKind::AddMcp,
+            "/mcp" => SlashCommandKind::Mcp,
+            "/create-environment" => SlashCommandKind::CreateEnvironment,
+            "/docker-sandbox" => SlashCommandKind::CreateDockerSandbox,
+            "/create-new-project" => SlashCommandKind::CreateNewProject,
+            "/open-skill" => SlashCommandKind::EditSkill,
+            "/skills" => SlashCommandKind::InvokeSkill,
+            "/add-prompt" => SlashCommandKind::AddPrompt,
+            "/add-rule" => SlashCommandKind::AddRule,
+            "/open-file" => SlashCommandKind::Edit,
+            "/rename-tab" => SlashCommandKind::RenameTab,
+            "/set-tab-color" => SlashCommandKind::SetTabColor,
+            "/fork" => SlashCommandKind::Fork,
+            "/handoff" => SlashCommandKind::MoveToCloud,
+            "/open-code-review" => SlashCommandKind::OpenCodeReview,
+            "/index" => SlashCommandKind::Index,
+            "/init" => SlashCommandKind::Init,
+            "/open-project-rules" => SlashCommandKind::OpenProjectRules,
+            "/open-mcp-servers" => SlashCommandKind::OpenMcpServers,
+            "/open-settings-file" => SlashCommandKind::OpenSettingsFile,
+            "/changelog" => SlashCommandKind::Changelog,
+            "/open-repo" => SlashCommandKind::OpenRepo,
+            "/open-rules" => SlashCommandKind::OpenRules,
+            "/new" => SlashCommandKind::New,
+            "/model" => SlashCommandKind::Model,
+            "/profile" => SlashCommandKind::Profile,
+            "/compact" => SlashCommandKind::Compact,
+            "/compact-and" => SlashCommandKind::CompactAnd,
+            "/queue" => SlashCommandKind::Queue,
+            "/fork-and-compact" => SlashCommandKind::ForkAndCompact,
+            "/fork-from" => SlashCommandKind::ForkFrom,
+            "/conversations" => SlashCommandKind::Conversations,
+            "/prompts" => SlashCommandKind::Prompts,
+            "/rewind" => SlashCommandKind::Rewind,
+            "/export-to-clipboard" => SlashCommandKind::ExportToClipboard,
+            "/export-to-file" => SlashCommandKind::ExportToFile,
+            _ => SlashCommandKind::Other,
+        }
+    }
+
+    /// Whether this command is implemented on the ratatui TUI surface. Mirrors the
+    /// `GuiAndTui`/`TuiOnly` surface classification from Warp OSS for the commands Zap ships.
+    pub fn supports_tui(&self) -> bool {
+        matches!(
+            self.name,
+            "/agent"
+                | "/create-new-project"
+                | "/skills"
+                | "/new"
+                | "/init"
+                | "/model"
+                | "/profile"
+                | "/prompts"
+                | "/compact"
+                | "/compact-and"
+                | "/queue"
+                | "/fork"
+                | "/fork-and-compact"
+                | "/fork-from"
+                | "/rewind"
+                | "/conversations"
+                | "/export-to-clipboard"
+                | "/export-to-file"
+        )
     }
 }
 

@@ -24,7 +24,7 @@ pub mod slash_command_menu;
 pub mod welcome_palette;
 mod workflows;
 
-pub use item::SearchItem;
+pub use item::{SearchItem, SearchItemDetail};
 pub use mixer::SyncDataSource;
 pub use result_renderer::ItemHighlightState;
 

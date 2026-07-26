@@ -62,6 +62,42 @@ pub enum SlashCommandEntryState {
     DisabledUntilEmptyBuffer,
 }
 
+/// Classification of slash-command input, shared across surfaces.
+///
+/// Ported from Warp OSS. This is the surface-agnostic parse result produced by
+/// [`SlashCommandDataSource::parse_input`]; unlike [`SlashCommandEntryState`] it has no
+/// disabled state (that is a per-surface concern layered on top).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedSlashCommandInput {
+    /// The input is not slash command composition.
+    None,
+    /// A slash command, saved prompt, or skill is being searched for.
+    Composing {
+        /// The suffix in the input after '/'.
+        filter: String,
+    },
+    /// A valid static slash command is entered in the input.
+    SlashCommand(DetectedCommand),
+    /// A valid skill command is entered in the input.
+    SkillCommand(DetectedSkillCommand),
+}
+
+/// Returns the composition filter (the text after `/`, up to the first space) when `input`
+/// looks like an in-progress slash-command composition, else `None`.
+///
+/// Ported verbatim from Warp OSS.
+pub fn slash_command_composition_filter(input: &str) -> Option<&str> {
+    let pending_command = input.strip_prefix('/')?;
+    let command_token = pending_command
+        .split_once(' ')
+        .map_or(pending_command, |(command, _)| command);
+    if command_token.contains('/') {
+        None
+    } else {
+        Some(pending_command)
+    }
+}
+
 impl SlashCommandEntryState {
     pub fn detected_command(&self) -> Option<&StaticCommand> {
         match self {
@@ -444,6 +480,57 @@ impl SlashCommandDataSource {
 
         Some(DetectedCommand {
             command: matched_command,
+            argument: possible_argument,
+        })
+    }
+
+    /// Classifies slash-command input consistently across GUI and TUI surfaces.
+    ///
+    /// Ported from Warp OSS's `SlashCommandDataSource::parse_input`.
+    pub fn parse_input(&self, buffer: &str, ctx: &AppContext) -> ParsedSlashCommandInput {
+        if !buffer.starts_with('/') {
+            return ParsedSlashCommandInput::None;
+        }
+        if let Some(detected) = self.parse_slash_command(buffer) {
+            return ParsedSlashCommandInput::SlashCommand(detected);
+        }
+        if let Some(detected) = self.parse_skill_command(buffer, ctx) {
+            return ParsedSlashCommandInput::SkillCommand(detected);
+        }
+        match slash_command_composition_filter(buffer) {
+            Some(filter) => ParsedSlashCommandInput::Composing {
+                filter: filter.to_owned(),
+            },
+            None => ParsedSlashCommandInput::None,
+        }
+    }
+
+    /// Matches `buffer` against skills available for the active working directory.
+    ///
+    /// Ported from Warp OSS's `SlashCommandDataSource::parse_skill_command`, using Zap's
+    /// `ActiveSession::current_working_directory` (Zap has no CLI-agent provider filtering on
+    /// this path).
+    pub fn parse_skill_command(&self, buffer: &str, ctx: &AppContext) -> Option<DetectedSkillCommand> {
+        let (possible_command, possible_argument) =
+            if let Some((command, argument)) = buffer.split_once(' ') {
+                (command, Some(argument.to_owned()))
+            } else {
+                (buffer, None)
+            };
+        let skill_name = possible_command.strip_prefix('/')?;
+
+        let active_session = self.active_session().as_ref(ctx);
+        let cwd = active_session.current_working_directory();
+        let cwd_path = cwd.as_ref().map(std::path::Path::new);
+        let matched_skill = SkillManager::handle(ctx)
+            .as_ref(ctx)
+            .get_skills_for_working_directory(cwd_path, ctx)
+            .into_iter()
+            .find(|skill| skill.name == skill_name)?;
+
+        Some(DetectedSkillCommand {
+            reference: matched_skill.reference,
+            name: matched_skill.name,
             argument: possible_argument,
         })
     }

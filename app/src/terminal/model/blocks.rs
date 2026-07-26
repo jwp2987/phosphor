@@ -836,6 +836,36 @@ impl BlockList {
         (self.blocks.len() - 1).into()
     }
 
+    /// The display-row range (in whole lines) currently occupied by the rich-content item for
+    /// `view_id`, or `None` if it is not laid out. Used by the TUI viewport source.
+    pub fn rich_content_row_range(&self, view_id: EntityId) -> Option<Range<usize>> {
+        let index = self
+            .removable_blocklist_item_positions
+            .get(&RemovableBlocklistItem::RichContent(view_id))?;
+        let mut cursor = self
+            .block_heights
+            .cursor::<TotalIndex, BlockHeightSummary>();
+        cursor.seek(index, SeekBias::Right);
+        let BlockHeightItem::RichContent(item) = cursor.item()? else {
+            return None;
+        };
+        let start = cursor.start().height.as_f64().floor().max(0.0) as usize;
+        let height = item.last_laid_out_height.as_f64().ceil().max(0.0) as usize;
+        Some(start..start.saturating_add(height))
+    }
+
+    /// Updates the laid-out heights of rich-content items and rebuilds the height sum-tree.
+    pub fn update_rich_content_heights_in_lines(
+        &mut self,
+        updated_heights: &HashMap<EntityId, BlockHeight>,
+    ) {
+        let heights: HashMap<EntityId, f64> = updated_heights
+            .iter()
+            .map(|(view_id, height)| (*view_id, height.as_f64()))
+            .collect();
+        self.update_blocks_and_sumtree(None, Some(&heights), |_| {}, |_| {});
+    }
+
     pub fn active_block(&self) -> &Block {
         self.blocks.last().expect("at least one block should exist")
     }
@@ -1216,7 +1246,7 @@ impl BlockList {
     }
 
     /// Takes and clears the set of dirty rich content view IDs.
-    pub(in crate::terminal) fn take_dirty_rich_content_items(&mut self) -> HashSet<EntityId> {
+    pub fn take_dirty_rich_content_items(&mut self) -> HashSet<EntityId> {
         std::mem::take(&mut self.dirty_rich_content_items)
     }
 
@@ -1541,6 +1571,44 @@ impl BlockList {
         self.event_proxy.send_wakeup_event();
     }
 
+    /// Removes all non-active command blocks that originated in the given conversation.
+    pub fn remove_command_blocks_for_conversation(&mut self, conversation_id: AIConversationId) {
+        let active_block_index = self.active_block_index();
+
+        let mut indices_to_remove = Vec::new();
+        for (i, block) in self.blocks.iter().enumerate() {
+            let index: BlockIndex = i.into();
+            if index == active_block_index {
+                continue;
+            }
+
+            if matches!(
+                block.agent_view_visibility(),
+                AgentViewVisibility::Agent {
+                    origin_conversation_id,
+                    ..
+                } if *origin_conversation_id == conversation_id
+            ) {
+                indices_to_remove.push(index);
+            }
+        }
+
+        if indices_to_remove.is_empty() {
+            return;
+        }
+
+        self.clear_selection();
+        self.clear_smart_select_override();
+        self.clear_scroll_position_before_filter();
+
+        // Remove in reverse order so indices remain valid.
+        for index in indices_to_remove.into_iter().rev() {
+            self.remove_block_at_index(index);
+        }
+
+        self.event_proxy.send_wakeup_event();
+    }
+
     /// Gets the active background block, if one exists.
     pub(super) fn background_block_mut(&mut self) -> Option<&mut Block> {
         // The active background block will be the one immediately before
@@ -1641,6 +1709,59 @@ impl BlockList {
         self.mark_agent_view_rich_content_dirty();
 
         self.update_blocks_and_sumtree(None, None, |_| {}, |_| {});
+    }
+
+    /// Associates the active command block with a conversation.
+    ///
+    /// Ported from Warp OSS `BlockList::set_active_conversation_context`. Zap models the
+    /// richer agent-view activation through [`set_agent_view_state`]; the TUI conversation
+    /// selection only needs command-block provenance, so this mirrors upstream's block-tagging
+    /// path directly. BYOP has no cloud runs, so the upstream `is_cloud` bit is dropped.
+    ///
+    /// [`set_agent_view_state`]: Self::set_agent_view_state
+    pub fn set_active_conversation_context(
+        &mut self,
+        conversation_id: AIConversationId,
+        _is_cloud: bool,
+        attach_to_terminal: bool,
+    ) {
+        if !self.active_block().finished() {
+            if attach_to_terminal {
+                self.active_block_mut()
+                    .add_attached_conversation_id(conversation_id);
+            } else {
+                self.active_block_mut().set_conversation_id(conversation_id);
+            }
+        }
+    }
+
+    /// The conversation owning the active command block, if any.
+    ///
+    /// Ported from Warp OSS `BlockList::active_conversation_id`. Upstream reads a single
+    /// `active_conversation_context` field; Zap instead tags the active block (see
+    /// [`set_active_conversation_context`]), so this reads the block's agent-view
+    /// conversation directly.
+    ///
+    /// [`set_active_conversation_context`]: Self::set_active_conversation_context
+    pub fn active_conversation_id(&self) -> Option<AIConversationId> {
+        self.active_block()
+            .agent_view_visibility()
+            .agent_view_conversation_id()
+    }
+
+    /// Clears the active command block's conversation association.
+    ///
+    /// Ported from Warp OSS `BlockList::clear_active_conversation_context`. Only clears blocks
+    /// created inside the agent view; terminal blocks keep their associations.
+    pub fn clear_active_conversation_context(&mut self) {
+        if !self.active_block().finished()
+            && matches!(
+                self.active_block().agent_view_visibility(),
+                &AgentViewVisibility::Agent { .. }
+            )
+        {
+            self.active_block_mut().clear_conversation_id();
+        }
     }
 
     /// Marks AI / agent-view rich content as dirty so heights get re-laid out. Call this after
@@ -3292,7 +3413,7 @@ impl BlockList {
         }
     }
 
-    pub(in crate::terminal) fn insert_rich_content_before_block_index(
+    pub fn insert_rich_content_before_block_index(
         &mut self,
         item: RichContentItem,
         block_index: BlockIndex,

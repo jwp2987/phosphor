@@ -189,6 +189,15 @@ impl BlockGrid {
         }
     }
 
+    /// The cursor's `(column, row)` in visible display coordinates, or `None` when the cursor
+    /// is off-screen (hidden cache). Used by the TUI to place the terminal cursor.
+    pub fn visible_cursor_display_position(&self) -> Option<(usize, usize)> {
+        match self.cursor_display_point()? {
+            CursorDisplayPoint::Visible(point) => Some((point.col, point.row)),
+            CursorDisplayPoint::HiddenCache(_) => None,
+        }
+    }
+
     pub(in crate::terminal) fn cursor_display_point(&self) -> Option<CursorDisplayPoint> {
         let cursor_point = self.grid_handler().cursor_render_point();
         let cursor_display_point = self

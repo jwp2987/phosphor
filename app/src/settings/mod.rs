@@ -6,7 +6,7 @@ pub mod app_installation_detection;
 mod autoupdate;
 mod block_visibility;
 pub mod cloud_preferences;
-mod cloud_sync;
+pub(crate) mod cloud_sync;
 mod cloud_sync_secrets;
 mod code;
 mod debug;
@@ -35,6 +35,7 @@ mod scroll;
 mod select;
 mod ssh;
 mod theme;
+mod tui_autoupdate;
 mod vim_banner;
 
 #[cfg(test)]
@@ -70,6 +71,7 @@ pub use scroll::*;
 pub use select::*;
 pub use ssh::*;
 pub use theme::*;
+pub use tui_autoupdate::*;
 pub use vim_banner::*;
 use warp_core::user_preferences::GetUserPreferences as _;
 
@@ -595,5 +597,51 @@ pub fn user_preferences_file_path() -> PathBuf {
 
 /// Returns the path to the TOML settings file.
 pub fn user_preferences_toml_file_path() -> PathBuf {
+    #[cfg(any(test, feature = "test-util"))]
+    if let Some(path) = toml_path_override::get() {
+        return path;
+    }
     warp_core::paths::config_local_dir().join("settings.toml")
 }
+
+/// Test-only override for [`user_preferences_toml_file_path`], mirroring the
+/// thread-local RAII pattern used by `FeatureFlag::override_enabled`. Lets a test
+/// point the settings-TOML path at a temp location so `.exists()` checks are
+/// hermetic instead of reading the developer's real `settings.toml` (which
+/// otherwise makes path-dependent tests fail on machines that already have Zap
+/// settings, while passing in a clean CI env).
+#[cfg(any(test, feature = "test-util"))]
+mod toml_path_override {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    thread_local! {
+        static TOML_PATH_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn get() -> Option<PathBuf> {
+        TOML_PATH_OVERRIDE.with(|p| p.borrow().clone())
+    }
+
+    /// RAII guard that overrides the settings-TOML path on the current thread and
+    /// restores the previous value on drop.
+    #[must_use]
+    pub struct TomlPathOverrideGuard(Option<PathBuf>);
+
+    impl TomlPathOverrideGuard {
+        pub fn new(path: PathBuf) -> Self {
+            let previous = TOML_PATH_OVERRIDE.with(|p| p.borrow_mut().replace(path));
+            Self(previous)
+        }
+    }
+
+    impl Drop for TomlPathOverrideGuard {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            TOML_PATH_OVERRIDE.with(|p| *p.borrow_mut() = previous);
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+pub use toml_path_override::TomlPathOverrideGuard;

@@ -20,7 +20,7 @@ pub use {history::History, history::HistoryEntry, history::HistoryEvent, history
 mod block_list_settings;
 
 mod alias;
-mod alt_screen;
+pub(crate) mod alt_screen;
 pub mod alt_screen_reporting;
 mod audible_bell;
 pub use audible_bell::AudibleBell;
@@ -34,6 +34,7 @@ mod blockgrid_renderer;
 mod bootstrap;
 pub mod color;
 mod command_corrections_denylist;
+pub mod conversation_restoration;
 pub mod dynamic_enum_suggestions;
 pub mod event;
 pub mod event_listener;
@@ -80,6 +81,9 @@ pub mod view;
 pub mod warpify;
 mod waterfall_gap_element;
 mod writeable_pty;
+pub use writeable_pty::{
+    PtyIntent, PtyIntentEvent, TerminalSurface, TerminalSurfaceInit, TerminalSurfaceResult,
+};
 #[cfg(windows)]
 pub mod wsl;
 
@@ -228,6 +232,20 @@ pub struct SizeUpdate {
 }
 
 impl SizeUpdate {
+    /// Builds a post-layout `SizeUpdate` from char-cell dimensions (TUI path), with no font
+    /// metrics.
+    pub fn from_cell_dimensions(last_size: SizeInfo, rows: usize, columns: usize) -> Self {
+        let new_size = SizeInfo::new_without_font_metrics(rows, columns);
+        Self {
+            update_reason: SizeUpdateReason::AfterLayout,
+            last_size,
+            new_size,
+            new_gap_height: None,
+            natural_rows: new_size.rows(),
+            natural_cols: new_size.columns(),
+        }
+    }
+
     /// Whether the reason for the update is a refresh.
     pub fn is_refresh(&self) -> bool {
         matches!(self.update_reason, SizeUpdateReason::Refresh)
@@ -241,6 +259,11 @@ impl SizeUpdate {
     pub fn rows_or_columns_changed(&self) -> bool {
         self.last_size.columns() != self.new_size.columns()
             || self.last_size.rows() != self.new_size.rows()
+    }
+
+    /// The new size info this update carries.
+    pub fn new_size(&self) -> SizeInfo {
+        self.new_size
     }
 
     /// Returns whether the pane size changed with this update
@@ -463,6 +486,18 @@ pub enum ClipboardType {
 
 /// The padding around each block, represented in fractional lines.
 ///
+/// Per-block spacing/layout inputs shared with the `warp_tui` transcript.
+///
+/// Ported from warp/master `terminal/terminal_manager.rs` (Zap forked before it
+/// was introduced). `warp_prompt_height_lines`/`show_memory_stats` are carried
+/// for parity; the TUI transcript sets them to `0.0`/`false`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BlockSpacing {
+    pub block_padding: BlockPadding,
+    pub warp_prompt_height_lines: f32,
+    pub show_memory_stats: bool,
+}
+
 /// TODO(vorporeal): Change this to hold `Lines` instead of `f32`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct BlockPadding {

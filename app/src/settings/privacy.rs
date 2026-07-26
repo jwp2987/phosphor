@@ -197,7 +197,7 @@ impl PrivacySettingsSnapshot {
         self.should_collect_ai_ugc_telemetry
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn mock() -> Self {
         Self {
             is_telemetry_enabled: true,
@@ -426,7 +426,7 @@ impl PrivacySettings {
     }
 
     /// Constructor for tests only.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn mock(_ctx: &mut ModelContext<Self>) -> Self {
         Self {
             auth_state: Arc::new(AuthState::new_for_test()),

@@ -1,8 +1,10 @@
 mod data_source;
+mod mixer;
 mod search_item;
 mod view;
 
 pub use data_source::*;
+pub use mixer::*;
 pub use view::*;
 
 #[cfg(feature = "local_fs")]
@@ -15,7 +17,7 @@ use warp_core::ui::appearance::Appearance;
 #[cfg(feature = "local_fs")]
 use warp_util::path::{CleanPathResult, LineAndColumnArg};
 use warpui::clipboard::ClipboardContent;
-use warpui::{SingletonEntity, ViewContext};
+use warpui::{AppContext, SingletonEntity, ViewContext};
 
 use crate::ai::blocklist::agent_view::{
     AgentViewEntryOrigin, DismissalStrategy, EphemeralMessage, ENTER_OR_EXIT_CONFIRMATION_WINDOW,
@@ -28,7 +30,8 @@ use crate::search::slash_command_menu::static_commands::commands::{self, COMMAND
 use crate::search::slash_command_menu::static_commands::Availability;
 use crate::search::slash_command_menu::{SlashCommandId, StaticCommand};
 use crate::server::ids::SyncId;
-use crate::server::telemetry::SlashCommandAcceptedDetails;
+use crate::server::telemetry::{AgentModeAutoDetectionSettingOrigin, SlashCommandAcceptedDetails};
+use crate::workflows::command_parser::compute_workflow_display_data;
 use crate::settings::AISettings;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
 use crate::terminal::input::inline_menu::{InlineMenuAction, InlineMenuType};
@@ -45,6 +48,96 @@ use crate::terminal::view::TerminalAction;
 use crate::view_components::DismissibleToast;
 use crate::workspace::{ForkedConversationDestination, ToastStack, WorkspaceAction};
 use crate::TelemetryEvent;
+
+/// What happens when a slash command is selected from the menu.
+///
+/// Ported from Warp OSS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlashCommandSelectionBehavior {
+    /// Insert the command text (with a trailing space) so the user can type an argument.
+    InsertCommandText(String),
+    /// Execute the command immediately.
+    Execute,
+}
+
+/// Returns whether selecting `command` inserts its text (to await an argument) or executes it.
+///
+/// Ported verbatim from Warp OSS.
+pub fn slash_command_selection_behavior(command: &StaticCommand) -> SlashCommandSelectionBehavior {
+    if command
+        .argument
+        .as_ref()
+        .is_some_and(|argument| !argument.should_execute_on_selection)
+    {
+        SlashCommandSelectionBehavior::InsertCommandText(format!("{} ", command.name))
+    } else {
+        SlashCommandSelectionBehavior::Execute
+    }
+}
+
+/// Whether the slash-command menu should close after an exact command match.
+///
+/// Ported verbatim from Warp OSS.
+pub fn should_close_slash_command_menu_for_exact_match(
+    result_count: usize,
+    argument_started: bool,
+) -> bool {
+    result_count < 2 || argument_started
+}
+
+/// Records the natural-language-detection toggle triggered from a slash command. Ported from
+/// Warp OSS (telemetry is inert in Zap/BYOP but the event plumbing is preserved).
+pub fn record_autodetection_toggle_from_slash_command(
+    is_autodetection_enabled: bool,
+    ctx: &mut AppContext,
+) {
+    send_telemetry_from_ctx!(
+        TelemetryEvent::AgentModeToggleAutoDetectionSetting {
+            is_autodetection_enabled,
+            origin: AgentModeAutoDetectionSettingOrigin::SlashCommand,
+        },
+        ctx
+    );
+}
+
+/// Records acceptance of a saved prompt from the slash-command menu. Ported from Warp OSS.
+pub fn record_saved_prompt_accepted(is_in_agent_view: bool, ctx: &mut AppContext) {
+    send_telemetry_from_ctx!(
+        TelemetryEvent::SlashCommandAccepted {
+            command_details: SlashCommandAcceptedDetails::SavedPrompt,
+            is_in_agent_view,
+        },
+        ctx
+    );
+}
+
+/// Records acceptance of a static slash command from the menu. Ported from Warp OSS.
+pub fn record_static_slash_command_accepted(
+    command_name: &str,
+    is_in_agent_view: bool,
+    ctx: &mut AppContext,
+) {
+    send_telemetry_from_ctx!(
+        TelemetryEvent::SlashCommandAccepted {
+            command_details: SlashCommandAcceptedDetails::StaticCommand {
+                command_name: command_name.to_owned(),
+            },
+            is_in_agent_view,
+        },
+        ctx
+    );
+}
+
+/// Returns the display text for a saved-prompt (agent-mode workflow) by id, if it exists.
+///
+/// Ported from Warp OSS, adapted to Zap's local object store (`ObjectStoreModel` in place of
+/// upstream's `CloudModel`).
+pub fn saved_prompt_text_for_id(id: &SyncId, ctx: &AppContext) -> Option<String> {
+    let workflow = ObjectStoreModel::as_ref(ctx).get_workflow(id)?;
+    workflow.model().data.is_agent_mode_workflow().then(|| {
+        compute_workflow_display_data(&workflow.model().data).command_with_replaced_arguments
+    })
+}
 
 #[derive(Debug, Clone)]
 pub enum AcceptSlashCommandOrSavedPrompt {

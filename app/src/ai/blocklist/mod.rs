@@ -1,17 +1,24 @@
 //! This module contains model, controller, and view logic for Blocklist AI.
-mod action_model;
+// `action_model`, `context_model`, `controller`, and `input_model` are `pub`
+// (like `block`) so the `tui_export` facade can re-export their public items
+// for the `warp_tui` front-end. `ai` itself stays a private module, so this
+// widens no external surface beyond what `tui_export` explicitly re-exports.
+pub mod action_model;
 pub mod agent_view;
 pub mod block;
 pub mod code_block;
-mod context_model;
-mod controller;
+pub mod context_model;
+pub mod conversation_selection;
+pub mod controller;
+pub mod diff_storage;
+pub mod input_mode_policy;
 mod passive_suggestions;
 pub(super) use controller::RequestInput;
 pub mod history_model;
 pub mod inline_action;
-mod input_model;
+pub mod input_model;
 mod permissions;
-mod persistence;
+pub(crate) mod persistence;
 pub mod prompt;
 pub mod suggested_agent_mode_workflow_modal;
 pub mod suggested_rule_modal;
@@ -20,7 +27,7 @@ pub mod summarization_cancel_dialog;
 pub mod usage;
 
 pub(crate) mod telemetry_banner;
-pub(super) mod view_util;
+pub mod view_util;
 
 #[cfg_attr(target_family = "wasm", allow(unused_imports))]
 pub(crate) use action_model::{

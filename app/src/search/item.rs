@@ -14,6 +14,14 @@ pub enum IconLocation {
     Top { margin_top: f32 },
 }
 
+/// A renderer-agnostic projection of a search item's detail (title + description), used by
+/// surfaces that cannot consume a GUI [`Element`] (e.g. the TUI).
+#[derive(Debug, Clone)]
+pub struct SearchItemDetail {
+    pub title: String,
+    pub description: Option<String>,
+}
+
 /// A trait representing a result from searching for a command.
 pub trait SearchItem: Send + Sync {
     /// The action that is dispatched when an item is accepted.
@@ -59,6 +67,13 @@ pub trait SearchItem: Send + Sync {
     ///
     /// If this returns `None`, no details panel is shown for the item.
     fn render_details(&self, _: &AppContext) -> Option<Box<dyn Element>> {
+        None
+    }
+
+    /// Optionally returns a renderer-agnostic detail projection (title + description) for
+    /// non-GUI surfaces (e.g. the TUI) that cannot consume [`SearchItem::render_details`]'s
+    /// GUI [`Element`]. Returns `None` when the item has no detail to show.
+    fn detail_data(&self) -> Option<SearchItemDetail> {
         None
     }
 

@@ -326,6 +326,26 @@ impl BlocklistAIHistoryModel {
         self.conversations_by_id.get(conversation_id)
     }
 
+    /// Returns the render status of one todo item in the conversation's todo
+    /// history — a narrow projection for consumers that don't need the whole
+    /// `AIConversation`.
+    pub fn todo_status(
+        &self,
+        conversation_id: &AIConversationId,
+        todo_id: &crate::ai::agent::AIAgentTodoId,
+    ) -> Option<crate::ai::agent::conversation::TodoStatus> {
+        self.conversation(conversation_id)?.todo_status(todo_id)
+    }
+
+    /// Returns the conversation's active (most recent) todo list, if any — a
+    /// narrow projection (see [`Self::todo_status`]).
+    pub fn active_todo_list(
+        &self,
+        conversation_id: &AIConversationId,
+    ) -> Option<&crate::ai::agent::todos::AIAgentTodoList> {
+        self.conversation(conversation_id)?.active_todo_list()
+    }
+
     pub fn conversation_mut(
         &mut self,
         conversation_id: &AIConversationId,
@@ -1410,7 +1430,7 @@ impl BlocklistAIHistoryModel {
 
     /// Handle clearing the blocklist for the terminal view.
     /// The terminal view will also cancel the active stream on processing the event emitted here.
-    pub(crate) fn clear_conversations_in_terminal_view(
+    pub fn clear_conversations_in_terminal_view(
         &mut self,
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,

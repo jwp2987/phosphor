@@ -133,11 +133,15 @@ impl fmt::Display for TaskId {
 
 pub type OptionalPlatformWindow = Option<Rc<dyn platform::Window>>;
 
+// `&mut dyn Any` (not `AnyView`) so dispatch can route to a GUI view (`views`) or
+// a Zap TUI view (`tui_views`, whose elements are `dyn AnyTuiView`). The handler
+// closures only `downcast_mut`, so `Any` is sufficient. See `App::dispatch_action`
+// / `App::dispatch_typed_action`.
 type ActionCallback =
-    dyn FnMut(&mut dyn AnyView, &dyn Any, &mut AppContext, WindowId, EntityId) -> bool;
+    dyn FnMut(&mut dyn Any, &dyn Any, &mut AppContext, WindowId, EntityId) -> bool;
 
 type TypedActionCallback =
-    dyn FnMut(&mut dyn AnyView, &dyn Any, &mut AppContext, WindowId, EntityId);
+    dyn FnMut(&mut dyn Any, &dyn Any, &mut AppContext, WindowId, EntityId);
 
 type GlobalActionCallback =
     dyn FnMut(&dyn Any, &'static std::panic::Location<'static>, &mut AppContext);
@@ -532,13 +536,19 @@ type ModelFromFutureCallback = dyn FnOnce(&mut dyn Any, Box<dyn Any>, &mut AppCo
 type ModelFromStreamItemCallback = dyn FnMut(&mut dyn Any, Box<dyn Any>, &mut AppContext, EntityId);
 type ModelFromStreamDoneCallback = dyn FnOnce(&mut dyn Any, &mut AppContext, EntityId);
 
+// `&mut dyn Any` (not `AnyView`) so the relay can dispatch to a GUI view or a Zap
+// TUI view (`window.tui_views`). See `App::relay_task_output`.
 type ViewFromFutureCallback =
-    dyn FnOnce(&mut dyn AnyView, Box<dyn Any>, &mut AppContext, WindowId, EntityId);
+    dyn FnOnce(&mut dyn Any, Box<dyn Any>, &mut AppContext, WindowId, EntityId);
 
+// These take `&mut dyn Any` (not `&mut dyn AnyView`) so the relay can dispatch to
+// either a GUI view (`window.views`) or a Zap TUI view (`window.tui_views`, whose
+// elements are `dyn AnyTuiView`, not `dyn AnyView`). The closures only ever
+// `downcast_mut`, so `Any` is sufficient. See `App::relay_task_output`.
 type ViewFromStreamItemCallback =
-    dyn FnMut(&mut dyn AnyView, Box<dyn Any>, &mut AppContext, WindowId, EntityId);
+    dyn FnMut(&mut dyn Any, Box<dyn Any>, &mut AppContext, WindowId, EntityId);
 
-type ViewFromStreamDoneCallback = dyn FnOnce(&mut dyn AnyView, &mut AppContext, WindowId, EntityId);
+type ViewFromStreamDoneCallback = dyn FnOnce(&mut dyn Any, &mut AppContext, WindowId, EntityId);
 
 enum TaskCallback {
     ModelFromFuture {

@@ -1,4 +1,12 @@
 mod align;
+// TUI (ratatui) element system and its shared helpers. Feature-gated so the
+// default GUI build never pulls them. See specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+pub mod animation;
+#[cfg(feature = "tui")]
+pub mod shimmer_math;
+#[cfg(feature = "tui")]
+pub mod tui;
 mod child_view;
 mod clipped;
 mod clipped_scrollable;

@@ -63,6 +63,107 @@ pub fn error_color(theme: &WarpTheme) -> ColorU {
         .into()
 }
 
+const ERROR_APOLOGY_TEXT: &str = "I'm sorry, I couldn't complete that request.";
+
+/// Shown alongside a failed Agent Mode response. Ported from warp; BYOP has no
+/// usage metering, but the string is carried for parity with the TUI renderer.
+pub const FAILED_OUTPUT_USAGE_NOTICE_TEXT: &str = "This response won't count towards your usage.";
+
+/// Renderer-neutral content for a failed Agent Mode request.
+///
+/// Ported from warp/master `blocklist/view_util.rs`. The enum keeps warp's full
+/// variant set so the `warp_tui` renderer's exhaustive match compiles, but the
+/// BYOP [`failed_output_presentation`] below never produces the cloud-only
+/// `OutOfCredits` / `GeminiEnterpriseCredentialsExpiredOrInvalid` arms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FailedOutputPresentation {
+    Message(String),
+    OutOfCredits {
+        message: String,
+        can_use_own_api_keys: bool,
+    },
+    InvalidApiKey {
+        title: &'static str,
+        detail: String,
+    },
+    ContextWindowExceeded {
+        message: String,
+    },
+    AwsBedrockCredentialsExpiredOrInvalid {
+        fallback_message: String,
+    },
+    GeminiEnterpriseCredentialsExpiredOrInvalid {
+        fallback_message: String,
+    },
+}
+
+/// Returns the user-facing presentation for an Agent Mode request failure.
+///
+/// BYOP adaptation of warp's `failed_output_presentation`: the cloud billing
+/// branches (out-of-credits / subscribe CTA / credit-reset date, read from
+/// `UserWorkspaces`/`AIRequestUsageModel`) are dropped — BYOP uses the user's own
+/// provider keys, so a quota/rate limit is surfaced as a plain message, not an
+/// out-of-credits upsell. Recovery-pending failures are suppressed so an
+/// automatic resume isn't interrupted by an alarming error.
+pub fn failed_output_presentation(
+    error: &crate::ai::agent::RenderableAIError,
+    _app: &warpui::AppContext,
+) -> Option<FailedOutputPresentation> {
+    use crate::ai::agent::RenderableAIError;
+    if error.will_attempt_resume() {
+        return None;
+    }
+    Some(match error {
+        RenderableAIError::QuotaLimit
+        | RenderableAIError::InternalWarpError
+        | RenderableAIError::ServerOverloaded => {
+            FailedOutputPresentation::Message(format!("{ERROR_APOLOGY_TEXT}\n\n{error}"))
+        }
+        RenderableAIError::ContextWindowExceeded(message) => {
+            FailedOutputPresentation::ContextWindowExceeded {
+                message: message.clone(),
+            }
+        }
+        RenderableAIError::InvalidApiKey {
+            provider,
+            model_name,
+        } => FailedOutputPresentation::InvalidApiKey {
+            title: "Provided API key is not valid",
+            detail: format!(
+                "Failed to authenticate with {provider} when using {model_name}. \
+                 Double-check that your API key is correct."
+            ),
+        },
+        RenderableAIError::AwsBedrockCredentialsExpiredOrInvalid { model_name } => {
+            FailedOutputPresentation::AwsBedrockCredentialsExpiredOrInvalid {
+                fallback_message: format!(
+                    "{ERROR_APOLOGY_TEXT}\n\nAWS credentials expired or missing for {model_name}. \
+                     Please refresh your AWS credentials."
+                ),
+            }
+        }
+        RenderableAIError::Other { error_message, .. } => {
+            FailedOutputPresentation::Message(format!("{ERROR_APOLOGY_TEXT}\n\n{error_message}"))
+        }
+    })
+}
+
+/// Whether a failed Agent Mode response should explain that it will not count
+/// towards usage.
+///
+/// BYOP has no Warp usage or credits — requests go straight to the user's own
+/// provider — so "This response won't count towards your usage" is meaningless
+/// and misleading here. Zap never shows the notice. (Parameters are kept so the
+/// call sites match warp's, in case the notice is ever reintroduced.)
+pub fn should_show_failed_output_usage_notice(
+    _error: &crate::ai::agent::RenderableAIError,
+    _is_latest_visible_exchange_in_root_task: bool,
+    _has_expanded_last_requested_command: bool,
+    _is_restored: bool,
+) -> bool {
+    false
+}
+
 /// Returns the AI icon element to be rendered in AI output blocks and the terminal input when in
 /// AI mode. Takes a color parameter as the solid fill for the icon. We use [ai_brand_color] in most
 /// cases.

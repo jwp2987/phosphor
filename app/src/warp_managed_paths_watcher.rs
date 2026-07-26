@@ -221,7 +221,7 @@ impl WarpManagedPathsWatcher {
         Self::new_internal(ctx, true)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn new_for_testing(ctx: &mut ModelContext<Self>) -> Self {
         Self::new_internal(ctx, false)
     }
@@ -344,7 +344,7 @@ impl WarpManagedPathsWatcher {
         Self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn new_for_testing(_ctx: &mut ModelContext<Self>) -> Self {
         Self
     }

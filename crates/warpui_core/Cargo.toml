@@ -1,13 +1,17 @@
 [package]
 name = "warpui_core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 authors.workspace = true
 publish.workspace = true
 license = "MIT"
 
 [features]
 traces = []
+# Headless terminal-UI (ratatui) rendering runtime, used by the warp_tui
+# front-end. Off by default; the GUI build never pulls ratatui or the runtime
+# module. See specs/warp-oss-sync/SCOPE.md (workstream B).
+tui = ["dep:ratatui", "dep:libc"]
 # Feature enabled only when app is compiled for integration tests.
 integration_tests = ["dep:minimp4", "dep:openh264"]
 # If enabled, writes named telemetry events to the info log.  Should never be
@@ -58,6 +62,13 @@ pathfinder_color.workspace = true
 pathfinder_geometry.workspace = true
 rand.workspace = true
 rangemap.workspace = true
+ratatui = { version = "0.30", optional = true, features = [
+    "unstable-rendered-line-info",
+] }
+# Used by the tui runtime module (terminal_probe) for raw-mode termios calls.
+libc = { workspace = true, optional = true }
+# Used by the tui element system for grapheme segmentation.
+unicode-segmentation = "1.11.0"
 raw-window-handle = "0.6.2"
 resvg.workspace = true
 rstar = "0.12.2"

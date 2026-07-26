@@ -20,7 +20,10 @@ use crate::{
     terminal::model::block::{BlockId, SerializedBlock},
 };
 
+use super::history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use super::AIQueryHistoryOutputStatus;
+use crate::persistence::ModelEvent;
+use warpui::{AppContext, EntityId, SingletonEntity as _};
 /// Data we persist for each [`AIAgentExchange`] for use in history. Does not contain output data.
 #[derive(Debug, Deserialize, Clone)]
 pub struct PersistedAIInput {
@@ -401,4 +404,76 @@ impl From<SerializedBlock> for SerializedBlockListItem {
             block: Box::new(value),
         }
     }
+}
+
+/// Builds the persistence upsert event for a newly appended/updated AI query, if
+/// the event belongs to `terminal_view_id` and represents a persistable exchange.
+///
+/// Ported from warp/master `blocklist/persistence.rs`; adapted to Zap's event
+/// accessor name (`terminal_view_id()` — warp's `terminal_surface_id()`). Returns
+/// the persistence [`ModelEvent`] the `PersistenceWriter` sender accepts.
+pub fn maybe_build_ai_query_upsert_event(
+    event: &BlocklistAIHistoryEvent,
+    terminal_view_id: EntityId,
+    is_shared_ambient_agent_session: bool,
+    app: &AppContext,
+) -> Option<ModelEvent> {
+    if event
+        .terminal_view_id()
+        .is_some_and(|id| id != terminal_view_id)
+    {
+        return None;
+    }
+
+    let (exchange_id, conversation_id, is_hidden) = match event {
+        BlocklistAIHistoryEvent::AppendedExchange {
+            exchange_id,
+            conversation_id,
+            is_hidden,
+            ..
+        }
+        | BlocklistAIHistoryEvent::UpdatedStreamingExchange {
+            exchange_id,
+            conversation_id,
+            is_hidden,
+            ..
+        } => (*exchange_id, *conversation_id, *is_hidden),
+        _ => return None,
+    };
+
+    let history_model = BlocklistAIHistoryModel::as_ref(app);
+    let Some(conversation) = history_model.conversation(&conversation_id) else {
+        log::warn!("Received event with invalid conversation ID: {conversation_id:?}");
+        return None;
+    };
+    let Some(exchange) = conversation.exchange_with_id(exchange_id) else {
+        log::warn!("Received event with invalid exchange ID: {exchange_id:?}");
+        return None;
+    };
+
+    if is_hidden || conversation.is_entirely_passive() || is_shared_ambient_agent_session {
+        return None;
+    }
+
+    let inputs: Vec<_> = exchange
+        .input
+        .iter()
+        .filter_map(|input| PersistedAIInputType::try_from(input).ok())
+        .collect();
+    if inputs.is_empty() {
+        return None;
+    }
+
+    Some(ModelEvent::UpsertAIQuery {
+        query: Arc::new(PersistedAIInput {
+            start_ts: exchange.start_time,
+            inputs,
+            exchange_id: exchange.id,
+            conversation_id,
+            output_status: AIQueryHistoryOutputStatus::from(&exchange.output_status),
+            working_directory: exchange.working_directory.clone(),
+            model_id: exchange.model_id.clone(),
+            coding_model_id: exchange.coding_model_id.clone(),
+        }),
+    })
 }

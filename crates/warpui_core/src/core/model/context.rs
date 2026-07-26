@@ -130,7 +130,9 @@ impl<'a, T: Entity> ModelContext<'a, T> {
 
     pub fn subscribe_to_view<V, F>(&mut self, handle: &ViewHandle<V>, mut callback: F)
     where
-        V: View,
+        // Bounded by `Entity` rather than `View` so a model can subscribe to a TUI view's
+        // event stream (a `TuiView: Entity`, not `warpui::View`). GUI-safe: `View: Entity`.
+        V: Entity,
         V::Event: 'static,
         F: 'static + FnMut(&mut T, &V::Event, &mut ModelContext<T>),
     {
@@ -263,7 +265,7 @@ impl<'a, T: Entity> ModelContext<'a, T> {
         &mut self,
         future: S,
         callback: F,
-    ) -> impl Future<Output = ()>
+    ) -> impl Future<Output = ()> + use<S, F, U, T>
     where
         S: 'static + Future,
         F: 'static + FnOnce(&mut T, S::Output, &mut ModelContext<T>) -> U,
@@ -552,11 +554,11 @@ impl<T> std::ops::DerefMut for ModelContext<'_, T> {
 }
 
 impl<M> ViewAsRef for ModelContext<'_, M> {
-    fn view<T: View>(&self, handle: &ViewHandle<T>) -> &T {
+    fn view<T: Entity>(&self, handle: &ViewHandle<T>) -> &T {
         self.app.view(handle)
     }
 
-    fn try_view<T: View>(&self, handle: &ViewHandle<T>) -> Option<&T> {
+    fn try_view<T: Entity>(&self, handle: &ViewHandle<T>) -> Option<&T> {
         self.app.try_view(handle)
     }
 }
@@ -564,7 +566,7 @@ impl<M> ViewAsRef for ModelContext<'_, M> {
 impl<M> ReadView for ModelContext<'_, M> {
     fn read_view<T, F, S>(&self, handle: &ViewHandle<T>, read: F) -> S
     where
-        T: View,
+        T: Entity,
         F: FnOnce(&T, &AppContext) -> S,
     {
         self.app.read_view(handle, read)
@@ -574,7 +576,7 @@ impl<M> ReadView for ModelContext<'_, M> {
 impl<M> UpdateView for ModelContext<'_, M> {
     fn update_view<T, F, S>(&mut self, handle: &ViewHandle<T>, update: F) -> S
     where
-        T: View,
+        T: Entity,
         F: FnOnce(&mut T, &mut ViewContext<T>) -> S,
     {
         self.app.update_view(handle, update)

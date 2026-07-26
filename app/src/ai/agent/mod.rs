@@ -372,7 +372,7 @@ pub struct AIAgentOutput {
     /// The set of documents that were referenced in the LLM's response.
     pub citations: Vec<AIAgentCitation>,
 
-    /// 本地/后端流式响应可附带的不透明输出 ID。
+    /// Opaque output ID a local/backend streaming response may carry.
     pub server_output_id: Option<ServerOutputId>,
 
     /// Optional metadata that may be attached by the `AIAgentApi` when emitting this output.
@@ -660,19 +660,56 @@ impl RenderableAIError {
 
 impl From<&AIApiError> for RenderableAIError {
     fn from(value: &AIApiError) -> Self {
-        match value {
-            AIApiError::QuotaLimit => Self::QuotaLimit,
-            AIApiError::ServerOverloaded => Self::ServerOverloaded,
-            AIApiError::Other(error) => Self::Other {
-                error_message: error.to_string(),
-                will_attempt_resume: false,
-                waiting_for_network: false,
+        // BYOP talks directly to the user's own provider, so map the common
+        // failures (auth, unreachable provider, HTTP status, bad response) to
+        // actionable messages instead of a raw `{:?}` debug dump.
+        let error_message = match value {
+            AIApiError::QuotaLimit => return Self::QuotaLimit,
+            AIApiError::ServerOverloaded => return Self::ServerOverloaded,
+            // A non-2xx surfaced through reqwest keeps the status but not the body.
+            AIApiError::Transport(err) => match err.status() {
+                Some(status) if matches!(status.as_u16(), 401 | 403) => format!(
+                    "Your AI provider rejected the request as unauthorized (HTTP {}). Check that \
+                     the provider's API key is set and correct.",
+                    status.as_u16()
+                ),
+                Some(status) if status.as_u16() == 404 => format!(
+                    "Your AI provider returned HTTP 404 — the model id or base URL may be wrong.\n\n{err}"
+                ),
+                Some(status) => {
+                    format!("Your AI provider returned HTTP {}.\n\n{err}", status.as_u16())
+                }
+                None => format!(
+                    "Couldn't reach your AI provider. Check that it's running and its base URL is \
+                     correct.\n\n{err}"
+                ),
             },
-            _ => Self::Other {
-                error_message: format!("Request failed with error: {value:?}"),
-                will_attempt_resume: false,
-                waiting_for_network: false,
-            },
+            // A status error read with its response body (often the provider's
+            // own error text, e.g. "model 'x' not found").
+            AIApiError::ErrorStatus(status, body) if matches!(status.as_u16(), 401 | 403) => {
+                format!(
+                    "Your AI provider rejected the request as unauthorized (HTTP {}). Check that \
+                     the provider's API key is set and correct.\n\n{body}",
+                    status.as_u16()
+                )
+            }
+            AIApiError::ErrorStatus(status, body) => {
+                format!("Your AI provider returned HTTP {}.\n\n{body}", status.as_u16())
+            }
+            AIApiError::Deserialization(err) => {
+                format!("Zap couldn't parse the response from your AI provider.\n\n{err}")
+            }
+            AIApiError::Stream {
+                stream_type,
+                source,
+            } => format!("Streaming error from your AI provider ({stream_type}).\n\n{source:#}"),
+            AIApiError::NoContextFound => "No context found for the request.".to_string(),
+            AIApiError::Other(error) => error.to_string(),
+        };
+        Self::Other {
+            error_message,
+            will_attempt_resume: false,
+            waiting_for_network: false,
         }
     }
 }
@@ -1274,6 +1311,13 @@ impl AgentOutputText {
     /// Returns the original responded text with the Markdown format syntax.
     pub fn text(&self) -> &str {
         self.markdown_text.as_str()
+    }
+
+    /// Returns the cached parsed Markdown, if parsing succeeded.
+    pub fn formatted_text_arc(&self) -> Option<Arc<FormattedText>> {
+        self.formatted_lines
+            .as_ref()
+            .map(FormattedTextWrapper::formatted_text_arc)
     }
 
     /// Note that mutating the returned string will not automatically reparse the text and update `formatted_lines`.
@@ -2062,14 +2106,15 @@ pub enum AIAgentAttachment {
         current: Option<CurrentHead>,
         base: DiffBase,
     },
-    /// VM 文件系统中文件的本地引用(例如 ambient-agent 运行恢复的附件)。
-    /// 本地 agent 直接把该路径作为 LLM 的文件上下文。
+    /// Local reference to a file in the VM filesystem (e.g. an attachment restored
+    /// from an ambient-agent run). The local agent passes this path directly to the
+    /// LLM as file context.
     FilePathReference {
-        /// 附件的不透明本地 ID。
+        /// Opaque local ID of the attachment.
         file_id: String,
-        /// 原始文件名。
+        /// Original file name.
         file_name: String,
-        /// 文件在磁盘上的完整解析路径。
+        /// Full resolved path of the file on disk.
         file_path: String,
     },
     #[serde(untagged)]
@@ -2390,10 +2435,11 @@ pub enum AIAgentInput {
 
     SummarizeConversation {
         prompt: Option<String>,
-        /// Zap BYOP:本字段标记本次摘要是否由 token-overflow 自动触发,
-        /// `chat_stream::SummarizeConversation` 分支据此决定 follow-up 文案
-        /// (overflow 路径会拼一段 "previous request exceeded ..." 解释)。
-        /// 本地 agent conversation 路径不读这个字段。所有现有调用点保持 `overflow: false`。
+        /// Zap BYOP: marks whether this summary was auto-triggered by token
+        /// overflow. The `chat_stream::SummarizeConversation` branch uses it to pick
+        /// the follow-up wording (the overflow path appends a "previous request
+        /// exceeded ..." explanation). The local agent-conversation path ignores this
+        /// field; all existing call sites keep `overflow: false`.
         overflow: bool,
     },
 
@@ -2404,15 +2450,15 @@ pub enum AIAgentInput {
         user_query: Option<InvokeSkillUserQuery>,
     },
 
-    /// 使用 ambient agent 运行中保存的 prompt 启动对话。
-    /// 如果提供 runtime_skill,本地 agent 会创建 InvokeSkill 消息。skill 指令会发送给 LLM,
-    /// 但不会显示在 UI 查询气泡中。
+    /// Start a conversation from a prompt saved during an ambient-agent run.
+    /// If `runtime_skill` is provided, the local agent creates an InvokeSkill message;
+    /// the skill instructions are sent to the LLM but not shown in the UI query bubble.
     StartFromAmbientRunPrompt {
         ambient_run_id: String,
         context: Arc<[AIAgentContext]>,
         /// Optional skill to use as base context (content hidden from user in UI).
         runtime_skill: Option<ai::skills::ParsedSkill>,
-        /// 可选的任务附件本地目录路径,用于给 LLM 构造正确的文件路径。
+        /// Optional local directory of task attachments, used to build correct file paths for the LLM.
         attachments_dir: Option<String>,
     },
 
@@ -2915,6 +2961,13 @@ impl AIAgentExchange {
     pub fn duration(&self) -> Option<TimeDelta> {
         self.finish_time
             .map(|finish_time| finish_time.signed_duration_since(self.start_time))
+    }
+
+    pub fn time_since_start(&self) -> Option<std::time::Duration> {
+        Local::now()
+            .signed_duration_since(self.start_time)
+            .to_std()
+            .ok()
     }
 }
 

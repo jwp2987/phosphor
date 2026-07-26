@@ -36,6 +36,95 @@ pub struct AcceptSkill {
     pub skill_reference: SkillReference,
 }
 
+/// A skill matched against a query, ready to present in a selection menu.
+///
+/// Ported from Warp OSS's `terminal/input/skills/core.rs`.
+pub struct SelectableSkill {
+    pub name: String,
+    pub reference: SkillReference,
+    pub description: String,
+    pub scope: SkillScope,
+    pub provider: SkillProvider,
+    pub icon_override: Option<Icon>,
+    pub name_match_result: Option<FuzzyMatchResult>,
+    pub score: OrderedFloat<f64>,
+}
+
+/// Fuzzy-matches skills available for `working_directory` against `query_text`, ranked for an
+/// inline menu (lower-ranked first; alphabetical tie-break).
+///
+/// Ported from Warp OSS, adapted to Zap's `SkillManager::get_skills_for_working_directory`
+/// (which takes a `&Path`; BYOP working directories are always local).
+pub fn query_selectable_skills(
+    working_directory: Option<&warp_util::local_or_remote_path::LocalOrRemotePath>,
+    terminal_view_id: EntityId,
+    include_bundled: bool,
+    query_text: &str,
+    app: &AppContext,
+) -> Vec<SelectableSkill> {
+    use warp_util::local_or_remote_path::LocalOrRemotePath;
+
+    let cli_agent_providers = CLIAgentSessionsModel::as_ref(app)
+        .session(terminal_view_id)
+        .filter(|session| matches!(session.input_state, CLIAgentInputState::Open { .. }))
+        .map(|session| session.agent.supported_skill_providers());
+    let skill_manager = SkillManager::as_ref(app);
+    let query_text = query_text.trim();
+    let cwd_path: Option<PathBuf> = working_directory.and_then(|location| match location {
+        LocalOrRemotePath::Local(path) => Some(path.clone()),
+        LocalOrRemotePath::Remote(_) => None,
+    });
+    let mut results = skill_manager
+        .get_skills_for_working_directory(cwd_path.as_deref(), app)
+        .into_iter()
+        .filter(|skill| {
+            if let Some(providers) = &cli_agent_providers {
+                skill_manager.skill_exists_for_any_provider(skill, providers)
+            } else {
+                include_bundled || skill.scope != SkillScope::Bundled
+            }
+        })
+        .filter_map(|mut skill| {
+            if let Some(providers) = &cli_agent_providers {
+                skill.provider = skill_manager.best_supported_provider(&skill, providers);
+            }
+
+            let (name_match_result, score) = if query_text.is_empty() {
+                (None, OrderedFloat(f64::MIN))
+            } else {
+                let match_result =
+                    match_indices_case_insensitive(skill.name.as_str(), query_text)?;
+                if query_text.len() > 1 && match_result.score < 10 {
+                    return None;
+                }
+                let score = OrderedFloat(match_result.score as f64);
+                (Some(match_result), score)
+            };
+
+            Some(SelectableSkill {
+                name: skill.name,
+                reference: skill.reference,
+                description: skill.description,
+                scope: skill.scope,
+                provider: skill.provider,
+                icon_override: skill.icon_override,
+                name_match_result,
+                score,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Inline menus render lower-ranked results first and select from the end.
+    // Reverse alphabetical tie-breaking puts the alphabetically first skill at
+    // the selected end of an unfiltered result list.
+    results.sort_by(|left, right| {
+        left.score
+            .cmp(&right.score)
+            .then_with(|| right.name.to_lowercase().cmp(&left.name.to_lowercase()))
+    });
+    results
+}
+
 impl InlineMenuAction for AcceptSkill {
     const MENU_TYPE: InlineMenuType = InlineMenuType::SkillMenu;
 

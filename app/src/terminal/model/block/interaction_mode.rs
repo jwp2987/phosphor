@@ -197,6 +197,10 @@ impl Block {
         }
     }
 
+    pub fn is_agent_requested_command(&self) -> bool {
+        self.requested_command_action_id().is_some()
+    }
+
     /// Returns the `long_running_control_state` associated with this block, if any.
     pub fn long_running_control_state(&self) -> Option<&LongRunningCommandControlState> {
         self.interaction_mode.long_running_control_state()

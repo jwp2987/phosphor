@@ -483,6 +483,10 @@ impl SelectionModel {
         self.pending_selection = None;
     }
 
+    pub fn has_pending_selection(&self) -> bool {
+        self.pending_selection.is_some()
+    }
+
     /// Set a single cursor at the offset.
     pub fn set_cursor(&mut self, offset: CharOffset, ctx: &mut ModelContext<Self>) {
         self.update_selection(

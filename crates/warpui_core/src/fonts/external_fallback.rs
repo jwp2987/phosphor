@@ -151,7 +151,7 @@ impl Cache {
 
     pub(crate) fn take_requested_fallback_families(
         &self,
-    ) -> impl Iterator<Item = (ExternalFontFamily, Vec<RequestedFallbackFontSource>)> {
+    ) -> impl Iterator<Item = (ExternalFontFamily, Vec<RequestedFallbackFontSource>)> + use<> {
         let result = self
             .font_fallback_cache
             .requested_fallback_families

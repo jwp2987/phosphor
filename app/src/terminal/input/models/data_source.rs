@@ -140,6 +140,88 @@ impl ModelSelectorDataSource {
     }
 }
 
+/// Frontend-neutral model picker result shared by the GUI and `warp_tui` surfaces.
+///
+/// Zap port of warp/master's `ModelPickerChoice`: the GUI keeps building the
+/// richer [`ModelSearchItem`] (icons, mouse state) via [`SyncDataSource::run_query`],
+/// while [`query_model_picker_choices`] exposes just the surface-agnostic slice the
+/// TUI menu needs.
+#[derive(Clone, Debug)]
+pub struct ModelPickerChoice {
+    pub llm: LLMInfo,
+    pub disable_reason: Option<DisableReason>,
+    pub name_match_result: Option<FuzzyMatchResult>,
+    pub score: OrderedFloat<f64>,
+}
+
+impl ModelPickerChoice {
+    pub fn is_selectable(&self) -> bool {
+        self.disable_reason.is_none()
+    }
+
+    fn priority_tier(&self) -> u8 {
+        if self.is_selectable() {
+            0
+        } else {
+            1
+        }
+    }
+}
+
+/// Applies the model picker's fuzzy filtering and effective disabled state to a
+/// set of `choices`, returning surface-agnostic [`ModelPickerChoice`]s ordered
+/// selectable-first then by match score.
+///
+/// Mirrors the filtering in [`ModelSelectorDataSource::run_query`] but is
+/// GUI-free so `warp_tui`'s model menu can share it. As in `run_query`, a model
+/// gated behind `RequiresUpgrade` is treated as enabled when the user already
+/// has a BYOK key for its provider.
+pub fn query_model_picker_choices<'a>(
+    _llm_preferences: &LLMPreferences,
+    choices: impl IntoIterator<Item = &'a LLMInfo>,
+    query_text: &str,
+    app: &AppContext,
+) -> Vec<ModelPickerChoice> {
+    let query_text = query_text.trim().to_lowercase();
+    let mut results = choices
+        .into_iter()
+        .filter_map(|llm| {
+            let name_match_result = if query_text.is_empty() {
+                None
+            } else {
+                let result = match_indices_case_insensitive(
+                    llm.display_name.to_lowercase().as_str(),
+                    query_text.as_str(),
+                )?;
+                // Avoid spamming results with extremely weak matches.
+                if query_text.len() > 1 && result.score < 10 {
+                    return None;
+                }
+                Some(result)
+            };
+            let disable_reason = if llm.disable_reason == Some(DisableReason::RequiresUpgrade)
+                && is_using_api_key_for_provider(&llm.provider, app)
+            {
+                None
+            } else {
+                llm.disable_reason.clone()
+            };
+            Some(ModelPickerChoice {
+                llm: llm.clone(),
+                disable_reason,
+                score: OrderedFloat(
+                    name_match_result
+                        .as_ref()
+                        .map_or(f64::MIN, |result| result.score as f64),
+                ),
+                name_match_result,
+            })
+        })
+        .collect::<Vec<_>>();
+    results.sort_by_key(|choice| (choice.priority_tier(), choice.score));
+    results
+}
+
 impl SyncDataSource for ModelSelectorDataSource {
     type Action = AcceptModel;
 

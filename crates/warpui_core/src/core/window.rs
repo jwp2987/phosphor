@@ -86,6 +86,12 @@ pub(super) struct Window {
     /// The set of views owned by this window, keyed by view ID.
     pub views: HashMap<EntityId, Box<dyn AnyView>>,
 
+    /// TUI views owned by this window, kept in a separate map so GUI view storage
+    /// is untouched. Only the TUI front-end populates this. See
+    /// specs/warp-oss-sync/SCOPE.md.
+    #[cfg(feature = "tui")]
+    pub tui_views: HashMap<EntityId, Box<dyn crate::core::view::AnyTuiView>>,
+
     /// A handle to the window's root view (top of the view hierarchy), if any.
     pub root_view: Option<AnyViewHandle>,
 

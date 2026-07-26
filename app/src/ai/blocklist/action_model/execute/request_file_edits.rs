@@ -52,6 +52,10 @@ pub struct RequestFileEditsExecutor {
     active_session: ModelHandle<ActiveSession>,
     apply_diff_model: ModelHandle<ApplyDiffModel>,
     diff_views: HashMap<AIAgentActionId, ViewHandle<CodeDiffView>>,
+    /// TUI diff storages, registered by non-GUI surfaces via
+    /// [`Self::register_requested_edits_storage`]. Parallel to `diff_views`; a given action
+    /// has an entry in at most one of the two maps.
+    tui_diff_storages: HashMap<AIAgentActionId, Box<dyn crate::ai::blocklist::diff_storage::RegisteredDiffStorage>>,
     /// Set of action IDs where diff application failed.
     diff_application_failures: HashMap<AIAgentActionId, Vec1<DiffApplicationError>>,
     terminal_view_id: EntityId,
@@ -68,9 +72,20 @@ impl RequestFileEditsExecutor {
             active_session,
             apply_diff_model,
             diff_views: HashMap::new(),
+            tui_diff_storages: HashMap::new(),
             diff_application_failures: HashMap::new(),
             terminal_view_id,
         }
+    }
+
+    /// Registers a renderer-agnostic diff storage (the TUI path) to handle a RequestFileEdits
+    /// action. The GUI equivalent is [`Self::register_requested_edits`].
+    pub fn register_requested_edits_storage(
+        &mut self,
+        action_id: &AIAgentActionId,
+        storage: Box<dyn crate::ai::blocklist::diff_storage::RegisteredDiffStorage>,
+    ) {
+        self.tui_diff_storages.insert(action_id.clone(), storage);
     }
 
     pub(super) fn should_autoexecute(
@@ -151,6 +166,32 @@ impl RequestFileEditsExecutor {
         else {
             return ActionExecution::InvalidAction;
         };
+
+        // TUI path: the diff storage owns save + result reporting via a returned future,
+        // so we bypass the GUI's diff-view event/oneshot flow entirely.
+        if self.tui_diff_storages.contains_key(id) {
+            if let Some(errors) = self.diff_application_failures.remove(id) {
+                return ActionExecution::Sync(AIAgentActionResultType::RequestFileEdits(
+                    RequestFileEditsResult::DiffApplicationFailed {
+                        error: DiffApplicationError::error_for_conversation(&errors),
+                    },
+                ));
+            }
+            let inner = self
+                .tui_diff_storages
+                .get(id)
+                .expect("presence checked above")
+                .accept_and_save(ctx);
+            // Match the GUI branch's `Result<_, oneshot::Canceled>` output type so both
+            // `new_async` arms produce the same `ActionExecution<T>`.
+            let future = async move { Ok::<_, oneshot::Canceled>(inner.await) };
+            return ActionExecution::new_async(future, |result, _ctx| match result {
+                Ok(result) => AIAgentActionResultType::RequestFileEdits(result),
+                Err(oneshot::Canceled) => {
+                    AIAgentActionResultType::RequestFileEdits(RequestFileEditsResult::Cancelled)
+                }
+            });
+        }
 
         let Some(diff_view) = self.diff_views.get(id) else {
             log::warn!("Tried to execute a RequestFileEdits action without a diff view");
@@ -346,12 +387,12 @@ impl RequestFileEditsExecutor {
     ) {
         tx.send(()).ok();
 
-        let Some(diff_view) = self.diff_views.get(&id) else {
+        if !self.diff_views.contains_key(&id) && !self.tui_diff_storages.contains_key(&id) {
             log::warn!(
                 "Tried to apply diffs for a RequestFileEdits action without a corresponding diff view"
             );
             return;
-        };
+        }
 
         let applied_diffs = match applied_diffs {
             Ok(diffs) if !diffs.is_empty() => diffs,
@@ -400,10 +441,14 @@ impl RequestFileEditsExecutor {
             _ => DiffSessionType::Local,
         };
 
-        diff_view.update(ctx, |diff_view, ctx| {
-            diff_view.set_diff_session_type(diff_session_type);
-            diff_view.set_candidate_diffs(diffs, ctx);
-        });
+        if let Some(storage) = self.tui_diff_storages.get(&id) {
+            storage.set_candidate_diffs(diffs, diff_session_type, ctx);
+        } else if let Some(diff_view) = self.diff_views.get(&id) {
+            diff_view.update(ctx, |diff_view, ctx| {
+                diff_view.set_diff_session_type(diff_session_type);
+                diff_view.set_candidate_diffs(diffs, ctx);
+            });
+        }
     }
 
     fn generate_ai_identifiers(

@@ -72,7 +72,7 @@ use warpui::elements::{
     XAxisAnchor, YAxisAnchor,
 };
 use warpui::text::{point::Point, TextBuffer};
-use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
+use warpui::{AppContext, Entity, ModelAsRef, ModelContext, ModelHandle, SingletonEntity};
 
 use super::super::DiffResult;
 use super::comments::{EditorCommentsModel, PendingComment, PendingCommentEvent};
@@ -415,6 +415,261 @@ impl CodeEditorModel {
             lazy_layout_initialized: false,
             pending_syntax_tree_bootstrap: false,
         }
+    }
+
+    /// Creates an editor backed by a TUI char-cell `RenderState` (monospace layout, no GPU
+    /// rendering). Shares all of `CodeEditorModel`'s non-render features. Reads syntax-highlight
+    /// colors from the `Appearance` singleton, like [`Self::new`].
+    pub fn new_tui(terminal_width: u16, ctx: &mut ModelContext<Self>) -> Self {
+        let content =
+            ctx.add_model(|_| Buffer::new(Box::new(|_, _| IndentBehavior::Ignore)));
+        ctx.subscribe_to_model(&content, |me, event, ctx| {
+            me.handle_content_model_event(event, ctx);
+        });
+
+        let selection_model = ctx.add_model(|_ctx| BufferSelectionModel::new(content.clone()));
+
+        let color_map = Self::syntax_highlighting_color_map(ctx);
+        let buffer_version = content.as_ref(ctx).buffer_version();
+        let buffer_handle = content.downgrade();
+        let syntax_tree =
+            ctx.add_model(|_ctx| SyntaxTreeState::new(buffer_handle, buffer_version, color_map));
+        ctx.subscribe_to_model(&syntax_tree, |me, event, ctx| {
+            me.handle_syntax_tree_model_event(event, ctx);
+        });
+
+        let diff = ctx.add_model(|_ctx| DiffModel::new());
+        ctx.subscribe_to_model(&diff, |me, event, ctx| {
+            me.handle_diff_model_event(event, ctx);
+        });
+
+        let hidden_lines =
+            ctx.add_model(|_| HiddenLinesModel::new(content.clone(), selection_model.clone()));
+
+        let render_state = ctx.add_model(|ctx| {
+            // CharCell layout never consults `RichTextStyles`, so pass a stub.
+            RenderState::new_tui(
+                terminal_width,
+                Self::tui_stub_text_styles(),
+                hidden_lines.clone(),
+                ctx,
+            )
+            .with_width_setting(WidthSetting::InfiniteWidth)
+        });
+        ctx.subscribe_to_model(&render_state, |me, event, ctx| {
+            me.handle_render_state_model_event(event, ctx);
+        });
+        let selection = ctx.add_model(|ctx| {
+            SelectionModel::new(
+                content.clone(),
+                render_state.clone(),
+                selection_model.clone(),
+                Some(hidden_lines.clone()),
+                ctx,
+            )
+            .with_disable_hidden_navigation()
+        });
+
+        let comments = ctx.add_model(|_| EditorCommentsModel {
+            pending_comment: PendingComment::Closed,
+        });
+
+        Self {
+            render_state,
+            diff,
+            content,
+            selection_model,
+            selection,
+            syntax_tree,
+            comments,
+            hidden_lines,
+            diff_navigation_state: DiffNavigationState::Collapsed,
+            interaction_state: InteractionState::Editable,
+            show_current_line_highlights: false,
+            delay_rendering: None,
+            vim_visual_tails: vec![],
+            hovered_symbol_range: None,
+            hide_lines_outside_of_active_diff: None,
+            lazy_layout_enabled: false,
+            lazy_layout_initialized: true,
+            pending_syntax_tree_bootstrap: false,
+        }
+    }
+
+    /// A minimal `RichTextStyles` for CharCell mode, where styles are never consulted for
+    /// rendering. All colors are transparent and sizes zero.
+    fn tui_stub_text_styles() -> RichTextStyles {
+        use warp_editor::render::model::{
+            BlockSpacings, BrokenLinkStyle, CheckBoxStyle, HorizontalRuleStyle, InlineCodeStyle,
+            ParagraphStyles, TableStyle,
+        };
+        use warpui::color::ColorU;
+        use warpui::elements::{Border, Fill};
+        use warpui::fonts::{FamilyId, Weight};
+
+        const TRANSPARENT: ColorU = ColorU {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 0,
+        };
+        let paragraph = |fixed_width_tab_size| ParagraphStyles {
+            font_family: FamilyId(0),
+            font_size: 10.,
+            font_weight: Weight::Normal,
+            line_height_ratio: 1.,
+            text_color: TRANSPARENT,
+            baseline_ratio: 0.7,
+            fixed_width_tab_size,
+        };
+        RichTextStyles {
+            base_text: paragraph(None),
+            code_text: paragraph(Some(4)),
+            code_background: Fill::None,
+            embedding_background: Fill::None,
+            embedding_text: paragraph(None),
+            code_border: Border::new(0.),
+            placeholder_color: TRANSPARENT,
+            selection_fill: Fill::None,
+            cursor_fill: Fill::None,
+            inline_code_style: InlineCodeStyle {
+                font_family: FamilyId(0),
+                background: TRANSPARENT,
+                font_color: TRANSPARENT,
+            },
+            check_box_style: CheckBoxStyle {
+                border_width: 0.,
+                border_color: TRANSPARENT,
+                icon_path: "",
+                background: TRANSPARENT,
+                hover_background: TRANSPARENT,
+            },
+            horizontal_rule_style: HorizontalRuleStyle {
+                rule_height: 0.,
+                color: TRANSPARENT,
+            },
+            broken_link_style: BrokenLinkStyle {
+                icon_path: "",
+                icon_color: TRANSPARENT,
+            },
+            block_spacings: BlockSpacings::default(),
+            minimum_paragraph_height: None,
+            show_placeholder_text_on_empty_block: false,
+            cursor_width: 0.,
+            highlight_urls: false,
+            table_style: TableStyle {
+                border_color: TRANSPARENT,
+                header_background: TRANSPARENT,
+                cell_background: TRANSPARENT,
+                alternate_row_background: None,
+                text_color: TRANSPARENT,
+                header_text_color: TRANSPARENT,
+                scrollbar_nonactive_thumb_color: TRANSPARENT,
+                scrollbar_active_thumb_color: TRANSPARENT,
+                font_family: FamilyId(0),
+                font_size: 10.,
+                cell_padding: 0.,
+                outer_border: false,
+                column_dividers: false,
+                row_dividers: false,
+            },
+        }
+    }
+
+    fn primary_cursor_gap(&self, ctx: &impl ModelAsRef) -> CharOffset {
+        *self.selection.as_ref(ctx).cursors(ctx).first()
+    }
+
+    /// The soft-wrapped visual row containing 0-based `cursor_offset`, as 0-based character
+    /// offsets; `None` outside char-cell (TUI) mode.
+    fn char_cell_visual_row_range(
+        &self,
+        cursor_offset: CharOffset,
+        ctx: &impl ModelAsRef,
+    ) -> Option<Range<CharOffset>> {
+        let render = self.render_state.as_ref(ctx);
+        Some(render.char_cell()?.visual_row_char_range(cursor_offset))
+    }
+
+    /// Deletes `range` (1-indexed gap offsets) as a user edit, returning the deleted text.
+    fn delete_range_returning_text(
+        &mut self,
+        range: Range<CharOffset>,
+        ctx: &mut ModelContext<Self>,
+    ) -> String {
+        let deleted = self
+            .content()
+            .as_ref(ctx)
+            .text_in_range(range.clone())
+            .into_string();
+        let selection_model = self.selection_model.clone();
+        self.update_content(
+            |mut content, ctx| {
+                content.apply_edit(
+                    BufferEditAction::Delete(vec1![range]),
+                    EditOrigin::UserInitiated,
+                    selection_model,
+                    ctx,
+                );
+            },
+            ctx,
+        );
+        deleted
+    }
+
+    /// Kills from the cursor to the start of its char-cell visual row (Ctrl-U in the TUI input).
+    pub fn kill_to_char_cell_visual_row_start(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<String> {
+        let cursor_gap = self.primary_cursor_gap(ctx);
+        let cursor_offset = CharOffset::from(cursor_gap.as_usize().saturating_sub(1));
+        let row = self.char_cell_visual_row_range(cursor_offset, ctx)?;
+        if row.start >= cursor_offset {
+            return None;
+        }
+        Some(self.delete_range_returning_text(row.start + 1..cursor_gap, ctx))
+    }
+
+    /// Kills from the cursor to the end of its char-cell visual row (Ctrl-K in the TUI input).
+    pub fn kill_to_char_cell_visual_row_end(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<String> {
+        let cursor_gap = self.primary_cursor_gap(ctx);
+        let cursor_offset = CharOffset::from(cursor_gap.as_usize().saturating_sub(1));
+        let row = self.char_cell_visual_row_range(cursor_offset, ctx)?;
+        if row.end <= cursor_offset {
+            return None;
+        }
+        Some(self.delete_range_returning_text(cursor_gap..row.end + 1, ctx))
+    }
+
+    /// Replaces the first `n` characters of the buffer with `text` (used to reconcile a
+    /// typeahead prefix in the TUI input).
+    pub fn replace_first_n_characters(
+        &mut self,
+        n: CharOffset,
+        text: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let selection_model = self.selection_model.clone();
+        self.update_content(
+            |mut content, ctx| {
+                let start = CharOffset::from(1);
+                let end = std::cmp::min(start + n.as_usize(), content.buffer().max_charoffset());
+                content.apply_edit(
+                    BufferEditAction::InsertAtCharOffsetRanges {
+                        edits: &vec1![(text.to_owned(), start..end)],
+                    },
+                    EditOrigin::UserInitiated,
+                    selection_model,
+                    ctx,
+                );
+            },
+            ctx,
+        );
+        self.validate(ctx);
     }
 
     fn should_defer_syntax_tree_parsing(&self) -> bool {
@@ -3817,6 +4072,14 @@ impl CoreEditorModel for CodeEditorModel {
         self.hidden_lines.update(ctx, |hidden_lines_model, ctx| {
             hidden_lines_model.materialize_hidden_range_offsets(buffer_version, ctx);
         });
+        // In TUI char-cell mode the async font-shaping pipeline is bypassed entirely (the
+        // LayoutAction::BufferEdit arm is a no-op for CharCell). Refresh the char-cell line
+        // index synchronously here so cursor positioning and, crucially, the display lattice
+        // see up-to-date text in the same frame — without this, typed text never renders.
+        if let Some(char_cell) = self.render_state.as_ref(ctx).char_cell() {
+            let text = self.content.as_ref(ctx).text().into_string();
+            char_cell.update_text(&text);
+        }
     }
 
     fn content(&self) -> &ModelHandle<Buffer> {

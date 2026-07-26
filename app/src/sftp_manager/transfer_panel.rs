@@ -48,14 +48,14 @@ fn render_state_label(state: &TransferState, appearance: &Appearance) -> Box<dyn
 
     let (label, color) = match state {
         TransferState::Pending => (
-            String::from("等待中"),
+            String::from("Waiting"),
             theme.sub_text_color(theme.background()),
         ),
-        TransferState::InProgress => (String::from("传输中"), theme.accent()),
-        TransferState::Completed => (String::from("已完成"), theme.ui_green_color().into()),
-        TransferState::Failed(_) => (String::from("失败"), theme.ui_error_color().into()),
+        TransferState::InProgress => (String::from("In progress"), theme.accent()),
+        TransferState::Completed => (String::from("Completed"), theme.ui_green_color().into()),
+        TransferState::Failed(_) => (String::from("Failed"), theme.ui_error_color().into()),
         TransferState::Cancelled => (
-            String::from("已取消"),
+            String::from("Cancelled"),
             theme.sub_text_color(theme.background()),
         ),
     };
@@ -204,7 +204,7 @@ pub fn render_transfer_panel(
 
     // 标题栏
     let count = transfers.len();
-    let title_text = format!("传输 ({count})");
+    let title_text = format!("Transfers ({count})");
 
     let title_el = Text::new_inline(title_text, ui_font, ui_font_size)
         .with_color(text_color.into())

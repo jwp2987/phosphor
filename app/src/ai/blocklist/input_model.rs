@@ -135,7 +135,9 @@ pub struct BlocklistAIInputModel {
     /// if a persistent lock is in place and a buffer is submitted.
     was_lock_set_with_empty_buffer: bool,
 
-    agent_view_controller: ModelHandle<AgentViewController>,
+    /// `None` on the TUI surface, which has no agent-view controller and is always treated as
+    /// agent-view-active and never fullscreen.
+    agent_view_controller: Option<ModelHandle<AgentViewController>>,
 
     /// Handle to the per-pane context model. Used to read pending attachments / blocks when
     /// deciding whether to force-lock the input to AI mode (see
@@ -149,9 +151,70 @@ pub struct BlocklistAIInputModel {
 }
 
 impl BlocklistAIInputModel {
+    /// Builds a mock input model for the `warp_tui` test suite, wired against a
+    /// mock terminal, a test `Sessions`, and an agent-view-less context model
+    /// (mirroring the real TUI surface). The `input_config` is sourced from the
+    /// supplied [`InputModePolicy`], and `Self` is constructed directly so the
+    /// mock does not depend on the `CLIAgentSessionsModel` singleton that
+    /// [`Self::new_tui`] subscribes to. Ported from Warp OSS; gated on `test-util`.
+    ///
+    /// [`InputModePolicy`]: super::input_mode_policy::InputModePolicy
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn mock(
+        policy: super::input_mode_policy::InputModePolicyHandle,
+        ctx: &mut AppContext,
+    ) -> ModelHandle<Self> {
+        let model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        let terminal_view_id = EntityId::new();
+        // Use the singleton-free, agent-view-less context model so `mock` does not
+        // depend on the `BlocklistAIHistoryModel`/`LLMPreferences`/`AISettings`
+        // singleton web that `BlocklistAIContextModel::new` subscribes to.
+        let ai_context_model = ctx.add_model(|_| {
+            BlocklistAIContextModel::mock_agent_view_less(model.clone(), terminal_view_id)
+        });
+        let input_config = policy.initial_config(ctx);
+        ctx.add_model(|_| Self {
+            input_config,
+            last_ai_autodetection_ts: None,
+            last_explicit_input_type_set_at: None,
+            was_lock_set_with_empty_buffer: false,
+            agent_view_controller: None,
+            ai_context_model,
+            terminal_view_id,
+            autodetect_abort_handle: None,
+            model,
+        })
+    }
+
     pub fn new(
         model: Arc<FairMutex<TerminalModel>>,
         agent_view_controller: ModelHandle<AgentViewController>,
+        ai_context_model: ModelHandle<BlocklistAIContextModel>,
+        terminal_view_id: EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
+        Self::new_inner(
+            model,
+            Some(agent_view_controller),
+            ai_context_model,
+            terminal_view_id,
+            ctx,
+        )
+    }
+
+    /// Constructs an input model for the TUI surface, which has no agent-view controller.
+    pub fn new_tui(
+        model: Arc<FairMutex<TerminalModel>>,
+        ai_context_model: ModelHandle<BlocklistAIContextModel>,
+        terminal_view_id: EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
+        Self::new_inner(model, None, ai_context_model, terminal_view_id, ctx)
+    }
+
+    fn new_inner(
+        model: Arc<FairMutex<TerminalModel>>,
+        agent_view_controller: Option<ModelHandle<AgentViewController>>,
         ai_context_model: ModelHandle<BlocklistAIContextModel>,
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,
@@ -191,7 +254,7 @@ impl BlocklistAIInputModel {
                 AISettingsChangedEvent::AIAutoDetectionEnabled { .. }
                     if FeatureFlag::AgentView.is_enabled() =>
                 {
-                    if me.agent_view_controller.as_ref(ctx).is_fullscreen() {
+                    if me.agent_view_controller.as_ref().is_some_and(|c| c.as_ref(ctx).is_fullscreen()) {
                         // Use context-specific check to determine if autodetection should be enabled
                         let is_nld_enabled =
                             AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
@@ -222,7 +285,7 @@ impl BlocklistAIInputModel {
                 }
                 AISettingsChangedEvent::NLDInTerminalEnabled { .. }
                     if FeatureFlag::AgentView.is_enabled()
-                        && !me.agent_view_controller.as_ref(ctx).is_active() =>
+                        && !me.agent_view_controller.as_ref().is_none_or(|c| c.as_ref(ctx).is_active()) =>
                 {
                     let is_nld_enabled = AISettings::as_ref(ctx).is_nld_in_terminal_enabled(ctx);
                     me.set_input_config_internal(
@@ -238,7 +301,8 @@ impl BlocklistAIInputModel {
         });
 
         if FeatureFlag::AgentView.is_enabled() {
-            ctx.subscribe_to_model(&agent_view_controller, |me, event, ctx| match event {
+            if let Some(agent_view_controller) = &agent_view_controller {
+            ctx.subscribe_to_model(agent_view_controller, |me, event, ctx| match event {
                 AgentViewControllerEvent::EnteredAgentView {
                     display_mode,
                     origin,
@@ -315,6 +379,7 @@ impl BlocklistAIInputModel {
                 }
                 _ => (),
             });
+            }
         }
 
         let is_autodetection_enabled = if FeatureFlag::AgentView.is_enabled() {
@@ -358,6 +423,17 @@ impl BlocklistAIInputModel {
         matches!(self.input_config.input_type, InputType::AI)
     }
 
+    pub fn is_terminal_use_active_or_pending(&self) -> bool {
+        let model = self.model.lock();
+        let active_block = model.block_list().active_block();
+        // Keep AI input locked while an agent-requested command is waiting for its
+        // CLI subagent, while the user has tagged the agent in, or while the user
+        // can hand control of an active monitored command back to the agent.
+        active_block.is_agent_driving_command()
+            || active_block.is_agent_tagged_in()
+            || active_block.is_eligible_for_agent_handoff()
+    }
+
     pub fn input_config(&self) -> InputConfig {
         self.input_config
     }
@@ -374,7 +450,7 @@ impl BlocklistAIInputModel {
     ) {
         // When agent view is active, the input should behave like Universal mode
         // even if Classic mode is selected (e.g. when PS1 is enabled).
-        if FeatureFlag::AgentView.is_enabled() && self.agent_view_controller.as_ref(ctx).is_active()
+        if FeatureFlag::AgentView.is_enabled() && self.agent_view_controller.as_ref().is_none_or(|c| c.as_ref(ctx).is_active())
         {
             return;
         }
@@ -407,7 +483,7 @@ impl BlocklistAIInputModel {
         // agent rich input case, the input must be in AI mode to suppress shell decorations
         // (syntax highlighting, error underlining).
         if FeatureFlag::AgentView.is_enabled()
-            && !self.agent_view_controller.as_ref(ctx).is_active()
+            && !self.agent_view_controller.as_ref().is_none_or(|c| c.as_ref(ctx).is_active())
             && new_config.input_type.is_ai()
             && new_config.is_locked
             && !CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id)
@@ -512,7 +588,7 @@ impl BlocklistAIInputModel {
 
         let ai_settings = AISettings::as_ref(app);
         if FeatureFlag::AgentView.is_enabled() {
-            if self.agent_view_controller.as_ref(app).is_fullscreen() {
+            if self.agent_view_controller.as_ref().is_some_and(|c| c.as_ref(app).is_fullscreen()) {
                 ai_settings.is_ai_autodetection_enabled(app)
             } else {
                 ai_settings.is_nld_in_terminal_enabled(app)
@@ -562,7 +638,7 @@ impl BlocklistAIInputModel {
             // If NLD is enabled and input is currently locked, unlock it, as we want to
             // resume autodetection for the next input.
             self.input_config.unlocked_if_autodetection_enabled(
-                self.agent_view_controller.as_ref(ctx).is_fullscreen(),
+                self.agent_view_controller.as_ref().is_some_and(|c| c.as_ref(ctx).is_fullscreen()),
                 ctx,
             )
         };

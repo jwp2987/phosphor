@@ -401,6 +401,20 @@ impl ProjectContextModel {
         );
     }
 
+    /// Like [`Self::find_applicable_rules`], but accepts a `LocalOrRemotePath`. Remote paths
+    /// have no indexed local project rules, so they always return `None`.
+    pub fn find_applicable_project_rules(
+        &self,
+        path: &warp_util::local_or_remote_path::LocalOrRemotePath,
+    ) -> Option<ProjectRulesResult> {
+        match path {
+            warp_util::local_or_remote_path::LocalOrRemotePath::Local(path) => {
+                self.find_applicable_rules(path)
+            }
+            warp_util::local_or_remote_path::LocalOrRemotePath::Remote(_) => None,
+        }
+    }
+
     pub fn find_applicable_rules(&self, path: &Path) -> Option<ProjectRulesResult> {
         let mut current_path = path.to_owned();
         let mut active_rules = Vec::new();

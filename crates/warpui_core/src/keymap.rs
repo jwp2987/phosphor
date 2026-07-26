@@ -337,8 +337,8 @@ impl schemars::JsonSchema for Keystroke {
         std::borrow::Cow::Borrowed("Keystroke")
     }
 
-    fn json_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        gen.subschema_for::<String>()
+    fn json_schema(r#gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        r#gen.subschema_for::<String>()
     }
 }
 
@@ -1061,6 +1061,53 @@ impl Keystroke {
         } else {
             // On windows and linux, we want to display "Ctrl Shift I" instead of "CtrlShiftI"
             s.join(" ")
+        }
+    }
+
+    /// A verbose modifier + key rendering (e.g. `Ctrl + Shift + A`), spelling out
+    /// modifier names rather than using platform symbols.
+    pub fn displayed_expanded(&self) -> String {
+        let mut parts = Vec::new();
+        if self.ctrl {
+            parts.push("Ctrl".to_owned());
+        }
+        if self.alt {
+            parts.push("Alt".to_owned());
+        }
+        if self.shift {
+            parts.push("Shift".to_owned());
+        }
+        if self.cmd {
+            parts.push("Cmd".to_owned());
+        }
+        if self.meta {
+            parts.push("Meta".to_owned());
+        }
+        parts.push(self.displayed_key());
+        parts.join(" + ")
+    }
+
+    fn displayed_key(&self) -> String {
+        // Always treat the key as uppercase--this matches how operating systems and most
+        // applications display keybindings.
+        match self.key.as_str() {
+            "up" => "↑".into(),
+            "down" => "↓".into(),
+            "left" => "←".into(),
+            "right" => "→".into(),
+            "\t" => "Tab".into(),
+            " " => "Space".into(),
+            "enter" => "⏎".into(),
+            "backspace" => "⌫".into(),
+            key => {
+                // Capitalize the first letter of the key name
+                key.chars()
+                    .next()
+                    .map(|c| c.to_ascii_uppercase())
+                    .into_iter()
+                    .chain(key.chars().skip(1))
+                    .collect()
+            }
         }
     }
 }

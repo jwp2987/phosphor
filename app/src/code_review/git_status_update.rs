@@ -40,6 +40,10 @@ pub struct GitStatusMetadata {
 /// Multiple terminals in the same repo share a single sub-model.  When the last
 /// strong handle to a sub-model is dropped, the watcher is torn down
 /// automatically.
+/// The TUI's git-status singleton. Warp OSS names this `GitRepoModels` (a cache/factory of
+/// per-repo status models); Zap's equivalent is [`GitStatusUpdateModel`], so this is an alias.
+pub type GitRepoModels = GitStatusUpdateModel;
+
 pub struct GitStatusUpdateModel {
     #[cfg(feature = "local_fs")]
     repos: HashMap<PathBuf, WeakModelHandle<GitRepoStatusModel>>,

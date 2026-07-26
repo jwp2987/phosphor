@@ -399,6 +399,9 @@ pub struct Block {
     /// If `true`, the output grid should not be rendered.
     should_hide_output_grid: bool,
 
+    /// If `true`, the command grid should not be rendered (TUI char-cell path).
+    should_hide_command_grid: bool,
+
     /// [`Self::linefeed`] may discard some linefeeds at the beginning of the prompt. Doing so will
     /// alter the row numbers for [`Self::goto`] and [`Self::goto_line`] when ConPTY is involved. We
     /// track the count of discarded newlines here in order to correct the row number.
@@ -1007,6 +1010,7 @@ impl Block {
             has_received_user_input: false,
             hidden: false,
             should_hide_output_grid: false,
+            should_hide_command_grid: false,
             leading_linefeeds_ignored: 0,
             is_ai_ugc_telemetry_enabled,
             restored_block_was_local: None,
@@ -1119,7 +1123,7 @@ impl Block {
     }
 
     /// Replaces the block's lprompt and command combined grid with the given one.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn set_prompt_and_command_grid(&mut self, prompt_and_command_grid: BlockGrid) {
         self.header_grid
             .set_prompt_and_command_grid(prompt_and_command_grid);
@@ -1138,14 +1142,14 @@ impl Block {
     }
 
     /// Replaces the block's rprompt grid with the given one.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub(super) fn set_rprompt_grid(&mut self, rprompt_grid: BlockGrid) {
         self.rprompt_grid = rprompt_grid;
     }
 
     /// Replaces the block's output grid with the given one.
     /// Useful for test functions.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn set_output_grid(&mut self, output_grid: BlockGrid) {
         self.output_grid = output_grid;
     }
@@ -1485,6 +1489,14 @@ impl Block {
         self.should_hide_output_grid = should_hide;
     }
 
+    pub fn should_hide_command_grid(&self) -> bool {
+        self.should_hide_command_grid
+    }
+
+    pub fn set_should_hide_command_grid(&mut self, should_hide: bool) {
+        self.should_hide_command_grid = should_hide;
+    }
+
     /// Returns true iff this block should be used as a scrollback block
     /// in a shared session context. Note the active block is included in scrollback to get the active prompt.
     pub fn is_scrollback_block_for_shared_session(
@@ -1719,7 +1731,7 @@ impl Block {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn set_was_long_running(&mut self, was_long_running: AtomicBool) {
         self.was_long_running = was_long_running;
     }

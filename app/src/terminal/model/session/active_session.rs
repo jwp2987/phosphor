@@ -99,6 +99,18 @@ impl ActiveSession {
         self.current_working_directory.as_ref()
     }
 
+    /// Returns the current working directory as a [`LocalOrRemotePath`]. BYOP sessions are local,
+    /// so this is always a `Local` path. Used by skill/slash-command surfaces that key off the
+    /// working directory.
+    pub fn current_working_directory_location(
+        &self,
+        _ctx: &AppContext,
+    ) -> Option<warp_util::local_or_remote_path::LocalOrRemotePath> {
+        self.current_working_directory
+            .as_ref()
+            .map(|cwd| warp_util::local_or_remote_path::LocalOrRemotePath::Local(cwd.into()))
+    }
+
     /// Returns the `WarpAiExecutionContext` for the active session.
     ///
     /// active session 解析失败时回退到最近一次已知值(见

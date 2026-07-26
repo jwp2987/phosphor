@@ -6,12 +6,19 @@ use crate::event::ModifiersState;
 
 use self::point::Point;
 
-use self::word_boundaries::WordBoundaries;
+use self::word_boundaries::{WordBoundaries, WordBoundariesPolicy};
 
 pub mod header;
 pub mod point;
 pub mod word_boundaries;
 pub mod words;
+
+/// A row/column position in rendered character-cell content.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TuiGridPoint {
+    pub row: usize,
+    pub col: u16,
+}
 
 pub use header::BlockHeaderSize;
 
@@ -188,6 +195,60 @@ pub trait TextBuffer {
             self.chars_rev_at(offset)?,
             self,
         ))
+    }
+
+    /// Returns the target offset for expanding a semantic (double-click) selection
+    /// from `position` in the given `direction`, respecting the word-boundary
+    /// `policy`. Used by the TUI selectable element.
+    fn semantic_expansion_target<T: BufferIndex>(
+        &self,
+        position: T,
+        direction: SelectionDirection,
+        policy: &WordBoundariesPolicy,
+    ) -> Result<Point> {
+        let offset = position.to_char_offset(self)?;
+
+        let target = match direction {
+            SelectionDirection::Forward => {
+                let mut chars = self.chars_at(offset)?;
+                let mut end = offset;
+                // Include the character under the cursor (if any).
+                if chars.next().is_some() {
+                    end += 1;
+                    // Extend through the following word only if the very next character is part
+                    // of a word; a boundary char here stops us (no trailing whitespace, no
+                    // crossing into the next word past a separator run).
+                    if chars.next().is_some_and(|c| !policy.is_word_boundary(c)) {
+                        end += 1;
+                        for c in chars {
+                            if policy.is_word_boundary(c) {
+                                break;
+                            }
+                            end += 1;
+                        }
+                    }
+                }
+                end
+            }
+            SelectionDirection::Backward => {
+                let mut chars = self.chars_rev_at(offset)?;
+                let mut start = offset;
+                // Extend left through a preceding word only if the character immediately before
+                // the cursor is part of a word.
+                if chars.next().is_some_and(|c| !policy.is_word_boundary(c)) {
+                    start -= 1;
+                    for c in chars {
+                        if policy.is_word_boundary(c) {
+                            break;
+                        }
+                        start -= 1;
+                    }
+                }
+                start
+            }
+        };
+
+        self.to_point(target)
     }
 }
 

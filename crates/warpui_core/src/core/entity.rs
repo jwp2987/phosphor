@@ -26,6 +26,11 @@ impl EntityId {
     }
 }
 
+/// Map keyed by [`EntityId`], used by the TUI runtime. Feature-gated to keep the
+/// default GUI build unchanged. See specs/warp-oss-sync/SCOPE.md.
+#[cfg(feature = "tui")]
+pub type EntityIdMap<V> = rustc_hash::FxHashMap<EntityId, V>;
+
 impl fmt::Display for EntityId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         std::fmt::Display::fmt(&self.0, f)

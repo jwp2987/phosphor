@@ -89,12 +89,12 @@ impl<T> TextCache<T> {
         }
 
         let mut curr_frame = RwLockUpgradableReadGuard::upgrade(curr_frame);
-        if let Some((key, val)) = self.prev_frame.lock().remove_entry(key) {
+        match self.prev_frame.lock().remove_entry(key) { Some((key, val)) => {
             curr_frame.insert(key, val.clone());
             Some(val)
-        } else {
+        } _ => {
             None
-        }
+        }}
     }
 
     pub fn insert(&self, key: CacheKeyValue, val: Arc<T>) {

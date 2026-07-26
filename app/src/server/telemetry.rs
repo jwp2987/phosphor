@@ -882,6 +882,10 @@ pub enum AgentModeAutoDetectionSettingOrigin {
     /// The AI settings page.
     #[serde(rename = "settings_page")]
     SettingsPage,
+
+    /// A natural-language-detection toggle slash command (TUI).
+    #[serde(rename = "slash_command")]
+    SlashCommand,
 }
 
 /// Payload for the [`AgentModePotentialAutodetectionFalsePositive`] event.
@@ -1097,6 +1101,9 @@ impl From<AgentViewEntryOrigin> for TelemetryAgentViewEntryOrigin {
             AgentViewEntryOrigin::DefaultSessionMode => Self::DefaultSessionMode,
             AgentViewEntryOrigin::ChildAgent => Self::ChildAgent,
             AgentViewEntryOrigin::LinearDeepLink => Self::LinearDeepLink,
+            // Telemetry is inert in Zap (BYOP); the TUI is a terminal front-end, so it maps to
+            // the closest existing origin rather than growing the telemetry enum.
+            AgentViewEntryOrigin::Tui => Self::Cli,
         }
     }
 }

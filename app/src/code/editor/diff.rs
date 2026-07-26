@@ -219,6 +219,58 @@ pub enum RenderableDiffHunk {
     },
 }
 
+/// Computes the unified diff (and added/removed line counts) between `base` and
+/// `new`, using a git-standard 3-line context radius and `file_name` for the
+/// diff header. Returns an empty [`DiffResult`] when the two are identical.
+///
+/// Shared by the editor's own `DiffModel` and by surface-agnostic callers such
+/// as the TUI diff storage (which has no editor buffers).
+pub async fn compute_unified_diff(
+    base: &MultilineStr<LF>,
+    new: &MultilineStr<LF>,
+    file_name: &str,
+) -> DiffResult {
+    if base == new {
+        return DiffResult {
+            unified_diff: String::new(),
+            lines_added: 0,
+            lines_removed: 0,
+        };
+    }
+
+    // Show 3 context lines (standard of git diff).
+    let text_diff = TextDiff::from_lines(base.as_str(), new.as_str());
+
+    // Calculate diff statistics.
+    let mut lines_added = 0;
+    let mut lines_removed = 0;
+
+    for op in text_diff.ops() {
+        match op {
+            DiffOp::Equal { .. } => (),
+            DiffOp::Delete { old_len, .. } => lines_removed += old_len,
+            DiffOp::Insert { new_len, .. } => lines_added += new_len,
+            DiffOp::Replace {
+                old_len, new_len, ..
+            } => {
+                lines_added += new_len;
+                lines_removed += old_len;
+            }
+        }
+    }
+
+    DiffResult {
+        unified_diff: text_diff
+            .unified_diff()
+            .context_radius(3)
+            .header(file_name, file_name)
+            .missing_newline_hint(false)
+            .to_string(),
+        lines_added,
+        lines_removed,
+    }
+}
+
 /// Model that tracks the line-by-line diff status of the editor content.
 pub struct DiffModel {
     /// Store base in an Arc to avoid cloning the underlying data on every content change.
@@ -621,45 +673,7 @@ impl DiffModel {
         new: &MultilineStr<LF>,
         file_name: &str,
     ) -> DiffResult {
-        if base == new {
-            return DiffResult {
-                unified_diff: String::new(),
-                lines_added: 0,
-                lines_removed: 0,
-            };
-        }
-
-        // Show 3 context lines (standard of git diff).
-        let text_diff = TextDiff::from_lines(base.as_str(), new.as_str());
-
-        // Calculate diff statistics.
-        let mut lines_added = 0;
-        let mut lines_removed = 0;
-
-        for op in text_diff.ops() {
-            match op {
-                DiffOp::Equal { .. } => (),
-                DiffOp::Delete { old_len, .. } => lines_removed += old_len,
-                DiffOp::Insert { new_len, .. } => lines_added += new_len,
-                DiffOp::Replace {
-                    old_len, new_len, ..
-                } => {
-                    lines_added += new_len;
-                    lines_removed += old_len;
-                }
-            }
-        }
-
-        DiffResult {
-            unified_diff: text_diff
-                .unified_diff()
-                .context_radius(3)
-                .header(file_name, file_name)
-                .missing_newline_hint(false)
-                .to_string(),
-            lines_added,
-            lines_removed,
-        }
+        compute_unified_diff(base, new, file_name).await
     }
 
     async fn compute_diff_internal(

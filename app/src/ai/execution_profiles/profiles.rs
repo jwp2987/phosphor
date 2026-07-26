@@ -163,7 +163,7 @@ impl AIExecutionProfilesModel {
                 }
 
                 let default_profile_state = match launch_mode {
-                    LaunchMode::App { .. } | LaunchMode::Test { .. } => match default_profile_object {
+                    LaunchMode::App { .. } | LaunchMode::Test { .. } | LaunchMode::Tui { .. } => match default_profile_object {
                         Some(p) => {
                             let execution_profile_id = ClientProfileId::new();
                             profile_id_to_sync_id.insert(execution_profile_id, p.id);

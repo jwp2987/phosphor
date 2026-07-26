@@ -1273,6 +1273,27 @@ impl AIConversation {
         self.task_store.latest_exchange()
     }
 
+    /// Whether the conversation's latest exchange is an in-progress conversation summarization.
+    pub fn is_summarizing(&self) -> bool {
+        let Some(exchange) = self.latest_exchange() else {
+            return false;
+        };
+        let Some(output) = exchange.output_status.output() else {
+            return false;
+        };
+        output.get().messages.last().is_some_and(|m| {
+            matches!(
+                m.message,
+                AIAgentOutputMessageType::Summarization {
+                    finished_duration: None,
+                    summarization_type:
+                        crate::ai::agent::SummarizationType::ConversationSummary,
+                    ..
+                }
+            )
+        })
+    }
+
     /// Get the auto-generated title of the given conversation
     /// (falling back to the first query if the title is empty).
     /// Get the title of the given conversation.

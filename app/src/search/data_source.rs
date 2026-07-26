@@ -471,6 +471,10 @@ impl<T: Action + Clone> QueryResult<T> {
         self.item.render_details(ctx)
     }
 
+    pub fn detail_data(&self) -> Option<super::item::SearchItemDetail> {
+        self.item.detail_data()
+    }
+
     pub fn priority_tier(&self) -> u8 {
         self.item.priority_tier()
     }

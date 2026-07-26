@@ -2,7 +2,7 @@ use parking_lot::FairMutex;
 use pathfinder_geometry::vector::Vector2F;
 use settings::Setting as _;
 use std::{any::Any, path::PathBuf, sync::Arc};
-use warpui::{AppContext, SingletonEntity, ViewHandle};
+use warpui::{AppContext, SingletonEntity};
 
 use crate::PrivacySettings;
 use crate::{
@@ -19,7 +19,7 @@ use super::{
     session_settings::SessionSettings,
     settings::TerminalSettings,
     view::{create_size_info_for_blocklist, WARP_PROMPT_HEIGHT_LINES},
-    ShellLaunchState, SizeInfo, TerminalModel, TerminalView,
+    ShellLaunchState, SizeInfo, TerminalModel,
 };
 use crate::pane_group::pane::DetachType;
 
@@ -27,8 +27,11 @@ pub trait TerminalManager: Any {
     /// Returns the backing terminal model.
     fn model(&self) -> Arc<FairMutex<TerminalModel>>;
 
-    /// Returns the terminal view being managed.
-    fn view(&self) -> ViewHandle<TerminalView>;
+    // The concrete terminal surface (`ViewHandle<TerminalView>` for the GUI) is
+    // intentionally NOT part of this object-safe contract: a TUI-owned manager
+    // has no `TerminalView`, so the surface is returned from the constructors
+    // (see `local_tty::TerminalManager::create_model` / `create_tui_model`)
+    // rather than recovered from the boxed manager.
 
     /// Called when the terminal pane detaches from its pane group. This is a sensitive path -
     /// do not do anything with high latency here. Note that we cannot rely on events emitted

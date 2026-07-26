@@ -50,9 +50,24 @@ pub struct DataSourceArgs {
     pub terminal_view_id: EntityId,
 }
 
+/// Construction arguments for the ratatui TUI surface, which has no agent-view controller
+/// (the TUI is a single always-agent-view surface).
+pub struct TuiSlashCommandDataSourceArgs {
+    pub active_session: ModelHandle<ActiveSession>,
+    pub cli_subagent_controller: ModelHandle<CLISubagentController>,
+    pub terminal_view_id: EntityId,
+}
+
+/// Type alias for the TUI's slash-command data source. Zap keeps a single concrete
+/// `SlashCommandDataSource` (parameterized on whether an agent-view controller is present)
+/// rather than Warp's trait + gui/tui split.
+pub type TuiSlashCommandDataSource = SlashCommandDataSource;
+
 pub struct SlashCommandDataSource {
     active_session: ModelHandle<ActiveSession>,
-    agent_view_controller: ModelHandle<AgentViewController>,
+    /// `None` on the TUI surface, which has no agent-view controller and is always treated as
+    /// agent-view-active.
+    agent_view_controller: Option<ModelHandle<AgentViewController>>,
     cli_subagent_controller: ModelHandle<CLISubagentController>,
     terminal_view_id: EntityId,
     active_commands_by_id: HashMap<SlashCommandId, StaticCommand>,
@@ -67,6 +82,38 @@ impl SlashCommandDataSource {
             cli_subagent_controller,
             terminal_view_id,
         } = args;
+        Self::new_inner(
+            active_session,
+            Some(agent_view_controller),
+            cli_subagent_controller,
+            terminal_view_id,
+            ctx,
+        )
+    }
+
+    /// Constructs a data source for the ratatui TUI surface, which has no agent-view controller.
+    pub fn new_tui(args: TuiSlashCommandDataSourceArgs, ctx: &mut ModelContext<Self>) -> Self {
+        let TuiSlashCommandDataSourceArgs {
+            active_session,
+            cli_subagent_controller,
+            terminal_view_id,
+        } = args;
+        Self::new_inner(
+            active_session,
+            None,
+            cli_subagent_controller,
+            terminal_view_id,
+            ctx,
+        )
+    }
+
+    fn new_inner(
+        active_session: ModelHandle<ActiveSession>,
+        agent_view_controller: Option<ModelHandle<AgentViewController>>,
+        cli_subagent_controller: ModelHandle<CLISubagentController>,
+        terminal_view_id: EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
         ctx.subscribe_to_model(&active_session, |me, event, ctx| match event {
             ActiveSessionEvent::UpdatedPwd | ActiveSessionEvent::Bootstrapped => {
                 me.recompute_active_commands(ctx);
@@ -80,13 +127,15 @@ impl SlashCommandDataSource {
                 me.recompute_active_commands(ctx);
             }
         });
-        ctx.subscribe_to_model(&agent_view_controller, |me, event, ctx| match event {
-            AgentViewControllerEvent::EnteredAgentView { .. }
-            | AgentViewControllerEvent::ExitedAgentView { .. } => {
-                me.recompute_active_commands(ctx);
-            }
-            _ => (),
-        });
+        if let Some(agent_view_controller) = &agent_view_controller {
+            ctx.subscribe_to_model(agent_view_controller, |me, event, ctx| match event {
+                AgentViewControllerEvent::EnteredAgentView { .. }
+                | AgentViewControllerEvent::ExitedAgentView { .. } => {
+                    me.recompute_active_commands(ctx);
+                }
+                _ => (),
+            });
+        }
         ctx.subscribe_to_model(&AISettings::handle(ctx), |me, event, ctx| {
             if matches!(event, AISettingsChangedEvent::IsAnyAIEnabled { .. }) {
                 me.recompute_active_commands(ctx);
@@ -138,7 +187,7 @@ impl SlashCommandDataSource {
 
         let mut session_context = Availability::empty();
 
-        let is_agent_view_active = self.agent_view_controller.as_ref(ctx).is_active();
+        let is_agent_view_active = self.is_agent_view_active(ctx);
         if !FeatureFlag::AgentView.is_enabled() {
             // When the AgentView feature flag is disabled, set both view bits so that
             // either view requirement is satisfied (but other requirements like
@@ -187,6 +236,12 @@ impl SlashCommandDataSource {
             session_context |= Availability::AI_ENABLED;
         }
 
+        // The ratatui TUI surface (no agent-view controller) can only execute the
+        // commands gated by `supports_tui`. Filtering here keeps the TUI slash
+        // menu honest — it stops advertising GUI-only commands that would no-op
+        // (or just insert text) when selected. As commands are ported to the TUI
+        // and added to `supports_tui`, they appear here automatically.
+        let is_tui_surface = self.agent_view_controller.is_none();
         let old_active_command_count = self.active_commands_by_id.len();
         self.active_commands_by_id = HashMap::from_iter(
             COMMAND_REGISTRY
@@ -197,6 +252,8 @@ impl SlashCommandDataSource {
                     !is_cli_agent_input
                         || Self::CLI_AGENT_INPUT_ALLOWED_COMMANDS.contains(&command.name)
                 })
+                // On the TUI, only surface commands that actually execute there.
+                .filter(|(_, command)| !is_tui_surface || command.supports_tui())
                 .map(|(id, command)| (id, command.clone())),
         );
 
@@ -225,8 +282,27 @@ impl SlashCommandDataSource {
         self.active_commands_by_id.iter()
     }
 
+    /// Returns the active session handle. Used by the input-parsing helpers to resolve the
+    /// current working directory for skill matching.
+    pub fn active_session(&self) -> &ModelHandle<ActiveSession> {
+        &self.active_session
+    }
+
     pub fn is_agent_view_active(&self, ctx: &AppContext) -> bool {
-        self.agent_view_controller.as_ref(ctx).is_active()
+        // The TUI surface has no agent-view controller; it is always agent-view-active.
+        self.agent_view_controller
+            .as_ref()
+            .is_none_or(|controller| controller.as_ref(ctx).is_active())
+    }
+
+    /// Returns whether this surface routes AI work (and thus local skills) to a local
+    /// execution host. Remote (e.g. SSH) sessions cannot run local skills. A BYOP fork
+    /// with no active session defaults to local.
+    pub fn local_skills_available(&self, ctx: &AppContext) -> bool {
+        self.active_session
+            .as_ref(ctx)
+            .session(ctx)
+            .is_none_or(|session| session.is_local())
     }
 
     /// Returns `true` if the CLI agent rich input is currently open for this terminal.

@@ -24,7 +24,7 @@ pub mod macros {
         ($val:literal) => {
             $crate::keymap::ContextPredicate::Identifier($val)
         };
-        ($val:expr) => {
+        ($val:expr_2021) => {
             $crate::keymap::ContextPredicate::Identifier($val)
         };
     }
