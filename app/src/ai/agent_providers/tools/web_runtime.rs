@@ -111,9 +111,12 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_blocked_ipv4(v4),
         IpAddr::V6(v6) => {
-            // IPv4-mapped IPv6 (::ffff:x.x.x.x) is handled with IPv4 rules.
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return is_blocked_ipv4(mapped);
+            // Both the IPv4-mapped (::ffff:x.x.x.x) and the deprecated
+            // IPv4-compatible (::x.x.x.x) forms embed an IPv4 address. `to_ipv4()`
+            // covers both, so e.g. `::127.0.0.1` / `[::203.0.113.5]` are evaluated
+            // with IPv4 rules and can't slip past the loopback/private/test blocks.
+            if let Some(embedded_v4) = v6.to_ipv4() {
+                return is_blocked_ipv4(embedded_v4);
             }
             v6.is_loopback()               // ::1
                 || v6.is_unspecified()      // ::
@@ -715,3 +718,30 @@ mod webfetch_tests;
 #[cfg(test)]
 #[path = "websearch_tests.rs"]
 mod websearch_tests;
+
+#[cfg(test)]
+mod ssrf_ip_tests {
+    use super::*;
+    use std::str::FromStr as _;
+
+    fn blocked(s: &str) -> bool {
+        is_blocked_ip(IpAddr::from_str(s).unwrap())
+    }
+
+    #[test]
+    fn blocks_ipv4_embedded_in_ipv6_forms() {
+        // IPv4-mapped and the deprecated IPv4-compatible forms must both be
+        // evaluated with IPv4 rules so loopback/private/test can't be smuggled.
+        assert!(blocked("::ffff:127.0.0.1"), "mapped loopback");
+        assert!(blocked("::127.0.0.1"), "compatible loopback");
+        assert!(blocked("::ffff:10.0.0.1"), "mapped private");
+        assert!(blocked("::10.0.0.1"), "compatible private");
+        assert!(blocked("::203.0.113.5"), "compatible TEST-NET-3");
+    }
+
+    #[test]
+    fn allows_public_addresses() {
+        assert!(!blocked("1.1.1.1"));
+        assert!(!blocked("2606:4700:4700::1111"));
+    }
+}

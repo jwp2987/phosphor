@@ -36,6 +36,13 @@ struct CachedToken {
 
 static TOKEN_CACHE: Mutex<Vec<CachedToken>> = Mutex::new(Vec::new());
 
+/// Serializes token minting so that concurrent cold-start callers (main chat +
+/// title-gen + active-AI all firing on the first turn) don't each spawn a
+/// separate `gcloud` subprocess. The window this guards is tiny and rare (once
+/// per credential per ~30 min), so a single global mint lock is fine — the first
+/// waiter to mint populates the cache for the rest.
+static MINT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Returns a valid GCP OAuth2 access token for the given credential, minting a fresh one via
 /// `gcloud` when the cache is empty or stale.
 ///
@@ -47,6 +54,14 @@ static TOKEN_CACHE: Mutex<Vec<CachedToken>> = Mutex::new(Vec::new());
 pub async fn access_token(credential: &str) -> Result<String, String> {
     let credential = credential.trim().to_string();
 
+    if let Some(token) = cached_token(&credential) {
+        return Ok(token);
+    }
+
+    // Single-flight: only one mint runs at a time. Re-check the cache after
+    // acquiring the lock, so callers that queued behind the first minter get its
+    // freshly-cached token instead of spawning another `gcloud`.
+    let _guard = MINT_LOCK.lock().await;
     if let Some(token) = cached_token(&credential) {
         return Ok(token);
     }

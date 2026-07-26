@@ -289,6 +289,19 @@ pub fn custom_prompt_raw(rel: &str) -> Option<String> {
     }
     let dir = active_override_dir()?;
     let path = dir.join(rel_path);
+    // Defense in depth beyond the `..`/absolute check above: resolve symlinks and
+    // confirm the target still lives inside the prompt dir, so a symlink placed in
+    // the dir can't be used to read a file outside it.
+    if let (Ok(canon_dir), Ok(canon_path)) =
+        (std::fs::canonicalize(&dir), std::fs::canonicalize(&path))
+    {
+        if !canon_path.starts_with(&canon_dir) {
+            log::error!(
+                "[byop prompt] custom prompt {rel:?} resolves outside the prompt dir; refusing"
+            );
+            return None;
+        }
+    }
     match std::fs::read_to_string(&path) {
         Ok(s) => Some(s),
         Err(e) => {

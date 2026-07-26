@@ -923,13 +923,29 @@ impl AgentProvider {
 /// Always ends with `/` (genai appends `publishers/...` onto it).
 pub fn vertex_endpoint_url(project: &str, location: &str) -> String {
     let project = project.trim();
-    let location = location.trim();
+    // GCP region ids are lowercase and are interpolated straight into the host
+    // (`{location}-aiplatform.googleapis.com`). Normalize case so a value entered
+    // as "Global" or "US-EAST5" (as GCP consoles often display them) still routes
+    // to a valid host instead of a bogus one.
+    let location = location.trim().to_ascii_lowercase();
     if location.is_empty() || location == "global" {
         format!("https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/")
     } else {
         format!(
             "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/"
         )
+    }
+}
+
+/// Which native provider family a Vertex model routes to. Vertex serves both
+/// Gemini (`publishers/google`) and Claude (`publishers/anthropic`) models; the
+/// reasoning tiers and attachment caps follow that family. Kept in one place so
+/// the two capability surfaces can't drift apart.
+pub fn vertex_model_family(model_id: &str) -> AgentProviderApiType {
+    if model_id.to_ascii_lowercase().contains("claude") {
+        AgentProviderApiType::Anthropic
+    } else {
+        AgentProviderApiType::Gemini
     }
 }
 
