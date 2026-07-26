@@ -114,7 +114,7 @@ use crate::auth::{WebHandoffEvent, WebHandoffView};
 /// this function only decides the initial title for when the window has just
 /// opened and no tab is attached yet.
 fn window_title() -> String {
-    ChannelState::app_id().application_name().to_owned()
+    ChannelState::display_name()
 }
 
 lazy_static! {

@@ -9,6 +9,14 @@ pub struct ChannelConfig {
     /// The application ID for this channel.
     pub app_id: AppId,
 
+    /// The user-facing product name (window title, About screen, User-Agent, …).
+    ///
+    /// Deliberately separate from `app_id.application_name()`: the app id also drives on-disk
+    /// storage paths and the OS window class, so the visible brand can change ("Phosphor")
+    /// without moving user data. Empty falls back to `app_id.application_name()`.
+    #[serde(default)]
+    pub display_name: Cow<'static, str>,
+
     /// The name of the file to which logs should be written.
     pub logfile_name: Cow<'static, str>,
 

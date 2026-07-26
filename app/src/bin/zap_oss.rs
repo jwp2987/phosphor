@@ -27,6 +27,7 @@ fn main() -> Result<()> {
         Channel::Oss,
         ChannelConfig {
             app_id: AppId::new("dev", "zap", "Zap"),
+            display_name: "Phosphor".into(),
             logfile_name: "zap.log".into(),
             autoupdate_config: None,
             mcp_static_config: None,

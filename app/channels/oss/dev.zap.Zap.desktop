@@ -4,7 +4,7 @@ Version=1.0
 
 Type=Application
 
-Name=Zap
+Name=Phosphor
 GenericName=TerminalEmulator
 
 # `zap` is a symlink to /opt/zap/zap-oss in deb/rpm packages, and a

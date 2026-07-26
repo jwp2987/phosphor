@@ -3578,14 +3578,11 @@ fn build_client_uncached(
 /// - `Zap/<git-tag>` — when a release build has `GIT_RELEASE_TAG` injected
 /// - `Zap` — for Dev / local builds with no version
 ///
-/// The app name is always taken from `ChannelState::app_id().application_name()`, ensuring
-/// it's consistent with the `AppId` registered by the entry-point bin (`bin/oss.rs`
-/// registers "Zap").
+/// The app name is the user-facing product name (`ChannelState::display_name()`), so the
+/// User-Agent reflects the brand ("Phosphor") rather than the storage-facing app id name.
 fn build_user_agent_header(
 ) -> Result<reqwest::header::HeaderValue, reqwest::header::InvalidHeaderValue> {
-    let app_name = warp_core::channel::ChannelState::app_id()
-        .application_name()
-        .to_owned();
+    let app_name = warp_core::channel::ChannelState::display_name();
     let ua = match warp_core::channel::ChannelState::app_version() {
         Some(v) if !v.is_empty() => format!("{app_name}/{v}"),
         _ => app_name,

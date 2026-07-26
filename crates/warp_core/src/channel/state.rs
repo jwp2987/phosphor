@@ -43,6 +43,7 @@ impl ChannelState {
             additional_features: Default::default(),
             config: ChannelConfig {
                 app_id,
+                display_name: "Phosphor".into(),
                 logfile_name: "".into(),
                 autoupdate_config: None,
                 mcp_static_config: None,
@@ -84,6 +85,20 @@ impl ChannelState {
     /// should make use of [`Self::data_domain`] instead.
     pub fn app_id() -> AppId {
         CHANNEL_STATE.lock().config.app_id.clone()
+    }
+
+    /// Returns the user-facing product name (window title, About, User-Agent, …).
+    ///
+    /// This is the display brand and is intentionally independent of
+    /// [`AppId::application_name`], which also keys on-disk storage. Falls back to the app id's
+    /// application name when a channel does not set an explicit `display_name`.
+    pub fn display_name() -> String {
+        let state = CHANNEL_STATE.lock();
+        if state.config.display_name.is_empty() {
+            state.config.app_id.application_name().to_owned()
+        } else {
+            state.config.display_name.to_string()
+        }
     }
 
     /// Returns a profile name for isolating user data. This should be used to

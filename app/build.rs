@@ -378,14 +378,14 @@ fn embed_resource_file(target_dir: &Path) {
     // from a plain `cargo build` shows up as `Zap(N)` in Task Manager. The
     // upstream official pipeline explicitly does `export WARP_APP_NAME=...`
     // to override this before invoking, so it's unaffected.
-    let app_name = env::var("WARP_APP_NAME").unwrap_or_else(|_| "Zap".to_owned());
+    let app_name = env::var("WARP_APP_NAME").unwrap_or_else(|_| "Phosphor".to_owned());
     let bin_name = env::var("CARGO_BIN_NAME").unwrap_or("oss".to_owned());
     // Overridden via `WARP_APP_PUBLISHER`; defaults to "Zap", matching the
     // installer / AUMID. Keeps the installer's `MyAppPublisher`, the Cargo
     // bundle metadata `copyright`, and the process AUMID `dev.zap.Zap`
     // globally aligned, avoiding Windows Shell missing the icon cache due to
     // a mismatched publisher / product name fingerprint.
-    let publisher = env::var("WARP_APP_PUBLISHER").unwrap_or_else(|_| "Zap".to_owned());
+    let publisher = env::var("WARP_APP_PUBLISHER").unwrap_or_else(|_| "Phosphor".to_owned());
     let (ver_major, ver_minor, ver_patch, ver_build) = parse_file_version_quad(&version);
 
     let icon_path = Path::new("channels")

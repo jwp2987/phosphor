@@ -22,6 +22,7 @@ fn main() -> Result<()> {
             // the providers configured in the GUI. The log stays separate via
             // `logfile_name` (a distinct field from the app id).
             app_id: AppId::new("dev", "zap", "Zap"),
+            display_name: "Phosphor".into(),
             logfile_name: "zap-tui.log".into(),
             autoupdate_config: None,
             mcp_static_config: None,

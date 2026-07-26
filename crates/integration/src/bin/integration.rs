@@ -35,6 +35,7 @@ pub fn main() -> Result<()> {
                     "WarpIntegration"
                 },
             ),
+            display_name: "Phosphor".into(),
             logfile_name: "warp_integration.log".into(),
             autoupdate_config: None,
             mcp_static_config: None,
