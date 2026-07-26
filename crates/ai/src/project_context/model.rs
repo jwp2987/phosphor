@@ -87,11 +87,16 @@ struct RuleAtPath {
     parent_path: PathBuf,
     warp_md: Option<ProjectRule>,
     agents_md: Option<ProjectRule>,
+    claude_md: Option<ProjectRule>,
 }
 
 impl RuleAtPath {
     fn respected_rule(&self) -> Option<&ProjectRule> {
-        self.warp_md.as_ref().or(self.agents_md.as_ref())
+        // Priority order matches RULES_FILE_PATTERN: WARP.md > AGENTS.md > CLAUDE.md.
+        self.warp_md
+            .as_ref()
+            .or(self.agents_md.as_ref())
+            .or(self.claude_md.as_ref())
     }
 }
 
@@ -170,6 +175,8 @@ impl ProjectRules {
             rule.warp_md.take()
         } else if file_name.to_lowercase() == "agents.md" {
             rule.agents_md.take()
+        } else if file_name.to_lowercase() == "claude.md" {
+            rule.claude_md.take()
         } else {
             None
         }
@@ -202,6 +209,8 @@ impl ProjectRules {
                     rule.warp_md = rule_file;
                 } else if file_name.to_lowercase() == "agents.md" {
                     rule.agents_md = rule_file;
+                } else if file_name.to_lowercase() == "claude.md" {
+                    rule.claude_md = rule_file;
                 }
             }
             None => {
@@ -213,6 +222,8 @@ impl ProjectRules {
                     rule.warp_md = rule_file;
                 } else if file_name.to_lowercase() == "agents.md" {
                     rule.agents_md = rule_file;
+                } else if file_name.to_lowercase() == "claude.md" {
+                    rule.claude_md = rule_file;
                 }
                 self.rules.push(rule);
             }
