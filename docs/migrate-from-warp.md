@@ -1,15 +1,20 @@
-# Migrating settings to Zap
+# Migrating settings to Phosphor
 
 [简体中文](./migrate-from-warp.zh-CN.md) · [日本語](./migrate-from-warp.ja.md)
 
 This guide is for people who want to bring **settings-style configuration**
-(custom keybindings, themes, workflows, MCP config, etc.) into Zap from a
+(custom keybindings, themes, workflows, MCP config, etc.) into Phosphor from a
 previous install.
+
+> **Note on names:** this project is now **Phosphor**. So far only the branding
+> has changed — on disk it still uses the `zap` app id, so every destination path
+> below intentionally uses `zap` / `Zap`, and existing installs keep working
+> unchanged. (Earlier names, oldest first: OpenWarp → Zap → Phosphor.)
 
 There are two source installs this might apply to:
 
-1. **OpenWarp** — Zap's own previous name.
-2. **Upstream [Warp](https://github.com/warpdotdev/warp)** — the project Zap
+1. **OpenWarp / Zap** — this project's own previous names.
+2. **Upstream [Warp](https://github.com/warpdotdev/warp)** — the project Phosphor
    is forked from.
 
 The two cases have **different safety profiles** and are covered separately

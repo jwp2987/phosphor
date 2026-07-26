@@ -1,18 +1,20 @@
 <div align="center">
 
-<img src="assets/zap-logo.svg" alt="Zap" width="128" />
+<img src="assets/phosphor-logo.jpeg" alt="Phosphor" width="160" />
 
-# Zap
+# Phosphor
+
+**A local-first terminal with first-class AI — bring your own model, glowing since the VT100.**
 
 [简体中文](./README.zh-CN.md) · [日本語](./README.ja.md)
 
-<sub><i>Currently based on <a href="https://github.com/warpdotdev/warp">Warp</a>; evolving independently going forward.</i></sub>
+<sub><i>Based on <a href="https://github.com/warpdotdev/warp">Warp</a> (via <a href="https://github.com/zerx-lab/zap">Zap</a> / OpenWarp); evolving independently as its own project.</i></sub>
 
 </div>
 
 > [!NOTE]
-> **This is a personal fork, mostly for fun and tinkering.** It's a playground
-> for poking at Zap's BYOP (bring-your-own-provider) AI stack — prompt rendering,
+> **This is a personal project, mostly for fun and tinkering.** It's a playground
+> for poking at Phosphor's BYOP (bring-your-own-provider) AI stack — prompt rendering,
 > caching behavior, and provider plumbing — not a polished product. Things here
 > are experimental and may change, break, or get thrown away. If you want the real
 > thing, go upstream: [zerx-lab/zap](https://github.com/zerx-lab/zap). Everything
@@ -23,12 +25,12 @@
 > with it — especially the prompt-cache / environment-context work, which is
 > tuned for FLM's text-only partial-prefill (KV-cache) behavior.
 
-Zap is an open, local-first terminal with first-class AI and agent support. Plug in any AI provider, bring in any CLI agent, manage SSH hosts inside the terminal — with keys, history and agent state staying on your machine by default.
+Phosphor is an open, local-first terminal with first-class AI and agent support. Plug in any AI provider, bring in any CLI agent, manage SSH hosts inside the terminal — with keys, history and agent state staying on your machine by default.
 
-## What Zap adds over upstream Warp
+## What Phosphor adds over upstream Warp
 
 - **No mandatory cloud** — no account, login, Drive sync or cloud agent history required.
-- **BYOP AI providers** — any OpenAI-compatible endpoint, plus native OpenAI / Anthropic / Gemini / DeepSeek / Ollama protocols. Keys stay local.
+- **BYOP AI providers** — any OpenAI-compatible endpoint, plus native OpenAI / Anthropic / Gemini / DeepSeek / Ollama protocols, **and Google Vertex AI** (Gemini + Claude, authenticated through `gcloud` — no static key). Keys stay local.
 - **Third-party CLI agents** — DeepSeek-TUI / Codex CLI / Claude Code / Google Antigravity (`agy`) wired into Blocks and the notification center.
 - **Built-in SSH host manager** — manage hosts, configs and sessions inside the terminal, with tmux integration.
 - **Editable system prompts** — minijinja templates rendered on the client.
@@ -38,8 +40,20 @@ Zap is an open, local-first terminal with first-class AI and agent support. Plug
 
 ## What this fork is playing with
 
-All experimental, all on the `fix/title-language-bias` branch. Roughly in order
-of how much fun they were:
+All experimental, spread across feature branches. Roughly in order of how much
+fun they were:
+
+### Google Vertex AI (BYOP)
+- **First-class Vertex AI provider** — pick "Vertex AI" as a provider type, enter
+  your GCP **project** + **location** (and optionally a service-account email to
+  impersonate), and add models like `gemini-2.5-flash` or `claude-sonnet-4-6`.
+  The publisher (Gemini vs. Claude) is routed by model name automatically.
+- **No static key** — Vertex uses short-lived OAuth2 bearer tokens, minted via
+  the `gcloud` CLI (Application Default Credentials / the active account / SA
+  impersonation) and cached in-process. Nothing to paste, nothing stored.
+- Reuses the whole BYOP path — model picker, reasoning tiers, attachment caps —
+  dispatched by model family. Includes a fix so streaming Claude on Vertex uses
+  `:streamRawPredict` (Google's streaming method) rather than the unary endpoint.
 
 ### Prompts & providers
 _Same FastFlowLM motivation as above, from the other direction: small models
@@ -119,12 +133,14 @@ don't benefit from the tail-block design._
 > Localized READMEs ([简体中文](./README.zh-CN.md) · [日本語](./README.ja.md))
 > describe upstream Zap and don't cover these fork experiments.
 
-## Migrating from OpenWarp or Warp
+## Migrating from Zap, OpenWarp, or Warp
 
-If you used the project before it was renamed to Zap (formerly **OpenWarp**),
-or are coming from upstream **Warp**, see
+If you used this project under an earlier name (**Zap**, or originally
+**OpenWarp**), or are coming from upstream **Warp**, see
 [docs/migrate-from-warp.md](docs/migrate-from-warp.md) to bring your settings
-across.
+across. Note: on-disk config, secrets and data still live under the `zap` app id
+for now, so existing installs keep working unchanged — the storage rename is
+intentionally deferred (only the branding has changed so far).
 
 ## Roadmap
 
@@ -132,5 +148,6 @@ See [docs/roadmap.md](docs/roadmap.md).
 
 ## Acknowledgements
 
-- [Warp](https://github.com/warpdotdev/warp) — the upstream terminal Zap is built on.
+- [Warp](https://github.com/warpdotdev/warp) — the upstream terminal Phosphor is built on.
+- [Zap / OpenWarp (zerx-lab)](https://github.com/zerx-lab/zap) — the BYOP Warp fork this project descends from.
 - [DeepSeek-TUI](https://github.com/Hmbown/DeepSeek-TUI) — first-class CLI agent partner.
