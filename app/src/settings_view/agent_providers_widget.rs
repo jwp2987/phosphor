@@ -124,6 +124,10 @@ struct ProviderRow {
     name_editor: ViewHandle<EditorView>,
     base_url_editor: ViewHandle<EditorView>,
     api_key_editor: ViewHandle<EditorView>,
+    /// Vertex AI only: GCP project id + location. Rendered in place of base_url when the
+    /// selected api_type is Vertex.
+    vertex_project_editor: ViewHandle<EditorView>,
+    vertex_location_editor: ViewHandle<EditorView>,
     fetch_button_state: MouseStateHandle,
     sync_models_dev_button_state: MouseStateHandle,
     save_button_state: MouseStateHandle,
@@ -150,6 +154,8 @@ struct ProviderDraftEditors {
     name_editor: ViewHandle<EditorView>,
     base_url_editor: ViewHandle<EditorView>,
     api_key_editor: ViewHandle<EditorView>,
+    vertex_project_editor: ViewHandle<EditorView>,
+    vertex_location_editor: ViewHandle<EditorView>,
     header_editors: Vec<(ViewHandle<EditorView>, ViewHandle<EditorView>)>,
     model_editors: Vec<ModelDraftEditorHandles>,
 }
@@ -161,6 +167,8 @@ impl ProviderDraftEditors {
             name_editor: row.name_editor.clone(),
             base_url_editor: row.base_url_editor.clone(),
             api_key_editor: row.api_key_editor.clone(),
+            vertex_project_editor: row.vertex_project_editor.clone(),
+            vertex_location_editor: row.vertex_location_editor.clone(),
             header_editors: row
                 .header_rows
                 .iter()
@@ -186,12 +194,14 @@ impl ProviderDraftEditors {
     fn to_save_action(&self, app: &AppContext) -> AISettingsPageAction {
         self.to_save_action_with(
             app,
-            |provider_id, name, base_url, api_key, headers, models| {
+            |provider_id, name, base_url, api_key, vertex_project, vertex_location, headers, models| {
                 AISettingsPageAction::SaveAgentProviderEdits {
                     provider_id,
                     name,
                     base_url,
                     api_key,
+                    vertex_project,
+                    vertex_location,
                     headers,
                     models,
                 }
@@ -206,12 +216,14 @@ impl ProviderDraftEditors {
     ) -> AISettingsPageAction {
         self.to_save_action_with(
             app,
-            |provider_id, name, base_url, api_key, headers, models| {
+            |provider_id, name, base_url, api_key, vertex_project, vertex_location, headers, models| {
                 AISettingsPageAction::SaveAgentProviderEditsThen {
                     provider_id,
                     name,
                     base_url,
                     api_key,
+                    vertex_project,
+                    vertex_location,
                     headers,
                     models,
                     action: Box::new(action),
@@ -228,6 +240,8 @@ impl ProviderDraftEditors {
             String,
             String,
             String,
+            String,
+            String,
             Vec<(String, String)>,
             Vec<(usize, String, String, u32, u32)>,
         ) -> AISettingsPageAction,
@@ -235,6 +249,8 @@ impl ProviderDraftEditors {
         let name = self.name_editor.as_ref(app).buffer_text(app);
         let base_url = self.base_url_editor.as_ref(app).buffer_text(app);
         let api_key = self.api_key_editor.as_ref(app).buffer_text(app);
+        let vertex_project = self.vertex_project_editor.as_ref(app).buffer_text(app);
+        let vertex_location = self.vertex_location_editor.as_ref(app).buffer_text(app);
         let headers: Vec<(String, String)> = self
             .header_editors
             .iter()
@@ -262,6 +278,8 @@ impl ProviderDraftEditors {
             name,
             base_url,
             api_key,
+            vertex_project,
+            vertex_location,
             headers,
             models,
         )
@@ -549,6 +567,43 @@ impl AgentProvidersWidget {
             collapse_selection_if_blurred(&editor, event, ctx);
         });
 
+        // ---- Vertex project / location editors (only rendered when api_type == Vertex) ----
+        let initial_vertex_project = provider.vertex_project.clone();
+        let vertex_project_editor = ctx.add_typed_action_view(move |ctx| {
+            let appearance = Appearance::handle(ctx).as_ref(ctx);
+            let options = single_line_editor_options(appearance, false);
+            let mut editor = EditorView::single_line(options, ctx);
+            editor.set_placeholder_text(
+                crate::t!("settings-agent-providers-vertex-project-placeholder"),
+                ctx,
+            );
+            if !initial_vertex_project.is_empty() {
+                editor.set_buffer_text(&initial_vertex_project, ctx);
+            }
+            editor
+        });
+        ctx.subscribe_to_view(&vertex_project_editor, move |_, editor, event, ctx| {
+            collapse_selection_if_blurred(&editor, event, ctx);
+        });
+
+        let initial_vertex_location = provider.vertex_location.clone();
+        let vertex_location_editor = ctx.add_typed_action_view(move |ctx| {
+            let appearance = Appearance::handle(ctx).as_ref(ctx);
+            let options = single_line_editor_options(appearance, false);
+            let mut editor = EditorView::single_line(options, ctx);
+            editor.set_placeholder_text(
+                crate::t!("settings-agent-providers-vertex-location-placeholder"),
+                ctx,
+            );
+            if !initial_vertex_location.is_empty() {
+                editor.set_buffer_text(&initial_vertex_location, ctx);
+            }
+            editor
+        });
+        ctx.subscribe_to_view(&vertex_location_editor, move |_, editor, event, ctx| {
+            collapse_selection_if_blurred(&editor, event, ctx);
+        });
+
         // ---- Model rows ----
         let model_rows: Vec<ModelRow> = provider
             .models
@@ -567,6 +622,8 @@ impl AgentProvidersWidget {
             name_editor,
             base_url_editor,
             api_key_editor,
+            vertex_project_editor,
+            vertex_location_editor,
             fetch_button_state: MouseStateHandle::default(),
             sync_models_dev_button_state: MouseStateHandle::default(),
             save_button_state: MouseStateHandle::default(),
@@ -1010,14 +1067,41 @@ impl AgentProvidersWidget {
             label_color,
             appearance,
         );
-        let base_url_field = field_block(
-            &crate::t!("settings-agent-providers-field-base-url"),
-            ChildView::new(&row.base_url_editor).finish(),
-            label_color,
-            appearance,
-        );
+        // Vertex is addressed by project + location rather than a raw base_url, and its "api key"
+        // is an optional service-account email to impersonate (empty = gcloud ADC / active
+        // account). Swap the endpoint + key fields accordingly.
+        let is_vertex = provider.api_type.is_vertex();
+        let endpoint_field = if is_vertex {
+            Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(field_block(
+                    &crate::t!("settings-agent-providers-field-vertex-project"),
+                    ChildView::new(&row.vertex_project_editor).finish(),
+                    label_color,
+                    appearance,
+                ))
+                .with_child(field_block(
+                    &crate::t!("settings-agent-providers-field-vertex-location"),
+                    ChildView::new(&row.vertex_location_editor).finish(),
+                    label_color,
+                    appearance,
+                ))
+                .finish()
+        } else {
+            field_block(
+                &crate::t!("settings-agent-providers-field-base-url"),
+                ChildView::new(&row.base_url_editor).finish(),
+                label_color,
+                appearance,
+            )
+        };
+        let api_key_label = if is_vertex {
+            crate::t!("settings-agent-providers-field-vertex-service-account")
+        } else {
+            crate::t!("settings-agent-providers-field-api-key")
+        };
         let api_key_field = field_block(
-            &crate::t!("settings-agent-providers-field-api-key"),
+            &api_key_label,
             ChildView::new(&row.api_key_editor).finish(),
             label_color,
             appearance,
@@ -1317,7 +1401,7 @@ impl AgentProvidersWidget {
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                 .with_child(name_field)
                 .with_child(api_type_field)
-                .with_child(base_url_field)
+                .with_child(endpoint_field)
                 .with_child(api_key_field)
                 .with_child(
                     Container::new(headers_column.finish())

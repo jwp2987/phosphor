@@ -2242,11 +2242,14 @@ impl AISettingsPageView {
             .collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn save_agent_provider_edits(
         provider_id: &str,
         name: &str,
         base_url: &str,
         api_key: &str,
+        vertex_project: &str,
+        vertex_location: &str,
         headers: &[(String, String)],
         models: &[(usize, String, String, u32, u32)],
         ctx: &mut ViewContext<Self>,
@@ -2256,6 +2259,9 @@ impl AISettingsPageView {
             if let Some(p) = providers.iter_mut().find(|p| p.id == provider_id) {
                 p.name = name.to_owned();
                 p.base_url = base_url.to_owned();
+                // Vertex-only fields; harmless (kept empty) for other provider types.
+                p.vertex_project = vertex_project.trim().to_owned();
+                p.vertex_location = vertex_location.trim().to_owned();
                 p.extra_headers = headers.to_vec();
                 // Updates by model_index, skipping out-of-range indices (the form and settings
                 // may briefly disagree mid-rebuild).
@@ -2418,6 +2424,9 @@ pub enum AISettingsPageAction {
         name: String,
         base_url: String,
         api_key: String,
+        /// Vertex AI only (empty for other types): GCP project id + location.
+        vertex_project: String,
+        vertex_location: String,
         headers: Vec<(String, String)>,
         /// Only carries the editable part: `(model_index, name, id, context_window,
         /// max_output_tokens)`. reasoning / tool_call / image / pdf / audio are maintained by
@@ -2429,6 +2438,9 @@ pub enum AISettingsPageAction {
         name: String,
         base_url: String,
         api_key: String,
+        /// Vertex AI only (empty for other types): GCP project id + location.
+        vertex_project: String,
+        vertex_location: String,
         headers: Vec<(String, String)>,
         /// Only carries the editable part: `(model_index, name, id, context_window,
         /// max_output_tokens)`.
@@ -3321,6 +3333,8 @@ impl TypedActionView for AISettingsPageView {
                 name,
                 base_url,
                 api_key,
+                vertex_project,
+                vertex_location,
                 headers,
                 models,
             } => {
@@ -3329,6 +3343,8 @@ impl TypedActionView for AISettingsPageView {
                     name,
                     base_url,
                     api_key,
+                    vertex_project,
+                    vertex_location,
                     headers,
                     models,
                     ctx,
@@ -3340,6 +3356,8 @@ impl TypedActionView for AISettingsPageView {
                 name,
                 base_url,
                 api_key,
+                vertex_project,
+                vertex_location,
                 headers,
                 models,
                 action,
@@ -3349,6 +3367,8 @@ impl TypedActionView for AISettingsPageView {
                     name,
                     base_url,
                     api_key,
+                    vertex_project,
+                    vertex_location,
                     headers,
                     models,
                     ctx,
