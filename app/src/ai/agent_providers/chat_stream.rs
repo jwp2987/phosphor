@@ -3548,8 +3548,8 @@ fn build_client_uncached(
     // `gzip=false` (a fork modification).
     //
     // User-Agent is dynamically bound to the current app name (taken from
-    // `ChannelState::app_id().application_name()`, registered by the entry-point bin:
-    // `bin/oss.rs` → "Zap"; other channels bring their own name). This way the upstream
+    // `ChannelState::app_id().application_name()`, set at build time via `WARP_APP_NAME`
+    // (default "Phosphor"); other channels bring their own name). This way the upstream
     // service can identify which branch build the request came from, and it automatically
     // follows if the name is changed later.
     let mut headers = reqwest::header::HeaderMap::new();

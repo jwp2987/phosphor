@@ -221,6 +221,15 @@ impl TuiShellCommandView {
         self.invalidate_layout(ctx);
     }
 
+    /// Whether a re-sync with this `(action, output_streaming)` would be a no-op,
+    /// so the reconciler can skip re-cloning the action every streamed chunk.
+    /// `update_action` is a pure function of these two inputs (live command output
+    /// is rendered reactively from the terminal model, not snapshotted here), so
+    /// this is exact.
+    pub(super) fn matches(&self, action: &AIAgentAction, output_streaming: bool) -> bool {
+        self.output_streaming == output_streaming && &self.action == action
+    }
+
     pub(super) fn active_permission_prompt(
         &self,
         app: &AppContext,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Local preview of Zap release notes — uses the same cliff.toml as
-# .github/workflows/zap_release.yml, ensuring the release body produced by CI
+# .github/workflows/phosphor_release.yml, ensuring the release body produced by CI
 # matches what you see locally.
 #
 # Usage:

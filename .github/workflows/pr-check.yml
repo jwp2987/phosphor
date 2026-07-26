@@ -1,6 +1,6 @@
 # PR validation — Linux `cargo check` for the app (gui + tui) and the warp_tui crate.
 #
-# zap_release.yml intentionally only runs on tags (full 3-platform packaging, ~3h),
+# phosphor_release.yml intentionally only runs on tags (full 3-platform packaging, ~3h),
 # and delegates PR validation to this workflow. This keeps PRs fast: a single Linux
 # `cargo check`, no packaging.
 #

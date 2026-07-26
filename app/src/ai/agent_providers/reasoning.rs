@@ -99,11 +99,7 @@ pub fn model_reasoning_variants(
         // Vertex serves both Gemini and Claude; reasoning tiers follow the model family, so
         // reuse the corresponding native adapter's rules keyed on the model name.
         AgentProviderApiType::Vertex => {
-            if id.contains("claude") {
-                model_reasoning_variants(AgentProviderApiType::Anthropic, model_id)
-            } else {
-                model_reasoning_variants(AgentProviderApiType::Gemini, model_id)
-            }
+            model_reasoning_variants(crate::settings::ai::vertex_model_family(&id), model_id)
         }
     }
 }

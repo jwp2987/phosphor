@@ -6,7 +6,7 @@
 # treat it as `status=unknown` and fail open.
 #
 # Important: the Zap Linux remote-server is now statically linked by
-# zap_release.yml for the `x86_64-unknown-linux-musl` target (static-musl). The
+# phosphor_release.yml for the `x86_64-unknown-linux-musl` target (static-musl). The
 # artifact doesn't depend on the host's dynamic libc, so it can run on any
 # Linux x86_64 host — including older glibc distros (CentOS 7 = 2.17, Amazon
 # Linux 2 = 2.26, Ubuntu 20.04 / Debian 11 = 2.31) and musl distros (Alpine, etc.).

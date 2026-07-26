@@ -769,6 +769,8 @@ fn extra_headers_skip_when_empty() {
         base_url: "https://api.example.com/v1".to_string(),
         models: Vec::new(),
         extra_headers: Vec::new(),
+        vertex_project: String::new(),
+        vertex_location: String::new(),
     };
     let serialized = toml::to_string(&provider).expect("should serialize");
     assert!(
@@ -787,4 +789,41 @@ fn extra_headers_round_trip() {
     let serialized = toml::to_string(&provider).expect("should serialize");
     let deserialized: AgentProvider = toml::from_str(&serialized).expect("should deserialize");
     assert_eq!(provider.extra_headers, deserialized.extra_headers);
+}
+
+#[test]
+fn vertex_endpoint_url_uses_regional_host_for_a_location() {
+    assert_eq!(
+        vertex_endpoint_url("my-proj", "us-east5"),
+        "https://us-east5-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-east5/"
+    );
+}
+
+#[test]
+fn vertex_endpoint_url_falls_back_to_global() {
+    let global = "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/";
+    assert_eq!(vertex_endpoint_url("my-proj", ""), global);
+    assert_eq!(vertex_endpoint_url("my-proj", "global"), global);
+}
+
+#[test]
+fn vertex_endpoint_url_normalizes_location_case() {
+    // GCP consoles often display region ids capitalized; they must still route
+    // to a valid lowercase host, not `US-EAST5-aiplatform...`.
+    assert_eq!(
+        vertex_endpoint_url("my-proj", "US-EAST5"),
+        "https://us-east5-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-east5/"
+    );
+    assert_eq!(
+        vertex_endpoint_url("my-proj", "Global"),
+        "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/"
+    );
+}
+
+#[test]
+fn vertex_model_family_routes_claude_to_anthropic_else_gemini() {
+    assert_eq!(vertex_model_family("claude-sonnet-4-6"), AgentProviderApiType::Anthropic);
+    assert_eq!(vertex_model_family("Claude-Opus"), AgentProviderApiType::Anthropic);
+    assert_eq!(vertex_model_family("gemini-2.5-flash"), AgentProviderApiType::Gemini);
+    assert_eq!(vertex_model_family("llama-3"), AgentProviderApiType::Gemini);
 }

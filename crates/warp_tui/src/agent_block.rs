@@ -525,11 +525,28 @@ impl TuiAIBlock {
                     &action.action,
                     AIAgentActionType::CreateDocuments(_) | AIAgentActionType::EditDocuments(_)
                 ) {
+                    // Runs per streamed chunk over the whole message list; skip
+                    // re-cloning the (potentially large) document action when the
+                    // retained view already reflects it (including model-derived
+                    // presentation state — see TuiPlanView::matches).
+                    if let Some(TuiToolCallView::Plan(view)) = self.action_views.get(&action.id) {
+                        if view.as_ref(ctx).matches(action, output_streaming, ctx) {
+                            continue;
+                        }
+                    }
                     plan_actions.push(action.clone());
                 } else if matches!(
                     &action.action,
                     AIAgentActionType::RequestCommandOutput { .. }
                 ) {
+                    // Same: skip re-cloning an unchanged shell-command action.
+                    if let Some(TuiToolCallView::ShellCommand(view)) =
+                        self.action_views.get(&action.id)
+                    {
+                        if view.as_ref(ctx).matches(action, output_streaming) {
+                            continue;
+                        }
+                    }
                     shell_command_actions.push(action.clone());
                 } else if action_model
                     .as_ref(ctx)

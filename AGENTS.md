@@ -2,7 +2,7 @@
 
 > This file is a navigation document for AI/automation agents working in this repository. It summarizes the repo's overall architecture, the responsibilities of each crate in the Cargo workspace, the boundaries between submodules under the `app/` main binary, and the engineering conventions that must be followed before making changes.
 >
-> It pairs with `WARP.md`: `WARP.md` is the engineer's handbook (commands, style, process), and this file is the **code map**. Read `WARP.md` first, then use this file to locate the right crate / module.
+> It pairs with `CLAUDE.md`: `CLAUDE.md` is the engineer's handbook (commands, style, process), and this file is the **code map**. Read `CLAUDE.md` first, then use this file to locate the right crate / module.
 
 ---
 
@@ -50,7 +50,7 @@ Infrastructure crates: warp_core / warp_util / http_client /
                 managed_secrets / virtual_fs / watcher / asset_cache …
 ```
 
-Key architectural patterns (see `WARP.md` for details):
+Key architectural patterns (see `CLAUDE.md` for details):
 
 1. **Entity-Handle system**: `App` globally owns all view/model entities; Views reference each other via `ViewHandle<T>` rather than owning directly.
 2. **Element / Action**: the UI is composed of a declarative Element tree + an Action event system (Flutter-style).
@@ -259,7 +259,7 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 
 ## 5. Engineering discipline (hard constraints for agents)
 
-> Compiled from `WARP.md` and the project's custom rules; this file's verification requirement for agents is `cargo check`.
+> Compiled from `CLAUDE.md` and the project's custom rules; this file's verification requirement for agents is `cargo check`.
 
 ### 5.1 Must-read conventions
 - **Write all code comments and docs in English** (project convention; superseded the earlier Simplified Chinese convention this fork inherited from Warp).
@@ -270,7 +270,7 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 - Explain multiple options and surface uncertainty rather than silently deciding for the user.
 - worktree path: .worktrees/<worktree_name>/
 
-### 5.2 Rust style (from `WARP.md`)
+### 5.2 Rust style (from `CLAUDE.md`)
 - Don't write redundant type annotations on closure parameters.
 - Use unified `use` statements at the top; don't write long fully-qualified paths — except inside `#[cfg]` branches.
 - Name the context parameter `ctx` and put it last; if there's also a closure parameter, the closure goes last.

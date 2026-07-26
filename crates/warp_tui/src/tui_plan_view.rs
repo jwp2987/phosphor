@@ -103,6 +103,22 @@ impl TuiPlanView {
         }
     }
 
+    /// Whether a re-sync would be a no-op, so the reconciler can skip re-cloning
+    /// the (potentially large document) action every streamed chunk. Unlike the
+    /// shell view this must also account for model-derived state: `sync_documents`
+    /// re-resolves the presentation from `action_model` (a tool result can arrive
+    /// with the action unchanged), so re-resolve and compare it here too.
+    pub(super) fn matches(
+        &self,
+        action: &AIAgentAction,
+        output_streaming: bool,
+        app: &AppContext,
+    ) -> bool {
+        self.output_streaming == output_streaming
+            && &self.action == action
+            && self.presentation == self.resolve_presentation(app)
+    }
+
     pub(super) fn renders_rich_body(&self) -> bool {
         !self.documents.is_empty()
     }
