@@ -1778,6 +1778,7 @@ impl RenderState {
             viewport_width,
             viewport_height,
             None,
+            LayoutMode::Pixels,
         )
     }
 
