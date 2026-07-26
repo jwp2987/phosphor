@@ -14229,8 +14229,9 @@ fn test_insert_at_offsets() {
 /// `apply_core_edit_actions` without validating.  The invalid range reaches
 /// `Buffer::edit`, which panics on the `debug_assert!`.
 ///
-/// 这个测试传入历史 crash 样本里的反向范围(`4042..3982`),确认 editor 会防御来自
-/// diff layer 的坏输入。
+/// This test feeds in the reversed range from a historical crash sample
+/// (`4042..3982`) to confirm the editor guards against bad input from the
+/// diff layer.
 #[test]
 fn test_insert_at_offsets_overlapping_ranges_skipped() {
     App::test((), |mut app| async move {
@@ -14253,8 +14254,9 @@ fn test_insert_at_offsets_overlapping_ranges_skipped() {
 
             let original_text = buffer.text().into_string();
 
-            // 传入 start > end 的反向范围。apply_core_edit_actions 修复后,
-            // 这种范围应被跳过而不是触发 panic。
+            // Pass in a reversed range where start > end. After the
+            // apply_core_edit_actions fix, this range should be skipped
+            // instead of triggering a panic.
             let edits = Vec1::try_from_vec(vec![(
                 "replacement\n".to_string(),
                 CharOffset::from(4042)..CharOffset::from(3982),

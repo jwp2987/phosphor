@@ -208,15 +208,17 @@ impl UpdateManager {
         object_type_and_id: &ObjectTypeAndId,
         ctx: &mut ModelContext<Self>,
     ) {
-        // Zap(Wave 4):resync 原语义是“重新入 SyncQueue 向服务端推上本地变更”。
-        // 本地化后本身就是单向 sqlite 写入,调用点仅需轻量检查。
+        // Zap (Wave 4): resync originally meant "re-enqueue into SyncQueue to push
+        // local changes up to the server". After localization it's already a
+        // one-way sqlite write, so call sites only need a lightweight check.
         let _ = (object_type_and_id, ctx);
     }
 
     /// Out-of-band (from the regular poll) refresh of updated objects.
     pub fn refresh_updated_objects(&mut self, ctx: &mut ModelContext<Self>) {
-        // Zap 本地化: 暂无云端 object 轮询源。
-        // 保留本方法仅用于兼容旧调用点，不触发网络 I/O。
+        // Zap localization: there is no cloud object polling source for now.
+        // This method is kept only for compatibility with old call sites; it
+        // triggers no network I/O.
         let _ = ctx;
     }
 
@@ -246,7 +248,7 @@ impl UpdateManager {
         }
     }
 
-    /// Zap 本地版不再拉取云端单对象；保留签名仅用于兼容旧调用点。
+    /// Zap's local version no longer fetches single cloud objects; the signature is kept only for compatibility with old call sites.
     ///
     /// Returns A `Receiver<()>` that completes when the fetch operation is done.
     /// This receiver can be used to wait for the fetch operation to complete before proceeding.
@@ -259,7 +261,7 @@ impl UpdateManager {
         let _ = fetch_single_object_option;
         let _ = ctx;
         let (fetch_cloud_object_tx, fetch_cloud_object_rx) = oneshot::channel::<()>();
-        log::debug!("Zap 跳过云端单对象拉取: {server_id:?}");
+        log::debug!("Zap skipping single cloud object fetch: {server_id:?}");
         let _ = fetch_cloud_object_tx.send(());
         fetch_cloud_object_rx
     }
@@ -424,8 +426,8 @@ impl UpdateManager {
         _current_metadata_last_updated_ts: Option<ServerTimestamp>,
         ctx: &mut ModelContext<Self>,
     ) {
-        // Zap:云端移动 RPC 已删除,这里折叠为本地直写并清
-        // has_pending_metadata_change 位。
+        // Zap: the cloud move RPC has been removed; this is now collapsed into a
+        // direct local write that also clears the has_pending_metadata_change bit.
         let _ = (object_type, owner, destination_folder);
         ObjectStoreModel::handle(ctx).update(ctx, |object_store_model, ctx| {
             if let Some(obj) = object_store_model.get_mut_by_uid(&server_id.uid()) {
@@ -450,9 +452,11 @@ impl UpdateManager {
 
     /// Attempts to move the object identified by `object_id`
     /// to the root of the drive identified by `destination_owner`.
-    /// Zap(Wave 6-7):原远端腿调用 `transfer_*_owner` 系列 stub,永 `Ok(true)`,
-    /// 跑一圈后清 has_pending_permissions_change + emit Success toast。这里折叠为本地直写。
-    /// `move_object_to_drive_failed` / `revert_workflow_on_failed_move` 随之退役。
+    /// Zap (Wave 6-7): the old remote leg called the `transfer_*_owner` family of
+    /// stubs, always `Ok(true)`, then cleared has_pending_permissions_change +
+    /// emitted a Success toast after a round trip. This is now collapsed into a
+    /// direct local write. `move_object_to_drive_failed` /
+    /// `revert_workflow_on_failed_move` are retired along with it.
     #[allow(clippy::too_many_arguments)]
     fn move_object_to_drive(
         &mut self,
@@ -464,8 +468,9 @@ impl UpdateManager {
         _current_permissions_last_updated_ts: Option<ServerTimestamp>,
         ctx: &mut ModelContext<Self>,
     ) {
-        // 本地复制 workflow enums 到目标 owner 仍需要进行 —— `update_object` /
-        // `create_object` 都是本地 stub,这个调用是纯本地 model 动作。
+        // Locally copying workflow enums to the destination owner still needs to
+        // happen — `update_object` / `create_object` are both local stubs, so this
+        // call is a purely local model action.
         if object_type == ObjectType::Workflow {
             let _ = self.copy_workflow_enums_to_drive(server_id, destination_owner, ctx);
         }
@@ -1021,11 +1026,14 @@ impl UpdateManager {
         );
     }
 
-    /// 使用给定 model 创建新的本地 stored object。
+    /// Creates a new local stored object using the given model.
     ///
-    /// Zap(本地化):同 `update_object` — 原实现入队 `SyncQueue` 等服务端创建 ack,
-    /// 本地化后仅保留创建内存对象 + 写 sqlite。对象以 client_id 身份永久存在,
-    /// 不再提升为 server_id。`entrypoint` / `initiated_by` 参数保留接口稳定。
+    /// Zap (localization): same as `update_object` — the original implementation
+    /// enqueued into `SyncQueue` and waited for a server-creation ack; after
+    /// localization only creating the in-memory object + writing sqlite is kept.
+    /// Objects live permanently under their client_id identity and are no longer
+    /// promoted to a server_id. The `entrypoint` / `initiated_by` parameters are
+    /// kept for interface stability.
     #[allow(clippy::too_many_arguments)]
     pub fn create_object<K, M>(
         &mut self,
@@ -1049,8 +1057,9 @@ impl UpdateManager {
             + 'static,
         M: StoredObjectModel<IdType = K, StoredObjectType = GenericStoredObject<K, M>> + 'static,
     {
-        // Zap:上云队列腿被砍,两个参数仅用于 `create_object_queue_item` 构造;
-        // 保留接口以避免冲击 30+ 调用点签名。
+        // Zap: the cloud-upload queue leg has been cut; these two parameters are
+        // only used to construct `create_object_queue_item`. The interface is kept
+        // to avoid impacting the signatures of 30+ call sites.
         let _ = entrypoint;
         let _ = initiated_by;
 
@@ -1080,13 +1089,16 @@ impl UpdateManager {
         }
     }
 
-    /// 使用新 model 更新本地 stored object。
+    /// Updates a local stored object using the new model.
     ///
-    /// Zap(本地化):无云端 = 无服务端 ack。原实现:更新内存 → 标 `InFlight` →
-    /// 写 sqlite → 入队 `SyncQueue`(等服务端响应再 decrement `InFlight`)。本地化后
-    /// 砍掉两段云端腿,仅保留:更新内存 + 写 sqlite。对象 sync_status 永远停在初始
-    /// `NoLocalChanges`(本地写入即"完成"语义)。`revision_ts` 参数保留以维持接口
-    /// 签名稳定,在本地分支被忽略(Phase 2d-4b 重命名时统一收拾)。
+    /// Zap (localization): no cloud = no server ack. The original implementation:
+    /// update memory → mark `InFlight` → write sqlite → enqueue into `SyncQueue`
+    /// (decrement `InFlight` once the server responds). After localization, both
+    /// cloud legs are cut; only update memory + write sqlite remain. The object's
+    /// sync_status permanently stays at its initial `NoLocalChanges` (a local write
+    /// is considered "done"). The `revision_ts` parameter is kept for interface
+    /// signature stability and ignored on the local branch (to be cleaned up
+    /// uniformly during the Phase 2d-4b rename).
     pub fn update_object<K, M>(
         &mut self,
         model: M,
@@ -1105,7 +1117,7 @@ impl UpdateManager {
             + 'static,
         M: StoredObjectModel<IdType = K, StoredObjectType = GenericStoredObject<K, M>> + 'static,
     {
-        let _ = revision_ts; // Zap: 无服务端 revision 协调,忽略。
+        let _ = revision_ts; // Zap: no server-side revision coordination, ignored.
 
         // Update in-memory model.
         ObjectStoreModel::handle(ctx).update(ctx, |object_store_model, ctx| {
@@ -1146,8 +1158,9 @@ impl UpdateManager {
         // Update sqlite.
         self.save_to_db([ModelEvent::InsertObjectAction { object_action }]);
 
-        // Zap(Wave 4):原末尾入 SyncQueue 上报 RecordObjectAction,SyncQueue 整删后
-        // 本地 sqlite 记录即是“已完成”。
+        // Zap (Wave 4): originally this reported RecordObjectAction by enqueueing
+        // into SyncQueue at the end; now that SyncQueue has been fully removed, the
+        // local sqlite record is itself considered "done".
         let _ = (id_and_type, action_type, data, action_timestamp);
     }
 
@@ -1207,8 +1220,9 @@ impl UpdateManager {
         });
     }
 
-    /// Zap:云端 notebook edit lease 已删除。这里折叠为本地授予编辑位,
-    /// 保留 method 签名给 `notebooks/notebook.rs` 调用点。
+    /// Zap: the cloud notebook edit lease has been removed. This is now collapsed
+    /// into granting the edit bit locally; the method signature is kept for
+    /// `notebooks/notebook.rs` call sites.
     pub fn grab_notebook_edit_access(
         &mut self,
         notebook_id: SyncId,
@@ -1223,7 +1237,7 @@ impl UpdateManager {
         self.set_notebook_current_editor(&notebook_id, Some(TEST_USER_UID.to_string()), ctx);
     }
 
-    /// Zap:云端 notebook edit lease 已删除,这里折叠为本地直接清编辑权。
+    /// Zap: the cloud notebook edit lease has been removed; this is now collapsed into directly clearing the edit right locally.
     pub fn give_up_notebook_edit_access(
         &mut self,
         notebook_id: SyncId,
@@ -1282,18 +1296,21 @@ impl UpdateManager {
     }
 
     pub fn trash_object(&mut self, id: ObjectTypeAndId, ctx: &mut ModelContext<Self>) {
-        // Zap(去中心化分支):本地对象(无 server_id)走纯本地 trash —
-        // 标记 trashed_ts + 写 sqlite。**不 emit ObjectOperationComplete**,
-        // 因为它的多个消费者(notebooks/env_vars/cloud_object/view)都 `.expect` server_id;
-        // Drive UI 已经通过 mark_object_trashed_and_return_timestamps 内部
-        // emit 的 ObjectStoreEvent::ObjectTrashed 收到通知。
+        // Zap (decentralized branch): a local object (no server_id) takes the purely
+        // local trash path — mark trashed_ts + write sqlite. **Does not emit
+        // ObjectOperationComplete**, because several of its consumers
+        // (notebooks/env_vars/cloud_object/view) all `.expect` a server_id; the
+        // Drive UI is already notified via the ObjectStoreEvent::ObjectTrashed
+        // emitted internally by mark_object_trashed_and_return_timestamps.
         let Some(server_id) = id.server_id() else {
             let hashed_id = id.uid();
             self.mark_object_trashed_and_return_timestamps(&hashed_id, ctx);
-            // Zap:本地对象永远没有服务端 ack 来清 has_pending_metadata_change。
-            // 必须在落 sqlite 前手动清掉,否则 upsert_stored_object 中
-            // `if !has_pending_metadata_change` 分支会跳过 trashed_ts 字段写入,
-            // 导致重启后从 sqlite 加载到的 trashed_ts 为 NULL,对象重新出现在 PERSONAL。
+            // Zap: a local object never gets a server ack to clear
+            // has_pending_metadata_change. It must be manually cleared before
+            // writing to sqlite, otherwise the `if !has_pending_metadata_change`
+            // branch in upsert_stored_object skips writing the trashed_ts field,
+            // causing trashed_ts loaded from sqlite after a restart to be NULL, and
+            // the object reappears in PERSONAL.
             ObjectStoreModel::handle(ctx).update(ctx, |object_store_model, _| {
                 if let Some(object) = object_store_model.get_mut_by_uid(&hashed_id) {
                     object
@@ -1353,13 +1370,14 @@ impl UpdateManager {
     }
 
     pub fn untrash_object(&mut self, id: ObjectTypeAndId, ctx: &mut ModelContext<Self>) {
-        // Zap:本地对象 untrash —— 清掉 trashed_ts + emit ObjectUntrashed + 写 sqlite。
-        // 不 emit ObjectOperationComplete(同 trash_object 的注释)。
+        // Zap: local object untrash — clear trashed_ts + emit ObjectUntrashed + write sqlite.
+        // Doesn't emit ObjectOperationComplete (same comment as trash_object).
         let Some(server_id) = id.server_id() else {
             let hashed_id = id.uid();
-            // Zap:本地对象 untrash —— 清 trashed_ts 同时把
-            // has_pending_metadata_change 清掉(本地分支无服务端 ack),
-            // 否则 upsert_stored_object 跳过 trashed_ts 写入,sqlite 仍为旧值。
+            // Zap: local object untrash — clear trashed_ts while also clearing
+            // has_pending_metadata_change (the local branch has no server ack),
+            // otherwise upsert_stored_object skips the trashed_ts write and sqlite
+            // keeps the old value.
             ObjectStoreModel::handle(ctx).update(ctx, |object_store_model, ctx| {
                 if let Some(object) = object_store_model.get_mut_by_uid(&hashed_id) {
                     object.metadata_mut().trashed_ts = None;
@@ -1396,7 +1414,7 @@ impl UpdateManager {
             return;
         }
 
-        // Zap:云端 untrash RPC 已删除,这里折叠为本地直写并清 pending_untrash 位。
+        // Zap: the cloud untrash RPC has been removed; this is now collapsed into a direct local write that also clears the pending_untrash bit.
         ObjectStoreModel::handle(ctx).update(ctx, |object_store_model, ctx| {
             if let Some(object) = object_store_model.get_mut_by_uid(&hashed_id) {
                 object.metadata_mut().trashed_ts = None;
@@ -1464,7 +1482,7 @@ impl UpdateManager {
             return;
         }
 
-        // Zap:云端 delete RPC 已删除,这里折叠为本地直接清除。
+        // Zap: the cloud delete RPC has been removed; this is now collapsed into a direct local clear.
         let num_deleted_objects =
             self.on_object_delete_success(vec![SyncId::ServerId(server_id)], ctx);
         ctx.emit(UpdateManagerEvent::ObjectOperationComplete {
@@ -1480,10 +1498,14 @@ impl UpdateManager {
     }
 
     pub fn empty_trash(&mut self, space: Space, ctx: &mut ModelContext<Self>) {
-        // Zap:Empty Trash 走纯本地路径。原实现调用上游云端 empty_trash 接口,
-        // 无 auth/无服务端时直接 `Failed to get access token` 重试 3 次后失败,Trash UI 不动。
-        // 本地分支:直接遍历 ObjectStoreModel 找出 owner 匹配 + is_trashed 的对象,
-        // 收集 SyncId 后复用 `on_object_delete_success`(它已经做了内存 + sqlite 双删 + actions 清理)。
+        // Zap: Empty Trash takes a purely local path. The original implementation
+        // called the upstream cloud empty_trash endpoint, which with no
+        // auth/server would fail directly with `Failed to get access token` after
+        // 3 retries, leaving the Trash UI unchanged. Local branch: directly
+        // iterate ObjectStoreModel to find objects matching owner + is_trashed,
+        // collect their SyncIds, and reuse `on_object_delete_success` (which
+        // already handles the double delete in memory + sqlite plus actions
+        // cleanup).
         let owner = match UserWorkspaces::as_ref(ctx).space_to_owner(space, ctx) {
             Some(owner) => owner,
             None => {
@@ -1614,7 +1636,9 @@ impl Entity for UpdateManager {
 
 impl SingletonEntity for UpdateManager {}
 
-// Phase 2c-2 删除 `update_manager_test.rs`(7500+ 行云端同步行为测试):
-// `update_object` Zap 本地化后,云端断言全部失效;本文件原属 Phase 2d-4a
-// 整文件删除范围,提前删避免 12 个 `#[ignore]` 累积。`server/cloud_objects/`
-// 其余消费者(listener / update_manager 本体)在 2d-4a 整片下线。
+// Phase 2c-2 deleted `update_manager_test.rs` (7500+ lines of cloud-sync
+// behavior tests): after `update_object` was localized under Zap, all the
+// cloud assertions became invalid. This file originally fell within Phase
+// 2d-4a's whole-file deletion scope; it was deleted early to avoid
+// accumulating 12 `#[ignore]`s. The rest of its consumers (listener /
+// update_manager itself) were retired together in the 2d-4a sweep.

@@ -1,13 +1,13 @@
-//! `ssh_command` 单元测试。
+//! Unit tests for `ssh_command`.
 //!
-//! 按 `AGENTS.md §5.6` 拆出到独立文件,由 `ssh_command.rs` 末尾的 `#[path]` 引入。
-//! 覆盖范围:
-//! - `build_ssh_args` / `build_ssh_command_line` 参数构建
-//! - `test_connection` 在缺密码 / 错认证类型时的错误路径
-//! - `build_password_auth_stdin` 字节流构造(顺带覆盖 stdin 注入的关键安全路径)
+//! Split out into a separate file per `AGENTS.md §5.6`, brought in via the
+//! `#[path]` at the end of `ssh_command.rs`. Coverage:
+//! - `build_ssh_args` / `build_ssh_command_line` argument construction
+//! - `test_connection`'s error paths when the password is missing / the auth type is wrong
+//! - `build_password_auth_stdin` byte-stream construction (incidentally covering the key stdin-injection security path)
 //!
-//! 注意:实际派生 ssh 子进程的端到端测试在 `app/src/ssh_manager/server_view.rs` 的
-//! 集成测试 / 手测里覆盖 — 单测不做网络连接。
+//! Note: end-to-end tests that actually spawn an ssh subprocess are covered by
+//! integration tests / manual tests in `app/src/ssh_manager/server_view.rs` — unit tests don't make network connections.
 //!
 //! author: logic
 //! date: 2026-06-01
@@ -34,8 +34,8 @@ fn server() -> SshServerInfo {
 fn default_port_omitted() {
     let s = server();
     assert_eq!(build_ssh_args(&s), vec!["ssh", "alice@1.2.3.4"]);
-    // shell-escape 出于保守会把 user@host 用单引号引起来,这是合法且
-    // shell-equivalent 的形式 — 不强求未引用版本。
+    // shell-escape conservatively wraps user@host in single quotes; this is a
+    // valid, shell-equivalent form — the unquoted version isn't required.
     let line = build_ssh_command_line(&s);
     assert!(
         line == "ssh alice@1.2.3.4" || line == "ssh 'alice@1.2.3.4'",
@@ -94,7 +94,7 @@ fn shell_escapes_spaces_in_path() {
 #[test]
 fn test_connection_requires_password_for_password_auth() {
     let s = server();
-    // test_connection 应该在没有密码时返回 Offline + 错误信息
+    // test_connection should return Offline + an error message when there's no password
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result = rt.block_on(test_connection(&s, None));
     assert_eq!(result.status, ConnectionStatus::Offline);
@@ -134,8 +134,8 @@ fn test_connection_key_auth_uses_batch_mode() {
     let mut s = server();
     s.auth_type = AuthType::Key;
     s.key_path = Some("/home/user/.ssh/id_rsa".into());
-    // 对于密钥认证,应该走 BatchMode=yes 路径(由 run_ssh_test 携带);
-    // 这里只验证 build_ssh_args 带了 -i 和 key_path。
+    // For key auth, the BatchMode=yes path should be taken (carried by
+    // run_ssh_test); this only verifies build_ssh_args includes -i and key_path.
     let args = build_ssh_args(&s);
     assert!(args.contains(&"-i".to_string()));
     assert!(args.contains(&"/home/user/.ssh/id_rsa".to_string()));
@@ -151,11 +151,12 @@ fn connection_status_equality() {
     assert_ne!(ConnectionStatus::Offline, ConnectionStatus::Unknown);
 }
 
-// -------- 密码 stdin 注入安全相关 --------
+// -------- Password stdin injection security --------
 
-/// 验证 `build_password_auth_stdin` 把密码 + 换行正确编码。
-/// 这是密码泄露修复的关键:必须确认写进 ssh stdin 的字节流就是密码字面量 +
-/// `\n`,而不是任何会让密码意外走 argv / 环境变量 / 临时文件的形态。
+/// Verifies `build_password_auth_stdin` correctly encodes password + newline.
+/// This is key to the password-leak fix: must confirm the byte stream written
+/// to ssh stdin is exactly the literal password + `\n`, not any form that
+/// would let the password accidentally end up in argv / env vars / temp files.
 #[test]
 fn build_password_auth_stdin_contains_password_with_newline() {
     let password: Zeroizing<String> = Zeroizing::new("s3cret-pass".into());
@@ -163,8 +164,8 @@ fn build_password_auth_stdin_contains_password_with_newline() {
     assert_eq!(&*bytes, b"s3cret-pass\n");
 }
 
-/// 边界:空密码仍要写一个 `\n`,这样 ssh 会立即拿到 EOF 并判定认证失败
-/// (而不是卡在等待 prompt 的状态)。
+/// Edge case: an empty password still needs to write a `\n`, so ssh
+/// immediately gets EOF and decides authentication failed (rather than hanging waiting for the prompt).
 #[test]
 fn build_password_auth_stdin_empty_password_still_has_newline() {
     let password: Zeroizing<String> = Zeroizing::new(String::new());
@@ -172,7 +173,7 @@ fn build_password_auth_stdin_empty_password_still_has_newline() {
     assert_eq!(&*bytes, b"\n");
 }
 
-/// Unicode 密码:走 UTF-8 字节原样写入。
+/// Unicode password: written as-is via UTF-8 bytes.
 #[test]
 fn build_password_auth_stdin_unicode_password() {
     let password: Zeroizing<String> = Zeroizing::new("密码🔐".into());
@@ -182,8 +183,9 @@ fn build_password_auth_stdin_unicode_password() {
     assert_eq!(&*bytes, expected.as_slice());
 }
 
-/// 回归:`build_ssh_args` 不应再带 `sshpass`,防止有人误把它加回 cmd_args
-/// (Windows / macOS 默认无 sshpass,残留路径会立即 No such file or directory)。
+/// Regression: `build_ssh_args` should no longer carry `sshpass`, guarding
+/// against someone mistakenly adding it back to cmd_args (Windows / macOS have
+/// no sshpass by default, and a leftover path would immediately hit No such file or directory).
 #[test]
 fn build_ssh_args_does_not_emit_sshpass() {
     let s = server();
@@ -194,19 +196,20 @@ fn build_ssh_args_does_not_emit_sshpass() {
     );
 }
 
-// -------- password auth cmd_args 回归保护 --------
+// -------- password auth cmd_args regression protection --------
 //
-// 这些测试守住"测试连接"password 路径不再 10s timeout 的关键开关。
-// 任何 `test_password_auth` 内部的 -o 选项调整都得满足这三条:
-// 1. 不再声明 keyboard-interactive(否则 server 端 PAM 会 fallback 到 kbd-int)
-// 2. 显式禁掉 KbdInteractiveAuthentication(客户端能力开关,不是偏好)
-// 3. 末尾仍是 `echo ok` 远端命令(否则成功判定匹配不到 stdout)
+// These tests guard the key switches that keep the "test connection" password
+// path from hitting the 10s timeout again. Any adjustment to the -o options
+// inside `test_password_auth` must satisfy these three conditions:
+// 1. No longer declare keyboard-interactive (otherwise the server-side PAM would fall back to kbd-int)
+// 2. Explicitly disable KbdInteractiveAuthentication (a client capability switch, not a preference)
+// 3. Still end with the `echo ok` remote command (otherwise the success check won't match stdout)
 // author: logic
 // date: 2026-06-01
 
-/// 回归保护:`PreferredAuthentications` 必须只含 `password`,不能含
-/// `keyboard-interactive`。否则 stdin pipe + EOF 会触发 kbd-int PAM
-/// 重试链(`pam_faildelay` ~2s/次),把 10s `TEST_TIMEOUT` 顶满。
+/// Regression protection: `PreferredAuthentications` must contain only
+/// `password`, not `keyboard-interactive`. Otherwise stdin pipe + EOF would
+/// trigger the kbd-int PAM retry chain (`pam_faildelay` ~2s per attempt), maxing out the 10s `TEST_TIMEOUT`.
 #[test]
 fn password_auth_args_no_keyboard_interactive() {
     let s = server();
@@ -220,8 +223,9 @@ fn password_auth_args_no_keyboard_interactive() {
         joined.contains("PreferredAuthentications=password"),
         "expected PreferredAuthentications=password; got {args:?}"
     );
-    // 即便 PreferredAuthentications=password 出现,后面也不能再列其它方法。
-    // split 取 "=" 后第一段,若以 "password," 开头说明后面还有别的认证。
+    // Even once PreferredAuthentications=password appears, no other methods
+    // may be listed after it. Splitting takes the first segment after "=";
+    // starting with "password," would indicate another auth method follows.
     let after_pref = joined
         .split("PreferredAuthentications=")
         .nth(1)
@@ -232,10 +236,12 @@ fn password_auth_args_no_keyboard_interactive() {
     );
 }
 
-/// 回归保护:必须显式禁 kbd-interactive(客户端能力开关),
-/// 不只靠 `PreferredAuthentications` 列表顺序(后者只约束 password
-/// 子方法)。OpenSSH 8.2+ 行为差异、与 server 端 `AuthenticationMethods`
-/// 交互时尤其需要这层 defense in depth。
+/// Regression protection: kbd-interactive must be explicitly disabled (a
+/// client capability switch), not relying solely on
+/// `PreferredAuthentications` list order (which only constrains the password
+/// sub-method). This layer of defense in depth is especially needed given
+/// OpenSSH 8.2+ behavior differences and interaction with the server-side
+/// `AuthenticationMethods`.
 #[test]
 fn password_auth_args_disable_kbd_interactive() {
     let s = server();
@@ -247,9 +253,11 @@ fn password_auth_args_disable_kbd_interactive() {
     );
 }
 
-/// 回归保护:cmd_args 末尾的 `echo ok` 必须作为 remote command 出现。
-/// ssh 解析规则下 destination 之后第一个非选项位置参数 = remote command,
-/// 如果选项顺序错了导致 ssh 不把 `echo ok` 识别为命令,成功判定会失效。
+/// Regression protection: the `echo ok` at the end of cmd_args must appear as
+/// the remote command. Under ssh's parsing rules, the first non-option
+/// positional argument after the destination = the remote command; if the
+/// option order is wrong and ssh doesn't recognize `echo ok` as the command,
+/// the success check would fail.
 #[test]
 fn password_auth_args_ends_with_echo_ok_command() {
     let s = server();
@@ -262,13 +270,15 @@ fn password_auth_args_ends_with_echo_ok_command() {
     );
 }
 
-/// 回归保护:password 路径的 destination (`user@host`) 必须出现在所有 `-o`
-/// 选项**之后**、`echo ok` **之前**。SSH 命令行解析规则为
-/// `ssh [options] destination [command]`,第一个非选项参数 = destination,
-/// 其后一切 = 远程命令。若 `-o` 选项跑到 destination 之后,SSH 会把它
-/// 当作远程命令的一部分而非自身选项,导致 `PreferredAuthentications`、
-/// `KbdInteractiveAuthentication` 等关键选项全部失效,触发 kbd-interactive
-/// PAM 重试链卡满 10s `TEST_TIMEOUT`。
+/// Regression protection: the password path's destination (`user@host`) must
+/// appear **after** all `-o` options and **before** `echo ok`. SSH's
+/// command-line parsing rule is `ssh [options] destination [command]` — the
+/// first non-option argument = destination, and everything after it = the
+/// remote command. If a `-o` option ends up after the destination, SSH treats
+/// it as part of the remote command rather than its own option, causing key
+/// options like `PreferredAuthentications` and `KbdInteractiveAuthentication`
+/// to all become ineffective, triggering the kbd-interactive PAM retry chain
+/// and maxing out the 10s `TEST_TIMEOUT`.
 /// author: logic
 /// date: 2026-06-01
 #[test]
@@ -277,7 +287,7 @@ fn password_auth_args_destination_before_echo_ok_and_after_options() {
     let args = build_password_auth_cmd_args(&s);
     let joined = args.join(" ");
 
-    // destination "alice@1.2.3.4" 必须出现在 "echo ok" 之前
+    // destination "alice@1.2.3.4" must appear before "echo ok"
     let dest_pos = joined
         .find("alice@1.2.3.4")
         .expect("destination must appear in args");
@@ -290,8 +300,8 @@ fn password_auth_args_destination_before_echo_ok_and_after_options() {
         "destination must come before `echo ok`; got joined: {joined}"
     );
 
-    // destination 必须出现在所有 -o 选项之后
-    // 找最后一个 -o 选项的位置
+    // destination must appear after all -o options
+    // find the position of the last -o option
     let last_o_pos = joined
         .rfind("-o ")
         .expect("expected at least one -o option");
@@ -301,8 +311,9 @@ fn password_auth_args_destination_before_echo_ok_and_after_options() {
     );
 }
 
-/// 回归保护:key auth 路径的 `build_ssh_args` 也需 destination 在 -o 选项之后。
-/// 用 `build_ssh_args` + 手动追加选项的方式验证顺序,模拟 `test_key_auth` 的构建。
+/// Regression protection: the key auth path's `build_ssh_args` also needs the
+/// destination after the -o options. Verifies the ordering by using
+/// `build_ssh_args` + manually appending options, mimicking `test_key_auth`'s construction.
 /// author: logic
 /// date: 2026-06-01
 #[test]
@@ -311,7 +322,7 @@ fn key_auth_args_destination_comes_after_options() {
     s.auth_type = AuthType::Key;
     s.key_path = Some("/home/user/.ssh/id_rsa".into());
 
-    // 模拟 test_key_auth 的构建逻辑
+    // Mimics test_key_auth's construction logic
     let mut args = build_ssh_args(&s);
     let target = args.pop().unwrap();
     args.extend([
@@ -348,36 +359,42 @@ fn key_auth_args_destination_comes_after_options() {
     );
 }
 
-// -------- Windows SSH_ASKPASS 回归保护 --------
+// -------- Windows SSH_ASKPASS regression protection --------
 //
-// Windows 上 Win32-OpenSSH 因无控制台 + CREATE_NO_WINDOW 而拒绝从 stdin
-// 读密码(Win32-OpenSSH issue #1470),必须走 SSH_ASKPASS 机制。
-// 守住这块代码的存在,防止有人误把 Windows 路径合并回 stdin 写法。
+// On Windows, Win32-OpenSSH refuses to read the password from stdin because
+// of no console + CREATE_NO_WINDOW (Win32-OpenSSH issue #1470), so it must go
+// through the SSH_ASKPASS mechanism. Guards the existence of this code path,
+// preventing someone from mistakenly merging the Windows path back into the stdin approach.
 // author: logic
 // date: 2026-06-01
 
-/// 回归保护:Windows 上 `test_password_auth` 入口必须引用 `AskpassSession`,
-/// 不能直接用 stdin 写密码。这条断言通过类型系统保证:如果 Windows 路径
-/// 被改成 stdin 方式,函数体里就不会出现 `AskpassSession::new`,测试会失败。
+/// Regression protection: on Windows, `test_password_auth`'s entry point must
+/// reference `AskpassSession`, and must not write the password directly via
+/// stdin. This assertion is guaranteed by the type system: if the Windows path
+/// were changed to the stdin approach, `AskpassSession::new` would no longer
+/// appear in the function body, and the test would fail.
 #[cfg(windows)]
 #[test]
 fn windows_password_auth_uses_askpass_not_stdin() {
-    // 这个测试在编译期就起作用:如果 ssh_command.rs 的 Windows 分支
-    // 退回到 stdin 注入,`AskpassSession` 类型不再被使用,编译会报
-    // dead_code 错误,CI 就会挂。
-    // 这里只验证 AskpassSession 类型存在 + 可 new — 跑不起来(需要写文件),
-    // 但能挡住"误删 AskpassSession"这类破坏。
+    // This test takes effect at compile time: if ssh_command.rs's Windows
+    // branch falls back to stdin injection, the `AskpassSession` type is no
+    // longer used, causing a dead_code compile error and failing CI.
+    // This only verifies the AskpassSession type exists + can be constructed —
+    // it doesn't actually run (would require writing a file), but it blocks
+    // damage like "mistakenly deleting AskpassSession".
     let _ = std::any::type_name::<AskpassSession>();
 }
 
-/// 真实端到端:创建 `AskpassSession` 拿到 askpass 脚本路径,然后用
-/// `CreateProcessW` 派生它(模拟 ssh 派生 askpass 的方式),验证它能起来。
+/// Real end-to-end: creates an `AskpassSession` to get the askpass script
+/// path, then spawns it via `CreateProcessW` (mimicking how ssh spawns
+/// askpass), verifying it can start.
 ///
-/// 这条测试守住 askpass 脚本在 ssh 视角下"可执行"——直接挡住
-/// `CreateProcessW failed error:5`(ERROR_ACCESS_DENIED)这类回归。
-/// 之前出过 bug:askpass 文件设了 `FILE_ATTRIBUTE_HIDDEN`,导致 ssh 的
-/// `posix_spawnp` 拒绝派生,askpass 根本起不来,密码没传出去,server
-/// 报 "wrong password"。
+/// This test guards that the askpass script is "executable" from ssh's point
+/// of view — directly blocking regressions like `CreateProcessW failed
+/// error:5` (ERROR_ACCESS_DENIED). There was a bug before: the askpass file
+/// had `FILE_ATTRIBUTE_HIDDEN` set, causing ssh's `posix_spawnp` to refuse to
+/// spawn it; askpass never started, the password was never transmitted, and
+/// the server reported "wrong password".
 #[cfg(windows)]
 #[test]
 fn windows_askpass_script_is_spawnable() {
@@ -390,9 +407,10 @@ fn windows_askpass_script_is_spawnable() {
     let script = session.script_path.clone();
     let password_file = session.password_path.clone();
 
-    // 派生 askpass 脚本:用 CreateProcessW 走和 ssh 相同的代码路径。
-    // CREATE_NO_WINDOW 模拟 ssh 派生 askpass 时的环境(无控制台)。
-    // 必须设 WARP_SSH_ASKPASS_FILE env,脚本靠它定位密码文件。
+    // Spawn the askpass script: uses CreateProcessW to go through the same
+    // code path as ssh. CREATE_NO_WINDOW mimics the environment when ssh
+    // spawns askpass (no console). WARP_SSH_ASKPASS_FILE env must be set;
+    // the script relies on it to locate the password file.
     let output = std::process::Command::new("cmd.exe")
         .raw_arg(format!("/c \"{}\"", script.display()))
         .env("WARP_SSH_ASKPASS_FILE", &password_file)
@@ -410,7 +428,8 @@ fn windows_askpass_script_is_spawnable() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // askpass 脚本读密码文件首行并 echo,应该输出 session 创建时写入的密码
+    // The askpass script reads the first line of the password file and
+    // echoes it; it should output the password written when the session was created
     assert!(
         stdout.trim() == "dummy-pw-for-spawn-test",
         "askpass output mismatch: got {stdout:?}"

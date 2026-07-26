@@ -553,7 +553,8 @@ fn test_close_unmodified() {
         initialize_app(&mut app);
         initial_load(&mut app, vec![]).await;
 
-        // Zap(Wave 4):SyncQueue 整删,原 stop_dequeueing + assert queue 长度不适用。
+        // Zap (Wave 4): SyncQueue was removed entirely, so the original
+        // stop_dequeueing + assert-on-queue-length no longer applies.
 
         let cloud_notebook = mock_stored_notebook("Test", "Some text");
         let notebook_id = cloud_notebook.id;
@@ -575,7 +576,8 @@ fn test_close_unmodified() {
                 .expect("Notebook should exist");
             assert!(!object.metadata().has_pending_content_changes());
 
-            // Zap(Wave 4):SyncQueue 整删,原 `sync_queue.is_empty()` 断言不适用。
+            // Zap (Wave 4): SyncQueue was removed entirely, so the original
+            // `sync_queue.is_empty()` assertion no longer applies.
         })
     });
 }

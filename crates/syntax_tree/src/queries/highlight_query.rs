@@ -118,7 +118,8 @@ impl HighlightQuery {
         let mut matches = cursor.matches(injections_query, tree.root_node(), TextBuffer(buffer));
 
         while let Some(query_match) = matches.next() {
-            // 中文注释：优先读取 query 的 #set! 属性，这是注入语言的权威来源。
+            // Prefer reading the query's #set! property first — it is the authoritative
+            // source for the injected language.
             // Source: arborium-highlight-2.18.0/src/tree_sitter.rs
             let mut lang_name = injections_query
                 .property_settings(query_match.pattern_index)
@@ -162,7 +163,9 @@ impl HighlightQuery {
                             ByteOffset::from(content_range.end),
                         );
 
-                        // 中文注释：注入片段必须先按目标语言单独建树，再把高亮偏移回原文件。
+                        // The injected fragment must first be parsed into its own tree
+                        // using the target language, then the highlight offsets are
+                        // mapped back onto the original file.
                         let highlights = injection_query
                             .highlight_query
                             .get_highlighted_chunks_for_injection(
@@ -196,7 +199,7 @@ impl HighlightQuery {
             let mut parser = parser.borrow_mut();
             parser
                 .set_language(&language.grammar)
-                .expect("注入语言语法应当兼容 parser");
+                .expect("injected language grammar should be compatible with the parser");
 
             let Some(tree) = parser.parse(source, None) else {
                 return RangeMap::new();
@@ -240,8 +243,9 @@ impl HighlightQuery {
 }
 
 fn injection_byte_to_buffer_byte(base_byte_offset: usize, local_byte_offset: usize) -> usize {
-    // 中文注释：注入片段来自已解析的 Vue tree-sitter 节点，映射回 Buffer 时需要抵消
-    // Buffer/TreeSitter 边界上的 1-byte 偏移，避免 token 首字符漏高亮。
+    // The injected fragment comes from an already-parsed Vue tree-sitter node; mapping
+    // it back to the Buffer needs to offset the 1-byte boundary discrepancy between
+    // Buffer/TreeSitter, to avoid missing the highlight on a token's first character.
     base_byte_offset + local_byte_offset.saturating_sub(1)
 }
 

@@ -61,15 +61,17 @@ fn is_opus_4_7_or_higher(model_name: &str) -> bool {
 	is_opus_at_least(model_name, 4, 7)
 }
 
-/// 模型是否支持 1M 上下文 beta(`anthropic-beta: context-1m-2025-08-07`)。
+/// Whether the model supports the 1M context beta (`anthropic-beta: context-1m-2025-08-07`).
 ///
-/// 判据(对齐 opencode `packages/console/.../anthropic.ts`):
-/// - 模型名包含 `sonnet`(Claude Sonnet 4 起全系都支持 1M)
-/// - 或为 Opus 4.6 及以上(`claude-opus-4-6`、`claude-opus-4-7`、`claude-opus-5-x` ...)
+/// Criteria (aligned with opencode's `packages/console/.../anthropic.ts`):
+/// - Model name contains `sonnet` (all Claude Sonnet 4+ models support 1M)
+/// - Or is Opus 4.6 or higher (`claude-opus-4-6`, `claude-opus-4-7`, `claude-opus-5-x` ...)
 ///
-/// 用于 BYOP / 直连 / 中转场景:不带这个 header,某些中转(如 anyrouter)会
-/// 直接 400 拒绝带 `claude-opus-4-7` 之类模型名的请求,见 zerx-lab/warp #21。
-/// Anthropic 官方接受该 header 后,prompt < 200K 时仍按常规价格,所以默认带上是安全的。
+/// Used for BYOP / direct / relay scenarios: without this header, some
+/// relays (e.g. anyrouter) will directly 400 reject requests carrying a
+/// model name like `claude-opus-4-7`, see zerx-lab/warp #21.
+/// Anthropic officially accepts this header and still bills at the regular
+/// rate when prompt < 200K, so sending it by default is safe.
 pub(in crate::adapter) fn model_supports_1m_context(model_name: &str) -> bool {
 	if model_name.contains("sonnet") {
 		return true;
@@ -272,10 +274,10 @@ impl Adapter for AnthropicAdapter {
 			("anthropic-version".to_string(), ANTHROPIC_VERSION.to_string()),
 		]);
 
-		// -- 1M context beta header(对支持 1M 的模型默认带上)
-		// 不带的话,某些中转网关(anyrouter 等)会直接 400 拒绝。
-		// Anthropic 官方对 prompt < 200K 仍按常规价格计费,默认带上是安全的。
-		// 详见 zerx-lab/warp issue #21。
+		// -- 1M context beta header (sent by default for models that support 1M)
+		// Without it, some relay gateways (anyrouter, etc.) will directly 400 reject the request.
+		// Anthropic officially still bills at the regular rate when prompt < 200K, so sending it by default is safe.
+		// See zerx-lab/warp issue #21 for details.
 		let (_, raw_model_name_for_beta) = model.model_name.namespace_and_name();
 		if model_supports_1m_context(raw_model_name_for_beta) {
 			headers.merge(Headers::from((
@@ -284,9 +286,10 @@ impl Adapter for AnthropicAdapter {
 			)));
 		}
 
-		// -- 合并用户在 ChatOptions 里追加的 extra_headers(后写覆盖前写)
-		// 用户可显式塞同名 header(比如组合多个 beta:`context-1m-...,files-api-...`)
-		// 来覆盖 adapter 默认值。
+		// -- Merge extra_headers the user appended in ChatOptions (later writes override earlier ones)
+		// The user can explicitly set a header with the same name (e.g. combining
+		// multiple betas: `context-1m-...,files-api-...`) to override the
+		// adapter's default value.
 		if let Some(extra_headers) = options_set.extra_headers() {
 			headers.merge_with(extra_headers);
 		}
@@ -1050,7 +1053,7 @@ mod tests {
 		);
 	}
 
-	/// 辅助:从 Headers 中按名取值(case-sensitive)。
+	/// Helper: look up a value in Headers by name (case-sensitive).
 	fn header_value<'a>(headers: &'a crate::Headers, name: &str) -> Option<&'a str> {
 		headers.iter().find_map(|(k, v)| (k == name).then_some(v.as_str()))
 	}
@@ -1072,8 +1075,9 @@ mod tests {
 		.expect("to_web_request_data should succeed")
 	}
 
-	/// 回归保护(zerx-lab/warp #21):支持 1M 上下文的模型必须默认带
-	/// `anthropic-beta: context-1m-2025-08-07`,否则 anyrouter 等中转网关 400。
+	/// Regression guard (zerx-lab/warp #21): models that support 1M context
+	/// must default to sending `anthropic-beta: context-1m-2025-08-07`,
+	/// otherwise relay gateways like anyrouter return 400.
 	#[test]
 	fn test_anthropic_beta_header_for_opus_4_7() {
 		let req = build_minimal_request("claude-opus-4-7");
@@ -1090,7 +1094,7 @@ mod tests {
 		assert_eq!(
 			header_value(&req.headers, "anthropic-beta"),
 			Some("context-1m-2025-08-07"),
-			"sonnet 全系都支持 1m context"
+			"all sonnet models support 1m context"
 		);
 	}
 
@@ -1108,20 +1112,21 @@ mod tests {
 		let req = build_minimal_request("claude-3-5-haiku");
 		assert!(
 			header_value(&req.headers, "anthropic-beta").is_none(),
-			"haiku 3.5 不支持 1m,不应注入 beta header"
+			"haiku 3.5 does not support 1m, should not inject the beta header"
 		);
 
 		let req = build_minimal_request("claude-opus-4-5");
 		assert!(
 			header_value(&req.headers, "anthropic-beta").is_none(),
-			"opus 4.5 不支持 1m,不应注入 beta header"
+			"opus 4.5 does not support 1m, should not inject the beta header"
 		);
 	}
 
 	#[test]
 	fn test_extra_headers_can_override_beta() {
-		// 用户在 ChatOptions 里塞自定义 anthropic-beta(比如组合多个 beta feature)
-		// 应该覆盖 adapter 默认的 1m 单值。
+		// A user-supplied custom anthropic-beta in ChatOptions (e.g. combining
+		// multiple beta features) should override the adapter's default
+		// single 1m value.
 		let custom = crate::Headers::from((
 			"anthropic-beta".to_string(),
 			"context-1m-2025-08-07,files-api-2025-04-14".to_string(),
@@ -1143,7 +1148,7 @@ mod tests {
 		assert_eq!(
 			header_value(&req.headers, "anthropic-beta"),
 			Some("context-1m-2025-08-07,files-api-2025-04-14"),
-			"用户 extra_headers 必须覆盖 adapter 默认 beta header"
+			"user extra_headers must override the adapter's default beta header"
 		);
 	}
 

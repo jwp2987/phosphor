@@ -1,17 +1,19 @@
-//! Prompt cache 序列化稳定性测试集合(对应文档 P1-8 / P1-9 / P1-13)。
+//! Prompt cache serialization stability test suite (corresponds to doc sections
+//! P1-8 / P1-9 / P1-13).
 //!
-//! Anthropic 文档明确警告:
+//! Anthropic's docs explicitly warn:
 //! > Verify that the keys in your `tool_use` content blocks have stable
 //! > ordering as some languages (for example, Swift, Go) randomize key order
 //! > during JSON conversion, breaking caches
 //!
-//! 这意味着任何 `serde_json::Value` 在 Rust 端的产出**必须**:
-//!   1. 同输入跨调用 byte-equal(确定性)
-//!   2. 不依赖 `HashMap` iterate 顺序
-//!   3. 不依赖外部状态(时间戳、随机、PID 等)
+//! This means any `serde_json::Value` produced on the Rust side **must**:
+//!   1. Be byte-equal across calls for the same input (deterministic)
+//!   2. Not depend on `HashMap` iteration order
+//!   3. Not depend on external state (timestamps, randomness, PID, etc.)
 //!
-//! 这套测试是 Zap 的"防退化护栏"——后续任何修改 prompt
-//! 构造路径的改动只要破坏字节级稳定性,这里就会断言失败。
+//! This test suite is Zap's "anti-regression guardrail" —— any future change to the
+//! prompt construction path that breaks byte-level stability will fail an assertion
+//! here.
 
 use crate::ai::agent::{MCPContext, MCPServer};
 use api::message;
@@ -21,15 +23,16 @@ use super::chat_stream;
 use super::tools;
 
 // ---------------------------------------------------------------------------
-// P1-8: tool schema 字段顺序稳定性
+// P1-8: tool schema field order stability
 // ---------------------------------------------------------------------------
 
-/// 对 `REGISTRY` 中每个 tool 调 `(parameters)()` 两次,断言 byte-equal。
+/// Calls `(parameters)()` twice for each tool in `REGISTRY`, asserting byte-equality.
 ///
-/// 风险点:tool schema 内嵌的 enum / oneof 内部如果用 `HashMap<String, Schema>`
-/// 转 Value,顺序就乱。`json!({...})` 字面量产出的 `serde_json::Map` 默认按
-/// **insertion order** 保留(`preserve_order` 默认开,见 Cargo.toml),所以
-/// 字面写死的 key 顺序跨调用稳定。这条测试守护这个不变量。
+/// Risk: if the enum / oneof nested inside a tool schema converts to Value via a
+/// `HashMap<String, Schema>`, the order gets scrambled. The `serde_json::Map`
+/// produced by a `json!({...})` literal preserves **insertion order** by default
+/// (`preserve_order` is on by default, see Cargo.toml), so a literally hardcoded key
+/// order is stable across calls. This test guards that invariant.
 #[test]
 fn registry_tool_schemas_are_deterministic() {
     for tool in tools::REGISTRY {
@@ -39,14 +42,16 @@ fn registry_tool_schemas_are_deterministic() {
         let j2 = serde_json::to_string(&s2).unwrap();
         assert_eq!(
             j1, j2,
-            "tool `{}` 的 schema 跨调用 byte-equal 必须成立(prompt cache 命中前置)",
+            "tool `{}`'s schema must be byte-equal across calls (a prerequisite for prompt cache hits)",
             tool.name
         );
     }
 }
 
-/// 对 `REGISTRY` 中每个 tool 反复调 50 次,断言所有调用产出 byte-equal。
-/// 防止偶发的 HashMap iterate 顺序漂移(只跑 2 次可能恰巧相同)。
+/// Calls each tool in `REGISTRY` repeatedly 50 times, asserting all calls produce
+/// byte-equal output.
+/// Guards against occasional HashMap iteration order drift (running just twice might
+/// happen to match).
 #[test]
 fn registry_tool_schemas_stable_under_repetition() {
     for tool in tools::REGISTRY {
@@ -55,15 +60,16 @@ fn registry_tool_schemas_stable_under_repetition() {
             let candidate = serde_json::to_string(&(tool.parameters)()).unwrap();
             assert_eq!(
                 baseline, candidate,
-                "tool `{}` 第 {i} 次调用产出与基准不一致(可能存在 HashMap 顺序漂移)",
+                "tool `{}`'s output on call {i} does not match the baseline (possible HashMap order drift)",
                 tool.name
             );
         }
     }
 }
 
-/// `tools::REGISTRY` 自身顺序静态,但仍验证一遍:
-/// 同一进程内 iterate 多次得到相同的 (name, description) 序列。
+/// `tools::REGISTRY`'s own order is static, but we verify it anyway: iterating
+/// multiple times within the same process yields the same (name, description)
+/// sequence.
 #[test]
 fn registry_iteration_order_is_stable() {
     let names1: Vec<&str> = tools::REGISTRY.iter().map(|t| t.name).collect();
@@ -72,16 +78,17 @@ fn registry_iteration_order_is_stable() {
 }
 
 // ---------------------------------------------------------------------------
-// P1-9: serialize_outgoing_tool_call 历史回放稳定性
+// P1-9: serialize_outgoing_tool_call historical replay stability
 // ---------------------------------------------------------------------------
 
-/// 模拟一个 Grep 工具调用,验证两次序列化产出 byte-equal。
-/// `serialize_outgoing_tool_call` 在每次 build_chat_request 都会重跑,
-/// 把历史轮的 ToolCall 转成 (name, args Value)。任何 HashMap / 时间相关的
-/// 不稳定就会让 messages 段后半段缓存失效。
+/// Simulates a Grep tool call, verifying that serializing it twice produces
+/// byte-equal output.
+/// `serialize_outgoing_tool_call` reruns on every build_chat_request, converting a
+/// historical turn's ToolCall into (name, args Value). Any HashMap- or time-related
+/// instability would invalidate the cache for the back half of the messages segment.
 ///
-/// 选 Grep 是因为它字段最简单(`queries: Vec<String>`, `path: String`),
-/// 不依赖任何 prost 隐式默认字段。
+/// Grep is chosen because its fields are the simplest (`queries: Vec<String>`,
+/// `path: String`), with no dependency on implicit default prost fields.
 #[test]
 fn serialize_grep_tool_call_is_deterministic() {
     let tc = message::ToolCall {
@@ -94,14 +101,16 @@ fn serialize_grep_tool_call_is_deterministic() {
 
     let (n1, v1) = chat_stream::serialize_outgoing_tool_call_for_test(&tc, None, "");
     let (n2, v2) = chat_stream::serialize_outgoing_tool_call_for_test(&tc, None, "");
-    assert_eq!(n1, n2, "tool name 必须一致");
+    assert_eq!(n1, n2, "tool name must match");
     let j1 = serde_json::to_string(&v1).unwrap();
     let j2 = serde_json::to_string(&v2).unwrap();
-    assert_eq!(j1, j2, "同一 ToolCall 跨序列化 byte-equal");
+    assert_eq!(j1, j2, "the same ToolCall must be byte-equal across serializations");
 }
 
-/// Grep `queries` 是 `Vec<String>`,顺序需稳定(Vec 天然稳定,但作为防御断言)。
-/// 这反映了一个更大的规则:任何用户 ToolCall 内的 Vec 字段都必须保留入参顺序。
+/// Grep's `queries` is a `Vec<String>`, and order must be stable (a Vec is naturally
+/// stable, but this is asserted defensively).
+/// This reflects a broader rule: any Vec field inside a user ToolCall must preserve
+/// input order.
 #[test]
 fn serialize_grep_preserves_queries_order() {
     let tc = message::ToolCall {
@@ -113,13 +122,14 @@ fn serialize_grep_preserves_queries_order() {
     };
     let (_, v) = chat_stream::serialize_outgoing_tool_call_for_test(&tc, None, "");
     let s = serde_json::to_string(&v).unwrap();
-    let pos_z = s.find("zzz").expect("queries 应含 zzz");
-    let pos_a = s.find("aaa").expect("queries 应含 aaa");
-    assert!(pos_z < pos_a, "Vec 顺序必须按入参保留(zzz 先,aaa 后)");
+    let pos_z = s.find("zzz").expect("queries should contain zzz");
+    let pos_a = s.find("aaa").expect("queries should contain aaa");
+    assert!(pos_z < pos_a, "Vec order must be preserved as given (zzz first, aaa second)");
 }
 
-/// MCP tool call 含 `prost_types::Struct`,验证序列化稳定。
-/// `prost_types::Struct.fields` 内部用 `BTreeMap`,本身就稳定,这里覆盖一下确认。
+/// MCP tool call contains a `prost_types::Struct`; verifies serialization stability.
+/// `prost_types::Struct.fields` internally uses a `BTreeMap`, which is inherently
+/// stable — this test just confirms it.
 #[test]
 fn serialize_mcp_tool_call_is_deterministic() {
     use prost_types::{value::Kind, Struct, Value as ProstValue};
@@ -151,7 +161,7 @@ fn serialize_mcp_tool_call_is_deterministic() {
         )),
     };
 
-    // 构造一个 mcp_context 让 sanitize_server_name 能查到 server name
+    // Build an mcp_context so sanitize_server_name can look up the server name
     let ctx = MCPContext {
         #[allow(deprecated)]
         resources: vec![],
@@ -172,12 +182,12 @@ fn serialize_mcp_tool_call_is_deterministic() {
     let j1 = serde_json::to_string(&v1).unwrap();
     let j2 = serde_json::to_string(&v2).unwrap();
     assert_eq!(j1, j2);
-    // BTreeMap 应该按 key 字典序输出(key_a 在 key_z 前)
-    let pos_a = j1.find("key_a").expect("应含 key_a");
-    let pos_z = j1.find("key_z").expect("应含 key_z");
+    // BTreeMap should output in key lexicographic order (key_a before key_z)
+    let pos_a = j1.find("key_a").expect("should contain key_a");
+    let pos_z = j1.find("key_z").expect("should contain key_z");
     assert!(
         pos_a < pos_z,
-        "prost_types::Struct 应按 BTreeMap key 字典序"
+        "prost_types::Struct should follow BTreeMap key lexicographic order"
     );
 }
 
@@ -217,20 +227,22 @@ fn carrier_with_invalid_json_args_falls_back_to_empty_object() {
 }
 
 // ---------------------------------------------------------------------------
-// P1-13: build_tools_array 整体稳定性(配合 P0-3 的 MCP 排序)
+// P1-13: build_tools_array overall stability (works with P0-3's MCP ordering)
 // ---------------------------------------------------------------------------
 
-/// 端到端断言:同一 `(REGISTRY + 同 mcp_context)` 跑两次 tools 数组拼接,
-/// 字符串 byte-equal。这覆盖了 prompt 中 tools 数组的关键稳定性约束
-/// (Anthropic 文档:tool definitions 改动 → 全部 cache 失效)。
+/// End-to-end assertion: running tools array assembly twice for the same
+/// `(REGISTRY + same mcp_context)` produces byte-equal strings. This covers the key
+/// stability constraint for the tools array in the prompt (per Anthropic's docs:
+/// changing tool definitions invalidates the entire cache).
 ///
-/// 不直接调 `build_tools_array(params: &RequestParams)` 是因为 `RequestParams`
-/// 字段太多构造门槛高;这里复刻它对 REGISTRY 与 mcp 部分的核心拼接逻辑。
+/// We don't call `build_tools_array(params: &RequestParams)` directly because
+/// `RequestParams` has too many fields to construct easily; instead this replicates
+/// its core assembly logic for the REGISTRY and mcp parts.
 #[test]
 fn full_tools_array_serialization_is_stable() {
     let assemble = || -> String {
         let mut buf = String::new();
-        // 内置 tools(REGISTRY iterate 顺序静态)
+        // Built-in tools (REGISTRY iteration order is static)
         for t in tools::REGISTRY {
             buf.push_str(t.name);
             buf.push('|');
@@ -240,16 +252,18 @@ fn full_tools_array_serialization_is_stable() {
             buf.push_str(&serde_json::to_string(&schema).unwrap());
             buf.push('\n');
         }
-        // MCP tools(已在 build_mcp_tool_defs 内排序,无 ctx 时为空)
+        // MCP tools (already sorted inside build_mcp_tool_defs; empty when there's
+        // no ctx)
         buf
     };
     let a = assemble();
     let b = assemble();
     assert_eq!(a.len(), b.len());
-    assert_eq!(a, b, "tools array 序列化结果跨调用必须 byte-equal");
+    assert_eq!(a, b, "tools array serialization must be byte-equal across calls");
 }
 
-/// 带 MCP server 的端到端拼接稳定性(对接 P0-3 排序保证)。
+/// End-to-end assembly stability with an MCP server (works with P0-3's ordering
+/// guarantee).
 #[test]
 fn full_tools_array_with_mcp_is_stable() {
     use rmcp::model::{AnnotateAble, RawResource, Tool as McpTool};
@@ -281,7 +295,7 @@ fn full_tools_array_with_mcp_is_stable() {
         tools: vec![],
         servers: vec![server_a.clone()],
     };
-    // 同 ctx 重新构造一次(servers Vec 顺序相同):
+    // Rebuild the same ctx once more (servers Vec order is the same):
     let ctx2 = MCPContext {
         #[allow(deprecated)]
         resources: vec![],
@@ -314,32 +328,37 @@ fn full_tools_array_with_mcp_is_stable() {
 
     let a = assemble(&ctx1);
     let b = assemble(&ctx2);
-    assert_eq!(a, b, "含 MCP 的 tools array 跨调用必须 byte-equal");
-    // 验证 MCP tools 按 function_name 字典序(alpha 在 zeta 前)
-    let pos_alpha = a.find("mcp__server-a__alpha").expect("应含 alpha");
-    let pos_zeta = a.find("mcp__server-a__zeta").expect("应含 zeta");
-    assert!(pos_alpha < pos_zeta, "P0-3 排序保证 alpha < zeta");
+    assert_eq!(a, b, "the tools array with MCP must be byte-equal across calls");
+    // Verify MCP tools are in function_name lexicographic order (alpha before zeta)
+    let pos_alpha = a.find("mcp__server-a__alpha").expect("should contain alpha");
+    let pos_zeta = a.find("mcp__server-a__zeta").expect("should contain zeta");
+    assert!(pos_alpha < pos_zeta, "P0-3 ordering guarantee: alpha < zeta");
 }
 
 // ---------------------------------------------------------------------------
-// 消息内容跨轮稳定性(live 渲染 vs 历史回放)
+// Message content stability across turns (live rendering vs historical replay)
 // ---------------------------------------------------------------------------
 //
-// 本节针对的是一整类真实 bug:**同一条逻辑消息,在"发出那一轮"和"作为历史被回放"
-// 时渲染出不同的文本**。
+// This section targets a whole class of real bugs: **the same logical message
+// renders different text when it's "sent live" versus "replayed as history"**.
 //
-// 为什么致命:FLM 之类的本地推理服务按 message 逐条比对缓存,**第一条不匹配就停**
-// (日志里表现为 `matched 0 of N` + `first divergence at message [i]`)。任何一条历史
-// 消息内容漂移,它后面的全部内容都要重新 prefill —— 实测本地 9B 上约 10K token / 33s。
+// Why this is fatal: local inference services like FLM compare the cache message by
+// message, **and stop at the first mismatch** (shows up in logs as
+// `matched 0 of N` + `first divergence at message [i]`). Any drift in a historical
+// message's content forces everything after it to be re-prefilled —— measured at
+// roughly 10K tokens / 33s on a local 9B model.
 //
-// 已知踩过的坑:
-//   1. `<env>` 待在 system prompt 里,`cd` 一次就让 message[0] 变化(全量重算)。
-//      → 已移到消息末尾的 `<environment_context>` 块。
-//   2. `<attached_context>`(自动附上的已执行命令)只在 live 轮渲染,回放时完全没
-//      重建,消息从长文本缩成裸 query。
-//   3. 回放时 `command_id` 被填成默认值,即便重建了内容也对不上。
+// Known pitfalls we've hit:
+//   1. `<env>` living in the system prompt — a single `cd` changes message[0] (full
+//      recompute). → Moved to an `<environment_context>` block at the end of the
+//      message list.
+//   2. `<attached_context>` (auto-attached executed commands) only rendered on the
+//      live turn, never reconstructed on replay, shrinking the message from long
+//      text down to a bare query.
+//   3. On replay, `command_id` got filled with a default value, so even reconstructed
+//      content wouldn't match.
 //
-// 下面的断言就是这三件事的护栏。
+// The assertions below are the guardrails for these three issues.
 
 use crate::ai::agent::api::convert_conversation::convert_input_context;
 use crate::ai::agent::AIAgentContext;
@@ -366,21 +385,23 @@ fn sample_block(id: &str) -> BlockContext {
     }
 }
 
-/// **核心护栏**:自动附上的命令块,live 渲染与"持久化→回放"渲染必须逐字节一致。
+/// **Core guardrail**: auto-attached command blocks must render byte-identically
+/// whether rendered live or via "persist → replay".
 ///
-/// 这条断言直接对应 bug #2/#3。若有人再把 `command_id` 之类的字段在回放侧填成默认值,
-/// 或者忘了在回放路径重建 `<attached_context>`,这里立刻失败。
+/// This assertion directly corresponds to bugs #2/#3. If someone fills a field like
+/// `command_id` with a default value on the replay side again, or forgets to
+/// reconstruct `<attached_context>` on the replay path, this fails immediately.
 #[test]
 fn attached_context_survives_persist_replay_byte_identical() {
     let block = sample_block("precmd-17844818512123-1");
 
-    // live:直接从内存中的 AIAgentContext 渲染
+    // live: render directly from the in-memory AIAgentContext
     let live_ctx = vec![AIAgentContext::Block(Box::new(block.clone()))];
     let live = user_context::collect_user_attachments(&live_ctx)
         .prefix
-        .expect("live 应当渲染出 attached_context");
+        .expect("live should render an attached_context");
 
-    // 回放:走一遍持久化 proto 再转回来
+    // replay: round-trip through the persisted proto and back
     let api_context = api::InputContext {
         executed_shell_commands: vec![block.into()],
         ..Default::default()
@@ -388,16 +409,18 @@ fn attached_context_survives_persist_replay_byte_identical() {
     let replayed_ctx = convert_input_context(Some(&api_context));
     let replayed = user_context::collect_user_attachments(&replayed_ctx)
         .prefix
-        .expect("回放应当渲染出 attached_context");
+        .expect("replay should render an attached_context");
 
     assert_eq!(
         live, replayed,
-        "attached_context 在 live 与回放之间发生了漂移 —— \
-         这会让 prompt cache 在该条消息上失配,后续内容全部重新 prefill"
+        "attached_context drifted between live and replay —— \
+         this would cause a prompt cache mismatch at this message, forcing a full \
+         re-prefill of everything after it"
     );
 }
 
-/// `command_id` 必须原样穿过持久化,而不是被填成默认值。
+/// `command_id` must round-trip through persistence unchanged, not be filled with a
+/// default value.
 #[test]
 fn block_command_id_round_trips_through_persistence() {
     let block = sample_block("precmd-abc-42");
@@ -408,15 +431,18 @@ fn block_command_id_round_trips_through_persistence() {
 
     let restored = convert_input_context(Some(&api_context));
     let AIAgentContext::Block(b) = &restored[0] else {
-        panic!("期望还原出 Block,实际是 {:?}", restored[0]);
+        panic!("expected a Block to be restored, got {:?}", restored[0]);
     };
     assert_eq!(b.id.to_string(), "precmd-abc-42");
 }
 
-/// `<environment_context>` 必须**随 cwd 变化**(与 system prompt 的恒定性互补)。
+/// `<environment_context>` must **change with cwd** (complementing the system
+/// prompt's constancy).
 ///
-/// 两条不变量缺一不可:system 段恒定保证缓存能命中,尾块跟随保证模型看到的目录是
-/// 真的。曾经的"冻结 cwd"方案满足前者、违反后者 —— 模型被告知了错误的目录。
+/// Both invariants are required: the constant system segment guarantees cache hits,
+/// while the tracking tail block guarantees the model sees the real directory. The
+/// old "freeze cwd" approach satisfied the former and violated the latter —— the
+/// model was told the wrong directory.
 #[test]
 fn environment_tail_tracks_cwd_while_staying_deterministic() {
     let at = |pwd: &str| {
@@ -425,12 +451,12 @@ fn environment_tail_tracks_cwd_while_staying_deterministic() {
             home_dir: None,
             are_file_symbols_indexed: false,
         }])
-        .expect("应当渲染")
+        .expect("should render")
     };
 
-    // 同输入 → 同字节
+    // same input → same bytes
     assert_eq!(at("/home/winters"), at("/home/winters"));
-    // 不同 cwd → 内容确实跟着变
+    // different cwd → content actually changes
     assert_ne!(at("/home/winters"), at("/etc"));
     assert!(at("/etc").contains("Working directory: /etc"));
 }

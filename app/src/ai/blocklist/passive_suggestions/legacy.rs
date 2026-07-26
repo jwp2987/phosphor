@@ -255,8 +255,9 @@ impl PassiveSuggestionsModel {
             return;
         };
 
-        // BYOP 路径:把 ServerApi 调用替换为 BYOP one-shot completion。
-        // Zap 已剥离 Zap Inc 云端,无 BYOP 配置时静默 no-op。
+        // BYOP path: replaces the ServerApi call with a BYOP one-shot completion.
+        // Zap has stripped out the Zap Inc cloud, so it's a silent no-op when no
+        // BYOP config is set.
         let Some(rendered) = build_prompt_suggestions_byop_request(
             &block_completed,
             execution_context,
@@ -628,9 +629,11 @@ fn build_prompt_suggestions_request(
     })
 }
 
-/// BYOP 路径的 prompt_suggestions 请求构造:抽出 block 信息 + 系统上下文,
-/// 委托给 `active_ai::prompt_suggestions::dispatch` 渲染 prompt 并解 BYOP 配置。
-/// 返回 `None` 表示没有 BYOP 配置或 block 内容丢失,调用方静默 no-op。
+/// Builds the BYOP path's prompt_suggestions request: extracts block info + system
+/// context, delegating to `active_ai::prompt_suggestions::dispatch` to render the
+/// prompt and resolve the BYOP config.
+/// Returns `None` when there's no BYOP config or block content was lost; the caller
+/// silently no-ops.
 fn build_prompt_suggestions_byop_request(
     block: &UserBlockCompleted,
     execution_context: WarpAiExecutionContext,

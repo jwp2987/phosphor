@@ -70,14 +70,15 @@ cleanup() {
 trap cleanup EXIT
 
 # Construct a directory that contains the build tree.
-# rpmbuild 在 _topdir 下需要 SPEC/RPMS/BUILD/BUILDROOT/SOURCES/SRPMS 六个目录,
-# 部分版本不会自动创建,事先建好避免「No such file or directory」。
+# rpmbuild needs six directories under _topdir: SPEC/RPMS/BUILD/BUILDROOT/SOURCES/SRPMS;
+# some versions don't create them automatically, so create them ahead of time to avoid "No such file or directory".
 rm -rf "$RPMBUILD_DIR"
 mkdir -p "$RPMBUILD_DIR"/{SPEC,RPMS,BUILD,BUILDROOT,SOURCES,SRPMS}
 
 # Move the RPM-specific package metadata into the package directory.
-# 去掉标签的前导 `v`,与 deb 保持一致;RPM 的 Version 字段按惯例不带 `v` 前缀,
-# 同时也避免下游 `RPM_NAME` 拼接时混入 `v` 让文件名不规范。
+# Strip the tag's leading `v`, consistent with deb; RPM's Version field
+# conventionally has no `v` prefix, and this also avoids `v` leaking into the
+# downstream `RPM_NAME` concatenation and making the filename nonstandard.
 VERSION="${GIT_RELEASE_TAG#v}"
 RELEASE="1"
 sed \
@@ -102,7 +103,7 @@ fakeroot rpmbuild -v -bb "$RPMBUILD_DIR/SPEC/warp.spec" --target="$ARCH" --defin
 RPM_NAME="$PACKAGE_NAME-$VERSION-$RELEASE.$ARCH.rpm"
 cp "$RPMBUILD_DIR/RPMS/$ARCH/$RPM_NAME" "$OUT_DIR"
 
-# Zap 不使用上游 Zap 的 RPM 签名 key；GitHub 构建只产出未签名本地包。
+# Zap does not use upstream Zap's RPM signing key; GitHub builds only produce unsigned local packages.
 if [ "${GITHUB_ACTIONS}" == "true" ]; then
   echo "Skipping upstream Zap RPM signing for Zap."
 fi

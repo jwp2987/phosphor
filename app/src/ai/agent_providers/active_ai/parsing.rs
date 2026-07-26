@@ -1,11 +1,12 @@
-//! 主动式 AI 模型输出解析。
+//! Active AI model output parsing.
 //!
-//! 各子链路要求模型按特定格式回复:
-//! - prompt_suggestions:JSON `{"kind","query","should_plan_task"|"files"}`
-//! - nld_predict:纯文本单行
-//! - relevant_files:JSON `{"paths":[...]}`
+//! Each sub-pipeline requires the model to reply in a specific format:
+//! - prompt_suggestions: JSON `{"kind","query","should_plan_task"|"files"}`
+//! - nld_predict: a single plain-text line
+//! - relevant_files: JSON `{"paths":[...]}`
 //!
-//! 模型并不总是干净地遵守格式 — 这里负责剥围栏、容错解析,失败 → `None` / 空。
+//! The model doesn't always follow the format cleanly — this module is responsible
+//! for stripping code fences and tolerant parsing; failures map to `None` / empty.
 
 use serde::Deserialize;
 
@@ -14,11 +15,11 @@ use crate::ai::predict::generate_am_query_suggestions::{
     Suggestion,
 };
 
-/// 剥 ```` ```json … ``` ```` / ```` ``` … ``` ```` 围栏。
+/// Strips ```` ```json … ``` ```` / ```` ``` … ``` ```` code fences.
 fn strip_code_fence(raw: &str) -> &str {
     let trimmed = raw.trim();
     if let Some(rest) = trimmed.strip_prefix("```") {
-        // 跳过可能的语言标识(json/JSON/javascript/...)+ 至换行
+        // Skip a possible language tag (json/JSON/javascript/...) up to the newline
         let after_lang = match rest.find('\n') {
             Some(idx) => &rest[idx + 1..],
             None => rest,
@@ -34,9 +35,10 @@ fn strip_code_fence(raw: &str) -> &str {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 enum SuggestionDto {
-    /// 模型显式表态"信号不足,无建议"。区别于"解析失败":
-    /// 后者会被上层 map 成 `AgentModePromptSuggestion::Error`,前者走
-    /// `AgentModePromptSuggestion::None` 干净不渲染芯片。
+    /// The model explicitly states "not enough signal, no suggestion". Distinct from
+    /// a "parse failure": the latter gets mapped upstream to
+    /// `AgentModePromptSuggestion::Error`, while this one takes the
+    /// `AgentModePromptSuggestion::None` path and cleanly renders no chip.
     None,
     Simple {
         query: String,
@@ -50,9 +52,10 @@ enum SuggestionDto {
     },
 }
 
-/// 解析 prompt_suggestions / nld_generate 的模型输出。
-/// 失败 → `None`,调用方映射为 `AgentModePromptSuggestion::Error`。
-/// `kind:"none"` → `Some(... suggestion: None)`,上层映射为 `AgentModePromptSuggestion::None`。
+/// Parses the model output for prompt_suggestions / nld_generate.
+/// Failure → `None`, which the caller maps to `AgentModePromptSuggestion::Error`.
+/// `kind:"none"` → `Some(... suggestion: None)`, mapped upstream to
+/// `AgentModePromptSuggestion::None`.
 pub fn parse_suggestion(raw: &str) -> Option<GenerateAMQuerySuggestionsResponse> {
     let cleaned = strip_code_fence(raw);
     let dto: SuggestionDto = serde_json::from_str(cleaned).ok()?;
@@ -89,15 +92,15 @@ pub fn parse_suggestion(raw: &str) -> Option<GenerateAMQuerySuggestionsResponse>
 
 const PREDICT_MAX_LEN: usize = 200;
 
-/// 解析 nld_predict 的纯文本输出。
-/// trim,剥外引号,拒绝多行 / 超长 → `None`。
+/// Parses the plain-text output of nld_predict.
+/// Trims, strips surrounding quotes, and rejects multi-line / overlong output → `None`.
 pub fn sanitize_predict(raw: &str) -> Option<String> {
     let mut s = raw.trim().to_owned();
     if s.is_empty() {
         return None;
     }
     if s.contains('\n') {
-        // 取首行(模型有时多嘴解释)
+        // Take the first line (the model sometimes rambles with explanations)
         s = s.lines().next().unwrap_or("").trim().to_owned();
         if s.is_empty() {
             return None;
@@ -128,7 +131,8 @@ struct RelevantFilesDto {
     paths: Vec<String>,
 }
 
-/// workflow_metadata 子链路的纯 DTO(避免本模块依赖 drive::workflows 上层类型)。
+/// A plain DTO for the workflow_metadata sub-pipeline (avoids this module depending
+/// on higher-level drive::workflows types).
 #[derive(Debug, Clone)]
 pub struct WorkflowMetadataDto {
     pub title: String,
@@ -166,8 +170,8 @@ struct WorkflowArgumentRaw {
     default_value: String,
 }
 
-/// 解析 workflow_metadata 的 JSON 输出。
-/// 失败 / `command` 为空 → `None`(调用方映射为 BadCommand)。
+/// Parses the JSON output of workflow_metadata.
+/// Failure / empty `command` → `None` (the caller maps this to BadCommand).
 pub fn parse_workflow_metadata(raw: &str) -> Option<WorkflowMetadataDto> {
     let cleaned = strip_code_fence(raw);
     let parsed: WorkflowMetadataRaw = serde_json::from_str(cleaned).ok()?;
@@ -191,7 +195,8 @@ pub fn parse_workflow_metadata(raw: &str) -> Option<WorkflowMetadataDto> {
     })
 }
 
-/// 解析 relevant_files 的 JSON 输出,与输入路径取交集过滤幻觉。
+/// Parses the JSON output of relevant_files, filtering out hallucinations by
+/// intersecting with the input paths.
 pub fn parse_relevant_files(raw: &str, input_paths: &[String]) -> Vec<String> {
     let cleaned = strip_code_fence(raw);
     let Ok(dto) = serde_json::from_str::<RelevantFilesDto>(cleaned) else {
@@ -252,8 +257,9 @@ mod tests {
 
     #[test]
     fn parse_none_kind_returns_empty_suggestion() {
-        // `kind:"none"` 表示模型选择沉默 — 必须返回 `Some(suggestion: None)`,
-        // 不能返回 `None`(后者会被上层映射为 Error)。
+        // `kind:"none"` means the model chose to stay silent — must return
+        // `Some(suggestion: None)`, not `None` (which would be mapped upstream to
+        // Error).
         let resp = parse_suggestion(r#"{"kind":"none"}"#).unwrap();
         assert!(resp.suggestion.is_none());
     }

@@ -1,29 +1,36 @@
-//! 把单条 `AIAgentInput::UserQuery` 自带的附件类 `AIAgentContext` 渲染为
-//! 发往上游模型的 user message 内容(text 前缀 + binary 多模态部件)。
+//! Renders the attachments carried by a single `AIAgentInput::UserQuery`'s
+//! `AIAgentContext` into user message content sent to the upstream model (a text
+//! prefix plus binary multimodal parts).
 //!
-//! ## 与 warp 自家路径的对齐
+//! ## Alignment with warp's own path
 //!
-//! warp 自家协议下,这些附件走 `api::InputContext` 的 `executed_shell_commands /
-//! selected_text / files / images` 字段(见 `app/src/ai/agent/api/convert_to.rs`
-//! `convert_context`)。BYOP 直接对接 OpenAI / Anthropic / Gemini / Ollama 兼容
-//! `/chat/completions`,没有 `InputContext` 这层结构,只能把数据嵌进 user message。
+//! Under warp's own protocol, these attachments go through `api::InputContext`'s
+//! `executed_shell_commands / selected_text / files / images` fields (see
+//! `app/src/ai/agent/api/convert_to.rs` `convert_context`). BYOP talks directly to
+//! OpenAI / Anthropic / Gemini / Ollama-compatible `/chat/completions` endpoints,
+//! which have no `InputContext` layer, so the data has to be embedded into the user
+//! message instead.
 //!
-//! 字段严格对齐 warp protobuf,不引入协议外字段:
+//! Fields are strictly aligned with the warp protobuf; no fields outside the protocol
+//! are introduced:
 //!
-//! | 类型             | warp protobuf 字段                                          |
+//! | Type             | warp protobuf field                                          |
 //! |------------------|-------------------------------------------------------------|
 //! | `Block`          | command / output / exit_code / command_id / is_auto_attached / started_ts / finished_ts |
 //! | `SelectedText`   | text                                                        |
-//! | `File`(text)    | file_name / content / line_range                            |
-//! | `File`(binary)  | file_name / data / mime_type(P1 binary 通道)              |
-//! | `Image`          | mime_type / file_name / data(P1 binary 通道)              |
+//! | `File` (text)    | file_name / content / line_range                            |
+//! | `File` (binary)  | file_name / data / mime_type (P1 binary channel)             |
+//! | `Image`          | mime_type / file_name / data (P1 binary channel)             |
 //!
-//! ## 作用域:per-input,不影响 system prompt
+//! ## Scope: per-input, does not affect the system prompt
 //!
-//! - 这些附件只注入 user message,不进 system prompt
-//! - 历史轮的 `referenced_attachments` 会从持久化 message 重新渲染,避免 BYOP 多轮丢上下文
-//! - env / git / skills / project_rules / codebase / current_time 这些**环境型** context
-//!   仍由 `prompt_renderer` 渲染进 system,与本模块互不重叠
+//! - These attachments are only injected into the user message, never into the
+//!   system prompt
+//! - `referenced_attachments` from prior turns are re-rendered from the persisted
+//!   message, to avoid losing context across BYOP multi-turn conversations
+//! - **Environmental** context such as env / git / skills / project_rules / codebase /
+//!   current_time is still rendered into the system prompt by `prompt_renderer`, and
+//!   does not overlap with this module
 
 use std::collections::HashMap;
 
@@ -34,25 +41,28 @@ use crate::ai::block_context::BlockContext;
 use ai::agent::action_result::{AnyFileContent, FileContext};
 use warp_multi_agent_api as api;
 
-/// `collect_user_attachments` 返回的双通道结果。
+/// The dual-channel result returned by `collect_user_attachments`.
 ///
-/// - `prefix`: 文本前缀块,prepend 到 user message text。包含 block / selected_text /
-///   text-like file 的内联 XML,以及 binary 附件的占位提示(让 LLM 能引用文件名)。
-/// - `binaries`: 需要作为 `ContentPart::Binary` 注入到多模态 message 的附件
-///   (image / PDF / audio)。caller(chat_stream.rs)会按 model capability 过滤后
-///   决定是否切到 `MessageContent::Parts`。
+/// - `prefix`: the text prefix block, prepended to the user message text. Contains
+///   inline XML for block / selected_text / text-like files, plus placeholder hints
+///   for binary attachments (so the LLM can refer to the file name).
+/// - `binaries`: attachments that need to be injected as `ContentPart::Binary` into a
+///   multimodal message (image / PDF / audio). The caller (chat_stream.rs) filters
+///   these by model capability before deciding whether to switch to
+///   `MessageContent::Parts`.
 #[derive(Debug, Default, Clone)]
 pub struct UserAttachments {
     pub prefix: Option<String>,
     pub binaries: Vec<UserBinary>,
 }
 
-/// 一条 binary 附件,等价于 genai `Binary::from_base64` 的输入三元组。
+/// A single binary attachment, equivalent to the input triple for genai's
+/// `Binary::from_base64`.
 #[derive(Debug, Clone)]
 pub struct UserBinary {
     pub name: String,
     pub content_type: String,
-    /// base64 编码后的数据(无 `data:` 前缀)。
+    /// base64-encoded data (no `data:` prefix).
     pub data: String,
 }
 
@@ -62,11 +72,12 @@ impl UserAttachments {
     }
 }
 
-/// 渲染单条 UserQuery 的附件 context 为「文本前缀 + binary 部件」。
+/// Renders a single UserQuery's attachment context into "text prefix + binary parts".
 ///
-/// 调用方应:
-/// 1. 把 `prefix` prepend 到 user query 文本前(中间留空行)
-/// 2. 按 model capability 过滤 `binaries`,有保留时切 `MessageContent::Parts`
+/// The caller should:
+/// 1. Prepend `prefix` to the user query text (with a blank line in between)
+/// 2. Filter `binaries` by model capability, and switch to `MessageContent::Parts`
+///    if any remain
 pub fn collect_user_attachments(ctx: &[AIAgentContext]) -> UserAttachments {
     let mut blocks: Vec<&BlockContext> = Vec::new();
     let mut selected_texts: Vec<&str> = Vec::new();
@@ -83,7 +94,7 @@ pub fn collect_user_attachments(ctx: &[AIAgentContext]) -> UserAttachments {
                 AnyFileContent::BinaryContent(_) => binary_files.push(f),
             },
             AIAgentContext::Image(img) => images.push(img),
-            // 环境型 context 由 prompt_renderer 处理,不进 user message。
+            // Environmental context is handled by prompt_renderer, not the user message.
             AIAgentContext::Directory { .. }
             | AIAgentContext::ExecutionEnvironment(_)
             | AIAgentContext::CurrentTime { .. }
@@ -124,26 +135,30 @@ pub fn collect_user_attachments(ctx: &[AIAgentContext]) -> UserAttachments {
         out.prefix = Some(prefix);
     }
 
-    // ----- binaries(供 caller 按 capability 过滤后注入 ContentPart::Binary) -----
+    // ----- binaries (filtered by capability by the caller before being injected as
+    // ContentPart::Binary) -----
     for img in &images {
         out.binaries.push(UserBinary {
             name: img.file_name.clone(),
             content_type: img.mime_type.clone(),
-            // ImageContext.data 已经是 base64 字符串(`process_non_image_files` 兄弟路径
-            // `read_and_process_images_async` 在 PendingAttachment::Image 入队时就完成了 encoding)
+            // ImageContext.data is already a base64 string (`process_non_image_files`'s
+            // sibling path `read_and_process_images_async` already completed the
+            // encoding when the PendingAttachment::Image was queued)
             data: img.data.to_string(),
         });
     }
     for f in &binary_files {
         if let AnyFileContent::BinaryContent(bytes) = &f.content {
-            // 空 BinaryContent 表示"上层故意没读 bytes"(.exe / 超大文件 / 非多模态
-            // mime),只走 placeholder XML 路径,不送 ContentPart::Binary。
+            // Empty BinaryContent means "the layer above deliberately didn't read the
+            // bytes" (.exe / oversized file / non-multimodal mime); only take the
+            // placeholder XML path, don't send ContentPart::Binary.
             if bytes.is_empty() {
                 continue;
             }
             let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-            // 用 file_name 上的扩展名猜 mime;`mime_guess` 与 process_non_image_files
-            // 走的是同一套规则,这里再算一遍是因为 FileContext 不保存 mime。
+            // Guess the mime from the extension on file_name; `mime_guess` follows the
+            // same rules as process_non_image_files, and we recompute it here because
+            // FileContext doesn't store the mime.
             let mime = mime_guess::from_path(&f.file_name)
                 .first_or_octet_stream()
                 .to_string();
@@ -158,26 +173,34 @@ pub fn collect_user_attachments(ctx: &[AIAgentContext]) -> UserAttachments {
     out
 }
 
-/// 渲染 `<environment_context>` 块 —— 会变的环境状态(cwd / git 分支 / 日期)。
+/// Renders the `<environment_context>` block —— environment state that changes
+/// (cwd / git branch / date).
 ///
-/// ## 为什么不在 system prompt 里
+/// ## Why this isn't in the system prompt
 ///
-/// FLM 等本地推理服务按 message 逐条比对缓存,**第一条不匹配就停**。cwd 会随
-/// `cd` 合法变化,只要它待在 system prompt(message[0])里,任何一次 `cd` 都会
-/// 让整轮对话全量 re-prefill(实测本地 9B 上约 10K token / 33s)。
+/// Local inference services like FLM compare the cache message by message, **and stop
+/// at the first mismatch**. cwd legitimately changes with `cd`; as long as it lives in
+/// the system prompt (message[0]), any single `cd` forces a full re-prefill of the
+/// entire conversation (measured at roughly 10K tokens / 33s on a local 9B model).
 ///
-/// 曾经的补救是把 cwd 在会话内**冻结**,message[0] 是稳住了,但模型被告知了错误
-/// 的目录,得自己跑 `pwd` 才知道身在何处 —— 用正确性换缓存,不划算。
+/// A past workaround was to **freeze** cwd for the session, which kept message[0]
+/// stable, but then the model was told the wrong directory and had to run `pwd` itself
+/// to find out where it actually was —— trading correctness for cache hits, which isn't
+/// worth it.
 ///
-/// 现在把这几个字段挪到消息列表**末尾**的临时块里:system prompt 逐字节恒定,
-/// 而环境状态每轮重新生成,永远是最新的。首个分歧点落在最后一条消息上,
-/// 需要重新 prefill 的正好就是本轮新增的内容 —— 这是理论最优。
+/// Now these fields are moved to a scratch block at the **end** of the message list:
+/// the system prompt is byte-for-byte constant, while the environment state is
+/// regenerated every turn and is always up to date. The first point of divergence
+/// lands on the last message, so exactly the content that's new this turn needs to be
+/// re-prefilled —— which is the theoretical optimum.
 ///
-/// 放末尾还有个附带好处:它是模型生成前读到的最后一段内容,显著性比埋在 9KB
-/// system prompt 里更高(回应 `prompt_renderer.rs` P1-7 注释对"模型一看就知道
-/// 当前分支"的担忧)。
+/// Putting it at the end has a side benefit too: it's the last thing the model reads
+/// before generating, so it's more salient than being buried in a 9KB system prompt
+/// (addressing the concern in `prompt_renderer.rs`'s P1-7 comment about the model
+/// "knowing the current branch at a glance").
 ///
-/// 无可用字段时返回 `None`,避免发出一整块 `(unknown)`。
+/// Returns `None` when no fields are available, to avoid emitting an entire block of
+/// `(unknown)`.
 pub fn render_environment_context(ctx: &[AIAgentContext]) -> Option<String> {
     let mut cwd: Option<&str> = None;
     let mut git_branch: Option<&str> = None;
@@ -198,7 +221,7 @@ pub fn render_environment_context(ctx: &[AIAgentContext]) -> Option<String> {
                 }
             }
             AIAgentContext::CurrentTime { current_time: t } => {
-                // 与旧模板一致:只保留自然日粒度。
+                // Consistent with the old template: only keep calendar-day granularity.
                 current_time = Some(t.format("%Y-%m-%d").to_string());
             }
             _ => {}
@@ -271,14 +294,15 @@ pub fn render_api_referenced_attachments(
     Some(out)
 }
 
-/// 兼容旧调用方:仅取 prefix 文本。新代码请用 `collect_user_attachments`。
+/// For compatibility with old call sites: only takes the prefix text. New code should
+/// use `collect_user_attachments`.
 #[cfg(test)]
 pub fn render_user_attachments(ctx: &[AIAgentContext]) -> Option<String> {
     collect_user_attachments(ctx).prefix
 }
 
 // ---------------------------------------------------------------------------
-// 子渲染器
+// Sub-renderers
 // ---------------------------------------------------------------------------
 
 fn render_block(out: &mut String, b: &BlockContext) {
@@ -613,23 +637,29 @@ fn render_file_text(out: &mut String, f: &FileContext) {
     out.push_str("  </file>\n");
 }
 
-/// Binary 文件 prefix 占位:让 LLM 知道有这个文件、完整路径与 mime,可以决定:
-/// - 是直接读 ContentPart::Binary(模型支持 + bytes 已上传)
-/// - 还是用 read_files / shell 工具按 path 自行处理(.exe / .zip / 超大文件)
+/// Binary file prefix placeholder: lets the LLM know this file exists, its full path,
+/// and its mime type, so it can decide:
+/// - whether to read ContentPart::Binary directly (model supports it + bytes already
+///   uploaded)
+/// - or use the read_files / shell tools to handle it by path itself (.exe / .zip /
+///   oversized files)
 ///
-/// 实际 bytes 通过 caller 端 `MessageContent::Parts` 走 ContentPart::Binary,
-/// 这里**不**重复贴 base64(避免双倍 token + 不少模型对超长 base64 解析慢)。
+/// The actual bytes go through ContentPart::Binary via the caller's
+/// `MessageContent::Parts`; base64 is **not** repeated here (to avoid double the
+/// tokens, plus many models parse overly long base64 slowly).
 fn render_file_binary_placeholder(out: &mut String, f: &FileContext) {
     use std::fmt::Write;
     let path = xml_attr(&f.file_name);
-    // mime 通过 mime_guess 从文件名/扩展名推,跟 process_non_image_files 一致。
+    // mime is guessed from the file name/extension via mime_guess, consistent with
+    // process_non_image_files.
     let mime = mime_guess::from_path(&f.file_name)
         .first_or_octet_stream()
         .to_string();
     let size = match &f.content {
         AnyFileContent::BinaryContent(bytes) if !bytes.is_empty() => Some(bytes.len()),
-        // bytes 为空(超大文件 / 非多模态 binary)→ size 未知,不输出 size 属性,
-        // 让 AI 用 read_files / Get-Item 之类自己查。
+        // Empty bytes (oversized file / non-multimodal binary) → size unknown, don't
+        // output the size attribute; let the AI look it up itself with read_files /
+        // Get-Item or similar.
         _ => None,
     };
     if let Some(size) = size {
@@ -647,7 +677,8 @@ fn render_file_binary_placeholder(out: &mut String, f: &FileContext) {
     }
 }
 
-/// Image prefix 占位:与 binary file 同语义,实际数据通过 ContentPart::Binary 进多模态。
+/// Image prefix placeholder: same semantics as a binary file; the actual data goes
+/// into the multimodal payload via ContentPart::Binary.
 fn render_image_placeholder(out: &mut String, img: &ImageContext) {
     use std::fmt::Write;
     let _ = writeln!(
@@ -659,7 +690,7 @@ fn render_image_placeholder(out: &mut String, img: &ImageContext) {
 }
 
 // ---------------------------------------------------------------------------
-// XML 转义
+// XML escaping
 // ---------------------------------------------------------------------------
 
 fn xml_text(s: &str) -> String {

@@ -1,7 +1,8 @@
-//! SSH 管理器集成测试步骤辅助函数。
+//! SSH manager integration test step helper functions.
 //!
-//! 所有步骤使用 `TestStep::new` 创建，不附加终端相关的默认断言，
-//! 因为 SSH 管理器测试不依赖终端视图。
+//! All steps are created with `TestStep::new` and don't attach the
+//! terminal-related default assertions, since SSH manager tests don't depend
+//! on the terminal view.
 
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +17,7 @@ use crate::workspace::{Workspace, WorkspaceAction};
 
 use super::assertions::ssh_server_view;
 
-/// 打开 SSH 管理器左侧面板。
+/// Opens the SSH manager's left-side panel.
 pub fn open_ssh_manager_panel() -> TestStep {
     TestStep::new("Open SSH manager panel").with_action(move |app, _, _| {
         let window_id = app.read(|ctx| {
@@ -40,7 +41,7 @@ pub fn open_ssh_manager_panel() -> TestStep {
     })
 }
 
-/// 通过 DB 创建测试文件夹，返回文件夹节点 ID。
+/// Creates a test folder via the DB, returning the folder node ID.
 pub fn create_folder_via_db(name: &str) -> String {
     let name = name.to_string();
     warp_ssh_manager::with_conn(move |c| {
@@ -51,7 +52,7 @@ pub fn create_folder_via_db(name: &str) -> String {
     .expect("create folder via db")
 }
 
-/// 通过 DB 在指定文件夹下创建测试服务器，返回节点 ID。
+/// Creates a test server under the given folder via the DB, returning the node ID.
 pub fn create_server_via_db(name: &str, parent_id: Option<&str>) -> String {
     let name = name.to_string();
     let parent = parent_id.map(String::from);
@@ -75,9 +76,9 @@ pub fn create_server_via_db(name: &str, parent_id: Option<&str>) -> String {
     .expect("create server via db")
 }
 
-/// 在分组下拉选择器中选择指定分组。
-/// 接收 `Arc<Mutex<Option<String>>>` 以便运行时读取文件夹 ID，
-/// 通过 ID 查找对应的 index，然后 dispatch SelectGroup。
+/// Selects the given group in the group dropdown selector.
+/// Takes an `Arc<Mutex<Option<String>>>` so the folder ID can be read at
+/// runtime, looks up the corresponding index by ID, and then dispatches SelectGroup.
 pub fn select_group_by_id(folder_id: Arc<Mutex<Option<String>>>) -> TestStep {
     TestStep::new("Select group by folder id").with_action(move |app, _, _| {
         let window_id = app.read(|ctx| {
@@ -96,7 +97,7 @@ pub fn select_group_by_id(folder_id: Arc<Mutex<Option<String>>>) -> TestStep {
     })
 }
 
-/// 保存服务器编辑器内容。
+/// Saves the server editor's content.
 pub fn save_server() -> TestStep {
     TestStep::new("Save server").with_action(move |app, _, _| {
         let window_id = app.read(|ctx| {

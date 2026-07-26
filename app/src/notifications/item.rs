@@ -18,9 +18,9 @@ impl NotificationId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationCategory {
-    /// 任务完成(成功 / 取消)
+    /// Task completed (success / cancelled)
     Complete,
-    /// 需要用户介入(权限请求或 idle prompt)
+    /// Needs user intervention (a permission request or idle prompt)
     Request,
     Error,
 }
@@ -42,8 +42,8 @@ impl NotificationFilter {
     }
 }
 
-/// 通知发出方。`Oz` 是 Zap 自家本地 BYOP agent;`CLI(...)` 是第三方 CLI agent
-/// (Claude Code / Codex / DeepSeek 等)。
+/// The notification's source agent. `Oz` is Zap's own local BYOP agent;
+/// `CLI(...)` is a third-party CLI agent (Claude Code / Codex / DeepSeek, etc.).
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum NotificationSourceAgent {
@@ -51,14 +51,14 @@ pub enum NotificationSourceAgent {
     CLI(CLIAgent),
 }
 
-/// 标识这条通知所属的对话或会话。
-/// 用于:
-/// - 去重(同一 origin 的新通知会替换旧的)
-/// - 清理(对话/会话关闭时一并清掉相关通知)
+/// Identifies the conversation or session this notification belongs to.
+/// Used for:
+/// - Deduplication (a new notification with the same origin replaces the old one)
+/// - Cleanup (related notifications are cleared when the conversation/session closes)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NotificationOrigin {
     Conversation(AIConversationId),
-    /// CLI session 按 terminal view id 区分(每个 pane 至多一个 CLI agent session)。
+    /// CLI sessions are distinguished by terminal view id (at most one CLI agent session per pane).
     CLISession(EntityId),
 }
 
@@ -70,19 +70,20 @@ pub struct NotificationItem {
     pub message: String,
     pub category: NotificationCategory,
     pub agent: NotificationSourceAgent,
-    /// 用户是否已读
-    /// (点过这条通知,或者已经导航到对应对话/会话)。
+    /// Whether the user has read this notification
+    /// (clicked this notification, or already navigated to the corresponding conversation/session).
     pub is_read: bool,
     pub created_at: Instant,
     pub terminal_view_id: EntityId,
     pub artifacts: Vec<Artifact>,
-    /// 通知关联的 git 分支。
-    /// 有值时按"rich"布局渲染(头部多一行 branch);无值时回退到"simple"布局。
+    /// The git branch associated with the notification.
+    /// When present, renders in the "rich" layout (an extra branch row in the
+    /// header); when absent, falls back to the "simple" layout.
     pub branch: Option<String>,
 }
 
 impl NotificationItem {
-    /// 标记为已读;若先前是未读则返回 true。
+    /// Marks as read; returns true if it was previously unread.
     fn mark_as_read(&mut self) -> bool {
         if self.is_read {
             return false;
@@ -125,7 +126,7 @@ pub struct NotificationItems {
 }
 
 impl NotificationItems {
-    /// 把新通知插到列表头(同时按 origin 去重,并截断最多 100 条)。
+    /// Inserts a new notification at the head of the list (deduplicating by origin, and truncating to at most 100 items).
     pub(crate) fn push(&mut self, item: NotificationItem) {
         self.remove_by_origin(item.origin);
         self.items.insert(0, item);
@@ -153,8 +154,7 @@ impl NotificationItems {
         self.items_filtered(filter).count()
     }
 
-    /// 返回顶部应当显示的过滤器 tab。"All" 始终显示,
-    /// 其它过滤器只在至少有一条匹配项时显示。
+    /// Returns the filter tabs that should be shown at the top. "All" is always shown; other filters only show when at least one matching item exists.
     pub(crate) fn visible_filters(&self) -> Vec<NotificationFilter> {
         enum_iterator::all::<NotificationFilter>()
             .filter(|f| *f == NotificationFilter::All || self.filtered_count(*f) > 0)
@@ -165,7 +165,7 @@ impl NotificationItems {
         self.items.iter().find(|item| item.id == id)
     }
 
-    /// 把指定 terminal view 上的所有通知标记为已读;有变更则返回 true。
+    /// Marks all notifications on the given terminal view as read; returns true if anything changed.
     pub(crate) fn mark_all_terminal_view_items_as_read(
         &mut self,
         terminal_view_id: EntityId,

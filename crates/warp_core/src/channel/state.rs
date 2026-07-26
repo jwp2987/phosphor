@@ -250,7 +250,8 @@ impl ChannelState {
     }
 }
 
-/// Zap Wave 5-5：`derive_http_origin_from_ws_url` 随 `rtc_http_url()` 一同物理删。
+/// Zap Wave 5-5: `derive_http_origin_from_ws_url` was physically removed together
+/// with `rtc_http_url()`.
 
 #[cfg(all(test, not(feature = "test-util")))]
 #[path = "state_tests.rs"]

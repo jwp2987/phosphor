@@ -1,14 +1,16 @@
-//! 压缩核心算法 — 1:1 移植 opencode `compaction.ts:141-341`(turns / select / splitTurn / prune)。
+//! Core compaction algorithm — ported 1:1 from opencode `compaction.ts:141-341`
+//! (turns / select / splitTurn / prune).
 //!
-//! 与 warp 的具体消息类型解耦:对外通过 [`MessageRef`] trait 抽象,
-//! 真实实现见 `super::message_view`。
+//! Decoupled from warp's concrete message types: exposed externally via the
+//! [`MessageRef`] trait abstraction; see `super::message_view` for the real
+//! implementation.
 use std::hash::Hash;
 
 use super::consts::{PRUNE_MINIMUM, PRUNE_PROTECT, PRUNE_PROTECTED_TOOLS};
 use super::overflow::{usable, ModelLimit};
 use super::CompactionConfig;
 
-/// 消息的角色 — 用于 turn 检测与 select。
+/// A message's role — used for turn detection and select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     User,
@@ -16,19 +18,19 @@ pub enum Role {
     Tool,
 }
 
-/// 单条 tool 输出的元信息(prune 决策需要)。
+/// Metadata for a single tool output (needed for prune decisions).
 #[derive(Debug, Clone)]
 pub struct ToolOutputRef<CallId> {
     pub call_id: CallId,
     pub tool_name: String,
-    /// 估算 token 数(对齐 opencode `Token.estimate(part.state.output)`)。
+    /// Estimated token count (matches opencode `Token.estimate(part.state.output)`).
     pub output_size: usize,
     pub completed: bool,
-    /// 已被 prune 标记 `compacted`,继续遍历时遇到要 break。
+    /// Already marked `compacted` by prune; break out when encountered while continuing to iterate.
     pub already_compacted: bool,
 }
 
-/// 抽象的消息引用 — algorithm 只与本 trait 交互,与 warp 类型解耦。
+/// An abstract message reference — the algorithm only interacts with this trait, decoupled from warp's concrete types.
 pub trait MessageRef {
     type Id: Clone + Eq + Hash;
     type CallId: Clone + Eq + Hash;
@@ -36,20 +38,20 @@ pub trait MessageRef {
     fn id(&self) -> Self::Id;
     fn role(&self) -> Role;
 
-    /// user message 是否承载了一次 compaction 触发标记(opencode `parts.some(p => p.type === "compaction")`)。
+    /// Whether the user message carries a compaction-trigger marker (opencode `parts.some(p => p.type === "compaction")`).
     fn is_compaction_marker(&self) -> bool;
 
-    /// assistant message 是否是摘要本身(opencode `info.summary === true`)。
+    /// Whether the assistant message is itself a summary (opencode `info.summary === true`).
     fn is_summary(&self) -> bool;
 
-    /// 单条消息的 token 估算 — 实现可用 `serde_json` + `super::token::estimate`。
+    /// Estimated token count for a single message — implementations can use `serde_json` + `super::token::estimate`.
     fn estimate_size(&self) -> usize;
 
-    /// 这条消息内的所有 tool outputs(prune 用)。assistant message 才会有。
+    /// All tool outputs within this message (used for prune); only assistant messages have these.
     fn tool_outputs(&self) -> Vec<ToolOutputRef<Self::CallId>>;
 }
 
-/// `compaction.ts:76-80` 类型对应。
+/// Corresponds to the `compaction.ts:76-80` type.
 #[derive(Debug, Clone)]
 pub struct Turn<Id> {
     pub start: usize,
@@ -57,14 +59,14 @@ pub struct Turn<Id> {
     pub id: Id,
 }
 
-/// `compaction.ts:82-85`。
+/// `compaction.ts:82-85`.
 #[derive(Debug, Clone)]
 pub struct Tail<Id> {
     pub start: usize,
     pub id: Id,
 }
 
-/// `select` 返回值:`head` 是要送给摘要 LLM 的范围,`tail_start_id` 是保留段起点。
+/// `select`'s return value: `head` is the range to send to the summarization LLM, `tail_start_id` is where the kept segment starts.
 #[derive(Debug, Clone)]
 pub struct SelectResult<Id> {
     pub head_end: usize,
@@ -97,7 +99,7 @@ pub fn turns<M: MessageRef>(messages: &[M]) -> Vec<Turn<M::Id>> {
     result
 }
 
-/// `compaction.ts:159-182` splitTurn — 在 turn 内部找第一个能塞进 budget 的切点。
+/// `compaction.ts:159-182` splitTurn — finds the first cut point within a turn that fits into the budget.
 fn split_turn<M, EstFn>(
     messages: &[M],
     turn: &Turn<M::Id>,
@@ -129,10 +131,11 @@ where
     None
 }
 
-/// `compaction.ts:244-293` select — 切出 head/tail。
+/// `compaction.ts:244-293` select — cuts out the head/tail.
 ///
-/// `estimate_slice` 对应 opencode `estimate({ messages: slice, model })`。
-/// 调用方传入因为它要决定如何把 message 列表序列化(JSON)再用 `Token.estimate`。
+/// `estimate_slice` corresponds to opencode's `estimate({ messages: slice, model })`.
+/// Passed in by the caller because it decides how to serialize the message list
+/// (JSON) before using `Token.estimate`.
 pub fn select<M, EstFn>(
     messages: &[M],
     cfg: &CompactionConfig,
@@ -184,7 +187,9 @@ where
         if split.is_some() {
             keep = split;
         }
-        // 注意 opencode 的实现:首次 size 超 budget 就 break,无论 splitTurn 是否找到都不再尝试更早 turn。
+        // Note opencode's implementation: break as soon as size first exceeds the
+        // budget, regardless of whether splitTurn found something — no earlier turn
+        // is tried after that.
         break;
     }
 
@@ -204,9 +209,11 @@ where
     }
 }
 
-/// `compaction.ts:297-341` prune 决策 — 返回应被标记 `compacted` 的 (message_id, tool_call_id) 对。
+/// `compaction.ts:297-341` prune decision — returns the (message_id, tool_call_id)
+/// pairs that should be marked `compacted`.
 ///
-/// 调用方据此写入 `CompactionState.markers`(实际 protobuf message 不动)。
+/// The caller writes these into `CompactionState.markers` (the actual protobuf
+/// message is left untouched).
 pub fn prune_decisions<M: MessageRef>(messages: &[M]) -> Vec<(M::Id, M::CallId)> {
     let mut total: usize = 0;
     let mut pruned: usize = 0;
@@ -217,11 +224,11 @@ pub fn prune_decisions<M: MessageRef>(messages: &[M]) -> Vec<(M::Id, M::CallId)>
         if msg.role() == Role::User {
             user_turns_seen += 1;
         }
-        // 至少保留最近 2 个 user turn 不动(opencode `if (turns < 2) continue`)。
+        // Keeps at least the most recent 2 user turns untouched (opencode `if (turns < 2) continue`).
         if user_turns_seen < 2 {
             continue;
         }
-        // 已是摘要边界 — 不再往前看。
+        // Already a summary boundary — stop looking further back.
         if msg.role() == Role::Assistant && msg.is_summary() {
             break 'outer;
         }

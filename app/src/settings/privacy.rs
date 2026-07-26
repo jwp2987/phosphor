@@ -14,11 +14,11 @@ use crate::auth::AuthStateProvider;
 use crate::auth::SyncedUserSettings;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::report_error;
-// Zap Wave 3-1:`AuthClient` trait + `MockAuthClient` 随 server_api/auth.rs
-// 整件物理删,`SyncedUserSettings` 迁到 `crate::auth`。
-// Zap Wave 3-1:`ServerApiProvider` 不再被本文件使用 ——
-// `auth_client = ServerApiProvider::as_ref(ctx).get_auth_client()` 的所有调用点
-// 随 AuthClient trait 一同物理删。
+// Zap Wave 3-1: the `AuthClient` trait + `MockAuthClient` were removed entirely along with
+// server_api/auth.rs; `SyncedUserSettings` moved to `crate::auth`.
+// Zap Wave 3-1: `ServerApiProvider` is no longer used by this file --
+// all call sites of `auth_client = ServerApiProvider::as_ref(ctx).get_auth_client()`
+// were removed along with the AuthClient trait.
 use crate::terminal::safe_mode_settings::SafeModeSettings;
 
 use settings::{
@@ -28,7 +28,7 @@ use settings::{
 
 use serde::{Deserialize, Serialize};
 
-// Zap(本地化,Phase 5):`PreferencesSyncer` 已物理删除。
+// Zap (localization, Phase 5): `PreferencesSyncer` has been removed entirely.
 use crate::workspaces::workspace::EnterpriseSecretRegex;
 
 pub trait RegexDisplayInfo {
@@ -93,9 +93,11 @@ impl PartialEq for CustomSecretRegex {
 
 impl settings_value::SettingsValue for CustomSecretRegex {}
 
-// openWarp 闭源遥测剥离:三个隐私开关默认值 true → false。原 Zap 默认开是商业产品的
-// "选择退出"模式;Zap 已物理切断遥测、崩溃上报、云端对话存储三条外发链路,
-// 默认开关只会在新用户面前显示 ON 但实际不外发,造成认知割裂。改为默认 OFF。
+// openWarp closed-source telemetry strip-out: the three privacy toggles' defaults changed from
+// true -> false. The original Zap default of "on" was the commercial product's "opt-out" model;
+// Zap has physically cut off the three outbound channels (telemetry, crash reporting, cloud
+// conversation storage), so leaving the default "on" would show ON to new users while nothing
+// actually goes out, which is a confusing disconnect. Changed to default OFF.
 define_settings_group!(WarpDrivePrivacySettings, settings: [
     is_telemetry_enabled: IsTelemetryEnabled {
         type: bool,
@@ -141,9 +143,9 @@ maybe_define_setting!(HasInitializedDefaultSecretRegexes, group: PrivacySettings
 /// reporting and/or telemetry).
 pub struct PrivacySettings {
     auth_state: Arc<AuthState>,
-    // Zap Wave 3-1:`auth_client: Arc<dyn AuthClient>` 字段随 AuthClient trait
-    // 一同物理删。原用于在 telemetry / crash reporting 设置变动时向服务端
-    // 同步,Zap 已不再同步任何服务端设置。
+    // Zap Wave 3-1: the `auth_client: Arc<dyn AuthClient>` field was removed along with the
+    // AuthClient trait. It was originally used to sync to the server when telemetry / crash
+    // reporting settings changed; Zap no longer syncs any server-side settings.
     pub is_telemetry_enabled: bool,
     pub is_crash_reporting_enabled: bool,
     pub has_initialized_default_secret_regexes: HasInitializedDefaultSecretRegexes,
@@ -232,7 +234,8 @@ impl PrivacySettings {
     fn new(ctx: &mut ModelContext<Self>) -> Self {
         let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
 
-        // openWarp 闭源遥测剥离:user_preferences 缺值时也默认 false,与 setting macro 默认一致。
+        // openWarp closed-source telemetry strip-out: also defaults to false when user_preferences
+        // has no value, matching the setting macro's default.
         let is_telemetry_enabled: bool = ctx
             .private_user_preferences()
             .read_value(TELEMETRY_ENABLED_DEFAULTS_KEY)
@@ -363,8 +366,9 @@ impl PrivacySettings {
 
     /// Fetch the user's privacy settings from the server if any or update the server settings.
     pub fn fetch_or_update_settings(&self, _ctx: &mut ModelContext<Self>) {
-        // Zap Wave 3-1:原调 `auth_client.get_user_settings().await` 随 AuthClient
-        // 整 trait 物理删。Zap 本地化后隱私设置仅本地保存,入口 no-op。
+        // Zap Wave 3-1: the original call to `auth_client.get_user_settings().await` was
+        // removed along with the entire AuthClient trait. After Zap's localization, privacy
+        // settings are only saved locally; this entry point is a no-op.
     }
 
     /// Initializes state from the [`SyncedUserSettings`] fetched from the server, if any.
@@ -478,10 +482,10 @@ impl PrivacySettings {
             });
 
             if self.auth_state.is_logged_in() {
-                // Zap Wave 3-1:原调 `auth_client.set_is_crash_reporting_enabled(new_value)`
-                // 随 AuthClient 一同物理删。Zap 本地仅更新本地状态。
+                // Zap Wave 3-1: the original call to `auth_client.set_is_crash_reporting_enabled(new_value)`
+                // was removed along with the AuthClient trait. Zap only updates local state now.
                 log::debug!(
-                    "set_is_crash_reporting_enabled 远端同步已本地化,new_value={new_value}"
+                    "set_is_crash_reporting_enabled remote sync has been localized, new_value={new_value}"
                 );
             }
             ctx.emit(PrivacySettingsChangedEvent::UpdateIsCrashReportingEnabled {
@@ -512,8 +516,8 @@ impl PrivacySettings {
             });
 
             if self.auth_state.is_logged_in() {
-                // Zap Wave 3-1:同上。
-                log::debug!("set_is_telemetry_enabled 远端同步已本地化,new_value={new_value}");
+                // Zap Wave 3-1: same as above.
+                log::debug!("set_is_telemetry_enabled remote sync has been localized, new_value={new_value}");
             }
             ctx.emit(PrivacySettingsChangedEvent::UpdateIsTelemetryEnabled {
                 old_value,
@@ -601,8 +605,10 @@ impl PrivacySettings {
         }
     }
 
-    /// openWarp 闭源遥测剥离 P3:隐私设置不再同步到上游云端 settings。
-    /// 剥离后纯本地落盘(调用方仍会写 settings.toml + warp_drive 本地缓存),无外发。
+    /// openWarp closed-source telemetry strip-out P3: privacy settings are no longer synced to
+    /// upstream cloud settings.
+    /// After strip-out, this is purely local persistence (the caller still writes to
+    /// settings.toml + the warp_drive local cache), with no outbound sync.
     fn update_server_with_local_settings(&self, _ctx: &mut ModelContext<Self>) {}
 
     /// We wait until zap drive prefs have loaded and then either
@@ -670,8 +676,9 @@ impl PrivacySettings {
                         .is_crash_reporting_enabled
                         .set_value(self.is_crash_reporting_enabled, ctx));
                 });
-                // Zap(本地化,Phase 5):原 `PreferencesSyncer::maybe_sync_local_prefs_to_cloud`
-                // 同步本地隐私设置到云端,随同步器物理删除。本地设置仅写入 sqlite。
+                // Zap (localization, Phase 5): the original `PreferencesSyncer::maybe_sync_local_prefs_to_cloud`,
+                // which synced local privacy settings to the cloud, was removed along with the syncer.
+                // Local settings are now only written to sqlite.
             }
         }
     }

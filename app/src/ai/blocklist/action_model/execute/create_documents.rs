@@ -104,7 +104,7 @@ impl CreateDocumentsExecutor {
                 // Add plan artifact to the conversation.
                 let artifact = Artifact::Plan {
                     document_uid: id.to_string(),
-                    notebook_uid: None, // openWarp 不同步到云 notebook,始终为 None;本地打开走 document_uid
+                    notebook_uid: None, // openWarp doesn't sync to the cloud notebook, so always None; opens locally via document_uid
                     title: Some(document.title.clone()),
                 };
                 let terminal_view_id = self.terminal_view_id;
@@ -136,9 +136,10 @@ impl CreateDocumentsExecutor {
             model.clear_streaming_documents_for_action(&conversation_id, action_id, ctx);
         });
 
-        // openWarp 不再把 plan 推送到 Zap Drive；plan 内容已通过
-        // AIDocumentModel::enqueue_save 写入本地 SQLite ai_document_panes 表,
-        // 用户在右侧 pane 中可直接查看与编辑。
+        // openWarp no longer pushes the plan to Zap Drive; the plan content is
+        // already written to the local SQLite ai_document_panes table via
+        // AIDocumentModel::enqueue_save, and the user can view and edit it directly
+        // in the right-hand pane.
 
         ActionExecution::Sync(CreateDocumentsResult::Success { created_documents }.into())
     }

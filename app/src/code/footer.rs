@@ -1,12 +1,15 @@
-//! Code footer 视图。
+//! Code footer view.
 //!
-//! 历史上这个 view 同时承载 LSP 状态指示 / Enable LSP CTA / 服务管理菜单
-//! 与 TabConfig 编辑器右下角的「/update-tab-config skill」入口。LSP 全栈
-//! 下线后,本视图只剩 TabConfig 模式 —— 在编辑 tab config TOML 时显示
-//! 一个静态信息提示和「触发 /update-tab-config skill」的按钮。
+//! Historically this view carried the LSP status indicator, the Enable LSP
+//! CTA, the service management menu, and the "/update-tab-config skill" entry
+//! point in the bottom-right of the TabConfig editor. Now that the full LSP
+//! stack has been removed, this view only has the TabConfig mode left — it
+//! shows a static info hint and a "trigger /update-tab-config skill" button
+//! while editing tab config TOML.
 //!
-//! 普通源码 / workspace 编辑场景下,`CodeFooterView` 不再被构造(见
-//! `code/local_code_editor.rs`),整个 view 在那些路径上彻底消失。
+//! In normal source-code / workspace editing scenarios, `CodeFooterView` is no
+//! longer constructed (see `code/local_code_editor.rs`); the whole view
+//! disappears entirely on those paths.
 
 use std::path::{Path, PathBuf};
 
@@ -32,11 +35,11 @@ use crate::view_components::action_button::{
 };
 
 const FOOTER_HEIGHT: f32 = 24.;
-/// 信息图标外边距。
+/// Margin around the info icon.
 const ICON_MARGIN: f32 = 4.;
 
-/// 当前 footer 处于哪一种模式 —— 现在只有 TabConfig 一种,
-/// 其它源码 / workspace 场景已不再构造 `CodeFooterView`。
+/// Which mode the footer is currently in — for now there is only TabConfig;
+/// other source-code / workspace scenarios no longer construct `CodeFooterView`.
 enum FooterMode {
     TabConfig { path: PathBuf },
 }
@@ -51,27 +54,30 @@ impl FooterMode {
 
 #[derive(Debug, Clone)]
 pub enum CodeFooterViewAction {
-    /// TabConfig 编辑器右下角按钮触发 `/update-tab-config` skill。
+    /// The button in the bottom-right of the TabConfig editor triggers the
+    /// `/update-tab-config` skill.
     RunTabConfigSkill,
 }
 
 #[derive(Debug, Clone)]
 pub enum CodeFooterViewEvent {
-    /// 透传给 `LocalCodeEditorView` 触发 `/update-tab-config` skill。
+    /// Passed through to `LocalCodeEditorView` to trigger the
+    /// `/update-tab-config` skill.
     RunTabConfigSkill { path: PathBuf },
 }
 
 pub struct CodeFooterView {
     mode: FooterMode,
     tab_config_skill_button: ViewHandle<ActionButton>,
-    /// 是否绘制顶部分隔线 —— 复用既有调用方约定。
+    /// Whether to draw the top separator line — reuses the existing caller convention.
     show_border: bool,
 }
 
 impl CodeFooterView {
-    /// 仅当 `path` 是 tab config TOML 文件时才应该构造本视图。
-    /// 调用方(`LocalCodeEditorView::add_footer`)负责事先用
-    /// [`is_tab_config_path`](Self::is_tab_config_path) 判断。
+    /// This view should only be constructed when `path` is a tab config TOML file.
+    /// The caller (`LocalCodeEditorView::add_footer`) is responsible for
+    /// checking this beforehand with
+    /// [`is_tab_config_path`](Self::is_tab_config_path).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn new(path: PathBuf, ctx: &mut ViewContext<Self>) -> Self {
         let tab_config_skill_button = Self::create_tab_config_skill_button(ctx);
@@ -88,13 +94,15 @@ impl CodeFooterView {
         footer
     }
 
-    /// 当前 footer 是否对应 tab config 文件 —— 给调用方做条件构造判断。
+    /// Whether the current footer corresponds to a tab config file — used by
+    /// the caller for conditional construction.
     #[cfg(feature = "local_fs")]
     pub fn is_tab_config_path(path: &Path) -> bool {
         is_tab_config_toml(path)
     }
 
-    /// 非 local_fs 构建下,tab config 概念不可用,统一返回 false。
+    /// In non-local_fs builds, the tab config concept isn't available, so
+    /// this always returns false.
     #[cfg(not(feature = "local_fs"))]
     pub fn is_tab_config_path(_path: &Path) -> bool {
         false
@@ -164,7 +172,8 @@ impl CodeFooterView {
             .finish()
     }
 
-    /// 给宿主显式控制是否画顶部 border —— 与原签名保持兼容。
+    /// Lets the host explicitly control whether the top border is drawn —
+    /// kept for compatibility with the original signature.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn set_show_border(&mut self, show: bool) {
         self.show_border = show;

@@ -32,10 +32,11 @@ impl From<DateTime<Utc>> for ServerTimestamp {
     }
 }
 
-/// 本地估算的服务端时间。
+/// A locally estimated server time.
 ///
-/// Zap 不再请求云端 `/current_time`;启动路径用本地当前时间初始化,调用方仍可
-/// 通过该类型获得随单调时钟推进的 wall-clock 时间。
+/// Zap no longer requests the cloud `/current_time`; the startup path
+/// initializes it with the local current time, and callers can still obtain
+/// wall-clock time that advances with the monotonic clock through this type.
 #[derive(Debug, Clone)]
 pub struct ServerTime {
     time_at_fetch: DateTime<FixedOffset>,

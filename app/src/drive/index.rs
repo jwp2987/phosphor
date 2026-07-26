@@ -941,9 +941,12 @@ impl DriveIndex {
         app: &AppContext,
     ) -> bool {
         if let Some(object) = ObjectStoreModel::as_ref(app).get_by_uid(&object_type_and_id.uid()) {
-            // Zap(去中心化分支):本地对象(无 server_id,SyncQueue 上行无 auth no-op)
-            // 在原逻辑下永远拿不到 trash/move 菜单。这里把"无 server_id"视为本地对象,
-            // 允许其执行本地侧操作(trash 走 sqlite,无需服务器协调)。
+            // Zap (decentralized branch): local objects (no server_id, since
+            // the SyncQueue upload path is a no-op without auth) would never
+            // get the trash/move menu under the original logic. This treats
+            // "no server_id" as a local object, allowing it to perform
+            // local-side operations (trash goes through sqlite, no server
+            // coordination needed).
             if !object_type_and_id.has_server_id() {
                 return !object.metadata().has_pending_online_only_change();
             }
@@ -2340,7 +2343,7 @@ impl DriveIndex {
             share_dialog_open,
             is_selected,
             is_focused,
-            false, /* Zap(Wave 4):SyncQueue 整删,is_dequeueing 永远 false */
+            false, /* Zap (Wave 4): SyncQueue was fully removed, is_dequeueing is always false */
             tools_panel_menu_direction(app),
             appearance,
         )?;
@@ -3375,8 +3378,9 @@ impl DriveIndex {
     }
 
     fn retry_all_failed(&mut self, ctx: &mut ViewContext<Self>) {
-        // Zap(Wave 4):SyncQueue 整删后,“重试”原语义(重新上报服务端)
-        // 不再适用;本地化后对象不会进入 errored 态,这个路径是 dead code。
+        // Zap (Wave 4): after SyncQueue was fully removed, "retry"'s original
+        // meaning (re-reporting to the server) no longer applies; after
+        // localization, objects never enter the errored state, so this path is dead code.
         let _ = ctx;
     }
 
@@ -3757,9 +3761,11 @@ impl DriveIndex {
         let object = ObjectStoreModel::as_ref(app).get_by_uid(&object_type_and_id.uid());
 
         if let ObjectTypeAndId::Folder(folder_id) = object_type_and_id {
-            // Zap:本地 folder(ClientId,SyncQueue 上行无 auth no-op)永远拿不到 server_id,
-            // 原 `SyncId::ServerId(_) && is_online` 双重门槛会让本地文件夹永远没有"新建子项/Rename"右键菜单。
-            // 这里把"本地 folder"视为永远 ready。
+            // Zap: local folders (ClientId, since the SyncQueue upload path
+            // is a no-op without auth) never get a server_id; the original
+            // `SyncId::ServerId(_) && is_online` double gate would leave
+            // local folders permanently without a "new child/Rename" context
+            // menu. This treats "local folder" as always ready.
             let is_local_folder = matches!(folder_id, SyncId::ClientId(_));
             let server_folder_ready =
                 matches!(folder_id, SyncId::ServerId(_)) && self.is_online(app);
@@ -3851,9 +3857,11 @@ impl DriveIndex {
                                 .with_icon(Icon::Link)
                                 .into_item(),
                         );
-                        // TODO(zap-cloud-removal Phase 5): `editability` 在此处只剩
-                        // 用于决定 share 菜单可见性。share 菜单已删,但 editability 仍是
-                        // StoredObject 权限模型的一部分,保留以待 cloud_object 整体退役。
+                        // TODO(zap-cloud-removal Phase 5): `editability` at
+                        // this point is only used to decide share-menu
+                        // visibility. The share menu has been removed, but
+                        // editability is still part of the StoredObject
+                        // permission model, kept pending cloud_object's overall retirement.
                         let _ = editability;
                     }
                 }
@@ -3879,7 +3887,7 @@ impl DriveIndex {
                 );
 
                 if let Some(object) = object {
-                    // Zap(Wave 6-7):“Leave shared object” 菜单随 `leave_object` pub fn 退役。
+                    // Zap (Wave 6-7): the "Leave shared object" menu was retired along with the `leave_object` pub fn.
                     let _ = object;
                 }
             }
@@ -4117,7 +4125,7 @@ impl DriveIndex {
                 }
 
                 if FeatureFlag::SharedWithMe.is_enabled() && object.can_leave(app) {
-                    // Zap(Wave 6-7):“Leave shared object” 菜单随 `leave_object` pub fn 退役。
+                    // Zap (Wave 6-7): the "Leave shared object" menu was retired along with the `leave_object` pub fn.
                 }
             }
         }

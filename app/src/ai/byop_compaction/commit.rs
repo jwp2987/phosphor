@@ -1,7 +1,9 @@
-//! 把刚刚完成的 SummarizeConversation 流的产出写回 conversation.compaction_state —
-//! 对齐 opencode `compaction.ts processCompaction` 末尾的状态变更 + bus.publish(Compacted)。
+//! Writes the output of a just-finished SummarizeConversation stream back into
+//! conversation.compaction_state — matching the state change + bus.publish(Compacted)
+//! at the end of opencode's `compaction.ts processCompaction`.
 //!
-//! 本模块独立于 controller,作为可单元测试的 helper(虽然真实调用站点在 controller.rs)。
+//! This module is independent from the controller, as a unit-testable helper (even
+//! though the real call site is in controller.rs).
 
 use warp_multi_agent_api as api;
 
@@ -13,18 +15,19 @@ use super::message_view::{build_tool_name_lookup, project};
 use super::overflow::ModelLimit;
 use super::state::CompletedCompaction;
 
-/// 从 conversation 的 root task 倒序找最后一条 `Message::AgentOutput` —
-/// 它就是模型刚 emit 的摘要文本。
+/// Walks the conversation's root task backwards to find the last
+/// `Message::AgentOutput` — that's the summary text the model just emitted.
 ///
-/// `user_msg_id` 选最后一条 AgentOutput 之前最近一条真实 UserQuery 的 id;
-/// 没有时合成一个独立 uuid(只用作 marker key,build_chat_request 的 hidden
-/// 投影不会命中真实 message)。
+/// `user_msg_id` picks the id of the nearest real UserQuery before that last
+/// AgentOutput; if there is none, a standalone uuid is synthesized (used only as a
+/// marker key — build_chat_request's hidden projection won't match it against a
+/// real message).
 pub fn commit_summarization(
     conversation: &mut AIConversation,
     overflow: bool,
     cfg: &CompactionConfig,
 ) -> bool {
-    // 用 conversation 已有的 linearized messages accessor — 跨所有 task 已按时间序合并
+    // Uses the conversation's existing linearized messages accessor — already merged in timestamp order across all tasks
     let mut all_msgs: Vec<&api::Message> = conversation.all_linearized_messages();
     all_msgs.sort_by_key(|m| {
         m.timestamp
@@ -97,13 +100,16 @@ pub fn commit_summarization(
     true
 }
 
-/// 在每次 LLM 请求前自动跑 prune — 1:1 对齐 opencode `compaction.ts:297-341`。
+/// Automatically runs prune before every LLM request — matches opencode
+/// `compaction.ts:297-341` 1:1.
 ///
-/// 计算决策(哪些 ToolCallResult 的 output 应被替换为占位)然后写入
-/// `conversation.compaction_state.markers.tool_output_compacted_at`。
-/// 实际替换发生在 `chat_stream::build_chat_request` 投影时(读 marker)。
+/// Computes the decisions (which ToolCallResult outputs should be replaced with a
+/// placeholder), then writes them to
+/// `conversation.compaction_state.markers.tool_output_compacted_at`. The actual
+/// replacement happens during `chat_stream::build_chat_request`'s projection (which
+/// reads the marker).
 ///
-/// `cfg.prune == false` 时 no-op。
+/// A no-op when `cfg.prune == false`.
 pub fn prune_now(conversation: &mut AIConversation, cfg: &CompactionConfig) -> usize {
     if !cfg.prune {
         return 0;
@@ -115,7 +121,7 @@ pub fn prune_now(conversation: &mut AIConversation, cfg: &CompactionConfig) -> u
     let tool_names = build_tool_name_lookup(all_msgs.iter().copied());
     let state_snapshot = conversation.compaction_state.clone();
     let views = project(&all_msgs, &state_snapshot, &tool_names);
-    // 用 trait 引用避免泛型推导歧义
+    // Uses a trait reference to avoid generic-inference ambiguity
     let views_ref: &[_] = &views;
     let decisions = prune_decisions::<super::message_view::WarpMessageView<'_>>(views_ref);
     if decisions.is_empty() {
@@ -127,7 +133,7 @@ pub fn prune_now(conversation: &mut AIConversation, cfg: &CompactionConfig) -> u
         .unwrap_or(0);
     let count = decisions.len();
     for (msg_id, _call_id) in decisions {
-        // msg_id 是 ToolCallResult 的 message id;mark_tool_compacted 会在 marker 上写时间戳
+        // msg_id is the ToolCallResult's message id; mark_tool_compacted writes a timestamp onto the marker
         conversation
             .compaction_state
             .mark_tool_compacted(msg_id, now_ms);

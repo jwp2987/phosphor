@@ -48,8 +48,8 @@ impl ReadSkillExecutor {
 
         let manager = SkillManager::as_ref(ctx);
 
-        // Cache hit:proto 的 `SkillReference::Path(p)` 在这一步只在 p 恰好就是
-        // 索引中真实 SKILL.md 绝对路径时命中。
+        // Cache hit: the proto's `SkillReference::Path(p)` only matches here when p
+        // is exactly the real SKILL.md absolute path in the index.
         if let Some(skill) = manager.skill_by_reference(skill_ref) {
             send_telemetry_from_ctx!(
                 SkillTelemetryEvent::Read {
@@ -64,10 +64,11 @@ impl ReadSkillExecutor {
             return success_execution(skill);
         }
 
-        // BYOP `read_skill` 工具的实参是 skill **name**,被 `from_args` 装进
-        // `SkillReference::SkillPath(name)` 槽位(避免 proto schema 变更)。
-        // 这里在 cache miss 时按 name 反查真实 SKILL.md 路径,覆盖 Skill 管理器
-        // 能看到的所有 skill(文件 skill + bundled skill)。
+        // The BYOP `read_skill` tool's argument is the skill **name**, which
+        // `from_args` stuffs into the `SkillReference::SkillPath(name)` slot (to
+        // avoid changing the proto schema). On cache miss, look up the real SKILL.md
+        // path by name here, covering every skill the Skill manager can see (file
+        // skills + bundled skills).
         if let SkillReference::Path(p) = skill_ref {
             if let Some(candidate_name) = name_candidate(p) {
                 if let Some(skill) = manager.find_skill_by_name(candidate_name) {
@@ -86,24 +87,28 @@ impl ReadSkillExecutor {
             }
         }
 
-        // Cache miss 兜底:对于 `SkillReference::Path` 形式的引用,
-        // 如果路径形状是合法的 skill 文件
-        // (`.../<provider>/skills/<name>/SKILL.md` 或 warp managed skill 目录下),
-        // 直接读盘解析,修复 issue #99 中描述的「skill 已存在但 cache 未热」场景。
+        // Cache miss fallback: for a `SkillReference::Path`-shaped reference, if the
+        // path shape looks like a valid skill file
+        // (`.../<provider>/skills/<name>/SKILL.md` or under a warp-managed skill
+        // directory), read and parse it straight from disk, fixing the "skill exists
+        // but cache isn't warm" scenario described in issue #99.
         //
-        // 设计取舍:
-        // - 不主动 warm SkillManager cache。Cache 由 SkillWatcher 单向维护,
-        //   在这里写入会破坏数据流。重复 read_skill 同一路径会重复读盘,
-        //   但 SKILL.md 通常很小,可忽略。
-        // - `extract_skill_parent_directory` 只校验路径形状,与 cache hit 时
-        //   返回的 path 安全等级一致 —— 都不限定家目录前缀。这是有意的:
-        //   project 内 skill (`/some/repo/.agents/skills/...`) 也需要能读。
-        // - Windows 下正则用反斜杠分隔,Linux 风格 `/home/<u>/...` 路径会被
-        //   拒绝;这意味着本兜底对 "Windows 主进程 + WSL session" 不生效,
-        //   是 issue #99 的已知限制(见 PR 描述)。
-        // Cache miss fallback 仅在拥有本地文件系统的构建中可用;
-        // WASM 等无 fs 构建里 `extract_skill_parent_directory` / `parse_skill`
-        // 不存在,自然也无从读盘。
+        // Design tradeoffs:
+        // - Doesn't proactively warm the SkillManager cache. The cache is maintained
+        //   one-way by SkillWatcher; writing to it here would break the data flow.
+        //   Repeated read_skill calls on the same path will re-read from disk, but
+        //   SKILL.md is usually tiny, so this is negligible.
+        // - `extract_skill_parent_directory` only validates the path shape, at the
+        //   same safety level as the path returned on cache hit — neither restricts
+        //   to a home-directory prefix. This is intentional: in-project skills
+        //   (`/some/repo/.agents/skills/...`) need to be readable too.
+        // - On Windows the regex splits on backslashes, so Linux-style
+        //   `/home/<u>/...` paths get rejected; this means the fallback doesn't work
+        //   for a "Windows host process + WSL session" setup, a known limitation of
+        //   issue #99 (see the PR description).
+        // The cache-miss fallback is only available in builds with a local
+        // filesystem; in fs-less builds like WASM, `extract_skill_parent_directory` /
+        // `parse_skill` don't exist, so there's naturally no way to read from disk.
         #[cfg(feature = "local_fs")]
         if let SkillReference::Path(path) = skill_ref {
             if extract_skill_parent_directory(path).is_ok() {
@@ -158,8 +163,9 @@ impl ReadSkillExecutor {
 
 /// Build a sync success execution from a parsed skill.
 ///
-/// 抽出 helper 是为了让 `ActionExecution<T>` 的泛型 `T` 在 `success_execution`
-/// 和 `new_async` 两条路径里推导到相同类型(否则 Rust 会要求函数显式声明返回类型)。
+/// This helper is factored out so the generic `T` of `ActionExecution<T>` infers to
+/// the same type on both the `success_execution` and `new_async` paths (otherwise
+/// Rust would require the function to declare its return type explicitly).
 fn success_execution(skill: &ai::skills::ParsedSkill) -> ActionExecution<anyhow::Result<ai::skills::ParsedSkill>> {
     let content = FileContext::new(
         skill.path.to_string_lossy().into_owned(),
@@ -170,11 +176,13 @@ fn success_execution(skill: &ai::skills::ParsedSkill) -> ActionExecution<anyhow:
     ActionExecution::Sync(ReadSkillResult::Success { content }.into())
 }
 
-/// 判断 `SkillReference::Path` 中的值是否应当被当作 skill **name** 反查。
+/// Determines whether the value inside `SkillReference::Path` should be treated as a
+/// skill **name** lookup.
 ///
-/// 真实 SKILL.md 路径包含路径分隔符(`/` 或 `\`)或是绝对路径,而 BYOP
-/// 工具调用的 name(如 `"build-feature"`)是纯字符串。把这两类区分开,
-/// 避免把 `/home/.../SKILL.md` 误解为 name 而错过文件系统 fallback。
+/// A real SKILL.md path contains a path separator (`/` or `\`) or is absolute, while
+/// a BYOP tool call's name (e.g. `"build-feature"`) is a plain string. Distinguishing
+/// the two avoids mistaking `/home/.../SKILL.md` for a name and missing the
+/// filesystem fallback.
 fn name_candidate(p: &Path) -> Option<&str> {
     if p.is_absolute() {
         return None;

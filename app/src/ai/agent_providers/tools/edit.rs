@@ -1,13 +1,14 @@
-//! `apply_file_diffs`:写文件 / 改文件 / 删文件 三合一。
+//! `apply_file_diffs`: write file / edit file / delete file, all in one.
 //!
-//! warp protobuf 中的 `ApplyFileDiffs` 包含 4 个并列 vec:
-//! - `diffs`: search/replace 风格的字符串替换
-//! - `v4a_updates`: V4A 风格的多 hunk 修补(高级,Phase 4 再加)
-//! - `new_files`: 创建新文件
-//! - `deleted_files`: 删除文件
+//! warp's protobuf `ApplyFileDiffs` contains 4 parallel vecs:
+//! - `diffs`: search/replace-style string substitution
+//! - `v4a_updates`: V4A-style multi-hunk patching (advanced, to be added in Phase 4)
+//! - `new_files`: create new files
+//! - `deleted_files`: delete files
 //!
-//! 给上游模型提供一个聚合的 `apply_file_diffs(operations)` 工具,通过
-//! `op` 字段区分子类型 — 比让模型一次回 4 个并列数组更直观、错误率低。
+//! We give the upstream model a single aggregated `apply_file_diffs(operations)`
+//! tool, distinguishing subtypes via the `op` field — this is more intuitive and
+//! less error-prone than having the model return 4 parallel arrays at once.
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -25,17 +26,17 @@ struct Args {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op")]
 enum Operation {
-    /// 字符串搜索-替换(最常用,适合改一两处)。
+    /// String search-and-replace (most common, good for one or two changes).
     #[serde(rename = "edit")]
     Edit {
         file_path: String,
         search: String,
         replace: String,
     },
-    /// 创建新文件。
+    /// Create a new file.
     #[serde(rename = "create")]
     Create { file_path: String, content: String },
-    /// 删除已有文件。
+    /// Delete an existing file.
     #[serde(rename = "delete")]
     Delete { file_path: String },
 }

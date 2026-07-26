@@ -22,8 +22,9 @@ use crate::{
 };
 use warpui::SingletonEntity;
 
-/// BYOP 路径的请求分流参数。从 LLMId、settings、conversation 中提取后
-/// 一次性塞给 spawn closure(ctx 不能跨 await 边界)。
+/// Request-routing parameters for the BYOP path. Extracted from LLMId, settings, and
+/// conversation, then handed to the spawn closure in one shot (ctx can't cross an
+/// await boundary).
 pub(super) struct PendingTitleGeneration {
     pub(super) input: crate::ai::agent_providers::chat_stream::TitleGenInput,
     pub(super) user_query: String,
@@ -34,36 +35,45 @@ struct ByopDispatch {
     base_url: String,
     api_key: String,
     model_id: String,
-    /// 显式指定的 API 协议类型,chat_stream 据此映射 genai AdapterKind。
+    /// Explicitly-specified API protocol type; chat_stream maps this to a genai AdapterKind.
     api_type: crate::settings::AgentProviderApiType,
-    /// Provider 级 reasoning effort 偏好。`Auto` 时不向 genai 传 effort,
-    /// 由 adapter 自己按模型名后缀推断;非 Auto 经 client capability gate 后注入。
+    /// Provider-level reasoning effort preference. When `Auto`, no effort is passed
+    /// to genai and the adapter infers it from the model name suffix itself;
+    /// non-Auto is injected after the client capability gate.
     reasoning_effort: crate::settings::ReasoningEffortSetting,
     extra_headers: Vec<(String, String)>,
-    /// conversation 的 root task id — 必须用本地已注册的 id,
-    /// 否则下游 `Action::AddMessagesToTask` 在 task_store 找不到会 `TaskNotFound`。
+    /// The conversation's root task id — must use the locally-registered id,
+    /// otherwise the downstream `Action::AddMessagesToTask` will get `TaskNotFound`
+    /// when it can't find it in task_store.
     root_task_id: String,
-    /// 本轮模型输出应该写入的 task id。普通对话等于 root task;CLI subagent 后续轮为 subtask。
+    /// The task id this round's model output should be written to. Equal to the
+    /// root task for a normal conversation; a subtask for subsequent rounds of a CLI
+    /// subagent.
     target_task_id: String,
-    /// 是否需要 emit `CreateTask` 把 Optimistic root 升级为 Server task。
-    /// 仅首轮(root task 还没 source)需要;再次发会触发 `UnexpectedUpgrade`。
+    /// Whether `CreateTask` needs to be emitted to upgrade the Optimistic root to a
+    /// Server task. Only needed on the first round (before the root task has a
+    /// source); sending it again triggers `UnexpectedUpgrade`.
     needs_create_task: bool,
-    /// 标题生成模型参数。仅在首轮(needs_create_task)且 active title_model
-    /// 解码为合法 BYOP id 时填充;否则不启动后台标题生成。
+    /// Title-generation model parameters. Only filled in on the first round
+    /// (needs_create_task) when the active title_model decodes to a valid BYOP id;
+    /// otherwise background title generation isn't started.
     title_gen: Option<TitleGenParams>,
-    /// LRC 场景绑定的 `command_id`(= LRC block id 字符串)。
+    /// The `command_id` bound to an LRC scenario (= the LRC block id string).
     lrc_command_id: Option<String>,
-    /// 是否需要在 chat_stream 中合成 subagent CreateTask 来升级 optimistic CLI subtask。
+    /// Whether a subagent CreateTask needs to be synthesized in chat_stream to
+    /// upgrade an optimistic CLI subtask.
     lrc_should_spawn_subagent: bool,
-    /// 选中模型的上下文窗口(tokens)。0/None ⇒ 用户未填且 catalog 也无,
-    /// chat_stream 跳过 context_window_usage 计算,UI 维持 100% 占位。
+    /// The selected model's context window (tokens). 0/None ⇒ neither the user nor
+    /// the catalog filled it in, so chat_stream skips the context_window_usage
+    /// calculation and the UI stays at a 100% placeholder.
     context_window: Option<u32>,
-    /// ユーザー設定 (image/pdf/audio 三態 Override) を反映済みの attachment caps。
-    /// `resolve_for_model` で計算。UI 表示と runtime 動作が同じ caps を参照する。
+    /// Attachment caps that already reflect the user's settings (the three-way
+    /// image/pdf/audio Override). Computed by `resolve_for_model`. The UI display
+    /// and runtime behavior reference the same caps.
     attachment_caps: crate::ai::agent_providers::attachment_caps::AttachmentCaps,
 }
 
-/// 标题生成专用的 BYOP 配置(可能与主 base 模型同 provider 也可能不同)。
+/// BYOP config dedicated to title generation (may share the same provider as the main base model, or may not).
 pub(crate) struct TitleGenParams {
     pub base_url: String,
     pub api_key: String,
@@ -87,8 +97,9 @@ fn byop_dispatch_info(
     let (provider, api_key, model_id) =
         crate::ai::agent_providers::lookup_byop(ctx, &params.model)?;
     let extra_headers = provider.extra_headers.clone();
-    // 从 provider.models 里找当前模型条目,取其 context_window(tokens)。
-    // 0 视为未填,后续走 None 分支 ⇒ chat_stream 不算占用率。
+    // Finds the current model entry in provider.models and takes its context_window
+    // (tokens). 0 is treated as unfilled, falling through to the None branch ⇒
+    // chat_stream skips the usage-rate calculation.
     let context_window = provider
         .models
         .iter()
@@ -103,14 +114,17 @@ fn byop_dispatch_info(
         .byop_target_task_id
         .clone()
         .unwrap_or_else(|| root_task_id.clone());
-    // compute_active_tasks 只返回 `task.source().is_some()` 的 task —
-    // 因此非空 ⇒ root 已经升级为 Server 状态,不要再 emit CreateTask。
+    // compute_active_tasks only returns tasks where `task.source().is_some()` —
+    // so non-empty ⇒ the root has already been upgraded to the Server state, so
+    // don't emit CreateTask again.
     let needs_create_task = conversation.compute_active_tasks().is_empty();
 
-    // 标题生成:只在首轮触发(避免每轮重复打标题)。
-    // 解析 active title_model:可能是 base_model 自己,也可能是用户独立选的另一个 BYOP 模型。
-    // 任一模型不是 BYOP 编码(比如 fallback 到非 BYOP 默认),则跳过 — Zap 主路径都是 BYOP,
-    // 实际 fallback 到 base 时,base 自己就是 BYOP。
+    // Title generation: only triggered on the first round (avoiding re-titling
+    // every round). Resolves the active title_model: it may be the base_model
+    // itself, or another BYOP model the user selected independently. If either
+    // model isn't BYOP-coded (e.g. falling back to a non-BYOP default), skip it —
+    // Zap's main path is always BYOP, so when it actually falls back to base, base
+    // itself is BYOP.
     let llm_prefs = crate::ai::llms::LLMPreferences::as_ref(ctx);
     let title_gen = if needs_create_task {
         let title_id = llm_prefs.get_active_title_model(ctx, None).id.clone();
@@ -288,9 +302,11 @@ impl ResponseStream {
 
         let request_id = Uuid::new_v4();
         let params_clone = params.clone();
-        // BYOP 路径: 若选中的 base model 是用户自定义 provider 编码的 LLMId,
-        // 则在 spawn 前从 ctx 中取出 (provider, api_key, model_id, root_task_id),
-        // 走自定义 chat completions。否则走 warp 自家 multi-agent 端点(原有路径)。
+        // BYOP path: if the selected base model is an LLMId coded for a
+        // user-defined provider, then before spawning, (provider, api_key,
+        // model_id, root_task_id) are taken out of ctx and it goes through custom
+        // chat completions. Otherwise it goes through warp's own multi-agent
+        // endpoint (the original path).
         let byop_dispatch = byop_dispatch_info(&params, &ai_identifiers, ctx);
         let pending_title_generation = byop_dispatch
             .as_ref()
@@ -355,9 +371,10 @@ impl ResponseStream {
         self.params.lrc_should_spawn_subagent
     }
 
-    /// Zap BYOP 本地会话压缩:返回本流是否在跑 SummarizeConversation,
-    /// 以及 overflow 标记。controller 在 handle_response_stream_finished 的
-    /// Done 分支据此调 commit_summarization 把摘要落到 conversation.compaction_state。
+    /// Zap BYOP local session compaction: returns whether this stream is running
+    /// SummarizeConversation, along with the overflow marker. In the Done branch of
+    /// handle_response_stream_finished, the controller uses this to call
+    /// commit_summarization and land the summary in conversation.compaction_state.
     pub fn summarization_overflow(&self) -> Option<bool> {
         self.params.input.iter().find_map(|input| match input {
             crate::ai::agent::AIAgentInput::SummarizeConversation { overflow, .. } => {
@@ -403,8 +420,10 @@ impl ResponseStream {
         self.current_request_id = Some(request_id);
         let params = self.params.clone();
         let byop_dispatch = byop_dispatch_info(&params, &self.ai_identifiers, ctx);
-        // 指数退避:0.5s / 1s / 2s。此前无任何间隔,秒级重试同一 payload
-        // 三连败(确定性失败如请求超限时纯属白打),还会加剧单机 LLM 的排队。
+        // Exponential backoff: 0.5s / 1s / 2s. Previously there was no interval at
+        // all, so retrying the same payload three times in a row within seconds was
+        // pure waste for deterministic failures (like exceeding a request limit),
+        // and it also worsened queueing on a single-machine LLM.
         let backoff = std::time::Duration::from_millis(500u64 << (self.retry_count - 1).min(4));
         let _ = ctx.spawn(
             async move {

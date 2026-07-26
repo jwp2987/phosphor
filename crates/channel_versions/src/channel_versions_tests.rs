@@ -82,10 +82,11 @@ fn test_ignores_unknown_channels() {
     );
 }
 
-// openWarp(OSS)使用 vYYYY.MM.DD.N 这种简化 tag。下面这些测试确保:
-// 1. 这种格式能被 ParsedVersion 解析(否则 is_current_version_ahead_of_latest_version
-//    会一直返回 Err,导致用户被错误引导去"升级"到一个回滚版本)。
-// 2. 大小比较在 (major=0, date, patch) 三元组上是单调的。
+// openWarp (OSS) uses this simplified vYYYY.MM.DD.N tag format. The tests below ensure:
+// 1. This format can be parsed by ParsedVersion (otherwise
+//    is_current_version_ahead_of_latest_version would keep returning Err,
+//    misleading users into "upgrading" to a rolled-back version).
+// 2. Size comparison is monotonic over the (major=0, date, patch) triple.
 #[test]
 fn test_oss_version_parses() {
     let parsed: ParsedVersion = "v2026.05.26.2"
@@ -104,7 +105,7 @@ fn test_oss_version_parses() {
 
 #[test]
 fn test_oss_version_without_patch_parses() {
-    // 早期 OSS tag 可能没有第 4 段(序号)。
+    // Early OSS tags may not have a 4th segment (sequence number).
     let parsed: ParsedVersion = "v2026.05.26"
         .try_into()
         .expect("OSS 3-segment tag should parse");
@@ -121,8 +122,8 @@ fn test_oss_version_without_v_prefix_parses() {
 
 #[test]
 fn test_oss_version_rollback_detected() {
-    // 远端被回滚:新发布的 release tag 比当前本地版本更早,is_current_version_ahead_of_latest_version
-    // 应能识别为 true,从而不把回滚版本错误地展示为"升级"。
+    // Remote was rolled back: the newly published release tag is earlier than the current local version;
+    // is_current_version_ahead_of_latest_version should detect this as true, so the rolled-back version isn't incorrectly shown as an "upgrade".
     let local: ParsedVersion = "v2026.05.26.2".try_into().unwrap();
     let rolled_back_remote: ParsedVersion = "v2026.05.20.1".try_into().unwrap();
     assert!(local > rolled_back_remote);

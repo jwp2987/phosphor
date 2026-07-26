@@ -254,7 +254,7 @@ pub struct RunAgentArgs {
     /// LEGACY: MCP servers to start before executing the agent, identified by UUID.
     #[arg(long = "mcp-server", value_name = "UUID", hide = true)]
     pub mcp_servers: Vec<uuid::Uuid>,
-    // Zap Wave 7-2:`--environment` 参数 随 cloud ambient agent 主体子系统物理删。
+    // Zap Wave 7-2: the `--environment` argument was physically removed along with the cloud ambient agent subsystem.
     /// Keep the agent's session open after the conversation completes.
     ///
     /// This is useful when you want to keep the session alive for follow-up interactions.

@@ -1,9 +1,11 @@
-//! Code 设置页:Zap 在 LSP 全栈 + 持久化 workspace 历史下线后,
-//! 这个页面只剩「编辑器与代码评审」相关的几个本地开关。
+//! The Code settings page: after Zap retired the full LSP stack and persisted workspace
+//! history, this page has only a handful of local toggles left, related to the editor and
+//! code review.
 //!
-//! 历史上这里还承载 LSP 管理子页 + codebase indexing,但都已下线;
-//! `Code` 在侧边栏不再是 umbrella(没有第二个子页可挂),改为单层 Page。
-//! 页面渲染的就是这一组开关本身。
+//! Historically this page also hosted the LSP management subpage plus codebase indexing, but
+//! both have been retired; `Code` is no longer an umbrella in the sidebar (there's no second
+//! subpage to hang off it), and has become a single-layer Page.
+//! What the page renders is exactly this set of toggles.
 
 #[cfg(feature = "local_fs")]
 use super::features::external_editor::ExternalEditorView;
@@ -38,8 +40,8 @@ pub struct CodeSettingsPageView {
 
 impl CodeSettingsPageView {
     pub fn new(ctx: &mut ViewContext<CodeSettingsPageView>) -> Self {
-        // 订阅 ProjectContextModel:project rules 变动时重渲染,
-        // 让任何依赖 rule 集合的子组件保持最新。
+        // Subscribes to ProjectContextModel: re-render when project rules change, keeping any
+        // subcomponent that depends on the rule set up to date.
         ctx.subscribe_to_model(&ProjectContextModel::handle(ctx), |_me, _, event, ctx| {
             if matches!(event, ProjectContextModelEvent::KnownRulesChanged(_)) {
                 ctx.notify();
@@ -55,8 +57,8 @@ impl CodeSettingsPageView {
         }
     }
 
-    /// 构造页面 widgets。Code 现在是单页(无子页面、无 category 标题),
-    /// 直接铺平展示「编辑器与代码评审」开关。
+    /// Constructs the page widgets. Code is now a single page (no subpages, no category
+    /// headers) — the editor and code-review toggles are laid out flat.
     #[cfg(feature = "local_fs")]
     fn build_page(
         ctx: &mut ViewContext<Self>,
@@ -74,8 +76,9 @@ impl CodeSettingsPageView {
             ];
             (widgets, Some(editor_view))
         } else {
-            // legacy 视图:旧设置模式下 Code 页不渲染任何内容(原 CodePageWidget
-            // 仅渲染一个 LSP 时代的 header,无实际意义,直接返回空页面)。
+            // Legacy view: in the old settings mode, the Code page renders nothing (the
+            // original CodePageWidget only rendered an LSP-era header with no real content, so
+            // this just returns an empty page).
             (vec![], None)
         };
         (
@@ -84,7 +87,8 @@ impl CodeSettingsPageView {
         )
     }
 
-    /// wasm 构建下没有 ExternalEditorView,只渲染 4 个非外部编辑器开关。
+    /// There is no ExternalEditorView in wasm builds; only the 4 non-external-editor toggles
+    /// are rendered.
     #[cfg(not(feature = "local_fs"))]
     fn build_page(
         _ctx: &mut ViewContext<Self>,

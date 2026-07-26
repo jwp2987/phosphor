@@ -73,8 +73,9 @@ echo "Relocating binary to $OPT_DIR/$WARP_BINARY_NAME"
 mv "$SRC_BIN" "$OPT_DIR/$WARP_BINARY_NAME"
 
 # Create a relative symlink so usr/bin/<name> still resolves to the binary.
-# usr/bin/<name> 的父目录是 usr/bin/,固定需要 ../../ 才能回到 AppDir 根,
-# 然后拼上去掉前导 / 的 WARP_OPT_DIR 与二进制文件名。
+# usr/bin/<name>'s parent directory is usr/bin/, so ../../ is always needed to
+# get back to the AppDir root, followed by WARP_OPT_DIR (with its leading /
+# stripped) and the binary filename.
 echo "Creating symlink at usr/bin/$WARP_BINARY_NAME"
 ln -s "../..${WARP_OPT_DIR}/$WARP_BINARY_NAME" "$SRC_BIN"
 

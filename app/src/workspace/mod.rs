@@ -146,7 +146,7 @@ pub fn init(app: &mut AppContext) {
     ]);
 
     if ChannelState::enable_debug_features() {
-        // 根据平台选择本地 crash 描述对应的 fluent key
+        // Select the local crash-description fluent key based on the platform
         let crash_description = if cfg!(target_os = "macos") {
             crate::t!("keybinding-desc-workspace-crash-macos")
         } else {
@@ -1072,7 +1072,7 @@ pub fn init(app: &mut AppContext) {
         ]);
     }
 
-    // 去中心化分支:"Log out" 命令已删除。
+    // Decentralized branch: the "Log out" command has been removed.
 
     if !FeatureFlag::AvatarInTabBar.is_enabled() {
         app.register_editable_bindings([EditableBinding::new(
@@ -1351,8 +1351,9 @@ fn add_open_setting_pages_as_editable_binding(app: &mut AppContext) {
         )
         .with_group(bindings::BindingGroup::Settings.as_str())
         .with_context_predicate(id!("Workspace")),
-        // Zap Wave 6-8:`workspace:show_settings_shared_blocks_page` keybinding 随
-        // `ShowBlocksView` 设置页与 `CustomAction::ViewSharedBlocks` 一同物理删。
+        // Zap Wave 6-8: the `workspace:show_settings_shared_blocks_page`
+        // keybinding was physically removed together with the
+        // `ShowBlocksView` settings page and `CustomAction::ViewSharedBlocks`.
         EditableBinding::new(
             "workspace:show_settings_keyboard_shortcuts_page",
             BindingDescription::new(crate::t!(
@@ -1405,10 +1406,11 @@ fn add_open_setting_pages_as_editable_binding(app: &mut AppContext) {
         )
         .with_group(bindings::BindingGroup::Settings.as_str())
         .with_context_predicate(id!("Workspace")),
-        // Zap Wave 6-8:`workspace:show_settings_referrals_page` keybinding 随
-        // `ReferralsPageView` 设置页物理删。
-        // Zap Wave 7-3:`workspace:show_settings_environments_page` keybinding 随
-        // ambient-agent UI 子系统物理删。
+        // Zap Wave 6-8: the `workspace:show_settings_referrals_page`
+        // keybinding was physically removed together with the
+        // `ReferralsPageView` settings page.
+        // Zap Wave 7-3: the `workspace:show_settings_environments_page`
+        // keybinding was physically removed along with the ambient-agent UI subsystem.
         EditableBinding::new(
             "workspace:show_mcp_servers_settings_page",
             BindingDescription::new(crate::t!(
@@ -1433,7 +1435,7 @@ fn add_overflow_menu_items_as_editable_binding(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
     // Add the ability to open all overflow menu items to the command palette.
-    // 去中心化分支:"Invite People..." 命令对应 ShowReferralSettingsPage,已删除。
+    // Decentralized branch: the "Invite People..." command, which mapped to ShowReferralSettingsPage, has been removed.
     app.register_editable_bindings([
         EditableBinding::new(
             "workspace:link_to_slack",

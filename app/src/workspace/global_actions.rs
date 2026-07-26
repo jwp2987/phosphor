@@ -1,13 +1,15 @@
 use crate::network::NetworkStatus;
 use crate::persistence::ModelEvent;
-// Zap Wave 3-1:`AuthClient` trait 与 `workspace:debug_create_anonymous_user`
-// debug action 随 auth 子系统下线一同物理删。
+// Zap Wave 3-1: the `AuthClient` trait and the
+// `workspace:debug_create_anonymous_user` debug action were physically
+// removed together with the auth subsystem.
 use crate::app_state::get_app_state;
 use crate::terminal::alt_screen_reporting::AltScreenReporting;
 use crate::terminal::general_settings::GeneralSettings;
 use crate::workspace::cross_window_tab_drag::CrossWindowTabDrag;
-// Zap Wave 3-1:`ServerApiProvider` 不再被本文件使用,`debug_create_anonymous_user`
-// debug action 随 AuthClient 一同物理删。
+// Zap Wave 3-1: `ServerApiProvider` is no longer used in this file; the
+// `debug_create_anonymous_user` debug action was physically removed together
+// with AuthClient.
 use ::settings::ToggleableSetting;
 use warp_core::execution_mode::AppExecutionMode;
 
@@ -125,8 +127,9 @@ pub fn init_global_actions(app: &mut AppContext) {
         "workspace:toggle_debug_network_status",
         toggle_debug_network_status,
     );
-    // Zap Wave 3-1:`workspace:debug_create_anonymous_user` global action 已随
-    // 上游匿名用户创建云端入口一同物理删。
+    // Zap Wave 3-1: the `workspace:debug_create_anonymous_user` global action
+    // was physically removed together with the upstream cloud entry point for
+    // anonymous user creation.
     app.add_global_action("workspace:open_repository", open_repository);
     app.add_global_action("app:undo_close", undo_close);
 }
@@ -215,8 +218,9 @@ fn toggle_debug_network_status(_: &(), ctx: &mut AppContext) {
     });
 }
 
-// Zap Wave 3-1:`fn create_anonymous_user` debug 调试入口已随上游匿名用户
-// 创建云端入口一同物理删。Zap 已无匿名用户概念。
+// Zap Wave 3-1: the `fn create_anonymous_user` debug entry point was
+// physically removed together with the upstream cloud entry point for
+// anonymous user creation. Zap no longer has a concept of anonymous users.
 
 /// Reopens the last closed item (window or tab).
 fn undo_close(_: &(), ctx: &mut AppContext) {

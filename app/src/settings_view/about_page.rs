@@ -29,18 +29,22 @@ use warpui::{
 #[derive(Debug, Clone)]
 pub enum AboutPageAction {
     ToggleAutomaticUpdates,
-    /// 用户点击"检查更新"按钮:主动触发一次检查(等价 RequestType::ManualCheck)。
+    /// The user clicked the "Check for updates" button: proactively triggers a check
+    /// (equivalent to RequestType::ManualCheck).
     CheckForUpdate,
-    /// 用户点击"前往 GitHub 下载"链接:用系统默认浏览器打开 release 页面。
-    /// 仅在异常 fallback 路径里使用(例如下载失败 / 没有可用资产)。
+    /// The user clicked the "Download from GitHub" link: opens the release page in the
+    /// system's default browser.
+    /// Only used on the error-fallback path (e.g. download failed / no available asset).
     OpenReleasePage(String),
-    /// 用户点击"立即安装"链接:dispatch 给 workspace,触发与菜单 `ApplyUpdate`
-    /// 完全等价的安装+重启流程。具体平台行为见 `autoupdate::apply_update`。
+    /// The user clicked the "Install now" link: dispatches to the workspace, triggering an
+    /// install+restart flow fully equivalent to the menu's `ApplyUpdate`. See
+    /// `autoupdate::apply_update` for the specific per-platform behavior.
     InstallUpdate,
-    /// 用户点击"导出日志"链接:弹出原生 save-file 对话框,用户选择保存
-    /// 位置后将主日志、MCP 日志、自动更新器日志以及诊断摘要打包为 zip
-    /// 直接写入用户指定的路径,完成后通过 workspace toast 反馈成功 / 失败。
-    /// 由 `WorkspaceAction::ExportLogsToPath` 负责实现。
+    /// The user clicked the "Export logs" link: pops up the native save-file dialog; once the
+    /// user picks a save location, the main log, MCP log, autoupdater log, and diagnostic
+    /// summary are packaged into a zip and written directly to the user-specified path,
+    /// reporting success / failure via a workspace toast when done.
+    /// Implemented by `WorkspaceAction::ExportLogsToPath`.
     #[cfg(not(target_family = "wasm"))]
     ExportLogs,
 }
@@ -51,7 +55,8 @@ pub struct AboutPageView {
 
 impl AboutPageView {
     pub fn new(ctx: &mut ViewContext<AboutPageView>) -> Self {
-        // 订阅 AutoupdateState,stage 变化(检查中 / 发现新版本 / 失败 等)时刷新 UI。
+        // Subscribes to AutoupdateState, refreshing the UI when the stage changes (checking /
+        // found new version / failed, etc).
         let autoupdate_handle = AutoupdateState::handle(ctx);
         ctx.observe(&autoupdate_handle, |_, _, ctx| {
             ctx.notify();
@@ -90,15 +95,16 @@ impl TypedActionView for AboutPageView {
                 ctx.open_url(url);
             }
             AboutPageAction::InstallUpdate => {
-                // 复用 WorkspaceAction::ApplyUpdate:它会调 autoupdate::apply_update +
-                // initiate_relaunch_for_update,平台层在 relaunch() 里决定具体安装动作
-                // (mac OSS: open dmg / Win OSS: 非 silent 安装向导 / Linux: 重启新二进制)。
+                // Reuses WorkspaceAction::ApplyUpdate: it calls autoupdate::apply_update +
+                // initiate_relaunch_for_update, and the platform layer decides the specific
+                // install action inside relaunch() (mac OSS: open dmg / Win OSS: non-silent
+                // install wizard / Linux: restart new binary).
                 ctx.dispatch_typed_action(&WorkspaceAction::ApplyUpdate);
             }
             #[cfg(not(target_family = "wasm"))]
             AboutPageAction::ExportLogs => {
-                // 触发 workspace 层弹出 save-file 对话框、由用户选择保存路径
-                // 后完成打包与 toast 反馈。
+                // Triggers the workspace layer to pop up the save-file dialog; once the user
+                // picks a save path, packaging completes and a toast reports the result.
                 ctx.dispatch_typed_action(&WorkspaceAction::ExportLogsToPath);
             }
         }
@@ -120,7 +126,7 @@ struct AboutPageWidget {
     copy_version_button_mouse_state: MouseStateHandle,
     automatic_updates_switch_state: SwitchStateHandle,
     update_action_link_mouse_state: MouseStateHandle,
-    /// "导出日志"链接的悬停 / 按下状态。
+    /// Hover / pressed state for the "Export logs" link.
     #[cfg(not(target_family = "wasm"))]
     export_logs_link_mouse_state: MouseStateHandle,
 }
@@ -140,10 +146,11 @@ impl SettingsWidget for AboutPageWidget {
     ) -> Box<dyn Element> {
         let ui_builder = appearance.ui_builder();
 
-        // 始终用纯图标 logo,品牌名以独立文本 "Zap" 呈现,不再依赖带 "warp" 字样的 svg
+        // Always use the icon-only logo; the brand name is rendered as separate "Zap" text, no
+        // longer relying on an svg that includes the word "warp"
         let image_path = "bundled/svg/warp-logo-light.svg";
 
-        // GIT_RELEASE_TAG 注入 → 显示 tag;否则进入 Dev 开发模式
+        // GIT_RELEASE_TAG injected -> shows the tag; otherwise falls into Dev development mode
         let version = ChannelState::app_version().unwrap_or("Dev");
 
         let version_text = ui_builder
@@ -195,8 +202,10 @@ impl SettingsWidget for AboutPageWidget {
             )
             .with_child(version_row.finish());
 
-        // 更新状态区域:显示当前是否有新版本,并提供"检查更新"或"前往 GitHub 下载"链接。
-        // 仅在能进入 autoupdate 流程的执行模式下渲染(与下方"自动更新"开关共用条件)。
+        // Update status area: shows whether a new version is currently available, and provides
+        // a "Check for updates" or "Download from GitHub" link.
+        // Only rendered in an execution mode that can enter the autoupdate flow (shares its
+        // condition with the "Automatic updates" toggle below).
         if AppExecutionMode::as_ref(app).can_autoupdate() {
             content.add_child(
                 Container::new(self.render_update_status(appearance, app))
@@ -213,8 +222,8 @@ impl SettingsWidget for AboutPageWidget {
                 .finish(),
         );
 
-        // "导出日志"链接:平台原生导出 zip 给排查人员分享。WASM 平台没有
-        // 文件系统日志,跳过。
+        // "Export logs" link: platform-native export of a zip to share with support staff.
+        // Skipped on WASM, which has no filesystem logs.
         #[cfg(not(target_family = "wasm"))]
         {
             let export_link = ui_builder
@@ -230,7 +239,8 @@ impl SettingsWidget for AboutPageWidget {
                 .build()
                 .finish();
 
-            // 用一个垂直 Flex 列同时呈现链接和说明文字(说明为什么导出、包含什么)。
+            // Uses a vertical Flex column to present both the link and the description text
+            // (explaining why to export and what it contains).
             let export_section = Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_child(export_link)
@@ -284,16 +294,17 @@ impl SettingsWidget for AboutPageWidget {
 }
 
 impl AboutPageWidget {
-    /// 渲染"更新状态"行:状态文字 + 操作链接(检查更新 / 进度展示 / 立即安装 / GitHub 兜底)。
+    /// Renders the "update status" row: status text + action link (check for updates /
+    /// progress display / install now / GitHub fallback).
     fn render_update_status(&self, appearance: &Appearance, app: &AppContext) -> Box<dyn Element> {
         let ui_builder = appearance.ui_builder();
 
-        // 当前 stage 决定文案与操作:
-        // - NoUpdateAvailable / 未知错误:已是最新 + "检查更新"
-        // - CheckingForUpdate:正在检查...(无操作)
-        // - DownloadingUpdate:正在下载 X% (X MB / Y MB) (无操作)
-        // - UpdateReady / UpdatedPendingRestart:可以安装 + "立即安装"按钮
-        // - UnableTo*: 自动安装失败 + "前往 GitHub 下载"兜底链接
+        // The current stage determines the copy and action:
+        // - NoUpdateAvailable / unknown error: already up to date + "Check for updates"
+        // - CheckingForUpdate: checking... (no action)
+        // - DownloadingUpdate: downloading X% (X MB / Y MB) (no action)
+        // - UpdateReady / UpdatedPendingRestart: ready to install + "Install now" button
+        // - UnableTo*: automatic install failed + "Download from GitHub" fallback link
         let stage = autoupdate::get_update_state(app);
         let progress = autoupdate::AutoupdateState::as_ref(app).download_progress().cloned();
 
@@ -303,16 +314,19 @@ impl AboutPageWidget {
                 UpdateAction::None,
             ),
             AutoupdateStage::DownloadingUpdate => {
-                // 三平台共用:从 AutoupdateState.download_progress 拿到下载字节,
-                // 拼成"X.X MB / Y.Y MB (P%)";总大小未知时只显示已下载字节。
+                // Shared across all three platforms: gets the downloaded bytes from
+                // AutoupdateState.download_progress and formats them as
+                // "X.X MB / Y.Y MB (P%)"; shows only the downloaded bytes if the total size is
+                // unknown.
                 let new_version = stage
                     .available_new_version()
                     .map(|v| v.version.as_str())
                     .unwrap_or("");
                 let text = match &progress {
                     Some(p) => {
-                        // i18n_embed_fl::fl! 要求参数是引用且有 lifetime,所以
-                        // 先把进度字符串绑到 let,不要塞临时表达式。
+                        // i18n_embed_fl::fl! requires the argument to be a reference with a
+                        // lifetime, so bind the progress string to a let first rather than
+                        // inlining a temporary expression.
                         let progress_str = format_download_progress(p);
                         crate::t!(
                             "settings-about-update-downloading",
@@ -340,8 +354,9 @@ impl AboutPageWidget {
                 (text, UpdateAction::Install)
             }
             stage if stage.available_new_version().is_some() => {
-                // UnableToUpdateToNewVersion / UnableToLaunchNewVersion / Updating(残留):
-                // 自动安装出错或被打断 → 给用户一个手动下载兜底。
+                // UnableToUpdateToNewVersion / UnableToLaunchNewVersion / Updating (leftover):
+                // automatic install errored out or was interrupted -> give the user a manual
+                // download fallback.
                 let new_version = stage.available_new_version().unwrap();
                 let text = crate::t!(
                     "settings-about-update-available",
@@ -354,7 +369,8 @@ impl AboutPageWidget {
                     });
                 (text, UpdateAction::OpenReleasePage(url))
             }
-            // 兜底(理论上不可达):任何剩余 stage 都视为"已是最新"。
+            // Fallback (theoretically unreachable): any remaining stage is treated as "already
+            // up to date".
             _ => (
                 crate::t!("settings-about-update-up-to-date"),
                 UpdateAction::Check,
@@ -433,13 +449,15 @@ impl AboutPageWidget {
             }
         }
 
-        // 安装提示:仅在 UpdateReady/UpdatedPendingRestart 状态(Install 操作)显示,
-        // 让用户在点击前预知接下来会看到什么(打开 dmg / 启动安装向导 / 重启 AppImage)。
+        // Install hint: only shown in the UpdateReady/UpdatedPendingRestart state (Install
+        // action), letting the user know ahead of clicking what happens next (open dmg /
+        // launch install wizard / restart AppImage).
         if matches!(
             autoupdate::get_update_state(app),
             AutoupdateStage::UpdateReady { .. } | AutoupdateStage::UpdatedPendingRestart { .. }
         ) {
-            // t! 是宏,必须传 literal,不能用变量。按 cfg 分支挑选具体 key。
+            // t! is a macro and must be passed a literal, not a variable, so the specific key is
+            // picked per cfg branch.
             #[cfg(target_os = "macos")]
             let hint = crate::t!("settings-about-update-install-hint-macos");
             #[cfg(windows)]
@@ -465,7 +483,7 @@ impl AboutPageWidget {
     }
 }
 
-/// 把字节数格式化为 "X.X MB" / "X KB",用于下载进度文案。
+/// Formats a byte count as "X.X MB" / "X KB", used for download-progress copy.
 fn format_bytes(bytes: u64) -> String {
     const MB: f64 = 1024.0 * 1024.0;
     const KB: f64 = 1024.0;
@@ -479,7 +497,8 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// 把 DownloadProgress 渲染成 "1.2 MB / 3.4 MB (35%)";total 未知时只显示已下载。
+/// Renders a DownloadProgress as "1.2 MB / 3.4 MB (35%)"; shows only the downloaded amount when
+/// the total is unknown.
 fn format_download_progress(p: &autoupdate::DownloadProgress) -> String {
     let downloaded = format_bytes(p.downloaded);
     match p.total {
@@ -491,7 +510,8 @@ fn format_download_progress(p: &autoupdate::DownloadProgress) -> String {
     }
 }
 
-/// 更新状态区域要展示的操作:无 / 检查更新 / 打开 GitHub Release / 立即安装。
+/// The action to show in the update status area: none / check for updates / open GitHub
+/// release / install now.
 enum UpdateAction {
     None,
     Check,

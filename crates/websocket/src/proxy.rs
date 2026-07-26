@@ -1,9 +1,10 @@
 //! HTTP proxy support for WebSocket connections.
 //!
-//! 优先读取 `http_client::current_proxy_config()` 这个全局单例。如果是
-//! `ProxyMode::Custom` 或 `Off`,则直接应用;如果是 `ProxyMode::System`,则
-//! fallback 到原有的环境变量解析逻辑(`HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` /
-//! `NO_PROXY`)。这样设置页的 Custom URL / Off 能覆盖到 WebSocket。见 Issue #72。
+//! Prefers reading the `http_client::current_proxy_config()` global singleton.
+//! If it's `ProxyMode::Custom` or `Off`, apply it directly; if it's
+//! `ProxyMode::System`, fall back to the original environment-variable
+//! parsing logic (`HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY`).
+//! This way, the settings page's Custom URL / Off can also cover WebSocket. See Issue #72.
 //!
 //! TODO: Switch to tungstenite's native proxy support once it is available and remove this
 //! module: <https://github.com/snapview/tungstenite-rs/pull/530>
@@ -22,20 +23,22 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use url::Url;
 
-/// 代理模式镜像。与 `http_client::ProxyMode` 一一对应,只是为了避免
-/// `websocket -> http_client -> warp_core -> websocket` 的循环依赖,这里本地镜像一份。
-/// `app` 启动 / 设置变更时同时调用 `http_client::set_global_proxy_config` 和
-/// `websocket::set_global_proxy_config` 保证两路保持一致。
+/// A mirror of the proxy mode. Corresponds 1:1 with `http_client::ProxyMode`;
+/// mirrored locally here purely to avoid a
+/// `websocket -> http_client -> warp_core -> websocket` circular dependency.
+/// The `app` calls both `http_client::set_global_proxy_config` and
+/// `websocket::set_global_proxy_config` together at startup / when settings
+/// change to keep the two paths in sync.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProxyMode {
-    /// 与 `http_client::ProxyMode` 一致:默认 `Off`。
+    /// Consistent with `http_client::ProxyMode`: defaults to `Off`.
     #[default]
     Off,
     System,
     Custom,
 }
 
-/// `http_client::ProxyConfig` 的镜像,参见 [`ProxyMode`] 的说明。
+/// A mirror of `http_client::ProxyConfig`; see [`ProxyMode`]'s description.
 #[derive(Clone, Debug, Default)]
 pub struct ProxyConfig {
     pub mode: ProxyMode,
@@ -51,13 +54,13 @@ fn slot() -> &'static RwLock<ProxyConfig> {
     GLOBAL_PROXY_CONFIG.get_or_init(|| RwLock::new(ProxyConfig::default()))
 }
 
-/// 安装全局 WebSocket 代理配置。应在启动与设置变更时同时调用
-/// `http_client::set_global_proxy_config`。
+/// Installs the global WebSocket proxy configuration. Should be called
+/// together with `http_client::set_global_proxy_config` at startup and when settings change.
 pub fn set_global_proxy_config(cfg: ProxyConfig) {
     if let Ok(mut guard) = slot().write() {
         *guard = cfg;
     } else {
-        log::error!("写入 WebSocket 代理配置失败:RwLock 已 poison");
+        log::error!("Failed to write WebSocket proxy config: RwLock poisoned");
     }
 }
 
@@ -65,7 +68,7 @@ fn current_proxy_config() -> ProxyConfig {
     match slot().read() {
         Ok(guard) => guard.clone(),
         Err(err) => {
-            log::error!("读取 WebSocket 代理配置失败:RwLock 已 poison({err})");
+            log::error!("Failed to read WebSocket proxy config: RwLock poisoned ({err})");
             ProxyConfig::default()
         }
     }
@@ -85,24 +88,24 @@ pub struct ProxyInfo {
 
 /// Returns proxy info if a proxy should be used for the given target URI.
 ///
-/// 优先级:
-/// 1. 读取 `http_client::current_proxy_config()`:
-///    - `Custom`: 使用设置页填入的 URL / auth / no_proxy。
-///    - `Off`: 返回 `None`。
-///    - `System`: 落到环境变量解析。
-/// 2. 环境变量解析(保持向后兼容):
+/// Priority order:
+/// 1. Reads `http_client::current_proxy_config()`:
+///    - `Custom`: uses the URL / auth / no_proxy filled in on the settings page.
+///    - `Off`: returns `None`.
+///    - `System`: falls through to environment-variable parsing.
+/// 2. Environment-variable parsing (kept for backward compatibility):
 ///    - For TLS targets (`wss://`): `HTTPS_PROXY` / `https_proxy`, then `ALL_PROXY` / `all_proxy`.
 ///    - For plain targets (`ws://`): `HTTP_PROXY` / `http_proxy`, then `ALL_PROXY` / `all_proxy`.
 ///    - `NO_PROXY` / `no_proxy` is checked to bypass the proxy for specific hosts.
 pub fn resolve_proxy(uri: &http::Uri) -> anyhow::Result<Option<ProxyInfo>> {
     let target_host = uri.host().unwrap_or_default();
 
-    // 优先走全局设置(与 http_client 镇 mirror,避免循环依赖)。
+    // Prefer the global setting (mirrored from http_client, avoiding a circular dependency).
     let global_cfg = current_proxy_config();
     match global_cfg.mode {
         ProxyMode::Off => return Ok(None),
         ProxyMode::Custom => {
-            // 重用 settings 中的 no_proxy 列表(以逗号分隔)。
+            // Reuse the comma-separated no_proxy list from settings.
             if !global_cfg.no_proxy.trim().is_empty()
                 && host_matches_no_proxy_list(target_host, &global_cfg.no_proxy)
             {
@@ -110,8 +113,8 @@ pub fn resolve_proxy(uri: &http::Uri) -> anyhow::Result<Option<ProxyInfo>> {
             }
             let trimmed = global_cfg.url.trim();
             if trimmed.is_empty() {
-                // Custom 但 URL 为空: 与 http_client 一致,静默退回环境变量解析。
-                log::warn!("WebSocket: HTTP 代理设置为 Custom 但 URL 为空,退回环境变量");
+                // Custom but URL is empty: consistent with http_client, silently falls back to environment-variable parsing.
+                log::warn!("WebSocket: HTTP proxy set to Custom but URL is empty, falling back to environment variables");
             } else {
                 let info = parse_proxy_url_with_optional_auth(
                     trimmed,
@@ -123,7 +126,7 @@ pub fn resolve_proxy(uri: &http::Uri) -> anyhow::Result<Option<ProxyInfo>> {
             }
         }
         ProxyMode::System => {
-            // 落入环境变量解析。
+            // Falls through to environment-variable parsing.
         }
     }
 
@@ -147,7 +150,7 @@ pub fn resolve_proxy(uri: &http::Uri) -> anyhow::Result<Option<ProxyInfo>> {
         .map(Some)
 }
 
-/// 拆分逗号分隔的 no_proxy 列表并多 apply `is_no_proxy` 中的同样规则。
+/// Splits the comma-separated no_proxy list and applies the same rules as in `is_no_proxy`.
 fn host_matches_no_proxy_list(target_host: &str, no_proxy: &str) -> bool {
     let target = target_host.to_lowercase();
     for entry in no_proxy.split(',') {
@@ -171,7 +174,7 @@ fn host_matches_no_proxy_list(target_host: &str, no_proxy: &str) -> bool {
     false
 }
 
-/// `parse_proxy_url` 的变体,附加 settings 中的显式 username / password(覆盖 URL 中的)。
+/// A variant of `parse_proxy_url` that layers in explicit username / password from settings (overriding those in the URL).
 fn parse_proxy_url_with_optional_auth(
     raw: &str,
     extra_user: &str,

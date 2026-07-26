@@ -128,9 +128,10 @@ fn parse_preinstall_supported_glibc() {
 
 #[test]
 fn parse_preinstall_legacy_glibc_too_old_now_supported() {
-    // remote-server 现在是静态 musl 二进制,旧脚本的 `glibc_too_old` 门禁
-    // 已失效。即使老 remote 端缓存着旧脚本并报出该理由,客户端也应把它当
-    // 作支持处理,而不是回退到 ControlMaster。
+    // remote-server is now a static musl binary, so the old script's
+    // `glibc_too_old` gate no longer applies. Even if an old remote side is
+    // caching the old script and reports this reason, the client should treat
+    // it as supported rather than falling back to ControlMaster.
     let stdout = "required_glibc=2.17\n\
                   libc_family=glibc\n\
                   libc_version=2.17\n\
@@ -143,8 +144,8 @@ fn parse_preinstall_legacy_glibc_too_old_now_supported() {
 
 #[test]
 fn parse_preinstall_legacy_non_glibc_now_supported() {
-    // 同理:musl/uclibc 宿主在静态二进制下也能运行。旧脚本的 `non_glibc`
-    // 不再触发 fall-back。
+    // Same reasoning: musl/uclibc hosts can also run the static binary. The
+    // old script's `non_glibc` no longer triggers a fall-back.
     let stdout = "required_glibc=2.17\n\
                   libc_family=musl\n\
                   status=unsupported\n\
@@ -162,7 +163,7 @@ fn parse_preinstall_legacy_non_glibc_now_supported() {
 
 #[test]
 fn parse_preinstall_musl_host_supported() {
-    // 新版脚本在 musl 宿主上直接报 `status=supported`。
+    // The new script reports `status=supported` directly on a musl host.
     let stdout = "required_glibc=2.17\n\
                   libc_family=musl\n\
                   status=supported\n";
@@ -173,7 +174,7 @@ fn parse_preinstall_musl_host_supported() {
 
 #[test]
 fn parse_preinstall_old_glibc_host_supported() {
-    // 新版脚本在旧 glibc(< 2.35)宿主上也直接报 `status=supported`。
+    // The new script also reports `status=supported` directly on an old glibc (< 2.35) host.
     let stdout = "required_glibc=2.17\n\
                   libc_family=glibc\n\
                   libc_version=2.17\n\

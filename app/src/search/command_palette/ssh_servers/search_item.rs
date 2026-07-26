@@ -21,9 +21,9 @@ use warp_ssh_manager::{SshNode, SshServerInfo};
 pub struct SshServerSearchItem {
     pub node: SshNode,
     pub server: SshServerInfo,
-    /// 显示用的 user@host(或仅 host)。
+    /// The user@host (or just host) used for display.
     pub host_user: String,
-    /// 节点名(用作主标签)。
+    /// The node name (used as the main label).
     pub display_name: String,
     pub match_result: FuzzyMatchResult,
 }
@@ -49,15 +49,17 @@ impl SshServerSearchItem {
         item_highlight_state: ItemHighlightState,
         appearance: &Appearance,
     ) -> Box<dyn Element> {
-        // 主标签 "name + 灰色 user@host",fuzzy match 高亮 name 部分(host 部分
-        // 不画高亮,仅作辅助信息),所以 indices 只取落在 name 范围内的。
+        // The main label is "name + gray user@host"; fuzzy match highlights
+        // only the name part (the host part isn't highlighted, it's just
+        // supplementary info), so we only keep indices that fall within the name range.
         let main_color = item_highlight_state.main_text_fill(appearance).into_solid();
         let sub_color = item_highlight_state.sub_text_fill(appearance).into_solid();
 
-        // 注意:match_result.matched_indices 是相对于
-        // `format!("{display_name} {host_user}")`(单空格)的索引。combined 用
-        // 双空格分隔,索引会偏。我们重新只在 display_name 部分做高亮,host_user
-        // 部分作为附属信息单独画(更直观)。
+        // Note: match_result.matched_indices are indices relative to
+        // `format!("{display_name} {host_user}")` (a single space). If
+        // `combined` used a double space instead the indices would drift.
+        // We deliberately only highlight within the display_name part and
+        // draw host_user separately as supplementary info (more intuitive).
         let name_part = Text::new_inline(
             self.display_name.clone(),
             appearance.ui_font_family(),
@@ -69,8 +71,9 @@ impl SshServerSearchItem {
             Highlight::new()
                 .with_properties(Properties::default().weight(Weight::Bold))
                 .with_foreground_color(main_color),
-            // 仅取落在 display_name 范围内的 indices(fuzzy 匹配的是整条 haystack,
-            // 但视觉上只在 name 部分加粗高亮就够,host 那段不改样式)。
+            // Only keep indices that fall within the display_name range
+            // (fuzzy matching runs over the whole haystack, but visually it's
+            // enough to bold-highlight just the name part; the host part's style is untouched).
             self.match_result
                 .matched_indices
                 .iter()

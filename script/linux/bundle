@@ -199,7 +199,7 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
   WARP_BIN="zap-oss"
   BINARY_NAME="zap-oss"
   APP_NAME="Zap"
-  # OSS channel 使用本地 crash reporting,不启用 release 默认特性集合。
+  # The OSS channel uses local crash reporting; it doesn't enable the release default feature set.
   FEATURES="release_bundle"
 fi
 
@@ -221,10 +221,10 @@ elif [[ "$ARTIFACT" == "app" ]]; then
 fi
 
 if [[ $RELEASE_CHANNEL = "oss" ]]; then
-  # OSS(Zap) bundle id 与运行时 app id (`dev.zap.Zap`, 见
-  # `app/src/bin/oss.rs` / Cargo bundle metadata) 对齐, 否则 Linux 桌面
-  # (尤其是 Wayland) 会按 desktop-file ID 而非 StartupWMClass 关联窗口,
-  # 导致 icon 找不到.
+  # The OSS (Zap) bundle id is aligned with the runtime app id (`dev.zap.Zap`,
+  # see `app/src/bin/oss.rs` / Cargo bundle metadata); otherwise the Linux
+  # desktop (Wayland in particular) will associate the window by desktop-file
+  # ID rather than StartupWMClass, causing the icon to not be found.
   BUNDLE_ID="dev.zap.Zap"
 else
   BUNDLE_ID="dev.warp.$APP_NAME"
@@ -256,10 +256,12 @@ fi
 
 # Build the binary.
 #
-# `USE_ZIGBUILD=true` 时改用 `cargo zigbuild`:zig 自带完整 C/C++ 交叉工具链,
-# musl 目标下不需要手工准备 `musl-gcc`/`musl-g++`,也不需要给 cc-rs 装
-# `<triple>-{gcc,g++}` 符号链接。CI 的静态 musl CLI build 走这条路。
-# 本地不设置该变量时维持原有 `cargo build` 行为(host glibc 路径不受影响)。
+# When `USE_ZIGBUILD=true`, switch to `cargo zigbuild`: zig bundles a
+# complete C/C++ cross toolchain, so the musl target doesn't need
+# `musl-gcc`/`musl-g++` manually prepared, nor `<triple>-{gcc,g++}` symlinks
+# installed for cc-rs. CI's static musl CLI build goes through this path.
+# When this variable isn't set locally, the original `cargo build` behavior
+# is preserved (the host glibc path is unaffected).
 if [[ "$BUILD" == "true" ]]; then
   echo "Building and bundling Zap for channel $RELEASE_CHANNEL and bundle id $BUNDLE_ID"
   if [[ "${USE_ZIGBUILD:-false}" == "true" ]]; then

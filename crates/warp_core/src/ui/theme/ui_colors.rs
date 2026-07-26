@@ -1,13 +1,15 @@
-//! UI 颜色覆盖映射结构体。
-//! 从独立的 UI 主题文件加载，提供可选的 UI 颜色覆盖。
-//! 所有字段为 Option，未设置时回退到 WarpTheme 的程序化派生值。
+//! UI color override mapping struct.
+//! Loaded from a separate UI theme file, providing optional UI color overrides.
+//! All fields are Option; when unset, they fall back to WarpTheme's
+//! programmatically derived values.
 
 use serde::{Deserialize, Serialize};
 use warpui::color::ColorU;
 
 use crate::ui::color::hex_color_alpha;
 
-/// UI 颜色覆盖映射。所有字段可选，缺失时使用 WarpTheme 的默认派生值。
+/// UI color override mapping. All fields are optional; when missing, uses
+/// WarpTheme's default derived values.
 #[derive(Serialize, Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct UiColors {
     #[serde(default, with = "hex_color_alpha::option", skip_serializing_if = "Option::is_none")]

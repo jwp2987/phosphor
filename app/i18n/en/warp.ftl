@@ -1,9 +1,12 @@
 # Zap Desktop — English (source-of-truth locale)
-# 本文件由多 agent 并行编辑,各自维护自己的 SECTION,key 以 surface 前缀隔离避免冲突。
-# 加 key 时 ctrl-F 找到对应 SECTION 头追加;新 surface 在文件末尾加新 SECTION。
+# This file is edited in parallel by multiple agents, each maintaining their
+# own SECTION; keys are isolated by a surface prefix to avoid conflicts.
+# When adding a key, ctrl-F to find the corresponding SECTION header and
+# append there; a new surface gets a new SECTION at the end of the file.
 #
-# 命名规范:kebab-case,前缀按 surface,例 settings-ai-title / drive-folder-rename-title
-# 变量插值用 Fluent { $name } 语法,不要拼接
+# Naming convention: kebab-case, prefixed by surface, e.g.
+# settings-ai-title / drive-folder-rename-title
+# Use Fluent's { $name } syntax for variable interpolation, not string concatenation
 
 # =============================================================================
 # SECTION: common (Owner: foundation)
@@ -605,8 +608,8 @@ settings-debug-show-inband-blocks = Show in-band command blocks
 settings-debug-hide-inband-blocks = Hide in-band command blocks
 
 # --- ANCHOR-SUB-ABOUT (agent-settings-about) ---
-# 此锚点下放 settings_view/about_page.rs + main_page.rs 字符串
-# 命名前缀:settings-about-* / settings-main-*
+# Strings for settings_view/about_page.rs + main_page.rs go under this anchor
+# Naming prefix: settings-about-* / settings-main-*
 
 # about_page.rs
 settings-about-copyright = Copyright 2026 Zap
@@ -634,8 +637,8 @@ settings-about-export-logs-failure = Failed to export logs: { $error }
 
 
 # --- ANCHOR-SUB-MCP (agent-settings-mcp) ---
-# 此锚点下放 settings_view/mcp_servers_page.rs 字符串
-# 命名前缀:settings-mcp-*
+# Strings for settings_view/mcp_servers_page.rs go under this anchor
+# Naming prefix: settings-mcp-*
 settings-mcp-page-title = MCP Servers
 settings-mcp-logout-success-named = Successfully logged out of {$name} MCP server
 settings-mcp-logout-success = Successfully logged out of MCP server
@@ -728,8 +731,8 @@ settings-mcp-update-modal-update = Update
 settings-mcp-update-modal-no-updates = No updates available
 
 # --- ANCHOR-SUB-PLATFORM (agent-settings-platform) ---
-# 此锚点下放 settings_view/platform_page.rs 字符串
-# 命名前缀:settings-platform-*
+# Strings for settings_view/platform_page.rs go under this anchor
+# Naming prefix: settings-platform-*
 settings-platform-section-title = Agent API Keys
 settings-platform-description = Create and manage API keys to allow local agents to access your Zap account.
     For more information, visit the
@@ -1065,7 +1068,7 @@ settings-ai-refresh = Refresh
 
 # --- ANCHOR-SUB-FEATURES (agent-settings-features) ---
 # settings_view/features_page.rs P0 + P1(category + toggle labels)
-# 命名前缀:settings-features-*
+# Naming prefix: settings-features-*
 settings-features-category-general = General
 settings-features-category-session = Session
 settings-features-category-keys = Keys
@@ -1189,8 +1192,8 @@ settings-features-wayland-description = Enabling this setting disables global ho
 settings-features-restart-warp-to-apply = Restart Zap for changes to take effect.
 
 # --- ANCHOR-SUB-SETTINGS-PAGE-NAV (agent-settings-page-nav) ---
-# 此锚点下放 settings_view/{settings_page,nav,delete_environment_confirmation_dialog,directory_color_add_picker,pane_manager}.rs 字符串
-# 命名前缀:settings-page-* / settings-nav-* / settings-confirm-* / settings-color-picker-*
+# Strings for settings_view/{settings_page,nav,delete_environment_confirmation_dialog,directory_color_add_picker,pane_manager}.rs go under this anchor
+# Naming prefix: settings-page-* / settings-nav-* / settings-confirm-* / settings-color-picker-*
 
 # ---- settings_page.rs ----
 settings-page-info-icon-tooltip = Click to learn more in docs
@@ -1364,8 +1367,8 @@ settings-show-blocks-confirm-cancel = Cancel
 settings-show-blocks-confirm-unshare = Unshare
 
 # --- ANCHOR-SUB-APPEARANCE (agent-settings-appearance) ---
-# 此锚点下放 settings_view/appearance_page.rs 剩余字符串(不含已完成的 Language widget)
-# 命名前缀:settings-appearance-*
+# Remaining strings for settings_view/appearance_page.rs go under this anchor (excluding the already-completed Language widget)
+# Naming prefix: settings-appearance-*
 
 # Categories
 settings-appearance-category-themes = Themes
@@ -1542,8 +1545,8 @@ settings-update-environment-setup-command-placeholder = e.g. cd my-repo && pip i
 settings-update-environment-description-placeholder = e.g., this environment is for all front end focused agents
 
 # --- ANCHOR-SUB-AGENT-PROVIDERS (agent-settings-agent-providers) ---
-# 此锚点下放 settings_view/agent_providers_widget.rs 字符串
-# 命名前缀:settings-agent-providers-*
+# Strings for settings_view/agent_providers_widget.rs go under this anchor
+# Naming prefix: settings-agent-providers-*
 settings-agent-providers-title = Agent providers
 settings-agent-providers-description = Configure custom Agent providers across multiple protocols — OpenAI-compatible (DeepSeek, Zhipu GLM, Moonshot, DashScope, SiliconFlow, OpenRouter, etc.), Anthropic, Gemini, and local Ollama. You can add models manually (display name + model ID mapping) or fetch them automatically from the API. Provider metadata is stored in the local settings.toml; API keys are stored securely in the system keychain.
 settings-agent-providers-empty = No providers configured yet. Click [+ Add provider] in the top-right to add one.
@@ -1692,11 +1695,11 @@ quit-warning-unsaved-editor-tab = Do you want to save the changes you made to { 
 quit-warning-unsaved-editor-tab-fallback-name = this file
 
 # --- ANCHOR-SUB-RULES-PAGE (agent-rules-page) ---
-# Manage Rules 页面(Zap Drive 中的 AI Fact Collection)。
+# The Manage Rules page (the AI Fact Collection in Zap Drive).
 rules-collection-name = Rules
 
 # --- ANCHOR-SUB-KEYBINDING-DESC (agent-keybinding-descriptions) ---
-# Description 文案 for keyboard binding entries shown in the Settings >
+# Description text for keyboard binding entries shown in the Settings >
 # Keyboard Shortcuts page and the command palette. Each key corresponds to
 # a binding registered via `EditableBinding::new(name, description, action)`
 # or `BindingDescription::new("…")`. The binding `name` (e.g.
@@ -2178,7 +2181,7 @@ keybinding-desc-terminal-toggle-session-recording = Toggle PTY Recording for Ses
 keybinding-desc-nbeditor-select-to-paragraph-start = Select to start of paragraph
 keybinding-desc-nbeditor-select-to-paragraph-end = Select to end of paragraph
 
-# Misc binding desc(收尾批次:常量/LazyLock/动态描述去硬编码)
+# Misc binding desc (final batch: de-hardcoding constants/LazyLock/dynamic descriptions)
 keybinding-desc-save-file = Save file
 keybinding-desc-new-agent-pane = New Agent Pane
 keybinding-desc-edit-code-diff = Edit Code Diff
@@ -2351,10 +2354,10 @@ settings-external-editor-default-app = Default App
 
 # =============================================================================
 # SECTION: context-menu (Owner: agent-context-menu)
-# 鼠标右键弹出菜单。surface 前缀:menu-{block,input,ai-block,tab,pane,filetree,codeeditor}-*
+# Right-click context menus. Surface prefix: menu-{block,input,ai-block,tab,pane,filetree,codeeditor}-*
 # =============================================================================
 
-# --- block 右键菜单(terminal/view.rs) ---
+# --- block context menu (terminal/view.rs) ---
 menu-block-copy = Copy
 menu-block-copy-url = Copy URL
 menu-block-copy-path = Copy path
@@ -2390,7 +2393,7 @@ menu-block-split-pane-down = Split pane down
 menu-block-split-pane-up = Split pane up
 menu-block-close-pane = Close pane
 
-# --- input 右键菜单(terminal/view.rs) ---
+# --- input context menu (terminal/view.rs) ---
 menu-input-cut = Cut
 menu-input-copy = Copy
 menu-input-paste = Paste
@@ -2402,7 +2405,7 @@ menu-input-save-as-workflow = Save as workflow
 menu-input-hide-hint-text = Hide input hint text
 menu-input-show-hint-text = Show input hint text
 
-# --- AI block overflow 菜单(terminal/view.rs) ---
+# --- AI block overflow menu (terminal/view.rs) ---
 menu-ai-block-copy = Copy
 menu-ai-block-copy-prompt = Copy prompt
 menu-ai-block-copy-output-as-markdown = Copy output as Markdown
@@ -2417,7 +2420,7 @@ menu-ai-block-rewind-to-before-here = Rewind to before here
 menu-ai-block-fork-from-last-query = Fork from last query
 menu-ai-block-fork-from-query = Fork from "{ $query }"
 
-# --- tab 右键菜单(tab.rs) ---
+# --- tab context menu (tab.rs) ---
 menu-tab-stop-sharing = Stop sharing
 menu-tab-stop-sharing-all = Stop sharing all
 menu-tab-copy-link = Copy link
@@ -2434,12 +2437,12 @@ menu-tab-close-right = Close Tabs to the Right
 menu-tab-save-as-new-config = Save as new config
 menu-tab-default-no-color = Default (no color)
 
-# --- pane header 溢出菜单(terminal/view/pane_impl.rs) ---
+# --- pane header overflow menu (terminal/view/pane_impl.rs) ---
 menu-pane-copy-link = Copy link
 menu-pane-stop-sharing-session = Stop session broadcast
 menu-pane-open-on-desktop = Open on Desktop
 
-# --- 文件树右键菜单(code/file_tree/view.rs) ---
+# --- file tree context menu (code/file_tree/view.rs) ---
 menu-filetree-open-in-new-pane = Open in new pane
 menu-filetree-open-in-new-tab = Open in new tab
 menu-filetree-open-file = Open file
@@ -2454,11 +2457,11 @@ menu-filetree-attach-as-context = Attach as context
 menu-filetree-copy-path = Copy path
 menu-filetree-copy-relative-path = Copy relative path
 
-# --- 代码编辑器右键菜单(code/local_code_editor.rs) ---
+# --- code editor context menu (code/local_code_editor.rs) ---
 menu-codeeditor-go-to-definition = Go to definition
 menu-codeeditor-find-references = Find references
 
-# --- 共享标签:附加为 agent 上下文(blocklist/view_util.rs) ---
+# --- shared label: attach as agent context (blocklist/view_util.rs) ---
 menu-attach-as-agent-context = Attach as agent context
 
 # --- ANCHOR-SUB-SLASH-COMMANDS (agent-slash-commands) ---

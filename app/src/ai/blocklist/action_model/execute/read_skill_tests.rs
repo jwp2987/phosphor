@@ -142,8 +142,9 @@ fn test_read_skill_executor_file_not_found() {
     });
 }
 
-/// Issue #99 兜底:cache 未命中时,若 SkillReference::Path 指向合法形状的 skill 文件,
-/// 直接读盘并成功返回(走 Async 分支)。
+/// Issue #99 fallback: on a cache miss, if SkillReference::Path points to a
+/// validly-shaped skill file, read it straight from disk and succeed (via the
+/// Async branch).
 #[test]
 fn test_read_skill_executor_fallback_reads_disk_on_cache_miss() {
     let temp_dir = TempDir::new().unwrap();
@@ -151,7 +152,7 @@ fn test_read_skill_executor_fallback_reads_disk_on_cache_miss() {
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-        // 注意:不调用 add_skill_for_testing,模拟 cache miss。
+        // Note: intentionally not calling add_skill_for_testing, to simulate a cache miss.
         let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
 
         let action = AIAgentAction {
@@ -200,12 +201,14 @@ fn test_read_skill_executor_fallback_reads_disk_on_cache_miss() {
     });
 }
 
-/// Issue #99 兜底失败路径:cache 未命中时,若路径形状合法但磁盘上文件不存在
-///(例如校验后被删的竞态),Async 分支的 parse_skill 失败,on_complete 应返回 Error。
+/// Issue #99 fallback failure path: on a cache miss, if the path shape is valid but
+/// the file doesn't exist on disk (e.g. a race where it was deleted after
+/// validation), the Async branch's parse_skill fails, and on_complete should return
+/// Error.
 #[test]
 fn test_read_skill_executor_fallback_returns_error_when_file_missing() {
     let temp_dir = TempDir::new().unwrap();
-    // 路径形状合法,但 SKILL.md 从未被创建。
+    // Path shape is valid, but SKILL.md was never created.
     let skill_path = temp_dir
         .path()
         .join(".agents/skills/missing-skill/SKILL.md");
@@ -253,9 +256,10 @@ fn test_read_skill_executor_fallback_returns_error_when_file_missing() {
     });
 }
 
-/// BYOP `read_skill` 工具用 name 调用时:
-/// `from_args` 把 name 装进 `SkillReference::SkillPath(name)`,
-/// executor 端 cache miss 后按 name 反查命中并 Sync Success 返回。
+/// When the BYOP `read_skill` tool is called with a name:
+/// `from_args` stuffs the name into `SkillReference::SkillPath(name)`, and on the
+/// executor side, after a cache miss, it's looked up by name and returned as a Sync
+/// Success.
 #[test]
 fn test_read_skill_executor_resolves_by_name() {
     let temp_dir = TempDir::new().unwrap();
@@ -271,7 +275,7 @@ fn test_read_skill_executor_resolves_by_name() {
 
         let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
 
-        // 模拟 BYOP from_args:把 name 当作 path 传入。
+        // Simulates BYOP from_args: passing the name in as if it were a path.
         let action = AIAgentAction {
             id: AIAgentActionId::from("name-lookup-action".to_string()),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
@@ -300,9 +304,10 @@ fn test_read_skill_executor_resolves_by_name() {
     });
 }
 
-/// 未知 name(不在 SkillManager 索引中)走完所有 fallback 后:
-/// `name_candidate` 命中但 `find_skill_by_name` 返回 None,继续到 fs fallback —
-/// 此处路径形状不合法(纯 name 不含 `/`),直接 Sync Error。
+/// An unknown name (not in the SkillManager index), after exhausting every
+/// fallback: `name_candidate` matches but `find_skill_by_name` returns None, so it
+/// continues to the fs fallback — where the path shape is invalid (a plain name has
+/// no `/`), resulting directly in a Sync Error.
 #[test]
 fn test_read_skill_executor_rejects_unknown_name() {
     App::test((), |mut app| async move {
@@ -337,13 +342,15 @@ fn test_read_skill_executor_rejects_unknown_name() {
     });
 }
 
-/// Issue #99 安全门:cache 未命中时,若路径不匹配 skill 文件形状,
-/// 直接走 Sync Error 分支,不触发任何磁盘读取。
+/// Issue #99 safety gate: on a cache miss, if the path doesn't match a skill file
+/// shape, it goes straight to the Sync Error branch without triggering any disk
+/// read.
 #[test]
 fn test_read_skill_executor_rejects_non_skill_path_on_cache_miss() {
     let temp_dir = TempDir::new().unwrap();
-    // 一个不在 `.<provider>/skills/<name>/SKILL.md` 结构里的随机 markdown 文件。
-    // 即使该文件存在,fallback 也不应读取它 —— extract_skill_parent_directory 会拒绝。
+    // A random markdown file that doesn't sit in the
+    // `.<provider>/skills/<name>/SKILL.md` structure. Even though the file exists,
+    // the fallback shouldn't read it — extract_skill_parent_directory rejects it.
     let non_skill_path = temp_dir.path().join("random.md");
     fs::write(&non_skill_path, "not a skill").unwrap();
 

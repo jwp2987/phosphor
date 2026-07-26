@@ -20,7 +20,7 @@ pub enum WebFetchViewAction {
 pub struct WebFetchView {
     pub status: WebFetchStatus,
     pub collapsible: CollapsibleSearchResultsState,
-    /// 双动画 state — 必须 view 持久化。详见 search_results_common 注释。
+    /// Dual-animation state — must be persisted by the view. See the comments in search_results_common for details.
     shimmer_handle: ShimmeringTextStateHandle,
     spinner_handle: SpinnerStateHandle,
 }
@@ -41,7 +41,7 @@ impl WebFetchView {
 
     fn render_loading(&self, urls: &[String], app: &AppContext) -> Box<dyn Element> {
         let _ = Appearance::as_ref(app);
-        // 个性化进行时,对齐 opencode "Fetching from the web..."。
+        // Custom present-progressive phrasing, matching opencode's "Fetching from the web...".
         let text = if urls.len() == 1 {
             "Fetching from the web...".to_string()
         } else {

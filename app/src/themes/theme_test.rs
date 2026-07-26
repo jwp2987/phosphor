@@ -1,9 +1,9 @@
 use super::*;
 use crate::util::color::OPAQUE;
 
-// --- VS Code 2026 Dark 内置主题测试 ---
+// --- VS Code 2026 Dark built-in theme tests ---
 
-/// 验证 vscode_2026_dark 基础颜色正确。
+/// Verifies vscode_2026_dark's base colors are correct.
 #[test]
 fn vscode_2026_dark_base_colors() {
     let theme = vscode_2026_dark();
@@ -20,7 +20,7 @@ fn vscode_2026_dark_base_colors() {
     assert_eq!(theme.name(), Some("VS Code 2026 Dark".to_string()));
 }
 
-/// 验证 vscode_2026_dark 终端 normal 颜色正确。
+/// Verifies vscode_2026_dark's terminal normal colors are correct.
 #[test]
 fn vscode_2026_dark_terminal_normal_colors() {
     let theme = vscode_2026_dark();
@@ -36,7 +36,7 @@ fn vscode_2026_dark_terminal_normal_colors() {
     assert_eq!(colors.normal.white, AnsiColor::from_u32(0xE5E5E5FF));
 }
 
-/// 验证 vscode_2026_dark 终端 bright 颜色正确。
+/// Verifies vscode_2026_dark's terminal bright colors are correct.
 #[test]
 fn vscode_2026_dark_terminal_bright_colors() {
     let theme = vscode_2026_dark();
@@ -52,70 +52,70 @@ fn vscode_2026_dark_terminal_bright_colors() {
     assert_eq!(colors.bright.white, AnsiColor::from_u32(0xE5E5E5FF));
 }
 
-/// 验证 vscode_2026_dark 包含 UiColors 覆盖且值正确。
+/// Verifies vscode_2026_dark includes a UiColors override with correct values.
 #[test]
 fn vscode_2026_dark_has_ui_colors_override() {
     let theme = vscode_2026_dark();
 
-    let ui = theme.ui_colors().expect("应有 ui_colors 覆盖");
+    let ui = theme.ui_colors().expect("should have a ui_colors override");
 
-    // surface 层级
+    // surface levels
     assert_eq!(ui.surface_1, Some(ColorU { r: 0x20, g: 0x21, b: 0x22, a: 255 }));
     assert_eq!(ui.surface_2, Some(ColorU { r: 0x24, g: 0x25, b: 0x26, a: 255 }));
     assert_eq!(ui.surface_3, Some(ColorU { r: 0x2A, g: 0x2B, b: 0x2C, a: 255 }));
 
-    // 边框
+    // borders
     assert_eq!(ui.border, Some(ColorU { r: 0x33, g: 0x35, b: 0x36, a: 255 }));
     assert_eq!(ui.focus_border, Some(ColorU { r: 0x39, g: 0x94, b: 0xBC, a: 0xB3 }));
     assert_eq!(ui.split_pane_border, Some(ColorU { r: 0x2A, g: 0x2B, b: 0x2C, a: 255 }));
 
-    // 文字颜色
+    // text colors
     assert_eq!(ui.main_text, Some(ColorU { r: 0xED, g: 0xED, b: 0xED, a: 255 }));
     assert_eq!(ui.sub_text, Some(ColorU { r: 0x8C, g: 0x8C, b: 0x8C, a: 255 }));
     assert_eq!(ui.hint_text, Some(ColorU { r: 0x55, g: 0x55, b: 0x55, a: 255 }));
     assert_eq!(ui.disabled_text, Some(ColorU { r: 0x55, g: 0x55, b: 0x55, a: 255 }));
 
-    // 交互状态
+    // interaction states
     assert_eq!(ui.selection, Some(ColorU { r: 0x39, g: 0x94, b: 0xBC, a: 0x33 }));
     assert_eq!(ui.text_selection, Some(ColorU { r: 0x39, g: 0x94, b: 0xBC, a: 0x33 }));
     assert_eq!(ui.hover, Some(ColorU { r: 0xFF, g: 0xFF, b: 0xFF, a: 0x0D }));
     assert_eq!(ui.active, Some(ColorU { r: 0x39, g: 0x94, b: 0xBC, a: 255 }));
 
-    // 功能色
+    // functional colors
     assert_eq!(ui.warning, Some(ColorU { r: 0xE5, g: 0xBA, b: 0x7D, a: 255 }));
     assert_eq!(ui.error, Some(ColorU { r: 0xF4, g: 0x87, b: 0x71, a: 255 }));
     assert_eq!(ui.success, Some(ColorU { r: 0x72, g: 0xC8, b: 0x92, a: 255 }));
     assert_eq!(ui.link, Some(ColorU { r: 0x48, g: 0xA0, b: 0xC7, a: 255 }));
 }
 
-/// 验证 UiColors 覆盖实际生效（surface_1 返回覆盖值而非派生值）。
+/// Verifies the UiColors override actually takes effect (surface_1 returns the override value, not the derived one).
 #[test]
 fn vscode_2026_dark_ui_colors_override_works() {
     let theme = vscode_2026_dark();
 
-    // surface_1 应返回 UiColors 中定义的 #1E1F20 而非派生值
+    // surface_1 should return the #1E1F20 defined in UiColors, not a derived value
     let s1 = theme.surface_1().into_solid();
     assert_eq!(s1, ColorU { r: 0x20, g: 0x21, b: 0x22, a: 255 });
 
-    // outline 应返回 UiColors 中定义的 border #333536
+    // outline should return the border #333536 defined in UiColors
     let ol = theme.outline().into_solid();
     assert_eq!(ol, ColorU { r: 0x33, g: 0x35, b: 0x36, a: 255 });
 
-    // text_selection_color 应返回 UiColors 中定义的 selection
+    // text_selection_color should return the selection defined in UiColors
     let sel = theme.text_selection_color().into_solid();
     assert_eq!(sel, ColorU { r: 0x39, g: 0x94, b: 0xBC, a: 0x33 });
 }
 
-/// 验证 ThemeKind::VsCode2026Dark 已注册到默认配置中。
+/// Verifies ThemeKind::VsCode2026Dark is registered in the default config.
 #[test]
 fn vscode_2026_dark_registered_in_default_config() {
     let config = WarpThemeConfig::default();
     let theme = config.theme_map.get(&ThemeKind::VsCode2026Dark);
-    assert!(theme.is_some(), "VsCode2026Dark 应存在于默认主题配置中");
+    assert!(theme.is_some(), "VsCode2026Dark should exist in the default theme config");
     assert_eq!(theme.unwrap().name(), Some("VS Code 2026 Dark".to_string()));
 }
 
-/// 验证 ThemeKind::VsCode2026Dark 的 Display 输出。
+/// Verifies ThemeKind::VsCode2026Dark's Display output.
 #[test]
 fn vscode_2026_dark_display_name() {
     assert_eq!(format!("{}", ThemeKind::VsCode2026Dark), "VS Code 2026 Dark");

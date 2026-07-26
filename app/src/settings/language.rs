@@ -1,12 +1,15 @@
-//! 用户界面语言设置(persisted via settings.toml,启动时应用到 i18n loader)。
+//! User interface language setting (persisted via settings.toml, applied to the i18n loader
+//! on startup).
 //!
-//! 当前支持英文、简体中文与日语。新增语言只需:
-//!   1. `Language` 加 variant
-//!   2. `app/i18n/<locale>/warp.ftl` 新建翻译文件
-//!   3. `Display` + `to_locale_str` 加 case
+//! Currently supports English, Simplified Chinese, and Japanese. Adding a new language only
+//! requires:
+//!   1. Adding a variant to `Language`
+//!   2. Creating a new translation file at `app/i18n/<locale>/warp.ftl`
+//!   3. Adding a case to `Display` + `to_locale_str`
 //!
-//! 切换在重启后完全生效(已渲染 UI 文本不会自动重排,需要 view 重建)。
-//! 设置页 dropdown 应附"重启 Zap 后完全生效"提示。
+//! The switch takes full effect only after a restart (already-rendered UI text does not
+//! automatically re-lay-out; the view needs to be rebuilt).
+//! The settings-page dropdown should include a "Takes full effect after restarting Zap" hint.
 
 use enum_iterator::Sequence;
 use serde::{Deserialize, Serialize};
@@ -31,7 +34,7 @@ use warp_core::settings::{macros::define_settings_group, SupportedPlatforms, Syn
     rename_all = "snake_case"
 )]
 pub enum Language {
-    /// 跟随系统语言;若系统 locale 非已支持语言,fallback 到英文。
+    /// Follows the system language; falls back to English if the system locale isn't a supported language.
     #[default]
     #[schemars(description = "System default")]
     System,
@@ -56,7 +59,7 @@ impl std::fmt::Display for Language {
 }
 
 impl Language {
-    /// 转 BCP-47 locale 字符串,`System` 返回 `None` 表示走系统检测。
+    /// Converts to a BCP-47 locale string; `System` returns `None` to signal system detection.
     pub fn to_locale_str(self) -> Option<&'static str> {
         match self {
             Language::System => None,
@@ -66,10 +69,11 @@ impl Language {
         }
     }
 
-    /// 注入 prompt 模板用的英文语言名("English" / "Simplified Chinese" / "Japanese")。
+    /// The English language name injected into prompt templates ("English" / "Simplified Chinese" / "Japanese").
     ///
-    /// `System` 经 i18n loader 的当前 locale 解析 — 中/日系统 locale 且未显式
-    /// override 的用户仍应得到 CJK 输出(见 #276/#277 的修复历史)。
+    /// `System` is resolved via the i18n loader's current locale — users with a Chinese/Japanese
+    /// system locale who haven't explicitly overridden it should still get CJK output (see the
+    /// #276/#277 fix history).
     pub fn prompt_language_name(self) -> &'static str {
         match self {
             Language::English => "English",

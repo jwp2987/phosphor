@@ -671,7 +671,7 @@ pub struct AgentConversationsModel {
     /// A map of conversation IDs to local conversations.
     conversations: HashMap<AIConversationId, ConversationMetadata>,
     /// Set of view IDs actively consuming this model's data per window.
-    /// Zap:本地化后无轮询,仅作为 register_view_open/closed 的占位记录使用。
+    /// Zap: no polling after localization; only kept as a placeholder record for register_view_open/closed.
     active_data_consumers_per_window: HashMap<WindowId, HashSet<EntityId>>,
     /// Whether we have finished the initial task load
     has_finished_initial_load: bool,
@@ -702,14 +702,17 @@ impl SingletonEntity for AgentConversationsModel {}
 
 impl AgentConversationsModel {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
-        // Zap(本地化,Phase 3b-1 / Wave 6-6):AgentConversationsModel 原本负责轮询/探听
-        // 远端 ambient agent tasks 与 conversation metadata。本地化场景下:
-        //   - 无轮询子系统(Wave 6-6 物理删)
-        //   - has_finished_initial_load 直接为 true,使 UI 查询以空集合返回
-        // BYOP agent 本地运行不依赖该模型。
+        // Zap (localization, Phase 3b-1 / Wave 6-6): AgentConversationsModel originally
+        // handled polling/probing remote ambient agent tasks and conversation metadata.
+        // In the localized scenario:
+        //   - There's no polling subsystem (physically removed in Wave 6-6)
+        //   - has_finished_initial_load is directly true, so UI queries return empty sets
+        // BYOP agents running locally don't depend on this model.
         //
-        // Issue #93 修复:必须订阅 BlocklistAIHistoryModel 的事件,否则用户在历史对话
-        // 列表中删除对话后,本模型缓存的 conversations 不会刷新,UI 将持续展示已删除的项。
+        // Issue #93 fix: must subscribe to BlocklistAIHistoryModel's events, otherwise
+        // when the user deletes a conversation from the history conversation list, this
+        // model's cached conversations won't refresh and the UI will keep showing the
+        // deleted item.
         let history_model = BlocklistAIHistoryModel::handle(ctx);
         ctx.subscribe_to_model(&history_model, |me, event, ctx| {
             me.handle_history_event(event, ctx);
@@ -964,10 +967,11 @@ impl AgentConversationsModel {
         self.tasks.get(task_id).cloned()
     }
 
-    /// 按 task ID 读取本地已缓存的 task 数据。
+    /// Reads locally cached task data by task ID.
     ///
-    /// Zap 不再向云端补取 ambient agent task。调用方如果恢复了旧布局但本地模型没有
-    /// 对应 task,这里返回 `None`,由现有面板降级路径处理。
+    /// Zap no longer fetches ambient agent tasks from the cloud. If the caller restored
+    /// an old layout but the local model has no corresponding task, this returns `None`,
+    /// handled by the existing panel fallback path.
     pub fn get_or_async_fetch_task_data(
         &self,
         task_id: &AmbientAgentTaskId,

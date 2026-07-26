@@ -187,7 +187,7 @@ impl SystemInfo {
         // Collect a detailed memory breakdown for diagnostics.
         let memory_breakdown = memory_footprint::memory_breakdown();
 
-        // 如果启用了 heap usage tracking,内存异常时把当前 heap profile 写入本地日志。
+        // If heap usage tracking is enabled, write the current heap profile to the local log when memory usage is abnormal.
         #[cfg(feature = "heap_usage_tracking")]
         {
             let breakdown_for_diagnostics = memory_breakdown.clone();

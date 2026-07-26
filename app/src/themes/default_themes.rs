@@ -282,7 +282,7 @@ const WEZTERM_CLASSIC_BRIGHT_COLORS: AnsiColors = AnsiColors::new(
     AnsiColor::from_u32(0xFFFFFFFF),
 );
 
-// 16 色 ANSI 配色源: vscode/extensions/theme-defaults/themes/2026-dark.json
+// Source for the 16-color ANSI palette: vscode/extensions/theme-defaults/themes/2026-dark.json
 const VSCODE_2026_DARK_NORMAL_COLORS: AnsiColors = AnsiColors::new(
     AnsiColor::from_u32(0x000000FF),
     AnsiColor::from_u32(0xCD3131FF),
@@ -304,13 +304,14 @@ const VSCODE_2026_DARK_BRIGHT_COLORS: AnsiColors = AnsiColors::new(
     AnsiColor::from_u32(0xE5E5E5FF),
 );
 
-/// 返回 VS Code 2026 Dark 主题的 16 色 ANSI 终端颜色。
+/// Returns the VS Code 2026 Dark theme's 16-color ANSI terminal colors.
 pub(super) fn vscode_2026_dark_colors() -> TerminalColors {
     TerminalColors::new(VSCODE_2026_DARK_NORMAL_COLORS, VSCODE_2026_DARK_BRIGHT_COLORS)
 }
 
-/// VS Code 2026 Dark 内置主题；配色源: vscode/extensions/theme-defaults/themes/2026-dark.json。
-/// 包含完整 UiColors 覆盖，将 VS Code 的 editor/panel 颜色映射到 Zap UI 组件。
+/// The built-in VS Code 2026 Dark theme; palette source:
+/// vscode/extensions/theme-defaults/themes/2026-dark.json.
+/// Includes a full UiColors override, mapping VS Code's editor/panel colors to Zap UI components.
 pub(super) fn vscode_2026_dark() -> WarpTheme {
     WarpTheme::new(
         Fill::Solid(ColorU::from_u32(0x191A1BFF)),
@@ -802,7 +803,7 @@ pub(super) fn adeberry() -> WarpTheme {
     )
 }
 
-// 16 色 ANSI 与背景/前景对齐 WezTerm 默认配色；强调色 #52AD70 为本项目自选，非 WezTerm 规范色。
+// The 16-color ANSI palette and background/foreground are aligned with WezTerm's default colors; the accent color #52AD70 was chosen by this project and is not an official WezTerm color.
 pub(super) fn wezterm_classic() -> WarpTheme {
     WarpTheme::new(
         Fill::Solid(ColorU::from_u32(0x000000FF)),

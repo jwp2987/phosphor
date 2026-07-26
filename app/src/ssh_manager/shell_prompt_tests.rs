@@ -33,7 +33,7 @@ fn matches_powerline_prompts() {
 
 #[test]
 fn does_not_match_partial_prompt_chars() {
-    // 缺空格不算 prompt
+    // Missing a trailing space doesn't count as a prompt
     assert!(!matches("$"));
     assert!(!matches("#"));
     assert!(!matches(">"));
@@ -48,7 +48,7 @@ fn does_not_match_random_output() {
 
 #[test]
 fn matches_with_long_preceding_output() {
-    // tail 只看 256 字节,前面有 1KB 输出,只要末尾是 prompt 仍命中
+    // tail only looks at the last 256 bytes; with 1KB of output before it, it still matches as long as the end is a prompt
     let mut s = "x".repeat(1024);
     s.push_str("$ ");
     assert!(matches(&s));
@@ -56,7 +56,7 @@ fn matches_with_long_preceding_output() {
 
 #[test]
 fn does_not_match_quoted_prompt_in_middle() {
-    // prompt 字符出现在末尾以外位置不应该误命中
+    // A prompt character appearing somewhere other than the end shouldn't false-match
     assert!(!matches("$ foo"));
     assert!(!matches("# comment"));
 }

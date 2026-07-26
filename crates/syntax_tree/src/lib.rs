@@ -114,7 +114,8 @@ impl SyntaxTreeState {
         let mut injection_queries = HashMap::new();
 
         if language.injections_query.is_some() {
-            // 中文注释：这里按 Vue injections.scm 里会出现的语言集合预热查询，避免渲染时重复查表。
+            // Pre-warm queries here for the set of languages that can appear in Vue's
+            // injections.scm, to avoid repeated lookups during rendering.
             for injection_language in ["javascript", "typescript", "jsx", "tsx", "css", "scss"] {
                 if let Some(injected_language) = languages::language_by_name(injection_language) {
                     let highlight_query =

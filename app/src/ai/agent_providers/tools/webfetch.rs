@@ -1,16 +1,18 @@
-//! `webfetch` BYOP 工具 descriptor。
+//! `webfetch` BYOP tool descriptor.
 //!
-//! 实际 HTTP 执行在 `web_runtime::run_webfetch`。本 descriptor 提供给 genai SDK
-//! 用于把 tool 描述发给上游 LLM(name + description + JSON Schema)。
+//! Actual HTTP execution happens in `web_runtime::run_webfetch`. This descriptor is provided
+//! to the genai SDK to send the tool description to the upstream LLM (name + description +
+//! JSON Schema).
 //!
-//! ## 不走 protobuf executor
+//! ## Does not go through the protobuf executor
 //!
-//! `from_args` 永远返回 `Err("intercepted at byop layer")`,因为 `chat_stream::
-//! parse_incoming_tool_call` 之前会按 name 命中并直接调 `web_runtime`。`result_to_json`
-//! 同理永远返回 `None`(没有对应的 protobuf result variant)。这两个 stub 函数仅
-//! 满足 `OpenAiTool` 结构体的字段约束。
+//! `from_args` always returns `Err("intercepted at byop layer")`, because `chat_stream::
+//! parse_incoming_tool_call` intercepts by name and calls `web_runtime` directly before that
+//! point. Likewise, `result_to_json` always returns `None` (there's no corresponding protobuf
+//! result variant). These two stub functions exist only to satisfy the `OpenAiTool` struct's
+//! field requirements.
 //!
-//! 参数 schema 与 opencode `webfetch.ts:12-20` 对齐。
+//! The parameter schema is aligned with opencode's `webfetch.ts:12-20`.
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};

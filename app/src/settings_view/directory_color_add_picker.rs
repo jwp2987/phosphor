@@ -163,8 +163,9 @@ impl DirectoryColorAddPicker {
     }
 
     fn refresh_items(&mut self, ctx: &mut ViewContext<Self>) {
-        // PersistedWorkspace 已下线,不再有「之前打开过的 git 仓库」候选源,
-        // 这里给 picker 一个空集合,让 dropdown 永远只剩 `+ Add directory…` 兜底按钮。
+        // PersistedWorkspace has been retired, so there's no longer a "previously opened git
+        // repo" candidate source; give the picker an empty set here so the dropdown always
+        // falls back to just the `+ Add directory...` button.
         let persisted_paths: HashSet<PathBuf> = HashSet::new();
         let existing = TabSettings::as_ref(ctx)
             .directory_tab_colors

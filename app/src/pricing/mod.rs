@@ -40,11 +40,13 @@ pub enum StripeSubscriptionPlan {
     Other(String),
 }
 
-/// 服务端价格信息的全局模型。
+/// Global model for server-side pricing information.
 ///
-/// Zap 中它是本地 no-op stub:OSS channel 没有云端服务推送价格数据,
-/// 所以进程生命周期内 `pricing_info` 通常保持 `None`,所有 getter 都返回 `None`。
-/// 模型暂时保留给少量请求用量和计费兼容调用点,后续云端清理完成后可整段删除。
+/// In Zap this is a local no-op stub: the OSS channel has no cloud service
+/// pushing pricing data, so `pricing_info` typically stays `None` for the
+/// lifetime of the process, and all getters return `None`. The model is
+/// temporarily kept for a handful of request-usage and billing compatibility
+/// call sites, and can be removed entirely once cloud cleanup is complete.
 #[derive(Debug)]
 pub struct PricingInfoModel {
     pricing_info: Option<PricingInfo>,

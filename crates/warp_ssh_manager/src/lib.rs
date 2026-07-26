@@ -1,6 +1,7 @@
-//! SSH 管理器数据层 — 持久化的服务器 / 文件夹树 + OS keychain 凭据存储 +
-//! 命令拼装。UI 与 PTY 注入逻辑放在 `app/src/ssh_manager/` 与 `secret_injector`
-//! 模块,这里保持纯 Rust、无 warpui 依赖、可单独 `cargo test` 跑。
+//! SSH manager data layer — persisted server/folder tree + OS keychain
+//! credential storage + command assembly. UI and PTY injection logic lives in
+//! `app/src/ssh_manager/` and the `secret_injector` module; this crate stays
+//! pure Rust with no warpui dependency, so it can be run with `cargo test` on its own.
 
 pub mod db;
 pub mod repository;

@@ -1,4 +1,4 @@
-//! AES-256-GCM 加密/解密模块
+//! AES-256-GCM encryption/decryption module
 //!
 // author: logic
 // date: 2026-05-26
@@ -9,18 +9,18 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// 加密/解密错误
+/// Encryption/decryption error
 #[derive(Debug, Error)]
 pub enum CryptoError {
-    /// 加密失败
-    #[error("加密失败: {0}")]
+    /// Encryption failed
+    #[error("Encryption failed: {0}")]
     Encrypt(String),
-    /// 解密失败
-    #[error("解密失败: {0}")]
+    /// Decryption failed
+    #[error("Decryption failed: {0}")]
     Decrypt(String),
 }
 
-/// 基于用户 Token 派生 32 字节密钥
+/// Derives a 32-byte key based on the user Token
 fn derive_key(token: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
@@ -30,9 +30,9 @@ fn derive_key(token: &str) -> [u8; 32] {
     hasher2.finalize().into()
 }
 
-/// 使用 AES-256-GCM 加密明文，返回 Base64 编码的 nonce+ciphertext
+/// Encrypts plaintext using AES-256-GCM, returning a Base64-encoded nonce+ciphertext
 ///
-/// 使用用户 Token 派生加密密钥
+/// Derives the encryption key from the user Token
 pub fn encrypt(token: &str, plaintext: &str) -> Result<String, CryptoError> {
     let key = derive_key(token);
     let cipher = Aes256Gcm::new_from_slice(&key)
@@ -47,16 +47,16 @@ pub fn encrypt(token: &str, plaintext: &str) -> Result<String, CryptoError> {
     Ok(BASE64.encode(&combined))
 }
 
-/// 解密 Base64 编码的 nonce+ciphertext
+/// Decrypts a Base64-encoded nonce+ciphertext
 ///
-/// 使用用户 Token 派生解密密钥（必须与加密时一致）
+/// Derives the decryption key from the user Token (must match the one used for encryption)
 pub fn decrypt(token: &str, encoded: &str) -> Result<String, CryptoError> {
     let key = derive_key(token);
     let combined = BASE64
         .decode(encoded)
         .map_err(|e| CryptoError::Decrypt(e.to_string()))?;
     if combined.len() < 12 {
-        return Err(CryptoError::Decrypt("数据过短".to_string()));
+        return Err(CryptoError::Decrypt("Data too short".to_string()));
     }
     let (nonce_bytes, ciphertext) = combined.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
@@ -124,9 +124,9 @@ mod tests {
         let plaintext = "same_input";
         let e1 = encrypt(TEST_TOKEN, plaintext).unwrap();
         let e2 = encrypt(TEST_TOKEN, plaintext).unwrap();
-        // 不同 nonce 应产生不同密文
+        // Different nonces should produce different ciphertexts
         assert_ne!(e1, e2);
-        // 但都能正确解密
+        // But both should decrypt correctly
         assert_eq!(decrypt(TEST_TOKEN, &e1).unwrap(), plaintext);
         assert_eq!(decrypt(TEST_TOKEN, &e2).unwrap(), plaintext);
     }
@@ -152,7 +152,7 @@ mod tests {
         let plaintext = "secret_data";
         let encrypted = encrypt("token_alpha", plaintext).unwrap();
         let result = decrypt("token_beta", &encrypted);
-        assert!(result.is_err(), "不同 token 解密应该失败");
+        assert!(result.is_err(), "decrypting with a different token should fail");
     }
 
     #[test]
@@ -167,19 +167,19 @@ mod tests {
     fn test_derive_key_deterministic() {
         let key1 = derive_key("my_token");
         let key2 = derive_key("my_token");
-        assert_eq!(key1, key2, "相同 token 应派生出相同密钥");
+        assert_eq!(key1, key2, "the same token should derive the same key");
     }
 
     #[test]
     fn test_derive_key_different_tokens() {
         let key1 = derive_key("token_a");
         let key2 = derive_key("token_b");
-        assert_ne!(key1, key2, "不同 token 应派生出不同密钥");
+        assert_ne!(key1, key2, "different tokens should derive different keys");
     }
 
     #[test]
     fn test_decrypt_exact_nonce_size() {
-        // 恰好 12 字节（仅 nonce，无密文），AES-GCM 解密应失败
+        // Exactly 12 bytes (nonce only, no ciphertext); AES-GCM decryption should fail
         let data = vec![0u8; 12];
         let encoded = BASE64.encode(&data);
         let result = decrypt(TEST_TOKEN, &encoded);
@@ -190,23 +190,23 @@ mod tests {
     fn test_decrypt_tampered_ciphertext() {
         let encrypted = encrypt(TEST_TOKEN, "hello").unwrap();
         let mut combined = BASE64.decode(&encrypted).unwrap();
-        // 篡改 nonce 后的一个字节
+        // Tamper with one byte after the nonce
         combined[12] ^= 0xFF;
         let tampered = BASE64.encode(&combined);
         let result = decrypt(TEST_TOKEN, &tampered);
-        assert!(result.is_err(), "篡改后的密文应解密失败");
+        assert!(result.is_err(), "the tampered ciphertext should fail to decrypt");
     }
 
     #[test]
     fn test_crypto_error_display_encrypt() {
         let err = CryptoError::Encrypt("something went wrong".to_string());
-        assert_eq!(format!("{err}"), "加密失败: something went wrong");
+        assert_eq!(format!("{err}"), "Encryption failed: something went wrong");
     }
 
     #[test]
     fn test_crypto_error_display_decrypt() {
         let err = CryptoError::Decrypt("bad data".to_string());
-        assert_eq!(format!("{err}"), "解密失败: bad data");
+        assert_eq!(format!("{err}"), "Decryption failed: bad data");
     }
 
     #[test]

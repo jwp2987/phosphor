@@ -432,7 +432,7 @@ name: VS Code 2026 Dark
     assert!(theme.ui_colors().is_none());
 }
 
-/// 构建 UiColors 测试实例的工具函数。
+/// Utility function to build a test UiColors instance.
 fn test_ui_colors() -> super::ui_colors::UiColors {
     use super::ui_colors::UiColors;
     UiColors {
@@ -457,7 +457,7 @@ fn test_ui_colors() -> super::ui_colors::UiColors {
     }
 }
 
-/// 构建 WarpTheme 的工具函数，可选注入 UiColors。
+/// Utility function to build a WarpTheme, optionally injecting UiColors.
 fn build_theme(ui_colors: Option<super::ui_colors::UiColors>) -> WarpTheme {
     WarpTheme::new(
         Fill::Solid(ColorU::from_u32(0x1E1E1EFF)),
@@ -472,7 +472,7 @@ fn build_theme(ui_colors: Option<super::ui_colors::UiColors>) -> WarpTheme {
     )
 }
 
-// --- surface_1 回退逻辑测试 ---
+// --- surface_1 fallback logic tests ---
 
 #[test]
 fn surface_1_without_ui_colors_returns_derived() {
@@ -498,7 +498,7 @@ fn surface_1_with_ui_colors_but_none_field_returns_derived() {
     assert_eq!(theme.surface_1(), derived);
 }
 
-// --- surface_2 回退逻辑测试 ---
+// --- surface_2 fallback logic tests ---
 
 #[test]
 fn surface_2_with_ui_colors_returns_override() {
@@ -515,7 +515,7 @@ fn surface_2_without_ui_colors_returns_derived() {
     assert_eq!(theme.surface_2(), derived);
 }
 
-// --- surface_3 回退逻辑测试 ---
+// --- surface_3 fallback logic tests ---
 
 #[test]
 fn surface_3_with_ui_colors_returns_override() {
@@ -532,7 +532,7 @@ fn surface_3_without_ui_colors_returns_derived() {
     assert_eq!(theme.surface_3(), derived);
 }
 
-// --- outline (border) 回退逻辑测试 ---
+// --- outline (border) fallback logic tests ---
 
 #[test]
 fn outline_with_ui_colors_returns_border_override() {
@@ -549,7 +549,7 @@ fn outline_without_ui_colors_returns_derived() {
     assert_eq!(theme.outline(), derived);
 }
 
-// --- split_pane_border_color 回退逻辑测试 ---
+// --- split_pane_border_color fallback logic tests ---
 
 #[test]
 fn split_pane_border_with_ui_colors_returns_override() {
@@ -566,7 +566,7 @@ fn split_pane_border_without_ui_colors_returns_derived() {
     assert_eq!(theme.split_pane_border_color(), derived);
 }
 
-// --- text_selection_color 回退逻辑测试 ---
+// --- text_selection_color fallback logic tests ---
 
 #[test]
 fn text_selection_color_with_ui_colors_returns_override() {
@@ -583,7 +583,7 @@ fn text_selection_color_without_ui_colors_returns_default() {
     assert_eq!(theme.text_selection_color(), expected);
 }
 
-// --- block_selection_color 回退逻辑测试 ---
+// --- block_selection_color fallback logic tests ---
 
 #[test]
 fn block_selection_color_with_ui_colors_returns_override() {
@@ -600,18 +600,18 @@ fn block_selection_color_without_ui_colors_returns_derived() {
     assert_eq!(theme.block_selection_color(), derived);
 }
 
-// --- UiColors 往返序列化测试 ---
+// --- UiColors round-trip serialization test ---
 
 #[test]
 fn ui_colors_roundtrip_serialization() {
     use super::ui_colors::UiColors;
     let original = test_ui_colors();
-    let yaml = serde_yaml::to_string(&original).expect("序列化失败");
-    let restored: UiColors = serde_yaml::from_str(&yaml).expect("反序列化失败");
+    let yaml = serde_yaml::to_string(&original).expect("serialization failed");
+    let restored: UiColors = serde_yaml::from_str(&yaml).expect("deserialization failed");
     assert_eq!(original, restored);
 }
 
-// --- hex_color_alpha 边界条件测试（通过 UiColors 间接测试） ---
+// --- hex_color_alpha boundary condition tests (indirectly tested via UiColors) ---
 
 #[test]
 fn hex_alpha_rejects_no_hash_prefix_via_ui_colors() {
@@ -643,13 +643,13 @@ surface_1: "#GHIJKL"
 #[test]
 fn hex_alpha_roundtrip_with_alpha_via_ui_colors() {
     let mut colors = test_ui_colors();
-    // 确保 surface_1 有特定 alpha 值
+    // Make sure surface_1 has a specific alpha value
     colors.surface_1 = Some(ColorU { r: 0x39, g: 0x94, b: 0xBC, a: 0x26 });
     colors.surface_2 = None;
     colors.surface_3 = None;
-    let yaml = serde_yaml::to_string(&colors).expect("序列化失败");
+    let yaml = serde_yaml::to_string(&colors).expect("serialization failed");
     let restored: super::ui_colors::UiColors =
-        serde_yaml::from_str(&yaml).expect("反序列化失败");
+        serde_yaml::from_str(&yaml).expect("deserialization failed");
     assert_eq!(restored.surface_1, colors.surface_1);
 }
 
@@ -659,8 +659,8 @@ fn hex_alpha_roundtrip_opaque_via_ui_colors() {
     colors.surface_1 = Some(ColorU { r: 0xFF, g: 0x00, b: 0x80, a: 255 });
     colors.surface_2 = None;
     colors.surface_3 = None;
-    let yaml = serde_yaml::to_string(&colors).expect("序列化失败");
+    let yaml = serde_yaml::to_string(&colors).expect("serialization failed");
     let restored: super::ui_colors::UiColors =
-        serde_yaml::from_str(&yaml).expect("反序列化失败");
+        serde_yaml::from_str(&yaml).expect("deserialization failed");
     assert_eq!(restored.surface_1, colors.surface_1);
 }

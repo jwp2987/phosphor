@@ -1,4 +1,4 @@
-//! `web_runtime::run_websearch` 单测(mockito,无外网)。
+//! Unit tests for `web_runtime::run_websearch` (mockito, no outbound network).
 
 use super::*;
 use mockito::{Matcher, Server};
@@ -25,7 +25,7 @@ fn sse_body(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 端点路由 / API key 注入
+// Endpoint routing / API key injection
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -49,16 +49,16 @@ async fn anonymous_endpoint_no_querystring() {
 
 #[tokio::test]
 async fn passes_api_key_via_querystring() {
-    // 不直接验证 mockito 的 querystring(因为我们用 endpoint_override,
-    // 而 endpoint_override 已经替代了 endpoint_url)。
-    // 单独验证 api_key 通过 endpoint_url 拼接。
+    // Doesn't directly verify mockito's querystring (since we use endpoint_override, which
+    // already replaces endpoint_url). Separately verifies that api_key gets appended via
+    // endpoint_url.
     let url = exa::endpoint_url(Some("k1+k2"));
     assert!(url.contains("?exaApiKey="));
-    assert!(url.contains("k1%2Bk2"), "应 percent-encode: {url}");
+    assert!(url.contains("k1%2Bk2"), "should be percent-encoded: {url}");
 }
 
 // ---------------------------------------------------------------------------
-// 请求 body shape
+// Request body shape
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -127,7 +127,7 @@ async fn sends_correct_accept_header() {
 }
 
 // ---------------------------------------------------------------------------
-// SSE 解析 / 错误
+// SSE parsing / errors
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -201,11 +201,12 @@ async fn handles_multiple_data_lines() {
 }
 
 // ---------------------------------------------------------------------------
-// SearchToolArgs → SearchArgs 默认填充
+// SearchToolArgs → SearchArgs default filling
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// 真实端点 smoke 测试(默认开启;CI 网络受限时设 WARP_SKIP_WEB_INTEGRATION=1)
+// Real-endpoint smoke tests (enabled by default; set WARP_SKIP_WEB_INTEGRATION=1 when CI
+// network access is restricted)
 // ---------------------------------------------------------------------------
 
 fn skip_real() -> bool {
@@ -231,23 +232,24 @@ async fn real_exa_anonymous_search() {
 }
 
 // ---------------------------------------------------------------------------
-// 描述文档 / opencode 字节级对齐 + {{year}} 占位回归
+// Description doc / opencode byte-level alignment + {{year}} placeholder regression
 // ---------------------------------------------------------------------------
 
-/// websearch.md 必须包含 `{{year}}` 占位 — `chat_stream::build_tools_array`
-/// 在 build 时会替换成当前年份(对齐 opencode `websearch.ts:30-32`)。删占位
-/// 会让模型用训练数据里的旧年份做时间敏感搜索。
+/// websearch.md must contain a `{{year}}` placeholder — `chat_stream::build_tools_array`
+/// replaces it with the current year at build time (aligned with opencode
+/// `websearch.ts:30-32`). Removing the placeholder would make the model use the stale year
+/// from its training data for time-sensitive searches.
 #[test]
 fn websearch_description_contains_year_placeholder() {
     use super::super::websearch::WEBSEARCH;
     assert!(
         WEBSEARCH.description.contains("{{year}}"),
-        "websearch description 必须含 {{{{year}}}} 占位,build 时会替换"
+        "websearch description must contain a {{{{year}}}} placeholder, replaced at build time"
     );
 }
 
-/// 锁住 websearch.md 与 opencode `packages/opencode/src/tool/websearch.txt`
-/// 字节级一致。修改时需同步两边。
+/// Locks websearch.md to be byte-for-byte identical to opencode's
+/// `packages/opencode/src/tool/websearch.txt`. Keep both sides in sync when editing.
 #[test]
 fn websearch_description_matches_opencode_verbatim() {
     use super::super::websearch::WEBSEARCH;
@@ -285,8 +287,9 @@ fn search_tool_args_into_exa_uses_defaults() {
     assert!(exa.context_max_characters.is_none());
 }
 
-/// `_byop_intercepted` sentinel 必须存在于 search result 中(同 webfetch),
-/// 让 controller 知道触发 auto-resume,否则模型卡死等结果。
+/// The `_byop_intercepted` sentinel must be present in the search result (same as webfetch),
+/// so the controller knows to trigger auto-resume — otherwise the model gets stuck waiting
+/// for a result.
 #[test]
 fn search_output_carries_byop_sentinel() {
     let out = SearchOutput {

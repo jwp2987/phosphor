@@ -1,8 +1,9 @@
-//! Issue #116:`collect_user_rules` 的集成测试。
+//! Issue #116: integration tests for `collect_user_rules`.
 //!
-//! 用 `warpui::App::test` harness 把 `AIFact::Memory` 真实塞到 `ObjectStoreModel`,
-//! 验证收集逻辑(过滤 trashed / 排序 / no-name 等)。harness 初始化复用
-//! `data_source_tests.rs` 的样板。
+//! Uses the `warpui::App::test` harness to actually stuff `AIFact::Memory` into
+//! `ObjectStoreModel`, verifying the collection logic (filtering trashed / sorting /
+//! no-name, etc.). The harness initialization reuses the boilerplate from
+//! `data_source_tests.rs`.
 
 use settings::manager::SettingsManager;
 use warpui::{App, SingletonEntity};
@@ -62,7 +63,7 @@ fn collect_user_rules_returns_empty_when_store_is_empty() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         let rules = app.read(|app| collect_user_rules(ObjectStoreModel::as_ref(app)));
-        assert!(rules.is_empty(), "空 store 应返回空 Vec, got: {rules:?}");
+        assert!(rules.is_empty(), "empty store should return empty Vec, got: {rules:?}");
     });
 }
 
@@ -80,7 +81,7 @@ fn collect_user_rules_filters_trashed_entries() {
         });
 
         let rules = app.read(|app| collect_user_rules(ObjectStoreModel::as_ref(app)));
-        assert_eq!(rules.len(), 1, "trashed 条目应被过滤: {rules:?}");
+        assert_eq!(rules.len(), 1, "trashed entries should be filtered out: {rules:?}");
         assert_eq!(rules[0].0.as_deref(), Some("alive"));
         assert_eq!(rules[0].1, "live content");
     });
@@ -88,12 +89,13 @@ fn collect_user_rules_filters_trashed_entries() {
 
 #[test]
 fn collect_user_rules_sorts_deterministically() {
-    // 即使插入顺序乱、HashMap 迭代顺序不定,collect_user_rules 也必须给出
-    // 稳定的 (name, content) 字典序输出 —— 这是 prompt cache 命中前提。
+    // Even with a shuffled insertion order and non-deterministic HashMap iteration
+    // order, collect_user_rules must still produce a stable (name, content)
+    // lexicographic output — this is a prerequisite for prompt cache hits.
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         ObjectStoreModel::handle(&app).update(&mut app, |model, _| {
-            // 故意逆序插入
+            // Deliberately inserted in reverse order
             for fact in [
                 make_rule(10, Some("zebra"), "z content", false),
                 make_rule(11, Some("alpha"), "a content", false),
@@ -108,14 +110,14 @@ fn collect_user_rules_sorts_deterministically() {
         assert_eq!(
             names,
             vec!["alpha", "mango", "zebra"],
-            "应按 name 字典序排序: {names:?}"
+            "should be sorted lexicographically by name: {names:?}"
         );
     });
 }
 
 #[test]
 fn collect_user_rules_handles_unnamed_rules() {
-    // None < Some 在 Rust PartialOrd 下成立,无 name 的条目应排到最前。
+    // None < Some holds under Rust's PartialOrd, so entries without a name should sort first.
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         ObjectStoreModel::handle(&app).update(&mut app, |model, _| {
@@ -129,7 +131,7 @@ fn collect_user_rules_handles_unnamed_rules() {
 
         let rules = app.read(|app| collect_user_rules(ObjectStoreModel::as_ref(app)));
         assert_eq!(rules.len(), 2);
-        assert_eq!(rules[0].0, None, "无 name 条目应排在前: {rules:?}");
+        assert_eq!(rules[0].0, None, "entries without a name should sort first: {rules:?}");
         assert_eq!(rules[0].1, "unnamed content");
         assert_eq!(rules[1].0.as_deref(), Some("named"));
     });

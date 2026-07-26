@@ -600,8 +600,10 @@ impl NotebookView {
                     .id()
                     .and_then(SyncId::into_server)
                 {
-                    // TODO(zap-cloud-removal Phase 5): 同上,sharing UI 已退役,
-                    // notebook 的 ShareableObject 注入移除;cloud_object 退役时清理 id 流程。
+                    // TODO(zap-cloud-removal Phase 5): same as above, the
+                    // sharing UI has been retired and the notebook's
+                    // ShareableObject injection removed; clean up this id flow
+                    // when cloud_object is retired.
                     let _ = id;
                 }
             }
@@ -1612,8 +1614,9 @@ impl NotebookView {
         self.set_title(&notebook.model().title, ctx);
         self.set_content(&notebook, ctx);
 
-        // TODO(zap-cloud-removal Phase 5): sharing UI 已退役,notebook
-        // ShareableObject 注入移除;cloud_object server_id 路径保留待 Phase 5。
+        // TODO(zap-cloud-removal Phase 5): the sharing UI has been retired
+        // and the notebook's ShareableObject injection removed; the
+        // cloud_object server_id path is kept pending Phase 5.
         let _ = notebook.id;
 
         self.active_notebook_data.update(ctx, |data, ctx| {

@@ -95,12 +95,12 @@ pub struct RequestParams {
     /// family, the historical behavior).
     pub prompt_override: Option<crate::ai::execution_profiles::PromptSource>,
     pub is_memory_enabled: bool,
-    /// Zap BYOP 专用:用户在 设置 → Agents → Rules 创建的全局 Rules
-    /// (`AIFact::Memory`)的快照,在 `new()` 中从 `ObjectStoreModel` 一次性拉取
-    /// 后随请求 plumb 到 `chat_stream::build_chat_request` → `prompt_renderer`,
-    /// 由 `partials/user_rules.j2` 渲染进 system prompt。
-    /// 仅在 `is_memory_enabled` 为 true 且未被 trash 时收集;为了 prompt cache
-    /// 稳定性,按 `(name, content)` 字典序排序。
+    /// Zap BYOP-only: a snapshot of the global Rules the user created under Settings →
+    /// Agents → Rules (`AIFact::Memory`), fetched once from `ObjectStoreModel` in
+    /// `new()`, then plumbed with the request to `chat_stream::build_chat_request` →
+    /// `prompt_renderer`, rendered into the system prompt by `partials/user_rules.j2`.
+    /// Only collected when `is_memory_enabled` is true and the entry isn't trashed; for
+    /// prompt cache stability, sorted lexicographically by `(name, content)`.
     pub user_rules: Vec<(Option<String>, String)>,
     pub warp_drive_context_enabled: bool,
     pub context_window_limit: Option<u32>,
@@ -118,49 +118,56 @@ pub struct RequestParams {
     pub ask_user_question_enabled: bool,
     pub research_agent_enabled: bool,
     pub supported_tools_override: Option<Vec<warp_multi_agent_api::ToolType>>,
-    /// Zap BYOP 专用:本地会话 id,只用于 request-readiness 诊断日志。
+    /// Zap BYOP-only: local conversation id, used only for request-readiness diagnostic logging.
     pub byop_conversation_id: Option<AIConversationId>,
-    /// Zap BYOP 专用:单次请求内的非持久诊断关联 id。
+    /// Zap BYOP-only: a non-persistent diagnostic correlation id scoped to a single request.
     pub byop_readiness_attempt_id: Option<String>,
     /// The conversation ID of the parent agent that spawned this child agent, if any.
     pub parent_agent_id: Option<String>,
     /// The display name for this agent (e.g. "Agent 1"), assigned by the orchestrator.
     pub agent_name: Option<String>,
-    /// Zap BYOP 专用:发起本请求时,关联的 LRC(Long Running Command)block id。
-    /// tag-in 首轮和已进入 agent control 的 CLI subagent 后续轮都会填充,用于
-    /// 让 BYOP prompt / tools 继续绑定到当前 PTY,避免模型另起 shell 操作同一个 TUI。
+    /// Zap BYOP-only: the LRC (Long Running Command) block id associated with this
+    /// request when it was initiated. Filled in both on the first tag-in turn and on
+    /// subsequent CLI subagent turns that have already entered agent control, so the
+    /// BYOP prompt / tools keep binding to the current PTY, preventing the model from
+    /// spawning another shell to operate the same TUI.
     pub lrc_command_id: Option<String>,
-    /// Zap BYOP 专用:LRC 当前快照。`UserQuery.running_command` 只覆盖用户输入轮,
-    /// auto-resume / tool result 后续轮需要通过这里继续携带最新 PTY 内容。
+    /// Zap BYOP-only: the current LRC snapshot. `UserQuery.running_command` only covers
+    /// the user-input turn; subsequent auto-resume / tool-result turns need this field to
+    /// keep carrying the latest PTY content.
     pub lrc_running_command: Option<RunningCommand>,
-    /// Zap BYOP 本地会话压缩 sidecar 快照(controller 把 conversation.compaction_state.clone() 塞进来)。
-    /// `chat_stream::build_chat_request` 据此:
-    ///   1. 过滤 [`crate::ai::byop_compaction::state::CompactionState::hidden_message_ids`] 里的 messages
-    ///   2. 在被隐去区间的位置插入"摘要 user/assistant 对"
-    ///   3. 把 `tool_output_compacted_at` 不为空的 ToolCallResult 替换为占位符
-    ///   4. 在 `AIAgentInput::SummarizeConversation` 路径切 head + 拼 SUMMARY_TEMPLATE 作 user message
+    /// Zap BYOP local conversation compaction sidecar snapshot (the controller stuffs
+    /// conversation.compaction_state.clone() in here).
+    /// `chat_stream::build_chat_request` uses this to:
+    ///   1. filter out messages in [`crate::ai::byop_compaction::state::CompactionState::hidden_message_ids`]
+    ///   2. insert a "summary user/assistant pair" at the position of the hidden range
+    ///   3. replace ToolCallResults whose `tool_output_compacted_at` is non-empty with a placeholder
+    ///   4. on the `AIAgentInput::SummarizeConversation` path, cut the head and splice the SUMMARY_TEMPLATE in as a user message
     ///
-    /// 默认 `None` = 兼容路径(无压缩)。
+    /// Defaults to `None` = the compatibility path (no compaction).
     pub compaction_state: Option<crate::ai::byop_compaction::state::CompactionState>,
-    /// Zap BYOP repair sidecar 快照。serializer 只读使用,不在请求构造中反序列化持久化 JSON。
+    /// Zap BYOP repair sidecar snapshot. Used read-only by the serializer; not deserialized from persisted JSON during request construction.
     pub byop_repair_state: crate::ai::byop_readiness::RepairStateStatus,
-    /// Zap BYOP 专用:本轮是否需要模拟上游 CreateTask 流程来升级 optimistic CLI subtask。
-    /// 只有用户刚 tag-in 的首轮需要;已存在 CLI subagent 的后续轮只复用 task,不能重复 spawn。
+    /// Zap BYOP-only: whether this turn needs to simulate the upstream CreateTask flow to
+    /// upgrade an optimistic CLI subtask. Only needed on the first turn right after the
+    /// user tags in; subsequent turns with an existing CLI subagent just reuse the task and must not spawn again.
     pub lrc_should_spawn_subagent: bool,
-    /// Zap BYOP 专用:本轮响应应该写入的 task。普通对话是 root task;
-    /// CLI subagent 后续轮则是对应 subtask。
+    /// Zap BYOP-only: the task this turn's response should be written to. For a normal
+    /// conversation this is the root task; for subsequent CLI subagent turns it's the corresponding subtask.
     pub byop_target_task_id: Option<String>,
 }
 
-/// 收集用户在 设置 → Agents → Rules 创建的全局 Rules(`AIFact::Memory`)快照,
-/// 用于注入 BYOP system prompt(Issue #116)。
+/// Collects a snapshot of the global Rules (`AIFact::Memory`) the user created under
+/// Settings → Agents → Rules, used to inject into the BYOP system prompt (Issue #116).
 ///
-/// - 过滤 trashed 条目
-/// - 按 `(name, content)` 字典序排序,避免 HashMap 迭代导致的请求间顺序漂移
-///   (否则会击穿上游 Anthropic / OpenAI 的 prompt cache)
+/// - Filters out trashed entries
+/// - Sorts lexicographically by `(name, content)`, to avoid request-to-request ordering
+///   drift caused by HashMap iteration (otherwise it would defeat the upstream
+///   Anthropic / OpenAI prompt cache)
 ///
-/// 不在内部判断 `is_memory_enabled`,gate 由调用方控制;这样函数可作为纯
-/// 集合逻辑独立测试,不依赖 `AISettings` 等 singleton。
+/// Does not check `is_memory_enabled` internally; the gate is controlled by the caller,
+/// so this function can be tested independently as pure set logic, without depending on
+/// singletons like `AISettings`.
 pub(crate) fn collect_user_rules(
     object_store_model: &ObjectStoreModel,
 ) -> Vec<(Option<String>, String)> {
@@ -257,9 +264,10 @@ impl RequestParams {
         let is_memory_enabled = ai_settings.is_memory_enabled(app);
         let warp_drive_context_enabled = ai_settings.is_warp_drive_context_enabled(app);
 
-        // Zap BYOP 修复 Issue #116:gate 在 `is_memory_enabled`,具体收集逻辑
-        // 抽到 `collect_user_rules` 纯函数,只接 `&ObjectStoreModel` 入参以便测试,
-        // 不依赖完整 AppContext singleton 集合。
+        // Zap BYOP fix for Issue #116: the gate is `is_memory_enabled`; the actual
+        // collection logic is factored out into the `collect_user_rules` pure function,
+        // which only takes an `&ObjectStoreModel` argument for testability, without
+        // depending on the full AppContext singleton set.
         let user_rules = if is_memory_enabled {
             collect_user_rules(ObjectStoreModel::as_ref(app))
         } else {
@@ -448,8 +456,8 @@ impl RequestParams {
             lrc_running_command: None,
             lrc_should_spawn_subagent: false,
             byop_target_task_id,
-            // BYOP-only:由 controller 在 dispatch 到 BYOP exec 前回填(setter 风格,
-            // 避免穿过 ConversationRequestData / 非 BYOP 路径)。
+            // BYOP-only: backfilled by the controller before dispatching to BYOP exec
+            // (setter-style, to avoid threading it through ConversationRequestData / non-BYOP paths).
             compaction_state: None,
             byop_repair_state: Default::default(),
         }

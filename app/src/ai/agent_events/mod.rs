@@ -17,7 +17,7 @@ pub(crate) use driver::{
 };
 pub(crate) use message_hydrator::MessageHydrator;
 
-/// 本地 agent 事件流入口。Zap 保留接口以支持本地 driver 注入,默认实现禁用云端 RTC。
+/// Entry point for the local agent event stream. Zap keeps the interface to support local driver injection; the default implementation disables cloud RTC.
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub(crate) trait AgentEventStreamClient: 'static + Send + Sync {

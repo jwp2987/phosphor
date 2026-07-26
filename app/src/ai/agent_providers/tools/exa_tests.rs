@@ -1,4 +1,4 @@
-//! `exa.rs` 纯协议逻辑单测(无 HTTP)。
+//! Unit tests for `exa.rs`'s pure protocol logic (no HTTP).
 
 use super::*;
 
@@ -21,13 +21,13 @@ fn endpoint_url_with_simple_key() {
 
 #[test]
 fn endpoint_url_percent_encodes_special_chars() {
-    // key 含 + / = 这类 querystring 危险字符
+    // Key contains querystring-dangerous characters like + / = &
     let url = endpoint_url(Some("a+b/c=d&e"));
     assert!(url.starts_with("https://mcp.exa.ai/mcp?exaApiKey="));
-    assert!(url.contains("%2B"), "+ 应被编码: {url}");
-    assert!(url.contains("%2F"), "/ 应被编码: {url}");
-    assert!(url.contains("%3D"), "= 应被编码: {url}");
-    assert!(url.contains("%26"), "& 应被编码: {url}");
+    assert!(url.contains("%2B"), "+ should be encoded: {url}");
+    assert!(url.contains("%2F"), "/ should be encoded: {url}");
+    assert!(url.contains("%3D"), "= should be encoded: {url}");
+    assert!(url.contains("%26"), "& should be encoded: {url}");
 }
 
 // ---------------------------------------------------------------------------
@@ -55,10 +55,10 @@ fn request_body_default_args_match_opencode() {
     assert_eq!(a["type"], "auto");
     assert_eq!(a["numResults"], 8);
     assert_eq!(a["livecrawl"], "fallback");
-    // contextMaxCharacters 缺省时不应序列化
+    // contextMaxCharacters should not be serialized when absent
     assert!(
         a.get("contextMaxCharacters").is_none(),
-        "contextMaxCharacters 应在 None 时被 skip"
+        "contextMaxCharacters should be skipped when None"
     );
 }
 
@@ -105,7 +105,7 @@ fn sse_parser_skips_non_data_lines() {
 
 #[test]
 fn sse_parser_returns_first_with_content() {
-    // 第一条 data 没有 content,第二条才有
+    // The first data line has no content; the second one does
     let body = "data: {\"result\":{\"content\":[]}}\n\
                 data: {\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"second\"}]}}\n";
     let out = parse_sse_body(body).expect("parse ok").expect("non-empty");
@@ -116,7 +116,7 @@ fn sse_parser_returns_first_with_content() {
 fn sse_parser_empty_results_returns_none() {
     let body = "data: {\"result\":{\"content\":[]}}\n";
     let out = parse_sse_body(body).expect("parse ok");
-    assert!(out.is_none(), "空 content 应返回 None");
+    assert!(out.is_none(), "empty content should return None");
 }
 
 #[test]
@@ -128,19 +128,19 @@ fn sse_parser_no_data_lines() {
 
 #[test]
 fn sse_parser_invalid_json_returns_err() {
-    // 唯一一条 data 行不是合法 JSON,且没有任何 content 行
+    // The only data line is not valid JSON, and there's no content line at all
     let body = "data: not_a_json\n";
-    let err = parse_sse_body(body).expect_err("应当报错");
+    let err = parse_sse_body(body).expect_err("should error");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("Exa SSE") || msg.contains("invalid"),
-        "错误消息应可读: {msg}"
+        "error message should be readable: {msg}"
     );
 }
 
 #[test]
 fn sse_parser_handles_data_with_no_space() {
-    // SSE 规范允许 `data:foo`(无空格)和 `data: foo`(有空格)
+    // The SSE spec allows both `data:foo` (no space) and `data: foo` (with space)
     let body = "data:{\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"z\"}]}}\n";
     let out = parse_sse_body(body).expect("parse ok").expect("non-empty");
     assert_eq!(out, "z");

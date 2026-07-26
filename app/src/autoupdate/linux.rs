@@ -74,18 +74,19 @@ mod appimage {
         const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
         let channel = ChannelState::channel();
-        // openWarp:从 GitHub Release 缓存里取真实下载 URL,绕开空的 releases_base_url。
-        // 官方 channel 仍然走 release_assets_directory_url。
+        // openWarp: fetch the real download URL from the cached GitHub Release,
+        // bypassing the empty releases_base_url. Official channels still go
+        // through release_assets_directory_url.
         let url = if matches!(channel, warp_core::channel::Channel::Oss) {
-            // OSS Linux AppImage 默认资产名 "Zap-x86_64.AppImage"。
-            // 已知 release 资产名固定在 GitHub Actions 里。
+            // OSS Linux AppImage's default asset name is "Zap-x86_64.AppImage".
+            // The known release asset name is fixed in GitHub Actions.
             let asset = "Zap-x86_64.AppImage";
             if let Some(release) = crate::autoupdate::github::cached_release() {
                 if let Some(found) = release.find_asset(asset) {
                     found.browser_download_url.clone()
                 } else {
                     log::warn!(
-                        "openWarp: cached release tag {} 没有名为 {asset} 的资产,回退到 tag URL",
+                        "openWarp: cached release tag {} has no asset named {asset}, falling back to the tag URL",
                         release.tag_name
                     );
                     format!(
@@ -122,8 +123,10 @@ mod appimage {
             .await?
             .error_for_status()?;
 
-        // 流式读 chunk + 写入,过程中节流上报进度。AppImage 体积大(数十 MB),
-        // 一次 `.bytes()` 会卡住整个 UI 直到下载完;改成 stream 让 UI 看到进度。
+        // Stream-read chunks + write, throttling progress reporting along the
+        // way. The AppImage is large (tens of MB); a single `.bytes()` call
+        // would block the whole UI until the download finished, so this uses a
+        // stream instead so the UI can show progress.
         let total = response
             .headers()
             .get(http::header::CONTENT_LENGTH)
@@ -160,14 +163,16 @@ mod appimage {
             total,
         });
 
-        // openWarp:在覆盖原 AppImage 之前先对临时文件做 SHA-256 校验,
-        // 防御 CDN 中间人 / 网络损坏。其他 channel 跳过(有自家流程)。
+        // openWarp: verify the temp file's SHA-256 before overwriting the
+        // original AppImage, to guard against a CDN man-in-the-middle / network
+        // corruption. Other channels skip this (they have their own process).
         if matches!(channel, warp_core::channel::Channel::Oss) {
             let temp_path = new_appimage.path().to_path_buf();
             if let Err(e) =
                 crate::autoupdate::verify_oss_asset_sha256(&temp_path, "Zap-x86_64.AppImage")
             {
-                // 临时文件会随 NamedTempFile drop 自动清理,这里只需返回错误。
+                // The temp file is cleaned up automatically when NamedTempFile
+                // drops; only the error needs to be returned here.
                 return Err(e);
             }
         }
@@ -209,8 +214,9 @@ mod appimage {
         // Pass a flag to the app to let it know it was restarted as part of the
         // autoupdate process.
         command.arg(warp_cli::finish_update_flag());
-        // 测试本地通道版本 JSON 时，让新启动的二进制继续引用同一个文件，
-        // 以便验证自动更新后的 changelog 展示。
+        // When testing the local channel version JSON, let the newly launched
+        // binary keep referencing the same file, so we can verify the changelog
+        // display after auto-update.
         if let Ok(path) = std::env::var("WARP_CHANNEL_VERSIONS_PATH") {
             command.env("WARP_CHANNEL_VERSIONS_PATH", path);
         }
@@ -244,8 +250,9 @@ mod package_manager {
         // Pass a flag to the app to let it know it was restarted as part of the
         // autoupdate process.
         command.arg(finish_update_flag);
-        // 测试本地通道版本 JSON 时，让新启动的二进制继续引用同一个文件，
-        // 以便验证自动更新后的 changelog 展示。
+        // When testing the local channel version JSON, let the newly launched
+        // binary keep referencing the same file, so we can verify the changelog
+        // display after auto-update.
         if let Ok(path) = std::env::var("WARP_CHANNEL_VERSIONS_PATH") {
             command.env("WARP_CHANNEL_VERSIONS_PATH", path);
         }
@@ -273,8 +280,10 @@ impl UpdateMethod {
             return Self::AppImage(appimage_path);
         }
         if let Ok(package_manager) = PackageManager::detect() {
-            // 记录用户应当跑的升级命令,方便从日志查问题。UI 仍然兜底跳 GitHub
-            // release 页(用户可以下 .deb/.rpm 自行 apt install / dnf install)。
+            // Log the upgrade command the user should run, to make it easy to
+            // find from the logs when troubleshooting. The UI still falls back
+            // to the GitHub release page (the user can download the .deb/.rpm and
+            // apt install / dnf install it themselves).
             package_manager.log_upgrade_hint();
             return Self::PackageManager(package_manager);
         }
@@ -283,10 +292,12 @@ impl UpdateMethod {
 }
 
 /// Package managers that we understand and can assist with auto-update
-/// for. `Pacman` 区分两种情形:`PacmanOfficial` 表示包来自 archlinux.org 的
-/// 官方仓库(可以直接 `sudo pacman -Syu`),`PacmanAur` 表示包来自 AUR 或者
-/// 本地手工 `makepkg -si`,这时应该走 AUR helper(`paru -Syu` / `yay -Syu`),
-/// 不应该让用户 `pacman -U` 一个不存在的 release 资产。
+/// for. `Pacman` distinguishes two cases: `PacmanOfficial` means the package
+/// came from archlinux.org's official repo (can run `sudo pacman -Syu`
+/// directly); `PacmanAur` means the package came from the AUR or a local
+/// manual `makepkg -si`, in which case an AUR helper should be used
+/// (`paru -Syu` / `yay -Syu`) instead of having the user run `pacman -U` on a
+/// release asset that doesn't exist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackageManager {
     Apt {
@@ -301,20 +312,22 @@ pub enum PackageManager {
     Zypper {
         package_name: String,
     },
-    /// 走 archlinux.org 官方仓库的 pacman 包(`pacman -Si <pkg>` 命中)。
+    /// A pacman package from archlinux.org's official repo (`pacman -Si <pkg>` hits).
     PacmanOfficial {
         package_name: String,
     },
-    /// AUR / 本地手工安装(`pacman -Qi <pkg>` 命中但 `pacman -Si <pkg>` 不命中)。
+    /// AUR / manual local install (`pacman -Qi <pkg>` hits but `pacman -Si <pkg>` doesn't).
     PacmanAur {
         package_name: String,
     },
 }
 
 impl PackageManager {
-    /// 当前 channel 下要在系统包管理器里查询的候选包名,按可能性从高到低排序。
-    /// OSS 在 deb/rpm/arch bundle 脚本里包名都是 `zap`(见 script/linux/bundle_*),
-    /// 但 AUR 上常见命名是 `zap-bin` / `zap-git`,所以多试几个。
+    /// Candidate package names to look up in the system package manager for the
+    /// current channel, ordered from most to least likely. OSS's deb/rpm/arch
+    /// bundle scripts all use `zap` as the package name (see
+    /// script/linux/bundle_*), but common naming on the AUR is `zap-bin` /
+    /// `zap-git`, so several are tried.
     fn candidate_names(channel: Channel) -> &'static [&'static str] {
         match channel {
             Channel::Stable => &["warp-terminal"],
@@ -322,8 +335,8 @@ impl PackageManager {
             Channel::Dev => &["warp-terminal-dev"],
             Channel::Integration => &["warp-terminal-integration"],
             Channel::Local => &["warp-terminal-local"],
-            // OSS:bundle_deb/rpm/arch 全部用 `zap` 作 package name,但 AUR
-            // 维护者可能选 `zap-bin` / `zap-git`,所以也试一下。
+            // OSS: bundle_deb/rpm/arch all use `zap` as the package name, but AUR
+            // maintainers might pick `zap-bin` / `zap-git`, so try those too.
             Channel::Oss => &["zap", "zap-bin", "zap-git"],
         }
     }
@@ -332,8 +345,9 @@ impl PackageManager {
         let channel = ChannelState::channel();
         let candidates = Self::candidate_names(channel);
 
-        // 依次试每个候选包名;第一个被任意 PM 识别为已安装的就返回。
-        // pacman 命中后再用 `pacman -Si` 区分官方仓库 / AUR。
+        // Try each candidate package name in turn; return the first one that any
+        // PM recognizes as installed. After a pacman hit, use `pacman -Si` to
+        // distinguish official repo / AUR.
         for &name in candidates {
             if let Some(pm) = Self::probe_one(name)? {
                 return Ok(pm);
@@ -345,16 +359,18 @@ impl PackageManager {
         );
     }
 
-    /// 对一个具体的包名跑探测脚本;命中则返回对应的 PackageManager,未命中返回 None。
-    /// pacman 命中后额外查 `pacman -Si` 来区分官方仓库和 AUR。
+    /// Runs the detection script for a specific package name; returns the
+    /// corresponding PackageManager on a hit, or None on a miss. After a pacman
+    /// hit, additionally queries `pacman -Si` to distinguish official repo from AUR.
     fn probe_one(package_name: &str) -> Result<Option<Self>> {
-        // shell 脚本里 `$PACKAGE_NAME` 由 env 传入,内容不会被 shell 转义注入
-        // (传到 command 而非 sh -c 字符串拼接)。
+        // `$PACKAGE_NAME` is passed via env in the shell script, so its content
+        // won't be shell-escaped/injected (it's passed to `command`, not
+        // interpolated into an `sh -c` string).
         let detect_script = r#"
             command -p pacman -Qi "$PACKAGE_NAME" >/dev/null 2>/dev/null
             if [ $? -eq 0 ]; then
-              # 区分官方仓库 vs AUR/手工。-Si 查 sync database,AUR/手工
-              # 安装的包不会被 sync 出来。
+              # Distinguish official repo vs AUR/manual. -Si queries the sync
+              # database; AUR/manually installed packages won't show up there.
               if command -p pacman -Si "$PACKAGE_NAME" >/dev/null 2>/dev/null; then
                 echo "pacman-official"
               else
@@ -400,7 +416,7 @@ impl PackageManager {
             }
         };
 
-        // exit 1 = 这个候选名没被任何 PM 识别;不是错,继续下一个候选。
+        // exit 1 = this candidate name wasn't recognized by any PM; not an error, try the next candidate.
         if !output.status.success() {
             return Ok(None);
         }
@@ -419,37 +435,39 @@ impl PackageManager {
         Ok(Some(pm))
     }
 
-    /// 把"用户应该跑的升级命令"写到日志里。OSS 用户翻 ~/.local/share/dev.zap.Zap/
-    /// 下面的日志能找到精确指令;UI 仍然走"前往 GitHub 下载"兜底,不区分到包管理器。
+    /// Writes "the upgrade command the user should run" to the log. OSS users
+    /// can find the precise instructions in the logs under
+    /// ~/.local/share/dev.zap.Zap/; the UI still falls back to "go download from
+    /// GitHub" without distinguishing by package manager.
     fn log_upgrade_hint(&self) {
         let hint = match self {
             Self::Apt { package_name } => {
                 format!(
-                    "请运行: 从 GitHub Release 下载 .deb 后 `sudo apt install ./{package_name}_*.deb`,\
-                     或者把 release 添加为 apt 源后 `sudo apt update && sudo apt install {package_name}`"
+                    "Please run: download the .deb from the GitHub Release, then `sudo apt install ./{package_name}_*.deb`,\
+                     or add the release as an apt source and run `sudo apt update && sudo apt install {package_name}`"
                 )
             }
             Self::Yum { package_name } => {
-                format!("请运行: 下载 .rpm 后 `sudo yum install ./{package_name}-*.rpm`")
+                format!("Please run: download the .rpm, then `sudo yum install ./{package_name}-*.rpm`")
             }
             Self::Dnf { package_name } => {
-                format!("请运行: 下载 .rpm 后 `sudo dnf install ./{package_name}-*.rpm`")
+                format!("Please run: download the .rpm, then `sudo dnf install ./{package_name}-*.rpm`")
             }
             Self::Zypper { package_name } => {
-                format!("请运行: 下载 .rpm 后 `sudo zypper install ./{package_name}-*.rpm`")
+                format!("Please run: download the .rpm, then `sudo zypper install ./{package_name}-*.rpm`")
             }
             Self::PacmanOfficial { package_name } => {
-                format!("请运行: `sudo pacman -Syu {package_name}`")
+                format!("Please run: `sudo pacman -Syu {package_name}`")
             }
             Self::PacmanAur { package_name } => {
                 format!(
-                    "您似乎从 AUR 安装了 {package_name}。请用 AUR helper 升级,\
-                     例如: `paru -Syu {package_name}` 或 `yay -Syu {package_name}`。\
-                     不要手动 pacman -U,GitHub Release 不附带 .pkg.tar.zst 资产。"
+                    "It looks like you installed {package_name} from the AUR. Please upgrade using an AUR helper,\
+                     e.g.: `paru -Syu {package_name}` or `yay -Syu {package_name}`.\
+                     Do not run pacman -U manually — the GitHub Release doesn't ship a .pkg.tar.zst asset."
                 )
             }
         };
-        log::info!("openWarp 升级提示: {hint}");
+        log::info!("openWarp upgrade hint: {hint}");
     }
 }
 

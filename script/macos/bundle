@@ -284,7 +284,7 @@ if [[ $RELEASE_CHANNEL = "local" ]]; then
     WARP_APP_NAME="WarpLocal"
     WARP_SCHEME_NAME="warplocal"
     FEATURES="$FEATURES,agent_mode_debug"
-    # 本地构建可覆盖 bundled framework 版本,供 app/build.rs 在 cargo bundle 期间读取。
+    # Local builds can override the bundled framework version, read by app/build.rs during cargo bundle.
     export FRAMEWORK_OVERRIDE="dev"
 elif [[ $RELEASE_CHANNEL = "dev" ]]; then
     WARP_BIN="dev"
@@ -294,7 +294,7 @@ elif [[ $RELEASE_CHANNEL = "dev" ]]; then
     FEATURES="$FEATURES,agent_mode_debug"
     # Enable heap usage tracking & profiling using jemalloc through pprof.
     FEATURES="$FEATURES,jemalloc_pprof,heap_usage_tracking"
-    # Dev 构建可覆盖 bundled framework 版本,供 app/build.rs 在 cargo bundle 期间读取。
+    # Dev builds can override the bundled framework version, read by app/build.rs during cargo bundle.
     export FRAMEWORK_OVERRIDE="dev"
     export HANDLE_MARKDOWN=1
 elif [[ $RELEASE_CHANNEL = "preview" ]]; then
@@ -315,7 +315,7 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
     BUNDLE_ID="dev.zap.Zap"
     WARP_APP_NAME="Zap"
     WARP_SCHEME_NAME="zap"
-    # autoupdate 走 GitHub Release(zerx-lab/warp),仅下载 DMG 到 Downloads,不自动覆盖 .app。
+    # autoupdate goes through GitHub Release (zerx-lab/warp); it only downloads the DMG to Downloads, and doesn't auto-overwrite the .app.
     FEATURES="release_bundle,extern_plist,autoupdate"
 fi
 

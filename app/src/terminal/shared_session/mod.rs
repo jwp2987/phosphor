@@ -21,7 +21,7 @@ pub mod presence_manager;
 pub mod render_util;
 pub(crate) mod selections;
 pub mod settings;
-// Zap:删除 share_modal(云端 shared session 弹窗)
+// Zap: removed share_modal (cloud shared-session popup)
 pub mod viewer;
 
 #[cfg(test)]

@@ -98,8 +98,9 @@ fn test_state_dir_path() {
 
 #[test]
 fn test_oss_secure_state_dir_is_disabled() {
-    // ChannelState 默认是 Channel::Oss。Zap 不应该探测 Zap 官方 App Group,
-    // 否则 macOS 会把它识别成访问其他 App 数据并在每次启动时弹权限窗。
+    // ChannelState defaults to Channel::Oss. Zap should not probe the official
+    // Zap App Group, otherwise macOS will treat it as accessing another app's
+    // data and pop up a permission dialog on every launch.
     assert_eq!(secure_state_dir(), None);
 }
 

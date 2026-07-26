@@ -3,9 +3,11 @@
 /// It also handles applying an optional diff to the file content that will be applied
 /// when the file is loaded.
 //
-// LSP 全栈下线后,本文件不再承载任何 LSP / hover / goto-definition /
-// find-references / 诊断装饰相关逻辑;只保留文件 load/save、diff 接受/拒绝、
-// 选区上下文 tooltip、版本冲突横幅、TabConfig footer 等本地能力。
+// Now that the full LSP stack has been removed, this file no longer carries
+// any LSP / hover / goto-definition / find-references / diagnostic-decoration
+// logic; it only retains local capabilities such as file load/save, diff
+// accept/reject, selection context tooltip, version-conflict banner, and the
+// TabConfig footer.
 use std::{
     ops::Range,
     path::{Path, PathBuf},
@@ -124,7 +126,7 @@ pub enum LocalCodeEditorEvent {
     ViewportUpdated,
     /// Emitted when the render state layout has been updated.
     LayoutInvalidated,
-    /// TabConfig footer 上点击「/update-tab-config」后递到上层处理。
+    /// Passed up to the parent for handling after clicking "/update-tab-config" on the TabConfig footer.
     RunTabConfigSkill {
         path: PathBuf,
     },
@@ -136,8 +138,8 @@ pub enum LocalCodeEditorEvent {
 enum LoadedFileMetadata {
     /// Normal file with both FileId and path (for files that are actually opened)
     LocalFile { id: FileId, path: PathBuf },
-    /// 远端 buffer:文件位于 SSH 主机上,通过 buffer-sync 协议同步,
-    /// 本地没有对应路径。
+    /// Remote buffer: the file lives on an SSH host and is synced via the
+    /// buffer-sync protocol; there is no corresponding local path.
     #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
     RemoteFile {
         id: FileId,
@@ -223,7 +225,8 @@ impl LocalCodeEditorView {
                 ctx.notify();
             }
             CodeEditorEvent::MouseHovered { .. } => {
-                // LSP 下线后,鼠标 hover 不再触发 hover/goto-definition;保留 event 订阅但不做处理。
+                // Since LSP was removed, mouse hover no longer triggers hover/goto-definition;
+                // the event subscription is kept but is a no-op.
             }
             CodeEditorEvent::CommentSaved { comment } => {
                 ctx.emit(LocalCodeEditorEvent::CommentSaved {
@@ -283,9 +286,11 @@ impl LocalCodeEditorView {
     fn perform_save(&mut self, file_id: FileId, ctx: &mut ViewContext<Self>) {
         self.base_content_version = Some(self.editor.as_ref(ctx).version(ctx));
 
-        // 远端 SSH 文件:走 buffer-sync 的 `SaveBuffer` 协议落盘。不能用下面的本地
-        // `FileModel` 路径 —— Remote buffer 没有本地路径,会得到 `NoFilePath`。
-        // 用户的编辑已通过 `BufferEdit` 实时同步到 daemon,这里只触发 daemon 落盘。
+        // Remote SSH file: writes to disk via the buffer-sync `SaveBuffer`
+        // protocol. Can't use the local `FileModel` path below — a Remote
+        // buffer has no local path and would get `NoFilePath`. The user's
+        // edits are already synced to the daemon in real time via
+        // `BufferEdit`; this only triggers the daemon to write to disk.
         #[cfg(feature = "local_tty")]
         {
             let is_remote = GlobalBufferModel::handle(ctx)
@@ -412,10 +417,11 @@ impl LocalCodeEditorView {
         local_editor
     }
 
-    /// 构造一个绑定到远端 buffer 的编辑器视图。
+    /// Constructs an editor view bound to a remote buffer.
     ///
-    /// 通过 [`GlobalBufferModel::open`] 以 [`BufferLocation::Remote`] 打开远端文件,
-    /// 内容由 buffer-sync 协议异步填充。语言识别复用远端路径的后缀。
+    /// Opens the remote file via [`GlobalBufferModel::open`] with
+    /// [`BufferLocation::Remote`]; content is filled in asynchronously by the
+    /// buffer-sync protocol. Language detection reuses the remote path's extension.
     #[cfg(feature = "local_tty")]
     pub fn new_with_remote_buffer<T>(
         remote_path: crate::code::buffer_location::RemotePath,
@@ -427,7 +433,7 @@ impl LocalCodeEditorView {
     where
         T: FnOnce(BufferState, &mut ViewContext<Self>) -> ViewHandle<CodeEditorView>,
     {
-        // 远端路径用于语言识别(后缀)。
+        // The remote path is used for language detection (by extension).
         let language_path = std::path::PathBuf::from(remote_path.path.as_str());
         let buffer_state = GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
             model.open(
@@ -522,7 +528,7 @@ impl LocalCodeEditorView {
     }
 
     /// Adds the TabConfig footer to the editor view if the file is a tab config TOML.
-    /// LSP 下线后,普通源码文件不再渲染 footer。
+    /// Since LSP was removed, normal source files no longer render a footer.
     pub(crate) fn add_footer(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(path) = self.file_path() else {
             return;
@@ -588,8 +594,8 @@ impl LocalCodeEditorView {
                         error: error.clone(),
                     });
                 }
-                // 远端 buffer 同步事件由 GlobalBufferModel / ServerModel 内部消费,
-                // 本地编辑器视图不关心。
+                // Remote buffer sync events are consumed internally by
+                // GlobalBufferModel / ServerModel; the local editor view doesn't care about them.
                 GlobalBufferModelEvent::RemoteBufferConflict { .. }
                 | GlobalBufferModelEvent::ServerLocalBufferUpdated { .. } => {}
             }
@@ -611,7 +617,7 @@ impl LocalCodeEditorView {
             return Err(ImmediateSaveError::NoFileId);
         };
 
-        // LSP 下线后不再在保存前调用 LSP format。
+        // Since LSP was removed, LSP format is no longer called before saving.
         self.perform_save(file_id, ctx);
         Ok(())
     }
@@ -729,7 +735,7 @@ impl LocalCodeEditorView {
     pub fn file_path(&self) -> Option<&Path> {
         match self.metadata.as_ref()? {
             LoadedFileMetadata::LocalFile { path, .. } => Some(path.as_path()),
-            // 远端文件没有本地路径。
+            // Remote files have no local path.
             LoadedFileMetadata::RemoteFile { .. } => None,
         }
     }

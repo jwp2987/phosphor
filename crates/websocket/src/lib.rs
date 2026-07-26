@@ -18,9 +18,9 @@ use thiserror::Error;
 #[cfg(not(target_family = "wasm"))]
 pub use async_tungstenite::tungstenite;
 
-// Issue #72:把 native::proxy 模块的全局代理类型重导出到 crate root,供
-// `app::settings::network` / `app::settings::init` 通过 `websocket::ProxyMode`
-// 直接引用。
+// Issue #72: re-exports the global proxy types from the native::proxy module
+// to the crate root, so `app::settings::network` / `app::settings::init` can
+// reference them directly via `websocket::ProxyMode`.
 #[cfg(not(target_family = "wasm"))]
 pub use imp::proxy::{set_global_proxy_config, ProxyConfig, ProxyMode};
 

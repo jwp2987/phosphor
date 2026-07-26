@@ -1,31 +1,38 @@
-//! 模型 reasoning(思考链)能力的启发式判定。
+//! Heuristic detection of model reasoning (chain-of-thought) capability.
 //!
-//! 背景:genai 0.6 各 adapter 内部**不**对模型做 capability gate ——
-//! 只要 `ChatOptions::reasoning_effort` 非空就照样注入 thinking 参数。
-//! 这对**不支持 reasoning 的模型**(claude-3-5-haiku / gpt-4o / gemini-1.5-pro)
-//! 会让上游 API 直接 400,所以 client 端必须自己判定。
+//! Background: genai 0.6's adapters do **not** gate models by capability internally ——
+//! as long as `ChatOptions::reasoning_effort` is non-empty, the thinking parameter gets
+//! injected regardless. For **models that don't support reasoning** (claude-3-5-haiku /
+//! gpt-4o / gemini-1.5-pro) this causes the upstream API to return a 400 directly, so the
+//! client side has to make this determination itself.
 //!
-//! 判定策略沿用 opencode `provider/transform.ts::variants()` 的"硬编码 + 子串匹配":
-//! BYOP 用户填的 model id 是任意字符串,无法靠 registry 元数据,只能匹配命名约定。
+//! The detection strategy follows opencode's `provider/transform.ts::variants()` approach
+//! of "hardcoded table + substring matching": a BYOP user's model id is an arbitrary
+//! string, so we can't rely on registry metadata and can only match naming conventions.
 //!
-//! 参考:
-//! - genai 0.6 anthropic adapter 的 SUPPORT_EFFORT_MODELS / SUPPORT_ADAPTTIVE_THINK_MODELS
-//! - opencode v5 的 anthropicAdaptiveEfforts / OPENAI_EFFORTS 名单
-//! - 各 provider 官方文档的 thinking-mode model 列表
+//! References:
+//! - genai 0.6 anthropic adapter's SUPPORT_EFFORT_MODELS / SUPPORT_ADAPTTIVE_THINK_MODELS
+//! - opencode v5's anthropicAdaptiveEfforts / OPENAI_EFFORTS lists
+//! - Each provider's official docs listing their thinking-mode models
 
 use crate::settings::{AgentProviderApiType, ReasoningEffortSetting};
 use std::collections::HashSet;
 use std::sync::{OnceLock, RwLock};
 
-/// 返回指定 (api_type, model_id) 实际可用的 reasoning effort 档位列表。
+/// Returns the list of reasoning effort tiers actually available for the given
+/// (api_type, model_id).
 ///
-/// 列表为空 → picker 整个隐藏(不支持 reasoning 或 client 无法可靠注入)。
-/// 列表首项 → 该模型的推荐默认档(picker 第一次出现时的初值)。
-/// 末项恒为 [`ReasoningEffortSetting::Off`],表示"明确关闭思考"(对支持 effort 的模型
-/// 会发 `none` 档,对 budget 系列会跳过 thinking 字段)。
+/// Empty list → the picker is hidden entirely (reasoning unsupported, or the client
+/// can't reliably inject it).
+/// First item → the recommended default tier for this model (the initial value the
+/// first time the picker appears).
+/// Last item is always [`ReasoningEffortSetting::Off`], meaning "explicitly turn off
+/// thinking" (for models that support effort tiers this sends the `none` tier; for
+/// budget-style models the thinking field is omitted entirely).
 ///
-/// 设计参照 opencode `provider/transform.ts::variants()` —— 各家档位是硬编码的,
-/// 不来自 models.dev。models.dev 只给"是否支持 reasoning"布尔,具体档位由 client 内置。
+/// Design follows opencode's `provider/transform.ts::variants()` —— each vendor's tiers
+/// are hardcoded, not sourced from models.dev. models.dev only gives a boolean for
+/// "does it support reasoning"; the actual tiers are built into the client.
 pub fn model_reasoning_variants(
     api_type: AgentProviderApiType,
     model_id: &str,
@@ -36,49 +43,53 @@ pub fn model_reasoning_variants(
     match api_type {
         AgentProviderApiType::Anthropic => {
             if is_opus_4_7_or_higher(&id) {
-                // Opus 4.7+: adaptive thinking + xhigh + max(genai 已适配)
+                // Opus 4.7+: adaptive thinking + xhigh + max (already supported by genai)
                 return vec![R::High, R::Low, R::Medium, R::XHigh, R::Max, R::Off];
             }
             if id.contains("claude-opus-4-6") || id.contains("claude-sonnet-4-6") {
-                // 4.6 系: adaptive thinking + max
+                // 4.6 line: adaptive thinking + max
                 return vec![R::High, R::Low, R::Medium, R::Max, R::Off];
             }
             if is_anthropic_reasoning_model(&id) {
-                // 4.5 / 3.7-sonnet 等 legacy budget,无 max
+                // 4.5 / 3.7-sonnet etc. — legacy budget, no max
                 return vec![R::High, R::Low, R::Medium, R::Off];
             }
             vec![]
         }
         AgentProviderApiType::OpenAi | AgentProviderApiType::OpenAiResp => {
             if id.contains("gpt-5") || id.contains("codex") {
-                // GPT-5 / codex: minimal + xhigh 都可用
+                // GPT-5 / codex: both minimal and xhigh are available
                 return vec![R::Medium, R::Minimal, R::Low, R::High, R::XHigh, R::Off];
             }
             if is_openai_reasoning_model(&id) {
-                // o-series: 仅 low/medium/high
+                // o-series: only low/medium/high
                 return vec![R::Medium, R::Low, R::High, R::Off];
             }
             vec![]
         }
         AgentProviderApiType::Gemini => {
             if is_gemini_reasoning_model(&id) {
-                // genai 0.6 统一发 thinkingBudget 数值,2.5/3.x 不区分档位
+                // genai 0.6 uniformly sends a thinkingBudget number; 2.5/3.x don't
+                // distinguish tiers
                 return vec![R::Medium, R::Low, R::High, R::Off];
             }
             vec![]
         }
-        // DeepSeek thinking-mode 模型(deepseek-reasoner / v4 / thinking / r1)。
-        // Zap 本地 fork(`lib/rust-genai`)放宽了 adapter_shared.rs 的注入条件,
-        // 让 `reasoning_effort` 顶层字段按 DeepSeek thinking_mode 文档下发。
+        // DeepSeek thinking-mode models (deepseek-reasoner / v4 / thinking / r1).
+        // Zap's local fork (`lib/rust-genai`) relaxed the injection condition in
+        // adapter_shared.rs so the `reasoning_effort` top-level field gets sent per
+        // DeepSeek's thinking_mode docs.
         //
-        // Ollama 后端模型 id 任意,保守留空。
+        // Ollama backend model ids are arbitrary, so we conservatively leave this empty.
         AgentProviderApiType::DeepSeek => {
             if is_deepseek_thinking_model(&id) {
-                // DeepSeek 官方思考深度只有 high / max 两档(low/medium/xhigh
-                // 即便服务端 deserializer 接受也只是同档别名,picker 不暴露冗余项)。
-                // Off 档走"关闭思考":本地 fork genai 已支持 ChatOptions::extra_body,
-                // chat_stream 在 DeepSeek+Off 时改发
-                // `extra_body = {"thinking": {"type": "disabled"}}` 顶层合并。
+                // DeepSeek's official docs only expose two thinking depths, high / max
+                // (low/medium/xhigh are accepted as aliases by the server deserializer
+                // at best, so the picker doesn't expose redundant entries).
+                // The Off tier turns thinking off: our local genai fork supports
+                // ChatOptions::extra_body, and chat_stream sends
+                // `extra_body = {"thinking": {"type": "disabled"}}` merged at the top
+                // level for DeepSeek+Off.
                 vec![R::High, R::Max, R::Off]
             } else {
                 vec![]
@@ -88,7 +99,8 @@ pub fn model_reasoning_variants(
     }
 }
 
-/// 该模型的推荐默认档(picker 首次出现时的初值);None 表示模型不支持 reasoning。
+/// The recommended default tier for this model (the initial value the first time the
+/// picker appears); `None` means the model doesn't support reasoning.
 pub fn default_reasoning_for(
     api_type: AgentProviderApiType,
     model_id: &str,
@@ -98,8 +110,8 @@ pub fn default_reasoning_for(
         .copied()
 }
 
-/// Opus 4.7 及更高版本(`claude-opus-4-7` / `claude-opus-5-0` ...)。
-/// 与 genai anthropic adapter 的 `is_opus_4_7_or_higher` regex 同语义。
+/// Opus 4.7 and above (`claude-opus-4-7` / `claude-opus-5-0` ...).
+/// Semantically matches the genai anthropic adapter's `is_opus_4_7_or_higher` regex.
 fn is_opus_4_7_or_higher(model_name: &str) -> bool {
     static RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
     let re = RE.get_or_init(|| regex::Regex::new(r"claude-opus-(\d+)-(\d+)").ok());
@@ -114,22 +126,26 @@ fn is_opus_4_7_or_higher(model_name: &str) -> bool {
     matches!((major, minor), (Some(major), Some(minor)) if (major, minor) >= (4, 7))
 }
 
-/// 判定指定 (api_type, model_name) 组合是否支持 reasoning(思考链)。
+/// Determines whether the given (api_type, model_name) combination supports reasoning
+/// (chain-of-thought).
 ///
-/// 仅当返回 `true` 时才向 genai 注入 `reasoning_effort`,否则按原样发送
-/// 普通 chat 请求,避免向旧模型(如 claude-3-5-haiku / gpt-4o)注入 thinking
-/// 参数被上游拒绝。
+/// Only when this returns `true` do we inject `reasoning_effort` into genai; otherwise
+/// we send a plain chat request as-is, to avoid injecting a thinking parameter into
+/// older models (e.g. claude-3-5-haiku / gpt-4o) that upstream would reject.
 ///
-/// 命名约定按各家 model id 风格(全转 lowercase 后子串匹配):
-/// - **Anthropic**:`claude-opus-4` / `claude-sonnet-4` / `claude-haiku-4` /
-///   `claude-3-7-sonnet`(extended thinking 起点)及更新版本
-/// - **OpenAI / OpenAIResp**:`o1` / `o3` / `o4` 系列、`gpt-5`、`codex`
-/// - **Gemini**:`gemini-2.5*` / `gemini-3*`(2.5 起 thinking,3.x 全系)
-/// - **DeepSeek**:`deepseek-reasoner` / `deepseek-r1` / `deepseek-v4*` /
-///   `deepseek-thinking`(官方两档:high / max 走 `reasoning_effort` 顶层字段,
-///   Off 档走 `extra_body.thinking.type=disabled` 关闭思考)
-/// - **Ollama**:走 OpenAI 兼容路径,后端模型 id 不可控,**保守返回 `false`**
-///   (用户若确实在跑 thinking 模型,可在 Settings 显式调档,后续再放宽)
+/// Naming conventions per vendor's model id style (all matched lowercase, by substring):
+/// - **Anthropic**: `claude-opus-4` / `claude-sonnet-4` / `claude-haiku-4` /
+///   `claude-3-7-sonnet` (where extended thinking starts) and newer
+/// - **OpenAI / OpenAIResp**: `o1` / `o3` / `o4` series, `gpt-5`, `codex`
+/// - **Gemini**: `gemini-2.5*` / `gemini-3*` (thinking starts at 2.5, all of 3.x)
+/// - **DeepSeek**: `deepseek-reasoner` / `deepseek-r1` / `deepseek-v4*` /
+///   `deepseek-thinking` (official has two tiers: high / max go through the
+///   `reasoning_effort` top-level field; Off goes through
+///   `extra_body.thinking.type=disabled` to turn thinking off)
+/// - **Ollama**: goes through the OpenAI-compatible path, backend model id is not
+///   controllable, so we **conservatively return `false`**
+///   (if a user really is running a thinking model, they can explicitly set the tier
+///   in Settings; we can relax this later)
 pub fn model_supports_reasoning(api_type: AgentProviderApiType, model_id: &str) -> bool {
     !model_reasoning_variants(api_type, model_id).is_empty()
 }
@@ -147,12 +163,12 @@ fn strip_effort_suffix(id: &str) -> &str {
 }
 
 fn is_anthropic_reasoning_model(id: &str) -> bool {
-    // claude-3-7-sonnet 是 extended thinking 的起点(2025-02 发布)。
+    // claude-3-7-sonnet is where extended thinking starts (released 2025-02).
     if id.contains("claude-3-7-sonnet") {
         return true;
     }
-    // claude-opus-4* / claude-sonnet-4* / claude-haiku-4* 全系支持。
-    // 同时兼容 `4.5` / `4-5` / `4_5` 三种点号风格。
+    // claude-opus-4* / claude-sonnet-4* / claude-haiku-4* are all supported.
+    // Also handles the `4.5` / `4-5` / `4_5` dot-style variants.
     let four_series = ["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"];
     if four_series.iter().any(|prefix| id.contains(prefix)) {
         return true;
@@ -161,9 +177,10 @@ fn is_anthropic_reasoning_model(id: &str) -> bool {
 }
 
 fn is_openai_reasoning_model(id: &str) -> bool {
-    // o-series reasoning 模型(o1 / o1-mini / o1-pro / o3 / o3-mini / o4 / o4-mini)。
-    // 注意 `o1-mini` 在 opencode azure case 被排除,但 OpenAI 官方接受 reasoning_effort,
-    // 这里按上游 OpenAI 行为保留。
+    // o-series reasoning models (o1 / o1-mini / o1-pro / o3 / o3-mini / o4 / o4-mini).
+    // Note: `o1-mini` is excluded in opencode's azure case, but OpenAI's official API
+    // accepts reasoning_effort for it, so we keep it here to match upstream OpenAI
+    // behavior.
     let o_series_prefixes = ["o1", "o3", "o4"];
     for prefix in o_series_prefixes {
         if id == prefix
@@ -173,7 +190,8 @@ fn is_openai_reasoning_model(id: &str) -> bool {
             return true;
         }
     }
-    // GPT-5 系列(全系 reasoning)+ codex 变体(gpt-5-codex / codex-* / o*-codex 等)。
+    // GPT-5 series (all support reasoning) + codex variants (gpt-5-codex / codex-* /
+    // o*-codex etc.).
     if id.contains("gpt-5") || id.contains("codex") {
         return true;
     }
@@ -181,8 +199,8 @@ fn is_openai_reasoning_model(id: &str) -> bool {
 }
 
 fn is_deepseek_thinking_model(id: &str) -> bool {
-    // DeepSeek thinking-mode 模型名约定:reasoner / r1 / v4* / *-thinking。
-    // `deepseek-v4` 子串覆盖 `deepseek-v4-flash` 等后续变体。
+    // DeepSeek thinking-mode model naming convention: reasoner / r1 / v4* / *-thinking.
+    // The `deepseek-v4` substring also covers later variants like `deepseek-v4-flash`.
     id.contains("deepseek-reasoner")
         || id.contains("deepseek-v4")
         || id.contains("deepseek-thinking")
@@ -190,101 +208,117 @@ fn is_deepseek_thinking_model(id: &str) -> bool {
 }
 
 fn is_gemini_reasoning_model(id: &str) -> bool {
-    // gemini-2.5-* 起 thinking 模式(flash-thinking-exp / pro / pro-thinking)。
-    // gemini-3.* 全系(opencode 在 levels 上区分 3 / 3.1)。
+    // Thinking mode starts at gemini-2.5-* (flash-thinking-exp / pro / pro-thinking).
+    // All of gemini-3.* (opencode distinguishes 3 / 3.1 at the levels layer).
     if id.contains("gemini-2.5") || id.contains("gemini-3") {
         return true;
     }
-    // 历史 thinking exp 通道(2.0 flash-thinking-exp 也算)。
+    // Legacy thinking exp channel (2.0 flash-thinking-exp counts too).
     if id.contains("thinking") {
         return true;
     }
     false
 }
 
-/// 对齐 opencode `model.capabilities.interleaved.field`(`provider/provider.ts:1182-1187`、
-/// `provider/transform.ts:217-249`):某些 thinking-mode 模型要求把历史 reasoning 以特定
-/// 字段名挂回 assistant message。
+/// Mirrors opencode's `model.capabilities.interleaved.field` (`provider/provider.ts:1182-1187`,
+/// `provider/transform.ts:217-249`): some thinking-mode models require historical
+/// reasoning to be attached back onto the assistant message under a specific field name.
 ///
-/// opencode 的两个合法取值是 `"reasoning_content"` 和 `"reasoning_details"`:
-/// - `reasoning_content`:绝大多数国产 OpenAI 兼容 thinking 模型(DeepSeek/Kimi/MiMo/Qwen3/
-///   GLM-thinking/MiniMax/Hunyuan/Ernie/Doubao …)使用的顶层字符串字段。
-/// - `reasoning_details`:OpenRouter 等聚合 provider 的 array 形式;genai 0.6 OpenAI adapter
-///   暂未支持(只能 hoist 顶层 `reasoning_content` 字符串)— 留作 enum 占位,
-///   命中时退化按 `ReasoningContent` 序列化(够覆盖大多数兼容端点)。
+/// opencode's two valid values are `"reasoning_content"` and `"reasoning_details"`:
+/// - `reasoning_content`: the top-level string field used by most Chinese OpenAI-compatible
+///   thinking models (DeepSeek/Kimi/MiMo/Qwen3/GLM-thinking/MiniMax/Hunyuan/Ernie/Doubao ...).
+/// - `reasoning_details`: the array form used by aggregator providers like OpenRouter;
+///   the genai 0.6 OpenAI adapter doesn't support this yet (it can only hoist the
+///   top-level `reasoning_content` string) — kept as an enum placeholder, and falls back
+///   to serializing as `ReasoningContent` when matched (which covers most compatible
+///   endpoints).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReasoningInterleavedField {
-    /// 顶层 `reasoning_content` 字符串字段。
+    /// Top-level `reasoning_content` string field.
     ReasoningContent,
-    /// 顶层 `reasoning_details` 数组字段(预留,当前序列化路径走 fallback)。
+    /// Top-level `reasoning_details` array field (reserved; the current serialization
+    /// path falls back).
     ReasoningDetails,
 }
 
-/// 国产 / 第三方 OpenAI 兼容 thinking 模型 model_id 子串匹配表。
+/// Substring match table of model_ids for Chinese / third-party OpenAI-compatible
+/// thinking models.
 ///
-/// 设计照 opencode `models.dev` 的 `capabilities.interleaved` 数据字段 —— 每条
-/// thinking 模型在 catalog 里显式声明 field,client 端按 model 查表决定回传形态。
-/// warp 没有外置 catalog,把表硬编码进来,后续可改为可配置覆盖。
+/// Modeled after opencode's `models.dev` `capabilities.interleaved` data field —— each
+/// thinking model explicitly declares its field in the catalog, and the client looks up
+/// the model to decide the echo shape. warp has no external catalog, so the table is
+/// hardcoded here; it can be made configurable/overridable later.
 ///
-/// 规则:**小写 model_id 子串包含 needle 即命中**。顺序无关(短串与长串不互相覆盖,
-/// 第一个命中即可)。维护时只需在表里加一行,不改控制流。
+/// Rule: **a match is a lowercase model_id substring containing the needle**. Order
+/// doesn't matter (short and long strings don't shadow each other; the first match
+/// wins). Maintaining this only requires adding a row to the table, no control-flow
+/// changes.
 const INTERLEAVED_RULES: &[(&str, ReasoningInterleavedField)] = {
     use ReasoningInterleavedField::ReasoningContent as RC;
     &[
-        // DeepSeek 全系 thinking(用户常把官方 OpenAI 兼容端点配为 OpenAi api_type)
+        // DeepSeek's whole thinking line (users often configure the official
+        // OpenAI-compatible endpoint as the OpenAi api_type)
         ("deepseek-reasoner", RC),
         ("deepseek-v4", RC),
         ("deepseek-r1", RC),
         ("deepseek-thinking", RC),
-        // Moonshot Kimi 系列
+        // Moonshot Kimi series
         ("kimi", RC),
         ("moonshot", RC),
-        // 小米 MiMo(报错 issue 来源:`mimo-v2.5-pro`)
+        // Xiaomi MiMo (source of the reported issue: `mimo-v2.5-pro`)
         ("mimo", RC),
-        // 阿里 Qwen thinking / QwQ(DashScope OpenAI 兼容端点 + enable_thinking)
+        // Alibaba Qwen thinking / QwQ (DashScope OpenAI-compatible endpoint +
+        // enable_thinking)
         ("qwen3", RC),
         ("qwq", RC),
-        // 智谱 GLM thinking(z.ai / 智谱开放平台)
+        // Zhipu GLM thinking (z.ai / Zhipu open platform)
         ("zai-glm", RC),
         ("glm-4.5-thinking", RC),
         ("glm-4.6-thinking", RC),
         ("glm-4.7", RC),
-        // MiniMax M1 thinking(使用 reasoning_content 字段)
+        // MiniMax M1 thinking (uses the reasoning_content field)
         ("minimax-m1", RC),
-        // MiniMax M3: reasoning 以 <think> 标签夹在 content 中传输,
-        // 多轮 echo 格式待确认(RC 还是 <think>-in-content),暂不加 RC 条目。
-        // 显示修复由 model_uses_think_tags_in_content 白名单 + 流式提取处理。
-        // 腾讯混元 T1 thinking
+        // MiniMax M3: reasoning is delivered inline in content wrapped in <think> tags;
+        // the multi-turn echo format (RC vs <think>-in-content) is still unconfirmed,
+        // so no RC entry is added for it yet.
+        // The display fix is handled by the model_uses_think_tags_in_content
+        // whitelist plus streaming extraction.
+        // Tencent Hunyuan T1 thinking
         ("hunyuan-t1", RC),
-        // 百度文心 X1 / thinking
+        // Baidu Ernie X1 / thinking
         ("ernie-x1", RC),
         ("ernie-thinking", RC),
-        // 阶跃 Step thinking
+        // StepFun Step thinking
         ("step-r-mini", RC),
         ("step-thinking", RC),
-        // 字节豆包 thinking
+        // ByteDance Doubao thinking
         ("doubao-thinking", RC),
         ("doubao-1-5-thinking", RC),
-        // 零一 Yi thinking
+        // 01.AI Yi thinking
         ("yi-thinking", RC),
     ]
 };
 
-/// OpenAI 兼容 thinking 模型中，把 reasoning 以 `<think>...</think>` 标签形式夹在
-/// `/delta/content` 里传输（而非独立的 `/delta/reasoning_content` 字段）的模型白名单。
+/// Whitelist of OpenAI-compatible thinking models that deliver reasoning inline in
+/// `/delta/content` wrapped in `<think>...</think>` tags (rather than as a separate
+/// `/delta/reasoning_content` field).
 ///
-/// 命中此表的模型，chat_stream 流式层会对 Chunk 事件做 `<think>` 标签提取，
-/// 把标签内内容路由到 reasoning 通道显示为灰色思考块。
-/// 未命中的模型保持原有文本输出行为，避免误吞含字面量 `<think>` 的正常输出。
+/// For models matching this table, the chat_stream streaming layer extracts `<think>`
+/// tags from Chunk events, routing the tagged content to the reasoning channel to be
+/// displayed as a grayed-out thinking block.
+/// Models that don't match keep their original text-output behavior, to avoid
+/// accidentally swallowing normal output that happens to contain a literal `<think>`.
 const THINK_TAG_IN_CONTENT_MODELS: &[&str] = &[
-    // MiniMax M3:reasoning 通过 content 中的 <think> 标签传输。
+    // MiniMax M3: reasoning is delivered via <think> tags in content.
     "minimax-m3",
 ];
 
-/// 返回指定模型是否通过 `<think>` 标签在 content 中传递 reasoning（而非 reasoning_content 字段）。
+/// Returns whether the given model delivers reasoning via `<think>` tags in content
+/// (rather than via the reasoning_content field).
 ///
-/// chat_stream 流式层用此函数决定是否对 Chunk 事件做 `<think>` 标签提取。
+/// The chat_stream streaming layer uses this function to decide whether to extract
+/// `<think>` tags from Chunk events.
 pub fn model_uses_think_tags_in_content(model_id: &str) -> bool {
     let id = model_id.to_ascii_lowercase();
     THINK_TAG_IN_CONTENT_MODELS
@@ -292,20 +326,24 @@ pub fn model_uses_think_tags_in_content(model_id: &str) -> bool {
         .any(|&needle| id.contains(needle))
 }
 
-/// 运行时 latch 集合:记录哪些 (api_type, model_id) 在某次 stream 里发过
-/// `ReasoningChunk` —— 即"该 endpoint 服务端认识 reasoning_content 字段"的
-/// 精准启发式信号。
+/// Runtime latch set: records which (api_type, model_id) pairs have sent a
+/// `ReasoningChunk` during some stream —— i.e. a precise heuristic signal that "this
+/// endpoint's server recognizes the reasoning_content field".
 ///
-/// 这是和 opencode 的关键差异:opencode 用 `models.dev` 外置 catalog 静态声明
-/// `capabilities.interleaved`,warp 没有 catalog,改用 stream 探测 —— 发过 reasoning
-/// chunk 的 endpoint 必然认 reasoning_content,**Cerebras / Groq / OpenRouter
-/// / Together AI / SambaNova**等不发该 chunk 的 strict provider 永远不会被 latch,
-/// 自动避开 zerx-lab/warp #25 那类误挂 400。
+/// This is the key difference from opencode: opencode statically declares
+/// `capabilities.interleaved` via an external `models.dev` catalog; warp has no
+/// catalog, so it uses stream probing instead —— an endpoint that has ever sent a
+/// reasoning chunk must recognize reasoning_content, and **strict providers like
+/// Cerebras / Groq / OpenRouter / Together AI / SambaNova** that never send that chunk
+/// will simply never get latched, automatically avoiding the kind of spurious 400 seen
+/// in zerx-lab/warp #25.
 ///
-/// 信号只跨 stream/turn 在内存里保留,进程重启清空(下次见到 reasoning chunk
-/// 会重新 latch)。仅对 OpenAi / OpenAiResp api_type 有意义 —— DeepSeek 整个
-/// adapter 默认 echo;Anthropic / Gemini 各自走 thinking blocks / thought
-/// signatures,即便 stream 出 reasoning chunk 也不需要顶层 `reasoning_content` 字段。
+/// The signal is only kept in memory across a stream/turn and is cleared on process
+/// restart (it gets re-latched the next time a reasoning chunk is seen). It's only
+/// meaningful for the OpenAi / OpenAiResp api_type —— the whole DeepSeek adapter echoes
+/// by default; Anthropic / Gemini each go through thinking blocks / thought signatures
+/// respectively, so even if a stream emits a reasoning chunk they don't need this
+/// top-level `reasoning_content` field.
 static REASONING_ECHO_LATCH: OnceLock<RwLock<HashSet<(AgentProviderApiType, String)>>> =
     OnceLock::new();
 
@@ -313,13 +351,15 @@ fn latch_set() -> &'static RwLock<HashSet<(AgentProviderApiType, String)>> {
     REASONING_ECHO_LATCH.get_or_init(|| RwLock::new(HashSet::new()))
 }
 
-/// 在 stream 收到 `ReasoningChunk` 时调用,把 (api_type, lowercased model_id) 标记为
-/// "需要回传 reasoning_content"。下一轮 [`model_reasoning_interleaved`] /
-/// [`model_requires_reasoning_echo`] 查询时优先返回 `Some(ReasoningContent)` /
-/// `true`,无论是否在静态 [`INTERLEAVED_RULES`] 表内。
+/// Called when a `ReasoningChunk` is received in a stream; marks (api_type, lowercased
+/// model_id) as "needs to echo back reasoning_content". On the next
+/// [`model_reasoning_interleaved`] / [`model_requires_reasoning_echo`] query, this takes
+/// priority and returns `Some(ReasoningContent)` / `true`, regardless of whether it's
+/// present in the static [`INTERLEAVED_RULES`] table.
 ///
-/// 仅对 OpenAi / OpenAiResp api_type 真正落地写入(其他 api_type 早就有原生
-/// reasoning 通道,latch 无收益且会污染 set);其余路径快速 return。
+/// Only actually writes for the OpenAi / OpenAiResp api_type (other api_types already
+/// have a native reasoning channel, so latching would have no benefit and would just
+/// pollute the set); other paths return early.
 pub fn note_reasoning_seen(api_type: AgentProviderApiType, model_id: &str) {
     if !matches!(
         api_type,
@@ -345,7 +385,7 @@ fn latch_contains(api_type: AgentProviderApiType, model_id_lower: &str) -> bool 
         .unwrap_or(false)
 }
 
-/// 测试用:清空 latch。生产代码不应调用。
+/// For tests only: clears the latch. Production code should not call this.
 #[cfg(test)]
 fn reset_reasoning_latch() {
     if let Ok(mut s) = latch_set().write() {
@@ -353,36 +393,42 @@ fn reset_reasoning_latch() {
     }
 }
 
-/// 查表得到模型应使用的 reasoning interleaved 字段;`None` 表示该 endpoint 不应回传
-/// `reasoning_content` —— 即便 stream 收到了真实 reasoning,回放时也丢弃,避免被
-/// **Cerebras / Groq / OpenRouter / Together AI / SambaNova / OpenAI 官方**等
-/// 严格 schema provider 用 400 `wrong_api_format` 拒绝。
+/// Looks up which reasoning interleaved field the model should use; `None` means this
+/// endpoint should not echo back `reasoning_content` —— even if the stream received real
+/// reasoning, it's discarded on replay, to avoid a 400 `wrong_api_format` rejection from
+/// **strict-schema providers like Cerebras / Groq / OpenRouter / Together AI / SambaNova /
+/// official OpenAI**.
 ///
-/// 对齐 opencode `provider/transform.ts:217-249` 的 `capabilities.interleaved` 语义,
-/// 增强为两段决策(精度优先 → 召回率兜底):
+/// Mirrors the semantics of opencode's `provider/transform.ts:217-249`
+/// `capabilities.interleaved`, enhanced into a two-stage decision (precision first,
+/// then recall as a fallback):
 ///
-/// 1. **运行时 latch**(精准):此 (api_type, model_id) 在历史 stream 中发过
-///    `ReasoningChunk` → 该 endpoint 服务端必然认 reasoning_content 字段 →
-///    返回 `Some(ReasoningContent)`。覆盖 [`INTERLEAVED_RULES`] 表外的任意国产 /
-///    第三方 thinking 模型,无需维护白名单。
-/// 2. **静态 hint**(冷启动):latch 未命中时回退查 [`INTERLEAVED_RULES`] 子串表
-///    与 api_type 默认值:
-///    - **DeepSeek api_type**:整个 adapter 即 DeepSeek 专属,全模型 echo
-///      (与 opencode 默认值 `apiID.includes("deepseek") → { field: "reasoning_content" }` 一致)
-///    - **OpenAI / OpenAiResp**:走子串表,覆盖国内主流 thinking 模型
-///    - **Anthropic / Gemini / Ollama**:`None`(Anthropic 走 thinking blocks,
-///      Gemini 走 thought signatures,Ollama 走原生 reasoning;均不需要这个 echo)
+/// 1. **Runtime latch** (precise): this (api_type, model_id) has sent a
+///    `ReasoningChunk` in a past stream → this endpoint's server must recognize the
+///    reasoning_content field → returns `Some(ReasoningContent)`. This covers any
+///    Chinese / third-party thinking model outside the [`INTERLEAVED_RULES`] table,
+///    with no whitelist maintenance needed.
+/// 2. **Static hint** (cold start): if the latch doesn't match, falls back to the
+///    [`INTERLEAVED_RULES`] substring table and api_type defaults:
+///    - **DeepSeek api_type**: the whole adapter is DeepSeek-specific, so all models
+///      echo (matches opencode's default of
+///      `apiID.includes("deepseek") → { field: "reasoning_content" }`)
+///    - **OpenAI / OpenAiResp**: uses the substring table, covering mainstream
+///      Chinese thinking models
+///    - **Anthropic / Gemini / Ollama**: `None` (Anthropic uses thinking blocks,
+///      Gemini uses thought signatures, Ollama uses native reasoning; none of them
+///      need this echo)
 pub fn model_reasoning_interleaved(
     api_type: AgentProviderApiType,
     model_id: &str,
 ) -> Option<ReasoningInterleavedField> {
     use AgentProviderApiType as T;
     let id = model_id.to_ascii_lowercase();
-    // (1) 运行时 latch —— 上一轮 stream 发过 reasoning chunk 就锁定 echo
+    // (1) Runtime latch —— echo is locked in if the last stream sent a reasoning chunk
     if matches!(api_type, T::OpenAi | T::OpenAiResp) && latch_contains(api_type, &id) {
         return Some(ReasoningInterleavedField::ReasoningContent);
     }
-    // (2) 静态 hint —— 冷启动 / 首轮(尚未 stream 过)的兜底
+    // (2) Static hint —— fallback for cold start / first turn (not streamed yet)
     match api_type {
         T::DeepSeek => Some(ReasoningInterleavedField::ReasoningContent),
         T::OpenAi | T::OpenAiResp => INTERLEAVED_RULES
@@ -393,17 +439,21 @@ pub fn model_reasoning_interleaved(
     }
 }
 
-/// 判定指定 (api_type, model_id) 是否需要在每条 assistant message 上回传
-/// `reasoning_content` 字段(包括空串占位)。等价于 [`model_reasoning_interleaved`]
-/// `.is_some()`,保留旧名以兼容已有调用点。
+/// Determines whether the given (api_type, model_id) needs to echo back the
+/// `reasoning_content` field on every assistant message (including as an empty-string
+/// placeholder). Equivalent to [`model_reasoning_interleaved`] `.is_some()`; the old
+/// name is kept for compatibility with existing call sites.
 ///
-/// 背景:`deepseek-v4-flash` / `mimo-v2.5-pro` 等新一代 thinking-mode 模型把
-/// server-side 校验从"仅含 tool_calls 的 assistant 必须带 reasoning_content"收紧到
-/// "thinking-mode 下每条 assistant 必须带 reasoning_content,缺失即 400
-/// `The reasoning_content in the thinking mode must be passed back to the API`"。
-/// genai 0.6 序列化层(`adapter_shared.rs:368-373`)只 echo 已有的
-/// `ContentPart::ReasoningContent`,**不会自动补缺**,所以 client 层必须强制挂上
-/// 占位字段(空串也行 — genai 原样 insert,服务端只校验字段存在性)。
+/// Background: newer-generation thinking-mode models like `deepseek-v4-flash` /
+/// `mimo-v2.5-pro` tightened server-side validation from "an assistant message
+/// containing only tool_calls must carry reasoning_content" to "in thinking mode,
+/// every assistant message must carry reasoning_content, or it's a 400 error:
+/// `The reasoning_content in the thinking mode must be passed back to the API`".
+/// The genai 0.6 serialization layer (`adapter_shared.rs:368-373`) only echoes an
+/// existing `ContentPart::ReasoningContent` and **does not auto-fill a missing one**,
+/// so the client layer must forcibly attach a placeholder field (an empty string is
+/// fine —— genai inserts it as-is, and the server only validates that the field is
+/// present).
 pub fn model_requires_reasoning_echo(api_type: AgentProviderApiType, model_id: &str) -> bool {
     model_reasoning_interleaved(api_type, model_id).is_some()
 }
@@ -419,7 +469,7 @@ mod tests {
         assert!(model_supports_reasoning(t, "claude-sonnet-4-6"));
         assert!(model_supports_reasoning(t, "claude-opus-4-7"));
         assert!(model_supports_reasoning(t, "claude-3-7-sonnet-20250219"));
-        // 后缀不影响判定
+        // suffix should not affect the determination
         assert!(model_supports_reasoning(t, "claude-sonnet-4-5-high"));
         assert!(model_supports_reasoning(t, "claude-opus-4-7-max"));
     }
@@ -478,7 +528,7 @@ mod tests {
         assert!(model_supports_reasoning(t, "deepseek-v4-flash"));
         assert!(model_supports_reasoning(t, "deepseek-thinking"));
         assert!(model_supports_reasoning(t, "deepseek-r1"));
-        // 普通 chat 模型不带 thinking
+        // plain chat models don't have thinking
         assert!(!model_supports_reasoning(t, "deepseek-chat"));
         assert!(!model_supports_reasoning(t, "deepseek-coder"));
     }
@@ -493,7 +543,7 @@ mod tests {
 
     #[test]
     fn requires_reasoning_echo_deepseek() {
-        // DeepSeek api_type 一律 echo,不挑 model
+        // DeepSeek api_type always echoes, regardless of model
         assert!(model_requires_reasoning_echo(
             AgentProviderApiType::DeepSeek,
             "deepseek-v4-flash"
@@ -517,30 +567,32 @@ mod tests {
             AgentProviderApiType::OpenAiResp,
             "Kimi-Latest"
         ));
-        // 普通 OpenAI 模型不 echo
+        // plain OpenAI models don't echo
         assert!(!model_requires_reasoning_echo(t, "gpt-5"));
         assert!(!model_requires_reasoning_echo(t, "o3-mini"));
     }
 
     #[test]
     fn requires_reasoning_echo_deepseek_via_openai() {
-        // DeepSeek 官方端点是 OpenAI-compatible 的,用户常把它配成 OpenAI api_type 的
-        // BYOP provider。thinking 模型必须回 echo `reasoning_content`,否则 400。
+        // DeepSeek's official endpoint is OpenAI-compatible; users often configure it
+        // as an OpenAI api_type BYOP provider. Thinking models must echo back
+        // `reasoning_content`, or it's a 400.
         let t = AgentProviderApiType::OpenAi;
         assert!(model_requires_reasoning_echo(t, "deepseek-v4-flash"));
         assert!(model_requires_reasoning_echo(t, "deepseek-v4"));
         assert!(model_requires_reasoning_echo(t, "deepseek-reasoner"));
         assert!(model_requires_reasoning_echo(t, "deepseek-r1"));
         assert!(model_requires_reasoning_echo(t, "deepseek-thinking"));
-        // 大小写不敏感
+        // case-insensitive
         assert!(model_requires_reasoning_echo(t, "DeepSeek-V4-Flash"));
-        // OpenAiResp 同源
+        // OpenAiResp shares the same behavior
         assert!(model_requires_reasoning_echo(
             AgentProviderApiType::OpenAiResp,
             "deepseek-r1"
         ));
-        // 非 thinking 的 DeepSeek 模型(deepseek-chat / deepseek-coder)走 OpenAI
-        // 兼容路径时不进 thinking-mode 校验,无需 echo
+        // Non-thinking DeepSeek models (deepseek-chat / deepseek-coder) don't go
+        // through thinking-mode validation over the OpenAI-compatible path, so no
+        // echo is needed
         assert!(!model_requires_reasoning_echo(t, "deepseek-chat"));
         assert!(!model_requires_reasoning_echo(t, "deepseek-coder"));
     }
@@ -622,12 +674,12 @@ mod tests {
     #[test]
     fn deepseek_thinking_variants_two_levels_plus_off() {
         let v = model_reasoning_variants(AgentProviderApiType::DeepSeek, "deepseek-reasoner");
-        // DeepSeek 官方:仅 high / max 两档 + Off
+        // DeepSeek official: only high / max plus Off
         assert_eq!(v.len(), 3);
         assert_eq!(v[0], ReasoningEffortSetting::High);
         assert_eq!(v[1], ReasoningEffortSetting::Max);
         assert_eq!(v[2], ReasoningEffortSetting::Off);
-        // 不应暴露冗余别名
+        // should not expose redundant aliases
         assert!(!v.contains(&ReasoningEffortSetting::Medium));
         assert!(!v.contains(&ReasoningEffortSetting::Low));
         assert!(!v.contains(&ReasoningEffortSetting::XHigh));
@@ -647,7 +699,7 @@ mod tests {
 
     #[test]
     fn default_reasoning_for_consistency() {
-        // default 应等于 variants 列表第一项
+        // default should equal the first item in the variants list
         assert_eq!(
             default_reasoning_for(AgentProviderApiType::Anthropic, "claude-opus-4-7"),
             Some(ReasoningEffortSetting::High)
@@ -664,7 +716,7 @@ mod tests {
 
     #[test]
     fn supports_reasoning_consistent_with_variants() {
-        // 单一来源:supports == !variants.is_empty()
+        // single source of truth: supports == !variants.is_empty()
         for (t, m) in [
             (AgentProviderApiType::Anthropic, "claude-opus-4-7"),
             (AgentProviderApiType::Anthropic, "claude-3-5-haiku"),
@@ -684,31 +736,32 @@ mod tests {
 
     #[test]
     fn requires_reasoning_echo_domestic_thinking_models() {
-        // 国产 OpenAI 兼容 thinking 模型必须 echo `reasoning_content`,
-        // 否则服务端 400 `The reasoning_content in the thinking mode must be passed back`。
-        // 测试在 OpenAi api_type 下命中(用户最常见的 BYOP 配法)。
+        // Chinese OpenAI-compatible thinking models must echo `reasoning_content`,
+        // or the server returns 400 `The reasoning_content in the thinking mode must
+        // be passed back`.
+        // Test hits this under the OpenAi api_type (the most common BYOP configuration).
         let t = AgentProviderApiType::OpenAi;
-        // 小米 MiMo(本次 issue 触发模型)
+        // Xiaomi MiMo (the model that triggered this issue)
         assert!(model_requires_reasoning_echo(t, "mimo-v2.5-pro"));
         assert!(model_requires_reasoning_echo(t, "mimo-vl-7b"));
-        // 阿里 Qwen3 thinking / QwQ
+        // Alibaba Qwen3 thinking / QwQ
         assert!(model_requires_reasoning_echo(
             t,
             "qwen3-235b-a22b-thinking-2507"
         ));
         assert!(model_requires_reasoning_echo(t, "qwq-32b-preview"));
-        // 智谱 GLM thinking
+        // Zhipu GLM thinking
         assert!(model_requires_reasoning_echo(t, "zai-glm-4.7"));
         assert!(model_requires_reasoning_echo(t, "glm-4.6-thinking"));
         assert!(model_requires_reasoning_echo(t, "glm-4.5-thinking"));
-        // MiniMax / 混元 / 文心 / 阶跃 / 豆包 / Yi
+        // MiniMax / Hunyuan / Ernie / Step / Doubao / Yi
         assert!(model_requires_reasoning_echo(t, "minimax-m1-80k"));
         assert!(model_requires_reasoning_echo(t, "hunyuan-t1-latest"));
         assert!(model_requires_reasoning_echo(t, "ernie-x1-turbo-32k"));
         assert!(model_requires_reasoning_echo(t, "step-r-mini"));
         assert!(model_requires_reasoning_echo(t, "doubao-1-5-thinking-pro"));
         assert!(model_requires_reasoning_echo(t, "yi-thinking-v1"));
-        // OpenAiResp 同源
+        // OpenAiResp shares the same behavior
         let r = AgentProviderApiType::OpenAiResp;
         assert!(model_requires_reasoning_echo(r, "MiMo-V2.5-Pro"));
         assert!(model_requires_reasoning_echo(r, "Qwen3-Coder-Thinking"));
@@ -716,8 +769,9 @@ mod tests {
 
     #[test]
     fn reasoning_interleaved_field_for_domestic_models() {
-        // model_reasoning_interleaved 必须返回 ReasoningContent(目前所有 INTERLEAVED_RULES
-        // 都是 ReasoningContent;ReasoningDetails 是预留 enum 占位)。
+        // model_reasoning_interleaved must return ReasoningContent (currently every
+        // INTERLEAVED_RULES entry is ReasoningContent; ReasoningDetails is a reserved
+        // enum placeholder).
         let t = AgentProviderApiType::OpenAi;
         assert_eq!(
             model_reasoning_interleaved(t, "mimo-v2.5-pro"),
@@ -727,15 +781,16 @@ mod tests {
             model_reasoning_interleaved(t, "deepseek-v4-flash"),
             Some(ReasoningInterleavedField::ReasoningContent)
         );
-        // DeepSeek api_type 全模型(包括非 thinking 的 chat / coder)都返回 ReasoningContent —
-        // adapter 即 DeepSeek 专属,与 opencode `apiID.includes("deepseek") →
-        // { field: "reasoning_content" }` 默认对齐。
+        // DeepSeek api_type returns ReasoningContent for all models (including
+        // non-thinking chat / coder) — the adapter is DeepSeek-specific, matching
+        // opencode's default of `apiID.includes("deepseek") →
+        // { field: "reasoning_content" }`.
         let d = AgentProviderApiType::DeepSeek;
         assert_eq!(
             model_reasoning_interleaved(d, "deepseek-chat"),
             Some(ReasoningInterleavedField::ReasoningContent)
         );
-        // 无声明的模型 / 非 OpenAI 系 → None
+        // undeclared models / non-OpenAI-family → None
         assert_eq!(model_reasoning_interleaved(t, "gpt-5"), None);
         assert_eq!(model_reasoning_interleaved(t, "gpt-4o"), None);
         assert_eq!(
@@ -754,49 +809,53 @@ mod tests {
 
     #[test]
     fn requires_reasoning_echo_strict_providers_excluded() {
-        // OpenAI 官方 / Anthropic / Gemini / 普通 OpenAI 模型 → 不挂 reasoning_content,
-        // 避免 Cerebras / Groq / OpenRouter 等 strict OpenAI provider 400 `wrong_api_format`
-        // (zerx-lab/warp #25)。
+        // Official OpenAI / Anthropic / Gemini / plain OpenAI models → don't attach
+        // reasoning_content, to avoid a 400 `wrong_api_format` from strict OpenAI
+        // providers like Cerebras / Groq / OpenRouter (zerx-lab/warp #25).
         let t = AgentProviderApiType::OpenAi;
         assert!(!model_requires_reasoning_echo(t, "gpt-5"));
         assert!(!model_requires_reasoning_echo(t, "gpt-4o"));
         assert!(!model_requires_reasoning_echo(t, "o3-mini"));
-        // 名字里既不含已知 thinking 子串又不是 DeepSeek api_type 的随便 BYOP 模型
+        // arbitrary BYOP models whose names contain no known thinking substring and
+        // aren't the DeepSeek api_type
         assert!(!model_requires_reasoning_echo(t, "llama-3.3-70b-instruct"));
         assert!(!model_requires_reasoning_echo(t, "mistral-large-2407"));
     }
 
     #[test]
     fn runtime_latch_overrides_static_table() {
-        // 任意未在 INTERLEAVED_RULES 内的国产/第三方 thinking 模型,
-        // 一旦 stream 发过 reasoning chunk → 下一轮起自动 echo。
-        // 用一个故意"不存在"的 model id 验证 latch 是真起作用的。
+        // Any Chinese/third-party thinking model not in INTERLEAVED_RULES should
+        // start auto-echoing from the next turn onward once the stream has sent a
+        // reasoning chunk.
+        // Uses a deliberately "nonexistent" model id to verify the latch actually
+        // works.
         let t = AgentProviderApiType::OpenAi;
         let exotic = "totally-new-thinking-model-2099";
         reset_reasoning_latch();
         assert!(
             !model_requires_reasoning_echo(t, exotic),
-            "未 latch 前白名单外模型应不 echo"
+            "a model outside the whitelist should not echo before being latched"
         );
         note_reasoning_seen(t, exotic);
         assert!(
             model_requires_reasoning_echo(t, exotic),
-            "latch 后必须 echo"
+            "must echo after being latched"
         );
         assert_eq!(
             model_reasoning_interleaved(t, exotic),
             Some(ReasoningInterleavedField::ReasoningContent)
         );
-        // 大小写不敏感
+        // case-insensitive
         assert!(model_requires_reasoning_echo(
             t,
             "Totally-New-Thinking-Model-2099"
         ));
-        // OpenAiResp 与 OpenAi 是独立 key —— 但同 endpoint 类别都应 latch 各自
+        // OpenAiResp and OpenAi are independent keys —— but the same endpoint class
+        // should each latch on its own
         let r = AgentProviderApiType::OpenAiResp;
         assert!(
             !model_requires_reasoning_echo(r, exotic),
-            "另一 api_type 不串"
+            "the other api_type should not be affected"
         );
         note_reasoning_seen(r, exotic);
         assert!(model_requires_reasoning_echo(r, exotic));
@@ -805,10 +864,12 @@ mod tests {
 
     #[test]
     fn runtime_latch_never_writes_for_strict_api_types() {
-        // Anthropic / Gemini / Ollama 各自走原生 reasoning 通道,即使有人误调
-        // note_reasoning_seen 也不能污染 latch(否则跨 api_type 共用 model_id
-        // 可能在 OpenAi 路径误命中 —— 我们用 (api_type, id) 复合 key,本来就隔离,
-        // 但语义上额外保险:这些 api_type 不进 latch)。
+        // Anthropic / Gemini / Ollama each go through their native reasoning
+        // channel, so even if someone mistakenly calls note_reasoning_seen it must
+        // not pollute the latch (otherwise sharing a model_id across api_types could
+        // cause a false hit on the OpenAi path —— we use an (api_type, id) composite
+        // key which already isolates this, but as extra insurance semantically these
+        // api_types should never enter the latch).
         reset_reasoning_latch();
         for at in [
             AgentProviderApiType::Anthropic,
@@ -818,7 +879,7 @@ mod tests {
         ] {
             note_reasoning_seen(at, "some-model");
         }
-        // 任何 OpenAi/OpenAiResp 查询都不应被这些 noise 命中
+        // no OpenAi/OpenAiResp query should be hit by this noise
         assert!(!model_requires_reasoning_echo(
             AgentProviderApiType::OpenAi,
             "some-model"
@@ -848,18 +909,18 @@ mod tests {
 
     #[test]
     fn think_tag_in_content_models() {
-        // MiniMax M3 命中
+        // MiniMax M3 matches
         assert!(model_uses_think_tags_in_content("minimax-m3"));
         assert!(model_uses_think_tags_in_content("MiniMax-M3-80k"));
         assert!(model_uses_think_tags_in_content("MINIMAX-M3"));
-        // MiniMax M1 不命中(使用 reasoning_content 字段)
+        // MiniMax M1 does not match (uses the reasoning_content field)
         assert!(!model_uses_think_tags_in_content("minimax-m1"));
-        // 其他 thinking 模型不命中(各自走 reasoning_content 字段)
+        // other thinking models do not match (each uses the reasoning_content field)
         assert!(!model_uses_think_tags_in_content("deepseek-r1"));
         assert!(!model_uses_think_tags_in_content("gpt-5"));
         assert!(!model_uses_think_tags_in_content("qwen3-235b"));
         assert!(!model_uses_think_tags_in_content("kimi-k2-thinking"));
-        // 普通非 thinking 模型不命中
+        // plain non-thinking models do not match
         assert!(!model_uses_think_tags_in_content("gpt-4o"));
         assert!(!model_uses_think_tags_in_content("claude-opus-4-7"));
     }

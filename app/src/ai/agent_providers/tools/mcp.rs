@@ -1,27 +1,31 @@
-//! MCP(Model Context Protocol)服务器的 tool 注入与双向翻译。
+//! Tool injection and bidirectional translation for MCP (Model Context Protocol)
+//! servers.
 //!
-//! 与 `shell.rs` / `files.rs` 等静态 tool 不同,MCP tool 是**动态**的:
-//! 用户配置的每个 MCP server 暴露自己的 tool 列表(name + description +
-//! JSON Schema),需要在每次请求构造时按 `RequestParams.mcp_context` 即时
-//! 注入到 OpenAI tools 数组。
+//! Unlike static tools like `shell.rs` / `files.rs`, MCP tools are **dynamic**:
+//! each user-configured MCP server exposes its own list of tools (name +
+//! description + JSON Schema), which need to be injected into the OpenAI tools
+//! array on the fly, at each request-construction time, based on
+//! `RequestParams.mcp_context`.
 //!
-//! ## 命名约定
+//! ## Naming convention
 //!
-//! OpenAI function 名: `mcp__<server_name_safe>__<tool_name>`
-//! - 双下划线分隔,避免与内置 tool 名(下划线分词)冲突
-//! - server_name_safe = server.name 中所有非 `[a-zA-Z0-9_-]` 字符替换为 `_`
+//! OpenAI function name: `mcp__<server_name_safe>__<tool_name>`
+//! - Separated by double underscores, to avoid colliding with built-in tool names
+//!   (which are underscore-separated words)
+//! - server_name_safe = server.name with every character not in
+//!   `[a-zA-Z0-9_-]` replaced with `_`
 //!
-//! ## 反向解析
+//! ## Reverse resolution
 //!
-//! 看到 `mcp__` 前缀名时:
-//! 1. 拆出 `server_name_safe` 和 `tool_name`
-//! 2. 在 `params.mcp_context.servers` 中按 sanitize 后的 name 匹配,拿 server.id
-//! 3. 构造 `Message::ToolCall::CallMcpTool { name: tool_name, args, server_id }`
+//! When a `mcp__`-prefixed name is seen:
+//! 1. Split out `server_name_safe` and `tool_name`
+//! 2. Match against `params.mcp_context.servers` by sanitized name, to get server.id
+//! 3. Build `Message::ToolCall::CallMcpTool { name: tool_name, args, server_id }`
 //!
-//! ## Result 序列化
+//! ## Result serialization
 //!
-//! `ToolCallResultType::CallMcpTool(CallMcpToolResult)` 中的 result 是结构化
-//! 的 MCP content,转成 JSON 给上游模型。
+//! The result inside `ToolCallResultType::CallMcpTool(CallMcpToolResult)` is
+//! structured MCP content, converted to JSON for the upstream model.
 
 use anyhow::{anyhow, Result};
 use prost_types::value::Kind as ProstKind;
@@ -32,10 +36,11 @@ use crate::ai::agent::{MCPContext, MCPServer};
 
 const PREFIX: &str = "mcp__";
 const SEP: &str = "__";
-/// 读 MCP resource 的统一函数名(uri 跨 server,语义上是单一 tool)。
+/// Unified function name for reading an MCP resource (the uri spans servers, but
+/// semantically this is a single tool).
 const READ_RESOURCE_NAME: &str = "mcp_read_resource";
 
-/// 把 server.name 转成可作为 OpenAI function name 一部分的安全字符串。
+/// Convert server.name into a string safe to use as part of an OpenAI function name.
 fn sanitize_server_name(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -48,7 +53,7 @@ fn sanitize_server_name(name: &str) -> String {
         .collect()
 }
 
-/// 给一条 MCP tool 生成 OpenAI function 名。
+/// Generate an OpenAI function name for an MCP tool.
 pub fn function_name(server: &MCPServer, tool_name: &str) -> String {
     format!(
         "{}{}{}{}",
@@ -59,28 +64,32 @@ pub fn function_name(server: &MCPServer, tool_name: &str) -> String {
     )
 }
 
-/// 判断给定 OpenAI function name 是否是 MCP 调用(含动态 mcp__ 前缀工具调用
-/// 与统一的 mcp_read_resource 资源读取)。
+/// Determine whether a given OpenAI function name is an MCP call (covers both
+/// dynamic mcp__-prefixed tool calls and the unified mcp_read_resource read).
 pub fn is_mcp_function(name: &str) -> bool {
     name == READ_RESOURCE_NAME || name.starts_with(PREFIX)
 }
 
-/// 把 mcp_context 中所有 server 的 tool 转成 OpenAI tool 定义(name/description/parameters)。
-/// 同时,如果至少有一个 server 暴露了 resources,会附加一个统一的 `mcp_read_resource`
-/// tool 定义,供模型读资源用。
-/// 返回三元组 `(name, description, parameters_value)` — 调用方包成 ToolDef。
+/// Convert the tools of every server in mcp_context into OpenAI tool definitions
+/// (name/description/parameters). Also, if at least one server exposes resources,
+/// append a unified `mcp_read_resource` tool definition for the model to read
+/// resources with.
+/// Returns a triple `(name, description, parameters_value)` — the caller wraps it
+/// into a ToolDef.
 ///
-/// **P0-3 prompt cache 优化**:输出**字典序稳定**。
-/// 原因:Anthropic 明确警告任何 tools 字段改动 → 所有缓存层全失效。
-/// `ctx.servers` 上游依赖(`MCPContext.servers: Vec<MCPServer>`)本身不保证顺序
-/// (从 HashMap iterate / 进程启动顺序 / 并发连接都会让跨请求顺序漂移)。
-/// 这里按 `function_name`(包含 server.name 与 tool.name)字典序排序以该锁,
-/// 最后追加 `mcp_read_resource`(固定名不参与排序)。
+/// **P0-3 prompt cache optimization**: output is **stable in lexicographic order**.
+/// Reason: Anthropic explicitly warns that any change to the tools field invalidates
+/// every cache layer. The upstream dependency `ctx.servers`
+/// (`MCPContext.servers: Vec<MCPServer>`) does not itself guarantee ordering
+/// (HashMap iteration / process startup order / concurrent connections can all
+/// cause the order to drift across requests). Here we sort by `function_name`
+/// (which includes server.name and tool.name) to lock that down, then append
+/// `mcp_read_resource` last (its fixed name doesn't participate in sorting).
 pub fn build_mcp_tool_defs(ctx: &MCPContext) -> Vec<(String, String, Value)> {
     let mut out = Vec::new();
     for server in &ctx.servers {
         for tool in &server.tools {
-            // rmcp::Tool.input_schema 是 Arc<Map<String,Value>>,克隆后 wrap 成 Value::Object。
+            // rmcp::Tool.input_schema is Arc<Map<String,Value>>; clone it and wrap in Value::Object.
             let schema = Value::Object((*tool.input_schema).clone());
             let desc = tool
                 .description
@@ -95,13 +104,14 @@ pub fn build_mcp_tool_defs(ctx: &MCPContext) -> Vec<(String, String, Value)> {
             out.push((function_name(server, &tool.name), prefixed_desc, schema));
         }
     }
-    // P0-3:按 function_name 字典序排序,保证跨请求同一静态上下文产出顺序
-    // 一致。function_name 全局唯一(`mcp__<server_safe>__<tool>`),作为排序键
-    // 不会有冲突。
+    // P0-3: sort by function_name in lexicographic order, to guarantee that the
+    // same static context produces a consistent order across requests.
+    // function_name is globally unique (`mcp__<server_safe>__<tool>`), so there's
+    // no conflict when using it as the sort key.
     out.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // 仅在有任意 server 暴露 resources 时才注入 read_resource tool,避免
-    // 模型空发(可读列表是 server 决定的)。
+    // Only inject the read_resource tool if any server exposes resources, to avoid
+    // the model calling it for nothing (the readable list is decided by the server).
     let any_resources = ctx.servers.iter().any(|s| !s.resources.is_empty());
     if any_resources {
         let mut available_uris: Vec<String> = Vec::new();
@@ -110,8 +120,9 @@ pub fn build_mcp_tool_defs(ctx: &MCPContext) -> Vec<(String, String, Value)> {
                 available_uris.push(format!("[{}] {} ({})", s.name, r.name, r.uri));
             }
         }
-        // P0-3:available_uris 依赖 ctx.servers 顺序 × server.resources 顺序,
-        // 同样需要跨请求稳定。按字面字典序排序,避免 HashMap iterate 顺序漂移。
+        // P0-3: available_uris depends on ctx.servers order × server.resources
+        // order, which likewise needs to be stable across requests. Sort by
+        // literal lexicographic order to avoid HashMap iteration order drift.
         available_uris.sort();
         let desc = format!(
             "Read a resource exposed by an MCP server (file / database / API, etc.). \
@@ -139,9 +150,10 @@ pub fn build_mcp_tool_defs(ctx: &MCPContext) -> Vec<(String, String, Value)> {
     out
 }
 
-/// 反向解析:把上游模型回的 `mcp__server__tool` 或 `mcp_read_resource` 调用
-/// 翻译成 warp `Tool::CallMcpTool` 或 `Tool::ReadMcpResource`。
-/// 失败原因: name 格式错误 / server 找不到 / args 解析失败。
+/// Reverse resolution: translate a `mcp__server__tool` or `mcp_read_resource` call
+/// returned by the upstream model into warp's `Tool::CallMcpTool` or
+/// `Tool::ReadMcpResource`.
+/// Failure reasons: malformed name / server not found / args parse failure.
 pub fn parse_mcp_tool_call(
     function_name: &str,
     arguments_json: &str,
@@ -220,10 +232,10 @@ fn parse_read_resource(
     ctx: Option<&MCPContext>,
 ) -> Result<api::message::tool_call::Tool> {
     let parsed: ReadResourceArgs = serde_json::from_str(arguments_json)?;
-    // 解析 server_id:
-    // 1) 若给了 server 名,按 sanitize 后匹配
-    // 2) 否则在所有 server 中找含此 uri 的 resource(命中第一个)
-    // 3) 兜底 server_id 为空(server 端按 uri 自己定位)
+    // Resolve server_id:
+    // 1) If a server name is given, match against it after sanitizing
+    // 2) Otherwise, look across all servers for a resource with this uri (take the first hit)
+    // 3) Fall back to an empty server_id (the server side locates it by uri itself)
     let server_id = if let Some(ctx) = ctx {
         match parsed.server.as_deref() {
             Some(name) => ctx
@@ -254,7 +266,8 @@ fn parse_read_resource(
     ))
 }
 
-/// 给历史里的 `Tool::ReadMcpResource` 序列化为 OpenAI tool_calls 中的 (name, args_json)。
+/// Serialize a `Tool::ReadMcpResource` from history into the (name, args_json) form
+/// used in OpenAI tool_calls.
 pub fn serialize_outgoing_read_resource(
     tc: &api::message::tool_call::ReadMcpResource,
     ctx: Option<&MCPContext>,
@@ -269,12 +282,13 @@ pub fn serialize_outgoing_read_resource(
     (READ_RESOURCE_NAME.to_owned(), args.to_string())
 }
 
-/// 给历史里的 `Tool::CallMcpTool` 序列化为 OpenAI tool_calls 中的 (name, args_json) 对。
+/// Serialize a `Tool::CallMcpTool` from history into the (name, args_json) pair
+/// used in OpenAI tool_calls.
 pub fn serialize_outgoing_call(
     tc: &api::message::tool_call::CallMcpTool,
     ctx: Option<&MCPContext>,
 ) -> (String, String) {
-    // 找回对应 server.name(若 mcp_context 已变,fallback 到 server_id)
+    // Look up the corresponding server.name (fall back to server_id if mcp_context has changed)
     let server_name = ctx
         .and_then(|c| c.servers.iter().find(|s| s.id == tc.server_id))
         .map(|s| sanitize_server_name(&s.name))
@@ -312,7 +326,8 @@ fn prost_value_to_json(v: &prost_types::Value) -> Value {
     }
 }
 
-/// 序列化 ToolCallResult 中 CallMcpTool 或 ReadMcpResource 的 result 给上游模型。
+/// Serialize the result of CallMcpTool or ReadMcpResource within ToolCallResult for
+/// the upstream model.
 pub fn serialize_result(result: &api::message::tool_call_result::Result) -> Option<Value> {
     use api::call_mcp_tool_result::Result as McpR;
     use api::message::tool_call_result::Result as R;
@@ -322,7 +337,7 @@ pub fn serialize_result(result: &api::message::tool_call_result::Result) -> Opti
         let value = match &r.result {
             Some(McpR::Success(s)) => json!({
                 "status": "ok",
-                // s.content 是 Vec<rmcp Content> 类型,此处简化为 debug 字符串。
+                // s.content is a Vec<rmcp Content>; simplified here to a debug string.
                 "content": format!("{:?}", s),
             }),
             Some(McpR::Error(e)) => json!({ "status": "error", "message": e.message }),
@@ -334,7 +349,7 @@ pub fn serialize_result(result: &api::message::tool_call_result::Result) -> Opti
         let value = match &r.result {
             Some(ReadR::Success(s)) => json!({
                 "status": "ok",
-                // contents 是 Vec<rmcp ResourceContents>,debug 序列化保留所有信息
+                // contents is Vec<rmcp ResourceContents>; debug serialization preserves all info
                 "contents": format!("{:?}", s.contents),
             }),
             Some(ReadR::Error(e)) => json!({ "status": "error", "message": e.message }),

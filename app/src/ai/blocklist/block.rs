@@ -1018,19 +1018,22 @@ impl AIBlock {
             ActiveSessionEvent::Bootstrapped => {}
         });
 
-        // Zap:原这里订阅 GetRelevantFilesController 的 Success 事件以在 RAG
-        // 完成后走个 `ctx.notify` 刷新 UI。该 controller 已随 outline 推退下线,
-        // 订阅点一并删除。
+        // Zap: this used to subscribe to GetRelevantFilesController's Success event
+        // to fire a `ctx.notify` and refresh the UI once RAG finished. That
+        // controller was retired along with outline, so the subscription is removed
+        // here too.
 
         let manage_rules_button = ctx.add_typed_action_view(|_| {
             ActionButton::new(crate::t!("ai-block-manage-rules"), NakedTheme)
                 .on_click(|ctx| ctx.dispatch_typed_action(AIBlockAction::OpenAIFactCollection))
         });
 
-        // Zap(Phase 3c A1):删除对 `AIRequestUsageModelEvent::RequestBonusRefunded`
-        // 的订阅。本地化后该事件永远不会被 emit(没有 `provide_negative_feedback_response`
-        // RPC 调用),订阅本身已成为永久空转的死代码。`request_refunded_count` 字段保留
-        // 但永远是初始值 None。
+        // Zap (Phase 3c A1): removed the subscription to
+        // `AIRequestUsageModelEvent::RequestBonusRefunded`. After localization this
+        // event is never emitted (there's no `provide_negative_feedback_response` RPC
+        // call), so the subscription itself was permanently-idle dead code. The
+        // `request_refunded_count` field is kept but always stays at its initial
+        // value of None.
 
         // Note: UpdatedStreamingExchange is handled by the dedicated on_updated_output()
         // callback in model_impl.rs, so we don't need to respond to it here.
@@ -5867,7 +5870,7 @@ impl TypedActionView for AIBlock {
                 ctx.open_url(url);
             }
             AIBlockAction::ViewScreenshot { action_id: _ } => {
-                // Computer Use 已被移除,screenshot lightbox 不再可用。
+                // Computer Use has been removed; the screenshot lightbox is no longer available.
             }
         }
         ctx.notify();

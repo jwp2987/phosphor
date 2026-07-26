@@ -110,19 +110,20 @@ pub async fn is_likely_shell_command(
     false
 }
 
-/// 是否包含 CJK / 假名 / 韩文 / 全角字符。命中即视为非英文自然语言输入,
-/// 直接判 AI(因为词典与 ML 模型均为英文,无 CJK 训练样本)。
+/// Whether the text contains CJK / kana / Korean / fullwidth characters. A hit
+/// is treated as non-English natural-language input and classified directly as
+/// AI (since the dictionary and ML model are both English, with no CJK training samples).
 pub fn contains_cjk(text: &str) -> bool {
     text.chars().any(|c| {
         matches!(
             c,
-            '\u{4E00}'..='\u{9FFF}'   // CJK 基本汉字
-            | '\u{3400}'..='\u{4DBF}' // CJK 扩展 A
-            | '\u{3040}'..='\u{309F}' // 平假名
-            | '\u{30A0}'..='\u{30FF}' // 片假名
-            | '\u{AC00}'..='\u{D7AF}' // 韩文音节
-            | '\u{3000}'..='\u{303F}' // CJK 标点(。、!?,等)
-            | '\u{FF00}'..='\u{FFEF}' // 半角/全角(。、!?,等)
+            '\u{4E00}'..='\u{9FFF}'   // CJK unified ideographs
+            | '\u{3400}'..='\u{4DBF}' // CJK extension A
+            | '\u{3040}'..='\u{309F}' // Hiragana
+            | '\u{30A0}'..='\u{30FF}' // Katakana
+            | '\u{AC00}'..='\u{D7AF}' // Hangul syllables
+            | '\u{3000}'..='\u{303F}' // CJK punctuation (。、!?, etc.)
+            | '\u{FF00}'..='\u{FFEF}' // Halfwidth/fullwidth forms (。、!?, etc.)
         )
     })
 }

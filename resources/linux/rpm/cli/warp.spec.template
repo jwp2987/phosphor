@@ -68,6 +68,6 @@ ln -s @@OPT_DIR@@/@@BINARY_NAME@@ %{buildroot}%{_bindir}/@@BINARY_NAME@@
 ###############################################################################
 %post
 
-# Zap 不配置上游 Warp RPM 软件源,也不安装上游签名 key。
-# Zap 不做 post-install repo 配置；deb/rpm 包通过 GitHub Release 分发。
+# Zap does not configure the upstream Warp RPM repo, nor does it install the upstream signing key.
+# Zap does no post-install repo configuration; deb/rpm packages are distributed via GitHub Release.
 exit 0

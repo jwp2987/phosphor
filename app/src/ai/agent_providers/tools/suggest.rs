@@ -1,7 +1,8 @@
-//! 提示用户类工具:`suggest_new_conversation` / `suggest_prompt`。
+//! User-suggestion tools: `suggest_new_conversation` / `suggest_prompt`.
 //!
-//! 这两个 tool 都是**纯本地 channel 信号** + UI 弹窗 — 模型主动建议某个动作,
-//! 用户在 UI 接受/拒绝,executor 等用户决定后回写 result。不依赖任何 server。
+//! Both tools are **pure local channel signals** + a UI prompt — the model proactively
+//! suggests an action, the user accepts/rejects it in the UI, and the executor writes the
+//! result back once the user decides. No server dependency.
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -16,7 +17,8 @@ use super::OpenAiTool;
 
 #[derive(Debug, Deserialize)]
 struct NewConvArgs {
-    /// 当前 assistant message 的 id(模型若不知道可传空字符串,controller 会兜底)。
+    /// The current assistant message's id (the model may pass an empty string if it doesn't
+    /// know it; the controller falls back to a default).
     #[serde(default)]
     message_id: String,
 }
@@ -82,9 +84,10 @@ pub static SUGGEST_NEW_CONVERSATION: OpenAiTool = OpenAiTool {
 
 #[derive(Debug, Deserialize)]
 struct PromptArgs {
-    /// 实际发给 agent 的 prompt 文本。
+    /// The prompt text actually sent to the agent.
     prompt: String,
-    /// 可选:UI 上展示的短标签(若 prompt 太长用作 chip 显示)。
+    /// Optional: short label shown in the UI (used for the chip display when the prompt is
+    /// too long).
     #[serde(default)]
     label: String,
 }

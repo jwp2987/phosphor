@@ -20,7 +20,7 @@ pub enum WebSearchViewAction {
 pub struct WebSearchView {
     pub status: WebSearchStatus,
     pub collapsible: CollapsibleSearchResultsState,
-    /// 双动画 state — 必须 view 持久化。详见 search_results_common 注释。
+    /// Dual-animation state — must be persisted by the view. See the comments in search_results_common for details.
     shimmer_handle: ShimmeringTextStateHandle,
     spinner_handle: SpinnerStateHandle,
 }
@@ -42,7 +42,7 @@ impl WebSearchView {
     }
 
     fn render_loading(&self, query: &Option<String>, app: &AppContext) -> Box<dyn Element> {
-        // 个性化进行时短语,对齐 opencode "Searching web..."。
+        // Custom present-progressive phrasing, matching opencode's "Searching web...".
         let _ = Appearance::as_ref(app);
         let text = if let Some(q) = query {
             format!("Searching the web for \"{q}\"...")

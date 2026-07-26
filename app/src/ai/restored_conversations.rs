@@ -23,8 +23,10 @@ pub struct RestoredAgentConversations {
 }
 
 impl RestoredAgentConversations {
-    /// 转换持久化会话; 把转换失败的 conversation_id 收集起来,调用方负责把它们从 sqlite 中清理掉,
-    /// 否则下次启动会重复尝试转换并打 warn,白白拖慢启动。
+    /// Converts persisted conversations; collects the conversation_ids that failed
+    /// to convert, and the caller is responsible for cleaning them out of sqlite —
+    /// otherwise the next startup will repeatedly retry the conversion and log a
+    /// warning, needlessly slowing down startup.
     pub fn new(conversations: Vec<AgentConversation>) -> (Self, Vec<String>) {
         let mut conversations_by_id = HashMap::new();
         let mut failed_to_restore = Vec::new();

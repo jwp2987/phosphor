@@ -1,9 +1,9 @@
-//! `AgentProviderSecrets`:把每个自定义 Provider 的 API key 保存到 OS 密钥库。
+//! `AgentProviderSecrets`: stores each custom provider's API key in the OS key store.
 //!
-//! 数据形态: `HashMap<provider_id, api_key>`,通过 `serde_json` 序列化后写入
-//! `secure_storage` 的 `AgentProviderSecrets` 键。
+//! Data shape: `HashMap<provider_id, api_key>`, serialized via `serde_json` and
+//! written under the `AgentProviderSecrets` key in `secure_storage`.
 //!
-//! 设计参考 `crates/ai/src/api_keys.rs::ApiKeyManager`。
+//! Design modeled after `crates/ai/src/api_keys.rs::ApiKeyManager`.
 
 use std::collections::HashMap;
 
@@ -12,32 +12,32 @@ use warpui_extras::secure_storage::{self, AppContextExt};
 
 const SECURE_STORAGE_KEY: &str = "AgentProviderSecrets";
 
-/// 当任意 Provider 的 API key 发生变化时发出。
+/// Emitted whenever any provider's API key changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentProviderSecretsEvent {
     KeysUpdated,
 }
 
-/// 单例:管理用户自定义 Provider 的 API key。
+/// Singleton: manages the user's custom provider API keys.
 pub struct AgentProviderSecrets {
     keys: HashMap<String, String>,
 }
 
 impl AgentProviderSecrets {
-    /// 启动时从 secure storage 读取所有 key。
+    /// Reads all keys from secure storage at startup.
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
         Self {
             keys: Self::load_from_storage(ctx),
         }
     }
 
-    /// 读取指定 Provider 的 API key,若未配置则返回 `None`。
+    /// Reads the API key for the given provider; returns `None` if not configured.
     pub fn get(&self, provider_id: &str) -> Option<&str> {
         self.keys.get(provider_id).map(String::as_str)
     }
 
-    /// 设置/更新某个 Provider 的 API key。
-    /// 传入空字符串等价于删除。
+    /// Sets/updates the API key for a provider.
+    /// Passing an empty string is equivalent to deleting it.
     pub fn set(&mut self, provider_id: &str, api_key: String, ctx: &mut ModelContext<Self>) {
         if api_key.is_empty() {
             self.keys.remove(provider_id);
@@ -48,7 +48,7 @@ impl AgentProviderSecrets {
         self.persist(ctx);
     }
 
-    /// 删除某个 Provider(连带其 secret)。
+    /// Removes a provider (along with its secret).
     pub fn remove(&mut self, provider_id: &str, ctx: &mut ModelContext<Self>) {
         if self.keys.remove(provider_id).is_some() {
             ctx.emit(AgentProviderSecretsEvent::KeysUpdated);

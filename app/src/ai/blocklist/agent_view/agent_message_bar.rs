@@ -196,7 +196,8 @@ impl AgentMessageBar {
             }
         });
 
-        // 订阅「显示 Agent 快捷键提示」设置，开关改变后重渲染 message bar 以隐藏/恢复 4 项 hint。
+        // Subscribes to the "Show Agent shortcut hints" setting; when the toggle
+        // changes, re-render the message bar to hide/restore the 4 hint items.
         ctx.subscribe_to_model(&InputSettings::handle(ctx), |_, _, event, ctx| {
             if matches!(
                 event,
@@ -349,8 +350,9 @@ impl View for AgentMessageBar {
             return Empty::new().finish();
         };
 
-        // Zap(Phase 3c A1):删除 ambient credits banner UI。
-        // 本地化后 `ambient_only_credits_remaining` 恒为 None，原分支只会走 None。
+        // Zap (Phase 3c A1): removed the ambient credits banner UI. After
+        // localization, `ambient_only_credits_remaining` is always None, so the
+        // original branch only ever takes the None path.
         let right_element: Option<Box<dyn warpui::Element>> = None;
 
         // Append a Figma MCP chip to the message if applicable.
@@ -515,8 +517,10 @@ impl MessageProvider<AgentMessageArgs<'_>> for ZeroStateMessageProducer {
             bg_color_override_for_shortcuts_and_commands,
         ) = disableable_message_item_color_overrides(!is_buffer_empty, app);
 
-        // 「显示 Agent 快捷键提示」总开关：false 时跳过底部 4 项 hint(? 帮助 / / 命令 /
-        // 打开对话 / 代码评审)。resume / plan / fork 不受影响，因为它们不是提示而是状态性入口。
+        // The master "Show Agent shortcut hints" toggle: when false, skip the bottom
+        // 4 hint items (? help / / commands / open conversation / code review).
+        // resume / plan / fork are unaffected, since they're stateful entry points,
+        // not hints.
         let show_zero_state_hints = *InputSettings::as_ref(app).show_agent_zero_state_hints;
 
         if show_zero_state_hints {

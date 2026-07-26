@@ -840,8 +840,9 @@ impl Input {
                     return true;
                 };
 
-                // menu 路径无参数时 argument 是 Some(""),规范化为 None,避免摘要后
-                // 触发一次空 user query 浪费 token。
+                // When invoked from the menu with no argument, `argument` is Some(""); normalize
+                // it to None to avoid triggering an empty user query (and wasting a token) after
+                // summarizing.
                 let initial_prompt = argument.cloned().filter(|p: &String| !p.is_empty());
                 ctx.dispatch_typed_action(&WorkspaceAction::SummarizeAIConversation {
                     prompt: None,
@@ -884,15 +885,18 @@ impl Input {
                 self.open_repos_menu(ctx);
             }
             compact if command.name == commands::COMPACT.name => {
-                // Zap:`/compact` 与 `/compact-and` 共用本地会话压缩链路 —
-                // dispatch `WorkspaceAction::SummarizeAIConversation`,initial_prompt: None
-                // 表示"压缩完不发后续 prompt",仅做摘要静默落到 conversation。
-                // 自定义指令(`/compact <指令>`)进 prompt 字段,在 BYOP build_chat_request
-                // 路径下会拼到 SUMMARY_TEMPLATE 后面作为 plugin_context。
+                // Zap: `/compact` and `/compact-and` share the local conversation-compaction
+                // pipeline — dispatch `WorkspaceAction::SummarizeAIConversation`, with
+                // initial_prompt: None meaning "don't send a follow-up prompt after
+                // compacting," just silently summarizing into the conversation.
+                // A custom instruction (`/compact <instruction>`) goes into the prompt field;
+                // on the BYOP build_chat_request path it gets appended after
+                // SUMMARY_TEMPLATE as plugin_context.
                 //
-                // 非 BYOP 路径下,`SummarizeConversation { prompt }` 仍走 server protobuf
-                // (`api::request::input::SummarizeConversation`),server 端处理摘要 —
-                // 之前 prefix 注入的语义被 SummarizeConversation 完整替代。
+                // On the non-BYOP path, `SummarizeConversation { prompt }` still goes through
+                // the server protobuf (`api::request::input::SummarizeConversation`), with the
+                // server handling the summary — the previous prefix-injection semantics are
+                // now fully replaced by SummarizeConversation.
                 if self
                     .ai_context_model
                     .as_ref(ctx)
@@ -902,8 +906,9 @@ impl Input {
                     show_error_toast("/compact requires an active conversation".to_owned(), ctx);
                     return true;
                 };
-                // menu 路径无参数时 argument 是 Some(""),规范化为 None,
-                // 避免 chat_stream 拼摘要 prompt 时多走一次空 filter 分支。
+                // When invoked from the menu with no argument, `argument` is Some(""); normalize
+                // it to None to avoid an extra empty-filter branch when chat_stream assembles
+                // the summary prompt.
                 let prompt = argument.cloned().filter(|p: &String| !p.is_empty());
                 ctx.dispatch_typed_action(&WorkspaceAction::SummarizeAIConversation {
                     prompt,

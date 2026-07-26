@@ -143,7 +143,8 @@ impl Workspace {
         intention: OnboardingIntention,
         ctx: &mut ViewContext<Self>,
     ) {
-        // Zap 智能体固定开启；这里保留运行时守卫,避免未来平台策略改变时误启动引导。
+        // The Zap agent is always enabled; this runtime guard is kept to
+        // avoid accidentally triggering onboarding if platform policy changes in the future.
         if FeatureFlag::ZapNewSettingsModes.is_enabled()
             && !AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
         {

@@ -1013,7 +1013,7 @@ pub struct AgentConversationData {
     /// Opaque serialized BYOP repair sidecar. The app layer owns validation semantics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub byop_repair_state_json: Option<String>,
-    /// CLI subagent 终端 block 快照 sidecar。具体 JSON schema 由 app 层负责。
+    /// CLI subagent terminal block snapshot sidecar. The specific JSON schema is owned by the app layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_subagent_block_snapshots_json: Option<String>,
 }
@@ -1466,7 +1466,7 @@ pub struct SshNodeRow {
     pub sort_order: i32,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
-    /// 仅对 folder 有意义;server 永远是 false。
+    /// Only meaningful for folder; always false for server.
     pub is_collapsed: bool,
 }
 

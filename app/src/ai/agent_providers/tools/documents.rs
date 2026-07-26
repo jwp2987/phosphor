@@ -1,9 +1,10 @@
-//! Zap Drive 本地文档系统的 read / edit / create 三件套。
+//! The read / edit / create trio for the Zap Drive local document system.
 //!
-//! 与 `read_files` / `apply_file_diffs` 区别:这些操作的目标是 **AIDocumentModel
-//! 管理的文档**(Drive 内部本地文档,通过 `document_id` 引用),而不是文件系统
-//! 中的文件。Executor 走 `crate::ai::document::ai_document_model::AIDocumentModel`,
-//! 完全本地,不依赖任何 server。
+//! Difference from `read_files` / `apply_file_diffs`: these operations target
+//! **documents managed by AIDocumentModel** (Drive's internal local documents,
+//! referenced via `document_id`), not files on the file system. The executor goes
+//! through `crate::ai::document::ai_document_model::AIDocumentModel`, entirely
+//! locally, with no dependency on any server.
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -13,7 +14,7 @@ use warp_multi_agent_api as api;
 use super::OpenAiTool;
 
 // ---------------------------------------------------------------------------
-// 共用:DocumentContent → JSON
+// Shared: DocumentContent → JSON
 // ---------------------------------------------------------------------------
 
 fn document_content_to_json(d: &api::DocumentContent) -> Value {

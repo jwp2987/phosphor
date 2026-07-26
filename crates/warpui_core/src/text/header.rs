@@ -15,7 +15,7 @@ pub enum BlockHeaderSize {
 impl BlockHeaderSize {
     /// Get font size multiplication ratio for this heading level.
     pub fn font_size_multiplication_ratio(self) -> f32 {
-        // 基于 W3C HTML4 建议默认样式表:
+        // Based on the W3C HTML4 recommended default style sheet:
         // https://www.w3.org/TR/CSS2/sample.html
         match self {
             Self::Header1 => 2.0,

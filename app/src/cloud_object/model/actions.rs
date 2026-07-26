@@ -17,7 +17,7 @@ pub enum ObjectActionType {
     Execute,
 }
 
-// 为了复用历史序列化值和 SQLite 读取路径,action type 实现 to_string()。
+// To reuse historical serialized values and the SQLite read path, action type implements to_string().
 //
 // Temporarily suppress clippy warnings about the `ToString` impl until we
 // move `ObjectType` away from using `std::fmt::Display` for serialization.
@@ -140,8 +140,9 @@ impl TryFrom<PersistedObjectAction> for ObjectAction {
     }
 }
 
-/// ObjectActionHistory 保留历史对象 action 序列化形状:uid、actions(single 或 bundled)
-/// 以及最近 action 的 timestamp。当前仅作为本地 update_manager 可传递的兼容类型。
+/// ObjectActionHistory keeps the historical object action serialization
+/// shape: uid, actions (single or bundled), and the timestamp of the most
+/// recent action. Currently only serves as a compatibility type passable within the local update_manager.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectActionHistory {
     pub uid: ObjectUid,

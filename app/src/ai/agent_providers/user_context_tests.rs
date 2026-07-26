@@ -44,7 +44,7 @@ fn only_environment_context_returns_none() {
     ];
     assert!(
         render_user_attachments(&ctx).is_none(),
-        "环境型 context 不应进 user message"
+        "environmental context should not enter the user message"
     );
 }
 
@@ -57,7 +57,7 @@ fn single_block_renders_required_fields() {
         1,
         false,
     )))];
-    let out = render_user_attachments(&ctx).expect("应当渲染");
+    let out = render_user_attachments(&ctx).expect("should render");
     assert!(out.starts_with("<attached_context>"));
     assert!(out.ends_with("</attached_context>"));
     assert!(out.contains("command_id=\"b-1\""));
@@ -150,7 +150,7 @@ fn file_binary_content_self_closing_with_size() {
         None,
     );
     let out = render_user_attachments(&[AIAgentContext::File(f)]).unwrap();
-    // 新版 placeholder:path + mime_type + binary + size,缺一不可。
+    // New placeholder format: path + mime_type + binary + size, all required.
     assert!(out.contains("path=\"logo.png\""));
     assert!(out.contains("mime_type=\"image/png\""));
     assert!(out.contains("binary=\"true\""));
@@ -159,7 +159,8 @@ fn file_binary_content_self_closing_with_size() {
 
 #[test]
 fn file_binary_empty_omits_size_attr() {
-    // 上层故意没读 bytes(.exe / 超大文件)→ size 属性应被省略,但 path / mime / binary 必存
+    // The layer above deliberately didn't read the bytes (.exe / oversized file) →
+    // the size attribute should be omitted, but path / mime / binary must be present
     let f = FileContext::new(
         "C:\\Users\\me\\WarpSetup.exe".into(),
         AnyFileContent::BinaryContent(Vec::new()),
@@ -171,10 +172,11 @@ fn file_binary_empty_omits_size_attr() {
     assert!(out.contains("binary=\"true\""));
     assert!(
         !out.contains("size="),
-        "空 BinaryContent 不应输出 size 属性"
+        "empty BinaryContent should not output a size attribute"
     );
-    // .exe 默认 mime 是 application/vnd.microsoft.portable-executable 或 octet-stream,
-    // 不强 assert 具体值,只验证 mime_type 属性存在
+    // The default mime for .exe is application/vnd.microsoft.portable-executable or
+    // octet-stream; we don't assert the exact value, only that the mime_type
+    // attribute is present.
     assert!(out.contains("mime_type=\""));
 }
 
@@ -190,7 +192,7 @@ fn image_renders_placeholder_only() {
     assert!(out.contains("<image file_name=\"shot.png\" mime_type=\"image/png\" />"));
     assert!(
         !out.contains("BASE64DATA"),
-        "首版不应内联 base64,避免上下文被填爆"
+        "the first version should not inline base64, to avoid filling up the context"
     );
 }
 
@@ -203,18 +205,18 @@ fn referenced_notebook_renders_full_payload() {
             uid: "Client-1".to_string(),
             payload: Some(DriveObjectPayload::Notebook {
                 title: "base".to_string(),
-                content: "base prompt 内容".to_string(),
+                content: "base prompt content".to_string(),
             }),
         },
     );
 
-    let out = render_referenced_attachments(&attachments).expect("应当渲染");
+    let out = render_referenced_attachments(&attachments).expect("should render");
     assert!(out.contains("<attached_context>"));
     assert!(out.contains("reference=\"@base\""));
     assert!(out.contains("uid=\"Client-1\""));
     assert!(out.contains("type=\"notebook\""));
     assert!(out.contains("<title>\nbase\n    </title>"));
-    assert!(out.contains("base prompt 内容"));
+    assert!(out.contains("base prompt content"));
 }
 
 #[test]
@@ -230,7 +232,7 @@ fn referenced_document_content_renders_full_payload() {
         },
     );
 
-    let out = render_referenced_attachments(&attachments).expect("应当渲染");
+    let out = render_referenced_attachments(&attachments).expect("should render");
     assert!(out.contains("<document_content"));
     assert!(out.contains("reference=\"@plan\""));
     assert!(out.contains("document_id=\"doc-1\""));
@@ -238,7 +240,7 @@ fn referenced_document_content_renders_full_payload() {
 }
 
 // ---------------------------------------------------------------------------
-// <environment_context> 尾块
+// <environment_context> trailing block
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -255,7 +257,7 @@ fn environment_context_renders_cwd_git_and_date() {
         },
     ];
 
-    let out = render_environment_context(&ctx).expect("应当渲染");
+    let out = render_environment_context(&ctx).expect("should render");
     assert!(out.starts_with("<environment_context>"), "{out}");
     assert!(out.ends_with("</environment_context>"), "{out}");
     assert!(out.contains("Working directory: /home/winters"), "{out}");
@@ -271,12 +273,13 @@ fn environment_context_reports_no_git_when_absent() {
         are_file_symbols_indexed: false,
     }];
 
-    let out = render_environment_context(&ctx).expect("应当渲染");
+    let out = render_environment_context(&ctx).expect("should render");
     assert!(out.contains("Is directory a git repo: no"), "{out}");
     assert!(!out.contains("Git branch:"), "{out}");
 }
 
-/// 没有任何可用字段时返回 `None` —— 不要发出一整块 `(unknown)`。
+/// Returns `None` when no fields are available —— don't emit an entire block of
+/// `(unknown)`.
 #[test]
 fn environment_context_is_none_when_nothing_resolvable() {
     assert!(render_environment_context(&[]).is_none());
@@ -293,7 +296,8 @@ fn environment_context_is_none_when_nothing_resolvable() {
     assert!(render_environment_context(&only_shell).is_none());
 }
 
-/// 缓存匹配依赖逐字节一致:同样的输入必须产出同样的字节。
+/// Cache matching depends on byte-for-byte consistency: the same input must produce
+/// the same bytes.
 #[test]
 fn environment_context_is_deterministic() {
     let ctx = vec![
@@ -313,7 +317,8 @@ fn environment_context_is_deterministic() {
     );
 }
 
-/// cwd 变化必须体现在尾块里 —— 这正是 system prompt 冻结方案丢掉的正确性。
+/// A cwd change must be reflected in the trailing block —— this is exactly the
+/// correctness that the "freeze the system prompt" approach lost.
 #[test]
 fn environment_context_reflects_cwd_change() {
     let at = |pwd: &str| {
@@ -322,7 +327,7 @@ fn environment_context_reflects_cwd_change() {
             home_dir: None,
             are_file_symbols_indexed: false,
         }])
-        .expect("应当渲染")
+        .expect("should render")
     };
     assert!(at("/home/winters").contains("Working directory: /home/winters"));
     assert!(at("/etc").contains("Working directory: /etc"));

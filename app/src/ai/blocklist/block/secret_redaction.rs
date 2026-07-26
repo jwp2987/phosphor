@@ -207,7 +207,7 @@ impl SecretRedactionState {
         }
     }
 
-    /// 清理所有 output 位置的脱敏结果，保留 query 的脱敏状态。
+    /// Clears redaction results for all output locations, keeping the query's redaction state.
     pub fn clear_output_locations(&mut self) {
         self.detected_secrets
             .retain(|location, _| !matches!(location, TextLocation::Output { .. }));
@@ -323,7 +323,7 @@ impl SecretRedactionState {
         }
     }
 
-    /// 从指定的渲染 section 起点扫描一组 output sections，并返回参与索引累计的 section 数。
+    /// Scans a set of output sections starting from a given render section index, and returns the number of sections counted toward the index.
     pub(crate) fn run_redaction_on_text_sections_with_starting_section_index(
         &mut self,
         sections: &[AIAgentTextSection],
@@ -358,7 +358,7 @@ impl SecretRedactionState {
         sections.len()
     }
 
-    /// 从指定的渲染 section 起点扫描完整 output，并返回参与索引累计的 section 数。
+    /// Scans the entire output starting from a given render section index, and returns the number of sections counted toward the index.
     pub(crate) fn run_redaction_on_output_with_starting_section_index(
         &mut self,
         output: &AIAgentOutput,

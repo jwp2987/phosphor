@@ -49,8 +49,10 @@ pub(super) fn input_context_for_request(
     is_user_query: bool,
     context_model: &BlocklistAIContextModel,
     active_session: &ActiveSession,
-    // 保留参数:多个上层调用方的签名暂不动。env 稳定性现在由消息末尾的
-    // `<environment_context>` 块负责,这里不再需要按会话缓存。
+    // Kept as a parameter: several upstream callers' signatures aren't being
+    // touched for now. env stability is now handled by the `<environment_context>`
+    // block at the end of the message, so caching per-conversation is no longer
+    // needed here.
     _conversation_id: Option<AIConversationId>,
     additional_context: Vec<AIAgentContext>,
     app: &AppContext,
@@ -61,25 +63,33 @@ pub(super) fn input_context_for_request(
         current_time: Local::now(),
     });
 
-    // cwd / 执行环境一律用**当前**解析结果,不做冻结、不做会话级兜底。
+    // cwd / execution environment always use the **current** resolved result — no
+    // freezing, no per-session fallback.
     //
-    // 曾经这里按 conversation 冻结过 pwd:见到一次有效值就锁死,之后整个会话复用。
-    // 目的是稳住 system prompt 里的 <env> 段(message[0] 一变,FLM 就 matched=0,
-    // 全量 re-prefill)。代价是 `cd` 之后模型被告知了错误的目录,得自己跑 `pwd`
-    // 才知道身在何处 —— 拿正确性换缓存,不划算。
+    // This used to freeze pwd per conversation: once a valid value was seen, it
+    // locked in and got reused for the whole session. The goal was to keep the
+    // <env> section of the system prompt stable (if message[0] changes, the FLM's
+    // matched count drops to 0 and it does a full re-prefill). The cost was that
+    // after a `cd`, the model was told the wrong directory and had to run `pwd`
+    // itself to figure out where it was — trading correctness for cache hits, which
+    // wasn't worth it.
     //
-    // 现在 cwd / git / 日期已经从 system prompt 移到消息列表末尾的
-    // `<environment_context>` 块(见 `user_context::render_environment_context`),
-    // system prompt 不再包含任何会变的环境字段,所以这里没有任何理由再冻结:
-    // system 段逐字节恒定,而环境状态每轮如实反映当下。
+    // Now cwd / git / date have moved out of the system prompt into the
+    // `<environment_context>` block at the end of the message list (see
+    // `user_context::render_environment_context`), so the system prompt no longer
+    // contains any environment field that changes, meaning there's no longer any
+    // reason to freeze it: the system section stays byte-for-byte constant, while
+    // the environment state faithfully reflects the present on every round.
     if let Some(env) = active_session.ai_execution_environment(app) {
         context.push(AIAgentContext::ExecutionEnvironment(env));
     }
 
     if FeatureFlag::ListSkills.is_enabled() {
-        // 项目去云端后,system prompt 每轮在客户端完整重渲(BYOP 无状态),
-        // skills 必须每轮全量送达,不再做差量。空列表时也不 push,保持
-        // context 紧凑(模板侧 `{% if skills %}` 守卫即可正常省略 section)。
+        // Now that the project has moved off the cloud, the system prompt is fully
+        // re-rendered client-side every round (BYOP is stateless), so skills must be
+        // sent in full every round rather than as a diff. Also doesn't push when the
+        // list is empty, keeping context compact (the template's `{% if skills %}`
+        // guard can then omit the section normally).
         let skills = list_skills(
             active_session.current_working_directory().map(Path::new),
             app,
@@ -294,8 +304,8 @@ pub(crate) fn plan_attachment_for_reference(
     None
 }
 
-/// 从 ObjectStoreModel 中按 UID 和类型取对象 payload。
-/// 找不到对象时返回 None。
+/// Fetches an object's payload from ObjectStoreModel by UID and type.
+/// Returns None if the object isn't found.
 fn get_object_attachment_payload(
     uid: &str,
     object_type: ObjectType,

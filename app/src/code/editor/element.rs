@@ -1509,7 +1509,7 @@ impl<V: EditorView> Element for EditorWrapper<V> {
         }
 
         // Cache find references anchor position if we have one.
-        // LSP 下线后不再需要缓存 find-references gutter 位置。
+        // Since LSP was removed, caching the find-references gutter position is no longer needed.
 
         self.child_max_z_index = Some(ctx.scene.max_active_z_index());
     }

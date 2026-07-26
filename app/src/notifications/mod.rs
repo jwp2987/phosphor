@@ -1,16 +1,18 @@
-//! 通知中心(mailbox + toast)。
+//! Notification center (mailbox + toast).
 //!
-//! 由 002ce467 cloud-removal 误删后重建,只保留与云端无关的本地路径:
-//! - 软件本体的 BYOP agent (Oz) 完成/出错通知
-//! - 第三方 CLI agent (Claude Code / Codex / DeepSeek 等) 状态通知
+//! Rebuilt after 002ce467's cloud-removal mistakenly deleted it, keeping only
+//! the cloud-unrelated local paths:
+//! - The app's own BYOP agent (Oz) completion/error notifications
+//! - Third-party CLI agent (Claude Code / Codex / DeepSeek, etc.) status notifications
 //!
-//! 模块布局:
-//! - `item`         数据模型 (`NotificationItem` / `NotificationItems` 等)
-//! - `item_rendering` 单条通知 UI (mailbox 和 toast 共用)
-//! - `model`        单例 `NotificationsModel`(订阅 history / cli 会话 model,产出通知)
-//! - `view`         `NotificationMailboxView`(信箱主面板)
-//! - `toast_stack`  `AgentNotificationToastStack`(右下角 toast)
-//! - `telemetry`    通知中心相关的 telemetry event(`NotificationsTelemetryEvent`)
+//! Module layout:
+//! - `item`          the data model (`NotificationItem` / `NotificationItems`, etc.)
+//! - `item_rendering` per-notification UI (shared by mailbox and toast)
+//! - `model`         the singleton `NotificationsModel` (subscribes to the
+//!                   history / cli session models, produces notifications)
+//! - `view`          `NotificationMailboxView` (the mailbox's main panel)
+//! - `toast_stack`   `AgentNotificationToastStack` (bottom-right toast)
+//! - `telemetry`     notification-center-related telemetry events (`NotificationsTelemetryEvent`)
 
 pub(crate) mod item;
 pub(crate) mod item_rendering;

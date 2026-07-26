@@ -141,5 +141,7 @@ pub fn assert_binding_display_string(
     )
 }
 
-// Zap(本地化,Phase 2d-4a-1):原 `assert_websocket_has_started` / `assert_websocket_has_not_started`
-// 断言依赖物理删除的 `Listener` singleton,无调用方,一并移除。
+// Zap (localization, Phase 2d-4a-1): the original
+// `assert_websocket_has_started` / `assert_websocket_has_not_started`
+// assertions depended on the physically-removed `Listener` singleton; with
+// no callers left, they were removed together.

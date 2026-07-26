@@ -103,8 +103,9 @@ impl Requests {
             request_limit_info,
         };
 
-        // Zap:无 Zap Inc 云后端,初始 request_limit_info 不再向服务端拉取;
-        // 使用上面 cached / default 的值即可。
+        // Zap: with no Zap Inc cloud backend, the initial request_limit_info
+        // is no longer fetched from the server; using the cached / default
+        // value above is sufficient.
         let _ = cached_request_limit_info;
         requests
     }

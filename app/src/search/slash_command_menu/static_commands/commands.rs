@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn rename_tab_command_requires_argument() {
-        // hint_text 走 i18n,初始化 loader 后取真实英文文案
+        // hint_text goes through i18n; initialize the loader to get the real English copy
         crate::i18n::init(Some("en"));
         let command = COMMAND_REGISTRY
             .get_command_with_name(RENAME_TAB.name)

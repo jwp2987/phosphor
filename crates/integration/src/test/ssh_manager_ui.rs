@@ -1,6 +1,6 @@
-//! SSH 管理器分组下拉选择功能的集成测试。
+//! Integration tests for the SSH manager's group dropdown selection feature.
 //!
-//! 使用 `TestStep::new` 创建步骤，不附加终端相关的默认断言。
+//! Uses `TestStep::new` to create steps, without attaching terminal-related default assertions.
 
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +17,7 @@ use warpui::{
 
 use crate::Builder;
 
-/// 共享的测试数据 ID。
+/// Shared test data IDs.
 struct TestIds {
     folder_a: Arc<Mutex<Option<String>>>,
     folder_b: Arc<Mutex<Option<String>>>,
@@ -34,15 +34,15 @@ impl TestIds {
     }
 }
 
-/// 测试服务器分组下拉选择功能：
-/// 创建两个文件夹和一个服务器，通过下拉选择器切换分组并保存，
-/// 验证 DB 中节点正确移动。
+/// Tests the server group dropdown selection feature:
+/// creates two folders and one server, switches the group via the dropdown
+/// selector and saves, then verifies the node moved correctly in the DB.
 pub fn test_ssh_server_group_dropdown() -> Builder {
     let ids = TestIds::new();
 
     let mut builder = crate::test::new_builder();
 
-    // Step 0: 等待 workspace 视图就绪
+    // Step 0: wait for the workspace view to be ready
     builder = builder.with_step(
         TestStep::new("Wait for workspace to be ready")
             .set_timeout(std::time::Duration::from_secs(30))
@@ -63,7 +63,7 @@ pub fn test_ssh_server_group_dropdown() -> Builder {
             ),
     );
 
-    // Step 1: 创建测试数据（folder A、folder B、server in folder A）
+    // Step 1: create test data (folder A, folder B, server in folder A)
     {
         let fa = ids.folder_a.clone();
         let fb = ids.folder_b.clone();
@@ -80,7 +80,7 @@ pub fn test_ssh_server_group_dropdown() -> Builder {
         );
     }
 
-    // Step 2: 打开 SSH 管理器面板（含重试）
+    // Step 2: open the SSH manager panel (with retries)
     builder = builder.with_step(
         open_ssh_manager_panel()
             .set_timeout(std::time::Duration::from_secs(30))
@@ -91,7 +91,7 @@ pub fn test_ssh_server_group_dropdown() -> Builder {
             ),
     );
 
-    // Step 3: 打开服务器编辑器
+    // Step 3: open the server editor
     {
         let sid = ids.server.clone();
         builder = builder.with_step(
@@ -115,7 +115,7 @@ pub fn test_ssh_server_group_dropdown() -> Builder {
         );
     }
 
-    // Step 4: 等待编辑器可见，断言初始分组为 GroupA
+    // Step 4: wait for the editor to be visible, assert the initial group is GroupA
     {
         let fa = ids.folder_a.clone();
         builder = builder.with_step(
@@ -139,13 +139,13 @@ pub fn test_ssh_server_group_dropdown() -> Builder {
         );
     }
 
-    // Step 5: 通过 ID 选择 GroupB
+    // Step 5: select GroupB by ID
     {
         let fb = ids.folder_b.clone();
         builder = builder.with_step(select_group_by_id(fb));
     }
 
-    // Step 6: 断言分组切换为 GroupB
+    // Step 6: assert the group switched to GroupB
     {
         let fb = ids.folder_b.clone();
         builder = builder.with_step(
@@ -168,13 +168,13 @@ pub fn test_ssh_server_group_dropdown() -> Builder {
         );
     }
 
-    // Step 7: 选择 Root（None）
+    // Step 7: select Root (None)
     {
         let none_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         builder = builder.with_step(select_group_by_id(none_id));
     }
 
-    // Step 8: 断言分组切换为 Root
+    // Step 8: assert the group switched to Root
     builder = builder.with_step(
         TestStep::new("Verify group changed to Root")
             .set_timeout(std::time::Duration::from_secs(10))
@@ -184,10 +184,10 @@ pub fn test_ssh_server_group_dropdown() -> Builder {
             ),
     );
 
-    // Step 9: 保存
+    // Step 9: save
     builder = builder.with_step(save_server());
 
-    // Step 10: 断言 DB 中节点已移到 Root
+    // Step 10: assert the node has moved to Root in the DB
     {
         let sid = ids.server.clone();
         builder = builder.with_step(

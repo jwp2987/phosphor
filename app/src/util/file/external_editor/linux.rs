@@ -66,24 +66,26 @@ impl EditorMetadata {
         })
     }
 
-    /// 构造外部编辑器命令的通用实现。
+    /// Generic implementation for building the external editor command.
     ///
-    /// - 先把 Exec 字段拆成 shell words，再在每个 token 内展开 field code，
-    ///   得到正确的 argv 向量
-    /// - 直接设置 program 和 args，避免经过 shell
+    /// - First splits the Exec field into shell words, then expands field
+    ///   codes within each token, yielding the correct argv vector
+    /// - Sets program and args directly, avoiding going through a shell
     ///
-    /// field code 替换由 `field_code_processor` 回调处理。回调收到
-    /// `&mut Vec<String>`：修改最后一个元素表示追加到当前参数，push 新
-    /// `String` 表示新增参数。
+    /// Field code substitution is handled by the `field_code_processor`
+    /// callback. The callback receives `&mut Vec<String>`: modifying the last
+    /// element means appending to the current argument, pushing a new
+    /// `String` means adding a new argument.
     fn build_command<T>(&self, field_code_processor: T) -> Result<Command, DesktopExecError>
     where
         T: Fn(&Self, &mut Vec<String>, char),
     {
         let raw_exec = &self.exec;
 
-        // 先按 shell words 拆分 Exec，再在每个 token 内展开 field code。
-        // 这样能保留替换值中的空格(例如文件路径)，同时尊重 .desktop Exec
-        // 原始内容中的引用规则。
+        // Split Exec into shell words first, then expand field codes within
+        // each token. This preserves spaces in substituted values (e.g. file
+        // paths) while respecting the quoting rules in the .desktop Exec's
+        // original content.
         let tokens =
             shell_words::split(raw_exec).map_err(|_| DesktopExecError::MalformedFieldCode)?;
 
@@ -99,8 +101,8 @@ impl EditorMetadata {
                 let Some(next_char) = iter.next() else {
                     return Err(DesktopExecError::MalformedFieldCode);
                 };
-                // field code 处理器可以追加额外 argv 项，例如 %i 会把
-                // "--icon" 和 icon 值作为两个独立参数写入。
+                // The field code processor can append extra argv items — e.g.
+                // %i writes "--icon" and the icon value as two separate arguments.
                 field_code_processor(self, &mut parts, next_char);
             }
             for p in parts {
@@ -119,17 +121,17 @@ impl EditorMetadata {
         Ok(command)
     }
 
-    /// field code 默认替换逻辑。
+    /// Default field code substitution logic.
     ///
-    /// 根据 FreeDesktop 规范处理 `field_code`，把替换值追加到当前 argv 参数
-    /// 或新增 argv 参数：
+    /// Handles `field_code` per the FreeDesktop spec, appending the substituted value to the current argv argument
+    /// or adding a new argv argument:
     /// https://specifications.freedesktop.org/desktop-entry-spec/latest/ar01s07.html
-    /// 依赖文件路径的 %f、%F、%u、%U 使用 `file_path` 参数。
+    /// %f, %F, %u, %U, which depend on the file path, use the `file_path` parameter.
     ///
-    /// 信息缺失或处理失败时保持原有行为：静默跳过对应替换值。
+    /// Preserves the original behavior when information is missing or processing fails: silently skips the corresponding substitution value.
     fn process_field_code(&self, parts: &mut Vec<String>, field_code: char, file_path: &Path) {
         match field_code {
-            // 文件路径
+            // File path
             'f' | 'F' => {
                 parts
                     .last_mut()
@@ -138,37 +140,38 @@ impl EditorMetadata {
             }
             // URI
             'u' | 'U' => {
-                // TODO(daprahamian): 这里使用 canonicalize，因此文件不存在时会失败，
-                // 也会额外触发一次文件系统检查。未来可以改用 std::path::absolute。
+                // TODO(daprahamian): this uses canonicalize, so it fails when
+                // the file doesn't exist, and also triggers an extra
+                // filesystem check. Could switch to std::path::absolute in the future.
                 //
-                // 参考 https://github.com/rust-lang/rust/issues/92750
+                // See https://github.com/rust-lang/rust/issues/92750
                 if let Ok(absolute) = file_path.canonicalize() {
                     if let Ok(file_url) = url::Url::from_file_path(absolute) {
                         parts.last_mut().unwrap().push_str(file_url.as_str());
                     }
                 }
             }
-            // 本地化名称
+            // Localized name
             'c' => {
                 if let Some(localized_name) = self.localized_name.as_ref() {
                     parts.last_mut().unwrap().push_str(localized_name);
                 }
             }
-            // icon 参数需要拆成独立 argv 项
+            // The icon argument needs to be split into a separate argv item
             'i' => {
                 if let Some(icon) = &self.icon {
                     parts.last_mut().unwrap().push_str("--icon");
                     parts.push(icon.clone());
                 }
             }
-            // desktop 文件路径
+            // desktop file path
             'k' => {
                 parts
                     .last_mut()
                     .unwrap()
                     .push_str(self.desktop_file_path.to_str().unwrap_or_default());
             }
-            // 未知 field code 按规范保留该字符
+            // Unknown field code: keep the character as-is per the spec
             other => parts.last_mut().unwrap().push(other),
         };
     }

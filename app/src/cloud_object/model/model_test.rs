@@ -169,10 +169,13 @@ fn folder_from_object_store_model(model: &ObjectStoreModel, id: SyncId) -> &Fold
 /// Mock receiving an RTC update. These tests update objects by mocking RTC messages so that they
 /// don't need to mock the server API for updates. The unit tests for [`UpdateManager`] ensure that
 /// updates from both RTC and client actions emit the same events.
-// Zap(本地化,Phase 2d-4a-1):RTC 入口 `received_message_from_server` 随 `Listener`
-// 一并物理删除,以下依赖 `receive_rtc_update` / `move_object` helper 的 4 个
-// folder 排序时间戳测试(test_update_folder_timestamp_from_*)与 helper 同一删除,
-// 本地写入路径下的 metadata 更新由 `ObjectStoreModel` 直接接手,无需 RTC 路径。
+// Zap (localization, Phase 2d-4a-1): the RTC entry point
+// `received_message_from_server` was physically removed along with
+// `Listener`. The 4 folder sort-timestamp tests below
+// (test_update_folder_timestamp_from_*), which depend on the
+// `receive_rtc_update` / `move_object` helper, were removed together with the
+// helper — under the local write path, metadata updates are now handled
+// directly by `ObjectStoreModel`, no RTC path needed.
 
 #[test]
 fn test_create_json_object() {

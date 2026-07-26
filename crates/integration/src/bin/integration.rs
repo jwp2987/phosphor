@@ -313,7 +313,7 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_history_command_is_linked_to_local_workflow);
     register_test!(test_up_arrow_history_enters_shift_tab_for_workflow);
 
-    // Zap(本地化,Phase 5):websocket 集成测试随 Listener 物理删除。
+    // Zap (localization, Phase 5): the websocket integration test was physically removed along with the Listener.
 
     register_test!(test_secret_is_obfuscated_on_copy);
     register_test!(test_secret_tooltip_shows_on_click);

@@ -63,16 +63,16 @@ desired_behavior.md
 # Don't include the python cache for bundled skills.
 __pycache__/
 
-# 嵌套 vendored 仓库,本地参考用,不入库
+# Nested vendored repo, for local reference only, not checked in
 /warp-proto-apis/
 
-# logo 生成脚本的依赖
+# Dependency of the logo generation script
 /scripts/node_modules/
 
 # Project notes
 .note/
 
-# ProcMon / 临时调试日志
+# ProcMon / temporary debug logs
 Logfile.CSV
 docs/tmp.md
 official-website/

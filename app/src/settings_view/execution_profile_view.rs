@@ -123,7 +123,8 @@ impl View for ExecutionProfileView {
             .map(|info| info.display_name.clone())
             .unwrap_or_else(|| crate::t!("settings-exec-profile-auto"));
 
-        // title 模型 fallback 到 base 的显示名,与 base 一致表示"未独立设置"。
+        // The title model falls back to base's display name; matching base means "not
+        // configured separately".
         let title_model = profile
             .title_model
             .as_ref()
@@ -136,7 +137,8 @@ impl View for ExecutionProfileView {
                     .clone()
             });
 
-        // active AI 模型(prompt suggestions / NLD / relevant files 用),fallback 到 base。
+        // The active AI model (used for prompt suggestions / NLD / relevant files), falls back
+        // to base.
         let active_ai_model = profile
             .active_ai_model
             .as_ref()
@@ -149,7 +151,8 @@ impl View for ExecutionProfileView {
                     .clone()
             });
 
-        // Next Command 模型(灰色补全 / zero-state 建议),fallback 到 base。
+        // The Next Command model (ghost-text completion / zero-state suggestions), falls back
+        // to base.
         let next_command_model = profile
             .next_command_model
             .as_ref()

@@ -130,8 +130,8 @@ pub enum LeafContents {
     AIDocument(AIDocumentPaneSnapshot),
     Code(CodePaneSnapShot),
     EnvVarCollection(EnvVarCollectionPaneSnapshot),
-    // Zap Wave 7-3:`EnvironmentManagement` LeafContents variant 随 Ambient Agent UI
-    // 子系统物理删。
+    // Zap Wave 7-3: the `EnvironmentManagement` LeafContents variant was
+    // physically removed along with the Ambient Agent UI subsystem.
     Workflow(WorkflowPaneSnapshot),
     Settings(SettingsPaneSnapshot),
     AIFact(AIFactPaneSnapshot),
@@ -145,13 +145,15 @@ pub enum LeafContents {
     },
     /// A new first-time user experience which prioritizes choosing a coding repository.
     GetStarted,
-    /// SSH 服务器编辑器 pane(openWarp 独有)。引用 `ssh_servers.node_id` 主键
-    /// 加载/保存。**不持久化** — 重启后用户从左侧 SSH 管理器树重新打开。
+    /// The SSH server editor pane (openWarp-only). Loads/saves by referencing
+    /// the `ssh_servers.node_id` primary key. **Not persisted** — the user
+    /// reopens it from the SSH manager tree on the left after a restart.
     SshServer {
         node_id: String,
     },
-    /// SFTP 文件浏览器 pane。引用 `ssh_servers.node_id` 主键关联远端服务器。
-    /// **不持久化** — 重启后用户从左侧 SSH 管理器树重新打开。
+    /// The SFTP file browser pane. Associates with the remote server by
+    /// referencing the `ssh_servers.node_id` primary key.
+    /// **Not persisted** — the user reopens it from the SSH manager tree on the left after a restart.
     Sftp {
         node_id: String,
     },
@@ -170,19 +172,24 @@ impl LeafContents {
     /// restoration to fail and the whole tab to disappear on restart.
     pub(crate) fn is_persisted(&self) -> bool {
         match self {
-            // Zap Wave 7-3:`EnvironmentManagement` arm 随 variant 一同物理删。
-            // SSH server editor:数据(host/user/...)持久化在 ssh_servers 表里,
-            // pane 本身只是 view,关掉再打开没差别。
+            // Zap Wave 7-3: the `EnvironmentManagement` arm was physically
+            // removed along with the variant.
+            // SSH server editor: the data (host/user/...) is persisted in the
+            // ssh_servers table; the pane itself is just a view, so closing
+            // and reopening it makes no difference.
             LeafContents::SshServer { .. } => false,
-            // SFTP 浏览器:远端文件系统依赖活跃 SSH 连接,pane 不可恢复。
+            // SFTP browser: the remote filesystem depends on an active SSH
+            // connection, so the pane cannot be restored.
             LeafContents::Sftp { .. } => false,
             // Image viewer panes are intentionally not persisted: they render in-session but
             // are not restored after restart.
             LeafContents::Image { .. } => false,
-            // 远端文件代码 pane:远端 buffer 依赖活跃 SSH 连接,`RemoteFileTree`
-            // source 不可恢复(`is_restorable() == false`)。若写入持久化会留下
-            // 一条 restore 阶段被跳过的孤儿 `Code` 行,导致整个 tab 丢失 ——
-            // 因此带远端 source 的代码 pane 整体不持久化。
+            // Remote-file code pane: the remote buffer depends on an active
+            // SSH connection, and the `RemoteFileTree` source can't be
+            // restored (`is_restorable() == false`). Writing it to
+            // persistence would leave behind an orphan `Code` row that gets
+            // skipped during the restore phase, causing the whole tab to be
+            // lost — so code panes with a remote source aren't persisted at all.
             LeafContents::Code(CodePaneSnapShot::Local { source, .. }) => {
                 source.as_ref().map(|s| s.is_restorable()).unwrap_or(true)
             }
@@ -292,7 +299,7 @@ pub enum EnvVarCollectionPaneSnapshot {
     },
 }
 
-// Zap Wave 7-3:`EnvironmentManagementPaneSnapshot` 随 LeafContents variant 一同物理删。
+// Zap Wave 7-3: `EnvironmentManagementPaneSnapshot` was physically removed along with the LeafContents variant.
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingsPaneSnapshot {

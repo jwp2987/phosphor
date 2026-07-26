@@ -1,7 +1,7 @@
-//! zap_sftp — SFTP 协议层封装
+//! zap_sftp — SFTP protocol-layer wrapper
 //!
-//! 基于 ssh2 crate 封装 SFTP 文件传输协议，提供会话管理、
-//! 远程文件读写、目录操作等功能。
+//! Wraps the SFTP file transfer protocol on top of the ssh2 crate, providing
+//! session management, remote file read/write, directory operations, and more.
 //! author: logic
 //! date: 2026-05-31
 

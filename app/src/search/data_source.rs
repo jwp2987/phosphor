@@ -207,7 +207,7 @@ pub enum QueryFilter {
     /// Filter results for known/indexed code repos.
     Repos,
 
-    /// Filter results for SSH servers in the openWarp SSH 管理器 tree.
+    /// Filter results for SSH servers in the openWarp SSH manager tree.
     SshServers,
 
     /// Filter results for diff sets.

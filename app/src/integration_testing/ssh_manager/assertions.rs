@@ -1,4 +1,4 @@
-//! SSH 管理器集成测试断言辅助函数。
+//! SSH manager integration test assertion helper functions.
 
 use std::sync::{Arc, Mutex};
 
@@ -8,7 +8,7 @@ use warpui::{async_assert, integration::AssertionCallback, App, ViewHandle, Wind
 use crate::integration_testing::view_getters::workspace_view;
 use crate::ssh_manager::server_view::SshServerView;
 
-/// 获取窗口中唯一的 SshServerView 视图句柄。
+/// Gets the unique SshServerView view handle in the window.
 pub fn ssh_server_view(app: &App, window_id: WindowId) -> ViewHandle<SshServerView> {
     let mut views = app
         .views_of_type::<SshServerView>(window_id)
@@ -17,7 +17,7 @@ pub fn ssh_server_view(app: &App, window_id: WindowId) -> ViewHandle<SshServerVi
     views.remove(0)
 }
 
-/// 断言 SSH 管理器左侧面板已打开。
+/// Asserts that the SSH manager's left panel is open.
 pub fn assert_ssh_manager_panel_open() -> AssertionCallback {
     Box::new(move |app, window_id| {
         let workspace = workspace_view(app, window_id);
@@ -30,7 +30,7 @@ pub fn assert_ssh_manager_panel_open() -> AssertionCallback {
     })
 }
 
-/// 断言服务器编辑器视图可见。
+/// Asserts that the server editor view is visible.
 pub fn assert_server_view_visible() -> AssertionCallback {
     Box::new(move |app, window_id| {
         let views = app.views_of_type::<SshServerView>(window_id);
@@ -42,7 +42,7 @@ pub fn assert_server_view_visible() -> AssertionCallback {
     })
 }
 
-/// 断言服务器编辑器当前的 current_group_id 等于预期值。
+/// Asserts that the server editor's current current_group_id equals the expected value.
 pub fn assert_server_group_id(expected: Option<String>) -> AssertionCallback {
     Box::new(move |app, window_id| {
         let view = ssh_server_view(app, window_id);
@@ -56,7 +56,7 @@ pub fn assert_server_group_id(expected: Option<String>) -> AssertionCallback {
     })
 }
 
-/// 断言 DB 中指定节点的 parent_id 等于预期值（运行时从 Arc 中读取 node_id）。
+/// Asserts that the given node's parent_id in the DB equals the expected value (node_id is read from the Arc at runtime).
 pub fn assert_db_node_parent_id(
     node_id: Arc<Mutex<Option<String>>>,
     expected: Option<String>,

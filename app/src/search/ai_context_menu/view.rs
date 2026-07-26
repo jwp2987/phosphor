@@ -417,8 +417,9 @@ impl AIContextMenu {
                     categories.push(AIContextMenuCategory::CurrentFolderFiles);
                 }
             }
-            // Zap:原会根据 outline_codebase_symbols_for_at_context_menu 设置 push Code
-            // 分类,现 outline 下线,Code 分类不再出现。
+            // Zap: this used to push a Code category based on the
+            // outline_codebase_symbols_for_at_context_menu setting; now that
+            // outline has been retired, the Code category no longer appears.
             return categories;
         }
 
@@ -452,7 +453,7 @@ impl AIContextMenu {
                 categories.push(AIContextMenuCategory::Commands);
             }
             categories.push(AIContextMenuCategory::Blocks);
-            // Zap:Code 分类随 outline 下线同步推退,不再 push。
+            // Zap: the Code category was retired along with outline, so it is no longer pushed.
             if show_warp_drive && FeatureFlag::DriveObjectsAsContext.is_enabled() {
                 categories.push(AIContextMenuCategory::Workflows);
                 categories.push(AIContextMenuCategory::Notebooks);
@@ -474,8 +475,9 @@ impl AIContextMenu {
             categories
         } else if !is_shared_session_viewer {
             // Terminal mode: show Files category only.
-            // Zap:原这里还会按 outline_codebase_symbols_for_at_context_menu push Code
-            // 分类,现 outline 下线,Code 分类不再出现。
+            // Zap: this used to also push a Code category based on
+            // outline_codebase_symbols_for_at_context_menu; now that outline
+            // has been retired, the Code category no longer appears.
 
             if is_active_dir_in_git_repo {
                 vec![AIContextMenuCategory::RepoFiles]
@@ -595,9 +597,10 @@ impl AIContextMenu {
         // Get initial categories for proper initialization
         let initial_categories = Self::get_categories_for_mode(true, false, false, false, ctx); // Default to AI mode, not a viewer, not ambient agent, not CLI agent input
 
-        // Zap:原这里会创建 CodeSymbolCache(订阅 RepoOutlines) 以支持
-        // 代码符号搜索。该功能已随 outline 推退下线,这些订阅/创建代码
-        // 一并删除。
+        // Zap: this used to create a CodeSymbolCache (subscribing to
+        // RepoOutlines) to support code symbol search. That feature has been
+        // retired along with outline, so this subscription/creation code was
+        // removed too.
 
         let mut result = Self {
             mixer,
@@ -867,8 +870,9 @@ impl AIContextMenu {
                     );
                 });
             }
-            // Zap:Code 分类随 outline 下线推退。该分类不会出现在 categories 中,
-            // 但 enum variant 保留以避免 match 大面积破坏;这里不会被命中。
+            // Zap: the Code category was retired along with outline. It
+            // never appears in categories anymore, but the enum variant is
+            // kept to avoid breaking matches widely; this arm is unreachable.
             #[cfg(not(target_family = "wasm"))]
             NavigationState::Category(AIContextMenuCategory::Workflows) => {
                 let workflow_data_source = ctx.add_model(|_| WorkflowDataSource::new());
@@ -1043,8 +1047,8 @@ impl AIContextMenu {
                         mixer.add_sync_source(block_data_source, [QueryFilter::Blocks]);
                     });
                 }
-                // Zap:Code 分类随 outline 下线推退;不会出现但保留 noop 分支
-                // 避免 match 错误。
+                // Zap: the Code category was retired along with outline; it
+                // never appears, but a no-op arm is kept to avoid a match error.
                 AIContextMenuCategory::Code => {}
                 AIContextMenuCategory::Workflows => {
                     let workflow_data_source = ctx.add_model(|_| WorkflowDataSource::new());
@@ -1335,9 +1339,10 @@ impl AIContextMenu {
         .finish()
     }
 
-    // Zap:原 `render_code_symbols_indexing` 负责在代码符号索引中时渲染
-    // “Code symbols indexing...” 提示。outline 下线后该渲染路径不会被调,
-    // 函数一并删除。
+    // Zap: `render_code_symbols_indexing` used to render a "Code symbols
+    // indexing..." hint while code symbols were being indexed. Now that
+    // outline has been removed, that render path is never called, so the
+    // function was removed too.
 
     fn render_matching_results(
         &self,
@@ -1544,8 +1549,10 @@ impl AIContextMenu {
         fallback: Box<dyn Element>,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        // Zap:原这里会检查 Code 分类下是否正在索引代码符号,如是则走
-        // `render_code_symbols_indexing` 提示。outline 下线后该分类不会出现,完全删除。
+        // Zap: this used to check whether code symbols were being indexed
+        // under the Code category, and if so render the
+        // `render_code_symbols_indexing` hint. Now that outline has been
+        // removed, that category never appears, so this was removed entirely.
         let _ = category;
 
         if self.mixer.as_ref(app).is_loading() {

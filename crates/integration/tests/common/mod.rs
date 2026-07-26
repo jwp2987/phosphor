@@ -100,11 +100,12 @@ pub fn run_integration_test(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Windows 平台的集成测试运行器。
+/// Integration test runner for the Windows platform.
 ///
-/// 使用 std::process::Command 替代 command::blocking::Command，
-/// 因为后者会注入 CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB 标志，
-/// 导致集成测试二进制无法正常创建 GUI 窗口（os error 5）。
+/// Uses std::process::Command instead of command::blocking::Command, because
+/// the latter injects the CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB flags,
+/// which prevents the integration test binary from properly creating a GUI
+/// window (os error 5).
 #[cfg(windows)]
 pub fn run_integration_test(name: &str) -> Result<(), String> {
     let mut keep_going = true;

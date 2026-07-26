@@ -1,4 +1,4 @@
-//! 同步引擎
+//! Sync engine
 //!
 // author: logic
 // date: 2026-05-24
@@ -7,25 +7,25 @@ use crate::gist_client::{GistClient, GistOps};
 use crate::types::*;
 use chrono::Utc;
 
-/// 数据提供者 trait，各业务模块实现此 trait 接入同步
+/// Data provider trait; each business module implements this trait to hook into sync
 pub trait SyncDataProvider: Send + Sync {
-    /// 数据所属的 section key（如 "ssh"）
+    /// The section key the data belongs to (e.g. "ssh")
     fn section_key(&self) -> &str;
 
-    /// 收集本地数据，返回该 section 的 JSON Value
+    /// Collects local data, returning that section's JSON Value
     fn collect_data(&self, token: &str) -> Result<serde_json::Value, SyncEngineError>;
 
-    /// 将云端数据应用到本地
+    /// Applies cloud data to the local side
     fn apply_data(&self, token: &str, data: &serde_json::Value) -> Result<(), SyncEngineError>;
 }
 
-/// 同步引擎，负责上传/下载同步数据到 Gist
+/// Sync engine, responsible for uploading/downloading sync data to Gist
 pub struct SyncEngine<C: GistOps> {
     client: C,
 }
 
 impl SyncEngine<GistClient> {
-    /// 创建新的 SyncEngine 实例（使用真实 GistClient）
+    /// Creates a new SyncEngine instance (using a real GistClient)
     pub fn new() -> Self {
         Self {
             client: GistClient::new(),
@@ -34,12 +34,12 @@ impl SyncEngine<GistClient> {
 }
 
 impl<C: GistOps> SyncEngine<C> {
-    /// 使用自定义 GistOps 实现创建引擎
+    /// Creates an engine using a custom GistOps implementation
     pub fn with_client(client: C) -> Self {
         Self { client }
     }
 
-    /// 上传数据到指定平台
+    /// Uploads data to the specified platform
     pub async fn upload(
         &self,
         platform: SyncPlatform,
@@ -80,7 +80,7 @@ impl<C: GistOps> SyncEngine<C> {
             let remote_data: SyncData = serde_json::from_str(&remote_content)
                 .map_err(|e| SyncEngineError::Serialization(e.to_string()))?;
 
-            // 严格 > 才算冲突;== 表示本地与远程同处一个版本,无需重复上传
+            // Only strictly > counts as a conflict; == means local and remote are already at the same version, no need to re-upload
             if remote_data.version > local_version {
                 return Ok(SyncResult::Conflict {
                     local_version,
@@ -111,7 +111,7 @@ impl<C: GistOps> SyncEngine<C> {
         })
     }
 
-    /// 从指定平台下载数据
+    /// Downloads data from the specified platform
     pub async fn download(
         &self,
         platform: SyncPlatform,
@@ -126,7 +126,7 @@ impl<C: GistOps> SyncEngine<C> {
             .find_gist(platform, token_owned.clone())
             .await
             .map_err(|e| SyncEngineError::Gist(e.to_string()))?
-            .ok_or_else(|| SyncEngineError::Gist("Gist 未找到".to_string()))?;
+            .ok_or_else(|| SyncEngineError::Gist("Gist not found".to_string()))?;
 
         let remote_content = self
             .client
@@ -160,7 +160,7 @@ impl<C: GistOps> SyncEngine<C> {
         })
     }
 
-    /// 强制上传，忽略远程版本冲突。版本号由引擎内部管理，失败时回滚
+    /// Force-uploads, ignoring remote version conflicts. The version number is managed internally by the engine and rolled back on failure
     pub async fn force_upload(
         &self,
         platform: SyncPlatform,
@@ -178,14 +178,14 @@ impl<C: GistOps> SyncEngine<C> {
 
         let token_owned = token.to_string();
 
-        // 查找已有 Gist
+        // Look for an existing Gist
         let gist_id = self
             .client
             .find_gist(platform, token_owned.clone())
             .await
             .map_err(|e| SyncEngineError::Gist(e.to_string()))?;
 
-        // 确定远程版本号
+        // Determine the remote version number
         let remote_version = if let Some(ref gid) = gist_id {
             let remote_content = self
                 .client
@@ -209,10 +209,10 @@ impl<C: GistOps> SyncEngine<C> {
         let content = serde_json::to_string_pretty(&sync_data)
             .map_err(|e| SyncEngineError::Serialization(e.to_string()))?;
 
-        // 先递增版本号
+        // Increment the version number first
         tokio::task::block_in_place(|| version_store.set_sync_version(new_version))?;
 
-        // 上传，失败时回滚版本号
+        // Upload, rolling back the version number on failure
         let upload_result = if let Some(gid) = gist_id {
             self.client
                 .update_gist(platform, token_owned, gid, content)
@@ -225,17 +225,19 @@ impl<C: GistOps> SyncEngine<C> {
         };
 
         if let Err(e) = upload_result {
-            // 把上传错误与回滚错误聚合后返回,而不是吞掉回滚错误。
-            // 回滚失败时本地 sync_version 卡在 new_version,后续上传会
-            // 用本地状态意外覆盖远程,必须让调用方看到。
+            // Aggregate the upload error with any rollback error and return
+            // it, rather than swallowing the rollback error. If the rollback
+            // fails, the local sync_version stays stuck at new_version, and a
+            // subsequent upload would unexpectedly overwrite the remote with
+            // local state — the caller must be able to see this.
             let rollback_msg = match tokio::task::block_in_place(|| {
                 version_store.set_sync_version(local_version)
             }) {
                 Ok(()) => String::new(),
                 Err(rollback_err) => {
-                    log::error!("强制上传失败后回滚版本号失败: {rollback_err}");
+                    log::error!("Failed to roll back the version number after a force-upload failure: {rollback_err}");
                     format!(
-                        " (回滚 sync_version 也失败: {rollback_err},本地版本卡在 {new_version},请手动改回 {local_version})"
+                        " (rolling back sync_version also failed: {rollback_err}, local version is stuck at {new_version}, please manually change it back to {local_version})"
                     )
                 }
             };
@@ -250,7 +252,7 @@ impl<C: GistOps> SyncEngine<C> {
         })
     }
 
-    /// 获取本地版本号
+    /// Gets the local version number
     pub fn get_local_version(version_store: &dyn SyncVersionStore) -> Result<i64, SyncEngineError> {
         version_store.get_sync_version()
     }
@@ -313,7 +315,7 @@ mod tests {
         content: String,
         create_called: Mutex<bool>,
         update_called: Mutex<bool>,
-        /// 记录最近一次调用经过的 platform,便于测试断言 platform-specific 路径
+        /// Records the platform used in the most recent call, so tests can assert platform-specific paths
         last_platform: Mutex<Option<SyncPlatform>>,
     }
 
@@ -397,7 +399,7 @@ mod tests {
         let result = engine.upload(platform, "token", &[&provider], &store).await.unwrap();
         assert!(matches!(result, SyncResult::Success { version: 1, .. }));
         assert!(*engine.client.create_called.lock().unwrap());
-        // 断言 platform 真的传到 GistOps,避免 mock 吞参数
+        // Assert the platform was actually passed to GistOps, guarding against the mock swallowing the parameter
         assert_eq!(*engine.client.last_platform.lock().unwrap(), Some(platform));
     }
 
@@ -500,15 +502,16 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_upload_equal_version_is_no_op() {
-        // 本地与远程同版本时,上传应当返回 AlreadyUpToDate 而非 Conflict
-        // (修复:此前会陷入虚假冲突循环,见 PR #161 review)
+        // When local and remote are at the same version, upload should return
+        // AlreadyUpToDate rather than Conflict
+        // (fix: this used to fall into a false-conflict loop, see PR #161 review)
         let mock = MockGistOps::new(Some("gist123".to_string()), &make_sync_data_json(3));
         let engine = SyncEngine::with_client(mock);
         let provider = MockProvider;
         let store = MockVersionStore::new(3);
         let result = engine.upload(SyncPlatform::GitHub, "token", &[&provider], &store).await.unwrap();
         assert!(matches!(result, SyncResult::AlreadyUpToDate { version: 3 }));
-        // 远程版本未变,不应触发任何写操作
+        // The remote version hasn't changed, so no write operation should be triggered
         assert!(!*engine.client.update_called.lock().unwrap());
         assert!(!*engine.client.create_called.lock().unwrap());
     }

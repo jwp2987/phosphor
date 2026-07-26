@@ -33,10 +33,12 @@ pub enum SlashCommandRequest {
     },
     Summarize {
         prompt: Option<String>,
-        /// Zap BYOP 本地会话压缩:本次摘要是否由 token-overflow 自动触发。
-        /// chat_stream::SummarizeConversation 分支据此决定 follow-up 文案
-        /// (overflow 路径会拼一段 "previous request exceeded ..." 解释)。
-        /// /compact /compact-and 手动触发时为 false;auto-trigger 路径为 true。
+        /// Zap BYOP local session compaction: whether this summary was
+        /// auto-triggered by a token-overflow. The
+        /// chat_stream::SummarizeConversation branch uses this to decide the
+        /// follow-up copy (the overflow path appends a "previous request exceeded
+        /// ..." explanation). False when manually triggered by /compact
+        /// /compact-and; true on the auto-trigger path.
         overflow: bool,
     },
     FetchReviewComments {
@@ -69,7 +71,7 @@ impl SlashCommandRequest {
         if let Some(prompt) = query.strip_prefix(commands::COMPACT.name) {
             return Some(Self::Summarize {
                 prompt: prompt.strip_prefix(' ').map(String::from),
-                overflow: false, // 文本输入路径只用于手动 /compact,永不为自动 overflow
+                overflow: false, // The text-input path is only for manual /compact, never an auto overflow
             });
         }
 

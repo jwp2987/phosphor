@@ -1,8 +1,9 @@
-//! SSH 服务器编辑器 pane(中央 pane,通过 SSH 管理器树打开)。
+//! SSH server editor pane (a central pane, opened via the SSH manager tree).
 //!
-//! 仿 `get_started_pane.rs` 的极简结构,不含 cloud sync / sharing。pane 不
-//! 持久化(`LeafContents::SshServer { .. }` 在 `is_persisted()` 返回 false),
-//! 业务数据(host/user/port/...)走 `warp_ssh_manager::SshRepository` 操作 SQLite。
+//! Modeled on the minimal structure of `get_started_pane.rs`, with no cloud
+//! sync / sharing. The pane is not persisted (`LeafContents::SshServer { .. }`
+//! returns false from `is_persisted()`); business data (host/user/port/...)
+//! is driven by `warp_ssh_manager::SshRepository` operating on SQLite.
 
 use warpui::{AppContext, ModelHandle, View, ViewContext, ViewHandle};
 
@@ -20,7 +21,7 @@ use super::PaneId;
 pub struct SshServerPane {
     view: ViewHandle<PaneView<SshServerView>>,
     pane_configuration: ModelHandle<PaneConfiguration>,
-    /// 业务节点 id(不是 pane view id),用于 snapshot 序列化。
+    /// The business node id (not the pane view id), used for snapshot serialization.
     node_id: String,
 }
 

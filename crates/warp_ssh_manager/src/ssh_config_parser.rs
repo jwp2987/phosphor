@@ -1,23 +1,26 @@
-//! `~/.ssh/config` → `SshConfigCandidate` 解析器与一次性加载器。
+//! `~/.ssh/config` → `SshConfigCandidate` parser and one-shot loader.
 //!
-//! 设计与边界见 `specs/gh-110-ssh-config-import/{PRODUCT,TECH}.md`(对应 GitHub
-//! issue #110):只支持 5 个字段(`Host` / `HostName` / `User` / `Port` /
-//! `IdentityFile`),跳过通配符 / 否定 `Host`、忽略 `Match` 块、`Include` 仅
-//! warn 不递归、`Port` 非法返 `None` 而不是静默填 22。
+//! Design and scope in `specs/gh-110-ssh-config-import/{PRODUCT,TECH}.md`
+//! (corresponding to GitHub issue #110): only supports 5 fields (`Host` /
+//! `HostName` / `User` / `Port` / `IdentityFile`), skips wildcard / negated
+//! `Host`, ignores `Match` blocks, `Include` only warns without recursing,
+//! and invalid `Port` returns `None` instead of silently defaulting to 22.
 //!
-//! 解析器是纯函数(`parse_ssh_config(&str) -> Vec<_>`),不碰 IO、env、tokio,
-//! 单元测试用字面量驱动。`load_candidates()` 是顶层 IO 包装,返回的
-//! `LoadResult` 把"路径"和"结果"分开,让 UI 在 NotFound / Error 情况也能告诉
-//! 用户实际尝试读的是哪个路径。
+//! The parser is a pure function (`parse_ssh_config(&str) -> Vec<_>`),
+//! touching no IO, env, or tokio; unit tests are driven by literals.
+//! `load_candidates()` is the top-level IO wrapper; the returned `LoadResult`
+//! separates "path" from "result", letting the UI tell the user which path
+//! was actually attempted even in NotFound / Error cases.
 
 use std::path::PathBuf;
 
-/// 一条可导入候选,来自 `~/.ssh/config` 中一个有效的 `Host` 块。
+/// One importable candidate, from a valid `Host` block in `~/.ssh/config`.
 ///
-/// 字段是 OpenSSH `ssh_config` 的子集 —— PRODUCT.md decision I/J/K 选定
-/// 的最小集。`alias` 是 `Host` 行上的字面别名,导入到 `SshServerInfo`
-/// 时作为 `host` 字段使用,这样后续从 Zap 启动 `ssh` 时 OpenSSH 仍能
-/// 应用 `~/.ssh/config` 里这个别名对应的高级指令(`ProxyJump` 等)。
+/// The fields are a subset of OpenSSH's `ssh_config` — the minimal set chosen
+/// by PRODUCT.md decision I/J/K. `alias` is the literal alias on the `Host`
+/// line; when imported into `SshServerInfo` it's used as the `host` field, so
+/// that when `ssh` is later launched from Zap, OpenSSH can still apply the
+/// advanced directives (`ProxyJump`, etc.) associated with this alias in `~/.ssh/config`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SshConfigCandidate {
     pub alias: String,
@@ -27,18 +30,20 @@ pub struct SshConfigCandidate {
     pub identity_file: Option<PathBuf>,
 }
 
-/// 解析 `ssh_config` 文件正文,返回有序的候选列表。
+/// Parses the `ssh_config` file body, returning an ordered list of candidates.
 ///
-/// 顺序按文件中 `Host` 块出现的顺序;`Host a b c` 一行展开成 3 条
-/// 共享 body 的候选。具体边界规则见 `PRODUCT.md` 第 4 节(F-L)。
+/// Ordered by the order `Host` blocks appear in the file; a `Host a b c` line
+/// expands into 3 candidates sharing the same body. See `PRODUCT.md` section
+/// 4 (F-L) for the specific boundary rules.
 pub fn parse_ssh_config(content: &str) -> Vec<SshConfigCandidate> {
     let mut out = Vec::new();
     let mut state = ParseState::Outside;
 
     for line in content.lines() {
-        // 行内 `#` 之后一律视为注释截断。OpenSSH 实际语义对引号外/内的 `#`
-        // 处理有边角差异,但 PRODUCT.md decision 范围内的 5 个字段都不会
-        // 在合理输入中含 `#`,naive 截断对用户预期是对的。
+        // Anything after `#` in a line is always treated as a comment cutoff.
+        // OpenSSH's actual semantics differ at the edges for `#` outside/inside
+        // quotes, but none of the 5 fields within PRODUCT.md's decision scope
+        // would reasonably contain `#`, so this naive cutoff matches user expectations.
         let no_comment = match line.find('#') {
             Some(idx) => &line[..idx],
             None => line,
@@ -56,9 +61,11 @@ pub fn parse_ssh_config(content: &str) -> Vec<SshConfigCandidate> {
             flush(&mut state, &mut out);
             let aliases = parse_host_aliases(value);
             state = if aliases.is_empty() {
-                // 整行都是 wildcard / 否定模式 —— 不开新块,但要"消费"后续
-                // 字段行,免得它们漏到下一个有效 Host。InMatch 状态正好就是
-                // "丢弃直到下一个 Host"的语义,这里复用。
+                // The whole line is a wildcard / negated pattern — don't open a
+                // new block, but must "consume" subsequent field lines so they
+                // don't leak into the next valid Host. The InMatch state
+                // happens to have exactly the semantics of "discard until the
+                // next Host", reused here.
                 ParseState::InMatch
             } else {
                 ParseState::InHost {
@@ -67,14 +74,15 @@ pub fn parse_ssh_config(content: &str) -> Vec<SshConfigCandidate> {
                 }
             };
         } else if keyword.eq_ignore_ascii_case("Match") {
-            // PRODUCT.md decision H:Match 块整段忽略,与"全 wildcard Host"
-            // 走同一条 InMatch 路径。
+            // PRODUCT.md decision H: Match blocks are ignored entirely,
+            // sharing the same InMatch path as an "all-wildcard Host".
             flush(&mut state, &mut out);
             state = ParseState::InMatch;
         } else if keyword.eq_ignore_ascii_case("Include") {
-            // PRODUCT.md decision F:MVP 不递归,只 warn。状态不变,后续
-            // 行仍归属当前 Host 块(若有)—— 这与 OpenSSH 的 Include 语义
-            // 一致(Include 不结束当前 Host 上下文)。
+            // PRODUCT.md decision F: the MVP doesn't recurse, only warns. The
+            // state doesn't change; subsequent lines still belong to the
+            // current Host block (if any) — this matches OpenSSH's Include
+            // semantics (Include doesn't end the current Host context).
             log::warn!(
                 "Include directive in ssh_config is not supported by importer; \
                  hosts in `{value}` will not be imported"
@@ -82,7 +90,7 @@ pub fn parse_ssh_config(content: &str) -> Vec<SshConfigCandidate> {
         } else if let ParseState::InHost { body, .. } = &mut state {
             apply_body_field(body, keyword, value);
         }
-        // InMatch / Outside 下的其他 keyword:忽略。
+        // Other keywords under InMatch / Outside: ignored.
     }
 
     flush(&mut state, &mut out);
@@ -90,19 +98,19 @@ pub fn parse_ssh_config(content: &str) -> Vec<SshConfigCandidate> {
 }
 
 // ---------------------------------------------------------------------------
-// 内部辅助
+// Internal helpers
 // ---------------------------------------------------------------------------
 
 enum ParseState {
-    /// 还没遇到任何 Host / Match。
+    /// Haven't encountered any Host / Match yet.
     Outside,
-    /// 当前在一个有效 Host 块内。`aliases` 是去掉 wildcard 后剩下的别名。
+    /// Currently inside a valid Host block. `aliases` is what remains after stripping wildcards.
     InHost {
         aliases: Vec<String>,
         body: BodyFields,
     },
-    /// 当前在被忽略的块内(`Match` 或全 wildcard 的 `Host`),消费字段直到
-    /// 下一个 `Host` 或 EOF。
+    /// Currently inside a block being ignored (`Match` or an all-wildcard
+    /// `Host`), consuming fields until the next `Host` or EOF.
     InMatch,
 }
 
@@ -129,7 +137,7 @@ fn flush(state: &mut ParseState, out: &mut Vec<SshConfigCandidate>) {
     }
 }
 
-/// 把 `Host a *.prod b !bad` 这样的行解析成 `["a", "b"]`。
+/// Parses a line like `Host a *.prod b !bad` into `["a", "b"]`.
 fn parse_host_aliases(value: &str) -> Vec<String> {
     value
         .split_whitespace()
@@ -138,7 +146,7 @@ fn parse_host_aliases(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// 在当前 Host 块的 body 上应用一个字段。**首次出现胜出**(匹配 OpenSSH 语义)。
+/// Applies a field to the current Host block's body. **First occurrence wins** (matching OpenSSH semantics).
 fn apply_body_field(body: &mut BodyFields, keyword: &str, value: &str) {
     if keyword.eq_ignore_ascii_case("HostName") {
         if body.hostname.is_none() {
@@ -149,9 +157,10 @@ fn apply_body_field(body: &mut BodyFields, keyword: &str, value: &str) {
             body.user = Some(value.to_string());
         }
     } else if keyword.eq_ignore_ascii_case("Port") {
-        // 注意:首次"声明"胜出,而不是首次"有效"胜出 —— 但因为 Port 解析
-        // 失败时我们填 None(PRODUCT.md decision K),first-wins 的"已声明"
-        // 状态在这里和"值非 None"等价。简单起见用 is_none 守卫。
+        // Note: first "declaration" wins, not first "valid value" — but since
+        // we fill in None when Port parsing fails (PRODUCT.md decision K), the
+        // first-wins "already declared" state here is equivalent to "value is
+        // not None". Guarded with is_none for simplicity.
         if body.port.is_none() {
             body.port = value.parse::<u16>().ok();
         }
@@ -159,7 +168,7 @@ fn apply_body_field(body: &mut BodyFields, keyword: &str, value: &str) {
         let unquoted = strip_surrounding_quotes(value);
         body.identity_file = Some(expand_tilde(unquoted));
     }
-    // 其余 keyword:忽略(MVP 只支持 5 个字段)。
+    // Other keywords: ignored (the MVP only supports 5 fields).
 }
 
 fn strip_surrounding_quotes(s: &str) -> &str {
@@ -179,36 +188,37 @@ fn expand_tilde(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// 当前用户的默认 `~/.ssh/config` 路径,跨平台。
+/// The current user's default `~/.ssh/config` path, cross-platform.
 ///
-/// 找不到 home 目录(罕见)时返回 `None`。
+/// Returns `None` when the home directory can't be found (rare).
 pub fn default_ssh_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".ssh").join("config"))
 }
 
-/// 解析结果及其来源路径,供 UI 用于错误/空状态展示。
+/// The parse result and its source path, for the UI to display error/empty states.
 #[derive(Debug)]
 pub struct LoadResult {
-    /// 实际尝试读取的路径。`None` 表示连 home 目录都拿不到。
+    /// The path actually attempted to read. `None` means even the home directory couldn't be obtained.
     pub path: Option<PathBuf>,
     pub outcome: LoadOutcome,
 }
 
 #[derive(Debug)]
 pub enum LoadOutcome {
-    /// 文件成功读取并解析(可能列表为空)。
+    /// The file was successfully read and parsed (the list may be empty).
     Loaded(Vec<SshConfigCandidate>),
-    /// 路径不存在 —— 干净状态,UI 显示"未找到"提示而不是 error。
+    /// The path doesn't exist — a clean state; the UI shows a "not found" hint instead of an error.
     NotFound,
-    /// IO 错误(权限、编码、磁盘 etc.)。`String` 是给用户看的可读消息。
+    /// An IO error (permissions, encoding, disk, etc.). The `String` is a user-readable message.
     Error(String),
 }
 
-/// 一次性加载默认路径的 `~/.ssh/config`,返回路径 + 结果。
+/// One-shot loads `~/.ssh/config` from the default path, returning the path + result.
 ///
-/// 设计为同步 + 无 panic:UI 在面板首次打开时调一次,典型 config <10KB,
-/// 同步 IO 足够快。fs 读不存在 / 权限失败时分别走 `NotFound` / `Error`,
-/// 不向上抛错。
+/// Designed to be synchronous and panic-free: the UI calls this once when the
+/// panel first opens; a typical config is <10KB, so synchronous IO is fast
+/// enough. When fs read fails due to nonexistence / permission errors, it goes
+/// through `NotFound` / `Error` respectively rather than throwing upward.
 pub fn load_candidates() -> LoadResult {
     match default_ssh_config_path() {
         Some(p) => load_candidates_from(&p),
@@ -219,8 +229,9 @@ pub fn load_candidates() -> LoadResult {
     }
 }
 
-/// 同 [`load_candidates`],但允许调用方显式指定路径 —— 主要给单元测试用
-/// (tempfile),也为未来"自定义 config 路径"设置项留接口。
+/// Same as [`load_candidates`], but lets the caller explicitly specify the
+/// path — mainly for unit tests (tempfile), and also leaves room for a future
+/// "custom config path" setting.
 pub fn load_candidates_from(path: &std::path::Path) -> LoadResult {
     let outcome = match std::fs::read_to_string(path) {
         Ok(s) => LoadOutcome::Loaded(parse_ssh_config(&s)),
@@ -237,7 +248,7 @@ pub fn load_candidates_from(path: &std::path::Path) -> LoadResult {
 mod tests {
     use super::*;
 
-    /// 测试用快捷构造器,默认全 `None`,只填用例关心的字段。
+    /// Test-only shortcut constructor, defaulting everything to `None`, only filling in the fields the test case cares about.
     fn cand(alias: &str) -> SshConfigCandidate {
         SshConfigCandidate {
             alias: alias.into(),
@@ -248,9 +259,9 @@ mod tests {
         }
     }
 
-    /// 最朴素的快乐路径:一个带全部 5 个字段的 Host 块,产出一条候选。
-    /// 这个测试驱动出最小的"Host 块识别 + 字段解析"主线;后续 case 都在
-    /// 它的基础上加状态机分支。
+    /// The simplest happy path: a Host block with all 5 fields, producing one candidate.
+    /// This test drives out the minimal "Host block recognition + field
+    /// parsing" main line; subsequent cases add state-machine branches on top of it.
     #[test]
     fn single_host_with_all_fields() {
         let input = "\
@@ -285,8 +296,8 @@ Host prodbox
 
     #[test]
     fn host_with_only_alias_has_no_hostname_field() {
-        // Importer 层(不在本模块)把 `alias` 当 `server.host` 用,这里只保证
-        // parser 不臆造 hostname。
+        // The importer layer (not this module) treats `alias` as `server.host`;
+        // this only guarantees the parser doesn't fabricate a hostname.
         assert_eq!(parse_ssh_config("Host foo\n"), vec![cand("foo")]);
     }
 
@@ -313,7 +324,7 @@ Host c
 
     #[test]
     fn wildcard_star_host_skipped() {
-        // PRODUCT.md decision G:`Host *.prod` 是模板而非机器,不进候选区。
+        // PRODUCT.md decision G: `Host *.prod` is a template, not a machine, so it doesn't enter the candidate pool.
         let input = "\
 Host *.prod
     User root
@@ -350,7 +361,7 @@ Host !bad
 
     #[test]
     fn host_with_multiple_aliases_expands_to_separate_candidates() {
-        // PRODUCT.md decision L:`Host a b c` 共享 body。
+        // PRODUCT.md decision L: `Host a b c` shares the same body.
         let input = "\
 Host a b c
     Port 22
@@ -367,7 +378,7 @@ Host a b c
 
     #[test]
     fn host_with_mixed_aliases_filters_wildcards_keeps_literals() {
-        // `Host a *.prod b` → 只导出 a 和 b。
+        // `Host a *.prod b` → only exports a and b.
         let input = "\
 Host a *.prod b
     User shared
@@ -379,8 +390,8 @@ Host a *.prod b
 
     #[test]
     fn match_block_ignored_until_next_host() {
-        // PRODUCT.md decision H:`Match` 块整段忽略,不应"污染"前一个 Host
-        // 的 body,也不应当成新候选。
+        // PRODUCT.md decision H: `Match` blocks are ignored entirely; they
+        // shouldn't "pollute" the previous Host's body, nor should they be treated as a new candidate.
         let input = "\
 Host a
     User u_a
@@ -394,7 +405,7 @@ Host b
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].alias, "a");
         assert_eq!(got[0].user.as_deref(), Some("u_a"));
-        assert_eq!(got[0].port, None, "Match 块的 Port 9999 不应漏到 a");
+        assert_eq!(got[0].port, None, "the Match block's Port 9999 should not leak into a");
         assert_eq!(got[1].alias, "b");
         assert_eq!(got[1].user.as_deref(), Some("u_b"));
     }
@@ -415,7 +426,7 @@ Match user x
 
     #[test]
     fn include_directive_logged_and_skipped_outside_host() {
-        // PRODUCT.md decision F:`Include` 不递归,只 warn,后续解析照旧。
+        // PRODUCT.md decision F: `Include` doesn't recurse, only warns; subsequent parsing continues as normal.
         let input = "\
 Include ~/.ssh/work/*.conf
 Host a
@@ -433,7 +444,7 @@ Host a
 
     #[test]
     fn port_invalid_string_yields_none() {
-        // PRODUCT.md decision K:不静默回退 22,UI 把空 port 显示给用户看。
+        // PRODUCT.md decision K: doesn't silently fall back to 22; the UI shows the empty port to the user.
         let input = "Host a\n    Port not-a-number\n";
         assert_eq!(parse_ssh_config(input)[0].port, None);
     }
@@ -452,7 +463,7 @@ Host a
 
     #[test]
     fn quoted_identity_file_has_quotes_stripped() {
-        // OpenSSH 允许带空格路径用引号包裹。
+        // OpenSSH allows paths with spaces to be wrapped in quotes.
         let input = "Host a\n    IdentityFile \"C:\\Users\\Jiaqi Jiang\\.ssh\\id\"\n";
         assert_eq!(
             parse_ssh_config(input)[0].identity_file,
@@ -462,7 +473,7 @@ Host a
 
     #[test]
     fn tilde_in_identity_file_expanded_to_home() {
-        // ~/x 展开成 $HOME/x。$HOME 在不同 CI 环境不一样,只断言前缀是 home。
+        // ~/x expands to $HOME/x. $HOME differs across CI environments, so only assert the prefix is home.
         let input = "Host a\n    IdentityFile ~/keys/id\n";
         let got = parse_ssh_config(input);
         let path = got[0].identity_file.as_ref().expect("IdentityFile set");
@@ -495,7 +506,7 @@ Host a
 
     #[test]
     fn repeated_field_first_wins() {
-        // 匹配 OpenSSH 语义:同一 Host 块内同一字段,首次出现的胜出。
+        // Matches OpenSSH semantics: within the same Host block, the first occurrence of the same field wins.
         let input = "Host a\n    Port 1\n    Port 2\n    User first\n    User second\n";
         let got = parse_ssh_config(input);
         assert_eq!(got[0].port, Some(1));
@@ -504,8 +515,9 @@ Host a
 
     #[test]
     fn inline_trailing_comment_dropped_from_value() {
-        // OpenSSH 实际上对行内 `#` 的处理边界比较模糊;我们走"保守"路线:
-        // 整行扫描时遇到 `#` 截断,引号外有效。
+        // OpenSSH's actual handling of inline `#` is somewhat fuzzy at the
+        // edges; we take the "conservative" route: scanning the whole line and
+        // cutting off at `#`, valid outside quotes.
         let input = "Host a # primary box\n    User alice # admin\n";
         let got = parse_ssh_config(input);
         assert_eq!(got[0].alias, "a");
@@ -514,7 +526,7 @@ Host a
 
     #[test]
     fn leading_indent_tolerated() {
-        // OpenSSH 允许任意前导空白。
+        // OpenSSH allows arbitrary leading whitespace.
         let input = "  Host a\n\t  Port 22\n";
         let got = parse_ssh_config(input);
         assert_eq!(got[0].alias, "a");
@@ -527,8 +539,8 @@ Host a
 
     #[test]
     fn default_path_points_under_home_dot_ssh_config() {
-        // 跨平台:只要 dirs::home_dir() 拿得到值,结果就应该是
-        // `<home>/.ssh/config`。CI runner 始终有 HOME / USERPROFILE。
+        // Cross-platform: as long as dirs::home_dir() returns a value, the
+        // result should be `<home>/.ssh/config`. CI runners always have HOME / USERPROFILE.
         let got = default_ssh_config_path().expect("test runner has home dir");
         let home = dirs::home_dir().expect("test runner has home dir");
         assert!(got.starts_with(&home), "{got:?} should start with {home:?}");

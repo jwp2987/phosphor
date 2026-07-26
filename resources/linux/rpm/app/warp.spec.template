@@ -74,11 +74,11 @@ ln -s @@OPT_DIR@@/@@BINARY_NAME@@ %{buildroot}%{_bindir}/%{name}
 ###############################################################################
 %post
 
-# Zap 不配置上游 Warp RPM 软件源,也不安装上游签名 key。
+# Zap does not configure the upstream Warp RPM repo, nor does it install the upstream signing key.
 # Make sure the system incorporates the newly-installed desktop file.
 if hash update-desktop-database 2>/dev/null; then
 	update-desktop-database
 fi
 
-# Zap 不做 post-install repo 配置；deb/rpm 包通过 GitHub Release 分发。
+# Zap does no post-install repo configuration; deb/rpm packages are distributed via GitHub Release.
 exit 0

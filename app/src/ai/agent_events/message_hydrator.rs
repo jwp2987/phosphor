@@ -1,8 +1,8 @@
 use crate::ai::agent::ReceivedMessageInput;
 use crate::ai::agent_events::AgentRunEvent;
 
-/// Zap 本地构建不再从云端 mailbox 拉取消息正文或发送 delivered 回执。
-/// 该类型保留本地 harness 桥接调用面的无副作用兼容语义。
+/// Zap's local build no longer fetches message bodies from the cloud mailbox or sends delivered receipts.
+/// This type is kept for its no-op-compatible call surface, to bridge the local harness.
 #[derive(Clone)]
 pub(crate) struct MessageHydrator;
 

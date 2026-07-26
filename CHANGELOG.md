@@ -1,93 +1,93 @@
 # Changelog
 
-本文档记录 Zap 各个发布版本的关键变更。仅收录功能性 commit,省略 dev / stable 等内部滚动 tag。
+This document records key changes across Zap releases. Only feature-level commits are included; internal rolling tags such as dev / stable are omitted.
 
 ## [Unreleased]
 
-- **AI / BYOP**:port opencode `applyCaching`,启用 prompt caching;`write_to_long_running_shell_command` 在 line 模式下拒绝嵌入 LF;BYOP LRC monitor fallback 改走 silent subtask;`cancel_execution` 50ms 窗口内 sender 泄漏修复(#134 follow-up,#137)
-- **云端剥离 Phase 1–2**:增加 `cloud-disabled` channel 谓词;清理 billing/pricing、referral/reward、cloud sharing dialog UI;退订 RTC UpdateManager;退役 notebook/folder sync queue
-- **平台**:修复 Spotlight/Finder/Launchpad 启动 macOS 时的 panic;`run_shell_command` stdout 兜底回退至 command grid
-- **基建**:`.gitattributes` 强制 LF;新增 stale bot 与 Claude Code GitHub workflow
-- **编辑器**:代码/Markdown 查看器新增 15 种语言语法高亮(Dart、Zig、SCSS、R、Julia、OCaml、Erlang、Nix、Groovy、Solidity、GraphQL、Protobuf、Clojure、Elm、CMake)
+- **AI / BYOP**: ported opencode's `applyCaching`, enabling prompt caching; `write_to_long_running_shell_command` now rejects embedded LF in line mode; BYOP LRC monitor fallback now goes through a silent subtask; fixed a sender leak inside the `cancel_execution` 50ms window (#134 follow-up, #137)
+- **Cloud stripping Phase 1–2**: added the `cloud-disabled` channel predicate; cleaned up billing/pricing, referral/reward, and cloud sharing dialog UI; unsubscribed the RTC UpdateManager; retired the notebook/folder sync queue
+- **Platform**: fixed a panic when launching macOS via Spotlight/Finder/Launchpad; `run_shell_command` stdout now falls back to the command grid
+- **Infra**: `.gitattributes` now forces LF; added a stale bot and a Claude Code GitHub workflow
+- **Editor**: added syntax highlighting for 15 more languages in the code/Markdown viewer (Dart, Zig, SCSS, R, Julia, OCaml, Erlang, Nix, Groovy, Solidity, GraphQL, Protobuf, Clojure, Elm, CMake)
 
 ## [v2026.05.06.preview] — 2026-05-06
 
 - **AI**
-  - 集成 DeepSeek CLI agent,提升 LSP 安装可靠性
-  - LSP 改为全局 `enabled_lsp_servers` setting,移除 `/index` 命令与 codebase indexing runtime
-  - `/plan` 真实复刻 Plan Mode(system prompt + 工具硬护栏)
-  - Agent dynamic tool whitelist、`persist_conversations` setting、auto-approve 下 `ask_user_question` 始终询问
-  - BYOP 支持 provider extra headers
-- **修复**
-  - `apply_file_diffs` schema 从 `const` 改为 `enum` 适配 Gemini
-  - SSE 卡顿根因——genai gzip 默认关闭 + workflow 拆分
-  - 无云端环境下计划文件夹笔记本立即创建
-- **品牌**:logo 与图标改用白色背景;BYOP 模式隐藏 credits/billing UI
+  - Integrated the DeepSeek CLI agent, improving LSP install reliability
+  - LSP switched to a global `enabled_lsp_servers` setting; removed the `/index` command and the codebase indexing runtime
+  - `/plan` now genuinely replicates Plan Mode (system prompt + hard tool guardrails)
+  - Agent dynamic tool whitelist, `persist_conversations` setting, `ask_user_question` always asks even under auto-approve
+  - BYOP supports provider extra headers
+- **Fixes**
+  - `apply_file_diffs` schema changed from `const` to `enum` to accommodate Gemini
+  - Root-caused the SSE stutter — genai gzip was off by default + workflow split
+  - Plan folder notebooks are now created immediately in cloud-less environments
+- **Branding**: logo and icons switched to a white background; BYOP mode hides the credits/billing UI
 
 ## [v2026.05.04.preview] — 2026-05-04
 
-- **SSH Manager**:数据层 + 持久化 + keychain 落地;UI/UX 完整接入(面板 + 中央 Pane + 拖拽 + 折叠 + Connect + Command Palette)
-- **AI**:区分模型"无建议"输出并完善提示系统;BYOP 历史多模态扩展到 PDF/audio,opencode 风格 ERROR 替换;UserQuery.context.images 全链路保活
-- **UI**:标题栏搜索框可隐藏开关;键位设置编辑态与快捷键徽章对比度修复
-- **i18n**:剩余主要界面固定文案汉化;`/model` 默认绑定 `alt-shift-/`
-- **修复**:Anthropic adapter 默认带 1M context beta header;BYOP ToolCall 首帧即 emit 占位卡;OpenAI-strict provider 禁回传 `reasoning_content`
-- **基建**:CI 修复 `.deb` 构建并启用 PR 测试
+- **SSH Manager**: data layer + persistence + keychain landed; full UI/UX integration (panel + center pane + drag-and-drop + collapse + Connect + Command Palette)
+- **AI**: distinguish the model's "no suggestion" output and refine the hint system; BYOP history multimodal support extended to PDF/audio, opencode-style ERROR replacement; UserQuery.context.images kept alive end-to-end
+- **UI**: title-bar search box can now be hidden; fixed keybinding-settings edit-state and shortcut-badge contrast
+- **i18n**: localized the remaining fixed text in the main UI; `/model` now defaults to `alt-shift-/`
+- **Fixes**: Anthropic adapter now sends the 1M context beta header by default; BYOP ToolCall now emits a placeholder card on the first frame; OpenAI-strict providers no longer echo back `reasoning_content`
+- **Infra**: CI fixed the `.deb` build and enabled PR testing
 
 ## [v2026.05.03.preview(.2/.3/.4)] — 2026-05-03
 
-- **上游同步**:合入大批 warp-upstream commit(tab 跨窗口拖拽、shell 脚本识别、IME cursor、远程服务器初始化重构、SSH remote-server 自动升级、跨窗口 tab drag 等);建立 rerere + `zap-ours` 合并驱动;新增黑名单文档
-- **AI / BYOP**:工具参数 type-mismatched 输出的 coerce 层;suspicious backslash 扫描收紧消除 ls/diff 误报
-- **i18n**:中文国际化补齐(设置面板等)
-- **网站**:GitHub 地址统一为 `zerx-lab/warp`;移动端横向溢出修复
-- **修复**:Windows 任务栏 ICO 与上游格式对齐;NLD in terminal 默认 true 恢复中文输入自动入 AI
+- **Upstream sync**: merged in a large batch of warp-upstream commits (cross-window tab drag, shell script recognition, IME cursor, remote server init refactor, SSH remote-server auto-upgrade, cross-window tab drag, etc.); set up rerere + the `zap-ours` merge driver; added blocklist docs
+- **AI / BYOP**: added a coerce layer for type-mismatched tool argument output; tightened the suspicious-backslash scan to eliminate ls/diff false positives
+- **i18n**: filled in remaining Chinese localization (settings panel, etc.)
+- **Website**: unified the GitHub URL to `zerx-lab/warp`; fixed mobile horizontal overflow
+- **Fixes**: aligned the Windows taskbar ICO with upstream's format; NLD in terminal now defaults to true, restoring automatic Chinese-input-to-AI routing
 
 ## [v2026.05.02.preview] — 2026-05-02
 
 - **AI / BYOP**
-  - 完成会话压缩闭环——`byop_compaction` 模块、settings 持久化、auto prune、overflow 透传,1:1 复刻 opencode
-  - reasoning effort 从 provider settings 迁移到输入框 picker
-  - 多模态附件能力接入 BYOP 路径
-  - 本地 BYOP webfetch / websearch 与 Exa 集成
-  - 按模型标识选择系统提示模板,新增多份模板
-- **隐私 / 云端剥离**
-  - 物理删 P4 易剥离死代码(anonymous_id / EXPERIMENT_ID_HEADER / settings 同步 / app_focus)
-  - 切断闭源遥测、Sentry、anonymous_id、Settings 同步四条外发链路
-  - 三个隐私开关默认值 true → false
-  - `cloud_conversations` 两波清理(UI / 隐私 / FeatureFlag / AIClient / cargo feature)
-- **重构**:移除 blocklist 人工智能响应评分及埋点;移除 `agent_attribution` 与 Oz changelog toggle
-- **CI**:周构建改为正式发布并规范 tag
+  - Closed the loop on conversation compaction — the `byop_compaction` module, settings persistence, auto prune, overflow passthrough, 1:1 replication of opencode
+  - Moved reasoning effort from provider settings to the input-box picker
+  - Wired multimodal attachment support into the BYOP path
+  - Integrated local BYOP webfetch / websearch with Exa
+  - Select system prompt templates by model identifier; added several new templates
+- **Privacy / cloud stripping**
+  - Physically removed easily-strippable P4 dead code (anonymous_id / EXPERIMENT_ID_HEADER / settings sync / app_focus)
+  - Cut off four outbound channels: closed-source telemetry, Sentry, anonymous_id, and settings sync
+  - Flipped three privacy toggle defaults from true → false
+  - Two cleanup passes on `cloud_conversations` (UI / privacy / FeatureFlag / AIClient / cargo feature)
+- **Refactor**: removed blocklist AI response scoring and telemetry; removed `agent_attribution` and the Oz changelog toggle
+- **CI**: switched the weekly build to an official release with standardized tags
 
 ## [v2026.05.01.preview] — 2026-05-01
 
-- **云端剥离**:物理删 6 个云端 LLM tool + child_agent + orchestration;物理删 share modal 三件套与 billing denied modal;website 换单色 logo
+- **Cloud stripping**: physically removed 6 cloud LLM tools + child_agent + orchestration; physically removed the share-modal trio and the billing-denied modal; website logo switched to monochrome
 - **AI**
-  - Workflow Autofill 接入 BYOP one-shot
-  - BYOP LRC 后续轮持续注入上下文 + sanitize 强化 + 控制键 token
-  - 聊天流增加远程登录会话提示与推理回传
-  - genai 错误映射细化为 Stream / Other variants
-  - chat stream adapter,修复 ToolCall None 处理
-- **平台**:`warpui_core` 避免重复扫描系统字体;同步命令无条件禁用 pager,改用 `PAGER=cat` 保留真实退出码
-- **网站**:全站组件与 i18n 重构,Tailwind 与全局样式同步
+  - Wired Workflow Autofill into BYOP one-shot
+  - BYOP LRC now keeps injecting context on subsequent turns + hardened sanitize + control-key tokens
+  - Chat stream now surfaces remote-login session hints and reasoning passthrough
+  - Refined genai error mapping into Stream / Other variants
+  - Chat stream adapter, fixed ToolCall None handling
+- **Platform**: `warpui_core` avoids rescanning system fonts; sync commands unconditionally disable the pager, using `PAGER=cat` instead to preserve the real exit code
+- **Website**: site-wide component and i18n refactor, Tailwind and global styles kept in sync
 
 ## [v2026.04.30.oss] — 2026-04-30
 
-- **CI**:CHANNEL `preview` → `oss`,修 Windows / macOS 构建失败
-- **重构**:删除 cloud_mode 残留代码与设置
+- **CI**: CHANNEL `preview` → `oss`; fixed Windows / macOS build failures
+- **Refactor**: removed leftover cloud_mode code and settings
 
 ## [v2026.04.30.preview] — 2026-04-30
 
-Zap 社区分支首个预览版本。
+First preview release of the Zap community fork.
 
-- **品牌与定位**:Zap 改名 + logo 重制 + 社区分支 README
+- **Branding & positioning**: renamed to Zap + logo redesign + community fork README
 - **BYOP**
-  - `async-openai` → `genai`,支持 5 种原生协议显式绑定
-  - Providers 子页 + models.dev 数据源 + 快速添加搜索框
-  - prompt 模板精简
-- **去中心化清理**:移除 `UseComputer` / `RequestComputerUse` 工具、Drive `Create team` / `Join team` 入口、referral 相关代码
-- **i18n**:Fluent 基础设施 + 12 个 settings_view 文件翻译;ai / features / teams 三页 i18n 补全
-- **网站**:新增 BYOP 落地页(Astro + Tailwind, 中英双语);响应式优化
-- **AI**:CJK 输入分类、reasoning 拆分、BYOP tool_call 诊断、LRC tag-in 合成虚拟 subagent + 浮窗 spawn 链路
-- **CI**:Release 显式声明 `contents: write` 权限修 403
+  - `async-openai` → `genai`, supporting explicit binding of 5 native protocols
+  - Providers subpage + models.dev data source + quick-add search box
+  - Trimmed down the prompt template
+- **Decentralization cleanup**: removed the `UseComputer` / `RequestComputerUse` tools, Drive's `Create team` / `Join team` entry points, and referral-related code
+- **i18n**: Fluent infrastructure + translated 12 settings_view files; completed i18n for the ai / features / teams pages
+- **Website**: added a bilingual (Astro + Tailwind, EN/CN) BYOP landing page; responsive improvements
+- **AI**: CJK input classification, reasoning split, BYOP tool_call diagnostics, LRC tag-in synthetic virtual subagent + floating-window spawn chain
+- **CI**: Release now explicitly declares `contents: write` permission, fixing 403s
 
 [Unreleased]: https://github.com/zerx-lab/warp/compare/v2026.05.06.preview...HEAD
 [v2026.05.06.preview]: https://github.com/zerx-lab/warp/compare/v2026.05.04.preview...v2026.05.06.preview

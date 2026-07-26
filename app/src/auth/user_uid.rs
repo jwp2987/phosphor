@@ -2,7 +2,7 @@ use std::{fmt, sync::LazyLock};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// 本地用户唯一标识。
+/// A unique identifier for the local user.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UserUid(lasso::Spur);
 

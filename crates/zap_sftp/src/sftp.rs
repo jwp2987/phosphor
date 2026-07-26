@@ -1,7 +1,7 @@
-//! SFTP 通道操作模块
+//! SFTP channel operations module
 //!
-//! 封装 ssh2::Sftp 提供线程安全的远程文件系统操作接口，
-//! 包括文件打开、目录读写、重命名、删除等。
+//! Wraps ssh2::Sftp to provide a thread-safe remote filesystem operations
+//! interface, including file opening, directory read/write, renaming, deletion, etc.
 //! author: logic
 //! date: 2026-05-31
 
@@ -14,48 +14,48 @@ use crate::error::SftpError;
 use crate::file::File;
 use crate::types::{DirEntry, Metadata, OpenOptions, RenameOptions};
 
-/// SFTP 通道，所有远程文件系统操作的入口
+/// SFTP channel, the entry point for all remote filesystem operations
 #[derive(Clone)]
 pub struct Sftp {
     inner: Arc<Mutex<ssh2::Sftp>>,
 }
 
 impl Sftp {
-    /// 从 ssh2::Sftp 创建 Sftp 实例
+    /// Creates an Sftp instance from an ssh2::Sftp
     pub(crate) fn new(sftp: ssh2::Sftp) -> Self {
         Self {
             inner: Arc::new(Mutex::new(sftp)),
         }
     }
 
-    /// 打开远程文件
+    /// Opens a remote file
     pub fn open(&self, path: &Path, options: OpenOptions) -> Result<File, SftpError> {
         let sftp = self.inner.lock().unwrap();
         File::open(&sftp, path, &options)
     }
 
-    /// 创建目录
+    /// Creates a directory
     pub fn create_dir(&self, path: &Path) -> Result<(), SftpError> {
         let sftp = self.inner.lock().unwrap();
         sftp.mkdir(path, 0o755)?;
         Ok(())
     }
 
-    /// 删除目录（必须为空）
+    /// Removes a directory (must be empty)
     pub fn remove_dir(&self, path: &Path) -> Result<(), SftpError> {
         let sftp = self.inner.lock().unwrap();
         sftp.rmdir(path)?;
         Ok(())
     }
 
-    /// 删除文件
+    /// Removes a file
     pub fn remove_file(&self, path: &Path) -> Result<(), SftpError> {
         let sftp = self.inner.lock().unwrap();
         sftp.unlink(path)?;
         Ok(())
     }
 
-    /// 重命名/移动
+    /// Renames/moves
     pub fn rename(&self, src: &Path, dst: &Path, opts: RenameOptions) -> Result<(), SftpError> {
         let sftp = self.inner.lock().unwrap();
         let mut flags = ssh2::RenameFlags::empty();
@@ -72,41 +72,41 @@ impl Sftp {
         Ok(())
     }
 
-    /// 获取文件元数据（跟随符号链接）
+    /// Gets file metadata (following symlinks)
     pub fn stat(&self, path: &Path) -> Result<Metadata, SftpError> {
         let sftp = self.inner.lock().unwrap();
         let stat = sftp.stat(path)?;
         Ok(Metadata::from_ssh2(stat))
     }
 
-    /// 获取文件元数据（不跟随符号链接）
+    /// Gets file metadata (not following symlinks)
     pub fn lstat(&self, path: &Path) -> Result<Metadata, SftpError> {
         let sftp = self.inner.lock().unwrap();
         let stat = sftp.lstat(path)?;
         Ok(Metadata::from_ssh2(stat))
     }
 
-    /// 读取目录内容
+    /// Reads the contents of a directory
     pub fn read_dir(&self, path: &Path) -> Result<Vec<DirEntry>, SftpError> {
         let sftp = self.inner.lock().unwrap();
         Dir::read_dir(&sftp, path)
     }
 
-    /// 创建符号链接
+    /// Creates a symlink
     pub fn symlink(&self, src: &Path, dst: &Path) -> Result<(), SftpError> {
         let sftp = self.inner.lock().unwrap();
         sftp.symlink(src, dst)?;
         Ok(())
     }
 
-    /// 读取符号链接目标
+    /// Reads the target of a symlink
     pub fn readlink(&self, path: &Path) -> Result<PathBuf, SftpError> {
         let sftp = self.inner.lock().unwrap();
         let target = sftp.readlink(path)?;
         Ok(target)
     }
 
-    /// 解析远程路径的真实路径
+    /// Resolves the real path of a remote path
     pub fn realpath(&self, path: &Path) -> Result<PathBuf, SftpError> {
         let sftp = self.inner.lock().unwrap();
         let real = sftp.realpath(path)?;

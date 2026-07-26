@@ -74,9 +74,10 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
     }
 }
 
-/// 在后台线程预热 SQLite 连接 + 跑 migration。应该在 `app_builder.run`
-/// 之前调用,这样 SQLite 初始化可以与 winit / wgpu 初始化并发进行,
-/// 冷启动上可省 ~70–90ms。多次调用幂等。未调用会 fallback 到同步路径。
+/// Prewarms the SQLite connection + runs migrations on a background thread.
+/// Should be called before `app_builder.run`, so SQLite initialization can
+/// run concurrently with winit / wgpu initialization, saving ~70-90ms on cold
+/// start. Calling multiple times is idempotent. Not calling it falls back to the synchronous path.
 #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
 pub fn prewarm_db_in_background() {
     cfg_if::cfg_if! {
@@ -156,7 +157,8 @@ impl PersistenceWriter {
                 log::error!("Could not terminate SQLite writer thread: {err}");
             }
             if handle.join().is_err() {
-                // crash reporting 启用时 panic hook 已写入本地日志,这里补充线程级上下文。
+                // When crash reporting is enabled, the panic hook has already
+                // written to the local log; this adds thread-level context.
                 log::error!("SQLite writer thread panicked");
             }
             log::info!("Shut down SQLite writer in {:?}", start.elapsed());

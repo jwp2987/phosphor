@@ -1,5 +1,5 @@
-// Zap:telemetry 发送层与 context provider 已删除。
-// 这里仅保留 `TelemetryEvent` 枚举及其辅助类型,作为大量 UI/模型调用点的类型壳。
+// Zap: the telemetry send layer and context provider have been removed.
+// Only the `TelemetryEvent` enum and its helper types are kept here, serving as a type shell for a large number of UI/model call sites.
 
 use std::collections::HashSet;
 use std::time::Duration;

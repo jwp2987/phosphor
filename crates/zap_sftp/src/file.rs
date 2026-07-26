@@ -1,7 +1,7 @@
-//! SFTP 远程文件句柄模块
+//! SFTP remote file handle module
 //!
-//! 封装 ssh2::File 提供远程文件的读写操作，
-//! 支持 Read/Write trait 和流式传输。
+//! Wraps ssh2::File to provide remote file read/write operations, supporting
+//! the Read/Write traits and streaming transfer.
 //! author: logic
 //! date: 2026-05-31
 
@@ -10,13 +10,13 @@ use std::io::{Read, Write};
 use crate::error::SftpError;
 use crate::types::OpenOptions;
 
-/// SFTP 远程文件句柄
+/// SFTP remote file handle
 pub struct File {
     handle: ssh2::File,
 }
 
 impl File {
-    /// 打开远程文件
+    /// Opens a remote file
     pub(crate) fn open(
         sftp: &ssh2::Sftp,
         path: &std::path::Path,
@@ -48,31 +48,31 @@ impl File {
         Ok(File { handle })
     }
 
-    /// 读取文件全部内容
+    /// Reads the entire contents of the file
     pub fn read_to_end(&mut self, buf: &mut Vec<u8>) -> Result<u64, SftpError> {
         let n = self.handle.read_to_end(buf)?;
         Ok(n as u64)
     }
 
-    /// 写入全部内容
+    /// Writes the entire contents
     pub fn write_all(&mut self, buf: &[u8]) -> Result<(), SftpError> {
         self.handle.write_all(buf)?;
         Ok(())
     }
 
-    /// 刷新写入缓冲
+    /// Flushes the write buffer
     pub fn flush(&mut self) -> Result<(), SftpError> {
         self.handle.flush()?;
         Ok(())
     }
 
-    /// 获取文件元数据
+    /// Gets the file metadata
     pub fn stat(&mut self) -> Result<crate::types::Metadata, SftpError> {
         let stat = self.handle.stat()?;
         Ok(crate::types::Metadata::from_ssh2(stat))
     }
 
-    /// 读取一块数据到缓冲区
+    /// Reads a chunk of data into the buffer
     pub fn read(&mut self, buf: &mut [u8]) -> Result<usize, SftpError> {
         let n = self.handle.read(buf)?;
         Ok(n)

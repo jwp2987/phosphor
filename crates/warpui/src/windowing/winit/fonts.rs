@@ -230,9 +230,10 @@ impl FontDB {
             #[cfg(not(feature = "fontkit-rasterizer"))]
             swash_cache: RwLock::new(cosmic_text::SwashCache::new()),
         };
-        // 添加预热仅限 Windows:PR #62 仅在 Windows 路径接入 locale-aware CJK 回退,
-        // 该回归(zerx-lab/warp#68)也仅出现在 Windows。macOS/Linux 走各自的 fallback 路径,
-        // 不需预热。
+        // Warm-up is added for Windows only: PR #62 wired up locale-aware CJK
+        // fallback only on the Windows path, and that regression
+        // (zerx-lab/warp#68) also only showed up on Windows. macOS/Linux go
+        // through their own fallback paths and don't need warm-up.
         #[cfg(target_os = "windows")]
         db.text_layout_system.warm_up_preferred_cjk_families();
         db
@@ -304,21 +305,26 @@ impl Default for TextLayoutSystem {
     }
 }
 
-/// 用新 locale 原地重建 cosmic-text `FontSystem`,复用现有 `fontdb::Database`,
-/// 因此不会重新加载字体数据。`cosmic_text::FontSystem` 没有公开的 `set_locale`,
-/// 所以这里通过 `std::mem::replace` 替换整个结构,再重新挂回 db。
+/// Rebuilds the cosmic-text `FontSystem` in place for a new locale, reusing
+/// the existing `fontdb::Database`, so font data isn't reloaded.
+/// `cosmic_text::FontSystem` has no public `set_locale`, so here we replace
+/// the whole struct via `std::mem::replace` and then re-attach the db.
 ///
-/// 成本:`into_locale_and_db` 只会跨替换保留 `(locale, db)`。新的 `FontSystem`
-/// 会从头重建实例级缓存:`font_cache`、`monospace_font_ids`、
-/// `per_script_monospace_font_ids`、`font_codepoint_support_info_cache`、
-/// `font_matches_cache`、`shape_plan_cache`,以及启用 `shape-run-cache` feature 时的
-/// `shape_run_cache`。构造函数还会对 monospace 字体集合重新运行 `cache_fonts`,
-/// 在系统字体很多的 Windows 上,首次重建后渲染可能耗时数百 ms 到约 1 s。
-/// mmap 支撑的字体文件数据本身不会被重新读取。
+/// Cost: `into_locale_and_db` only preserves `(locale, db)` across the
+/// replacement. The new `FontSystem` rebuilds its instance-level caches from
+/// scratch: `font_cache`, `monospace_font_ids`,
+/// `per_script_monospace_font_ids`, `font_codepoint_support_info_cache`,
+/// `font_matches_cache`, `shape_plan_cache`, and `shape_run_cache` when the
+/// `shape-run-cache` feature is enabled. The constructor also re-runs
+/// `cache_fonts` over the monospace font set; on Windows, which tends to have
+/// many system fonts, the first rebuild's rendering can take anywhere from a
+/// few hundred ms to around 1 s. The mmap-backed font file data itself is not
+/// re-read.
 ///
-/// 这是可接受的,因为 UI locale 切换很少发生(目前由 Settings → Language 和
-/// "restart Zap" 提示驱动),用户已经预期会有一次中断。如果之后需要热重载低延迟,
-/// 钩子在 `app::i18n::set_locale`。
+/// This is acceptable because UI locale switching happens rarely (currently
+/// driven by Settings -> Language and the "restart Zap" prompt), and the
+/// user already expects a brief interruption. If low-latency hot reload is
+/// needed later, the hook is in `app::i18n::set_locale`.
 fn rebuild_font_system_for_locale(
     store: &std::sync::Arc<RwLock<cosmic_text::FontSystem>>,
     locale: &str,

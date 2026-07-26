@@ -1,21 +1,24 @@
-//! BYOP `webfetch` 与 `websearch` 工具的本地执行逻辑。
+//! Local execution logic for the BYOP `webfetch` and `websearch` tools.
 //!
-//! 这两个 BYOP 工具不走 protobuf executor(`warp_multi_agent_api` 没有对应 variant),
-//! 由 `chat_stream.rs::handle_byop_web_tool_intercept` 在 `parse_incoming_tool_call`
-//! 之前直接调用本模块,把结果合成 `(ToolCall carrier, ToolCallResult)` 一对消息推回流。
+//! These two BYOP tools don't go through the protobuf executor (`warp_multi_agent_api` has no
+//! corresponding variant); `chat_stream.rs::handle_byop_web_tool_intercept` calls this module
+//! directly before `parse_incoming_tool_call`, synthesizing the result into a
+//! `(ToolCall carrier, ToolCallResult)` message pair pushed back into the stream.
 //!
-//! ## 与 opencode 对齐
+//! ## Alignment with opencode
 //!
-//! - `webfetch` 镜像 `packages/opencode/src/tool/webfetch.ts`:
-//!   * UA 默认 Chrome,403 + `cf-mitigated: challenge` → 切回 `Zap` UA 重试一次
-//!   * `Accept` 头按 format 参数 q 优先级协商
-//!   * Content-Length 预检 + 实读字节双检,5 MB 上限
-//!   * timeout 默认 30s,上限 120s
-//!   * 图片 mime 自动 base64 → output.attachments
-//! - `websearch` 镜像 `packages/opencode/src/tool/{websearch,mcp-exa}.ts`:
-//!   * 默认匿名 `https://mcp.exa.ai/mcp`,`EXA_API_KEY` 环境变量存在则拼到 querystring
+//! - `webfetch` mirrors `packages/opencode/src/tool/webfetch.ts`:
+//!   * UA defaults to Chrome; a 403 + `cf-mitigated: challenge` → falls back to the `Zap` UA
+//!     and retries once
+//!   * `Accept` header negotiated by q-priority based on the format parameter
+//!   * Content-Length precheck + actual bytes-read double-check, 5 MB cap
+//!   * timeout defaults to 30s, capped at 120s
+//!   * image mimes auto-base64 into `output.attachments`
+//! - `websearch` mirrors `packages/opencode/src/tool/{websearch,mcp-exa}.ts`:
+//!   * defaults to the anonymous `https://mcp.exa.ai/mcp`; if the `EXA_API_KEY` env var is
+//!     present it's appended to the querystring
 //!   * 25s timeout
-//!   * SSE 响应 → `result.content[0].text`
+//!   * SSE response → `result.content[0].text`
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -32,7 +35,7 @@ use std::time::Duration;
 use super::exa;
 
 // ---------------------------------------------------------------------------
-// 常量(对齐 opencode webfetch.ts:8-10)
+// Constants (aligned with opencode webfetch.ts:8-10)
 // ---------------------------------------------------------------------------
 
 pub const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024; // 5 MB
@@ -79,7 +82,7 @@ pub struct FetchArgs {
     pub url: String,
     #[serde(default)]
     pub format: Option<FetchFormat>,
-    /// 单位:秒。`None` → 30s;上限 120s,超过被 clamp。
+    /// Unit: seconds. `None` → 30s; capped at 120s, values above that are clamped.
     #[serde(default)]
     pub timeout: Option<u64>,
 }
@@ -87,7 +90,7 @@ pub struct FetchArgs {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct FetchAttachment {
     pub mime: String,
-    /// `data:<mime>;base64,<...>` 形式(对齐 opencode)。
+    /// `data:<mime>;base64,<...>` form (aligned with opencode).
     pub url: String,
 }
 
@@ -102,13 +105,13 @@ pub struct FetchOutput {
     pub attachments: Vec<FetchAttachment>,
 }
 
-/// 如果 IP 属于 private、loopback、link-local 等 webfetch 不应访问的范围，
-/// 返回 `true`。
+/// Returns `true` if the IP falls within a private, loopback, link-local, or other range that
+/// webfetch should not access.
 fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_blocked_ipv4(v4),
         IpAddr::V6(v6) => {
-            // IPv4-mapped IPv6(::ffff:x.x.x.x) 按 IPv4 规则处理。
+            // IPv4-mapped IPv6 (::ffff:x.x.x.x) is handled with IPv4 rules.
             if let Some(mapped) = v6.to_ipv4_mapped() {
                 return is_blocked_ipv4(mapped);
             }
@@ -117,7 +120,7 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
                 || v6.is_multicast()        // ff00::/8
                 || is_ipv6_unique_local(v6) // fc00::/7
                 || is_ipv6_link_local(v6)   // fe80::/10
-                || is_ipv6_documentation(v6) // 文档示例地址 2001:db8::/32
+                || is_ipv6_documentation(v6) // documentation example range 2001:db8::/32
         }
     }
 }
@@ -128,15 +131,15 @@ fn is_blocked_ipv4(v4: Ipv4Addr) -> bool {
         || v4.is_private()    // 10/8, 172.16/12, 192.168/16
         || v4.is_link_local() // 169.254.0.0/16
         || v4.is_multicast()  // 224.0.0.0/4
-        || o[0] == 0          // 0.0.0.0/8，“本主机”范围
+        || o[0] == 0          // 0.0.0.0/8, "this host" range
         || v4.is_broadcast()  // 255.255.255.255
         || (Ipv4Addr::new(100, 64, 0, 0) <= v4 && v4 <= Ipv4Addr::new(100, 127, 255, 255))
             // CGNAT 100.64/10
         || (o[0] == 192 && o[1] == 0 && o[2] == 2)   // TEST-NET-1 192.0.2.0/24
         || (o[0] == 198 && o[1] == 51 && o[2] == 100) // TEST-NET-2 198.51.100.0/24
         || (o[0] == 203 && o[1] == 0 && o[2] == 113)  // TEST-NET-3 203.0.113.0/24
-        || (o[0] == 198 && (o[1] & 0xfe) == 18)       // 性能测试地址 198.18.0.0/15
-        || o[0] >= 240 // 保留地址 240.0.0.0/4
+        || (o[0] == 198 && (o[1] & 0xfe) == 18)       // benchmarking range 198.18.0.0/15
+        || o[0] >= 240 // reserved range 240.0.0.0/4
 }
 
 fn is_ipv6_unique_local(v6: Ipv6Addr) -> bool {
@@ -151,18 +154,19 @@ fn is_ipv6_documentation(v6: Ipv6Addr) -> bool {
     v6.segments()[0] == 0x2001 && v6.segments()[1] == 0x0db8
 }
 
-/// 校验 URL 的 SSRF 安全性:拒绝 IP 字面量形式的 private/internal 地址。
+/// Validates a URL's SSRF safety: rejects private/internal addresses given as IP literals.
 ///
-/// 仅做同步、无 I/O 的字面量检查。hostname 的 DNS 结果由 `SsrfSafeResolver`
-/// 在解析阶段过滤(连接时强制执行,无 TOCTOU 间隙)。早前版本在这里还做了一次
-/// 阻塞式 `to_socket_addrs` 预解析 —— 它跑在 async 运行时线程上(包括
-/// redirect policy 闭包内,hyper 每一跳都会调),慢 DNS 时会卡住整个 worker;
-/// 且在 wasm32 上 `to_socket_addrs` 本来就不可用,等于从未生效。
+/// Only performs a synchronous, I/O-free literal check. DNS results for hostnames are
+/// filtered by `SsrfSafeResolver` at resolution time (enforced at connect time, with no
+/// TOCTOU gap). An earlier version also did a blocking `to_socket_addrs` pre-resolution
+/// here — it ran on the async runtime's threads (including inside the redirect policy
+/// closure, which hyper calls on every hop), so slow DNS would stall the entire worker; and
+/// `to_socket_addrs` isn't available on wasm32 anyway, so it never actually took effect there.
 fn validate_url_not_internal(url_str: &str) -> Result<()> {
     let parsed = url::Url::parse(url_str).context("invalid URL")?;
     let host = parsed.host_str().context("URL has no host")?;
 
-    // 如果 host 已经是 IP 字面量，直接检查。
+    // If host is already an IP literal, check it directly.
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_blocked_ip(ip) {
             bail!("URL targets a blocked IP address range");
@@ -172,10 +176,11 @@ fn validate_url_not_internal(url_str: &str) -> Result<()> {
     Ok(())
 }
 
-/// DNS resolver 在解析阶段过滤被禁止的内部 IP，避免预校验和连接之间的 TOCTOU 间隙。
+/// A DNS resolver that filters out disallowed internal IPs at resolution time, avoiding the
+/// TOCTOU gap between pre-validation and connection.
 ///
-/// 仅非 WASM 目标可用：reqwest 的 `dns` 模块和 `ClientBuilder::dns_resolver`
-/// 不暴露给 WebAssembly。
+/// Only available for non-WASM targets: reqwest's `dns` module and
+/// `ClientBuilder::dns_resolver` aren't exposed to WebAssembly.
 #[cfg(not(target_arch = "wasm32"))]
 struct SsrfSafeResolver;
 
@@ -209,25 +214,27 @@ impl reqwest::dns::Resolve for SsrfSafeResolver {
     }
 }
 
-/// 最大重定向次数，与 reqwest 默认值保持一致。
+/// Maximum redirect hops, matching reqwest's default.
 const MAX_REDIRECT_HOPS: usize = 10;
 
-/// 构建带 SSRF 防护的 reqwest client：
-/// - 自定义 DNS resolver 阻止连接到内部 IP
-/// - 自定义重定向策略强制 HTTPS、校验每一跳并限制总跳数
-///   (`Policy::custom` 不会继承 reqwest 默认跳数限制)
+/// Builds a reqwest client with SSRF protection:
+/// - a custom DNS resolver blocks connections to internal IPs
+/// - a custom redirect policy enforces HTTPS, validates each hop, and caps the total number of
+///   hops (`Policy::custom` doesn't inherit reqwest's default hop limit)
 pub fn build_ssrf_safe_client() -> Result<reqwest::Client> {
     let policy = Policy::custom(|attempt| {
-        // `Policy::custom` 不继承 reqwest 默认的循环/最大跳数保护，需要显式限制。
+        // `Policy::custom` doesn't inherit reqwest's default loop/max-hop protection, so it
+        // must be enforced explicitly.
         if attempt.previous().len() >= MAX_REDIRECT_HOPS {
             return attempt.stop();
         }
         let url = attempt.url();
-        // 重定向目标必须保持 HTTPS，避免 HTTPS → HTTP 降级。
+        // The redirect target must stay HTTPS, to avoid an HTTPS → HTTP downgrade.
         if url.scheme() != "https" {
             return attempt.stop();
         }
-        // 在 DNS resolver 之外再做一层校验，立即拦截 IP 字面量形式的内部地址。
+        // An extra layer of validation on top of the DNS resolver, to immediately reject
+        // internal addresses given as IP literals.
         if validate_url_not_internal(url.as_str()).is_err() {
             attempt.stop()
         } else {
@@ -237,13 +244,15 @@ pub fn build_ssrf_safe_client() -> Result<reqwest::Client> {
     let builder = reqwest::Client::builder()
         .redirect(policy)
         .pool_idle_timeout(Duration::from_secs(30));
-    // 仅非 WASM 目标接入 SSRF-safe DNS resolver；WebAssembly 不暴露 reqwest DNS 模块。
+    // Only non-WASM targets get the SSRF-safe DNS resolver; WebAssembly doesn't expose
+    // reqwest's DNS module.
     #[cfg(not(target_arch = "wasm32"))]
     let builder = builder.dns_resolver(Arc::new(SsrfSafeResolver));
     builder.build().context("build SSRF-safe reqwest client")
 }
 
-/// 入口:执行一次 webfetch,返回结构化 output(由 caller `serde_json::to_value` 喂给上游 LLM)。
+/// Entry point: runs a single webfetch, returning structured output (fed to the upstream LLM
+/// by the caller via `serde_json::to_value`).
 pub async fn run_webfetch(client: &reqwest::Client, args: FetchArgs) -> Result<FetchOutput> {
     if !args.url.starts_with("https://") {
         bail!("URL must use HTTPS");
@@ -262,7 +271,8 @@ pub async fn run_webfetch(client: &reqwest::Client, args: FetchArgs) -> Result<F
         Err(e) => return Err(e),
     };
 
-    // Cloudflare 挑战:Chrome UA 第一轮 403 + cf-mitigated: challenge → 换 UA 重试一次。
+    // Cloudflare challenge: a first-round 403 + cf-mitigated: challenge with the Chrome UA →
+    // switch UA and retry once.
     let resp = if resp.status() == StatusCode::FORBIDDEN
         && resp
             .headers()
@@ -279,10 +289,10 @@ pub async fn run_webfetch(client: &reqwest::Client, args: FetchArgs) -> Result<F
     response_to_fetch_output(resp, &args.url, &format).await
 }
 
-/// 共享的 Response → FetchOutput 转换逻辑。
+/// Shared Response → FetchOutput conversion logic.
 ///
-/// 由 `run_webfetch` 和测试辅助函数共同调用，避免重复实现状态检查、
-/// 大小限制、图片编码和 JSON 美化等逻辑。
+/// Called by both `run_webfetch` and test helper functions, to avoid duplicating status
+/// checking, size limiting, image encoding, and JSON pretty-printing logic.
 async fn response_to_fetch_output(
     resp: reqwest::Response,
     url: &str,
@@ -305,7 +315,7 @@ async fn response_to_fetch_output(
         .map(|s| s.trim().to_ascii_lowercase())
         .unwrap_or_default();
 
-    // Content-Length 预检
+    // Content-Length precheck
     if let Some(len_str) = resp
         .headers()
         .get(CONTENT_LENGTH)
@@ -329,7 +339,7 @@ async fn response_to_fetch_output(
         );
     }
 
-    // 图片 → base64 attachment
+    // Image → base64 attachment
     if is_image_mime(&mime) {
         let encoded = BASE64.encode(&bytes);
         let data_url = format!("data:{mime};base64,{encoded}");
@@ -353,7 +363,7 @@ async fn response_to_fetch_output(
         FetchFormat::Markdown if is_html => html_to_markdown(&body_str),
         FetchFormat::Text if is_html => extract_text_from_html(&body_str),
         FetchFormat::Html => body_str,
-        // markdown / text 但 mime 不是 html → 透传（已经是 text 类）
+        // markdown / text requested but mime isn't html → pass through (already text-like)
         _ => body_str,
     };
 
@@ -389,8 +399,8 @@ fn is_image_mime(mime: &str) -> bool {
     mime.starts_with("image/")
 }
 
-/// 若 mime 是 application/json,且 content 是合法 JSON,美化为 ```json``` 代码块
-/// (对齐 zed fetch_tool.rs 的 JSON 处理)。
+/// If mime is application/json and content is valid JSON, pretty-print it into a ```json```
+/// code block (aligned with zed fetch_tool.rs's JSON handling).
 fn maybe_format_json(content: &str, mime: &str) -> String {
     if mime != "application/json" {
         return content.to_owned();
@@ -405,9 +415,10 @@ fn maybe_format_json(content: &str, mime: &str) -> String {
 }
 
 fn html_to_markdown(html: &str) -> String {
-    // htmd 默认配置已对齐 Turndown 的常见输出风格(atx 标题、fenced code block 等)。
-    // 预先剥 script / style / noscript / iframe 内容(htmd 默认会把这些标签内的
-    // 文本当作普通文本保留,污染 markdown 输出)。
+    // htmd's default config already aligns with Turndown's common output style (atx
+    // headings, fenced code blocks, etc.). Strip script / style / noscript / iframe content
+    // beforehand (htmd's default behavior keeps the text inside these tags as plain text,
+    // polluting the markdown output).
     let pre = strip_unsafe_blocks(html);
     match std::panic::catch_unwind(|| htmd::convert(&pre)) {
         Ok(Ok(s)) => s,
@@ -422,11 +433,12 @@ fn html_to_markdown(html: &str) -> String {
     }
 }
 
-/// 删 `<script>...</script>` / `<style>...</style>` / `<noscript>...</noscript>` /
-/// `<iframe>...</iframe>` 等整段(大小写不敏感,允许 attribute)。
+/// Deletes entire `<script>...</script>` / `<style>...</style>` / `<noscript>...</noscript>` /
+/// `<iframe>...</iframe>` blocks, etc. (case-insensitive, attributes allowed).
 ///
-/// 单趟实现:整份文档只 lowercase 一次、只产出一个 String。早前按 tag 逐趟
-/// 处理,每趟都 lowercase + 重建整份文档(5 MB 上限 × 6 tag ≈ 12 次大分配)。
+/// Single-pass implementation: lowercases the whole document once and produces a single
+/// String. An earlier version processed tags one at a time, lowercasing and rebuilding the
+/// whole document on every pass (5 MB cap × 6 tags ≈ 12 large allocations).
 fn strip_unsafe_blocks(html: &str) -> String {
     const STRIP_TAGS: &[&str] = &["script", "style", "noscript", "iframe", "object", "embed"];
     let lower = html.to_ascii_lowercase();
@@ -441,7 +453,8 @@ fn strip_unsafe_blocks(html: &str) -> String {
         cursor = lt;
         for tag in STRIP_TAGS {
             if lower[lt + 1..].starts_with(tag) {
-                // 必须接着 `>` / 空白 / `/`(避免误吞 <scriptlike>)
+                // Must be followed by `>` / whitespace / `/` (avoids mis-matching
+                // <scriptlike>)
                 let after = lt + 1 + tag.len();
                 match lower.as_bytes().get(after) {
                     Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
@@ -454,14 +467,14 @@ fn strip_unsafe_blocks(html: &str) -> String {
                         cursor = after + rel_close + close.len();
                     }
                     None => {
-                        // 没闭合 → 整段丢弃
+                        // Unclosed → discard the rest of the document
                         cursor = html.len();
                     }
                 }
                 continue 'scan;
             }
         }
-        // 不是要剥的 tag:原样保留 `<`,继续扫描。
+        // Not a tag to strip: keep `<` as-is and keep scanning.
         out.push('<');
         cursor += 1;
     }
@@ -469,7 +482,8 @@ fn strip_unsafe_blocks(html: &str) -> String {
     out
 }
 
-/// 极简 HTML→纯文本兜底:正则 strip 所有 tag。仅 htmd 失败时用。
+/// Minimal HTML→plain-text fallback: strips all tags with a simple scan. Only used when htmd
+/// fails.
 fn naive_html_strip(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut in_tag = false;
@@ -484,10 +498,11 @@ fn naive_html_strip(html: &str) -> String {
     out
 }
 
-/// HTML → 纯文本:先用 htmd 转 markdown,再剥 markdown 标记。
+/// HTML → plain text: first convert to markdown with htmd, then strip markdown markers.
 ///
-/// 简化路径,避免再引入 html5ever DOM 遍历依赖(`markup5ever_rcdom`)。htmd 内部
-/// 已经过滤了 script/style/noscript 等不可见标签,纯文本输出对 text 模式足够。
+/// A simplified path that avoids pulling in an html5ever DOM traversal dependency
+/// (`markup5ever_rcdom`). htmd already filters out invisible tags like script/style/noscript
+/// internally, so the plain-text output is good enough for text mode.
 fn extract_text_from_html(html: &str) -> String {
     let md = html_to_markdown(html);
     strip_markdown(&md)
@@ -498,18 +513,18 @@ fn strip_markdown(md: &str) -> String {
     let mut last_blank = false;
     for raw_line in md.lines() {
         let mut line = raw_line.trim().to_owned();
-        // 标题前缀 # ## ###
+        // Heading prefix # ## ###
         while line.starts_with('#') {
             line.remove(0);
         }
         let line = line.trim_start();
-        // 列表 / 引用 / 水平线 prefix
+        // List / blockquote / horizontal-rule prefix
         let line = line.trim_start_matches(['-', '*', '>', '+']).trim_start();
-        // ![alt](url) → 删整段
+        // ![alt](url) → delete the whole thing
         let line = strip_pattern(line, "![", ")");
-        // [text](url) → 保留 text
+        // [text](url) → keep text
         let line = unwrap_links(&line);
-        // `code` / **bold** / *em* / _em_ — 保守地把 ` * _ 删掉
+        // `code` / **bold** / *em* / _em_ — conservatively strip out ` * _
         let cleaned: String = line
             .chars()
             .filter(|c| !matches!(c, '`' | '*' | '_'))
@@ -540,7 +555,7 @@ fn strip_pattern(s: &str, start: &str, end: &str) -> String {
         match after.find(end) {
             Some(j) => rest = &after[j + end.len()..],
             None => {
-                // 没闭合,保留剩余
+                // Unclosed, keep the remainder
                 rest = after;
                 break;
             }
@@ -552,14 +567,15 @@ fn strip_pattern(s: &str, start: &str, end: &str) -> String {
 
 /// `[text](url)` → `text`
 ///
-/// 只在 str 边界上切片拼接(`find` 返回的都是合法 UTF-8 边界)。早前实现逐字节
-/// `push(bytes[i] as char)`,多字节 UTF-8 会被逐字节转成 Latin-1 码点,非 ASCII
-/// 文本(CJK 等)全部乱码。
+/// Only slices and concatenates on str boundaries (everything `find` returns is a valid UTF-8
+/// boundary). An earlier implementation did byte-by-byte `push(bytes[i] as char)`, which
+/// converts multi-byte UTF-8 into Latin-1 code points one byte at a time, garbling all
+/// non-ASCII text (CJK, etc.).
 fn unwrap_links(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(open) = rest.find('[') {
-        // 找 ]( 然后 )
+        // Look for ]( then )
         if let Some(close_text) = rest[open + 1..].find("](") {
             let text = &rest[open + 1..open + 1 + close_text];
             let after_paren = &rest[open + 1 + close_text + 2..];
@@ -570,7 +586,7 @@ fn unwrap_links(s: &str) -> String {
                 continue;
             }
         }
-        // 非链接形态的 `[`:原样保留,继续向后扫。
+        // A `[` that isn't part of a link: keep as-is and keep scanning forward.
         out.push_str(&rest[..=open]);
         rest = &rest[open + 1..];
     }
@@ -617,16 +633,16 @@ impl SearchToolArgs {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SearchOutput {
     pub query: String,
-    /// Exa 返回的人类可读 / LLM-optimized context 字符串。
+    /// The human-readable / LLM-optimized context string returned by Exa.
     pub results: String,
 }
 
 const EMPTY_FALLBACK: &str = "No search results found. Please try a different query.";
 
-/// 入口:执行一次 Exa websearch。
+/// Entry point: runs a single Exa websearch.
 ///
-/// `endpoint_override`:测试用,默认走 `exa::endpoint_url(api_key)`。
-/// `api_key`:`None` → 匿名;`Some(...)` → 拼到 querystring。
+/// `endpoint_override`: for tests; defaults to `exa::endpoint_url(api_key)`.
+/// `api_key`: `None` → anonymous; `Some(...)` → appended to the querystring.
 pub async fn run_websearch(
     client: &reqwest::Client,
     args: SearchToolArgs,
@@ -663,11 +679,13 @@ pub async fn run_websearch(
     Ok(SearchOutput { query, results })
 }
 
-/// 把 webfetch / websearch 的结构化结果序列化为 JSON Value(给上游 LLM 看的字符串)。
+/// Serializes webfetch / websearch structured results into a JSON Value (the string the
+/// upstream LLM sees).
 ///
-/// 所有 BYOP 本地拦截工具的 tool_result 必须带 `"_byop_intercepted":true` sentinel,
-/// 否则 controller (`controller.rs:2693+`) 不会触发 auto-resume,模型会卡在等结果。
-/// 见 `chat_stream::dispatch_byop_web_tool` 与 controller 的 `needs_byop_local_resume` 检测。
+/// The tool_result of every BYOP local-intercept tool must carry the
+/// `"_byop_intercepted":true` sentinel, otherwise the controller (`controller.rs:2693+`)
+/// won't trigger auto-resume and the model will get stuck waiting for a result. See
+/// `chat_stream::dispatch_byop_web_tool` and the controller's `needs_byop_local_resume` check.
 pub fn fetch_output_to_json(out: &FetchOutput) -> Value {
     let mut v = serde_json::to_value(out).unwrap_or_else(|_| json!({"status": "serialize_error"}));
     if let Some(obj) = v.as_object_mut() {

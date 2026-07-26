@@ -1,29 +1,32 @@
-//! 工具参数容错层。
+//! Tool argument tolerance layer.
 //!
-//! 部分 BYOP 模型(尤其 DeepSeek reasoner、某些 OSS 模型)在 tool_calls 的
-//! `arguments` 里会把 boolean 写成 `"true"`/`"false"`、把数字写成字符串、把
-//! array/object 整个 JSON.stringify 一次。`from_args` 用 serde 严格解,这类
-//! 输入会直接 reject,UI 端表现为"工具偶发故障"。
+//! Some BYOP models (especially the DeepSeek reasoner and certain OSS models) will,
+//! in the `arguments` of `tool_calls`, write booleans as `"true"`/`"false"`, write
+//! numbers as strings, or JSON.stringify an entire array/object. `from_args` parses
+//! strictly with serde, so this kind of input gets rejected outright, which shows up
+//! on the UI side as "the tool intermittently fails."
 //!
-//! 本模块只在 `from_args` 第一次失败后才被调用:读 `parameters()` schema,
-//! 按 schema 声明的类型,把 JSON Value 里的 string 强转回目标类型。覆盖:
+//! This module is only invoked after `from_args` fails the first time: it reads the
+//! `parameters()` schema and, based on the type declared there, force-converts
+//! strings in the JSON Value back to the target type. Coverage:
 //!
-//! | schema type | 模型返回 | 修正为 |
+//! | schema type | model returns | corrected to |
 //! |---|---|---|
 //! | boolean | "true"/"True"/"1"/"yes" | true |
 //! | boolean | "false"/"False"/"0"/"no" | false |
 //! | integer | "42" / 42.0 | 42 |
 //! | number | "3.14" | 3.14 |
 //! | string | 42 / true | "42" / "true" |
-//! | array | "[\"a\"]"(JSON 字符串) | ["a"] |
-//! | object | "{\"k\":1}"(JSON 字符串) | {"k":1} |
+//! | array | "[\"a\"]" (JSON string) | ["a"] |
+//! | object | "{\"k\":1}" (JSON string) | {"k":1} |
 //!
-//! 不能 coerce 的字段保留原值,让原始解析错误透出。
+//! Fields that can't be coerced are left as-is, so the original parse error surfaces.
 
 use serde_json::{Number, Value};
 
-/// 尝试根据 schema 修正 args JSON。返回 `Some(coerced_string)` 表示至少做了一次
-/// 类型转换;返回 `None` 表示输入根本解不出 JSON 或没有任何字段需要 coerce。
+/// Attempt to correct the args JSON against the schema. Returns `Some(coerced_string)`
+/// if at least one type conversion was made; returns `None` if the input can't be
+/// parsed as JSON at all, or no field needed coercion.
 pub fn coerce_args_against_schema(args_str: &str, schema: &Value) -> Option<String> {
     let mut value: Value = serde_json::from_str(args_str).ok()?;
     let mut changed = false;
@@ -36,7 +39,8 @@ pub fn coerce_args_against_schema(args_str: &str, schema: &Value) -> Option<Stri
 
 fn coerce_value(value: &mut Value, schema: &Value, changed: &mut bool) {
     let Some(ty) = schema.get("type").and_then(|t| t.as_str()) else {
-        // schema 没标 type:对象类型尝试递归 properties,否则放弃。
+        // No type declared in the schema: for an object type, try recursing into
+        // properties; otherwise give up.
         if let Some(props) = schema.get("properties") {
             coerce_object(value, props, schema, changed);
         }
@@ -45,7 +49,8 @@ fn coerce_value(value: &mut Value, schema: &Value, changed: &mut bool) {
 
     match ty {
         "object" => {
-            // 模型把整个 object 字符串化的情况:解一层后再继续。
+            // Case where the model stringified the whole object: parse one layer
+            // and continue.
             if let Some(s) = value.as_str() {
                 if let Ok(parsed) = serde_json::from_str::<Value>(s) {
                     if parsed.is_object() {
@@ -143,19 +148,24 @@ fn coerce_object(value: &mut Value, props: &Value, parent_schema: &Value, change
         return;
     };
 
-    // 显式 null == 没填(仅限非 required 字段)。
+    // Explicit null == not provided (only for non-required fields).
     //
-    // 模型很爱把"这个可选字段我不填"写成显式 null 而不是省略 key。serde 的
-    // `#[serde(default)]` 只兜得住"字段整个缺失",显式 null 照样 reject,白白烧掉
-    // 一轮 tool call。实测 2026-07-19,qwen3-it:4b 第一次调 read_files:
+    // Models love to write "I'm not filling in this optional field" as an explicit
+    // null instead of omitting the key. serde's `#[serde(default)]` only covers the
+    // case where the field is entirely absent; an explicit null still gets rejected,
+    // burning a whole tool-call round-trip for nothing. Observed in practice on
+    // 2026-07-19: qwen3-it:4b's first call to read_files:
     //
     //   {"files":[{"line_ranges":null,"path":"./start_flm.sh"}]}  → invalid type: null
-    //   {"files":[{"line_ranges":[],"path":"./start_flm.sh"}]}    → ok(模型自己重试)
+    //   {"files":[{"line_ranges":[],"path":"./start_flm.sh"}]}    → ok (model retried itself)
     //
-    // 两者语义完全一样。删掉这个 key 让 serde 走 default,等价且不需要重试。
+    // The two are semantically identical. Dropping this key lets serde fall through
+    // to its default, which is equivalent and doesn't require a retry.
     //
-    // required 字段的 null 一律保留原样:那是模型真的漏了必填值,这里不该替它编一个,
-    // 应该让原始解析错误透出去(与本模块"不能 coerce 的字段保留原值"一致)。
+    // A null on a required field is always left as-is: that means the model truly
+    // omitted a required value, and we shouldn't invent one here — the original parse
+    // error should surface (consistent with this module's rule that fields which
+    // can't be coerced are left as-is).
     let required: std::collections::HashSet<&str> = parent_schema
         .get("required")
         .and_then(|r| r.as_array())
@@ -176,7 +186,7 @@ fn coerce_object(value: &mut Value, props: &Value, parent_schema: &Value, change
             coerce_value(field, prop_schema, changed);
         }
     }
-    // additionalProperties: schema 也有可能描述未列在 properties 中的字段。
+    // additionalProperties: the schema may also describe fields not listed in properties.
     if let Some(additional) = parent_schema
         .get("additionalProperties")
         .filter(|v| v.is_object())
@@ -315,7 +325,7 @@ mod tests {
         assert_eq!(v["config"]["enabled"], json!(true));
     }
 
-    /// read_files 的真实 schema 片段:`path` 必填,`line_ranges` 可选。
+    /// Real schema fragment from read_files: `path` is required, `line_ranges` is optional.
     fn read_files_schema() -> Value {
         json!({
             "type": "object",
@@ -336,8 +346,9 @@ mod tests {
         })
     }
 
-    /// 实测回归(2026-07-19,qwen3-it:4b 首次 read_files 调用)。
-    /// 显式 null 的可选字段应被删掉,让 serde 的 `#[serde(default)]` 生效。
+    /// Regression observed in practice (2026-07-19, qwen3-it:4b's first read_files call).
+    /// An optional field with an explicit null should be dropped so serde's
+    /// `#[serde(default)]` kicks in.
     #[test]
     fn explicit_null_optional_field_is_dropped() {
         let args = r#"{"files":[{"line_ranges":null,"path":"./start_flm.sh"}]}"#;
@@ -346,13 +357,14 @@ mod tests {
         assert_eq!(v["files"][0]["path"], json!("./start_flm.sh"));
         assert!(
             v["files"][0].get("line_ranges").is_none(),
-            "null 的可选字段应被删除,实际: {}",
+            "an optional field with null should be removed, got: {}",
             v["files"][0]
         );
     }
 
-    /// required 字段为 null 时**不能**被删:那是模型漏了必填值,
-    /// 应该让原始解析错误透出,而不是在这里悄悄编一个默认值。
+    /// A required field with null **must not** be removed: that means the model
+    /// omitted a required value, and the original parse error should surface rather
+    /// than us quietly inventing a default value here.
     #[test]
     fn explicit_null_required_field_is_preserved() {
         let args = r#"{"files":[{"path":null,"line_ranges":[]}]}"#;
@@ -362,7 +374,7 @@ mod tests {
                 let v: Value = serde_json::from_str(&out).unwrap();
                 assert!(
                     v["files"][0].get("path").is_some_and(Value::is_null),
-                    "required 的 null 字段不应被删除,实际: {}",
+                    "a required field with null should not be removed, got: {}",
                     v["files"][0]
                 );
             }

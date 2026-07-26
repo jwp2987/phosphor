@@ -73,11 +73,13 @@ impl FromStr for AmbientAgentTaskId {
 }
 
 impl AmbientAgentTaskId {
-    /// Zap(本地化,Phase 3b-4):本地生成一个 UUID v4 作为 task_id,避免本地
-    /// harness 启动子 task 时依赖远端预创建任务接口。
+    /// Zap (localization, Phase 3b-4): generates a UUID v4 locally as the task_id, so
+    /// the local harness doesn't need a remote pre-create-task API when spawning a
+    /// child task.
     pub fn new_local() -> Self {
         let uuid = Uuid::new_v4();
-        // UUID v4 几乎不可能产生 nil(概率 ~ 1/2^122),采用 expect 表示逻辑不可达。
+        // A UUID v4 is essentially never nil (probability ~ 1/2^122); `expect` here
+        // documents that this branch is logically unreachable.
         let non_nil =
             NonNilUuid::try_from(uuid).expect("freshly generated UUID v4 must be non-nil");
         Self(non_nil)

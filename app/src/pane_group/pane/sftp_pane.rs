@@ -1,8 +1,8 @@
-//! SFTP 文件浏览器 pane(中央 pane,通过 SSH 管理器树打开)。
+//! SFTP file browser pane (a central pane, opened via the SSH manager tree).
 //!
-//! 仿 `ssh_server_pane.rs` 的极简结构。pane 不持久化(
-//! `LeafContents::Sftp { .. }` 在 `is_persisted()` 返回 false),
-//! 业务数据走 SFTP 连接操作。
+//! Modeled on the minimal structure of `ssh_server_pane.rs`. The pane is not
+//! persisted (`LeafContents::Sftp { .. }` returns false from
+//! `is_persisted()`); business data is driven by SFTP connection operations.
 //! author: logic
 //! date: 2026-05-26
 
@@ -16,16 +16,16 @@ use crate::sftp_manager::browser::SftpBrowserView;
 
 use super::{DetachType, PaneId, ShareableLink, ShareableLinkError};
 
-/// SFTP 文件浏览器 pane 内容
+/// SFTP file browser pane content
 pub struct SftpPane {
     view: ViewHandle<PaneView<SftpBrowserView>>,
     pane_configuration: ModelHandle<PaneConfiguration>,
-    /// 业务节点 id(不是 pane view id),用于 snapshot 序列化。
+    /// The business node id (not the pane view id), used for snapshot serialization.
     node_id: String,
 }
 
 impl SftpPane {
-    /// 创建新的 SFTP 浏览器 pane
+    /// Creates a new SFTP browser pane
     pub fn new<V: View>(node_id: String, ctx: &mut ViewContext<V>) -> Self {
         let id_for_view = node_id.clone();
         let browser_view =

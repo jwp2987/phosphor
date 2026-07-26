@@ -1,5 +1,6 @@
-//! 支持 RRGGBBAA 格式 (8 位 hex) 的 serde 序列化模块。
-//! 同时兼容 RRGGBB (6 位) 格式，此时 alpha 默认为 255 (不透明)。
+//! A serde serialization module that supports the RRGGBBAA format (8-digit hex).
+//! Also compatible with the RRGGBB (6-digit) format, in which case alpha defaults
+//! to 255 (opaque).
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use warpui::color::ColorU;
@@ -10,7 +11,8 @@ const SHORT_LEN: usize = 3;
 const RGB_LEN: usize = 6;
 const RGBA_LEN: usize = 8;
 
-/// 从 hex 字符串解析 ColorU，支持 #RGB、#RRGGBB、#RRGGBBAA 格式。
+/// Parses a ColorU from a hex string, supporting the #RGB, #RRGGBB, and
+/// #RRGGBBAA formats.
 fn coloru_from_hex_alpha(s: &str) -> Result<ColorU, String> {
     if !s.starts_with('#') {
         return Err("Expected hex color string starting with #".to_string());
@@ -25,7 +27,7 @@ fn coloru_from_hex_alpha(s: &str) -> Result<ColorU, String> {
         ));
     }
 
-    // 展开 3 位缩写: #RGB -> #RRGGBB
+    // Expand the 3-digit shorthand: #RGB -> #RRGGBB
     let expanded: String = if hex.len() == SHORT_LEN {
         hex.chars().flat_map(|c| std::iter::repeat_n(c, 2)).collect()
     } else {
@@ -39,7 +41,8 @@ fn coloru_from_hex_alpha(s: &str) -> Result<ColorU, String> {
 
     match parsed {
         Ok(bytes) => match bytes.len() {
-            // 此分支处理 #RRGGBB（6 字符）及已展开的 #RGB（3→6 字符）两种情况
+            // This branch handles both #RRGGBB (6 characters) and the already-expanded
+            // #RGB (3->6 characters) cases
             3 => Ok(ColorU {
                 r: bytes[0],
                 g: bytes[1],
@@ -58,8 +61,9 @@ fn coloru_from_hex_alpha(s: &str) -> Result<ColorU, String> {
     }
 }
 
-/// 将 ColorU 序列化为 hex 字符串。
-/// 当 alpha 为 255 时输出 6 位 (#RRGGBB) 以保持简洁，否则输出 8 位 (#RRGGBBAA)。
+/// Serializes a ColorU into a hex string.
+/// Outputs 6 digits (#RRGGBB) when alpha is 255 to keep it concise, otherwise
+/// outputs 8 digits (#RRGGBBAA).
 fn coloru_to_hex_alpha_string(color: &ColorU) -> String {
     if color.a == OPAQUE {
         format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
@@ -71,7 +75,7 @@ fn coloru_to_hex_alpha_string(color: &ColorU) -> String {
     }
 }
 
-/// serde deserialize 函数，用于 `#[serde(with = "hex_color_alpha")]`。
+/// serde deserialize function, for use with `#[serde(with = "hex_color_alpha")]`.
 pub fn deserialize<'de, D, C>(deserializer: D) -> Result<C, D::Error>
 where
     C: From<ColorU>,
@@ -83,7 +87,7 @@ where
         .map_err(de::Error::custom)
 }
 
-/// serde serialize 函数，用于 `#[serde(with = "hex_color_alpha")]`。
+/// serde serialize function, for use with `#[serde(with = "hex_color_alpha")]`.
 pub fn serialize<S, C>(color: &C, serializer: S) -> Result<S::Ok, S::Error>
 where
     C: Into<ColorU> + Clone,
@@ -93,12 +97,12 @@ where
     coloru_to_hex_alpha_string(&coloru).serialize(serializer)
 }
 
-/// 支持 Option<ColorU> 的 serde 序列化/反序列化模块。
-/// 用于 `#[serde(default, with = "hex_color_alpha::option")]`。
+/// A serde serialization/deserialization module that supports Option<ColorU>.
+/// For use with `#[serde(default, with = "hex_color_alpha::option")]`.
 pub mod option {
     use super::*;
 
-    /// 反序列化可选的 hex 颜色值，支持 None 和字符串。
+    /// Deserializes an optional hex color value, supporting both None and a string.
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<ColorU>, D::Error>
     where
         D: Deserializer<'de>,
@@ -110,7 +114,7 @@ pub mod option {
         }
     }
 
-    /// 序列化可选的 hex 颜色值，None 时输出 null。
+    /// Serializes an optional hex color value, outputting null when None.
     pub fn serialize<S>(color: &Option<ColorU>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,

@@ -605,34 +605,36 @@ fn test_should_update() {
                 _ => panic!("Expected UpdateReady::CanDownload for new update"),
             }
 
-            // openWarp(Channel::Oss)下 `ChannelState::app_version()` 保留 `v` 前缀,
-            // 而 `github::GithubRelease::version()` 已经 trim 掉 `v`。两者只差 `v`
-            // 前缀时应识别为 `UpdateReady::No`,否则关于页会永远提示“发现新版本”。
-            // Test 6: openWarp 同版本(本地带 v、远端不带 v)
+            // Under openWarp (Channel::Oss), `ChannelState::app_version()`
+            // keeps the `v` prefix, while `github::GithubRelease::version()`
+            // has already trimmed the `v`. When the two differ only by the
+            // `v` prefix, this should be recognized as `UpdateReady::No`,
+            // otherwise the about page would forever claim "found a new version".
+            // Test 6: openWarp same version (local has v, remote doesn't)
             ChannelState::set_app_version(Some("v2026.05.10.preview"));
             let version = make_version_info("2026.05.10.preview", false);
             let result = autoupdate.should_update(version, "oss_same_version".to_string());
             assert!(
                 matches!(result, UpdateReady::No),
-                "openWarp 仅 v 前缀差异应识别为已是最新,实际: {result:?}"
+                "openWarp: a v-prefix-only difference should be recognized as already up to date, actual: {result:?}"
             );
 
-            // Test 7: 反向(本地不带 v、远端带 v)同样应识别为同版本
+            // Test 7: reversed (local has no v, remote has v) should also be recognized as the same version
             ChannelState::set_app_version(Some("2026.05.10.preview"));
             let version = make_version_info("v2026.05.10.preview", false);
             let result = autoupdate.should_update(version, "oss_same_version_2".to_string());
             assert!(
                 matches!(result, UpdateReady::No),
-                "反向前缀差异应识别为已是最新,实际: {result:?}"
+                "reversed prefix difference should be recognized as already up to date, actual: {result:?}"
             );
 
-            // Test 8: 不同版本仍须能识别为可下载(不被归一化误伤)
+            // Test 8: different versions must still be recognized as downloadable (not falsely normalized away)
             ChannelState::set_app_version(Some("v2026.05.10.preview"));
             let version = make_version_info("2026.05.11.preview", false);
             let result = autoupdate.should_update(version, "oss_new_version".to_string());
             assert!(
                 matches!(result, UpdateReady::CanDownload { .. }),
-                "不同版本应识别为 CanDownload,实际: {result:?}"
+                "different versions should be recognized as CanDownload, actual: {result:?}"
             );
         });
     });

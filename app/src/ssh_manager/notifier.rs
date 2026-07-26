@@ -1,8 +1,10 @@
-//! 全局 SSH 树变更广播 — 任何 view 改了树结构(增/删/改名/改 server 字段)
-//! 后调一次 `notify`,SshManagerPanel 等订阅者据此 refresh。
+//! Global SSH tree-changed broadcast — whenever any view modifies the tree
+//! structure (add/remove/rename/change server field), it calls `notify`
+//! once, and subscribers like SshManagerPanel refresh accordingly.
 //!
-//! 跟 `KeybindingChangedNotifier`(`app/src/settings_view/keybindings.rs:72`)
-//! 一个套路:Empty struct + SingletonEntity + 单个 Event 变体。
+//! Same pattern as `KeybindingChangedNotifier`
+//! (`app/src/settings_view/keybindings.rs:72`): an empty struct +
+//! SingletonEntity + a single Event variant.
 
 use warpui::{Entity, SingletonEntity};
 
@@ -17,7 +19,7 @@ impl SshTreeChangedNotifier {
 
 #[derive(Clone, Debug)]
 pub enum SshTreeChangedEvent {
-    /// 节点列表 / server 详情已变,需要重新 list_nodes。
+    /// The node list / server details have changed; list_nodes needs to be re-run.
     TreeChanged,
 }
 

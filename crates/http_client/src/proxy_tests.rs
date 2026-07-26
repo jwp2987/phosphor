@@ -1,26 +1,30 @@
-//! `proxy` 模块的单元测试。
+//! Unit tests for the `proxy` module.
 //!
-//! reqwest 0.12 没有公开 API 让我们查询 `ClientBuilder` 上已注册的 `Proxy`,
-//! 因此这里只能从可观察行为(`apply` 之后构造出的 `Client` 是否成功)上做最小验证。
-//! 更细的"实际是否走代理"留给集成测试(需要本地起 mitm)。
+//! reqwest 0.12 doesn't have a public API for us to query the `Proxy` registered
+//! on a `ClientBuilder`, so this can only do minimal verification via observable
+//! behavior (whether the `Client` constructed after `apply` succeeds).
+//! Finer-grained "does it actually go through the proxy" checks are left to
+//! integration tests (which require a local mitm setup).
 //!
-//! 注意:reqwest 在 `rustls-tls-native-roots-no-provider` features 下,
-//! `.build()` 需要一个全局 crypto provider 已安装,否则 panic。生产代码由
-//! `app/src/lib.rs::init_common` 安装,单测进程里需要我们自己装上。
+//! Note: under the `rustls-tls-native-roots-no-provider` features, reqwest's
+//! `.build()` requires a global crypto provider to already be installed,
+//! otherwise it panics. Production code installs this via
+//! `app/src/lib.rs::init_common`; in the unit test process we need to install
+//! it ourselves.
 
 use super::*;
 use std::sync::Once;
 
 static INSTALL_CRYPTO_PROVIDER: Once = Once::new();
 
-/// 在运行 reqwest `.build()` 的测试前调用,仅第一次生效。
+/// Called before tests that run reqwest `.build()`; only takes effect the first time.
 fn ensure_crypto_provider() {
     INSTALL_CRYPTO_PROVIDER.call_once(|| {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     });
 }
 
-/// 构造一个关闭原生 CA 加载的 builder,避免在难拿到系统证书的环境里 build 失败。
+/// Builds a builder with native CA loading disabled, avoiding build failures in environments where system certificates are hard to obtain.
 fn test_builder() -> reqwest::ClientBuilder {
     ensure_crypto_provider();
     reqwest::ClientBuilder::new()
@@ -36,7 +40,7 @@ fn proxy_mode_from_str_lenient_handles_variants() {
     assert_eq!(ProxyMode::from_str_lenient("off"), ProxyMode::Off);
     assert_eq!(ProxyMode::from_str_lenient("disabled"), ProxyMode::Off);
     assert_eq!(ProxyMode::from_str_lenient("none"), ProxyMode::Off);
-    // 未知值退回 Off,与默认项一致,避免意外走系统代理。
+    // Unknown values fall back to Off, matching the default, avoiding an unexpected system proxy.
     assert_eq!(ProxyMode::from_str_lenient("wat"), ProxyMode::Off);
 }
 
@@ -54,11 +58,11 @@ fn apply_system_returns_default_builder() {
         mode: ProxyMode::System,
         ..Default::default()
     };
-    // 验证不会 panic 且能成功 build。
+    // Verify it doesn't panic and can build successfully.
     let builder = cfg.apply(test_builder()).no_proxy();
-    // 上面再叠一个 no_proxy 只是为了避免 build 时去真正解析系统代理;
-    // 核心断言是 apply 不 panic。
-    let _client = builder.build().expect("System 模式应可成功 build");
+    // The extra no_proxy() above is only to avoid actually resolving the system
+    // proxy during build; the core assertion is that apply doesn't panic.
+    let _client = builder.build().expect("System mode should build successfully");
 }
 
 #[test]
@@ -68,7 +72,7 @@ fn apply_off_disables_proxy_without_error() {
         ..Default::default()
     };
     let builder = cfg.apply(test_builder());
-    let _client = builder.build().expect("Off 模式应可成功 build");
+    let _client = builder.build().expect("Off mode should build successfully");
 }
 
 #[test]
@@ -81,7 +85,7 @@ fn apply_custom_with_valid_url_succeeds() {
     let builder = cfg.apply(test_builder());
     let _client = builder
         .build()
-        .expect("Custom 模式 + 合法 URL 应可成功 build");
+        .expect("Custom mode + valid URL should build successfully");
 }
 
 #[test]
@@ -94,7 +98,7 @@ fn apply_custom_with_basic_auth_succeeds() {
         ..Default::default()
     };
     let builder = cfg.apply(test_builder());
-    let _client = builder.build().expect("Custom + auth 应可成功 build");
+    let _client = builder.build().expect("Custom + auth should build successfully");
 }
 
 #[test]
@@ -106,7 +110,7 @@ fn apply_custom_with_no_proxy_list_succeeds() {
         ..Default::default()
     };
     let builder = cfg.apply(test_builder());
-    let _client = builder.build().expect("Custom + no_proxy 应可成功 build");
+    let _client = builder.build().expect("Custom + no_proxy should build successfully");
 }
 
 #[test]
@@ -116,9 +120,9 @@ fn apply_custom_with_empty_url_falls_back_silently() {
         url: String::new(),
         ..Default::default()
     };
-    // 不该 panic,等价于退回 System(reqwest 默认)。
+    // Shouldn't panic; equivalent to falling back to System (reqwest default).
     let builder = cfg.apply(test_builder()).no_proxy();
-    let _client = builder.build().expect("空 URL 应静默退回");
+    let _client = builder.build().expect("empty URL should fall back silently");
 }
 
 #[test]
@@ -129,12 +133,12 @@ fn apply_custom_with_invalid_url_falls_back_silently() {
         ..Default::default()
     };
     let builder = cfg.apply(test_builder()).no_proxy();
-    let _client = builder.build().expect("非法 URL 应静默退回");
+    let _client = builder.build().expect("invalid URL should fall back silently");
 }
 
 #[test]
 fn set_and_read_global_config_roundtrip() {
-    // 注意:OnceLock 全局,测试间不能假设隔离;这里只验证 set 之后读到的就是写入的。
+    // Note: OnceLock is global, so isolation between tests can't be assumed; this only verifies that what's read back after set matches what was written.
     let cfg = ProxyConfig {
         mode: ProxyMode::Custom,
         url: "http://test-proxy:1234".to_string(),
@@ -150,6 +154,6 @@ fn set_and_read_global_config_roundtrip() {
     assert_eq!(read_back.password, cfg.password);
     assert_eq!(read_back.no_proxy, cfg.no_proxy);
 
-    // 重置回默认,避免污染其他测试。
+    // Reset back to default to avoid polluting other tests.
     set_global_proxy_config(ProxyConfig::default());
 }

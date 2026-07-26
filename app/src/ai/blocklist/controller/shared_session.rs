@@ -1,4 +1,4 @@
-// BlocklistAIController 的共享会话本地展示逻辑。
+// Local display logic for BlocklistAIController's shared sessions.
 use itertools::Itertools;
 use warp_multi_agent_api::response_event::ClientActions;
 use warp_multi_agent_api::{client_action::Action, message::Message};
@@ -69,9 +69,11 @@ impl BlocklistAIController {
         let terminal_view_id = self.terminal_view_id;
         let history = BlocklistAIHistoryModel::handle(ctx);
 
-        // 如果共享会话 conversation token 已经绑定到本地对话,直接复用。
-        // 否则,当当前 agent view 对话为空时复用该本地对话 ID,并绑定传入的共享 token。
-        // 这样可以保留当前 agent view 里已创建终端 block 的可见性。
+        // If the shared session's conversation token is already bound to a local
+        // conversation, reuse it directly. Otherwise, when the current agent view's
+        // conversation is empty, reuse that local conversation ID and bind it to the
+        // incoming shared token. This keeps the visibility of terminal blocks
+        // already created in the current agent view.
         let conversation_id = self
             .find_existing_conversation_by_shared_token(&init_event.conversation_id, ctx)
             .or_else(|| {
@@ -327,13 +329,13 @@ impl BlocklistAIController {
             finished,
             conversation_id,
             did_exchange_contain_user_query,
-            // shared session 路径不会触发本地压缩(来自远端 viewer 同步流),始终 None
+            // The shared session path never triggers local compaction (it comes from a remote viewer sync stream), so this is always None
             None,
             ctx,
         );
     }
 
-    /// 查找与共享会话 conversation token 对应的本地对话。
+    /// Finds the local conversation corresponding to a shared session's conversation token.
     pub fn find_existing_conversation_by_shared_token(
         &self,
         conversation_token: &str,
@@ -392,7 +394,7 @@ impl BlocklistAIController {
         event: &warp_multi_agent_api::ResponseEvent,
         ctx: &mut ModelContext<Self>,
     ) {
-        // 从 StreamInit 事件取出新的共享会话 conversation id。
+        // Takes the new shared session's conversation id from the StreamInit event.
         let new_conversation_id = match &event.r#type {
             Some(warp_multi_agent_api::response_event::Type::Init(init)) => {
                 init.conversation_id.as_str()

@@ -1,4 +1,4 @@
-//! 云同步设置页面 — 平台选择、Token 配置、同步操作、状态显示
+//! Cloud sync settings page -- platform selection, token configuration, sync actions, status display
 //!
 // author: logic
 // date: 2026-05-25
@@ -39,14 +39,14 @@ const INPUT_AREA_MAX_WIDTH: f32 = 420.0;
 const BUTTON_PADDING: f32 = 6.0;
 const DIALOG_WIDTH: f32 = 450.0;
 
-/// 同步方向
+/// Sync direction
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncDirection {
     Upload,
     Download,
 }
 
-/// 同步状态
+/// Sync status
 #[derive(Debug, Clone, Default)]
 enum SyncState {
     #[default]
@@ -77,50 +77,50 @@ enum SyncState {
     },
 }
 
-/// 云同步设置页面的操作
+/// Actions for the cloud sync settings page
 #[derive(Debug, Clone)]
 pub enum CloudSyncPageAction {
-    /// 切换同步平台
+    /// Switches the sync platform
     SetPlatform(SyncPlatformSetting),
-    /// 保存当前平台的 Token
+    /// Saves the token for the current platform
     SaveToken,
-    /// 清除当前平台的 Token
+    /// Clears the token for the current platform
     ClearToken,
-    /// Token 验证完成。platform/token 由 SaveToken 时捕获,避免与 SetPlatform 竞态
+    /// Token validation completed. platform/token are captured at SaveToken time, avoiding a race with SetPlatform
     TokenValidated {
         platform_setting: SyncPlatformSetting,
         token: String,
         result: Result<String, String>,
     },
-    /// 请求上传同步（弹出确认弹窗,避免误覆盖云端历史）
+    /// Requests an upload sync (pops up a confirmation dialog, to avoid accidentally overwriting cloud history)
     Upload,
-    /// 下载同步（使用当前选中平台）
+    /// Download sync (uses the currently selected platform)
     Download,
-    /// 异步同步完成回调
+    /// Async sync completion callback
     SyncComplete {
         platform: SyncPlatform,
         direction: SyncDirection,
         result: Result<SyncResult, String>,
     },
-    /// 强制上传（覆盖远程）
+    /// Force upload (overwrites remote)
     ForceUpload {
         platform: SyncPlatform,
     },
-    /// 取消冲突弹窗
+    /// Cancel the conflict dialog
     CancelConflict,
-    /// 确认下载
+    /// Confirm download
     ConfirmDownload { platform: SyncPlatform },
-    /// 取消下载确认
+    /// Cancel the download confirmation
     CancelDownloadConfirm,
-    /// 确认上传 — token 在 View 字段中捕获,无需通过 action 传递(避免 String clone 开销)
+    /// Confirm upload -- the token is captured in a View field, so it doesn't need to be passed via the action (avoids String clone overhead)
     ConfirmUpload { platform: SyncPlatform },
-    /// 取消上传确认
+    /// Cancel the upload confirmation
     CancelUploadConfirm,
-    /// 切换自动同步开关
+    /// Toggles the auto-sync switch
     ToggleAutoSync,
 }
 
-/// 云同步设置页面视图
+/// The cloud sync settings page view
 pub struct CloudSyncPageView {
     page: PageType<Self>,
     platform_dropdown: ViewHandle<Dropdown<CloudSyncPageAction>>,
@@ -136,12 +136,12 @@ pub struct CloudSyncPageView {
     conflict_local_version: i64,
     conflict_remote_version: i64,
     conflict_platform: SyncPlatform,
-    /// 进入 Conflict 状态时捕获的 token,Force Upload 时使用,避免确认期间用户切平台
+    /// The token captured on entering the Conflict state, used for Force Upload, avoiding the user switching platforms during confirmation
     conflict_token: String,
     download_confirm_visible: bool,
     download_confirm_platform: SyncPlatform,
-    /// 打开下载确认弹窗时捕获的 token 快照,Confirm 时直接使用,
-    /// 避免确认过程中用户切平台或 ClearToken 导致 spawn 用错凭据
+    /// The token snapshot captured when the download confirmation dialog was opened; used directly on Confirm,
+    /// avoiding the user switching platforms or ClearToken during confirmation causing spawn to use the wrong credentials
     download_confirm_token: String,
     download_confirm_mouse: MouseStateHandle,
     download_confirm_cancel_mouse: MouseStateHandle,
@@ -154,14 +154,14 @@ pub struct CloudSyncPageView {
     cached_last_sync_time: String,
     cached_last_sync_platform: String,
     has_valid_token: bool,
-    /// 自动同步开关状态
+    /// Auto-sync switch state
     auto_sync_mouse: MouseStateHandle,
     auto_sync_switch: SwitchStateHandle,
-    /// 自动同步抑制计数 — 大于 0 时跳过 SshTreeChanged 触发的自动上传，每次事件递减
+    /// Auto-sync suppression counter -- when greater than 0, skips the auto-upload triggered by SshTreeChanged, decrementing on each event
     suppress_auto_upload: u8,
 }
 
-/// 构造 Token 密码编辑器
+/// Constructs the token password editor
 fn build_token_editor(
     ctx: &mut ViewContext<CloudSyncPageView>,
     placeholder: &str,
@@ -183,7 +183,7 @@ fn build_token_editor(
     })
 }
 
-/// 从 CloudSyncSettings 同步 Dropdown 选中状态
+/// Syncs the Dropdown's selected state from CloudSyncSettings
 fn sync_from_settings(me: &mut CloudSyncPageView, ctx: &mut ViewContext<CloudSyncPageView>) {
     let platform = *CloudSyncSettings::as_ref(ctx).sync_platform.value();
 
@@ -193,7 +193,7 @@ fn sync_from_settings(me: &mut CloudSyncPageView, ctx: &mut ViewContext<CloudSyn
     });
 }
 
-/// 从 CloudSyncTokenStore 加载当前平台的 Token 到编辑器
+/// Loads the current platform's token from CloudSyncTokenStore into the editor
 fn load_token_from_store(me: &mut CloudSyncPageView, ctx: &mut ViewContext<CloudSyncPageView>) {
     let platform = *CloudSyncSettings::as_ref(ctx).sync_platform.value();
     let key = match platform {
@@ -212,15 +212,15 @@ fn load_token_from_store(me: &mut CloudSyncPageView, ctx: &mut ViewContext<Cloud
     });
 }
 
-/// 获取当前选中平台对应的 Token（从 OS 密钥库读取）
+/// Gets the token corresponding to the currently selected platform (read from the OS keychain)
 fn current_token(ctx: &AppContext) -> String {
     let platform = *CloudSyncSettings::as_ref(ctx).sync_platform.value();
     token_for_platform(ctx, platform.to_sync_platform())
 }
 
-/// 获取指定 SyncPlatform 对应的 Token,不依赖当前 dropdown 选中状态。
-/// 用于 force_upload 重新捕获场景:必须读取冲突所属 platform 的 token,
-/// 而非用户在冲突期间可能切换到的新 platform。
+/// Gets the token corresponding to the given SyncPlatform, independent of the current dropdown selection.
+/// Used for the force_upload re-capture scenario: must read the token for the platform the conflict belongs to,
+/// not a new platform the user may have switched to during the conflict.
 fn token_for_platform(ctx: &AppContext, platform: SyncPlatform) -> String {
     let key = match platform {
         SyncPlatform::GitHub => GITHUB_TOKEN_KEY,
@@ -233,7 +233,7 @@ fn token_for_platform(ctx: &AppContext, platform: SyncPlatform) -> String {
 }
 
 impl CloudSyncPageView {
-    /// 创建云同步设置页面
+    /// Creates the cloud sync settings page
     pub fn new(ctx: &mut ViewContext<Self>) -> Self {
         let platform_dropdown = ctx.add_typed_action_view(Dropdown::<CloudSyncPageAction>::new);
         platform_dropdown.update(ctx, |dropdown, ctx| {
@@ -297,7 +297,7 @@ impl CloudSyncPageView {
             suppress_auto_upload: 0,
         };
 
-        // 订阅 SSH 树变更事件，用于自动同步上传
+        // Subscribes to SSH tree change events, used for auto-sync upload
         ctx.subscribe_to_model(
             &SshTreeChangedNotifier::handle(ctx),
             move |me: &mut Self, _, event, ctx| {
@@ -306,7 +306,7 @@ impl CloudSyncPageView {
         );
 
         me.refresh_sync_cache();
-        // 启动时自动下载：如果 auto_sync 启用且有有效 token，异步下载
+        // Auto-download on startup: if auto_sync is enabled and a valid token exists, download asynchronously
         {
             let auto_sync_enabled = *CloudSyncSettings::as_ref(ctx).auto_sync.value();
             if auto_sync_enabled {
@@ -322,9 +322,9 @@ impl CloudSyncPageView {
                 if !token.is_empty() {
                     let sync_platform = platform.to_sync_platform();
                     let spawn_token = token.clone();
-                    // 预先保存 conflict_token，与 spawn_download 模式一致
+                    // Pre-save conflict_token, consistent with the spawn_download pattern
                     me.conflict_token = token;
-                    // 设置 Syncing 状态，让 is_syncing 守卫生效，防止并发同步
+                    // Sets the Syncing state so the is_syncing guard takes effect, preventing concurrent syncs
                     me.sync_state = SyncState::Syncing {
                         platform: sync_platform,
                         direction: SyncDirection::Download,
@@ -368,13 +368,13 @@ impl CloudSyncPageView {
                                     ctx.notify();
                                 }
                                 Ok(SyncResult::AlreadyUpToDate { .. }) => {
-                                    // 非冲突结局：恢复 Idle 并清理 conflict_token
+                                    // Non-conflict outcome: restore Idle and clear conflict_token
                                     view.sync_state = SyncState::Idle;
                                     view.conflict_token.clear();
                                     ctx.notify();
                                 }
                                 Err(e) => {
-                                    // 非冲突结局：恢复 Failed 并清理 conflict_token
+                                    // Non-conflict outcome: restore Failed and clear conflict_token
                                     view.sync_state = SyncState::Failed {
                                         message: e.clone(),
                                     };
@@ -393,10 +393,10 @@ impl CloudSyncPageView {
         me
     }
 
-    /// 构造当前应作为 overlay 渲染的模态(冲突 / 下载确认 / 上传确认)。
-    /// 由 CloudSyncPageWidget::render 内的 Stack 用 ParentOffsetBounds::WindowByPosition 居中,
-    /// 必须从本 View 的 render 路径调用,以保证点击事件可路由回 handle_action
-    /// (overlay 由 SettingsView 渲染会丢失 view chain)。
+    /// Constructs the modal that should currently be rendered as an overlay (conflict / download confirmation / upload confirmation).
+    /// Centered by the Stack inside CloudSyncPageWidget::render using ParentOffsetBounds::WindowByPosition,
+    /// must be called from this View's render path to ensure click events can route back to handle_action
+    /// (an overlay rendered by SettingsView would lose the view chain).
     fn build_modal_element(&self, appearance: &Appearance) -> Option<Box<dyn Element>> {
         use crate::ui_components::dialog::{dialog_styles, Dialog};
         if self.conflict_visible {
@@ -528,7 +528,7 @@ impl CloudSyncPageView {
         }
 
         if self.upload_confirm_visible {
-            // 用 Accent(主题主色)而非 Warn(黄色警告色);Force Upload 才用 Warn
+            // Uses Accent (the theme's primary color) rather than Warn (yellow warning color); Warn is only used for Force Upload
             let confirm_button = Container::new(
                 appearance
                     .ui_builder()
@@ -590,7 +590,7 @@ impl CloudSyncPageView {
         None
     }
 
-    /// 刷新同步状态缓存
+    /// Refreshes the sync status cache
     fn refresh_sync_cache(&mut self) {
         self.cached_version = with_conn(|c| Ok(SyncMetaRepository::get_sync_version(c)?))
             .map(|v| v.to_string())
@@ -607,7 +607,7 @@ impl CloudSyncPageView {
             });
     }
 
-    /// 启动上传同步。token 由调用方在弹窗打开时捕获,保证与 platform 配对。
+    /// Starts an upload sync. The token is captured by the caller when the dialog opens, ensuring it's paired with the platform.
     fn spawn_upload(&mut self, platform: SyncPlatform, token: String, ctx: &mut ViewContext<Self>) {
         if token.is_empty() {
             let label = platform.label();
@@ -618,7 +618,7 @@ impl CloudSyncPageView {
             return;
         }
 
-        // 把当前 token 保存为 conflict_token,若上传返回 Conflict → Force Upload 重试时复用
+        // Saves the current token as conflict_token, reused if the upload returns Conflict -> Force Upload retry
         self.conflict_token = token.clone();
 
         self.sync_state = SyncState::Syncing {
@@ -651,7 +651,7 @@ impl CloudSyncPageView {
         );
     }
 
-    /// 启动下载同步。token 由调用方在弹窗打开时捕获。
+    /// Starts a download sync. The token is captured by the caller when the dialog opens.
     fn spawn_download(&mut self, platform: SyncPlatform, spawn_token: String, ctx: &mut ViewContext<Self>) {
         let token = spawn_token;
         if token.is_empty() {
@@ -692,7 +692,7 @@ impl CloudSyncPageView {
         );
     }
 
-    /// 启动强制上传同步（覆盖远程）。token 来自冲突弹出时的快照。
+    /// Starts a forced upload sync (overwrites remote). The token comes from the snapshot taken when the conflict popped up.
     fn spawn_force_upload(&mut self, platform: SyncPlatform, token: String, ctx: &mut ViewContext<Self>) {
         if token.is_empty() {
             let label = platform.label();
@@ -732,7 +732,7 @@ impl CloudSyncPageView {
         );
     }
 
-    /// 处理 SSH 树变更事件 — 自动同步上传的入口
+    /// Handles the SSH tree change event -- the entry point for auto-sync upload
     fn handle_ssh_tree_changed(
         &mut self,
         event: &SshTreeChangedEvent,
@@ -749,7 +749,7 @@ impl CloudSyncPageView {
         }
     }
 
-    /// 防抖自动上传：2 秒延迟后执行
+    /// Debounced auto-upload: executes after a 2-second delay
     fn spawn_auto_upload(&mut self, ctx: &mut ViewContext<Self>) {
         let auto_sync_enabled = *CloudSyncSettings::as_ref(ctx).auto_sync.value();
         if !auto_sync_enabled {
@@ -772,11 +772,11 @@ impl CloudSyncPageView {
             return;
         }
 
-        // 预先保存 conflict_token，若上传返回 Conflict → Force Upload 时复用
-        // （与 spawn_upload 保持一致，遵循 PR #161 review 确立的 token 快照模式）
+        // Pre-save conflict_token, reused if the upload returns Conflict -> Force Upload
+        // (kept consistent with spawn_upload, following the token-snapshot pattern established by PR #161 review)
         self.conflict_token = token.clone();
 
-        // 注意：不在防抖等待期设置 Syncing 状态，避免 2 秒延迟期间阻止手动同步操作
+        // Note: the Syncing state is not set during the debounce wait, to avoid blocking manual sync actions during the 2-second delay
         let spawn_token = token;
         ctx.spawn(
             async move {
@@ -790,7 +790,7 @@ impl CloudSyncPageView {
                     .map_err(|e| e.to_string())
             },
             move |view, result, ctx| {
-                // 上传完成后设置最终状态（成功/冲突/失败由 SyncComplete 统一处理）
+                // Sets the final state after upload completes (success/conflict/failure is handled uniformly by SyncComplete)
                 view.handle_action(
                     &CloudSyncPageAction::SyncComplete {
                         platform,
@@ -833,7 +833,7 @@ impl TypedActionView for CloudSyncPageView {
                 self.sync_state = SyncState::Validating;
                 ctx.notify();
 
-                // 派发时捕获 platform + token,避免异步期间用户切平台导致写错 keychain key
+                // Captures platform + token at dispatch time, avoiding the wrong keychain key being written if the user switches platforms during the async operation
                 let token = value.clone();
                 let captured_token = token.clone();
                 ctx.spawn(
@@ -865,7 +865,7 @@ impl TypedActionView for CloudSyncPageView {
                 match result {
                     Ok(username) => {
                         let username = username.clone();
-                        // 用派发时捕获的 platform / token 写 keychain,而非当前 context
+                        // Writes to the keychain using the platform / token captured at dispatch time, not the current context
                         let key = match platform_setting {
                             SyncPlatformSetting::GitHub => GITHUB_TOKEN_KEY,
                             SyncPlatformSetting::Gitee => GITEE_TOKEN_KEY,
@@ -876,8 +876,8 @@ impl TypedActionView for CloudSyncPageView {
                                 store.set(key, token.clone(), ctx);
                             },
                         );
-                        // 只有当前显示的平台与被验证的平台一致时,才更新 UI 状态;
-                        // 否则用户已切到别的平台,验证结果不应覆盖当前 UI
+                        // Only updates UI state if the currently displayed platform matches the platform being validated;
+                        // otherwise the user has already switched to another platform, and the validation result should not override the current UI
                         if *platform_setting == current_platform {
                             self.has_valid_token = true;
                             self.sync_state = SyncState::TokenValid { username };
@@ -915,7 +915,7 @@ impl TypedActionView for CloudSyncPageView {
                     .value()
                     .to_sync_platform();
                 let token = current_token(ctx);
-                // 早返回:token 为空时直接置 Failed,不弹只能失败的确认框 (PR #161 三轮 review)
+                // Early return: if the token is empty, sets Failed directly without popping up a confirmation dialog that can only fail (PR #161 third review round)
                 if token.is_empty() {
                     let label = platform.label();
                     self.sync_state = SyncState::Failed {
@@ -924,9 +924,9 @@ impl TypedActionView for CloudSyncPageView {
                     ctx.notify();
                     return;
                 }
-                // 上传具备覆盖云端历史的破坏性,与下载对称弹出二次确认。
-                // 在弹窗打开时立刻捕获 token 快照,避免确认期间用户切平台 / ClearToken 导致
-                // spawn_upload 用错凭据 (PR #161 二轮 review)
+                // Uploading is destructive in that it can overwrite cloud history, so it pops up a second confirmation symmetric with download.
+                // Captures a token snapshot immediately when the dialog opens, avoiding the user switching platforms / ClearToken during confirmation causing
+                // spawn_upload to use the wrong credentials (PR #161 second review round)
                 self.upload_confirm_visible = true;
                 self.upload_confirm_platform = platform;
                 self.upload_confirm_token = token;
@@ -965,7 +965,7 @@ impl TypedActionView for CloudSyncPageView {
                             direction,
                             version: *version,
                         };
-                        // 非冲突结局:清掉 conflict_token,避免 PAT 长期驻留在 view 内存
+                        // Non-conflict outcome: clears conflict_token, avoiding the PAT lingering in view memory long-term
                         self.conflict_token.clear();
                         if direction == SyncDirection::Download {
                             self.suppress_auto_upload = 2;
@@ -987,11 +987,11 @@ impl TypedActionView for CloudSyncPageView {
                         self.conflict_local_version = *local_version;
                         self.conflict_remote_version = *remote_version;
                         self.conflict_platform = platform;
-                        // 进入 Conflict 时刷新 conflict_token,避免后续 Force Upload 用空 token:
-                        // - 首次冲突:spawn_upload 已把 token 写入 conflict_token,这里再次覆盖也无害
-                        // - force_upload 又返回 Conflict:之前 mem::take 已清空 conflict_token,
-                        //   必须根据冲突所属 platform 重新捕获(而不是当前 dropdown 平台,
-                        //   用户可能在冲突期间切换;PR #161 四轮 review)
+                        // Refreshes conflict_token on entering Conflict, avoiding a subsequent Force Upload using an empty token:
+                        // - First conflict: spawn_upload has already written the token into conflict_token; overwriting it again here is harmless
+                        // - force_upload returns Conflict again: mem::take previously cleared conflict_token,
+                        //   so it must be re-captured based on the platform the conflict belongs to (rather than the current dropdown
+                        //   platform, since the user may have switched during the conflict; PR #161 fourth review round)
                         if self.conflict_token.is_empty() {
                             self.conflict_token = token_for_platform(ctx, platform);
                         }
@@ -1021,7 +1021,7 @@ impl TypedActionView for CloudSyncPageView {
             CloudSyncPageAction::CancelConflict => {
                 self.conflict_visible = false;
                 self.sync_state = SyncState::Idle;
-                // 与 CancelUploadConfirm / CancelDownloadConfirm 保持对称,清掉残留 PAT
+                // Kept symmetric with CancelUploadConfirm / CancelDownloadConfirm, clearing the leftover PAT
                 self.conflict_token.clear();
                 ctx.notify();
             }
@@ -1110,7 +1110,7 @@ impl SettingsWidget for CloudSyncPageWidget {
     ) -> Box<dyn Element> {
         let theme = appearance.theme();
 
-        // 同步范围说明 — 放在页面顶部,作为首要提示
+        // Sync-scope explanation -- placed at the top of the page as the primary notice
         let mut content = Flex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_child(super::settings_page::render_settings_info_banner(
@@ -1133,7 +1133,7 @@ impl SettingsWidget for CloudSyncPageWidget {
             .finish(),
         );
 
-        // 平台选择 Dropdown
+        // Platform selection Dropdown
         let dropdown_element = warpui::elements::ChildView::new(&view.platform_dropdown).finish();
         content.add_child(render_body_item::<CloudSyncPageAction>(
             crate::t!("settings-cloud-sync-platform-label"),
@@ -1145,7 +1145,7 @@ impl SettingsWidget for CloudSyncPageWidget {
             Some(crate::t!("settings-cloud-sync-platform-description")),
         ));
 
-        // Token 编辑器 — 使用 text_input 组件获得一致的边框和布局约束
+        // Token editor -- uses the text_input component for consistent border and layout constraints
         let editor_element = appearance
             .ui_builder()
             .text_input(view.token_editor.clone())
@@ -1221,7 +1221,7 @@ impl SettingsWidget for CloudSyncPageWidget {
             Some(crate::t!("settings-cloud-sync-token-description")),
         ));
 
-        // 自动同步开关
+        // Auto-sync switch
         let auto_sync_enabled = *CloudSyncSettings::as_ref(_app).auto_sync.value();
         let auto_sync_switch = appearance
             .ui_builder()
@@ -1246,7 +1246,7 @@ impl SettingsWidget for CloudSyncPageWidget {
             Some(crate::t!("settings-cloud-sync-auto-sync-description")),
         ));
 
-        // 同步操作
+        // Sync actions
         content.add_child(
             Container::new(
                 super::settings_page::render_sub_header(
@@ -1303,14 +1303,14 @@ impl SettingsWidget for CloudSyncPageWidget {
             .with_child(Container::new(download_btn).with_margin_left(8.).finish())
             .finish();
 
-        // 与下方版本信息列表保持 12px 间距,避免按钮贴着 本地版本 标签
+        // Keeps 12px spacing from the version info list below, so the button doesn't stick to the "Local version" label
         content.add_child(
             Container::new(buttons_row)
                 .with_margin_bottom(12.)
                 .finish(),
         );
 
-        // 同步状态区域（使用缓存）
+        // Sync status area (uses the cache)
         let version = &view.cached_version;
         let last_sync_time = &view.cached_last_sync_time;
         let last_sync_platform = &view.cached_last_sync_platform;
@@ -1356,7 +1356,7 @@ impl SettingsWidget for CloudSyncPageWidget {
             None,
         ));
 
-        // 同步操作状态（带颜色区分）
+        // Sync action status (color-differentiated)
         let state_color: Option<pathfinder_color::ColorU> = match &view.sync_state {
             SyncState::Idle => None,
             SyncState::Validating => Some(theme.active_ui_text_color().into_solid()),
@@ -1426,9 +1426,9 @@ impl SettingsWidget for CloudSyncPageWidget {
             );
         }
 
-        // 冲突 / 下载确认 / 上传确认弹窗 — 在本 View 的 render 路径构造,
-        // 用 Stack overlay child(WindowByPosition + Center)实现窗口居中,
-        // 同时保证点击事件能路由回 CloudSyncPageView::handle_action。
+        // Conflict / download confirmation / upload confirmation dialog -- constructed in this View's render path,
+        // uses a Stack overlay child (WindowByPosition + Center) to center the window,
+        // while ensuring click events can route back to CloudSyncPageView::handle_action.
         if let Some(modal) = view.build_modal_element(appearance) {
             let mut stack = Stack::new();
             stack.add_child(content.finish());

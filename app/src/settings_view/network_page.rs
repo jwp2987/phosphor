@@ -1,8 +1,9 @@
-//! "Network" 设置页:全局 HTTP 代理配置(见 Issue #72)。
+//! The "Network" settings page: global HTTP proxy configuration (see Issue #72).
 //!
-//! 设计原则:每个输入框始终显示当前已保存值,可直接编辑(包括清空),用旁边的
-//! "保存"按钮提交。密码字段用 `is_password: true` mask 显示。System / Off 模式
-//! 下输入框禁用 + 显示提示;Custom 模式才可编辑。
+//! Design principle: every input box always shows the currently saved value and can be
+//! edited directly (including clearing it), submitted via the adjacent "Save" button.
+//! Password fields are masked using `is_password: true`. In System / Off mode
+//! the input boxes are disabled + show a hint; only Custom mode is editable.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,20 +35,22 @@ use crate::settings::network::{NetworkSettings, ProxyMode};
 use crate::settings::network_secrets::ProxyCredentials;
 use crate::view_components::dropdown::{Dropdown, DropdownItem};
 
-/// System / Off 模式下用于“出网连通”探测的公网 URL。
-/// `generate_204` 对代理友好,无 body,固定返回 204。
+/// The public URL used for "outbound connectivity" detection in System / Off mode.
+/// `generate_204` is proxy-friendly, has no body, and always returns 204.
 const PUBLIC_PROBE_URL: &str = "https://www.google.com/generate_204";
 
-/// 单次测试连接的最长等待时间。
+/// The maximum wait time for a single connection test.
 const TEST_CONNECTION_TIMEOUT_SECS: u64 = 8;
 
-/// 输入框区域(editor + 两个按钮)的最大宽度,与字段标签右侧的槽位约束对齐。
+/// The maximum width of the input box area (editor + two buttons), aligned with the slot
+/// constraint to the right of the field label.
 const INPUT_AREA_MAX_WIDTH: f32 = 420.0;
 
 const BUTTON_PADDING: f32 = 6.0;
 
-/// 从环境变量读取系统代理(跨平台最小集):返回 (https_proxy, http_proxy, no_proxy)。
-/// Windows WinINET / macOS SCDynamicStore 的深入读取留作后续 PR。
+/// Reads the system proxy from environment variables (a minimal cross-platform set):
+/// returns (https_proxy, http_proxy, no_proxy).
+/// Deeper reads via Windows WinINET / macOS SCDynamicStore are left for a follow-up PR.
 fn read_system_proxy_env() -> (String, String, String) {
     fn read(name_upper: &str) -> String {
         std::env::var(name_upper)
@@ -60,11 +63,11 @@ fn read_system_proxy_env() -> (String, String, String) {
 
 #[derive(Debug, Clone)]
 pub enum NetworkPageAction {
-    /// dropdown 选择了某个 ProxyMode 项,持久化到 settings。
+    /// A ProxyMode item was selected in the dropdown; persisted to settings.
     SetProxyMode(ProxyMode),
-    /// 点击 URL 字段的"保存"按钮。
+    /// Clicked the "Save" button on the URL field.
     SaveProxyUrl,
-    /// 点击 URL 字段的"清除"按钮。
+    /// Clicked the "Clear" button on the URL field.
     ClearProxyUrl,
     SaveProxyUsername,
     ClearProxyUsername,
@@ -72,31 +75,33 @@ pub enum NetworkPageAction {
     ClearProxyPassword,
     SaveProxyNoProxy,
     ClearProxyNoProxy,
-    /// 点击“测试连接”按钮。
+    /// Clicked the "Test connection" button.
     TestConnection,
-    /// 测试连接完成。
+    /// The connection test completed.
     TestConnectionResult(TestOutcome),
 }
 
-/// 本次测试选择的探测方式。供结果文案选择合适的描述。
+/// The detection method chosen for this test. Used by the result copy to pick an appropriate description.
 #[derive(Debug, Clone, Copy)]
 enum TestKind {
-    /// TCP 探测代理 host:port(验证代理本身可达,适合企业内网 / VPN 代理)。
-    /// 用于 Custom 模式与能从环境变量探测到系统代理的 System 模式。
+    /// Probes the proxy host:port over TCP (verifies the proxy itself is reachable; suitable for
+    /// corporate intranet / VPN proxies).
+    /// Used for Custom mode and for System mode when a system proxy can be detected from
+    /// environment variables.
     Tcp,
-    /// HTTP GET 公网探测 URL。仅用于 Off 模式 或 System 模式但未能探测
-    /// 到系统代理时的退化。
+    /// HTTP GET probe of a public URL. Only used in Off mode, or as a fallback in System mode
+    /// when the system proxy could not be detected.
     Http,
 }
 
-/// 测试结果(从 async 任务返回给 main 线程的 handle_action)。
+/// The test result (returned from the async task to the main thread's handle_action).
 #[derive(Debug, Clone)]
 pub struct TestOutcome {
     kind: TestKind,
     result: Result<u128, String>,
 }
 
-/// 测试连接的当前状态。
+/// The current state of the connection test.
 #[derive(Debug, Clone, Default)]
 enum TestState {
     #[default]
@@ -114,14 +119,14 @@ enum TestState {
 
 pub struct NetworkPageView {
     page: PageType<Self>,
-    /// 代理模式下拉。
+    /// The proxy-mode dropdown.
     mode_dropdown: ViewHandle<Dropdown<NetworkPageAction>>,
-    /// 各字段的 editor(密码字段开了 `is_password` mask)。
+    /// The editor for each field (the password field has the `is_password` mask enabled).
     url_editor: ViewHandle<EditorView>,
     username_editor: ViewHandle<EditorView>,
     password_editor: ViewHandle<EditorView>,
     no_proxy_editor: ViewHandle<EditorView>,
-    /// 每个字段对应的两个按钮(保存 + 清除)的 mouse state。
+    /// Mouse state for each field's two buttons (Save + Clear).
     url_save_state: MouseStateHandle,
     url_clear_state: MouseStateHandle,
     username_save_state: MouseStateHandle,
@@ -130,7 +135,7 @@ pub struct NetworkPageView {
     password_clear_state: MouseStateHandle,
     no_proxy_save_state: MouseStateHandle,
     no_proxy_clear_state: MouseStateHandle,
-    /// 测试连接按钮的 mouse state 与状态。
+    /// Mouse state and status for the test-connection button.
     test_button_state: MouseStateHandle,
     test_state: TestState,
 }
@@ -176,8 +181,9 @@ impl NetworkPageView {
             crate::t!("settings-network-no-proxy-placeholder"),
         );
 
-        // 订阅 settings / credentials 变更 — 任何字段或 mode 外部变更后,
-        // 把最新值灌回各 editor 的 buffer,并同步 dropdown 选项。
+        // Subscribes to settings / credentials changes -- whenever a field or the mode
+        // changes externally, pushes the latest values back into each editor's buffer, and
+        // syncs the dropdown's options.
         ctx.subscribe_to_model(
             &NetworkSettings::handle(ctx),
             |me: &mut Self, _, _event, ctx| {
@@ -212,13 +218,13 @@ impl NetworkPageView {
             test_state: TestState::Idle,
         };
 
-        // 初始同步一次,让 dropdown 与各 editor 显示当前已保存值。
+        // Does an initial sync so the dropdown and each editor show the currently saved values.
         Self::sync_all_from_settings(&mut me, ctx);
         Self::sync_password_from_credentials(&mut me, ctx);
         me
     }
 
-    /// 把当前 NetworkSettings 的值灌进 dropdown 与三个非密码 editor。
+    /// Pushes the current NetworkSettings values into the dropdown and the three non-password editors.
     fn sync_all_from_settings(me: &mut Self, ctx: &mut ViewContext<Self>) {
         let net = NetworkSettings::as_ref(ctx);
         let mode = *net.proxy_mode.value();
@@ -226,7 +232,7 @@ impl NetworkPageView {
         let username = net.proxy_username.value().clone();
         let no_proxy = net.proxy_no_proxy.value().clone();
 
-        // dropdown 选项跟随 mode。
+        // The dropdown's options follow the mode.
         let label: String = match mode {
             ProxyMode::Off => crate::t!("settings-network-mode-off"),
             ProxyMode::System => crate::t!("settings-network-mode-system"),
@@ -236,13 +242,14 @@ impl NetworkPageView {
             dropdown.set_selected_by_name(label, ctx);
         });
 
-        // editor buffer 跟随 setting 值;同时按 mode 切换 InteractionState。
+        // The editor buffer follows the setting value; also switches InteractionState by mode.
         let editable = matches!(mode, ProxyMode::Custom);
         set_editor_text_and_state(&me.url_editor, &url, editable, ctx);
         set_editor_text_and_state(&me.username_editor, &username, editable, ctx);
         set_editor_text_and_state(&me.no_proxy_editor, &no_proxy, editable, ctx);
 
-        // 密码也跟随 mode 切换交互态(buffer 由 ProxyCredentials 订阅单独刷)。
+        // The password also switches interaction state by mode (its buffer is refreshed
+        // separately by the ProxyCredentials subscription).
         me.password_editor.update(ctx, |editor, ctx| {
             editor.set_interaction_state(
                 if editable {
@@ -255,7 +262,7 @@ impl NetworkPageView {
         });
     }
 
-    /// 把当前密码灌进 password editor(由 ProxyCredentials 单独管理)。
+    /// Pushes the current password into the password editor (managed separately by ProxyCredentials).
     fn sync_password_from_credentials(me: &mut Self, ctx: &mut ViewContext<Self>) {
         let pw = ProxyCredentials::as_ref(ctx).password().to_string();
         me.password_editor.update(ctx, |editor, ctx| {
@@ -336,9 +343,10 @@ impl TypedActionView for NetworkPageView {
                 self.test_state = TestState::Running;
                 ctx.notify();
 
-                // 根据当前 mode 决定测试策略:
-                //   Custom → TCP 探测代理 host:port (代理连通性,与出网无关,适合企业内网代理)
-                //   System / Off → HTTP GET 公网探测 URL (出网连通性)
+                // Decides the test strategy based on the current mode:
+                //   Custom -> probes the proxy host:port over TCP (proxy connectivity, unrelated
+                //   to outbound access, suitable for corporate intranet proxies)
+                //   System / Off -> HTTP GET probe of a public URL (outbound connectivity)
                 let mode = *NetworkSettings::as_ref(ctx).proxy_mode.value();
                 let proxy_url = NetworkSettings::as_ref(ctx).proxy_url.value().clone();
                 spawn_test_connection(self, mode, proxy_url, ctx);
@@ -398,7 +406,8 @@ impl From<ViewHandle<NetworkPageView>> for SettingsPageViewHandle {
     }
 }
 
-/// 根据模式选择探测方式,spawn 到后台运行,结果通过 action 回到主线程。
+/// Chooses the detection method based on mode, spawns it to run in the background, and
+/// returns the result to the main thread via an action.
 fn spawn_test_connection(
     _view: &NetworkPageView,
     mode: ProxyMode,
@@ -409,7 +418,7 @@ fn spawn_test_connection(
 
     match mode {
         ProxyMode::Custom => {
-            // 用户填的代理:解析后 TCP 探测 host:port。
+            // The user-filled proxy: after parsing, probes host:port over TCP.
             let Some((host, port)) = parse_host_port(&proxy_url) else {
                 ctx.spawn(
                     async move {
@@ -427,9 +436,10 @@ fn spawn_test_connection(
             spawn_tcp_probe(host, port, timeout, ctx);
         }
         ProxyMode::System => {
-            // 优先从环境变量读系统代理(跨平台的最小集),能读到则走 TCP
-            // 探测;读不到(macOS SCDynamicStore / Windows WinINET 仅 reqwest 内部
-            // 使用)则退化 HTTP 探测公网。
+            // Prefers reading the system proxy from environment variables (a minimal
+            // cross-platform set); if that succeeds, does a TCP probe; if not (macOS
+            // SCDynamicStore / Windows WinINET are only used internally by reqwest),
+            // falls back to an HTTP probe of a public URL.
             let (sys_https, sys_http, _) = read_system_proxy_env();
             let sys_proxy = if !sys_https.is_empty() {
                 sys_https
@@ -443,13 +453,13 @@ fn spawn_test_connection(
             }
         }
         ProxyMode::Off => {
-            // Off 模式没有代理可测,测一下“直连出网”可不可。
+            // Off mode has no proxy to test, so it tests whether a "direct outbound connection" works.
             spawn_http_probe(timeout, ctx);
         }
     }
 }
 
-/// 同步 TCP 探测逻辑抽出为 helper,顺便可重用 Custom 与 System 两路。
+/// The synchronous TCP-probe logic factored out as a helper, reusable by both the Custom and System paths.
 fn spawn_tcp_probe(
     host: String,
     port: u16,
@@ -477,7 +487,7 @@ fn spawn_tcp_probe(
     );
 }
 
-/// HTTP 探测逻辑(走 reqwest 全局代理设置)。仅用于 Off 或 System 退化场景。
+/// The HTTP probe logic (goes through reqwest's global proxy settings). Only used for Off, or as a System fallback.
 fn spawn_http_probe(timeout: Duration, ctx: &mut ViewContext<NetworkPageView>) {
     let client = Arc::new(http_client::Client::new());
     let target = PUBLIC_PROBE_URL.to_string();
@@ -505,19 +515,20 @@ fn spawn_http_probe(timeout: Duration, ctx: &mut ViewContext<NetworkPageView>) {
     );
 }
 
-/// 从一个“粗略”代理 URL 中抽取 host + port。
-/// 支持以下输入:
+/// Extracts host + port from a "rough" proxy URL.
+/// Supports the following inputs:
 ///   - `http://host:port`
 ///   - `https://host:port`
 ///   - `socks5://host:port`
-///   - `host:port`(无 scheme)
-/// 返回 `None` 表示无法解析。
+///   - `host:port` (no scheme)
+/// Returns `None` if it cannot be parsed.
 fn parse_host_port(raw: &str) -> Option<(String, u16)> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    // 如果有 scheme,先走 url::Url 解析;否则补上 `http://` 再解析。
+    // If there's a scheme, first try parsing with url::Url; otherwise prepend `http://` and
+    // parse.
     let normalized: String = if trimmed.contains("://") {
         trimmed.to_string()
     } else {
@@ -529,7 +540,7 @@ fn parse_host_port(raw: &str) -> Option<(String, u16)> {
     Some((host, port))
 }
 
-/// 构造单行 EditorView,可选 password mask。
+/// Constructs a single-line EditorView, with an optional password mask.
 fn build_text_editor(
     ctx: &mut ViewContext<NetworkPageView>,
     is_password: bool,
@@ -551,9 +562,9 @@ fn build_text_editor(
     })
 }
 
-/// 把当前值写入 editor buffer,并按 `editable` 切换 InteractionState。
-/// 注意:`set_buffer_text` 会重置光标,不该在用户聚焦编辑时调用 —— 本函数仅
-/// 在 settings 外部变更时使用。
+/// Writes the current value into the editor buffer, and switches InteractionState per `editable`.
+/// Note: `set_buffer_text` resets the cursor, and should not be called while the user is
+/// focused editing -- this function is only used when settings change externally.
 fn set_editor_text_and_state(
     editor: &ViewHandle<EditorView>,
     value: &str,
@@ -561,7 +572,7 @@ fn set_editor_text_and_state(
     ctx: &mut ViewContext<NetworkPageView>,
 ) {
     editor.update(ctx, |editor, ctx| {
-        // 若 buffer 已经等于目标值,跳过 set 以避免不必要的 cursor 重置。
+        // Skips the set if the buffer already equals the target value, to avoid an unnecessary cursor reset.
         if editor.buffer_text(ctx) != value {
             editor.set_buffer_text(value, ctx);
         }
@@ -592,8 +603,9 @@ impl SettingsWidget for NetworkPageWidget {
         appearance: &Appearance,
         _app: &AppContext,
     ) -> Box<dyn Element> {
-        // 注: SettingsWidget::render 传入的 `_app` 是渲染时的 AppContext;读当前 mode
-        // 需要用到。这里暂不改参数名以避免全文修改,下文直接用 `_app`。
+        // Note: the `_app` passed into SettingsWidget::render is the AppContext at render
+        // time; it's needed to read the current mode. The parameter name is left as-is here
+        // to avoid a file-wide rename; `_app` is used directly below.
         let page_title = crate::t!("settings-network-page-title");
         let header = crate::t!("settings-network-header");
         let description = crate::t!("settings-network-description");
@@ -607,7 +619,7 @@ impl SettingsWidget for NetworkPageWidget {
                 description,
             ));
 
-        // 1. 模式 dropdown — 始终 enabled
+        // 1. Mode dropdown -- always enabled
         content.add_child(render_body_item::<NetworkPageAction>(
             crate::t!("settings-network-mode-label"),
             None::<AdditionalInfo<NetworkPageAction>>,
@@ -618,7 +630,7 @@ impl SettingsWidget for NetworkPageWidget {
             Some(crate::t!("settings-network-mode-description")),
         ));
 
-        // 字段渲染辅助:一个 editor + 保存按钮 + 清除按钮,统一宽度对齐。
+        // Field-render helper: an editor + Save button + Clear button, uniformly width-aligned.
         let render_field = |label: String,
                             description: String,
                             editor: &ViewHandle<EditorView>,
@@ -628,11 +640,13 @@ impl SettingsWidget for NetworkPageWidget {
                             clear_action: NetworkPageAction|
          -> Box<dyn Element> {
             let editor_element = warpui::elements::ChildView::new(editor).finish();
-            // 注意:不要把 `margin` 写进 button 的 `UiComponentStyles`。
-            // `WrappableText::build()`(`Span::new(text, styles).build()` 内部)
-            // 会把同一份 `styles.margin` 应用到 label 容器上,导致按钮**内部**
-            // label 也被左推同样的距离,视觉表现为「文字偏右」。
-            // 这里改用外层 Container 设置按钮与编辑器/相邻按钮的水平间距。
+            // Note: don't put `margin` into the button's `UiComponentStyles`.
+            // Inside `WrappableText::build()` (`Span::new(text, styles).build()`),
+            // the same `styles.margin` gets applied to the label container too, causing the
+            // label **inside** the button to also get pushed left by the same amount, which
+            // visually looks like "text shifted right".
+            // Here, an outer Container is used instead to set the horizontal spacing between
+            // the button and the editor/adjacent button.
             let save_button = Container::new(
                 appearance
                     .ui_builder()
@@ -675,8 +689,9 @@ impl SettingsWidget for NetworkPageWidget {
                     .with_main_axis_size(MainAxisSize::Min)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_child(
-                        // editor 占据剩余空间,放进一个有限宽度的容器里(避免内部 flex 在
-                        // 无限约束下出问题)。
+                        // The editor takes up the remaining space, placed inside a
+                        // finite-width container (avoiding issues with internal flex under
+                        // unbounded constraints).
                         ConstrainedBox::new(editor_element)
                             .with_max_width(INPUT_AREA_MAX_WIDTH - 120.0)
                             .finish(),
@@ -710,7 +725,7 @@ impl SettingsWidget for NetworkPageWidget {
             NetworkPageAction::ClearProxyUrl,
         ));
 
-        // 3. 用户名
+        // 3. Username
         content.add_child(render_field(
             crate::t!("settings-network-username-label"),
             crate::t!("settings-network-username-description"),
@@ -721,7 +736,7 @@ impl SettingsWidget for NetworkPageWidget {
             NetworkPageAction::ClearProxyUsername,
         ));
 
-        // 4. 密码
+        // 4. Password
         content.add_child(render_field(
             crate::t!("settings-network-password-label"),
             crate::t!("settings-network-password-description"),
@@ -743,7 +758,7 @@ impl SettingsWidget for NetworkPageWidget {
             NetworkPageAction::ClearProxyNoProxy,
         ));
 
-        // 6. 测试连接 — 与上面保存按钮同款样式。
+        // 6. Test connection -- same style as the Save button above.
         let mut test_button = appearance
             .ui_builder()
             .button(ButtonVariant::Accent, view.test_button_state.clone())
@@ -761,7 +776,8 @@ impl SettingsWidget for NetworkPageWidget {
             test_button = test_button.disable();
         }
 
-        // Idle 提示文案需要与当前模式匹配:Custom 测代理连通性,System/Off 测出网连通性。
+        // The Idle hint copy needs to match the current mode: Custom tests proxy connectivity,
+        // System/Off tests outbound connectivity.
         let mode = *NetworkSettings::as_ref(_app).proxy_mode.value();
         let result_text: String = match &view.test_state {
             TestState::Idle => match mode {
@@ -799,8 +815,9 @@ impl SettingsWidget for NetworkPageWidget {
         .with_style(Properties::default().weight(Weight::Normal))
         .finish();
 
-        // 外层用 Align(left)包裹,防止父级 Flex 在 cross-axis 上 stretch 把按钮拉高;
-        // 内层 Flex::row 带 MainAxisSize::Min,只占据实际安全需要的宽度。
+        // Wraps the outer layer in Align(left) to prevent the parent Flex from stretching the
+        // button taller on the cross-axis;
+        // the inner Flex::row uses MainAxisSize::Min, taking up only the width actually needed.
         content.add_child(
             Container::new(
                 Align::new(

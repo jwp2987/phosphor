@@ -17,23 +17,25 @@ git-fetch-with-cli = true
 [target.'cfg(target_family = "wasm")']
 rustflags = ["--cfg=web_sys_unstable_apis"]
 
-# 本机开发用 mold 链接器,大幅加快大型 debug 二进制(如 zap-tui-oss)的链接。
-# target 专属 rustflags 会整体覆盖 [build].rustflags,所以这里保留通用的
-# symbol-mangling 设置,并去掉 [build] 里 macOS 专用的
-# `-headerpad_max_install_names`(在 Linux 上无意义)。
-# 需要先安装 mold 并确保在 PATH 中,否则链接会失败:
-#   sudo apt-get install -y mold      # 或把预编译 mold 解到 ~/.local
-# gcc 12+ / clang 均支持 `-fuse-ld=mold`。
+# Local dev uses the mold linker, which greatly speeds up linking large debug
+# binaries (e.g. zap-tui-oss). Target-specific rustflags fully override
+# [build].rustflags, so we keep the general symbol-mangling setting here and
+# drop the macOS-only `-headerpad_max_install_names` from [build] (meaningless
+# on Linux).
+# You need mold installed and on PATH first, otherwise linking will fail:
+#   sudo apt-get install -y mold      # or unpack a prebuilt mold to ~/.local
+# gcc 12+ / clang both support `-fuse-ld=mold`.
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "symbol-mangling-version=v0", "-C", "link-arg=-fuse-ld=mold"]
 
-# 静态 musl 构建(CLI / remote-server tarball)。
-# `[build].rustflags` 里的 `-Wl,-headerpad_max_install_names` 是 macOS
-# 专用 linker flag,会让 musl-gcc 报错;target-specific rustflags 会整体
-# 覆盖 `[build].rustflags`,所以这里只保留通用的 symbol-mangling 设置,
-# 并显式开启 crt-static 产出完全静态、不依赖宿主 libc 的二进制。
-# linker 默认走 `cc`(在 CI 上由 musl-tools 提供 `musl-gcc`);
-# 需要时可用 CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER 覆盖
-# (见 script/deploy_remote_server)。
+# Static musl build (CLI / remote-server tarball).
+# The `-Wl,-headerpad_max_install_names` in `[build].rustflags` is a
+# macOS-only linker flag that makes musl-gcc error out; target-specific
+# rustflags fully override `[build].rustflags`, so we only keep the general
+# symbol-mangling setting here and explicitly enable crt-static to produce a
+# fully static binary with no dependency on the host libc.
+# The linker defaults to `cc` (on CI, musl-tools provides `musl-gcc`);
+# override with CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER if needed
+# (see script/deploy_remote_server).
 [target.x86_64-unknown-linux-musl]
 rustflags = ["-C", "symbol-mangling-version=v0", "-C", "target-feature=+crt-static"]

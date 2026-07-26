@@ -5,10 +5,12 @@
 //! (version parsing, family classification) can evolve independently
 //! from the rest of [`crate::setup`].
 //!
-//! 注意:remote-server 二进制现在是静态 musl 链接(见 `preinstall_check.sh`),
-//! 不依赖宿主 libc。这里解析出的 libc family / version 已不再用于安装门禁,
-//! 仅作为遥测/诊断信息保留。`RemoteLibc` 与 `GlibcVersion` 继续被
-//! [`crate::setup::PreinstallCheckResult`] 和 `UnsupportedReason` 使用。
+//! Note: the remote-server binary is now statically linked against musl (see
+//! `preinstall_check.sh`) and doesn't depend on the host libc. The libc
+//! family / version parsed here is no longer used as an install gate, and is
+//! only kept as telemetry/diagnostic information. `RemoteLibc` and
+//! `GlibcVersion` continue to be used by [`crate::setup::PreinstallCheckResult`]
+//! and `UnsupportedReason`.
 
 use std::fmt;
 

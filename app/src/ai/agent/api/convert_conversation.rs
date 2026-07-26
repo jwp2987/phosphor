@@ -56,15 +56,18 @@ pub(crate) fn convert_input_context(context: Option<&api::InputContext>) -> Arc<
     for executed_shell_command in &context.executed_shell_commands {
         if !executed_shell_command.command.is_empty() {
             result.push(AIAgentContext::Block(Box::new(BlockContext {
-                // command_id 是持久化过来的(见 `convert_to.rs` 的
+                // command_id was carried over from persistence (see `convert_to.rs`'s
                 // `impl From<BlockContext> for api::ExecutedShellCommand`,
-                // `command_id: block.id.into()`),必须还原而不是丢成默认值。
+                // `command_id: block.id.into()`), and must be restored rather than
+                // dropped to a default value.
                 //
-                // `user_context::render_block` 会把它渲染成
-                // `<executed_shell_command command_id="...">`。以前这里填默认值,
-                // 导致同一条 user message 在"发出那一轮"和"作为历史回放"时渲染出
-                // 不同的 command_id —— 消息内容逐轮变化,prompt cache 在那条消息上
-                // 失配。还原 id 后,live 与 replay 的渲染结果逐字节一致。
+                // `user_context::render_block` renders it into
+                // `<executed_shell_command command_id="...">`. Previously this was filled
+                // with a default value, causing the same user message to render a
+                // different command_id "when first sent" versus "replayed as history" —
+                // the message content changed turn to turn, causing a prompt cache
+                // mismatch on that message. After restoring the id, the live and replay
+                // renderings are byte-for-byte identical.
                 id: BlockId::from(executed_shell_command.command_id.clone()),
                 index: BlockIndex::from(0),
                 command: executed_shell_command.command.clone(),
@@ -597,7 +600,7 @@ pub(crate) fn convert_tool_call_result_to_input(
             })
         }
         Some(ToolCallResultType::UploadFileArtifact(_)) => {
-            // Upload artifact 已物理切除,云端 result 直接丢弃
+            // Upload artifact has been physically removed; the cloud result is simply discarded
             let _ = tool_call_id;
             let _ = task_id;
             let _ = context;
@@ -1185,11 +1188,11 @@ pub(crate) fn convert_tool_call_result_to_input(
         }
         Some(ToolCallResultType::UseComputer(_))
         | Some(ToolCallResultType::RequestComputerUseResult(_)) => {
-            // Computer Use 已被移除,历史记录中遇到这两类 result 直接忽略。
+            // Computer Use has been removed; these two result types are simply ignored when encountered in history.
             None
         }
         Some(ToolCallResultType::FetchConversation(_)) => {
-            // 云端工具已物理切除
+            // Cloud tool has been physically removed
             None
         }
         Some(ToolCallResultType::Server(_)) => {
@@ -1203,7 +1206,7 @@ pub(crate) fn convert_tool_call_result_to_input(
         }
         Some(ToolCallResultType::Subagent(_)) => None,
         Some(ToolCallResultType::StartAgent(_)) | Some(ToolCallResultType::StartAgentV2(_)) => {
-            // 云端工具已物理切除
+            // Cloud tool has been physically removed
             None
         }
         Some(ToolCallResultType::AskUserQuestion(result)) => {
@@ -1246,7 +1249,7 @@ pub(crate) fn convert_tool_call_result_to_input(
             })
         }
         Some(ToolCallResultType::SendMessageToAgent(_)) => {
-            // 云端工具已物理切除
+            // Cloud tool has been physically removed
             None
         }
         // Deprecated/unused result types.
@@ -1331,7 +1334,7 @@ fn create_cancelled_result_for_tool_call(
             )
         }
         ToolType::UseComputer(_) | ToolType::RequestComputerUse(_) => {
-            // Computer Use 已被移除,转换路径不应再被命中。
+            // Computer Use has been removed; this conversion path should no longer be hit.
             return None;
         }
         ToolType::FetchConversation(_) => return None,

@@ -145,13 +145,13 @@ use crate::pane_group::{
 use crate::quit_warning::UnsavedStateSummary;
 use crate::search::command_palette::view::NavigationMode;
 use crate::search::slash_command_menu::static_commands::commands;
-// Zap Wave 3-1:`AuthClient` trait 随 server_api/auth.rs 一同物理删。
+// Zap Wave 3-1: the `AuthClient` trait was physically removed together with server_api/auth.rs.
 use crate::settings::{
     AISettings, AISettingsChangedEvent, CodeSettings, CodeSettingsChangedEvent, CtrlTabBehavior,
     DefaultSessionMode, InputModeSettings,
 };
-// Zap Wave 7-3:`environments_page::EnvironmentsPage` import 随 ambient-agent UI
-// 子系统物理删。
+// Zap Wave 7-3: the `environments_page::EnvironmentsPage` import was
+// physically removed along with the ambient-agent UI subsystem.
 use crate::settings_view::pane_manager::SettingsPaneManager;
 use crate::settings_view::{SettingsSection, SettingsView, SettingsViewEvent};
 #[cfg(all(target_os = "windows", feature = "local_tty"))]
@@ -177,7 +177,7 @@ use repo_metadata::RemoteRepositoryIdentifier;
 #[cfg(target_family = "wasm")]
 use url::Url;
 
-// Zap:删除 SharedObjectsCreationDeniedModal(云端 Drive 配额拒绝弹窗)
+// Zap: removed SharedObjectsCreationDeniedModal (cloud Drive quota-denial modal)
 
 #[cfg(target_family = "wasm")]
 use crate::wasm_nux_dialog::WasmNUXDialog;
@@ -635,7 +635,7 @@ pub enum WorkspaceBanner {
     UnableToUpdateToNewVersion,
     /// to display the AutoupdateStage::UnableToLaunchNewVersion
     UnableToLaunchNewVersion,
-    // 去中心化分支:`Reauth` banner 已删除。
+    // Decentralized branch: the `Reauth` banner has been removed.
     // to display an anonymous user has X days left to sign in
     AnonymousUserAuth,
     /// to display when recovering from a crash that may have been due to use
@@ -656,7 +656,7 @@ impl WorkspaceBanner {
             Self::UnableToLaunchNewVersion => true,
             Self::VersionDeprecated => false,
             Self::AnonymousUserAuth => false,
-            // 去中心化分支:`Reauth` 已删除。
+            // Decentralized branch: `Reauth` has been removed.
             #[cfg(target_os = "linux")]
             Self::WaylandCrashRecovery => true,
             Self::InvalidSettings => true,
@@ -945,10 +945,12 @@ pub struct Workspace {
     toast_stack: ViewHandle<DismissibleToastStack<WorkspaceAction>>,
     agent_toast_stack: ViewHandle<AgentToastStack>,
     update_toast_stack: ViewHandle<DismissibleToastStack<WorkspaceAction>>,
-    /// 通知中心信箱(标题栏右上角 Inbox 按钮的下拉浮层)。
-    /// 仅在 `HOANotifications` feature flag 开启时实例化。
+    /// The notification center mailbox (the dropdown overlay from the Inbox
+    /// button in the top-right of the title bar).
+    /// Only instantiated when the `HOANotifications` feature flag is enabled.
     notification_mailbox_view: Option<ViewHandle<NotificationMailboxView>>,
-    /// 通知 toast 堆(右下角悬浮)。同上 gate 在 `HOANotifications`。
+    /// The notification toast stack (floating in the bottom-right). Gated by
+    /// the same `HOANotifications` flag as above.
     notification_toast_stack: Option<ViewHandle<AgentNotificationToastStack>>,
     /// We need to render some dynamic keybindings for our tooltips. These cannot be looked up in the
     /// render method, so look them up when the view is constructed and cache them here. Note that they
@@ -2647,7 +2649,7 @@ impl Workspace {
             me.handle_cli_agent_sessions_event(event, ctx);
         });
 
-        // CLI agent 安装扫描完成后刷新 UI（新 tab 菜单、标题栏按钮等）
+        // Refresh the UI (new-tab menu, title bar buttons, etc.) once the CLI agent install scan completes
         ctx.subscribe_to_model(
             &CLIAgentInstallModel::handle(ctx),
             |_, _, CLIAgentInstallEvent::ScanComplete, ctx| {
@@ -2737,7 +2739,7 @@ impl Workspace {
         let agent_toast_stack =
             ctx.add_typed_action_view(|ctx| AgentToastStack::new(Duration::from_secs(4), ctx));
 
-        // 通知中心 mailbox + toast(只在 HOANotifications feature flag 开启时实例化)。
+        // Notification center mailbox + toast (only instantiated when the HOANotifications feature flag is enabled).
         let notification_mailbox_view = if FeatureFlag::HOANotifications.is_enabled() {
             let view = ctx.add_typed_action_view(NotificationMailboxView::new);
             ctx.subscribe_to_view(&view, move |me, _, event, ctx| match event {
@@ -2778,7 +2780,7 @@ impl Workspace {
             None
         };
 
-        // 订阅通知 model 事件,以便标题栏 Inbox 按钮上的未读小红点及时刷新。
+        // Subscribe to notification model events so the unread dot on the title bar's Inbox button refreshes promptly.
         if FeatureFlag::HOANotifications.is_enabled() {
             ctx.subscribe_to_model(&NotificationsModel::handle(ctx), |_, _, _event, ctx| {
                 ctx.notify()
@@ -2851,7 +2853,7 @@ impl Workspace {
         });
 
         let native_modal = Self::build_native_modal_view(ctx);
-        // Zap:删除 SharedObjectsCreationDeniedModal 注册(云端 Drive 配额拒绝弹窗)
+        // Zap: removed the SharedObjectsCreationDeniedModal registration (cloud Drive quota-denial modal)
 
         ctx.subscribe_to_model(&AISettings::handle(ctx), |me, _, event, ctx| match event {
             AISettingsChangedEvent::IsAnyAIEnabled { .. }
@@ -3723,7 +3725,7 @@ impl Workspace {
         }
     }
 
-    /// 兼容旧的 server token 入口:仅打开本地已经恢复过的 conversation。
+    /// Compatibility shim for the old server-token entry point: only opens a conversation that has already been restored locally.
     pub fn open_cloud_conversation_from_server_token(
         &mut self,
         server_token: ServerConversationToken,
@@ -3937,7 +3939,7 @@ impl Workspace {
         });
     }
 
-    /// 新建默认终端标签页，然后执行指定 CLI agent 的启动命令。
+    /// Creates a new default terminal tab, then runs the launch command for the given CLI agent.
     fn add_tab_with_specific_agent(&mut self, agent: CLIAgent, ctx: &mut ViewContext<Self>) {
         self.add_terminal_tab(false, ctx);
         self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
@@ -5271,8 +5273,8 @@ impl Workspace {
                 self.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
             }
             FileTarget::ImageViewer(_layout) => {
-                // 图片始终在新标签页打开,见 `insert_image_pane`。target 携带的
-                // layout 在此被故意忽略。
+                // Images always open in a new tab, see `insert_image_pane`.
+                // The layout carried by `target` is intentionally ignored here.
                 self.open_image(path.clone(), self.get_active_session(ctx), ctx);
             }
             FileTarget::ExternalEditor(editor) => {
@@ -5417,9 +5419,10 @@ impl Workspace {
         }
     }
 
-    /// 在中央区域打开给定 SSH 节点的编辑 pane。MVP 实现:**每次都开新
-    /// pane**(暂未做去重 / find_pane);Phase 2 起加 manager singleton 做
-    /// dedupe + 切窗口聚焦。
+    /// Opens an editing pane for the given SSH node in the central area. MVP
+    /// implementation: **always opens a new pane** (dedup / find_pane isn't
+    /// done yet); starting in Phase 2 a manager singleton will add dedupe +
+    /// cross-window focus.
     pub fn open_ssh_server(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
         use crate::pane_group::pane::ssh_server_pane::SshServerPane;
         self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
@@ -5435,7 +5438,7 @@ impl Workspace {
         });
     }
 
-    /// 在中央区域打开给定 SSH 节点的 SFTP 文件浏览器 pane。
+    /// Opens the SFTP file browser pane for the given SSH node in the central area.
     pub fn open_sftp_pane(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
         use crate::pane_group::pane::sftp_pane::SftpPane;
         self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
@@ -5451,16 +5454,18 @@ impl Workspace {
         });
     }
 
-    /// 在远端文件树里点击一个文件后,以 buffer-sync 协议打开它。
+    /// Opens a file via the buffer-sync protocol after it's clicked in the remote file tree.
     ///
-    /// 远端文件与本地文件统一走 [`Self::open_code`] / `CodePane` / `CodeView`:
-    /// 这样它就和本地文件一样遵守 `open_file_layout`(新 tab / 分屏)以及多文件
-    /// 分组开关(多个远端文件并入同一个代码编辑器 pane 的内部 tab)。
+    /// Remote and local files both go through [`Self::open_code`] /
+    /// `CodePane` / `CodeView` uniformly: this way remote files follow
+    /// `open_file_layout` (new tab / split) and the multi-file grouping
+    /// toggle (multiple remote files merged into internal tabs of the same
+    /// code editor pane) just like local files.
     ///
-    /// buffer 内容仍由 `GlobalBufferModel` 的 `BufferLocation::Remote` 路径打开
-    /// (向 daemon 发 `OpenBuffer`,后续 `BufferEdit` / `BufferUpdatedPush` 同步),
-    /// 这一段由 `LocalCodeEditorView::new_with_remote_buffer` 在 `CodeView` 内部
-    /// 完成。
+    /// The buffer content is still opened via `GlobalBufferModel`'s
+    /// `BufferLocation::Remote` path (sending `OpenBuffer` to the daemon,
+    /// then syncing via `BufferEdit` / `BufferUpdatedPush`); that part is
+    /// handled by `LocalCodeEditorView::new_with_remote_buffer` inside `CodeView`.
     #[cfg(feature = "local_tty")]
     pub fn open_remote_file(
         &mut self,
@@ -5470,8 +5475,8 @@ impl Workspace {
         self.open_remote_file_with_target(remote_path, None, ctx);
     }
 
-    /// 与 [`Self::open_remote_file`] 相同,但可携带 `line_col`(行:列跳转)。
-    /// 终端里 Ctrl/Cmd+点击远端文件路径时使用,把行号一路透传给 `open_code`。
+    /// Same as [`Self::open_remote_file`], but can carry a `line_col` (line:column jump).
+    /// Used when Ctrl/Cmd+clicking a remote file path in the terminal, passing the line number all the way through to `open_code`.
     #[cfg(feature = "local_tty")]
     pub fn open_remote_file_with_target(
         &mut self,
@@ -5496,18 +5501,22 @@ impl Workspace {
         );
     }
 
-    /// 在当前 tab 开新 terminal pane,自动跑 `ssh ...` 命令,并 spawn 一个
-    /// SecretInjector 监听 PTY 输出,在出现 `password:` / `passphrase:` 提示时
-    /// 自动注入 keychain 里的 secret。
+    /// Opens a new terminal pane in the current tab, automatically runs
+    /// `ssh ...`, and spawns a SecretInjector that watches the PTY output and
+    /// auto-injects the secret from the keychain when a `password:` /
+    /// `passphrase:` prompt appears.
     ///
-    /// **配公钥免登录的边界**:用户在 server 端配了 authorized_keys,客户端
-    /// 默认私钥握手成功 → 不会出现 prompt → injector 静默超时(15s)退出,
-    /// **不会乱注入到登录后的 shell**。这是 SecretInjector 的天然特性:行尾
-    /// 严格匹配 + 一次性触发 + deadline。
+    /// **Boundary for public-key passwordless login**: if the user has set up
+    /// authorized_keys on the server side and the client's default private
+    /// key handshake succeeds → no prompt ever appears → the injector times
+    /// out silently (15s) and exits — **it will never mistakenly inject into
+    /// the post-login shell**. This is an inherent property of SecretInjector:
+    /// strict end-of-line matching + one-shot trigger + a deadline.
     ///
-    /// **shell bootstrap 时序**:`execute_command_or_set_pending` 把 ssh 命令
-    /// 丢进 pending 队列,等 `BootstrapPrecmdDone` 事件再 flush —— 不会跟
-    /// bootstrap 脚本拼到一起把 shell 整挂(2026-05-04 实测过)。
+    /// **Shell bootstrap timing**: `execute_command_or_set_pending` puts the
+    /// ssh command into a pending queue and flushes it only after the
+    /// `BootstrapPrecmdDone` event — this avoids concatenating it with the
+    /// bootstrap script and hanging the shell entirely (verified in testing on 2026-05-04).
     pub fn open_ssh_terminal(
         &mut self,
         node_id: String,
@@ -5543,8 +5552,10 @@ impl Workspace {
         let cmd = warp_ssh_manager::build_ssh_command_line(&server_for_connection);
         let window_id = ctx.window_id();
 
-        // 开新 tab(不分屏 — 之前用 add_terminal_pane(Direction::Right) 会切左/右
-        // 分屏,用户反馈不喜欢)。新 tab 添加后会自动成为 active tab。
+        // Open a new tab (not a split — previously using
+        // add_terminal_pane(Direction::Right) would split left/right, and
+        // users reported not liking that). The new tab automatically becomes
+        // the active tab once added.
         self.add_new_session_tab_internal_with_default_session_mode_behavior(
             NewSessionSource::Tab,
             Some(window_id),
@@ -5555,7 +5566,7 @@ impl Workspace {
             ctx,
         );
 
-        // 拿新 tab 的 focused terminal view。
+        // Get the focused terminal view of the new tab.
         let pane_group = self.active_tab_pane_group();
         let focused_pane_id = pane_group.as_ref(ctx).focused_pane_id(ctx);
         let Some(terminal_view) = pane_group
@@ -5572,7 +5583,7 @@ impl Workspace {
             });
         }
 
-        // 1. 同步读 keychain(主线程 OK)。OneKey server 会使用共享凭据 id。
+        // 1. Read the keychain synchronously (fine on the main thread). The OneKey server uses a shared credential id.
         let secret = match KeychainSecretStore.get(&secret_lookup_id, secret_kind) {
             Ok(opt) => opt.unwrap_or_else(|| zeroize::Zeroizing::new(String::new())),
             Err(e) => {
@@ -5581,8 +5592,8 @@ impl Workspace {
             }
         };
 
-        // 2. 注入器 spawn 必须在 execute_command 之前启动 — 否则 password prompt
-        //    在 spawn 之前已经飞过 broadcast,injector 拿不到。
+        // 2. The injector must be spawned before execute_command — otherwise
+        //    the password prompt may already have been broadcast before spawn, and the injector would miss it.
         let pty_reads_rx = terminal_view.read(ctx, |v, c| v.inactive_pty_reads_rx(c));
         crate::ssh_manager::secret_injector::spawn_password_injector(
             pty_reads_rx,
@@ -5591,7 +5602,7 @@ impl Workspace {
             ctx,
         );
 
-        // 启动命令注入器 — 等待 shell ready 后自动执行 startup_command
+        // Startup command injector — waits for the shell to be ready, then automatically runs startup_command
         if let Some(ref startup_cmd) = server.startup_command {
             if !startup_cmd.is_empty() {
                 crate::ssh_manager::startup_command_injector::spawn_startup_command_injector(
@@ -5603,7 +5614,7 @@ impl Workspace {
             }
         }
 
-        // su 密码注入器 — 监听 su 密码提示,自动输入 root 密码
+        // su password injector — watches for the su password prompt and automatically enters the root password
         let root_secret = match KeychainSecretStore.get(&node_id, SecretKind::RootPassword) {
             Ok(opt) => opt,
             Err(e) => {
@@ -5622,7 +5633,7 @@ impl Workspace {
             );
         }
 
-        // 3. 排队 ssh 命令,等 bootstrap 完成自动 flush。
+        // 3. Queue the ssh command; it flushes automatically once bootstrap completes.
         terminal_view.update(ctx, |view, ctx| {
             view.execute_command_or_set_pending(&cmd, ctx);
         });
@@ -5736,8 +5747,10 @@ impl Workspace {
 
     #[cfg(not(target_family = "wasm"))]
     fn view_logs(&mut self, ctx: &mut ViewContext<Self>) {
-        // 在调用线程同步采集诊断信息(版本、平台、channel、执行模式、MCP/更新日志路径等),
-        // 真正的 zip 打包在阻塞线程上完成,避免读取 `AppContext` 全局状态时跨线程。
+        // Collect diagnostic info synchronously on the calling thread
+        // (version, platform, channel, execution mode, MCP/update log paths,
+        // etc.); the actual zip bundling happens on a blocking thread, to
+        // avoid crossing threads while reading `AppContext` global state.
         let extras = Self::collect_log_bundle_extras(ctx);
         ctx.spawn(
             async move {
@@ -5768,17 +5781,20 @@ impl Workspace {
         );
     }
 
-    /// 与 `view_logs` 不同:让用户通过系统原生 save-file 对话框选择保存位置,
-    /// 然后把日志包直接写到该位置。打包内容与 `view_logs` 完全一致。
+    /// Unlike `view_logs`: lets the user pick a save location via the
+    /// system's native save-file dialog, then writes the log bundle directly
+    /// to that location. The bundle contents are identical to `view_logs`.
     ///
-    /// 失败 / 成功都通过 `toast_stack` 反馈,以便在设置页这种没有自己 toast
-    /// 区域的视图也能看到结果。
+    /// Both failure and success are reported via `toast_stack`, so views like
+    /// the settings page, which have no toast area of their own, can still
+    /// see the result.
     #[cfg(not(target_family = "wasm"))]
     fn export_logs_to_path(&mut self, ctx: &mut ViewContext<Self>) {
         use warpui::platform::SaveFilePickerConfiguration;
 
-        // 在调用线程同步采集 extras(读取 AppContext 全局状态),保存对话框
-        // 与实际写盘都在后续异步流程中。
+        // Collect extras synchronously on the calling thread (reading
+        // AppContext global state); the save dialog and the actual disk write
+        // both happen in the subsequent async flow.
         let extras = Self::collect_log_bundle_extras(ctx);
         let default_filename = warp_logging::default_log_bundle_filename();
         let default_directory = dirs::download_dir().or_else(dirs::home_dir);
@@ -5791,7 +5807,7 @@ impl Workspace {
         ctx.open_save_file_picker(
             move |path_opt, _me, ctx| {
                 let Some(path_string) = path_opt else {
-                    // 用户取消,不打扰用户。
+                    // User canceled; don't bother them further.
                     return;
                 };
                 let output_path = std::path::PathBuf::from(path_string);
@@ -5805,8 +5821,9 @@ impl Workspace {
                     },
                     |me, result, ctx| match result {
                         Ok(Ok(path)) => {
-                            // i18n_embed_fl::fl! 要求位置参数活到 macro 展开结束,
-                            // 故先 `let` 绑定到本作用域的 String,再借用其 &str。
+                            // i18n_embed_fl::fl! requires positional arguments
+                            // to live until the macro expansion finishes, so
+                            // bind to a String in this scope first, then borrow it as &str.
                             let path_str = path.display().to_string();
                             let message = crate::t!(
                                 "settings-about-export-logs-success",
@@ -5848,16 +5865,16 @@ impl Workspace {
         );
     }
 
-    /// 收集本次"导出日志"要附加进 zip 的诊断材料:
+    /// Collects the diagnostic material to attach to the zip for this "export logs" run:
     ///
-    /// - `manifest.txt`:版本 / channel / 平台 / arch / 执行模式 / 生成时间戳;
-    /// - 其它子系统日志(MCP server stderr、Windows 自动更新器、minidump 服务进程),
-    ///   仅当文件实际存在时才会进入 zip。
+    /// - `manifest.txt`: version / channel / platform / arch / execution mode / generation timestamp;
+    /// - Other subsystem logs (MCP server stderr, the Windows auto-updater,
+    ///   the minidump service process), only included in the zip when the file actually exists.
     ///
-    /// 故意**不**打包的内容(权衡):
-    /// - `.dmp` minidump 二进制(可能极大,需要单独按需上传);
-    /// - `zap.prompt_chips.log`(含命令 stdout/stderr,仅在 debug channel 生成,默认隐私风险);
-    /// - profiling 产物(`dhat-heap.json` / `profile.pb`,仅特殊 cargo feature 启用)。
+    /// Content deliberately **not** bundled (tradeoffs):
+    /// - `.dmp` minidump binaries (can be huge, need to be uploaded separately on demand);
+    /// - `zap.prompt_chips.log` (contains command stdout/stderr, only generated on the debug channel, a privacy risk by default);
+    /// - profiling artifacts (`dhat-heap.json` / `profile.pb`, only enabled by special cargo features).
     #[cfg(not(target_family = "wasm"))]
     fn collect_log_bundle_extras(ctx: &AppContext) -> warp_logging::LogBundleExtras {
         use std::path::{Path, PathBuf};
@@ -5867,9 +5884,10 @@ impl Workspace {
 
         let log_dir = warp_logging::log_directory().ok();
 
-        // 1) manifest.txt:可读的诊断摘要,排查问题时第一眼看的内容。
-        // 日志目录用 `home_relative_path` 脱敏(在 Unix 下把 `$HOME` 替换为 `~`),
-        // 避免分享 zip 给排查人员时泄露用户名 / 真实家目录路径。
+        // 1) manifest.txt: a human-readable diagnostic summary, the first thing seen when investigating an issue.
+        // The log directory is sanitized with `home_relative_path` (replacing
+        // `$HOME` with `~` on Unix), to avoid leaking the username / real
+        // home directory path when sharing the zip with someone investigating the issue.
         let manifest = {
             let version = ChannelState::app_version().unwrap_or("Dev");
             let channel = ChannelState::channel();
@@ -5881,14 +5899,14 @@ impl Workspace {
                 .unwrap_or_else(|| "<unknown>".to_string());
 
             format!(
-                "Zap 日志导出\n\
-                 生成时间: {now}\n\
-                 版本: {version}\n\
+                "Zap log export\n\
+                 Generated at: {now}\n\
+                 Version: {version}\n\
                  channel: {channel}\n\
-                 执行模式: {execution_mode:?}\n\
+                 Execution mode: {execution_mode:?}\n\
                  OS: {os}\n\
                  ARCH: {arch}\n\
-                 日志目录: {log_dir_str}\n",
+                 Log directory: {log_dir_str}\n",
                 os = std::env::consts::OS,
                 arch = std::env::consts::ARCH,
             )
@@ -5902,11 +5920,12 @@ impl Workspace {
             ..Default::default()
         };
 
-        // 2) 同目录下其它产物:同 channel 的 minidump 服务进程日志、Windows 更新器日志。
+        // 2) Other artifacts in the same directory: the minidump service
+        // process log for the same channel, the Windows updater log.
         if let Some(dir) = log_dir.as_ref() {
             let candidates: &[&str] = &[
-                "warp-minidump.log", // Linux/Windows minidump 服务进程
-                "warp_update.log",   // Windows 自动更新器(Inno Setup)
+                "warp-minidump.log", // Linux/Windows minidump service process
+                "warp_update.log",   // Windows auto-updater (Inno Setup)
             ];
             for name in candidates {
                 let path = dir.join(name);
@@ -5919,9 +5938,11 @@ impl Workspace {
             }
         }
 
-        // 3) MCP server 当前会话 stderr(`purge_on_startup: true`,只在运行期间存在)。
-        // 路径通过 `simple_logger::manager::resolve_log_path` 间接得到:取一个虚拟文件名
-        // 再 `parent()` 得到 namespace 目录,避免暴露 `log_directory_path` 私有 API。
+        // 3) The MCP server's current-session stderr (`purge_on_startup: true`, only exists while running).
+        // The path is obtained indirectly via
+        // `simple_logger::manager::resolve_log_path`: take a placeholder file
+        // name and then call `parent()` to get the namespace directory,
+        // avoiding exposing the private `log_directory_path` API.
         let mcp_probe = simple_logger::manager::resolve_log_path("mcp", Path::new("_probe"));
         if let Some(mcp_dir) = mcp_probe.parent() {
             if let Ok(read_dir) = std::fs::read_dir(mcp_dir) {
@@ -6082,7 +6103,7 @@ impl Workspace {
             }
         }
 
-        // 3. Separator — 仅在后面有 Agent 或 Coding Agent 时才显示
+        // 3. Separator — only shown when an Agent or Coding Agent follows
         if is_any_ai_enabled {
             menu_items.push(MenuItem::Separator);
         }
@@ -6098,7 +6119,7 @@ impl Workspace {
             menu_items.push(agent_item.into_item());
         }
 
-        // 5. Coding Agents — 仅已安装且 tab_menu 启用的出现在菜单中
+        // 5. Coding Agents — only ones that are installed and have tab_menu enabled appear in the menu
         let coding_agent_count = {
             let start_len = menu_items.len();
             let ai_settings = AISettings::as_ref(ctx);
@@ -6110,7 +6131,7 @@ impl Workspace {
                 if !install_model.is_cli_agent_installed(agent) {
                     continue;
                 }
-                // 检查 per-agent tab_menu 设置
+                // Check the per-agent tab_menu setting
                 if !ai_settings.is_cli_agent_tab_menu_enabled(agent) {
                     continue;
                 }
@@ -6123,8 +6144,8 @@ impl Workspace {
             menu_items.len() - start_len
         };
 
-        // 6. Separator — 仅当 coding agent 有内容且 Docker 启用时才显示
-        // TabConfigs 区域在 step 8 自带分隔线，无需这里重复
+        // 6. Separator — only shown when there are coding agent items and Docker is enabled
+        // The TabConfigs section already has its own separator in step 8, so no need to repeat it here
         if coding_agent_count > 0 && FeatureFlag::LocalDockerSandbox.is_enabled() {
             menu_items.push(MenuItem::Separator);
         }
@@ -6635,8 +6656,9 @@ impl Workspace {
     /// If the user is new and therefore has not seen the in app onboarding,
     /// triggers the welcome block to be shown after bootstrapping is completed.
     fn check_and_trigger_onboarding(&mut self, ctx: &mut ViewContext<Self>) -> bool {
-        // Zap: 去掉首次打开的 agentic suggestions 欢迎块教程。仍把用户标记为
-        // onboarded,避免下游(如 telemetry banner)把已用户当新用户处理。
+        // Zap: removed the first-open agentic-suggestions welcome-block
+        // tutorial. Still mark the user as onboarded, so downstream consumers
+        // (e.g. the telemetry banner) don't treat an existing user as new.
         if !self.auth_state.is_onboarded().unwrap_or_default() {
             AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
                 auth_manager.set_user_onboarded(ctx);
@@ -6760,10 +6782,11 @@ impl Workspace {
                     &locator,
                 );
             }
-            // TODO(zap-cloud-removal Phase 5): invitee_email/source 这条
-            // notebook 邀请链路已无 UI 出口,但 `ZapDriveObjectSettings.invitee_email`
-            // 仍由 URL handler / drag-drop 链路传入。Phase 5 退役 invitee 概念时
-            // 把字段从 settings 结构里也删掉。
+            // TODO(zap-cloud-removal Phase 5): the invitee_email/source
+            // notebook invitation path has no UI entry point anymore, but
+            // `ZapDriveObjectSettings.invitee_email` is still passed in via
+            // the URL handler / drag-drop path. When the invitee concept is
+            // retired in Phase 5, remove the field from the settings struct too.
             let _ = settings;
             let _ = source;
         } else if default_to_new_pane {
@@ -7140,7 +7163,7 @@ impl Workspace {
             return;
         };
 
-        // 先建带 loading spinner 的空 pane,再异步抓字节填充(spinner-first UX)。
+        // First create an empty pane with a loading spinner, then fetch the bytes asynchronously and fill it in (spinner-first UX).
         let pane = ImagePane::new_remote(remote_path.clone(), ctx);
         let image_view = pane.image_view(ctx);
         self.insert_image_pane(pane, ctx);
@@ -7160,8 +7183,9 @@ impl Workspace {
                     });
                 }
                 Err(error) => {
-                    // 不开空白 pane —— pane 已显示 loading,这里只记录失败,避免像
-                    // `open_remote_buffer` 那样把所有错误抹成 DoesNotExist。
+                    // Don't open a blank pane — the pane already shows
+                    // loading, so just log the failure here, avoiding
+                    // flattening every error into DoesNotExist the way `open_remote_buffer` does.
                     log::warn!(
                         "Failed to load remote image {path}: {error}",
                         path = remote_path.path.as_str()
@@ -7199,9 +7223,12 @@ impl Workspace {
         });
     }
 
-    // 远端文件浏览器的 cd:与本地 cd_to_directory 不同,这里直接执行命令而不是
-    // 填入输入框。原因是远端会话切换工作目录后需要立即反馈到会话状态,且面板
-    // 是右键菜单触发的明确意图,不需要再让用户二次确认。
+    // cd for the remote file browser: unlike the local cd_to_directory, this
+    // directly executes the command instead of filling the input box. The
+    // reason is that switching the working directory in a remote session
+    // needs to reflect back into session state immediately, and this panel
+    // is a right-click-menu-triggered explicit intent that doesn't need a
+    // second confirmation from the user.
     fn cd_to_remote_directory(&mut self, path: &str, ctx: &mut ViewContext<Self>) {
         let Some(input_handle) = self.get_active_input_view_handle(ctx) else {
             log::warn!("No active input view when trying to cd to remote directory");
@@ -7482,8 +7509,8 @@ impl Workspace {
         });
     }
 
-    // Zap Wave 7-3:`open_environment_management_pane` 随 ambient-agent UI 子系统
-    // 物理删。
+    // Zap Wave 7-3: `open_environment_management_pane` was physically removed
+    // along with the ambient-agent UI subsystem.
 
     pub(super) fn active_session_view(
         &self,
@@ -8189,8 +8216,10 @@ impl Workspace {
     }
 
     fn user_menu_items(&self, app: &AppContext) -> Vec<MenuItem<WorkspaceAction>> {
-        // 去中心化分支:用户菜单不再展示账户名 / 账号 CTA / Upgrade / Billing / Invite /
-        // Log out 等云端账户相关项,只保留本地可用入口(更新、设置、文档、反馈、日志)。
+        // Decentralized branch: the user menu no longer shows the account
+        // name / account CTA / Upgrade / Billing / Invite / Log out and other
+        // cloud-account-related items; only local entry points remain
+        // (Update, Settings, Docs, Feedback, Logs).
         let mut items = Vec::new();
 
         let appearance = Appearance::as_ref(app);
@@ -8277,8 +8306,9 @@ impl Workspace {
             MenuItem::Separator,
         ]);
 
-        // 去中心化分支:此处原本会追加账号 CTA / Upgrade / Billing / Invite / Log out
-        // 等账号相关项,本地模式下全部移除。
+        // Decentralized branch: this used to append account CTA / Upgrade /
+        // Billing / Invite / Log out and other account-related items; all
+        // removed under local mode.
         items
     }
 
@@ -8481,8 +8511,9 @@ impl Workspace {
         .with_padding_override(0., 0.)
         .into_item();
         let query = self.worktree_sidecar_search_query.trim().to_lowercase();
-        // PersistedWorkspace 已下线,不再从「近期仓库」拉列表;
-        // _query 在这里只为保持变量使用语义,实际 items 总为空。
+        // PersistedWorkspace has been removed, so we no longer pull a list
+        // from "recent repositories"; `_query` here is only to keep the
+        // variable's usage semantics, the actual items are always empty.
         let _ = query;
         let items = vec![search_item];
         items
@@ -8931,7 +8962,7 @@ impl Workspace {
                     return;
                 };
                 let path_buf: PathBuf = path.clone().into();
-                // PersistedWorkspace 已下线,不再写入「近期仓库」列表。
+                // PersistedWorkspace has been removed, so we no longer write to the "recent repositories" list.
                 // Refresh the repo picker and pre-select the new path.
                 modal_view.update(ctx, |modal, ctx| {
                     modal.body().update(ctx, |body, ctx| {
@@ -9130,7 +9161,7 @@ impl Workspace {
                     return;
                 };
                 let path_buf: PathBuf = path.clone().into();
-                // PersistedWorkspace 已下线,不再写入「近期仓库」列表。
+                // PersistedWorkspace has been removed, so we no longer write to the "recent repositories" list.
                 modal_view.update(ctx, |modal, ctx| {
                     modal.body().update(ctx, |body, ctx| {
                         body.on_new_repo_selected(path_buf, ctx);
@@ -11519,7 +11550,7 @@ impl Workspace {
                         controller.send_slash_command_request(
                             SlashCommandRequest::Summarize {
                                 prompt: summarization_prompt,
-                                overflow: false, // ForkAndCompact 是用户主动触发,非自动 overflow
+                                overflow: false, // ForkAndCompact is user-triggered, not an automatic overflow
                             },
                             ctx,
                         );
@@ -12278,7 +12309,8 @@ impl Workspace {
     }
 
     fn handle_changelog_event(&mut self, _event: &ChangelogEvent, _ctx: &mut ViewContext<Self>) {
-        // Zap 是本地化 fork,不依赖私有 changelog 服务,不在更新后弹出 toast/resource-center。
+        // Zap is a localized fork that doesn't depend on a private changelog
+        // service, so it doesn't pop up a toast/resource-center after updates.
     }
 
     fn manual_check_for_update(&self, ctx: &mut ViewContext<Self>) {
@@ -12333,10 +12365,13 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         match event {
-            // Zap 去中心化分支:`CheckForUpdate` / `ZapDrive` 事件 arm 随
-            // `SettingsViewEvent` 中同名 variant 一同物理删。手动检查更新仍可
-            // 由 `WorkspaceAction::CheckForUpdate`(`workspace:check_for_updates` binding)
-            // 触发;Zap Drive 仍可由 `WorkspaceAction::ZapDrive` 触发。
+            // Zap decentralized branch: the `CheckForUpdate` / `ZapDrive`
+            // event arms were physically removed together with the
+            // same-named variants in `SettingsViewEvent`. Manually checking
+            // for updates can still be triggered via
+            // `WorkspaceAction::CheckForUpdate` (the
+            // `workspace:check_for_updates` binding); Zap Drive can still be
+            // triggered via `WorkspaceAction::ZapDrive`.
             SettingsViewEvent::Pane(_) | SettingsViewEvent::StartResize => {}
             SettingsViewEvent::ShowToast { message, flavor } => {
                 self.toast_stack.update(ctx, |toast_stack, ctx| {
@@ -12514,7 +12549,7 @@ impl Workspace {
                             play_sound,
                         ),
                         move |workspace, notification_error, ctx| {
-                            // 未知错误写本地日志,便于排查通知系统问题。
+                            // Log unknown errors locally, to help debug notification system issues.
                             if let NotificationSendError::Other { error_message } =
                                 &notification_error
                             {
@@ -13458,7 +13493,7 @@ impl Workspace {
                     ctx,
                 );
             }
-            // Zap:终端里 Ctrl/Cmd+点击远端 SSH 文件路径,走 buffer-sync 协议打开。
+            // Zap: Ctrl/Cmd+clicking a remote SSH file path in the terminal opens it via the buffer-sync protocol.
             #[cfg(all(feature = "local_tty", feature = "local_fs"))]
             pane_group::Event::OpenRemoteFileFromTerminal {
                 remote_path,
@@ -13477,8 +13512,8 @@ impl Workspace {
             pane_group::Event::OpenAgentProfileEditor { profile_id } => {
                 self.open_execution_profile_editor_pane(None, *profile_id, ctx);
             }
-            // Zap Wave 7-3:`pane_group::Event::OpenEnvironmentManagementPane` handler 随
-            // ambient-agent UI 子系统物理删。
+            // Zap Wave 7-3: the `pane_group::Event::OpenEnvironmentManagementPane`
+            // handler was physically removed along with the ambient-agent UI subsystem.
             pane_group::Event::LeftPanelToggled { is_open } => {
                 // Only handle visibility changes from the active pane group.
                 if pane_group.id() == self.active_tab_pane_group().id() {
@@ -13871,8 +13906,10 @@ impl Workspace {
             if let (Some(sid), Some(cwd), Some(s)) =
                 (session_id, pwd.clone(), server_file_browser_session)
             {
-                // 加上 `ServerFileBrowser` 守卫,确保该功能被 `ZAP_UNSTABLE_FEATURES`
-                // 关闭时不要在 SSH 会话激活后偷偷拉取远程目录,避免任何相关后台活动。
+                // Guarded by `ServerFileBrowser`, to ensure that when this
+                // feature is disabled via `ZAP_UNSTABLE_FEATURES` we don't
+                // quietly fetch the remote directory after an SSH session
+                // becomes active, avoiding any related background activity.
                 if is_remote
                     && FeatureFlag::ServerFileBrowser.is_enabled()
                     && FeatureFlag::SshRemoteServer.is_enabled()
@@ -14027,7 +14064,7 @@ impl Workspace {
                 ctx.focus(&self.left_panel_view);
             }
             DrivePanelEvent::OpenSharedObjectsCreationDeniedModal(_, _) => {
-                // Zap:云端 Drive 配额拒绝弹窗已删除,事件直接忽略
+                // Zap: the cloud Drive quota-denial modal has been removed, so the event is ignored outright
             }
             DrivePanelEvent::AttachPlanAsContext(id) => {
                 self.attach_plan_as_context(*id, ctx);
@@ -14751,9 +14788,10 @@ impl Workspace {
                 .server_id
                 .and_then(|id| ObjectStoreModel::as_ref(ctx).get_by_uid(&id.uid()))
             {
-                // TODO(zap-cloud-removal Phase 5): drive sharing onboarding
-                // block 已退;`created_object` 仍是 cloud_object 创建结果,
-                // StoredObject 模型本身在后续 phase 一并退役。
+                // TODO(zap-cloud-removal Phase 5): the drive sharing
+                // onboarding block has been retired; `created_object` is
+                // still the result of a cloud_object creation, and the
+                // StoredObject model itself will be retired together in a later phase.
                 let _ = created_object;
             }
         }
@@ -14839,8 +14877,10 @@ impl Workspace {
     }
 
     fn keep_theme(&mut self, ctx: &mut ViewContext<Self>) {
-        // 关闭时把 per-window override map 同步回已提交的 self.theme_override,抵消打开时
-        // select_theme 在 ThisWindow scope 下写入的预览覆盖(否则重开后 override 会丢失)。
+        // On close, sync the per-window override map back to the committed
+        // self.theme_override, undoing the preview override that
+        // select_theme wrote under ThisWindow scope while open (otherwise the
+        // override would be lost after reopening).
         let window_id = ctx.window_id();
         let committed = self.theme_override.clone();
         AppearanceManager::handle(ctx).update(ctx, |appearance_manager, ctx| match &committed {
@@ -15624,7 +15664,7 @@ impl Workspace {
         ctx.notify();
     }
 
-    // Zap:删除 open_shared_objects_creation_denied_modal(云端 Drive 配额拒绝弹窗)
+    // Zap: removed open_shared_objects_creation_denied_modal (cloud Drive quota-denial modal)
 
     /// Opens the workflow modal in the provided space and folder with no existing content (i.e. a new workflow modal).
     fn open_workflow_modal(
@@ -15642,7 +15682,7 @@ impl Workspace {
         let owner = match space {
             Space::Team { team_uid } => {
                 if !UserWorkspaces::has_capacity_for_shared_workflows(team_uid, ctx, 1) {
-                    // Zap:云端配额拒绝弹窗已删除,直接 return
+                    // Zap: the cloud quota-denial modal has been removed, just return
                     return;
                 }
 
@@ -16428,7 +16468,7 @@ impl Workspace {
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_main_axis_size(MainAxisSize::Min);
 
-            // 标题栏 agent 快捷启动按钮（垂直标签栏模式）
+            // Title bar agent quick-launch buttons (vertical tab bar mode)
             for button in self.render_cli_agent_titlebar_buttons(appearance, ctx) {
                 right_controls.add_child(button);
             }
@@ -16572,7 +16612,7 @@ impl Workspace {
         // Placeholder to make sure the flex row expands across the entire width of the app.
         tab_bar.add_child(Shrinkable::new(0.5, Empty::new().finish()).finish());
 
-        // 标题栏 agent 快捷启动按钮（水平标签栏模式）
+        // Title bar agent quick-launch buttons (horizontal tab bar mode)
         for button in self.render_cli_agent_titlebar_buttons(appearance, ctx) {
             tab_bar.add_child(button);
         }
@@ -16651,8 +16691,8 @@ impl Workspace {
         )
     }
 
-    /// 渲染标题栏上已安装 CLI agent 的快捷启动按钮。
-    /// 只显示 per-agent 设置中 titlebar 标记为 true 的 agent。
+    /// Renders quick-launch buttons in the title bar for installed CLI agents.
+    /// Only shows agents whose per-agent setting has titlebar marked as true.
     fn render_cli_agent_titlebar_buttons(
         &self,
         appearance: &Appearance,
@@ -16700,7 +16740,7 @@ impl Workspace {
                 background: Some(theme.background().into()),
                 ..UiComponentStyles::default()
             })
-            // 图标缩小到 14×14：padding 从 4 增大到 5.0，按钮外框 24×24 不变
+            // Icon shrunk to 14x14: padding increased from 4 to 5.0, button outer frame stays 24x24
             .with_style(UiComponentStyles::default()
                 .set_padding(Coords::uniform(5.0))
             );
@@ -16854,7 +16894,7 @@ impl Workspace {
                     .finish(),
             );
         } else {
-            // 去中心化分支:不再渲染 Zap Essentials(灯泡)按钮,只保留设置齿轮。
+            // Decentralized branch: no longer render the Zap Essentials (lightbulb) button; keep only the settings gear.
             target.add_child(
                 Container::new(self.render_settings_button(appearance))
                     .with_margin_left(TAB_BAR_PADDING_LEFT)
@@ -17568,7 +17608,7 @@ impl Workspace {
         // more important that users are notified their settings file is broken
         // than that they continue to see any of the autoupdate or crash recovery
         // banners.
-        // 去中心化分支:reauth banner 已删除。
+        // Decentralized branch: the reauth banner has been removed.
         let banner_fields = self
             .render_settings_error_banner(app)
             .or_else(|| self.render_autoupdate_banner_element(app));
@@ -17622,7 +17662,7 @@ impl Workspace {
             .map(|fields| self.render_workspace_banner(fields, appearance))
     }
 
-    // 去中心化分支:`render_reauth_banner_element` 已删除。
+    // Decentralized branch: `render_reauth_banner_element` has been removed.
 
     fn render_autoupdate_banner_element(&self, app: &AppContext) -> Option<WorkspaceBannerFields> {
         if FeatureFlag::Autoupdate.is_enabled() {
@@ -18778,12 +18818,12 @@ impl Workspace {
         if WarpDriveSettings::is_warp_drive_enabled(ctx) {
             views.push(ToolPanelView::ZapDrive);
         }
-        // openWarp 独有:SSH 管理器,无 feature flag,默认始终显示。
+        // openWarp-only: the SSH manager has no feature flag and is always shown by default.
         views.push(ToolPanelView::SshManager);
         if FeatureFlag::ServerFileBrowser.is_enabled() && FeatureFlag::SshRemoteServer.is_enabled() {
             views.push(ToolPanelView::ServerFileBrowser);
         }
-        // openWarp 独有:Skill 管理器,无 feature flag,local_fs 构建下默认显示。
+        // openWarp-only: the Skill manager has no feature flag and is shown by default in local_fs builds.
         if cfg!(feature = "local_fs") {
             views.push(ToolPanelView::SkillManager);
         }
@@ -19162,7 +19202,7 @@ impl TypedActionView for Workspace {
             }
             AutoupdateFailureLink => self.open_autoupdate_failure_link(ctx),
             ApplyUpdate => self.apply_update(ctx),
-            // 去中心化分支:`LogOut` 已删除。
+            // Decentralized branch: `LogOut` has been removed.
             ExportAllWarpDriveObjects => {
                 self.export_all_warp_drive_objects(ctx);
             }
@@ -19194,7 +19234,7 @@ impl TypedActionView for Workspace {
                 mode: palette_mode,
                 source,
             } => self.toggle_palette(*palette_mode, *source, ctx),
-            // 去中心化分支:`ShowUpgrade` / `ShowReferralSettingsPage` 已删除。
+            // Decentralized branch: `ShowUpgrade` / `ShowReferralSettingsPage` have been removed.
             JoinSlack => self.join_slack(ctx),
             ViewUserDocs => self.view_user_docs(ctx),
             ViewLatestChangelog => self.view_latest_changelog(ctx),
@@ -19784,8 +19824,8 @@ impl TypedActionView for Workspace {
                 });
                 send_telemetry_from_ctx!(TelemetryEvent::DisableInputSync, ctx);
             }
-            // 去中心化分支:`Reauth` 已删除。
-            // 去中心化分支:云端账号注册 / 登录动作已删除。
+            // Decentralized branch: `Reauth` has been removed.
+            // Decentralized branch: the cloud account registration / login actions have been removed.
             HandleConflictingWorkflow(workflow_id) => {
                 self.toast_stack.update(ctx, |view, ctx| {
                     view.dismiss_older_toasts(&workflow_id.uid(), ctx);
@@ -19890,7 +19930,7 @@ impl TypedActionView for Workspace {
                 self.insert_in_input(content, *replace_buffer, false, *ensure_agent_mode, ctx);
                 ctx.notify();
             }
-            // 去中心化分支:`AttemptLoginGatedAIUpgrade` 已删除。
+            // Decentralized branch: `AttemptLoginGatedAIUpgrade` has been removed.
             #[cfg(all(enable_crash_recovery, target_os = "linux"))]
             DismissWaylandCrashRecoveryBannerAndOpenLink => {
                 self.dismiss_workspace_banner(ctx, &WorkspaceBanner::WaylandCrashRecovery);
@@ -19936,8 +19976,8 @@ impl TypedActionView for Workspace {
                     ctx
                 );
             }
-            // Zap Wave 7-3:`OpenEnvironmentManagementPane` WorkspaceAction handler 随
-            // ambient-agent UI 子系统物理删。
+            // Zap Wave 7-3: the `OpenEnvironmentManagementPane` WorkspaceAction
+            // handler was physically removed along with the ambient-agent UI subsystem.
             ToggleAIDocumentPane {
                 document_id,
                 document_version,
@@ -21740,7 +21780,7 @@ impl View for Workspace {
             );
         }
 
-        // 通知中心浮层:mailbox 下拉面板 + (mailbox 未开时) toast 堆。
+        // Notification center overlay: the mailbox dropdown panel + (when the mailbox isn't open) the toast stack.
         if FeatureFlag::HOANotifications.is_enabled()
             && *AISettings::as_ref(app).show_agent_notifications
         {

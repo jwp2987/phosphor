@@ -122,7 +122,7 @@ use crate::terminal::local_tty;
 use crate::terminal::model::session::Session;
 use crate::terminal::session_settings::NewSessionSource;
 use crate::terminal::session_settings::SessionSettings;
-// Zap:删除 ShareSessionModal import(云端 shared session 弹窗)
+// Zap: removed the ShareSessionModal import (cloud shared-session modal)
 use crate::terminal::shared_session::IsSharedSessionCreator;
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::{
@@ -157,7 +157,7 @@ pub use pane::ai_fact_pane::AIFactPane;
 pub use pane::code_diff_pane::CodeDiffPane;
 pub use pane::code_pane::CodePane;
 pub use pane::env_var_collection_pane::EnvVarCollectionPane;
-// Zap Wave 7-3:`EnvironmentManagementPane` 随 ambient-agent UI 子系统物理删。
+// Zap Wave 7-3: `EnvironmentManagementPane` was physically removed along with the ambient-agent UI subsystem.
 pub use pane::execution_profile_editor_pane::ExecutionProfileEditorPane;
 pub use pane::file_pane::FilePane;
 pub use pane::image_pane::ImagePane;
@@ -620,8 +620,8 @@ pub enum Event {
         initial_content: Option<String>,
     },
     OpenAddRulePane,
-    // Zap Wave 7-3:`OpenEnvironmentManagementPane` event 随 ambient-agent UI
-    // 子系统物理删。
+    // Zap Wave 7-3: the `OpenEnvironmentManagementPane` event was physically
+    // removed along with the ambient-agent UI subsystem.
     OpenFilesPalette {
         source: PaletteSource,
     },
@@ -635,8 +635,9 @@ pub enum Event {
         target: FileTarget,
         line_col: Option<LineAndColumnArg>,
     },
-    /// Zap:在终端里 Ctrl/Cmd+点击远端 SSH 会话输出中的文件路径时发出,
-    /// 由 workspace 走 buffer-sync 协议在编辑器中打开远端文件。
+    /// Zap: emitted when Ctrl/Cmd+clicking a file path in remote SSH session
+    /// output in the terminal; the workspace opens the remote file in the
+    /// editor via the buffer-sync protocol.
     #[cfg(all(feature = "local_tty", feature = "local_fs"))]
     OpenRemoteFileFromTerminal {
         remote_path: crate::code::buffer_location::RemotePath,
@@ -800,20 +801,20 @@ pub struct PaneGroup {
     /// Mapping from pane IDs to their contents.
     pane_contents: HashMap<PaneId, Box<dyn AnyPaneContent>>,
 
-    // Zap:删除 terminal_with_open_share_block_modal / share_block_modal 字段(云端 share block)
+    // Zap: removed the terminal_with_open_share_block_modal / share_block_modal fields (cloud share block)
     dragged_border: Option<DraggedBorder>,
     user_default_shell_changed_banner: ViewHandle<Banner<PaneGroupAction>>,
 
-    // Zap:删除 terminal_with_open_share_session_modal / share_session_modal 字段(云端 shared session)
+    // Zap: removed the terminal_with_open_share_session_modal / share_session_modal fields (cloud shared session)
     /// Model that tracks the currently active file.
     active_file_model: ModelHandle<ActiveFileModel>,
     /// If there is an open summarization cancel dialog, the terminal pane ID where summarization is active.
     terminal_with_open_summarization_dialog: Option<TerminalPaneId>,
 
     /// Pane with an open environment setup mode selector modal (rendered at tab level).
-    // Zap Wave 7-3:`pane_with_open_environment_setup_mode_selector` /
-    // `pane_with_open_agent_assisted_environment_modal` 随 ambient-agent UI 子系统
-    // 物理删。
+    // Zap Wave 7-3: `pane_with_open_environment_setup_mode_selector` /
+    // `pane_with_open_agent_assisted_environment_modal` were physically
+    // removed along with the ambient-agent UI subsystem.
 
     /// If the left panel is open for this pane group
     pub left_panel_open: bool,
@@ -1811,8 +1812,9 @@ impl PaneGroup {
                 ))
             }
             LeafContents::Sftp { .. } => {
-                // SFTP 浏览器 pane 不持久化,远端文件系统依赖活跃 SSH 连接,
-                // 无法在重启后恢复。
+                // The SFTP browser pane is not persisted; the remote
+                // filesystem depends on a live SSH connection and cannot be
+                // restored after a restart.
                 Err(anyhow::anyhow!(
                     "SFTP pane should not have been persisted, as it cannot be restored"
                 ))
@@ -1853,8 +1855,8 @@ impl PaneGroup {
                     };
                     Ok((PaneData::new(pane_id), focus))
                 }
-            } // Zap Wave 7-3:`EnvironmentManagement` LeafContents arm 随 ambient-agent UI
-              // 子系统物理删。
+            } // Zap Wave 7-3: the `EnvironmentManagement` LeafContents arm was
+              // physically removed along with the ambient-agent UI subsystem.
         };
 
         if let (Ok((pane_data, _)), Some(title)) = (&result, custom_vertical_tabs_title.as_deref())
@@ -2360,17 +2362,17 @@ impl PaneGroup {
         _terminal_pane_id: TerminalPaneId,
         ctx: &mut ViewContext<Self>,
     ) {
-        // Zap:share_session_modal 已删,no-op
+        // Zap: share_session_modal was removed, no-op
         ctx.notify();
     }
 
     /// Closes the share session modal if it is open. Does nothing otherwise. Does not change
     /// which element is focused.
     fn close_share_session_modal(&mut self, _ctx: &mut ViewContext<Self>) {
-        // Zap:share_session_modal 已删,no-op
+        // Zap: share_session_modal was removed, no-op
     }
 
-    // Zap:删除 handle_share_session_modal_event(云端 shared session 弹窗)
+    // Zap: removed handle_share_session_modal_event (cloud shared-session modal)
 
     fn new_internal(
         tips_completed: ModelHandle<TipsCompleted>,
@@ -2421,7 +2423,7 @@ impl PaneGroup {
             me.handle_focus_state_event(event, ctx);
         });
 
-        // Zap:删除 share_block_modal 注册(云端 share block)
+        // Zap: removed the share_block_modal registration (cloud share block)
 
         ctx.subscribe_to_model(&PaneSettings::handle(ctx), |_, _, _, ctx| {
             ctx.notify();
@@ -2465,7 +2467,7 @@ impl PaneGroup {
             },
         );
 
-        // Zap:删除 share_session_modal 注册(云端 shared session 弹窗)
+        // Zap: removed the share_session_modal registration (cloud shared-session modal)
 
         ctx.subscribe_to_model(&UndoCloseStack::handle(ctx), |me, _, event, ctx| {
             let UndoCloseStackEvent::DiscardPane(pane_id) = event;
@@ -2486,8 +2488,8 @@ impl PaneGroup {
             user_default_shell_changed_banner,
             active_file_model,
             terminal_with_open_summarization_dialog: None,
-            // Zap Wave 7-3:ambient-agent UI 子系统中的 pane-level modal 跟踪
-            // 字段随 UI 物理删。
+            // Zap Wave 7-3: the pane-level modal tracking field in the
+            // ambient-agent UI subsystem was physically removed along with the UI.
             right_panel_open: false,
             left_panel_open: false,
             is_right_panel_maximized: false,
@@ -3272,7 +3274,7 @@ impl PaneGroup {
         }
     }
 
-    // Zap:删除 handle_share_block_modal_event(云端 share block)
+    // Zap: removed handle_share_block_modal_event (cloud share block)
 
     /// Used to add a new pane but not splitting panes.
     pub fn add_terminal_pane(
@@ -3880,9 +3882,9 @@ impl PaneGroup {
                 self.hide_closed_pane(pane_id, ctx);
             }
 
-            // Zap:删除 share_block_modal cleanup(云端 share block)
-            // Zap Wave 7-3:ambient-agent UI 子系统中的 pane-level modal 跟踪
-            // 字段 cleanup 随 UI 物理删。
+            // Zap: removed the share_block_modal cleanup (cloud share block)
+            // Zap Wave 7-3: the pane-level modal tracking field cleanup in the
+            // ambient-agent UI subsystem was physically removed along with the UI.
 
             self.focus_next_terminal_pane_and_activate_session(
                 pane_id,
@@ -3904,9 +3906,9 @@ impl PaneGroup {
 
             self.clean_up_pane(pane_id, ctx);
 
-            // Zap:删除 share_block_modal cleanup(云端 share block)
-            // Zap Wave 7-3:ambient-agent UI 子系统中的 pane-level modal 跟踪
-            // 字段 cleanup 随 UI 物理删。
+            // Zap: removed the share_block_modal cleanup (cloud share block)
+            // Zap Wave 7-3: the pane-level modal tracking field cleanup in the
+            // ambient-agent UI subsystem was physically removed along with the UI.
 
             self.focus_next_terminal_pane_and_activate_session(
                 pane_id,
@@ -6080,7 +6082,7 @@ impl PaneGroup {
         );
 
         self.close_share_session_modal(ctx);
-        // Zap:删除 terminal_with_open_share_block_modal 清空(字段已不存在)
+        // Zap: removed the terminal_with_open_share_block_modal reset (the field no longer exists)
         ctx.notify();
     }
 
@@ -6223,7 +6225,7 @@ impl View for PaneGroup {
 
         let mut stack = Stack::new().with_child(column.finish());
 
-        // Zap:删除 share_block_modal / share_session_modal / role-change modal 渲染分支(字段已不存在)
+        // Zap: removed the share_block_modal / share_session_modal / role-change modal render branches (the fields no longer exist)
 
         // Render the summarization cancel dialog at tab level when open.
         if let Some(terminal_pane_id) = self.terminal_with_open_summarization_dialog {
@@ -6236,8 +6238,9 @@ impl View for PaneGroup {
             }
         }
 
-        // Zap Wave 7-3:environment setup mode selector / agent-assisted environment
-        // modal 在 tab 层级的覆盖渲染随 ambient-agent UI 子系统物理删。
+        // Zap Wave 7-3: the tab-level overlay rendering for the environment
+        // setup mode selector / agent-assisted environment modal was
+        // physically removed along with the ambient-agent UI subsystem.
 
         stack.finish()
     }

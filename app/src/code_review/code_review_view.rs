@@ -1293,8 +1293,9 @@ impl CodeReviewView {
         };
 
         let is_maximized = focus_handle.is_maximized(ctx);
-        // t!(非 t_static!):本函数在每次 focus/maximize 状态变化时都会跑,
-        // t_static! 的 Box::leak 会随切换次数持续泄漏。
+        // t! (not t_static!): this function runs on every focus/maximize
+        // state change, and t_static!'s Box::leak would keep leaking with
+        // every toggle.
         let (icon, tooltip) = if is_maximized {
             (Icon::Minimize, crate::t!("common-restore"))
         } else {

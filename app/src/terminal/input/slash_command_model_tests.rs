@@ -121,7 +121,7 @@ fn test_ai_commands_ignore_legacy_global_ai_disabled_setting() {
         let slash_command_data_source =
             input.read(&app, |input, _| input.slash_command_data_source.clone());
 
-        // 旧版全局关闭值现在会被忽略,AI 功能保持开启。
+        // The legacy global-off value is now ignored; AI features stay enabled.
         AISettings::handle(&app).update(&mut app, |settings, ctx| {
             report_if_error!(settings.is_any_ai_enabled.set_value(false, ctx));
         });

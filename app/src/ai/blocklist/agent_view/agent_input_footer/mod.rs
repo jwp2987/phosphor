@@ -574,8 +574,8 @@ impl AgentInputFooter {
             me.handle_profile_model_selector_event(event, ctx);
         });
 
-        // Zap Wave 7-3:`EnvironmentSelector` 初始化 + 订阅 + ambient_agent
-        // Status rerender subscription was removed with the hosted-mode footer.
+        // Zap Wave 7-3: `EnvironmentSelector` init + subscription + ambient_agent
+        // status rerender subscription was removed with the hosted-mode footer.
 
         let reasoning_depth_selector = ctx.add_typed_action_view(|ctx| {
             ReasoningDepthSelector::new(menu_positioning_provider.clone(), terminal_view_id, ctx)
@@ -694,8 +694,8 @@ impl AgentInputFooter {
             plugin_chip_ready: false,
             context_window_button,
             model_selector: profile_model_selector_full,
-            // Zap Wave 7-3:`environment_selector` field init was removed with hosted-mode UI.
-            // 子系统物理删。
+            // Zap Wave 7-3: `environment_selector` field init was removed with hosted-mode UI.
+            // The subsystem was physically deleted.
             reasoning_depth_selector,
             prompt_alert,
             terminal_model,
@@ -1335,8 +1335,8 @@ impl AgentInputFooter {
     }
 
     pub fn has_open_chip_menu(&self, app: &AppContext) -> bool {
-        // Zap Wave 7-3:`environment_selector` is_menu_open() check was removed with hosted-mode UI.
-        // 子系统物理删。
+        // Zap Wave 7-3: `environment_selector` is_menu_open() check was removed with hosted-mode UI.
+        // The subsystem was physically deleted.
         self.all_display_chips()
             .any(|chip| chip.as_ref(app).display_chip_kind().has_open_menu())
     }
@@ -1476,8 +1476,9 @@ impl AgentInputFooter {
 
         match &self.cli_voice_input_state {
             CLIVoiceInputState::Stopped => {
-                // Zap(Phase 3c A1):删除 `AIRequestUsageModel::can_request_voice`
-                // 额度闸。本地化后语音输入不受云端额度限制，统一可发送。
+                // Zap (Phase 3c A1): removed the `AIRequestUsageModel::can_request_voice`
+                // quota gate. After localization, voice input is no longer subject to
+                // cloud quota limits and can always be sent.
 
                 let session_result = voice_input::VoiceInput::handle(ctx)
                     .update(ctx, |voice_input, ctx| {
@@ -2257,8 +2258,8 @@ pub enum AgentInputFooterEvent {
     ShowContextMenu {
         position: Vector2F,
     },
-    // Zap Wave 7-3:`OpenEnvironmentManagementPane` event was removed with hosted-mode UI.
-    // 物理删。
+    // Zap Wave 7-3: `OpenEnvironmentManagementPane` event was removed with hosted-mode UI.
+    // Physically deleted.
     PluginInstalled(CLIAgent),
     #[cfg(not(target_family = "wasm"))]
     OpenPluginInstructionsPane(CLIAgent, PluginModalKind),

@@ -38,10 +38,12 @@ impl CustomSecretRegexUpdater {
 
         set_user_and_enterprise_secret_regexes(user_secrets, enterprise_secrets);
 
-        // Zap(Wave1-S4):原 telemetry-side `update_telemetry_secrets_regex` 调用
-        // 已随 `server/telemetry/secret_redaction.rs` 整体删除。安全模式的视觉模糊
-        // 走 `set_user_and_enterprise_secret_regexes` 已完整覆盖;telemetry-side
-        // defence-in-depth 的 redact 因不再有任何外发路径而失去意义。
+        // Zap (Wave1-S4): the original telemetry-side `update_telemetry_secrets_regex`
+        // call was removed entirely along with `server/telemetry/secret_redaction.rs`.
+        // Safe mode's visual blurring is already fully covered by
+        // `set_user_and_enterprise_secret_regexes`; the telemetry-side
+        // defense-in-depth redact no longer serves a purpose since there's no
+        // outbound path left for it to protect.
     }
 }
 

@@ -439,8 +439,10 @@ impl Scene {
     // on its current layer. The intersection is then checked against the event position
     // to determine whether we should dispatch the event.
     pub fn visible_rect(&self, origin: Point, size: Vector2F) -> Option<RectF> {
-        // TODO:调查什么情况下会传入 scene 中不存在的 z-index。
-        // 历史崩溃样本显示这较常见,但不太影响正常使用;可能发生在 view teardown frame。
+        // TODO: investigate under what conditions a z-index that doesn't exist in
+        // the scene gets passed in.
+        // Historical crash samples show this is fairly common but doesn't much
+        // affect normal usage; may occur during a view teardown frame.
         let maybe_layer = match origin.z_index() {
             ZIndex::Normal(index) => self.layers.get(index),
             ZIndex::Overlay(index) => self.overlay_layers.get(index),

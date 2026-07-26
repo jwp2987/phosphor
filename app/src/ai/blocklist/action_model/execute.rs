@@ -362,7 +362,7 @@ impl BlocklistAIActionExecutor {
         _id: Option<AmbientAgentTaskId>,
         _ctx: &mut ModelContext<Self>,
     ) {
-        // Computer Use 已被移除,这里保留空实现以兼容调用点。
+        // Computer Use has been removed; this stays as an empty impl for call-site compatibility.
     }
 
     pub fn preprocess_action(
@@ -622,7 +622,7 @@ impl BlocklistAIActionExecutor {
             AnyActionExecution::InvalidAction => {
                 log::error!(
                     "[byop-diag] executor: InvalidAction action_id={action_id:?} \
-                     (走错 executor — wrong tool dispatch)"
+                     (wrong executor — wrong tool dispatch)"
                 );
                 debug_assert!(false, "Tried to execute AIAgentAction with wrong executor.");
                 TryExecuteResult::NotExecuted {

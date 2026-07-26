@@ -1,11 +1,14 @@
-//! UI 信号 marker 类工具:执行即"通知前端做某事",result 是固定 ack。
+//! UI-signal marker-style tools: executing them just means "notify the frontend to
+//! do something", and the result is a fixed ack.
 //!
-//! - `open_code_review`: 打开 Code Review 面板
-//! - `transfer_shell_command_control_to_user`: 把长运行命令的 PTY 控制权交给用户
+//! - `open_code_review`: open the Code Review panel
+//! - `transfer_shell_command_control_to_user`: hand PTY control of a long-running
+//!   command back to the user
 //!
-//! 这些工具的 protobuf 字段都很少(空 message 或一个字段),executor 大多是
-//! 直接转固定 result 的 marker 路径,client 端的实际副作用由 UI/Terminal
-//! 监听对应 ToolCall message 后触发。
+//! These tools' protobuf fields are minimal (an empty message or a single field);
+//! the executor mostly just takes the marker path that returns a fixed result
+//! directly, and the actual side effect on the client is triggered when the
+//! UI/Terminal listens for the corresponding ToolCall message.
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -58,7 +61,7 @@ pub static OPEN_CODE_REVIEW: OpenAiTool = OpenAiTool {
 
 #[derive(Debug, Deserialize)]
 struct TransferArgs {
-    /// 给用户看的解释:为什么要交还控制权。
+    /// Explanation shown to the user: why control is being handed back.
     #[serde(default)]
     reason: String,
 }

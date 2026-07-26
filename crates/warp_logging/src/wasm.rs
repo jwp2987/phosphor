@@ -169,7 +169,7 @@ impl Log for WasmLogger {
                             .line()
                             .map_or_else(|| "[Unknown]".to_string(), |line| line.to_string()),
                     );
-                    // 把错误日志发给宿主层做本地处理。
+                    // Send the error log to the host layer for local handling.
                     warp_web_event_bus::emit_event(warp_web_event_bus::WarpEvent::ErrorLogged {
                         error,
                     });

@@ -1,17 +1,23 @@
-//! Zap 本地身份 facade。
+//! Zap local identity facade.
 //!
-//! 该模块保留 `AuthState` / `AuthStateProvider` / `AuthManager` / `User` / `UserUid` /
-//! `Credentials` 等类型表面 + pub 方法签名,**所有方法体本地化**:
-//! - `is_logged_in()` / 各 `is_*` 谓词:固定返回本地用户对应的常量。
-//! - `user_id()`:返回基于 `TEST_USER_UID` 的常量 [`UserUid`]。
-//! - `username_for_display` / `display_name`:基于 [`User::test`] 占位元数据。
-//! - 外部账号回调触发点已下线,不再依赖远端账号客户端。
+//! This module keeps the type surface + pub method signatures of `AuthState` /
+//! `AuthStateProvider` / `AuthManager` / `User` / `UserUid` / `Credentials`, but
+//! **all method bodies are localized**:
+//! - `is_logged_in()` / the various `is_*` predicates: always return the constant
+//!   corresponding to the local user.
+//! - `user_id()`: returns a constant [`UserUid`] based on `TEST_USER_UID`.
+//! - `username_for_display` / `display_name`: based on placeholder metadata from
+//!   [`User::test`].
+//! - External-account callback entry points have been retired; nothing depends on
+//!   a remote account client anymore.
 //!
-//! 167 处 `crate::auth::AuthStateProvider::as_ref(ctx).get()` 调用一行不改即可继续编译,
-//! 运行时永远拿到"已登录、Free Tier 无限额"的本地占位状态。
+//! The 167 call sites of `crate::auth::AuthStateProvider::as_ref(ctx).get()` keep
+//! compiling with zero changes, and at runtime they always get a local placeholder
+//! state of "logged in, unlimited Free Tier".
 //!
-//! 物理删除清单见 README:21 个 UI / RPC / token 持久化 / web handoff /
-//! login_slide / paste_auth_token_modal / web_handoff 等文件随外部账号体系一并下线。
+//! See the README for the physical-deletion list: 21 UI / RPC / token-persistence /
+//! web-handoff files — login_slide / paste_auth_token_modal / web_handoff, etc. —
+//! were removed together with the external account system.
 
 use std::sync::Arc;
 
@@ -35,38 +41,44 @@ pub enum OwnerType {
     User,
 }
 
-/// Zap 本地 API key 前缀。
+/// Zap's local API key prefix.
 ///
-/// 历史上用于识别"以 wk- 开头的字符串为托管 API key",在 BYOP 路径上
-/// 已无托管账号 API key 概念。常量仍被 `AuthState::initialize` 内部消费 + 少量遗留
-/// 调用点匹配前缀,因此保留。
+/// Historically used to identify "strings starting with wk- as a managed API
+/// key"; there is no managed-account API key concept left on the BYOP path. The
+/// constant is still consumed internally by `AuthState::initialize` plus a
+/// handful of legacy call sites that match on the prefix, so it's kept.
 pub const API_KEY_PREFIX: &str = "wk-";
 
 // ---------- Credentials / AuthToken / LoginToken ----------
 //
-// 原来用于托管 token / API key / session cookie 几种认证方式的运行时分支。Zap
-// 本地化后只保留 `ApiKey` / `Test` 两种实际用得到的 variant。托管 token 与
-// cookie variant 已物理删除,所有原外部账号分支在 Zap 下永远走 `None` / 早 return。
+// Originally the runtime branch for a few authentication methods: managed
+// token / API key / session cookie. After Zap's localization, only the
+// `ApiKey` / `Test` variants that are actually used remain. The managed-token
+// and cookie variants have been physically deleted; all former
+// external-account branches under Zap always take the `None` path / return early.
 
-/// 表示用户与 Zap 的认证方式。
+/// Represents how a user authenticates with Zap.
 ///
-/// Zap 本地化分支:
-/// - `ApiKey`:BYOP 路径下用户自携 LLM provider API key,实际由 settings/keychain
-///   各自管理,这里只保留 enum facade 给 `AuthState::credentials()` 等读取方法。
-/// - `Test`:测试 / `skip_login` 构建下使用。
+/// Zap's localized branches:
+/// - `ApiKey`: on the BYOP path the user brings their own LLM provider API key,
+///   which is actually managed by settings/keychain respectively; this only
+///   keeps the enum facade for `AuthState::credentials()` and other read
+///   methods.
+/// - `Test`: used under test / `skip_login` builds.
 #[derive(Clone, Debug)]
 pub enum Credentials {
-    /// BYOP / Zap Inc API key,保留 owner_type 供旧代码读取(永远 `None`)。
+    /// BYOP / Zap Inc API key; keeps `owner_type` around for old code to read
+    /// (always `None`).
     ApiKey {
         key: String,
         owner_type: Option<OwnerType>,
     },
-    /// 测试 / `skip_login` 构建占位。
+    /// Test / `skip_login` build placeholder.
     Test,
 }
 
 impl Credentials {
-    /// 返回 API key 字符串(仅当 variant 为 [`Credentials::ApiKey`])。
+    /// Returns the API key string (only when the variant is [`Credentials::ApiKey`]).
     pub fn as_api_key(&self) -> Option<&str> {
         match self {
             Credentials::ApiKey { key, .. } => Some(key),
@@ -74,7 +86,7 @@ impl Credentials {
         }
     }
 
-    /// 返回 API key owner type(Zap 路径下永远 `None`)。
+    /// Returns the API key owner type (always `None` on the Zap path).
     pub fn api_key_owner_type(&self) -> Option<OwnerType> {
         match self {
             Credentials::ApiKey { owner_type, .. } => *owner_type,
@@ -82,9 +94,10 @@ impl Credentials {
         }
     }
 
-    /// 返回要写入 Authorization 头的 bearer token。
+    /// Returns the bearer token to write into the Authorization header.
     ///
-    /// 本地化后只有 `ApiKey` 产出真实值;`Test` 返回 [`AuthToken::NoAuth`]。
+    /// After localization only `ApiKey` produces a real value; `Test` returns
+    /// [`AuthToken::NoAuth`].
     pub fn bearer_token(&self) -> AuthToken {
         match self {
             Credentials::ApiKey { key, .. } => AuthToken::ApiKey(key.clone()),
@@ -93,17 +106,17 @@ impl Credentials {
     }
 }
 
-/// HTTP 请求头使用的短期 token。
+/// Short-lived token used in HTTP request headers.
 #[derive(Debug, Clone)]
 pub enum AuthToken {
-    /// BYOP / 平台层 API key。
+    /// BYOP / platform-layer API key.
     ApiKey(String),
-    /// 无任何 token(session cookie / test / Zap 本地模式)。
+    /// No token at all (session cookie / test / Zap local mode).
     NoAuth,
 }
 
 impl AuthToken {
-    /// 返回 bearer token 字符串(若有)。
+    /// Returns the bearer token string, if any.
     pub fn bearer_token(&self) -> Option<String> {
         match self {
             AuthToken::ApiKey(key) => Some(key.clone()),
@@ -111,7 +124,7 @@ impl AuthToken {
         }
     }
 
-    /// 返回 Authorization 头使用的 token 引用。
+    /// Returns a reference to the token used in the Authorization header.
     pub fn as_bearer_token(&self) -> Option<&str> {
         match self {
             AuthToken::ApiKey(key) => Some(key),
@@ -120,11 +133,12 @@ impl AuthToken {
     }
 }
 
-// ---------- User 元数据 ----------
+// ---------- User metadata ----------
 
-/// 匿名用户类型 facade。Zap 本地化后无匿名用户概念,保留 enum 是为了让
-/// 散落在 telemetry / settings 中的 match arm 仍能编译。所有 Zap 代码路径
-/// 均不会构造 `Some(AnonymousUserType::...)`。
+/// Anonymous user type facade. After Zap's localization there is no anonymous
+/// user concept; the enum is kept so match arms scattered across
+/// telemetry / settings still compile. No Zap code path ever constructs
+/// `Some(AnonymousUserType::...)`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AnonymousUserType {
     NativeClientAnonymousUser,
@@ -132,7 +146,7 @@ pub enum AnonymousUserType {
     WebClientAnonymousUser,
 }
 
-/// 认证 principal 类型 facade。Zap 永远等同 `User`。
+/// Auth principal type facade. Always equal to `User` under Zap.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PrincipalType {
     #[default]
@@ -140,8 +154,9 @@ pub enum PrincipalType {
     ServiceAccount,
 }
 
-/// 个人对象限额 facade(原匿名用户 Free Tier 限额)。Zap 永不构造此值,
-/// 但保留 struct 让消费方继续编译。
+/// Personal object limits facade (originally the anonymous user's Free Tier
+/// limits). Zap never constructs this value, but keeps the struct so
+/// consumers keep compiling.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct PersonalObjectLimits {
     pub env_var_limit: usize,
@@ -149,7 +164,8 @@ pub struct PersonalObjectLimits {
     pub workflow_limit: usize,
 }
 
-/// 用户元数据 facade,只保留少数字段供 telemetry / display 使用。
+/// User metadata facade; only keeps the handful of fields used by
+/// telemetry / display.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UserMetadata {
     pub email: String,
@@ -157,7 +173,7 @@ pub struct UserMetadata {
     pub photo_url: Option<String>,
 }
 
-/// 当前登录用户(本地占位)。
+/// The current logged-in user (local placeholder).
 #[derive(Debug, Clone)]
 pub struct User {
     pub local_id: UserUid,
@@ -172,7 +188,7 @@ pub struct User {
 }
 
 impl User {
-    /// 用于显示的用户名 — display_name 优先,否则 email。
+    /// Username for display — display_name takes priority, otherwise email.
     pub fn username_for_display(&self) -> &str {
         self.metadata
             .display_name
@@ -180,12 +196,12 @@ impl User {
             .unwrap_or(self.metadata.email.as_str())
     }
 
-    /// 用户显示名,不回退到 email。
+    /// The user's display name, without falling back to email.
     pub fn display_name(&self) -> Option<String> {
         self.metadata.display_name.clone()
     }
 
-    /// 测试/默认用户占位。Zap 在所有路径下都使用此用户。
+    /// Test/default user placeholder. Zap uses this user on every code path.
     pub fn test() -> Self {
         Self {
             local_id: UserUid::new(TEST_USER_UID),
@@ -204,7 +220,7 @@ impl User {
         }
     }
 
-    /// 用户是否匿名。Zap 永远返回 `false`。
+    /// Whether the user is anonymous. Zap always returns `false`.
     pub fn is_user_anonymous(&self) -> bool {
         false
     }
@@ -224,11 +240,11 @@ impl User {
 
 // ---------- AuthState ----------
 
-/// 当前认证状态(本地化 stub)。
+/// Current auth state (localized stub).
 ///
-/// 所有"是否登录、是否匿名、是否需要重新认证"的查询都返回固定值;
-/// `user_id()` 永远返回 `Some(UserUid::new(TEST_USER_UID))`。
-/// 167+ 个消费点零改动即可编译。
+/// All queries about "logged in, anonymous, needs reauth" return fixed values;
+/// `user_id()` always returns `Some(UserUid::new(TEST_USER_UID))`.
+/// All 167+ consumers compile with zero changes.
 pub struct AuthState {
     user: RwLock<Option<User>>,
     credentials: RwLock<Option<Credentials>>,
@@ -241,7 +257,7 @@ impl Default for AuthState {
 }
 
 impl AuthState {
-    /// 创建本地默认 AuthState(永远视为已登录的测试用户)。
+    /// Creates the local default AuthState (always treated as the logged-in test user).
     pub fn new() -> Self {
         Self {
             user: RwLock::new(Some(User::test())),
@@ -249,13 +265,14 @@ impl AuthState {
         }
     }
 
-    /// 测试场景下构造 AuthState(等价于 [`AuthState::new`])。
+    /// Constructs an AuthState for test scenarios (equivalent to [`AuthState::new`]).
     pub fn new_for_test() -> Self {
         Self::new()
     }
 
-    /// 初始化 AuthState。`api_key` 参数被忠实保留(BYOP 入口仍可能传入),
-    /// 但其他外部账号检查路径全部 no-op。
+    /// Initializes AuthState. The `api_key` parameter is faithfully kept (the
+    /// BYOP entry point may still pass one in), but every other external-account
+    /// check path is a no-op.
     #[cfg_attr(target_family = "wasm", allow(unused_variables))]
     pub fn initialize(_ctx: &AppContext, api_key: Option<String>) -> Self {
         let state = Self::new();
@@ -273,18 +290,18 @@ impl AuthState {
         state
     }
 
-    /// 用户是否已登录。Zap 永远 `true`。
+    /// Whether the user is logged in. Always `true` under Zap.
     pub fn is_logged_in(&self) -> bool {
         true
     }
 
-    /// 是否匿名或登出。Zap 永远 `false`。
+    /// Whether anonymous or logged out. Always `false` under Zap.
     pub fn is_anonymous_or_logged_out(&self) -> bool {
         false
     }
 
-    /// 返回缓存的 access token(忽略有效性)。Zap 路径下仅当用户挂了
-    /// `Credentials::ApiKey` 才有值。
+    /// Returns the cached access token (ignoring validity). Under Zap this only
+    /// has a value if the user has `Credentials::ApiKey` attached.
     pub fn get_access_token_ignoring_validity(&self) -> Option<String> {
         self.credentials
             .read()
@@ -338,7 +355,7 @@ impl AuthState {
         Some(false)
     }
 
-    /// Zap 本地用户永不会撞 Free Tier 限额。
+    /// Zap's local user can never hit the Free Tier limit.
     pub fn is_anonymous_user_past_object_limit(
         &self,
         _object_type: crate::cloud_object::ObjectType,
@@ -366,7 +383,7 @@ impl AuthState {
         None
     }
 
-    /// 标记用户为已 onboarded。
+    /// Marks the user as onboarded.
     pub fn set_is_onboarded(&self, is_onboarded: bool) {
         if let Some(user) = self.user.write().as_mut() {
             user.is_onboarded = is_onboarded;
@@ -377,19 +394,21 @@ impl AuthState {
         self.user.read().as_ref().map(|user| user.local_id)
     }
 
-    /// 返回 nil UUID 字符串。Zap 本地化后,该 ID 不再出现在
-    /// 任何外发 HTTP 头中,仅为给 telemetry 上下文 / session 头提供形式上的占位。
+    /// Returns the nil UUID string. After Zap's localization this ID no longer
+    /// appears in any outgoing HTTP header; it only serves as a formal
+    /// placeholder for telemetry context / session headers.
     pub fn anonymous_id(&self) -> String {
         Uuid::nil().to_string()
     }
 
-    /// 返回是否需要重新认证。Zap 永远 `false`。
+    /// Returns whether reauthentication is needed. Always `false` under Zap.
     pub fn needs_reauth(&self) -> bool {
         false
     }
 
-    /// 返回当前用户的 anonymous renotification block 是否过期。Zap 用户
-    /// 不被视作匿名用户,该函数返回 `false`(永不弹注册提示)。
+    /// Returns whether the current user's anonymous renotification block has
+    /// expired. Zap users aren't treated as anonymous users, so this function
+    /// returns `false` (the sign-up prompt is never shown).
     pub fn anonymous_user_renotification_block_expired(
         &self,
         _last_time_opt: Option<String>,
@@ -427,12 +446,13 @@ impl AuthState {
         self.credentials.read().as_ref()?.api_key_owner_type()
     }
 
-    /// 返回当前 credentials 的克隆。
+    /// Returns a clone of the current credentials.
     pub fn credentials(&self) -> Option<Credentials> {
         self.credentials.read().clone()
     }
 
-    /// 将本地 auth 状态恢复到本地占位用户的默认快照，用于 `log_out` 及本地重置路径。
+    /// Resets the local auth state back to the local placeholder user's default
+    /// snapshot; used by `log_out` and other local-reset paths.
     pub fn reset_local_defaults(&self) {
         *self.user.write() = Some(User::test());
         *self.credentials.write() = Some(Credentials::Test);
@@ -445,7 +465,7 @@ impl warp_managed_secrets::ActorProvider for AuthState {
     }
 }
 
-/// AuthState 的 singleton 包装。
+/// Singleton wrapper for AuthState.
 pub struct AuthStateProvider {
     auth_state: Arc<AuthState>,
 }
@@ -461,10 +481,11 @@ impl AuthStateProvider {
         }
     }
 
-    /// 构造一个"已登出"的 AuthState provider。
+    /// Constructs a "logged out" AuthState provider.
     ///
-    /// Zap 不再有真正的登出状态,本函数返回与 `new_for_test` 等价的
-    /// "已登录测试用户"provider,以保证旧测试代码继续编译。
+    /// Zap no longer has a real logged-out state; this function returns a
+    /// provider equivalent to `new_for_test` ("logged-in test user") so old
+    /// test code keeps compiling.
     pub fn new_logged_out_for_test() -> Self {
         Self::new_for_test()
     }
@@ -482,17 +503,21 @@ impl SingletonEntity for AuthStateProvider {}
 
 // ---------- AuthManager facade ----------
 
-/// 旧 UI 遗留的 "登录被门控 " 标识,作为字符串常量(原 `&'static str`)。
+/// A string-constant identifier for "login gated" left over from the old UI
+/// (originally an `&'static str`).
 pub type LoginGatedFeature = &'static str;
 
-/// `AuthManager::open_url_maybe_with_anonymous_token` 的 url 构造回调。
+/// URL-constructing callback for
+/// `AuthManager::open_url_maybe_with_anonymous_token`.
 ///
-/// 在原 UI 中,该回调会收到匿名用户 token 后拼装 出”打开浏览器 可附带身份“的 URL。
-/// Zap 下匿名身份不再存在,回调被丢弃。
+/// In the original UI, this callback would receive an anonymous user token and
+/// then assemble a URL that "opens a browser with identity attached". Under
+/// Zap, anonymous identity no longer exists, so the callback is discarded.
 pub type AnonymousTokenUrlBuilder = Box<dyn FnOnce(Option<&str>) -> String>;
 
-/// AuthView 变体 facade。Zap 已物理删 AuthView UI,所有派发点在 stub 中
-/// 仅产生 log,但 enum 表面保留供旧 `match` arm 编译通过。
+/// AuthView variant facade. Zap has physically deleted the AuthView UI; every
+/// dispatch site in the stub only produces a log, but the enum surface is kept
+/// so old `match` arms keep compiling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthViewVariant {
     Initial,
@@ -500,20 +525,23 @@ pub enum AuthViewVariant {
     ShareRequirementCloseable,
 }
 
-// ---------- UI view facade(原物理删 UI 的占位) ----------
+// ---------- UI view facade (placeholder for the physically-removed UI) ----------
 //
-// `root_view.rs` / `workspace/view.rs` 原本持有 6 个 `ViewHandle<T>` 字段,
-// 以及起源于这些 view 的事件。Wave 3-1 物理删 view body 后,保留这些
-// view + event enum facade使`ViewHandle<AuthView>` 类型、事件 match arm 、
-// `ctx.add_typed_action_view(AuthView::new)` 调用仍能编译。
+// `root_view.rs` / `workspace/view.rs` originally held 6 `ViewHandle<T>` fields,
+// plus events originating from those views. After Wave 3-1 physically removed
+// the view bodies, these view + event enum facades are kept so the
+// `ViewHandle<AuthView>` type, event match arms, and
+// `ctx.add_typed_action_view(AuthView::new)` call still compile.
 //
-// 运行时这些 view 代码路径仍会被创建但不渲染(`View::render` 返回 `Empty`)、
-// 事件不被触发(原 UI 交互点已不存在)。
+// At runtime these view code paths are still created but not rendered
+// (`View::render` returns `Empty`), and events are never triggered (the
+// original UI interaction points no longer exist).
 
 use warpui::elements::Empty;
 use warpui::{Element, View, ViewContext};
 
-/// AuthView facade。原 UI 包含《登录 / 注册》表单,本地化后已物理删除。
+/// AuthView facade. The original UI contained the "sign in / sign up" form;
+/// physically removed after localization.
 pub struct AuthView {
     variant: AuthViewVariant,
 }
@@ -527,12 +555,13 @@ impl AuthView {
         self.variant = variant;
     }
 
-    /// 返回当前 variant。Zap 路径下不使用。
+    /// Returns the current variant. Not used on the Zap path.
     pub fn variant(&self) -> AuthViewVariant {
         self.variant
     }
 
-    /// 原原生登录 UI 跳过 ”输入口令 “ 进 入后续 ”在浏览器中打开 “步。 Zap:no-op。
+    /// The original native login UI skipped the "enter passcode" step straight
+    /// into the following "open in browser" step. Zap: no-op.
     pub fn skip_to_browser_open_step(&mut self, _ctx: &mut ViewContext<Self>) {}
 }
 
@@ -560,7 +589,7 @@ pub enum AuthViewEvent {
     Close,
 }
 
-/// AuthOverrideWarningModal facade。
+/// AuthOverrideWarningModal facade.
 pub struct AuthOverrideWarningModal;
 
 impl AuthOverrideWarningModal {
@@ -600,7 +629,7 @@ pub enum AuthOverrideWarningModalVariant {
     WorkspaceModal,
 }
 
-/// NeedsSsoLinkView facade。
+/// NeedsSsoLinkView facade.
 pub struct NeedsSsoLinkView;
 
 impl NeedsSsoLinkView {
@@ -636,7 +665,7 @@ impl warpui::TypedActionView for NeedsSsoLinkView {
     fn handle_action(&mut self, _action: &(), _ctx: &mut ViewContext<Self>) {}
 }
 
-/// WebHandoffView facade (wasm-only 重新登录入口)。
+/// WebHandoffView facade (wasm-only re-login entry point).
 pub struct WebHandoffView;
 
 impl WebHandoffView {
@@ -664,8 +693,9 @@ pub enum WebHandoffEvent {
     Unsupported,
 }
 
-/// AuthManager 事件 facade。`AuthManagerEvent::AuthComplete` 仍可被
-/// `AuthManager::new` 内部触发以兼容部分订阅方对"已认证"信号的依赖。
+/// AuthManager event facade. `AuthManagerEvent::AuthComplete` can still be
+/// triggered internally by `AuthManager::new` to remain compatible with some
+/// subscribers that depend on an "authenticated" signal.
 #[derive(Debug)]
 pub enum AuthManagerEvent {
     AuthComplete,
@@ -675,12 +705,13 @@ pub enum AuthManagerEvent {
     AttemptedLoginGatedFeature {
         auth_view_variant: AuthViewVariant,
     },
-    /// 低频 失败:同上。
+    /// Low-frequency failure: same as above.
     CreateAnonymousUserFailed,
 }
 
-/// 用户认证错误 facade。少量订阅方仍 match 各 variant,因此保留 enum;
-/// Zap 不再触发任何 variant 的构造。
+/// User authentication error facade. A handful of subscribers still match on
+/// each variant, so the enum is kept; Zap no longer triggers construction of
+/// any variant.
 #[derive(Debug, thiserror::Error)]
 pub enum UserAuthenticationError {
     #[error("Access token denied")]
@@ -695,59 +726,66 @@ pub enum UserAuthenticationError {
     Unexpected(anyhow::Error),
 }
 
-/// 服务端持久化的用户隐私设置 facade,仍被 `settings/privacy.rs` 消费。
+/// Server-persisted user privacy settings facade, still consumed by
+/// `settings/privacy.rs`.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct SyncedUserSettings {
     pub is_crash_reporting_enabled: bool,
     pub is_telemetry_enabled: bool,
 }
 
-/// 持久化在 SQLite `current_user_information` 表里的当前用户信息。
-/// `persistence/sqlite.rs` 与 `persistence/mod.rs` 仍消费该 struct,保留。
+/// Current user info persisted in the SQLite `current_user_information` table.
+/// `persistence/sqlite.rs` and `persistence/mod.rs` still consume this struct,
+/// so it's kept.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedCurrentUserInformation {
     pub email: String,
 }
 
-/// AuthManager facade。Zap 本地化后所有外部账号/RPC 入口都成为 no-op,
-/// `AuthManager` 仍作为 singleton 模型挂在 App 中,以保证 `subscribe_to_model` /
-/// `handle(ctx).update(...)` 调用 0 改动,同时保留本地身份 / onboarded 标记 /
-/// logout reset 语义。
+/// AuthManager facade. After Zap's localization every external-account/RPC
+/// entry point becomes a no-op. `AuthManager` is still mounted as a singleton
+/// model on the App, to keep `subscribe_to_model` / `handle(ctx).update(...)`
+/// calls at zero changes, while retaining the local identity / onboarded flag /
+/// logout reset semantics.
 pub struct AuthManager {
     auth_state: Arc<AuthState>,
 }
 
 impl AuthManager {
-    /// 创建 AuthManager。本地化后不再接受外部账号客户端参数。
+    /// Creates the AuthManager. After localization it no longer accepts an
+    /// external-account client parameter.
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
         let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
         Self { auth_state }
     }
 
-    /// 测试场景构造,与 [`Self::new`] 等价。
+    /// Constructs for test scenarios, equivalent to [`Self::new`].
     pub fn new_for_test(ctx: &mut ModelContext<Self>) -> Self {
         Self::new(ctx)
     }
 
-    /// 刷新当前用户态。
+    /// Refreshes the current user state.
     ///
-    /// 历史上这里会走云端 token 刷新;Zap 本地化后认证状态在启动时已完成
-    /// 本地初始化,不再发任何外部账号请求。
+    /// Historically this would refresh a cloud token; after Zap's localization,
+    /// the auth state has already completed local initialization at startup, so
+    /// no external-account request is sent anymore.
     pub fn refresh_user(&self, _ctx: &mut ModelContext<Self>) {}
 
-    /// 主动登出。
+    /// Actively logs out.
     ///
-    /// Zap 不再进入“云端已登出”状态,这里仅把本地身份快照恢复成默认占位用户,
-    /// 供设置重置 / 会话清理等调用点复用。
+    /// Zap no longer enters a "logged out in the cloud" state; this simply
+    /// resets the local identity snapshot back to the default placeholder user,
+    /// for reuse by settings-reset / session-cleanup call sites, etc.
     pub(crate) fn log_out(&mut self, _ctx: &mut ModelContext<Self>) {
         self.auth_state.reset_local_defaults();
-        log::debug!("AuthManager::log_out 已本地 reset: 已切换为本地占位用户态");
+        log::debug!("AuthManager::log_out performed a local reset: switched to the local placeholder user state");
     }
 
-    /// 标记需要重新认证。本地化:no-op。
+    /// Marks that reauthentication is needed. Localized: no-op.
     pub fn set_needs_reauth(&mut self, _new_value: bool, _ctx: &mut ModelContext<Self>) {}
 
-    /// 创建匿名用户。本地化:no-op,直接发出 `AuthComplete` 让 onboarding 流推进。
+    /// Creates an anonymous user. Localized: no-op — directly emits
+    /// `AuthComplete` so the onboarding flow can proceed.
     pub fn create_anonymous_user(
         &mut self,
         _referral_code: Option<String>,
@@ -756,7 +794,8 @@ impl AuthManager {
         ctx.emit(AuthManagerEvent::AuthComplete);
     }
 
-    /// 派发"匿名用户尝试触碰登录门控功能"。本地化:no-op。
+    /// Dispatches "an anonymous user attempted to touch a login-gated feature".
+    /// Localized: no-op.
     pub fn attempt_login_gated_feature(
         &mut self,
         _feature: LoginGatedFeature,
@@ -765,10 +804,10 @@ impl AuthManager {
     ) {
     }
 
-    /// 匿名用户撞 Drive 限额提醒。本地化:no-op。
+    /// An anonymous user hit the Drive object limit reminder. Localized: no-op.
     pub fn anonymous_user_hit_drive_object_limit(&mut self, _ctx: &mut ModelContext<Self>) {}
 
-    /// 启动匿名用户 → 完整用户的浏览器登录链路。本地化:no-op。
+    /// Starts the anonymous-user-to-full-user browser login flow. Localized: no-op.
     pub fn initiate_anonymous_user_linking(
         &mut self,
         _entrypoint: crate::server::telemetry::AnonymousUserSignupEntrypoint,
@@ -776,17 +815,19 @@ impl AuthManager {
     ) {
     }
 
-    /// 用户引导走完后置本地 onboarded 标记。
+    /// Sets the local onboarded flag once the user finishes onboarding.
     pub fn set_user_onboarded(&mut self, ctx: &mut ModelContext<Self>) {
         self.auth_state.set_is_onboarded(true);
         ctx.emit(AuthManagerEvent::AuthComplete);
     }
 
-    // ---------- URL 构造 facade ----------
+    // ---------- URL-construction facade ----------
     //
-    // 旧 UI(login_slide / paste_auth_token_modal / auth_view_modal)在物理删除前
-    // 会调用这些方法以填充历史登录提示链接;Zap 不再打开 Zap 云登录页。
-    // 物理删 UI 后已无调用方,但 enum/trait 仍可能被反射式消费,保留 stub。
+    // Before their physical removal, the old UI (login_slide /
+    // paste_auth_token_modal / auth_view_modal) called these methods to fill in
+    // legacy sign-in prompt links; Zap no longer opens the Zap cloud sign-in page.
+    // There are no callers left after the physical UI removal, but the
+    // enum/trait may still be consumed reflectively, so the stub is kept.
 
     pub fn sign_up_url(&self) -> String {
         String::new()
@@ -808,7 +849,8 @@ impl AuthManager {
         String::new()
     }
 
-    /// 用浏览器打开 url,可选附带匿名 token。本地化:no-op。
+    /// Opens a URL in the browser, optionally attaching an anonymous token.
+    /// Localized: no-op.
     pub fn open_url_maybe_with_anonymous_token(
         &mut self,
         _ctx: &mut ModelContext<Self>,
@@ -816,7 +858,7 @@ impl AuthManager {
     ) {
     }
 
-    /// 复制匿名用户登录链接到剪贴板。本地化:no-op。
+    /// Copies the anonymous user's login link to the clipboard. Localized: no-op.
     pub fn copy_anonymous_user_linking_url_to_clipboard(&mut self, _ctx: &mut ModelContext<Self>) {}
 }
 
@@ -826,11 +868,12 @@ impl Entity for AuthManager {
 
 impl SingletonEntity for AuthManager {}
 
-// ---------- 全模块 init ----------
+// ---------- Whole-module init ----------
 
-/// Zap 本地身份 facade 的 init(no-op)。
+/// Init for Zap's local identity facade (no-op).
 ///
-/// 原 `init` 中挂载的 `init` / `auth_view_body::init` /
-/// `auth_override_warning_body::init` / `login_slide::init` /
-/// `paste_auth_token_modal::init` 子模块均已物理删除。
+/// The sub-modules originally mounted in `init` — `init` /
+/// `auth_view_body::init` / `auth_override_warning_body::init` /
+/// `login_slide::init` / `paste_auth_token_modal::init` — have all been
+/// physically removed.
 pub fn init(_app: &mut AppContext) {}

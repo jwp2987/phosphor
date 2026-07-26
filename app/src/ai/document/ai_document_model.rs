@@ -50,12 +50,12 @@ struct AIDocumentSaveRequest {
 
 /// The status of saving an AI Document.
 ///
-/// openWarp 中 plan 只写本地 SQLite,不写云端 Drive,因此
-/// 只保留 `Saved` / `NotSaved` 两种状态。
+/// In openWarp, the plan only writes to local SQLite, never to cloud Drive, so only
+/// the `Saved` / `NotSaved` states are kept.
 pub enum AIDocumentSaveStatus {
-    /// 已保存到本地 SQLite
+    /// Saved to local SQLite
     Saved,
-    /// 未保存（仅用于无文档时的兜底）
+    /// Not saved (only used as a fallback when there's no document)
     NotSaved,
 }
 
@@ -187,12 +187,12 @@ impl AIDocumentModel {
         }
     }
 
-    /// 返回文档的本地保存状态。在 openWarp 下只要文档还存在内存中,
-    /// 其 markdown 内容就已由 throttle save 通道写入 SQLite 了,
-    /// 因此始终为 `Saved`。
+    /// Returns the document's local save status. Under openWarp, as long as the
+    /// document still exists in memory, its markdown content has already been
+    /// written to SQLite via the throttle-save channel, so this is always `Saved`.
     pub fn get_document_save_status(&self, id: &AIDocumentId) -> AIDocumentSaveStatus {
-        // openWarp 不使用云端同步；Plan 内容已自动写入本地 SQLite，
-        // 文档存在即视为已保存。
+        // openWarp doesn't use cloud sync; the plan content has already been
+        // auto-written to local SQLite, so the document existing is treated as saved.
         if self.documents.contains_key(id) {
             AIDocumentSaveStatus::Saved
         } else {
@@ -225,9 +225,10 @@ impl AIDocumentModel {
 
     /// Create a document from an existing local AI document id and content.
     ///
-    /// openWarp 本地化:原 `create_document_from_notebook` 依赖云 notebook 提供
-    /// title + sync_id;本地路径只需要 id + content,仅用于「会话恢复
-    /// 时 plan 不在内存中」的占位重建。
+    /// openWarp localization: the original `create_document_from_notebook` depended
+    /// on the cloud notebook to provide title + sync_id; the local path only needs
+    /// id + content, used only to rebuild a placeholder for "the plan isn't in
+    /// memory on session restore".
     pub fn create_document_with_id(
         &mut self,
         ai_document_id: AIDocumentId,
@@ -709,7 +710,7 @@ impl AIDocumentModel {
                 version,
                 source,
             });
-            // openWarp 本地化:不再向云 notebook 推送新版本内容,全走本地 SQLite。
+            // openWarp localization: no longer pushes new version content to the cloud notebook; everything goes through local SQLite.
             Some(version)
         } else {
             None
@@ -737,7 +738,7 @@ impl AIDocumentModel {
             ctx,
         );
 
-        // openWarp 本地化:plan 只存本地 SQLite,不再从云 notebook 反查 sync_id。
+        // openWarp localization: the plan is only stored in local SQLite; sync_id is no longer looked up from the cloud notebook.
     }
 
     /// This is used for restoring EditDocuments results where we already have the final content.
@@ -814,7 +815,7 @@ impl AIDocumentModel {
             .copied()
             .unwrap_or(false)
         {
-            // openWarp 本地化:不再向云 notebook 推送内容,只写本地 SQLite。
+            // openWarp localization: no longer pushes content to the cloud notebook; only writes to local SQLite.
             self.persist_content_to_sqlite(&request.document_id, ctx);
             self.content_dirty_flags.insert(request.document_id, false);
         }

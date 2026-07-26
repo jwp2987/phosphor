@@ -1,11 +1,13 @@
-//! Exa MCP wire 协议(纯逻辑,不含 HTTP I/O)。
+//! Exa MCP wire protocol (pure logic, no HTTP I/O).
 //!
-//! 镜像 opencode `packages/opencode/src/tool/mcp-exa.ts`:
-//! - 端点:`https://mcp.exa.ai/mcp`(默认匿名)或带 `?exaApiKey=...`
-//! - 协议:JSON-RPC 2.0 POST,`Accept: application/json, text/event-stream`
-//! - 响应:SSE,逐行扫描 `data: ` 前缀,解析 `result.content[0].text`
+//! Mirrors opencode's `packages/opencode/src/tool/mcp-exa.ts`:
+//! - Endpoint: `https://mcp.exa.ai/mcp` (anonymous by default) or with `?exaApiKey=...`
+//! - Protocol: JSON-RPC 2.0 POST, `Accept: application/json, text/event-stream`
+//! - Response: SSE, scanning line by line for the `data: ` prefix, parsing
+//!   `result.content[0].text`
 //!
-//! 所有 HTTP 调用在 `web_runtime.rs` 里;本模块只负责构造请求 body 和解析响应字符串。
+//! All HTTP calls live in `web_runtime.rs`; this module is only responsible for
+//! building the request body and parsing the response string.
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -14,7 +16,8 @@ use serde_json::Value;
 pub const EXA_BASE_URL: &str = "https://mcp.exa.ai/mcp";
 pub const SEARCH_TOOL_NAME: &str = "web_search_exa";
 
-/// 拼出最终的 Exa 端点 URL。`api_key=Some` 时把 key 拼到 querystring(percent-encode)。
+/// Build the final Exa endpoint URL. When `api_key` is `Some`, the key is appended
+/// to the querystring (percent-encoded).
 pub fn endpoint_url(api_key: Option<&str>) -> String {
     match api_key {
         Some(k) if !k.trim().is_empty() => {
@@ -25,7 +28,7 @@ pub fn endpoint_url(api_key: Option<&str>) -> String {
     }
 }
 
-/// `web_search_exa` 入参(直接发给 Exa)。
+/// `web_search_exa` input args (sent directly to Exa).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SearchArgs {
     pub query: String,
@@ -44,7 +47,7 @@ pub struct SearchArgs {
 }
 
 impl SearchArgs {
-    /// opencode 默认值(websearch.ts:54-58)。
+    /// opencode's default values (websearch.ts:54-58).
     pub fn with_defaults(query: String) -> Self {
         Self {
             query,
@@ -56,7 +59,8 @@ impl SearchArgs {
     }
 }
 
-/// JSON-RPC 2.0 `tools/call` 请求 body。`id` 固定为 1(单次调用,不需要 id 区分)。
+/// JSON-RPC 2.0 `tools/call` request body. `id` is fixed at 1 (single call, no
+/// need to distinguish by id).
 pub fn build_request_body(tool_name: &str, args: &SearchArgs) -> Value {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -69,10 +73,12 @@ pub fn build_request_body(tool_name: &str, args: &SearchArgs) -> Value {
     })
 }
 
-/// 解析 Exa SSE 响应:扫描每一行,首个 `data: ` 行 JSON parse 后取 `result.content[0].text`。
+/// Parse an Exa SSE response: scan each line, and once the first `data: ` line is
+/// JSON-parsed, take `result.content[0].text`.
 ///
-/// 返回 `Ok(Some(text))` = 找到内容;`Ok(None)` = 没有任何 content(空结果);
-/// `Err` = data 行存在但 JSON 解析失败 / 结构不符。
+/// Returns `Ok(Some(text))` if content was found; `Ok(None)` if there's no content
+/// at all (empty result); `Err` if a data line exists but JSON parsing failed / the
+/// structure doesn't match.
 pub fn parse_sse_body(body: &str) -> Result<Option<String>> {
     let mut last_err: Option<anyhow::Error> = None;
     for line in body.split('\n') {
@@ -91,7 +97,7 @@ pub fn parse_sse_body(body: &str) -> Result<Option<String>> {
                 if let Some(text) = extract_first_text(&v) {
                     return Ok(Some(text));
                 }
-                // data: 行解析了但没 content,继续看下一条
+                // The data: line parsed but had no content, keep looking at the next one
             }
             Err(e) => {
                 last_err = Some(anyhow!("invalid Exa SSE JSON payload: {e}"));

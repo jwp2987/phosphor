@@ -189,13 +189,14 @@ pub(crate) struct Props<'a> {
     pub(super) ask_user_question_view: Option<&'a ViewHandle<AskUserQuestionView>>,
 }
 
-/// T1-2: 已成功完成的 tool action 卡片是否应被隐藏。
-/// 对齐 opencode TUI 的 `showDetails` 默认行为 — 只显示 in-progress / error / cancelled,
-/// 完成成功的卡片折叠掉,长 session 不被堆积淹没。
+/// T1-2: whether a successfully-completed tool action card should be hidden.
+/// Matches opencode TUI's `showDetails` default behavior — only show in-progress /
+/// error / cancelled, and collapse successfully-completed cards so long sessions
+/// don't get buried under a pile of them.
 ///
-/// **不隐藏**:
-/// - failed / cancelled action(用户需要看到错误才能 retry)
-/// - 仍在 streaming 中的卡片(状态未稳定)
+/// **Not hidden**:
+/// - failed / cancelled actions (the user needs to see the error to retry)
+/// - cards still streaming (state not yet settled)
 fn should_hide_completed_action(
     action_model: &ModelHandle<BlocklistAIActionModel>,
     id: &AIAgentActionId,
@@ -208,7 +209,7 @@ fn should_hide_completed_action(
     let Some(status) = action_model.as_ref(app).get_action_status(id) else {
         return false;
     };
-    // 只藏 success;failed/cancelled 仍要看到。
+    // Only hide success; failed/cancelled should still be visible.
     status.is_success()
 }
 
@@ -395,7 +396,7 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                 should_render_suggestions = false;
                             }
 
-                            // T1-2:已成功完成的卡片可隐藏(失败/取消仍显示)。
+                            // T1-2: a successfully-completed card can be hidden (failed/cancelled still show).
                             if should_hide_completed_action(
                                 props.action_model,
                                 id,

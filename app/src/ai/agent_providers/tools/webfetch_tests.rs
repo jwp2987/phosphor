@@ -1,4 +1,4 @@
-//! `web_runtime::run_webfetch` 单测(mockito,无外网)。
+//! Unit tests for `web_runtime::run_webfetch` (mockito, no outbound network).
 
 use super::*;
 use mockito::{Matcher, Server};
@@ -18,7 +18,7 @@ fn args(url: &str) -> FetchArgs {
 }
 
 // ---------------------------------------------------------------------------
-// URL 验证（纯逻辑，无 HTTP）
+// URL validation (pure logic, no HTTP)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -49,12 +49,13 @@ async fn rejects_http_urls() {
 }
 
 // ---------------------------------------------------------------------------
-// 内容类型分支 — 直接调用 send_fetch，因为 mockito 只提供 HTTP
+// Content-type branches — calls send_fetch directly, since mockito only serves HTTP
 // ---------------------------------------------------------------------------
 
-/// 辅助函数：对 mockito 服务器执行类似 webfetch 的流程，跳过 HTTPS 检查
-/// （mockito 只提供 HTTP）。测试内容处理管道，不经过 URL scheme 校验。
-/// 复用 `response_to_fetch_output` 以避免与生产逻辑漂移。
+/// Helper: runs a webfetch-like flow against the mockito server, skipping the HTTPS check
+/// (mockito only serves HTTP). Tests the content-processing pipeline without going through
+/// URL scheme validation. Reuses `response_to_fetch_output` to avoid drifting from
+/// production logic.
 async fn run_webfetch_test(
     server_url: &str,
     path: &str,
@@ -179,7 +180,7 @@ async fn image_attachment_base64() {
 }
 
 // ---------------------------------------------------------------------------
-// format 参数
+// format parameter
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -219,7 +220,7 @@ async fn format_text_strips_html() {
     assert!(out.output.contains("Two"));
     assert!(
         !out.output.contains("alert(1)"),
-        "script 内容应被剥离: {}",
+        "script content should be stripped: {}",
         out.output
     );
     assert_eq!(out.format, "text");
@@ -261,7 +262,7 @@ async fn accept_header_negotiation_for_markdown() {
 }
 
 // ---------------------------------------------------------------------------
-// 大小 / 状态
+// Size / status
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -298,7 +299,7 @@ async fn http_error_status_propagates() {
 }
 
 // ---------------------------------------------------------------------------
-// SSRF：is_blocked_ip 覆盖测试
+// SSRF: is_blocked_ip coverage tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -311,22 +312,22 @@ fn blocked_ip_ipv4_basics() {
         "192.168.1.1",
         "169.254.1.1",
         "0.0.0.0",
-        "0.0.0.1",       // 0.0.0.0/8 本主机范围
-        "0.255.255.255", // 0.0.0.0/8 上界
+        "0.0.0.1",       // 0.0.0.0/8 "this host" range
+        "0.255.255.255", // 0.0.0.0/8 upper bound
         "255.255.255.255",
         "100.64.0.1",      // CGNAT
         "192.0.2.1",       // TEST-NET-1
         "198.51.100.1",    // TEST-NET-2
         "203.0.113.1",     // TEST-NET-3
-        "198.18.0.1",      // 性能测试地址
-        "224.0.0.1",       // 组播
-        "239.255.255.255", // 组播上界
-        "240.0.0.1",       // 保留地址
+        "198.18.0.1",      // benchmarking range
+        "224.0.0.1",       // multicast
+        "239.255.255.255", // multicast upper bound
+        "240.0.0.1",       // reserved range
     ] {
         let ip: IpAddr = blocked.parse().unwrap();
         assert!(is_blocked_ip(ip), "should block {blocked}");
     }
-    // 公网 IP 不能被误拦截。
+    // Public IPs must not be blocked by mistake.
     for allowed in ["8.8.8.8", "1.1.1.1", "93.184.216.34"] {
         let ip: IpAddr = allowed.parse().unwrap();
         assert!(!is_blocked_ip(ip), "should allow {allowed}");
@@ -336,7 +337,7 @@ fn blocked_ip_ipv4_basics() {
 #[test]
 fn blocked_ip_ipv4_mapped_ipv6() {
     use std::net::IpAddr;
-    // ::ffff:127.0.0.1 是 IPv4-mapped IPv6，必须按 IPv4 loopback 拦截。
+    // ::ffff:127.0.0.1 is IPv4-mapped IPv6 and must be blocked as an IPv4 loopback.
     let mapped_loopback: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
     assert!(
         is_blocked_ip(mapped_loopback),
@@ -355,7 +356,7 @@ fn blocked_ip_ipv4_mapped_ipv6() {
         "::ffff:169.254.1.1 must be blocked"
     );
 
-    // ::ffff:8.8.8.8 对应公网 IPv4，不能被误拦截。
+    // ::ffff:8.8.8.8 maps to a public IPv4 address and must not be blocked by mistake.
     let mapped_public: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
     assert!(
         !is_blocked_ip(mapped_public),
@@ -371,36 +372,38 @@ fn blocked_ip_ipv6_ranges() {
         "::",          // unspecified
         "fc00::1",     // unique-local
         "fe80::1",     // link-local
-        "ff00::1",     // 组播
-        "2001:db8::1", // 文档示例地址
+        "ff00::1",     // multicast
+        "2001:db8::1", // documentation example range
     ] {
         let ip: IpAddr = blocked.parse().unwrap();
         assert!(is_blocked_ip(ip), "should block {blocked}");
     }
-    // 公网 IPv6 不能被误拦截。
+    // Public IPv6 must not be blocked by mistake.
     let public: IpAddr = "2606:4700:4700::1111".parse().unwrap();
     assert!(!is_blocked_ip(public), "public IPv6 should be allowed");
 }
 
 // ---------------------------------------------------------------------------
-// SSRF 重定向保护
+// SSRF redirect protection
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn ssrf_safe_client_builds_with_redirect_policy() {
     let client = build_ssrf_safe_client().expect("build client");
-    // 验证客户端能使用自定义 SSRF 重定向策略和 DNS 解析器成功构建。
-    // TODO: mockito 支持重定向后，补充真正的内部 IP 重定向集成测试。
+    // Verifies the client can be built successfully with the custom SSRF redirect policy and
+    // DNS resolver.
+    // TODO: once mockito supports redirects, add a real internal-IP redirect integration test.
     assert!(client.get("https://example.invalid").build().is_ok());
 }
 
 // ---------------------------------------------------------------------------
-// FetchOutput 序列化测试
+// FetchOutput serialization tests
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// 真实端点 smoke 测试默认跳过，避免 CI 或离线开发环境依赖外网。
-// 需要手动验证真实端点时设置 WARP_RUN_WEB_INTEGRATION=1。
+// Real-endpoint smoke tests are skipped by default, to avoid CI or offline dev environments
+// depending on outbound network. Set WARP_RUN_WEB_INTEGRATION=1 to verify against real
+// endpoints manually.
 // ---------------------------------------------------------------------------
 
 fn skip_real() -> bool {
@@ -474,11 +477,11 @@ async fn real_httpbin_404_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// 描述文档 / opencode 字节级对齐回归
+// Description doc / opencode byte-level alignment regression
 // ---------------------------------------------------------------------------
 
-/// 锁住 webfetch.md 与 opencode `packages/opencode/src/tool/webfetch.txt`
-/// 字节级一致。修改时需同步两边。
+/// Locks webfetch.md to be byte-for-byte identical to opencode's
+/// `packages/opencode/src/tool/webfetch.txt`. Keep both sides in sync when editing.
 #[test]
 fn webfetch_description_matches_opencode_verbatim() {
     use super::super::webfetch::WEBFETCH;
@@ -511,14 +514,14 @@ fn fetch_output_omits_empty_attachments_in_json() {
     let v = fetch_output_to_json(&out);
     assert!(
         v.get("attachments").is_none(),
-        "空 attachments 应被 skip: {v}"
+        "empty attachments should be skipped: {v}"
     );
     assert_eq!(v["output"], "hi");
 }
 
-/// `_byop_intercepted` sentinel 必须存在于所有 web tool result（包括 error）中，
-/// 否则 controller（`controller.rs::needs_byop_local_resume`）不会触发 auto-resume，
-/// 模型会卡在等待结果，UI 显示静默失败。
+/// The `_byop_intercepted` sentinel must be present in every web tool result (including
+/// errors), otherwise the controller (`controller.rs::needs_byop_local_resume`) won't trigger
+/// auto-resume — the model gets stuck waiting for a result and the UI shows a silent failure.
 #[test]
 fn fetch_output_carries_byop_sentinel() {
     let out = FetchOutput {

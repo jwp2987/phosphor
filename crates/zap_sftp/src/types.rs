@@ -1,13 +1,13 @@
-//! SFTP 协议层公共类型定义
+//! SFTP protocol-layer public type definitions
 //!
-//! 定义文件类型、元数据、打开选项、重命名选项、目录条目等类型，
-//! 提供从 ssh2 原始类型到高层类型的转换。
+//! Defines types like file type, metadata, open options, rename options,
+//! directory entry, etc., and provides conversion from raw ssh2 types to higher-level types.
 //! author: logic
 //! date: 2026-05-31
 
 use std::path::PathBuf;
 
-/// 文件类型
+/// File type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
     Dir,
@@ -17,7 +17,7 @@ pub enum FileType {
 }
 
 impl FileType {
-    /// 从 unix 权限 mode 位解析文件类型
+    /// Parses the file type from unix permission mode bits
     pub fn from_mode(mode: u32) -> Self {
         match mode & 0o170000 {
             0o040000 => FileType::Dir,
@@ -28,7 +28,7 @@ impl FileType {
     }
 }
 
-/// 文件权限（Unix 风格）
+/// File permissions (Unix style)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FilePermissions {
     pub owner_read: bool,
@@ -43,7 +43,7 @@ pub struct FilePermissions {
 }
 
 impl FilePermissions {
-    /// 从 unix mode 位解析权限
+    /// Parses permissions from unix mode bits
     pub fn from_mode(mode: u32) -> Self {
         Self {
             owner_read: mode & 0o400 != 0,
@@ -59,7 +59,7 @@ impl FilePermissions {
     }
 }
 
-/// 文件元数据
+/// File metadata
 #[derive(Debug, Clone)]
 pub struct Metadata {
     pub file_type: FileType,
@@ -72,7 +72,7 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    /// 从 ssh2::FileStat 创建
+    /// Creates from an ssh2::FileStat
     pub fn from_ssh2(m: ssh2::FileStat) -> Self {
         let file_type = FileType::from_mode(m.perm.unwrap_or(0));
         Self {
@@ -91,21 +91,21 @@ impl Metadata {
     }
 }
 
-/// 写入模式
+/// Write mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteMode {
     Write,
     Append,
 }
 
-/// 打开文件类型
+/// Open file type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenFileType {
     File,
     Dir,
 }
 
-/// 文件打开选项
+/// File open options
 #[derive(Debug, Clone)]
 pub struct OpenOptions {
     pub read: bool,
@@ -117,7 +117,7 @@ pub struct OpenOptions {
 }
 
 impl OpenOptions {
-    /// 只读模式
+    /// Read-only mode
     pub fn read() -> Self {
         Self {
             read: true,
@@ -129,7 +129,7 @@ impl OpenOptions {
         }
     }
 
-    /// 写入模式（创建+截断）
+    /// Write mode (create + truncate)
     pub fn write() -> Self {
         Self {
             read: false,
@@ -141,7 +141,7 @@ impl OpenOptions {
         }
     }
 
-    /// 追加模式
+    /// Append mode
     pub fn append() -> Self {
         Self {
             read: false,
@@ -153,7 +153,7 @@ impl OpenOptions {
         }
     }
 
-    /// 创建新文件模式
+    /// Create-new-file mode
     pub fn create_new() -> Self {
         Self {
             read: false,
@@ -166,7 +166,7 @@ impl OpenOptions {
     }
 }
 
-/// 重命名选项
+/// Rename options
 #[derive(Debug, Clone, Default)]
 pub struct RenameOptions {
     pub overwrite: bool,
@@ -174,7 +174,7 @@ pub struct RenameOptions {
     pub native: bool,
 }
 
-/// 目录条目
+/// Directory entry
 #[derive(Debug, Clone)]
 pub struct DirEntry {
     pub name: String,

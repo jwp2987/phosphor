@@ -1,27 +1,30 @@
-//! BYOP (Bring Your Own Provider) 的 `LLMId` 前缀编解码。
+//! `LLMId` prefix encoding/decoding for BYOP (Bring Your Own Provider).
 //!
-//! 自定义 Agent 提供商的模型在 `LLMId` 字符串里用前缀 `byop:` 区分,
-//! 以便 controller 在请求出口判断该走 warp 后端还是用户自己的 OpenAI 兼容端点。
+//! Custom Agent provider models are distinguished in the `LLMId` string by the
+//! `byop:` prefix, so the controller can decide at the request egress point whether
+//! to route to the warp backend or the user's own OpenAI-compatible endpoint.
 //!
-//! 编码格式: `byop:<provider_id>:<model_id>`
-//! - `provider_id` 是 `AgentProvider.id`(UUID)
-//! - `model_id` 是 `AgentProviderModel.id`(发给上游 API 的 `model` 字段值)
+//! Encoding format: `byop:<provider_id>:<model_id>`
+//! - `provider_id` is `AgentProvider.id` (a UUID)
+//! - `model_id` is `AgentProviderModel.id` (the value sent as the `model` field to
+//!   the upstream API)
 //!
-//! 示例: `byop:6f3b...:deepseek-chat`
+//! Example: `byop:6f3b...:deepseek-chat`
 //!
-//! `provider_id` 是 UUID 不含冒号,`model_id` 可能含冒号(部分上游存在 `vendor:model` 风格的命名),
-//! 因此 split 时只在第一个冒号处拆。
+//! `provider_id` is a UUID and contains no colons, while `model_id` may contain
+//! colons (some upstreams use `vendor:model`-style naming), so the split only
+//! happens at the first colon.
 
 use ai::LLMId;
 
 pub const BYOP_PREFIX: &str = "byop:";
 
-/// 把 `(provider_id, model_id)` 编码成单一 `LLMId`。
+/// Encodes `(provider_id, model_id)` into a single `LLMId`.
 pub fn encode(provider_id: &str, model_id: &str) -> LLMId {
     LLMId::from(format!("{BYOP_PREFIX}{provider_id}:{model_id}"))
 }
 
-/// 若 `LLMId` 是 BYOP 编码,返回 `(provider_id, model_id)`,否则返回 `None`。
+/// Returns `(provider_id, model_id)` if `LLMId` is a BYOP encoding, otherwise `None`.
 pub fn decode(id: &LLMId) -> Option<(String, String)> {
     let s = id.as_str().strip_prefix(BYOP_PREFIX)?;
     let (pid, mid) = s.split_once(':')?;
@@ -31,7 +34,8 @@ pub fn decode(id: &LLMId) -> Option<(String, String)> {
     Some((pid.to_owned(), mid.to_owned()))
 }
 
-/// 这个 `LLMId` 是不是 BYOP 编码(供调用方在不需要拆字段时快速判断)。
+/// Whether this `LLMId` is a BYOP encoding (for callers to check quickly without
+/// needing to split the fields).
 pub fn is_byop(id: &LLMId) -> bool {
     id.as_str().starts_with(BYOP_PREFIX)
 }
@@ -52,9 +56,9 @@ mod tests {
 
     #[test]
     fn model_id_with_colon_is_preserved() {
-        // 例如 OpenRouter 的 "anthropic/claude-3-haiku" 不含冒号,
-        // 但部分网关可能用 "vendor:model:variant"。我们只在第一个冒号处 split,
-        // 余下部分整体作为 model_id。
+        // e.g. OpenRouter's "anthropic/claude-3-haiku" contains no colon, but some
+        // gateways may use "vendor:model:variant". We only split at the first colon,
+        // and treat the rest as the model_id as a whole.
         let id = encode("uuid-1", "vendor:model:v2");
         assert_eq!(
             decode(&id),
@@ -72,8 +76,8 @@ mod tests {
     #[test]
     fn missing_parts_returns_none() {
         assert_eq!(decode(&LLMId::from("byop:")), None);
-        assert_eq!(decode(&LLMId::from("byop:uuid")), None); // 没冒号
-        assert_eq!(decode(&LLMId::from("byop::model")), None); // 空 provider_id
-        assert_eq!(decode(&LLMId::from("byop:uuid:")), None); // 空 model_id
+        assert_eq!(decode(&LLMId::from("byop:uuid")), None); // no colon
+        assert_eq!(decode(&LLMId::from("byop::model")), None); // empty provider_id
+        assert_eq!(decode(&LLMId::from("byop:uuid:")), None); // empty model_id
     }
 }

@@ -38,11 +38,12 @@ runs:
     - name: Add Strawberry Perl to PATH and point openssl-src at it (Windows)
       if: ${{ inputs.target_os == 'windows' }}
       shell: bash
-      # openssl-sys (vendored) 用 openssl-src 跑 `perl ./Configure` 编译 OpenSSL。
-      # 仅把 Strawberry 加进 PATH 不可靠:cargo build script spawn 的裸 `perl` 仍会
-      # 解析到 Git 自带的 MSYS perl(缺 Locale::Maketext::Simple,Configure 报错退出 2)。
-      # 显式设 OPENSSL_SRC_PERL 指向 Strawberry perl 绝对路径,绕开 PATH 解析,
-      # 与 openssl-src 官方 CI 做法一致。
+      # openssl-sys (vendored) uses openssl-src to run `perl ./Configure` to build OpenSSL.
+      # Just putting Strawberry on PATH isn't reliable: a bare `perl` spawned by a cargo
+      # build script can still resolve to Git's bundled MSYS perl (missing
+      # Locale::Maketext::Simple, so Configure errors out with exit 2).
+      # Explicitly set OPENSSL_SRC_PERL to the absolute path of Strawberry perl to bypass
+      # PATH resolution, matching openssl-src's official CI approach.
       run: |
         echo "C:/Strawberry/perl/bin" >> $GITHUB_PATH
         echo "OPENSSL_SRC_PERL=C:/Strawberry/perl/bin/perl" >> $GITHUB_ENV
@@ -168,10 +169,14 @@ runs:
     - name: Install protoc from official release (Windows)
       if: ${{ inputs.target_os == 'windows' }}
       shell: pwsh
-      # choco/winget 的 protoc 不稳定:choco 社区源时常返回无效 XML 导致包找不到,
-      # winget 的 Google.Protobuf 版本又过新(35.x)与 Linux 固定的 25.1 漂移。
-      # 直接取官方发行版 zip,版本与 script/linux/install_build_deps、bootstrap.ps1 对齐。
-      # prost-build 优先读 PROTOC 环境变量,显式写入 $GITHUB_ENV 最稳妥。
+      # choco/winget's protoc is unreliable: the choco community feed often returns
+      # invalid XML, causing the package to not be found, and winget's
+      # Google.Protobuf version is too new (35.x), drifting from the 25.1 pinned on
+      # Linux.
+      # Grab the official release zip directly, matching the version used by
+      # script/linux/install_build_deps and bootstrap.ps1.
+      # prost-build prefers reading the PROTOC env var, so writing it explicitly to
+      # $GITHUB_ENV is the most reliable approach.
       run: |
         $protocVersion = '25.1'
         $protocDir = "$env:RUNNER_TEMP\protoc"
@@ -191,10 +196,13 @@ runs:
     - name: Ensure Metal Toolchain is available (macOS)
       if: ${{ inputs.target_os == 'macos' && inputs.is_self_hosted != 'true' }}
       shell: bash
-      # warpui 的 build script 用 `metal` 把 shaders.metal 编译成 .air。Xcode 26 把
-      # Metal Toolchain 拆成需单独下载的组件,macos-26 runner 镜像默认不预装,且
-      # 编译走 MD_APPLE_SDK_ROOT 指向的 Xcode(可能与 setup-xcode 选定的不同),
-      # 故对该 Xcode 显式下载组件。-downloadComponent 幂等,已存在则快速返回。
+      # warpui's build script uses `metal` to compile shaders.metal into .air. Xcode 26
+      # split the Metal Toolchain into a separately downloadable component that the
+      # macos-26 runner image doesn't preinstall by default, and compilation goes
+      # through whichever Xcode MD_APPLE_SDK_ROOT points to (which may differ from
+      # the one setup-xcode selected), so we explicitly download the component for
+      # that Xcode. -downloadComponent is idempotent and returns quickly if it
+      # already exists.
       run: |
         if [ -n "$MD_APPLE_SDK_ROOT" ]; then
           DEVELOPER_DIR="$MD_APPLE_SDK_ROOT/Contents/Developer"

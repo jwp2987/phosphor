@@ -266,7 +266,7 @@ fn init_local_crash_reporting(
     _email: Option<String>,
     _ctx: &mut AppContext,
 ) {
-    log::info!("openWarp: crash reporting 使用本地 panic 日志,不向远端上报");
+    log::info!("openWarp: crash reporting uses local panic logs; nothing is reported remotely");
 
     use std::sync::Once;
     static PANIC_HOOK_INSTALLED: Once = Once::new();
@@ -296,7 +296,7 @@ fn init_local_crash_reporting(
                 "panic in thread '{thread}' at {location}: {payload}\nbacktrace:\n{backtrace}"
             );
 
-            // 仍调原 hook 以便 stderr 等默认行为继续
+            // Still call the original hook so default behavior like stderr output continues
             original_hook(panic_info);
         }));
     });
@@ -308,20 +308,20 @@ pub fn uninit_crash_reporting() {
     local_minidump::uninit();
 }
 
-/// 子进程派生前暂停本地崩溃报告状态的兼容入口。
+/// Compatibility entry point for suspending local crash-reporting state before a child process is spawned.
 pub fn suspend_crash_reporting_for_child_spawn() {
-    log::info!("openWarp: macOS 原生 crash reporter 已剥离,跳过暂停");
+    log::info!("openWarp: the macOS native crash reporter has been stripped out; skipping suspend");
 }
 
 pub fn resume_crash_reporting_after_child_spawn() {
-    log::info!("openWarp: macOS 原生 crash reporter 已剥离,跳过恢复");
+    log::info!("openWarp: the macOS native crash reporter has been stripped out; skipping resume");
 }
 
 pub fn crash() {
     panic!("openWarp: crash() invoked for local panic-hook smoke test");
 }
 
-/// 保留公开签名给登录状态回调使用,但本地 crash reporting 不写入用户身份。
+/// The public signature is kept for use by login-state callbacks, but local crash reporting doesn't write any user identity.
 pub fn set_user_id(_user_id: UserUid, _email: Option<String>, _ctx: &mut AppContext) {}
 
 fn release_version() -> &'static str {

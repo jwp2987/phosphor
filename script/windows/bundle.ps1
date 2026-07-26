@@ -113,16 +113,17 @@ if ("$CHANNEL" -eq 'local') {
     $WARP_BIN = 'zap-oss'
     $BINARY_NAME = 'zap-oss.exe'
     $APP_NAME = 'Zap'
-    # OSS channel 使用本地 crash reporting,不启用 release 默认特性集合。
-    # autoupdate 走 GitHub Release(zerx-lab/warp),仅下载到 Downloads,不调 Inno Setup。
+    # The OSS channel uses local crash reporting; it doesn't enable the release default feature set.
+    # autoupdate goes through GitHub Release (zerx-lab/warp); it only downloads to Downloads, without invoking Inno Setup.
     $FEATURES = 'release_bundle,gui,nld_improvements,autoupdate'
 }
 
 $BINARY_PATH = "$CARGO_TARGET_OUTPUT_DIR\$BINARY_NAME"
-# AUMID(Windows AppUserModel ID)—— 必须与进程端 `ChannelState::app_id()` 生成的完全一致,
-# 否则 Windows ToastNotificationManager 会在 Start Menu 快捷方式 / 进程 AUMID 不匹配时
-# 静默吞掉 toast。OSS(Zap)在 `app/src/bin/oss.rs` 里是 `dev.zap.Zap`,
-# 其他官方 channel 是 `dev.warp.<Name>`。
+# AUMID (Windows AppUserModel ID) — must exactly match what the process side's
+# `ChannelState::app_id()` generates, otherwise Windows ToastNotificationManager
+# silently swallows the toast when the Start Menu shortcut / process AUMID
+# mismatch. OSS (Zap) is `dev.zap.Zap` in `app/src/bin/oss.rs`; other official
+# channels are `dev.warp.<Name>`.
 if ("$CHANNEL" -eq 'oss') {
     $AUMID = "dev.zap.$APP_NAME"
 } else {
@@ -212,9 +213,10 @@ if (-Not $?) {
 }
 
 Write-Output 'Building Zap installer'
-# Inno Setup `AppId` 决定注册表 Uninstall 条目与升级跟踪键。OSS 下固定为 `zap-oss`,
-# 避免留在默认的 `warp-terminal-oss` 上。其他 channel 走 .iss 里的默认
-# `warp-terminal-{ReleaseChannel}`。
+# Inno Setup's `AppId` determines the registry Uninstall entry and the
+# upgrade-tracking key. Fixed to `zap-oss` under OSS, to avoid staying on the
+# default `warp-terminal-oss`. Other channels use the default
+# `warp-terminal-{ReleaseChannel}` from the .iss file.
 if ("$CHANNEL" -eq 'oss') {
     $INNO_APP_ID = 'zap-oss'
 } else {

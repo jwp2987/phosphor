@@ -1,23 +1,24 @@
-//! BYOP 模式下 OpenAI tool calling 的双向翻译注册表。
+//! Bidirectional translation registry for OpenAI tool calling in BYOP mode.
 //!
-//! 每个 warp 内置 tool(`api::message::tool_call::Tool` 的 variant)对应一个
-//! [`OpenAiTool`] 描述: function name + JSON Schema + 反向解析 args + 把执行
-//! result 序列化为给上游模型看的字符串。
+//! Each built-in warp tool (a variant of `api::message::tool_call::Tool`) maps to one
+//! [`OpenAiTool`] descriptor: function name + JSON Schema + reverse-parsing of args +
+//! serializing the execution result into a string the upstream model can read.
 //!
-//! ## 当前实现的子集(Phase 3a 第一批)
+//! ## Currently implemented subset (Phase 3a, first batch)
 //!
 //! - `run_shell_command`
 //! - `read_files`
 //!
-//! 后续轮次扩展:`grep` / `file_glob_v2` / `apply_file_diffs` / `call_mcp_tool` 等。
+//! Later rounds will add: `grep` / `file_glob_v2` / `apply_file_diffs` / `call_mcp_tool`, etc.
 //!
-//! ## 闭环说明
+//! ## Closed-loop overview
 //!
-//! 模型回 `tool_calls` → `from_args` 翻成 `tool_call::Tool` → 我们 emit
-//! `Message::ToolCall { tool_call_id, tool }` → warp 自家 `convert_from.rs`
-//! 自动翻成 `AIAgentAction` → executor 走 profile 权限/弹窗 → 执行 → result
-//! 自动写回 conversation → 触发下一轮 byop request → 我们的 `result_to_json`
-//! 把 result 序列化为 `role=tool, tool_call_id=...` 的 content 给上游。
+//! The model returns `tool_calls` → `from_args` converts it into a `tool_call::Tool` → we emit
+//! `Message::ToolCall { tool_call_id, tool }` → warp's own `convert_from.rs`
+//! automatically converts it into an `AIAgentAction` → the executor runs it through profile
+//! permissions/prompts → executes → the result is written back into the conversation
+//! automatically → triggering the next byop request round → our `result_to_json`
+//! serializes the result into `role=tool, tool_call_id=...` content for the upstream model.
 
 pub mod ask;
 pub mod coerce;
@@ -43,28 +44,33 @@ use warp_multi_agent_api as api;
 
 use crate::ai::agent::AIAgentActionResult;
 
-/// 一条 tool 的双向适配描述。
+/// A bidirectional adapter descriptor for one tool.
 ///
-/// **命名历史**:最早 BYOP 只接 OpenAI 兼容协议,后改用 genai SDK 跨 5 种 adapter
-/// (OpenAI / OpenAIResp / Gemini / Anthropic / Ollama)。结构体名沿用 `OpenAiTool`
-/// 保留 git blame,但所承载的 JSON Schema 是 OpenAPI 标准,各 adapter 由 genai 内部
-/// 自动重写为各自原生格式(如 Anthropic input_schema、Gemini function_declarations)。
+/// **Naming history**: BYOP originally only spoke the OpenAI-compatible protocol, then
+/// switched to the genai SDK across 5 adapters (OpenAI / OpenAIResp / Gemini / Anthropic /
+/// Ollama). The struct name kept `OpenAiTool` to preserve git blame, but the JSON Schema it
+/// carries is the OpenAPI standard; each adapter is automatically rewritten internally by
+/// genai into its own native format (e.g. Anthropic's input_schema, Gemini's
+/// function_declarations).
 pub struct OpenAiTool {
-    /// 给上游 LLM 的 function name(模型在响应中按此名调用)。
+    /// Function name given to the upstream LLM (the model calls it by this name in its response).
     pub name: &'static str,
-    /// 给 LLM 的描述。
+    /// Description given to the LLM.
     pub description: &'static str,
-    /// 参数 JSON Schema(OpenAPI 标准)。返回闭包以避免在 const 中构造 serde_json::Value。
+    /// Parameter JSON Schema (OpenAPI standard). Returns a closure to avoid constructing a
+    /// serde_json::Value in a const.
     pub parameters: fn() -> Value,
-    /// 反向解析: 上游模型返回的 args JSON 字符串 → warp 内部 `tool_call::Tool` variant。
+    /// Reverse parsing: the args JSON string returned by the upstream model → warp's internal
+    /// `tool_call::Tool` variant.
     pub from_args: fn(args: &str) -> Result<api::message::tool_call::Tool>,
-    /// 把 ToolCallResult 中对应该 tool 的 `Result` variant 转成给上游模型可读的 JSON。
-    /// 没有匹配的 variant 时返回 `None`(让调用方 fallback 到 generic 序列化)。
+    /// Converts the `Result` variant in ToolCallResult that corresponds to this tool into JSON
+    /// readable by the upstream model. Returns `None` when there's no matching variant (letting
+    /// the caller fall back to generic serialization).
     pub result_to_json: fn(&api::message::tool_call_result::Result) -> Option<Value>,
 }
 
 impl OpenAiTool {
-    /// 转 genai `Tool`(用于喂给 `ChatRequest.tools`)。
+    /// Converts to a genai `Tool` (used to feed `ChatRequest.tools`).
     pub fn to_genai_tool(&self) -> genai::chat::Tool {
         genai::chat::Tool::new(self.name)
             .with_description(self.description)
@@ -72,7 +78,7 @@ impl OpenAiTool {
     }
 }
 
-/// 注册表:全部已支持的 BYOP tool。
+/// Registry: all currently supported BYOP tools.
 pub const REGISTRY: &[&OpenAiTool] = &[
     &shell::RUN_SHELL_COMMAND,
     &files::READ_FILES,
@@ -83,32 +89,35 @@ pub const REGISTRY: &[&OpenAiTool] = &[
     &long_shell::READ_SHELL_COMMAND_OUTPUT,
     &ask::ASK_USER_QUESTION,
     &skill::READ_SKILL,
-    // 本地文档系统(AIDocumentModel)
+    // Local document system (AIDocumentModel)
     &documents::READ_DOCUMENTS,
     &documents::EDIT_DOCUMENTS,
     &documents::CREATE_DOCUMENTS,
-    // 用户建议类(本地 channel + UI)
+    // User-suggestion tools (local channel + UI)
     &suggest::SUGGEST_NEW_CONVERSATION,
     &suggest::SUGGEST_PROMPT,
-    // UI marker(无副作用,信号通知前端)
+    // UI markers (no side effects, just signals to the frontend)
     &markers::OPEN_CODE_REVIEW,
     &markers::TRANSFER_SHELL_CONTROL,
-    // 本地 todo list(BYOP 自合成 Message::UpdateTodos,不走 protobuf executor)
+    // Local todo list (BYOP synthesizes Message::UpdateTodos itself; doesn't go through the
+    // protobuf executor)
     &todowrite::TODOWRITE,
-    // BYOP-only 网络工具:不映射到 protobuf executor variant,由 chat_stream
-    // 在 parse_incoming_tool_call 之前按 name 拦截,直接调 web_runtime 跑 HTTP。
-    // gating:profile.web_search_enabled=false 时,build_tools_array 会过滤掉。
+    // BYOP-only network tools: not mapped to a protobuf executor variant; chat_stream
+    // intercepts them by name before parse_incoming_tool_call and calls web_runtime directly
+    // to run the HTTP request.
+    // Gating: when profile.web_search_enabled=false, build_tools_array filters these out.
     &webfetch::WEBFETCH,
     &websearch::WEBSEARCH,
 ];
 
-/// 按 OpenAI function name 反查注册表。
+/// Looks up the registry by OpenAI function name.
 pub fn lookup(name: &str) -> Option<&'static OpenAiTool> {
     REGISTRY.iter().copied().find(|t| t.name == name)
 }
 
-/// 给定一条 ToolCallResult,优先在 REGISTRY 中找到对应的 tool 并用其 `result_to_json`
-/// 序列化;找不到时尝试 MCP 通用序列化;再兜底到一个简短描述,避免 panic。
+/// Given a ToolCallResult, first tries to find the matching tool in REGISTRY and serialize
+/// with its `result_to_json`; if not found, tries generic MCP serialization; falls back to a
+/// short description as a last resort to avoid panicking.
 pub fn serialize_result(result: &api::message::ToolCallResult) -> String {
     let inner = match &result.result {
         Some(r) => r,
@@ -122,36 +131,41 @@ pub fn serialize_result(result: &api::message::ToolCallResult) -> String {
     if let Some(json) = mcp::serialize_result(inner) {
         return serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_owned());
     }
-    // Fallback:不识别的 variant(用户后续轮次还没注册的 tool 也走这里)。
+    // Fallback: unrecognized variant (tools not yet registered in later user rounds also land
+    // here).
     r#"{"status":"unsupported_tool_result"}"#.to_owned()
 }
 
-/// 把 *当前轮 client 端执行* 完毕的 `AIAgentActionResult` 序列化为 JSON 字符串
-/// 喂给上游模型(role=tool 的 content)。
+/// Serializes an `AIAgentActionResult` that just finished *client-side execution this round*
+/// into a JSON string to feed to the upstream model (as `role=tool` content).
 ///
-/// ## 为什么不直接用 `AIAgentActionResultType::Display`
+/// ## Why not just use `AIAgentActionResultType::Display`
 ///
-/// `Display` impl 把结构化结果(尤其是 `LongRunningCommandSnapshot`)渲染成
-/// `"Command 'bun repl' is long-running"` 这类一行字符串,**完全丢弃 block_id
-/// (=command_id)、grid_contents、is_alt_screen_active 等关键字段**,导致下一轮
-/// 模型拿不到 command_id 没法继续 read/write_to_long_running_*,长运行命令完全废掉。
+/// The `Display` impl renders structured results (especially `LongRunningCommandSnapshot`)
+/// into one-line strings like `"Command 'bun repl' is long-running"`, **completely discarding
+/// critical fields like block_id (=command_id), grid_contents, is_alt_screen_active**, which
+/// causes the next round's model to lose access to command_id and be unable to continue
+/// read/write_to_long_running_*, completely breaking long-running commands.
 ///
-/// ## 工作原理
+/// ## How it works
 ///
-/// 1. 复用 `app/src/ai/agent/api/convert_to.rs` 中既有的 `TryFrom<AIAgentActionResult>
-///    for api::request::input::user_inputs::user_input::Input`(覆盖全部 25+ ActionResult
-///    variant),拿到 `Input::ToolCallResult { result, .. }`
-/// 2. inner `*Result` 类型(如 `RunShellCommandResult`)与 `api::message::tool_call_result::Result`
-///    共用同一个 protobuf message,只是外层 enum 的命名空间不同,所以可以重新包一次
-///    外层 enum 复用 `tools::REGISTRY` 中既有的 per-tool `result_to_json`
-///    (见 `shell.rs::result_to_json` 把 `LongRunningCommandSnapshot` 拍成完整 JSON
-///    包含 command_id/output/is_alt_screen_active)
-/// 3. 不识别的 variant 返回 `None`,调用方 fallback 到 Display
+/// 1. Reuse the existing `TryFrom<AIAgentActionResult> for
+///    api::request::input::user_inputs::user_input::Input` in
+///    `app/src/ai/agent/api/convert_to.rs` (covering all 25+ ActionResult variants), to get
+///    `Input::ToolCallResult { result, .. }`
+/// 2. The inner `*Result` type (e.g. `RunShellCommandResult`) shares the same protobuf message
+///    with `api::message::tool_call_result::Result`; only the outer enum's namespace differs,
+///    so it can be rewrapped in the outer enum and reuse the existing per-tool
+///    `result_to_json` in `tools::REGISTRY` (see `shell.rs::result_to_json`, which flattens
+///    `LongRunningCommandSnapshot` into complete JSON including
+///    command_id/output/is_alt_screen_active)
+/// 3. Unrecognized variants return `None`, and the caller falls back to Display
 ///
-/// ## 维护注意
+/// ## Maintenance note
 ///
-/// 新增 BYOP tool 时,**这里的 enum match 必须同步加 variant**,否则该 tool 的
-/// 当前轮 ActionResult 会 fallback 到 Display,丢失结构化字段。
+/// When adding a new BYOP tool, **the enum match here must be updated with the new variant**,
+/// otherwise that tool's current-round ActionResult will fall back to Display and lose its
+/// structured fields.
 pub fn serialize_action_result(action: &AIAgentActionResult) -> Option<String> {
     let msg_side = action_result_to_msg_result(action)?;
     for t in REGISTRY {
@@ -165,11 +179,11 @@ pub fn serialize_action_result(action: &AIAgentActionResult) -> Option<String> {
     None
 }
 
-/// 把当前轮 client 端执行完的 `AIAgentActionResult` 转为
-/// `api::message::tool_call_result::Result` enum,供 BYOP 持久化为 task.message。
+/// Converts an `AIAgentActionResult` that finished client-side execution this round into an
+/// `api::message::tool_call_result::Result` enum, for BYOP to persist as task.message.
 ///
-/// 共用 `serialize_action_result` 的 ReqR → MsgR 映射;调用方拿到后包成
-/// `Message::ToolCallResult { result: Some(...), context: None, tool_call_id }`。
+/// Shares the ReqR → MsgR mapping with `serialize_action_result`; the caller wraps the result
+/// into `Message::ToolCallResult { result: Some(...), context: None, tool_call_id }`.
 pub fn action_result_to_msg_result(
     action: &AIAgentActionResult,
 ) -> Option<api::message::tool_call_result::Result> {

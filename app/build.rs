@@ -341,13 +341,15 @@ fn copy_windows_assets(target_dir: &Path) {
         .expect("Could not copy platform OpenConsole.exe");
 }
 
-/// 把 `GIT_RELEASE_TAG`(如 `v2026.05.10.preview` 或 `v0`)解析成
-/// Windows VERSIONINFO 需要的 4 段 16-bit 数字。不识别的段(如
-/// "preview")跳过,不足 4 段补 0。
+/// Parses `GIT_RELEASE_TAG` (e.g. `v2026.05.10.preview` or `v0`) into the
+/// four 16-bit number segments that Windows VERSIONINFO requires.
+/// Unrecognized segments (e.g. "preview") are skipped, and missing segments
+/// are padded with 0 up to 4.
 ///
-/// 为什么要认真填不是都填 1.0.0.0:Windows Shell / Defender / SmartScreen
-/// 会拿这个数值 FILEVERSION 与 installer `MyAppVersion`(字符串形式的同一
-/// `GIT_RELEASE_TAG`)做一致性校验,不一致会被走额外 reputation/cache miss 路径。
+/// Why bother filling this in carefully instead of just using 1.0.0.0: Windows
+/// Shell / Defender / SmartScreen cross-check this FILEVERSION value against
+/// the installer's `MyAppVersion` (the same `GIT_RELEASE_TAG` in string form)
+/// for consistency; a mismatch routes it through an extra reputation/cache-miss path.
 #[cfg(windows)]
 fn parse_file_version_quad(tag: &str) -> (u16, u16, u16, u16) {
     let stripped = tag.strip_prefix('v').unwrap_or(tag);
@@ -367,18 +369,22 @@ fn embed_resource_file(target_dir: &Path) {
     use std::io::Write;
 
     let version = env::var("GIT_RELEASE_TAG").unwrap_or("v0".to_owned());
-    // 默认值与 publisher 一致定为「Zap」,与 `script/windows/bundle.ps1` OSS 分支
-    // (`$APP_NAME = 'Zap'`) + AUMID `dev.zap.Zap` + Cargo bundle
-    // metadata 全局对齐。Windows 任务管理器的进程分组名实际取自 PE 资源中的
-    // `FileDescription` / `ProductName`(不是窗口标题),所以这里若回退默认 "Zap",
-    // 直接 `cargo build` 出来的 dev 二进制在任务管理器里会显示成 `Zap(N)`。
-    // 上游官方流水线在调用前会显式 `export WARP_APP_NAME=...` 覆盖,不受影响。
+    // The default value is set to "Zap", matching the publisher, and aligned
+    // globally with `script/windows/bundle.ps1`'s OSS branch (`$APP_NAME =
+    // 'Zap'`) + AUMID `dev.zap.Zap` + Cargo bundle metadata. Windows Task
+    // Manager's process grouping name is actually taken from the
+    // `FileDescription` / `ProductName` in the PE resources (not the window
+    // title), so falling back to the default "Zap" here means a dev binary
+    // from a plain `cargo build` shows up as `Zap(N)` in Task Manager. The
+    // upstream official pipeline explicitly does `export WARP_APP_NAME=...`
+    // to override this before invoking, so it's unaffected.
     let app_name = env::var("WARP_APP_NAME").unwrap_or_else(|_| "Zap".to_owned());
     let bin_name = env::var("CARGO_BIN_NAME").unwrap_or("oss".to_owned());
-    // 以 `WARP_APP_PUBLISHER` 覆盖;默认与 installer / AUMID 一致为「Zap」。
-    // 保持 installer `MyAppPublisher`、Cargo bundle metadata `copyright`、
-    // 进程 AUMID `dev.zap.Zap` 三处全局对齐，避免 Windows Shell
-    // 因 publisher / product name fingerprint 不一致而 miss 掉 icon cache。
+    // Overridden via `WARP_APP_PUBLISHER`; defaults to "Zap", matching the
+    // installer / AUMID. Keeps the installer's `MyAppPublisher`, the Cargo
+    // bundle metadata `copyright`, and the process AUMID `dev.zap.Zap`
+    // globally aligned, avoiding Windows Shell missing the icon cache due to
+    // a mismatched publisher / product name fingerprint.
     let publisher = env::var("WARP_APP_PUBLISHER").unwrap_or_else(|_| "Zap".to_owned());
     let (ver_major, ver_minor, ver_patch, ver_build) = parse_file_version_quad(&version);
 

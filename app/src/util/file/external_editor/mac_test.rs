@@ -2,9 +2,9 @@ use super::is_zap_bundle;
 
 #[test]
 fn is_zap_bundle_recognises_zap_channels() {
-    // OSS (Zap) 自身。
+    // OSS (Zap) itself.
     assert!(is_zap_bundle("dev.zap.Zap"));
-    // 上游 Warp 各 channel —— 同样视为本应用家族,允许 default-app 重定向。
+    // Upstream Warp's various channels — also considered part of this app family, allowing default-app redirection.
     assert!(is_zap_bundle("dev.warp.Zap"));
     assert!(is_zap_bundle("dev.warp.WarpDev"));
     assert!(is_zap_bundle("dev.warp.WarpPreview"));

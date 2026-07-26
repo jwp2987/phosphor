@@ -49,8 +49,9 @@ pub struct OpenMCPSettingsArgs {
 }
 
 /// Source query parameter value indicating auth was initiated from agent setup.
-/// Zap Wave 7-3:URI handler / Settings UI 已删,仅供 `update_environment_form` 在 agent UI
-/// 大手术 commit 完成前充当起起过渡 (后者不拼发出的 URL 用到)。
+/// Zap Wave 7-3: the URI handler / Settings UI have been removed; this only
+/// serves as a stopgap for `update_environment_form` before the agent UI's
+/// major-surgery commit lands (the latter doesn't use it to build outgoing URLs).
 pub const CLOUD_SETUP_SOURCE: &str = "cloud_setup";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -255,9 +256,11 @@ impl UriHost {
                 if let Some(settings_sub_page) = settings_sub_page {
                     match settings_sub_page.as_str() {
                         "environments" => {
-                            // Zap Wave 7-3:warp://settings/environments URI handler 随
-                            // ambient-agent UI 子系统物理删。还保留 GitHub auth completion
-                            // 通知 —— 其他独立的组件可能需要听。
+                            // Zap Wave 7-3: the warp://settings/environments URI
+                            // handler was physically removed along with the
+                            // ambient-agent UI subsystem. The GitHub auth
+                            // completion notification is still kept — other
+                            // independent components may need to listen for it.
                             GitHubAuthNotifier::handle(ctx).update(ctx, |notifier, ctx| {
                                 notifier.notify_auth_completed(ctx);
                             });
@@ -277,12 +280,14 @@ impl UriHost {
                                 ctx,
                             );
                         }
-                        // Zap Wave 3-1:"platform" URI 路由原指向
-                        // `SettingsSection::OzCloudAPIKeys`(云端 API key 管理页),
-                        // 随 UI 一同物理删。保留 arm 以记录原意图,物理处理为 no-op。
+                        // Zap Wave 3-1: the "platform" URI route originally
+                        // pointed to `SettingsSection::OzCloudAPIKeys` (the
+                        // cloud API key management page), and was physically
+                        // removed along with the UI. The arm is kept to
+                        // record the original intent; it's handled as a no-op.
                         "platform" => {
                             log::warn!(
-                                "warp://settings/platform 路由在 Zap 中已下线,忽略该请求"
+                                "The warp://settings/platform route has been retired in Zap; ignoring this request"
                             );
                         }
                         "appearance" => {

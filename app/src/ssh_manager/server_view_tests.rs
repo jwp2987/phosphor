@@ -1,4 +1,4 @@
-/// resolve_test_password 单元测试
+/// Unit tests for resolve_test_password
 /// author: logic
 /// date: 2026/06/01
 use super::*;
@@ -12,7 +12,7 @@ use warpui::{App, WindowInvalidation};
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::view_components::dropdown::DropdownAction;
 
-/// 进程内 mock,绕开 OS keychain。支持错误注入,模拟 NoBackend / Keyring 错。
+/// In-process mock that bypasses the OS keychain. Supports error injection to simulate NoBackend / Keyring errors.
 struct MockSecretStore {
     inner: Mutex<HashMap<String, String>>,
     get_err: Mutex<Option<SshSecretStoreError>>,
@@ -122,8 +122,10 @@ fn empty_editor_stored_returns_secret() {
 
 #[test]
 fn filled_editor_ignores_keychain() {
-    // keychain 存了旧密码,form 敲了新密码 → 必须用 form 的新密码,
-    // 否则用户改 host 后测试会被旧密码污染。
+    // The keychain has an old password stored, and a new password was typed
+    // into the form → the form's new password must be used, otherwise
+    // testing after the user changes the host would be contaminated by the
+    // old password.
     let store = MockSecretStore::with_secret("n1", SecretKind::Password, "old-pw");
     let pw = resolve_test_password(Some("n1"), SecretKind::Password, "new-pw", &store).unwrap();
     assert_eq!(&*pw, "new-pw");

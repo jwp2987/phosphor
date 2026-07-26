@@ -1,7 +1,7 @@
-//! SFTP 远程目录操作模块
+//! SFTP remote directory operations module
 //!
-//! 提供远程目录读取功能，自动过滤 . 和 .. 条目，
-//! 按目录优先 + 字母序排列。
+//! Provides remote directory reading, automatically filtering out . and ..
+//! entries, and sorting directories first + alphabetically.
 //! author: logic
 //! date: 2026-05-31
 
@@ -10,11 +10,11 @@ use std::path::Path;
 use crate::error::SftpError;
 use crate::types::{DirEntry, FileType, Metadata};
 
-/// SFTP 远程目录操作
+/// SFTP remote directory operations
 pub struct Dir;
 
 impl Dir {
-    /// 读取远程目录内容
+    /// Reads the contents of a remote directory
     pub(crate) fn read_dir(sftp: &ssh2::Sftp, path: &Path) -> Result<Vec<DirEntry>, SftpError> {
         let mut entries = Vec::new();
         for entry in sftp.readdir(path)? {

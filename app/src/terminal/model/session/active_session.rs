@@ -21,13 +21,15 @@ pub struct ActiveSession {
     /// The current working directory of the terminal session.
     current_working_directory: Option<String>,
 
-    /// 最近一次成功解析出的执行环境(shell / os)。
+    /// The most recently successfully resolved execution environment (shell / os).
     ///
-    /// `session()` 会在 active session id 缺失或 id 查不到 session 时返回 `None`
-    /// (焦点切换、session 重建期间都可能短暂发生)。此时若直接返回 `None`,
-    /// `input_context_for_request` 就不会 push `ExecutionEnvironment`,
-    /// system prompt 的 <env> 段会整段丢掉 Shell/Platform 两行 —— 模型丢失环境
-    /// 信息,且 system 段逐轮变化击穿 prompt cache。缓存最后一次已知值兜底。
+    /// `session()` returns `None` when the active session id is missing or the id
+    /// doesn't resolve to a session (this can happen briefly during focus switches
+    /// or session rebuilds). If we returned `None` directly in that case,
+    /// `input_context_for_request` wouldn't push an `ExecutionEnvironment`, and the
+    /// system prompt's <env> section would drop the Shell/Platform lines entirely —
+    /// the model loses environment info, and a system section that changes turn to
+    /// turn busts the prompt cache. We cache the last known value as a fallback.
     last_execution_environment: RefCell<Option<WarpAiExecutionContext>>,
 }
 
@@ -39,10 +41,11 @@ impl ActiveSession {
     ) -> Self {
         ctx.subscribe_to_model(&model_event_dispatcher, move |me, event, ctx| {
             if let ModelEvent::BlockMetadataReceived(block_metadata_received_event) = event {
-                // 粘性更新:不带 cwd 的 block metadata 不应清空已知目录。
-                // 详见 `BlocklistAIContextModel::update_directory_context` 的注释 ——
-                // 此处若被置空,`list_skills` 会静默降级(见
-                // `controller/input_context.rs` 中按 cwd 发现 skills 的调用)。
+                // Sticky update: block metadata without a cwd should not clear the
+                // known directory. See the comment on
+                // `BlocklistAIContextModel::update_directory_context` — if this got
+                // cleared here, `list_skills` would silently degrade (see the
+                // cwd-based skill-discovery call in `controller/input_context.rs`).
                 let new_pwd = block_metadata_received_event
                     .block_metadata
                     .current_working_directory()
@@ -113,9 +116,10 @@ impl ActiveSession {
 
     /// Returns the `WarpAiExecutionContext` for the active session.
     ///
-    /// active session 解析失败时回退到最近一次已知值(见
-    /// [`Self::last_execution_environment`]),避免 system prompt 的 <env> 段
-    /// 在对话中途丢失 Shell/Platform 行。
+    /// Falls back to the last known value (see
+    /// [`Self::last_execution_environment`]) when active-session resolution fails,
+    /// avoiding losing the Shell/Platform lines from the system prompt's <env>
+    /// section mid-conversation.
     pub fn ai_execution_environment(&self, app: &AppContext) -> Option<WarpAiExecutionContext> {
         if let Some(session) = self.session(app).as_ref() {
             let env = WarpAiExecutionContext::new(session);

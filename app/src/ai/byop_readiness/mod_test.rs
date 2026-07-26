@@ -656,23 +656,25 @@ fn smoke_blocked_readiness_error_uses_user_facing_copy() {
     );
 }
 
-/// 回归:assistant 纯文本落在 ToolCall 与 ToolCallResult **之间**时,
-/// 不能打断二者的配对。
+/// Regression: when plain-text assistant content lands **between** a ToolCall and
+/// its ToolCallResult, it must not break their pairing.
 ///
-/// 真实触发场景(Qwen3.5 + FastFlowLM):模型在 tool_call 之外多吐了一个 "\n",
-/// Zap 把它持久化成一条独立的 `AgentOutput`,顺序为
-/// `UserQuery → ToolCall → AgentOutput → ToolCallResult`。
-/// 此前 AssistantBoundary 会重置 tool-call 组,导致结果推断不出归属的
-/// assistant message,被判成 `OutOfOrderToolResult` 并永久阻断该对话。
+/// Real-world trigger scenario (Qwen3.5 + FastFlowLM): the model emits an extra
+/// "\n" outside the tool_call, and Zap persists it as a standalone `AgentOutput`,
+/// giving the order `UserQuery → ToolCall → AgentOutput → ToolCallResult`.
+/// Previously, AssistantBoundary would reset the tool-call group, causing the
+/// result to be unable to infer its attributed assistant message, getting judged as
+/// `OutOfOrderToolResult` and permanently blocking that conversation.
 #[test]
 fn assistant_text_between_call_and_result_does_not_break_pairing() {
     let report = classify(vec![
         ProjectionItem::user_boundary("task-1", "user-1"),
         assistant_with_one_call(),
-        // 模型多吐的那一个 "\n" —— 落在 tool call 之后、结果之前。
+        // That extra "\n" the model emits — landing after the tool call, before the result.
         ProjectionItem::assistant_boundary("task-1", "assistant-text-1"),
-        // 归属由投影构建方(`build_controller_readiness_projection`)直接填好,
-        // 不依赖 normalize 的跨 boundary 推断。
+        // Attribution is filled in directly by the projection builder
+        // (`build_controller_readiness_projection`), not relying on normalize's
+        // cross-boundary inference.
         ProjectionItem::tool_result(ProjectedToolResult::new(
             "task-1",
             "result-1",
@@ -691,8 +693,10 @@ fn assistant_text_between_call_and_result_does_not_break_pairing() {
     );
 }
 
-/// 反向保证:UserBoundary 仍然终止 tool-call 组 —— 用户已经再次发言却仍无结果的
-/// tool call,确实是缺失,必须继续被 readiness 捕获而不是被上面的放宽掩盖。
+/// Reverse guarantee: UserBoundary still terminates a tool-call group — if the user
+/// has already spoken again and a tool call still has no result, that's genuinely
+/// missing and must still be caught by readiness, not masked by the relaxation
+/// above.
 #[test]
 fn user_boundary_still_terminates_group() {
     let report = classify(vec![

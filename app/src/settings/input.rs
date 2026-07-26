@@ -153,10 +153,10 @@ define_settings_group!(InputSettings,
             toml_path: "agents.warp_agent.input.show_agent_tips",
             description: "Whether agent tips are displayed in the input.",
         },
-        // 控制 Agent 视图零状态(zero-state)中的快捷键提示是否展示:
-        // 1) zero_state_block 中 "ctrl+shift+enter 开始新对话 / /model 切换模型 / esc 返回终端" 三行;
-        // 2) Agent message bar 底部 "? 查看帮助 / / 查看命令 / 打开对话 / 进入代码评审" 四项。
-        // 关闭后,用户可在「设置 → Zap 智能体 → AI 输入」中重新开启。
+        // Controls whether the shortcut hints in the Agent view's zero-state are shown:
+        // 1) The three zero_state_block lines "ctrl+shift+enter start new conversation / /model switch model / esc back to terminal";
+        // 2) The four items at the bottom of the Agent message bar "? view help / / view commands / open conversation / enter code review".
+        // Once disabled, the user can re-enable it under "Settings -> Zap Agent -> AI Input".
         show_agent_zero_state_hints: ShowAgentZeroStateHints {
             type: bool,
             default: true,

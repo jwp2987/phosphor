@@ -433,10 +433,11 @@ impl super::TerminalView {
 // where we can spawn a local tty.
 #[cfg(feature = "local_fs")]
 impl super::TerminalView {
-    /// Zap:判断给定会话是否是 remote-server(SSH)会话。
+    /// Zap: determines whether the given session is a remote-server (SSH) session.
     ///
-    /// 当 `local_tty` 未启用 / 在 wasm 上 / `SshRemoteServer` feature flag 关闭时,
-    /// 一律返回 `false`,即保持本地行为完全不变。
+    /// Always returns `false` when `local_tty` is disabled / on wasm / the
+    /// `SshRemoteServer` feature flag is off — i.e. local behavior stays completely
+    /// unchanged.
     fn session_is_remote(
         &self,
         session_id: Option<crate::terminal::model::session::SessionId>,
@@ -463,13 +464,17 @@ impl super::TerminalView {
         false
     }
 
-    /// Zap:取得远端会话某个 cwd 的目录列表校验上下文。
+    /// Zap: gets the directory-listing validation context for a remote session's
+    /// given cwd.
     ///
-    /// 命中缓存则直接返回 `Remote(Some(..))`;未命中则异步发起 daemon
-    /// `ListDirectory` RPC 拉取该目录列表,本轮返回 `Remote(None)`(不高亮),
-    /// 拉取完成后写入缓存并 `ctx.notify()` 触发 re-render 把链接点亮。
+    /// On a cache hit, returns `Remote(Some(..))` directly; on a miss,
+    /// asynchronously starts a daemon `ListDirectory` RPC to fetch that directory
+    /// listing, returning `Remote(None)` this round (not highlighted). Once the
+    /// fetch completes, the result is written to the cache and `ctx.notify()` is
+    /// called to trigger a re-render that lights up the link.
     ///
-    /// 缓存保持有界:拉取新 cwd 时清掉所有旧条目,只保留当前 cwd。
+    /// The cache stays bounded: fetching a new cwd clears all old entries, keeping
+    /// only the current cwd.
     #[cfg(all(
         feature = "local_tty",
         feature = "local_fs",
@@ -490,15 +495,16 @@ impl super::TerminalView {
         use crate::util::file::{LinkValidationContext, RemoteDirListing};
 
         let cwd_path = PathBuf::from(cwd);
-        // 缓存按 (会话, cwd) 复合键索引,避免不同 host 的相同路径互相串扰。
+        // The cache is indexed by a composite (session, cwd) key, to avoid the same
+        // path on different hosts cross-contaminating each other.
         let cache_key = (session_id, cwd_path.clone());
 
-        // 命中缓存(已就绪或拉取中)直接返回。
+        // Return directly on a cache hit (whether ready or still fetching).
         if let Some(entry) = self.remote_dir_listing_cache.get(&cache_key) {
             return LinkValidationContext::Remote(entry.clone());
         }
 
-        // 取该会话的 daemon 客户端。
+        // Get the daemon client for this session.
         let Some(client) = RemoteServerManager::handle(ctx)
             .as_ref(ctx)
             .client_for_session(session_id)
@@ -507,12 +513,14 @@ impl super::TerminalView {
             return LinkValidationContext::Remote(None);
         };
 
-        // 拉取新 cwd:超出容量上限时按插入顺序 FIFO 淘汰最旧条目,
-        // 然后插入 `None` 占位(标记拉取中)。`MAX_ENTRIES` 选 8 足够覆盖
-        // 用户在终端里常切的几个工作目录,避免每次切回都要 RPC。
+        // Fetching a new cwd: when over capacity, evict the oldest entry FIFO-style
+        // by insertion order, then insert a `None` placeholder (marking it as
+        // in-flight). `MAX_ENTRIES` is chosen as 8, enough to cover the handful of
+        // working directories a user commonly switches between in the terminal,
+        // avoiding an RPC every time they switch back.
         const MAX_ENTRIES: usize = 8;
         while self.remote_dir_listing_cache.len() >= MAX_ENTRIES {
-            // shift_remove_index 保持插入顺序;FIFO 头部是最旧的。
+            // shift_remove_index preserves insertion order; the FIFO head is the oldest.
             self.remote_dir_listing_cache.shift_remove_index(0);
         }
         self.remote_dir_listing_cache
@@ -526,7 +534,8 @@ impl super::TerminalView {
             move |me, result, ctx| {
                 use crate::remote_server::proto::list_directory_response;
 
-                // 拉取期间用户可能已经切换 cwd / 清空缓存,只有占位还在才写入。
+                // The user may have switched cwd / cleared the cache while fetching
+                // was in progress; only write if the placeholder is still there.
                 if !me.remote_dir_listing_cache.contains_key(&key_for_store) {
                     return;
                 }
@@ -542,15 +551,17 @@ impl super::TerminalView {
                                 Arc::new(RemoteDirListing::new(cwd_for_store.clone(), entries));
                             me.remote_dir_listing_cache
                                 .insert(key_for_store.clone(), Some(listing));
-                            // 列表到达,触发 re-render 让链接重新扫描并点亮。
+                            // The listing arrived; trigger a re-render so links are
+                            // rescanned and lit up.
                             ctx.notify();
                         }
                         Some(list_directory_response::Result::Error(err)) => {
                             log::warn!(
-                                "远端 ListDirectory 失败 {cwd_for_store:?}: {}",
+                                "Remote ListDirectory failed {cwd_for_store:?}: {}",
                                 err.message
                             );
-                            // 拉取失败:移除占位,下次悬停时会重试。
+                            // Fetch failed: remove the placeholder; it'll retry on the
+                            // next hover.
                             me.remote_dir_listing_cache.shift_remove(&key_for_store);
                         }
                         None => {
@@ -558,7 +569,7 @@ impl super::TerminalView {
                         }
                     },
                     Err(err) => {
-                        log::warn!("远端 ListDirectory RPC 出错 {cwd_for_store:?}: {err}");
+                        log::warn!("Remote ListDirectory RPC error {cwd_for_store:?}: {err}");
                         me.remote_dir_listing_cache.shift_remove(&key_for_store);
                     }
                 }
@@ -578,9 +589,10 @@ impl super::TerminalView {
     ) {
         use crate::util::file::LinkValidationContext;
 
-        // Zap:判断被悬停 block 所属会话是否是 remote-server 会话。
-        // 远端会话的文件不在本地磁盘上,需要用 `LinkValidationContext::Remote`
-        // 携带 daemon 拉取来的真实目录列表做精确校验。
+        // Zap: determines whether the session owning the hovered block is a
+        // remote-server session. Files in a remote session aren't on the local
+        // disk, so `LinkValidationContext::Remote` is needed, carrying the real
+        // directory listing fetched by the daemon, for precise validation.
         let block_session_id = match position {
             WithinModel::AltScreen(_) => self.active_block_session_id(),
             WithinModel::BlockList(inner) => self
@@ -595,12 +607,14 @@ impl super::TerminalView {
         // For AltScreen we scan for relative path with the current working directory.
         // For BlockList we scan for relative path with the pwd of the hovered block.
         //
-        // Zap:远端会话的 block `pwd()` 是 shell-integration 上报的远端 cwd,
-        // 拼接后即得到正确的远端绝对路径,因此远端 block 也参与扫描(不再跳过)。
+        // Zap: for a remote session, the block's `pwd()` is the remote cwd reported
+        // by shell-integration; joining it gives the correct remote absolute path,
+        // so remote blocks now also participate in scanning (no longer skipped).
         let pwd_to_scan_for = match position {
             WithinModel::AltScreen(_) => {
                 if is_remote {
-                    // 远端会话:`pwd()` 返回的是 shell-integration 上报的远端活动 cwd。
+                    // Remote session: `pwd()` returns the remote active cwd reported by
+                    // shell-integration.
                     self.pwd()
                 } else {
                     self.pwd_if_local(ctx)
@@ -614,7 +628,8 @@ impl super::TerminalView {
                 .and_then(|block| block.pwd().map(String::from)),
         };
 
-        // Zap:远端会话用缓存的 cwd 目录列表精确校验;本地会话保持 `Local`。
+        // Zap: remote sessions use the cached cwd directory listing for precise
+        // validation; local sessions stay `Local`.
         let validation_ctx = match (&pwd_to_scan_for, block_session_id) {
             #[cfg(all(feature = "local_tty", not(target_family = "wasm")))]
             (Some(cwd), Some(session_id)) if is_remote => {
@@ -629,8 +644,8 @@ impl super::TerminalView {
             Some(path) if matches!(from_editor, TerminalEditor::No) => {
                 let possible_paths = self.model.lock().possible_file_paths_at_point(position);
                 let max_columns = self.size_info.columns;
-                // 用被悬停 block 自己的 launch data,避免跨会话/host/WSL 时
-                // 用错 shell 规则解析路径。
+                // Use the hovered block's own launch data, to avoid resolving the
+                // path with the wrong shell rules across sessions/hosts/WSL.
                 let shell_launch_data = block_session_id
                     .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
                     .and_then(|session| session.launch_data().cloned());

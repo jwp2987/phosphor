@@ -24,17 +24,17 @@ pub trait StoredStringObject: StoredObject + Send + Sync {
     /// Returns a serialized model from this string object.
     fn serialized(&self) -> SerializedModel;
 
-    /// 返回这个 stored object 的 boxed clone。
-    /// 不能直接要求该 trait derive Clone,否则 trait 不再 object safe。
+    /// Returns a boxed clone of this stored object.
+    /// This trait can't directly require Clone to be derived, or the trait stops being object safe.
     fn clone_box(&self) -> Box<dyn StoredStringObject>;
 }
 
 /// A `StringModel` is a model that can be serialized and deserialized as a simple string.
 ///
 /// Any model that has a simple string representation (e.g. JSON, markdown, yaml) that can be atomically updated
-/// 实现这个 trait 后即可复用大多数本地 object-store 行为。
+/// can implement this trait to reuse most local object-store behavior.
 ///
-/// 实现这个类型的对象共享同一套本地存储行为。
+/// Objects implementing this type share the same set of local storage behavior.
 pub trait StringModel: Clone + Debug + PartialEq + Send + Sync + 'static {
     type StoredObjectType: StoredObject + 'static;
 

@@ -73,8 +73,9 @@ impl TerminalView {
         self.pending_user_query_view_id = Some(view_id);
     }
 
-    /// 为本地 ambient agent run 插入一个 pending user query block,直到 harness CLI 启动。
-    /// 这个 block 只展示用户 prompt 和 queued 状态,不提供本地队列回调按钮。
+    /// Inserts a pending user query block for a local ambient agent run, until the
+    /// harness CLI starts. This block only shows the user prompt and queued state;
+    /// it doesn't provide a local queue-callback button.
     pub(in crate::terminal::view) fn insert_ambient_agent_queued_user_query_block(
         &mut self,
         prompt: String,

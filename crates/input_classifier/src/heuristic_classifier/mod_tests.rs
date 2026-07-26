@@ -99,48 +99,48 @@ fn test_cjk_input_detection() {
     futures::executor::block_on(async move {
         let classifier = HeuristicClassifier;
 
-        // 默认从 Shell 模式触发(更严格场景,验证 CJK 仍能切到 AI)。
+        // Starting from Shell mode by default (stricter scenario, verifying CJK can still switch to AI).
         let context = Context {
             current_input_type: InputType::Shell,
             is_agent_follow_up: false,
         };
 
-        // 单个汉字也判 AI(默认逻辑会因 token 数 < 2 被判 Shell)。
+        // A single CJK character also classifies as AI (default logic would classify it as Shell due to token count < 2).
         let token = mock_parsed_input_token("帮我列出当前目录文件".to_string()).await;
         assert_eq!(
             classifier.detect_input_type(token, &context).await,
             InputType::AI
         );
 
-        // 中英混合,只要含 CJK 就走 AI。
+        // Mixed Chinese and English; as long as it contains CJK, it goes to AI.
         let token = mock_parsed_input_token("用 cargo build 编译这个项目".to_string()).await;
         assert_eq!(
             classifier.detect_input_type(token, &context).await,
             InputType::AI
         );
 
-        // 中文标点(全角逗号、句号、问号)也命中。
+        // Chinese punctuation (fullwidth comma, period, question mark) also matches.
         let token = mock_parsed_input_token("这是什么?".to_string()).await;
         assert_eq!(
             classifier.detect_input_type(token, &context).await,
             InputType::AI
         );
 
-        // 日文(平假名 + 片假名)。
+        // Japanese (hiragana + katakana).
         let token = mock_parsed_input_token("ファイルを表示してください".to_string()).await;
         assert_eq!(
             classifier.detect_input_type(token, &context).await,
             InputType::AI
         );
 
-        // 韩文。
+        // Korean.
         let token = mock_parsed_input_token("파일 목록을 보여줘".to_string()).await;
         assert_eq!(
             classifier.detect_input_type(token, &context).await,
             InputType::AI
         );
 
-        // 纯英文 shell 命令不受影响。
+        // Pure English shell commands are unaffected.
         let token = mock_parsed_input_token("ls -la".to_string()).await;
         assert_eq!(
             classifier.detect_input_type(token, &context).await,

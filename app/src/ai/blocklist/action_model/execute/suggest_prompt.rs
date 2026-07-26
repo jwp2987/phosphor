@@ -52,11 +52,13 @@ impl PromptSuggestionExecutor {
             return ActionExecution::InvalidAction;
         };
 
-        // Zap:无条件 emit(原版 gate 在 PromptSuggestionsViaMAA cargo feature 下,
-        // OSS 默认不开 → chip 永远不显示 → oneshot 永挂)。BYOP 场景模型主动调
-        // suggest_prompt 时,需要 view 层订阅本 event 把 chip 显示给用户,接受后
-        // 调 complete_suggest_prompt_action 关 channel。详见
-        // app/src/terminal/view.rs::handle_prompt_suggestion_executor_event。
+        // Zap: emits unconditionally (the original gate is behind the
+        // PromptSuggestionsViaMAA cargo feature, which OSS doesn't enable by default
+        // → the chip never shows → the oneshot hangs forever). When the model
+        // proactively calls suggest_prompt in a BYOP scenario, the view layer needs
+        // to subscribe to this event to show the chip to the user; once accepted, it
+        // calls complete_suggest_prompt_action to close the channel. See
+        // app/src/terminal/view.rs::handle_prompt_suggestion_executor_event.
         if let SuggestPromptRequest::PromptSuggestion { prompt, label } = request {
             ctx.emit(PromptSuggestionExecutorEvent::NewPromptSuggestion {
                 prompt: prompt.clone(),

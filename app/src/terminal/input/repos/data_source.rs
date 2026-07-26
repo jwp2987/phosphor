@@ -1,10 +1,12 @@
 //! Async data source for the inline repos menu.
 //!
-//! 历史上这里从 `PersistedWorkspace` 拉「之前打开过的 git 仓库」列表。
-//! LSP + workspace 历史下线后,这个候选源已不存在,因此本 data source
-//! 仅保留 trait 与 view 接线,永远返回空结果 —— 也就是说菜单仍能被
-//! 唤出但永远没有候选项。这样可以避免大改上层 view / suggestions mode
-//! 的接线,等未来若要接入「当前 pane group 实时 cwd」再补回数据来源。
+//! Historically, this pulled the list of "previously opened git repositories" from
+//! `PersistedWorkspace`. Now that LSP + workspace history have been retired, that
+//! candidate source no longer exists, so this data source only keeps the trait and
+//! view wiring, always returning an empty result — meaning the menu can still be
+//! invoked but will never have candidates. This avoids a large rewrite of the
+//! upstream view / suggestions-mode wiring, so a data source can be reattached
+//! later if "current pane group's live cwd" support is added.
 
 use warpui::{AppContext, Entity};
 

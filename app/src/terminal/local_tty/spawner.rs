@@ -86,13 +86,14 @@ fn invoke_without_crash_reporting<T>(
     is_crash_reporting_enabled: bool,
     func: impl FnOnce() -> T,
 ) -> T {
-    // 子进程派生前暂停本地 crash reporting 状态,避免把信号/异常处理状态泄漏到 shell。
+    // Suspend the local crash reporting state before spawning the child process, to
+    // avoid leaking signal/exception handling state into the shell.
     #[cfg(feature = "crash_reporting")]
     crate::crash_reporting::suspend_crash_reporting_for_child_spawn();
 
     let retval = func();
 
-    // 子进程完成派生后恢复本地 crash reporting 状态。
+    // Restore the local crash reporting state after the child process has spawned.
     if is_crash_reporting_enabled {
         #[cfg(feature = "crash_reporting")]
         crate::crash_reporting::resume_crash_reporting_after_child_spawn();

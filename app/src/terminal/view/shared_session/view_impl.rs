@@ -169,8 +169,10 @@ impl TerminalView {
         // still runs; it just doesn't surface a "share" button in the header.
     }
 
-    // Zap:Share Session 路径已切断,下面两个方法保留签名但 no-op,
-    // 不再 emit `Event::OpenShareSessionModal{,DeniedModal}`,也不再触达云端协同会话服务。
+    // Zap: the Share Session path has been cut; the two methods below keep their
+    // signatures but are now no-ops — they no longer emit
+    // `Event::OpenShareSessionModal{,DeniedModal}` and no longer reach the cloud
+    // collaborative-session service.
     pub fn open_share_session_modal(
         &mut self,
         _open_source: SharedSessionActionSource,
@@ -206,8 +208,10 @@ impl TerminalView {
     /// 5. Once the session is registered with [`shared_session::manager::Manager`], it
     ///    will emit an event for relevant subscribers (e.g. the Workspace will need to
     ///    re-render when a share starts for tab indicator, share button, etc.)
-    // Zap:Shared Session 网络入口已切断,attempt_to_share_session 整体 no-op,
-    // 不再 set SharePending 状态、不再 emit StartSharingCurrentSession、不再触发遥测。
+    // Zap: the Shared Session network entry point has been cut;
+    // attempt_to_share_session is now entirely a no-op — it no longer sets the
+    // SharePending state, no longer emits StartSharingCurrentSession, and no longer
+    // triggers telemetry.
     pub fn attempt_to_share_session(
         &mut self,
         _scrollback_type: SharedSessionScrollbackType,
@@ -229,9 +233,11 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let started_at = Local::now();
-        // TODO(zap-cloud-removal Phase 5): `self_handle` 原本喂给 ShareableObject::Session
-        // 用于 sharing UI 反查 pane;sharing UI 已删但 shared_session 整条链路仍在,
-        // 完整退役 shared_session 时再删这个 ctx.handle() 调用。
+        // TODO(zap-cloud-removal Phase 5): `self_handle` originally fed
+        // ShareableObject::Session for the sharing UI to look up the pane;
+        // the sharing UI has been removed but the shared_session pipeline is still
+        // present, so remove this ctx.handle() call once shared_session is fully
+        // decommissioned.
         let _self_handle = ctx.handle();
         let adapter = Adapter::new_for_sharer(
             sharer_id,
@@ -294,9 +300,11 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         let started_at = Local::now();
-        // TODO(zap-cloud-removal Phase 5): `self_handle` 原本喂给 ShareableObject::Session
-        // 用于 sharing UI 反查 pane;sharing UI 已删但 shared_session 整条链路仍在,
-        // 完整退役 shared_session 时再删这个 ctx.handle() 调用。
+        // TODO(zap-cloud-removal Phase 5): `self_handle` originally fed
+        // ShareableObject::Session for the sharing UI to look up the pane;
+        // the sharing UI has been removed but the shared_session pipeline is still
+        // present, so remove this ctx.handle() call once shared_session is fully
+        // decommissioned.
         let _self_handle = ctx.handle();
         let adapter = Adapter::new_for_viewer(
             viewer_id.clone(),

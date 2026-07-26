@@ -19,7 +19,7 @@ impl ErrorExt for reqwest::Error {
             return false;
         }
 
-        // 如果服务端返回 capacity error,客户端侧没有可操作的修复动作。
+        // If the server returns a capacity error, there's no actionable fix on the client side.
         if self.status() == Some(StatusCode::TOO_MANY_REQUESTS) {
             return false;
         }

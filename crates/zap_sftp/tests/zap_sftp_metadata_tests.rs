@@ -1,7 +1,7 @@
-//! zap_sftp::types::Metadata::from_ssh2 模块单元测试
+//! Unit tests for the zap_sftp::types::Metadata::from_ssh2 module
 //!
-//! 验证从 ssh2::FileStat 创建 Metadata 的逻辑，
-//! 重点覆盖符号链接检测修复和各字段 Some/None 回退。
+//! Verifies the logic for creating Metadata from ssh2::FileStat, focusing on
+//! the symlink-detection fix and each field's Some/None fallback.
 //! author: logic
 //! date: 2026-05-27
 
@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use zap_sftp::types::*;
 
-/// 构造所有字段为 None 的空 ssh2::FileStat
+/// Builds an empty ssh2::FileStat with all fields set to None
 fn empty_stat() -> ssh2::FileStat {
     ssh2::FileStat {
         size: None,
@@ -22,10 +22,10 @@ fn empty_stat() -> ssh2::FileStat {
 }
 
 // ============================================================
-// Metadata::from_ssh2 — 文件类型检测
+// Metadata::from_ssh2 — file type detection
 // ============================================================
 
-/// 验证 perm 包含目录 mode 位时 file_type 为 Dir
+/// Verifies file_type is Dir when perm contains the directory mode bits
 #[test]
 fn test_metadata_from_ssh2_dir() {
     let stat = ssh2::FileStat {
@@ -36,7 +36,7 @@ fn test_metadata_from_ssh2_dir() {
     assert_eq!(meta.file_type, FileType::Dir);
 }
 
-/// 验证 perm 包含常规文件 mode 位时 file_type 为 File
+/// Verifies file_type is File when perm contains regular-file mode bits
 #[test]
 fn test_metadata_from_ssh2_file() {
     let stat = ssh2::FileStat {
@@ -47,7 +47,7 @@ fn test_metadata_from_ssh2_file() {
     assert_eq!(meta.file_type, FileType::File);
 }
 
-/// 验证 perm 包含符号链接 mode 位时 file_type 为 Symlink（修复验证）
+/// Verifies file_type is Symlink when perm contains symlink mode bits (fix verification)
 #[test]
 fn test_metadata_from_ssh2_symlink() {
     let stat = ssh2::FileStat {
@@ -58,7 +58,7 @@ fn test_metadata_from_ssh2_symlink() {
     assert_eq!(meta.file_type, FileType::Symlink);
 }
 
-/// 验证 perm 为 None 时 file_type 回退为 Other
+/// Verifies file_type falls back to Other when perm is None
 #[test]
 fn test_metadata_from_ssh2_perm_none() {
     let stat = ssh2::FileStat {
@@ -69,7 +69,7 @@ fn test_metadata_from_ssh2_perm_none() {
     assert_eq!(meta.file_type, FileType::Other);
 }
 
-/// 验证未知 mode 位组合时 file_type 为 Other
+/// Verifies file_type is Other for an unknown mode-bit combination
 #[test]
 fn test_metadata_from_ssh2_unknown_mode() {
     let stat = ssh2::FileStat {
@@ -81,10 +81,10 @@ fn test_metadata_from_ssh2_unknown_mode() {
 }
 
 // ============================================================
-// Metadata::from_ssh2 — 权限字段
+// Metadata::from_ssh2 — permission fields
 // ============================================================
 
-/// 验证权限位正确解析
+/// Verifies permission bits are parsed correctly
 #[test]
 fn test_metadata_from_ssh2_permissions() {
     let stat = ssh2::FileStat {
@@ -100,7 +100,7 @@ fn test_metadata_from_ssh2_permissions() {
     assert!(meta.permissions.group_exec);
 }
 
-/// 验证 perm 为 None 时权限全部为 false
+/// Verifies all permissions are false when perm is None
 #[test]
 fn test_metadata_from_ssh2_permissions_none() {
     let stat = ssh2::FileStat {
@@ -113,10 +113,10 @@ fn test_metadata_from_ssh2_permissions_none() {
 }
 
 // ============================================================
-// Metadata::from_ssh2 — 数值字段回退
+// Metadata::from_ssh2 — numeric field fallbacks
 // ============================================================
 
-/// 验证 size/uid/gid 正常值
+/// Verifies normal size/uid/gid values
 #[test]
 fn test_metadata_from_ssh2_fields_present() {
     let stat = ssh2::FileStat {
@@ -132,7 +132,7 @@ fn test_metadata_from_ssh2_fields_present() {
     assert_eq!(meta.gid, 100);
 }
 
-/// 验证 size/uid/gid 为 None 时回退为 0
+/// Verifies size/uid/gid fall back to 0 when None
 #[test]
 fn test_metadata_from_ssh2_fields_absent() {
     let stat = ssh2::FileStat {
@@ -149,10 +149,10 @@ fn test_metadata_from_ssh2_fields_absent() {
 }
 
 // ============================================================
-// Metadata::from_ssh2 — 时间戳
+// Metadata::from_ssh2 — timestamps
 // ============================================================
 
-/// 验证 atime/mtime 正确转换为 SystemTime
+/// Verifies atime/mtime are correctly converted to SystemTime
 #[test]
 fn test_metadata_from_ssh2_timestamps_present() {
     let stat = ssh2::FileStat {
@@ -168,7 +168,7 @@ fn test_metadata_from_ssh2_timestamps_present() {
     assert_eq!(meta.modified, Some(expected_mtime));
 }
 
-/// 验证 atime/mtime 为 None 时 accessed/modified 为 None
+/// Verifies accessed/modified are None when atime/mtime are None
 #[test]
 fn test_metadata_from_ssh2_timestamps_absent() {
     let stat = ssh2::FileStat {
@@ -183,10 +183,10 @@ fn test_metadata_from_ssh2_timestamps_absent() {
 }
 
 // ============================================================
-// Metadata::from_ssh2 — 完整字段组合
+// Metadata::from_ssh2 — full field combination
 // ============================================================
 
-/// 验证所有字段同时设置的完整场景
+/// Verifies the full scenario with all fields set at once
 #[test]
 fn test_metadata_from_ssh2_full_stat() {
     let stat = ssh2::FileStat {

@@ -30,6 +30,6 @@ zeroize = "1.8"
 [dev-dependencies]
 diesel = { workspace = true, features = ["chrono", "sqlite", "returning_clauses_for_sqlite_3_35"] }
 diesel_migrations = "2.2.0"
-# 静态链接 SQLite,避免依赖系统级 sqlite3.lib(Windows 默认没有)。
+# Statically link SQLite, avoiding a dependency on the system-level sqlite3.lib (absent on Windows by default).
 libsqlite3-sys = { version = "0.33.0", features = ["bundled"] }
 tempfile.workspace = true

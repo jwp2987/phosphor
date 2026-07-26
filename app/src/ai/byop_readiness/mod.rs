@@ -1,7 +1,8 @@
-//! BYOP 请求发送前的工具调用就绪性分类。
+//! Tool-call readiness classification before a BYOP request is sent.
 //!
-//! 这个模块只处理已经投影出来的安全元数据,不读取原始 prompt、工具参数或工具输出,
-//! 也不修改 controller、serializer 或 conversation 状态。
+//! This module only handles safe metadata that's already been projected out; it
+//! doesn't read the raw prompt, tool arguments, or tool output, and doesn't modify
+//! controller, serializer, or conversation state.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -369,14 +370,18 @@ impl ProjectionItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RepairSource {
-    /// 用户通过 fork(/fork、rewind)从 source conversation 派生新 conversation 时,
-    /// 由 `byop_fork_repair_state_json` 为被丢弃的 tool result 记录的修复来源。
+    /// When the user derives a new conversation from a source conversation via fork
+    /// (/fork, rewind), `byop_fork_repair_state_json` records this as the repair
+    /// source for the discarded tool result.
     ForkedHistory,
-    /// 旧版客户端写入但当前协议无法回放的 tool result 缺口在恢复时记录的修复来源。
-    /// 见 `specs/byop-placeholder-tool-results/ISSUES.md` BYOP-PR-6:目前未在恢复路径中产生此 variant,
-    /// 老 BYOP conversation 中无法解释的缺口默认按 corrupted history 阻断处理。
-    /// **不要随意删除该 variant**:持久化 sidecar 中可能反序列化出 `restored_legacy_history`,
-    /// 删除会破坏 Sidecar 格式兼容性。
+    /// The repair source recorded on restore for a tool-result gap that was written
+    /// by an old client but can't be replayed under the current protocol.
+    /// See `specs/byop-placeholder-tool-results/ISSUES.md` BYOP-PR-6: this variant
+    /// is currently never produced on the restore path — an unexplainable gap in an
+    /// old BYOP conversation is treated as corrupted history and blocked by default.
+    /// **Don't casually remove this variant**: the persisted sidecar may deserialize
+    /// into `restored_legacy_history`, and removing it would break sidecar format
+    /// compatibility.
     RestoredLegacyHistory,
 }
 
@@ -897,11 +902,15 @@ pub fn normalize_projection(mut items: Vec<ProjectionItem>) -> Vec<ProjectionIte
                     }
                 }
             }
-            // 注意:这里**故意**不跨 boundary 推断归属(见
-            // `projection_does_not_infer_backref_across_boundary`)。readiness 的职责是
-            // 拦截配对不上的历史,猜错归属等于把损坏的历史放行给 provider。
-            // 需要精确归属时应由投影构建方直接填 `assistant_tool_call_message_id`
-            // (见 `chat_stream::build_controller_readiness_projection`),而不是在这里猜。
+            // Note: this **deliberately** doesn't infer attribution across a
+            // boundary (see `projection_does_not_infer_backref_across_boundary`).
+            // readiness's job is to intercept history that doesn't pair up
+            // correctly; guessing attribution wrong is equivalent to letting
+            // corrupted history through to the provider. When precise attribution
+            // is needed, the projection builder should fill in
+            // `assistant_tool_call_message_id` directly (see
+            // `chat_stream::build_controller_readiness_projection`), rather than
+            // guessing it here.
             ProjectionItemKind::UserBoundary
             | ProjectionItemKind::AssistantBoundary
             | ProjectionItemKind::SystemBoundary
@@ -931,9 +940,11 @@ pub fn classify_projection(
                 finished
             }
             ProjectionItemKind::ToolResult(result) => classifier.handle_tool_result(result),
-            // 与 `normalize_projection` 同址注释:assistant 纯文本不终止 tool-call 组,
-            // 否则它后面的 ToolCallResult 会失去归属。真正缺结果的场景仍会在
-            // 下一个 UserBoundary / AssistantToolCalls / 末尾的 finish 里被捕获。
+            // Same-site comment as `normalize_projection`: plain-text assistant
+            // content doesn't terminate a tool-call group, otherwise the
+            // ToolCallResult after it would lose its attribution. A genuinely
+            // missing result will still be caught at the next UserBoundary /
+            // AssistantToolCalls / the finish at the end.
             ProjectionItemKind::AssistantBoundary => None,
             ProjectionItemKind::UserBoundary
             | ProjectionItemKind::SystemBoundary
@@ -1093,9 +1104,11 @@ impl<'a> Classifier<'a> {
     }
 
     fn handle_tool_result(&mut self, result: ProjectedToolResult) -> Option<ReadinessState> {
-        // 把"是否归属当前 active group"的判断与"修改 active_call 状态"分成两步,
-        // 先通过不可变借用筛选,失败则直接走 unattached 路径,
-        // 通过后再获取可变借用,避免 expect/unwrap 出现在生产路径上。
+        // Splits the check of "does this belong to the current active group" from
+        // "modify active_call state" into two steps: first filter via an immutable
+        // borrow, and on failure go straight to the unattached path; only take a
+        // mutable borrow after passing, avoiding expect/unwrap on the production
+        // path.
         match self.active_group.as_ref() {
             Some(active_group)
                 if result.task_id == active_group.task_id
@@ -1232,10 +1245,14 @@ impl<'a> Classifier<'a> {
     }
 
     fn mark_stale_repair_records_for_visible_gap(&mut self, key: &ToolCallKey) {
-        // Repair record 的授权语义要求 task_id + assistant_tool_call_message_id + tool_call_id
-        // 三字段完全相等;但当出现真实可见 gap(即同 `tool_call_id` 已被当前对话历史明确标记缺失)时,
-        // 任何"同 tool_call_id 但来自其他 (task_id, assistant_message_id)"的 repair record 都不再适用,
-        // 标记为 stale 以便上层在 diagnostics 中提示该 record 已被忽略。
+        // A repair record's authorization semantics require all three fields —
+        // task_id + assistant_tool_call_message_id + tool_call_id — to match
+        // exactly; but once a genuinely visible gap appears (i.e. the same
+        // `tool_call_id` has been clearly marked missing in the current
+        // conversation's history), any repair record with "the same tool_call_id but
+        // from a different (task_id, assistant_message_id)" no longer applies, and
+        // is marked stale so upstream can flag in diagnostics that this record has
+        // been ignored.
         for (index, record) in self.context.repair_records.iter().enumerate() {
             if record.key.tool_call_id == key.tool_call_id && record.key != *key {
                 self.stale_repair_indices.insert(index);

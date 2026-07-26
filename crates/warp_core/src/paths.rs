@@ -72,11 +72,15 @@ pub fn warp_home_skills_dir() -> Option<PathBuf> {
     warp_home_config_dir().map(|warp_config_dir| warp_config_dir.join("skills"))
 }
 
-/// Zap:system prompt 模板热加载目录的推荐位置(`~/.zap/prompts`)。
+/// Zap: recommended location for the system prompt template hot-reload
+/// directory (`~/.zap/prompts`).
 ///
-/// 只是设置面板给出的**默认建议路径**,不是隐式生效的位置 —— 设置留空时
-/// 依然走编进二进制的内置模板(零运行时 IO)。用户点「导出内置模板」后
-/// 才会把模板落到这里并把路径填进设置。
+/// This is only the **default suggested path** shown in the settings panel,
+/// not a location that takes effect implicitly — when the setting is left
+/// empty, it still falls back to the built-in templates compiled into the
+/// binary (zero runtime IO). Only after the user clicks "Export built-in
+/// templates" will the templates be placed here and the path filled into the
+/// setting.
 pub fn warp_home_prompts_dir() -> Option<PathBuf> {
     warp_home_config_dir().map(|warp_config_dir| warp_config_dir.join("prompts"))
 }

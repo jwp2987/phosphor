@@ -42,21 +42,21 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     }
 }
 
-/// title 或 message 是否会被 `truncate_text` 截断。
+/// Whether the title or message would be truncated by `truncate_text`.
 fn content_is_truncated(title: &str, message: &str) -> bool {
     title.chars().count() > COLLAPSED_MAX_CHARS - 3
         || message.chars().count() > COLLAPSED_MAX_CHARS - 3
 }
 
-/// 区分 toast vs mailbox 渲染差异。
+/// Distinguishes toast vs mailbox rendering differences.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NotificationRenderContext {
     Toast,
     Mailbox,
 }
 
-/// 通知里 artifact chip 的按钮主题。
-/// 使用 `outline` 边框,以便在 `surface_2` 背景上仍可见。
+/// Button theme for artifact chips within notifications.
+/// Uses an `outline` border so it remains visible against a `surface_2` background.
 pub(crate) struct NotificationArtifactButtonTheme;
 
 impl ActionButtonTheme for NotificationArtifactButtonTheme {
@@ -82,11 +82,11 @@ impl ActionButtonTheme for NotificationArtifactButtonTheme {
     }
 }
 
-/// 用户在被截断的消息上点击展开/折叠时回调。
+/// Callback for when the user clicks to expand/collapse a truncated message.
 pub(crate) type OnExpandClick = Box<dyn Fn(&mut warpui::EventContext)>;
 
-/// 渲染通知项的内层内容。
-/// 根据 `item.branch` 是否存在分发到 rich(带 branch 行) 或 simple 布局。
+/// Renders the inner content of a notification item.
+/// Dispatches to the rich layout (with a branch row) or the simple layout depending on whether `item.branch` is present.
 pub(crate) fn render_notification_item_content(
     item: &NotificationItem,
     artifact_buttons: Option<&ViewHandle<ArtifactButtonsRow>>,
@@ -133,7 +133,7 @@ pub(crate) fn render_notification_item_content(
         .finish()
 }
 
-/// Rich 布局:branch 行 + clamped title + clamped message + artifact 按钮。
+/// Rich layout: branch row + clamped title + clamped message + artifact button.
 fn render_rich_text_column(
     item: &NotificationItem,
     artifact_buttons: Option<&ViewHandle<ArtifactButtonsRow>>,
@@ -154,7 +154,7 @@ fn render_rich_text_column(
             render_expand_chevron(message_expanded, on_expand_click, theme)
         }
         NotificationRenderContext::Toast => {
-            // 内容能完整显示时不渲染 chevron。
+            // Don't render the chevron when the content can be shown in full.
             Flex::row().finish()
         }
         NotificationRenderContext::Mailbox => render_timestamp_with_dot(item, appearance),
@@ -181,7 +181,7 @@ fn render_rich_text_column(
     content.finish()
 }
 
-/// Simple 布局:title (+ 可选 chevron) | timestamp 行 + message + artifact 按钮。
+/// Simple layout: title (+ optional chevron) | timestamp row + message + artifact button.
 fn render_simple_text_column(
     item: &NotificationItem,
     artifact_buttons: Option<&ViewHandle<ArtifactButtonsRow>>,
@@ -227,7 +227,7 @@ fn render_simple_text_column(
     content.finish()
 }
 
-/// 把 artifact 按钮和 extra content 追加到 text column。
+/// Appends the artifact button and extra content to the text column.
 fn append_trailing_content(
     content: &mut Flex,
     artifact_buttons: Option<&ViewHandle<ArtifactButtonsRow>>,
@@ -245,7 +245,7 @@ fn append_trailing_content(
     }
 }
 
-/// git-branch 图标 + branch 名标签。
+/// A git-branch icon + the branch name label.
 fn render_branch_label(branch: &str, appearance: &Appearance) -> Box<dyn Element> {
     let theme = appearance.theme();
     let color = theme.sub_text_color(theme.surface_1());
@@ -283,7 +283,7 @@ fn render_branch_label(branch: &str, appearance: &Appearance) -> Box<dyn Element
     .finish()
 }
 
-/// 时间戳文本 + 可选未读小红点。
+/// Timestamp text + an optional small unread red dot.
 fn render_timestamp_with_dot(item: &NotificationItem, appearance: &Appearance) -> Box<dyn Element> {
     let theme = appearance.theme();
 
@@ -325,7 +325,7 @@ fn render_timestamp_with_dot(item: &NotificationItem, appearance: &Appearance) -
     row.finish()
 }
 
-/// 可点击的展开/折叠 chevron。
+/// A clickable expand/collapse chevron.
 fn render_expand_chevron(
     expanded: bool,
     on_click: OnExpandClick,
@@ -352,7 +352,7 @@ fn render_expand_chevron(
         .finish()
 }
 
-/// 标题文本,按 expanded 状态决定截断长度。
+/// Title text; the truncation length is decided by the expanded state.
 fn render_clamped_title(title: &str, expanded: bool, appearance: &Appearance) -> Box<dyn Element> {
     let theme = appearance.theme();
     let max = if expanded {
@@ -375,7 +375,7 @@ fn render_clamped_title(title: &str, expanded: bool, appearance: &Appearance) ->
         .finish()
 }
 
-/// 消息正文,按 expanded 状态决定截断长度。
+/// Message body; the truncation length is decided by the expanded state.
 fn render_message_text(message: &str, expanded: bool, appearance: &Appearance) -> Box<dyn Element> {
     let theme = appearance.theme();
     let max = if expanded {
@@ -442,8 +442,8 @@ fn notification_category_to_conversation_status(
     }
 }
 
-/// 创建带通知专用主题的 `ArtifactButtonsRow` view。
-/// 调用方需要自己订阅返回 view 的事件。
+/// Creates an `ArtifactButtonsRow` view with the notification-specific theme.
+/// The caller needs to subscribe to the returned view's events itself.
 pub(crate) fn create_notification_artifact_buttons_view(
     artifacts: &[Artifact],
     ctx: &mut ViewContext<impl View>,
@@ -455,7 +455,7 @@ pub(crate) fn create_notification_artifact_buttons_view(
     Some(ctx.add_typed_action_view(|ctx| ArtifactButtonsRow::with_theme(artifacts, theme, ctx)))
 }
 
-/// 处理通知 view (toast / mailbox) 里的 artifact 按钮事件。
+/// Handles artifact button events inside the notification view (toast / mailbox).
 pub(crate) fn handle_notification_artifact_buttons_event(
     event: &ArtifactButtonsRowEvent,
     ctx: &mut ViewContext<impl View>,
@@ -468,8 +468,8 @@ pub(crate) fn handle_notification_artifact_buttons_event(
                 },
                 ctx
             );
-            // openWarp 本地化:点击 plan 按钮打开本地 AIDocument pane,
-            // 不再跳到云 notebook 镜像。
+            // openWarp localization: clicking the plan button opens the local
+            // AIDocument pane; it no longer jumps to the cloud notebook mirror.
             let document_version =
                 crate::ai::document::ai_document_model::AIDocumentModel::as_ref(ctx)
                     .get_current_document(document_uid)

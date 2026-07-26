@@ -263,39 +263,40 @@ fn current_and_rotated_log_paths() -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// 额外打包到日志 zip 的内容,由调用方收集后传入。
+/// Extra content to bundle into the log zip, collected and passed in by the caller.
 ///
-/// `warp_logging` 本身只知道主日志文件;诊断摘要、其它子系统(如 MCP)的日志
-/// 路径、自动更新日志等都由 `app` 层在收集后通过本结构体传入,避免本 crate
-/// 反向依赖上层模块。
+/// `warp_logging` itself only knows about the main log file; diagnostic
+/// summaries, other subsystems' (e.g. MCP) log paths, autoupdate logs, etc.
+/// are all collected and passed in via this struct by the `app` layer, avoiding
+/// a reverse dependency of this crate on upper-layer modules.
 #[derive(Debug, Default)]
 pub struct LogBundleExtras {
-    /// 需要原样打包进 zip 的额外磁盘文件;不存在的文件会被静默跳过。
+    /// Extra on-disk files to bundle into the zip as-is; missing files are silently skipped.
     pub extra_files: Vec<ExtraFile>,
-    /// 直接以内存字符串形式写入 zip 的虚拟文件(如 `manifest.txt`)。
+    /// Virtual files written into the zip directly from an in-memory string (e.g. `manifest.txt`).
     pub inline_files: Vec<InlineFile>,
 }
 
-/// 额外打包的磁盘文件描述。
+/// Description of an extra on-disk file to bundle.
 #[derive(Debug)]
 pub struct ExtraFile {
-    /// 真实磁盘路径。
+    /// The real on-disk path.
     pub source_path: PathBuf,
-    /// 在 zip 中保存为的相对路径(支持子目录,如 `mcp/<uuid>.log`)。
+    /// The relative path to save it as inside the zip (supports subdirectories, e.g. `mcp/<uuid>.log`).
     pub entry_name: String,
 }
 
-/// 以内存内容写入 zip 的虚拟文件。
+/// A virtual file written into the zip from in-memory content.
 #[derive(Debug)]
 pub struct InlineFile {
-    /// 在 zip 中保存为的相对路径。
+    /// The relative path to save it as inside the zip.
     pub entry_name: String,
-    /// 文件内容(UTF-8)。
+    /// The file content (UTF-8).
     pub contents: String,
 }
 
-/// 默认 zip 文件名(用于"导出到日志目录"流程,以及作为 save-file picker
-/// 的默认文件名)。形如 `zap-20260518-093000.zip`。
+/// Default zip filename (used for the "export to log directory" flow, and as
+/// the default filename for the save-file picker). Looks like `zap-20260518-093000.zip`.
 pub fn default_log_bundle_filename() -> String {
     let logfile_name = ChannelState::logfile_name();
     let logfile_stem = logfile_name.strip_suffix(".log").unwrap_or(&logfile_name);
@@ -305,21 +306,22 @@ pub fn default_log_bundle_filename() -> String {
     )
 }
 
-/// 把调用方提供的 entry name 规范化为安全的 zip 内部相对路径,防御 path traversal:
-/// - 反斜杠统一为 `/`;
-/// - 拒绝绝对路径 / Windows 盘符;
-/// - 剥离 `..` 父级组件以及连续的 `/` / `.`;
-/// - 空串视为非法。
+/// Normalizes the caller-provided entry name into a safe relative path inside
+/// the zip, defending against path traversal:
+/// - Backslashes are unified to `/`;
+/// - Absolute paths / Windows drive letters are rejected;
+/// - `..` parent components and consecutive `/` / `.` are stripped;
+/// - An empty string is treated as invalid.
 ///
-/// 返回 `None` 表示该 entry 应被跳过(调用方会 log::warn! 并 continue)。
+/// Returns `None` to mean this entry should be skipped (the caller will `log::warn!` and continue).
 fn sanitize_zip_entry_name(name: &str) -> Option<String> {
     if name.is_empty() {
         return None;
     }
-    // 统一分隔符。
+    // Unify separators.
     let normalized = name.replace('\\', "/");
 
-    // 检查 Windows 盘符,如 `C:/foo`。
+    // Check for a Windows drive letter, e.g. `C:/foo`.
     let bytes = normalized.as_bytes();
     if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
         return None;
@@ -328,8 +330,8 @@ fn sanitize_zip_entry_name(name: &str) -> Option<String> {
     let mut parts: Vec<&str> = Vec::new();
     for segment in normalized.split('/') {
         match segment {
-            "" | "." => continue, // 连续 `/` 或 `./`,丢弃。
-            ".." => return None,  // 不允许跳出。
+            "" | "." => continue, // Consecutive `/` or `./`, discard.
+            ".." => return None,  // Not allowed to break out.
             other => parts.push(other),
         }
     }
@@ -340,8 +342,8 @@ fn sanitize_zip_entry_name(name: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// 实际把日志 + extras 写入指定 zip 输出路径的核心实现。
-/// 公开的 `create_log_bundle_zip` 与 `write_log_bundle_zip_to` 都委托到这里。
+/// The core implementation that actually writes logs + extras to the given zip
+/// output path. The public `create_log_bundle_zip` and `write_log_bundle_zip_to` both delegate here.
 fn write_log_bundle_zip_inner(zip_path: &Path, extras: &LogBundleExtras) -> Result<()> {
     let log_files = current_and_rotated_log_paths()?;
 
@@ -349,7 +351,7 @@ fn write_log_bundle_zip_inner(zip_path: &Path, extras: &LogBundleExtras) -> Resu
     let mut zip_writer = ZipWriter::new(zip_file);
     let zip_options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
-    // 主日志 + 轮转的旧日志,平铺到 zip 根目录。
+    // Main log + rotated old logs, flattened into the zip's root directory.
     for log_file in log_files {
         let entry_name = log_file
             .file_name()
@@ -361,7 +363,7 @@ fn write_log_bundle_zip_inner(zip_path: &Path, extras: &LogBundleExtras) -> Resu
         copy(&mut source, &mut zip_writer)?;
     }
 
-    // 额外的磁盘文件:存在则打包,不存在/读取失败仅打印 warn,不影响主流程。
+    // Extra on-disk files: bundled if present; missing/read failures only print a warning without affecting the main flow.
     for extra in &extras.extra_files {
         if !extra.source_path.is_file() {
             continue;
@@ -390,7 +392,7 @@ fn write_log_bundle_zip_inner(zip_path: &Path, extras: &LogBundleExtras) -> Resu
         }
     }
 
-    // 内存内容 (`manifest.txt` 等):始终尝试写入。
+    // In-memory content (`manifest.txt`, etc.): always attempted.
     for inline in &extras.inline_files {
         let raw_name = &inline.entry_name;
         let Some(safe_entry) = sanitize_zip_entry_name(raw_name) else {
@@ -414,11 +416,12 @@ fn write_log_bundle_zip_inner(zip_path: &Path, extras: &LogBundleExtras) -> Resu
 /// and any older logs for the active instance, written into the active
 /// log directory. Returns the resulting zip path.
 ///
-/// 用于"打包后在文件管理器中显示"的入口(Help 菜单 → View Zap Logs)。
+/// Used as the entry point for "bundle then show in file manager" (Help menu → View Zap Logs).
 ///
-/// `extras` 让调用方追加其它诊断产物(MCP 日志、自动更新日志、诊断摘要等);
-/// 任何不存在或无法读取的额外文件都会被跳过并通过 `log::warn!` 记录,
-/// 不会让整个导出失败。
+/// `extras` lets the caller append other diagnostic artifacts (MCP logs,
+/// autoupdate logs, diagnostic summaries, etc.); any missing or unreadable
+/// extra file is skipped and recorded via `log::warn!`, without failing the
+/// whole export.
 pub fn create_log_bundle_zip(extras: LogBundleExtras) -> Result<PathBuf> {
     let log_directory = log_directory()?;
     let zip_path = log_directory.join(default_log_bundle_filename());
@@ -436,8 +439,8 @@ pub fn create_log_bundle_zip(extras: LogBundleExtras) -> Result<PathBuf> {
 /// Writes a log bundle zip directly to `output_path` (overwriting if it
 /// already exists, mirroring the save-file picker contract).
 ///
-/// 用于"用户在保存对话框中选择路径"的入口(设置 → 关于 → 导出日志)。
-/// 与 `create_log_bundle_zip` 共享相同的打包内容与失败容忍策略。
+/// Used as the entry point for "user chooses a path in the save dialog" (Settings → About → Export Logs).
+/// Shares the same bundled content and failure-tolerance policy as `create_log_bundle_zip`.
 pub fn write_log_bundle_zip_to(
     output_path: impl AsRef<Path>,
     extras: LogBundleExtras,

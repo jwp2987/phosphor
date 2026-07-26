@@ -120,7 +120,8 @@ impl ImageViewerView {
             pane_config.set_title(name.clone(), ctx);
         });
 
-        // 用 host_id:path 作为稳定 asset id —— 同一远端图片复用缓存,不同主机/路径不碰撞。
+        // Use host_id:path as a stable asset id — the same remote image
+        // reuses the cache, while different hosts/paths never collide.
         let asset_id = format!("{}:{}", remote_path.host_id, remote_path.path.as_str());
         AssetCache::handle(ctx).update(ctx, |cache, ctx| {
             cache.insert_raw_asset_bytes::<ImageType>(asset_id.clone(), bytes, ctx);
@@ -208,7 +209,8 @@ impl View for ImageViewerView {
                     .before_load(loading_element())
                     .finish()
             }
-            // 远端图片在抓取字节期间还没有 source —— 先显示 loading 占位。
+            // A remote image has no source yet while its bytes are being
+            // fetched — show a loading placeholder in the meantime.
             None if self.loading => loading_element(),
             None => Empty::new().finish(),
         };

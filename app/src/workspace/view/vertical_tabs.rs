@@ -757,7 +757,7 @@ enum SummaryPaneKind {
     Workflow { is_ai_prompt: bool },
     Settings,
     EnvVarCollection,
-    // Zap Wave 7-3:`EnvironmentManagement` variant 随 ambient-agent UI 子系统物理删。
+    // Zap Wave 7-3: the `EnvironmentManagement` variant was physically removed along with the ambient-agent UI subsystem.
     AIFact,
     AIDocument,
     ExecutionProfileEditor,
@@ -2390,7 +2390,7 @@ fn resolve_icon_with_status_variant(
             }
         }
         // Settings and environment management use the foreground color per design spec
-        // Zap Wave 7-3:`TypedPane::EnvironmentManagement` 随 ambient-agent UI 子系统物理删。
+        // Zap Wave 7-3: `TypedPane::EnvironmentManagement` was physically removed along with the ambient-agent UI subsystem.
         TypedPane::Settings => IconWithStatusVariant::Neutral {
             icon: typed.icon(),
             icon_color: main_text,
@@ -2550,7 +2550,7 @@ enum TypedPane<'a> {
     Workflow { is_ai_prompt: bool },
     Settings,
     EnvVarCollection,
-    // Zap Wave 7-3:`EnvironmentManagement` variant 随 ambient-agent UI 子系统物理删。
+    // Zap Wave 7-3: the `EnvironmentManagement` variant was physically removed along with the ambient-agent UI subsystem.
     AIFact,
     AIDocument,
     ExecutionProfileEditor,
@@ -2592,7 +2592,7 @@ impl TypedPane<'_> {
             },
             TypedPane::Settings => SummaryPaneKind::Settings,
             TypedPane::EnvVarCollection => SummaryPaneKind::EnvVarCollection,
-            // Zap Wave 7-3:`TypedPane::EnvironmentManagement` arm 随 variant 物理删。
+            // Zap Wave 7-3: the `TypedPane::EnvironmentManagement` arm was physically removed along with the variant.
             TypedPane::AIFact => SummaryPaneKind::AIFact,
             TypedPane::AIDocument => SummaryPaneKind::AIDocument,
             TypedPane::ExecutionProfileEditor => SummaryPaneKind::ExecutionProfileEditor,
@@ -2620,8 +2620,8 @@ impl TypedPane<'_> {
             TypedPane::EnvVarCollection => {
                 crate::t!("vertical-tabs-pane-kind-environment-variables")
             }
-            // Zap Wave 7-3:`TypedPane::EnvironmentManagement` kind_label arm 随 variant
-            // 物理删。
+            // Zap Wave 7-3: the `TypedPane::EnvironmentManagement` kind_label
+            // arm was physically removed along with the variant.
             TypedPane::AIFact => crate::t!("vertical-tabs-pane-kind-rules"),
             TypedPane::AIDocument => crate::t!("vertical-tabs-pane-kind-plan"),
             TypedPane::ExecutionProfileEditor => {
@@ -2645,7 +2645,7 @@ impl TypedPane<'_> {
             | TypedPane::Workflow { .. }
             | TypedPane::Settings
             | TypedPane::EnvVarCollection
-            // Zap Wave 7-3:`TypedPane::EnvironmentManagement` arm 随 variant 物理删。
+            // Zap Wave 7-3: the `TypedPane::EnvironmentManagement` arm was physically removed along with the variant.
             | TypedPane::AIFact
             | TypedPane::AIDocument
             | TypedPane::ExecutionProfileEditor
@@ -2666,7 +2666,7 @@ impl TypedPane<'_> {
                 is_ai_prompt: false,
             } => WarpIcon::Workflow,
             TypedPane::Settings => WarpIcon::Gear,
-            // Zap Wave 7-3:`TypedPane::EnvironmentManagement` icon arm 随 variant 物理删。
+            // Zap Wave 7-3: the `TypedPane::EnvironmentManagement` icon arm was physically removed along with the variant.
             TypedPane::EnvVarCollection => WarpIcon::EnvVarCollection,
             TypedPane::AIFact => WarpIcon::BookOpen,
             TypedPane::AIDocument => WarpIcon::Compass,
@@ -2804,7 +2804,7 @@ fn build_vertical_tabs_summary_data(
             | TypedPane::Workflow { .. }
             | TypedPane::Settings
             | TypedPane::EnvVarCollection
-            // Zap Wave 7-3:`TypedPane::EnvironmentManagement` arm 随 variant 物理删。
+            // Zap Wave 7-3: the `TypedPane::EnvironmentManagement` arm was physically removed along with the variant.
             | TypedPane::AIFact
             | TypedPane::AIDocument
             | TypedPane::ExecutionProfileEditor
@@ -2927,7 +2927,7 @@ impl<'a> PaneProps<'a> {
             | TypedPane::Workflow { .. }
             | TypedPane::Settings
             | TypedPane::EnvVarCollection
-            // Zap Wave 7-3:`TypedPane::EnvironmentManagement` arm 随 variant 物理删。
+            // Zap Wave 7-3: the `TypedPane::EnvironmentManagement` arm was physically removed along with the variant.
             | TypedPane::AIFact
             | TypedPane::AIDocument
             | TypedPane::ExecutionProfileEditor
@@ -3240,7 +3240,7 @@ impl PaneGroup {
             }
             IPaneType::Settings => TypedPane::Settings,
             IPaneType::EnvVarCollection => TypedPane::EnvVarCollection,
-            // Zap Wave 7-3:`EnvironmentManagement` arm 随 variant 一同物理删。
+            // Zap Wave 7-3: the `EnvironmentManagement` arm was physically removed together with the variant.
             IPaneType::AIFact => TypedPane::AIFact,
             IPaneType::AIDocument => TypedPane::AIDocument,
             IPaneType::ExecutionProfileEditor => TypedPane::ExecutionProfileEditor,
@@ -3775,7 +3775,7 @@ fn render_summary_pane_kind_icon_circle(
         | SummaryPaneKind::Workflow { .. }
         | SummaryPaneKind::Settings
         | SummaryPaneKind::EnvVarCollection
-        // Zap Wave 7-3:`SummaryPaneKind::EnvironmentManagement` arm 随 variant 物理删。
+        // Zap Wave 7-3: the `SummaryPaneKind::EnvironmentManagement` arm was physically removed along with the variant.
         | SummaryPaneKind::AIFact
         | SummaryPaneKind::AIDocument
         | SummaryPaneKind::ExecutionProfileEditor
@@ -3852,7 +3852,7 @@ fn summary_pane_kind_icon(
             },
         ),
         SummaryPaneKind::Settings => (WarpIcon::Gear, main_text),
-        // Zap Wave 7-3:`SummaryPaneKind::EnvironmentManagement` arm 随 variant 物理删。
+        // Zap Wave 7-3: the `SummaryPaneKind::EnvironmentManagement` arm was physically removed along with the variant.
         SummaryPaneKind::EnvVarCollection => (
             WarpIcon::EnvVarCollection,
             drive_color(DriveObjectType::EnvVarCollection),
@@ -5672,7 +5672,7 @@ fn typed_pane_warp_drive_object_type(typed: &TypedPane<'_>) -> Option<DriveObjec
         | TypedPane::CodeDiff
         | TypedPane::File
         | TypedPane::Settings
-        // Zap Wave 7-3:`TypedPane::EnvironmentManagement` arm 随 variant 物理删。
+        // Zap Wave 7-3: the `TypedPane::EnvironmentManagement` arm was physically removed along with the variant.
         | TypedPane::ExecutionProfileEditor
         | TypedPane::Other => None,
     }
@@ -5699,7 +5699,7 @@ fn render_detail_section(
         TypedPane::CodeDiff
         | TypedPane::File
         | TypedPane::Settings
-        // Zap Wave 7-3:`TypedPane::EnvironmentManagement` arm 随 variant 物理删。
+        // Zap Wave 7-3: the `TypedPane::EnvironmentManagement` arm was physically removed along with the variant.
         | TypedPane::ExecutionProfileEditor
         | TypedPane::Other => Empty::new().finish(),
     }

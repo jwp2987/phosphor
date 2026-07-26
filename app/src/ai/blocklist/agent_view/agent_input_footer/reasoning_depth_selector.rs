@@ -1,10 +1,12 @@
-//! 输入框右下角"思考深度"picker(BYOP 模式)。
+//! The "reasoning depth" picker in the bottom-right of the input box (BYOP mode).
 //!
-//! 与 `EnvironmentSelector` 同模板,简化为:
-//! - 数据源:`LLMPreferences::get_reasoning_effort(...)` + 当前选中模型的 variants 表
-//! - 状态:`LLMPreferences::reasoning_effort_per_terminal`(session-only)
-//! - 不写 settings.toml,不发 telemetry,不接 cloud
-//! - 当前模型不支持 reasoning(variants 为空)→ 整个组件渲染空,picker 自然消失
+//! Uses the same template as `EnvironmentSelector`, simplified to:
+//! - Data source: `LLMPreferences::get_reasoning_effort(...)` + the currently
+//!   selected model's variants table
+//! - State: `LLMPreferences::reasoning_effort_per_terminal` (session-only)
+//! - Doesn't write to settings.toml, doesn't send telemetry, doesn't touch cloud
+//! - When the current model doesn't support reasoning (variants is empty), the whole
+//!   component renders empty and the picker naturally disappears
 
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
@@ -38,14 +40,14 @@ use crate::{
 
 use super::AgentInputButtonTheme;
 
-/// 输入框 toolbar 的"Reasoning Depth"选择器。
+/// The "Reasoning Depth" selector in the input box toolbar.
 pub struct ReasoningDepthSelector {
     button: ViewHandle<ActionButton>,
     dropdown: ViewHandle<DisplayChipMenu>,
     is_menu_open: bool,
     menu_positioning_provider: Arc<dyn MenuPositioningProvider>,
     terminal_view_id: EntityId,
-    /// 当前 picker 关联的 (api_type, model_id);随 LLMPreferences 变化刷新。
+    /// The (api_type, model_id) the picker is currently associated with; refreshed as LLMPreferences changes.
     current_target: Option<(AgentProviderApiType, String)>,
 }
 
@@ -116,10 +118,11 @@ impl ReasoningDepthSelector {
         });
 
         let dropdown = ctx.add_typed_action_view(move |ctx| {
-            // 用 CodeReview 风格(无 search input、无 environment sidecar、视觉紧凑)。
-            // 不能用 Environments — 它的 sidecar 路径会把 action_data() 喂给
-            // `ServerId::from_string_lossy`,我们的 effort 名字(如 "Auto"/"Off")
-            // 不是 22 字符,debug build 触发 panic。
+            // Uses the CodeReview style (no search input, no environment sidecar,
+            // visually compact). Can't use Environments — its sidecar path feeds
+            // action_data() into `ServerId::from_string_lossy`, and our effort names
+            // (e.g. "Auto"/"Off") aren't 22 characters, which triggers a panic in
+            // debug builds.
             DisplayChipMenu::new(
                 Vec::<ReasoningDepthMenuItem>::new(),
                 None,
@@ -194,7 +197,7 @@ impl ReasoningDepthSelector {
         });
     }
 
-    /// 解析当前选中模型 → 若是 BYOP 模型解出 (api_type, model_id),否则 None。
+    /// Resolves the currently selected model → (api_type, model_id) if it's a BYOP model, otherwise None.
     fn resolve_current_target(&self, ctx: &AppContext) -> Option<(AgentProviderApiType, String)> {
         let prefs = LLMPreferences::as_ref(ctx);
         let llm_id = prefs
@@ -209,7 +212,7 @@ impl ReasoningDepthSelector {
         let target = self.resolve_current_target(ctx);
         self.current_target = target.clone();
 
-        // Variants 为空 → 整个组件后续 render 走空
+        // Empty variants → the whole component renders empty from here on
         let (variants, current_effort) = match target.as_ref() {
             Some((api_type, model_id)) => {
                 let v = model_reasoning_variants(*api_type, model_id);
@@ -223,7 +226,7 @@ impl ReasoningDepthSelector {
             None => (Vec::new(), ReasoningEffortSetting::Auto),
         };
 
-        // 刷新 dropdown items
+        // Refresh dropdown items
         let menu_items: Vec<ReasoningDepthMenuItem> = variants
             .iter()
             .map(|v| ReasoningDepthMenuItem {
@@ -235,7 +238,7 @@ impl ReasoningDepthSelector {
             menu.update_menu_items(menu_items, ctx);
         });
 
-        // 刷新按钮 label / disabled
+        // Refresh button label / disabled
         let label = if variants.is_empty() {
             String::new()
         } else {
@@ -250,7 +253,7 @@ impl ReasoningDepthSelector {
         ctx.notify();
     }
 
-    /// 当前是否应渲染(模型支持 reasoning)。
+    /// Whether this should currently render (the model supports reasoning).
     fn is_visible(&self) -> bool {
         match &self.current_target {
             Some((api_type, model_id)) => !model_reasoning_variants(*api_type, model_id).is_empty(),
@@ -297,7 +300,7 @@ impl View for ReasoningDepthSelector {
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         if !self.is_visible() {
-            // 不支持 reasoning 的模型 → 渲染空
+            // A model that doesn't support reasoning → render empty
             return Stack::new().finish();
         }
 

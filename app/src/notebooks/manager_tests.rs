@@ -94,7 +94,8 @@ fn initialize_app(app: &mut App) -> TestState {
 
     let (sender, receiver) = mpsc::sync_channel(10);
     app.add_singleton_model(|ctx| UpdateManager::new(Some(sender), ctx));
-    // Zap(Wave 4):SyncQueue 整删,原 `sync_queue.start_dequeueing(ctx)` 已不适用。
+    // Zap (Wave 4): SyncQueue was removed entirely, so the original
+    // `sync_queue.start_dequeueing(ctx)` no longer applies.
 
     app.add_singleton_model(ObjectStoreViewModel::mock);
     let manager = app.add_singleton_model(NotebookManager::mock);

@@ -157,8 +157,8 @@ impl TryFrom<PaneNodeSnapshot> for PaneTemplateType {
                 | LeafContents::GetStarted
                 | LeafContents::Welcome { .. }
                 | LeafContents::AIDocument(_)
-                // Zap Wave 7-3:`EnvironmentManagement` arm 随 ambient-agent UI
-                // 子系统物理删。
+                // Zap Wave 7-3: the `EnvironmentManagement` arm was
+                // physically removed along with the ambient-agent UI subsystem.
                 | LeafContents::SshServer { .. }
                 | LeafContents::Sftp { .. }
                 | LeafContents::AmbientAgent(_) => {

@@ -142,9 +142,11 @@ impl DetailsBar {
                     .finish()
             });
         } else {
-            // openWarp UX: 给 "铅笔" 切换按钮加 tooltip,避免用户(特别是首次使用)
-            // 不知道这个图标能点、点了会发生什么。Tooltip 按当前 mode
-            // 表达「点击后会发生的动作」,而不是重复旁边的状态文字。
+            // openWarp UX: add a tooltip to the "pencil" toggle button so
+            // users (especially first-time users) know the icon is clickable
+            // and what clicking it does. The tooltip expresses "the action
+            // that will happen on click" based on the current mode, rather
+            // than repeating the adjacent status text.
             let tooltip_text = match mode {
                 Mode::View => crate::t!("common-tooltip-enter-edit-mode"),
                 Mode::Editing => crate::t!("common-tooltip-exit-edit-mode"),

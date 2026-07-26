@@ -1,23 +1,30 @@
-//! "Candidates" 区域的视图模型 —— 把 `warp_ssh_manager::load_candidates()`
-//! 的结果(及已导入别名集合、折叠状态)摊平成 UI 友好的 [`CandidateRow`]
-//! 列表。
+//! View model for the "Candidates" section — flattens the results of
+//! `warp_ssh_manager::load_candidates()` (plus the set of already-imported
+//! aliases and collapsed state) into a UI-friendly [`CandidateRow`] list.
 //!
-//! 设计要点(对应 `specs/gh-110-ssh-config-import/{PRODUCT,TECH}.md`):
+//! Design notes (corresponding to
+//! `specs/gh-110-ssh-config-import/{PRODUCT,TECH}.md`):
 //!
-//! - `rows()` 是**纯函数**:只依赖 view-model 的当前字段,不碰 IO / runtime,
-//!   单元测试可以直接构造一个 `CandidatesViewModel` 并断言输出。这正是 TDD
-//!   讨论里要求的点 —— PR 2 的渲染层 warpui 测试代价太高,把"哪些行该显示"
-//!   的逻辑抽出来单测就够覆盖关键判断。
-//! - `refresh()` 同步调用 `warp_ssh_manager::load_candidates()`(<10KB 文件,
-//!   见 TECH.md §3.1 的取舍),把结果存进 `state`。
-//! - `on_tree_changed()` 由 panel 在订阅 `SshTreeChangedNotifier` 后调用 —— 把
-//!   保存树里所有 server 的 `host` 字段收集成 `HashSet`,作为 "Added" 徽章的
-//!   判定依据(PRODUCT.md decision E)。
-//! - "已导入"的判定按 `host == alias` 做。导入逻辑在 panel 侧把 `server.host`
-//!   设成候选别名(PRODUCT.md decision I),所以这里的比较语义与导入语义一致。
+//! - `rows()` is a **pure function**: it only depends on the view-model's
+//!   current fields and doesn't touch IO / runtime, so unit tests can
+//!   directly construct a `CandidatesViewModel` and assert on the output.
+//!   This is exactly what the TDD discussion called for — PR 2's rendering
+//!   layer warpui tests are too expensive, so pulling the "which rows should
+//!   show" logic out into unit tests is enough to cover the key decisions.
+//! - `refresh()` synchronously calls `warp_ssh_manager::load_candidates()`
+//!   (a <10KB file — see the tradeoff discussion in TECH.md §3.1), storing
+//!   the result into `state`.
+//! - `on_tree_changed()` is called by the panel after subscribing to
+//!   `SshTreeChangedNotifier` — it collects the `host` field of every server
+//!   in the saved tree into a `HashSet`, used as the basis for deciding the
+//!   "Added" badge (PRODUCT.md decision E).
+//! - "Already imported" is determined by `host == alias`. The import logic
+//!   on the panel side sets `server.host` to the candidate alias (PRODUCT.md
+//!   decision I), so the comparison semantics here match the import
+//!   semantics.
 //!
-//! 字段全部 `pub(crate)`,只让 `panel.rs` 看见;`CandidatesViewModel` 本身
-//! 通过 `pub` 暴露给 `mod.rs` 的 re-export。
+//! All fields are `pub(crate)`, visible only to `panel.rs`;
+//! `CandidatesViewModel` itself is exposed via `pub` for re-export in `mod.rs`.
 
 use std::collections::HashSet;
 
@@ -27,13 +34,16 @@ use warpui::{Entity, ModelContext, SingletonEntity};
 
 use crate::settings::SshSettings;
 
-/// `~/.ssh/config` 一行候选服务器在 UI 中的来源 + 状态视图。
+/// Source + status view in the UI for a candidate server line from `~/.ssh/config`.
 pub struct CandidatesViewModel {
-    /// 最近一次加载结果。`None` 表示模型刚创建、尚未触发任何 refresh。
+    /// The most recent load result. `None` means the model was just created
+    /// and no refresh has been triggered yet.
     state: Option<LoadResult>,
-    /// 保存树里所有 server 的 `host` 字段集合。`rows()` 用它判断 `added`。
+    /// The set of `host` fields for all servers in the saved tree. `rows()`
+    /// uses it to determine `added`.
     added_aliases: HashSet<String>,
-    /// 区段折叠状态(PRODUCT.md UX 表 "Many candidates")。默认展开。
+    /// Section collapsed state (PRODUCT.md UX table "Many candidates").
+    /// Expanded by default.
     expanded: bool,
 }
 
@@ -44,8 +54,9 @@ impl Default for CandidatesViewModel {
 }
 
 impl CandidatesViewModel {
-    /// 全空构造器 —— 模型刚被 `add_model` 进 App 时使用。`refresh()` 必须由
-    /// 调用方在合适时机触发(panel `new` 里立刻调一次即可)。
+    /// All-empty constructor — used when the model is just added to the App
+    /// via `add_model`. `refresh()` must be triggered by the caller at the
+    /// appropriate time (calling it once immediately in panel's `new` is enough).
     pub fn new() -> Self {
         Self {
             state: None,
@@ -54,8 +65,8 @@ impl CandidatesViewModel {
         }
     }
 
-    /// 测试用构造器:把内部状态显式塞进去,避开 runtime / IO,直接驱动
-    /// `rows()` 各种分支。
+    /// Test-only constructor: explicitly injects internal state, bypassing
+    /// runtime / IO, to directly drive the various branches of `rows()`.
     #[cfg(test)]
     pub fn with_state(
         state: Option<LoadResult>,
@@ -69,12 +80,14 @@ impl CandidatesViewModel {
         }
     }
 
-    /// 同步重新读 `~/.ssh/config`,把结果存入 `state`。
+    /// Synchronously re-reads `~/.ssh/config` and stores the result into `state`.
     ///
-    /// 设计上不返回错误 —— `LoadOutcome::Error` 已经把错误信息字符串带回,
-    /// UI 用红色错误行展示(见 PRODUCT.md UX 表 "Parse / IO error")。
+    /// By design, this doesn't return an error — `LoadOutcome::Error` already
+    /// carries back the error message string, and the UI shows it as a red
+    /// error row (see PRODUCT.md UX table "Parse / IO error").
     ///
-    /// 当"自动发现 SSH 主机"设置关闭时,跳过读取并清空状态。
+    /// When the "auto-discover SSH hosts" setting is off, skips reading and
+    /// clears the state.
     pub fn refresh(&mut self, ctx: &mut ModelContext<Self>) {
         let auto_discover = *SshSettings::as_ref(ctx).enable_ssh_auto_discovery.value();
         if !auto_discover {
@@ -86,11 +99,13 @@ impl CandidatesViewModel {
         ctx.notify();
     }
 
-    /// 树变更回调 —— 用传入的 server hosts 重建 `added_aliases`。
+    /// Tree-changed callback — rebuilds `added_aliases` from the given server hosts.
     ///
-    /// 接收 `impl IntoIterator<Item = String>` 而不是 `&SshRepository` 让测试
-    /// 不必塞一个真实的 SQLite 连接;调用方(panel)负责把 `list_nodes` +
-    /// `get_server` 的 host 字段收集成迭代器再传入。
+    /// Accepting `impl IntoIterator<Item = String>` instead of
+    /// `&SshRepository` means tests don't have to set up a real SQLite
+    /// connection; the caller (panel) is responsible for collecting the
+    /// `host` field from `list_nodes` + `get_server` into an iterator before
+    /// passing it in.
     pub fn on_tree_changed<I>(&mut self, hosts: I, ctx: &mut ModelContext<Self>)
     where
         I: IntoIterator<Item = String>,
@@ -99,19 +114,20 @@ impl CandidatesViewModel {
         ctx.notify();
     }
 
-    /// 切换"区段折叠"状态。
+    /// Toggles the "section collapsed" state.
     pub fn toggle_expanded(&mut self, ctx: &mut ModelContext<Self>) {
         self.expanded = !self.expanded;
         ctx.notify();
     }
 
-    /// 是否展开(panel 渲染时决定是否显示 body 行)。
+    /// Whether it's expanded (the panel uses this to decide whether to render body rows).
     pub fn is_expanded(&self) -> bool {
         self.expanded
     }
 
-    /// 按 alias 查找候选 —— `ImportCandidate { alias }` action 处理时用,
-    /// 拿到完整字段后调 `SshRepository::create_server`。
+    /// Looks up a candidate by alias — used when handling the
+    /// `ImportCandidate { alias }` action, after which the full fields are
+    /// used to call `SshRepository::create_server`.
     pub fn find_candidate(&self, alias: &str) -> Option<&SshConfigCandidate> {
         let state = self.state.as_ref()?;
         match &state.outcome {
@@ -120,8 +136,9 @@ impl CandidatesViewModel {
         }
     }
 
-    /// 当前 `~/.ssh/config` 路径的可读字符串(给 `notes = "Imported from {}"`
-    /// 用)。`None` 表示还没加载过、或连 home 都拿不到。
+    /// A human-readable string of the current `~/.ssh/config` path (used for
+    /// `notes = "Imported from {}"`). `None` means it hasn't been loaded
+    /// yet, or the home directory couldn't even be resolved.
     pub fn path_display(&self) -> Option<String> {
         self.state
             .as_ref()
@@ -129,15 +146,18 @@ impl CandidatesViewModel {
             .map(|p| p.display().to_string())
     }
 
-    /// 把当前状态摊平成行列表 —— 见模块文档的"纯函数"约定。
+    /// Flattens the current state into a row list — see the module docs'
+    /// "pure function" contract.
     ///
-    /// 输出语义(对应 PRODUCT.md §5 UX 表):
-    /// - 还没 refresh:返回空 Vec(panel 在拿到 `state == None` 时不渲染区段)。
-    /// - `NotFound`:Header + 一行 `NotFound`。
-    /// - `Error`:Header + 一行 `Error`(can_refresh=true 让用户改完 config 后重试)。
-    /// - `Loaded(empty)`:Header + 一行 `Empty`。
-    /// - `Loaded(non-empty)`:Header(count = N)+ N 行 `Candidate`,每行
-    ///   `added` 由 `added_aliases.contains(alias)` 决定。
+    /// Output semantics (corresponding to the PRODUCT.md §5 UX table):
+    /// - Not yet refreshed: returns an empty Vec (the panel doesn't render
+    ///   the section when `state == None`).
+    /// - `NotFound`: Header + one `NotFound` row.
+    /// - `Error`: Header + one `Error` row (can_refresh=true lets the user
+    ///   retry after fixing the config).
+    /// - `Loaded(empty)`: Header + one `Empty` row.
+    /// - `Loaded(non-empty)`: Header (count = N) + N `Candidate` rows, each
+    ///   with `added` decided by `added_aliases.contains(alias)`.
     pub fn rows(&self) -> Vec<CandidateRow> {
         let Some(state) = self.state.as_ref() else {
             return Vec::new();
@@ -154,16 +174,17 @@ impl CandidatesViewModel {
             LoadOutcome::Loaded(v) => v.len(),
             LoadOutcome::NotFound | LoadOutcome::Error(_) => 0,
         };
-        // Header 永远第一行 —— 即便区段折叠了,panel 仍要画 header(那是
-        // toggle 入口)。`can_refresh = true` 总成立:任何状态都允许用户点
-        // Refresh 重读。
+        // Header is always the first row — even when the section is
+        // collapsed, the panel still draws the header (that's the toggle
+        // entry point). `can_refresh = true` always holds: any state allows
+        // the user to click Refresh to re-read.
         out.push(CandidateRow::Header {
             path_display: path_display.clone(),
             count,
             can_refresh: true,
         });
 
-        // 区段折叠时只保留 header,body 不渲染。
+        // When the section is collapsed, only the header is kept; the body isn't rendered.
         if !self.expanded {
             return out;
         }
@@ -199,8 +220,8 @@ impl CandidatesViewModel {
     }
 }
 
-/// UI 友好的一行。Header 永远在最前面,后面要么是单条状态行(NotFound /
-/// Empty / Error),要么是一串 Candidate。
+/// A UI-friendly row. Header is always first, followed by either a single
+/// status row (NotFound / Empty / Error) or a run of Candidate rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CandidateRow {
     Header {
@@ -236,8 +257,9 @@ impl Entity for CandidatesViewModel {
 #[path = "candidates_tests.rs"]
 mod tests;
 
-// 让测试代码不必关心 PathBuf 的具体磁盘路径 —— helper 用 `LoadResult` 拼一个
-// 固定的展示串。测试模块里也会用到,所以放在外层以方便 #[cfg(test)] 复用。
+// Lets test code not worry about the exact on-disk PathBuf — these helpers
+// build a fixed display string via `LoadResult`. Also used inside the test
+// module, so they're placed at the outer level for easy #[cfg(test)] reuse.
 #[cfg(test)]
 pub(crate) fn fake_load_result_loaded(path: &str, cands: Vec<SshConfigCandidate>) -> LoadResult {
     LoadResult {

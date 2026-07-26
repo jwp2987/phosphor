@@ -1,10 +1,12 @@
-//! 长运行 shell 命令的交互工具:
-//! - `write_to_long_running_shell_command`: 给一个尚在运行的命令写 stdin/PTY
-//! - `read_shell_command_output`: 拿一个尚在运行命令的当前输出快照
+//! Interactive tools for long-running shell commands:
+//! - `write_to_long_running_shell_command`: write stdin/PTY input to a command
+//!   that's still running
+//! - `read_shell_command_output`: grab the current output snapshot of a command
+//!   that's still running
 //!
-//! 这两个工具的 `command_id` 来自 `run_shell_command` 的初始 snapshot
-//! (`LongRunningShellCommandSnapshot.command_id`)。模型在调用前需要先看到一个
-//! 长运行 shell 的 snapshot 拿到 id。
+//! Both tools' `command_id` comes from the initial snapshot of `run_shell_command`
+//! (`LongRunningShellCommandSnapshot.command_id`). The model needs to see a
+//! long-running shell snapshot to obtain the id before calling these.
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -21,7 +23,7 @@ use super::OpenAiTool;
 struct WriteArgs {
     command_id: String,
     input: String,
-    /// "raw" | "line" | "block",默认 "line"
+    /// "raw" | "line" | "block", defaults to "line"
     #[serde(default = "default_mode")]
     mode: String,
 }
@@ -133,7 +135,7 @@ fn write_result_to_json(result: &api::message::tool_call_result::Result) -> Opti
             "exit_code": f.exit_code,
             "output": f.output,
         }),
-        // ShellCommandError 现仅有 BlockNotFound 一个 variant
+        // ShellCommandError currently has only one variant, BlockNotFound
         Some(WR::Error(_)) => json!({
             "status": "error",
             "message": "block_not_found_or_command_id_invalid",
@@ -160,7 +162,7 @@ pub static WRITE_TO_LONG_RUNNING_SHELL_COMMAND: OpenAiTool = OpenAiTool {
 #[derive(Debug, Deserialize)]
 struct ReadArgs {
     command_id: String,
-    /// "on_completion"(默认)或 number(秒数 → Duration)
+    /// "on_completion" (default) or a number (seconds → Duration)
     #[serde(default)]
     delay_seconds: Option<u64>,
 }

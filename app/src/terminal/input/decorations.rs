@@ -152,7 +152,8 @@ impl Input {
         true
     }
 
-    /// 高亮已登记的 @ 上下文引用，让它们和 slash command 一样有可识别的样式。
+    /// Highlights registered @ context references so they get a recognizable style
+    /// just like slash commands.
     fn apply_at_context_reference_highlighting(
         &mut self,
         buffer_text: &str,

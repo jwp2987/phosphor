@@ -39,8 +39,9 @@ pub enum WorkflowOpenSource {
 
 impl WorkflowManager {
     pub fn new(_ctx: &mut ModelContext<Self>) -> Self {
-        // Zap:无云端 = 无 client_id→server_id 转换事件,原 UpdateManager
-        // 订阅 + handle_update_manager_event 为死代码,Phase 2c‑1 删除。
+        // Zap: no cloud = no client_id→server_id conversion event; the
+        // original UpdateManager subscription + handle_update_manager_event
+        // was dead code, removed in Phase 2c-1.
         WorkflowManager {
             panes_by_hashed_id: HashMap::new(),
         }

@@ -439,27 +439,31 @@ impl UserWorkspaces {
         })
     }
 
-    // Zap:团队空间是云端协作入口,本地版不暴露任何 Team space。
+    // Zap: team spaces are a cloud collaboration entry point; the local version doesn't expose any Team space.
     pub fn team_spaces(&self) -> Vec<Space> {
         vec![]
     }
 
-    // Zap:Drive 只保留本地 Personal space。Team / Shared 都是云端协作面,
-    // 即使旧缓存里还有 workspace metadata,也不能重新进入 Drive 或 Workflow UI。
+    // Zap: Drive only keeps the local Personal space. Team / Shared are both
+    // cloud collaboration surfaces; even if old cache still has workspace
+    // metadata, it must not re-enter the Drive or Workflow UI.
     pub fn all_user_spaces(&self, ctx: &AppContext) -> Vec<Space> {
         let _ = ctx;
         vec![Space::Personal]
     }
 
-    // Zap(本地化分支)个人空间 owner 固定绑到本地占位用户。
-    // 必须保持稳定,否则重启后旧对象 owner 字段对不上,Personal Space 列表里"看不见"旧数据。
+    // Zap (localization branch): the personal space's owner is fixed to the
+    // local placeholder user. This must stay stable, otherwise old objects'
+    // owner fields won't match after a restart, and old data becomes
+    // "invisible" in the Personal Space list.
     fn effective_personal_user_uid() -> UserUid {
         UserUid::new(TEST_USER_UID)
     }
 
     // Returns the [`Owner`] for the user's personal drive.
-    // Zap:Drive Personal 空间下的 Workflow / EnvVar / Folder / Notebook / Import
-    // 等 Create 动作统一归属本地占位用户(只本地 sqlite 持久化)。
+    // Zap: Create actions under Drive's Personal space — Workflow / EnvVar /
+    // Folder / Notebook / Import, etc. — are all uniformly attributed to the
+    // local placeholder user (persisted only to local sqlite).
     pub fn personal_drive(&self, ctx: &AppContext) -> Option<Owner> {
         let _ = ctx;
         Some(Owner::User {
@@ -487,8 +491,9 @@ impl UserWorkspaces {
                     return Space::Personal;
                 }
 
-                // Zap:用 effective_personal_user_uid 比较,确保无 auth 下
-                // 本地 Owner(user_uid="zap")也归到 Personal 而非 Shared。
+                // Zap: compare using effective_personal_user_uid, to ensure
+                // that under no-auth, the local Owner (user_uid="zap") is also
+                // attributed to Personal rather than Shared.
                 if user_uid == Self::effective_personal_user_uid() {
                     Space::Personal
                 } else {
@@ -588,7 +593,7 @@ impl UserWorkspaces {
         entrypoint: StoredObjectEventEntrypoint,
         _ctx: &mut ModelContext<Self>,
     ) {
-        // Zap(本地化):移除成员路径在本地无远端 team 写入目标 → no-op。
+        // Zap (localization): the remove-member path has no remote team write target locally → no-op.
         let _ = (user_uid, team_uid, entrypoint);
     }
 
@@ -598,7 +603,8 @@ impl UserWorkspaces {
         domains: Vec<String>,
         ctx: &mut ModelContext<Self>,
     ) {
-        // Zap(本地化):域限制路径在本地无远端 team/invite 写入目标 → 发 Success 事件使 UI 不卡住。
+        // Zap (localization): the domain-restriction path has no remote
+        // team/invite write target locally → emit a Success event so the UI doesn't get stuck.
         let _ = (team_uid, domains);
         ctx.emit(UserWorkspacesEvent::AddDomainRestrictionsSuccess);
         ctx.notify();
@@ -667,8 +673,8 @@ impl UserWorkspaces {
     }
 
     pub fn refresh_ai_overages(&mut self, _ctx: &mut ModelContext<Self>) {
-        // Zap(本地化,Phase 5):本地无云端 AI overages 查询,no-op。
-        // 调用点 (`blocklist/controller.rs::maybe_refresh_ai_overages`) UI 不发起有意义的更新。
+        // Zap (localization, Phase 5): there's no cloud AI overages query locally, no-op.
+        // The call site (`blocklist/controller.rs::maybe_refresh_ai_overages`) UI doesn't initiate any meaningful update.
     }
 
     pub fn is_enterprise_secret_redaction_enabled(&self) -> bool {
@@ -700,7 +706,7 @@ impl UserWorkspaces {
     }
 
     pub fn is_ai_allowed_in_remote_sessions(&self) -> bool {
-        // Zap 没有托管组织策略，远程 SSH 会话始终允许使用本地 Agent 能力。
+        // Zap has no managed organization policy; remote SSH sessions are always allowed to use local Agent capabilities.
         true
     }
 
@@ -880,8 +886,9 @@ impl Entity for UserWorkspaces {
 /// Mark UserWorkspaces as global application state.
 impl SingletonEntity for UserWorkspaces {}
 
-// Zap(本地化,Phase 5):`user_workspaces_tests.rs` 全部针对 team RPC 路径(`MockTeamClient` / `mockall::Sequence`),
-// 本地化后这些路径不可达，整文件物理删除。
+// Zap (localization, Phase 5): `user_workspaces_tests.rs` targeted entirely
+// the team RPC path (`MockTeamClient` / `mockall::Sequence`); after
+// localization these paths are unreachable, so the entire file was physically removed.
 
 #[cfg(test)]
 mod tests {

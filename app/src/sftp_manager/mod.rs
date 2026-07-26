@@ -1,6 +1,7 @@
-//! SFTP 文件浏览器模块
+//! SFTP file browser module
 //!
-//! 提供 SFTP 连接管理、远程文件浏览、上传下载等功能。
+//! Provides SFTP connection management, remote file browsing, upload/download,
+//! and related functionality.
 //! author: logic
 //! date: 2026-05-26
 

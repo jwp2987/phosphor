@@ -1,13 +1,14 @@
-//! 自定义 Agent 提供商支持。
+//! Custom Agent provider support.
 //!
-//! 这个模块负责:
-//! - 把每个 Provider 的 `api_key` 安全地存到 OS keychain (secure_storage),
-//!   而 Provider 元数据(name/base_url/model 列表) 走普通 settings.toml。
-//! - 通过 `OpenAiCompatibleClient` 调用 `${base_url}/models`
-//!   抓取上游可用模型列表(供 UI "Fetch models" 按钮使用)。
+//! This module is responsible for:
+//! - Securely storing each provider's `api_key` in the OS keychain (secure_storage),
+//!   while provider metadata (name/base_url/model list) goes through plain
+//!   settings.toml.
+//! - Calling `${base_url}/models` via `OpenAiCompatibleClient` to fetch the upstream
+//!   list of available models (used by the UI's "Fetch models" button).
 //!
-//! 第二阶段会基于这套配置实现 `AiProvider` trait,
-//! 把 Agent 的 multi-agent 调用分流到本地 Provider。
+//! A second phase will implement the `AiProvider` trait on top of this
+//! configuration, routing the Agent's multi-agent calls to local providers.
 
 pub mod active_ai;
 pub mod attachment_caps;
@@ -32,17 +33,21 @@ mod tests;
 #[cfg(test)]
 mod cache_stability_tests;
 
-// 当前外部使用点:
-// - `fetch_openai_compatible_models`: ai_page.rs 中的 FetchAgentProviderModels handler
-// - `AgentProviderSecrets`: ai_page.rs 中的多个 handler 与 lib.rs 注册点
-// 其余符号(`OpenAiCompatibleError`/`OpenAiCompatibleModel`/`AgentProviderSecretsEvent`)
-// 仍可通过 `crate::ai::agent_providers::openai_compatible::*` 等完整路径访问,
-// 这里不再 re-export 以避免 `unused_imports` 告警。
+// Current external use sites:
+// - `fetch_openai_compatible_models`: the FetchAgentProviderModels handler in
+//   ai_page.rs
+// - `AgentProviderSecrets`: several handlers in ai_page.rs and the lib.rs
+//   registration point
+// The remaining symbols (`OpenAiCompatibleError`/`OpenAiCompatibleModel`/
+// `AgentProviderSecretsEvent`) are still reachable via full paths like
+// `crate::ai::agent_providers::openai_compatible::*`; we no longer re-export them
+// here to avoid `unused_imports` warnings.
 pub use openai_compatible::fetch_openai_compatible_models;
 pub use secrets::AgentProviderSecrets;
 
 // ---------------------------------------------------------------------------
-// LLMInfo 合成:把 settings 中配置的 agent_providers 转成 picker 可用的形态
+// LLMInfo synthesis: converts the agent_providers configured in settings into a
+// form the picker can use
 // ---------------------------------------------------------------------------
 
 use std::collections::HashMap;
@@ -56,13 +61,17 @@ use crate::ai::llms::{
 };
 use crate::settings::{AISettings, AgentProvider};
 
-/// 合成给定 provider 的所有合法 (provider, model) 对的 LLMInfo 列表。
+/// Synthesizes the list of LLMInfo for all valid (provider, model) pairs of the given
+/// providers.
 ///
-/// "合法" = provider 有非空 base_url + 至少 1 个 model。
-/// **API key 可选**:本地无认证 provider(ollama / lm-studio / vllm 等)允许留空,
-/// 缺 key 时仍然把模型暴露给 picker;运行时仍会发请求,只是不带 `Authorization`。
-/// 不合法的 provider(没填 base_url 或没模型)会整体被忽略,picker 中不展示其下的模型,
-/// 这样用户能直观地看到"哪些 provider 没填全 → 没出现"。
+/// "Valid" = the provider has a non-empty base_url + at least 1 model.
+/// **API key is optional**: local unauthenticated providers (ollama / lm-studio /
+/// vllm etc.) are allowed to leave it empty; the model still gets exposed to the
+/// picker even without a key, and requests still go out at runtime, just without an
+/// `Authorization` header.
+/// Invalid providers (missing base_url or no models) are ignored entirely, and their
+/// models don't show up in the picker — this lets the user intuitively see "which
+/// providers aren't fully filled in → don't appear".
 fn build_byop_llm_infos(app: &AppContext) -> Vec<LLMInfo> {
     let providers = AISettings::as_ref(app).agent_providers.value().clone();
     let mut out = Vec::new();
@@ -90,10 +99,12 @@ fn build_byop_llm_infos(app: &AppContext) -> Vec<LLMInfo> {
             } else {
                 model.name.clone()
             };
-            // 三层优先级解析最终能力:用户在 settings 三态 chip 强制开关 →
-            // models.dev catalog 推断 → substring fallback。
-            // 这个函数也是 chat_stream 决策塞 ContentPart::Binary 时用的同一个,
-            // UI 显示与运行时行为永远一致。
+            // Three-tier priority resolves the final capability: the user's
+            // three-state chip override in settings → models.dev catalog inference →
+            // substring fallback.
+            // This is the same function chat_stream uses when deciding whether to
+            // attach ContentPart::Binary, so UI display and runtime behavior always
+            // stay in sync.
             let resolved_caps =
                 attachment_caps::resolve_for_model(&provider.id, provider.api_type, model);
             let vision_supported = resolved_caps.images;
@@ -121,9 +132,10 @@ fn build_byop_llm_infos(app: &AppContext) -> Vec<LLMInfo> {
     out
 }
 
-/// 占位条目:当用户没配任何合法 provider 时,picker 至少要有 1 个条目
-/// (`AvailableLLMs::new` 拒绝空列表)。该条目用 `DisableReason::Unavailable` 灰显,
-/// 选不动,提示用户去设置中配。
+/// Placeholder entry: when the user has no valid provider configured, the picker
+/// still needs at least 1 entry (`AvailableLLMs::new` rejects an empty list). This
+/// entry is grayed out via `DisableReason::Unavailable`, can't be selected, and
+/// prompts the user to configure one in Settings.
 fn placeholder_llm_info() -> LLMInfo {
     LLMInfo {
         display_name: "No custom provider configured — add one in Settings → AI".to_owned(),
@@ -145,9 +157,10 @@ fn placeholder_llm_info() -> LLMInfo {
     }
 }
 
-/// 构造一个完全由 BYOP 模型填充的 `ModelsByFeature`。
-/// 4 个 feature(agent_mode / coding / cli_agent / computer_use)使用同一份模型集合 —
-/// 自定义 provider 不区分 capability,所有模型都能用作任意 feature。
+/// Builds a `ModelsByFeature` populated entirely with BYOP models.
+/// All 4 features (agent_mode / coding / cli_agent / computer_use) share the same
+/// model set — custom providers don't distinguish capability, so any model can be
+/// used for any feature.
 pub fn build_byop_models_by_feature(app: &AppContext) -> ModelsByFeature {
     let mut choices = build_byop_llm_infos(app);
     if choices.is_empty() {
@@ -168,14 +181,18 @@ pub fn build_byop_models_by_feature(app: &AppContext) -> ModelsByFeature {
     }
 }
 
-/// 给定一个 BYOP `LLMId`,从 `AISettings` 与 secrets 里查出 `(provider, api_key, model_id)`。
-/// 任一信息缺失返回 `None`(controller 调用方应映射为 `InvalidApiKey` 错误)。
+/// Given a BYOP `LLMId`, looks up `(provider, api_key, model_id)` from `AISettings`
+/// and secrets.
+/// Returns `None` if any piece of information is missing (the controller caller
+/// should map this to an `InvalidApiKey` error).
 pub fn lookup_byop(app: &AppContext, id: &ai::LLMId) -> Option<(AgentProvider, String, String)> {
     let (provider_id, model_id) = llm_id::decode(id)?;
     let providers = AISettings::as_ref(app).agent_providers.value().clone();
     let provider = providers.into_iter().find(|p| p.id == provider_id)?;
-    // API key 可选:无 key 时返回空字符串,下游 build_client 会传给 genai
-    // `AuthData::from_single("")` —— 不附带 `Authorization`,适配 ollama 等本地无认证服务。
+    // API key is optional: returns an empty string when there's no key; downstream
+    // build_client passes this to genai as `AuthData::from_single("")` —— no
+    // `Authorization` header attached, which works for local unauthenticated services
+    // like ollama.
     let api_key = AgentProviderSecrets::as_ref(app)
         .get(&provider_id)
         .map(str::to_owned)

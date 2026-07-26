@@ -73,7 +73,7 @@ source "$WORKSPACE_ROOT_DIR/script/linux/bundle_install" "$PKGDIR/stage"
 tar cvf "$PKGDIR/data.tar" -C "$PKGDIR/stage" .
 
 # Move the Arch-specific package metadata into the package directory.
-# Arch pkgver 不允许 - / : / / / 空白,完整 sanitize 并剩除 v 前缀。
+# Arch pkgver doesn't allow - / : / / / whitespace; fully sanitize and strip the leading v prefix.
 VERSION="$GIT_RELEASE_TAG"
 PKGVER="$(echo "$VERSION" | sed -E 's/^v//; s/[-:/[:space:]]+/_/g')"
 RELEASE=1
@@ -103,9 +103,10 @@ if [ "${GITHUB_ACTIONS}" == "true" ]; then
   EXTRA_ARGS="--noconfirm"
 fi
 cd "$PKGDIR"
-# 允许调用方通过 MAKEPKG_EXTRA_ARGS 追加 makepkg 参数(如 CI 容器里
-# 需要 --assume-installed opengl-driver 跳过不在官方仓库的虚拟包)。
-# 用数组展开避免空字符串当作多余参数传入。
+# Allow the caller to append extra makepkg args via MAKEPKG_EXTRA_ARGS (e.g.
+# the CI container needs --assume-installed opengl-driver to skip a virtual
+# package that isn't in the official repos).
+# Use array expansion to avoid an empty string being passed as a spurious argument.
 read -r -a _makepkg_extra <<< "${MAKEPKG_EXTRA_ARGS:-}"
 PKGDEST="$OUT_DIR" CARCH="$ARCH" makepkg -cfrs --needed --skipchecksums $EXTRA_ARGS "${_makepkg_extra[@]}"
 

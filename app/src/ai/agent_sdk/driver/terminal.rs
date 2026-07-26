@@ -137,7 +137,7 @@ impl TerminalDriver {
     ) -> Self {
         let session_bootstrapped = Condition::new();
 
-        // 立即把 task_id 和附件下载目录写入 AI controller,供本地任务元数据和附件使用。
+        // Immediately write task_id and the attachments download directory into the AI controller, for use by local task metadata and attachments.
         if let Some(tid) = task_id {
             let attachments_dir = attachments_download_dir(&working_dir);
             terminal_view.update(ctx, |terminal, ctx| {

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use settings::{macros::define_settings_group, SupportedPlatforms, SyncToCloud};
 
-/// 云同步平台选择
+/// Cloud sync platform selection
 #[derive(
     Clone,
     Copy,
@@ -22,7 +22,7 @@ pub enum SyncPlatformSetting {
 }
 
 impl SyncPlatformSetting {
-    /// 转换为 zap_sync::SyncPlatform
+    /// Convert to zap_sync::SyncPlatform
     pub fn to_sync_platform(self) -> zap_sync::SyncPlatform {
         match self {
             Self::GitHub => zap_sync::SyncPlatform::GitHub,
@@ -30,7 +30,7 @@ impl SyncPlatformSetting {
         }
     }
 
-    /// 获取显示名称
+    /// Get the display name
     pub fn label(self) -> &'static str {
         match self {
             Self::GitHub => "GitHub",

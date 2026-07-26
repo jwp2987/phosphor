@@ -1,12 +1,14 @@
 //! Telemetry events for the in-app notification mailbox / toast stack.
 //!
-//! 这是 002ce467 cloud-removal 时一并删掉的 `AgentManagementTelemetryEvent` 的最小裁剪版,
-//! 仅保留通知中心(`item_rendering.rs`)实际仍在用的 variant —— artifact 点击事件 +
-//! tombstone 已经不存在但保留 schema 以维持向后兼容/未来重建。
+//! This is a minimally-trimmed version of `AgentManagementTelemetryEvent`,
+//! which was deleted along with 002ce467's cloud-removal, keeping only the
+//! variant actually still used by the notification center
+//! (`item_rendering.rs`) — the artifact click event + tombstone no longer
+//! exist, but the schema is kept for backward compatibility/future rebuilds.
 
 use serde::Serialize;
 
-/// 通知 artifact 类型(用于 telemetry)。
+/// Notification artifact type (used for telemetry).
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactType {
@@ -15,9 +17,9 @@ pub enum ArtifactType {
     PullRequest,
 }
 
-/// 通知中心相关的 telemetry 事件。
+/// Telemetry events related to the notification center.
 #[derive(Serialize, Debug)]
 pub enum NotificationsTelemetryEvent {
-    /// 用户在通知项里点击了 artifact 按钮(plan / branch / PR)
+    /// The user clicked an artifact button (plan / branch / PR) in a notification item
     ArtifactClicked { artifact_type: ArtifactType },
 }

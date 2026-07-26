@@ -1,4 +1,4 @@
-//! 搜索类工具:`Grep`(逐行匹配)+ `FileGlobV2`(文件名通配)。
+//! Search tools: `Grep` (line-by-line matching) + `FileGlobV2` (filename globbing).
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -125,11 +125,12 @@ fn glob_parameters() -> Value {
     })
 }
 
-/// `limit` 缺省/0 时的结果条数上限。此前 0 = 无限制:小模型爱用
-/// `patterns=["*.sh"], search_dir="."` 扫全家目录,几千条路径进 tool result
-/// 后请求直接超出小上下文本地模型(如 32K)的承受范围,流被瞬时掐断。
+/// Result-count cap when `limit` is omitted/0. Previously 0 meant unlimited: small models
+/// like to use `patterns=["*.sh"], search_dir="."` to scan the entire home directory, and
+/// thousands of paths landing in the tool result would then blow past what a small-context
+/// local model (e.g. 32K) can handle, cutting the stream off instantly.
 const DEFAULT_GLOB_LIMIT: i32 = 200;
-/// 显式传入 limit 的硬上限。
+/// Hard cap for an explicitly passed `limit`.
 const MAX_GLOB_LIMIT: i32 = 2000;
 
 fn glob_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
@@ -148,7 +149,7 @@ fn glob_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
                 parsed.search_dir
             },
             max_matches,
-            max_depth: 0, // 不限深度
+            max_depth: 0, // unlimited depth
             min_depth: 0,
         },
     ))
@@ -168,8 +169,8 @@ fn glob_result_to_json(result: &api::message::tool_call_result::Result) -> Optio
                 .iter()
                 .map(|f| f.file_path.as_str())
                 .collect();
-            // protobuf 中 Success.warnings: String 是 stderr 警告文本(如权限错误)。
-            // 仅在非空时输出,避免给模型噪声。
+            // In protobuf, Success.warnings: String is stderr warning text (e.g. permission
+            // errors). Only emitted when non-empty, to avoid noise for the model.
             let mut value = json!({ "status": "ok", "files": files });
             if !s.warnings.is_empty() {
                 value["warnings"] = json!(s.warnings);

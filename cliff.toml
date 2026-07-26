@@ -1,20 +1,20 @@
-# git-cliff 配置 — 用于在 Zap Release 发布时自动生成「自上个 tag 以来的变更」。
+# git-cliff config — used to auto-generate "changes since the previous tag" for Zap Releases.
 #
-# 设计原则:
-# - 主分组按 conventional commit type(feat/fix/refactor/docs/test/build/ci/ui/perf/chore)。
-# - scope 以加粗前缀 `**(scope)**` 形式保留,便于按子系统快速扫读(ai/ssh/i18n/linux/...)。
-# - Merge commit、纯 chore(release)、Revert 等噪声直接 skip。
-# - 非 conventional commit 落到「其他」分组兜底,不丢信息但也不污染主分组。
-# - 输出纯片段(不带 H1 标题与日期块),由 workflow 拼到 release_body 顶部说明之后。
+# Design principles:
+# - Main grouping is by conventional commit type (feat/fix/refactor/docs/test/build/ci/ui/perf/chore).
+# - scope is kept as a bold prefix `**(scope)**`, for quick scanning by subsystem (ai/ssh/i18n/linux/...).
+# - Merge commits, pure chore(release), Revert, and other noise are skipped outright.
+# - Non-conventional commits fall back into an "Other" group, so nothing is lost without polluting the main groups.
+# - Outputs a plain fragment (no H1 heading or date block); the workflow appends it after the release_body's top description.
 
 [changelog]
-# 顶部不输出 `# Changelog` 大标题;由 publish_release 步骤负责整体排版。
+# Don't output the top-level `# Changelog` heading; the publish_release step handles overall layout.
 header = ""
 
 body = """
 {%- if previous %}
 {%- if previous.version %}
-**变更范围**: [`{{ previous.version }}` … `{{ version }}`]({{ self::compare_url(prev=previous.version, curr=version) }})
+**Range**: [`{{ previous.version }}` … `{{ version }}`]({{ self::compare_url(prev=previous.version, curr=version) }})
 
 {% endif -%}
 {%- endif -%}
@@ -33,38 +33,38 @@ https://github.com/zerx-lab/warp/commit/{{ sha }}
 {%- endmacro -%}
 """
 
-# tag 之间的对比页脚由模板里的 compare_url 输出,这里不再额外追加 footer。
+# The comparison footer between tags is emitted by compare_url in the template above; no extra footer is appended here.
 footer = ""
 
 trim = true
 
 [git]
-# 不解析 conventional commits 失败时不报错;落到 commit_parsers 的兜底分组。
+# Don't error out when conventional-commit parsing fails; falls into commit_parsers' catch-all group.
 conventional_commits = true
 filter_unconventional = false
-# 不拆分多行 body — 一条 commit 一条记录。
+# Don't split multi-line bodies — one commit is one entry.
 split_commits = false
 
-# tag 命名:v 前缀 + 任意尾巴(v2026.05.27.2 / v2026.05.06.preview / v2026.05.21.zaptest01)。
+# Tag naming: v prefix + arbitrary suffix (v2026.05.27.2 / v2026.05.06.preview / v2026.05.21.zaptest01).
 tag_pattern = "v[0-9].*"
 
-# 顺序按 commit 在 git log 中出现的顺序(新 → 旧),保持可读性。
+# Order follows the order commits appear in git log (newest → oldest), for readability.
 topo_order = false
 sort_commits = "newest"
 
-# 忽略归并 / 内部 release tag 这类对用户无意义的 commit。
+# Ignore commits like merges / internal release tags that are meaningless to users.
 commit_preprocessors = [
-    # 去掉首行末尾的 PR 编号括号,避免 `(#171)` 与下文 hash 链接重复显示。
-    # 用 `(?m)` 让 `$` 锚到每行末尾(commit subject 是第一行),而不是整段 message 末尾。
+    # Strip the trailing PR-number parens from the first line, to avoid `(#171)` being shown twice alongside the hash link below.
+    # Use `(?m)` so `$` anchors to the end of each line (the commit subject is the first line), not the end of the whole message.
     { pattern = '(?m) \(#[0-9]+\)$', replace = "" },
-    # 去掉 commit subject 开头的 gitmoji 前缀(如 "♻️ refactor: ..."),
-    # 否则后续 `^refactor` 这类分组规则无法命中,会落到「其他」。
+    # Strip the gitmoji prefix at the start of the commit subject (e.g. "♻️ refactor: ..."),
+    # otherwise subsequent grouping rules like `^refactor` won't match and it falls into "Other".
     { pattern = '^(♻️|✨|🐛|🎨|🚀|🔥|💄|📝|🛠|⚡|🚧|🐳|🔧|🚨|✅|♿|🔒)[️]?\s*', replace = "" },
 ]
 
-# 顺序敏感:第一个匹配生效。把噪声 skip 放最前面。
+# Order-sensitive: the first match wins. Put noise skips first.
 commit_parsers = [
-    # 噪声:跳过
+    # Noise: skip
     { message = "^[Mm]erge ", skip = true },
     { message = "^[Rr]evert ", skip = true },
     { message = "^[Bb]ump ", skip = true },
@@ -72,17 +72,17 @@ commit_parsers = [
     { message = "^chore: release", skip = true },
     { message = "^v[0-9]+\\.", skip = true },
 
-    # conventional commit 主分组(中文标题,顺序就是渲染顺序)
-    { message = "^feat", group = "✨ 新功能" },
-    { message = "^fix", group = "🐛 修复" },
-    { message = "^perf", group = "⚡ 性能" },
-    { message = "^refactor", group = "♻️ 重构" },
-    { message = "^ui", group = "🎨 界面" },
-    { message = "^style", group = "🎨 界面" },
-    { message = "^test", group = "🧪 测试" },
-    { message = "^docs", group = "📝 文档" },
-    { message = "^(build|ci|chore)", group = "🛠 基建与杂项" },
+    # Main conventional-commit groups (rendering order matches the order below)
+    { message = "^feat", group = "✨ Features" },
+    { message = "^fix", group = "🐛 Fixes" },
+    { message = "^perf", group = "⚡ Performance" },
+    { message = "^refactor", group = "♻️ Refactor" },
+    { message = "^ui", group = "🎨 UI" },
+    { message = "^style", group = "🎨 UI" },
+    { message = "^test", group = "🧪 Tests" },
+    { message = "^docs", group = "📝 Docs" },
+    { message = "^(build|ci|chore)", group = "🛠 Build & misc" },
 
-    # 兜底:其余形态的 commit 也保留下来,放到「其他」分组,避免漏掉非规范提交。
-    { message = ".*", group = "📦 其他" },
+    # Catch-all: keep any remaining commits too, placed in the "Other" group, so nonconforming commits aren't dropped.
+    { message = ".*", group = "📦 Other" },
 ]

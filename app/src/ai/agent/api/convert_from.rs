@@ -540,14 +540,19 @@ impl ConvertAPIToolCallToAIAgentAction for api::message::ToolCall {
         params: ConversionParams,
     ) -> Result<MaybeAIAgentAction, ToolToAIAgentActionError> {
         let Some(tool) = self.tool else {
-            // Zap BYOP:`make_tool_call_carrier_message` 在 from_args 解析失败时
-            // 故意 emit `tool: None` 的 ToolCall,仅作为下一轮 build_chat_request 还原
-            // 原 fn_name + args_str 给上游模型的载体(server_message_data 携带原始内容),
-            // 紧随其后的 synthetic error ToolCallResult 才是要展示给用户看的内容。
-            // 返回 MissingTool 会让整个 conversation 更新被拒(`UpdateTask(ConversionError)`),
-            // 紧跟的 ToolCallResult 也无法应用 → exchange 永远卡在 "Warping..."。
-            // 这里改为 NoClientRepresentation:UI 不渲染这条空 ToolCall,
-            // task.messages 仍持久化(server_message_data 完整),下轮上游重发链路完整。
+            // Zap BYOP: `make_tool_call_carrier_message` deliberately emits a ToolCall
+            // with `tool: None` when from_args parsing fails, purely as a carrier
+            // (server_message_data carries the raw content) so that the next round's
+            // build_chat_request can restore the original fn_name + args_str for the
+            // upstream model; the synthetic error ToolCallResult that immediately follows
+            // is the content actually meant to be shown to the user.
+            // Returning MissingTool would cause the whole conversation update to be
+            // rejected (`UpdateTask(ConversionError)`), and the following ToolCallResult
+            // couldn't be applied either → the exchange would be stuck at "Warping..."
+            // forever. So this returns NoClientRepresentation instead: the UI doesn't
+            // render this empty ToolCall, task.messages is still persisted
+            // (server_message_data intact), and the upstream resend chain on the next
+            // turn stays intact.
             return Ok(MaybeAIAgentAction::NoClientRepresentation);
         };
 
@@ -618,7 +623,7 @@ impl ConvertAPIToolCallToAIAgentAction for api::message::ToolCall {
             ) => create_standard_action(transfer_shell_command_control_to_user.into()),
             api::message::tool_call::Tool::UseComputer(_)
             | api::message::tool_call::Tool::RequestComputerUse(_) => {
-                // Computer Use 已被移除,模型即便发起这两类调用也不 dispatch。
+                // Computer Use has been removed; even if the model issues these two call types, they are not dispatched.
                 Err(ToolToAIAgentActionError::UnexpectedTool)
             }
             api::message::tool_call::Tool::Subagent(subagent) => {

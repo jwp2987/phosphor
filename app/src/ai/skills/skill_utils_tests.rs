@@ -131,19 +131,19 @@ fn test_unique_skills_keeps_same_provider_skills_from_different_dirs() {
     let skill_paths = vec![(home_dir, home_path.clone()), (project_dir, project_path)];
 
     let result = unique_skills(&skill_paths, &skills_by_path);
-    assert_eq!(result.len(), 2, "同名 + 同 provider 跨目录应各自保留");
+    assert_eq!(result.len(), 2, "Same name + same provider across different directories should each be kept");
     assert!(
         result
             .iter()
             .any(|skill| skill.reference.to_string().contains("/home/user/.agents")),
-        "应保留 home 目录里的同名 skill,实际={result:?}"
+        "Should keep the same-name skill in the home directory, actual={result:?}"
     );
     assert!(
         result.iter().any(|skill| skill
             .reference
             .to_string()
             .contains("/home/user/projects/repo/.agents")),
-        "应保留 project 目录里的同名 skill,实际={result:?}"
+        "Should keep the same-name skill in the project directory, actual={result:?}"
     );
 }
 
@@ -189,11 +189,11 @@ fn test_unique_skills_name_dedup_same_name_different_providers() {
     assert_eq!(
         result.len(),
         1,
-        "同名不同内容不同 provider 应 name-dedup,仅保留最高优先级 provider"
+        "Same name, different content, different provider should be name-deduped, keeping only the highest-priority provider"
     );
     assert_eq!(
         result[0].provider,
         SkillProvider::Agents,
-        "name-dedup 应保留高优先级 provider(Agents > Claude)"
+        "name-dedup should keep the higher-priority provider (Agents > Claude)"
     );
 }

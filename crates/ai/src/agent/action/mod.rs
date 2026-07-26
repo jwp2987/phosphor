@@ -219,10 +219,10 @@ impl AIAgentActionType {
         }
     }
 
-    /// 进行时短语,用于 surface "AI 当前在做什么"——
-    /// 子代理状态卡 / status bar / 父卡 surfacing 等场景。
-    /// 短而具体,前端可加 `↳ Reading files...` / `↳ Searching codebase...`。
-    /// 风格对齐 opencode TUI(Bash="Writing command..." / Read="Reading file..." 等)。
+    /// Present-continuous phrase used to surface "what the AI is currently doing" —
+    /// for sub-agent status cards / status bar / parent card surfacing scenarios.
+    /// Short and specific; the frontend can prefix `↳ Reading files...` / `↳ Searching codebase...`.
+    /// Style aligned with opencode TUI (Bash="Writing command..." / Read="Reading file..." etc.).
     pub fn presence_continuous_summary(&self) -> &'static str {
         match self {
             Self::RequestCommandOutput { .. } => "Running command",

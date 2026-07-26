@@ -89,7 +89,7 @@ fn query_prefix_highlight_len_keeps_existing_plan_highlighting() {
 #[test]
 fn query_context_references_only_returns_real_at_attachments() {
     let input = AIAgentInput::UserQuery {
-        query: "@base 输出提示词".to_string(),
+        query: "@base output the prompt".to_string(),
         context: Arc::new([]),
         static_query_type: None,
         referenced_attachments: HashMap::from([
@@ -108,7 +108,7 @@ fn query_context_references_only_returns_real_at_attachments() {
     };
 
     assert_eq!(
-        query_context_references(&input, "/agent @base 输出提示词"),
+        query_context_references(&input, "/agent @base output the prompt"),
         vec![QueryContextReference {
             label: "@base".to_string(),
             icon: Icon::AtSign,

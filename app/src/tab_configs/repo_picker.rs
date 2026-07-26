@@ -57,8 +57,9 @@ impl RepoPicker {
         style: Option<PickerStyle>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
-        // PersistedWorkspace 已下线,不再订阅「WorkspaceAdded」事件。
-        // dropdown 列表永远为空,只剩底部 `+ Add new repo...` 兜底按钮。
+        // PersistedWorkspace has been retired; no longer subscribes to the
+        // "WorkspaceAdded" event. The dropdown list is always empty, leaving
+        // only the `+ Add new repo...` fallback button at the bottom.
         let width = style.as_ref().map_or(DEFAULT_DROPDOWN_WIDTH, |s| s.width);
         let bg = style.and_then(|s| s.background);
         let dropdown = ctx.add_typed_action_view(|ctx| {
@@ -136,8 +137,9 @@ impl RepoPicker {
     }
 
     fn refresh_items(&mut self, select_path: Option<&str>, ctx: &mut ViewContext<Self>) {
-        // PersistedWorkspace 已下线,不再有「之前打开过的 git 仓库」候选源,
-        // dropdown 列表永远为空,`+ Add new repo...` 作为 sticky footer 存在。
+        // PersistedWorkspace has been retired; there's no longer a "previously
+        // opened git repo" candidate source, so the dropdown list is always
+        // empty, with `+ Add new repo...` existing as a sticky footer.
         let items: Vec<DropdownItem<RepoPickerAction>> = Vec::new();
 
         let path_to_select = select_path

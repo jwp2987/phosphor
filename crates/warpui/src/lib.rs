@@ -58,14 +58,17 @@ mod ui_locale {
 
 pub use ui_locale::{current_ui_locale, on_ui_locale_changed, set_ui_locale};
 
-/// 共享 CJK Han 码点判定:这些字符在 ja / zh-Hans / zh-Hant / ko 之间字形不同,
-/// 调用方据此把 DirectWrite / cosmic-text 的 Han 回退偏向当前 UI locale 的本地字体
-/// (例如 ja-* → Yu Gothic UI、ko-* → Malgun Gothic、zh-Hant → Microsoft JhengHei UI)。
+/// Shared CJK Han codepoint predicate: these characters have different glyph
+/// shapes across ja / zh-Hans / zh-Hant / ko. Callers use this to bias the
+/// DirectWrite / cosmic-text Han fallback toward a local font for the current
+/// UI locale (e.g. ja-* -> Yu Gothic UI, ko-* -> Malgun Gothic,
+/// zh-Hant -> Microsoft JhengHei UI).
 ///
-/// 覆盖 Unicode 15.0 之前已分配的所有 Unified Ideographs 区段(到 Extension G)。
-/// 后续 Unicode 再扩展时,按需在此处统一追加 —— 这是仓库内 CJK Han 范围的**单一来源**,
-/// 调用方(`crates/warpui/src/windowing/winit/fonts/windows.rs` 与
-/// `app/src/font_fallback.rs`)不应自己 fork 范围。
+/// Covers all Unified Ideographs blocks assigned as of Unicode 15.0 (up
+/// through Extension G). When Unicode expands further, append here as
+/// needed — this is the **single source of truth** for the CJK Han range in
+/// this repo; callers (`crates/warpui/src/windowing/winit/fonts/windows.rs`
+/// and `app/src/font_fallback.rs`) should not fork their own range.
 pub fn is_shared_cjk_han(ch: char) -> bool {
     matches!(
         ch as u32,

@@ -665,12 +665,15 @@ const ONEKEY_CONTEXT_MENU_WIDTH: f32 = 380.;
 const ONEKEY_PROMPT_THROTTLE: Duration = Duration::from_secs(2);
 const ONEKEY_PROMPT_SLIDING_WINDOW_BYTES: usize = 8 * 1024;
 const ONEKEY_PROMPT_BUFFER_HARD_LIMIT: usize = 16 * 1024;
-/// 每条 OneKey 候选行的估算高度(stacked label + padding),用于按候选数量
-/// 推导 Scrollable 菜单的目标高度。仅作启发,不需要像素精确。
+/// Estimated height of each OneKey candidate row (stacked label + padding), used to
+/// derive the Scrollable menu's target height from the candidate count. This is
+/// only a heuristic; it doesn't need to be pixel-precise.
 const ONEKEY_MENU_ROW_HEIGHT: f32 = 44.;
-/// OneKey 菜单顶部搜索 header 的估算高度(icon + EditorView + padding + border)。
+/// Estimated height of the search header at the top of the OneKey menu (icon +
+/// EditorView + padding + border).
 const ONEKEY_SEARCH_HEADER_HEIGHT: f32 = 32.;
-/// OneKey 菜单 Scrollable 区域的最大高度,避免几十/几百条凭据时盖住终端。
+/// Max height of the OneKey menu's Scrollable area, to avoid covering the terminal
+/// when there are dozens/hundreds of credentials.
 const ONEKEY_MENU_MAX_HEIGHT: f32 = 360.;
 
 /// The minimum amount of mouse-drag to consider a selection to
@@ -1808,8 +1811,9 @@ pub enum Event {
         target: FileTarget,
         line_col: Option<LineAndColumnArg>,
     },
-    /// Zap:终端里 Ctrl/Cmd+点击远端 SSH 会话输出中的文件路径时发出。
-    /// 走 buffer-sync 协议在编辑器里打开远端文件,而不是本地 `OpenFileWithTarget`。
+    /// Zap: emitted when Ctrl/Cmd+clicking a file path in a remote SSH session's
+    /// terminal output. Opens the remote file in the editor via the buffer-sync
+    /// protocol, instead of the local `OpenFileWithTarget`.
     #[cfg(all(feature = "local_tty", feature = "local_fs"))]
     OpenRemoteFileFromTerminal {
         remote_path: crate::code::buffer_location::RemotePath,
@@ -1916,9 +1920,9 @@ pub enum ContextMenuType {
     Prompt { position: Vector2F },
     /// Opened via right-clicking on the input box.
     Input { position: Vector2F },
-    /// 检测到 PTY 输出密码提示后自动打开。
+    /// Automatically opened after a password prompt is detected in the PTY output.
     OneKeyPrompt,
-    /// 检测到 su root + 密码提示后弹出确认菜单。
+    /// Pops up a confirmation menu after a su root + password prompt is detected.
     SuRootPasswordConfirm,
 
     /// Lists the block(s) or text attached as context to the query represented in the AI block
@@ -2326,17 +2330,22 @@ pub struct TerminalView {
     context_menu_state: Option<ContextMenuState>,
     onekey_prompt_candidates: Vec<OneKeyPromptCandidate>,
     onekey_last_prompt_at: Option<Instant>,
-    /// OneKey 菜单顶部的搜索输入框。常驻字段,与 TerminalView 同生命周期;
-    /// 菜单关闭时通过 `clear_buffer` 重置内容,而不是销毁 ViewHandle——
-    /// 因为框架未提供 view 释放 API,丢弃 handle 不会注销订阅,
-    /// 反复创建会泄漏并让旧订阅干扰新菜单。
+    /// The search input box at the top of the OneKey menu. A long-lived field with
+    /// the same lifetime as TerminalView; when the menu closes, its content is
+    /// reset via `clear_buffer` instead of destroying the ViewHandle — because the
+    /// framework provides no view-release API, dropping the handle wouldn't
+    /// unsubscribe it, and recreating it repeatedly would leak and let stale
+    /// subscriptions interfere with the new menu.
     onekey_search_editor: ViewHandle<EditorView>,
-    /// 当前 OneKey 搜索框中的查询字符串,影响菜单 items 列表的过滤与排序。
+    /// The current query string in the OneKey search box, affecting the filtering
+    /// and sorting of the menu items list.
     onekey_query: String,
-    /// `secret_injector` 起飞后到完成/超时之间为 true。OneKey listener 看到
-    /// true 直接跳过,避免与自动注入同时弹菜单。
+    /// True from when `secret_injector` starts until it completes/times out. The
+    /// OneKey listener skips directly when it sees true, to avoid popping up the
+    /// menu at the same time as auto-injection.
     ssh_secret_auto_injection_in_flight: bool,
-    /// 检测到 su root 密码提示时暂存 root 密码,等待用户确认后注入。
+    /// Stashes the root password when an su root password prompt is detected,
+    /// pending injection after user confirmation.
     pub(crate) su_root_password: Option<zeroize::Zeroizing<String>>,
     su_root_onekey_candidates: Vec<usize>,
 
@@ -2399,8 +2408,9 @@ pub struct TerminalView {
     /// `pane_tree_from_template_recursive` when a tab config has both
     /// commands and `PaneMode::Agent`.
     enter_agent_view_after_pending_commands: bool,
-    /// SSH 管理器创建的 tab 会先启动本地 shell，再执行 ssh 并等待远端 shell
-    /// bootstrap；默认 Agent 模式必须延后到远端会话可用后再进入。
+    /// A tab created by the SSH manager first starts a local shell, then runs ssh
+    /// and waits for the remote shell bootstrap; default Agent mode must be
+    /// deferred until after the remote session becomes available.
     enter_agent_view_after_ssh_bootstrap: bool,
     slow_bootstrap_banner: ViewHandle<Banner<TerminalAction>>,
     is_slow_bootstrap_banner_open: bool,
@@ -2444,13 +2454,16 @@ pub struct TerminalView {
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     file_link_scanning_join_handle: Option<JoinHandle<()>>,
 
-    /// Zap:远端 SSH 会话的 cwd 目录列表缓存,用于精确校验终端文件链接。
+    /// Zap: cache of directory listings for remote SSH sessions' cwds, used to
+    /// precisely validate terminal file links.
     ///
-    /// 键是 `(session_id, cwd 绝对路径)`,值为该目录的真实子项列表;`None`
-    /// 表示该 cwd 的列表正在异步拉取中(daemon `ListDirectory` RPC)。
-    /// 用 `IndexMap` 保持插入顺序,容量上限定义在
-    /// `link_detection::remote_dir_listing_context` 中的 `MAX_ENTRIES`,
-    /// 拉取新 cwd 触发 FIFO 淘汰。本地会话永不写入此缓存。
+    /// The key is `(session_id, absolute cwd path)`; the value is the real list of
+    /// entries in that directory; `None` means the listing for that cwd is
+    /// currently being fetched asynchronously (via a daemon `ListDirectory` RPC).
+    /// Uses `IndexMap` to preserve insertion order; the capacity limit is defined
+    /// as `MAX_ENTRIES` in `link_detection::remote_dir_listing_context`, and
+    /// fetching a new cwd triggers FIFO eviction. Local sessions never write to
+    /// this cache.
     #[cfg(all(
         feature = "local_tty",
         feature = "local_fs",
@@ -3115,9 +3128,10 @@ impl TerminalView {
                         && was_modified
                         && !is_exit_due_to_user_takeover_of_lrc
                         && !has_existing_lrc_block)
-                        // restored/历史会话只读查看时不会新增 exchange；
-                        // 用户按 ESC 返回 terminal 后仍需要一个 terminal-mode 入口卡片，
-                        // 否则 fullscreen AgentView 退出后所有 Agent block 都会被隐藏。
+                        // A restored/history session viewed read-only won't add a new
+                        // exchange; the user still needs a terminal-mode entry card
+                        // after pressing ESC to return to the terminal, or else all
+                        // Agent blocks get hidden once the fullscreen AgentView exits.
                         || should_insert_restored_unmodified_entry_card
                         // If the agent view was entered via accepting a 'new conversation
                         // speedbump', an entry block should always be inserted.
@@ -3514,11 +3528,13 @@ impl TerminalView {
             &ai_action_model.as_ref(ctx).shell_command_executor(ctx),
             Self::handle_shell_command_executor_event,
         );
-        // Zap BYOP:订阅 suggest_prompt 工具的 chip event,把模型主动建议的 prompt
-        // 渲染成 input 上方的 chip。原版 emit 被 PromptSuggestionsViaMAA cargo feature
-        // gate(`action_model/execute/suggest_prompt.rs:56`),OSS 默认无人订阅 → chip
-        // 永远不显示 → oneshot channel 永挂 → conversation 卡死。已去掉 emit gate,
-        // 这里补上 view 层订阅。
+        // Zap BYOP: subscribes to the suggest_prompt tool's chip event, rendering the
+        // model's proactively suggested prompt as a chip above the input. The
+        // original emit was gated behind the PromptSuggestionsViaMAA cargo feature
+        // (`action_model/execute/suggest_prompt.rs:56`); with no subscriber by
+        // default in OSS, the chip never shows → the oneshot channel hangs forever
+        // → the conversation gets stuck. The emit gate has been removed, and the
+        // view-layer subscription is added here.
         ctx.subscribe_to_model(
             &ai_action_model.as_ref(ctx).suggest_prompt_executor(ctx),
             Self::handle_suggest_prompt_executor_event,
@@ -4281,7 +4297,7 @@ impl TerminalView {
     }
 
     fn can_pop_nested_ambient_agent_view(&self, _ctx: &AppContext) -> bool {
-        // openWarp:ambient_agent 已删除,nested agent view 永远不存在。
+        // openWarp: ambient_agent has been removed; a nested agent view never exists.
         false
     }
 
@@ -5227,8 +5243,10 @@ impl TerminalView {
 
         if is_live {
             if let Some(initial_requested_command_id) = initial_requested_command_action_id {
-                // live spawn 时，触发 CLI subagent 的那轮 AI block 只是桥接工具调用，
-                // 真正 UI 挂在 command block 上；移除它以保持 requested command 视觉连续。
+                // On a live spawn, the AI block that triggered the CLI subagent is
+                // just a bridging tool call; the real UI is attached to the command
+                // block. Remove it to keep the requested command visually
+                // contiguous.
                 if let Some(result_ai_block_id) = self.rich_content_views.iter().find_map(|view| {
                     let ai_metadata = view.ai_block_metadata()?;
                     ai_metadata
@@ -5257,14 +5275,16 @@ impl TerminalView {
     ) {
         match event {
             CLISubagentViewEvent::TextSelected => {
-                // CLI subagent 的文本选择不能和 block list / alt screen 选择并存，
-                // 先清掉终端侧选择，再交给统一的 rich content selection 逻辑收尾。
+                // A CLI subagent's text selection can't coexist with block list /
+                // alt screen selection; clear the terminal-side selection first,
+                // then let the unified rich content selection logic finish up.
                 {
                     let mut model = self.model.lock();
                     model.block_list_mut().clear_selection();
                     model.alt_screen_mut().clear_selection();
                 }
-                // 清理临时拖选状态，避免切换到 CLI subagent view 后仍残留旧选择视觉。
+                // Clear the temporary drag-selection state, to avoid leaving stale
+                // selection visuals after switching to the CLI subagent view.
                 self.is_selecting = false;
                 self.block_text_selection_start_position = None;
                 self.clear_selected_text_except(Some(cli_subagent_view_id), ctx);
@@ -5305,7 +5325,8 @@ impl TerminalView {
                 metadata.and_then(|metadata| metadata.requested_command_action_id().cloned())
             });
 
-            // 只在持锁期间复制 block 快照，写 conversation 时不持有 TerminalModel 锁。
+            // Only copy the block snapshot while holding the lock; don't hold the
+            // TerminalModel lock while writing the conversation.
             let block_snapshot = SerializedBlock::from(block);
             conversation_id
                 .zip(task_id)
@@ -5356,7 +5377,7 @@ impl TerminalView {
                 log::info!(
                     "[byop-diag] CLISubagentEvent::SpawnedSubagent received: \
                      block_id={block_id:?} task_id={task_id:?} conv={conversation_id:?} \
-                     → 创建 CLISubagentView 加进 cli_subagent_views map"
+                     → creating CLISubagentView and adding to cli_subagent_views map"
                 );
                 self.create_cli_subagent_view(
                     block_id.clone(),
@@ -5398,9 +5419,12 @@ impl TerminalView {
                 );
                 self.cli_subagent_views.remove(block_id);
 
-                // SSH 等交互式 CLI subagent 会话结束后，Live 卡片会被回收，
-                // 但用户仍应能在终端里看到折叠的只读终端交互卡片（与重开历史时一致）。
-                // 这里在 block 仍持有匹配 metadata 的前提下，用 RestoredReadOnly 模式重建。
+                // After an interactive CLI subagent session (e.g. SSH) ends, the Live
+                // card gets reclaimed, but the user should still be able to see a
+                // collapsed read-only terminal-interaction card in the terminal
+                // (consistent with reopening from history). Here, provided the block
+                // still holds matching metadata, we rebuild it in RestoredReadOnly
+                // mode.
                 if let Some(conversation_id) = conversation_id {
                     let should_restore = {
                         let model = self.model.lock();
@@ -5465,10 +5489,13 @@ impl TerminalView {
                 // TUI-only affordance (pending-instruction indicator); no GUI surface.
             }
             CLISubagentEvent::UpdatedLastSnapshot { .. } => {
-                // 仅更新内存中的 last_snapshot_at（已在 controller 内完成），
-                // 不触发全量落盘。落盘由低频的 SpawnedSubagent / FinishedSubagent 承担，
-                // 避免 BlockCompleted 时 UpdatedLastSnapshot 与紧随其后的 FinishedSubagent
-                // 连续两次全量序列化整个 conversation 造成主线程写放大。
+                // Only updates last_snapshot_at in memory (already done inside the
+                // controller); doesn't trigger a full disk write. Disk writes are
+                // handled by the low-frequency SpawnedSubagent / FinishedSubagent
+                // events, to avoid write amplification on the main thread from
+                // UpdatedLastSnapshot and the immediately-following FinishedSubagent
+                // both fully serializing the entire conversation back-to-back on
+                // BlockCompleted.
             }
             CLISubagentEvent::ControlHandedBackAfterTransfer => {
                 // Notify the shell command executor that control was handed back after transfer.
@@ -7385,9 +7412,10 @@ impl TerminalView {
         ctx.emit(Event::WriteBytesToPty { bytes: data.into() });
     }
 
-    /// 暴露 PTY 输出广播接收端,给非录制订阅者用(目前是 SSH manager 的
-    /// SecretInjector,见 `app/src/ssh_manager/secret_injector.rs`)。返回
-    /// `None` 表示当前会话不是 local TTY(wasm / 远端会话)。
+    /// Exposes the PTY output broadcast receiver, for non-recording subscribers to
+    /// use (currently the SSH manager's SecretInjector, see
+    /// `app/src/ssh_manager/secret_injector.rs`). Returns `None` if the current
+    /// session isn't a local TTY (wasm / remote session).
     pub fn inactive_pty_reads_rx(
         &self,
         ctx: &warpui::AppContext,
@@ -8666,8 +8694,9 @@ impl TerminalView {
         let should_start_new_conversation = suggestion.should_start_new_conversation;
         let conversation_id = banner_state.conversation_id;
         let trigger_block_id = trigger.as_ref().and_then(|t| t.block_id());
-        // Zap BYOP:克隆 byop_action_id + prompt,用于 accept 末尾通知 executor
-        // (`complete_suggest_prompt_action(Accepted { query })` 关 oneshot channel)。
+        // Zap BYOP: clones byop_action_id + prompt, used to notify the executor at
+        // the end of accept (`complete_suggest_prompt_action(Accepted { query })`
+        // closes the oneshot channel).
         let byop_banner_for_completion = banner_state
             .byop_action_id
             .is_some()
@@ -8765,17 +8794,19 @@ impl TerminalView {
             );
         }
 
-        // Zap BYOP:模型主动建议的 chip 被用户接受 → 通知 executor 关
-        // oneshot channel,让 BYOP loop 拿到 `Accepted{query}` result,模型下一轮
-        // 可见到"用户已采纳并提交了那条 prompt"的 tool_result。
+        // Zap BYOP: a chip proactively suggested by the model was accepted by the
+        // user → notify the executor to close the oneshot channel, so the BYOP loop
+        // gets the `Accepted{query}` result, and the model can see the tool_result
+        // for "the user accepted and submitted that prompt" on its next turn.
         if let Some(banner) = byop_banner_for_completion.as_ref() {
             self.complete_byop_suggest_prompt_if_needed(
                 banner,
                 Some(prompt_for_byop_completion),
                 ctx,
             );
-            // 清掉 banner 防止下次 click 重复触发(reject path 已经 clear,accept
-            // path 之前没显式 clear,统一在这里清)。
+            // Clear the banner to prevent it from firing again on the next click
+            // (the reject path already clears it; the accept path didn't explicitly
+            // clear it before, so we do it uniformly here).
             self.inline_banners_state.prompt_suggestions_banner = None;
             self.input.update(ctx, |input, ctx| {
                 input.set_prompt_suggestions_banner_state(None, ctx);
@@ -10047,8 +10078,9 @@ impl TerminalView {
                                         },
                                     );
 
-                                    // 使用 OSC 9 通知的 agent 不会发结构化 SessionStart 事件，
-                                    // 因此在命令检测时主动创建监听器。
+                                    // Agents that use OSC 9 notifications don't send a
+                                    // structured SessionStart event, so the listener is
+                                    // proactively created at command detection time.
                                     if let Some((agent @ (CLIAgent::Codex | CLIAgent::DeepSeek), _)) =
                                         detection
                                     {
@@ -10877,7 +10909,8 @@ impl TerminalView {
                     return;
                 }
 
-                // 如果当前 agent 已有监听器，OSC 9 通知由 agent 专属 handler 处理。
+                // If the current agent already has a listener, OSC 9 notifications are
+                // handled by the agent's dedicated handler.
                 if title.is_none() {
                     let has_osc9_listener = CLIAgentSessionsModel::as_ref(ctx)
                         .session(self.view_id)
@@ -12588,8 +12621,9 @@ impl TerminalView {
 
     fn clear_prompt_suggestions(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(banner) = self.inline_banners_state.prompt_suggestions_banner.take() {
-            // Zap BYOP:若该 chip 来自 suggest_prompt 工具,需要 cancel 掉
-            // 对应 oneshot channel,否则 BYOP loop 永挂等 result。
+            // Zap BYOP: if this chip came from the suggest_prompt tool, its
+            // corresponding oneshot channel needs to be canceled, or the BYOP loop
+            // will hang forever waiting for the result.
             self.complete_byop_suggest_prompt_if_needed(&banner, None, ctx);
             self.input.update(ctx, |input, ctx| {
                 input.set_prompt_suggestions_banner_state(None, ctx);
@@ -12603,8 +12637,9 @@ impl TerminalView {
         };
     }
 
-    /// 如果 banner 携带 BYOP `byop_action_id`,调 `complete_suggest_prompt_action`
-    /// 关闭 oneshot channel。`accepted_query=Some` 时回 Accepted,否则回 Cancelled。
+    /// If the banner carries a BYOP `byop_action_id`, calls
+    /// `complete_suggest_prompt_action` to close the oneshot channel. Replies
+    /// Accepted when `accepted_query=Some`, otherwise Cancelled.
     fn complete_byop_suggest_prompt_if_needed(
         &self,
         banner: &PromptSuggestionBannerState,
@@ -12758,18 +12793,23 @@ impl TerminalView {
         self.update_scroll_position_locking(ScrollPositionUpdate::AfterEnd, ctx);
     }
 
-    /// Zap BYOP:模型主动调 `suggest_prompt` 工具时,executor emit 此事件携带
-    /// prompt + label + action_id。
+    /// Zap BYOP: when the model proactively calls the `suggest_prompt` tool, the
+    /// executor emits this event carrying prompt + label + action_id.
     ///
-    /// **设计语义**:`suggest_prompt` 是 fire-and-forget(对齐 opencode agentic 工具行为)
-    /// —— chip 一显示就**立即** complete oneshot(以 Accepted{query: prompt} 喂回模型),
-    /// 不等用户点击。这样:
-    /// 1. conversation 状态栏 "Warping..." 立即消失,模型下一轮自然 end_turn 收尾
-    /// 2. chip 仍在 UI 上挂着,用户点击 → 走 `resolve_prompt_suggestion` →
-    ///    `enter_agent_view(Some(prompt))`,把 prompt 当**新一轮 user input** 提交,
-    ///    跟用户手动键入那段 prompt 等价(独立于 oneshot channel)
+    /// **Design semantics**: `suggest_prompt` is fire-and-forget (matching
+    /// opencode's agentic tool behavior) — as soon as the chip is displayed, the
+    /// oneshot is **immediately** completed (feeding Accepted{query: prompt} back
+    /// to the model), without waiting for the user to click. This way:
+    /// 1. The conversation status bar's "Warping..." disappears immediately, and the
+    ///    model naturally wraps up with end_turn on its next turn
+    /// 2. The chip still hangs around in the UI; if the user clicks it →
+    ///    `resolve_prompt_suggestion` → `enter_agent_view(Some(prompt))` submits the
+    ///    prompt as a **new round of user input**, equivalent to the user manually
+    ///    typing that prompt (independent of the oneshot channel)
     ///
-    /// 之前误把"用户点 chip"当 oneshot 完成信号,导致用户不点 → conversation 永挂。
+    /// Previously, "the user clicked the chip" was mistakenly treated as the oneshot
+    /// completion signal, so if the user never clicked, the conversation would hang
+    /// forever.
     fn handle_suggest_prompt_executor_event(
         &mut self,
         _: ModelHandle<PromptSuggestionExecutor>,
@@ -12786,23 +12826,27 @@ impl TerminalView {
                 self.on_maa_prompt_suggestion_generated(
                     prompt,
                     label,
-                    0,    // request_duration_ms — BYOP 本地工具,无服务端往返耗时
-                    None, // trigger — 不来自 shell command 等被动触发器
+                    0,    // request_duration_ms — BYOP local tool, no server round-trip time
+                    None, // trigger — not from a passive trigger like a shell command
                     Some(*conversation_id),
-                    None, // server_request_token — 非 server 触发
+                    None, // server_request_token — not server-triggered
                     ctx,
                 );
-                // 立即 complete oneshot 关 channel,但**必须用 Cancelled** —— 否则
-                // controller (`controller.rs:472` `should_trigger_request_upon_completion`)
-                // 检测 Accepted/非 Cancelled result 会强制触发新一轮 BYOP LLM call,
-                // 模型看到"用户接受了 chip"+ 没有新 user message,返回空响应,
-                // UX 卡在 "Warping..." 又一次。Cancelled 让 controller 不触发 follow-up
-                // request,当前轮自然结束。
+                // Immediately complete the oneshot to close the channel, but **must
+                // use Cancelled** — otherwise the controller
+                // (`controller.rs:472` `should_trigger_request_upon_completion`)
+                // detecting an Accepted/non-Cancelled result would force a new round
+                // of BYOP LLM call, the model would see "the user accepted the chip"
+                // with no new user message, return an empty response, and the UX
+                // would get stuck on "Warping..." yet again. Cancelled makes the
+                // controller not trigger a follow-up request, and the current turn
+                // ends naturally.
                 //
-                // 用户点 chip 是另一条路径:`resolve_prompt_suggestion` →
-                // `enter_agent_view(Some(prompt))` 把 prompt 作为新 user query 发送
-                // (跟 mastra `append({role:'user', content: prompt})` 等价),触发
-                // 全新一轮对话,跟本 oneshot channel 无关。
+                // The user clicking the chip is a separate path:
+                // `resolve_prompt_suggestion` → `enter_agent_view(Some(prompt))` sends
+                // the prompt as a new user query (equivalent to mastra's
+                // `append({role:'user', content: prompt})`), triggering a brand-new
+                // round of conversation, unrelated to this oneshot channel.
                 let executor = self
                     .ai_action_model
                     .as_ref(ctx)
@@ -14277,7 +14321,7 @@ impl TerminalView {
                 let is_copy_both_disabled =
                     is_copy_commands_disabled && tail_block.output_to_string().trim().is_empty();
 
-                // Zap:删除 "Share block..." / "Share session..." 入口(云端依赖)
+                // Zap: removed the "Share block..." / "Share session..." entries (cloud dependency)
                 let _ = is_share_disabled;
 
                 let mut items = vec![
@@ -14459,7 +14503,7 @@ impl TerminalView {
             ) => {
                 // If selection is empty, only show non-block related options
                 let items: Vec<MenuItem<TerminalAction>> = Vec::new();
-                // Zap:删除 session_sharing_context_menu_items(云端 shared session 入口)
+                // Zap: removed session_sharing_context_menu_items (cloud shared session entry point)
                 items
             }
             _ => vec![],
@@ -14854,7 +14898,7 @@ impl TerminalView {
                 .into_item(),
         );
 
-        // Zap:删除 session_sharing_context_menu_items(云端 shared session 入口)
+        // Zap: removed session_sharing_context_menu_items (cloud shared session entry point)
 
         // Section 2: AI Command Search, Ask Zap AI
         items.extend([
@@ -15088,7 +15132,7 @@ impl TerminalView {
             }
         }
 
-        // Zap:删除 session_sharing_context_menu_items(云端 shared session 入口)
+        // Zap: removed session_sharing_context_menu_items (cloud shared session entry point)
         let current_shell = model.shell_launch_state().available_shell();
         let mut pane_context_menu_items = self.pane_context_menu_items(current_shell, ctx);
         if !menu_items.is_empty() && !pane_context_menu_items.is_empty() {
@@ -15505,11 +15549,13 @@ impl TerminalView {
             return;
         }
 
-        // 抢占 throttle 窗口,防止 stream 紧接着第二次 yield 时又起一个 spawn。
+        // Claim the throttle window preemptively, to prevent the stream from
+        // spawning another task on its very next yield.
         self.onekey_last_prompt_at = Some(Instant::now());
 
-        // Keychain + SQLite 都是同步阻塞 API,不能在 UI 线程跑。
-        // 走 spawn_blocking,完成后回到主线程展示菜单。
+        // Keychain + SQLite are both synchronous blocking APIs and can't run on the
+        // UI thread. Use spawn_blocking, then return to the main thread to show the
+        // menu once it completes.
         let future = async move {
             tokio::task::spawn_blocking(load_saved_ssh_credentials)
                 .await
@@ -15526,7 +15572,8 @@ impl TerminalView {
             if credentials.is_empty() {
                 return;
             }
-            // 二次确认:加载途中可能用户已经手动打开菜单或 injector 起飞了。
+            // Double-check: while loading, the user may have already manually opened
+            // the menu, or the injector may have started.
             if view.context_menu_state.is_some() || view.ssh_secret_auto_injection_in_flight {
                 return;
             }
@@ -15541,7 +15588,8 @@ impl TerminalView {
                 })
                 .collect();
             view.onekey_query.clear();
-            // 复用常驻 editor:清空内容、把焦点稍后转过来。
+            // Reuse the long-lived editor: clear its content, and move focus over
+            // shortly after.
             view.onekey_search_editor
                 .clone()
                 .update(ctx, |editor, ctx| {
@@ -15549,9 +15597,11 @@ impl TerminalView {
                 });
 
             let items = view.build_onekey_menu_items();
-            // 候选可能很多(用户保存了几十/几百台 SSH 服务器),按数量推导
-            // 一个有限高度,并切到 Scrollable,这样方向键导航会自动 scroll-into-view,
-            // 也不会把终端主体盖住。搜索框(pinned header)单独算 ~32px。
+            // There may be many candidates (a user may have saved dozens/hundreds of
+            // SSH servers), so derive a bounded height from the count and switch to
+            // Scrollable, so arrow-key navigation auto scroll-into-views and doesn't
+            // cover the main terminal body. The search box (pinned header) is
+            // counted separately at ~32px.
             let candidate_count = view.onekey_prompt_candidates.len() as f32;
             let target_height = (ONEKEY_SEARCH_HEADER_HEIGHT
                 + candidate_count * ONEKEY_MENU_ROW_HEIGHT)
@@ -15560,9 +15610,10 @@ impl TerminalView {
             ctx.update_view(&view.context_menu, |context_menu, _| {
                 context_menu.set_menu_variant(MenuVariant::scrollable());
                 context_menu.set_height(target_height);
-                // 搜索框走 pinned header,不占用 selection 索引,也不会被滚动。
-                // 闭包是 Fn,只捕获 ViewHandle clone,不依赖 query —— query 变化
-                // 走 set_items 重建候选行,不重建 header。
+                // The search box is a pinned header: it doesn't consume a selection
+                // index, and isn't scrolled. The closure is Fn, only capturing a
+                // ViewHandle clone, not depending on query — query changes rebuild
+                // the candidate rows via set_items, not the header.
                 context_menu.set_pinned_header_builder(move |app| {
                     render_onekey_search_header(&search_editor, app)
                 });
@@ -15575,24 +15626,28 @@ impl TerminalView {
                 items,
                 ctx,
             );
-            // 把焦点放到搜索框,这样用户能直接打字过滤候选;
-            // Up/Down/Enter/Escape/Ctrl+N/Ctrl+P 通过 editor 的导航键
-            // propagate 机制转成 EditorEvent 触发对应的菜单操作。
+            // Move focus to the search box, so the user can type directly to filter
+            // candidates; Up/Down/Enter/Escape/Ctrl+N/Ctrl+P are converted to
+            // EditorEvents via the editor's navigation-key propagate mechanism to
+            // trigger the corresponding menu action.
             ctx.focus(&view.onekey_search_editor);
-            // 默认选中第一条候选(items[0]),保持原 select_next 语义健壮性:
-            // 如果将来在候选前插入 separator 等非 selectable 项,仍能正确跳过。
+            // Selects the first candidate (items[0]) by default, keeping the original
+            // select_next semantics robust: if a non-selectable item like a
+            // separator is inserted before the candidates in the future, it will
+            // still be correctly skipped.
             ctx.update_view(&view.context_menu, |context_menu, ctx| {
                 context_menu.select_next(ctx);
             });
         });
     }
 
-    /// 创建 OneKey 菜单顶部的搜索输入框,与 TerminalView 同生命周期。
-    /// 订阅 Edited 触发实时过滤,Up/Down/Enter/Escape 通过 editor 的
-    /// 导航键 propagate 机制转给菜单。Ctrl+N/Ctrl+P 在 EditorView 全局
-    /// 被映射为 EditorAction::Down/Up(见 app/src/editor/view/mod.rs:633,640),
-    /// 因此 single-line + Always 自动 emit Navigate(NavigationKey::Up/Down),
-    /// 无需额外 keymap。
+    /// Creates the search input box at the top of the OneKey menu, with the same
+    /// lifetime as TerminalView. Subscribes to Edited to trigger live filtering;
+    /// Up/Down/Enter/Escape are forwarded to the menu via the editor's
+    /// navigation-key propagate mechanism. Ctrl+N/Ctrl+P are globally mapped to
+    /// EditorAction::Down/Up in EditorView (see app/src/editor/view/mod.rs:633,640),
+    /// so single-line + Always automatically emits Navigate(NavigationKey::Up/Down),
+    /// with no extra keymap needed.
     fn build_onekey_search_editor(ctx: &mut ViewContext<Self>) -> ViewHandle<EditorView> {
         let editor = ctx.add_typed_action_view(|ctx| {
             let appearance = Appearance::as_ref(ctx);
@@ -15603,9 +15658,10 @@ impl TerminalView {
                     clear_selections_on_blur: true,
                     propagate_and_no_op_vertical_navigation_keys:
                         PropagateAndNoOpNavigationKeys::Always,
-                    // 让 escape 先 propagate 到 TerminalView 关闭菜单,
-                    // 与 ModelSelector(model_selector.rs:96)对齐——这样
-                    // 即便 vim 模式有 pending 操作,也优先关闭菜单。
+                    // Let escape propagate to TerminalView first to close the menu,
+                    // aligning with ModelSelector (model_selector.rs:96) — this way,
+                    // even if vim mode has a pending operation, closing the menu
+                    // still takes priority.
                     propagate_and_no_op_escape_key: PropagateAndNoOpEscapeKey::PropagateFirst,
                     ..Default::default()
                 },
@@ -15626,8 +15682,9 @@ impl TerminalView {
         event: &EditorEvent,
         ctx: &mut ViewContext<Self>,
     ) {
-        // 只有当 OneKey 菜单仍然处于打开状态时,这些事件才有意义;
-        // 否则可能是 editor 已被替换/销毁过程中迟到的事件。
+        // These events only matter while the OneKey menu is still open; otherwise
+        // this may be a stale event arriving while the editor is being
+        // replaced/destroyed.
         if !matches!(
             self.context_menu_state.map(|state| state.menu_type),
             Some(ContextMenuType::OneKeyPrompt)
@@ -15661,33 +15718,37 @@ impl TerminalView {
                 }
             }
             EditorEvent::Escape => {
-                // Menu 框架本身也注册了 escape→Close 的 keybinding。如果
-                // EditorView 没有 stop_propagation,close_context_menu 可能
-                // 被调用两次,但 self.context_menu_state.take() 是幂等的,
-                // 第二次进来 state 已经 None,不会重复清理。
+                // The Menu framework itself also registers an escape→Close
+                // keybinding. If EditorView doesn't stop_propagation,
+                // close_context_menu may get called twice, but
+                // self.context_menu_state.take() is idempotent — on the second
+                // call the state is already None, so no duplicate cleanup happens.
                 self.close_context_menu(ctx, true);
             }
             _ => {}
         }
     }
 
-    /// 按当前 query 用 fuzzy_match 过滤 & 排序候选,重建菜单 items 列表。
-    /// 搜索框走 pinned header,不在 items 列表里;items 第 0 项就是
-    /// 命中的第一条候选(或空态 disabled 行)。
+    /// Filters & sorts candidates by fuzzy_match against the current query, and
+    /// rebuilds the menu's items list. The search box is a pinned header and isn't
+    /// in the items list; items index 0 is the first matched candidate (or the
+    /// empty-state disabled row).
     fn refresh_onekey_menu_items(&mut self, ctx: &mut ViewContext<Self>) {
         let items = self.build_onekey_menu_items();
         ctx.update_view(&self.context_menu, |context_menu, ctx| {
             context_menu.set_items(items, ctx);
-            // set_items 会 reset_selection;query 变化后默认选中第一条
-            // selectable 候选,方便用户直接回车填充。
+            // set_items triggers reset_selection; after a query change, select the
+            // first selectable candidate by default, so the user can just hit Enter
+            // to fill it in.
             context_menu.select_next(ctx);
         });
         ctx.notify();
     }
 
-    /// 构建 OneKey 菜单的 items:按当前 query 过滤排序后的候选行,
-    /// 每行的 on_select_action 携带其在全集 `onekey_prompt_candidates`
-    /// 中的索引。搜索框走 `set_pinned_header_builder`,不在 items 列表中。
+    /// Builds the OneKey menu's items: candidate rows filtered and sorted by the
+    /// current query, where each row's on_select_action carries its index into the
+    /// full `onekey_prompt_candidates` set. The search box uses
+    /// `set_pinned_header_builder` and isn't in the items list.
     fn build_onekey_menu_items(&self) -> Vec<MenuItem<TerminalAction>> {
         let order = filter_and_sort_onekey_candidates(
             self.onekey_prompt_candidates
@@ -15696,8 +15757,9 @@ impl TerminalView {
             &self.onekey_query,
         );
         match order {
-            // 命中为空:加一条 disabled 提示行,避免菜单只剩搜索框
-            // 显得很怪;disabled 会被 select_next/previous 自动跳过。
+            // No matches: add a disabled hint row, so the menu doesn't look odd with
+            // only the search box left; disabled rows are automatically skipped by
+            // select_next/previous.
             OnekeyMenuRows::NoMatches => {
                 vec![
                     MenuItemFields::new(crate::t!("terminal-onekey-search-no-results"))
@@ -15726,9 +15788,11 @@ impl TerminalView {
             self.close_context_menu(ctx, true);
             return;
         };
-        // 用 Zeroizing<Vec<u8>> 持有本函数内的明文副本,函数返回时自动清零;
-        // write_to_pty 收到的是另一份 Cow,那一份在事件系统/PTY 路径上无法
-        // zeroize(属于既有架构限制),但至少把本帧栈上的明文窗口缩到最小。
+        // Hold this function's plaintext copy in a Zeroizing<Vec<u8>>, which
+        // auto-zeroes on return; write_to_pty receives a separate Cow, which can't
+        // be zeroized on the event-system/PTY path (an existing architectural
+        // limitation), but this at least minimizes the plaintext window on this
+        // frame's stack.
         let mut bytes: zeroize::Zeroizing<Vec<u8>> =
             zeroize::Zeroizing::new(candidate.secret.as_bytes().to_vec());
         bytes.push(b'\n');
@@ -15746,12 +15810,12 @@ impl TerminalView {
         }
     }
 
-    /// 仅由 `secret_injector` 在起飞/结束时调用。详见字段文档。
+    /// Called only by `secret_injector` at start/end. See the field docs for details.
     pub(crate) fn set_ssh_secret_auto_injection_in_flight(&mut self, in_flight: bool) {
         self.ssh_secret_auto_injection_in_flight = in_flight;
     }
 
-    /// 检测到 su root 密码提示后弹出确认菜单。
+    /// Pops up a confirmation menu after an su root password prompt is detected.
     pub(crate) fn show_su_root_confirm_menu(&mut self, ctx: &mut ViewContext<Self>) {
         if self.context_menu_state.is_some() {
             return;
@@ -15865,7 +15929,7 @@ impl TerminalView {
         items
     }
 
-    /// 用户确认后注入暂存的 root 密码。
+    /// Injects the stashed root password after the user confirms.
     fn fill_su_root_password(&mut self, ctx: &mut ViewContext<Self>) {
         if let Some(password) = self.su_root_password.take() {
             self.fill_su_password(&password, ctx);
@@ -16379,10 +16443,12 @@ impl TerminalView {
         }
     }
 
-    /// Zap:若当前活动 block 所属会话是 remote-server 会话,返回其 `HostId`。
+    /// Zap: returns the `HostId` if the currently active block's session is a
+    /// remote-server session.
     ///
-    /// 用于在终端里 Ctrl/Cmd+点击文件路径时,判断应当走本地还是远端 buffer-sync
-    /// 打开流程。非 remote-server 会话返回 `None`(保持本地行为不变)。
+    /// Used when Ctrl/Cmd+clicking a file path in the terminal, to decide whether
+    /// to go through the local or remote buffer-sync open flow. Returns `None` for
+    /// non-remote-server sessions (local behavior stays unchanged).
     #[cfg(all(feature = "local_tty", feature = "local_fs"))]
     fn active_session_remote_host_id(&self, ctx: &AppContext) -> Option<warp_core::HostId> {
         #[cfg(not(target_family = "wasm"))]
@@ -16401,8 +16467,9 @@ impl TerminalView {
         }
     }
 
-    /// Zap:把终端文件链接里已解析出的绝对路径当作远端路径,构造 `RemotePath`。
-    /// 远端 SSH 主机均为 Unix,路径字符串由 shell-integration 上报的远端 cwd 拼接而来。
+    /// Zap: treats an absolute path resolved from a terminal file link as a remote
+    /// path, constructing a `RemotePath`. Remote SSH hosts are always Unix, and the
+    /// path string comes from joining the remote cwd reported by shell-integration.
     #[cfg(all(feature = "local_tty", feature = "local_fs"))]
     fn remote_path_from_terminal_path(
         host_id: warp_core::HostId,
@@ -16411,7 +16478,7 @@ impl TerminalView {
         let path_str = path.to_str()?;
         let standardized = warp_util::standardized_path::StandardizedPath::try_new(path_str)
             .map_err(|e| {
-                log::warn!("无法将终端文件路径转换为远端路径 {path_str:?}: {e}");
+                log::warn!("Failed to convert terminal file path to remote path {path_str:?}: {e}");
             })
             .ok()?;
         Some(crate::code::buffer_location::RemotePath::new(
@@ -16420,10 +16487,12 @@ impl TerminalView {
         ))
     }
 
-    /// Zap:判断终端文件链接里的远端路径是否指向目录。
+    /// Zap: determines whether the remote path from a terminal file link points to
+    /// a directory.
     ///
-    /// 依据是缓存下来的远端 cwd 目录列表(由 `link_detection.rs` 拉取并写入)。
-    /// 未缓存或非目录返回 `false`(按文件处理)。
+    /// Based on the cached remote cwd directory listing (fetched and written by
+    /// `link_detection.rs`). Returns `false` if not cached or not a directory
+    /// (treated as a file).
     #[cfg(all(
         feature = "local_tty",
         feature = "local_fs",
@@ -16442,13 +16511,15 @@ impl TerminalView {
         })
     }
 
-    /// Zap:在当前(远端)终端会话里 `cd` 进指定目录。
+    /// Zap: `cd`s into the given directory in the current (remote) terminal session.
     ///
-    /// 与本地点击目录链接的行为对齐 —— 远端目录无法在编辑器里打开,改为
-    /// 在该远端 shell 会话中执行 `cd <dir>`。
+    /// Aligned with local directory-link click behavior — a remote directory can't
+    /// be opened in the editor, so instead we run `cd <dir>` in that remote shell
+    /// session.
     #[cfg(all(feature = "local_tty", feature = "local_fs"))]
     fn cd_into_remote_directory(&mut self, path: &std::path::Path, ctx: &mut ViewContext<Self>) {
-        // 对路径做 shell 转义,防止包含 `"`、`$(...)`、反引号等字符时被远端 shell 执行注入命令。
+        // Shell-escape the path, to prevent injection if it contains characters like
+        // `"`, `$(...)`, or backticks that the remote shell would otherwise execute.
         let quoted_dir = shell_words::quote(&path.to_string_lossy()).into_owned();
         self.input.update(ctx, |input, ctx| {
             input.try_execute_command(format!("cd -- {quoted_dir}").as_str(), ctx);
@@ -16464,10 +16535,11 @@ impl TerminalView {
     ) {
         ctx.notify();
 
-        // Zap:远端 SSH 会话走 buffer-sync 协议打开远端文件。
+        // Zap: remote SSH sessions open remote files via the buffer-sync protocol.
         #[cfg(all(feature = "local_tty", feature = "local_fs"))]
         if let Some(host_id) = self.active_session_remote_host_id(ctx) {
-            // 远端目录点击:不在编辑器里打开,改为在该远端会话里 `cd` 进去。
+            // Remote directory click: don't open in the editor; instead `cd` into it
+            // in that remote session.
             #[cfg(not(target_family = "wasm"))]
             if let Some(session_id) = self.active_block_session_id() {
                 if self.remote_clicked_path_is_dir(session_id, &path) {
@@ -16504,11 +16576,13 @@ impl TerminalView {
     ) {
         ctx.notify();
 
-        // Zap:远端 SSH 会话走 buffer-sync 协议打开远端文件。
-        // 远端文件统一在内嵌代码编辑器打开,忽略 `target`(外部编辑器无法访问远端文件)。
+        // Zap: remote SSH sessions open remote files via the buffer-sync protocol.
+        // Remote files are always opened in the embedded code editor, ignoring
+        // `target` (an external editor can't access remote files).
         #[cfg(all(feature = "local_tty", feature = "local_fs"))]
         if let Some(host_id) = self.active_session_remote_host_id(ctx) {
-            // 远端目录点击:不在编辑器里打开,改为在该远端会话里 `cd` 进去。
+            // Remote directory click: don't open in the editor; instead `cd` into it
+            // in that remote session.
             #[cfg(not(target_family = "wasm"))]
             if let Some(session_id) = self.active_block_session_id() {
                 if self.remote_clicked_path_is_dir(session_id, &path) {
@@ -18325,8 +18399,8 @@ impl TerminalView {
                     ctx.emit(Event::ZapDriveObjectInPane(uid.clone()));
                 }
                 AIAgentCitation::WarpDocumentation { path: _ } => {
-                    // Zap fork 不继承上游 docs.warp.dev 文档站,
-                    // 点击该类型引用暂不跳转。
+                    // The Zap fork doesn't inherit the upstream docs.warp.dev docs
+                    // site, so clicking this citation type doesn't navigate for now.
                 }
                 AIAgentCitation::WebPage { url } => {
                     ctx.open_url(url);
@@ -18610,12 +18684,15 @@ impl TerminalView {
         })
     }
 
-    /// 在所有可见的 AI block 子视图层里查找已被用户选中的文本。
+    /// Searches for user-selected text across all visible AI block subview layers.
     ///
-    /// AI block 的 rich content 选区由 `SelectableArea` 维护,与终端 grid 选区是两套
-    /// 互不通气的系统;`selection_to_string` 只会读 grid 选区,因此 Ctrl+Shift+C 与右键
-    /// 菜单的 `Copy` 都会漏掉 AI block 内的选区。这里集中提供一个兜底:遍历所有 AI block,
-    /// 取第一个 `selected_text(ctx).is_some()` 的结果即可。
+    /// An AI block's rich content selection is maintained by `SelectableArea`,
+    /// which is a separate system from the terminal grid selection that doesn't
+    /// talk to it; `selection_to_string` only reads the grid selection, so both
+    /// Ctrl+Shift+C and the right-click menu's `Copy` would miss any selection
+    /// inside an AI block. This provides a centralized fallback: iterate over all
+    /// AI blocks and take the result of the first one where
+    /// `selected_text(ctx).is_some()`.
     fn selected_text_from_visible_ai_blocks(&self, ctx: &AppContext) -> Option<String> {
         self.rich_content_views.iter().find_map(|rich_content| {
             let ai_metadata = rich_content.ai_block_metadata()?;
@@ -18768,16 +18845,18 @@ impl TerminalView {
             if matches!(state.menu_type, ContextMenuType::OneKeyPrompt) {
                 self.onekey_prompt_candidates.clear();
                 self.onekey_query.clear();
-                // 搜索 editor 是常驻字段(框架未提供 view 释放 API),
-                // 这里清空其内容以便下次打开时是干净状态。
+                // The search editor is a long-lived field (the framework provides no
+                // view-release API), so we clear its content here so it's in a
+                // clean state next time it's opened.
                 self.onekey_search_editor
                     .clone()
                     .update(ctx, |editor, ctx| {
                         editor.clear_buffer(ctx);
                     });
-                // 该 `Menu` 实例被各类 ContextMenu 共用,关闭 OneKey 菜单时
-                // 把 variant 切回 Fixed 并清掉 pinned header,避免影响后续
-                // 右键 / Alt-screen 菜单。
+                // This `Menu` instance is shared across all kinds of ContextMenu, so
+                // when closing the OneKey menu, switch the variant back to Fixed and
+                // clear the pinned header, to avoid affecting subsequent right-click
+                // / Alt-screen menus.
                 ctx.update_view(&self.context_menu, |context_menu, _| {
                     context_menu.set_menu_variant(MenuVariant::Fixed);
                     context_menu.clear_pinned_header_builder();
@@ -18934,8 +19013,10 @@ impl TerminalView {
     fn context_menu_copy_selected_text(&mut self, ctx: &mut ViewContext<Self>) {
         send_telemetry_from_ctx!(TelemetryEvent::ContextMenuCopySelectedText, ctx);
 
-        // 优先试 AI block 内选区(详见 `selected_text_from_visible_ai_blocks` 注释)。
-        // 放在 `model.lock()` 之前,避免在终端模型锁持锁期间调用可能再次加锁的代码。
+        // Try selection inside an AI block first (see the
+        // `selected_text_from_visible_ai_blocks` comment for details). This is
+        // placed before `model.lock()` to avoid calling code that might re-lock
+        // while holding the terminal model lock.
         if let Some(selected_text) = self.selected_text_from_visible_ai_blocks(ctx) {
             if !selected_text.is_empty() {
                 ctx.clipboard()
@@ -19617,7 +19698,8 @@ impl TerminalView {
         false
     }
 
-    /// 返回当前终端里是否已经有该 conversation 的 AgentView 入口卡片。
+    /// Returns whether the current terminal already has an AgentView entry card for
+    /// this conversation.
     fn has_agent_view_entry_block_for_conversation(
         &self,
         conversation_id: AIConversationId,
@@ -21277,13 +21359,18 @@ impl TerminalView {
         let render_context = self.get_terminal_view_render_context(model, app);
 
         let enforce_minimum_contrast = *FontSettings::as_ref(app).enforce_minimum_contrast;
-        // Zap:alt-screen 渲染 cli subagent 浮窗的判定从原 `is_agent_in_control()`
-        // 放宽到 `is_agent_in_control_or_tagged_in()`。原来的判定只考虑 handoff 路径
-        // (agent 拿走 LRC 控制权),漏掉了用户主动 tag-in 路径(`SetInputModeAgent` →
-        // `tag_in_agent_for_user_long_running_command`)。后者是 Zap BYOP 链路下
-        // 浮窗的主要入口(controller `send_request_input` 检测 tagged-in → 注入
-        // `lrc_command_id` → chat_stream 合成虚拟 subagent → spawn CLISubagentView),
-        // 不放宽就算 view 已建,alt-screen 仍不挂载,模型回复永远看不到。
+        // Zap: the check for whether alt-screen renders the cli subagent floating
+        // window was loosened from the original `is_agent_in_control()` to
+        // `is_agent_in_control_or_tagged_in()`. The original check only considered
+        // the handoff path (the agent takes over LRC control), missing the path
+        // where the user proactively tags in (`SetInputModeAgent` →
+        // `tag_in_agent_for_user_long_running_command`). The latter is the main
+        // entry point for the floating window under the Zap BYOP pipeline
+        // (controller `send_request_input` detects tagged-in → injects
+        // `lrc_command_id` → chat_stream synthesizes a virtual subagent → spawns
+        // CLISubagentView); without loosening this, even once the view is built,
+        // alt-screen would still fail to mount, and the model's reply would never
+        // be visible.
         let active_cli_subagent_view = model
             .block_list()
             .active_block()
@@ -22509,7 +22596,8 @@ impl TerminalView {
                     {
                         *request_outcome = Some(outcome.clone());
                     }
-                    // 未知错误写本地日志,便于排查通知权限问题。
+                    // Log unknown errors locally, to help diagnose notification
+                    // permission issues.
                     if let RequestPermissionsOutcome::OtherError { error_message } = &outcome {
                         log::error!(
                             "Unknown error when requesting notification permissions. error_msg: {error_message}"
@@ -25721,20 +25809,23 @@ fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {
     Some((first_word, rest))
 }
 
-/// `filter_and_sort_onekey_candidates` 的返回值。命中为空时与"全部命中"
-/// 区分开,方便调用方决定显示空态行还是候选行。
+/// The return value of `filter_and_sort_onekey_candidates`. Distinguishes an empty
+/// match set from "all matched," so the caller can decide whether to show the
+/// empty-state row or the candidate rows.
 #[derive(Debug, PartialEq, Eq)]
 enum OnekeyMenuRows {
-    /// 候选在 onekey_prompt_candidates 全集中的索引,按显示顺序排列。
+    /// Candidate indices into the full onekey_prompt_candidates set, in display order.
     Ordered(Vec<usize>),
-    /// query 非空但没有任何候选命中。
+    /// The query is non-empty but no candidate matched.
     NoMatches,
 }
 
-/// 按 query 用 fuzzy_match 过滤+排序 OneKey 候选,返回展示顺序中的全集索引。
-/// query 为空时保持原顺序;非空时对 label / subtitle 各打分,取最高分降序。
-/// 提取为 pure 函数以便单元测试(skim 算法对 Unicode char 序列匹配,
-/// 中/英/日/韩字符均可直接搜索)。
+/// Filters+sorts OneKey candidates by query using fuzzy_match, returning indices
+/// into the full set in display order. Keeps the original order when the query is
+/// empty; when non-empty, scores label / subtitle each and takes the highest score
+/// descending. Extracted as a pure function for unit testing (the skim algorithm
+/// matches over Unicode char sequences, so Chinese/English/Japanese/Korean
+/// characters can all be searched directly).
 fn filter_and_sort_onekey_candidates<'a, I>(candidates: I, query: &str) -> OnekeyMenuRows
 where
     I: IntoIterator<Item = (&'a str, &'a str)>,
@@ -25754,7 +25845,7 @@ where
             Some((score, index))
         })
         .collect();
-    // score 大者靠前;同分按原始顺序(stable sort)。
+    // Higher scores sort first; ties keep original order (stable sort).
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     if scored.is_empty() {
         OnekeyMenuRows::NoMatches
@@ -25763,8 +25854,9 @@ where
     }
 }
 
-/// 渲染 OneKey 菜单顶部的搜索 header(pinned header builder 调用)。
-/// 提取为模块级函数以避免在 query 变化时反复构造 Arc 闭包。
+/// Renders the search header at the top of the OneKey menu (called by the pinned
+/// header builder). Extracted as a module-level function to avoid repeatedly
+/// constructing an Arc closure on every query change.
 fn render_onekey_search_header(
     editor: &ViewHandle<EditorView>,
     app: &AppContext,

@@ -1,31 +1,32 @@
 #!/usr/bin/env bash
-# Zap remote-server 二进制的预安装检查。
+# Pre-install check for the Zap remote-server binary.
 #
-# stdout 输出结构化 key=value 摘要。退出码 0 表示探测完成;
-# 非 0 表示探测过程失败,客户端会按 `status=unknown` 处理并 fail open。
+# stdout prints a structured key=value summary. Exit code 0 means the probe
+# completed; non-zero means the probe process failed, and the client will
+# treat it as `status=unknown` and fail open.
 #
-# 重要:Zap Linux remote-server 现在由 zap_release.yml 以
-# `x86_64-unknown-linux-musl` 目标静态链接构建(static-musl)。产物不依赖
-# 宿主的动态 libc,因此可以在任意 Linux x86_64 主机上运行 —— 包括旧 glibc
-# 发行版(CentOS 7 = 2.17、Amazon Linux 2 = 2.26、Ubuntu 20.04 / Debian 11
-# = 2.31)以及 musl 发行版(Alpine 等)。
+# Important: the Zap Linux remote-server is now statically linked by
+# zap_release.yml for the `x86_64-unknown-linux-musl` target (static-musl). The
+# artifact doesn't depend on the host's dynamic libc, so it can run on any
+# Linux x86_64 host — including older glibc distros (CentOS 7 = 2.17, Amazon
+# Linux 2 = 2.26, Ubuntu 20.04 / Debian 11 = 2.31) and musl distros (Alpine, etc.).
 #
-# 既然二进制是静态的,libc 探测不再用于「门禁」,只作为遥测信息保留。
+# Since the binary is static, libc probing is no longer used as a "gate", only kept as telemetry.
 
 set -u
 
-# 历史字段:保留 required_glibc 以兼容旧客户端的解析逻辑。
-# 静态 musl 二进制实际上没有 glibc 下限,此处仅为向后兼容输出,
-# 不再参与下面的 status 判定。
+# Legacy field: kept `required_glibc` for compatibility with old client parsing logic.
+# A static musl binary actually has no glibc floor; this is output purely for
+# backward compatibility and no longer participates in the status decision below.
 required_glibc="2.17"
 echo "required_glibc=${required_glibc}"
 
-# 1. 识别 libc family,并在 glibc 场景下识别版本(纯遥测,不影响 status)。
+# 1. Identify the libc family, and the version in the glibc case (pure telemetry, doesn't affect status).
 libc_family="unknown"
 libc_version=""
 
 if version=$(getconf GNU_LIBC_VERSION 2>/dev/null); then
-    # 输出形如: "glibc 2.35"
+    # Output looks like: "glibc 2.35"
     libc_family="glibc"
     libc_version="${version##* }"
 elif ldd_out=$(ldd --version 2>&1 | head -n1); then
@@ -45,12 +46,14 @@ fi
 echo "libc_family=${libc_family}"
 [ -n "$libc_version" ] && echo "libc_version=${libc_version}"
 
-# 2. 判断支持状态。
+# 2. Determine the support status.
 #
-# remote-server 是静态 musl 二进制,不链接宿主 libc,所以任何 glibc 版本
-# (含 2.35 以下)以及 musl / uclibc 宿主都能运行。只要成功识别出这是一台
-# Linux x86_64 主机,就报告 `supported`;探测不出任何 libc 线索(连
-# getconf 和 ldd 都没有)时回退 `unknown`,让客户端 fail open 照常尝试安装。
+# remote-server is a static musl binary that doesn't link the host libc, so it
+# can run under any glibc version (including below 2.35) as well as musl /
+# uclibc hosts. As long as we can successfully identify this as a Linux
+# x86_64 host, we report `supported`; if no libc clues at all can be probed
+# (neither getconf nor ldd is available), fall back to `unknown`, letting the
+# client fail open and try the install as usual.
 status="unknown"
 reason=""
 

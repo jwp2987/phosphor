@@ -118,8 +118,8 @@ fn should_autoexecute_returns_false_when_questions_are_allowed() {
     });
 }
 
-// openWarp: auto-approve(ctrl+shift+i)只对 shell/编辑工具自动通过,
-// ask_user_question 即使在 autoapprove 模式下也必须弹给用户。
+// openWarp: auto-approve (ctrl+shift+i) only auto-passes shell/edit tools;
+// ask_user_question must always be surfaced to the user, even in autoapprove mode.
 #[test]
 fn should_autoexecute_returns_false_when_autoapprove_is_enabled_with_default_profile() {
     App::test((), |mut app| async move {

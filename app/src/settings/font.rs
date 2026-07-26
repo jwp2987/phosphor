@@ -1,7 +1,7 @@
 use warp_core::ui::builder::MIN_FONT_SIZE;
 
-// 重导出底层 warp_core 定义的 UI 字号常量,
-// 使 `crate::settings::DEFAULT_UI_FONT_SIZE` / `UI_FONT_SIZE_MIN` / `UI_FONT_SIZE_MAX` 仍可用。
+// Re-export the UI font size constants defined by the underlying warp_core,
+// so `crate::settings::DEFAULT_UI_FONT_SIZE` / `UI_FONT_SIZE_MIN` / `UI_FONT_SIZE_MAX` remain available.
 pub use warp_core::ui::appearance::{
     DEFAULT_UI_FONT_SIZE, UI_FONT_SIZE_MAX, UI_FONT_SIZE_MIN,
 };
@@ -17,7 +17,7 @@ use super::EnforceMinimumContrast as EnforceMinimumContrastEnum;
 pub const DEFAULT_MONOSPACE_FONT_NAME: &str = "Hack";
 pub const DEFAULT_MONOSPACE_FALLBACK_FONT_NAME: &str = "";
 
-// Markdown 标题字号倍率的合法区间（与 UI 层 clamp 保持一致）
+// Valid range for markdown heading font size multipliers (matches the UI-layer clamp)
 pub const MARKDOWN_HEADING_SCALE_MIN: f32 = 0.1;
 pub const MARKDOWN_HEADING_SCALE_MAX: f32 = 5.0;
 pub const DEFAULT_MONOSPACE_FONT_SIZE: f32 = 13.0;
@@ -241,7 +241,7 @@ pub fn derived_notebook_font_size(font_settings: &FontSettings) -> f32 {
 pub fn heading_font_size_multipliers_from_settings(
     font_settings: &FontSettings,
 ) -> HeadingFontSizeMultipliers {
-    // 数据层兜底：防止直接编辑 TOML 或云同步注入 0/负数/超大值，与 UI 层 clamp 区间一致
+    // Data-layer safeguard: prevents direct TOML edits or cloud sync from injecting 0/negative/oversized values; matches the UI-layer clamp range
     let clamp = |v: f32| v.clamp(MARKDOWN_HEADING_SCALE_MIN, MARKDOWN_HEADING_SCALE_MAX);
     HeadingFontSizeMultipliers {
         h1: clamp(*font_settings.markdown_heading_h1_scale),

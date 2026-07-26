@@ -585,24 +585,27 @@ impl From<CLIAgent> for CLIAgentType {
     }
 }
 
-// ── CLI Agent 安装状态 singleton model ──
-// 对齐 AntivirusInfo 模式:ctx.spawn 异步扫描 → 回调 emit 事件 → 订阅者自动刷新 UI
+// ── CLI Agent installation-state singleton model ──
+// Mirrors the AntivirusInfo pattern: ctx.spawn an async scan → callback emits an
+// event → subscribers automatically refresh the UI.
 
-/// CLI agent 安装扫描完成事件。
+/// Event fired when the CLI agent installation scan completes.
 pub enum CLIAgentInstallEvent {
-    /// 后台扫描完成，安装状态缓存已就绪。
+    /// The background scan finished and the installation-state cache is ready.
     ScanComplete,
 }
 
-/// Singleton model，跟踪 CLI agent 的安装状态。
+/// Singleton model tracking the installation state of CLI agents.
 ///
-/// 构造时通过 `ctx.spawn` 启动后台 PATH 扫描，扫描完成后 emit
-/// [`CLIAgentInstallEvent::ScanComplete`] 并自动同步 per-agent 设置。
+/// On construction, launches a background PATH scan via `ctx.spawn`; once the scan
+/// completes it emits [`CLIAgentInstallEvent::ScanComplete`] and automatically
+/// syncs the per-agent settings.
 ///
-/// 所有需要查询安装状态的 UI 代码应通过 `CLIAgentInstallModel::as_ref(ctx)`
-/// 读取，并订阅事件以在扫描完成后触发重绘。
+/// Any UI code that needs to query installation state should read it via
+/// `CLIAgentInstallModel::as_ref(ctx)` and subscribe to the event to trigger a
+/// redraw once the scan completes.
 pub struct CLIAgentInstallModel {
-    /// None = 扫描尚未完成; Some = 已有结果。
+    /// None = scan not yet complete; Some = results are available.
     cache: Option<HashMap<CLIAgent, bool>>,
 }
 
@@ -618,7 +621,7 @@ impl CLIAgentInstallModel {
     fn on_scan_complete(&mut self, results: HashMap<CLIAgent, bool>, ctx: &mut ModelContext<Self>) {
         self.cache = Some(results.clone());
 
-        // 自动同步到 per-agent 设置
+        // Automatically sync to per-agent settings
         crate::settings::AISettings::handle(ctx).update(ctx, |settings, ctx| {
             settings.sync_per_agent_from_scan(&results, ctx);
         });
@@ -626,7 +629,8 @@ impl CLIAgentInstallModel {
         ctx.emit(CLIAgentInstallEvent::ScanComplete);
     }
 
-    /// 查询某个 agent 是否已安装。扫描未完成时返回 false。
+    /// Queries whether a given agent is installed. Returns false while the scan is
+    /// still in progress.
     pub fn is_cli_agent_installed(&self, agent: CLIAgent) -> bool {
         self.cache
             .as_ref()
@@ -634,12 +638,13 @@ impl CLIAgentInstallModel {
             .unwrap_or(false)
     }
 
-    /// 扫描是否已完成。
+    /// Whether the scan has completed.
     pub fn is_scan_complete(&self) -> bool {
         self.cache.is_some()
     }
 
-    /// 获取安装状态快照。扫描未完成时返回 None。
+    /// Gets a snapshot of the installation state. Returns None while the scan is
+    /// still in progress.
     pub fn snapshot(&self) -> Option<HashMap<CLIAgent, bool>> {
         self.cache.clone()
     }
@@ -651,7 +656,8 @@ impl Entity for CLIAgentInstallModel {
 
 impl SingletonEntity for CLIAgentInstallModel {}
 
-/// 同步 PATH 搜索，检测所有 agent 是否安装。仅供 `ctx.spawn` 异步任务内部使用。
+/// Synchronous PATH search that detects whether each agent is installed. For use
+/// only inside the `ctx.spawn` async task.
 #[cfg(unix)]
 fn scan_cli_agent_installations() -> HashMap<CLIAgent, bool> {
     let search_dirs = cli_agent_search_dirs().collect::<Vec<_>>();
@@ -661,7 +667,8 @@ fn scan_cli_agent_installations() -> HashMap<CLIAgent, bool> {
         .collect()
 }
 
-/// 同步 PATH 搜索，检测所有 agent 是否安装。仅供 `ctx.spawn` 异步任务内部使用。
+/// Synchronous PATH search that detects whether each agent is installed. For use
+/// only inside the `ctx.spawn` async task.
 #[cfg(windows)]
 fn scan_cli_agent_installations() -> HashMap<CLIAgent, bool> {
     enum_iterator::all::<CLIAgent>()
@@ -683,7 +690,7 @@ fn cli_agent_is_on_path_with_dirs(agent: CLIAgent, search_dirs: &[PathBuf]) -> b
     }
 }
 
-/// 内联 PATH 搜索，零进程、零闪窗。
+/// Inline PATH search — spawns no process and flashes no window.
 #[cfg(unix)]
 fn is_on_path_in_dirs(cmd: &str, search_dirs: &[PathBuf]) -> bool {
     search_dirs.iter().any(|dir| dir.join(cmd).is_file())

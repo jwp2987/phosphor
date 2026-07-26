@@ -75,7 +75,7 @@ pub fn register_all_settings(ctx: &mut AppContext) {
     GPUSettings::register(ctx);
     GeneralSettings::register(ctx);
     AISettings::register_and_subscribe_to_events(ctx);
-    // Zap Wave 7-3:`AmbientAgentSettings` 随 ambient-agent UI 子系统物理删。
+    // Zap Wave 7-3: `AmbientAgentSettings` was removed entirely along with the ambient-agent UI subsystem.
     ScrollSettings::register(ctx);
     SelectionSettings::register(ctx);
     InputModeSettings::register(ctx);
@@ -132,8 +132,9 @@ pub fn init(
         migrate_native_settings_to_settings_file(ctx);
     }
 
-    // 应用持久化语言设置到 i18n loader。run() 早期已用系统 locale 初始化,此处覆盖到
-    // 用户显式选择;Language::System 时不动。
+    // Apply the persisted language setting to the i18n loader. run() already initialized it with
+    // the system locale early on; this overrides it with the user's explicit choice.
+    // Left alone when Language::System.
     {
         let lang = *super::language::LanguageSettings::as_ref(ctx).language;
         if let Some(locale) = lang.to_locale_str() {
@@ -216,20 +217,24 @@ pub fn init(
 
     appearance::register(ctx);
 
-    // 全局 HTTP 代理(见 Issue #72):这里只读 NetworkSettings 中的非敏感字段,
-    // 密码从 OS 密钥库读取的 ProxyCredentials 由 `initialize_app` 后期注册后再推。
+    // Global HTTP proxy (see Issue #72): this only reads the non-sensitive fields from
+    // NetworkSettings; the password, read from the OS keychain via ProxyCredentials, is pushed
+    // later once `initialize_app` has registered it.
     apply_network_settings_to_global_slots(ctx, "");
     ctx.subscribe_to_model(&NetworkSettings::handle(ctx), |_model, _event, ctx| {
-        // 变更时密码可能已由 ProxyCredentials 提供。lib.rs 会额外订阅那个
-        // singleton 并推送带 password 的 apply。这里仅推非密码字段,
-        // 保持密码不变即可。
+        // By the time of a change, the password may already have been provided by
+        // ProxyCredentials. lib.rs separately subscribes to that singleton and pushes an apply
+        // that includes the password. Here we only push the non-password fields, keeping the
+        // password unchanged.
         crate::settings::reapply_network_settings_preserving_password(ctx);
     });
 
-    // Zap:system prompt 模板热加载目录。`prompt_renderer` 是一组自由函数,
-    // 拿不到 AppContext,所以和上面的代理设置一样走“推进全局槽”的路子。
-    // 必须在这里推一次(而不是只靠设置页订阅):设置页可能整个会话都没打开过,
-    // 那样存盘的目录就永远不会生效。
+    // Zap: hot-reload directory for the system prompt template. `prompt_renderer` is a set of
+    // free functions with no access to AppContext, so like the proxy settings above, it follows
+    // the "push into a global slot" pattern.
+    // This must be pushed once here (not only via the settings-page subscription): the settings
+    // page may never be opened during the whole session, in which case a persisted directory
+    // would never take effect.
     apply_prompt_template_dir_to_global_slot(ctx);
     ctx.subscribe_to_model(&AISettings::handle(ctx), |_model, event, ctx| {
         if matches!(event, AISettingsChangedEvent::PromptTemplateDir { .. }) {
@@ -254,14 +259,16 @@ pub fn init(
     user_defaults_on_startup
 }
 
-/// 读取当前 `NetworkSettings` + 外部传入的 `password`,同时更新
-/// `http_client::set_global_proxy_config` 与 `websocket::set_global_proxy_config`,
-/// 使两者保持同一代理语义(见 Issue #72)。
+/// Reads the current `NetworkSettings` plus the externally supplied `password`, updating both
+/// `http_client::set_global_proxy_config` and `websocket::set_global_proxy_config` so they stay
+/// consistent with the same proxy semantics (see Issue #72).
 ///
-/// 密码参数是以 `&str` 传入而不是从 `ProxyCredentials` 的 singleton 里读,是为了
-/// 避免该 singleton 在 settings::init 阶段还未注册。调用方责任:启动早期传
-/// 空串(后续 UI / ProxyCredentials 事件会重推),后期传真实密码。重建已有
-/// `Client` 实例是调用方责任。
+/// The password is passed in as `&str` instead of being read from the `ProxyCredentials`
+/// singleton in order to avoid a dependency on that singleton, which is not yet registered
+/// during the settings::init phase. It's the caller's responsibility to pass an empty string
+/// early during startup (subsequent UI / ProxyCredentials events will re-push it) and the real
+/// password later on. Rebuilding any existing `Client` instances is also the caller's
+/// responsibility.
 pub(crate) fn apply_network_settings_to_global_slots(ctx: &mut AppContext, password: &str) {
     use super::network::NetworkSettings;
     let net = NetworkSettings::as_ref(ctx);
@@ -286,15 +293,17 @@ pub(crate) fn apply_network_settings_to_global_slots(ctx: &mut AppContext, passw
     });
 }
 
-/// Zap:把 设置 → AI → System prompt template directory 推进 `prompt_renderer`
-/// 的全局槽。
+/// Zap: pushes Settings -> AI -> System prompt template directory into `prompt_renderer`'s
+/// global slot.
 ///
-/// `prompt_renderer` 是一组自由函数(拿不到 `AppContext`),所以和上面的全局代理
-/// 设置一样走“settings 读出来 → 推进全局槽”的路子。
+/// `prompt_renderer` is a set of free functions (with no access to `AppContext`), so like the
+/// global proxy settings above, it follows the "read settings -> push into a global slot"
+/// pattern.
 ///
-/// 空串 = 关闭热加载,回到 `include_str!` 编进二进制的内置模板。
-/// 注意环境变量 `ZAP_PROMPT_DIR` 在 `prompt_renderer` 那侧优先级更高,
-/// 设了会盖过这里推的值。
+/// Empty string = hot-reload disabled, falling back to the built-in template compiled into the
+/// binary via `include_str!`.
+/// Note that the `ZAP_PROMPT_DIR` environment variable takes higher priority on the
+/// `prompt_renderer` side, and will override whatever value is pushed here if set.
 pub(crate) fn apply_prompt_template_dir_to_global_slot(ctx: &AppContext) {
     let dir = AISettings::as_ref(ctx).prompt_template_dir.value().clone();
     crate::ai::agent_providers::prompt_renderer::set_override_dir(
@@ -302,8 +311,9 @@ pub(crate) fn apply_prompt_template_dir_to_global_slot(ctx: &AppContext) {
     );
 }
 
-/// 在 `initialize_app` 之后(`ProxyCredentials` 已注册)调用:读当前密码后重推
-/// 全局代理设置。也用于 NetworkSettings 变更订阅以保持密码不丢。
+/// Called after `initialize_app` (once `ProxyCredentials` is registered): reads the current
+/// password and re-pushes the global proxy settings. Also used by the NetworkSettings change
+/// subscription to keep the password from being lost.
 pub(crate) fn reapply_network_settings_preserving_password(ctx: &mut AppContext) {
     use super::network_secrets::ProxyCredentials;
     let password = ProxyCredentials::as_ref(ctx).password().to_string();

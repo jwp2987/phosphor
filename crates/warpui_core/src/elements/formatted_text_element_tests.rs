@@ -98,8 +98,9 @@ fn test_custom_heading_font_size_multipliers() {
     );
 }
 
-/// 作者: logic
-/// 验证默认倍率精确值，防止 BlockHeaderSize 或 Default impl 被意外修改
+/// Author: logic
+/// Verifies the exact default multiplier values, guarding against accidental
+/// changes to BlockHeaderSize or the Default impl
 #[test]
 fn test_heading_default_values_are_spec() {
     let m = HeadingFontSizeMultipliers::default();
@@ -111,8 +112,8 @@ fn test_heading_default_values_are_spec() {
     assert_eq!(m.h6, 0.75);
 }
 
-/// 作者: logic
-/// 验证标题字号倍率层级不变式: h1 >= h2 >= h3 >= h4 >= h5 >= h6
+/// Author: logic
+/// Verifies the heading font size multiplier hierarchy invariant: h1 >= h2 >= h3 >= h4 >= h5 >= h6
 #[test]
 fn test_heading_multipliers_size_ordering() {
     let m = HeadingFontSizeMultipliers::default();
@@ -123,8 +124,8 @@ fn test_heading_multipliers_size_ordering() {
     assert!(m.h5 >= m.h6, "h5 >= h6");
 }
 
-/// 作者: logic
-/// 验证 get_multiplier 是 const fn，可在编译期求值
+/// Author: logic
+/// Verifies get_multiplier is a const fn that can be evaluated at compile time
 #[test]
 fn test_get_multiplier_const_fn() {
     const M: HeadingFontSizeMultipliers = HeadingFontSizeMultipliers {

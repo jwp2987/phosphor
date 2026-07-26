@@ -1,31 +1,34 @@
-//! 统一的工具卡片渲染 helper,对齐 opencode TUI 的 `InlineTool` / `BlockTool`。
+//! Unified tool-card rendering helpers, matching opencode TUI's `InlineTool` / `BlockTool`.
 //!
-//! ## 设计哲学
+//! ## Design philosophy
 //!
-//! opencode 把每个 ToolPart 渲染严格按 4 状态机切样式:
-//! - `pending`(args 还在累积):浅灰文本 "Writing command..." / "Reading file..."
-//! - `running`(args 完整,正在执行):BrailleSpinner + 标题文字
-//! - `completed`(成功结束):静态 icon + 工具描述,可折叠
-//! - `error`(失败 / 拒绝):红色错误文字,denied 时全文 STRIKETHROUGH
+//! opencode renders every ToolPart strictly through a 4-state machine:
+//! - `pending` (args still accumulating): light-gray text "Writing command..." / "Reading file..."
+//! - `running` (args complete, executing): BrailleSpinner + title text
+//! - `completed` (finished successfully): static icon + tool description, collapsible
+//! - `error` (failed / rejected): red error text; full-text STRIKETHROUGH when denied
 //!
-//! 所有 12 个内置工具(Bash/Read/Glob/Grep/Edit/Write/...)只用 InlineTool /
-//! BlockTool 两个组件;新工具接入时**只填语义**,不重新实现卡片骨架。
+//! All 12 built-in tools (Bash/Read/Glob/Grep/Edit/Write/...) use only the
+//! InlineTool / BlockTool components; onboarding a new tool means **only filling in
+//! semantics**, never re-implementing the card skeleton.
 //!
-//! ## warp 现状
+//! ## Current state in warp
 //!
-//! warp 的 inline_action/ 目录每个 view(web_search.rs / web_fetch.rs /
-//! requested_command.rs / requested_action.rs / ...)各
-//! 自完整渲染卡片(header + body + footer + permission ring + 状态切换),
-//! 重复样板 ~150 行起。这是历史包袱,**全量重构需要一次性改 12+ 个 view**,
-//! 风险大、阻力大。
+//! Each view in warp's inline_action/ directory (web_search.rs / web_fetch.rs /
+//! requested_command.rs / requested_action.rs / ...) fully renders its own card
+//! (header + body + footer + permission ring + state switching), duplicating ~150+
+//! lines of boilerplate each. This is historical baggage — **a full refactor would
+//! require changing 12+ views at once**, which is high-risk and high-friction.
 //!
-//! 本模块作为**渐进式重构入口**:
-//! 1. 定义统一 API([`ToolCardState`] 状态机 + [`ToolCardSpec`] builder);
-//! 2. 提供 [`render_inline_tool_card`] / [`render_block_tool_card`] 两个 helper;
-//! 3. **新加的 inline_action 优先用本模块**;旧 view 保留不动,等单独 PR 收敛。
+//! This module serves as a **progressive refactor entry point**:
+//! 1. Defines a unified API (the [`ToolCardState`] state machine + [`ToolCardSpec`] builder);
+//! 2. Provides two helpers, [`render_inline_tool_card`] / [`render_block_tool_card`];
+//! 3. **New inline_action code should prefer this module**; old views are left
+//!    untouched for now, to be converged in a separate PR.
 //!
-//! 当前已经先在 `search_results_common.rs` 加了 `render_loading_header_animated` /
-//! `render_terminal_header_strikethrough`,本模块在其上叠加完整 spec 抽象。
+//! `render_loading_header_animated` / `render_terminal_header_strikethrough` were
+//! already added to `search_results_common.rs`; this module layers a full spec
+//! abstraction on top of them.
 
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::Fill;
@@ -42,36 +45,40 @@ use super::inline_action_header::{
 use super::inline_action_icons::icon_size;
 use crate::ui_components::spinner::SpinnerStateHandle;
 
-/// 工具卡的当前状态。**严格 5 态对齐 opencode TUI**:
-/// 不要为图省事新增中间态——所有渲染分支只接受这 5 个 case。
+/// A tool card's current state. **Strictly 5 states, matching opencode TUI**:
+/// don't add an intermediate state for convenience — every render branch only
+/// accepts these 5 cases.
 ///
-/// 5 态而非 opencode 4 态:多了 [`Self::PermissionPending`],对应 warp 的
-/// `AIActionStatus::Blocked`(等用户允许)。opencode 把这个塞进 InlineTool 的
-/// 整卡 fg→warning 色逻辑里,我们抽成显式 case 更清晰。
+/// 5 states instead of opencode's 4: adds [`Self::PermissionPending`], corresponding
+/// to warp's `AIActionStatus::Blocked` (waiting on user permission). opencode folds
+/// this into InlineTool's whole-card fg→warning color logic; we've pulled it out as
+/// an explicit case for clarity.
 #[derive(Clone)]
 pub enum ToolCardState {
-    /// args 还在累积或工具尚未实际执行。视觉:静态 icon + "Writing command..." 等
-    /// 进行时短语 + 浅灰文字。
+    /// Args are still accumulating, or the tool hasn't actually executed yet.
+    /// Visual: static icon + a present-progressive phrase like "Writing
+    /// command..." + light-gray text.
     Pending {
-        /// 进行时短语,如 "Writing command", "Reading file"。无需结尾 `...`,
-        /// 渲染时自动补。
+        /// A present-progressive phrase, e.g. "Writing command", "Reading file".
+        /// No trailing `...` needed — it's added automatically at render time.
         verb: String,
     },
-    /// 工具正在执行。视觉:`BrailleSpinner`(80ms 帧切换)+ ShimmeringText 标题。
+    /// The tool is executing. Visual: `BrailleSpinner` (80ms frame switching) + ShimmeringText title.
     Running {
         title: String,
         spinner_handle: SpinnerStateHandle,
         shimmer_handle: ShimmeringTextStateHandle,
     },
-    /// 等待用户允许执行(`AIActionStatus::Blocked`)。
-    /// 视觉:**header background 切 warning 黄**,文字保持高对比度,
-    /// 对齐 opencode 的 `if (permission()) return theme.warning`。
-    /// detail 通常是 "OK if I run this command?" / "OK if I call this MCP tool?"。
+    /// Waiting for user permission to execute (`AIActionStatus::Blocked`).
+    /// Visual: **header background switches to warning yellow**, text keeps high
+    /// contrast, matching opencode's `if (permission()) return theme.warning`.
+    /// detail is usually "OK if I run this command?" / "OK if I call this MCP tool?".
     PermissionPending { title: String, detail: String },
-    /// 工具成功完成。视觉:绿色 check icon + 工具描述。
+    /// The tool completed successfully. Visual: green check icon + tool description.
     Completed { title: String },
-    /// 工具失败 / 用户拒绝。`denied=true` 时标题文字带 STRIKETHROUGH 删除线
-    /// 表达"被驳回",对齐 opencode `<text attributes={STRIKETHROUGH}>`。
+    /// The tool failed / the user denied it. When `denied=true`, the title text
+    /// gets a STRIKETHROUGH to convey "was rejected", matching opencode's
+    /// `<text attributes={STRIKETHROUGH}>`.
     Error {
         title: String,
         denied: bool,
@@ -80,44 +87,43 @@ pub enum ToolCardState {
 }
 
 impl ToolCardState {
-    /// 等价 opencode `part.state.status === "running"`。spinner 仅在 Running 时显示。
+    /// Equivalent to opencode's `part.state.status === "running"`. The spinner only shows while Running.
     pub fn is_running(&self) -> bool {
         matches!(self, Self::Running { .. })
     }
 
-    /// 等价 opencode `part.state.status === "completed"`。可被 hide_completed_tool_cards
-    /// setting 隐藏。
+    /// Equivalent to opencode's `part.state.status === "completed"`. Can be hidden by the hide_completed_tool_cards setting.
     pub fn is_completed(&self) -> bool {
         matches!(self, Self::Completed { .. })
     }
 
-    /// 是否为 denied(用户拒绝),用于切删除线视觉。
+    /// Whether this is denied (rejected by the user), used to toggle the strikethrough visual.
     pub fn is_denied(&self) -> bool {
         matches!(self, Self::Error { denied: true, .. })
     }
 
-    /// 是否为 permission pending(等用户允许),用于切 warning 背景色。
+    /// Whether this is permission pending (waiting on user approval), used to toggle the warning background color.
     pub fn is_permission_pending(&self) -> bool {
         matches!(self, Self::PermissionPending { .. })
     }
 }
 
-/// 工具卡 spec —— caller 填的所有必要信息。
+/// Tool card spec — all the necessary info the caller fills in.
 pub struct ToolCardSpec {
-    /// 工具图标(终态用,Pending/Running 时根据状态自行选 spinner)。
+    /// Tool icon (used for terminal states; Pending/Running pick their own spinner based on state).
     pub icon: warpui::elements::Icon,
-    /// 当前状态。
+    /// Current state.
     pub state: ToolCardState,
 }
 
-/// 渲染 inline 模式工具卡(单行 icon + 文本)。对齐 opencode `InlineTool`。
+/// Renders an inline-mode tool card (single-line icon + text). Matches opencode `InlineTool`.
 ///
-/// 适合简短描述:Glob "*.rs" / Grep "TODO" / WebFetch URL。
-/// **限制**:body 高度始终 1 行;复杂内容(diff / file list)走 [`render_block_tool_card`]。
+/// Suited for short descriptions: Glob "*.rs" / Grep "TODO" / WebFetch URL.
+/// **Limitation**: body height is always 1 line; complex content (diff / file list) should use [`render_block_tool_card`].
 pub fn render_inline_tool_card(spec: ToolCardSpec, app: &AppContext) -> Box<dyn Element> {
     let appearance = Appearance::as_ref(app);
     let theme = appearance.theme();
-    // T3-6:permission pending 走 warning 黄背景,其它走 surface_2 默认背景。
+    // T3-6: permission pending gets a warning-yellow background; everything else gets the surface_2 default background.
     let header_background: Fill = if spec.state.is_permission_pending() {
         Fill::Solid(theme.ui_warning_color())
     } else {
@@ -128,7 +134,7 @@ pub fn render_inline_tool_card(spec: ToolCardSpec, app: &AppContext) -> Box<dyn 
         .with_main_axis_alignment(MainAxisAlignment::Start)
         .with_cross_axis_alignment(CrossAxisAlignment::Center);
 
-    // icon: Running 时换 BrailleSpinner,其它状态用传入的 icon。
+    // icon: swaps to BrailleSpinner when Running; other states use the passed-in icon.
     let icon_element: Box<dyn Element> = match &spec.state {
         ToolCardState::Running { spinner_handle, .. } => {
             use warp_core::ui::theme::AnsiColorIdentifier;
@@ -152,7 +158,7 @@ pub fn render_inline_tool_card(spec: ToolCardSpec, app: &AppContext) -> Box<dyn 
             .finish(),
     );
 
-    // 文本:四种状态各自构造。
+    // Text: constructed separately for each of the four states.
     let title_element = build_title_text(&spec.state, header_background, app);
     row.add_child(Shrinkable::new(1.0, title_element).finish());
 
@@ -164,10 +170,11 @@ pub fn render_inline_tool_card(spec: ToolCardSpec, app: &AppContext) -> Box<dyn 
         .finish()
 }
 
-/// 渲染 block 模式工具卡(header + body)。对齐 opencode `BlockTool`。
+/// Renders a block-mode tool card (header + body). Matches opencode `BlockTool`.
 ///
-/// header 同 inline_tool_card;body 是用户传入的任意 Element(diff、文件列表、
-/// 输出预览等)。Running 时 header 走 spinner,body 通常是 in-progress 数据。
+/// The header is the same as inline_tool_card; the body is any Element the caller
+/// passes in (diff, file list, output preview, etc.). While Running, the header uses
+/// a spinner and the body is typically in-progress data.
 pub fn render_block_tool_card(
     spec: ToolCardSpec,
     body: Box<dyn Element>,
@@ -242,7 +249,7 @@ fn build_title_text(
             .finish()
         }
         ToolCardState::PermissionPending { title, detail } => {
-            // 主标题 + detail 副行。background 已切 warning,文字用主色保证对比。
+            // Main title + detail subline. background has already switched to warning; text uses the main color to keep contrast.
             let main_color = theme.main_text_color(header_background).into();
             let detail_color = theme.sub_text_color(header_background).into_solid();
             let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
@@ -274,7 +281,7 @@ fn build_title_text(
             use warpui::elements::{Highlight, HighlightedRange};
             use warpui::text_layout::TextStyle;
 
-            // 主文本:denied 时打 STRIKETHROUGH,error 不打但走 sub 色 + detail 副行。
+            // Main text: STRIKETHROUGH when denied; error doesn't get one but uses the sub color + a detail subline instead.
             let text_color = theme.sub_text_color(header_background).into_solid();
             let mut text_widget = Text::new_inline(
                 title.clone(),
@@ -295,7 +302,7 @@ fn build_title_text(
                 }]);
             }
 
-            // detail 行:有就 column 拼接;没有就只一行。
+            // detail line: stack in a column if present; otherwise just a single line.
             if let Some(detail_text) = detail {
                 let mut col = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Start);
                 col.add_child(text_widget.finish());

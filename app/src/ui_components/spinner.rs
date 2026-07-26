@@ -1,9 +1,9 @@
-//! Braille spinner element — `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` 80ms 切帧。
+//! Braille spinner element — `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` cycles frames every 80ms.
 //!
-//! 替换 inline_action loading 卡的静态 Circle icon,视觉等价于 opencode TUI
-//! `<spinner frames=...>` 元件。
+//! Replaces the static Circle icon on the inline_action loading card;
+//! visually equivalent to opencode TUI's `<spinner frames=...>` element.
 //!
-//! 用法:
+//! Usage:
 //! ```ignore
 //! let spinner = BrailleSpinner::new(
 //!     family_id,
@@ -12,8 +12,9 @@
 //!     spinner_state_handle.clone(),
 //! );
 //! ```
-//! `SpinnerStateHandle` 必须存在 view struct 跨 render 持久化(否则 Instant 每帧
-//! 重置 → 永远停在第 0 帧)。同 ShimmeringTextStateHandle 模式。
+//! `SpinnerStateHandle` must be persisted on the view struct across renders
+//! (otherwise Instant resets every frame → it stays stuck on frame 0
+//! forever). Same pattern as ShimmeringTextStateHandle.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -89,8 +90,9 @@ impl Element for BrailleSpinner {
         app: &AppContext,
     ) -> Vector2F {
         let frame = FRAMES[self.state.frame_idx()];
-        // braille 字符是等宽,但仍每帧 layout 一次以确保字体/字号变更立即生效。
-        // 单字符 layout 成本可忽略。
+        // Braille characters are monospace, but layout still runs once per
+        // frame to ensure font/size changes take effect immediately. The cost
+        // of laying out a single character is negligible.
         let mut text =
             Text::new_inline(frame, self.family_id, self.font_size).with_color(self.color);
         let size = text.layout(constraint, ctx, app);
@@ -110,8 +112,9 @@ impl Element for BrailleSpinner {
         if let Some(t) = self.inner.as_mut() {
             t.paint(origin, ctx, app);
         }
-        // 关键:每帧 paint 完请求 80ms 后再次重绘,触发下一帧字符切换。
-        // 不调用 repaint_after 则 spinner 静止——这是动画的引擎心跳。
+        // Key detail: after each frame's paint completes, request a repaint
+        // 80ms later to trigger the next frame's character switch. Without
+        // calling repaint_after, the spinner stays static — this is the animation's engine heartbeat.
         ctx.repaint_after(Duration::from_millis(FRAME_INTERVAL_MS));
     }
 

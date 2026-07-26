@@ -138,43 +138,50 @@ const ZAP_APP_GROUP_SQLITE_MIGRATION_MARKER: &str = ".zap-app-group-sqlite-migra
 #[cfg(target_os = "macos")]
 const WARP_APP_GROUP_ID: &str = "2BBY89MBSN.dev.warp";
 
-/// 删除本地 stored object 时使用的回调。入参是待删除对象的 id。
-/// 传入的 conn 已经启动 transaction。
+/// Callback used when deleting a local stored object. The parameter is the id
+/// of the object to delete. The `conn` passed in has already started a transaction.
 type DeleteCloudObjectFn =
     Box<dyn FnOnce(&mut SqliteConnection, StoredObjectId) -> Result<(), Error>>;
 
 /// Runs any migrations and creates the Sqlite database if it doesn't exist.
 /// Reads from the sqlite database to get the app state for session restoration.
 /// Starts a writer thread that listens for ModelEvents and processes them.
-/// 后台预热出来的 SQLite 连接。在 `prewarm_db_in_background` 启动后,
-/// 后台线程会把 `init_db()` 结果存到这里;`initialize` 会从这里取走。
+/// The SQLite connection produced by background prewarming. Once
+/// `prewarm_db_in_background` is started, the background thread stores the
+/// result of `init_db()` here; `initialize` takes it from here.
 ///
-/// 类型说明:
-/// - 外层 `OnceLock` 表示“是否已启动预热”。
-/// - 内层 `Mutex<PrewarmState>` 用于主线程取结果 · 后台线程存结果。
+/// Type notes:
+/// - The outer `OnceLock` indicates "whether prewarming has been started".
+/// - The inner `Mutex<PrewarmState>` is used by the main thread to take the
+///   result, and by the background thread to store the result.
 static PREWARMED_DB: OnceLock<Mutex<PrewarmState>> = OnceLock::new();
 
-/// 预热状态机。`Pending` -> (`Done` | `Joining`)。`Joining` 表示主线程
-/// 拿走了 handle 但后台线程尚未写入 Done —— 后台线程仍应该能写入。
-/// `Taken` 表示主线程已拿走结果。
+/// The prewarm state machine. `Pending` -> (`Done` | `Joining`). `Joining`
+/// means the main thread has taken the handle but the background thread
+/// hasn't written Done yet — the background thread should still be able to
+/// write to it. `Taken` means the main thread has already taken the result.
 enum PrewarmState {
     Pending(std::thread::JoinHandle<()>),
-    /// 主线程拿走 handle 去 join 了,但后台线程还没写入结果。
-    /// 后台线程会把这个状态转为 Done。
+    /// The main thread took the handle to join it, but the background thread
+    /// hasn't written the result yet. The background thread will transition
+    /// this state to Done.
     Joining,
     Done(Result<SqliteConnection>),
     Taken,
 }
 
-/// 在后台线程预热 SQLite 连接 + 执行 migration。应该在 `app_builder.run`
-/// 调用之前发起,这样 SQLite 初始化可以与后续的 winit / wgpu 初始化
-/// 并发进行,冷启动上可省 ~70–90ms。
+/// Prewarms the SQLite connection + runs migrations on a background thread.
+/// Should be kicked off before the `app_builder.run` call, so SQLite
+/// initialization can run concurrently with the subsequent winit / wgpu
+/// initialization, saving ~70-90ms on cold start.
 ///
-/// 如果未调用本函数,`initialize` 会 fallback 到同步路径(原行为)。
-/// 多次调用是幂等的 —— OnceLock 保证只启动一次后台线程。
+/// If this function isn't called, `initialize` falls back to the synchronous
+/// path (the original behavior). Calling it multiple times is idempotent —
+/// the OnceLock guarantees the background thread is only started once.
 pub fn prewarm_db_in_background() {
-    // OnceLock::get_or_init 在多个调用者下只会跳一次闭包 —— 后台线程
-    // 只会被创建一次。spawn 失败会存 Failed 状态(unlikely)。
+    // OnceLock::get_or_init only runs the closure once across multiple
+    // callers — the background thread is only ever created once. A spawn
+    // failure stores a Failed state (unlikely).
     PREWARMED_DB.get_or_init(|| {
         let handle_result = std::thread::Builder::new()
             .name("warp-sqlite-prewarm".into())
@@ -191,8 +198,10 @@ pub fn prewarm_db_in_background() {
                 );
                 if let Some(cell) = PREWARMED_DB.get() {
                     if let Ok(mut guard) = cell.lock() {
-                        // 转换为 Done。Pending 和 Joining 两种状态都需要写入结果。
-                        // 如果主线程已 Taken(不应该发生),则丢弃连接。
+                        // Transition to Done. Both Pending and Joining states
+                        // need the result written. If the main thread has
+                        // already Taken it (shouldn't happen), discard the
+                        // connection.
                         match *guard {
                             PrewarmState::Pending(_) | PrewarmState::Joining => {
                                 *guard = PrewarmState::Done(result);
@@ -215,27 +224,32 @@ pub fn prewarm_db_in_background() {
     });
 }
 
-/// 如果后台预热已启动,取走结果(可能要等后台线程 join)。
-/// 返回 `None` 表示从未发起预热,调用方走同步路径。
+/// If background prewarming has been started, take the result (may need to
+/// wait for the background thread to join). Returns `None` to mean prewarming
+/// was never kicked off, in which case the caller takes the synchronous path.
 fn take_prewarmed_db() -> Option<Result<SqliteConnection>> {
     let cell = PREWARMED_DB.get()?;
     let take_start = Instant::now();
 
-    // 先拿出 join handle(如果还在 Pending),转换为 Joining,join 完后再拿结果。
-    // 这个两阶段设计避免主线程拿着锁跳,同时保证后台线程能写入结果。
+    // First take out the join handle (if still Pending), transitioning to
+    // Joining, then join and take the result. This two-phase design avoids
+    // the main thread holding the lock while it joins, while still
+    // guaranteeing the background thread can write the result.
     let handle = {
         let mut guard = match cell.lock() {
             Ok(g) => g,
-            // 锁中毒 = 之前某次 panic;走同步路径。
+            // Lock poisoned = a previous panic; take the synchronous path.
             Err(_) => {
                 log::warn!("SQLite prewarm: mutex poisoned, falling back to sync");
                 return None;
             }
         };
-        // 先看状态:Done 直接拿结果;Pending 拿 handle 后 join。
+        // Check the state first: Done takes the result directly; Pending
+        // takes the handle and joins.
         match std::mem::replace(&mut *guard, PrewarmState::Taken) {
             PrewarmState::Pending(h) => {
-                // 转为 Joining 状态(后台线程仍会写入 Done)。
+                // Transition to the Joining state (the background thread will
+                // still write Done).
                 *guard = PrewarmState::Joining;
                 Some(h)
             }
@@ -247,27 +261,32 @@ fn take_prewarmed_db() -> Option<Result<SqliteConnection>> {
                 return Some(result);
             }
             PrewarmState::Joining | PrewarmState::Taken => {
-                // 不应该发生 —— take 只会调一次。返回 None 走同步路径。
+                // Shouldn't happen — take is only ever called once. Return
+                // None to take the synchronous path.
                 log::warn!("SQLite prewarm: unexpected Joining/Taken state, sync fallback");
                 return None;
             }
         }
     };
 
-    // join 后台线程。如果后台 panic,join 会返回 Err —— 这是不会死循环的关键。
+    // Join the background thread. If the background thread panicked, join
+    // returns Err — this is the key to not looping forever.
     if let Some(handle) = handle {
         match handle.join() {
             Ok(()) => {
                 let join_us = take_start.elapsed().as_micros();
                 log::info!("SQLite prewarm: main thread waited {join_us} µs for background");
-                // 后台线程运行完成后,结果应在 Mutex 里。
+                // Once the background thread has finished running, the result
+                // should be in the Mutex.
                 let mut guard = match cell.lock() {
                     Ok(g) => g,
                     Err(_) => return None,
                 };
                 match std::mem::replace(&mut *guard, PrewarmState::Taken) {
                     PrewarmState::Done(result) => Some(result),
-                    // 后台线程 join 成功但 Done 未被写入 —— 不可能,防御性处理。
+                    // The background thread joined successfully but Done
+                    // wasn't written — shouldn't be possible; handled
+                    // defensively.
                     _ => None,
                 }
             }
@@ -284,7 +303,7 @@ fn take_prewarmed_db() -> Option<Result<SqliteConnection>> {
 pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<WriterHandles>) {
     let database_path = database_file_path();
 
-    // 优先取后台预热结果;拿不到则同步 init_db()(原行为)。
+    // Prefer taking the background prewarm result; fall back to synchronous init_db() (the original behavior) if unavailable.
     let init_result = match take_prewarmed_db() {
         Some(result) => result,
         None => {
@@ -405,9 +424,10 @@ unsafe fn init_logging() {
         // valid C string pointer.
         let msg = unsafe { CStr::from_ptr(msg) };
         let err_message = String::from_utf8_lossy(msg.to_bytes());
-        // 本地日志路径不应 panic,但仍避免跨 FFI 边界 unwind。
+        // The local logging path shouldn't panic, but still guard against
+        // unwinding across the FFI boundary.
         let _ = panic::catch_unwind(|| {
-            // openWarp 仅写本地日志,错误码/描述照常保留诊断价值。
+            // openWarp only writes local logs; the error code/description still retain diagnostic value.
             log::log!(
                 level,
                 "SQLite error {} ({}): {}",
@@ -734,8 +754,10 @@ fn start_writer(conn: SqliteConnection, database_path: PathBuf) -> Result<Writer
                             }
                         }
                         ModelEvent::Terminate => {
-                            // 退出前主动把 WAL 全部 checkpoint 回主库并清空,
-                            // 避免下次启动时 sqlite3_open 触发 "WAL mode database file was recovered" 恢复。
+                            // Proactively checkpoint the entire WAL back into the
+                            // main database and clear it before exiting, to avoid
+                            // sqlite3_open triggering a "WAL mode database file
+                            // was recovered" recovery on the next startup.
                             if let Err(e) =
                                 current_conn.batch_execute("PRAGMA wal_checkpoint(TRUNCATE);")
                             {
@@ -947,7 +969,7 @@ fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> a
 
 /// Report a database error and additional context for debugging.
 fn report_db_error(err_kind: &str, err: anyhow::Error, database_path: &Path) {
-    // 数据库有时会缺失或不可访问,这里补充权限和存在性诊断。
+    // The database can sometimes be missing or inaccessible; add permission and existence diagnostics here.
     fn log_access(prefix: &str, path: &Path) {
         match fs::metadata(path) {
             Ok(metadata) => {
@@ -1272,7 +1294,7 @@ fn save_pane_state(
         LeafContents::GetStarted => GET_STARTED_PANE_KIND,
         LeafContents::Welcome { .. } => WELCOME_PANE_KIND,
         LeafContents::AIDocument(_) => AI_DOCUMENT_PANE_KIND,
-        // Zap Wave 7-3:`EnvironmentManagement` arm 随 variant 一同物理删。
+        // Zap Wave 7-3: the `EnvironmentManagement` arm was physically removed along with the variant.
         LeafContents::SshServer { .. } => {
             // These pane types are filtered out before this function is
             // called; see `LeafContents::is_persisted` and the skip in
@@ -1286,7 +1308,7 @@ fn save_pane_state(
             return Ok(());
         }
         LeafContents::Sftp { .. } => {
-            // SFTP 浏览器 pane 不持久化,逻辑同 SshServer。
+            // The SFTP browser pane is not persisted; same logic as SshServer.
             debug_assert!(
                 false,
                 "save_pane_state called for non-persisted LeafContents variant"
@@ -1441,7 +1463,7 @@ fn save_pane_state(
                 .values(workflow)
                 .execute(conn)?;
         }
-        // Zap Wave 7-3:`EnvironmentManagement` LeafContents arm 随 variant 一同物理删。
+        // Zap Wave 7-3: the `EnvironmentManagement` LeafContents arm was physically removed along with the variant.
         LeafContents::Settings(settings_pane_snapshot) => {
             let current_page = match settings_pane_snapshot {
                 SettingsPaneSnapshot::Local { current_page, .. } => current_page,
@@ -2139,8 +2161,8 @@ fn increment_retry_count(
     })
 }
 
-/// 删除 `sync_id` 标识的本地 stored object 的 helper。如果找到有效 object metadata row,
-/// 就调用 `delete_object_fn` 删除实际对象。
+/// Helper that deletes the local stored object identified by `sync_id`. If a
+/// valid object metadata row is found, calls `delete_object_fn` to delete the actual object.
 fn delete_cloud_object(
     conn: &mut SqliteConnection,
     sync_id: SyncId,

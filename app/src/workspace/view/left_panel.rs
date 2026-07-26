@@ -108,12 +108,12 @@ pub enum LeftPanelEvent {
     OpenSkillFile {
         source: CodeSource,
     },
-    /// 用户在远端文件树里点击一个文件 → 主窗口应以远端 buffer 方式打开它。
+    /// The user clicks a file in the remote file tree → the main window should open it as a remote buffer.
     #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
     OpenRemoteFile {
         remote_path: crate::code::buffer_location::RemotePath,
     },
-    /// 用户在远端文件树里点击一个图片 → 主窗口应以远端图片查看器打开它。
+    /// The user clicks an image in the remote file tree → the main window should open it with the remote image viewer.
     #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
     OpenRemoteImage {
         remote_path: crate::code::buffer_location::RemotePath,
@@ -125,18 +125,20 @@ pub enum LeftPanelEvent {
         terminal_view_id: Option<warpui::EntityId>,
     },
     ShowDeleteAllConfirmationDialog,
-    /// 用户从 SSH 管理器树点击 server / 双击 / 右键 "编辑" → 主窗口应在中央
-    /// 区开/聚焦 `SshServerPane`(具体 `WorkspaceView::open_ssh_server`)。
+    /// The user clicks / double-clicks / right-clicks "Edit" on a server in
+    /// the SSH manager tree → the main window should open/focus a
+    /// `SshServerPane` in the central area (see `WorkspaceView::open_ssh_server`).
     OpenSshServerEditor {
         node_id: String,
     },
-    /// 用户从 SSH 管理器右键 "连接" → 主窗口在新 terminal pane 跑 `ssh ...`
-    /// 并启动 SecretInjector(Commit 3 实施;当前为占位事件)。
+    /// The user right-clicks "Connect" in the SSH manager → the main window
+    /// runs `ssh ...` in a new terminal pane and starts a SecretInjector
+    /// (implemented in Commit 3; currently a placeholder event).
     OpenSshTerminal {
         node_id: String,
         server: warp_ssh_manager::SshServerInfo,
     },
-    /// 用户从 SSH 管理器右键 "SFTP 浏览" → 主窗口开 SFTP 文件浏览器 pane。
+    /// The user right-clicks "SFTP browse" in the SSH manager → the main window opens the SFTP file browser pane.
     OpenSftpPane {
         node_id: String,
         server: warp_ssh_manager::SshServerInfo,
