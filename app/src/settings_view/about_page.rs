@@ -135,7 +135,7 @@ impl SettingsWidget for AboutPageWidget {
     type View = AboutPageView;
 
     fn search_terms(&self) -> &str {
-        "about warp version automatic updates auto update 自动更新 检查更新 新版本"
+        "about version automatic updates auto update check for updates new version"
     }
 
     fn render(
@@ -146,9 +146,14 @@ impl SettingsWidget for AboutPageWidget {
     ) -> Box<dyn Element> {
         let ui_builder = appearance.ui_builder();
 
-        // Always use the icon-only logo; the brand name is rendered as separate "Zap" text, no
-        // longer relying on an svg that includes the word "warp"
-        let image_path = "bundled/svg/warp-logo-light.svg";
+        // Autoupdate UI is hidden for this fork: there is no Phosphor release channel to update
+        // from (the upstream release URLs point at Warp/Zap), so the update-status row and the
+        // "Automatic updates" toggle would be misleading. Flip to `true` to restore both.
+        const SHOW_AUTOUPDATE_UI: bool = false;
+
+        // Phosphor brand badge; the name is rendered as separate text below, from the channel's
+        // display name, no longer relying on an svg that includes the word "warp".
+        let image_path = "bundled/jpg/phosphor-logo.jpeg";
 
         // GIT_RELEASE_TAG injected -> shows the tag; otherwise falls into Dev development mode
         let version = ChannelState::app_version().unwrap_or("Dev");
@@ -195,7 +200,7 @@ impl SettingsWidget for AboutPageWidget {
             )
             .with_child(
                 ui_builder
-                    .span("Zap")
+                    .span(ChannelState::display_name())
                     .build()
                     .with_margin_top(12.)
                     .finish(),
@@ -206,7 +211,7 @@ impl SettingsWidget for AboutPageWidget {
         // a "Check for updates" or "Download from GitHub" link.
         // Only rendered in an execution mode that can enter the autoupdate flow (shares its
         // condition with the "Automatic updates" toggle below).
-        if AppExecutionMode::as_ref(app).can_autoupdate() {
+        if SHOW_AUTOUPDATE_UI && AppExecutionMode::as_ref(app).can_autoupdate() {
             content.add_child(
                 Container::new(self.render_update_status(appearance, app))
                     .with_margin_top(16.)
@@ -257,7 +262,7 @@ impl SettingsWidget for AboutPageWidget {
             content.add_child(Container::new(export_section).with_margin_top(16.).finish());
         }
 
-        if AppExecutionMode::as_ref(app).can_autoupdate() {
+        if SHOW_AUTOUPDATE_UI && AppExecutionMode::as_ref(app).can_autoupdate() {
             content.add_child(
                 Container::new(
                     ConstrainedBox::new(render_body_item::<AboutPageAction>(
