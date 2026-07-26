@@ -274,12 +274,14 @@ impl GistClient {
             let raw_url = file_obj["raw_url"]
                 .as_str()
                 .ok_or(GistClientError::NotFound)?;
-            let raw_resp = self
-                .client
-                .get(raw_url)
-                .header("Authorization", Self::auth_header(platform, token))
-                .send()
-                .await?;
+            // `raw_url` is taken from the API response body. Only attach the bearer
+            // token when it points at a known content host for this platform, so a
+            // tampered response cannot exfiltrate the token to an attacker URL.
+            let mut req = self.client.get(raw_url);
+            if raw_url_is_trusted(platform, raw_url) {
+                req = req.header("Authorization", Self::auth_header(platform, token));
+            }
+            let raw_resp = req.send().await?;
             if !raw_resp.status().is_success() {
                 return Err(GistClientError::Api {
                     status: raw_resp.status().as_u16(),
@@ -293,6 +295,31 @@ impl GistClient {
                 .ok_or(GistClientError::NotFound)?;
             Ok(content.to_string())
         }
+    }
+}
+
+/// Whether `raw_url` (taken verbatim from a gist API response body) is a host we
+/// trust enough to send the API bearer token to. A tampered response could
+/// otherwise point `raw_url` at an attacker-controlled host and capture the
+/// token; requiring HTTPS + a known platform content host closes that.
+fn raw_url_is_trusted(platform: SyncPlatform, raw_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw_url) else {
+        return false;
+    };
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    match platform {
+        SyncPlatform::GitHub => {
+            host == "gist.githubusercontent.com"
+                || host == "raw.githubusercontent.com"
+                || host == "api.github.com"
+                || host == "github.com"
+        }
+        SyncPlatform::Gitee => host == "gitee.com" || host.ends_with(".gitee.com"),
     }
 }
 
@@ -332,6 +359,40 @@ mod tests {
     fn test_auth_header_gitee() {
         let header = GistClient::auth_header(SyncPlatform::Gitee, "mytoken");
         assert_eq!(header, "token mytoken");
+    }
+
+    #[test]
+    fn raw_url_trusted_for_known_content_hosts() {
+        assert!(raw_url_is_trusted(
+            SyncPlatform::GitHub,
+            "https://gist.githubusercontent.com/u/abc/raw/def/data.json"
+        ));
+        assert!(raw_url_is_trusted(
+            SyncPlatform::GitHub,
+            "https://raw.githubusercontent.com/u/r/main/f"
+        ));
+        assert!(raw_url_is_trusted(SyncPlatform::Gitee, "https://gitee.com/u/gist/raw/f"));
+    }
+
+    #[test]
+    fn raw_url_rejected_for_untrusted_or_insecure_hosts() {
+        // Attacker-controlled host must not receive the token.
+        assert!(!raw_url_is_trusted(SyncPlatform::GitHub, "https://evil.example.com/steal"));
+        // A GitHub content host must not be trusted for a Gitee request (and vice versa).
+        assert!(!raw_url_is_trusted(
+            SyncPlatform::Gitee,
+            "https://gist.githubusercontent.com/u/abc/raw/f"
+        ));
+        // Suffix-smuggling: a host merely ending in the brand must not match.
+        assert!(!raw_url_is_trusted(SyncPlatform::Gitee, "https://gitee.com.attacker.com/f"));
+        assert!(!raw_url_is_trusted(SyncPlatform::GitHub, "https://notgithub.com/f"));
+        // Plaintext http must be rejected even on an otherwise-valid host.
+        assert!(!raw_url_is_trusted(
+            SyncPlatform::GitHub,
+            "http://gist.githubusercontent.com/u/abc/raw/f"
+        ));
+        // Garbage / non-URL input.
+        assert!(!raw_url_is_trusted(SyncPlatform::GitHub, "not a url"));
     }
 
     #[tokio::test]

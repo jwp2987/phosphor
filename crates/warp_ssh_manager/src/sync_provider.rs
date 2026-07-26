@@ -182,7 +182,9 @@ impl SyncDataProvider for SshSyncProvider {
         struct PendingSecret {
             node_id: String,
             kind: SecretKind,
-            value: String,
+            // Held zeroized so the decrypted plaintext secret does not linger in
+            // freed heap after it is written to the keychain.
+            value: Zeroizing<String>,
         }
         let mut pending_secrets: Vec<PendingSecret> = Vec::new();
         let mut explicit_clears: Vec<(String, SecretKind)> = Vec::new();
@@ -194,8 +196,10 @@ impl SyncDataProvider for SshSyncProvider {
             ] {
                 match enc {
                     Some(enc) => {
-                        let value = crypto::decrypt(token, enc)
-                            .map_err(|e| SyncEngineError::Crypto(e.to_string()))?;
+                        let value = Zeroizing::new(
+                            crypto::decrypt(token, enc)
+                                .map_err(|e| SyncEngineError::Crypto(e.to_string()))?,
+                        );
                         pending_secrets.push(PendingSecret {
                             node_id: server.node_id.clone(),
                             kind,
@@ -215,8 +219,10 @@ impl SyncDataProvider for SshSyncProvider {
             );
             match &credential.password_encrypted {
                 Some(enc) => {
-                    let value = crypto::decrypt(token, enc)
-                        .map_err(|e| SyncEngineError::Crypto(e.to_string()))?;
+                    let value = Zeroizing::new(
+                        crypto::decrypt(token, enc)
+                            .map_err(|e| SyncEngineError::Crypto(e.to_string()))?,
+                    );
                     pending_secrets.push(PendingSecret {
                         node_id: credential.id.clone(),
                         kind: secret_kind,
