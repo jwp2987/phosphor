@@ -53,14 +53,22 @@ pub struct AboutPageView {
     page: PageType<Self>,
 }
 
+/// Whether the autoupdate UI (update-status row + "Automatic updates" toggle) is
+/// shown on the About page. Hidden for this fork: there is no Phosphor release
+/// channel to update from (the upstream release URLs point at Warp/Zap), so those
+/// controls would be misleading. Flip to `true` to restore them.
+const SHOW_AUTOUPDATE_UI: bool = false;
+
 impl AboutPageView {
     pub fn new(ctx: &mut ViewContext<AboutPageView>) -> Self {
-        // Subscribes to AutoupdateState, refreshing the UI when the stage changes (checking /
-        // found new version / failed, etc).
-        let autoupdate_handle = AutoupdateState::handle(ctx);
-        ctx.observe(&autoupdate_handle, |_, _, ctx| {
-            ctx.notify();
-        });
+        // Only subscribe to AutoupdateState when the autoupdate UI is actually
+        // shown; otherwise its stage changes would needlessly re-render the page.
+        if SHOW_AUTOUPDATE_UI {
+            let autoupdate_handle = AutoupdateState::handle(ctx);
+            ctx.observe(&autoupdate_handle, |_, _, ctx| {
+                ctx.notify();
+            });
+        }
 
         AboutPageView {
             page: PageType::new_monolith(AboutPageWidget::default(), None, false),
@@ -135,7 +143,9 @@ impl SettingsWidget for AboutPageWidget {
     type View = AboutPageView;
 
     fn search_terms(&self) -> &str {
-        "about version automatic updates auto update check for updates new version"
+        // Autoupdate terms omitted while SHOW_AUTOUPDATE_UI is false — searching
+        // for them shouldn't surface a page that no longer has those controls.
+        "about version copyright export logs"
     }
 
     fn render(
@@ -145,11 +155,6 @@ impl SettingsWidget for AboutPageWidget {
         app: &AppContext,
     ) -> Box<dyn Element> {
         let ui_builder = appearance.ui_builder();
-
-        // Autoupdate UI is hidden for this fork: there is no Phosphor release channel to update
-        // from (the upstream release URLs point at Warp/Zap), so the update-status row and the
-        // "Automatic updates" toggle would be misleading. Flip to `true` to restore both.
-        const SHOW_AUTOUPDATE_UI: bool = false;
 
         // Phosphor brand badge; the name is rendered as separate text below, from the channel's
         // display name, no longer relying on an svg that includes the word "warp".
