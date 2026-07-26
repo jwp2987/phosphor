@@ -760,6 +760,12 @@ impl TuiAIBlock {
     /// streaming boundary change naturally drops stale children and creates
     /// the newly semantic section.
     fn sync_code_block_views(&mut self, ctx: &mut ViewContext<Self>) {
+        let mut active_keys = HashSet::new();
+        // Only new or changed blocks are materialized into payloads. This runs on
+        // every streamed output chunk, and a code section can be up to 256 KB, so
+        // cloning every block every chunk is O(chunks x total code size) of pure
+        // allocation churn. Skipping unchanged blocks (all but the one currently
+        // streaming) avoids that; sync() no-ops on an equal payload anyway.
         let mut descriptors = Vec::new();
         if let Some(output) = self.block_model.status(ctx).output_to_render() {
             for message in &output.get().messages {
@@ -788,40 +794,35 @@ impl TuiAIBlock {
                     continue;
                 };
                 for (section_index, section) in text.sections.iter().enumerate() {
-                    let payload = match section {
-                        AIAgentTextSection::Code { code, language, .. } => {
-                            Some(TuiCodeBlockPayload::new(
-                                code.clone(),
-                                language.as_ref().map(|language| language.display_name()),
-                            ))
-                        }
+                    let (code, language): (&str, Option<String>) = match section {
+                        AIAgentTextSection::Code { code, language, .. } => (
+                            code.as_str(),
+                            language.as_ref().map(|language| language.display_name()),
+                        ),
                         AIAgentTextSection::MermaidDiagram { diagram } => {
-                            Some(TuiCodeBlockPayload::new(
-                                diagram.source.clone(),
-                                Some("mermaid".to_owned()),
-                            ))
+                            (diagram.source.as_str(), Some("mermaid".to_owned()))
                         }
                         AIAgentTextSection::PlainText { .. }
                         | AIAgentTextSection::Table { .. }
-                        | AIAgentTextSection::Image { .. } => None,
+                        | AIAgentTextSection::Image { .. } => continue,
                     };
-                    if let Some(payload) = payload {
-                        descriptors.push((
-                            TuiCodeBlockKey {
-                                message_id: message.id.clone(),
-                                section_index,
-                            },
-                            payload,
-                        ));
+                    let key = TuiCodeBlockKey {
+                        message_id: message.id.clone(),
+                        section_index,
+                    };
+                    active_keys.insert(key.clone());
+                    // Common case: the retained view already holds this exact code +
+                    // language, so skip the clone entirely.
+                    if let Some(view) = self.code_block_views.get(&key) {
+                        if view.as_ref(ctx).matches(code, language.as_deref()) {
+                            continue;
+                        }
                     }
+                    descriptors.push((key, TuiCodeBlockPayload::new(code.to_owned(), language)));
                 }
             }
         }
 
-        let active_keys = descriptors
-            .iter()
-            .map(|(key, _)| key.clone())
-            .collect::<HashSet<_>>();
         self.code_block_views
             .retain(|key, _| active_keys.contains(key));
 

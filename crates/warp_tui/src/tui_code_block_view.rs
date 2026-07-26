@@ -99,6 +99,13 @@ impl TuiCodeBlockView {
         editor
     }
 
+    /// Whether the current payload already matches this code + language, without
+    /// allocating a new payload. Lets the reconciler skip re-cloning (and
+    /// re-syncing) unchanged code blocks on every streamed output update.
+    pub(crate) fn matches(&self, code: &str, language: Option<&str>) -> bool {
+        self.payload.code == code && self.payload.language.as_deref() == language
+    }
+
     /// Updates the retained child only when its code or language changes.
     pub(crate) fn sync(
         &mut self,
