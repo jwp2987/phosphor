@@ -1,0 +1,34 @@
+# Phosphor Green (P1 CRT phosphor)
+# The signature Phosphor look: an 80s green-screen monochrome, where everything
+# glows in shades of phosphor green. Blue/magenta/cyan are pulled toward the
+# green so the whole surface reads like a single-gun CRT, while red and yellow
+# are kept warm enough that errors and warnings still stand out.
+# Installation (Windows):
+#   Copy this file to %APPDATA%\zap\Zap\data\themes\phosphor_green.yaml
+#   After restarting Phosphor, select "Phosphor Green" under
+#   Settings → Appearance → Themes.
+---
+name: Phosphor Green
+background: '#0a0f0a'
+foreground: '#3bf07a'
+accent: '#22ffa0'
+details: darker
+terminal_colors:
+  normal:
+    black: '#0a0f0a'
+    red: '#ff6b5e'
+    green: '#3bf07a'
+    yellow: '#b6e84a'
+    blue: '#2fd9a0'
+    magenta: '#7ff09a'
+    cyan: '#2ff0c8'
+    white: '#a7e6b8'
+  bright:
+    black: '#2e4a38'
+    red: '#ff8a7e'
+    green: '#5cff98'
+    yellow: '#d2ff6a'
+    blue: '#5cf0c0'
+    magenta: '#a6ffbe'
+    cyan: '#5cffe0'
+    white: '#e6ffe9'

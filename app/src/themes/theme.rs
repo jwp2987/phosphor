@@ -51,7 +51,6 @@ pub enum ThemeKind {
     Adeberry,
     #[schemars(description = "Phenomenon")]
     Phenomenon,
-    #[default]
     #[schemars(description = "Dark")]
     Dark,
     #[schemars(description = "Dracula")]
@@ -60,6 +59,11 @@ pub enum ThemeKind {
     TokyoNight,
     #[schemars(description = "One Dark")]
     OneDark,
+    #[default]
+    #[schemars(description = "Phosphor Amber")]
+    PhosphorAmber,
+    #[schemars(description = "Phosphor Green")]
+    PhosphorGreen,
     #[schemars(description = "Fancy Dracula")]
     FancyDracula,
     #[schemars(description = "Cyber Wave")]
@@ -125,6 +129,8 @@ impl std::fmt::Display for ThemeKind {
             ThemeKind::Dracula => "Dracula",
             ThemeKind::TokyoNight => "Tokyo Night",
             ThemeKind::OneDark => "One Dark",
+            ThemeKind::PhosphorAmber => "Phosphor Amber",
+            ThemeKind::PhosphorGreen => "Phosphor Green",
             ThemeKind::SolarizedDark => "Solarized Dark",
             ThemeKind::SolarizedLight => "Solarized Light",
             ThemeKind::GruvboxDark => "Gruvbox Dark",
@@ -338,6 +344,8 @@ impl WarpThemeConfig {
             (ThemeKind::Adeberry, adeberry()),
             (ThemeKind::WezTermClassic, wezterm_classic()),
             (ThemeKind::VsCode2026Dark, vscode_2026_dark()),
+            (ThemeKind::PhosphorAmber, phosphor_amber()),
+            (ThemeKind::PhosphorGreen, phosphor_green()),
         ]);
         WarpThemeConfig { theme_map }
     }

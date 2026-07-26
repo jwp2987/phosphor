@@ -789,6 +789,88 @@ pub(super) fn one_dark() -> WarpTheme {
     )
 }
 
+// --- Phosphor CRT-phosphor themes (also shipped as themes/phosphor_*.yaml) ---
+// Order: black, red, green, yellow, blue, magenta, cyan, white. The palettes lean
+// monochrome (blue/magenta/cyan pulled toward the phosphor hue) while red/yellow
+// stay warm enough to keep errors and warnings legible.
+
+const PHOSPHOR_GREEN_NORMAL_COLORS: AnsiColors = AnsiColors::new(
+    AnsiColor::from_u32(0x0A0F0AFF),
+    AnsiColor::from_u32(0xFF6B5EFF),
+    AnsiColor::from_u32(0x3BF07AFF),
+    AnsiColor::from_u32(0xB6E84AFF),
+    AnsiColor::from_u32(0x2FD9A0FF),
+    AnsiColor::from_u32(0x7FF09AFF),
+    AnsiColor::from_u32(0x2FF0C8FF),
+    AnsiColor::from_u32(0xA7E6B8FF),
+);
+const PHOSPHOR_GREEN_BRIGHT_COLORS: AnsiColors = AnsiColors::new(
+    AnsiColor::from_u32(0x2E4A38FF),
+    AnsiColor::from_u32(0xFF8A7EFF),
+    AnsiColor::from_u32(0x5CFF98FF),
+    AnsiColor::from_u32(0xD2FF6AFF),
+    AnsiColor::from_u32(0x5CF0C0FF),
+    AnsiColor::from_u32(0xA6FFBEFF),
+    AnsiColor::from_u32(0x5CFFE0FF),
+    AnsiColor::from_u32(0xE6FFE9FF),
+);
+const PHOSPHOR_AMBER_NORMAL_COLORS: AnsiColors = AnsiColors::new(
+    AnsiColor::from_u32(0x0F0A02FF),
+    AnsiColor::from_u32(0xFF6A3DFF),
+    AnsiColor::from_u32(0xD4A520FF),
+    AnsiColor::from_u32(0xFFCF3DFF),
+    AnsiColor::from_u32(0xD69A4AFF),
+    AnsiColor::from_u32(0xFF9A5CFF),
+    AnsiColor::from_u32(0xE6B45AFF),
+    AnsiColor::from_u32(0xFFD694FF),
+);
+const PHOSPHOR_AMBER_BRIGHT_COLORS: AnsiColors = AnsiColors::new(
+    AnsiColor::from_u32(0x5C4420FF),
+    AnsiColor::from_u32(0xFF8A5CFF),
+    AnsiColor::from_u32(0xE6C33AFF),
+    AnsiColor::from_u32(0xFFE06AFF),
+    AnsiColor::from_u32(0xE6B877FF),
+    AnsiColor::from_u32(0xFFB480FF),
+    AnsiColor::from_u32(0xFFCF94FF),
+    AnsiColor::from_u32(0xFFF0D6FF),
+);
+
+pub(super) fn phosphor_green_colors() -> TerminalColors {
+    TerminalColors::new(PHOSPHOR_GREEN_NORMAL_COLORS, PHOSPHOR_GREEN_BRIGHT_COLORS)
+}
+
+pub(super) fn phosphor_amber_colors() -> TerminalColors {
+    TerminalColors::new(PHOSPHOR_AMBER_NORMAL_COLORS, PHOSPHOR_AMBER_BRIGHT_COLORS)
+}
+
+pub(super) fn phosphor_green() -> WarpTheme {
+    WarpTheme::new(
+        Fill::Solid(ColorU::from_u32(0x0A0F0AFF)),
+        ColorU::from_u32(0x3BF07AFF),
+        Fill::Solid(ColorU::from_u32(0x22FFA0FF)),
+        None,
+        Some(Details::Darker),
+        phosphor_green_colors(),
+        None,
+        Some("Phosphor Green".to_string()),
+        None,
+    )
+}
+
+pub(super) fn phosphor_amber() -> WarpTheme {
+    WarpTheme::new(
+        Fill::Solid(ColorU::from_u32(0x0F0A02FF)),
+        ColorU::from_u32(0xFFB437FF),
+        Fill::Solid(ColorU::from_u32(0xFFD45CFF)),
+        None,
+        Some(Details::Darker),
+        phosphor_amber_colors(),
+        None,
+        Some("Phosphor Amber".to_string()),
+        None,
+    )
+}
+
 pub(super) fn adeberry() -> WarpTheme {
     WarpTheme::new(
         Fill::Solid(ColorU::from_u32(0x1D2022FF)),
