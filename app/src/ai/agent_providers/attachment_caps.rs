@@ -222,6 +222,15 @@ fn caps_for_by_substring(api_type: AgentProviderApiType, model_id: &str) -> Atta
                 AttachmentCaps::default()
             }
         }
+        AgentProviderApiType::Vertex => {
+            // Vertex serves both Gemini and Claude; attachment caps follow the model family, so
+            // reuse the corresponding native rules keyed on the model name.
+            if lower.contains("claude") {
+                caps_for_by_substring(AgentProviderApiType::Anthropic, model_id)
+            } else {
+                caps_for_by_substring(AgentProviderApiType::Gemini, model_id)
+            }
+        }
     }
 }
 

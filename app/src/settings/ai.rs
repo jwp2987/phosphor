@@ -682,6 +682,12 @@ pub enum AgentProviderApiType {
     /// like `deepseek-reasoner` / `deepseek-v4-flash` must select this type; plain chat models
     /// (`deepseek-chat`) also work fine with OpenAI selected.
     DeepSeek,
+    /// Google Vertex AI (`{location}-aiplatform.googleapis.com`). Serves both Gemini
+    /// (`publishers/google`) and Claude (`publishers/anthropic`) models, routed by model name.
+    /// Unlike the other types the "api key" is a short-lived GCP OAuth2 bearer token, minted
+    /// from Application Default Credentials (gcloud) or a service-account JSON; the endpoint is
+    /// built from `vertex_project` + `vertex_location` rather than `base_url`.
+    Vertex,
 }
 
 /// Provider-level reasoning effort (thinking depth) preference.
@@ -762,6 +768,7 @@ impl AgentProviderApiType {
             Self::Anthropic => "Anthropic",
             Self::Ollama => "Ollama",
             Self::DeepSeek => "DeepSeek",
+            Self::Vertex => "Vertex AI",
         }
     }
 
@@ -776,6 +783,7 @@ impl AgentProviderApiType {
             "Anthropic" => Self::Anthropic,
             "Ollama" => Self::Ollama,
             "DeepSeek" => Self::DeepSeek,
+            "Vertex" => Self::Vertex,
             _ => return None,
         })
     }
@@ -799,7 +807,19 @@ impl AgentProviderApiType {
             Self::Anthropic => "https://api.anthropic.com/v1/",
             Self::Ollama => "http://localhost:11434/",
             Self::DeepSeek => "https://api.deepseek.com/v1/",
+            // Vertex has no static base URL — the endpoint is built from vertex_project +
+            // vertex_location (see AgentProvider::resolved_base_url). The UI hides base_url for
+            // this type and collects project/location instead.
+            Self::Vertex => "",
         }
+    }
+
+    /// Whether this provider type derives its endpoint from `vertex_project`/`vertex_location`
+    /// rather than a user-entered `base_url`, and mints an OAuth2 bearer instead of using a
+    /// static api key. Kept as a method so match sites read intent rather than a bare
+    /// `== Vertex`.
+    pub fn is_vertex(&self) -> bool {
+        matches!(self, Self::Vertex)
     }
 }
 
@@ -846,6 +866,17 @@ pub struct AgentProvider {
     /// `api_key` still goes through the standard `Authorization: Bearer` path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_headers: Vec<(String, String)>,
+
+    /// Vertex AI only: the GCP project id (e.g. `my-project-123`). Ignored for other api types.
+    /// A `base_url` cannot carry this, so it is stored as its own field; the endpoint is built
+    /// by [`AgentProvider::resolved_base_url`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vertex_project: String,
+
+    /// Vertex AI only: the GCP location / region (e.g. `us-east5`, `global`). Empty falls back
+    /// to `global`. Ignored for other api types.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vertex_location: String,
 }
 
 impl AgentProvider {
@@ -863,7 +894,42 @@ impl AgentProvider {
             base_url: String::new(),
             models: Vec::new(),
             extra_headers: Vec::new(),
+            vertex_project: String::new(),
+            vertex_location: String::new(),
         }
+    }
+
+    /// The endpoint base URL genai should target, accounting for provider-type specifics.
+    ///
+    /// For [`AgentProviderApiType::Vertex`] this is derived from `vertex_project` +
+    /// `vertex_location` into the aiplatform URL genai's Vertex adapter expects:
+    /// `https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/`
+    /// (falling back to the `global` host/location when no location is set). For every other
+    /// type it is just `base_url` unchanged, so existing behavior is untouched.
+    pub fn resolved_base_url(&self) -> String {
+        if self.api_type.is_vertex() {
+            vertex_endpoint_url(&self.vertex_project, &self.vertex_location)
+        } else {
+            self.base_url.clone()
+        }
+    }
+}
+
+/// Builds the Vertex AI aiplatform endpoint URL from a project id and location.
+///
+/// Mirrors genai's `VertexAdapter::default_endpoint`: a set location routes to the regional
+/// host `{location}-aiplatform.googleapis.com/.../locations/{location}/`, while an empty
+/// location falls back to the global host `aiplatform.googleapis.com/.../locations/global/`.
+/// Always ends with `/` (genai appends `publishers/...` onto it).
+pub fn vertex_endpoint_url(project: &str, location: &str) -> String {
+    let project = project.trim();
+    let location = location.trim();
+    if location.is_empty() || location == "global" {
+        format!("https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/")
+    } else {
+        format!(
+            "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/"
+        )
     }
 }
 

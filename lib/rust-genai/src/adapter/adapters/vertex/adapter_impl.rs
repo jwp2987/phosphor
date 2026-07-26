@@ -108,8 +108,12 @@ impl Adapter for VertexAdapter {
 				ServiceType::Embed => format!("{base_url}{publisher_path}/models/{model_name}:predict"),
 			},
 			VertexPublisher::Anthropic => match service_type {
-				ServiceType::Chat | ServiceType::ChatStream => {
-					format!("{base_url}{publisher_path}/models/{model_name}:rawPredict")
+				// Vertex uses distinct methods for Claude: `:rawPredict` is unary, while streaming
+				// requires `:streamRawPredict`. Sending `stream: true` to `:rawPredict` does not
+				// stream, so a streaming request must target the streaming method.
+				ServiceType::Chat => format!("{base_url}{publisher_path}/models/{model_name}:rawPredict"),
+				ServiceType::ChatStream => {
+					format!("{base_url}{publisher_path}/models/{model_name}:streamRawPredict")
 				}
 				ServiceType::Embed => format!("{base_url}{publisher_path}/models/{model_name}:predict"),
 			},

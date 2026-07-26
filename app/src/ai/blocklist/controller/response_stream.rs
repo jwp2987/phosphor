@@ -143,7 +143,7 @@ fn byop_dispatch_info(
                 let t_effort =
                     llm_prefs.get_reasoning_effort(None, t_provider.api_type, &t_model_id);
                 TitleGenParams {
-                    base_url: t_provider.base_url,
+                    base_url: t_provider.resolved_base_url(),
                     api_key: t_api_key,
                     model_id: t_model_id,
                     api_type: t_provider.api_type,
@@ -179,7 +179,7 @@ fn byop_dispatch_info(
             crate::ai::agent_providers::attachment_caps::caps_for(provider.api_type, &model_id)
         });
     Some(ByopDispatch {
-        base_url: provider.base_url,
+        base_url: provider.resolved_base_url(),
         api_key,
         model_id,
         api_type: provider.api_type,
