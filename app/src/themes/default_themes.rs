@@ -814,14 +814,16 @@ const PHOSPHOR_GREEN_BRIGHT_COLORS: AnsiColors = AnsiColors::new(
     AnsiColor::from_u32(0x5CFFE0FF),
     AnsiColor::from_u32(0xE6FFE9FF),
 );
+// Blue (directories) and cyan (symlinks) keep a cool steel cast so listings stay legible
+// against the warm amber body text — the one deliberate break from strict monochrome.
 const PHOSPHOR_AMBER_NORMAL_COLORS: AnsiColors = AnsiColors::new(
     AnsiColor::from_u32(0x0F0A02FF),
     AnsiColor::from_u32(0xFF6A3DFF),
     AnsiColor::from_u32(0xD4A520FF),
     AnsiColor::from_u32(0xFFCF3DFF),
-    AnsiColor::from_u32(0xD69A4AFF),
+    AnsiColor::from_u32(0x7FB0C4FF),
     AnsiColor::from_u32(0xFF9A5CFF),
-    AnsiColor::from_u32(0xE6B45AFF),
+    AnsiColor::from_u32(0x8FC8C0FF),
     AnsiColor::from_u32(0xFFD694FF),
 );
 const PHOSPHOR_AMBER_BRIGHT_COLORS: AnsiColors = AnsiColors::new(
@@ -829,9 +831,9 @@ const PHOSPHOR_AMBER_BRIGHT_COLORS: AnsiColors = AnsiColors::new(
     AnsiColor::from_u32(0xFF8A5CFF),
     AnsiColor::from_u32(0xE6C33AFF),
     AnsiColor::from_u32(0xFFE06AFF),
-    AnsiColor::from_u32(0xE6B877FF),
+    AnsiColor::from_u32(0xA6D2E4FF),
     AnsiColor::from_u32(0xFFB480FF),
-    AnsiColor::from_u32(0xFFCF94FF),
+    AnsiColor::from_u32(0xB6E4DCFF),
     AnsiColor::from_u32(0xFFF0D6FF),
 );
 

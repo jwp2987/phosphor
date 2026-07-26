@@ -1,8 +1,10 @@
 # Phosphor Amber (P3 CRT phosphor)
 # The warm amber-monochrome counterpart to Phosphor Green — the classic
-# amber-on-black glow of late-70s / early-80s terminals. Blues/magentas are
-# pulled toward amber so the surface reads as a single warm phosphor, while red
-# stays orange-red enough to remain legible for errors.
+# amber-on-black glow of late-70s / early-80s terminals. Magenta is pulled
+# toward amber so the surface reads as a single warm phosphor, while red stays
+# orange-red enough to remain legible for errors. Blue (directories) and cyan
+# (symlinks) keep a cool steel cast so listings stay legible against the warm
+# body text — the one deliberate break from strict monochrome.
 # Installation (Windows):
 #   Copy this file to %APPDATA%\zap\Zap\data\themes\phosphor_amber.yaml
 #   After restarting Phosphor, select "Phosphor Amber" under
@@ -19,16 +21,16 @@ terminal_colors:
     red: '#ff6a3d'
     green: '#d4a520'
     yellow: '#ffcf3d'
-    blue: '#d69a4a'
+    blue: '#7fb0c4'
     magenta: '#ff9a5c'
-    cyan: '#e6b45a'
+    cyan: '#8fc8c0'
     white: '#ffd694'
   bright:
     black: '#5c4420'
     red: '#ff8a5c'
     green: '#e6c33a'
     yellow: '#ffe06a'
-    blue: '#e6b877'
+    blue: '#a6d2e4'
     magenta: '#ffb480'
-    cyan: '#ffcf94'
+    cyan: '#b6e4dc'
     white: '#fff0d6'
