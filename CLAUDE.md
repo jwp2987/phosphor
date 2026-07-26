@@ -7,6 +7,19 @@ the app id (dev.zap.Zap), on-disk paths, keyring service, and binary names
 (zap-oss) are intentionally unchanged, so internal "zap" identifiers are
 expected. See specs/phosphor-rebrand/SCOPE.md for the layered plan.
 
+DEV-ENVIRONMENT NOTE — command-signatures stub (address later):
+  This working copy may contain a local, gitignored stub at
+  `crates/command-signatures-v2/js/build/.placeholder.json` (a `{}` file). It
+  lets the app build WITHOUT Node/yarn: `command-signatures-v2`'s build.rs only
+  panics when `js/build/` is missing, so when the stub makes that dir exist it
+  instead prints "Proceeding with stale command signatures!" and continues.
+  Consequence: smart per-command argument completions are EMPTY; everything else
+  (terminal, BYOP/Vertex, themes) works. It is local-only (gitignored) and does
+  NOT ship — anyone cloning still needs Node to build.
+  To get a REAL build: install Node 18.14.1+, run `corepack enable`, then
+  `rm -rf crates/command-signatures-v2/js/build` so the next build runs
+  `yarn build` for real.
+
 Fork-specific design decisions and direction (English):
   docs/DESIGN-ZAP-FORK.md
 
