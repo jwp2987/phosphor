@@ -23,6 +23,7 @@ pub mod reasoning;
 pub mod secrets;
 pub mod tools;
 pub mod user_context;
+pub mod vertex_auth;
 pub mod wire_inspector;
 pub mod wire_log;
 
@@ -77,7 +78,14 @@ fn build_byop_llm_infos(app: &AppContext) -> Vec<LLMInfo> {
     let mut out = Vec::new();
 
     for provider in providers {
-        if provider.base_url.trim().is_empty() {
+        // A provider is addressable only if it has an endpoint. For Vertex that is derived from
+        // `vertex_project` (+ optional location); for every other type it's `base_url`.
+        let has_endpoint = if provider.api_type.is_vertex() {
+            !provider.vertex_project.trim().is_empty()
+        } else {
+            !provider.base_url.trim().is_empty()
+        };
+        if !has_endpoint {
             continue;
         }
         if provider.models.is_empty() {

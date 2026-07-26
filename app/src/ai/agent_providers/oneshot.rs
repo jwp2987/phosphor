@@ -239,7 +239,7 @@ pub fn resolve_active_ai_oneshot(
     let reasoning_effort =
         llm_prefs.get_reasoning_effort(terminal_view_id, provider.api_type, &model_id);
     Some(OneshotConfig {
-        base_url: provider.base_url,
+        base_url: provider.resolved_base_url(),
         api_key,
         model_id,
         api_type: provider.api_type,
@@ -262,7 +262,7 @@ pub fn resolve_next_command_oneshot(
     let reasoning_effort =
         llm_prefs.get_reasoning_effort(terminal_view_id, provider.api_type, &model_id);
     Some(OneshotConfig {
-        base_url: provider.base_url,
+        base_url: provider.resolved_base_url(),
         api_key,
         model_id,
         api_type: provider.api_type,

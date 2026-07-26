@@ -96,6 +96,15 @@ pub fn model_reasoning_variants(
             }
         }
         AgentProviderApiType::Ollama => vec![],
+        // Vertex serves both Gemini and Claude; reasoning tiers follow the model family, so
+        // reuse the corresponding native adapter's rules keyed on the model name.
+        AgentProviderApiType::Vertex => {
+            if id.contains("claude") {
+                model_reasoning_variants(AgentProviderApiType::Anthropic, model_id)
+            } else {
+                model_reasoning_variants(AgentProviderApiType::Gemini, model_id)
+            }
+        }
     }
 }
 
@@ -435,7 +444,9 @@ pub fn model_reasoning_interleaved(
             .iter()
             .find(|(needle, _)| id.contains(needle))
             .map(|(_, f)| *f),
-        T::Anthropic | T::Gemini | T::Ollama => None,
+        // Vertex (Gemini/Claude) does not use the interleaved reasoning_content echo — like the
+        // native Anthropic/Gemini adapters it returns None.
+        T::Anthropic | T::Gemini | T::Ollama | T::Vertex => None,
     }
 }
 

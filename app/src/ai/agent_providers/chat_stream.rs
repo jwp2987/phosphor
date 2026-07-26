@@ -3257,6 +3257,7 @@ fn adapter_kind_for(api_type: AgentProviderApiType) -> AdapterKind {
         AgentProviderApiType::Anthropic => AdapterKind::Anthropic,
         AgentProviderApiType::Ollama => AdapterKind::Ollama,
         AgentProviderApiType::DeepSeek => AdapterKind::DeepSeek,
+        AgentProviderApiType::Vertex => AdapterKind::Vertex,
     }
 }
 
@@ -3342,6 +3343,20 @@ fn effective_adapter_kind_for(
 /// `…/messages/messages`.
 fn normalize_endpoint_url(api_type: AgentProviderApiType, base_url: &str) -> String {
     let trimmed = base_url.trim();
+
+    // Vertex: base_url is already the fully-formed aiplatform endpoint, built from project +
+    // location by `AgentProvider::resolved_base_url` (e.g.
+    // `https://us-east5-aiplatform.googleapis.com/v1/projects/p/locations/us-east5/`). The
+    // default-version-path logic below is OpenAI/Anthropic/Gemini-specific and would corrupt it,
+    // so pass it through, only guaranteeing the trailing `/` genai's Vertex adapter appends onto.
+    if api_type == AgentProviderApiType::Vertex {
+        return if trimmed.ends_with('/') {
+            trimmed.to_owned()
+        } else {
+            format!("{trimmed}/")
+        };
+    }
+
     if trimmed.is_empty() {
         return api_type.default_base_url().to_owned();
     }
@@ -3485,8 +3500,13 @@ fn build_client_uncached(
 ) -> Client {
     let endpoint_url = normalize_endpoint_url(api_type, base_url);
     log::info!("[byop] build_client: api_type={api_type:?} endpoint_url={endpoint_url}");
+    // Vertex mints a short-lived OAuth2 bearer per request, so it needs an async resolver; every
+    // other type routes through the synchronous static-key path below.
+    let resolver = if api_type == AgentProviderApiType::Vertex {
+        build_vertex_resolver(endpoint_url.clone(), api_key.clone())
+    } else {
     let key_for_resolver = api_key.clone();
-    let resolver = ServiceTargetResolver::from_resolver_fn(
+    ServiceTargetResolver::from_resolver_fn(
         move |service_target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
             let ServiceTarget { model, .. } = service_target;
             let endpoint = Endpoint::from_owned(endpoint_url.clone());
@@ -3514,7 +3534,8 @@ fn build_client_uncached(
                 model,
             })
         },
-    );
+        )
+    };
 
     // Zap BYOP: the SSE stream must not use gzip. `Accept-Encoding: gzip` makes an
     // nginx-style proxy compress the response, and the server has to flush a complete
@@ -3572,6 +3593,40 @@ fn build_client_uncached(
         .with_web_config(web_config)
         .with_service_target_resolver(resolver)
         .build()
+}
+
+/// Builds the async `ServiceTargetResolver` for Vertex AI.
+///
+/// Unlike the static-key resolver, this awaits [`super::vertex_auth::access_token`] on every
+/// request to obtain a fresh GCP OAuth2 bearer (gcloud caches + refreshes underneath), while the
+/// surrounding genai `Client` — and its reqwest connection pool — is still cached by
+/// `build_client` (Vertex's cache key is stable: the endpoint encodes project+location and the
+/// credential string doesn't change). The endpoint (already built from project+location by
+/// `normalize_endpoint_url`) and `AdapterKind::Vertex` are pinned here so genai does not fall
+/// back to guessing the adapter by model name.
+fn build_vertex_resolver(endpoint_url: String, credential: String) -> ServiceTargetResolver {
+    ServiceTargetResolver::from_resolver_async_fn(move |service_target: ServiceTarget| {
+        let endpoint_url = endpoint_url.clone();
+        let credential = credential.clone();
+        Box::pin(async move {
+            let ServiceTarget { model, .. } = service_target;
+            let token = super::vertex_auth::access_token(&credential)
+                .await
+                .map_err(genai::resolver::Error::Custom)?;
+            let endpoint = Endpoint::from_owned(endpoint_url);
+            let auth = AuthData::from_single(token);
+            // Override genai's "guess by model name"; keep model_name so the Vertex adapter can
+            // route to publishers/google (gemini*) or publishers/anthropic (claude*).
+            let model = ModelIden::new(AdapterKind::Vertex, model.model_name);
+            Ok(ServiceTarget {
+                endpoint,
+                auth,
+                model,
+            })
+        }) as std::pin::Pin<
+            Box<dyn std::future::Future<Output = genai::resolver::Result<ServiceTarget>> + Send>,
+        >
+    })
 }
 
 /// Builds the `User-Agent` header for BYOP outbound requests, in the form:
