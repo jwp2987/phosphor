@@ -6,8 +6,6 @@
 
 **A local-first terminal with first-class AI — bring your own model, glowing since the VT100.**
 
-[简体中文](./README.zh-CN.md) · [日本語](./README.ja.md)
-
 <sub><i>Based on <a href="https://github.com/warpdotdev/warp">Warp</a> (via <a href="https://github.com/zerx-lab/zap">Zap</a> / OpenWarp); evolving independently as its own project.</i></sub>
 
 </div>
@@ -129,9 +127,6 @@ don't benefit from the tail-block design._
   hatch for stdout.
 - **Perf** — reuse HTTP clients, unblock async DNS, trim webfetch/history
   overhead, cap `file_glob` results and back off failed retries.
-
-> Localized READMEs ([简体中文](./README.zh-CN.md) · [日本語](./README.ja.md))
-> describe upstream Zap and don't cover these fork experiments.
 
 ## Migrating from Zap, OpenWarp, or Warp
 
