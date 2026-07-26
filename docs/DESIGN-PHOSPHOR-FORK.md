@@ -1,7 +1,7 @@
-# Zap fork — design decisions & direction
+# Phosphor fork — design decisions & direction
 
-English design record for this fork. Companion to `AGENTS.md` (the code map, in
-Chinese) and the `specs/` docs. Read this to understand *why* the fork is shaped
+English design record for this fork. Companion to `AGENTS.md` (the code map)
+and the `specs/` docs. Read this to understand *why* the fork is shaped
 the way it is and where it is heading, before making architectural changes.
 
 ## 1. Identity & lineage
@@ -11,15 +11,15 @@ the way it is and where it is heading, before making architectural changes.
     moving daily. Cloud-agent product.
   - `upstream` remote → `zerx-lab/zap` — the **"Zap" fork** this repo descends
     from. BYOP-native, but not actively developed (mostly bug-fix branches).
-  - `origin` → this personal fork (`jwp2987/zap`).
+  - `origin` → this personal fork (`jwp2987/phosphor`, previously `jwp2987/zap`).
 - **What this fork is:** a **BYOP** (Bring-Your-Own-Provider) terminal/agent. The
   cloud half of Warp (orchestration, Drive sync, auth/billing, remote agents) is
   stripped; the agent talks **directly to a user-configured OpenAI-compatible /
   Anthropic / Gemini / Ollama / Vertex endpoint** via the vendored `lib/rust-genai`.
   Primary test target: **FastFlowLM (FLM)**, a local small-model server.
-- **North star — match Warp minus cloud.** Zap should stay as close to
+- **North star — match Warp minus cloud.** Phosphor should stay as close to
   feature-parity with upstream Warp as possible, dropping **only genuinely
-  cloud-dependent** features. When a Warp feature is missing from Zap, the default
+  cloud-dependent** features. When a Warp feature is missing from Phosphor, the default
   is to **build or port it for parity**, not stub or drop it. Drop only cloud:
   orchestration, remote/RunAgents/StartAgent child agents, `server_api`,
   connected self-hosted workers, ambient agents, cloud harness, oz child-launch,
@@ -62,8 +62,8 @@ The fork is ~1700 commits behind current Warp OSS across a hard product split, s
 
 ## 4. TUI port — guiding principles
 
-Porting Warp's `warp_tui` (a ratatui terminal front-end) onto Zap. The crate rides
-on ~3 months of `warpui_core` refactoring Zap never took, so the port is really a
+Porting Warp's `warp_tui` (a ratatui terminal front-end) onto Phosphor. The crate rides
+on ~3 months of `warpui_core` refactoring Phosphor never took, so the port is really a
 **targeted re-convergence of the UI core**. Governing rules:
 
 - **Isolate, don't refactor the GUI.** Every change is either `#[cfg(feature =
@@ -106,8 +106,8 @@ long-term cost, while keeping the BYOP product identity. Concretely:
 
 - `warpui_core` migrated to edition 2024 (matching upstream).
 - View-core bounds relaxed to match upstream's Entity-generic design.
-- `warp_search_core` now exists in Zap as a shared crate (as upstream intended).
-- **Deferred convergence project:** Zap still has its own `inline_menu` inside the
+- `warp_search_core` now exists in Phosphor as a shared crate (as upstream intended).
+- **Deferred convergence project:** Phosphor still has its own `inline_menu` inside the
   app crate (~53 files). Upstream shares it via `warp_search_core`. Eventually the
   GUI could migrate onto the shared crate and the legacy app-crate inline_menu be
   dropped — but that is a **large, separate refactor with a different API**, kept
@@ -122,7 +122,7 @@ app crate, **the distributed whole is AGPL**. Implications for the product
 direction:
 
 - Distributing a modified build requires offering **complete corresponding source
-  under AGPL**. No closed-source distribution of a modified Warp/Zap.
+  under AGPL**. No closed-source distribution of a modified Warp/Phosphor.
 - **Do not** use Warp's name/branding/trademarks; pick a distinct fork name. AGPL
   §7 declines trademark grants.
 - Keep copyright/license notices intact.

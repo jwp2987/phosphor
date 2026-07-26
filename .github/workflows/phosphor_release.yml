@@ -1,4 +1,4 @@
-# Zap release pipeline — triggered by pushing a tag (v*) on the openWarp branch
+# Phosphor release pipeline — triggered by pushing a tag (v*)
 #
 # Differences from upstream create_release.yml:
 # - Only macOS arm64 + macOS Intel + Windows x64 + Linux x86_64;
@@ -19,7 +19,7 @@
 # If any build job fails → publish_release is skipped via `needs` → no
 # Release without installers is ever left behind.
 
-name: Zap Release
+name: Phosphor Release
 
 # PR validation is handled by .github/workflows/pr-check.yml (Linux cargo check).
 # This workflow only runs the full three-platform build on tag push / manual
@@ -43,7 +43,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CONFIG_FILE: ".github/workflows/release_configurations.json"
-  # The Zap fork uses the oss channel (corresponds to the inline ChannelConfig
+  # The Phosphor fork uses the oss channel (corresponds to the inline ChannelConfig
   # in app/src/bin/oss.rs, no dependency on the private warp-channel-config
   # binary); internal channels like preview go through the
   # channel_config::load_config!() macro → build.rs calls warp-channel-config,

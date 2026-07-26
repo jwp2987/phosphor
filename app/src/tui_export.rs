@@ -5,7 +5,7 @@
 //! re-exports are dropped (Zap has no cloud agent), and the app-crate features Zap
 //! has not yet ported (conversation selection/restoration, diff storage, git-repo
 //! model, the newer slash-command/skills/model-picker TUI types) are omitted for
-//! now. Per the "match Warp minus cloud" north star (see docs/DESIGN-ZAP-FORK.md),
+//! now. Per the "match Warp minus cloud" north star (see docs/DESIGN-PHOSPHOR-FORK.md),
 //! those non-cloud gaps are to be built/ported and re-added here — not left out
 //! permanently. See specs/warp-oss-sync/SCOPE.md.
 

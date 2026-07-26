@@ -1,4 +1,4 @@
-# git-cliff config — used to auto-generate "changes since the previous tag" for Zap Releases.
+# git-cliff config — used to auto-generate "changes since the previous tag" for Phosphor Releases.
 #
 # Design principles:
 # - Main grouping is by conventional commit type (feat/fix/refactor/docs/test/build/ci/ui/perf/chore).
@@ -26,10 +26,10 @@ body = """
 {% endfor %}
 {% endfor %}
 {%- macro compare_url(prev, curr) -%}
-https://github.com/zerx-lab/warp/compare/{{ prev }}...{{ curr }}
+https://github.com/jwp2987/phosphor/compare/{{ prev }}...{{ curr }}
 {%- endmacro -%}
 {%- macro commit_url(sha) -%}
-https://github.com/zerx-lab/warp/commit/{{ sha }}
+https://github.com/jwp2987/phosphor/commit/{{ sha }}
 {%- endmacro -%}
 """
 

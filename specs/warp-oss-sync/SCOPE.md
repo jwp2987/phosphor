@@ -81,7 +81,7 @@ to satisfy exhaustive matches — never produced).
 ### Remaining tail — resolved / handed to CI + manual QA
 
 1. **CI coverage — RESOLVED.** Added `.github/workflows/pr-check.yml` (the file
-   `zap_release.yml` already referenced but that was missing): a Linux `cargo check`
+   `phosphor_release.yml` already referenced but that was missing): a Linux `cargo check`
    on PRs to `main` covering `warp --features gui --lib --tests`, `warp --features
    tui`, and (explicitly, since it's not in `default-members`) `warp_tui`. `warp_tui`
    is deliberately kept out of `default-members` so the default/release build stays
@@ -438,7 +438,7 @@ because warp_tui depends on ~half of warp's app-crate feature surface Zap lacks
 (cloud + diverged app infra).
 
 **Direction (per the "match Warp minus cloud" north star — see
-`docs/DESIGN-ZAP-FORK.md`): BUILD/PORT the non-cloud missing features for parity;
+`docs/DESIGN-PHOSPHOR-FORK.md`): BUILD/PORT the non-cloud missing features for parity;
 drop ONLY cloud.** So the earlier "minimal v0, stub/drop slash+skills" idea is
 superseded. Per-feature plan for the MISSING groups:
 

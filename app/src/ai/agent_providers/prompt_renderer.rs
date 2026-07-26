@@ -1643,8 +1643,8 @@ mod tests {
                 &[],
             );
             assert!(
-                out.contains("Zap"),
-                "id={id} should mention Zap, got: {out}"
+                out.contains("Phosphor"),
+                "id={id} should mention Phosphor, got: {out}"
             );
         }
     }
