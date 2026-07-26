@@ -33,8 +33,12 @@ use std::process::Stdio;
 use std::time::Duration;
 use zeroize::Zeroizing;
 
-pub fn build_ssh_args(server: &SshServerInfo) -> Vec<String> {
-    let mut args: Vec<String> = vec!["ssh".into()];
+/// Connection options that MUST precede the destination on the ssh command line
+/// (`-p <port>`, `-i <key>`). Returned without the leading `"ssh"` and without
+/// the destination, so callers can splice their own `-o` options in between the
+/// options and the destination.
+fn ssh_connection_opts(server: &SshServerInfo) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
     if server.port != 22 {
         args.push("-p".into());
         args.push(server.port.to_string());
@@ -47,12 +51,36 @@ pub fn build_ssh_args(server: &SshServerInfo) -> Vec<String> {
             }
         }
     }
-    let target = if server.username.is_empty() {
+    args
+}
+
+/// The ssh destination (`user@host`, or bare `host` when no username is set).
+fn ssh_destination(server: &SshServerInfo) -> String {
+    if server.username.is_empty() {
         server.host.clone()
     } else {
         format!("{}@{}", server.username, server.host)
-    };
-    args.push(target);
+    }
+}
+
+/// Appends the `--` option terminator followed by the destination to `args`.
+///
+/// Security: without `--`, a `host` (or `username`) beginning with `-` — e.g.
+/// `-oProxyCommand=touch /tmp/pwned` — is parsed by `ssh` as an option, which
+/// for `ProxyCommand`/`LocalCommand` means arbitrary **local** command execution
+/// before any network connection. Shell-escaping does not help: it quotes
+/// metacharacters but a leading-dash token is still a valid argv element that
+/// `ssh` reads as a flag. `--` stops option parsing; everything after it is
+/// positional (destination, then optional remote command).
+fn push_destination(args: &mut Vec<String>, server: &SshServerInfo) {
+    args.push("--".into());
+    args.push(ssh_destination(server));
+}
+
+pub fn build_ssh_args(server: &SshServerInfo) -> Vec<String> {
+    let mut args: Vec<String> = vec!["ssh".into()];
+    args.extend(ssh_connection_opts(server));
+    push_destination(&mut args, server);
     args
 }
 
@@ -100,11 +128,11 @@ pub async fn test_connection(
 }
 
 async fn test_key_auth(server: &SshServerInfo) -> Result<(), String> {
-    let mut args = build_ssh_args(server);
-    // build_ssh_args ends with the destination (user@host); the -o options
-    // must be inserted before the destination, otherwise SSH treats -o as part
-    // of the remote command instead of its own option.
-    let target = args.pop().unwrap();
+    // The -o options must be inserted before the destination, otherwise SSH
+    // treats -o as part of the remote command instead of its own option; the
+    // destination itself is appended (guarded by `--`) via push_destination.
+    let mut args: Vec<String> = vec!["ssh".into()];
+    args.extend(ssh_connection_opts(server));
     args.extend([
         "-o".into(),
         "BatchMode=yes".into(),
@@ -115,7 +143,7 @@ async fn test_key_auth(server: &SshServerInfo) -> Result<(), String> {
         "-o".into(),
         "LogLevel=ERROR".into(),
     ]);
-    args.push(target);
+    push_destination(&mut args, server);
     args.push("echo ok".into());
     let cmd_args = args;
 
@@ -301,11 +329,11 @@ fn build_password_auth_stdin(password: &Zeroizing<String>) -> Zeroizing<Vec<u8>>
 /// author: logic
 /// date: 2026-06-01
 fn build_password_auth_cmd_args(server: &SshServerInfo) -> Vec<String> {
-    // skip(1) drops "ssh" itself (already specified by Command::new), leaving
-    // ["-p","2222","user@host"]. The -o options must be inserted before the
-    // destination, otherwise SSH treats -o as part of the remote command instead of its own option.
-    let mut args: Vec<String> = build_ssh_args(server).into_iter().skip(1).collect();
-    let target = args.pop().unwrap();
+    // No leading "ssh" (Command::new("ssh") supplies it). The -o options must be
+    // inserted before the destination, otherwise SSH treats -o as part of the
+    // remote command instead of its own option; the destination is appended
+    // (guarded by `--`) via push_destination.
+    let mut args: Vec<String> = ssh_connection_opts(server);
     args.extend([
         "-o".into(),
         "BatchMode=no".into(),
@@ -322,7 +350,7 @@ fn build_password_auth_cmd_args(server: &SshServerInfo) -> Vec<String> {
         "-o".into(),
         "LogLevel=ERROR".into(),
     ]);
-    args.push(target);
+    push_destination(&mut args, server);
     args.push("echo ok".into());
     args
 }

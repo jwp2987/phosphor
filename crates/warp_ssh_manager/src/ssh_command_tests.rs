@@ -33,12 +33,12 @@ fn server() -> SshServerInfo {
 #[test]
 fn default_port_omitted() {
     let s = server();
-    assert_eq!(build_ssh_args(&s), vec!["ssh", "alice@1.2.3.4"]);
+    assert_eq!(build_ssh_args(&s), vec!["ssh", "--", "alice@1.2.3.4"]);
     // shell-escape conservatively wraps user@host in single quotes; this is a
     // valid, shell-equivalent form — the unquoted version isn't required.
     let line = build_ssh_command_line(&s);
     assert!(
-        line == "ssh alice@1.2.3.4" || line == "ssh 'alice@1.2.3.4'",
+        line == "ssh -- alice@1.2.3.4" || line == "ssh -- 'alice@1.2.3.4'",
         "unexpected: {line}"
     );
 }
@@ -49,7 +49,7 @@ fn custom_port_uses_dash_p() {
     s.port = 2222;
     assert_eq!(
         build_ssh_args(&s),
-        vec!["ssh", "-p", "2222", "alice@1.2.3.4"]
+        vec!["ssh", "-p", "2222", "--", "alice@1.2.3.4"]
     );
 }
 
@@ -60,7 +60,7 @@ fn key_auth_emits_dash_i() {
     s.key_path = Some("/home/u/.ssh/id_ed25519".into());
     assert_eq!(
         build_ssh_args(&s),
-        vec!["ssh", "-i", "/home/u/.ssh/id_ed25519", "alice@1.2.3.4"]
+        vec!["ssh", "-i", "/home/u/.ssh/id_ed25519", "--", "alice@1.2.3.4"]
     );
 }
 
@@ -69,14 +69,14 @@ fn key_auth_without_path_is_skipped() {
     let mut s = server();
     s.auth_type = AuthType::Key;
     s.key_path = None;
-    assert_eq!(build_ssh_args(&s), vec!["ssh", "alice@1.2.3.4"]);
+    assert_eq!(build_ssh_args(&s), vec!["ssh", "--", "alice@1.2.3.4"]);
 }
 
 #[test]
 fn empty_username_yields_host_only() {
     let mut s = server();
     s.username = String::new();
-    assert_eq!(build_ssh_args(&s), vec!["ssh", "1.2.3.4"]);
+    assert_eq!(build_ssh_args(&s), vec!["ssh", "--", "1.2.3.4"]);
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn onekey_key_auth_emits_dash_i_when_key_path_is_resolved() {
 
     assert_eq!(
         build_ssh_args(&s),
-        vec!["ssh", "-i", "/home/u/.ssh/shared_ed25519", "alice@1.2.3.4"]
+        vec!["ssh", "-i", "/home/u/.ssh/shared_ed25519", "--", "alice@1.2.3.4"]
     );
 }
 
@@ -322,9 +322,9 @@ fn key_auth_args_destination_comes_after_options() {
     s.auth_type = AuthType::Key;
     s.key_path = Some("/home/user/.ssh/id_rsa".into());
 
-    // Mimics test_key_auth's construction logic
-    let mut args = build_ssh_args(&s);
-    let target = args.pop().unwrap();
+    // Mirrors test_key_auth's construction logic.
+    let mut args: Vec<String> = vec!["ssh".into()];
+    args.extend(ssh_connection_opts(&s));
     args.extend([
         "-o".into(),
         "BatchMode=yes".into(),
@@ -335,7 +335,7 @@ fn key_auth_args_destination_comes_after_options() {
         "-o".into(),
         "LogLevel=ERROR".into(),
     ]);
-    args.push(target);
+    push_destination(&mut args, &s);
     args.push("echo ok".into());
 
     let joined = args.join(" ");
@@ -356,6 +356,63 @@ fn key_auth_args_destination_comes_after_options() {
     assert!(
         dest_pos < echo_pos,
         "destination must come before `echo ok`; got joined: {joined}"
+    );
+}
+
+// -------- Option-injection (leading-dash host/username) regression protection --------
+//
+// Security: `ssh` parses any argv element beginning with `-` as an option, even
+// after shell-escaping. A host or username of `-oProxyCommand=...` would make
+// `ssh` run an arbitrary LOCAL command before connecting. The `--` terminator
+// pushed by `push_destination` stops option parsing so the destination can only
+// be read as positional. These tests guard that `--` immediately precedes the
+// destination in every argv path.
+
+/// A host beginning with `-` must be preceded by `--` in build_ssh_args, so ssh
+/// cannot interpret it as an option (e.g. `-oProxyCommand=...` → local RCE).
+#[test]
+fn build_ssh_args_guards_leading_dash_host() {
+    let mut s = server();
+    s.username = String::new();
+    s.host = "-oProxyCommand=touch /tmp/pwned".into();
+    let args = build_ssh_args(&s);
+
+    let dash_pos = args
+        .iter()
+        .position(|a| a == "--")
+        .expect("build_ssh_args must emit a `--` option terminator");
+    let host_pos = args
+        .iter()
+        .rposition(|a| a == "-oProxyCommand=touch /tmp/pwned")
+        .expect("host must appear in args");
+    assert_eq!(
+        host_pos,
+        dash_pos + 1,
+        "`--` must immediately precede the destination; got {args:?}"
+    );
+    // The malicious host must be the final positional (destination), not a flag.
+    assert_eq!(args.last().map(String::as_str), Some("-oProxyCommand=touch /tmp/pwned"));
+}
+
+/// Same guard on the password-auth argv path (build_password_auth_cmd_args).
+#[test]
+fn password_auth_args_guard_leading_dash_host() {
+    let mut s = server();
+    s.host = "-oProxyCommand=evil".into();
+    let args = build_password_auth_cmd_args(&s);
+
+    let dash_pos = args
+        .iter()
+        .position(|a| a == "--")
+        .expect("must emit a `--` option terminator");
+    let dest_pos = args
+        .iter()
+        .position(|a| a == "alice@-oProxyCommand=evil")
+        .expect("destination must appear in args");
+    assert_eq!(
+        dest_pos,
+        dash_pos + 1,
+        "`--` must immediately precede the destination; got {args:?}"
     );
 }
 

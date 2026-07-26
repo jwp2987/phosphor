@@ -167,13 +167,11 @@ impl SyncDataProvider for SshSyncProvider {
             onekey_credentials: sync_onekey_credentials,
         };
 
-        serde_json::to_value(&data)
-            .map_err(|e: serde_json::Error| SyncEngineError::Serialization(e.to_string()))
+        seal_payload(token, &data)
     }
 
     fn apply_data(&self, token: &str, data: &serde_json::Value) -> Result<(), SyncEngineError> {
-        let ssh_data: SshSyncData = serde_json::from_value(data.clone())
-            .map_err(|e: serde_json::Error| SyncEngineError::Serialization(e.to_string()))?;
+        let ssh_data: SshSyncData = unseal_payload(token, data)?;
 
         // ---- Phase 0 ---- decrypt everything + collect the explicit-clear list
         // pending_secrets: the remote explicitly gave ciphertext → needs to be written to the keychain
@@ -458,6 +456,55 @@ fn read_secret(
     }
 }
 
+/// On-wire envelope version for the SSH sync section.
+///
+/// v2 wraps the *entire* serialized [`SshSyncData`] in a single AES-GCM seal, so
+/// every field — `host`, `key_path`, `startup_command`, `notes`, node structure —
+/// is integrity-protected by the GCM auth tag, not just the individual secret
+/// fields. This closes an RCE-on-connect gap: previously the structural fields
+/// were plaintext and unauthenticated, and `startup_command` is written verbatim
+/// to the PTY on connect, so a tampered gist could inject a local command.
+///
+/// v1 (a bare `SshSyncData` at the top level) is unauthenticated and is refused
+/// on download — see [`unseal_payload`].
+const SEAL_VERSION: u32 = 2;
+
+/// Seals the full sync payload: serialize `SshSyncData`, then AES-GCM-encrypt the
+/// whole document so it is authenticated as a unit. The individual `*_encrypted`
+/// secret fields remain encrypted inside (defense in depth).
+fn seal_payload(token: &str, data: &SshSyncData) -> Result<serde_json::Value, SyncEngineError> {
+    let inner = serde_json::to_string(data)
+        .map_err(|e: serde_json::Error| SyncEngineError::Serialization(e.to_string()))?;
+    let sealed = crypto::encrypt(token, &inner).map_err(|e| SyncEngineError::Crypto(e.to_string()))?;
+    Ok(serde_json::json!({ "v": SEAL_VERSION, "sealed": sealed }))
+}
+
+/// Opens a sealed payload, verifying the AES-GCM tag over the whole document
+/// before returning the parsed [`SshSyncData`]. Any tampering of the sealed blob
+/// fails authentication and is rejected. A legacy v1 (unauthenticated) payload is
+/// also refused, since its structural fields cannot be integrity-checked; the
+/// user must re-upload from an updated client to rewrite the gist in v2 form.
+fn unseal_payload(
+    token: &str,
+    data: &serde_json::Value,
+) -> Result<SshSyncData, SyncEngineError> {
+    let Some(sealed) = data.get("sealed").and_then(|v| v.as_str()) else {
+        return Err(SyncEngineError::Crypto(
+            "SSH sync data is in the legacy unauthenticated format and was refused for safety. \
+             Re-upload from this device (Settings → Cloud Sync → Upload) to upgrade it to the \
+             authenticated format, then sync again."
+                .to_string(),
+        ));
+    };
+    let inner = crypto::decrypt(token, sealed).map_err(|e| {
+        SyncEngineError::Crypto(format!(
+            "SSH sync data failed integrity/authentication check (tampered, or wrong sync token): {e}"
+        ))
+    })?;
+    serde_json::from_str(&inner)
+        .map_err(|e: serde_json::Error| SyncEngineError::Serialization(e.to_string()))
+}
+
 fn encrypt_optional(token: &str, value: Option<&str>) -> Result<Option<String>, SyncEngineError> {
     match value {
         None => Ok(None),
@@ -595,6 +642,87 @@ mod tests {
     fn test_section_key() {
         let provider = SshSyncProvider::new();
         assert_eq!(provider.section_key(), "ssh");
+    }
+
+    // -------- Payload sealing / integrity (v2 authenticated envelope) --------
+
+    const SEAL_TEST_TOKEN: &str = "seal-test-token";
+
+    fn sample_data() -> SshSyncData {
+        SshSyncData {
+            nodes: vec![SyncNode {
+                id: "n1".to_string(),
+                parent_id: None,
+                kind: "server".to_string(),
+                name: "prod".to_string(),
+                sort_order: 0,
+                is_collapsed: false,
+            }],
+            servers: vec![SyncServer {
+                node_id: "n1".to_string(),
+                host: "example.com".to_string(),
+                port: 22,
+                username: "root".to_string(),
+                auth_type: "password".to_string(),
+                key_path: None,
+                startup_command: Some("echo hi".to_string()),
+                notes: None,
+                credential_id: None,
+                password_encrypted: None,
+                passphrase_encrypted: None,
+                root_password_encrypted: None,
+            }],
+            onekey_credentials: vec![],
+        }
+    }
+
+    /// The sealed envelope must round-trip and must not leak structural fields in
+    /// plaintext on the wire.
+    #[test]
+    fn seal_roundtrip_recovers_data_and_hides_fields() {
+        let sealed = seal_payload(SEAL_TEST_TOKEN, &sample_data()).unwrap();
+        assert_eq!(sealed.get("v").and_then(|v| v.as_u64()), Some(SEAL_VERSION as u64));
+
+        let wire = serde_json::to_string(&sealed).unwrap();
+        assert!(!wire.contains("example.com"), "host leaked in plaintext: {wire}");
+        assert!(!wire.contains("echo hi"), "startup_command leaked in plaintext: {wire}");
+
+        let opened = unseal_payload(SEAL_TEST_TOKEN, &sealed).unwrap();
+        assert_eq!(opened.servers.len(), 1);
+        assert_eq!(opened.servers[0].host, "example.com");
+        assert_eq!(opened.servers[0].startup_command.as_deref(), Some("echo hi"));
+    }
+
+    /// Tampering the sealed ciphertext (e.g. an attacker rewriting a writable
+    /// gist) must fail the AES-GCM authentication tag and be rejected — this is
+    /// what closes the RCE-on-connect gap via `startup_command`.
+    #[test]
+    fn tampered_sealed_payload_is_rejected() {
+        let mut sealed = seal_payload(SEAL_TEST_TOKEN, &sample_data()).unwrap();
+        let s = sealed.get("sealed").unwrap().as_str().unwrap().to_string();
+        let mut chars: Vec<char> = s.chars().collect();
+        let mid = chars.len() / 2;
+        chars[mid] = if chars[mid] == 'A' { 'B' } else { 'A' };
+        sealed["sealed"] = serde_json::Value::String(chars.into_iter().collect());
+
+        let err = unseal_payload(SEAL_TEST_TOKEN, &sealed).unwrap_err();
+        assert!(
+            matches!(err, SyncEngineError::Crypto(_)),
+            "tampered payload must fail authentication; got {err:?}"
+        );
+    }
+
+    /// A legacy v1 (bare, unauthenticated) payload must be refused, so its
+    /// unauthenticated structural fields are never applied.
+    #[test]
+    fn legacy_unauthenticated_payload_is_rejected() {
+        let legacy = serde_json::to_value(sample_data()).unwrap();
+        assert!(legacy.get("sealed").is_none());
+        let err = unseal_payload(SEAL_TEST_TOKEN, &legacy).unwrap_err();
+        assert!(
+            matches!(err, SyncEngineError::Crypto(_)),
+            "legacy payload must be refused; got {err:?}"
+        );
     }
 
     #[test]
