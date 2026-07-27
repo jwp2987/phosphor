@@ -376,9 +376,16 @@ jobs:
       # with no packaged release artifact until now — build/run
       # was source-only (`cargo run -p warp_tui`). No CLI build runs in this
       # job to reuse a warmed profile from, so this is a plain release build.
+      # app/build.rs needs CARGO_FULL_PROFILE (a custom env var, since Cargo
+      # itself doesn't expose the target-dir profile name to build scripts —
+      # see rust-lang/cargo#9661) to know where to copy conpty.dll on Windows.
+      # Without it, it defaults to "debug" and fails to find a target/debug
+      # directory that was never created by this --release build.
       - name: Build TUI
         run: cargo build -p warp_tui --release --bin zap-tui-oss
         shell: bash
+        env:
+          CARGO_FULL_PROFILE: release
 
       - name: Package TUI zip
         run: |
