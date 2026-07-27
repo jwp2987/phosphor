@@ -903,7 +903,7 @@ async fn fetch_version(
     update_id: &str,
     http_client: Arc<http_client::Client>,
 ) -> Result<VersionInfo> {
-    // openWarp uses GitHub Releases (zerx-lab/warp), completely bypassing
+    // openWarp uses GitHub Releases (jwp2987/phosphor), completely bypassing
     // official Zap's channel_versions / GCS. Return early to avoid the
     // subsequent fetch_channel_versions inevitably failing.
     if matches!(channel, Channel::Oss) {

@@ -3713,7 +3713,7 @@ impl TuiView for TuiTerminalSessionView {
                     let label = if conversation.is_summarizing() {
                         "Summarizing conversation..."
                     } else {
-                        "Warping..."
+                        "Burning in..."
                     };
                     content = content.child(
                         TuiContainer::new(self.render_warping_indicator(

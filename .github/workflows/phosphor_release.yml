@@ -304,6 +304,33 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # warp_tui is a non-default workspace member (crates/warp_tui, binary
+      # zap-tui-oss — an internal binary name, like zap-oss for the GUI;
+      # renamed to phosphor-tui below since that's what users see/download)
+      # with no packaged release artifact until now — build/run
+      # was source-only (`cargo run -p warp_tui`). Reuses the same
+      # release-cli profile + target already warmed by the CLI build above,
+      # so this doesn't pay for a second full dependency compile.
+      - name: Build TUI
+        id: bundle_tui
+        run: |
+          cargo build -p warp_tui --profile release-cli --target ${{ matrix.arch }}-apple-darwin --bin zap-tui-oss
+        shell: bash
+
+      - name: Package TUI tarball
+        run: |
+          cp "target/${{ matrix.arch }}-apple-darwin/release-cli/zap-tui-oss" phosphor-tui
+          tar czf phosphor-tui-macos-${{ matrix.arch }}.tar.gz phosphor-tui
+        shell: bash
+
+      - name: Upload TUI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phosphor-tui-macos-${{ matrix.arch }}
+          path: phosphor-tui-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
   release_windows:
     name: Build Release (Windows x64)
     runs-on: windows-latest
@@ -340,6 +367,30 @@ jobs:
         with:
           name: zap-windows-x64
           path: ${{ steps.bundle_app.outputs.installer_path }}
+          if-no-files-found: error
+          retention-days: 7
+
+      # warp_tui is a non-default workspace member (crates/warp_tui, binary
+      # zap-tui-oss — an internal binary name, like zap-oss for the GUI;
+      # renamed to phosphor-tui below since that's what users see/download)
+      # with no packaged release artifact until now — build/run
+      # was source-only (`cargo run -p warp_tui`). No CLI build runs in this
+      # job to reuse a warmed profile from, so this is a plain release build.
+      - name: Build TUI
+        run: cargo build -p warp_tui --release --bin zap-tui-oss
+        shell: bash
+
+      - name: Package TUI zip
+        run: |
+          Copy-Item target/release/zap-tui-oss.exe phosphor-tui.exe
+          Compress-Archive -Path phosphor-tui.exe -DestinationPath phosphor-tui-windows-x64.zip
+        shell: pwsh
+
+      - name: Upload TUI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phosphor-tui-windows-x64
+          path: phosphor-tui-windows-x64.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -605,6 +656,35 @@ jobs:
         with:
           name: zap-cli-linux-x86_64
           path: zap-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      # warp_tui is a non-default workspace member (crates/warp_tui, binary
+      # zap-tui-oss — an internal binary name, like zap-oss for the GUI;
+      # renamed to phosphor-tui below since that's what users see/download)
+      # with no packaged release artifact until now — build/run
+      # was source-only (`cargo run -p warp_tui`). Reuses the same
+      # release-cli profile + musl target + zig/cargo-zigbuild toolchain
+      # already warmed by the CLI build above, so this doesn't pay for a
+      # second full dependency compile or a second cross-toolchain install.
+      - name: Build TUI (static musl via zigbuild)
+        run: |
+          cargo zigbuild -p warp_tui --profile release-cli --target x86_64-unknown-linux-musl --bin zap-tui-oss
+        shell: bash
+        env:
+          PKG_CONFIG_ALLOW_CROSS: 1
+
+      - name: Package TUI tarball
+        run: |
+          cp "target/x86_64-unknown-linux-musl/release-cli/zap-tui-oss" phosphor-tui
+          tar czf phosphor-tui-linux-x86_64.tar.gz phosphor-tui
+        shell: bash
+
+      - name: Upload TUI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phosphor-tui-linux-x86_64
+          path: phosphor-tui-linux-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 7
 

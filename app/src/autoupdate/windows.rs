@@ -39,7 +39,7 @@ pub(super) async fn download_update_and_cleanup(
     let channel = ChannelState::channel();
     let installer_file_name = installer_file_name()?;
     // openWarp: fetch the real download URL from the cached GitHub Release
-    // (asset names are ZapSetup.exe / ZapSetup-arm64.exe, see
+    // (asset names are PhosphorSetup.exe / PhosphorSetup-arm64.exe, see
     // installer_file_name()). Other channels use the official base url.
     let url = if matches!(channel, Channel::Oss) {
         if let Some(release) = github::cached_release() {
@@ -51,13 +51,13 @@ pub(super) async fn download_update_and_cleanup(
                     release.tag_name
                 );
                 format!(
-                    "https://github.com/zerx-lab/warp/releases/download/v{}/{installer_file_name}",
+                    "https://github.com/jwp2987/phosphor/releases/download/v{}/{installer_file_name}",
                     version_info.version
                 )
             }
         } else {
             format!(
-                "https://github.com/zerx-lab/warp/releases/download/v{}/{installer_file_name}",
+                "https://github.com/jwp2987/phosphor/releases/download/v{}/{installer_file_name}",
                 version_info.version
             )
         }
@@ -364,8 +364,8 @@ fn app_name_prefix(channel: Channel) -> &'static str {
         Channel::Integration => "integration",
         Channel::Dev => "WarpDev",
         // Aligned with script/windows/bundle.ps1's OSS branch
-        // INSTALLER_NAME=Zap+Setup, so the GitHub Release asset name
-        // ZapSetup.exe is generated correctly by installer_file_name().
-        Channel::Oss => "Zap",
+        // INSTALLER_NAME=Phosphor+Setup, so the GitHub Release asset name
+        // PhosphorSetup.exe is generated correctly by installer_file_name().
+        Channel::Oss => "Phosphor",
     }
 }

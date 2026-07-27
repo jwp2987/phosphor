@@ -1,9 +1,9 @@
 pkgname=@@PACKAGE_NAME@@
 pkgver=@@PKGVER@@
 pkgrel=@@RELEASE@@
-pkgdesc="Zap, a community fork of the Rust-based Warp terminal"
+pkgdesc="Phosphor, a community fork of the Rust-based Warp terminal"
 arch=('@@ARCH@@')
-url="https://github.com/zerx-lab/warp"
+url="https://github.com/jwp2987/phosphor"
 license=('custom')
 depends=(
 	'curl'
@@ -39,4 +39,8 @@ package() {
 
 	# Copy the shell script that launches the application.
 	install -Dm755 $pkgname.sh "$pkgdir"/usr/bin/$pkgname
+
+	# Also provide `phosphor` as a launch command (the display brand), alongside
+	# the package's own $pkgname command (kept for existing installs/config paths).
+	install -Dm755 $pkgname.sh "$pkgdir"/usr/bin/phosphor
 }

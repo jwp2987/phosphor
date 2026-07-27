@@ -78,9 +78,10 @@ mod appimage {
         // bypassing the empty releases_base_url. Official channels still go
         // through release_assets_directory_url.
         let url = if matches!(channel, warp_core::channel::Channel::Oss) {
-            // OSS Linux AppImage's default asset name is "Zap-x86_64.AppImage".
+            // OSS Linux AppImage's default asset name is "Phosphor-x86_64.AppImage"
+            // (derived from the .desktop file's Name= field by linuxdeploy).
             // The known release asset name is fixed in GitHub Actions.
-            let asset = "Zap-x86_64.AppImage";
+            let asset = "Phosphor-x86_64.AppImage";
             if let Some(release) = crate::autoupdate::github::cached_release() {
                 if let Some(found) = release.find_asset(asset) {
                     found.browser_download_url.clone()
@@ -90,13 +91,13 @@ mod appimage {
                         release.tag_name
                     );
                     format!(
-                        "https://github.com/zerx-lab/warp/releases/download/v{}/{asset}",
+                        "https://github.com/jwp2987/phosphor/releases/download/v{}/{asset}",
                         version_info.version
                     )
                 }
             } else {
                 format!(
-                    "https://github.com/zerx-lab/warp/releases/download/v{}/{asset}",
+                    "https://github.com/jwp2987/phosphor/releases/download/v{}/{asset}",
                     version_info.version
                 )
             }
@@ -169,7 +170,7 @@ mod appimage {
         if matches!(channel, warp_core::channel::Channel::Oss) {
             let temp_path = new_appimage.path().to_path_buf();
             if let Err(e) =
-                crate::autoupdate::verify_oss_asset_sha256(&temp_path, "Zap-x86_64.AppImage")
+                crate::autoupdate::verify_oss_asset_sha256(&temp_path, "Phosphor-x86_64.AppImage")
             {
                 // The temp file is cleaned up automatically when NamedTempFile
                 // drops; only the error needs to be returned here.

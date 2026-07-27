@@ -2,13 +2,13 @@
 # Package Spec
 ###############################################################################
 
-Summary:     Zap, a community fork of the Rust-based Warp terminal
+Summary:     Phosphor, a community fork of the Rust-based Warp terminal
 Name:        @@PACKAGE_NAME@@
 Version:     @@VERSION@@
 Release:     @@RELEASE@@
-Vendor:      Zap Maintainers
-Url:         https://github.com/zerx-lab/warp
-Packager:    Zap Maintainers <zap-maintainers@localhost>
+Vendor:      Phosphor Maintainers
+Url:         https://github.com/jwp2987/phosphor
+Packager:    Phosphor Maintainers <zap-maintainers@localhost>
 License:     AGPL-3.0-only AND MIT
 
 Requires: 	 xdg-utils, (libvulkan.so.1()(64bit) or libEGL.so.1()(64bit)), (libwayland-egl.so.1()(64bit) if (libwayland-client.so.0()(64bit) and libEGL.so.1()(64bit))), libxcb.so.1()(64bit), libxkbcommon-x11.so.0()(64bit), libX11.so.6()(64bit), libX11-xcb.so.1()(64bit), libXcursor.so.1()(64bit), libXi.so.6()(64bit)
@@ -28,7 +28,7 @@ prefix:      /opt
 ###############################################################################
 
 %description
-Zap is a community fork of the Rust-based Warp terminal that strips the
+Phosphor is a community fork of the Rust-based Warp terminal that strips the
 mandatory cloud dependency, opens up the AI provider layer, ships a built-in
 SSH host manager, and lets you plug in any third-party CLI agent. All
 credentials, conversations and agent history stay on your machine.
@@ -51,9 +51,11 @@ credentials, conversations and agent history stay on your machine.
 mkdir -p %{buildroot}
 OPT_DIR="@@OPT_DIR@@" @@WORKSPACEROOT@@/script/linux/bundle_install %{buildroot}
 
-# Set up a symlink from the system's bin dir to our installed executable.
+# The user-facing launch command is `phosphor` only — not %{name}, which
+# stays as the internal package/install-dir name so existing installs'
+# config/data paths keep working unchanged.
 mkdir -p %{buildroot}%{_bindir}
-ln -s @@OPT_DIR@@/@@BINARY_NAME@@ %{buildroot}%{_bindir}/%{name}
+ln -s @@OPT_DIR@@/@@BINARY_NAME@@ %{buildroot}%{_bindir}/phosphor
 
 ###############################################################################
 # Files listing - what files will end up in the package?
@@ -64,7 +66,7 @@ ln -s @@OPT_DIR@@/@@BINARY_NAME@@ %{buildroot}%{_bindir}/%{name}
 @@OPT_DIR@@
 
 # We also install a few things elsewhere in the system.
-%{_bindir}/%{name}
+%{_bindir}/phosphor
 %{_datadir}/applications/@@BUNDLEID@@.desktop
 %{_datadir}/icons/hicolor
 

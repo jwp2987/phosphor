@@ -894,7 +894,7 @@ fn update_url(channel: Channel, version: &str) -> String {
             );
         }
         return format!(
-            "https://github.com/zerx-lab/warp/releases/download/v{version}/{asset}"
+            "https://github.com/jwp2987/phosphor/releases/download/v{version}/{asset}"
         );
     }
     format!(
@@ -919,15 +919,16 @@ fn dmg_name(channel: Channel) -> String {
         .output()
         .is_ok_and(|output| output.stdout.starts_with(b"arm64"));
 
-    // openWarp GitHub Release asset names are fixed as `Zap-arm64.dmg` /
-    // `Zap-intel.dmg` (from the .github/workflows naming convention), which
-    // doesn't match `app_name_prefix("zap-oss")`. This is hardcoded only for
-    // OSS and doesn't affect official channels' universal naming.
+    // openWarp GitHub Release asset names are fixed as `Phosphor-arm64.dmg` /
+    // `Phosphor-intel.dmg` (from script/macos/bundle's WARP_APP_NAME +
+    // --dmg-name-suffix), which doesn't match `app_name_prefix("zap-oss")`.
+    // This is hardcoded only for OSS and doesn't affect official channels'
+    // universal naming.
     if matches!(channel, Channel::Oss) {
         return if is_arm64 {
-            "Zap-arm64.dmg".to_string()
+            "Phosphor-arm64.dmg".to_string()
         } else {
-            "Zap-intel.dmg".to_string()
+            "Phosphor-intel.dmg".to_string()
         };
     }
 

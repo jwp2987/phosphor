@@ -11,11 +11,11 @@ use anyhow::{Context as _, Result};
 use lazy_static::lazy_static;
 use serde::Deserialize;
 
-const REPO_OWNER: &str = "zerx-lab";
-const REPO_NAME: &str = "warp";
+const REPO_OWNER: &str = "jwp2987";
+const REPO_NAME: &str = "phosphor";
 
 // GitHub mandatorily requires a User-Agent; the API version is also explicitly declared to avoid future default drift.
-const USER_AGENT: &str = "Zap-Autoupdate";
+const USER_AGENT: &str = "Phosphor-Autoupdate";
 const ACCEPT: &str = "application/vnd.github+json";
 const API_VERSION: &str = "2022-11-28";
 

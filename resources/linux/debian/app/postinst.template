@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 
-# Create a symlink from /usr/bin to our binary under /opt.
+# The user-facing launch command is `phosphor` only — not @@PACKAGE_NAME@@,
+# which stays as the internal package/install-dir name so existing installs'
+# config/data paths under ~/.config/zap etc. keep working unchanged (see
+# specs/phosphor-rebrand/SCOPE.md). Clean up any older package version's
+# @@PACKAGE_NAME@@ symlink before creating the phosphor one.
 rm -f /usr/bin/@@PACKAGE_NAME@@
-ln -s @@OPTDIR@@/@@BINARY_NAME@@ /usr/bin/@@PACKAGE_NAME@@
+rm -f /usr/bin/phosphor
+ln -s @@OPTDIR@@/@@BINARY_NAME@@ /usr/bin/phosphor
 
 # Make sure the system incorporates the newly-installed desktop file.
 if hash update-desktop-database 2>/dev/null; then

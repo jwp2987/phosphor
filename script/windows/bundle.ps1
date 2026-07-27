@@ -106,13 +106,13 @@ if ("$CHANNEL" -eq 'local') {
 } elseif ("$CHANNEL" -eq 'stable') {
     $WARP_BIN = 'stable'
     $BINARY_NAME = 'warp.exe'
-    $APP_NAME = 'Zap'
+    $APP_NAME = 'Phosphor'
     # TODO(vorporeal): Remove this once we get tests passing with this default enabled.
     $FEATURES = "$FEATURES,nld_improvements"
 } elseif ("$CHANNEL" -eq 'oss') {
     $WARP_BIN = 'zap-oss'
     $BINARY_NAME = 'zap-oss.exe'
-    $APP_NAME = 'Zap'
+    $APP_NAME = 'Phosphor'
     # The OSS channel uses local crash reporting; it doesn't enable the release default feature set.
     # autoupdate goes through GitHub Release (zerx-lab/warp); it only downloads to Downloads, without invoking Inno Setup.
     $FEATURES = 'release_bundle,gui,nld_improvements,autoupdate'
