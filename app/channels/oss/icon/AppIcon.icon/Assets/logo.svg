@@ -2,105 +2,38 @@
 <svg
    viewBox="0 0 512 512"
    version="1.0"
-   id="zap"
+   id="phosphor"
    xmlns="http://www.w3.org/2000/svg">
-  <defs
-     id="defs8">
-    <linearGradient
-       id="g1"
-       x1="0"
-       y1="1"
-       x2="0"
-       y2="0">
-      <stop
-         offset="0%"
-         stop-color="#184f83"
-         id="stop1" />
-      <stop
-         offset="100%"
-         stop-color="#0175c2"
-         id="stop2" />
+  <defs>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#423228"/>
+      <stop offset="100%" stop-color="#1c1510"/>
     </linearGradient>
-    <linearGradient
-       id="g2"
-       x1="0"
-       y1="1"
-       x2="0"
-       y2="0">
-      <stop
-         offset="0%"
-         stop-color="#0175c2"
-         id="stop3" />
-      <stop
-         offset="100%"
-         stop-color="#01a9fc"
-         id="stop4" />
-    </linearGradient>
-    <linearGradient
-       id="g3"
-       x1="0"
-       y1="1"
-       x2="0"
-       y2="0">
-      <stop
-         offset="0%"
-         stop-color="#01a9fc"
-         id="stop5" />
-      <stop
-         offset="100%"
-         stop-color="#00ced1"
-         id="stop6" />
-    </linearGradient>
-    <linearGradient
-       id="g4"
-       x1="0"
-       y1="1"
-       x2="0"
-       y2="0">
-      <stop
-         offset="0%"
-         stop-color="#00ced1"
-         id="stop7" />
-      <stop
-         offset="100%"
-         stop-color="#66ffcc"
-         id="stop8" />
+    <linearGradient id="glow" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#ffb437"/>
+      <stop offset="100%" stop-color="#ffe6a8"/>
     </linearGradient>
   </defs>
-  <g
-     transform="skewX(-8)"
-     id="g11">
-    <rect
-       x="70"
-       y="332"
-       width="80"
-       height="140"
-       rx="18"
-       fill="url(#g1)"
-       id="rect1" />
-    <rect
-       x="166"
-       y="252"
-       width="90"
-       height="200"
-       rx="20"
-       fill="url(#g2)"
-       id="rect2" />
-    <rect
-       x="272"
-       y="162"
-       width="110"
-       height="260"
-       rx="25"
-       fill="url(#g3)"
-       id="rect3" />
-    <rect
-       x="400"
-       y="72"
-       width="120"
-       height="320"
-       rx="30"
-       fill="url(#g4)"
-       id="rect4" />
-  </g>
+
+  <!-- base -->
+  <rect x="146" y="432" width="220" height="30" rx="12" fill="url(#bezel)"/>
+  <!-- neck -->
+  <rect x="216" y="388" width="80" height="52" rx="10" fill="url(#bezel)"/>
+
+  <!-- monitor chassis -->
+  <rect x="70" y="56" width="372" height="336" rx="36" fill="url(#bezel)"/>
+
+  <!-- screen -->
+  <rect x="108" y="94" width="296" height="260" rx="18" fill="#0f0a02"/>
+
+  <!-- prompt chevron -->
+  <path
+     d="M 154 168 L 232 224 L 154 280"
+     fill="none"
+     stroke="url(#glow)"
+     stroke-width="28"
+     stroke-linecap="round"
+     stroke-linejoin="round" />
+  <!-- cursor bar -->
+  <rect x="258" y="252" width="96" height="28" rx="6" fill="url(#glow)"/>
 </svg>

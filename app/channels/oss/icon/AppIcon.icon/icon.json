@@ -11,7 +11,7 @@
           "image-name" : "logo.svg",
           "name" : "logo",
           "position" : {
-            "scale" : 1.45,
+            "scale" : 1.0,
             "translation-in-points" : [
               0,
               0
