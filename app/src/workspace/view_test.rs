@@ -1330,7 +1330,7 @@ fn test_open_or_toggle_warp_drive() {
             );
             assert!(
                 workspace.current_workspace_state.is_warp_drive_open,
-                "Zap Drive should be open"
+                "Phosphor Drive should be open"
             );
             assert!(
                 !workspace
@@ -1338,7 +1338,7 @@ fn test_open_or_toggle_warp_drive() {
                     .as_ref(ctx)
                     .features_used
                     .contains(&Tip::Action(TipAction::ZapDrive)),
-                "Zap drive welcome tip should not be completed"
+                "Phosphor drive welcome tip should not be completed"
             );
 
             // Next, toggle zap drive as a user action. WD should be closed and tip should not be filled out.
@@ -1349,7 +1349,7 @@ fn test_open_or_toggle_warp_drive() {
             );
             assert!(
                 !workspace.current_workspace_state.is_warp_drive_open,
-                "Zap Drive should be closed"
+                "Phosphor Drive should be closed"
             );
             assert!(
                 !workspace
@@ -1357,7 +1357,7 @@ fn test_open_or_toggle_warp_drive() {
                     .as_ref(ctx)
                     .features_used
                     .contains(&Tip::Action(TipAction::ZapDrive)),
-                "Zap drive welcome tip should not be completed"
+                "Phosphor drive welcome tip should not be completed"
             );
 
             // Finally, toggle zap drive again as a user action. WD should be open and tip filled out.
@@ -1368,7 +1368,7 @@ fn test_open_or_toggle_warp_drive() {
             );
             assert!(
                 workspace.current_workspace_state.is_warp_drive_open,
-                "Zap Drive should be open"
+                "Phosphor Drive should be open"
             );
             assert!(
                 workspace
@@ -1376,7 +1376,7 @@ fn test_open_or_toggle_warp_drive() {
                     .as_ref(ctx)
                     .features_used
                     .contains(&Tip::Action(TipAction::ZapDrive)),
-                "Zap drive welcome tip should not be completed"
+                "Phosphor drive welcome tip should not be completed"
             );
         });
     });
@@ -1466,7 +1466,7 @@ fn test_switch_focus_panels() {
         workspace.update(&mut app, |view, ctx| {
             assert!(
                 view.left_panel_view.is_self_or_child_focused(ctx),
-                "Expected Zap Drive panel to be focused"
+                "Expected Phosphor Drive panel to be focused"
             );
         });
 

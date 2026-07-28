@@ -9762,7 +9762,7 @@ impl Workspace {
         let warp_drive_index_width = modal_sizes.map(|ms| {
             ms.warp_drive_index_width
                 .lock()
-                .expect("should be able to lock zap drive resizable state handle")
+                .expect("should be able to lock phosphor drive resizable state handle")
                 .size()
         });
 
@@ -12722,7 +12722,7 @@ impl Workspace {
                         ctx,
                     ),
                     _ => {
-                        log::warn!("Attempted to open an unsupported Zap Drive link")
+                        log::warn!("Attempted to open an unsupported Phosphor Drive link")
                     }
                 }
             }

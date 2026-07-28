@@ -20,7 +20,9 @@ use warpui_core::AppContext;
 use warpui_core::elements::animation::{AnimationClock, Keyframe, KeyframeTimeline};
 use warpui_core::elements::shimmer_math::ShimmerConfig;
 use warpui_core::elements::tui::{
-    Modifier, TuiAnimated, TuiElement, TuiFlex, TuiShimmeringText, TuiStyle, TuiText,
+    Modifier, TuiAnimated, TuiConstraint, TuiElement, TuiFlex, TuiLayoutContext, TuiPaintContext,
+    TuiPaintSurface, TuiScreenPoint, TuiScreenPosition, TuiShimmeringText, TuiSize, TuiStyle,
+    TuiText,
 };
 
 use crate::tui_builder::TuiUiBuilder;
@@ -68,15 +70,76 @@ static SPINNER_TIMELINE: LazyLock<KeyframeTimeline<&'static str>> = LazyLock::ne
     ])
 });
 
+/// A single-glyph spinner painted from [`SPINNER_TIMELINE`], driven by a
+/// clock. Paint-only, mirroring [`TuiShimmeringText`]: every timeline glyph is
+/// exactly one display cell wide, so `layout` runs once and repaints only
+/// re-run `render` — unlike [`TuiAnimated`] (used for the counter below),
+/// which re-runs `layout` on the *whole* tree on every repaint, forcing
+/// unrelated siblings (e.g. a large code block) to redo their layout work at
+/// the spinner's cadence. See `TuiAnimated`'s doc comment ("When not to use
+/// it") for the same tradeoff `TuiShimmeringText` already makes for the label.
+struct TuiSpinner {
+    clock: AnimationClock,
+    style: TuiStyle,
+    size: Option<TuiSize>,
+    origin: Option<TuiScreenPoint>,
+}
+
+impl TuiElement for TuiSpinner {
+    fn layout(
+        &mut self,
+        constraint: TuiConstraint,
+        _ctx: &mut TuiLayoutContext,
+        _app: &AppContext,
+    ) -> TuiSize {
+        let size = TuiSize::new(constraint.constrain_width(1), constraint.constrain_height(1));
+        self.size = Some(size);
+        size
+    }
+
+    fn render(
+        &mut self,
+        origin: TuiScreenPosition,
+        surface: &mut TuiPaintSurface<'_>,
+        ctx: &mut TuiPaintContext,
+    ) {
+        self.origin = Some(ctx.scene_point(origin));
+        let Some(size) = self.size else {
+            return;
+        };
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+
+        let glyph = *SPINNER_TIMELINE.value_at(self.clock.elapsed());
+        if let Some(cell) = surface.cell_mut(origin) {
+            cell.set_symbol(glyph).set_style(self.style);
+        }
+
+        // The spinner repaints at its timeline's shortest hold so the fast
+        // spins don't skip frames; repaint requests coalesce to the earliest
+        // deadline. This does NOT request a layout re-run (unlike
+        // TuiAnimated), which is the entire point of this element.
+        ctx.repaint_after(Duration::from_millis(FAST_SPIN_FRAME_MILLIS));
+    }
+
+    fn size(&self) -> Option<TuiSize> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<TuiScreenPoint> {
+        self.origin
+    }
+}
+
 /// Renders the shared animated TUI spinner with the supplied clock and style.
 pub(crate) fn render_spinner(clock: AnimationClock, style: TuiStyle) -> Box<dyn TuiElement> {
-    TuiAnimated::new(Duration::from_millis(FAST_SPIN_FRAME_MILLIS), move || {
-        TuiText::new(*SPINNER_TIMELINE.value_at(clock.elapsed()))
-            .with_style(style)
-            .truncate()
-            .finish()
+    Box::new(TuiSpinner {
+        clock,
+        style,
+        size: None,
+        origin: None,
     })
-    .finish()
 }
 /// Renders the animated progress row for an exchange that has been running
 /// for `elapsed`.

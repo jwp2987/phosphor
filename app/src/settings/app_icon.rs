@@ -40,7 +40,7 @@ pub enum AppIcon {
     Classic3,
     #[schemars(description = "Comets")]
     Comets,
-    /// Cow icon, for Code on Zap launch.
+    /// Cow icon, for Code on Phosphor launch.
     #[schemars(description = "Cow")]
     Cow,
     #[schemars(description = "Glass Sky")]
@@ -64,7 +64,7 @@ pub enum AppIcon {
     #[schemars(description = "Sticker")]
     Sticker,
     /// Previous default icon with solid blue background.
-    #[schemars(description = "Zap 1")]
+    #[schemars(description = "Phosphor 1")]
     WarpOne,
 }
 
@@ -87,7 +87,7 @@ impl std::fmt::Display for AppIcon {
             AppIcon::Original => "Original",
             AppIcon::Starburst => "Starburst",
             AppIcon::Sticker => "Sticker",
-            AppIcon::WarpOne => "Zap 1",
+            AppIcon::WarpOne => "Phosphor 1",
         };
         write!(f, "{value}")
     }

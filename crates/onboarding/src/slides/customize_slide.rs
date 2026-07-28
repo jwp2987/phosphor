@@ -326,7 +326,7 @@ impl CustomizeUISlide {
             });
 
             chips.push(ChipSpec {
-                label: localized("onboarding-customize-warp-drive", "Zap Drive"),
+                label: localized("onboarding-customize-warp-drive", "Phosphor Drive"),
                 is_enabled: ui.show_warp_drive,
                 mouse_state: self.chip_warp_drive_mouse.clone(),
                 on_click: Box::new(|ctx, _, _| {

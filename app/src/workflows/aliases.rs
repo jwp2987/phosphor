@@ -30,7 +30,7 @@ define_settings_group!(WorkflowAliases, settings: [
 ]);
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone, schemars::JsonSchema, SettingsValue)]
-#[schemars(description = "A shortcut alias for a Zap Drive workflow.")]
+#[schemars(description = "A shortcut alias for a Phosphor Drive workflow.")]
 pub struct WorkflowAlias {
     #[schemars(description = "The alias text that triggers this workflow.")]
     pub alias: String,

@@ -5947,7 +5947,7 @@ impl SettingsWidget for AIFactWidget {
     type View = AISettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "agent oz ai a.i. knowledge fact memory memories rules zap drive context workflows notebooks environment variables"
+        "agent oz ai a.i. knowledge fact memory memories rules phosphor drive context workflows notebooks environment variables"
     }
 
     fn should_render(&self, _app: &AppContext) -> bool {

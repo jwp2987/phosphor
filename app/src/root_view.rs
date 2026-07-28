@@ -2052,7 +2052,7 @@ impl RootView {
             ctx.windows().show_window_and_focus_app(window_id);
             ctx.notify();
         } else {
-            log::warn!("Auth not complete before trying to open zap drive object");
+            log::warn!("Auth not complete before trying to open phosphor drive object");
         }
         true
     }

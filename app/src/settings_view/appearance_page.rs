@@ -267,9 +267,9 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
         context.to_owned(),
     )]);
 
-    // Add command palette entry for toggling between Zap and Classic input modes
+    // Add command palette entry for toggling between Phosphor and Classic input modes
     app.register_fixed_bindings(vec![FixedBinding::empty(
-        "Toggle Input Mode (Zap/Classic)".to_string(),
+        "Toggle Input Mode (Phosphor/Classic)".to_string(),
         builder(SettingsAction::AppearancePageToggle(
             AppearancePageAction::ToggleInputMode,
         )),
@@ -1792,7 +1792,7 @@ impl AppearanceSettingsPageView {
             AppIcon::Original => "Original",
             AppIcon::Starburst => "Starburst",
             AppIcon::Sticker => "Sticker",
-            AppIcon::WarpOne => "Zap 1",
+            AppIcon::WarpOne => "Phosphor 1",
         }
     }
 
@@ -3874,7 +3874,7 @@ impl SettingsWidget for ToolsPanelStateScopeWidget {
     type View = AppearanceSettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "left tools panel open closed across tabs file tree project explorer global search zap drive conversation list"
+        "left tools panel open closed across tabs file tree project explorer global search phosphor drive conversation list"
     }
 
     fn render(

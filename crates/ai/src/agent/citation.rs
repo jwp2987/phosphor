@@ -14,10 +14,10 @@ impl Display for AIAgentCitation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AIAgentCitation::WarpDriveObject { uid } => {
-                write!(f, "Zap Drive Object: {uid}")
+                write!(f, "Phosphor Drive Object: {uid}")
             }
             AIAgentCitation::WarpDocumentation { path } => {
-                write!(f, "Zap Documentation: {path}")
+                write!(f, "Phosphor Documentation: {path}")
             }
             AIAgentCitation::WebPage { url } => {
                 write!(f, "Web Page: {url}")

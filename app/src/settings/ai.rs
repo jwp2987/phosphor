@@ -1646,7 +1646,7 @@ define_settings_group!(AISettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "agents.knowledge.warp_drive_context_enabled",
-        description: "Whether Zap Drive context is included in AI requests.",
+        description: "Whether Phosphor Drive context is included in AI requests.",
     }
 
     // Whether the agent mode setup banner has been shown for a given repo path.

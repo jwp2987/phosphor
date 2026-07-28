@@ -266,7 +266,7 @@ pub fn write_has_auto_opened_welcome_folder_to_user_defaults(app: &mut AppContex
     settings_value::SettingsValue,
 )]
 #[schemars(
-    description = "Sort order for Zap Drive items.",
+    description = "Sort order for Phosphor Drive items.",
     rename_all = "snake_case"
 )]
 pub enum DriveSortOrder {
