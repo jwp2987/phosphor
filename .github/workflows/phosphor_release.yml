@@ -275,7 +275,7 @@ jobs:
       - name: Upload DMG artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zap-macos-${{ matrix.dmg_name_suffix }}
+          name: phosphor-macos-${{ matrix.dmg_name_suffix }}
           path: ${{ steps.bundle_app.outputs.dmg_path }}
           if-no-files-found: error
           retention-days: 7
@@ -291,7 +291,7 @@ jobs:
       - name: Package CLI tarball
         run: |
           cp "${{ steps.bundle_cli.outputs.binary_path }}" zap-oss
-          tar czf zap-macos-${{ matrix.arch }}.tar.gz \
+          tar czf phosphor-cli-macos-${{ matrix.arch }}.tar.gz \
             zap-oss \
             -C "$(dirname "${{ steps.bundle_cli.outputs.bundled_resources_dir }}")" resources
         shell: bash
@@ -299,8 +299,8 @@ jobs:
       - name: Upload CLI artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zap-cli-macos-${{ matrix.arch }}
-          path: zap-macos-${{ matrix.arch }}.tar.gz
+          name: phosphor-cli-macos-${{ matrix.arch }}
+          path: phosphor-cli-macos-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -365,7 +365,7 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zap-windows-x64
+          name: phosphor-windows-x64
           path: ${{ steps.bundle_app.outputs.installer_path }}
           if-no-files-found: error
           retention-days: 7
@@ -576,10 +576,25 @@ jobs:
             '
         shell: bash
 
+      # dpkg-deb/rpmbuild/makepkg all auto-derive their output filename from
+      # the internal package name (@@PACKAGE_NAME@@ = "zap", kept for
+      # install-path compatibility — see specs/phosphor-rebrand/SCOPE.md), so
+      # the .deb/.rpm/.pkg.tar.zst filenames still say "zap" even though the
+      # AppImage already reads "Phosphor" (from the .desktop file's Name=).
+      # Rename them to match before they land on the release page.
+      - name: Rename package files for the release page
+        shell: bash
+        run: |
+          dir="${{ steps.bundle_app.outputs.packages_dir }}"
+          for f in "$dir"/zap_* "$dir"/zap-*; do
+            [ -e "$f" ] || continue
+            mv "$f" "$(dirname "$f")/$(basename "$f" | sed -E 's/^zap([_-])/phosphor\1/')"
+          done
+
       - name: Upload package artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zap-linux-x86_64
+          name: phosphor-linux-x86_64
           # packages_dir is target/release-lto/bundle/linux; AppImage/deb/Arch all land here
           path: ${{ steps.bundle_app.outputs.packages_dir }}
           if-no-files-found: error
@@ -653,7 +668,7 @@ jobs:
       - name: Package CLI tarball
         run: |
           cp "${{ steps.bundle_cli.outputs.executable_path }}" zap-oss
-          tar czf zap-linux-x86_64.tar.gz \
+          tar czf phosphor-cli-linux-x86_64.tar.gz \
             zap-oss \
             -C "$(dirname "${{ steps.bundle_cli.outputs.bundled_resources_dir }}")" resources
         shell: bash
@@ -661,8 +676,8 @@ jobs:
       - name: Upload CLI artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: zap-cli-linux-x86_64
-          path: zap-linux-x86_64.tar.gz
+          name: phosphor-cli-linux-x86_64
+          path: phosphor-cli-linux-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 7
 
