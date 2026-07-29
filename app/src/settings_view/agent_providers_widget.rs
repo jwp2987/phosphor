@@ -111,6 +111,27 @@ pub(super) fn toggle_disabled_section_expanded() {
     DISABLED_SECTION_EXPANDED.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Forces the "Disabled providers" section open. Used when adding a new empty provider,
+/// since it lands in that section (no models yet) and would otherwise be invisible right
+/// after clicking "+ Add provider".
+pub(super) fn set_disabled_section_expanded(expanded: bool) {
+    DISABLED_SECTION_EXPANDED.store(expanded, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the "Hidden providers" section (models.dev catalog entries the user chose not to
+/// see in the quick-add row) is expanded. Collapsed by default, same rationale as
+/// `DISABLED_SECTION_EXPANDED`.
+static HIDDEN_CATALOG_SECTION_EXPANDED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn hidden_catalog_section_expanded() -> bool {
+    HIDDEN_CATALOG_SECTION_EXPANDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(super) fn toggle_hidden_catalog_section_expanded() {
+    HIDDEN_CATALOG_SECTION_EXPANDED.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // Per-provider model list search + disabled-models section state (process-local, not
 // persisted -- same treatment as the model-row expansion state above)
@@ -387,10 +408,13 @@ pub(super) struct AgentProvidersWidget {
     refresh_catalog_button_state: MouseStateHandle,
     expand_chips_button_state: MouseStateHandle,
     disabled_section_toggle_button_state: MouseStateHandle,
+    hidden_catalog_section_toggle_button_state: MouseStateHandle,
     /// The search box for the quick-add chip row.
     search_editor: ViewHandle<EditorView>,
     /// One button state per catalog provider id -- used by the chip row.
     quick_add_button_states: RefCell<HashMap<String, MouseStateHandle>>,
+    /// One hide/unhide button state per catalog provider id.
+    quick_hide_button_states: RefCell<HashMap<String, MouseStateHandle>>,
     rows: RefCell<HashMap<String, ProviderRow>>,
 }
 
@@ -436,8 +460,10 @@ impl AgentProvidersWidget {
             refresh_catalog_button_state: MouseStateHandle::default(),
             expand_chips_button_state: MouseStateHandle::default(),
             disabled_section_toggle_button_state: MouseStateHandle::default(),
+            hidden_catalog_section_toggle_button_state: MouseStateHandle::default(),
             search_editor,
             quick_add_button_states: RefCell::new(HashMap::new()),
+            quick_hide_button_states: RefCell::new(HashMap::new()),
             rows: RefCell::new(rows),
         }
     }
@@ -1173,12 +1199,12 @@ impl AgentProvidersWidget {
         app: &AppContext,
     ) -> Box<dyn Element> {
         let is_any_ai_enabled = AISettings::as_ref(app).is_any_ai_enabled(app);
-        let label_color = if is_any_ai_enabled && !provider.disabled {
+        let label_color = if is_any_ai_enabled && !provider.effectively_disabled() {
             appearance.theme().active_ui_text_color()
         } else {
             appearance.theme().disabled_ui_text_color()
         };
-        let detail_color = if is_any_ai_enabled && !provider.disabled {
+        let detail_color = if is_any_ai_enabled && !provider.effectively_disabled() {
             appearance.theme().foreground()
         } else {
             appearance.theme().disabled_ui_text_color()
@@ -1627,7 +1653,9 @@ impl AgentProvidersWidget {
             appearance,
         );
         // Hides the provider's models from the picker without touching its saved config or
-        // API key -- the reversible alternative to Remove.
+        // API key -- the reversible alternative to Remove. Always reflects the raw explicit
+        // flag (not effectively_disabled()): even an empty, auto-hidden provider can be
+        // explicitly disabled too, so it stays hidden after models are later added.
         let disable_toggle_label = if provider.disabled {
             crate::t!("settings-agent-providers-enable")
         } else {
@@ -1706,7 +1734,7 @@ impl AgentProvidersWidget {
         let _ = detail_color;
 
         let mut card = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        if provider.disabled {
+        if provider.effectively_disabled() {
             card.add_child(
                 Container::new(render_customer_type_badge(
                     appearance,
@@ -1844,7 +1872,7 @@ impl AgentProvidersWidget {
     fn render_models_dev_section(
         &self,
         appearance: &Appearance,
-        _app: &AppContext,
+        app: &AppContext,
     ) -> Box<dyn Element> {
         use crate::ai::agent_providers::models_dev;
 
@@ -1929,8 +1957,24 @@ impl AgentProvidersWidget {
                 // Filters by the search query; an empty query -> all entries in order.
                 let query = models_dev::search_query();
                 let filtered = models_dev::filter_catalog(&catalog, &query);
-                let total = filtered.len();
                 let has_query = !query.trim().is_empty();
+
+                // Only a handful of "common" providers (the ones this app has a native
+                // adapter for) show in the main row by default; everything else starts in
+                // the collapsed "Hidden providers" section below, still reachable by
+                // searching for it or one of its models. `overrides` flips that default in
+                // either direction per id -- see `models_dev::effectively_visible`.
+                let overrides: HashSet<String> = AISettings::as_ref(app)
+                    .catalog_provider_visibility_overrides
+                    .value()
+                    .iter()
+                    .cloned()
+                    .collect();
+                let (visible_matching, hidden_matching): (Vec<_>, Vec<_>) = filtered
+                    .into_iter()
+                    .partition(|(cat_id, _)| models_dev::effectively_visible(cat_id, &overrides));
+
+                let total = visible_matching.len();
                 // When search is active, always expand all matches without collapsing
                 // (otherwise a result count <= the collapse limit wouldn't show them all).
                 let visible_count = if expanded || has_query {
@@ -1944,30 +1988,46 @@ impl AgentProvidersWidget {
                     .with_run_spacing(6.)
                     .with_cross_axis_alignment(CrossAxisAlignment::Center);
                 {
-                    let mut states = self.quick_add_button_states.borrow_mut();
-                    for (cat_id, cat_provider) in filtered.iter().take(visible_count) {
+                    let mut add_states = self.quick_add_button_states.borrow_mut();
+                    let mut hide_states = self.quick_hide_button_states.borrow_mut();
+                    for (cat_id, cat_provider) in visible_matching.iter().take(visible_count) {
                         let label = if cat_provider.name.is_empty() {
                             cat_id.clone()
                         } else {
                             cat_provider.name.clone()
                         };
-                        let state = states.entry(cat_id.clone()).or_default().clone();
+                        let add_state = add_states.entry(cat_id.clone()).or_default().clone();
                         let model_count = cat_provider.models.len();
                         let display_label = format!("+ {label} ({model_count})");
                         let chip = Self::render_card_button(
                             display_label,
-                            state,
+                            add_state,
                             AISettingsPageAction::AddProviderFromModelsDev {
                                 catalog_provider_id: cat_id.clone(),
                             },
                             appearance,
                         );
-                        wrap = wrap.with_child(chip);
+                        let hide_state = hide_states.entry(cat_id.clone()).or_default().clone();
+                        let hide_button = Self::render_card_button(
+                            "×",
+                            hide_state,
+                            AISettingsPageAction::ToggleCatalogProviderVisibilityOverride {
+                                catalog_provider_id: cat_id.clone(),
+                            },
+                            appearance,
+                        );
+                        wrap = wrap.with_child(
+                            Flex::row()
+                                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                                .with_child(chip)
+                                .with_child(Container::new(hide_button).with_margin_left(2.).finish())
+                                .finish(),
+                        );
                     }
                 }
                 body.add_child(Container::new(wrap.finish()).with_margin_top(4.).finish());
 
-                if has_query && total == 0 {
+                if has_query && total == 0 && hidden_matching.is_empty() {
                     body.add_child(
                         Container::new(
                             Text::new(
@@ -2011,6 +2071,69 @@ impl AgentProvidersWidget {
                         .with_margin_top(6.)
                         .finish(),
                     );
+                }
+
+                // Hidden providers live in their own collapsed-by-default section, mirroring
+                // the "Disabled providers" section for configured providers -- same
+                // decluttering rationale, just for catalog entries never added at all.
+                if !hidden_matching.is_empty() {
+                    let hidden_section_expanded = hidden_catalog_section_expanded();
+                    let hidden_toggle_label = if hidden_section_expanded {
+                        crate::t!(
+                            "settings-agent-providers-hidden-catalog-collapse",
+                            count = hidden_matching.len()
+                        )
+                    } else {
+                        crate::t!(
+                            "settings-agent-providers-hidden-catalog-expand",
+                            count = hidden_matching.len()
+                        )
+                    };
+                    let hidden_toggle_button = Self::render_card_button(
+                        hidden_toggle_label,
+                        self.hidden_catalog_section_toggle_button_state.clone(),
+                        AISettingsPageAction::ToggleHiddenCatalogSectionExpanded,
+                        appearance,
+                    );
+                    body.add_child(
+                        Container::new(
+                            Flex::row()
+                                .with_main_axis_alignment(MainAxisAlignment::Start)
+                                .with_child(hidden_toggle_button)
+                                .finish(),
+                        )
+                        .with_margin_top(6.)
+                        .finish(),
+                    );
+                    if hidden_section_expanded {
+                        let mut hide_states = self.quick_hide_button_states.borrow_mut();
+                        let mut unhide_wrap = Wrap::row()
+                            .with_spacing(6.)
+                            .with_run_spacing(6.)
+                            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+                        for (cat_id, cat_provider) in &hidden_matching {
+                            let label = if cat_provider.name.is_empty() {
+                                cat_id.clone()
+                            } else {
+                                cat_provider.name.clone()
+                            };
+                            let state = hide_states.entry(cat_id.clone()).or_default().clone();
+                            let unhide_button = Self::render_card_button(
+                                format!("↺ {label}"),
+                                state,
+                                AISettingsPageAction::ToggleCatalogProviderVisibilityOverride {
+                                    catalog_provider_id: cat_id.clone(),
+                                },
+                                appearance,
+                            );
+                            unhide_wrap = unhide_wrap.with_child(unhide_button);
+                        }
+                        body.add_child(
+                            Container::new(unhide_wrap.finish())
+                                .with_margin_top(6.)
+                                .finish(),
+                        );
+                    }
                 }
             }
         }
@@ -2106,7 +2229,7 @@ impl SettingsWidget for AgentProvidersWidget {
             column.add_child(empty);
         } else {
             let (disabled_providers, active_providers): (Vec<_>, Vec<_>) =
-                providers.iter().partition(|p| p.disabled);
+                providers.iter().partition(|p| p.effectively_disabled());
 
             for provider in &active_providers {
                 column.add_child(self.render_provider_card(provider, appearance, app));

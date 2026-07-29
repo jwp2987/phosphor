@@ -793,12 +793,35 @@ fn extra_headers_round_trip() {
 }
 
 #[test]
-fn new_empty_provider_starts_disabled() {
-    // With no model configured yet there's nothing to serve; it should not show up in the
-    // picker as a confusing empty entry until the user finishes setting it up.
+fn new_empty_provider_is_not_explicitly_disabled_but_reads_as_effectively_disabled() {
+    // The raw flag starts false (the provider itself was never explicitly turned off) --
+    // only `effectively_disabled()` (used for the Settings UI grouping) treats it as off,
+    // because it has no models yet. This is what makes a freshly configured provider
+    // graduate to "enabled" automatically the moment it gets a model, with no separate
+    // "Enable" click needed.
     let provider = AgentProvider::new_empty();
-    assert!(provider.disabled);
+    assert!(!provider.disabled);
+    assert!(provider.effectively_disabled());
     assert!(!provider.is_usable());
+}
+
+#[test]
+fn effectively_disabled_auto_graduates_once_models_are_added() {
+    let mut provider = AgentProvider::new_empty();
+    assert!(
+        provider.effectively_disabled(),
+        "no models yet -> effectively disabled"
+    );
+
+    provider.models = vec![AgentProviderModel::from_id("some-model".to_string())];
+    assert!(
+        !provider.effectively_disabled(),
+        "adding a model should graduate it back to enabled automatically"
+    );
+
+    // But an explicit disable always wins, even with models configured.
+    provider.disabled = true;
+    assert!(provider.effectively_disabled());
 }
 
 #[test]

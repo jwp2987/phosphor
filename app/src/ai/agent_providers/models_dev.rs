@@ -20,7 +20,7 @@
 //! unavailable the UI just shows empty data with "models.dev hasn't been fetched
 //! yet, please check your network".
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -322,8 +322,10 @@ pub fn set_search_query(q: String) {
     }
 }
 
-/// Filters the catalog by the current search query, case-insensitively matching a
-/// substring against provider.name and provider.id.
+/// Filters the catalog by the current search query, case-insensitively matching a substring
+/// against provider.name, provider.id, or any of the provider's model names/ids -- so
+/// searching "claude" surfaces a provider you've never heard of just because it happens to
+/// serve a Claude model, without needing to already know which provider hosts it.
 /// An empty query returns all entries in order. Returns an owned Vec so the UI side
 /// can take/iter it.
 pub fn filter_catalog(catalog: &Catalog, query: &str) -> Vec<(String, Provider)> {
@@ -336,9 +338,41 @@ pub fn filter_catalog(catalog: &Catalog, query: &str) -> Vec<(String, Provider)>
     }
     catalog
         .iter()
-        .filter(|(id, p)| id.to_lowercase().contains(&q) || p.name.to_lowercase().contains(&q))
+        .filter(|(id, p)| {
+            id.to_lowercase().contains(&q)
+                || p.name.to_lowercase().contains(&q)
+                || p.models
+                    .values()
+                    .any(|m| m.id.to_lowercase().contains(&q) || m.name.to_lowercase().contains(&q))
+        })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
+}
+
+/// Catalog provider ids shown in the Quick-add row by default, without needing a search --
+/// the app has a dedicated native adapter for each (see `AgentProviderApiType`), so these are
+/// the ones most users will actually reach for. Everything else defaults into the collapsed
+/// "Hidden providers" section (still reachable by name or by searching for one of its
+/// models) unless the user explicitly overrides it -- see `effectively_visible`.
+const COMMON_PROVIDER_IDS: &[&str] = &[
+    "openai",
+    "anthropic",
+    "google",
+    VERTEX_QUICK_ADD_ID,
+    "ollama",
+    "deepseek",
+];
+
+pub fn is_common_provider(catalog_provider_id: &str) -> bool {
+    COMMON_PROVIDER_IDS.contains(&catalog_provider_id)
+}
+
+/// Whether a catalog provider should show in the Quick-add row's main (non-collapsed) chip
+/// row: common by default, with `overrides` flipping that default in either direction --
+/// membership hides an otherwise-common provider, or pins an otherwise-uncommon one visible.
+/// The same override set and the same toggle action serve both directions.
+pub fn effectively_visible(catalog_provider_id: &str, overrides: &HashSet<String>) -> bool {
+    is_common_provider(catalog_provider_id) != overrides.contains(catalog_provider_id)
 }
 
 /// Converts a models.dev Model into the local settings' AgentProviderModel.
@@ -518,5 +552,63 @@ mod quick_add_tests {
         let merged = quick_add_catalog(&catalog);
         assert_eq!(merged.len(), 1);
         assert!(!merged.contains_key(VERTEX_QUICK_ADD_ID));
+    }
+
+    #[test]
+    fn is_common_provider_matches_the_natively_supported_ones() {
+        assert!(is_common_provider("openai"));
+        assert!(is_common_provider("anthropic"));
+        assert!(is_common_provider("google"));
+        assert!(is_common_provider("google-vertex"));
+        assert!(is_common_provider("ollama"));
+        assert!(is_common_provider("deepseek"));
+        assert!(!is_common_provider("302-ai"));
+        assert!(!is_common_provider("groq"));
+    }
+
+    #[test]
+    fn effectively_visible_defaults_to_common_and_flips_with_overrides() {
+        let empty: HashSet<String> = HashSet::new();
+        assert!(effectively_visible("ollama", &empty), "common, no override");
+        assert!(
+            !effectively_visible("302-ai", &empty),
+            "uncommon, no override"
+        );
+
+        let mut overrides = HashSet::new();
+        overrides.insert("ollama".to_owned());
+        overrides.insert("302-ai".to_owned());
+        assert!(
+            !effectively_visible("ollama", &overrides),
+            "common, explicitly hidden by override"
+        );
+        assert!(
+            effectively_visible("302-ai", &overrides),
+            "uncommon, explicitly pinned visible by override"
+        );
+    }
+
+    #[test]
+    fn filter_catalog_matches_provider_name_id_or_a_model_name_or_id() {
+        let mut catalog = Catalog::new();
+        catalog.insert(
+            "some-obscure-gateway".to_owned(),
+            provider("Some Obscure Gateway", &["claude-sonnet-5", "gpt-5"]),
+        );
+        catalog.insert("anthropic".to_owned(), provider("Anthropic", &["claude"]));
+
+        // Matches by provider name/id, as before.
+        assert_eq!(filter_catalog(&catalog, "obscure").len(), 1);
+        assert_eq!(filter_catalog(&catalog, "some-obscure-gateway").len(), 1);
+
+        // New: matches by a model id/name the provider serves, even though the query never
+        // appears in the provider's own name -- this is how an uncommon, default-hidden
+        // provider is meant to be found without already knowing its name.
+        let by_model = filter_catalog(&catalog, "claude-sonnet-5");
+        assert_eq!(by_model.len(), 1);
+        assert_eq!(by_model[0].0, "some-obscure-gateway");
+
+        // A query with no match anywhere (name or models) returns nothing.
+        assert!(filter_catalog(&catalog, "no-such-thing-exists").is_empty());
     }
 }

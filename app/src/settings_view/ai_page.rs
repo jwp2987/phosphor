@@ -2525,6 +2525,14 @@ pub enum AISettingsPageAction {
     /// Sets the search query for the "quick add" chip row (substring-filters provider
     /// name/id).
     SetModelsDevSearchQuery(String),
+    /// Flips a models.dev catalog provider id's default Quick-add visibility (see
+    /// `models_dev::effectively_visible`): hides an otherwise-common provider, or pins an
+    /// otherwise-uncommon one visible. Never adds it as a real configured provider.
+    ToggleCatalogProviderVisibilityOverride {
+        catalog_provider_id: String,
+    },
+    /// Collapses/expands the "Hidden providers" section in the quick-add row.
+    ToggleHiddenCatalogSectionExpanded,
 
     // ----- Single model entry detail panel -----
     /// Toggles a single model's detail panel expanded/collapsed state.
@@ -3286,6 +3294,10 @@ impl TypedActionView for AISettingsPageView {
                     providers.push(crate::settings::AgentProvider::new_empty());
                     let _ = settings.agent_providers.set_value(providers, ctx);
                 });
+                // The new provider has no models yet, so it lands in the "Disabled
+                // providers" section (see AgentProvider::effectively_disabled) -- force it
+                // open so the card is actually visible to configure.
+                super::agent_providers_widget::set_disabled_section_expanded(true);
                 self.rebuild_current_page(ctx);
             }
             AISettingsPageAction::RemoveAgentProvider { provider_id } => {
@@ -3701,10 +3713,9 @@ impl TypedActionView for AISettingsPageView {
                     .values()
                     .map(models_dev::into_agent_provider_model)
                     .collect();
-                // new_empty() defaults to disabled (nothing configured yet); a quick-add already
-                // brings its own model list, so it should come in live unless the catalog entry
-                // itself had none.
-                new_provider.disabled = new_provider.models.is_empty();
+                // No need to touch `disabled` here: AgentProvider::effectively_disabled()
+                // already treats an empty-of-models provider as disabled automatically, and
+                // graduates it back once models land -- see the doc comment there.
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     let mut providers = settings.agent_providers.value().clone();
                     providers.push(new_provider);
@@ -3810,6 +3821,26 @@ impl TypedActionView for AISettingsPageView {
             AISettingsPageAction::SetModelsDevSearchQuery(q) => {
                 use crate::ai::agent_providers::models_dev;
                 models_dev::set_search_query(q.clone());
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleCatalogProviderVisibilityOverride {
+                catalog_provider_id,
+            } => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let mut overrides = settings.catalog_provider_visibility_overrides.value().clone();
+                    if let Some(pos) = overrides.iter().position(|id| id == catalog_provider_id) {
+                        overrides.remove(pos);
+                    } else {
+                        overrides.push(catalog_provider_id.clone());
+                    }
+                    let _ = settings
+                        .catalog_provider_visibility_overrides
+                        .set_value(overrides, ctx);
+                });
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleHiddenCatalogSectionExpanded => {
+                super::agent_providers_widget::toggle_hidden_catalog_section_expanded();
                 ctx.notify();
             }
             AISettingsPageAction::ToggleAgentProviderModelExpanded {

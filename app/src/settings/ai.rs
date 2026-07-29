@@ -890,12 +890,9 @@ impl AgentProvider {
         uuid::Uuid::new_v4().to_string()
     }
 
-    /// Constructs a new, empty provider.
-    ///
-    /// Starts `disabled`: with no models configured yet it has nothing to serve, and
-    /// would otherwise sit in the picker as a confusing empty entry until the user
-    /// finishes filling it in and saves. Adding a model (directly, via "Fetch from
-    /// API", or via "Sync from models.dev") is what should make it live.
+    /// Constructs a new, empty provider. `disabled` starts `false` (not explicitly turned
+    /// off) -- see [`AgentProvider::effectively_disabled`] for why it still shows up as
+    /// disabled in the UI until it's configured.
     pub fn new_empty() -> Self {
         Self {
             id: Self::default_id(),
@@ -907,7 +904,7 @@ impl AgentProvider {
             extra_headers: Vec::new(),
             vertex_project: String::new(),
             vertex_location: String::new(),
-            disabled: true,
+            disabled: false,
         }
     }
 
@@ -926,13 +923,27 @@ impl AgentProvider {
         }
     }
 
-    /// Whether this provider has an endpoint, at least one model, and hasn't been disabled —
-    /// i.e. whether it should show up in the model picker. `build_byop_llm_infos` is the sole
-    /// caller; `lookup_byop` (resolving an already-selected model at request time) only checks
-    /// `disabled` directly, since by that point `model_id` came from the caller's `LLMId`, not
-    /// from `self.models`.
+    /// Whether this provider should be treated as off: either the user explicitly disabled
+    /// it, or it has no models configured yet and so has nothing to serve. The second half
+    /// is deliberately a *computed*, live check rather than a flag set once at creation --
+    /// a freshly added provider starts this way automatically, and the moment it's given a
+    /// model it graduates back to enabled on its own, no separate "Enable" click needed. A
+    /// provider that already has models stays enabled until someone explicitly disables it;
+    /// this never auto-flips `disabled` itself.
+    ///
+    /// This is the single predicate the Settings UI uses to decide whether a provider card
+    /// belongs in the main list or the collapsed "Disabled providers" section.
+    pub fn effectively_disabled(&self) -> bool {
+        self.disabled || self.models.is_empty()
+    }
+
+    /// Whether this provider has an endpoint, at least one model, and isn't disabled — i.e.
+    /// whether it should show up in the model picker. `build_byop_llm_infos` is the sole
+    /// caller; `lookup_byop` (resolving an already-selected model at request time) checks
+    /// [`AgentProvider::effectively_disabled`] directly instead, since by that point
+    /// `model_id` came from the caller's `LLMId`, not from `self.models`.
     pub fn is_usable(&self) -> bool {
-        if self.disabled {
+        if self.effectively_disabled() {
             return false;
         }
         let has_endpoint = if self.api_type.is_vertex() {
@@ -940,7 +951,7 @@ impl AgentProvider {
         } else {
             !self.base_url.trim().is_empty()
         };
-        has_endpoint && !self.models.is_empty()
+        has_endpoint
     }
 }
 
@@ -2001,6 +2012,21 @@ define_settings_group!(AISettings, settings: [
         private: false,
         toml_path: "agents.warp_agent.providers",
         description: "User-configured custom Agent providers (OpenAI-compatible).",
+    }
+
+    // models.dev catalog provider ids where the user has flipped the "Quick add" chip row's
+    // default visibility (see `models_dev::is_common_provider` / `effectively_visible`):
+    // membership here hides an otherwise-common provider, or pins an otherwise-uncommon one
+    // visible. Entries here were never added as a real configured provider -- unlike
+    // `agent_providers`, this only affects the browse row.
+    catalog_provider_visibility_overrides: CatalogProviderVisibilityOverrides {
+        type: Vec<String>,
+        default: Vec::new(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.warp_agent.catalog_provider_visibility_overrides",
+        description: "Quick-add catalog provider ids with flipped default visibility.",
     }
 
     // Zap BYOP local conversation compaction — 1:1 aligned with opencode's
