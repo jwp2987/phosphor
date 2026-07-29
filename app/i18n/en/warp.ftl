@@ -1587,6 +1587,11 @@ settings-agent-providers-add-model = + Add model
 settings-agent-providers-fetch-from-api = Fetch from API
 settings-agent-providers-sync-models-dev = Sync from models.dev
 settings-agent-providers-remove = Remove
+settings-agent-providers-disable = Disable
+settings-agent-providers-enable = Enable
+settings-agent-providers-disabled-badge = Disabled
+settings-agent-providers-disabled-section-expand = ▸ Disabled providers ({$count})
+settings-agent-providers-disabled-section-collapse = ▾ Disabled providers ({$count})
 settings-agent-providers-save = Save
 settings-agent-providers-saved-toast = Saved
 

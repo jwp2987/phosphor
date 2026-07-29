@@ -72,23 +72,18 @@ use crate::settings::{AISettings, AgentProvider};
 /// `Authorization` header.
 /// Invalid providers (missing base_url or no models) are ignored entirely, and their
 /// models don't show up in the picker — this lets the user intuitively see "which
-/// providers aren't fully filled in → don't appear".
+/// providers aren't fully filled in → don't appear". Explicitly disabled providers
+/// (`AgentProvider::disabled`) are skipped the same way, without touching their
+/// stored config or API key.
 fn build_byop_llm_infos(app: &AppContext) -> Vec<LLMInfo> {
     let providers = AISettings::as_ref(app).agent_providers.value().clone();
     let mut out = Vec::new();
 
     for provider in providers {
-        // A provider is addressable only if it has an endpoint. For Vertex that is derived from
-        // `vertex_project` (+ optional location); for every other type it's `base_url`.
-        let has_endpoint = if provider.api_type.is_vertex() {
-            !provider.vertex_project.trim().is_empty()
-        } else {
-            !provider.base_url.trim().is_empty()
-        };
-        if !has_endpoint {
-            continue;
-        }
-        if provider.models.is_empty() {
+        // Skips providers missing an endpoint / with no models / explicitly disabled by the
+        // user (see AgentProvider::is_usable) — their models don't show up in the picker at
+        // all, same treatment as an unconfigured provider.
+        if !provider.is_usable() {
             continue;
         }
 
@@ -191,12 +186,18 @@ pub fn build_byop_models_by_feature(app: &AppContext) -> ModelsByFeature {
 
 /// Given a BYOP `LLMId`, looks up `(provider, api_key, model_id)` from `AISettings`
 /// and secrets.
-/// Returns `None` if any piece of information is missing (the controller caller
-/// should map this to an `InvalidApiKey` error).
+/// Returns `None` if any piece of information is missing, or the provider is disabled
+/// (the controller caller should map this to an `InvalidApiKey` error). A model
+/// disabled mid-use is handled the same way an ordinary deleted provider already is:
+/// `AvailableLLMs::new` falls back to the first remaining choice once the disabled
+/// provider's models drop out of `build_byop_llm_infos`.
 pub fn lookup_byop(app: &AppContext, id: &ai::LLMId) -> Option<(AgentProvider, String, String)> {
     let (provider_id, model_id) = llm_id::decode(id)?;
     let providers = AISettings::as_ref(app).agent_providers.value().clone();
     let provider = providers.into_iter().find(|p| p.id == provider_id)?;
+    if provider.disabled {
+        return None;
+    }
     // API key is optional: returns an empty string when there's no key; downstream
     // build_client passes this to genai as `AuthData::from_single("")` —— no
     // `Authorization` header attached, which works for local unauthenticated services

@@ -877,6 +877,12 @@ pub struct AgentProvider {
     /// to `global`. Ignored for other api types.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub vertex_location: String,
+
+    /// Whether this provider is temporarily excluded from the model picker without deleting
+    /// its configuration or stored API key. Unlike removal, toggling this back off instantly
+    /// restores the provider exactly as it was. See [`AgentProvider::is_usable`].
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disabled: bool,
 }
 
 impl AgentProvider {
@@ -885,6 +891,11 @@ impl AgentProvider {
     }
 
     /// Constructs a new, empty provider.
+    ///
+    /// Starts `disabled`: with no models configured yet it has nothing to serve, and
+    /// would otherwise sit in the picker as a confusing empty entry until the user
+    /// finishes filling it in and saves. Adding a model (directly, via "Fetch from
+    /// API", or via "Sync from models.dev") is what should make it live.
     pub fn new_empty() -> Self {
         Self {
             id: Self::default_id(),
@@ -896,6 +907,7 @@ impl AgentProvider {
             extra_headers: Vec::new(),
             vertex_project: String::new(),
             vertex_location: String::new(),
+            disabled: true,
         }
     }
 
@@ -912,6 +924,23 @@ impl AgentProvider {
         } else {
             self.base_url.clone()
         }
+    }
+
+    /// Whether this provider has an endpoint, at least one model, and hasn't been disabled —
+    /// i.e. whether it should show up in the model picker. `build_byop_llm_infos` is the sole
+    /// caller; `lookup_byop` (resolving an already-selected model at request time) only checks
+    /// `disabled` directly, since by that point `model_id` came from the caller's `LLMId`, not
+    /// from `self.models`.
+    pub fn is_usable(&self) -> bool {
+        if self.disabled {
+            return false;
+        }
+        let has_endpoint = if self.api_type.is_vertex() {
+            !self.vertex_project.trim().is_empty()
+        } else {
+            !self.base_url.trim().is_empty()
+        };
+        has_endpoint && !self.models.is_empty()
     }
 }
 

@@ -23,6 +23,7 @@ fn sample_provider(id: &str) -> AgentProvider {
         extra_headers: Vec::new(),
         vertex_project: String::new(),
         vertex_location: String::new(),
+        disabled: false,
     }
 }
 
@@ -152,6 +153,68 @@ fn smoke_lookup_byop_returns_none_for_unknown_id() {
         app.read(|ctx| {
             assert!(lookup_byop(ctx, &LLMId::from("byop:missing:model")).is_none());
             assert!(lookup_byop(ctx, &LLMId::from("not-byop")).is_none());
+        });
+    });
+}
+
+#[test]
+fn smoke_disabled_provider_is_excluded_from_picker_and_lookup() {
+    App::test((), |mut app| async move {
+        init_byop_test_app(&mut app);
+
+        let provider_id = "provider-disabled-1";
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let mut disabled = sample_provider(provider_id);
+                disabled.disabled = true;
+                let _ = settings.agent_providers.set_value(vec![disabled], ctx);
+            });
+        });
+
+        let encoded = llm_id::encode(provider_id, "llama3.2");
+        app.read(|ctx| {
+            let default = LLMPreferences::as_ref(ctx).get_default_base_model();
+            assert_eq!(
+                default.disable_reason,
+                Some(DisableReason::Unavailable),
+                "a disabled provider's models must not appear in the picker, same as an \
+                 unconfigured one"
+            );
+            assert!(
+                lookup_byop(ctx, &encoded).is_none(),
+                "lookup_byop must refuse to resolve a disabled provider even by exact id"
+            );
+        });
+    });
+}
+
+#[test]
+fn smoke_re_enabled_provider_is_usable_again() {
+    App::test((), |mut app| async move {
+        init_byop_test_app(&mut app);
+
+        let provider_id = "provider-toggle-1";
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let mut disabled = sample_provider(provider_id);
+                disabled.disabled = true;
+                let _ = settings.agent_providers.set_value(vec![disabled], ctx);
+            });
+        });
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let mut providers = settings.agent_providers.value().clone();
+                providers[0].disabled = false;
+                let _ = settings.agent_providers.set_value(providers, ctx);
+            });
+        });
+
+        let encoded = llm_id::encode(provider_id, "llama3.2");
+        app.read(|ctx| {
+            let (provider, _api_key, model_id) = lookup_byop(ctx, &encoded)
+                .expect("re-enabling a provider should make it resolvable again");
+            assert_eq!(provider.id, provider_id);
+            assert_eq!(model_id, "llama3.2");
         });
     });
 }

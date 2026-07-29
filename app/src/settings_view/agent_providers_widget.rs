@@ -48,7 +48,9 @@ use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProv
 use strum::IntoEnumIterator;
 
 use super::ai_page::{AISettingsPageAction, AISettingsPageView, ModelCapabilityKind};
-use super::settings_page::{build_sub_header, SettingsWidget, HEADER_PADDING};
+use super::settings_page::{
+    build_sub_header, render_customer_type_badge, SettingsWidget, HEADER_PADDING,
+};
 
 const CARD_BUTTON_PADDING: f32 = 6.0;
 const FIELD_LABEL_MARGIN_TOP: f32 = 6.0;
@@ -92,6 +94,20 @@ pub(super) fn clear_expanded_models_for_provider(provider_id: &str) {
     });
 }
 
+/// Whether the "Disabled providers" section is expanded. Collapsed by default (`false`) so a
+/// list with several disabled providers doesn't bury the active ones -- same
+/// process-local/not-persisted treatment as `models_dev::chips_expanded()`.
+static DISABLED_SECTION_EXPANDED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn disabled_section_expanded() -> bool {
+    DISABLED_SECTION_EXPANDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(super) fn toggle_disabled_section_expanded() {
+    DISABLED_SECTION_EXPANDED.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The editable view handles for a single model entry (name + id + context + output).
 struct ModelRow {
     name_editor: ViewHandle<EditorView>,
@@ -132,6 +148,7 @@ struct ProviderRow {
     sync_models_dev_button_state: MouseStateHandle,
     save_button_state: MouseStateHandle,
     remove_button_state: MouseStateHandle,
+    disable_toggle_button_state: MouseStateHandle,
     add_model_button_state: MouseStateHandle,
     header_rows: Vec<HeaderRow>,
     add_header_button_state: MouseStateHandle,
@@ -291,6 +308,7 @@ pub(super) struct AgentProvidersWidget {
     add_button_state: MouseStateHandle,
     refresh_catalog_button_state: MouseStateHandle,
     expand_chips_button_state: MouseStateHandle,
+    disabled_section_toggle_button_state: MouseStateHandle,
     /// The search box for the quick-add chip row.
     search_editor: ViewHandle<EditorView>,
     /// One button state per catalog provider id -- used by the chip row.
@@ -339,6 +357,7 @@ impl AgentProvidersWidget {
             add_button_state: MouseStateHandle::default(),
             refresh_catalog_button_state: MouseStateHandle::default(),
             expand_chips_button_state: MouseStateHandle::default(),
+            disabled_section_toggle_button_state: MouseStateHandle::default(),
             search_editor,
             quick_add_button_states: RefCell::new(HashMap::new()),
             rows: RefCell::new(rows),
@@ -628,6 +647,7 @@ impl AgentProvidersWidget {
             sync_models_dev_button_state: MouseStateHandle::default(),
             save_button_state: MouseStateHandle::default(),
             remove_button_state: MouseStateHandle::default(),
+            disable_toggle_button_state: MouseStateHandle::default(),
             add_model_button_state: MouseStateHandle::default(),
             header_rows,
             add_header_button_state,
@@ -1021,12 +1041,12 @@ impl AgentProvidersWidget {
         app: &AppContext,
     ) -> Box<dyn Element> {
         let is_any_ai_enabled = AISettings::as_ref(app).is_any_ai_enabled(app);
-        let label_color = if is_any_ai_enabled {
+        let label_color = if is_any_ai_enabled && !provider.disabled {
             appearance.theme().active_ui_text_color()
         } else {
             appearance.theme().disabled_ui_text_color()
         };
-        let detail_color = if is_any_ai_enabled {
+        let detail_color = if is_any_ai_enabled && !provider.disabled {
             appearance.theme().foreground()
         } else {
             appearance.theme().disabled_ui_text_color()
@@ -1337,6 +1357,21 @@ impl AgentProvidersWidget {
             },
             appearance,
         );
+        // Hides the provider's models from the picker without touching its saved config or
+        // API key -- the reversible alternative to Remove.
+        let disable_toggle_label = if provider.disabled {
+            crate::t!("settings-agent-providers-enable")
+        } else {
+            crate::t!("settings-agent-providers-disable")
+        };
+        let disable_toggle_button = Self::render_card_button(
+            disable_toggle_label,
+            row.disable_toggle_button_state.clone(),
+            AISettingsPageAction::ToggleAgentProviderDisabled {
+                provider_id: provider.id.clone(),
+            },
+            appearance,
+        );
 
         // ---- Save button: reads all form buffers live inside the on_click closure.
         // The action can't be pre-built here (form values change with input), so the draft
@@ -1381,6 +1416,11 @@ impl AgentProvidersWidget {
                     Flex::row()
                         .with_cross_axis_alignment(CrossAxisAlignment::Center)
                         .with_child(Container::new(save_button).with_margin_right(8.).finish())
+                        .with_child(
+                            Container::new(disable_toggle_button)
+                                .with_margin_right(8.)
+                                .finish(),
+                        )
                         .with_child(remove_button)
                         .finish(),
                 )
@@ -1396,9 +1436,20 @@ impl AgentProvidersWidget {
         // warning); only relevant for potential coloring.
         let _ = detail_color;
 
+        let mut card = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        if provider.disabled {
+            card.add_child(
+                Container::new(render_customer_type_badge(
+                    appearance,
+                    crate::t!("settings-agent-providers-disabled-badge").into(),
+                ))
+                .with_margin_bottom(6.)
+                .finish(),
+            );
+        }
+
         Container::new(
-            Flex::column()
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            card
                 .with_child(name_field)
                 .with_child(api_type_field)
                 .with_child(endpoint_field)
@@ -1785,8 +1836,50 @@ impl SettingsWidget for AgentProvidersWidget {
             .finish();
             column.add_child(empty);
         } else {
-            for provider in &providers {
+            let (disabled_providers, active_providers): (Vec<_>, Vec<_>) =
+                providers.iter().partition(|p| p.disabled);
+
+            for provider in &active_providers {
                 column.add_child(self.render_provider_card(provider, appearance, app));
+            }
+
+            // Disabled providers live in their own collapsed-by-default section so a list with
+            // several turned off doesn't bury the active ones.
+            if !disabled_providers.is_empty() {
+                let section_expanded = disabled_section_expanded();
+                let toggle_label = if section_expanded {
+                    crate::t!(
+                        "settings-agent-providers-disabled-section-collapse",
+                        count = disabled_providers.len()
+                    )
+                } else {
+                    crate::t!(
+                        "settings-agent-providers-disabled-section-expand",
+                        count = disabled_providers.len()
+                    )
+                };
+                let toggle_button = Self::render_card_button(
+                    toggle_label,
+                    self.disabled_section_toggle_button_state.clone(),
+                    AISettingsPageAction::ToggleDisabledProvidersExpanded,
+                    appearance,
+                );
+                column.add_child(
+                    Container::new(
+                        Flex::row()
+                            .with_main_axis_alignment(MainAxisAlignment::Start)
+                            .with_child(toggle_button)
+                            .finish(),
+                    )
+                    .with_margin_top(if active_providers.is_empty() { 0. } else { 4. })
+                    .with_margin_bottom(8.)
+                    .finish(),
+                );
+                if section_expanded {
+                    for provider in &disabled_providers {
+                        column.add_child(self.render_provider_card(provider, appearance, app));
+                    }
+                }
             }
         }
 

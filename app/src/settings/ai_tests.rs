@@ -771,6 +771,7 @@ fn extra_headers_skip_when_empty() {
         extra_headers: Vec::new(),
         vertex_project: String::new(),
         vertex_location: String::new(),
+        disabled: false,
     };
     let serialized = toml::to_string(&provider).expect("should serialize");
     assert!(
@@ -789,6 +790,65 @@ fn extra_headers_round_trip() {
     let serialized = toml::to_string(&provider).expect("should serialize");
     let deserialized: AgentProvider = toml::from_str(&serialized).expect("should deserialize");
     assert_eq!(provider.extra_headers, deserialized.extra_headers);
+}
+
+#[test]
+fn new_empty_provider_starts_disabled() {
+    // With no model configured yet there's nothing to serve; it should not show up in the
+    // picker as a confusing empty entry until the user finishes setting it up.
+    let provider = AgentProvider::new_empty();
+    assert!(provider.disabled);
+    assert!(!provider.is_usable());
+}
+
+#[test]
+fn is_usable_requires_endpoint_and_model_and_not_disabled() {
+    let mut provider = AgentProvider::new_empty();
+    provider.disabled = false;
+    assert!(!provider.is_usable(), "no endpoint, no models yet");
+
+    provider.base_url = "https://api.example.com/v1".to_string();
+    assert!(!provider.is_usable(), "still no models");
+
+    provider.models = vec![AgentProviderModel::from_id("some-model".to_string())];
+    assert!(
+        provider.is_usable(),
+        "endpoint + model + not disabled = usable"
+    );
+
+    provider.disabled = true;
+    assert!(!provider.is_usable(), "explicitly disabled wins");
+}
+
+#[test]
+fn is_usable_for_vertex_checks_project_not_base_url() {
+    let mut provider = AgentProvider::new_empty();
+    provider.disabled = false;
+    provider.api_type = AgentProviderApiType::Vertex;
+    provider.models = vec![AgentProviderModel::from_id("gemini-2.5-pro".to_string())];
+    assert!(
+        !provider.is_usable(),
+        "Vertex has no base_url; needs vertex_project instead"
+    );
+
+    provider.vertex_project = "my-gcp-project".to_string();
+    assert!(provider.is_usable());
+}
+
+#[test]
+fn disabled_field_round_trip_and_omitted_when_false() {
+    let mut provider = AgentProvider::new_empty();
+    provider.disabled = false;
+    let serialized = toml::to_string(&provider).expect("should serialize");
+    assert!(
+        !serialized.contains("disabled"),
+        "disabled = false should not appear in TOML (matches is_false skip_serializing_if)"
+    );
+
+    provider.disabled = true;
+    let serialized = toml::to_string(&provider).expect("should serialize");
+    let deserialized: AgentProvider = toml::from_str(&serialized).expect("should deserialize");
+    assert!(deserialized.disabled);
 }
 
 #[test]

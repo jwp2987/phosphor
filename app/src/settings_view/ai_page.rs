@@ -2397,6 +2397,11 @@ pub enum AISettingsPageAction {
     RemoveAgentProvider {
         provider_id: String,
     },
+    /// Flips `AgentProvider::disabled`, temporarily hiding the provider's models from the
+    /// picker without deleting its configuration or stored API key.
+    ToggleAgentProviderDisabled {
+        provider_id: String,
+    },
     UpdateAgentProviderName {
         provider_id: String,
         name: String,
@@ -2515,6 +2520,8 @@ pub enum AISettingsPageAction {
     },
     /// Collapses/expands the "quick add" chip row.
     ToggleModelsDevChipsExpanded,
+    /// Collapses/expands the "Disabled providers" section.
+    ToggleDisabledProvidersExpanded,
     /// Sets the search query for the "quick add" chip row (substring-filters provider
     /// name/id).
     SetModelsDevSearchQuery(String),
@@ -3274,6 +3281,16 @@ impl TypedActionView for AISettingsPageView {
                 super::agent_providers_widget::clear_expanded_models_for_provider(provider_id);
                 self.rebuild_current_page(ctx);
             }
+            AISettingsPageAction::ToggleAgentProviderDisabled { provider_id } => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let mut providers = settings.agent_providers.value().clone();
+                    if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
+                        p.disabled = !p.disabled;
+                    }
+                    let _ = settings.agent_providers.set_value(providers, ctx);
+                });
+                ctx.notify();
+            }
             AISettingsPageAction::UpdateAgentProviderName { provider_id, name } => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     let mut providers = settings.agent_providers.value().clone();
@@ -3661,6 +3678,10 @@ impl TypedActionView for AISettingsPageView {
                     .values()
                     .map(models_dev::into_agent_provider_model)
                     .collect();
+                // new_empty() defaults to disabled (nothing configured yet); a quick-add already
+                // brings its own model list, so it should come in live unless the catalog entry
+                // itself had none.
+                new_provider.disabled = new_provider.models.is_empty();
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     let mut providers = settings.agent_providers.value().clone();
                     providers.push(new_provider);
@@ -3757,6 +3778,10 @@ impl TypedActionView for AISettingsPageView {
             AISettingsPageAction::ToggleModelsDevChipsExpanded => {
                 use crate::ai::agent_providers::models_dev;
                 models_dev::toggle_chips_expanded();
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleDisabledProvidersExpanded => {
+                super::agent_providers_widget::toggle_disabled_section_expanded();
                 ctx.notify();
             }
             AISettingsPageAction::SetModelsDevSearchQuery(q) => {
