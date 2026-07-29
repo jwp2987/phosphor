@@ -1472,7 +1472,18 @@ impl AgentProvidersWidget {
             // Indices (not a re-collected/re-indexed Vec) so RemoveAgentProviderModel /
             // ToggleAgentProviderModelExpanded / etc, which all address `provider.models` by
             // position, stay correct regardless of what's filtered out of view here.
-            let search_query = model_search_query(&provider.id);
+            //
+            // Only apply the stored query when the search box is actually shown: the query
+            // persists in a process-lifetime thread_local keyed by provider id, so if the
+            // model count drops back to/under the threshold (e.g. removing models one at a
+            // time) the search box disappears -- if the stale query kept filtering with no
+            // visible control left to clear it, models could vanish with no way to get them
+            // back short of deleting and re-adding the whole provider.
+            let search_query = if show_model_search {
+                model_search_query(&provider.id)
+            } else {
+                String::new()
+            };
             let matching_count = provider
                 .models
                 .iter()
@@ -2077,7 +2088,11 @@ impl AgentProvidersWidget {
                 // the "Disabled providers" section for configured providers -- same
                 // decluttering rationale, just for catalog entries never added at all.
                 if !hidden_matching.is_empty() {
-                    let hidden_section_expanded = hidden_catalog_section_expanded();
+                    // While actively searching, auto-expand so a match hidden by default
+                    // (e.g. an uncommon provider found by name or by one of its models)
+                    // isn't mistaken for "no results" behind an unopened toggle -- mirrors
+                    // the main chip row's `expanded || has_query` treatment above.
+                    let hidden_section_expanded = has_query || hidden_catalog_section_expanded();
                     let hidden_toggle_label = if hidden_section_expanded {
                         crate::t!(
                             "settings-agent-providers-hidden-catalog-collapse",

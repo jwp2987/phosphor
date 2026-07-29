@@ -21,6 +21,41 @@ fn test_program_unknown_shell() {
 }
 
 #[test]
+fn test_powershell_encoded_command_has_no_trailing_nul() {
+    let args = arguments_for_session_spawning_command("pwsh", ShellType::PowerShell);
+    let encoded_index = args
+        .iter()
+        .position(|a| a == "-EncodedCommand")
+        .expect("PowerShell args should include -EncodedCommand")
+        + 1;
+    let encoded = args[encoded_index]
+        .to_str()
+        .expect("encoded blob should be valid UTF-8 (it's base64)");
+
+    use base64::Engine as _;
+    let decoded_bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("should be valid base64");
+    assert_eq!(decoded_bytes.len() % 2, 0, "UTF-16LE byte count must be even");
+
+    let decoded_utf16: Vec<u16> = decoded_bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    // -EncodedCommand decodes into a length-prefixed managed string, not a C string --
+    // a NUL terminator would become a literal trailing character in the parsed script,
+    // not get stripped. Regression test for that bug.
+    assert!(
+        !decoded_utf16.ends_with(&[0]),
+        "decoded script must not have a trailing NUL code unit"
+    );
+
+    let decoded_script = String::from_utf16(&decoded_utf16).expect("should be valid UTF-16");
+    let expected_script = init_shell_script_for_shell(ShellType::PowerShell, &crate::ASSETS);
+    assert_eq!(decoded_script, expected_script);
+}
+
+#[test]
 fn test_trim_wsl_err_from_output() {
     assert_eq!(
         take_until_utf16_crlf(b"/bin/bash\n".to_vec()),

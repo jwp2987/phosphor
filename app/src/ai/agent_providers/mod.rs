@@ -188,9 +188,11 @@ pub fn build_byop_models_by_feature(app: &AppContext) -> ModelsByFeature {
 
 /// Given a BYOP `LLMId`, looks up `(provider, api_key, model_id)` from `AISettings`
 /// and secrets.
-/// Returns `None` if any piece of information is missing, the provider is effectively
-/// disabled (explicitly, or because it has no models configured), or the specific model is
-/// disabled (the controller caller should map this to an `InvalidApiKey` error). A
+/// Returns `None` if any piece of information is missing, the provider isn't usable
+/// (explicitly disabled, every model disabled, or no endpoint configured -- the same
+/// [`AgentProvider::is_usable`] check `build_byop_llm_infos` uses, so the picker and the
+/// actual send path can never disagree about which providers are live), or the specific
+/// model is disabled (the controller caller should map this to an `InvalidApiKey` error). A
 /// model disabled mid-use is handled the same way an ordinary deleted provider already is:
 /// `AvailableLLMs::new` falls back to the first remaining choice once the disabled
 /// provider's/model's entry drops out of `build_byop_llm_infos`.
@@ -198,7 +200,7 @@ pub fn lookup_byop(app: &AppContext, id: &ai::LLMId) -> Option<(AgentProvider, S
     let (provider_id, model_id) = llm_id::decode(id)?;
     let providers = AISettings::as_ref(app).agent_providers.value().clone();
     let provider = providers.into_iter().find(|p| p.id == provider_id)?;
-    if provider.effectively_disabled() {
+    if !provider.is_usable() {
         return None;
     }
     if provider

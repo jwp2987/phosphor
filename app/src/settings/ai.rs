@@ -924,24 +924,31 @@ impl AgentProvider {
     }
 
     /// Whether this provider should be treated as off: either the user explicitly disabled
-    /// it, or it has no models configured yet and so has nothing to serve. The second half
-    /// is deliberately a *computed*, live check rather than a flag set once at creation --
-    /// a freshly added provider starts this way automatically, and the moment it's given a
-    /// model it graduates back to enabled on its own, no separate "Enable" click needed. A
-    /// provider that already has models stays enabled until someone explicitly disables it;
-    /// this never auto-flips `disabled` itself.
+    /// it, or every model it has (including the case of having none at all) is unable to
+    /// serve anything. The second half is deliberately a *computed*, live check rather than
+    /// a flag set once at creation -- a freshly added provider starts this way
+    /// automatically, and the moment it's given a usable model it graduates back to enabled
+    /// on its own, no separate "Enable" click needed. A provider with at least one enabled
+    /// model stays enabled until someone explicitly disables it; this never auto-flips
+    /// `disabled` itself.
+    ///
+    /// `models.iter().all(...)` is vacuously `true` for an empty list, so this also covers
+    /// the no-models-yet case without a separate check -- and it means bulk-disabling every
+    /// individual model (e.g. "Disable shown" with no search filter) is equivalent to
+    /// disabling the provider itself, rather than leaving it looking active while
+    /// contributing zero models to the picker.
     ///
     /// This is the single predicate the Settings UI uses to decide whether a provider card
     /// belongs in the main list or the collapsed "Disabled providers" section.
     pub fn effectively_disabled(&self) -> bool {
-        self.disabled || self.models.is_empty()
+        self.disabled || self.models.iter().all(|m| m.disabled)
     }
 
-    /// Whether this provider has an endpoint, at least one model, and isn't disabled — i.e.
-    /// whether it should show up in the model picker. `build_byop_llm_infos` is the sole
-    /// caller; `lookup_byop` (resolving an already-selected model at request time) checks
-    /// [`AgentProvider::effectively_disabled`] directly instead, since by that point
-    /// `model_id` came from the caller's `LLMId`, not from `self.models`.
+    /// Whether this provider has an endpoint, at least one enabled model, and isn't
+    /// disabled — i.e. whether it should show up in the model picker. Used by both
+    /// `build_byop_llm_infos` (building the picker) and `lookup_byop` (resolving an
+    /// already-selected model at request time), so the two paths can never disagree about
+    /// which providers are live.
     pub fn is_usable(&self) -> bool {
         if self.effectively_disabled() {
             return false;

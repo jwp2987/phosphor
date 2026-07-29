@@ -146,6 +146,35 @@ fn smoke_lookup_byop_resolves_provider_and_model_without_api_key() {
 }
 
 #[test]
+fn smoke_lookup_byop_returns_none_when_endpoint_cleared() {
+    // Regression test: lookup_byop used to only check effectively_disabled(), not the
+    // endpoint half of is_usable() -- a provider whose base_url was cleared while it was
+    // still the active selection (e.g. mid-edit) would drop out of the picker
+    // (build_byop_llm_infos) but still resolve successfully through lookup_byop with an
+    // empty base_url, instead of the clean None -> InvalidApiKey path callers expect.
+    App::test((), |mut app| async move {
+        init_byop_test_app(&mut app);
+
+        let provider_id = "provider-cleared-endpoint";
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let mut provider = sample_provider(provider_id);
+                provider.base_url.clear();
+                let _ = settings.agent_providers.set_value(vec![provider], ctx);
+            });
+        });
+
+        let encoded = llm_id::encode(provider_id, "llama3.2");
+        app.read(|ctx| {
+            assert!(
+                lookup_byop(ctx, &encoded).is_none(),
+                "a provider with no endpoint must not resolve, matching build_byop_llm_infos"
+            );
+        });
+    });
+}
+
+#[test]
 fn smoke_lookup_byop_returns_none_for_unknown_id() {
     App::test((), |mut app| async move {
         init_byop_test_app(&mut app);

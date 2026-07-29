@@ -3729,6 +3729,15 @@ impl TypedActionView for AISettingsPageView {
                     log::warn!("[models.dev] catalog not loaded, cannot sync {provider_id}");
                     return;
                 };
+                // Match against the same merged (Vertex-family-collapsed) catalog quick-add
+                // itself resolves against -- a quick-added Vertex provider has no base_url
+                // (Vertex derives its endpoint from vertex_project/location, not a catalog
+                // URL) and is named "Google Vertex AI", a synthetic name that only exists in
+                // the merged catalog, not the raw one. Matching against the raw catalog would
+                // never find it by either URL or name, so "Sync from models.dev" would
+                // silently no-op on every Vertex provider forever. This is a no-op for every
+                // other provider type, since quick_add_catalog only touches Vertex entries.
+                let catalog = models_dev::quick_add_catalog(&catalog);
                 let providers_snapshot = AISettings::as_ref(ctx).agent_providers.value().clone();
                 let Some(local) = providers_snapshot.iter().find(|p| p.id == *provider_id) else {
                     return;
@@ -3919,7 +3928,10 @@ impl TypedActionView for AISettingsPageView {
                     }
                     let _ = settings.agent_providers.set_value(providers, ctx);
                 });
-                self.rebuild_current_page(ctx);
+                // Doesn't change model count/index/ViewHandle content, only render-time
+                // grouping/badge/color -- ctx.notify() is enough, same as the provider-level
+                // ToggleAgentProviderDisabled. No need for a full rebuild_current_page.
+                ctx.notify();
             }
             AISettingsPageAction::SetAgentProviderModelSearchQuery { provider_id, query } => {
                 super::agent_providers_widget::set_model_search_query(provider_id, query.clone());
@@ -3945,7 +3957,12 @@ impl TypedActionView for AISettingsPageView {
                     }
                     let _ = settings.agent_providers.set_value(providers, ctx);
                 });
-                self.rebuild_current_page(ctx);
+                // Same reasoning as ToggleAgentProviderModelDisabled above: a bulk flip of
+                // `disabled` bools doesn't need a full ViewHandle rebuild, just a repaint --
+                // and this is the path most likely to touch hundreds of models at once (the
+                // "curate a 200-300-model catalog" feature this button exists for), so a full
+                // rebuild here is the most expensive place to skip.
+                ctx.notify();
             }
         }
     }

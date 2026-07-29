@@ -203,6 +203,21 @@ fn multiline_trailing_comment_does_not_swallow_closer() {
     assert!(wrap_command_without_pager(Some(ShellType::PowerShell), command).ends_with("\n}"));
 }
 
+/// A genuinely single-line command ending in a `#` comment is the same failure class
+/// as the multi-line heredoc case: concatenating the closer onto the same line lets
+/// the comment swallow it (`ls -la # comment)` never closes the subshell). Regression
+/// test for that gap in the original fix -- this command contains no `\n` at all, so
+/// it must still switch to the wrapped (closer-on-its-own-line) form.
+#[test]
+fn single_line_trailing_comment_does_not_swallow_closer() {
+    let command = "ls -la  # clean listing";
+    assert!(!command.contains('\n'));
+
+    assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n)"));
+    assert!(wrap_command_without_pager(Some(ShellType::Fish), command).ends_with("\nend"));
+    assert!(wrap_command_without_pager(Some(ShellType::PowerShell), command).ends_with("\n}"));
+}
+
 /// Single-line commands must keep their original single-line shape:
 /// `bytes_to_execute_command` replaces `\n` with `\r` on shells that don't support
 /// bracketed paste, which would split one command into multiple blocks if we added
@@ -227,5 +242,15 @@ fn single_line_command_stays_on_one_line() {
 #[test]
 fn unknown_shell_passes_command_through() {
     let command = "python3 - <<'PY'\nprint('ok')\nPY";
+    assert_eq!(wrap_command_without_pager(None, command), command);
+}
+
+/// Regression test: an earlier version of this function trimmed trailing whitespace
+/// unconditionally before branching on shell type, which mutated the "pass through as-is"
+/// guarantee for an unrecognized shell -- the None path must return the exact original
+/// bytes, trailing whitespace included.
+#[test]
+fn unknown_shell_passthrough_preserves_trailing_whitespace() {
+    let command = "echo hi   \n\n";
     assert_eq!(wrap_command_without_pager(None, command), command);
 }

@@ -825,6 +825,32 @@ fn effectively_disabled_auto_graduates_once_models_are_added() {
 }
 
 #[test]
+fn effectively_disabled_when_every_individual_model_is_disabled() {
+    // A non-empty models list where every entry is individually disabled (e.g. via the
+    // "Disable shown" bulk action with no search filter) has nothing to serve, same as an
+    // empty list -- it must not look "active" in Settings while contributing zero models
+    // to the picker.
+    let mut provider = AgentProvider::new_empty();
+    let mut model_a = AgentProviderModel::from_id("model-a".to_string());
+    let mut model_b = AgentProviderModel::from_id("model-b".to_string());
+    model_a.disabled = true;
+    model_b.disabled = true;
+    provider.models = vec![model_a, model_b];
+
+    assert!(
+        provider.effectively_disabled(),
+        "every model disabled -> provider is effectively disabled too"
+    );
+
+    // Re-enabling just one model should be enough to bring the provider back.
+    provider.models[0].disabled = false;
+    assert!(
+        !provider.effectively_disabled(),
+        "at least one enabled model -> provider is usable again"
+    );
+}
+
+#[test]
 fn is_usable_requires_endpoint_and_model_and_not_disabled() {
     let mut provider = AgentProvider::new_empty();
     provider.disabled = false;

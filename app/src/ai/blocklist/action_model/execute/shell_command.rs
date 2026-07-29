@@ -813,41 +813,52 @@ const PWSH_NO_PAGER_PRELUDE: &str = "Remove-Item Env:PAGER -ErrorAction Silently
 /// bash 3.2). Multi-line commands are already split on those shells regardless, so
 /// this function doesn't make that case any worse.
 fn wrap_command_without_pager(shell_type: Option<ShellType>, command: &str) -> String {
+    // An unknown shell can't be decorated safely, so pass the command through as-is —
+    // pager suppression is completely ineffective on this path, and we can only rely on
+    // the MAX_UNTIL_COMPLETION_DURATION fallback timeout to avoid hanging forever. Only
+    // the known-shell branches below need the trailing-whitespace trim, so it's scoped to
+    // them rather than applied up front (an unrecognized shell gets `command` back
+    // byte-exact, matching the old `turn_off_pager_for_command`'s guarantee for this path).
+    let Some(shell_type) = shell_type else {
+        return command.to_owned();
+    };
     // Trailing newlines/whitespace on the command would leave a blank line before the
     // closing token — harmless semantically, but it clutters the blocklist display.
     let command = command.trim_end();
-    let is_multiline = command.contains('\n');
+    // A `#` anywhere in the command means its last line could plausibly end in a
+    // comment (a real shell tokenizer would need full quote-tracking to know for sure;
+    // this is deliberately conservative in the same direction as the heredoc check
+    // below -- false positives just mean the wrapped form is used when it wasn't
+    // strictly necessary, never a hang). If the closer were concatenated onto that
+    // same line, `#` would swallow it exactly like an unterminated heredoc does, so
+    // this also needs the "closer alone on its own line" wrapped form.
+    let needs_wrapped_form = command.contains('\n') || command.contains('#');
 
     match shell_type {
-        Some(ShellType::Zsh) | Some(ShellType::Bash) => {
+        ShellType::Zsh | ShellType::Bash => {
             let prelude = POSIX_NO_PAGER_PRELUDE;
-            if is_multiline {
+            if needs_wrapped_form {
                 format!("({prelude}\n{command}\n)")
             } else {
                 format!("({prelude}; {command})")
             }
         }
-        Some(ShellType::Fish) => {
+        ShellType::Fish => {
             let prelude = FISH_NO_PAGER_PRELUDE;
-            if is_multiline {
+            if needs_wrapped_form {
                 format!("begin; {prelude}\n{command}\nend")
             } else {
                 format!("begin; {prelude}; {command}; end")
             }
         }
-        Some(ShellType::PowerShell) => {
+        ShellType::PowerShell => {
             let prelude = PWSH_NO_PAGER_PRELUDE;
-            if is_multiline {
+            if needs_wrapped_form {
                 format!("& {{ {prelude}\n{command}\n}}")
             } else {
                 format!("& {{ {prelude}; {command} }}")
             }
         }
-        // An unknown shell can't be decorated safely, so pass the command through
-        // as-is — pager suppression is completely ineffective on this path, and we
-        // can only rely on the MAX_UNTIL_COMPLETION_DURATION fallback timeout to
-        // avoid hanging forever.
-        None => command.to_owned(),
     }
 }
 
