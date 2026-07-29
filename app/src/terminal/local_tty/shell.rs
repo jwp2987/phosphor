@@ -636,21 +636,43 @@ fn arguments_for_session_spawning_command(
                 .into(),
             ]
         }
-        ShellType::PowerShell => vec![
+        ShellType::PowerShell => {
             // When PowerShell starts a session, it writes "PowerShell <version>" to the PTY. This
             // option suppresses that message.
-            "-NoLogo".to_owned().into(),
-            // Skip RC files. We load these manually later.
-            "-NoProfile".to_owned().into(),
-            // Normally, passing the "-Command" option causes the shell to exit after executing
-            // those commands. Passing "-NoExit" suppresses that so PowerShell remains interactive
-            // afterwards.
-            "-NoExit".to_owned().into(),
-            // This arg must be last, as everything positioned after the "-Command" flag is treated
-            // as the value for this arg.
-            "-Command".to_owned().into(),
-            init_shell_script_for_shell(ShellType::PowerShell, &crate::ASSETS).into(),
-        ],
+            let mut args: Vec<OsString> = vec![
+                "-NoLogo".to_owned().into(),
+                // Skip RC files. We load these manually later.
+                "-NoProfile".to_owned().into(),
+                // Normally, passing the "-Command" option causes the shell to exit after executing
+                // those commands. Passing "-NoExit" suppresses that so PowerShell remains
+                // interactive afterwards.
+                "-NoExit".to_owned().into(),
+            ];
+            // PS 7.6 changes how `-Command` handles quotes: our cross-platform command-line
+            // quoting (backslash-escaping `"` -> `\"`, see `append_quoted` in windows/mod.rs)
+            // is correct for cmd.exe-style argument parsing, but PowerShell's `-Command`
+            // parser does NOT honor `\"` — on PS 7.6 the stray `\"` tokens trip the parser
+            // (e.g. `[int64]"$epoch$random"` becomes `[int64]\"$epoch$random\"` ->
+            // ParserError: Unexpected token), the whole init script fails to parse, pwsh
+            // exits with code 0 before emitting the InitShell OSC, and the app shows "Shell
+            // process exited prematurely".
+            //
+            // `-EncodedCommand` takes a UTF-16LE base64 blob, which is opaque to the Windows
+            // argv splitter and the PS tokenizer alike. This sidesteps the quoting bug
+            // entirely on every PS version, at the cost of a ~3-4x larger argv (still well
+            // under CreateProcess's 32k limit).
+            let init_script = init_shell_script_for_shell(ShellType::PowerShell, &crate::ASSETS);
+            let utf16le: Vec<u8> = init_script
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(|w| w.to_le_bytes())
+                .collect();
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16le);
+            args.push("-EncodedCommand".to_owned().into());
+            args.push(encoded.into());
+            args
+        }
     }
 }
 
