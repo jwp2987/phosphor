@@ -1458,11 +1458,6 @@ impl UpdateManager {
         initiated_by: InitiatedBy,
         ctx: &mut ModelContext<Self>,
     ) {
-        // If the object isn't known to the server yet, we can't delete it.
-        let Some(server_id) = id.server_id() else {
-            return;
-        };
-
         let uid = id.uid();
         // If there's a pending online-only operation for this object, don't delete it.
         let Some((has_pending_online_only_operation, has_pending_delete)) =
@@ -1482,15 +1477,18 @@ impl UpdateManager {
             return;
         }
 
-        // Zap: the cloud delete RPC has been removed; this is now collapsed into a direct local clear.
-        let num_deleted_objects =
-            self.on_object_delete_success(vec![SyncId::ServerId(server_id)], ctx);
+        // Zap: the cloud delete RPC has been removed; this is now collapsed into a direct local
+        // clear. Locally-created objects (SyncId::ClientId) have no server_id — the previous
+        // version of this function required `id.server_id()` to be `Some` before it would
+        // continue, so any locally-created object (e.g. an AI Rule) could never be deleted;
+        // clicking Delete silently no-op'd via the early return that used to be above.
+        let num_deleted_objects = self.on_object_delete_success(vec![id.sync_id()], ctx);
         ctx.emit(UpdateManagerEvent::ObjectOperationComplete {
             result: ObjectOperationResult {
                 success_type: OperationSuccessType::Success,
                 operation: ObjectOperation::Delete { initiated_by },
                 client_id: None,
-                server_id: Some(ServerId::from_string_lossy(&uid)),
+                server_id: id.server_id(),
                 num_objects: Some(num_deleted_objects),
             },
         });
