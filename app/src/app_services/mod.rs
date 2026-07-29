@@ -8,7 +8,7 @@
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub mod linux;
 #[cfg(target_os = "macos")]
-mod mac;
+pub mod mac;
 #[cfg(windows)]
 pub mod windows;
 
@@ -20,7 +20,7 @@ pub fn init(_ctx: &mut AppContext) {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     linux::init(_ctx);
     #[cfg(target_os = "macos")]
-    mac::init();
+    mac::init(_ctx);
     #[cfg(windows)]
     windows::init(_ctx);
 }

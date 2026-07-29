@@ -889,7 +889,10 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     #[cfg_attr(
         not(all(
             feature = "release_bundle",
-            any(windows, any(target_os = "linux", target_os = "freebsd"))
+            any(
+                windows,
+                any(target_os = "linux", target_os = "freebsd", target_os = "macos")
+            )
         )),
         expect(unused_mut)
     )]
@@ -933,6 +936,32 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
             Err(app_services::windows::StartupArgsForwardingError::NoExistingInstance) => {}
             // If we just finished an auto-update, we should continue running.
             Err(app_services::windows::StartupArgsForwardingError::IgnoredAfterAutoUpdate) => {}
+            // If we were unable to perform the forwarding for an unknown reason,
+            // it's better to run a second instance than potentially end up in a
+            // state where Zap refuses to run even a first instance.
+            Err(err) => {
+                let err = anyhow::Error::from(err).context("Failed to forward startup args");
+                log::error!("{err:#}");
+                pre_init_errors.push(err);
+            }
+        }
+    }
+
+    // Unlike Finder/Dock launches (deduplicated automatically by LaunchServices), the bundled
+    // `zap-oss` shell-integration script bypasses LaunchServices by directly exec-ing the main
+    // binary, so it needs the same explicit single-instance check Linux/Windows already have.
+    #[cfg(all(feature = "release_bundle", target_os = "macos"))]
+    if let LaunchMode::App { .. } = launch_mode {
+        match app_services::mac::pass_startup_args_to_existing_instance(
+            launch_mode.args().as_ref(),
+        ) {
+            // If we were able to contact an existing application instance, quit -
+            // we only want to run a single instance of Zap at a time.
+            Ok(_) => std::process::exit(0),
+            // If Zap isn't already running, we're good to go.
+            Err(app_services::mac::StartupArgsForwardingError::NoExistingInstance) => {}
+            // If we just finished an auto-update, we should continue running.
+            Err(app_services::mac::StartupArgsForwardingError::IgnoredAfterAutoUpdate) => {}
             // If we were unable to perform the forwarding for an unknown reason,
             // it's better to run a second instance than potentially end up in a
             // state where Zap refuses to run even a first instance.
