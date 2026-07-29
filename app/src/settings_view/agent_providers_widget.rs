@@ -1603,6 +1603,9 @@ impl AgentProvidersWidget {
                 );
             }
             Some(catalog) => {
+                // Merge the Vertex-family entries into one "Google Vertex AI" chip before
+                // filtering, so the row never shows two easily-confused vertex options.
+                let catalog = models_dev::quick_add_catalog(&catalog);
                 // Filters by the search query; an empty query -> all entries in order.
                 let query = models_dev::search_query();
                 let filtered = models_dev::filter_catalog(&catalog, &query);

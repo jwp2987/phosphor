@@ -366,3 +366,156 @@ pub fn into_agent_provider_model(model: &Model) -> crate::settings::AgentProvide
         audio: Some(caps.audio),
     }
 }
+
+/// The canonical catalog id for the merged Google Vertex quick-add chip, see
+/// [`quick_add_catalog`].
+pub const VERTEX_QUICK_ADD_ID: &str = "google-vertex";
+
+/// Whether a models.dev catalog provider id belongs to the Google Vertex AI family
+/// (models.dev lists Vertex-served Gemini and Claude as separate provider entries,
+/// e.g. `google-vertex` / `google-vertex-anthropic`).
+fn is_vertex_family(catalog_provider_id: &str) -> bool {
+    catalog_provider_id.to_lowercase().contains("vertex")
+}
+
+/// Maps a models.dev catalog provider id to the [`AgentProviderApiType`] that actually
+/// speaks its protocol, instead of always defaulting to the generic `OpenAi`-compatible
+/// type. Quick-adding e.g. Anthropic or Vertex with the wrong api_type silently produces
+/// a provider that can't authenticate or route correctly.
+///
+/// Only ids with a dedicated native adapter are mapped; every other catalog entry
+/// (DeepInfra, Groq, OpenRouter, ...) is genuinely OpenAI-compatible and keeps the
+/// `OpenAi` default.
+pub fn infer_api_type(catalog_provider_id: &str) -> crate::settings::AgentProviderApiType {
+    use crate::settings::AgentProviderApiType as T;
+    if is_vertex_family(catalog_provider_id) {
+        return T::Vertex;
+    }
+    match catalog_provider_id.to_lowercase().as_str() {
+        "anthropic" => T::Anthropic,
+        "google" | "google-generative-ai" => T::Gemini,
+        "deepseek" => T::DeepSeek,
+        "ollama" => T::Ollama,
+        _ => T::OpenAi,
+    }
+}
+
+/// Returns `catalog` with all Vertex-family entries collapsed into a single
+/// `google-vertex` provider named "Google Vertex AI", combining their model lists.
+///
+/// Un-merged, the quick-add chip row shows two near-identical "vertex" chips (Gemini
+/// and Claude publishers) that are easy to confuse with each other and with the
+/// API-Type dropdown's own "Vertex AI" option — even though this app's
+/// `AgentProviderApiType::Vertex` already serves both publishers under one provider,
+/// routed by model name (see `vertex_model_family`). Used only for building the
+/// quick-add chip row / resolving a chip click; other consumers (e.g. matching an
+/// existing provider by base_url in `SyncProviderModelsFromModelsDev`) keep using the
+/// raw catalog, since a concrete Vertex provider has no catalog base_url to match.
+pub fn quick_add_catalog(catalog: &Catalog) -> Catalog {
+    let mut merged = Catalog::new();
+    let mut vertex_models: BTreeMap<String, Model> = BTreeMap::new();
+    for (id, provider) in catalog {
+        if is_vertex_family(id) {
+            vertex_models.extend(provider.models.clone());
+            continue;
+        }
+        merged.insert(id.clone(), provider.clone());
+    }
+    if !vertex_models.is_empty() {
+        merged.insert(
+            VERTEX_QUICK_ADD_ID.to_owned(),
+            Provider {
+                id: VERTEX_QUICK_ADD_ID.to_owned(),
+                name: "Google Vertex AI".to_owned(),
+                api: None,
+                env: Vec::new(),
+                models: vertex_models,
+                doc: None,
+            },
+        );
+    }
+    merged
+}
+
+#[cfg(test)]
+mod quick_add_tests {
+    use super::*;
+    use crate::settings::AgentProviderApiType;
+
+    fn provider(name: &str, models: &[&str]) -> Provider {
+        Provider {
+            id: String::new(),
+            name: name.to_owned(),
+            api: Some(format!("https://example.invalid/{name}/")),
+            env: Vec::new(),
+            models: models
+                .iter()
+                .map(|m| {
+                    (
+                        (*m).to_owned(),
+                        Model {
+                            id: (*m).to_owned(),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            doc: None,
+        }
+    }
+
+    #[test]
+    fn infer_api_type_maps_known_ids() {
+        assert_eq!(infer_api_type("anthropic"), AgentProviderApiType::Anthropic);
+        assert_eq!(infer_api_type("google"), AgentProviderApiType::Gemini);
+        assert_eq!(infer_api_type("deepseek"), AgentProviderApiType::DeepSeek);
+        assert_eq!(infer_api_type("ollama"), AgentProviderApiType::Ollama);
+        assert_eq!(infer_api_type("google-vertex"), AgentProviderApiType::Vertex);
+        assert_eq!(
+            infer_api_type("google-vertex-anthropic"),
+            AgentProviderApiType::Vertex
+        );
+        // Anything else (Groq, OpenRouter, DeepInfra, ...) is genuinely
+        // OpenAI-compatible and keeps the default.
+        assert_eq!(infer_api_type("groq"), AgentProviderApiType::OpenAi);
+    }
+
+    #[test]
+    fn quick_add_catalog_merges_vertex_family_into_one_entry() {
+        let mut catalog = Catalog::new();
+        catalog.insert(
+            "google-vertex".to_owned(),
+            provider("Google Vertex", &["gemini-2.5-pro"]),
+        );
+        catalog.insert(
+            "google-vertex-anthropic".to_owned(),
+            provider("Google Vertex (Anthropic)", &["claude-sonnet-5"]),
+        );
+        catalog.insert("anthropic".to_owned(), provider("Anthropic", &["claude"]));
+
+        let merged = quick_add_catalog(&catalog);
+
+        // The two vertex entries collapse into exactly one, under the canonical id.
+        assert_eq!(
+            merged.keys().filter(|id| id.contains("vertex")).count(),
+            1
+        );
+        let vertex = merged.get(VERTEX_QUICK_ADD_ID).expect("merged vertex entry");
+        assert_eq!(vertex.name, "Google Vertex AI");
+        assert!(vertex.models.contains_key("gemini-2.5-pro"));
+        assert!(vertex.models.contains_key("claude-sonnet-5"));
+
+        // Non-vertex entries pass through untouched.
+        assert!(merged.contains_key("anthropic"));
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn quick_add_catalog_is_noop_without_vertex_entries() {
+        let mut catalog = Catalog::new();
+        catalog.insert("openai".to_owned(), provider("OpenAI", &["gpt-5"]));
+        let merged = quick_add_catalog(&catalog);
+        assert_eq!(merged.len(), 1);
+        assert!(!merged.contains_key(VERTEX_QUICK_ADD_ID));
+    }
+}

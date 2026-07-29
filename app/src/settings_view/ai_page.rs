@@ -3634,6 +3634,9 @@ impl TypedActionView for AISettingsPageView {
                     log::warn!("[models.dev] catalog not yet loaded, cannot add {catalog_provider_id}");
                     return;
                 };
+                // Resolve against the merged (Vertex-family-collapsed) catalog, matching what
+                // the chip row itself rendered and clicked through.
+                let catalog = models_dev::quick_add_catalog(&catalog);
                 let Some(cat_provider) = catalog.get(catalog_provider_id) else {
                     log::warn!("[models.dev] no such provider id in the catalog: {catalog_provider_id}");
                     return;
@@ -3644,8 +3647,14 @@ impl TypedActionView for AISettingsPageView {
                 } else {
                     cat_provider.name.clone()
                 };
-                if let Some(api) = &cat_provider.api {
-                    new_provider.base_url = api.clone();
+                new_provider.api_type = models_dev::infer_api_type(catalog_provider_id);
+                // Vertex has no catalog base_url (its endpoint is derived from
+                // vertex_project/vertex_location, filled in by the user after quick-add); every
+                // other type takes the catalog's base_url as before.
+                if !new_provider.api_type.is_vertex() {
+                    if let Some(api) = &cat_provider.api {
+                        new_provider.base_url = api.clone();
+                    }
                 }
                 new_provider.models = cat_provider
                     .models
