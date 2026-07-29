@@ -2501,6 +2501,10 @@ pub enum AISettingsPageAction {
     FetchAgentProviderModels {
         provider_id: String,
     },
+    /// Launches `gcloud auth login` (opens the system browser for OAuth) to refresh expired or
+    /// missing GCP credentials. Account-level, not tied to a specific provider -- any Vertex
+    /// provider's card can trigger it.
+    LaunchGcloudLogin,
     /// Triggers a models.dev catalog load (disk cache + network refresh if needed). Triggered
     /// as soon as the Providers subpage is opened.
     EnsureModelsDevLoaded,
@@ -3590,6 +3594,17 @@ impl TypedActionView for AISettingsPageView {
                         }
                     },
                 );
+            }
+            AISettingsPageAction::LaunchGcloudLogin => {
+                let status = match crate::ai::agent_providers::vertex_auth::launch_gcloud_login() {
+                    Ok(()) => crate::t!("settings-agent-providers-vertex-login-launched"),
+                    Err(e) => {
+                        log::warn!("Failed to launch gcloud auth login: {e}");
+                        e
+                    }
+                };
+                super::agent_providers_widget::set_gcloud_login_status(Some(status));
+                ctx.notify();
             }
             AISettingsPageAction::AddAgentProviderHeader { provider_id } => {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {

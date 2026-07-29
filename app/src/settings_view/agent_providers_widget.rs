@@ -133,6 +133,24 @@ pub(super) fn toggle_hidden_catalog_section_expanded() {
 }
 
 // ---------------------------------------------------------------------------
+// gcloud login status (process-local, not persisted -- same treatment as the other ephemeral
+// UI state above). Account-level rather than per-provider: any Vertex provider's card can
+// trigger it, and the resulting status applies regardless of which card triggered it.
+// ---------------------------------------------------------------------------
+
+std::thread_local! {
+    static GCLOUD_LOGIN_STATUS: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+pub(super) fn gcloud_login_status() -> Option<String> {
+    GCLOUD_LOGIN_STATUS.with(|s| s.borrow().clone())
+}
+
+pub(super) fn set_gcloud_login_status(status: Option<String>) {
+    GCLOUD_LOGIN_STATUS.with(|s| *s.borrow_mut() = status);
+}
+
+// ---------------------------------------------------------------------------
 // Per-provider model list search + disabled-models section state (process-local, not
 // persisted -- same treatment as the model-row expansion state above)
 // ---------------------------------------------------------------------------
@@ -237,6 +255,7 @@ struct ProviderRow {
     /// selected api_type is Vertex.
     vertex_project_editor: ViewHandle<EditorView>,
     vertex_location_editor: ViewHandle<EditorView>,
+    gcloud_login_button_state: MouseStateHandle,
     fetch_button_state: MouseStateHandle,
     sync_models_dev_button_state: MouseStateHandle,
     save_button_state: MouseStateHandle,
@@ -778,6 +797,7 @@ impl AgentProvidersWidget {
             api_key_editor,
             vertex_project_editor,
             vertex_location_editor,
+            gcloud_login_button_state: MouseStateHandle::default(),
             fetch_button_state: MouseStateHandle::default(),
             sync_models_dev_button_state: MouseStateHandle::default(),
             save_button_state: MouseStateHandle::default(),
@@ -1284,6 +1304,33 @@ impl AgentProvidersWidget {
             label_color,
             appearance,
         );
+        // Vertex's "api key" is a GCP OAuth2 bearer minted via `gcloud`, which requires an
+        // active login and expires periodically (see `vertex_auth`). Surface a direct way to
+        // (re)authenticate instead of making the user drop to a terminal.
+        let gcloud_login_section = is_vertex.then(|| {
+            let login_button = Self::render_card_button(
+                crate::t!("settings-agent-providers-vertex-login"),
+                row.gcloud_login_button_state.clone(),
+                AISettingsPageAction::LaunchGcloudLogin,
+                appearance,
+            );
+            let mut column = Flex::column()
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_child(login_button);
+            if let Some(status) = gcloud_login_status() {
+                column.add_child(
+                    Container::new(
+                        Text::new(status, appearance.ui_font_family(), appearance.ui_font_size())
+                            .with_color(appearance.theme().disabled_ui_text_color().into())
+                            .soft_wrap(true)
+                            .finish(),
+                    )
+                    .with_margin_top(4.)
+                    .finish(),
+                );
+            }
+            Container::new(column.finish()).with_margin_top(6.).finish()
+        });
 
         let headers_label = Container::new(
             Text::new(
@@ -1756,12 +1803,16 @@ impl AgentProvidersWidget {
             );
         }
 
+        card.add_child(name_field);
+        card.add_child(api_type_field);
+        card.add_child(endpoint_field);
+        card.add_child(api_key_field);
+        if let Some(gcloud_login_section) = gcloud_login_section {
+            card.add_child(gcloud_login_section);
+        }
+
         Container::new(
             card
-                .with_child(name_field)
-                .with_child(api_type_field)
-                .with_child(endpoint_field)
-                .with_child(api_key_field)
                 .with_child(
                     Container::new(headers_column.finish())
                         .with_margin_top(8.)
