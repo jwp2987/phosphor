@@ -725,6 +725,21 @@ fn extend_common_cli_dirs(dirs: &mut Vec<PathBuf>) {
         home.join(".cargo/bin"),
         home.join(".bun/bin"),
         home.join(".local/bin"),
+        // Claude Code's own installer places a wrapper here; it isn't always a real
+        // PATH entry (some installer versions only add a shell alias), but checking it
+        // is harmless and catches the common case.
+        home.join(".claude/local"),
+        // Common alternative global-bin locations for JS package managers and version
+        // managers -- most of the agents in `CLIAgent` are npm-installed, and a GUI app
+        // launched from Finder/Dock only inherits the system PATH, not whatever a
+        // user's shell rc file adds for these.
+        home.join(".npm-global/bin"),
+        home.join(".yarn/bin"),
+        home.join(".config/yarn/global/node_modules/.bin"),
+        home.join(".local/share/pnpm"),
+        home.join(".volta/bin"),
+        home.join(".asdf/shims"),
+        home.join(".local/share/mise/shims"),
     ]);
 
     if let Ok(node_versions) = std::fs::read_dir(home.join(".nvm/versions/node")) {

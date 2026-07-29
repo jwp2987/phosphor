@@ -536,3 +536,26 @@ fn test_cli_agent_search_dirs_include_home_managed_bins() {
     assert!(dirs.contains(&home.join(".bun/bin")));
     assert!(dirs.contains(&home.join(".local/bin")));
 }
+
+// Regression coverage for #253 ("CLI agent settings page shows 'not installed' on Mac"):
+// a GUI app launched from Finder/Dock/Spotlight only inherits the minimal system PATH, not
+// whatever a user's shell rc file adds -- so an agent installed via a package manager or
+// version manager whose bin dir isn't covered here would show as "not installed" even though
+// it's on the user's normal PATH in a terminal.
+#[cfg(unix)]
+#[test]
+fn test_cli_agent_search_dirs_include_common_package_and_version_manager_bins() {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    let dirs: Vec<PathBuf> = cli_agent_search_dirs().collect();
+
+    assert!(dirs.contains(&home.join(".claude/local")));
+    assert!(dirs.contains(&home.join(".npm-global/bin")));
+    assert!(dirs.contains(&home.join(".yarn/bin")));
+    assert!(dirs.contains(&home.join(".config/yarn/global/node_modules/.bin")));
+    assert!(dirs.contains(&home.join(".local/share/pnpm")));
+    assert!(dirs.contains(&home.join(".volta/bin")));
+    assert!(dirs.contains(&home.join(".asdf/shims")));
+    assert!(dirs.contains(&home.join(".local/share/mise/shims")));
+}
