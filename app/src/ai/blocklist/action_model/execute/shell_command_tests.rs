@@ -165,3 +165,67 @@ fn preemption_logic_covers_until_completion_timeout() {
         DurationDelay(Duration::from_secs(1))
     ));
 }
+
+/// Reproduces the hang case: a heredoc terminator must stay alone on its own line;
+/// the closing `)` must not get concatenated onto it.
+/// Concatenating to `PY)` means the shell never sees the terminator, gets stuck at
+/// PS2, and the command never finishes.
+#[test]
+fn multiline_heredoc_keeps_delimiter_and_closer_on_their_own_lines() {
+    let command = "python3 - <<'PY'\nprint('ok')\nPY";
+
+    for shell in [ShellType::Bash, ShellType::Zsh] {
+        let wrapped = wrap_command_without_pager(Some(shell), command);
+        let lines: Vec<&str> = wrapped.lines().collect();
+
+        assert_eq!(
+            lines[lines.len() - 2],
+            "PY",
+            "heredoc terminator got polluted: {wrapped}"
+        );
+        assert_eq!(
+            lines[lines.len() - 1],
+            ")",
+            "closing paren isn't alone on its own line: {wrapped}"
+        );
+        assert!(wrapped.contains("PAGER=cat"), "pager suppression lost: {wrapped}");
+    }
+}
+
+/// Same class of bug: when a command ends in a trailing `#` comment, the closing
+/// token would get commented out.
+#[test]
+fn multiline_trailing_comment_does_not_swallow_closer() {
+    let command = "echo start\necho done # trailing comment";
+
+    assert!(wrap_command_without_pager(Some(ShellType::Bash), command).ends_with("\n)"));
+    assert!(wrap_command_without_pager(Some(ShellType::Fish), command).ends_with("\nend"));
+    assert!(wrap_command_without_pager(Some(ShellType::PowerShell), command).ends_with("\n}"));
+}
+
+/// Single-line commands must keep their original single-line shape:
+/// `bytes_to_execute_command` replaces `\n` with `\r` on shells that don't support
+/// bracketed paste, which would split one command into multiple blocks if we added
+/// extra newlines.
+#[test]
+fn single_line_command_stays_on_one_line() {
+    let command = "cargo check";
+
+    for shell in [
+        ShellType::Bash,
+        ShellType::Zsh,
+        ShellType::Fish,
+        ShellType::PowerShell,
+    ] {
+        let wrapped = wrap_command_without_pager(Some(shell), command);
+        assert!(!wrapped.contains('\n'), "{shell:?} single-line command got split: {wrapped}");
+        assert!(wrapped.contains(command), "{shell:?} command got lost: {wrapped}");
+    }
+}
+
+/// An unknown shell can't be decorated safely, so it's passed through as-is.
+#[test]
+fn unknown_shell_passes_command_through() {
+    let command = "python3 - <<'PY'\nprint('ok')\nPY";
+    assert_eq!(wrap_command_without_pager(None, command), command);
+}
