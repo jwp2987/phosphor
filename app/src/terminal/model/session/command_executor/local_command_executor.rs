@@ -53,8 +53,19 @@ impl CommandBuilder<'_> {
                     });
                 let mut command = Command::new_with_process_group(program_to_execute);
                 command.arg(shell_config_flag);
-                command.arg("-c");
-                command.arg(command_string);
+                if shell_type == ShellType::PowerShell {
+                    // -Command/-c re-parses the joined Windows command-line string with
+                    // PowerShell's own tokenizer, which chokes on the backslash-escaped
+                    // quotes that Windows argv quoting produces for any command_string
+                    // containing a `"` (e.g. a quoted path) on PS 7.6. -EncodedCommand
+                    // sidesteps both re-parsing layers; see
+                    // `util::windows::encode_pwsh_command`.
+                    command.arg("-EncodedCommand");
+                    command.arg(crate::util::encode_pwsh_command(command_string));
+                } else {
+                    command.arg("-c");
+                    command.arg(command_string);
+                }
                 command
             }
         }

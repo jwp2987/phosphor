@@ -50,6 +50,29 @@ pub fn dedupe_from_last(lines: Vec<String>) -> Vec<String> {
     unique_elements
 }
 
+/// Encodes `command` as the base64 UTF-16LE payload PowerShell's `-EncodedCommand`
+/// flag expects, in place of `-Command`/`-c <command>`.
+///
+/// This sidesteps two layers of re-parsing that a plain string argument goes
+/// through on Windows: the argv-to-command-line quoting used to hand a child
+/// process its arguments (which backslash-escapes embedded `"` per the MSVCRT
+/// convention) and PowerShell's own `-Command` tokenizer, which on PS 7.6 does
+/// not honor that escaping and aborts with a parser error on any command
+/// containing a `"` (e.g. a quoted Windows path). Cross-platform (not gated
+/// behind `cfg(windows)`) so shell executors that also run on Unix, like
+/// `local_command_executor`, can call it whenever `shell_type` happens to be
+/// `PowerShell`. See `arguments_for_session_spawning_command` in
+/// `terminal/local_tty/shell.rs` for the interactive-session-launch use of the
+/// same flag.
+pub fn encode_pwsh_command(command: &str) -> String {
+    let utf16le: Vec<u8> = command
+        .encode_utf16()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(&utf16le)
+}
+
 pub fn parse_ascii_u32(bytes: &[u8]) -> Option<u32> {
     if bytes.is_empty() {
         return None;
@@ -86,6 +109,30 @@ impl fmt::Debug for AsciiDebug<'_> {
         write!(f, "\"")?;
         Ok(())
     }
+}
+
+#[test]
+fn encode_pwsh_command_round_trips_without_trailing_nul() {
+    let script = "Write-Host \"has $env:FOO embedded `\"quotes`\" in it\"";
+    let encoded = encode_pwsh_command(script);
+
+    use base64::Engine as _;
+    let decoded_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&encoded)
+        .expect("encode_pwsh_command must produce valid base64");
+    assert_eq!(decoded_bytes.len() % 2, 0, "UTF-16LE payload must be an even number of bytes");
+
+    let code_units: Vec<u16> = decoded_bytes
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    assert_ne!(
+        code_units.last(),
+        Some(&0u16),
+        "no NUL terminator: -EncodedCommand decodes into a length-prefixed managed \
+         string, not a C string"
+    );
+    assert_eq!(String::from_utf16(&code_units).unwrap(), script);
 }
 
 #[test]

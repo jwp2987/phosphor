@@ -349,22 +349,22 @@ pub fn filter_catalog(catalog: &Catalog, query: &str) -> Vec<(String, Provider)>
         .collect()
 }
 
-/// Catalog provider ids shown in the Quick-add row by default, without needing a search --
-/// the app has a dedicated native adapter for each (see `AgentProviderApiType`), so these are
-/// the ones most users will actually reach for. Everything else defaults into the collapsed
-/// "Hidden providers" section (still reachable by name or by searching for one of its
-/// models) unless the user explicitly overrides it -- see `effectively_visible`.
-const COMMON_PROVIDER_IDS: &[&str] = &[
-    "openai",
-    "anthropic",
-    "google",
-    VERTEX_QUICK_ADD_ID,
-    "ollama",
-    "deepseek",
-];
-
+/// Whether a catalog provider id is shown in the Quick-add row by default, without needing
+/// a search -- the app has a dedicated native adapter for it (see `AgentProviderApiType`),
+/// so it's one most users will actually reach for. Everything else defaults into the
+/// collapsed "Hidden providers" section (still reachable by name or by searching for one of
+/// its models) unless the user explicitly overrides it -- see `effectively_visible`.
+///
+/// Derived from `infer_api_type` instead of a separately maintained id list: every catalog
+/// id that resolves to a non-default (non-`OpenAi`) api_type has a native adapter, so it's
+/// common by construction, and a future native adapter added to `infer_api_type` becomes
+/// common automatically instead of silently staying hidden until someone remembers to also
+/// update a second list. "openai" itself is special-cased in since it maps to the *default*
+/// api_type rather than a distinctly-matched one, but is just as much a native adapter as
+/// the rest.
 pub fn is_common_provider(catalog_provider_id: &str) -> bool {
-    COMMON_PROVIDER_IDS.contains(&catalog_provider_id)
+    catalog_provider_id.eq_ignore_ascii_case("openai")
+        || infer_api_type(catalog_provider_id) != crate::settings::AgentProviderApiType::OpenAi
 }
 
 /// Whether a catalog provider should show in the Quick-add row's main (non-collapsed) chip
@@ -451,7 +451,20 @@ pub fn quick_add_catalog(catalog: &Catalog) -> Catalog {
     let mut vertex_models: BTreeMap<String, Model> = BTreeMap::new();
     for (id, provider) in catalog {
         if is_vertex_family(id) {
-            vertex_models.extend(provider.models.clone());
+            for (model_id, model) in &provider.models {
+                if vertex_models.contains_key(model_id) {
+                    // The Gemini and Claude Vertex-family entries are expected to use
+                    // disjoint model ids; a collision means one publisher's model would
+                    // silently vanish from the merged chip under `extend`'s last-wins
+                    // semantics. Keep the first (catalog iterates providers in BTreeMap/id
+                    // order, so this is deterministic) and log instead of losing it quietly.
+                    log::warn!(
+                        "quick_add_catalog: model id {model_id:?} appears in multiple Vertex-family providers (already merged before reaching {id:?}); keeping the first, dropping this one"
+                    );
+                    continue;
+                }
+                vertex_models.insert(model_id.clone(), model.clone());
+            }
             continue;
         }
         merged.insert(id.clone(), provider.clone());
@@ -543,6 +556,30 @@ mod quick_add_tests {
         // Non-vertex entries pass through untouched.
         assert!(merged.contains_key("anthropic"));
         assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn quick_add_catalog_keeps_first_model_on_id_collision_across_vertex_family() {
+        // Regression test: a naive `extend` merge silently drops one publisher's model
+        // whenever both Vertex-family entries happen to list the same model id -- catalog
+        // is a BTreeMap, so "google-vertex" (Gemini) is iterated before
+        // "google-vertex-anthropic" (Claude), and the first-seen model must survive rather
+        // than being silently overwritten by the later one.
+        let mut catalog = Catalog::new();
+        catalog.insert(
+            "google-vertex".to_owned(),
+            provider("Google Vertex", &["shared-id"]),
+        );
+        catalog.insert(
+            "google-vertex-anthropic".to_owned(),
+            provider("Google Vertex (Anthropic)", &["shared-id"]),
+        );
+
+        let merged = quick_add_catalog(&catalog);
+
+        let vertex = merged.get(VERTEX_QUICK_ADD_ID).expect("merged vertex entry");
+        assert_eq!(vertex.models.len(), 1, "collision must not duplicate/drop entries");
+        assert!(vertex.models.contains_key("shared-id"));
     }
 
     #[test]

@@ -662,15 +662,7 @@ fn arguments_for_session_spawning_command(
             // entirely on every PS version, at the cost of a ~3-4x larger argv (still well
             // under CreateProcess's 32k limit).
             let init_script = init_shell_script_for_shell(ShellType::PowerShell, &crate::ASSETS);
-            // No NUL terminator: -EncodedCommand decodes into a length-prefixed managed
-            // string, not a C string, so an appended U+0000 would become a literal trailing
-            // character in the parsed script text instead of being stripped.
-            let utf16le: Vec<u8> = init_script
-                .encode_utf16()
-                .flat_map(|w| w.to_le_bytes())
-                .collect();
-            use base64::Engine as _;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16le);
+            let encoded = crate::util::encode_pwsh_command(&init_script);
             args.push("-EncodedCommand".to_owned().into());
             args.push(encoded.into());
             args

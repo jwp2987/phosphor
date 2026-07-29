@@ -64,9 +64,13 @@ impl MSYS2CommandExecutor {
             command_process.envs(&environment_variables);
         }
 
+        // -Command/-c re-parses the joined Windows command-line string with PowerShell's
+        // own tokenizer, which chokes on the backslash-escaped quotes that Windows argv
+        // quoting produces for any command containing a `"` on PS 7.6. -EncodedCommand
+        // sidesteps both re-parsing layers; see `util::windows::encode_pwsh_command`.
         command_process
-            .arg("-c")
-            .arg(command)
+            .arg("-EncodedCommand")
+            .arg(crate::util::encode_pwsh_command(command))
             // The purpose of the executor is to produce output. If the child
             // has been dropped, there's no way to get the output anymore,
             // so there's no need for the process itself to stick around.
