@@ -852,6 +852,45 @@ fn disabled_field_round_trip_and_omitted_when_false() {
 }
 
 #[test]
+fn model_from_id_starts_enabled() {
+    // Unlike a freshly created provider, a freshly added/fetched model starts enabled --
+    // most providers have a handful of models and the common case shouldn't require manual
+    // enabling. Curating a huge catalog down is an opt-in bulk action, not the default.
+    let model = AgentProviderModel::from_id("gpt-5".to_string());
+    assert!(!model.disabled);
+}
+
+#[test]
+fn model_disabled_field_round_trip_and_omitted_when_false() {
+    let mut model = AgentProviderModel::from_id("gpt-5".to_string());
+    let serialized = toml::to_string(&model).expect("should serialize");
+    assert!(
+        !serialized.contains("disabled"),
+        "disabled = false should not appear in TOML"
+    );
+
+    model.disabled = true;
+    let serialized = toml::to_string(&model).expect("should serialize");
+    let deserialized: AgentProviderModel = toml::from_str(&serialized).expect("should deserialize");
+    assert!(deserialized.disabled);
+}
+
+#[test]
+fn model_legacy_plain_string_format_still_deserializes() {
+    // Backward compat: `models = ["deepseek-chat"]` (pre-struct format) must still parse, now
+    // that the struct's custom Deserialize impl has a new `disabled` field in Either::Full.
+    let toml_str = r#"models = ["deepseek-chat"]"#;
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        models: Vec<AgentProviderModel>,
+    }
+    let parsed: Wrapper = toml::from_str(toml_str).expect("legacy plain-string format");
+    assert_eq!(parsed.models.len(), 1);
+    assert_eq!(parsed.models[0].id, "deepseek-chat");
+    assert!(!parsed.models[0].disabled);
+}
+
+#[test]
 fn vertex_endpoint_url_uses_regional_host_for_a_location() {
     assert_eq!(
         vertex_endpoint_url("my-proj", "us-east5"),

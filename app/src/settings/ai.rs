@@ -1037,6 +1037,14 @@ pub struct AgentProviderModel {
     /// Whether audio input is supported (audio/* MIME).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<bool>,
+
+    /// Whether this specific model is excluded from the model picker, independent of its
+    /// provider's own `AgentProvider::disabled`. Lets a provider with a large catalog (some
+    /// have 200-300 models) be curated down to the handful actually wanted, without deleting
+    /// the rest -- "Fetch from API" / "Sync from models.dev" won't re-add them either, since
+    /// they're matched by id and skipped when already present.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub disabled: bool,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -1064,6 +1072,7 @@ impl AgentProviderModel {
             image: None,
             pdf: None,
             audio: None,
+            disabled: false,
         }
     }
 }
@@ -1095,6 +1104,8 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                 pdf: Option<bool>,
                 #[serde(default)]
                 audio: Option<bool>,
+                #[serde(default)]
+                disabled: bool,
             },
         }
         match Either::deserialize(deserializer)? {
@@ -1109,6 +1120,7 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                 image,
                 pdf,
                 audio,
+                disabled,
             } => {
                 let name = if name.is_empty() { id.clone() } else { name };
                 Ok(AgentProviderModel {
@@ -1121,6 +1133,7 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                     image,
                     pdf,
                     audio,
+                    disabled,
                 })
             }
         }

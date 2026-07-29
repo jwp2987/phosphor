@@ -2533,7 +2533,7 @@ pub enum AISettingsPageAction {
         model_index: usize,
     },
     /// Tri-state cycles a single model's given multimodal capability (image/pdf/audio).
-    /// `None → Some(true) → Some(false) → None`。
+    /// `None → Some(true) → Some(false) → None`.
     CycleAgentProviderModelCapability {
         provider_id: String,
         model_index: usize,
@@ -2548,6 +2548,28 @@ pub enum AISettingsPageAction {
     ToggleAgentProviderModelToolCall {
         provider_id: String,
         model_index: usize,
+    },
+    /// Toggles a single model's `disabled` flag: excludes/re-includes it from the model
+    /// picker without removing it from the provider's configured list.
+    ToggleAgentProviderModelDisabled {
+        provider_id: String,
+        model_index: usize,
+    },
+    /// Sets the search query for a provider's model list (substring-filters by name/id).
+    SetAgentProviderModelSearchQuery {
+        provider_id: String,
+        query: String,
+    },
+    /// Collapses/expands the "Disabled models" subsection within a provider's model list.
+    ToggleAgentProviderDisabledModelsExpanded {
+        provider_id: String,
+    },
+    /// Sets `disabled` on every model in the provider that currently matches its stored
+    /// search query (all models, if the query is empty) -- lets a provider with a huge
+    /// catalog be curated down in a few searches instead of clicking every row.
+    BulkSetAgentProviderModelsDisabledForSearch {
+        provider_id: String,
+        disabled: bool,
     },
 }
 
@@ -3279,6 +3301,7 @@ impl TypedActionView for AISettingsPageView {
                     },
                 );
                 super::agent_providers_widget::clear_expanded_models_for_provider(provider_id);
+                super::agent_providers_widget::clear_model_search_state_for_provider(provider_id);
                 self.rebuild_current_page(ctx);
             }
             AISettingsPageAction::ToggleAgentProviderDisabled { provider_id } => {
@@ -3846,6 +3869,47 @@ impl TypedActionView for AISettingsPageView {
                     if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
                         if let Some(m) = p.models.get_mut(*model_index) {
                             m.tool_call = !m.tool_call;
+                        }
+                    }
+                    let _ = settings.agent_providers.set_value(providers, ctx);
+                });
+                self.rebuild_current_page(ctx);
+            }
+            AISettingsPageAction::ToggleAgentProviderModelDisabled {
+                provider_id,
+                model_index,
+            } => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let mut providers = settings.agent_providers.value().clone();
+                    if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
+                        if let Some(m) = p.models.get_mut(*model_index) {
+                            m.disabled = !m.disabled;
+                        }
+                    }
+                    let _ = settings.agent_providers.set_value(providers, ctx);
+                });
+                self.rebuild_current_page(ctx);
+            }
+            AISettingsPageAction::SetAgentProviderModelSearchQuery { provider_id, query } => {
+                super::agent_providers_widget::set_model_search_query(provider_id, query.clone());
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleAgentProviderDisabledModelsExpanded { provider_id } => {
+                super::agent_providers_widget::toggle_disabled_models_expanded(provider_id);
+                ctx.notify();
+            }
+            AISettingsPageAction::BulkSetAgentProviderModelsDisabledForSearch {
+                provider_id,
+                disabled,
+            } => {
+                let query = super::agent_providers_widget::model_search_query(provider_id);
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let mut providers = settings.agent_providers.value().clone();
+                    if let Some(p) = providers.iter_mut().find(|p| p.id == *provider_id) {
+                        for m in p.models.iter_mut() {
+                            if super::agent_providers_widget::model_matches_search(m, &query) {
+                                m.disabled = *disabled;
+                            }
                         }
                     }
                     let _ = settings.agent_providers.set_value(providers, ctx);

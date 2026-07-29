@@ -56,6 +56,9 @@ const CARD_BUTTON_PADDING: f32 = 6.0;
 const FIELD_LABEL_MARGIN_TOP: f32 = 6.0;
 const FIELD_LABEL_MARGIN_BOTTOM: f32 = 2.0;
 const MODEL_ROW_GAP: f32 = 6.0;
+/// Below this many configured models, the search box + "Disable/Enable shown" bulk actions
+/// stay hidden -- most providers have a handful of models and don't need curating down.
+const MODEL_SEARCH_THRESHOLD: usize = 8;
 
 // ---------------------------------------------------------------------------
 // Model-row expansion state (process-local, thread_local single-threaded-UI safe; not
@@ -108,6 +111,72 @@ pub(super) fn toggle_disabled_section_expanded() {
     DISABLED_SECTION_EXPANDED.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+// ---------------------------------------------------------------------------
+// Per-provider model list search + disabled-models section state (process-local, not
+// persisted -- same treatment as the model-row expansion state above)
+// ---------------------------------------------------------------------------
+
+std::thread_local! {
+    /// {provider_id => current search text} for a provider's model list. Lets a provider
+    /// with a large catalog (some have 200-300 models) be narrowed down instead of scrolling
+    /// through every row, and scopes the "Disable/Enable shown" bulk actions.
+    static MODEL_SEARCH_QUERIES: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+    /// {provider_id} whose "Disabled models" subsection is currently expanded. Collapsed by
+    /// default, same rationale as `DISABLED_SECTION_EXPANDED`.
+    static DISABLED_MODELS_EXPANDED: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+pub(super) fn model_search_query(provider_id: &str) -> String {
+    MODEL_SEARCH_QUERIES.with(|m| m.borrow().get(provider_id).cloned().unwrap_or_default())
+}
+
+pub(super) fn set_model_search_query(provider_id: &str, query: String) {
+    MODEL_SEARCH_QUERIES.with(|m| {
+        let mut map = m.borrow_mut();
+        if query.trim().is_empty() {
+            map.remove(provider_id);
+        } else {
+            map.insert(provider_id.to_string(), query);
+        }
+    });
+}
+
+pub(super) fn disabled_models_expanded(provider_id: &str) -> bool {
+    DISABLED_MODELS_EXPANDED.with(|s| s.borrow().contains(provider_id))
+}
+
+pub(super) fn toggle_disabled_models_expanded(provider_id: &str) {
+    DISABLED_MODELS_EXPANDED.with(|s| {
+        let mut set = s.borrow_mut();
+        if !set.insert(provider_id.to_string()) {
+            set.remove(provider_id);
+        }
+    });
+}
+
+/// Case-insensitive substring match against a model's name or id; an empty/blank query
+/// matches everything. Shared by the model list's render-time filtering and the
+/// "Disable/Enable shown" bulk actions, so what's visually shown and what gets bulk-toggled
+/// can never disagree.
+pub(super) fn model_matches_search(model: &AgentProviderModel, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    model.name.to_lowercase().contains(&query) || model.id.to_lowercase().contains(&query)
+}
+
+/// Clears the per-provider model search/expansion state when a provider is deleted, avoiding
+/// stale entries piling up under an id that no longer exists.
+pub(super) fn clear_model_search_state_for_provider(provider_id: &str) {
+    MODEL_SEARCH_QUERIES.with(|m| {
+        m.borrow_mut().remove(provider_id);
+    });
+    DISABLED_MODELS_EXPANDED.with(|s| {
+        s.borrow_mut().remove(provider_id);
+    });
+}
+
 /// The editable view handles for a single model entry (name + id + context + output).
 struct ModelRow {
     name_editor: ViewHandle<EditorView>,
@@ -118,6 +187,9 @@ struct ModelRow {
     remove_button_state: MouseStateHandle,
     /// The quick-remove button to the right of the chevron at the end of the row.
     quick_remove_button_state: MouseStateHandle,
+    /// The compact ●/○ enable/disable toggle, excludes this model from the picker without
+    /// removing it from the list.
+    disable_toggle_button_state: MouseStateHandle,
     /// The expand/collapse chevron at the end of the row.
     expand_button_state: MouseStateHandle,
     /// Mouse state for the tri-state image/pdf/audio chips inside the detail panel.
@@ -155,6 +227,12 @@ struct ProviderRow {
     /// Mouse state for each of the 5 ApiType chips. The HashMap is keyed by chip display name.
     api_type_chip_states: RefCell<HashMap<AgentProviderApiType, MouseStateHandle>>,
     model_rows: Vec<ModelRow>,
+    /// Filters the models list below by name/id substring; also scopes the "Disable/Enable
+    /// shown" bulk actions. Only meaningful once a provider has more than a couple of models.
+    model_search_editor: ViewHandle<EditorView>,
+    disable_shown_button_state: MouseStateHandle,
+    enable_shown_button_state: MouseStateHandle,
+    disabled_models_toggle_button_state: MouseStateHandle,
 }
 
 type ModelDraftEditorHandles = (
@@ -462,6 +540,7 @@ impl AgentProvidersWidget {
             output_editor,
             remove_button_state: MouseStateHandle::default(),
             quick_remove_button_state: MouseStateHandle::default(),
+            disable_toggle_button_state: MouseStateHandle::default(),
             expand_button_state: MouseStateHandle::default(),
             image_chip_state: MouseStateHandle::default(),
             pdf_chip_state: MouseStateHandle::default(),
@@ -630,6 +709,36 @@ impl AgentProvidersWidget {
             .map(|m| Self::build_model_row(m, ctx))
             .collect();
 
+        // ---- Model list search box ----
+        let initial_model_search = model_search_query(&provider_id);
+        let model_search_editor = ctx.add_typed_action_view(move |ctx| {
+            let appearance = Appearance::handle(ctx).as_ref(ctx);
+            let options = single_line_editor_options(appearance, false);
+            let mut editor = EditorView::single_line(options, ctx);
+            editor.set_placeholder_text(
+                crate::t!("settings-agent-providers-model-search-placeholder"),
+                ctx,
+            );
+            if !initial_model_search.is_empty() {
+                editor.set_buffer_text(&initial_model_search, ctx);
+            }
+            editor
+        });
+        {
+            let provider_id = provider_id.clone();
+            ctx.subscribe_to_view(&model_search_editor, move |_, editor, event, ctx| {
+                if matches!(event, EditorEvent::Edited(_)) {
+                    let buffer_text = editor.as_ref(ctx).buffer_text(ctx);
+                    ctx.dispatch_typed_action_deferred(
+                        AISettingsPageAction::SetAgentProviderModelSearchQuery {
+                            provider_id: provider_id.clone(),
+                            query: buffer_text,
+                        },
+                    );
+                }
+            });
+        }
+
         let header_rows: Vec<HeaderRow> = provider
             .extra_headers
             .iter()
@@ -653,6 +762,10 @@ impl AgentProvidersWidget {
             add_header_button_state,
             api_type_chip_states: RefCell::new(HashMap::new()),
             model_rows,
+            model_search_editor,
+            disable_shown_button_state: MouseStateHandle::default(),
+            enable_shown_button_state: MouseStateHandle::default(),
+            disabled_models_toggle_button_state: MouseStateHandle::default(),
         }
     }
 
@@ -808,10 +921,29 @@ impl AgentProvidersWidget {
             },
             appearance,
         );
+        // Compact enable/disable toggle: excludes this one model from the picker without
+        // removing it from the list. Follows the same ●/○ filled/hollow convention as the
+        // tri-state capability chips in the detail panel below.
+        let disable_toggle_label = if model.disabled { "○" } else { "●" };
+        let disable_toggle_button = Self::render_card_button_preserving_draft(
+            disable_toggle_label,
+            row.disable_toggle_button_state.clone(),
+            draft_editors.clone(),
+            AISettingsPageAction::ToggleAgentProviderModelDisabled {
+                provider_id: provider.id.clone(),
+                model_index: index,
+            },
+            appearance,
+        );
         let row_controls = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(
                 Container::new(chevron_button)
+                    .with_margin_right(MODEL_ROW_GAP)
+                    .finish(),
+            )
+            .with_child(
+                Container::new(disable_toggle_button)
                     .with_margin_right(MODEL_ROW_GAP)
                     .finish(),
             )
@@ -1215,6 +1347,15 @@ impl AgentProvidersWidget {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(models_label);
 
+        let show_model_search = provider.models.len() > MODEL_SEARCH_THRESHOLD;
+        if show_model_search {
+            models_column.add_child(
+                Container::new(ChildView::new(&row.model_search_editor).finish())
+                    .with_margin_bottom(6.)
+                    .finish(),
+            );
+        }
+
         if provider.models.is_empty() {
             let empty_hint = Container::new(
                 Text::new(
@@ -1302,22 +1443,150 @@ impl AgentProvidersWidget {
             .finish();
             models_column.add_child(header);
 
-            for (idx, m_row) in row.model_rows.iter().enumerate() {
-                let model = match provider.models.get(idx) {
-                    Some(m) => m,
-                    // Edge case: settings were changed again during a rebuild gap, so
-                    // model_rows and provider.models temporarily differ in length; skip to
-                    // avoid a panic -- this self-corrects on the next frame.
-                    None => continue,
-                };
-                models_column.add_child(Self::render_model_row(
-                    provider,
-                    idx,
-                    model,
-                    m_row,
-                    draft_editors.clone(),
+            // Indices (not a re-collected/re-indexed Vec) so RemoveAgentProviderModel /
+            // ToggleAgentProviderModelExpanded / etc, which all address `provider.models` by
+            // position, stay correct regardless of what's filtered out of view here.
+            let search_query = model_search_query(&provider.id);
+            let matching_count = provider
+                .models
+                .iter()
+                .filter(|m| model_matches_search(m, &search_query))
+                .count();
+
+            if show_model_search {
+                let disable_shown_button = Self::render_card_button(
+                    crate::t!(
+                        "settings-agent-providers-disable-shown",
+                        count = matching_count
+                    ),
+                    row.disable_shown_button_state.clone(),
+                    AISettingsPageAction::BulkSetAgentProviderModelsDisabledForSearch {
+                        provider_id: provider.id.clone(),
+                        disabled: true,
+                    },
                     appearance,
-                ));
+                );
+                let enable_shown_button = Self::render_card_button(
+                    crate::t!(
+                        "settings-agent-providers-enable-shown",
+                        count = matching_count
+                    ),
+                    row.enable_shown_button_state.clone(),
+                    AISettingsPageAction::BulkSetAgentProviderModelsDisabledForSearch {
+                        provider_id: provider.id.clone(),
+                        disabled: false,
+                    },
+                    appearance,
+                );
+                models_column.add_child(
+                    Container::new(
+                        Flex::row()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                            .with_child(
+                                Container::new(disable_shown_button)
+                                    .with_margin_right(8.)
+                                    .finish(),
+                            )
+                            .with_child(enable_shown_button)
+                            .finish(),
+                    )
+                    .with_margin_bottom(6.)
+                    .finish(),
+                );
+            }
+
+            if matching_count == 0 {
+                models_column.add_child(
+                    Container::new(
+                        Text::new(
+                            crate::t!(
+                                "settings-agent-providers-models-no-match",
+                                query = search_query.as_str()
+                            ),
+                            appearance.ui_font_family(),
+                            appearance.ui_font_size(),
+                        )
+                        .with_color(appearance.theme().disabled_ui_text_color().into())
+                        .finish(),
+                    )
+                    .with_margin_bottom(MODEL_ROW_GAP)
+                    .finish(),
+                );
+            } else {
+                let mut disabled_matching = Vec::new();
+                for (idx, m_row) in row.model_rows.iter().enumerate() {
+                    let model = match provider.models.get(idx) {
+                        Some(m) => m,
+                        // Edge case: settings were changed again during a rebuild gap, so
+                        // model_rows and provider.models temporarily differ in length; skip to
+                        // avoid a panic -- this self-corrects on the next frame.
+                        None => continue,
+                    };
+                    if !model_matches_search(model, &search_query) {
+                        continue;
+                    }
+                    if model.disabled {
+                        disabled_matching.push((idx, model, m_row));
+                        continue;
+                    }
+                    models_column.add_child(Self::render_model_row(
+                        provider,
+                        idx,
+                        model,
+                        m_row,
+                        draft_editors.clone(),
+                        appearance,
+                    ));
+                }
+
+                // Disabled models collapse into their own subsection, same rationale and
+                // pattern as the top-level "Disabled providers" section: a curated-down
+                // 200-300-model provider shouldn't still render every excluded row.
+                if !disabled_matching.is_empty() {
+                    let expanded = disabled_models_expanded(&provider.id);
+                    let toggle_label = if expanded {
+                        crate::t!(
+                            "settings-agent-providers-disabled-models-collapse",
+                            count = disabled_matching.len()
+                        )
+                    } else {
+                        crate::t!(
+                            "settings-agent-providers-disabled-models-expand",
+                            count = disabled_matching.len()
+                        )
+                    };
+                    let toggle_button = Self::render_card_button(
+                        toggle_label,
+                        row.disabled_models_toggle_button_state.clone(),
+                        AISettingsPageAction::ToggleAgentProviderDisabledModelsExpanded {
+                            provider_id: provider.id.clone(),
+                        },
+                        appearance,
+                    );
+                    models_column.add_child(
+                        Container::new(
+                            Flex::row()
+                                .with_main_axis_alignment(MainAxisAlignment::Start)
+                                .with_child(toggle_button)
+                                .finish(),
+                        )
+                        .with_margin_top(4.)
+                        .with_margin_bottom(4.)
+                        .finish(),
+                    );
+                    if expanded {
+                        for (idx, model, m_row) in disabled_matching {
+                            models_column.add_child(Self::render_model_row(
+                                provider,
+                                idx,
+                                model,
+                                m_row,
+                                draft_editors.clone(),
+                                appearance,
+                            ));
+                        }
+                    }
+                }
             }
         }
 
@@ -1886,5 +2155,60 @@ impl SettingsWidget for AgentProvidersWidget {
         Container::new(column.finish())
             .with_margin_bottom(HEADER_PADDING)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod model_filter_tests {
+    use super::*;
+
+    fn model(name: &str, id: &str) -> AgentProviderModel {
+        let mut m = AgentProviderModel::from_id(id.to_owned());
+        m.name = name.to_owned();
+        m
+    }
+
+    #[test]
+    fn model_matches_search_is_empty_query_matches_everything() {
+        assert!(model_matches_search(&model("GPT-5", "gpt-5"), ""));
+        assert!(model_matches_search(&model("GPT-5", "gpt-5"), "   "));
+    }
+
+    #[test]
+    fn model_matches_search_is_case_insensitive_on_name_or_id() {
+        let m = model("DeepSeek V3 General", "deepseek-chat");
+        assert!(model_matches_search(&m, "deepseek"));
+        assert!(model_matches_search(&m, "DEEPSEEK"));
+        assert!(model_matches_search(&m, "V3 General"));
+        assert!(model_matches_search(&m, "chat"));
+        assert!(!model_matches_search(&m, "claude"));
+    }
+
+    #[test]
+    fn model_search_query_round_trips_and_clears_on_blank() {
+        let provider_id = "test-provider-search-state";
+        assert_eq!(model_search_query(provider_id), "");
+
+        set_model_search_query(provider_id, "gpt".to_owned());
+        assert_eq!(model_search_query(provider_id), "gpt");
+
+        // Blank input clears the stored entry rather than storing whitespace.
+        set_model_search_query(provider_id, "   ".to_owned());
+        assert_eq!(model_search_query(provider_id), "");
+
+        clear_model_search_state_for_provider(provider_id);
+        assert_eq!(model_search_query(provider_id), "");
+    }
+
+    #[test]
+    fn disabled_models_expanded_toggles_per_provider() {
+        let provider_id = "test-provider-disabled-models-expand";
+        assert!(!disabled_models_expanded(provider_id));
+
+        toggle_disabled_models_expanded(provider_id);
+        assert!(disabled_models_expanded(provider_id));
+
+        toggle_disabled_models_expanded(provider_id);
+        assert!(!disabled_models_expanded(provider_id));
     }
 }

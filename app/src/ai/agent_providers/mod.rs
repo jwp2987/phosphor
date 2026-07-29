@@ -74,7 +74,9 @@ use crate::settings::{AISettings, AgentProvider};
 /// models don't show up in the picker — this lets the user intuitively see "which
 /// providers aren't fully filled in → don't appear". Explicitly disabled providers
 /// (`AgentProvider::disabled`) are skipped the same way, without touching their
-/// stored config or API key.
+/// stored config or API key. Individual models can also be excluded via
+/// `AgentProviderModel::disabled`, so a provider with a huge catalog (some have
+/// 200-300 models) can be curated down without deleting the rest.
 fn build_byop_llm_infos(app: &AppContext) -> Vec<LLMInfo> {
     let providers = AISettings::as_ref(app).agent_providers.value().clone();
     let mut out = Vec::new();
@@ -94,7 +96,7 @@ fn build_byop_llm_infos(app: &AppContext) -> Vec<LLMInfo> {
         };
 
         for model in &provider.models {
-            if model.id.trim().is_empty() {
+            if model.id.trim().is_empty() || model.disabled {
                 continue;
             }
             let display_name = if model.name.trim().is_empty() {
@@ -186,16 +188,23 @@ pub fn build_byop_models_by_feature(app: &AppContext) -> ModelsByFeature {
 
 /// Given a BYOP `LLMId`, looks up `(provider, api_key, model_id)` from `AISettings`
 /// and secrets.
-/// Returns `None` if any piece of information is missing, or the provider is disabled
-/// (the controller caller should map this to an `InvalidApiKey` error). A model
-/// disabled mid-use is handled the same way an ordinary deleted provider already is:
+/// Returns `None` if any piece of information is missing, or the provider or the specific
+/// model is disabled (the controller caller should map this to an `InvalidApiKey` error). A
+/// model disabled mid-use is handled the same way an ordinary deleted provider already is:
 /// `AvailableLLMs::new` falls back to the first remaining choice once the disabled
-/// provider's models drop out of `build_byop_llm_infos`.
+/// provider's/model's entry drops out of `build_byop_llm_infos`.
 pub fn lookup_byop(app: &AppContext, id: &ai::LLMId) -> Option<(AgentProvider, String, String)> {
     let (provider_id, model_id) = llm_id::decode(id)?;
     let providers = AISettings::as_ref(app).agent_providers.value().clone();
     let provider = providers.into_iter().find(|p| p.id == provider_id)?;
     if provider.disabled {
+        return None;
+    }
+    if provider
+        .models
+        .iter()
+        .any(|m| m.id == model_id && m.disabled)
+    {
         return None;
     }
     // API key is optional: returns an empty string when there's no key; downstream

@@ -1592,6 +1592,12 @@ settings-agent-providers-enable = Enable
 settings-agent-providers-disabled-badge = Disabled
 settings-agent-providers-disabled-section-expand = ▸ Disabled providers ({$count})
 settings-agent-providers-disabled-section-collapse = ▾ Disabled providers ({$count})
+settings-agent-providers-model-search-placeholder = Search models by name or id...
+settings-agent-providers-disable-shown = Disable shown ({$count})
+settings-agent-providers-enable-shown = Enable shown ({$count})
+settings-agent-providers-models-no-match = No models match "{$query}"
+settings-agent-providers-disabled-models-expand = ▸ Disabled models ({$count})
+settings-agent-providers-disabled-models-collapse = ▾ Disabled models ({$count})
 settings-agent-providers-save = Save
 settings-agent-providers-saved-toast = Saved
 

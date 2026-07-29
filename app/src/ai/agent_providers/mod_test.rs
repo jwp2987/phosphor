@@ -218,3 +218,51 @@ fn smoke_re_enabled_provider_is_usable_again() {
         });
     });
 }
+
+#[test]
+fn smoke_disabled_model_is_excluded_from_picker_but_sibling_model_still_works() {
+    // Models a large-catalog provider curated down to a subset: one model explicitly
+    // disabled, one left enabled, both within an otherwise-enabled provider.
+    App::test((), |mut app| async move {
+        init_byop_test_app(&mut app);
+
+        let provider_id = "provider-model-disabled-1";
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let mut provider = sample_provider(provider_id);
+                provider.models = vec![
+                    AgentProviderModel::from_id("llama3.2".to_owned()),
+                    {
+                        let mut m = AgentProviderModel::from_id("llama3.2-huge".to_owned());
+                        m.disabled = true;
+                        m
+                    },
+                ];
+                let _ = settings.agent_providers.set_value(vec![provider], ctx);
+            });
+        });
+
+        let enabled_id = llm_id::encode(provider_id, "llama3.2");
+        let disabled_id = llm_id::encode(provider_id, "llama3.2-huge");
+        app.read(|ctx| {
+            let choices: Vec<_> = LLMPreferences::as_ref(ctx)
+                .get_base_llm_choices_for_agent_mode()
+                .collect();
+            assert_eq!(
+                choices.len(),
+                1,
+                "the disabled model must not appear in the picker"
+            );
+            assert_eq!(choices[0].id.as_str(), enabled_id.as_str());
+
+            assert!(
+                lookup_byop(ctx, &enabled_id).is_some(),
+                "the sibling enabled model must still resolve"
+            );
+            assert!(
+                lookup_byop(ctx, &disabled_id).is_none(),
+                "lookup_byop must refuse a disabled model even by exact id"
+            );
+        });
+    });
+}

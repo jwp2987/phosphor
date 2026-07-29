@@ -364,6 +364,7 @@ pub fn into_agent_provider_model(model: &Model) -> crate::settings::AgentProvide
         image: Some(caps.vision),
         pdf: Some(caps.pdf),
         audio: Some(caps.audio),
+        disabled: false,
     }
 }
 
