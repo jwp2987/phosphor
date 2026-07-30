@@ -1224,6 +1224,45 @@ impl<'a> Classifier<'a> {
 
         if exact_key_seen || task_tool_call_seen {
             ReadinessState::OutOfOrderToolResult { result }
+        } else if result.source == ToolResultSource::CurrentInput {
+            // zerx-lab/zap#328: a `CurrentInput`-sourced result can only ever
+            // originate from an action this app itself just dispatched and
+            // executed (see `chat_stream::build_controller_readiness_projection`,
+            // the only place that produces `ToolResultSource::CurrentInput`
+            // items, always from the *current outgoing request's own*
+            // `AIAgentInput::ActionResult` entries) — it is never loaded from
+            // persisted (and potentially corrupted) history the way a
+            // `PersistedHistory`-sourced result is. If we get here, its
+            // originating `ToolCall` hasn't shown up anywhere in this
+            // projection, which most likely means the tool finished fast enough
+            // that its result reached the outgoing request before the ToolCall
+            // message itself was mirrored into persisted task history, not that
+            // the call never happened. Treat it like a genuinely still-running
+            // tool call (`PendingToolResults`) rather than a fatal
+            // `OrphanToolResult`: the controller's preflight already retries
+            // `PendingToolResults` via the same stash-and-resend machinery used
+            // for in-flight async tool calls, so this converges as soon as the
+            // ToolCall message lands, instead of permanently blocking the
+            // conversation.
+            //
+            // This can't mask genuine corruption: real corrupted history is
+            // only ever observed via `PersistedHistory`-sourced results (loaded
+            // from `params.tasks`), which are untouched by this branch and
+            // still fall through to `OrphanToolResult` below exactly as before.
+            let synthetic_assistant_id = result
+                .assistant_tool_call_message_id
+                .clone()
+                .unwrap_or_else(|| format!("pending-current-input:{}", result.tool_call_id));
+            ReadinessState::PendingToolResults {
+                tool_calls: vec![ToolCallRef::new(
+                    ToolCallKey::new(
+                        result.task_id.clone(),
+                        synthetic_assistant_id,
+                        result.tool_call_id.clone(),
+                    ),
+                    result.redacted_tool_kind.clone(),
+                )],
+            }
         } else {
             ReadinessState::OrphanToolResult { result }
         }

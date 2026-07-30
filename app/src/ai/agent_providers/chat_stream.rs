@@ -7141,12 +7141,16 @@ mod cache_boundary_stability_tests {
 mod serializer_readiness_tests {
     use super::*;
     use crate::ai::agent::task::TaskId;
-    use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType, RequestCommandOutputResult};
+    use crate::ai::agent::{
+        AIAgentActionId, AIAgentActionResultType, RequestCommandOutputResult,
+        WriteToLongRunningShellCommandResult,
+    };
     use crate::ai::byop_compaction::state::{CompactionState, CompletedCompaction};
     use crate::ai::byop_readiness::{
         PendingByopToolResultsError, RepairRecord, RepairState, ToolCallKey, ToolCallRef,
         BLOCKED_BYOP_REQUEST_MESSAGE,
     };
+    use crate::terminal::model::block::BlockId;
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
@@ -7255,6 +7259,28 @@ mod serializer_readiness_tests {
 
     fn request_params(messages: Vec<api::Message>, input: Vec<AIAgentInput>) -> RequestParams {
         RequestParams::new_for_test(input, vec![task_with_messages(messages)])
+    }
+
+    /// A `CurrentInput`-sourced, non-cancelled `ActionResult` for a
+    /// fast-completing tool (mirrors the `write_to_long_running_shell_command`
+    /// action from the zerx-lab/zap#328 live repro).
+    fn long_running_action_result_input(call_id: &str) -> AIAgentInput {
+        AIAgentInput::ActionResult {
+            result: AIAgentActionResult {
+                id: AIAgentActionId::from(call_id.to_owned()),
+                task_id: TaskId::new("task-1".to_owned()),
+                result: AIAgentActionResultType::WriteToLongRunningShellCommand(
+                    WriteToLongRunningShellCommandResult::Snapshot {
+                        block_id: BlockId::new(),
+                        grid_contents: String::new(),
+                        cursor: String::new(),
+                        is_alt_screen_active: false,
+                        is_preempted: false,
+                    },
+                ),
+            },
+            context: Arc::<[AIAgentContext]>::from([]),
+        }
     }
 
     fn request_params_with_repair(
@@ -7554,6 +7580,38 @@ mod serializer_readiness_tests {
             ReadinessState::PendingToolResults { ref tool_calls }
                 if tool_calls.len() == 1 && tool_calls[0].key.tool_call_id == "call-1"
         ));
+    }
+
+    /// zerx-lab/zap#328 regression: approving/executing a fast tool action can
+    /// finish so quickly that its result lands in the *current* outgoing
+    /// request's `params.input` (as a `CurrentInput`-sourced `ActionResult`)
+    /// before the ToolCall message it belongs to has been mirrored into
+    /// `params.tasks` by the response-stream event pipeline — reproduced live
+    /// against a local Ollama endpoint via `write_to_long_running_shell_command`
+    /// (an `ExecutedSync` action). Before the fix, `classify_projection` had no
+    /// way to distinguish this from genuine corrupted history and misclassified
+    /// it as `OrphanToolResult`, which permanently blocks the conversation
+    /// ("Can't continue this conversation..."). It must instead be `Pending`, so
+    /// the controller's existing stash-and-retry machinery gives the ToolCall
+    /// message a chance to land.
+    #[test]
+    fn controller_readiness_treats_fast_current_input_result_as_pending_not_orphan() {
+        // No ToolCall message for "call-1" anywhere in `params.tasks` — only the
+        // `CurrentInput` action result the app itself just produced.
+        let params = request_params(vec![], vec![long_running_action_result_input("call-1")]);
+
+        let report = classify_byop_controller_readiness(&params);
+
+        assert!(
+            matches!(
+                &report.state,
+                ReadinessState::PendingToolResults { tool_calls }
+                    if tool_calls.len() == 1 && tool_calls[0].key.tool_call_id == "call-1"
+            ),
+            "expected a fast-completing tool result racing ahead of its ToolCall's \
+             persistence to be treated as pending, got {:?}",
+            report.state
+        );
     }
 
     #[test]

@@ -311,6 +311,66 @@ fn orphan_tool_result_blocks_readiness() {
     assert_eq!(report.state, ReadinessState::OrphanToolResult { result });
 }
 
+/// zerx-lab/zap#328 regression: unlike a `PersistedHistory`-sourced result, a
+/// `CurrentInput`-sourced result with no matching tool call anywhere in the
+/// projection can only mean the fast-completing action's result raced ahead of
+/// its own `ToolCall` message's persistence — never genuine corrupted history
+/// (see `unattached_result_state`'s `ToolResultSource::CurrentInput` branch).
+/// It must classify as recoverable (`PendingToolResults`), not a fatal
+/// `OrphanToolResult` that permanently blocks the conversation.
+#[test]
+fn current_input_orphan_result_is_pending_not_blocked() {
+    let result = ProjectedToolResult::new(
+        "task-1",
+        "current_input:0:call-1",
+        None,
+        "call-1",
+        kind("shell"),
+        ToolResultSource::CurrentInput,
+        TerminalResultKind::Real,
+    );
+
+    let report = classify(vec![ProjectionItem::tool_result(result)]);
+
+    assert!(
+        matches!(
+            &report.state,
+            ReadinessState::PendingToolResults { tool_calls }
+                if tool_calls.len() == 1 && tool_calls[0].key.tool_call_id == "call-1"
+        ),
+        "expected PendingToolResults, got {:?}",
+        report.state
+    );
+}
+
+/// Companion to `current_input_orphan_result_is_pending_not_blocked`: a
+/// `CurrentInput`-sourced result that's genuinely out of order (its
+/// `tool_call_id` *was* seen earlier, just not in the active group) must still
+/// classify as `OutOfOrderToolResult`, not get swept into the new pending path.
+#[test]
+fn current_input_out_of_order_result_is_unaffected() {
+    let result = ProjectedToolResult::new(
+        "task-1",
+        "current_input:0:call-1",
+        None,
+        "call-1",
+        kind("shell"),
+        ToolResultSource::CurrentInput,
+        TerminalResultKind::Real,
+    );
+
+    let report = classify(vec![
+        assistant_with_one_call(),
+        ProjectionItem::user_boundary("task-1", "user-2"),
+        ProjectionItem::tool_result(result.clone()),
+    ]);
+
+    assert_eq!(
+        report.state,
+        ReadinessState::OutOfOrderToolResult { result }
+    );
+}
+
 #[test]
 fn tool_result_after_user_boundary_is_out_of_order() {
     let result = ProjectedToolResult::new(
