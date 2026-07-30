@@ -31,6 +31,11 @@ const BUFFER_HARD_LIMIT: usize = 16 * 1024;
 /// Maximum duration to wait for the shell prompt in phase 1. On timeout, the
 /// entire stream is abandoned (and `in_flight` is reset in `on_done`).
 const SHELL_READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Once an `su`/`sudo`-to-root invocation has just been echoed, how long we
+/// stay "armed" waiting for the password prompt that should follow it. A
+/// real prompt appears near-instantly; this bounds how long a stale arm can
+/// stick around waiting to be (mis-)matched against unrelated later output.
+const SU_PASSWORD_ARM_TIMEOUT: Duration = Duration::from_secs(10);
 
 lazy_static! {
     /// Password-prompt regex — strictly matches two categories:
@@ -106,17 +111,26 @@ pub fn spawn_su_password_injector<O>(
             }
         }
 
-        // Phase 2: continuously detect su root + password prompt, resuming monitoring after each yield
+        // Phase 2: an idle <-> armed state machine, resuming monitoring after each yield.
+        //
+        // Security (finding #9): the old implementation matched
+        // `PASSWORD_PROMPT_REGEX` and `is_su_to_root` independently against
+        // the whole 8KB sliding window, so an `su root` line anywhere in
+        // scrollback (e.g. in a `cat`'d script) plus an *unrelated*
+        // "Password:"-looking line anywhere else in that same window (e.g.
+        // `cat`ing a file with a literal `Password:` line, or a heredoc)
+        // could co-occur and pop the su/sudo password confirmation menu
+        // over content that was never an actual prompt.
+        //
+        // See `next_su_password_event` for the tightened state machine: the
+        // password-prompt check now only runs *after* an su/sudo-to-root
+        // invocation has just been freshly echoed.
         buf.clear();
-        while let Ok(chunk) = active.recv().await {
-            buf.extend_from_slice(&chunk);
-            if buf.len() > BUFFER_HARD_LIMIT {
-                let drop_n = buf.len() - SLIDING_WINDOW_BYTES;
-                buf.drain(..drop_n);
-            }
-            if PASSWORD_PROMPT_REGEX.is_match(&buf) && is_su_to_root(&buf) {
-                buf.clear();
-                yield ();
+        loop {
+            match next_su_password_event(&mut active, &mut buf).await {
+                SuPasswordEvent::PromptFired => yield (),
+                SuPasswordEvent::StoodDown => {}
+                SuPasswordEvent::Eof => break,
             }
         }
     };
@@ -146,6 +160,105 @@ pub fn spawn_su_password_injector<O>(
             }
         },
     );
+}
+
+/// Result of one `next_su_password_event` cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuPasswordEvent {
+    /// A genuine password prompt appeared right after an su/sudo-to-root
+    /// invocation — the caller should pop the confirmation menu.
+    PromptFired,
+    /// An su/sudo-to-root invocation was seen but didn't lead to a genuine
+    /// password prompt (shell prompt reappeared first, or the arm window
+    /// timed out) — the caller should keep watching for the next one.
+    StoodDown,
+    /// The underlying PTY broadcast closed.
+    Eof,
+}
+
+/// One full idle -> armed cycle of the su/sudo-to-root password-prompt
+/// state machine (see the security note above phase 2 in
+/// `spawn_su_password_injector`):
+///
+/// 1. **Idle**: wait until `buf` shows a genuine su/sudo-to-root invocation.
+/// 2. **Armed**: from that point on (bounded by `SU_PASSWORD_ARM_TIMEOUT`),
+///    the *first* thing to appear decides the outcome — a password prompt
+///    fires, a shell prompt (or a timeout, or EOF) stands down. Either way
+///    `buf` is cleared before returning, so unrelated text from far outside
+///    this window can never combine with a later invocation to false-fire.
+///
+/// Pulled out of the `stream!` block as a plain function so it can be
+/// driven directly in tests via `warpui::r#async::block_on`, without the
+/// full `ViewContext`/`TerminalView` plumbing `ctx.spawn_stream_local`
+/// requires.
+async fn next_su_password_event(
+    active: &mut async_broadcast::Receiver<Arc<Vec<u8>>>,
+    buf: &mut Vec<u8>,
+) -> SuPasswordEvent {
+    // Idle: wait for a genuine su/sudo-to-root invocation to be echoed.
+    loop {
+        if is_su_to_root(buf) {
+            break;
+        }
+        match active.recv().await {
+            Ok(chunk) => {
+                buf.extend_from_slice(&chunk);
+                if buf.len() > BUFFER_HARD_LIMIT {
+                    let drop_n = buf.len() - SLIDING_WINDOW_BYTES;
+                    buf.drain(..drop_n);
+                }
+            }
+            Err(_) => return SuPasswordEvent::Eof,
+        }
+    }
+
+    // Armed: an su/sudo-to-root invocation was just observed. Deliberately
+    // does NOT clear `buf` here first: the password prompt may have
+    // arrived in the very same PTY chunk as the su/sudo echo (a single
+    // `recv()` covering both is common), so the already-buffered bytes are
+    // checked before waiting for more.
+    let armed_result = async {
+        loop {
+            if bytes_look_like_shell_prompt(buf) {
+                // su/sudo already resolved (e.g. NOPASSWD / cached
+                // credentials) without ever asking for a password — stand down.
+                return ArmOutcome::StoodDown;
+            }
+            if PASSWORD_PROMPT_REGEX.is_match(buf) {
+                return ArmOutcome::PromptSeen;
+            }
+            match active.recv().await {
+                Ok(chunk) => {
+                    buf.extend_from_slice(&chunk);
+                    if buf.len() > BUFFER_HARD_LIMIT {
+                        let drop_n = buf.len() - SLIDING_WINDOW_BYTES;
+                        buf.drain(..drop_n);
+                    }
+                }
+                Err(_) => return ArmOutcome::StoodDown,
+            }
+        }
+    }
+    .with_timeout(SU_PASSWORD_ARM_TIMEOUT)
+    .await
+    .unwrap_or(ArmOutcome::StoodDown);
+
+    buf.clear();
+    match armed_result {
+        ArmOutcome::PromptSeen => SuPasswordEvent::PromptFired,
+        ArmOutcome::StoodDown => SuPasswordEvent::StoodDown,
+    }
+}
+
+/// Outcome of the "armed" wait in `next_su_password_event` that follows a
+/// freshly-observed su/sudo-to-root invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArmOutcome {
+    /// A genuine password prompt appeared right after the invocation.
+    PromptSeen,
+    /// A shell prompt reappeared first (su/sudo resolved without asking for
+    /// a password), or the arm window timed out without seeing either.
+    StoodDown,
 }
 
 /// Checks whether the buffer contains an su command targeting root.

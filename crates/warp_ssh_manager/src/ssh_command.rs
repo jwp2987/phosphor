@@ -84,12 +84,36 @@ pub fn build_ssh_args(server: &SshServerInfo) -> Vec<String> {
     args
 }
 
+/// Builds the full `ssh ...` command line as text, quoted for **whatever
+/// local shell the resulting string will be typed into**.
+///
+/// This is written directly into a terminal pane's PTY (see
+/// `open_ssh_terminal` in `app/src/workspace/view.rs`), so it must be quoted
+/// for that pane's shell, not unconditionally for a POSIX shell. On Windows
+/// the local shell is cmd.exe/PowerShell — `'` is not a quote character
+/// there (it's passed through literally), so POSIX single-quoting a value
+/// containing a space or `"` would not actually keep it together as one
+/// argument, letting shell metacharacters in a maliciously-crafted
+/// host/username/key-path split across arguments instead of being
+/// neutralized. On Unix, quoting stays exactly as before.
 pub fn build_ssh_command_line(server: &SshServerInfo) -> String {
     let args = build_ssh_args(server);
     args.iter()
-        .map(|a| shell_escape::unix::escape(Cow::Borrowed(a.as_str())).to_string())
+        .map(|a| escape_for_local_shell(a))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Escapes a single argument for the local shell that will interpret the
+/// command line produced by `build_ssh_command_line`.
+#[cfg(windows)]
+fn escape_for_local_shell(arg: &str) -> String {
+    shell_escape::windows::escape(Cow::Borrowed(arg)).to_string()
+}
+
+#[cfg(not(windows))]
+fn escape_for_local_shell(arg: &str) -> String {
+    shell_escape::unix::escape(Cow::Borrowed(arg)).to_string()
 }
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);

@@ -19,6 +19,9 @@ pub enum SftpError {
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
 
+    #[error("Host key verification failed: {0}")]
+    HostKeyMismatch(String),
+
     #[error("Authentication failed: {0}")]
     AuthFailed(String),
 

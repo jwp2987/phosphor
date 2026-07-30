@@ -33,6 +33,7 @@ use warpui::{ViewContext, WeakViewHandle};
 use zeroize::Zeroizing;
 
 use crate::ssh_manager::password_prompt::bytes_look_like_password_prompt;
+use crate::ssh_manager::shell_prompt::bytes_look_like_shell_prompt;
 use crate::terminal::TerminalView;
 
 /// Upper bound for the injection timeout.
@@ -113,7 +114,19 @@ pub fn spawn_password_injector<O>(
 
 /// Async loop: consumes the PTY broadcast, appending to the sliding window;
 /// **returns true as soon as the regex hits a line-end prompt**; returns
-/// false on EOF. Timeout is wrapped by the caller via `with_timeout`.
+/// false on EOF **or once login has already completed**. Timeout is wrapped
+/// by the caller via `with_timeout`.
+///
+/// Security: a shell prompt (`$ `, `# `, …) is checked *before* the
+/// password-prompt regex on every chunk. Once a shell prompt has been
+/// observed, SSH login is over (e.g. key auth succeeded silently, so no
+/// password prompt was ever shown) — the loop returns `false` immediately
+/// and never looks at PTY output again, one-shot. Without this, an
+/// already-authenticated shell that happens to print text matching the
+/// password-prompt pattern later (e.g. `cat`ing a file containing a literal
+/// `Password:` line, or a program printing its own unrelated prompt) would
+/// cause the stored secret to be injected into that live shell — leaking it
+/// into scrollback/history/whatever command line is active.
 async fn watch_for_prompt(rx: InactiveReceiver<Arc<Vec<u8>>>) -> bool {
     let mut active = rx.activate_cloned();
     let mut buf: Vec<u8> = Vec::with_capacity(SLIDING_WINDOW_BYTES);
@@ -123,9 +136,21 @@ async fn watch_for_prompt(rx: InactiveReceiver<Arc<Vec<u8>>>) -> bool {
             let drop_n = buf.len() - SLIDING_WINDOW_BYTES;
             buf.drain(..drop_n);
         }
+        if bytes_look_like_shell_prompt(&buf) {
+            log::debug!(
+                "ssh secret injector: shell prompt observed before any password prompt — \
+                 login already completed without one; giving up rather than risk injecting \
+                 into an authenticated shell"
+            );
+            return false;
+        }
         if bytes_look_like_password_prompt(&buf) {
             return true;
         }
     }
     false
 }
+
+#[cfg(test)]
+#[path = "secret_injector_tests.rs"]
+mod tests;

@@ -1,7 +1,16 @@
 use super::{
-    is_su_to_root, should_spawn_su_password_injector, PASSWORD_PROMPT_REGEX, SU_ROOT_CMD_REGEX,
+    is_su_to_root, next_su_password_event, should_spawn_su_password_injector, SuPasswordEvent,
+    PASSWORD_PROMPT_REGEX, SU_ROOT_CMD_REGEX,
 };
+use std::sync::Arc;
 use zeroize::Zeroizing;
+
+fn make_channel() -> (
+    async_broadcast::Sender<Arc<Vec<u8>>>,
+    async_broadcast::Receiver<Arc<Vec<u8>>>,
+) {
+    async_broadcast::broadcast(16)
+}
 
 fn pw_matches(input: &str) -> bool {
     PASSWORD_PROMPT_REGEX.is_match(input.as_bytes())
@@ -106,4 +115,110 @@ fn should_spawn_su_password_injector_requires_non_empty_root_password() {
 
     let password = Zeroizing::new("root-password".to_string());
     assert!(should_spawn_su_password_injector(Some(&password)));
+}
+
+/// Real flow: `su -` gets typed/echoed, then the genuine password prompt
+/// follows right after — should fire.
+#[test]
+fn next_su_password_event_fires_on_genuine_prompt_after_su() {
+    let (tx, mut rx) = make_channel();
+    warpui::r#async::block_on(async {
+        tx.broadcast(Arc::new(b"alice@host:~$ su -\r\n".to_vec()))
+            .await
+            .unwrap();
+        tx.broadcast(Arc::new(b"Password: ".to_vec())).await.unwrap();
+        drop(tx);
+
+        let mut buf = Vec::new();
+        let event = next_su_password_event(&mut rx, &mut buf).await;
+        assert_eq!(event, SuPasswordEvent::PromptFired);
+    });
+}
+
+/// Core regression test for finding #9: the old implementation matched the
+/// su-command regex and the password-prompt regex independently against
+/// the whole sliding-window buffer, so an `su root` line typed long before,
+/// plus *unrelated* "Password:"-looking output later (e.g. `cat`ing a file
+/// with a literal `Password:` line) — with nothing to do with an actual su
+/// prompt — could co-occur in the window and pop the confirmation menu over
+/// content that was never a real prompt. That must no longer happen once a
+/// shell prompt has appeared between the two (i.e. the su invocation
+/// already resolved without asking for a password).
+#[test]
+fn fake_password_prompt_unrelated_to_earlier_su_does_not_fire() {
+    let bait: &[u8] = b"Password: \r\n";
+    // Sanity: this bait text does match the raw password-prompt regex in
+    // isolation — proving the state machine, not a non-matching pattern, is
+    // what prevents the false trigger below.
+    assert!(PASSWORD_PROMPT_REGEX.is_match(bait));
+
+    let (tx, mut rx) = make_channel();
+    warpui::r#async::block_on(async {
+        // User runs `su -`, but it resolves immediately without asking for
+        // a password (e.g. NOPASSWD-equivalent) — a shell prompt reappears.
+        tx.broadcast(Arc::new(b"root@host:~$ su -\r\n".to_vec()))
+            .await
+            .unwrap();
+        tx.broadcast(Arc::new(b"# ".to_vec())).await.unwrap();
+        // Later, completely unrelated to that su invocation, the user cats
+        // a file containing a line that happens to look like a password
+        // prompt.
+        tx.broadcast(Arc::new(b"cat leaked-notes.txt\r\n".to_vec()))
+            .await
+            .unwrap();
+        tx.broadcast(Arc::new(bait.to_vec())).await.unwrap();
+        drop(tx);
+
+        let mut buf = Vec::new();
+        // First cycle: su was seen, but it stood down (shell prompt showed
+        // up before any password prompt) rather than firing on the later,
+        // unrelated bait text.
+        let first = next_su_password_event(&mut rx, &mut buf).await;
+        assert_eq!(first, SuPasswordEvent::StoodDown);
+
+        // Second cycle: nothing left to see but EOF (no *new* su
+        // invocation preceded the bait text, so it's never considered).
+        let second = next_su_password_event(&mut rx, &mut buf).await;
+        assert_eq!(second, SuPasswordEvent::Eof);
+    });
+}
+
+/// The password prompt may land in the same PTY chunk as the su/sudo echo
+/// (a single terminal flush covering both) — must still fire.
+#[test]
+fn next_su_password_event_fires_when_prompt_in_same_chunk_as_su() {
+    let (tx, mut rx) = make_channel();
+    warpui::r#async::block_on(async {
+        tx.broadcast(Arc::new(b"$ su -\r\nPassword: ".to_vec()))
+            .await
+            .unwrap();
+        drop(tx);
+
+        let mut buf = Vec::new();
+        let event = next_su_password_event(&mut rx, &mut buf).await;
+        assert_eq!(event, SuPasswordEvent::PromptFired);
+    });
+}
+
+/// After standing down (or firing), the buffer must be cleared so a stale
+/// su-root match can't silently combine with the next cycle's output.
+#[test]
+fn next_su_password_event_resets_buffer_between_cycles() {
+    let (tx, mut rx) = make_channel();
+    warpui::r#async::block_on(async {
+        // Cycle 1: su root resolves instantly (stand down).
+        tx.broadcast(Arc::new(b"$ su root\r\n# ".to_vec())).await.unwrap();
+        drop(tx);
+
+        let mut buf = Vec::new();
+        assert_eq!(
+            next_su_password_event(&mut rx, &mut buf).await,
+            SuPasswordEvent::StoodDown
+        );
+        assert!(
+            buf.is_empty(),
+            "buffer must be cleared after standing down, got: {:?}",
+            String::from_utf8_lossy(&buf)
+        );
+    });
 }

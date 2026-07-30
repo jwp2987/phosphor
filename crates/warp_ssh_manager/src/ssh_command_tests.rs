@@ -416,6 +416,95 @@ fn password_auth_args_guard_leading_dash_host() {
     );
 }
 
+// -------- Platform-aware local-shell quoting (finding #15) --------
+//
+// `build_ssh_command_line` is typed literally into a terminal pane's PTY
+// (see `open_ssh_terminal` in app/src/workspace/view.rs), so it must be
+// quoted for *that pane's local shell* — which on Windows is cmd.exe /
+// PowerShell, not a POSIX shell. `'` is not a quote character in cmd.exe,
+// so unconditionally POSIX-single-quoting a value (the old behavior) is
+// wrong there: a value with a space would be POSIX-quoted with single
+// quotes, but cmd.exe would pass those quote characters through literally
+// and split on the space anyway.
+
+/// A value with a space and an embedded `'` — realistic for a Windows key
+/// path — is quoted structurally differently (and non-interchangeably) by
+/// the two `shell_escape` backends. This demonstrates *why* picking the
+/// right one per-platform matters, independent of which platform the test
+/// itself runs on.
+#[test]
+fn unix_and_windows_escaping_are_not_interchangeable_for_the_same_dangerous_value() {
+    let dangerous = r"C:\Program Files\ssh key's dir\id_rsa";
+
+    let unix_escaped = shell_escape::unix::escape(Cow::Borrowed(dangerous)).to_string();
+    let windows_escaped = shell_escape::windows::escape(Cow::Borrowed(dangerous)).to_string();
+
+    // POSIX quoting: wraps in single quotes, and neutralizes the embedded
+    // `'` via the `'\''` close-escape-reopen idiom — meaningless to cmd.exe.
+    assert!(unix_escaped.starts_with('\'') && unix_escaped.ends_with('\''));
+    assert!(
+        unix_escaped.contains("'\\''"),
+        "expected POSIX single-quote escaping of the embedded quote; got {unix_escaped}"
+    );
+
+    // Windows/cmd quoting: wraps in double quotes; a `'` isn't special so
+    // it passes through unescaped.
+    assert!(windows_escaped.starts_with('"') && windows_escaped.ends_with('"'));
+    assert!(
+        windows_escaped.contains("key's dir"),
+        "expected the embedded ' to survive un-mangled inside double quotes; got {windows_escaped}"
+    );
+
+    // The two outputs are genuinely different: swapping them would produce
+    // a value that's broken (or, more importantly, exploitable) on the
+    // other platform.
+    assert_ne!(unix_escaped, windows_escaped);
+}
+
+/// `build_ssh_command_line` must use `escape_for_local_shell`, which
+/// dispatches per-platform, rather than being hardcoded to
+/// `shell_escape::unix::escape` (the original bug). On this (non-Windows)
+/// build, that means it should match the unix escaper exactly.
+#[cfg(not(windows))]
+#[test]
+fn build_ssh_command_line_uses_unix_escaping_on_unix() {
+    let mut s = server();
+    s.auth_type = AuthType::Key;
+    s.key_path = Some("/path with a space/id_rsa".into());
+
+    let line = build_ssh_command_line(&s);
+    let expected_key = shell_escape::unix::escape(Cow::Borrowed("/path with a space/id_rsa"));
+    assert!(
+        line.contains(expected_key.as_ref()),
+        "expected unix-escaped key path in: {line}"
+    );
+}
+
+/// On Windows, `build_ssh_command_line` must quote with
+/// `shell_escape::windows::escape`, not POSIX rules — a value containing a
+/// space and an embedded `'` must come out double-quoted (cmd.exe-style),
+/// not single-quoted (which cmd.exe would not honor as quoting at all).
+#[cfg(windows)]
+#[test]
+fn build_ssh_command_line_uses_windows_escaping_on_windows() {
+    let mut s = server();
+    s.auth_type = AuthType::Key;
+    s.key_path = Some(r"C:\Program Files\ssh key's dir\id_rsa".into());
+
+    let line = build_ssh_command_line(&s);
+    let expected_key =
+        shell_escape::windows::escape(Cow::Borrowed(r"C:\Program Files\ssh key's dir\id_rsa"));
+    assert!(
+        line.contains(expected_key.as_ref()),
+        "expected windows-escaped key path in: {line}"
+    );
+    // Must NOT contain the POSIX single-quote escaping idiom anywhere.
+    assert!(
+        !line.contains("'\\''"),
+        "must not fall back to POSIX quoting on Windows; got {line}"
+    );
+}
+
 // -------- Windows SSH_ASKPASS regression protection --------
 //
 // On Windows, Win32-OpenSSH refuses to read the password from stdin because
