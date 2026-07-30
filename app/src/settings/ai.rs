@@ -923,14 +923,24 @@ impl AgentProvider {
         }
     }
 
+    /// Whether this provider has a configured endpoint: `vertex_project` for
+    /// [`AgentProviderApiType::Vertex`], `base_url` otherwise.
+    fn has_endpoint(&self) -> bool {
+        if self.api_type.is_vertex() {
+            !self.vertex_project.trim().is_empty()
+        } else {
+            !self.base_url.trim().is_empty()
+        }
+    }
+
     /// Whether this provider should be treated as off: either the user explicitly disabled
-    /// it, or every model it has (including the case of having none at all) is unable to
-    /// serve anything. The second half is deliberately a *computed*, live check rather than
-    /// a flag set once at creation -- a freshly added provider starts this way
-    /// automatically, and the moment it's given a usable model it graduates back to enabled
-    /// on its own, no separate "Enable" click needed. A provider with at least one enabled
-    /// model stays enabled until someone explicitly disables it; this never auto-flips
-    /// `disabled` itself.
+    /// it, every model it has (including the case of having none at all) is unable to serve
+    /// anything, or it has no configured endpoint. All three are deliberately *computed*,
+    /// live checks rather than a flag set once at creation -- a freshly added provider
+    /// starts this way automatically, and the moment it's given a usable model and an
+    /// endpoint it graduates back to enabled on its own, no separate "Enable" click needed.
+    /// A provider with at least one enabled model and an endpoint stays enabled until
+    /// someone explicitly disables it; this never auto-flips `disabled` itself.
     ///
     /// `models.iter().all(...)` is vacuously `true` for an empty list, so this also covers
     /// the no-models-yet case without a separate check -- and it means bulk-disabling every
@@ -939,26 +949,22 @@ impl AgentProvider {
     /// contributing zero models to the picker.
     ///
     /// This is the single predicate the Settings UI uses to decide whether a provider card
-    /// belongs in the main list or the collapsed "Disabled providers" section.
+    /// belongs in the main list or the collapsed "Disabled providers" section -- it must
+    /// agree with [`Self::is_usable`] on "no endpoint" or a provider can render as active in
+    /// Settings while being silently excluded from the model picker.
     pub fn effectively_disabled(&self) -> bool {
-        self.disabled || self.models.iter().all(|m| m.disabled)
+        self.disabled || self.models.iter().all(|m| m.disabled) || !self.has_endpoint()
     }
 
     /// Whether this provider has an endpoint, at least one enabled model, and isn't
     /// disabled — i.e. whether it should show up in the model picker. Used by both
     /// `build_byop_llm_infos` (building the picker) and `lookup_byop` (resolving an
     /// already-selected model at request time), so the two paths can never disagree about
-    /// which providers are live.
+    /// which providers are live. Equivalent to `!effectively_disabled()`, kept as a
+    /// separately-named predicate since "usable" reads better at its call sites than a
+    /// double negative would.
     pub fn is_usable(&self) -> bool {
-        if self.effectively_disabled() {
-            return false;
-        }
-        let has_endpoint = if self.api_type.is_vertex() {
-            !self.vertex_project.trim().is_empty()
-        } else {
-            !self.base_url.trim().is_empty()
-        };
-        has_endpoint
+        !self.effectively_disabled()
     }
 }
 

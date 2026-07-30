@@ -813,15 +813,42 @@ fn effectively_disabled_auto_graduates_once_models_are_added() {
         "no models yet -> effectively disabled"
     );
 
+    provider.base_url = "https://api.example.com/v1".to_string();
     provider.models = vec![AgentProviderModel::from_id("some-model".to_string())];
     assert!(
         !provider.effectively_disabled(),
-        "adding a model should graduate it back to enabled automatically"
+        "adding a model and an endpoint should graduate it back to enabled automatically"
     );
 
-    // But an explicit disable always wins, even with models configured.
+    // But an explicit disable always wins, even with models and an endpoint configured.
     provider.disabled = true;
     assert!(provider.effectively_disabled());
+}
+
+#[test]
+fn effectively_disabled_when_endpoint_is_missing() {
+    // Regression test: `effectively_disabled()` (the Settings UI's active/greyed-out
+    // predicate) used to only check `disabled` and per-model state, not the endpoint --
+    // letting a provider with a model but no base_url/vertex_project render as active in
+    // Settings while `is_usable()` (the actual model-picker gate) silently excluded it.
+    let mut provider = AgentProvider::new_empty();
+    provider.models = vec![AgentProviderModel::from_id("some-model".to_string())];
+    assert!(
+        provider.effectively_disabled(),
+        "a model with no endpoint must still read as effectively disabled"
+    );
+    assert_eq!(
+        provider.effectively_disabled(),
+        !provider.is_usable(),
+        "effectively_disabled() and is_usable() must never disagree"
+    );
+
+    provider.base_url = "https://api.example.com/v1".to_string();
+    assert!(
+        !provider.effectively_disabled(),
+        "filling in the endpoint should graduate it back to enabled"
+    );
+    assert_eq!(provider.effectively_disabled(), !provider.is_usable());
 }
 
 #[test]
@@ -831,6 +858,7 @@ fn effectively_disabled_when_every_individual_model_is_disabled() {
     // empty list -- it must not look "active" in Settings while contributing zero models
     // to the picker.
     let mut provider = AgentProvider::new_empty();
+    provider.base_url = "https://api.example.com/v1".to_string();
     let mut model_a = AgentProviderModel::from_id("model-a".to_string());
     let mut model_b = AgentProviderModel::from_id("model-b".to_string());
     model_a.disabled = true;
