@@ -173,6 +173,106 @@ fn finishing_command_editing_selects_yes_without_executing() {
 }
 
 #[test]
+fn escape_while_editing_exits_edit_mode_without_rejecting() {
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let action = command_action("action-1", "echo original");
+        let view = add_shell_view(
+            &mut app,
+            action.clone(),
+            Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        );
+        let (action_model, conversation_id, prompt) = app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            (
+                view.action_model.clone(),
+                view.conversation_id,
+                view.permission_prompt.clone(),
+            )
+        });
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action, conversation_id, ctx);
+        });
+
+        prompt.update(&mut app, |prompt, ctx| {
+            prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
+        });
+        app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            assert!(view.command_editor.as_ref(ctx).is_focused());
+        });
+        let command_editor = app.read(|ctx| view.as_ref(ctx).command_editor.clone());
+        command_editor.update(&mut app, |editor, ctx| {
+            editor.set_text("echo edited but abandoned", ctx)
+        });
+        present_shell_view(&mut app, &view);
+
+        assert!(dispatch_focused_key(&mut app, &view, "escape"));
+
+        app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            // Edit mode was exited (focus returned to the read-only reviewing
+            // state), not the whole request rejected.
+            assert!(!view.command_editor.as_ref(ctx).is_focused());
+            assert_eq!(view.permission_prompt.as_ref(ctx).highlighted_index(ctx), Some(0));
+            // The in-progress edit was discarded; the original proposed
+            // command is restored.
+            assert_eq!(
+                view.command_editor.as_ref(ctx).text(ctx),
+                "echo original"
+            );
+            // The command is still pending/blocked, not rejected.
+            assert!(
+                view.action_model
+                    .as_ref(ctx)
+                    .get_action_status(&view.action.id)
+                    .is_some_and(|status| status.is_blocked())
+            );
+        });
+    });
+}
+
+#[test]
+fn escape_when_not_editing_still_rejects_the_command() {
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        app.update(crate::tui_permission_prompt::init);
+        app.update(crate::option_selector::init);
+        let action = command_action("action-1", "echo original");
+        let view = add_shell_view(
+            &mut app,
+            action.clone(),
+            Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        );
+        let (action_model, conversation_id) = app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            (view.action_model.clone(), view.conversation_id)
+        });
+        action_model.update(&mut app, |model, ctx| {
+            // Blocking the action auto-focuses the permission prompt's
+            // option selector (not the command editor), matching the
+            // read-only reviewing state a real "not editing" Escape targets.
+            queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
+        });
+        present_shell_view(&mut app, &view);
+
+        assert!(dispatch_focused_key(&mut app, &view, "escape"));
+
+        app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            assert!(
+                !view
+                    .action_model
+                    .as_ref(ctx)
+                    .get_action_status(&action.id)
+                    .is_some_and(|status| status.is_blocked()),
+                "escape outside edit mode should still reject the blocked command"
+            );
+        });
+    });
+}
+
+#[test]
 fn command_editor_arrows_move_within_multiline_text_then_cycle_at_boundaries() {
     App::test((), |mut app| async move {
         app.update(super::init);
@@ -322,6 +422,39 @@ fn terminal_block_is_collapsed_by_default_and_expands_inline() {
             assert_eq!(rendered_height(&view, 80, app), collapsed_height);
             assert_eq!(layout_invalidations.get(), 2);
         });
+    });
+}
+
+#[test]
+fn ctrl_t_toggles_the_output_section_like_the_mouse_click_handler() {
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let action = command_action("action-1", "echo hi");
+        let view = add_shell_view(
+            &mut app,
+            action.clone(),
+            Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        );
+        let (action_model, conversation_id) = app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            (view.action_model.clone(), view.conversation_id)
+        });
+        // Blocking the action gives the view (and its permission prompt)
+        // keyboard focus, matching the state a keyboard-only user reaches it
+        // through in practice.
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action, conversation_id, ctx);
+        });
+        present_shell_view(&mut app, &view);
+
+        assert!(app.read(|ctx| !view.as_ref(ctx).is_expanded()));
+
+        assert!(dispatch_focused_key(&mut app, &view, "ctrl-t"));
+        assert!(app.read(|ctx| view.as_ref(ctx).is_expanded()));
+
+        present_shell_view(&mut app, &view);
+        assert!(dispatch_focused_key(&mut app, &view, "ctrl-t"));
+        assert!(app.read(|ctx| !view.as_ref(ctx).is_expanded()));
     });
 }
 

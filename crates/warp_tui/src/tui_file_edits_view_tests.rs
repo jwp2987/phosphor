@@ -4,15 +4,25 @@ use ai::diff_validation::{DiffDelta, DiffType};
 use futures::channel::oneshot;
 use warp::appearance::Appearance;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
-use warp::tui_export::FileDiff;
+use warp::tui_export::{
+    AIAgentActionId, AIConversationId, BlocklistAIActionModel, DiffSessionType, FileDiff,
+    RegisteredDiffStorage,
+};
 use warp_editor::content::buffer::InitialBufferState;
 use warp_editor::model::CoreEditorModel;
-use warpui::App;
+use warpui::platform::WindowStyle;
+use warpui::{AddWindowOptions, ModelHandle, ViewHandle, WindowInvalidation};
+use warpui_core::elements::tui::TuiRect;
+use warpui_core::keymap::Keystroke;
+use warpui_core::presenter::tui::TuiPresenter;
+use warpui_core::{App, TuiView as _};
 
 use super::{
-    SectionKey, SectionStates, ToolCallDisplayState, deltas_for, file_edit_header_label,
-    verb_and_name,
+    SectionKey, SectionStates, ToolCallDisplayState, TuiFileEditsView, deltas_for,
+    file_edit_header_label, verb_and_name,
 };
+use crate::test_fixtures::{TestHostView, add_test_action_model};
+use crate::tui_diff_storage::TuiDiffStorageHandle;
 
 fn delta(range: std::ops::Range<usize>, insertion: &str) -> DiffDelta {
     DiffDelta {
@@ -202,4 +212,119 @@ fn deltas_cover_every_diff_op() {
         }),
         vec![d, delta(4..5, "y\n")]
     );
+}
+
+#[test]
+fn ctrl_t_toggles_the_primary_section_like_the_mouse_click_handler() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        app.update(super::init);
+        // `record_applied_diffs` (run when the storage below is seeded)
+        // records into this singleton for `/rewind`; normally registered by
+        // `session.rs` at TUI startup.
+        app.update(crate::tui_revert_registry::TuiFileEditRevertRegistry::register);
+        let action_model = add_test_action_model(&mut app);
+        let action_id = AIAgentActionId::from("edit-1".to_owned());
+        let conversation_id = AIConversationId::new();
+        let view = add_file_edits_view(&mut app, action_id.clone(), conversation_id, &action_model);
+
+        // Seed the diff storage directly (bypassing the executor, which
+        // never ran since no action was queued) so the section exists to
+        // toggle, and focus the view directly rather than routing focus
+        // through a blocked permission prompt — both are orthogonal to what
+        // this test cares about: whether ctrl-t reaches `ToggleExpanded`.
+        let storage = app.read(|ctx| view.as_ref(ctx).storage.clone());
+        app.update(|ctx| {
+            TuiDiffStorageHandle::new(storage).set_candidate_diffs(
+                vec![update_diff("/tmp/a/lib.rs", None)],
+                DiffSessionType::Local,
+                ctx,
+            );
+        });
+        view.update(&mut app, |_, ctx| ctx.focus_self());
+
+        app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            assert_eq!(view.sections.len(), 1);
+            assert!(view.section_states.is_collapsed(SectionKey::File(0)));
+        });
+
+        present_file_edits_view(&mut app, &view);
+        assert!(dispatch_focused_key(&mut app, &view, "ctrl-t"));
+
+        app.read(|ctx| {
+            assert!(
+                !view
+                    .as_ref(ctx)
+                    .section_states
+                    .is_collapsed(SectionKey::File(0)),
+                "ctrl-t should toggle the sole file section, like clicking its header"
+            );
+        });
+
+        present_file_edits_view(&mut app, &view);
+        assert!(dispatch_focused_key(&mut app, &view, "ctrl-t"));
+        app.read(|ctx| {
+            assert!(
+                view.as_ref(ctx)
+                    .section_states
+                    .is_collapsed(SectionKey::File(0)),
+                "a second ctrl-t should collapse it again"
+            );
+        });
+    });
+}
+
+fn add_file_edits_view(
+    app: &mut App,
+    action_id: AIAgentActionId,
+    conversation_id: AIConversationId,
+    action_model: &ModelHandle<BlocklistAIActionModel>,
+) -> ViewHandle<TuiFileEditsView> {
+    let action_model = action_model.clone();
+    app.update(|ctx| {
+        let (window_id, _) = ctx.add_tui_window(
+            AddWindowOptions {
+                window_style: WindowStyle::NotStealFocus,
+                ..Default::default()
+            },
+            |_| TestHostView,
+        );
+        ctx.add_typed_action_tui_view(window_id, move |ctx| {
+            TuiFileEditsView::new(action_id, conversation_id, &action_model, ctx)
+        })
+    })
+}
+
+fn present_file_edits_view(app: &mut App, view: &ViewHandle<TuiFileEditsView>) {
+    let mut presenter = TuiPresenter::new();
+    app.update(|ctx| {
+        let view_ref = view.as_ref(ctx);
+        let prompt = &view_ref.permission_prompt;
+        let mut invalidation = WindowInvalidation::default();
+        invalidation.updated.insert(view.id());
+        invalidation.updated.insert(prompt.id());
+        invalidation
+            .updated
+            .extend(prompt.as_ref(ctx).child_view_ids(ctx));
+        presenter.invalidate(&invalidation, ctx, view.window_id(ctx));
+        presenter.present(ctx, view, TuiRect::new(0, 0, 80, 20));
+    });
+}
+
+fn dispatch_focused_key(app: &mut App, view: &ViewHandle<TuiFileEditsView>, key: &str) -> bool {
+    let (window_id, responder_chain) = app.read(|ctx| {
+        let window_id = view.window_id(ctx);
+        let focused = ctx
+            .focused_view_id(window_id)
+            .expect("file-edits permission interaction has a focused view");
+        (window_id, ctx.view_ancestors(window_id, focused))
+    });
+    app.dispatch_keystroke(
+        window_id,
+        &responder_chain,
+        &Keystroke::parse(key).expect("valid keystroke"),
+        false,
+    )
+    .expect("keystroke dispatch succeeds")
 }

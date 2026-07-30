@@ -1354,7 +1354,7 @@ impl TuiTerminalSessionView {
                     matches!(&result.result, AIAgentActionResultType::AskUserQuestion(_))
                 });
             if finished_asking_question {
-                ctx.focus(&view.input_view);
+                view.refocus_input_after_question(ctx);
             }
         });
         // The input box border color and the footer's shell-mode hint depend
@@ -1572,6 +1572,18 @@ impl TuiTerminalSessionView {
             self.focus_current_owner_if_active(ctx);
         }
         ctx.notify();
+    }
+
+    /// Reclaims focus for the composer after a question-type blocker
+    /// finishes, but only if no other blocker has already claimed it for
+    /// itself (e.g. a second blocker was created and focused in the same
+    /// tick, before this ran). `active_blocker_view_id` is the same
+    /// "current blocker" bookkeeping [`Self::sync_blocker_focus`] uses to
+    /// avoid stomping a newer focus target.
+    fn refocus_input_after_question(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.active_blocker_view_id.is_none() {
+            ctx.focus(&self.input_view);
+        }
     }
 
     /// Restores an Oz conversation into the TUI's sole conversation surface.

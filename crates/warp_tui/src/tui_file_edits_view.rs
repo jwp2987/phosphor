@@ -36,18 +36,37 @@ use warpui_core::elements::tui::{
     Modifier, TuiContainer, TuiElement, TuiFlex, TuiParentElement, TuiStyle, TuiText,
     tui_collapsible,
 };
+use warpui_core::keymap::macros::*;
+use warpui_core::keymap::FixedBinding;
 use warpui_core::{
     AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TuiView, TypedActionView,
     ViewContext, ViewHandle,
 };
 
 use crate::editor_element::{TuiEditorElement, TuiEditorStyles};
+use crate::keybindings::{TUI_BINDING_GROUP, is_tui_owned_binding};
 use crate::tool_call_labels::{ToolCallDisplayState, tool_call_display_state};
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_diff_storage::{TuiDiffStorage, TuiDiffStorageEvent, TuiDiffStorageHandle};
 use crate::tui_permission_prompt::{
     TuiPermissionPrompt, TuiPermissionPromptEvent, render_permission_card,
 };
+
+/// Registers keybindings for the file-edits view.
+pub(crate) fn init(app: &mut AppContext) {
+    // Keyboard equivalent of clicking a section header to expand/collapse it
+    // (previously mouse-only). Toggles the "primary" section: the sole file
+    // section for a single-file edit, or the summary header for a multi-file
+    // edit (mirroring the one section that's always visible and clickable
+    // without first expanding another section).
+    app.register_fixed_bindings([FixedBinding::new(
+        "ctrl-t",
+        TuiFileEditsViewAction::ToggleExpanded,
+        id!(TuiFileEditsView::ui_name()),
+    )
+    .with_group(TUI_BINDING_GROUP)]);
+    app.register_tui_binding_validator::<TuiFileEditsView>(is_tui_owned_binding);
+}
 
 /// Unchanged context lines rendered on each side of a hunk.
 const CONTEXT_LINES: usize = 3;
@@ -82,6 +101,10 @@ pub(super) enum TuiFileEditsViewEvent {
 #[derive(Clone, Debug)]
 pub(super) enum TuiFileEditsViewAction {
     ToggleSection(SectionKey),
+    /// Keyboard equivalent of clicking the primary (always-visible) section
+    /// header: the sole file section for a single-file edit, or the summary
+    /// header for a multi-file edit.
+    ToggleExpanded,
 }
 
 /// One edited file's diff: header facts plus the char-cell editor whose
@@ -359,6 +382,20 @@ impl TuiFileEditsView {
                 "File edits failed".to_string()
             }
             None => "Preparing edits…".to_string(),
+        }
+    }
+
+    /// The section a keyboard toggle affects: the sole file section for a
+    /// single-file edit, or the summary header for a multi-file edit —
+    /// whichever section is always visible and directly clickable without
+    /// first expanding another one. `None` before any diffs have resolved
+    /// (the fallback label has nothing to toggle, matching the mouse click
+    /// handler, which has no section to attach to either).
+    fn primary_section_key(&self) -> Option<SectionKey> {
+        match self.sections.len() {
+            0 => None,
+            1 => Some(SectionKey::File(0)),
+            _ => Some(SectionKey::Summary),
         }
     }
 
@@ -678,6 +715,14 @@ impl TypedActionView for TuiFileEditsView {
         match action {
             TuiFileEditsViewAction::ToggleSection(key) => {
                 self.section_states.toggle_collapsed(*key);
+                ctx.emit(TuiFileEditsViewEvent::LayoutChanged);
+                ctx.notify();
+            }
+            TuiFileEditsViewAction::ToggleExpanded => {
+                let Some(key) = self.primary_section_key() else {
+                    return;
+                };
+                self.section_states.toggle_collapsed(key);
                 ctx.emit(TuiFileEditsViewEvent::LayoutChanged);
                 ctx.notify();
             }

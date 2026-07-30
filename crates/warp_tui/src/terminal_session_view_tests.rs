@@ -6,10 +6,10 @@ use warp::appearance::Appearance;
 use warp::settings::AISettings;
 use warp::terminal::model::ansi::{Handler, InputBufferValue};
 use warp::tui_export::{
-    AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId, AgentViewEntryOrigin,
-    BlockPadding, BlocklistAIHistoryModel, ConversationStatus, Harness,
-    LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, AgentViewState,
-    export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
+    AIAgentExchangeId, AIConversationAutoexecuteMode, AgentViewEntryOrigin, AgentViewState,
+    BlockPadding, BlocklistAIHistoryModel, ConversationStatus, Harness, LLMPreferences, PtyIntent,
+    PtyIntentEvent, SizeInfo, SizeUpdate, export_conversation_markdown,
+    register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -568,6 +568,68 @@ fn input_text(view: &ViewHandle<super::TuiTerminalSessionView>, ctx: &AppContext
         .as_ref(ctx)
         .text()
         .into_string()
+}
+
+// `refocus_input_after_question` is the guarded refocus called when a
+// question-type blocker finishes (see the `action_model` subscription in
+// `TuiTerminalSessionView::new`). These tests call it directly rather than
+// driving a real `AskUserQuestion` action through the full blocklist
+// preprocess/execute pipeline: that pipeline is asynchronous and, in this
+// test environment, does not reliably resolve to a terminal `FinishedAction`
+// event (also observable via `queue_tui_permission_action` not reliably
+// reaching `Blocked` in other views' tests), which made an end-to-end
+// version of this test hang forever awaiting an event that never fires.
+// Calling the guarded method directly exercises exactly the logic finding #8
+// fixes, deterministically.
+#[test]
+fn finished_question_does_not_steal_focus_from_a_newer_blocker() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        // Simulate a second blocker that was already created and claimed
+        // focus for itself in the same tick, before the question-finished
+        // handler runs. `active_blocker_view_id` is the same bookkeeping
+        // `sync_blocker_focus` updates when a real blocker takes focus.
+        view.update(&mut app, |view, ctx| {
+            view.active_blocker_view_id = Some(view.attachment_bar.id());
+            ctx.focus(&view.attachment_bar);
+            view.refocus_input_after_question(ctx);
+        });
+
+        app.read(|ctx| {
+            assert!(
+                !view.as_ref(ctx).input_view.is_focused(ctx),
+                "answering a question must not steal focus from a newer blocker"
+            );
+            assert!(
+                view.as_ref(ctx).attachment_bar.is_focused(ctx),
+                "the newer blocker should keep focus"
+            );
+        });
+    });
+}
+
+#[test]
+fn finished_question_refocuses_input_when_no_other_blocker_is_active() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        // No other blocker is active (`active_blocker_view_id` starts `None`),
+        // so the guard must let the refocus through, matching pre-fix
+        // behavior for the common case.
+        view.update(&mut app, |view, ctx| {
+            view.refocus_input_after_question(ctx);
+        });
+
+        app.read(|ctx| {
+            assert!(
+                view.as_ref(ctx).input_view.is_focused(ctx),
+                "answering a question with no other blocker queued should still refocus the input"
+            );
+        });
+    });
 }
 
 #[test]
