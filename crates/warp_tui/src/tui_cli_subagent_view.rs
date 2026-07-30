@@ -8,8 +8,8 @@ use std::time::Duration;
 use parking_lot::FairMutex;
 use warp::tui_export::{
     AIAgentActionType, AIAgentInput, AIBlockModel, AIBlockModelImpl, AIConversationId, BlockId,
-    BlocklistAIActionModel, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-    CLISubagentController, CLISubagentTarget, LongRunningCommandControlState, ShellCommandDelay,
+    BlocklistAIActionModel, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, CLISubagentController,
+    CLISubagentTarget, CancellationReason, LongRunningCommandControlState, ShellCommandDelay,
     ShellCommandExecutor, TaskId, TerminalModel, UserTakeOverReason,
 };
 use warpui::SingletonEntity;
@@ -27,6 +27,18 @@ use crate::tui_builder::TuiUiBuilder;
 
 pub(super) const TAKE_CONTROL_KEY_BINDING: &str = "ctrl-c";
 pub(super) const HAND_BACK_KEY_BINDING: &str = "ctrl-g";
+/// Approves the agent's pending action on a long-running command it's driving.
+/// Mirrors the click handler on the "[Allow]" affordance in [`TuiCLISubagentView::render_content`]
+/// -- previously that affordance was mouse-only, with no keyboard path to unblock the agent.
+pub(super) const ALLOW_BLOCKED_ACTION_KEY_BINDING: &str = "ctrl-o";
+/// Rejects the agent's pending action on a long-running command it's driving,
+/// without taking over the command (mirrors the GUI's
+/// `CLISubagentAction::RejectBlockedAction { should_user_take_over: false }`,
+/// bound there to `ctrl-c`). This TUI reserves `ctrl-c` for the session-wide
+/// interrupt / take-control binding, so `ctrl-r` is used instead ("r" for
+/// reject); it was free as of this writing (see `TAKE_CONTROL_KEY_BINDING`
+/// and friends above for what's already taken).
+pub(super) const REJECT_BLOCKED_ACTION_KEY_BINDING: &str = "ctrl-r";
 
 fn terminal_use_status_text(
     control_state: &LongRunningCommandControlState,
@@ -36,14 +48,16 @@ fn terminal_use_status_text(
     if command_finished {
         return "Command finished".to_owned();
     }
+    if let LongRunningCommandControlState::Agent {
+        is_blocked: true, ..
+    } = control_state
+    {
+        return format!(
+            "Agent needs your input · {ALLOW_BLOCKED_ACTION_KEY_BINDING} to allow · \
+             {REJECT_BLOCKED_ACTION_KEY_BINDING} to reject"
+        );
+    }
     let (status, key_binding, action) = match control_state {
-        LongRunningCommandControlState::Agent {
-            is_blocked: true, ..
-        } => (
-            "Agent needs your input",
-            TAKE_CONTROL_KEY_BINDING,
-            "to take control",
-        ),
         LongRunningCommandControlState::Agent { .. } if output_streaming => (
             "Agent is monitoring command",
             TAKE_CONTROL_KEY_BINDING,
@@ -104,6 +118,7 @@ pub(super) enum TuiCLISubagentViewEvent {
 #[derive(Clone, Debug)]
 pub(super) enum TuiCLISubagentViewAction {
     Allow,
+    Reject,
 }
 
 /// Compact terminal-use state rendered alongside one command block.
@@ -117,6 +132,7 @@ pub(super) struct TuiCLISubagentView {
     terminal_model: Arc<FairMutex<TerminalModel>>,
     last_measured_width: Cell<Option<u16>>,
     allow_mouse_state: MouseStateHandle,
+    reject_mouse_state: MouseStateHandle,
 }
 
 impl TuiCLISubagentView {
@@ -189,6 +205,7 @@ impl TuiCLISubagentView {
             terminal_model,
             last_measured_width: Cell::new(None),
             allow_mouse_state: MouseStateHandle::default(),
+            reject_mouse_state: MouseStateHandle::default(),
         };
         view.start_countdown_refresh(ctx);
         view
@@ -328,13 +345,27 @@ impl TuiCLISubagentView {
         }
         if target.control_state.is_agent_blocked() {
             content.add_child(
-                TuiContainer::new(Self::render_action(
-                    "Allow",
-                    &self.allow_mouse_state,
-                    TuiCLISubagentViewAction::Allow,
-                    app,
-                ))
-                .finish(),
+                TuiFlex::row()
+                    .with_spacing(1)
+                    .child(
+                        TuiContainer::new(Self::render_action(
+                            "Allow",
+                            &self.allow_mouse_state,
+                            TuiCLISubagentViewAction::Allow,
+                            app,
+                        ))
+                        .finish(),
+                    )
+                    .child(
+                        TuiContainer::new(Self::render_action(
+                            "Reject",
+                            &self.reject_mouse_state,
+                            TuiCLISubagentViewAction::Reject,
+                            app,
+                        ))
+                        .finish(),
+                    )
+                    .finish(),
             );
         }
         content.finish()
@@ -405,6 +436,24 @@ impl TypedActionView for TuiCLISubagentView {
             TuiCLISubagentViewAction::Allow => {
                 self.action_model.update(ctx, |action_model, ctx| {
                     action_model.execute_next_action_for_user(self.conversation_id, ctx);
+                });
+            }
+            TuiCLISubagentViewAction::Reject => {
+                let conversation_id = self.conversation_id;
+                self.action_model.update(ctx, |action_model, ctx| {
+                    let Some(action_id) = action_model
+                        .get_pending_actions_for_conversation(&conversation_id)
+                        .next()
+                        .map(|action| action.id.clone())
+                    else {
+                        return;
+                    };
+                    action_model.cancel_action_with_id(
+                        conversation_id,
+                        &action_id,
+                        CancellationReason::ManuallyCancelled,
+                        ctx,
+                    );
                 });
             }
         }

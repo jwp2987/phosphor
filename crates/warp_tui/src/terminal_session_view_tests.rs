@@ -1310,6 +1310,37 @@ fn ctrl_d_is_owned_by_the_session_surface_not_input_delete_forward() {
 }
 
 #[test]
+fn allow_and_reject_blocked_lrc_actions_are_wired_to_distinct_ctrl_bindings() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        app.read(|ctx| {
+            let ctrl_o = Trigger::Keystrokes(vec![Keystroke::parse("ctrl-o").unwrap()]);
+            let ctrl_r = Trigger::Keystrokes(vec![Keystroke::parse("ctrl-r").unwrap()]);
+
+            // The keyboard path for "[Allow]" (ctrl-o) and "[Reject]" (ctrl-r)
+            // are both registered as fixed, non-remappable session bindings --
+            // distinct keys, same binding group as the rest of the session's
+            // reserved keys.
+            let allow_bound = ctx.get_key_bindings().any(|b| {
+                *b.trigger == ctrl_o && b.name.is_empty() && b.group == Some(TUI_BINDING_GROUP)
+            });
+            assert!(allow_bound, "ctrl-o should allow a blocked agent action");
+
+            let reject_bound = ctx.get_key_bindings().any(|b| {
+                *b.trigger == ctrl_r && b.name.is_empty() && b.group == Some(TUI_BINDING_GROUP)
+            });
+            assert!(reject_bound, "ctrl-r should reject a blocked agent action");
+
+            // Reject must not have been wired onto ctrl-c (the session's
+            // take-control / interrupt binding) or reused the allow trigger.
+            let ctrl_c = Trigger::Keystrokes(vec![Keystroke::parse("ctrl-c").unwrap()]);
+            assert_ne!(ctrl_r, ctrl_c);
+            assert_ne!(ctrl_r, ctrl_o);
+        });
+    });
+}
+
+#[test]
 fn non_command_prompt_preserves_leading_whitespace() {
     assert_eq!(raw_prompt_if_not_blank("  /compact"), Some("  /compact"));
 }

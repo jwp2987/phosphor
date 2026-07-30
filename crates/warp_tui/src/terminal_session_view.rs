@@ -108,7 +108,10 @@ use crate::terminal_use::{
 use crate::transcript_view::{TuiTranscriptView, TuiTranscriptViewEvent};
 use crate::transient_hint::{TransientHint, TransientHintTone};
 use crate::tui_builder::TuiUiBuilder;
-use crate::tui_cli_subagent_view::{HAND_BACK_KEY_BINDING, TuiCLISubagentView};
+use crate::tui_cli_subagent_view::{
+    ALLOW_BLOCKED_ACTION_KEY_BINDING, HAND_BACK_KEY_BINDING, REJECT_BLOCKED_ACTION_KEY_BINDING,
+    TuiCLISubagentView,
+};
 use crate::ui::{compact_footer_path, conversation_restore_failed, conversation_restoring};
 use crate::usage::render_context_usage_entry;
 use crate::warping_indicator::{render_response_summary, render_warping_indicator_row};
@@ -128,6 +131,16 @@ const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
 const SESSION_CAN_CANCEL_RESTORE_FLAG: &str = "TuiSessionCanCancelRestore";
 const SESSION_CAN_HAND_BACK_CONTROL_FLAG: &str = "TuiSessionCanHandBackControl";
+/// Set while the agent is tagged into a long-running command and blocked on
+/// approval to write to it (`LongRunningCommandControlState::is_agent_blocked`).
+/// Previously the only way to unblock it was clicking the "[Allow]" text in
+/// `TuiCLISubagentView` -- no keyboard path existed at all.
+const SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG: &str = "TuiSessionCanAllowBlockedLrcAction";
+/// Set while the agent is tagged into a long-running command and blocked on
+/// approval to write to it, same as [`SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG`]
+/// -- gates the reject keyboard path, the equivalent of clicking "[Reject]" in
+/// `TuiCLISubagentView`. Mirrors the GUI's `RejectBlockedAction { should_user_take_over: false }`.
+const SESSION_CAN_REJECT_BLOCKED_LRC_ACTION_FLAG: &str = "TuiSessionCanRejectBlockedLrcAction";
 pub(crate) const SESSION_COMPOSER_OWNS_INPUT_FLAG: &str = "TuiSessionComposerOwnsInput";
 pub(crate) const TRIGGER_COMPLETIONS_BINDING_NAME: &str = "tui:session:trigger_completions";
 pub(crate) const PASTE_IMAGE_BINDING_NAME: &str = "tui:session:paste_image";
@@ -425,6 +438,15 @@ pub(crate) enum TuiTerminalSessionAction {
     CancelRestore,
     /// Return a user-controlled terminal-use command to the agent.
     HandBackTerminalUseControl,
+    /// Approve the agent's pending action on a long-running command it's
+    /// driving (the keyboard path for the "[Allow]" affordance in
+    /// `TuiCLISubagentView`, which was previously mouse-only).
+    AllowBlockedLrcAction,
+    /// Reject the agent's pending action on a long-running command it's
+    /// driving, without taking over the command (the keyboard path for the
+    /// "[Reject]" affordance in `TuiCLISubagentView`). Mirrors the GUI's
+    /// `CLISubagentAction::RejectBlockedAction { should_user_take_over: false }`.
+    RejectBlockedLrcAction,
     /// Toggle the completed-response summary for the selected conversation.
     ToggleResponseSummaryVisibility,
     /// Click on the footer's active-model label: toggles the inline model
@@ -555,6 +577,18 @@ pub(crate) fn init(app: &mut AppContext) {
             HAND_BACK_KEY_BINDING,
             TuiTerminalSessionAction::HandBackTerminalUseControl,
             id!(SESSION_CAN_HAND_BACK_CONTROL_FLAG),
+        )
+        .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new(
+            ALLOW_BLOCKED_ACTION_KEY_BINDING,
+            TuiTerminalSessionAction::AllowBlockedLrcAction,
+            id!(SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG),
+        )
+        .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new(
+            REJECT_BLOCKED_ACTION_KEY_BINDING,
+            TuiTerminalSessionAction::RejectBlockedLrcAction,
+            id!(SESSION_CAN_REJECT_BLOCKED_LRC_ACTION_FLAG),
         )
         .with_group(TUI_BINDING_GROUP),
     ]);
@@ -853,6 +887,55 @@ impl TuiTerminalSessionView {
             .as_ref(ctx)
             .active_target()
             .filter(|target| target.control_state.is_user_in_control())
+    }
+
+    fn active_agent_blocked_target(&self, ctx: &AppContext) -> Option<CLISubagentTarget> {
+        self.cli_subagent_controller
+            .as_ref(ctx)
+            .active_target()
+            .filter(|target| target.control_state.is_agent_blocked())
+    }
+
+    /// Approves the agent's pending action on the long-running command it's
+    /// driving -- the keyboard equivalent of clicking "[Allow]" in
+    /// `TuiCLISubagentView` (`TuiCLISubagentViewAction::Allow`'s handler).
+    fn allow_blocked_lrc_action(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(target) = self.active_agent_blocked_target(ctx) else {
+            return;
+        };
+        self.ai_action_model.update(ctx, |action_model, ctx| {
+            action_model.execute_next_action_for_user(target.conversation_id, ctx);
+        });
+    }
+
+    /// Rejects the agent's pending action on the long-running command it's
+    /// driving, without taking over the command -- the keyboard equivalent of
+    /// clicking "[Reject]" in `TuiCLISubagentView`
+    /// (`TuiCLISubagentViewAction::Reject`'s handler). Mirrors the GUI's
+    /// `RejectBlockedAction { should_user_take_over: false }`: the front
+    /// pending action for the conversation is cancelled (same action
+    /// `execute_next_action_for_user` would have run), and control stays with
+    /// the agent.
+    fn reject_blocked_lrc_action(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(target) = self.active_agent_blocked_target(ctx) else {
+            return;
+        };
+        let conversation_id = target.conversation_id;
+        self.ai_action_model.update(ctx, |action_model, ctx| {
+            let Some(action_id) = action_model
+                .get_pending_actions_for_conversation(&conversation_id)
+                .next()
+                .map(|action| action.id.clone())
+            else {
+                return;
+            };
+            action_model.cancel_action_with_id(
+                conversation_id,
+                &action_id,
+                CancellationReason::ManuallyCancelled,
+                ctx,
+            );
+        });
     }
 
     fn send_terminal_use_prompt(&mut self, input: &str, ctx: &mut ViewContext<Self>) -> bool {
@@ -3588,6 +3671,10 @@ impl TuiView for TuiTerminalSessionView {
         if self.active_user_controlled_target(ctx).is_some() {
             context.set.insert(SESSION_CAN_HAND_BACK_CONTROL_FLAG);
         }
+        if self.active_agent_blocked_target(ctx).is_some() {
+            context.set.insert(SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG);
+            context.set.insert(SESSION_CAN_REJECT_BLOCKED_LRC_ACTION_FLAG);
+        }
         if self.transcript.as_ref(ctx).has_toggleable_plan(ctx) {
             context.set.insert(PLAN_TOGGLE_AVAILABLE_FLAG);
         }
@@ -3859,6 +3946,12 @@ impl TypedActionView for TuiTerminalSessionView {
             }
             TuiTerminalSessionAction::HandBackTerminalUseControl => {
                 self.hand_back_terminal_use_control(ctx)
+            }
+            TuiTerminalSessionAction::AllowBlockedLrcAction => {
+                self.allow_blocked_lrc_action(ctx)
+            }
+            TuiTerminalSessionAction::RejectBlockedLrcAction => {
+                self.reject_blocked_lrc_action(ctx)
             }
             TuiTerminalSessionAction::ToggleResponseSummaryVisibility => {
                 self.toggle_response_summary_visibility(ctx)

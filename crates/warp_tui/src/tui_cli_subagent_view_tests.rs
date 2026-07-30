@@ -32,7 +32,13 @@ fn terminal_use_status_covers_control_and_lifecycle_states() {
     };
     assert_eq!(
         terminal_use_status_text(&blocked, false, true),
-        "Agent needs your input · ctrl-c to take control"
+        "Agent needs your input · ctrl-o to allow · ctrl-r to reject"
+    );
+    // The blocked hint takes priority over the streaming/idle hints below --
+    // is_blocked wins regardless of output_streaming.
+    assert_eq!(
+        terminal_use_status_text(&blocked, false, false),
+        "Agent needs your input · ctrl-o to allow · ctrl-r to reject"
     );
 
     let manual = LongRunningCommandControlState::User {
