@@ -3307,6 +3307,18 @@ impl AppContext {
                         .removed
                         .insert(view_id);
                     window.views.remove(&view_id);
+                    // Zap TUI views live in the separate `tui_views` map (see
+                    // `Window::tui_views`); without this removal, dropped TUI
+                    // views accumulate forever since only the GUI `views` map
+                    // was pruned above.
+                    #[cfg(feature = "tui")]
+                    window.tui_views.remove(&view_id);
+                }
+
+                // Prune the dropped view from the TUI ancestry map too (harmless
+                // no-op for GUI-only builds/windows, which never populate it).
+                if let Some(parents) = self.view_parents.get_mut(&current_window_id) {
+                    parents.remove(&view_id);
                 }
 
                 autotracking::remove_view(current_window_id, view_id);

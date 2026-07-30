@@ -208,43 +208,67 @@ pub trait TextBuffer {
     ) -> Result<Point> {
         let offset = position.to_char_offset(self)?;
 
+        // If the clicked character is itself a boundary (whitespace/punctuation,
+        // not part of a "word"), the selection must not expand outward into the
+        // words on either side of it. Without this check, double-clicking a
+        // space between two words (e.g. "foo bar" at the space) would extend
+        // forward into the following word (because the char after the space is
+        // a word char) and backward into the preceding word (because the char
+        // before the space is a word char), selecting "foo bar" as a whole
+        // instead of just the space. When the clicked character is a boundary,
+        // the selection collapses to that single character.
+        let clicked_is_boundary = self
+            .chars_at(offset)?
+            .next()
+            .is_some_and(|c| policy.is_word_boundary(c));
+
         let target = match direction {
             SelectionDirection::Forward => {
-                let mut chars = self.chars_at(offset)?;
-                let mut end = offset;
-                // Include the character under the cursor (if any).
-                if chars.next().is_some() {
+                if clicked_is_boundary {
+                    let mut end = offset;
                     end += 1;
-                    // Extend through the following word only if the very next character is part
-                    // of a word; a boundary char here stops us (no trailing whitespace, no
-                    // crossing into the next word past a separator run).
-                    if chars.next().is_some_and(|c| !policy.is_word_boundary(c)) {
+                    end
+                } else {
+                    let mut chars = self.chars_at(offset)?;
+                    let mut end = offset;
+                    // Include the character under the cursor (if any).
+                    if chars.next().is_some() {
                         end += 1;
+                        // Extend through the following word only if the very next character is part
+                        // of a word; a boundary char here stops us (no trailing whitespace, no
+                        // crossing into the next word past a separator run).
+                        if chars.next().is_some_and(|c| !policy.is_word_boundary(c)) {
+                            end += 1;
+                            for c in chars {
+                                if policy.is_word_boundary(c) {
+                                    break;
+                                }
+                                end += 1;
+                            }
+                        }
+                    }
+                    end
+                }
+            }
+            SelectionDirection::Backward => {
+                if clicked_is_boundary {
+                    offset
+                } else {
+                    let mut chars = self.chars_rev_at(offset)?;
+                    let mut start = offset;
+                    // Extend left through a preceding word only if the character immediately before
+                    // the cursor is part of a word.
+                    if chars.next().is_some_and(|c| !policy.is_word_boundary(c)) {
+                        start -= 1;
                         for c in chars {
                             if policy.is_word_boundary(c) {
                                 break;
                             }
-                            end += 1;
+                            start -= 1;
                         }
                     }
+                    start
                 }
-                end
-            }
-            SelectionDirection::Backward => {
-                let mut chars = self.chars_rev_at(offset)?;
-                let mut start = offset;
-                // Extend left through a preceding word only if the character immediately before
-                // the cursor is part of a word.
-                if chars.next().is_some_and(|c| !policy.is_word_boundary(c)) {
-                    start -= 1;
-                    for c in chars {
-                        if policy.is_word_boundary(c) {
-                            break;
-                        }
-                        start -= 1;
-                    }
-                }
-                start
             }
         };
 

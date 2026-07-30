@@ -2851,3 +2851,68 @@ fn test_view_subscribe_then_unsubscribe_to_model_inside_callback_drops_new_subsc
         });
     });
 }
+
+/// Regression test for a leak where `remove_dropped_items` pruned a dropped
+/// view from the GUI `views` map but left it behind in the TUI-only
+/// `tui_views` and `view_parents` maps, so any long TUI session with view
+/// churn (floating windows, blockers, popups) would leak a view's storage
+/// forever.
+#[test]
+#[cfg(feature = "tui")]
+fn test_dropping_tui_view_removes_it_from_tui_views_and_view_parents() {
+    struct View;
+
+    impl Entity for View {
+        type Event = ();
+    }
+
+    impl crate::TuiView for View {
+        fn ui_name() -> &'static str {
+            "View"
+        }
+
+        fn render(&self, _: &AppContext) -> Box<dyn crate::elements::tui::TuiElement> {
+            unimplemented!("this test never renders a frame")
+        }
+    }
+
+    impl TypedActionView for View {
+        type Action = ();
+    }
+
+    App::test((), |mut app| async move {
+        let app = &mut app;
+
+        let (window_id, root) =
+            app.update(|ctx| ctx.add_tui_window(AddWindowOptions::default(), |_| View));
+        let root_id = root.id();
+        let child = app.update(|ctx| ctx.add_tui_view(window_id, |_| View));
+        let child_id = child.id();
+
+        // Simulate the ancestry bookkeeping the TUI presenter records every
+        // frame (`TuiPresenter::present` -> `report_view_embeddings`).
+        app.update(|ctx| ctx.record_view_parent(window_id, child_id, root_id));
+
+        app.read(|ctx| {
+            assert!(ctx.windows[&window_id].tui_views.contains_key(&child_id));
+        });
+        assert_eq!(
+            app.update(|ctx| ctx.view_ancestors(window_id, child_id)),
+            vec![root_id, child_id],
+        );
+
+        app.update(|_| drop(child));
+
+        app.read(|ctx| {
+            assert!(
+                !ctx.windows[&window_id].tui_views.contains_key(&child_id),
+                "dropped TUI view must be removed from `tui_views`, not leaked"
+            );
+        });
+        assert_eq!(
+            app.update(|ctx| ctx.view_ancestors(window_id, child_id)),
+            vec![child_id],
+            "dropped TUI view must be pruned from `view_parents`"
+        );
+    })
+}
