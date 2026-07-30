@@ -2011,7 +2011,7 @@ fn build_chat_request(
                 tail_blocks.len(),
                 params.input.len(),
             );
-            push_environment_context_message(&mut messages, tail);
+            push_environment_context_message(&mut messages, tail, api_type);
         }
     }
 
@@ -2736,8 +2736,11 @@ fn ensure_ends_with_user(messages: &mut Vec<ChatMessage>) {
 }
 
 /// Appends `<environment_context>` (and the LRC snapshot) as an **independent, standalone
-/// user message** to the end of the message list. Never merged into the preceding user
-/// query — see the comment inside the function body for why.
+/// user message** to the end of the message list, for the OpenAI-compatible main path.
+/// Never merged into the preceding user query there — see the comment inside the function
+/// body for why. On the Anthropic path this is merged into the trailing user message
+/// instead, when there is one, to preserve Anthropic's required strict user/assistant role
+/// alternation (see the Anthropic-specific branch inside the function body).
 ///
 /// This message is **rebuilt every turn, never persisted**: it carries "right now"
 /// environment state, which shouldn't and can't be reproduced on historical replay. The
@@ -2756,7 +2759,11 @@ fn ensure_ends_with_user(messages: &mut Vec<ChatMessage>) {
 /// `automodel.cpp:499` and the comment at `:503`), so once there's a divergence the whole
 /// thing gets recomputed — this design is a net loss on that class of engine. When running
 /// a local model, a text-only engine must be selected.
-fn push_environment_context_message(messages: &mut Vec<ChatMessage>, env_block: String) {
+fn push_environment_context_message(
+    messages: &mut Vec<ChatMessage>,
+    env_block: String,
+    api_type: AgentProviderApiType,
+) {
     // **Always appended as its own separate message**, never merged into the trailing user
     // message.
     //
@@ -2780,9 +2787,22 @@ fn push_environment_context_message(messages: &mut Vec<ChatMessage>, env_block: 
     // theoretically optimal).
     //
     // Concern about two consecutive user turns: on the FLM side, `normalize_messages` merges
-    // adjacent same-role messages, so it's harmless. Not verified for the Anthropic adapter,
-    // but the current BYOP main path is OpenAI-compatible; if Anthropic is actually needed,
-    // branch on api_type then — message stability must never be sacrificed for this.
+    // adjacent same-role messages, so it's harmless. The Anthropic Messages API is stricter:
+    // it requires strict user/assistant role alternation, and two consecutive `user`-role
+    // messages are rejected/mishandled by the API. So on the Anthropic path, if the trailing
+    // message is already `user`-role (the common case: this env/LRC tail follows the live
+    // user query), the env block is merged as an additional content part onto that existing
+    // message instead of being pushed as a brand-new one — this preserves alternation while
+    // keeping the merge scoped to Anthropic only, so the OpenAI-compatible main path (and its
+    // FLM prefix-cache tradeoff documented above) is untouched.
+    if matches!(api_type, AgentProviderApiType::Anthropic) {
+        if let Some(last) = messages.last_mut() {
+            if last.role == ChatRole::User {
+                last.content.push(ContentPart::Text(env_block));
+                return;
+            }
+        }
+    }
     messages.push(ChatMessage::user(env_block));
 }
 
@@ -5243,7 +5263,9 @@ pub async fn generate_byop_output(
                 loading_msg.id = web_msg_id.clone();
                 yield Ok(make_add_messages_event(&current_task_id, vec![loading_msg]));
 
-                let result_json = dispatch_byop_web_tool(&call.fn_name, &args_str).await;
+                let result_json =
+                    dispatch_byop_web_tool(&call.fn_name, &args_str, params.web_search_enabled)
+                        .await;
 
                 let mut done_msg = if is_search {
                     make_web_search_status_from_result(
@@ -5727,8 +5749,27 @@ fn make_append_event(task_id: &str, message_id: &str, kind: AppendKind) -> api::
 /// Doesn't go through the protobuf executor — runs the HTTP call locally with reqwest and
 /// serializes the structured result into a JSON Value for the upstream LLM. Errors are also
 /// serialized as `{status:"error", ...}`, so the model sees a standard tool_result.
-async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str) -> Value {
+///
+/// `web_search_enabled` is re-checked here, at the actual dispatch/execution site, using the
+/// same `profile.web_search_enabled` flag that `build_tools_array` / `available_tool_names`
+/// use to decide whether to advertise `webfetch`/`websearch` to the model at all. That
+/// tools-array gate only controls what the model is *told* it can call; it doesn't stop a
+/// tool call from actually running if the model emits one anyway (stale/cached tool
+/// definitions, a model that ignores its tool list, a replayed tool_call from history,
+/// etc.). Without this second check, disabling the privacy switch wouldn't actually block
+/// outbound network requests — just hide the affordance. So this must run before any network
+/// I/O (including building the SSRF-safe client), never after.
+async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str, web_search_enabled: bool) -> Value {
     use tools::web_runtime;
+    if !web_search_enabled {
+        log::warn!(
+            "[byop] web tool call rejected: web_search_enabled=false tool={tool_name}"
+        );
+        return web_runtime::error_to_json(
+            tool_name,
+            &anyhow::anyhow!("web_search_enabled is disabled for this profile"),
+        );
+    }
     // SSRF-safe client (custom DNS resolver + a redirect policy that validates every hop's
     // target). Reused at the process level: rebuilding it on every call would discard the
     // connection pool, forcing a fresh TCP+TLS handshake on every consecutive
@@ -8874,5 +8915,152 @@ mod issue_94_task_linearization_tests {
             "both user messages must be kept when their request_id differs"
         );
         assert_eq!(message_ids(&out), vec!["m1", "m2", "m3"]);
+    }
+}
+
+/// Code-review fix #2 regression test: `push_environment_context_message` used to
+/// unconditionally push a brand-new `user`-role message onto the end of `messages`,
+/// regardless of `api_type` or the role of the preceding message. On the Anthropic
+/// Messages API that breaks the required strict user/assistant role alternation whenever
+/// the trailing message is already `user`-role (the common case, since this env/LRC tail
+/// follows the live user query). The fix merges the env block into the existing trailing
+/// user message on the Anthropic path instead of appending a second one.
+#[cfg(test)]
+mod push_environment_context_message_tests {
+    use super::*;
+
+    /// Anthropic + trailing user message: must merge into the existing message rather than
+    /// appending a second `user`-role message, so the result never has two consecutive
+    /// `user`-role messages.
+    #[test]
+    fn anthropic_merges_into_trailing_user_message_instead_of_appending() {
+        let mut messages = vec![
+            ChatMessage::user("What folder am I in?"),
+        ];
+
+        push_environment_context_message(
+            &mut messages,
+            "<environment_context>...</environment_context>".to_owned(),
+            AgentProviderApiType::Anthropic,
+        );
+
+        // No two consecutive same-role (specifically user/user) messages anywhere in the
+        // sequence — this is the literal Anthropic API constraint being protected here.
+        for pair in messages.windows(2) {
+            assert!(
+                !(pair[0].role == ChatRole::User && pair[1].role == ChatRole::User),
+                "found two consecutive user-role messages, which Anthropic's Messages API \
+                 rejects/mishandles: {:?}",
+                messages.iter().map(|m| &m.role).collect::<Vec<_>>()
+            );
+        }
+
+        // Still exactly one message (merged, not appended), and it carries both the
+        // original query text and the env block.
+        assert_eq!(messages.len(), 1);
+        let joined = messages[0].content.joined_texts().unwrap_or_default();
+        assert!(joined.contains("What folder am I in?"));
+        assert!(joined.contains("<environment_context>"));
+    }
+
+    /// Anthropic + trailing assistant message (e.g. a resumed/auto-continue turn before
+    /// `ensure_ends_with_user` runs): nothing to merge into, so a new standalone user
+    /// message is pushed, same as the non-Anthropic path.
+    #[test]
+    fn anthropic_pushes_new_message_when_trailing_role_is_not_user() {
+        let mut messages = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi there"),
+        ];
+
+        push_environment_context_message(
+            &mut messages,
+            "<environment_context>...</environment_context>".to_owned(),
+            AgentProviderApiType::Anthropic,
+        );
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.last().unwrap().role, ChatRole::User);
+        for pair in messages.windows(2) {
+            assert!(!(pair[0].role == ChatRole::User && pair[1].role == ChatRole::User));
+        }
+    }
+
+    /// Non-Anthropic (OpenAI-compatible) path is unchanged: the env block is always
+    /// appended as its own standalone user message, even if that means two consecutive
+    /// user-role messages (documented as harmless there — FLM's `normalize_messages`
+    /// merges adjacent same-role messages, and this keeps the live user query byte-for-byte
+    /// stable across turns for prompt-cache purposes).
+    #[test]
+    fn non_anthropic_still_appends_standalone_message() {
+        let mut messages = vec![ChatMessage::user("What folder am I in?")];
+
+        push_environment_context_message(
+            &mut messages,
+            "<environment_context>...</environment_context>".to_owned(),
+            AgentProviderApiType::OpenAi,
+        );
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, ChatRole::User);
+        assert_eq!(messages[1].role, ChatRole::User);
+        assert_eq!(
+            messages[0].content.joined_texts().as_deref(),
+            Some("What folder am I in?")
+        );
+    }
+}
+
+/// Code-review fix #3 regression test: `dispatch_byop_web_tool` used to only be gated by
+/// `web_search_enabled` at tool-declaration time (`build_tools_array` /
+/// `available_tool_names` deciding whether to tell the model the tool exists). It wasn't
+/// re-checked at the actual dispatch/execution site, so a stale tool definition, a model
+/// that ignores its tool list, or a replayed tool_call from history could still trigger a
+/// real outbound web request even with the privacy switch off. The fix re-checks
+/// `web_search_enabled` right at dispatch, before any network I/O.
+#[cfg(test)]
+mod dispatch_byop_web_tool_tests {
+    use super::*;
+
+    /// `web_search_enabled = false`: dispatching a websearch tool call must be rejected
+    /// without executing the search (i.e. without ever touching the network) — surfaced to
+    /// the model as a standard `{status:"error", ...}` tool_result, not a panic or a silent
+    /// no-op.
+    #[tokio::test]
+    async fn websearch_rejected_when_web_search_disabled() {
+        let args = serde_json::json!({ "query": "does this actually run" }).to_string();
+
+        let result = dispatch_byop_web_tool(tools::websearch::TOOL_NAME, &args, false).await;
+
+        assert_eq!(
+            result.get("status").and_then(|v| v.as_str()),
+            Some("error"),
+            "expected a rejected tool_result, got: {result}"
+        );
+        let message = result
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            message.to_lowercase().contains("web_search_enabled") || message.to_lowercase().contains("disabled"),
+            "error message should explain the search was rejected because web search is \
+             disabled, got: {message}"
+        );
+    }
+
+    /// `web_search_enabled = false`: webfetch is gated by the same flag as websearch (both
+    /// tools go through the same privacy switch), so it must be rejected too.
+    #[tokio::test]
+    async fn webfetch_rejected_when_web_search_disabled() {
+        let args = serde_json::json!({ "url": "https://example.invalid/does-this-run" })
+            .to_string();
+
+        let result = dispatch_byop_web_tool(tools::webfetch::TOOL_NAME, &args, false).await;
+
+        assert_eq!(
+            result.get("status").and_then(|v| v.as_str()),
+            Some("error"),
+            "expected a rejected tool_result, got: {result}"
+        );
     }
 }
