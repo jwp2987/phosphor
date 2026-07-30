@@ -812,6 +812,44 @@ fn digits_are_viewport_relative_in_scrolled_lists() {
 }
 
 #[test]
+fn digit_beyond_the_visible_window_does_not_confirm_an_off_screen_row() {
+    App::test((), |mut app| async move {
+        let (selector, events) = add_selector(&mut app);
+        let ids: Vec<String> = (0..12).map(|i| format!("row-{i}")).collect();
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        set_page(&mut app, &selector, snapshot(&id_refs, Some("row-0")));
+        // Scroll so only rows 2..8 (six rows, the full viewport) are visible.
+        // Digit 9 would resolve to index 2 + 9 - 1 = 10 ("row-10"), which is
+        // still in-bounds for the full item list but was never labeled "9" on
+        // screen (only six rows are shown, numbered up to "6"). Regression
+        // test for review finding #11: pressing 9 must be a no-op here, not
+        // confirm the off-screen row.
+        act(&mut app, &selector, TuiOptionSelectorAction::ScrollBy(2));
+        act(
+            &mut app,
+            &selector,
+            TuiOptionSelectorAction::SelectNumberedOption(9),
+        );
+        assert!(primary_events(&events).is_empty());
+
+        // A digit that *is* within the visible window (6, the last visible
+        // row: scroll_offset 2 + digit 6 - 1 = index 7, "row-7") still
+        // confirms normally.
+        act(
+            &mut app,
+            &selector,
+            TuiOptionSelectorAction::SelectNumberedOption(6),
+        );
+        assert_eq!(
+            primary_events(&events),
+            [TuiOptionSelectorEvent::Confirmed {
+                id: "row-7".to_string()
+            }],
+        );
+    });
+}
+
+#[test]
 fn navigation_scrolls_to_keep_the_selection_visible() {
     App::test((), |mut app| async move {
         let (selector, _) = add_selector(&mut app);

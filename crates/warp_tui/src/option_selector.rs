@@ -1371,19 +1371,29 @@ impl TypedActionView for TuiOptionSelector {
                 self.select_item_without_confirm(*index, ctx);
             }
             TuiOptionSelectorAction::SelectNumberedOption(digit) => {
+                let items = self.items();
+                // Digit keys only ever label the currently visible rows (see
+                // `confirm_shortcut`, which bounds the same way): a digit whose
+                // implied index falls outside `scroll_offset..visible_end` refers to
+                // a row that isn't actually shown with that number on screen, so it
+                // must be ignored rather than confirming an off-screen row.
+                let visible_end =
+                    (self.interaction.scroll_offset + MAX_VISIBLE_OPTION_ROWS).min(items.len());
                 let index = self.interaction.scroll_offset + usize::from(*digit) - 1;
-                let item_has_custom_shortcut = self.items().get(index).is_some_and(|item| {
-                    let SelectorItem::Row(row_index) = item else {
-                        return false;
-                    };
-                    self.page
-                        .snapshot
-                        .rows
-                        .get(*row_index)
-                        .is_some_and(|row| self.page.row_shortcuts.contains_key(&row.id))
-                });
-                if !item_has_custom_shortcut {
-                    self.confirm_item(index, ctx);
+                if index < visible_end {
+                    let item_has_custom_shortcut = items.get(index).is_some_and(|item| {
+                        let SelectorItem::Row(row_index) = item else {
+                            return false;
+                        };
+                        self.page
+                            .snapshot
+                            .rows
+                            .get(*row_index)
+                            .is_some_and(|row| self.page.row_shortcuts.contains_key(&row.id))
+                    });
+                    if !item_has_custom_shortcut {
+                        self.confirm_item(index, ctx);
+                    }
                 }
             }
             TuiOptionSelectorAction::SelectShortcut(shortcut) => {
