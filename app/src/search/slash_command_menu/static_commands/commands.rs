@@ -114,6 +114,17 @@ pub static RENAME_TAB: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand 
     argument: Some(Argument::required().with_hint_text(t_static!("slash-cmd-rename-tab-hint"))),
 });
 
+// TUI-only: configures which items appear in the bottom statusline and their order. Not
+// executable in the GUI (see `execute_slash_command`'s explicit guard for this command).
+pub static STATUSLINE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/statusline",
+    description: t_static!("slash-cmd-statusline-desc"),
+    icon_path: "bundled/svg/sliders-04.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 pub static FORK: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     name: "/fork",
     description: t_static!("slash-cmd-fork-desc"),
@@ -448,6 +459,7 @@ fn all_commands() -> Vec<StaticCommand> {
         NEW.clone(),
         PLAN.clone(),
         RENAME_TAB.clone(),
+        STATUSLINE.clone(),
         CONVERSATIONS.clone(),
         EXPORT_TO_CLIPBOARD.clone(),
         MODEL.clone(),
@@ -537,6 +549,21 @@ mod tests {
         for name in names {
             assert!(seen.insert(name), "duplicate slash command name: {name}");
         }
+    }
+
+    #[test]
+    fn statusline_command_is_registered_and_tui_only() {
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(STATUSLINE.name)
+            .expect("expected /statusline to be registered");
+        assert_eq!(
+            command.kind(),
+            crate::search::slash_command_menu::static_commands::SlashCommandKind::Statusline
+        );
+        assert_eq!(command.availability, Availability::ALWAYS);
+        assert!(!command.auto_enter_ai_mode);
+        assert!(command.argument.is_none());
+        assert!(command.supports_tui());
     }
 
     #[test]

@@ -229,6 +229,7 @@ impl TuiPermissionPrompt {
             TuiOptionSelectorEvent::LayoutInvalidated
             | TuiOptionSelectorEvent::CustomTextOpened
             | TuiOptionSelectorEvent::CustomTextClosed => self.invalidate_layout(ctx),
+            TuiOptionSelectorEvent::RowsReordered { .. } => {}
             TuiOptionSelectorEvent::Confirmed { .. } | TuiOptionSelectorEvent::RetryRequested => {}
         }
     }

@@ -923,6 +923,14 @@ impl Input {
                 // of handling user queries with specific slash command prefixes.
                 return false;
             }
+            tui_only if command.name == commands::STATUSLINE.name => {
+                debug_assert!(
+                    false,
+                    "Attempted to execute TUI-only slash command in the GUI: {}",
+                    command.name
+                );
+                return false;
+            }
             _ => {
                 debug_assert!(
                     false,

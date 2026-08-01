@@ -127,6 +127,7 @@ pub enum SlashCommandKind {
     RenameTab,
     RenameConversation,
     SetTabColor,
+    Statusline,
     Fork,
     MoveToCloud,
     OpenCodeReview,
@@ -216,6 +217,7 @@ impl StaticCommand {
             "/open-file" => SlashCommandKind::Edit,
             "/rename-tab" => SlashCommandKind::RenameTab,
             "/set-tab-color" => SlashCommandKind::SetTabColor,
+            "/statusline" => SlashCommandKind::Statusline,
             "/fork" => SlashCommandKind::Fork,
             "/handoff" => SlashCommandKind::MoveToCloud,
             "/open-code-review" => SlashCommandKind::OpenCodeReview,
@@ -269,6 +271,7 @@ impl StaticCommand {
                 | "/export-to-clipboard"
                 | "/export-to-file"
                 | "/api-keys"
+                | "/statusline"
         )
     }
 }

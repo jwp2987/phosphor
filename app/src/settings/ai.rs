@@ -395,6 +395,125 @@ impl ThinkingDisplayMode {
     }
 }
 
+/// One configurable item in the TUI statusline.
+///
+/// Ported from warp/master's `TuiStatuslineItem`. Upstream also carries a `CreditUsage`
+/// variant tied to Warp's cloud credits/billing system; Zap has no credits system (it
+/// already replaced Warp's credits UI with a local BYOP context-window-usage footer), so
+/// that variant is dropped and `ContextWindowUsage` covers the equivalent local-only need.
+///
+/// `AutoQueue` is kept but has different backing semantics than upstream: upstream's
+/// variant reflects a persistent "auto-queue next prompt" *mode* toggle backed by
+/// `QueuedQueryModel`, a feature not yet ported to Zap. Zap's `/queue` is a one-shot
+/// "hold this specific prompt until the current turn finishes" action instead, so this
+/// item indicates whether such a queued follow-up is currently pending.
+#[derive(
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    PartialEq,
+    Eq,
+    Copy,
+    Clone,
+    Hash,
+    EnumIter,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+#[schemars(
+    description = "A configurable item in the Zap Agent CLI statusline.",
+    rename_all = "snake_case"
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TuiStatuslineItem {
+    AutoApprove,
+    AutoQueue,
+    Model,
+    WorkingDirectory,
+    GitBranch,
+    GitDiffStatus,
+    ContextWindowUsage,
+}
+
+impl TuiStatuslineItem {
+    pub const ALL: [Self; 7] = [
+        Self::AutoApprove,
+        Self::AutoQueue,
+        Self::Model,
+        Self::WorkingDirectory,
+        Self::GitBranch,
+        Self::GitDiffStatus,
+        Self::ContextWindowUsage,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AutoApprove => "Auto-approve indicator",
+            Self::AutoQueue => "Queued follow-up prompt indicator",
+            Self::Model => "Model",
+            Self::WorkingDirectory => "Working directory",
+            Self::GitBranch => "Git branch",
+            Self::GitDiffStatus => "Git diff status",
+            Self::ContextWindowUsage => "Context window usage",
+        }
+    }
+}
+
+/// Ordered and enabled items in the TUI statusline.
+#[derive(
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    PartialEq,
+    Eq,
+    Clone,
+    schemars::JsonSchema,
+    settings_value::SettingsValue,
+)]
+pub struct TuiStatuslineConfig {
+    pub order: Vec<TuiStatuslineItem>,
+    pub enabled: Vec<TuiStatuslineItem>,
+}
+
+impl Default for TuiStatuslineConfig {
+    fn default() -> Self {
+        Self {
+            order: TuiStatuslineItem::ALL.to_vec(),
+            enabled: vec![
+                TuiStatuslineItem::Model,
+                TuiStatuslineItem::WorkingDirectory,
+                TuiStatuslineItem::GitBranch,
+                TuiStatuslineItem::GitDiffStatus,
+            ],
+        }
+    }
+}
+
+impl TuiStatuslineConfig {
+    /// Returns a complete, duplicate-free catalog and a valid enabled subset.
+    pub fn normalized(&self) -> Self {
+        let mut order = Vec::with_capacity(TuiStatuslineItem::ALL.len());
+        for item in self.order.iter().copied().chain(TuiStatuslineItem::ALL) {
+            if !order.contains(&item) {
+                order.push(item);
+            }
+        }
+
+        let mut enabled = Vec::with_capacity(self.enabled.len());
+        for item in self.enabled.iter().copied() {
+            if order.contains(&item) && !enabled.contains(&item) {
+                enabled.push(item);
+            }
+        }
+
+        Self { order, enabled }
+    }
+
+    pub fn is_enabled(&self, item: TuiStatuslineItem) -> bool {
+        self.enabled.contains(&item)
+    }
+}
+
 /// Tracks the state of the quota reset banner
 #[derive(
     Debug,
@@ -1514,6 +1633,21 @@ define_settings_group!(AISettings, settings: [
     // This field is used to store the key used for voice input toggling.
     // Note this is not the named key, but rather corresponds to the physical key.
     voice_input_toggle_key: VoiceInputToggleKey,
+    // Ordered visibility configuration for the TUI's bottom statusline.
+    // TUI-only and local so separate devices can use different terminal layouts.
+    //
+    // Upstream tags this `surface: settings::SettingSurfaces::TUI`; Zap's settings macro
+    // predates that concept (see app/src/settings/tui_autoupdate.rs), so it's just a regular
+    // shared-settings entry here — behaviorally the same since it's only ever read by the TUI.
+    tui_statusline: TuiStatusline {
+        type: TuiStatuslineConfig,
+        default: TuiStatuslineConfig::default(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "agents.statusline",
+        description: "Controls the order and visibility of Zap Agent CLI statusline items.",
+    },
     // This is not a user-visible setting - it's merely a one-time flag to track if the user has
     // explicitly interacted with voice input. We use this to determine whether we should show a toast
     // to inform the user about voice input and auto-set the keybinding.

@@ -10,7 +10,7 @@ use async_channel::Sender;
 use instant::Instant;
 use parking_lot::FairMutex;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
-use warp::settings::{AISettings, AISettingsChangedEvent};
+use warp::settings::{AISettings, AISettingsChangedEvent, TuiStatuslineConfig, TuiStatuslineItem};
 use warp::tui_export::{
     AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
     AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
@@ -100,6 +100,7 @@ use crate::resume::TuiExitSummaryHandle;
 use crate::session_registry::TuiSessions;
 use crate::skills_menu::{TuiSkillMenuEvent, TuiSkillMenuModel};
 use crate::slash_commands::TuiSlashCommandModel;
+use crate::statusline_config_view::{TuiStatuslineConfigEvent, TuiStatuslineConfigView};
 use crate::terminal_content_element::TuiTerminalContentElement;
 use crate::terminal_use::{
     TerminalUseInterruptAction, TuiInputTarget, hide_agent_requested_command_from_top_level,
@@ -203,6 +204,8 @@ const REWOUND_HINT: &str = "Rewound conversation and reverted file edits";
 /// guidance lives in the input's placeholder ghost text, so the footer only
 /// names the mode.
 const SHELL_MODE_HINT: &str = "shell mode";
+const STATUSLINE_SAVED_HINT: &str = "Statusline configuration saved.";
+const STATUSLINE_PERSISTENCE_FAILED_HINT: &str = "Could not save the statusline configuration.";
 const COPY_SELECTION_HINT: &str = "copied to clipboard";
 const COPY_FAILED_HINT: &str = "failed to copy to clipboard";
 const LOG_BUNDLE_FAILED_HINT: &str = "Failed to create log bundle (check logs)";
@@ -233,112 +236,118 @@ fn cost_command_unavailable_hint(
     }
 }
 
-/// Resolved segments for the footer's left-aligned sectioned status row.
-/// [`TuiTerminalSessionView::render_footer`] builds this from view state and
-/// delegates to [`render_status_footer_row`]; keeping the row layout separate
-/// makes the left alignment, section order, and bash-mode omissions directly
-/// render-to-lines testable without view-state plumbing.
-struct FooterSegments {
-    /// Whether the input is in `!` shell mode: the shell-mode indicator leads
-    /// the row and the model/usage segments are hidden.
-    shell_mode: bool,
-    /// The clickable active-model label. Hidden in shell mode.
-    model_label: Option<Box<dyn TuiElement>>,
-    /// The session's compacted working directory. Part of the combined
-    /// cwd/branch section.
-    cwd: Option<String>,
-    /// The current branch name, appended to the cwd segment as ` ↬ branch`.
-    branch: Option<String>,
-    /// The clickable usage entry. Hidden in shell mode.
-    usage: Option<Box<dyn TuiElement>>,
-    /// Uncommitted diff additions; rendered as `+N` when > 0.
-    diff_additions: usize,
-    /// Uncommitted diff deletions; rendered as `-M` when > 0.
-    diff_deletions: usize,
+/// One resolved item in the footer's configured presentation order.
+enum FooterSegment {
+    ShellMode,
+    ActiveIndicator(&'static str),
+    Model(Box<dyn TuiElement>),
+    WorkingDirectory(String),
+    GitBranch(String),
+    /// The selected conversation's context-window usage. BYOP has no cloud
+    /// credits/cost, so unlike upstream's clickable credits⇄cost toggle this
+    /// wraps Zap's informational context-% entry (`crate::usage`).
+    ContextWindowUsage(Box<dyn TuiElement>),
+    GitDiff { additions: usize, deletions: usize },
 }
 
-/// Builds the left-aligned sectioned status row from resolved segments.
-///
-/// Agent mode orders the sections `[model] [cwd ↬ branch] • [usage] •
-/// [+N -M]`; shell mode leads with the shell-mode indicator and hides the
-/// model and usage segments, yielding `[shell mode] [cwd ↬ branch] •
-/// [+N -M]`. A plain space separates the model from cwd/branch; a ` • `
-/// separator precedes usage and diff. Absent metadata never leaves a stray
-/// separator. Every child truncates to a single row, so the row lays out one
-/// row tall.
+impl FooterSegment {
+    fn separator_to(&self, next: &Self) -> &'static str {
+        match (self, next) {
+            // Only a shell-mode label directly preceding the working directory
+            // gets a plain space; a leading Model label falls through to the
+            // default " • " below so model and cwd don't visually run
+            // together (fixes a missing divider present in an earlier
+            // revision of this port — see warp upstream 311deab98).
+            (Self::ShellMode, Self::WorkingDirectory(_)) => " ",
+            (Self::WorkingDirectory(_), Self::GitBranch(_)) => " ↬ ",
+            (
+                Self::ShellMode
+                | Self::ActiveIndicator(_)
+                | Self::Model(_)
+                | Self::WorkingDirectory(_)
+                | Self::GitBranch(_)
+                | Self::ContextWindowUsage(_)
+                | Self::GitDiff { .. },
+                Self::ShellMode
+                | Self::ActiveIndicator(_)
+                | Self::Model(_)
+                | Self::WorkingDirectory(_)
+                | Self::GitBranch(_)
+                | Self::ContextWindowUsage(_)
+                | Self::GitDiff { .. },
+            ) => " • ",
+        }
+    }
+}
+
+/// Resolved segments for the footer's left-aligned status row.
+struct FooterSegments {
+    ordered: Vec<FooterSegment>,
+}
+
+/// Builds the status row from resolved segments. Working directory follows a
+/// leading model or shell-mode label with a plain space; an immediately
+/// following branch uses the existing ` ↬ ` relationship marker. Every other
+/// adjacent pair uses ` • `, and the first item never receives a separator.
+/// Every child truncates to a single row, so the row lays out one row tall.
 fn render_status_footer_row(segments: FooterSegments, builder: &TuiUiBuilder) -> TuiFlex {
     let muted = builder.muted_text_style();
     let mut row = TuiFlex::row();
-    let mut has_segment = false;
-
-    // First segment: the shell-mode indicator (shell mode) or the clickable
-    // model label (agent mode). Shell mode hides the model segment so the
-    // indicator leads.
-    if segments.shell_mode {
-        row = row.child(
-            TuiText::new(SHELL_MODE_HINT)
-                .with_style(builder.shell_mode_accent_style())
-                .truncate()
-                .finish(),
-        );
-        has_segment = true;
-    } else if let Some(model_label) = segments.model_label {
-        row = row.child(model_label);
-        has_segment = true;
-    }
-
-    // Combined cwd/branch section: the branch stays contextual to its path.
-    // A plain space separates this from the leading model/shell-mode segment,
-    // matching master's layout where model and cwd run together without a dot.
-    if segments.cwd.is_some() || segments.branch.is_some() {
-        if has_segment {
-            row = row.child(TuiText::new(" ").truncate().finish());
-        }
-        if let Some(cwd) = segments.cwd {
-            row = row.child(TuiText::new(cwd).with_style(muted).truncate().finish());
-        }
-        if let Some(branch) = segments.branch {
-            row = row.child(
-                TuiText::new(format!(" ↬ {branch}"))
-                    .with_style(muted)
-                    .truncate()
-                    .finish(),
-            );
-        }
-        has_segment = true;
-    }
-
-    // Usage entry (agent mode only): the clickable credits/cost toggle.
-    if !segments.shell_mode
-        && let Some(usage) = segments.usage
-    {
-        if has_segment {
-            row = row.child(TuiText::new(" • ").with_style(muted).truncate().finish());
-        }
-        row = row.child(usage);
-        has_segment = true;
-    }
-
-    // Diff counts retain their existing added/removed styles.
-    if segments.diff_additions > 0 || segments.diff_deletions > 0 {
-        if has_segment {
-            row = row.child(TuiText::new(" • ").with_style(muted).truncate().finish());
-        }
-        if segments.diff_additions > 0 {
-            row = row.child(
-                TuiText::new(format!("+{}", segments.diff_additions))
-                    .with_style(builder.diff_added_style())
-                    .truncate()
-                    .finish(),
-            );
-        }
-        if segments.diff_deletions > 0 {
-            if segments.diff_additions > 0 {
-                row = row.child(TuiText::new(" ").truncate().finish());
+    let mut segments = segments.ordered.into_iter().peekable();
+    while let Some(segment) = segments.next() {
+        let separator = segments.peek().map(|next| segment.separator_to(next));
+        match segment {
+            FooterSegment::ShellMode => {
+                row = row.child(
+                    TuiText::new(SHELL_MODE_HINT)
+                        .with_style(builder.shell_mode_accent_style())
+                        .truncate()
+                        .finish(),
+                );
             }
+            FooterSegment::ActiveIndicator(label) => {
+                row = row.child(
+                    TuiText::new(label)
+                        .with_style(builder.success_glyph_style())
+                        .truncate()
+                        .finish(),
+                );
+            }
+            FooterSegment::Model(model) | FooterSegment::ContextWindowUsage(model) => {
+                row = row.child(model);
+            }
+            FooterSegment::WorkingDirectory(cwd) | FooterSegment::GitBranch(cwd) => {
+                row = row.child(TuiText::new(cwd).with_style(muted).truncate().finish());
+            }
+            FooterSegment::GitDiff {
+                additions,
+                deletions,
+            } => {
+                if additions > 0 {
+                    row = row.child(
+                        TuiText::new(format!("+{additions}"))
+                            .with_style(builder.diff_added_style())
+                            .truncate()
+                            .finish(),
+                    );
+                }
+                if deletions > 0 {
+                    if additions > 0 {
+                        row = row.child(TuiText::new(" ").truncate().finish());
+                    }
+                    row = row.child(
+                        TuiText::new(format!("-{deletions}"))
+                            .with_style(builder.diff_removed_style())
+                            .truncate()
+                            .finish(),
+                    );
+                }
+            }
+        }
+        if let Some(separator) = separator {
             row = row.child(
-                TuiText::new(format!("-{}", segments.diff_deletions))
-                    .with_style(builder.diff_removed_style())
+                TuiText::new(separator)
+                    .with_style(muted)
                     .truncate()
                     .finish(),
             );
@@ -546,6 +555,9 @@ pub(crate) struct TuiTerminalSessionView {
     /// detect blocker transitions in [`Self::sync_blocker_focus`]. Input
     /// visibility itself is derived at render time, never stored.
     active_blocker_view_id: Option<EntityId>,
+    /// The `/statusline` configuration picker, mounted in place of the input
+    /// box while open.
+    statusline_config_view: Option<ViewHandle<TuiStatuslineConfigView>>,
     zero_state_view: ViewHandle<TuiZeroStateView>,
 }
 
@@ -704,6 +716,8 @@ impl TuiTerminalSessionView {
             TuiInputTarget::Disabled | TuiInputTarget::AgentEditor => {
                 if let Some(blocker) = self.active_blocking_child(ctx) {
                     Self::focus_blocking_child(blocker, ctx);
+                } else if let Some(statusline_config_view) = self.statusline_config_view.as_ref() {
+                    statusline_config_view.update(ctx, |view, ctx| view.focus(ctx));
                 } else {
                     ctx.focus(&self.input_view);
                 }
@@ -1423,10 +1437,15 @@ impl TuiTerminalSessionView {
         // The footer shows the active model and working directory: re-render
         // when the active model or its display name changes, or when the
         // session's working directory changes. (The context-usage entry
-        // re-renders via the conversation-model events above.)
+        // re-renders via the conversation-model events above.) Also re-render
+        // when the configured statusline items/order change (`/statusline`
+        // save or settings-file hot reload).
         ctx.subscribe_to_model(&AISettings::handle(ctx), |view, _, event, ctx| {
             if matches!(event, AISettingsChangedEvent::AIAutoDetectionEnabled { .. }) {
                 view.schedule_input_detection(ctx);
+            }
+            if matches!(event, AISettingsChangedEvent::TuiStatusline { .. }) {
+                ctx.notify();
             }
         });
         ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |_, _, event, ctx| {
@@ -1546,6 +1565,7 @@ impl TuiTerminalSessionView {
             next_restore_request_id: 0,
             exit_summary,
             active_blocker_view_id: None,
+            statusline_config_view: None,
             zero_state_view,
         }
     }
@@ -2234,13 +2254,13 @@ impl TuiTerminalSessionView {
         render_warping_indicator_row(label, elapsed, auto_approve, ctx)
     }
 
-    /// Builds the status footer under the input box. The row is left-aligned:
-    /// in agent mode `[model] [cwd ↬ branch] • [usage] • [+N -M]`, and in shell
-    /// mode `[shell mode] [cwd ↬ branch] • [+N -M]` (model and usage hidden).
-    /// A replacing hint — the ctrl-c exit confirmation while armed, the
-    /// conversation-list loading hint, or an active transient notice — occupies
-    /// the whole row instead. Every child truncates to a single row, so the row
-    /// lays out one row tall.
+    /// Builds the configured statusline under the input box. Normal mode uses
+    /// the persisted item order and visibility (`/statusline`); shell mode
+    /// always leads with its mode label and only resolves configured
+    /// working-directory and git items. A replacing hint — the ctrl-c exit
+    /// confirmation while armed, the conversation-list loading hint, or an
+    /// active transient notice — occupies the whole row instead. An empty
+    /// resolved configuration consumes no row.
     fn render_footer(&self, ctx: &AppContext) -> TuiFlex {
         let builder = TuiUiBuilder::from_app(ctx);
         let muted = builder.muted_text_style();
@@ -2282,83 +2302,99 @@ impl TuiTerminalSessionView {
             );
         }
         let shell_mode = self.is_shell_mode(ctx);
-
-        // Normal left-aligned sectioned status row.
+        let config = AISettings::as_ref(ctx).tui_statusline.normalized();
         let git_metadata = self.git_status_metadata(ctx);
-        let model_label = if shell_mode {
-            None
-        } else {
-            let model_name = LLMPreferences::as_ref(ctx)
-                .get_active_base_model(ctx, Some(self.terminal_surface_id))
-                .display_name
-                .clone();
-            // The active-model label is clickable: a left click toggles the
-            // inline model picker (the same menu `/model` surfaces). The hover
-            // state lives on a retained [`MouseStateHandle`] so it survives
-            // element-tree rebuilds, and the click dispatches a typed action
-            // since the element pass only has an immutable [`AppContext`] —
-            // mirroring the usage entry.
-            let model_label_hovered = self
-                .model_label_hover
-                .lock()
-                .is_ok_and(|state| state.is_hovered());
-            let model_label_style = if model_label_hovered {
-                builder.primary_text_style()
-            } else {
-                builder.muted_text_style()
-            };
-            Some(
-                TuiHoverable::new(
-                    self.model_label_hover.clone(),
-                    TuiText::new(model_name)
-                        .with_style(model_label_style)
-                        .truncate()
+        let mut ordered = Vec::new();
+        if shell_mode {
+            ordered.push(FooterSegment::ShellMode);
+        }
+        for item in config.order.iter().copied() {
+            if !config.is_enabled(item) {
+                continue;
+            }
+            let segment = match item {
+                TuiStatuslineItem::AutoApprove => (!shell_mode
+                    && self
+                        .conversation_selection
+                        .as_ref(ctx)
+                        .pending_query_autoexecute_override(ctx)
+                        .is_autoexecute_any_action())
+                .then_some(FooterSegment::ActiveIndicator("Auto-approve")),
+                // Zap has no persistent "auto-queue" mode (`/queue` holds a
+                // single specific prompt instead — see `TuiStatuslineItem`'s
+                // doc comment), so this indicates a queued follow-up prompt.
+                TuiStatuslineItem::AutoQueue => (!shell_mode && self.queued_follow_up.is_some())
+                    .then_some(FooterSegment::ActiveIndicator("Queued")),
+                TuiStatuslineItem::Model => (!shell_mode).then(|| {
+                    let model_name = LLMPreferences::as_ref(ctx)
+                        .get_active_base_model(ctx, Some(self.terminal_surface_id))
+                        .display_name
+                        .clone();
+                    // The active-model label is clickable: a left click
+                    // toggles the inline model picker (the same menu
+                    // `/model` surfaces). The hover state lives on a
+                    // retained [`MouseStateHandle`] so it survives
+                    // element-tree rebuilds, and the click dispatches a
+                    // typed action since the element pass only has an
+                    // immutable [`AppContext`] — mirroring the usage entry.
+                    let model_label_hovered = self
+                        .model_label_hover
+                        .lock()
+                        .is_ok_and(|state| state.is_hovered());
+                    let model_label_style = if model_label_hovered {
+                        builder.primary_text_style()
+                    } else {
+                        builder.muted_text_style()
+                    };
+                    FooterSegment::Model(
+                        TuiHoverable::new(
+                            self.model_label_hover.clone(),
+                            TuiText::new(model_name)
+                                .with_style(model_label_style)
+                                .truncate()
+                                .finish(),
+                        )
+                        .on_click(|event_ctx, _| {
+                            event_ctx
+                                .dispatch_typed_action(TuiTerminalSessionAction::ToggleModelMenu);
+                        })
                         .finish(),
-                )
-                .on_click(|event_ctx, _| {
-                    event_ctx.dispatch_typed_action(TuiTerminalSessionAction::ToggleModelMenu);
-                })
-                .finish(),
-            )
-        };
-        let cwd = self
-            .current_working_directory(ctx)
-            .map(|cwd| compact_footer_path(&cwd));
-        let branch = git_metadata.map(|metadata| metadata.current_branch_name.clone());
-        // Usage entry: the selected conversation's context-window occupancy,
-        // hidden until any usage has been reported (and hidden in shell mode,
-        // where it is stale AI-conversation metadata). BYOP has no cloud
-        // credits/cost, so this is the informational context-% indicator
-        // (see `crate::usage`) rather than Warp's clickable credits⇄cost entry.
-        let usage = if shell_mode {
-            None
-        } else {
-            self.selected_conversation_context_usage(ctx)
-                .map(|fraction| render_context_usage_entry(fraction, ctx))
-        };
-        let (diff_additions, diff_deletions) = git_metadata
-            .filter(|metadata| {
-                let stats = metadata.stats_against_head;
-                stats.total_additions > 0 || stats.total_deletions > 0
-            })
-            .map(|metadata| {
-                let stats = metadata.stats_against_head;
-                (stats.total_additions, stats.total_deletions)
-            })
-            .unwrap_or_default();
-
-        render_status_footer_row(
-            FooterSegments {
-                shell_mode,
-                model_label,
-                cwd,
-                branch,
-                usage,
-                diff_additions,
-                diff_deletions,
-            },
-            &builder,
-        )
+                    )
+                }),
+                TuiStatuslineItem::WorkingDirectory => self
+                    .current_working_directory(ctx)
+                    .map(|cwd| FooterSegment::WorkingDirectory(compact_footer_path(&cwd))),
+                TuiStatuslineItem::GitBranch => git_metadata
+                    .map(|metadata| FooterSegment::GitBranch(metadata.current_branch_name.clone())),
+                TuiStatuslineItem::GitDiffStatus => git_metadata.and_then(|metadata| {
+                    let stats = metadata.stats_against_head;
+                    (stats.total_additions > 0 || stats.total_deletions > 0).then_some(
+                        FooterSegment::GitDiff {
+                            additions: stats.total_additions,
+                            deletions: stats.total_deletions,
+                        },
+                    )
+                }),
+                // Selected conversation's context-window occupancy, hidden
+                // until any usage has been reported (and hidden in shell
+                // mode, where it is stale AI-conversation metadata). BYOP
+                // has no cloud credits/cost, so this reuses Zap's existing
+                // informational context-% entry (`crate::usage`) rather than
+                // upstream's clickable credits⇄cost toggle.
+                TuiStatuslineItem::ContextWindowUsage => (!shell_mode)
+                    .then(|| self.selected_conversation_context_usage(ctx))
+                    .flatten()
+                    .map(|fraction| {
+                        FooterSegment::ContextWindowUsage(render_context_usage_entry(
+                            fraction, ctx,
+                        ))
+                    }),
+            };
+            if let Some(segment) = segment {
+                ordered.push(segment);
+            }
+        }
+        render_status_footer_row(FooterSegments { ordered }, &builder)
     }
 
     /// Updates the watcher-backed git-status subscription after repository
@@ -3228,6 +3264,9 @@ impl TuiTerminalSessionView {
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
+            SlashCommandKind::Statusline => {
+                self.open_statusline_config(command.name, ctx);
+            }
             SlashCommandKind::Cost => {
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
                 ctx.dispatch_typed_action_deferred(
@@ -3572,6 +3611,62 @@ impl TuiTerminalSessionView {
         }
     }
 
+    /// Mounts the `/statusline` configuration picker in place of the input
+    /// box. No-ops while a blocker or an already-open picker owns the slot.
+    fn open_statusline_config(&mut self, command_name: &'static str, ctx: &mut ViewContext<Self>) {
+        if self.active_blocking_child(ctx).is_some() || self.statusline_config_view.is_some() {
+            return;
+        }
+        let config = AISettings::as_ref(ctx).tui_statusline.normalized();
+        let statusline_config_view =
+            ctx.add_typed_action_tui_view(|ctx| TuiStatuslineConfigView::new(config, ctx));
+        ctx.subscribe_to_view(&statusline_config_view, |view, _, event, ctx| {
+            view.handle_statusline_config_event(event, ctx);
+        });
+        self.statusline_config_view = Some(statusline_config_view);
+        self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+        self.focus_current_owner_if_active(ctx);
+        record_static_slash_command_accepted(command_name, true, ctx);
+        ctx.notify();
+    }
+
+    fn handle_statusline_config_event(
+        &mut self,
+        event: &TuiStatuslineConfigEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            TuiStatuslineConfigEvent::Saved(config) => {
+                self.persist_statusline_config(config.clone(), ctx);
+            }
+            TuiStatuslineConfigEvent::Cancelled => {
+                self.statusline_config_view = None;
+                self.focus_current_owner_if_active(ctx);
+                ctx.notify();
+            }
+            TuiStatuslineConfigEvent::LayoutChanged => ctx.notify(),
+        }
+    }
+
+    fn persist_statusline_config(
+        &mut self,
+        config: TuiStatuslineConfig,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let result = AISettings::handle(ctx).update(ctx, |settings, ctx| {
+            settings.tui_statusline.set_value(config.normalized(), ctx)
+        });
+        self.statusline_config_view = None;
+        self.focus_current_owner_if_active(ctx);
+        match result {
+            Ok(()) => self.show_success_hint(STATUSLINE_SAVED_HINT.to_owned(), ctx),
+            Err(error) => {
+                log::warn!("Failed to persist the TUI statusline config: {error}");
+                self.show_transient_hint(STATUSLINE_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
+            }
+        }
+    }
+
     /// Persists the natural-language-detection (NLD) setting to `enabled`, reports the
     /// toggle via telemetry, and surfaces a confirmation hint. Shared by the
     /// `/enable-natural-language-detection` and `/disable-natural-language-detection`
@@ -3683,12 +3778,16 @@ impl TuiView for TuiTerminalSessionView {
     }
 
     fn child_view_ids(&self, _ctx: &AppContext) -> Vec<EntityId> {
-        vec![
+        let mut child_view_ids = vec![
             self.transcript.id(),
             self.input_view.id(),
             self.attachment_bar.id(),
             self.zero_state_view.id(),
-        ]
+        ];
+        if let Some(statusline_config_view) = self.statusline_config_view.as_ref() {
+            child_view_ids.push(statusline_config_view.id());
+        }
+        child_view_ids
     }
 
     fn keymap_context(&self, ctx: &AppContext) -> keymap::Context {
@@ -3818,7 +3917,11 @@ impl TuiView for TuiTerminalSessionView {
             .and_then(|conversation_id| {
                 BlocklistAIHistoryModel::as_ref(ctx).conversation(&conversation_id)
             })
-            .filter(|_| !blocker_active && input_target.agent_editor_owns_input());
+            .filter(|_| {
+                !blocker_active
+                    && self.statusline_config_view.is_none()
+                    && input_target.agent_editor_owns_input()
+            });
         if let Some(conversation) = selected_conversation {
             if conversation.status().is_in_progress() {
                 let warping_elapsed = conversation
@@ -3886,6 +3989,16 @@ impl TuiView for TuiTerminalSessionView {
             );
         }
         if !blocker_active
+            && let Some(statusline_config_view) = self.statusline_config_view.as_ref()
+        {
+            content = content.child(
+                TuiContainer::new(TuiChildView::new(statusline_config_view).finish())
+                    .with_padding_top(1)
+                    .finish(),
+            );
+        }
+        if !blocker_active
+            && self.statusline_config_view.is_none()
             && (input_target.agent_editor_owns_input()
                 || matches!(input_target, TuiInputTarget::Disabled))
         {
