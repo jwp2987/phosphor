@@ -16,6 +16,7 @@ use warpui_core::elements::tui::{
 };
 use warpui_core::{AppContext, ModelHandle};
 
+use crate::api_keys_menu::TuiApiKeysMenuModel;
 use crate::completions_menu::{TuiAcceptedCompletion, TuiCompletionsMenuModel};
 use crate::conversation_menu::TuiConversationMenuModel;
 use crate::exchange_menu::{TuiExchangeMenuAction, TuiExchangeMenuModel};
@@ -640,6 +641,51 @@ impl TuiInlineMenuHandle for ModelHandle<TuiExchangeMenuModel> {
         self.as_ref(ctx)
             .accept_selected(ctx)
             .map(|(exchange_id, action)| TuiInlineMenuAccepted::Exchange(exchange_id, action))
+    }
+
+    fn dismiss(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.dismiss(ctx));
+    }
+
+    fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
+        self.as_ref(ctx).snapshot(ctx)
+    }
+}
+
+impl TuiInlineMenuHandle for ModelHandle<TuiApiKeysMenuModel> {
+    fn mode(&self) -> TuiInputSuggestionsMode {
+        TuiInputSuggestionsMode::ApiKeys
+    }
+    fn is_open(&self, ctx: &AppContext) -> bool {
+        self.as_ref(ctx).is_open(ctx)
+    }
+    fn open(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.open(ctx));
+    }
+    fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
+        None
+    }
+
+    fn input_argument_hint_text(&self, _ctx: &AppContext) -> Option<&'static str> {
+        None
+    }
+
+    fn select_previous(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_previous(ctx));
+    }
+
+    fn select_next(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_next(ctx));
+    }
+
+    // Always returns `None`: unlike the other menus, accepting a row here never hands a
+    // domain value back out to `TuiTerminalSessionView` to route -- adding/clearing a key is
+    // fully self-contained (persisted straight through `AgentProviderSecrets` inside
+    // `accept_selected`), and "select a provider row" is itself just an internal transition
+    // into the key-entry sub-state, not something the caller needs to act on.
+    fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        self.update(ctx, |model, ctx| model.accept_selected(ctx));
+        None
     }
 
     fn dismiss(&self, ctx: &mut AppContext) {

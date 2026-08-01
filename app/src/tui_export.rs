@@ -456,3 +456,109 @@ pub fn tui_conversation_actions_in_order(
 pub fn agent_conversations_cloud_metadata_load_failed(_app: &warpui::AppContext) -> bool {
     false
 }
+
+/// One user-configured BYOP agent provider for the TUI `/api-keys` picker.
+///
+/// Deliberately a flat DTO (not the raw `AgentProvider`) so `warp_tui` only sees what its
+/// picker needs to render and act on, mirroring `TuiProfileEntry` / `TuiPromptEntry`.
+#[derive(Clone)]
+pub struct TuiApiKeyProvider {
+    pub provider_id: String,
+    /// Falls back to `provider_id` when the user hasn't named the provider yet.
+    pub display_name: String,
+    pub api_type_label: &'static str,
+    /// Whether a non-empty API key is currently stored for this provider.
+    pub has_key: bool,
+}
+
+/// Lists every user-configured custom agent provider — arbitrary BYOP endpoints, not a fixed
+/// catalog — paired with whether it currently has an API key stored. Unlike
+/// `agent_providers::build_byop_llm_infos`, every configured provider is included regardless of
+/// `AgentProvider::is_usable()`: a provider without models yet (or temporarily disabled) can
+/// still have a key added to it here, so key management isn't gated behind first configuring
+/// models.
+pub fn tui_list_agent_provider_keys(app: &warpui::AppContext) -> Vec<TuiApiKeyProvider> {
+    use crate::ai::agent_providers::AgentProviderSecrets;
+    use crate::settings::AISettings;
+    use settings::Setting as _;
+    use warpui::SingletonEntity as _;
+
+    let providers = AISettings::as_ref(app).agent_providers.value().clone();
+    let secrets = AgentProviderSecrets::as_ref(app);
+    providers
+        .into_iter()
+        .map(|provider| {
+            let display_name = if provider.name.trim().is_empty() {
+                provider.id.clone()
+            } else {
+                provider.name.clone()
+            };
+            let has_key = secrets
+                .get(&provider.id)
+                .is_some_and(|key| !key.is_empty());
+            TuiApiKeyProvider {
+                provider_id: provider.id,
+                display_name,
+                api_type_label: provider.api_type.display_name(),
+                has_key,
+            }
+        })
+        .collect()
+}
+
+/// Sets (or, if `api_key` is empty, clears) the stored API key for `provider_id`. Reuses
+/// `AgentProviderSecrets` — the same secure-storage-backed singleton the GUI Settings AI page
+/// writes to via `AISettingsPageAction::UpdateAgentProviderApiKey` — so a key set from the TUI
+/// is immediately visible in the GUI and vice versa.
+pub fn tui_set_agent_provider_api_key(
+    app: &mut warpui::AppContext,
+    provider_id: &str,
+    api_key: String,
+) {
+    use crate::ai::agent_providers::AgentProviderSecrets;
+    use warpui::SingletonEntity as _;
+
+    AgentProviderSecrets::handle(app).update(app, |secrets, ctx| {
+        secrets.set(provider_id, api_key, ctx);
+    });
+}
+
+/// Clears the stored API key for `provider_id`, if any.
+pub fn tui_clear_agent_provider_api_key(app: &mut warpui::AppContext, provider_id: &str) {
+    use crate::ai::agent_providers::AgentProviderSecrets;
+    use warpui::SingletonEntity as _;
+
+    AgentProviderSecrets::handle(app).update(app, |secrets, ctx| {
+        secrets.remove(provider_id, ctx);
+    });
+}
+
+/// Whether `id` is a BYOP model whose provider currently has a *connected* key: the provider
+/// isn't effectively disabled (`AgentProvider::is_usable()` — missing endpoint, no enabled
+/// models, or explicitly turned off) AND a non-empty API key is stored for it. Backs the TUI
+/// model picker's "(key connected)" indicator (mirrors upstream Warp's
+/// `cd45ebb6f` / the GUI model picker's `Icon::Key` treatment in
+/// `terminal/input/models/data_source.rs`, but against this fork's arbitrary-provider BYOP
+/// model instead of upstream's fixed 4-provider `ApiKeyManager`).
+///
+/// Non-BYOP ids (and BYOP ids whose provider has since been removed) return `false`.
+pub fn tui_agent_provider_has_connected_key(app: &warpui::AppContext, id: &LLMId) -> bool {
+    use crate::ai::agent_providers::{llm_id, AgentProviderSecrets};
+    use crate::settings::AISettings;
+    use settings::Setting as _;
+    use warpui::SingletonEntity as _;
+
+    let Some((provider_id, _model_id)) = llm_id::decode(id) else {
+        return false;
+    };
+    let providers = AISettings::as_ref(app).agent_providers.value();
+    let Some(provider) = providers.iter().find(|p| p.id == provider_id) else {
+        return false;
+    };
+    if !provider.is_usable() {
+        return false;
+    }
+    AgentProviderSecrets::as_ref(app)
+        .get(&provider_id)
+        .is_some_and(|key| !key.is_empty())
+}

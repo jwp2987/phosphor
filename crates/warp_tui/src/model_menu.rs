@@ -1,7 +1,10 @@
 //! Searchable TUI model picker state.
 
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
-use warp::tui_export::{LLMId, LLMPreferences, LLMPreferencesEvent, query_model_picker_choices};
+use warp::tui_export::{
+    LLMId, LLMPreferences, LLMPreferencesEvent, query_model_picker_choices,
+    tui_agent_provider_has_connected_key,
+};
 use warp_editor::model::CoreEditorModel;
 use warpui_core::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 
@@ -13,11 +16,20 @@ use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestions
 
 const MAX_VISIBLE_ROWS: usize = result_row_capacity(MAX_INLINE_MENU_ROWS, true, false);
 
+/// Row suffix shown for a BYOP model whose provider currently has a connected API key --
+/// mirrors the GUI model picker's `Icon::Key` treatment (`terminal/input/models/data_source.rs`)
+/// as plain text, since the ratatui surface has no icon glyphs. See
+/// `tui_agent_provider_has_connected_key` for what "connected" means.
+const KEY_CONNECTED_SUFFIX: &str = "(key connected)";
+
 #[derive(Debug, Clone)]
 struct TuiModelMenuRow {
     id: LLMId,
     title: String,
     is_selectable: bool,
+    /// Whether this model's provider currently has a usable, connected API key. Always `false`
+    /// for non-BYOP entries (see `tui_agent_provider_has_connected_key`).
+    key_connected: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -67,20 +79,24 @@ impl TuiModelMenuModel {
         }
     }
 
+    /// `rows` is `(id, is_selectable, key_connected)`; `key_connected` drives the
+    /// "(key connected)" snapshot suffix without needing a live `AppContext` /
+    /// `AgentProviderSecrets` singleton (see `refresh_rows` for the real computation).
     #[cfg(test)]
     pub(crate) fn new_for_test(
         input_editor: ModelHandle<CodeEditorModel>,
         suggestions_mode: ModelHandle<TuiInputSuggestionsModeModel>,
-        rows: Vec<(LLMId, bool)>,
+        rows: Vec<(LLMId, bool, bool)>,
         selected_index: usize,
     ) -> Self {
         let mut list = TuiInlineMenuListState::default();
         list.replace_rows(
             rows.into_iter()
-                .map(|(id, is_selectable)| TuiModelMenuRow {
+                .map(|(id, is_selectable, key_connected)| TuiModelMenuRow {
                     title: id.to_string(),
                     id,
                     is_selectable,
+                    key_connected,
                 })
                 .collect(),
             false,
@@ -179,7 +195,7 @@ impl TuiModelMenuModel {
                 .map(|row| TuiInlineMenuRow {
                     title: row.title.clone(),
                     description: (!row.is_selectable).then(|| "disabled".to_owned()),
-                    state_suffix: None,
+                    state_suffix: row.key_connected.then(|| KEY_CONNECTED_SUFFIX.to_owned()),
                     is_selectable: row.is_selectable,
                     style: TuiInlineMenuRowStyle::Default,
                 })
@@ -212,10 +228,12 @@ impl TuiModelMenuModel {
             .into_iter()
             .map(|choice| {
                 let is_selectable = choice.is_selectable();
+                let key_connected = tui_agent_provider_has_connected_key(ctx, &choice.llm.id);
                 TuiModelMenuRow {
                     id: choice.llm.id,
                     title: choice.llm.display_name,
                     is_selectable,
+                    key_connected,
                 }
             })
             .collect::<Vec<_>>();

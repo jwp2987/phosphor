@@ -218,6 +218,19 @@ pub static MODEL: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     argument: None,
 });
 
+/// Fork-native: opens the BYOP provider API-key manager (list configured providers, see which
+/// have a key connected, add/update/clear one) without leaving the terminal or TUI. This fork's
+/// entire identity is BYOP, so unlike upstream Warp's cloud-gated `/add-api-key` this is always
+/// available whenever AI is enabled, with no fixed provider list and no billing/credit concepts.
+pub static API_KEYS: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/api-keys",
+    description: t_static!("slash-cmd-api-keys-desc"),
+    icon_path: "bundled/svg/key.svg",
+    availability: Availability::AI_ENABLED,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 pub static PROFILE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     name: "/profile",
     description: t_static!("slash-cmd-profile-desc"),
@@ -438,6 +451,7 @@ fn all_commands() -> Vec<StaticCommand> {
         CONVERSATIONS.clone(),
         EXPORT_TO_CLIPBOARD.clone(),
         MODEL.clone(),
+        API_KEYS.clone(),
     ];
 
     if FeatureFlag::LocalDockerSandbox.is_enabled() {

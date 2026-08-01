@@ -87,6 +87,7 @@ use crate::completions_menu::{
 };
 use ai::agent::action_result::RequestFileEditsResult;
 
+use crate::api_keys_menu::{TuiApiKeysMenuEvent, TuiApiKeysMenuModel};
 use crate::exchange_menu::{TuiExchangeMenuAction, TuiExchangeMenuEvent, TuiExchangeMenuModel};
 use crate::tui_diff_storage::revert_file_diffs;
 use crate::tui_revert_registry::TuiFileEditRevertRegistry;
@@ -483,6 +484,7 @@ pub(crate) struct TuiTerminalSessionView {
     profile_menu: ModelHandle<TuiProfileMenuModel>,
     prompts_menu: ModelHandle<TuiPromptsMenuModel>,
     exchange_menu: ModelHandle<TuiExchangeMenuModel>,
+    api_keys_menu: ModelHandle<TuiApiKeysMenuModel>,
     /// A follow-up prompt queued by `/compact-and`, submitted once the
     /// summarize exchange on its conversation completes. See
     /// [`Self::maybe_send_queued_follow_up`].
@@ -1184,6 +1186,12 @@ impl TuiTerminalSessionView {
         ctx.subscribe_to_model(&exchange_menu, |_, _, _: &TuiExchangeMenuEvent, ctx| {
             ctx.notify();
         });
+        let api_keys_menu = ctx.add_model(|ctx| {
+            TuiApiKeysMenuModel::new(input_editor_model.clone(), suggestions_mode.clone(), ctx)
+        });
+        ctx.subscribe_to_model(&api_keys_menu, |_, _, _: &TuiApiKeysMenuEvent, ctx| {
+            ctx.notify();
+        });
         // The footer's conversations callout depends on whether the input is
         // empty, so content changes must invalidate this parent view as well as
         // the input child. Typing after ctrl-c also disarms the pending exit
@@ -1237,6 +1245,7 @@ impl TuiTerminalSessionView {
             TuiInlineMenu::new(profile_menu.clone()),
             TuiInlineMenu::new(prompts_menu.clone()),
             TuiInlineMenu::new(exchange_menu.clone()),
+            TuiInlineMenu::new(api_keys_menu.clone()),
         ];
         let inline_menus_for_input = inline_menus.clone();
         let suggestions_mode_for_input = suggestions_mode.clone();
@@ -1504,6 +1513,7 @@ impl TuiTerminalSessionView {
             profile_menu,
             prompts_menu,
             exchange_menu,
+            api_keys_menu,
             queued_follow_up: None,
             completions_fetch: None,
             skills_menu,
@@ -3227,6 +3237,12 @@ impl TuiTerminalSessionView {
             }
             SlashCommandKind::Model => {
                 self.model_menu.update(ctx, |menu, ctx| menu.open(ctx));
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            SlashCommandKind::ApiKeys => {
+                // `/api-keys`: opens the BYOP provider key manager. Not conversation-scoped
+                // (unlike /fork-from and /rewind), so no conversation-selection guard is needed.
+                self.api_keys_menu.update(ctx, |menu, ctx| menu.open(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
             SlashCommandKind::Profile => {

@@ -642,7 +642,7 @@ fn build_view_with_model_menu(
         TuiModelMenuModel::new_for_test(
             input_model.clone(),
             suggestions_mode.clone(),
-            vec![(id_for_model, true)],
+            vec![(id_for_model, true, false)],
             0,
         )
     });

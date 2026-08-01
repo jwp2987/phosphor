@@ -2396,6 +2396,7 @@ slash-cmd-open-repo-desc = 別のインデックス済みリポジトリに切�
 slash-cmd-open-rules-desc = グローバルおよびプロジェクトのルールをすべて表示
 slash-cmd-new-desc = 新しい会話を開始 (/agent のエイリアス)
 slash-cmd-model-desc = ベースエージェントモデルを切り替え
+slash-cmd-api-keys-desc = プロバイダーの API キーを追加、確認、またはクリア
 slash-cmd-profile-desc = アクティブな実行プロファイルを切り替え
 slash-cmd-plan-desc = エージェントに調査させてタスクの計画を作成
 slash-cmd-plan-hint = <タスクを記述>

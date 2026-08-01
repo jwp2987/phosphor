@@ -2515,6 +2515,7 @@ slash-cmd-open-repo-desc = Switch to another indexed repository
 slash-cmd-open-rules-desc = View all of your global and project rules
 slash-cmd-new-desc = Start a new conversation (alias for /agent)
 slash-cmd-model-desc = Switch the base agent model
+slash-cmd-api-keys-desc = Add, view, or clear a provider's API key
 slash-cmd-profile-desc = Switch the active execution profile
 slash-cmd-plan-desc = Prompt the agent to do some research and create a plan for a task
 slash-cmd-plan-hint = <describe your task>

@@ -2418,6 +2418,7 @@ slash-cmd-open-repo-desc = 切换到另一个已索引的仓库
 slash-cmd-open-rules-desc = 查看你的全部全局规则与项目规则
 slash-cmd-new-desc = 开始新对话（/agent 的别名）
 slash-cmd-model-desc = 切换基础智能体模型
+slash-cmd-api-keys-desc = 添加、查看或清除某个提供商的 API 密钥
 slash-cmd-profile-desc = 切换当前激活的执行配置
 slash-cmd-plan-desc = 让智能体调研并为任务创建计划
 slash-cmd-plan-hint = <描述你的任务>
