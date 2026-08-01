@@ -222,6 +222,31 @@ impl TuiSlashCommandModel {
         ctx.emit(TuiSlashCommandModelEvent);
     }
 
+    /// Selects the row at absolute snapshot index `index` (for mouse click).
+    /// Returns `true` when the row was actually selected, `false` when the
+    /// index is out of bounds or the menu is not open.
+    pub(crate) fn select_at_snapshot_index(
+        &mut self,
+        index: usize,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let TuiSlashCommandState::Open { list, .. } = &mut self.state else {
+            return false;
+        };
+        let selected = list.select_absolute(index, MAX_VISIBLE_ROWS, |_| true);
+        ctx.emit(TuiSlashCommandModelEvent);
+        selected
+    }
+
+    /// Scrolls the viewport by `delta` rows without changing the selection.
+    pub(crate) fn scroll_by_delta(&mut self, delta: isize, ctx: &mut ModelContext<Self>) {
+        let TuiSlashCommandState::Open { list, .. } = &mut self.state else {
+            return;
+        };
+        list.scroll_by(delta, MAX_VISIBLE_ROWS);
+        ctx.emit(TuiSlashCommandModelEvent);
+    }
+
     pub(crate) fn dismiss(&mut self, ctx: &mut ModelContext<Self>) {
         if !self.is_open(ctx) {
             return;
@@ -282,6 +307,7 @@ impl TuiSlashCommandModel {
                 .collect(),
             selected_index: list.selected_index(),
             scroll_offset: list.scroll_offset(),
+            scroll_anchor: list.scroll_anchor(),
             max_visible_rows: MAX_VISIBLE_ROWS,
             status,
         })

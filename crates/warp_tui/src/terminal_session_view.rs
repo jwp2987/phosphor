@@ -478,6 +478,12 @@ pub(crate) enum TuiTerminalSessionAction {
     /// Tab: open the shell command/path completion popup for the token under the
     /// cursor, or cycle to the next candidate when it is already open.
     TriggerCompletions,
+    /// Left-click on the inline menu at absolute snapshot index `index`:
+    /// selects and accepts that row.
+    InlineMenuMouseAcceptRow(usize),
+    /// Scroll-wheel over the inline menu: scrolls the viewport by `delta` rows
+    /// without changing the selection.
+    InlineMenuMouseScrollBy(isize),
 }
 
 /// The authenticated terminal/session surface rendered inside [`RootTuiView`].
@@ -3175,6 +3181,29 @@ impl TuiTerminalSessionView {
         ctx.notify();
     }
 
+    /// Handles a mouse-click accept on the inline menu: selects the row at
+    /// `index` in the active menu and dispatches the result through the same
+    /// path as keyboard-based acceptance.
+    fn handle_inline_menu_mouse_accept(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
+        let mode = self.suggestions_mode.as_ref(ctx).mode();
+        let Some(menu) = active_inline_menu(&self.inline_menus, mode, ctx) else {
+            return;
+        };
+        // Guard: only fire accept when select_by_snapshot_index confirms the
+        // selection was made. The default no-op impl returns false, preventing
+        // a future menu that omits the override from silently accepting
+        // whatever row happened to be keyboard-selected.
+        if !menu.select_by_snapshot_index(index, ctx) {
+            return;
+        }
+        let Some(accepted) = menu.accept(ctx) else {
+            return;
+        };
+        self.input_view.update(ctx, |input, ctx| {
+            input.route_inline_menu_acceptance(accepted, ctx);
+        });
+    }
+
     /// Fills the accepted prompt-history prompt into the input and submits it
     /// immediately, matching the GUI's accept-a-prompt-from-history behavior.
     /// The menu has already closed itself.
@@ -3864,7 +3893,21 @@ impl TuiView for TuiTerminalSessionView {
                     self.suggestions_mode.as_ref(ctx).mode(),
                     ctx,
                 )
-                .and_then(|menu| menu.render(ctx))
+                .and_then(|menu| {
+                    menu.render_with_interaction(
+                        ctx,
+                        |index, event_ctx, _| {
+                            event_ctx.dispatch_typed_action(
+                                TuiTerminalSessionAction::InlineMenuMouseAcceptRow(index),
+                            );
+                        },
+                        |delta, event_ctx, _| {
+                            event_ctx.dispatch_typed_action(
+                                TuiTerminalSessionAction::InlineMenuMouseScrollBy(delta),
+                            );
+                        },
+                    )
+                })
             })
             .flatten();
         // Ctrl-c (cancel/clear/exit) is handled by the keymap pass via the
@@ -4123,6 +4166,16 @@ impl TypedActionView for TuiTerminalSessionView {
             }
             TuiTerminalSessionAction::TriggerCompletions => {
                 self.trigger_completions(ctx);
+            }
+            TuiTerminalSessionAction::InlineMenuMouseAcceptRow(index) => {
+                self.handle_inline_menu_mouse_accept(*index, ctx);
+            }
+            TuiTerminalSessionAction::InlineMenuMouseScrollBy(delta) => {
+                let mode = self.suggestions_mode.as_ref(ctx).mode();
+                if let Some(menu) = active_inline_menu(&self.inline_menus, mode, ctx) {
+                    menu.scroll_by_delta(*delta, ctx);
+                    ctx.notify();
+                }
             }
         }
     }

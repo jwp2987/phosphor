@@ -38,7 +38,8 @@ use warpui_core::{AppContext, Entity, ModelContext, ModelHandle};
 
 use crate::inline_menu::{
     MAX_INLINE_MENU_ROWS, TuiInlineMenuHeader, TuiInlineMenuListState, TuiInlineMenuRow,
-    TuiInlineMenuRowStyle, TuiInlineMenuSnapshot, TuiInlineMenuStatus, result_row_capacity,
+    TuiInlineMenuRowStyle, TuiInlineMenuScrollAnchor, TuiInlineMenuSnapshot, TuiInlineMenuStatus,
+    result_row_capacity,
 };
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 
@@ -271,6 +272,7 @@ impl TuiApiKeysMenuModel {
                     .collect(),
                 selected_index: list.selected_index(),
                 scroll_offset: list.scroll_offset(),
+                scroll_anchor: list.scroll_anchor(),
                 max_visible_rows: MAX_VISIBLE_ROWS,
                 status: list.rows().is_empty().then(|| {
                     TuiInlineMenuStatus::Empty(
@@ -287,6 +289,7 @@ impl TuiApiKeysMenuModel {
                 rows: Vec::new(),
                 selected_index: None,
                 scroll_offset: 0,
+                scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
                 max_visible_rows: MAX_VISIBLE_ROWS,
                 status: Some(TuiInlineMenuStatus::Empty(
                     "Type the API key and press Enter to save, Esc to cancel".to_owned(),
