@@ -312,6 +312,12 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 ### 5.8 Subagents / multi-agent
 - Split large tasks into subtasks with **non-overlapping write domains** and dispatch them in parallel; information-gathering tasks can be parallelized.
 - Do simple tasks directly; don't over-split them.
+- **`cargo build`/`check`/`test` MUST be serialized across every concurrently running agent, no exceptions.** This workspace is large enough that 2+ concurrent heavy compiles reliably exhausts memory and can crash the whole session — this has happened more than once. When dispatching parallel agents that will each need to build/check/test:
+  - Give every agent the same shared lock command and require it verbatim, e.g. `flock /path/to/a/shared/lockfile -c 'cargo check -p <crate> --lib 2>&1 | tail -N'`.
+  - **No workarounds are acceptable**: not a separate `CARGO_TARGET_DIR`, not `CARGO_BUILD_JOBS` tuning instead of locking, not "just this once, unlocked, because the queue seemed slow." All of these still contend for the same CPU/RAM and defeat the point of the lock.
+  - An agent must never run a second cargo invocation (locked or not) while it already has one in flight — one at a time, full stop, even for itself.
+  - If a locked command hits a tool call's timeout because the queue is long, that is expected and fine — use a longer timeout or a proper watch, not a second unlocked attempt.
+  - Periodically verify compliance directly (`ps aux | grep cargo`, check each hit's cwd against `/proc/<pid>/cwd` to attribute it to an agent) rather than trusting every agent's self-report — agents have claimed to be using the lock while a bare process was demonstrably running at the same time.
 
 ### 5.9 TUI / GUI slash-command parity (strong constraint)
 - **TUI and GUI slash commands MUST stay at feature parity**: every **non-cloud** slash command that works in the GUI should also work in the TUI. Only genuinely cloud-only / GUI-only commands (cloud/orchestration, or commands that open a GUI editor / settings panel) may be absent from the TUI, and the reason must be noted in code.
