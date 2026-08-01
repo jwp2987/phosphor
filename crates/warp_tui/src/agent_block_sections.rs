@@ -18,7 +18,10 @@ use warpui_core::elements::tui::{
 };
 
 use crate::agent_block::{CollapsibleSectionStates, TuiAIBlockAction};
-use crate::tool_call_labels::{ResolvedCommandBlock, tool_call_display_state, tool_call_label};
+use crate::tool_call_labels::{
+    ResolvedCommandBlock, mcp_server_name_for_action, tool_call_display_state,
+    tool_call_label_with_server,
+};
 use crate::tui_builder::TuiUiBuilder;
 
 const INPUT_PREFIX: &str = "> ";
@@ -93,7 +96,14 @@ pub(crate) fn render_fallback_tool_call_section(
     let state = tool_call_display_state(status, output_streaming, block.map(|block| block.state));
     let glyph_style = state.glyph_style(&builder);
     let label_style = state.label_style(&builder);
-    let label = tool_call_label(action, status, output_streaming, block);
+    let server_name = mcp_server_name_for_action(&action.action, app);
+    let label = tool_call_label_with_server(
+        action,
+        status,
+        output_streaming,
+        block,
+        server_name.as_deref(),
+    );
     TuiFlex::row()
         .child(
             TuiText::new(format!("{} ", state.glyph()))
