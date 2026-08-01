@@ -40,6 +40,8 @@ pub enum OptionBadge {
     Default,
     Recent,
     Connected,
+    /// The option the agent recommends, surfaced next to its label.
+    Recommended,
 }
 
 /// Load state of the catalog backing a snapshot.

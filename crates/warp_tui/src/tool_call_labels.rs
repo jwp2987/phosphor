@@ -1,5 +1,5 @@
-//! Per-tool, per-state one-line labels for tool-call rows in the TUI
-//! transcript, modeled on the GUI's inline action text.
+//! Per-tool, per-state labels for tool-call rows in the TUI transcript,
+//! modeled on the GUI's inline action text.
 
 use std::path::Path;
 
@@ -39,8 +39,9 @@ pub(crate) struct ResolvedCommandBlock {
     pub(crate) state: CommandBlockState,
 }
 
-/// Longest rendered length for interpolated values (commands, queries, paths)
-/// so tool-call rows stay scannable one-liners.
+/// Longest rendered length for compact interpolated values such as queries
+/// and paths. Shell commands are preserved in full and wrap in their
+/// collapsible header instead.
 const MAX_INLINE_LEN: usize = 80;
 
 /// Coarse presentation state for a tool call.
@@ -136,7 +137,7 @@ pub(crate) fn tool_call_display_state(
     }
 }
 
-/// Returns the one-line transcript label for a tool call in its current state.
+/// Returns the transcript label for a tool call in its current state.
 pub(crate) fn tool_call_label(
     action: &AIAgentAction,
     status: Option<&AIActionStatus>,
@@ -181,7 +182,10 @@ fn label_for_action(
             let executed = result
                 .and_then(AIAgentActionResultType::command_str)
                 .or_else(|| block.and_then(|block| block.command.as_deref()));
-            let cmd = single_line(executed.unwrap_or(command));
+            // Shell-command headers wrap in the collapsible header (see
+            // `tui_collapsible`), so retain the complete command instead of
+            // capping it at MAX_INLINE_LEN.
+            let cmd = executed.unwrap_or(command).trim_end();
             match state {
                 State::Constructing => "Generating command…".to_owned(),
                 State::Pending | State::Blocked => format!("Run `{cmd}`"),
