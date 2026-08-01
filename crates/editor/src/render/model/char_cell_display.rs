@@ -113,6 +113,32 @@ impl<'a> DisplayLattice<'a> {
         &self.ghosts
     }
 
+    /// Paint-ready text for a buffer or ghost `row`.
+    ///
+    /// Tabs expand to the exact width retained by the layout index for their
+    /// source character. Paint therefore consumes layout's tab geometry
+    /// directly instead of independently recalculating tab stops. Gap rows
+    /// have no source text and return `None`.
+    pub fn row_text(&self, row: &DisplayRow, buffer_chars: &[char]) -> Option<String> {
+        match &row.kind {
+            DisplayRowKind::Buffer { .. } => Some(display_text_for_range(
+                buffer_chars,
+                &self.text_index.char_widths,
+                &row.char_range,
+            )),
+            DisplayRowKind::Ghost { ghost_index } => {
+                let ghost = self.ghosts.get(*ghost_index)?;
+                let ghost_chars: Vec<char> = ghost.content.chars().collect();
+                Some(display_text_for_range(
+                    &ghost_chars,
+                    &ghost.char_widths,
+                    &row.char_range,
+                ))
+            }
+            DisplayRowKind::Gap { .. } => None,
+        }
+    }
+
     /// The display columns occupied by the clamped buffer character `range`.
     pub fn display_width(&self, range: Range<CharOffset>) -> u16 {
         let start = range
@@ -220,6 +246,31 @@ impl<'a> DisplayLattice<'a> {
             DisplayRowKind::Ghost { .. } | DisplayRowKind::Gap { .. } => None,
         }
     }
+}
+
+fn display_text_for_range(chars: &[char], char_widths: &[u8], range: &Range<CharOffset>) -> String {
+    let start = range
+        .start
+        .as_usize()
+        .min(chars.len())
+        .min(char_widths.len());
+    let end = range
+        .end
+        .as_usize()
+        .min(chars.len())
+        .min(char_widths.len())
+        .max(start);
+    let mut text = String::with_capacity(end - start);
+    for (&ch, &width) in chars[start..end].iter().zip(&char_widths[start..end]) {
+        if ch == '\t' {
+            for _ in 0..width {
+                text.push(' ');
+            }
+        } else {
+            text.push(ch);
+        }
+    }
+    text
 }
 
 fn normalize_hidden_line_ranges(ranges: &[Range<usize>]) -> Vec<Range<usize>> {

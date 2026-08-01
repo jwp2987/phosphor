@@ -165,6 +165,7 @@ pub(crate) fn render_warping_indicator_row(
         ShimmerConfig::default(),
         clock,
     )
+    .with_grouped_suffix("...")
     .with_modifier(Modifier::BOLD);
 
     let counter_style = builder.muted_text_style();
