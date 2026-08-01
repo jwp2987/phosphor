@@ -45,12 +45,11 @@ pub(crate) fn init(app: &mut AppContext) {
     app.register_fixed_bindings([
         FixedBinding::new(
             "escape",
-            TuiShellCommandViewAction::CancelCommandEdit,
-            predicate.clone(),
-        )
-        .with_group(TUI_BINDING_GROUP),
-        FixedBinding::new(
-            "ctrl-e",
+            // Esc while the command body editor is focused exits the editor
+            // and restores Yes as the highlighted option -- it does NOT
+            // cancel the tool call. A subsequent Esc (with the list
+            // focused) cancels via the PERMISSION_PROMPT_ACTIVE ->
+            // CancelOrBack path.
             TuiShellCommandViewAction::SaveCommandEdit,
             predicate.clone(),
         )
@@ -144,12 +143,6 @@ pub(super) enum TuiShellCommandViewEvent {
 /// User interactions handled by the shell-command view.
 #[derive(Clone, Debug)]
 pub(super) enum TuiShellCommandViewAction {
-    /// Rejects the blocked command outright (Escape while *not* editing).
-    CancelPermission,
-    /// Escape while actively editing the proposed command: exits edit mode
-    /// and discards the in-progress edit, without rejecting the command
-    /// itself. Distinct from [`Self::CancelPermission`].
-    CancelCommandEdit,
     SaveCommandEdit,
     ToggleExpanded,
 }
@@ -264,24 +257,6 @@ impl TuiShellCommandView {
         if !self.command_editor.as_ref(ctx).is_focused() {
             return;
         }
-        self.permission_prompt
-            .update(ctx, |prompt, ctx| prompt.restore_options_focus(ctx));
-        self.invalidate_layout(ctx);
-    }
-
-    /// Escape while editing: exits edit mode back to the read-only reviewing
-    /// state, discarding the in-progress edit and restoring the original
-    /// proposed command, rather than rejecting the whole request (that's
-    /// [`Self::reject`], still reachable via Escape once edit mode is
-    /// exited).
-    fn cancel_command_edit(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.command_editor.as_ref(ctx).is_focused() {
-            return;
-        }
-        let original_command = Self::action_command(&self.action).to_owned();
-        self.command_editor
-            .update(ctx, |editor, ctx| editor.set_text(original_command, ctx));
-        self.command_was_edited = false;
         self.permission_prompt
             .update(ctx, |prompt, ctx| prompt.restore_options_focus(ctx));
         self.invalidate_layout(ctx);
@@ -530,8 +505,6 @@ impl TypedActionView for TuiShellCommandView {
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
-            TuiShellCommandViewAction::CancelPermission => self.reject(ctx),
-            TuiShellCommandViewAction::CancelCommandEdit => self.cancel_command_edit(ctx),
             TuiShellCommandViewAction::SaveCommandEdit => self.save_command_edit(ctx),
             TuiShellCommandViewAction::ToggleExpanded => {
                 if self.user_controls_command() {

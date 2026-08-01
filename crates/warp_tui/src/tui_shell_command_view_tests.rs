@@ -173,7 +173,7 @@ fn finishing_command_editing_selects_yes_without_executing() {
 }
 
 #[test]
-fn escape_while_editing_exits_edit_mode_without_rejecting() {
+fn escape_while_editing_exits_edit_mode_without_rejecting_or_discarding() {
     App::test((), |mut app| async move {
         app.update(super::init);
         let action = command_action("action-1", "echo original");
@@ -203,7 +203,7 @@ fn escape_while_editing_exits_edit_mode_without_rejecting() {
         });
         let command_editor = app.read(|ctx| view.as_ref(ctx).command_editor.clone());
         command_editor.update(&mut app, |editor, ctx| {
-            editor.set_text("echo edited but abandoned", ctx)
+            editor.set_text("echo edited", ctx)
         });
         present_shell_view(&mut app, &view);
 
@@ -212,14 +212,15 @@ fn escape_while_editing_exits_edit_mode_without_rejecting() {
         app.read(|ctx| {
             let view = view.as_ref(ctx);
             // Edit mode was exited (focus returned to the read-only reviewing
-            // state), not the whole request rejected.
+            // state, Yes highlighted), not the whole request rejected.
             assert!(!view.command_editor.as_ref(ctx).is_focused());
             assert_eq!(view.permission_prompt.as_ref(ctx).highlighted_index(ctx), Some(0));
-            // The in-progress edit was discarded; the original proposed
-            // command is restored.
+            // Escape while editing SAVES the edit, matching Enter/the old
+            // ctrl-e -- it does not cancel the tool call, and it does not
+            // discard the in-progress edit either.
             assert_eq!(
                 view.command_editor.as_ref(ctx).text(ctx),
-                "echo original"
+                "echo edited"
             );
             // The command is still pending/blocked, not rejected.
             assert!(
