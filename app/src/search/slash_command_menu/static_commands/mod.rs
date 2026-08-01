@@ -161,6 +161,7 @@ pub enum SlashCommandKind {
     Rewind,
     ExportToClipboard,
     ExportToFile,
+    VimMode,
     /// A Zap command with no upstream `SlashCommandKind` (e.g. `/pr-comments`).
     Other,
 }
@@ -235,6 +236,7 @@ impl StaticCommand {
             "/rewind" => SlashCommandKind::Rewind,
             "/export-to-clipboard" => SlashCommandKind::ExportToClipboard,
             "/export-to-file" => SlashCommandKind::ExportToFile,
+            "/vim-mode" => SlashCommandKind::VimMode,
             _ => SlashCommandKind::Other,
         }
     }
@@ -262,6 +264,7 @@ impl StaticCommand {
                 | "/conversations"
                 | "/export-to-clipboard"
                 | "/export-to-file"
+                | "/vim-mode"
         )
     }
 }

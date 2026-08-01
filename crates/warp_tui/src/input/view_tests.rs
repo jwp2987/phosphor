@@ -868,7 +868,8 @@ fn multiline_paste_emits_once_and_fallback_inserts_without_submitting() {
                 | TuiInputViewEvent::AcceptedPrompt(_)
                 | TuiInputViewEvent::AcceptedExchange(..)
                 | TuiInputViewEvent::BackspaceAtEmptyInput
-                | TuiInputViewEvent::MoveFocusUp => {}
+                | TuiInputViewEvent::MoveFocusUp
+                | TuiInputViewEvent::VimModeChanged => {}
             });
             (view, pasted, submitted)
         });

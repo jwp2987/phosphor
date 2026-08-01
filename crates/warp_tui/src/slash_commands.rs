@@ -10,6 +10,7 @@ use string_offset::CharOffset;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::search::data_source::QueryResult;
 use warp::search::mixer::SearchMixerEvent;
+use warp::settings::AppEditorSettings;
 use warp::tui_export::{
     AcceptSlashCommandOrSavedPrompt, ConversationSelectionHandle, ParsedSlashCommandInput,
     SlashCommandMixer, TuiSlashCommandDataSource, UpdatedActiveCommands,
@@ -17,7 +18,7 @@ use warp::tui_export::{
 };
 use warp_editor::model::CoreEditorModel;
 use warp_search_core::inline_menu::{InlineMenuResultsUpdate, InputDrivenInlineMenuLifecycle};
-use warpui_core::{AppContext, Entity, ModelContext, ModelHandle};
+use warpui_core::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity as _};
 
 use crate::inline_menu::{
     MAX_INLINE_MENU_ROWS, TuiInlineMenuListState, TuiInlineMenuRow, TuiInlineMenuRowStyle,
@@ -266,16 +267,21 @@ impl TuiSlashCommandModel {
                     description: row.description.clone(),
                     // BYOP: Zap does not register an /auto-approve command constant, so match
                     // on the literal name; the row only appears if the command is present.
-                    state_suffix: (row.title == "/auto-approve").then(|| {
-                        format!(
+                    state_suffix: match row.title.as_str() {
+                        "/auto-approve" => Some(format!(
                             "(currently {})",
                             if self.auto_approve_enabled(ctx) {
                                 "on"
                             } else {
                                 "off"
                             }
-                        )
-                    }),
+                        )),
+                        "/vim-mode" => Some(format!(
+                            "(currently {})",
+                            if self.vim_mode_enabled(ctx) { "on" } else { "off" }
+                        )),
+                        _ => None,
+                    },
                     is_selectable: true,
                     style: TuiInlineMenuRowStyle::InlineMenuItem,
                 })
@@ -292,6 +298,13 @@ impl TuiSlashCommandModel {
             .as_ref(ctx)
             .pending_query_autoexecute_override(ctx)
             .is_autoexecute_any_action()
+    }
+
+    /// Guard against contexts where `AppEditorSettings` is not registered
+    /// (e.g. lightweight test fixtures), matching `TuiInputView::vim_mode_enabled`.
+    fn vim_mode_enabled(&self, ctx: &AppContext) -> bool {
+        ctx.has_singleton_model::<AppEditorSettings>()
+            && AppEditorSettings::as_ref(ctx).vim_mode_enabled()
     }
 
     fn update_from_input(&mut self, force_query: bool, ctx: &mut ModelContext<Self>) {
