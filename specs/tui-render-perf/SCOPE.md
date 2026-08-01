@@ -1,10 +1,34 @@
 # TUI render performance — deferred HIGH findings
 
-Status: **planned, not started.** Captured from the 2026-07-26 parallel
-performance audit. One sibling finding is already fixed (code-block re-clones,
-commit `448b7b9c`); the two below were deferred because a correct fix touches
-independently-changing state and needs verification in a running TUI, not just a
-compile.
+Status: **Finding A fixed; Finding B still open.** Captured from the
+2026-07-26 parallel performance audit. One sibling finding was already fixed
+at the time of the audit (code-block re-clones, commit `448b7b9c`); the two
+below were deferred because a correct fix touches independently-changing
+state and needs verification in a running TUI, not just a compile.
+
+**Finding A — DONE.** Fixed independently on 2026-07-26 in commit
+`e77659f72` ("perf(tui): skip re-cloning unchanged action views each streamed
+chunk"), following the proposed approach below almost exactly: added
+`TuiPlanView::matches`/`TuiShellCommandView::matches` (the latter's model-
+derived state included via a `resolve_presentation` comparison) and wired
+them into `sync_action_views` (`crates/warp_tui/src/agent_block.rs:531-548`).
+This status line went stale after that fix landed — corrected 2026-08-01
+during an upstream-commit review that also checked whether Warp's own
+2026-07 render-perf series (`eda008544`/`08ad6e8ab`/`a95e6e541`/`b462e0132`,
+a 4-part "TUI: bound clipped viewport painting" / "reuse retained text
+measurements" / "clip inline terminal block painting" / "reduce zero-state
+animation CPU" stack) fixed either finding. Verdict: no overlap — those four
+commits fix different code paths (paint-time viewport clipping, plain
+`TuiText` measurement caching, terminal-block output clipping, zero-state
+animation), not `agent_block.rs`/`tui_plan_view.rs` (Finding A, already
+fixed here independently) or `editor_element.rs`/`char_cell_display.rs`
+(Finding B, still open below). Two of the four (`eda008544`'s clip-aware
+`TuiPaintSurface` and `08ad6e8ab`'s width-keyed measurement cache) are
+low-friction ports if wanted as reusable infrastructure — this fork's
+`crates/warpui_core/src/elements/tui/{buffer.rs,clipped.rs,text.rs}` are
+untouched since the original TUI import and match upstream's pre-fix shape —
+but neither substitutes for Finding B's own fix, which lives one layer up in
+the `editor` crate that none of those four commits touch.
 
 These are real per-streamed-chunk / per-frame costs in the ported `warp_tui`
 rendering path. They cannot regress the GUI (warp_tui is a non-default workspace
@@ -150,7 +174,10 @@ the current baseline (test-isolation flakiness in the ported suite) — fix or
 quarantine separately so they don't mask regressions here.
 
 ## Sequencing
-Do Finding B's cache (step 1) first (self-contained in `editor_element.rs`,
-biggest per-frame win under the shimmer), then Finding A's plan fingerprint,
-then Finding B's viewport-windowing (shared `crates/editor`, highest blast
-radius — needs GUI-safety verification), last.
+Finding A is done (see status above). Remaining: Finding B's cache (step 1,
+self-contained in `editor_element.rs`, biggest per-frame win under the
+shimmer) first, then Finding B's viewport-windowing (shared `crates/editor`,
+highest blast radius — needs GUI-safety verification), last. Consider
+porting upstream's `eda008544`/`08ad6e8ab` (see status note above) as
+groundwork before or alongside step 1 — they're independently useful and
+low-risk, though they don't fix Finding B on their own.
