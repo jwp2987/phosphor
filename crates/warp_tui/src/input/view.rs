@@ -24,7 +24,9 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use string_offset::CharOffset;
+use vim::vim::{MotionType, VimMode, VimModel, VimSubscriber as _};
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
+use warp::settings::AppEditorSettings;
 use warp::tui_export::{
     AIAgentExchangeId, AcceptSlashCommandOrSavedPrompt, BlocklistAIInputModel, ClientProfileId,
     InputType, LLMId, TuiMcpAction,
@@ -33,10 +35,10 @@ use warp_editor::model::CoreEditorModel;
 use warpui_core::elements::MouseStateHandle;
 use warpui_core::elements::tui::{TuiContainer, TuiElement, TuiFlex, TuiHoverable, TuiText};
 use warpui_core::keymap::macros::*;
-use warpui_core::keymap::{self, EditableBinding};
+use warpui_core::keymap::{self, EditableBinding, Keystroke};
 use warpui_core::{
-    AppContext, BlurContext, Entity, FocusContext, ModelHandle, TuiView, TypedActionView,
-    ViewContext, ViewHandle,
+    AppContext, BlurContext, Entity, FocusContext, ModelHandle, SingletonEntity as _, TuiView,
+    TypedActionView, ViewContext, ViewHandle,
 };
 
 use crate::editor_element::{TuiEditorAction, TuiEditorElement, TuiEditorStyles};
@@ -137,6 +139,9 @@ pub enum TuiInputViewEvent {
     AcceptedPrompt(String),
     /// The user selected an exchange from the `/fork-from` or `/rewind` picker.
     AcceptedExchange(AIAgentExchangeId, TuiExchangeMenuAction),
+    /// The vim mode changed (Insert<->Normal<->Visual<->Replace). Emitted so the
+    /// parent session view can re-render its footer vim-mode indicator.
+    VimModeChanged,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,6 +201,17 @@ pub struct TuiInputView {
     orchestration_tabs_available: Rc<dyn Fn(&AppContext) -> bool>,
     /// Consults the owner live before an inline-menu Enter can accept an item.
     can_accept_inline_menu: Rc<dyn Fn(&AppContext) -> bool>,
+    /// Vim model (shared FSA + event dispatch layer). Always present but only
+    /// active when `AppEditorSettings::vim_mode_enabled()` returns `true`.
+    /// Wired via `VimSubscriber` to dispatch `VimEvent`s to `VimHandler` impls
+    /// on `TuiInputView` (see `input/vim.rs`).
+    vim_model: ModelHandle<VimModel>,
+    /// Internal yank / delete clipboard for vim operations. Separate from the
+    /// OS clipboard so that `p`/`P` work even without clipboard access.
+    yank_buffer: String,
+    /// Selection shape stored in `yank_buffer`, used to preserve linewise
+    /// `dd`/`yy` and Visual-line paste semantics.
+    yank_motion_type: MotionType,
 }
 
 impl Entity for TuiInputView {
@@ -274,6 +290,10 @@ impl TuiInputView {
         // on the config (shell-mode gutter/border), so every event re-renders.
         ctx.subscribe_to_model(&input_mode, |_, _, _, ctx| ctx.notify());
         ctx.subscribe_to_model(&suggestions_mode, |_, _, _, ctx| ctx.notify());
+        let vim_model = ctx.add_model(|_| VimModel::new());
+        // Subscribe to vim events: VimSubscriber blanket impl (TuiInputView: VimHandler)
+        // dispatches each VimEvent to the appropriate VimHandler method.
+        ctx.subscribe_to_model(&vim_model, Self::handle_vim_event);
         Self {
             model,
             input_mode,
@@ -287,6 +307,9 @@ impl TuiInputView {
             keyboard_enhancement_supported: false,
             orchestration_tabs_available: Rc::new(orchestration_tabs_available),
             can_accept_inline_menu: Rc::new(|_| true),
+            vim_model,
+            yank_buffer: String::new(),
+            yank_motion_type: MotionType::Charwise,
         }
     }
 
@@ -311,6 +334,37 @@ impl TuiInputView {
             .as_ref()
             .is_some_and(|transcript| transcript.as_ref(ctx).has_toggleable_plan(ctx))
     }
+
+    /// Whether vim mode is enabled in settings.
+    ///
+    /// Returns `false` when [`AppEditorSettings`] has not been registered in
+    /// the context (e.g. in lightweight test fixtures that don't boot the full
+    /// settings stack).
+    pub(crate) fn vim_mode_enabled(&self, ctx: &AppContext) -> bool {
+        ctx.has_singleton_model::<AppEditorSettings>()
+            && AppEditorSettings::as_ref(ctx).vim_mode_enabled()
+    }
+
+    /// Reset the vim state machine to insert mode. Called when vim mode is
+    /// enabled (so the user starts in insert mode, not whatever mode they
+    /// were in previously).
+    pub(crate) fn reset_vim_to_insert(&mut self, ctx: &mut ViewContext<Self>) {
+        self.vim_model
+            .update(ctx, |vim, ctx| vim.force_insert_mode(ctx));
+        // force_insert_mode bypasses the normal ChangeMode event path; notify
+        // the footer indicator manually so it reflects the new Insert state.
+        ctx.emit(TuiInputViewEvent::VimModeChanged);
+    }
+
+    /// The current vim mode, or `None` when vim mode is disabled.
+    pub(crate) fn vim_mode(&self, ctx: &AppContext) -> Option<VimMode> {
+        if self.vim_mode_enabled(ctx) {
+            Some(self.vim_model.as_ref(ctx).state().mode)
+        } else {
+            None
+        }
+    }
+
     /// Whether the input is in detected or explicitly locked shell mode.
     pub(crate) fn is_shell_mode(&self, ctx: &AppContext) -> bool {
         input_mode_policy::is_shell_mode(self.input_mode.as_ref(ctx))
@@ -331,6 +385,9 @@ impl TuiInputView {
     pub fn clear(&mut self, ctx: &mut ViewContext<Self>) {
         self.model.update(ctx, |m, ctx| m.clear_buffer(ctx));
         self.reset_to_default_agent_mode(ctx);
+        if self.vim_mode_enabled(ctx) {
+            self.reset_vim_to_insert(ctx);
+        }
         // The cursor is back at the buffer start, so following it scrolls the
         // viewport back to the top.
         self.follow_cursor(ctx);
@@ -361,6 +418,13 @@ impl TuiInputView {
             .on_action(|action, event_ctx| {
                 event_ctx.dispatch_typed_action(TuiInputAction::Editor(action))
             });
+        if let VimMode::Visual(motion_type) = self.vim_model.as_ref(ctx).state().mode {
+            let ranges = self
+                .model
+                .as_ref(ctx)
+                .vim_visual_selection_ranges(motion_type, ctx);
+            element = element.with_selection_ranges(ranges);
+        }
         if let Some(hint_text) = self
             .inline_menus
             .iter()
@@ -489,8 +553,20 @@ impl TuiView for TuiInputView {
     }
 
     fn keymap_context(&self, ctx: &AppContext) -> keymap::Context {
+        // In vim mode, escape is handled only when vim actually needs it:
+        // - Non-Normal modes (Insert->Normal, Visual->Normal, Replace->Normal)
+        // - Normal mode with pending input (clear the partial command)
+        // In Normal mode with no pending input, escape is a no-op for vim;
+        // passing it through allows session-level bindings (e.g.
+        // orchestration focus-main, cancel-restore) to fire instead.
+        let vim_mode_enabled = self.vim_mode_enabled(ctx);
+        let vim_state = self.vim_model.as_ref(ctx).state();
         input_keymap_context(
-            self.active_inline_menu(ctx).is_some() || self.is_shell_mode(ctx),
+            self.active_inline_menu(ctx).is_some()
+                || self.is_shell_mode(ctx)
+                || (vim_mode_enabled
+                    && (!matches!(vim_state.mode, VimMode::Normal)
+                        || !vim_state.showcmd.is_empty())),
             self.plan_toggle_available(ctx),
             self.keyboard_enhancement_supported,
         )
@@ -542,6 +618,21 @@ impl TypedActionView for TuiInputView {
                     ctx.emit(TuiInputViewEvent::Pasted(text.clone()));
                     return;
                 }
+                // Route every typed character through the shared Vim FSA when
+                // enabled. Insert-mode routing is required for insert counts
+                // and dot-repeat; prompt-specific insertion policy lives in
+                // `VimHandler::insert_char`.
+                if let TuiEditorAction::InsertChar(c) = *editor_action {
+                    if self.vim_mode_enabled(ctx) {
+                        let old_mode = self.vim_model.as_ref(ctx).state().mode;
+                        self.vim_model
+                            .update(ctx, |vim, ctx| vim.typed_character(c, ctx));
+                        if self.vim_model.as_ref(ctx).state().mode != old_mode {
+                            ctx.emit(TuiInputViewEvent::VimModeChanged);
+                        }
+                        return;
+                    }
+                }
                 // A `!` typed at the very start of the input enters shell mode
                 // instead of inserting (matching the GUI's typed-only trigger).
                 if matches!(editor_action, TuiEditorAction::InsertChar('!'))
@@ -570,6 +661,52 @@ impl TypedActionView for TuiInputView {
                 if matches!(*command, TuiEditorCommand::SelectUp) && self.can_focus_above(ctx) {
                     ctx.emit(TuiInputViewEvent::MoveFocusUp);
                     return;
+                }
+                let vim_keystroke = match *command {
+                    TuiEditorCommand::Backspace
+                        if !self.is_cursor_at_start(ctx)
+                            || (!self.is_shell_mode(ctx) && !self.plain_text(ctx).is_empty()) =>
+                    {
+                        Some("backspace")
+                    }
+                    TuiEditorCommand::DeleteForward => Some("delete"),
+                    TuiEditorCommand::InsertNewline => Some("shift-enter"),
+                    TuiEditorCommand::Backspace
+                    | TuiEditorCommand::DeleteWordBackward
+                    | TuiEditorCommand::DeleteWordForward
+                    | TuiEditorCommand::MoveLeft
+                    | TuiEditorCommand::MoveRight
+                    | TuiEditorCommand::MoveUp
+                    | TuiEditorCommand::MoveDown
+                    | TuiEditorCommand::MoveWordLeft
+                    | TuiEditorCommand::MoveWordRight
+                    | TuiEditorCommand::MoveToLineStart
+                    | TuiEditorCommand::MoveToLineEnd
+                    | TuiEditorCommand::SelectLeft
+                    | TuiEditorCommand::SelectRight
+                    | TuiEditorCommand::SelectUp
+                    | TuiEditorCommand::SelectDown
+                    | TuiEditorCommand::SelectWordLeft
+                    | TuiEditorCommand::SelectWordRight
+                    | TuiEditorCommand::SelectAll
+                    | TuiEditorCommand::KillToLineEnd
+                    | TuiEditorCommand::KillToLineStart
+                    | TuiEditorCommand::Yank
+                    | TuiEditorCommand::Undo
+                    | TuiEditorCommand::Redo => None,
+                };
+                if self.vim_mode_enabled(ctx) {
+                    if let Some(keystroke) = vim_keystroke {
+                        let old_mode = self.vim_model.as_ref(ctx).state().mode;
+                        let keystroke =
+                            Keystroke::parse(keystroke).expect("static Vim keystroke is valid");
+                        self.vim_model
+                            .update(ctx, |vim, ctx| vim.keypress(&keystroke, ctx));
+                        if self.vim_model.as_ref(ctx).state().mode != old_mode {
+                            ctx.emit(TuiInputViewEvent::VimModeChanged);
+                        }
+                        return;
+                    }
                 }
                 // Only open the conversation list from normal agent input; in
                 // `!` shell mode the `!` prefix is not part of `plain_text`, so
@@ -612,6 +749,14 @@ impl TypedActionView for TuiInputView {
                 }
             }
             TuiInputAction::SetCursor { offset } => {
+                // Clicking in the input switches to insert mode in vim.
+                if self.vim_mode_enabled(ctx)
+                    && !matches!(self.vim_model.as_ref(ctx).state().mode, VimMode::Insert)
+                {
+                    self.vim_model
+                        .update(ctx, |vim, ctx| vim.force_insert_mode(ctx));
+                    ctx.emit(TuiInputViewEvent::VimModeChanged);
+                }
                 self.model.update(ctx, |m, ctx| {
                     m.select_at(*offset, false, ctx);
                     m.end_selection(ctx);
@@ -855,6 +1000,34 @@ impl TuiInputView {
             return true;
         }
 
+        // In vim mode, Escape transitions between modes (Insert->Normal,
+        // Visual/Replace->Normal, Normal->clear pending). This takes priority
+        // over shell-mode exit so that `<Esc>` is always a vim command first.
+        // Exception: when the FSA is already in Normal mode with no pending
+        // input, a second Escape should exit shell mode if active (matching
+        // bash/zsh vi-mode behaviour where `<Esc><Esc>` exits shell mode).
+        if self.vim_mode_enabled(ctx) {
+            let vim_state = self.vim_model.as_ref(ctx).state();
+            if matches!(vim_state.mode, VimMode::Normal)
+                && vim_state.showcmd.is_empty()
+                && self.is_shell_mode(ctx)
+            {
+                self.exit_shell_mode(ctx);
+                return true;
+            }
+            // Drive the shared FSA via VimModel. VimSubscriber dispatches the
+            // resulting VimEvent (Escape or ChangeMode) to our VimHandler impl.
+            let escape = Keystroke::parse("escape").expect("escape key is valid");
+            let old_mode = vim_state.mode;
+            self.vim_model
+                .update(ctx, |vim, ctx| vim.keypress(&escape, ctx));
+            if self.vim_model.as_ref(ctx).state().mode != old_mode {
+                ctx.emit(TuiInputViewEvent::VimModeChanged);
+            }
+            ctx.notify();
+            return true;
+        }
+
         if self.is_shell_mode(ctx) {
             self.exit_shell_mode(ctx);
             return true;
@@ -870,6 +1043,12 @@ impl TuiInputView {
         )
     }
 }
+
+// VimHandler implementation for TuiInputView. Declared as a submodule so it
+// can access the private fields of TuiInputView while keeping the main view
+// file focused on prompt policy.
+#[path = "vim.rs"]
+mod vim_impl;
 
 #[cfg(test)]
 #[path = "view_tests.rs"]

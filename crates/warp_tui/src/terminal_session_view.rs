@@ -10,7 +10,9 @@ use async_channel::Sender;
 use instant::Instant;
 use parking_lot::FairMutex;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
-use warp::settings::{AISettings, AISettingsChangedEvent, TuiStatuslineConfig, TuiStatuslineItem};
+use warp::settings::{
+    AISettings, AISettingsChangedEvent, AppEditorSettings, TuiStatuslineConfig, TuiStatuslineItem,
+};
 use warp::tui_export::{
     AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
     AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
@@ -212,6 +214,9 @@ const LOG_BUNDLE_FAILED_HINT: &str = "Failed to create log bundle (check logs)";
 const NLD_ENABLED_HINT: &str = "Natural language detection enabled.";
 const NLD_DISABLED_HINT: &str = "Natural language detection disabled.";
 const NLD_PERSISTENCE_FAILED_HINT: &str = "Could not save the natural language detection setting.";
+const VIM_MODE_ENABLED_HINT: &str = "Vim mode enabled.";
+const VIM_MODE_DISABLED_HINT: &str = "Vim mode disabled.";
+const VIM_MODE_PERSISTENCE_FAILED_HINT: &str = "Could not save the vim mode setting.";
 const COST_NO_ACTIVE_CONVERSATION_HINT: &str =
     "Cannot show conversation cost: no active conversation";
 const COST_EMPTY_CONVERSATION_HINT: &str = "Cannot show conversation cost: conversation is empty";
@@ -238,6 +243,9 @@ fn cost_command_unavailable_hint(
 
 /// One resolved item in the footer's configured presentation order.
 enum FooterSegment {
+    /// Vim mode label (NOR/INS/VIS/V-L/REP), shown when vim mode is enabled.
+    /// Always the leading segment when present, ahead of shell-mode/model.
+    Vim(&'static str),
     ShellMode,
     ActiveIndicator(&'static str),
     Model(Box<dyn TuiElement>),
@@ -253,6 +261,10 @@ enum FooterSegment {
 impl FooterSegment {
     fn separator_to(&self, next: &Self) -> &'static str {
         match (self, next) {
+            // A leading vim indicator is joined to the shell-mode/model
+            // segment right after it with a plain space, matching the
+            // shell-mode-to-cwd relationship below.
+            (Self::Vim(_), Self::ShellMode | Self::Model(_)) => " ",
             // Only a shell-mode label directly preceding the working directory
             // gets a plain space; a leading Model label falls through to the
             // default " • " below so model and cwd don't visually run
@@ -261,14 +273,16 @@ impl FooterSegment {
             (Self::ShellMode, Self::WorkingDirectory(_)) => " ",
             (Self::WorkingDirectory(_), Self::GitBranch(_)) => " ↬ ",
             (
-                Self::ShellMode
+                Self::Vim(_)
+                | Self::ShellMode
                 | Self::ActiveIndicator(_)
                 | Self::Model(_)
                 | Self::WorkingDirectory(_)
                 | Self::GitBranch(_)
                 | Self::ContextWindowUsage(_)
                 | Self::GitDiff { .. },
-                Self::ShellMode
+                Self::Vim(_)
+                | Self::ShellMode
                 | Self::ActiveIndicator(_)
                 | Self::Model(_)
                 | Self::WorkingDirectory(_)
@@ -297,6 +311,14 @@ fn render_status_footer_row(segments: FooterSegments, builder: &TuiUiBuilder) ->
     while let Some(segment) = segments.next() {
         let separator = segments.peek().map(|next| segment.separator_to(next));
         match segment {
+            FooterSegment::Vim(label) => {
+                row = row.child(
+                    TuiText::new(label)
+                        .with_style(builder.accent_border_style())
+                        .truncate()
+                        .finish(),
+                );
+            }
             FooterSegment::ShellMode => {
                 row = row.child(
                     TuiText::new(SHELL_MODE_HINT)
@@ -1371,6 +1393,11 @@ impl TuiTerminalSessionView {
             }
             // No orchestration tab bar in Zap: nothing above the input to focus.
             TuiInputViewEvent::MoveFocusUp => {}
+            // The vim mode changed - re-render so the footer indicator (NOR/VIS/REP)
+            // updates. The indicator is rendered by this view's render_footer, not
+            // by TuiInputView itself, so a notify from TuiInputView alone is not
+            // sufficient to update the parent's element tree.
+            TuiInputViewEvent::VimModeChanged => ctx.notify(),
         });
         ctx.subscribe_to_model(&action_model, |view, action_model, event, ctx| {
             let BlocklistAIActionEvent::FinishedAction { action_id, .. } = event else {
@@ -2311,6 +2338,9 @@ impl TuiTerminalSessionView {
         let config = AISettings::as_ref(ctx).tui_statusline.normalized();
         let git_metadata = self.git_status_metadata(ctx);
         let mut ordered = Vec::new();
+        if let Some(vim_label) = self.vim_mode_indicator(ctx) {
+            ordered.push(FooterSegment::Vim(vim_label));
+        }
         if shell_mode {
             ordered.push(FooterSegment::ShellMode);
         }
@@ -2401,6 +2431,21 @@ impl TuiTerminalSessionView {
             }
         }
         render_status_footer_row(FooterSegments { ordered }, &builder)
+    }
+
+    /// Returns a brief vim mode label for the footer (NOR/INS/VIS/V-L/REP)
+    /// when vim mode is enabled, or `None` when vim mode is disabled.
+    fn vim_mode_indicator(&self, ctx: &AppContext) -> Option<&'static str> {
+        use vim::vim::{MotionType, VimMode};
+        let mode = self.input_view.as_ref(ctx).vim_mode(ctx)?;
+        match mode {
+            VimMode::Normal => Some("NOR"),
+            VimMode::Visual(MotionType::Charwise) => Some("VIS"),
+            VimMode::Visual(MotionType::Linewise) => Some("V-L"),
+            VimMode::Replace => Some("REP"),
+            // Insert mode is shown with a label, matching the GUI vim status indicator.
+            VimMode::Insert => Some("INS"),
+        }
     }
 
     /// Updates the watcher-backed git-status subscription after repository
@@ -3600,6 +3645,9 @@ impl TuiTerminalSessionView {
             SlashCommandKind::DisableNaturalLanguageDetection => {
                 self.set_nld_enabled(false, command.name, ctx);
             }
+            SlashCommandKind::VimMode => {
+                self.toggle_vim_mode(command.name, ctx);
+            }
             SlashCommandKind::CloudAgent
             | SlashCommandKind::AddMcp
             | SlashCommandKind::CreateEnvironment
@@ -3729,6 +3777,50 @@ impl TuiTerminalSessionView {
                     log::warn!("Failed to disable TUI natural language detection: {error}");
                 }
                 self.show_transient_hint(NLD_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
+            }
+        }
+        record_static_slash_command_accepted(command_name, true, ctx);
+    }
+
+    /// Toggles and persists vim mode (`text_editing.vim_mode_enabled`, shared
+    /// with the GUI editor's Settings > Text Editing toggle), and surfaces a
+    /// confirmation hint.
+    fn toggle_vim_mode(&mut self, command_name: &'static str, ctx: &mut ViewContext<Self>) {
+        self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+        // Guard: AppEditorSettings may be absent in lightweight test contexts.
+        // Without it, the toggle cannot persist, so surface a transient hint
+        // instead of panicking on an unregistered singleton.
+        if !ctx.has_singleton_model::<AppEditorSettings>() {
+            log::warn!("TUI vim mode toggle ignored: AppEditorSettings not registered");
+            self.show_transient_hint(VIM_MODE_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
+            record_static_slash_command_accepted(command_name, true, ctx);
+            return;
+        }
+        let enabled = !AppEditorSettings::as_ref(ctx).vim_mode_enabled();
+        let result = AppEditorSettings::handle(ctx)
+            .update(ctx, |settings, ctx| settings.vim_mode.set_value(enabled, ctx));
+        match result {
+            Ok(()) => {
+                if enabled {
+                    // Reset to insert mode when enabling, so the user starts
+                    // in the familiar editing state.
+                    self.input_view
+                        .update(ctx, |input, ctx| input.reset_vim_to_insert(ctx));
+                }
+                let hint = if enabled {
+                    VIM_MODE_ENABLED_HINT
+                } else {
+                    VIM_MODE_DISABLED_HINT
+                };
+                self.show_success_hint(hint.to_owned(), ctx);
+            }
+            Err(error) => {
+                if enabled {
+                    log::warn!("Failed to enable TUI vim mode: {error}");
+                } else {
+                    log::warn!("Failed to disable TUI vim mode: {error}");
+                }
+                self.show_transient_hint(VIM_MODE_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
             }
         }
         record_static_slash_command_accepted(command_name, true, ctx);

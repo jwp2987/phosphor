@@ -377,6 +377,18 @@ pub static EXPORT_TO_FILE: LazyLock<StaticCommand> = LazyLock::new(|| StaticComm
     argument: Some(Argument::optional().with_hint_text(t_static!("slash-cmd-export-to-file-hint"))),
 });
 
+/// Toggles the shared `text_editing.vim_mode_enabled` setting. Primarily useful on the
+/// ratatui TUI surface (see `crates/warp_tui`'s `supports_tui` gate below), where there is
+/// no Settings UI; on the GUI the same effect is available from Settings > Text Editing.
+pub static VIM_MODE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/vim-mode",
+    description: t_static!("slash-cmd-vim-mode-desc"),
+    icon_path: "bundled/svg/keyboard.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 pub static COMMAND_REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::new);
 
 /// A unique identifier for a static slash command.
@@ -532,6 +544,8 @@ fn all_commands() -> Vec<StaticCommand> {
     if FeatureFlag::SettingsFile.is_enabled() && cfg!(feature = "local_fs") {
         commands.push(OPEN_SETTINGS_FILE.clone());
     }
+
+    commands.push(VIM_MODE.clone());
 
     commands
 }

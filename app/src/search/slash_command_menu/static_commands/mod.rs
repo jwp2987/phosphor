@@ -167,6 +167,7 @@ pub enum SlashCommandKind {
     /// and needs its own dispatch arm, not upstream Warp's hardcoded-~4-provider
     /// `/add-api-key` / `/clear-provider-api-key`.
     ApiKeys,
+    VimMode,
     /// A Zap command with no upstream `SlashCommandKind` (e.g. `/pr-comments`).
     Other,
 }
@@ -243,6 +244,7 @@ impl StaticCommand {
             "/export-to-clipboard" => SlashCommandKind::ExportToClipboard,
             "/export-to-file" => SlashCommandKind::ExportToFile,
             "/api-keys" => SlashCommandKind::ApiKeys,
+            "/vim-mode" => SlashCommandKind::VimMode,
             _ => SlashCommandKind::Other,
         }
     }
@@ -272,6 +274,7 @@ impl StaticCommand {
                 | "/export-to-file"
                 | "/api-keys"
                 | "/statusline"
+                | "/vim-mode"
         )
     }
 }

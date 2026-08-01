@@ -2536,6 +2536,7 @@ slash-cmd-rewind-desc = Rewind to a previous point in the conversation
 slash-cmd-export-to-clipboard-desc = Export current conversation to clipboard in markdown format
 slash-cmd-export-to-file-desc = Export current conversation to a markdown file
 slash-cmd-export-to-file-hint = <optional filename>
+slash-cmd-vim-mode-desc = Toggle Vim mode for the composer
 
 # --- ANCHOR-SUB-PROMPT-TIPS ---
 # Prompt editor modal (app/src/prompt/editor_modal.rs)

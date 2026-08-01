@@ -15,7 +15,7 @@ pub use warpui::text::point::Point;
 // it on the public `editor` path the TUI expects. Gated on `tui` so the GUI
 // build's public surface is unchanged.
 #[cfg(feature = "tui")]
-pub use crate::code::editor::model::{CodeEditorModel, CodeEditorModelEvent};
+pub use crate::code::editor::model::{CodeEditorModel, CodeEditorModelEvent, LineBound};
 
 use std::{cmp, ops::Range};
 use warpui::AppContext;
