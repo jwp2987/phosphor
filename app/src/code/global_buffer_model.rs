@@ -1343,29 +1343,37 @@ impl GlobalBufferModel {
         };
 
         // Wire offsets are 1-indexed (matching CharOffset), so no conversion needed.
-        let new_version = ContentVersion::new();
+        //
+        // Apply each edit sequentially: the offsets are in sequential
+        // coordinates (each relative to the buffer *after* all preceding edits
+        // in the batch have been applied), so a length-changing edit shifts the
+        // offsets of every later edit in the same batch. We must therefore
+        // apply one edit at a time and recompute `max_offset` for each, rather
+        // than mapping all edits against the original buffer at once.
         buffer.update(ctx, |buffer, ctx| {
-            let max_offset = buffer.max_charoffset();
-            // Belt-and-suspenders: saturating conversion of the wire offset,
-            // plus clamping to the end of the buffer.
-            let char_edits: Vec<(std::ops::Range<CharOffset>, String)> = edits
-                .iter()
-                .map(|edit| {
-                    let start = CharOffset::from(
-                        usize::try_from(edit.start_offset)
-                            .unwrap_or(usize::MAX)
-                            .min(max_offset.as_usize()),
-                    );
-                    let end = CharOffset::from(
-                        usize::try_from(edit.end_offset)
-                            .unwrap_or(usize::MAX)
-                            .min(max_offset.as_usize()),
-                    );
-                    (start..end, edit.text.clone())
-                })
-                .collect();
-
-            buffer.insert_at_char_offset_ranges(char_edits, new_version, ctx);
+            for edit in edits {
+                let max_offset = buffer.max_charoffset();
+                // Belt-and-suspenders: saturating conversion of the wire
+                // offset, plus clamping to the end of the (current) buffer.
+                let start = CharOffset::from(
+                    usize::try_from(edit.start_offset)
+                        .unwrap_or(usize::MAX)
+                        .min(max_offset.as_usize()),
+                );
+                let end = CharOffset::from(
+                    usize::try_from(edit.end_offset)
+                        .unwrap_or(usize::MAX)
+                        .min(max_offset.as_usize()),
+                );
+                buffer.insert_at_char_offset_ranges(
+                    vec![(start..end, edit.text.clone())],
+                    ContentVersion::new(),
+                    ctx,
+                );
+            }
+            // Allocate the final version after all per-edit versions so the
+            // monotonic ContentVersion counter moves forward.
+            buffer.set_version(ContentVersion::new());
         });
 
         true
