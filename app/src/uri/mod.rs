@@ -1112,3 +1112,7 @@ fn safe_url_log_fields(url: &Url) -> String {
         url.path(),
     )
 }
+
+#[cfg(test)]
+#[path = "uri_test.rs"]
+mod tests;
