@@ -174,7 +174,7 @@ mod process_impl {
         paths: &[PathBuf],
         ignore_case: bool,
         multiline: bool,
-    ) -> anyhow::Result<impl Stream<Item = Match>> {
+    ) -> anyhow::Result<impl Stream<Item = Match> + use<>> {
         let child = spawn_search_process(patterns, paths, ignore_case, multiline)?;
         Ok(match_stream_from_child(child))
     }
