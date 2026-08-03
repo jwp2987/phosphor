@@ -25,6 +25,7 @@ serde.workspace = true
 serde_json.workspace = true
 pin-project.workspace = true
 futures-util.workspace = true
+event-listener.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
@@ -34,3 +35,4 @@ gloo.workspace = true
 
 [dev-dependencies]
 warpui.workspace = true
+futures-lite.workspace = true
