@@ -909,3 +909,7 @@ fn test_get_pw_entry() {
     let mut buf: [i8; 1024] = [0; 1024];
     let _pw = get_pw_entry(&mut buf);
 }
+
+#[cfg(test)]
+#[path = "unix_tests.rs"]
+mod tests;
