@@ -5601,9 +5601,8 @@ fn onekey_empty_candidates_with_empty_query_returns_empty_ordered() {
     assert_eq!(rows_indices(result), Vec::<usize>::new());
 }
 
-// Ported from Warp view_tests.rs. Warp's `UserTakeOverReason::Stop` carries a
-// `should_auto_resume` flag; the fork collapsed it into a fieldless `Stop`, so the
-// `Stop { should_auto_resume: true }` in the original is mechanically mapped to `Stop`.
+// Ported from Warp view_tests.rs. `UserTakeOverReason::Stop` carries a `should_auto_resume`
+// flag; a live Ctrl-C takeover uses `should_auto_resume: true`.
 #[test]
 fn ctrl_c_after_stop_takeover_cancels_conversation() {
     App::test((), |mut app| async move {
@@ -5639,7 +5638,12 @@ fn ctrl_c_after_stop_takeover_cancels_conversation() {
                 .expect("command should become agent monitored");
 
             view.cli_subagent_controller.update(ctx, |controller, ctx| {
-                controller.switch_control_to_user(UserTakeOverReason::Stop, ctx);
+                controller.switch_control_to_user(
+                    UserTakeOverReason::Stop {
+                        should_auto_resume: true,
+                    },
+                    ctx,
+                );
             });
 
             conversation_id

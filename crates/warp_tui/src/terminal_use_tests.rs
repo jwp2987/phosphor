@@ -299,7 +299,9 @@ fn terminal_use_interrupt_follows_takeover_then_process_interrupt_policy() {
     );
 
     let stopped = LongRunningCommandControlState::User {
-        reason: UserTakeOverReason::Stop,
+        reason: UserTakeOverReason::Stop {
+            should_auto_resume: true,
+        },
     };
     assert_eq!(
         terminal_use_interrupt_action(Some(&stopped), true),
@@ -348,7 +350,9 @@ fn completed_user_controlled_requested_command_resumes_unless_tearing_down() {
             .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
             .expect("command should become agent monitored");
         block
-            .take_over_control_for_user(UserTakeOverReason::Stop)
+            .take_over_control_for_user(UserTakeOverReason::Stop {
+                should_auto_resume: true,
+            })
             .expect("user takeover should succeed");
         block.id().clone()
     };

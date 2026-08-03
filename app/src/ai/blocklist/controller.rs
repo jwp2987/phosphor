@@ -3252,6 +3252,16 @@ impl BlocklistAIController {
         }
     }
 
+    /// Returns `true` if there is an in-flight response stream for the given conversation.
+    pub fn has_active_stream_for_conversation(
+        &self,
+        conversation_id: AIConversationId,
+        app: &AppContext,
+    ) -> bool {
+        self.in_flight_response_streams
+            .has_active_stream_for_conversation(conversation_id, app)
+    }
+
     /// Clears finished action results for a conversation. Used when reverting.
     pub fn clear_finished_action_results(
         &mut self,

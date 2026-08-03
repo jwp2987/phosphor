@@ -894,8 +894,11 @@ impl TuiTerminalSessionView {
             TerminalUseInterruptAction::TakeControl => {
                 self.cli_subagent_controller.update(ctx, |controller, ctx| {
                     controller.switch_control_to_user(
-                        // Zap's Stop is a unit variant (no should_auto_resume flag).
-                        UserTakeOverReason::Stop,
+                        // A live interrupt keeps the conversation alive so it resumes once the
+                        // interrupted command completes.
+                        UserTakeOverReason::Stop {
+                            should_auto_resume: true,
+                        },
                         ctx,
                     );
                 });
