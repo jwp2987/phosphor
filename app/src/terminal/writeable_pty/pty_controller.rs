@@ -546,8 +546,9 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             let mut model = self.terminal_model.lock();
 
-            // Explicitly start the block now that the command is executed.
-            match source {
+            // Explicitly start the block now that the command is executed. The lifecycle
+            // coordinator's start outcome is not consumed on this path.
+            let _ = match source {
                 CommandExecutionSource::AI { metadata } => {
                     model.start_command_execution_with_ai_metadata(metadata)
                 }
@@ -560,7 +561,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 CommandExecutionSource::EnvVarCollection { metadata } => {
                     model.start_command_execution_from_env_var_collection(metadata)
                 }
-            }
+            };
 
             // Ensure that the `TerminalModel` doesn't interpret any of the PTY output from the
             // following commands as in-band command output. If the in-band command output is not

@@ -678,6 +678,76 @@ fn test_exit_alt_screen_on_command_finished() {
     assert!(!terminal.alt_screen_active);
 }
 
+// Lifecycle-coordinator integration tests. These exercise `BlockLifecycleCoordinator` through the
+// live `TerminalModel` command-start and exit paths. Ported and adapted from Warp's
+// `terminal_model_tests.rs`; the fork drives the coordinator through its split `CommandFinished` /
+// `Precmd` hooks (see the coordinator wiring in `terminal_model.rs`).
+
+#[test]
+fn lifecycle_repeated_and_executing_command_starts_are_safely_gated() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let active_block_id = terminal.active_block_id().clone();
+
+    // The first start is accepted; a second start before execution is coalesced rather than
+    // starting a fresh block.
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::Accepted
+    );
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::Coalesced
+    );
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+
+    // Once the block is executing, a further start is rejected instead of clobbering the running
+    // command.
+    terminal.preexec(PreexecValue {
+        command: "running".to_owned(),
+    });
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::RejectedExecuting
+    );
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(
+        terminal.block_list().active_block().state(),
+        BlockState::Executing
+    );
+}
+
+#[test]
+fn lifecycle_terminal_exit_absorbs_later_inputs() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.exit(ExitReason::PtyDisconnected);
+    let active_block_id = terminal.active_block_id().clone();
+    let block_count = terminal.block_list().blocks().len();
+    let pending_session_id = terminal.pending_session_id();
+
+    // After exit the terminal is terminated (absorbing): a start is ignored, and later completion,
+    // preexec, and init-shell inputs must not mutate block or session state.
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::IgnoredTerminated
+    );
+    terminal.preexec(PreexecValue {
+        command: "ignored".to_owned(),
+    });
+    terminal.command_finished(CommandFinishedValue {
+        exit_code: ExitCode::from(1),
+        next_block_id: BlockId::new(),
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "bash".to_owned(),
+        session_id: 42.into(),
+        ..Default::default()
+    });
+
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(terminal.block_list().blocks().len(), block_count);
+    assert_eq!(terminal.pending_session_id(), pending_session_id);
+}
+
 #[test]
 fn test_unset_bracketed_paste_mode_on_command_finished() {
     let mut terminal: TerminalModel = TerminalModel::mock(None, None);

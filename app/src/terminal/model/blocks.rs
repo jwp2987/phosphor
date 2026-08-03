@@ -47,6 +47,8 @@ use warpui::{
 };
 
 use super::block::{BlockId, BlockSize, BlockState};
+use super::lifecycle::NextBlockIdDisposition;
+use warp_core::command::ExitCode;
 use super::early_output::EarlyOutput;
 use super::grid::grid_handler::{FragmentBoundary, GridHandler, PossiblePath};
 use super::grid::RespectDisplayedOutput;
@@ -873,6 +875,29 @@ impl BlockList {
 
     pub fn active_block_id(&self) -> &BlockId {
         self.active_block().id()
+    }
+
+    /// Classifies a completion-supplied next block ID against the current block list so that
+    /// duplicate or colliding IDs are rejected before any phase-specific lifecycle policy can
+    /// authorize a mutation.
+    pub(super) fn classify_next_block_id(&self, next_block_id: &BlockId) -> NextBlockIdDisposition {
+        if self.active_block_id() == next_block_id {
+            NextBlockIdDisposition::ActiveDuplicate
+        } else if self.block_index_for_id(next_block_id).is_some() {
+            NextBlockIdDisposition::ExistingCollision
+        } else {
+            NextBlockIdDisposition::Novel
+        }
+    }
+
+    /// Returns the exit code of the completed command immediately preceding the active block.
+    pub(super) fn previous_command_exit_code(&self) -> Option<ExitCode> {
+        [2usize, 3usize]
+            .into_iter()
+            .flat_map(|offset| self.blocks.len().checked_sub(offset))
+            .map(|idx| &self.blocks[idx])
+            .find(|block| !block.is_background() && block.finished())
+            .map(Block::exit_code)
     }
 
     fn next_gap_height(&self) -> Option<Lines> {
