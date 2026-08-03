@@ -5005,7 +5005,7 @@ impl TerminalView {
                     })
                 {
                     if let Some(RichContentMetadata::AIBlock(AIBlockMetadata {
-                        ref mut conversation_id,
+                        conversation_id,
                         ai_block_handle,
                         ..
                     })) = ai_block_rich_content.metadata_mut()
@@ -18939,9 +18939,9 @@ impl TerminalView {
             ctx.focus(blocked_cli_subagent_view);
         } else if should_focus_terminal {
             self.focus_terminal(ctx);
-        } else if let Some(ssh_choice_view) = self.active_ssh_remote_server_choice_block() {
+        } else { match self.active_ssh_remote_server_choice_block() { Some(ssh_choice_view) => {
             ctx.focus(&ssh_choice_view);
-        } else if let (Some(active_ai_block_view_handle), false) =
+        } _ => if let (Some(active_ai_block_view_handle), false) =
             (self.active_ai_block(ctx), is_input_visible)
         {
             ctx.focus(active_ai_block_view_handle);
@@ -18951,7 +18951,7 @@ impl TerminalView {
             ctx.focus(env_var_collection_block_handle);
         } else {
             self.focus_input_box(ctx);
-        }
+        }}}
     }
 
     fn close_context_menu(&mut self, ctx: &mut ViewContext<Self>, should_redetermine_focus: bool) {
@@ -19429,7 +19429,7 @@ impl TerminalView {
                 };
                 let initial_prompt = initial_prompt.clone();
 
-                if let Some(pane_stack) = self.pane_stack.as_ref().and_then(|h| h.upgrade(ctx)) {
+                match self.pane_stack.as_ref().and_then(|h| h.upgrade(ctx)) { Some(pane_stack) => {
                     let should_pop = pane_stack.as_ref(ctx).depth() > 1;
                     if should_pop {
                         pane_stack.update(ctx, |stack, ctx| {
@@ -19450,11 +19450,11 @@ impl TerminalView {
                             view.enter_agent_view_for_new_conversation(initial_prompt, origin, ctx);
                         });
                     }
-                } else {
+                } _ => {
                     log::warn!(
                         "ExitAmbientAgentAndStartLocalAgent received but no pane stack available; cannot start local agent without a parent terminal"
                     );
-                }
+                }}
 
                 ctx.notify();
             }
@@ -22538,13 +22538,13 @@ impl TerminalView {
 
         // Save a backup of the conversation before truncating, so users can restore it later.
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
-            if let Some(conversation) = history_model.conversation(&conversation_id).cloned() {
+            match history_model.conversation(&conversation_id).cloned() { Some(conversation) => {
                 if let Err(e) = history_model.fork_conversation(&conversation, PRE_REWIND_PREFIX, ctx) {
                     log::warn!("Failed to save pre-rewind backup of conversation {conversation_id}: {e}");
                 }
-            } else {
+            } _ => {
                 log::warn!("Failed to save pre-rewind backup: conversation {conversation_id} not found in memory");
-            }
+            }}
         });
 
         // Truncate the conversation history

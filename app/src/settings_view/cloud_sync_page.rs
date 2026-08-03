@@ -1429,7 +1429,7 @@ impl SettingsWidget for CloudSyncPageWidget {
         // Conflict / download confirmation / upload confirmation dialog -- constructed in this View's render path,
         // uses a Stack overlay child (WindowByPosition + Center) to center the window,
         // while ensuring click events can route back to CloudSyncPageView::handle_action.
-        if let Some(modal) = view.build_modal_element(appearance) {
+        match view.build_modal_element(appearance) { Some(modal) => {
             let mut stack = Stack::new();
             stack.add_child(content.finish());
             stack.add_positioned_overlay_child(
@@ -1442,8 +1442,8 @@ impl SettingsWidget for CloudSyncPageWidget {
                 ),
             );
             stack.finish()
-        } else {
+        } _ => {
             content.finish()
-        }
+        }}
     }
 }

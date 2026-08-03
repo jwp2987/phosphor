@@ -12825,20 +12825,20 @@ impl Input {
                 self.flush_deferred_remote_operations(ctx);
 
                 // Update shared session history model
-                if let Some(shared_session_history_model) = self
+                match self
                     .shared_session_input_state
                     .as_ref()
                     .map(|state| state.history_model.clone())
-                {
+                { Some(shared_session_history_model) => {
                     shared_session_history_model.update(ctx, |history_model, _ctx| {
                         history_model.push(HistoryEntry::for_completed_block(
                             block_completed.command,
                             &block_completed.serialized_block,
                         ))
                     })
-                } else {
+                } _ => {
                     log::warn!("Tried to access non-existent shared session history model")
-                }
+                }}
             } else if is_next_command_enabled(ctx) {
                 self.maybe_predict_next_action_ai(block_completed, ctx);
             }

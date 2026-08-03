@@ -1388,7 +1388,7 @@ impl View for LeftPanelView {
 
         let content_area: Box<dyn Element> = match self.active_view.get() {
             ToolPanelView::ProjectExplorer => {
-                if let Some(file_tree_view) = self.active_file_tree_view(app) {
+                match self.active_file_tree_view(app) { Some(file_tree_view) => {
                     Shrinkable::new(
                         1.0,
                         Container::new(ChildView::new(&file_tree_view).finish())
@@ -1397,20 +1397,20 @@ impl View for LeftPanelView {
                             .finish(),
                     )
                     .finish()
-                } else {
+                } _ => {
                     Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish()
-                }
+                }}
             }
             ToolPanelView::GlobalSearch { .. } => {
-                if let Some(global_search_view) = self.active_global_search_view(app) {
+                match self.active_global_search_view(app) { Some(global_search_view) => {
                     Shrinkable::new(
                         1.0,
                         Container::new(ChildView::new(&global_search_view).finish()).finish(),
                     )
                     .finish()
-                } else {
+                } _ => {
                     Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish()
-                }
+                }}
             }
             ToolPanelView::ZapDrive => Shrinkable::new(
                 1.0,

@@ -8735,16 +8735,16 @@ impl View for EditorView {
             .with_cursor(Cursor::IBeam)
             .finish();
 
-        let content = if let Some(controls) = self.render_controls(ctx) {
+        let content = match self.render_controls(ctx) { Some(controls) => {
             let mut row = Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::End);
             row.add_child(Shrinkable::new(1., hoverable).finish());
             row.add_child(controls);
             row.finish()
-        } else {
+        } _ => {
             hoverable
-        };
+        }};
 
         SavePosition::new(content, &get_rich_content_position_id(&self.view_id)).finish()
     }

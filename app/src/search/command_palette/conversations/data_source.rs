@@ -112,7 +112,7 @@ impl DataSource {
         &self,
         limit: usize,
         app: &AppContext,
-    ) -> impl Iterator<Item = QueryResult<<Self as SyncDataSource>::Action>> {
+    ) -> impl Iterator<Item = QueryResult<<Self as SyncDataSource>::Action>> + use<> {
         self.searcher
             .searchable_conversations(app)
             .into_iter()

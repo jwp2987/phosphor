@@ -276,7 +276,7 @@ impl AltScreen {
         })
     }
 
-    pub fn possible_file_paths_at_point(&self, point: Point) -> impl Iterator<Item = PossiblePath> {
+    pub fn possible_file_paths_at_point(&self, point: Point) -> impl Iterator<Item = PossiblePath> + use<> {
         self.grid_handler
             .possible_file_paths_at_point(point)
             .into_iter()
@@ -347,7 +347,7 @@ impl AltScreen {
         });
     }
 
-    fn ansi_handler(&mut self) -> &mut impl ansi::Handler {
+    fn ansi_handler(&mut self) -> &mut (impl ansi::Handler + use<>) {
         self.grid_handler.ansi_handler()
     }
 

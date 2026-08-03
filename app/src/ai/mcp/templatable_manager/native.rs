@@ -946,16 +946,16 @@ impl TemplatableMCPServerManager {
         }
         self.pending_oauth_csrf
             .retain(|_, v| *v != installation_uuid);
-        if let Some(server_info) = self.active_servers.remove(&installation_uuid) {
+        match self.active_servers.remove(&installation_uuid) { Some(server_info) => {
             self.change_server_state(installation_uuid, MCPServerState::ShuttingDown, ctx);
             // Cancel the server, and emit NotRunning state once it has stopped.
             ctx.spawn(server_info.service.cancel(), move |me, _, ctx| {
                 me.change_server_state(installation_uuid, MCPServerState::NotRunning, ctx);
                 ctx.dispatch_global_action("workspace:save_app", ());
             });
-        } else {
+        } _ => {
             self.change_server_state(installation_uuid, MCPServerState::NotRunning, ctx);
-        }
+        }}
 
         log::debug!("Successfully shut down server with installation uuid {installation_uuid}");
     }

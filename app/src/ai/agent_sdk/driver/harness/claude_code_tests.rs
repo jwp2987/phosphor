@@ -78,9 +78,11 @@ fn claude_command_pipes_prompt_path() {
 #[serial_test::serial]
 fn parent_bridge_root_prefers_environment_override() {
     let tmp = TempDir::new().unwrap();
-    std::env::set_var(OZ_MESSAGE_LISTENER_STATE_ROOT_ENV, tmp.path());
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(OZ_MESSAGE_LISTENER_STATE_ROOT_ENV, tmp.path()) };
     let root = parent_bridge_root().unwrap();
-    std::env::remove_var(OZ_MESSAGE_LISTENER_STATE_ROOT_ENV);
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(OZ_MESSAGE_LISTENER_STATE_ROOT_ENV) };
 
     assert_eq!(root, tmp.path());
 }

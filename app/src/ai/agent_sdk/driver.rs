@@ -475,7 +475,7 @@ impl AgentDriver {
         &mut self,
         task: Task,
         ctx: &mut ModelContext<Self>,
-    ) -> impl Future<Output = Result<(), AgentDriverError>> {
+    ) -> impl Future<Output = Result<(), AgentDriverError>> + use<> {
         let (tx, rx) = oneshot::channel();
         let foreground = ctx.spawner();
         let idle_on_complete = self.idle_on_complete;
@@ -525,7 +525,7 @@ impl AgentDriver {
 
     /// Check that the working directory exists. Since it's user-specified, we don't automatically
     /// create the directory (in case they made a typo).
-    fn check_working_dir(&self) -> impl Future<Output = Result<(), AgentDriverError>> {
+    fn check_working_dir(&self) -> impl Future<Output = Result<(), AgentDriverError>> + use<> {
         let working_dir = self.working_dir.clone();
         async move {
             match async_fs::metadata(&working_dir).await {
@@ -589,7 +589,7 @@ impl AgentDriver {
     fn start_profile_mcp_servers(
         &self,
         ctx: &mut ModelContext<Self>,
-    ) -> impl Future<Output = Result<(), AgentDriverError>> {
+    ) -> impl Future<Output = Result<(), AgentDriverError>> + use<> {
         let terminal_id = self.terminal_driver.as_ref(ctx).terminal_view().id();
         let permissions = BlocklistAIPermissions::as_ref(ctx);
         let profile_allowlist = permissions.get_mcp_allowlist(ctx, Some(terminal_id));
@@ -699,7 +699,7 @@ impl AgentDriver {
         &self,
         uuids: &[uuid::Uuid],
         ctx: &mut ModelContext<Self>,
-    ) -> impl Future<Output = Result<(), AgentDriverError>> {
+    ) -> impl Future<Output = Result<(), AgentDriverError>> + use<> {
         let (tx, rx) = oneshot::channel();
         let servers_to_start = match self.get_mcp_servers_to_start(uuids, ctx) {
             Ok(val) => val,
@@ -740,7 +740,7 @@ impl AgentDriver {
         &self,
         mut installations: Vec<TemplatableMCPServerInstallation>,
         ctx: &mut ModelContext<Self>,
-    ) -> impl Future<Output = Result<(), AgentDriverError>> {
+    ) -> impl Future<Output = Result<(), AgentDriverError>> + use<> {
         if installations.is_empty() {
             return Either::Right(future::ready(Ok(())));
         }
@@ -821,7 +821,7 @@ impl AgentDriver {
         &self,
         uuids: Vec<Uuid>,
         ctx: &mut ModelContext<Self>,
-    ) -> impl Future<Output = ()> {
+    ) -> impl Future<Output = ()> + use<> {
         // Filter out UUIDs that have already reached a terminal state.
         let mut pending_uuids: HashSet<Uuid> = {
             let templatable_manager = TemplatableMCPServerManager::as_ref(ctx);

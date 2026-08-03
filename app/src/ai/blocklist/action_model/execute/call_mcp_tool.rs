@@ -76,7 +76,7 @@ impl CallMCPToolExecutor {
         &mut self,
         input: ExecuteActionInput,
         ctx: &mut ModelContext<Self>,
-    ) -> impl Into<AnyActionExecution> {
+    ) -> impl Into<AnyActionExecution> + use<> {
         #[cfg(target_family = "wasm")]
         {
             ActionExecution::<()>::InvalidAction

@@ -80,14 +80,14 @@ pub fn resolve_owner(team_flag: bool, user_flag: bool, ctx: &AppContext) -> anyh
 /// This keeps workspace state fresh before operations that depend on team membership.
 pub fn refresh_workspace_metadata<C>(
     _ctx: &mut C,
-) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
+) -> impl Future<Output = anyhow::Result<()>> + Send + 'static + use<C> {
     async { Ok(()) }
 }
 
 /// Refresh Zap Drive before executing an operation.
 pub fn refresh_warp_drive(
     ctx: &AppContext,
-) -> impl Future<Output = anyhow::Result<()>> + Send + 'static {
+) -> impl Future<Output = anyhow::Result<()>> + Send + 'static + use<> {
     ObjectStoreModel::as_ref(ctx)
         .initial_load_complete()
         .with_timeout(WARP_DRIVE_SYNC_TIMEOUT)

@@ -628,11 +628,11 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
                 self.handler.remote_warpification_is_unavailable(value)
             }
             Ok(DProtoHook::SshTmuxInstaller { value }) => {
-                if let Ok(tmux_installation) = TmuxInstallationState::from_str(&value) {
+                match TmuxInstallationState::from_str(&value) { Ok(tmux_installation) => {
                     self.handler.notify_ssh_tmux_is_installed(tmux_installation)
-                } else {
+                } _ => {
                     log::error!("Received invalid SSH tmux installer value: '{value}'");
-                }
+                }}
             }
             Ok(DProtoHook::TmuxInstallFailed { value }) => self.handler.tmux_install_failed(value),
             Ok(DProtoHook::ExitShell { value }) => self.handler.exit_shell(value),
@@ -1499,7 +1499,7 @@ where
         }
 
         macro_rules! configure_charset {
-            ($charset:path, $intermediates:expr) => {{
+            ($charset:path, $intermediates:expr_2021) => {{
                 let index: CharsetIndex = match $intermediates {
                     [b'('] => CharsetIndex::G0,
                     [b')'] => CharsetIndex::G1,

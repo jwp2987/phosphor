@@ -305,7 +305,7 @@ impl TryFrom<KittyMessage> for KittyAction {
                     image_id: message
                         .control_data
                         .image_id
-                        .unwrap_or(rand::thread_rng().gen()),
+                        .unwrap_or(rand::thread_rng().r#gen()),
                     image: KittyImage::try_from(message)?,
                 };
 
@@ -326,11 +326,11 @@ impl TryFrom<KittyMessage> for KittyAction {
                     image_id: message
                         .control_data
                         .image_id
-                        .unwrap_or(rand::thread_rng().gen()),
+                        .unwrap_or(rand::thread_rng().r#gen()),
                     placement_id: message
                         .control_data
                         .placement_id
-                        .unwrap_or(rand::thread_rng().gen()),
+                        .unwrap_or(rand::thread_rng().r#gen()),
                     placement_data: KittyPlacementData {
                         z_index: message.control_data.z_index,
                         cols: message.control_data.cols,
@@ -363,7 +363,7 @@ impl TryFrom<KittyMessage> for KittyAction {
                     placement_id: message
                         .control_data
                         .placement_id
-                        .unwrap_or(rand::thread_rng().gen()),
+                        .unwrap_or(rand::thread_rng().r#gen()),
                     placement_data: KittyPlacementData {
                         z_index: message.control_data.z_index,
                         cols: message.control_data.cols,
@@ -377,7 +377,7 @@ impl TryFrom<KittyMessage> for KittyAction {
                     image_id: message
                         .control_data
                         .image_id
-                        .unwrap_or(rand::thread_rng().gen()),
+                        .unwrap_or(rand::thread_rng().r#gen()),
                     image: KittyImage::try_from(message)?,
                 };
 

@@ -5830,7 +5830,7 @@ fn run_input_mode_prefix_test(
 }
 
 macro_rules! input_mode_prefix_tests {
-    ($($name:ident: ($nld_improvements_enabled:literal, $udi_enabled:literal, $input_mode:expr),)*) => {
+    ($($name:ident: ($nld_improvements_enabled:literal, $udi_enabled:literal, $input_mode:expr_2021),)*) => {
         $(
             #[test]
             fn $name() {

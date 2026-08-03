@@ -1236,7 +1236,7 @@ impl CrossWindowTabDrag {
             return DropResult::ClosePreviewOnly { preview_window_id };
         }
 
-        if let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(preview_window_id, ctx) {
+        match WorkspaceRegistry::as_ref(ctx).get(preview_window_id, ctx) { Some(ws) => {
             ws.update(ctx, |ws, ctx| {
                 ws.set_is_tab_drag_preview(false);
                 // The preview's `suppress_detach_panes_on_window_close` flag
@@ -1253,11 +1253,11 @@ impl CrossWindowTabDrag {
                 ws.update_titlebar_height(ctx);
                 ctx.notify();
             });
-        } else {
+        } _ => {
             log::warn!(
                 "tab_drag: finalize_preview_as_new_window no workspace for preview_wid={preview_window_id}"
             );
-        }
+        }}
         ctx.windows().show_window_and_focus_app(preview_window_id);
         Self::deferred_focus(preview_window_id, ctx);
 
@@ -1835,7 +1835,7 @@ fn compute_insertion_index_for_window(
         }
     }
 
-    if let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(target_window_id, ctx) {
+    match WorkspaceRegistry::as_ref(ctx).get(target_window_id, ctx) { Some(ws) => {
         ws.read(ctx, |workspace, ctx| {
             workspace.tab_insertion_index_for_cursor(
                 target_window_id,
@@ -1843,7 +1843,7 @@ fn compute_insertion_index_for_window(
                 ctx,
             )
         })
-    } else {
+    } _ => {
         0
-    }
+    }}
 }

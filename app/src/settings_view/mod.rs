@@ -922,7 +922,7 @@ fn next_stop_index(current: usize, len: usize, direction: CycleDirection) -> usi
 }
 
 macro_rules! update_page {
-    ($handle:expr, $update:expr, $ctx:expr) => {
+    ($handle:expr_2021, $update:expr_2021, $ctx:expr_2021) => {
         match $handle {
             SettingsPageViewHandle::Appearance(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::Features(handle) => $ctx.update_view(handle, $update),

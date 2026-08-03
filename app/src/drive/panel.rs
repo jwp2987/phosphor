@@ -620,7 +620,7 @@ impl DrivePanel {
     pub fn has_warp_drive_initialized_sections(
         &self,
         app: &AppContext,
-    ) -> impl Future<Output = ()> {
+    ) -> impl Future<Output = ()> + use<> {
         self.index_view.as_ref(app).has_initialized_sections()
     }
 

@@ -63,7 +63,7 @@ impl Condition {
     }
 
     /// Asynchronously wait for the condition to be true.
-    pub fn wait(&self) -> impl Future<Output = ()> {
+    pub fn wait(&self) -> impl Future<Output = ()> + use<> {
         let flag = self.flag.clone();
         let event = self.event.clone();
         async move {

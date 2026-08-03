@@ -902,16 +902,16 @@ fn render_agent_tip(tip: &AgentTip, app: &AppContext) -> Box<dyn Element> {
 
     let mut fragments = tip.to_formatted_text(app);
 
-    if let (Some(action), Some(text)) = (tip.action.clone(), action_text.clone()) {
+    match (tip.action.clone(), action_text.clone()) { (Some(action), Some(text)) => {
         fragments.push(FormattedTextFragment::plain_text(" "));
         fragments.push(FormattedTextFragment::hyperlink_action(text, action));
-    } else if let Some(link_target) = tip.link.clone() {
+    } _ => if let Some(link_target) = tip.link.clone() {
         fragments.push(FormattedTextFragment::plain_text(" "));
         fragments.push(FormattedTextFragment::hyperlink(
             crate::t!("common-learn-more"),
             link_target,
         ));
-    }
+    }}
 
     let formatted_text =
         markdown_parser::FormattedText::new(vec![FormattedTextLine::Line(fragments)]);
@@ -1074,15 +1074,15 @@ impl View for BlocklistAIStatusBar {
                 },
                 app,
             )
-        } else if let (Some(warping_indicator), true) = (
+        } else { match (
             self.render_warping_indicator_for_latest_exchange(app),
             self.ephemeral_message_model
                 .as_ref(app)
                 .current_message()
                 .is_none(),
-        ) {
+        ) { (Some(warping_indicator), true) => {
             warping_indicator
-        } else if self
+        } _ => if self
             .ambient_agent_view_model
             .as_ref(app)
             .is_waiting_for_session()
@@ -1096,7 +1096,7 @@ impl View for BlocklistAIStatusBar {
                 .finish();
         } else {
             return Empty::new().finish();
-        };
+        }}};
 
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
