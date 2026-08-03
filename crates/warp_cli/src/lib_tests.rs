@@ -4,6 +4,17 @@ use clap::Parser;
 use crate::agent::{AgentCommand, Harness};
 // Zap Wave 7-2: the `environment` CLI was physically removed along with the cloud ambient agent subsystem.
 
+/// Ported from warp/master `identifies_worker_subcommands`.
+#[test]
+fn identifies_worker_subcommands() {
+    assert!(is_worker_invocation("minidump-server"));
+    #[cfg(unix)]
+    assert!(is_worker_invocation(&terminal_server_subcommand()));
+    #[cfg(feature = "plugin_host")]
+    assert!(is_worker_invocation("--plugin-host"));
+    assert!(!is_worker_invocation("--prompt"));
+}
+
 #[test]
 fn agent_run_accepts_model() {
     let args = Args::try_parse_from([
