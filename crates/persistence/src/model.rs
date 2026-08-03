@@ -1309,7 +1309,103 @@ pub struct NewMCPServerInstallation {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentConversationData;
+    use super::{AgentConversation, AgentConversationData, api};
+
+    fn parentless_task(id: &str, message_count: usize) -> api::Task {
+        api::Task {
+            id: id.to_string(),
+            description: String::new(),
+            dependencies: None,
+            messages: (0..message_count)
+                .map(|i| api::Message {
+                    id: format!("{id}-msg-{i}"),
+                    task_id: id.to_string(),
+                    server_message_data: String::new(),
+                    citations: vec![],
+                    message: None,
+                    request_id: String::new(),
+                    timestamp: None,
+                })
+                .collect(),
+            summary: String::new(),
+            server_data: String::new(),
+        }
+    }
+
+    fn child_task(id: &str, parent_id: &str) -> api::Task {
+        api::Task {
+            id: id.to_string(),
+            description: String::new(),
+            dependencies: Some(api::task::Dependencies {
+                parent_task_id: parent_id.to_string(),
+            }),
+            messages: vec![],
+            summary: String::new(),
+            server_data: String::new(),
+        }
+    }
+
+    fn conversation_with_tasks(tasks: Vec<api::Task>) -> AgentConversation {
+        AgentConversation {
+            conversation: Default::default(),
+            tasks,
+        }
+    }
+
+    /// Legacy [stub + real] root shape produced by the pre-QUALITY-774
+    /// optimistic-root writer bug must be considered restorable so the
+    /// restore-side dedupe can pick the real root.
+    #[test]
+    fn is_restorable_accepts_legacy_stub_plus_real_root_shape() {
+        let conversation = conversation_with_tasks(vec![
+            parentless_task("optimistic-stub-uuid", 0),
+            parentless_task("server-root-id", 2),
+            child_task("child-1", "server-root-id"),
+        ]);
+        assert!(conversation.is_restorable());
+    }
+
+    /// Multi-root with multiple real roots (each non-empty) is genuinely
+    /// ambiguous and must remain rejected — the dedupe heuristic cannot
+    /// disambiguate between two real roots.
+    #[test]
+    fn is_restorable_rejects_multi_root_with_multiple_real_roots() {
+        let conversation = conversation_with_tasks(vec![
+            parentless_task("root-a", 1),
+            parentless_task("root-b", 1),
+        ]);
+        assert!(!conversation.is_restorable());
+    }
+
+    /// Multi-root where every candidate is empty has nothing to anchor
+    /// restore on and must remain rejected.
+    #[test]
+    fn is_restorable_rejects_multi_root_with_no_real_root() {
+        let conversation = conversation_with_tasks(vec![
+            parentless_task("stub-1", 0),
+            parentless_task("stub-2", 0),
+        ]);
+        assert!(!conversation.is_restorable());
+    }
+
+    /// Normal happy path: a single parentless root plus well-formed child
+    /// tasks remains restorable.
+    #[test]
+    fn is_restorable_accepts_single_root_plus_subtasks() {
+        let conversation = conversation_with_tasks(vec![
+            parentless_task("root", 1),
+            child_task("child-1", "root"),
+            child_task("child-2", "root"),
+        ]);
+        assert!(conversation.is_restorable());
+    }
+
+    /// Empty or single-task conversations are trivially restorable.
+    #[test]
+    fn is_restorable_accepts_empty_and_single_task_conversations() {
+        assert!(conversation_with_tasks(vec![]).is_restorable());
+        assert!(conversation_with_tasks(vec![parentless_task("root", 0)]).is_restorable());
+    }
 
     #[test]
     fn agent_conversation_data_roundtrips_last_event_sequence() {

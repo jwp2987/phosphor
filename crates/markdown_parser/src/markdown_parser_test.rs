@@ -893,6 +893,82 @@ fn test_multi_parse_url() {
 }
 
 #[test]
+fn test_autolink_with_escaped_dot() {
+    // After a save cycle, `parse_url` may see `https://google\.com` (with `\.` from
+    // the serializer's escape of `.`). The URL should be unescaped so the buffer
+    // stores the clean string and the round-trip is stable.
+    assert_eq!(
+        test_parse_markdown("https://google\\.com"),
+        vec![FormattedTextLine::Line(vec![
+            FormattedTextFragment::hyperlink("https://google.com", "https://google.com"),
+        ])]
+    );
+}
+
+#[test]
+fn test_autolink_with_escaped_dash() {
+    assert_eq!(
+        test_parse_markdown("https://warp\\-dev.com"),
+        vec![FormattedTextLine::Line(vec![
+            FormattedTextFragment::hyperlink("https://warp-dev.com", "https://warp-dev.com"),
+        ])]
+    );
+}
+
+#[test]
+fn test_autolink_with_multiple_escapes() {
+    // Multiple escaped characters (`.`, `-`, `#`) should all be unescaped.
+    assert_eq!(
+        test_parse_markdown("https://github\\.com/foo\\-bar\\#anchor"),
+        vec![FormattedTextLine::Line(vec![
+            FormattedTextFragment::hyperlink(
+                "https://github.com/foo-bar#anchor",
+                "https://github.com/foo-bar#anchor"
+            ),
+        ])]
+    );
+}
+
+#[test]
+fn test_autolink_in_link_label_with_escapes() {
+    // When an escaped URL appears as the display text of an explicit link
+    // (the `can_autolink = false` path), it should also be unescaped.
+    let source = "[https://google\\.com](https://google.com)";
+    assert_eq!(
+        test_parse_markdown(source),
+        vec![FormattedTextLine::Line(vec![
+            FormattedTextFragment::hyperlink("https://google.com", "https://google.com"),
+        ])]
+    );
+}
+
+#[test]
+fn test_autolink_escape_roundtrip_is_stable() {
+    // Parsing a URL with no escapes should produce the same result as
+    // parsing the same URL with `\.` in place of `.` (simulating a save cycle).
+    // Both should yield the clean, unescaped URL.
+    let clean = test_parse_markdown("https://google.com");
+    let escaped = test_parse_markdown("https://google\\.com");
+    assert_eq!(clean, escaped);
+}
+
+#[test]
+fn test_parse_url_preserves_non_escaped_backslash() {
+    // A backslash followed by a non-punctuation character is not a markdown escape
+    // sequence and should be left as-is.
+    let source = "https://example.com/path\\nname";
+    assert_eq!(
+        test_parse_markdown(source),
+        vec![FormattedTextLine::Line(vec![
+            FormattedTextFragment::hyperlink(
+                "https://example.com/path\\nname",
+                "https://example.com/path\\nname"
+            ),
+        ])]
+    );
+}
+
+#[test]
 fn test_parse_url_embedded() {
     let source = "This iswww.google.comabc";
     assert_eq!(
@@ -952,6 +1028,29 @@ fn test_parse_unclosed_strikethrough() {
             FormattedTextFragment::bold("test1")
         ])]
     );
+}
+
+#[test]
+fn test_long_delimiter_run_does_not_overflow() {
+    // Regression test: a run of 256+ identical delimiters used to overflow the
+    // `u8` run counter, panicking in debug builds and silently wrapping the
+    // count to 0 (dropping the characters) in release builds. The count is now
+    // a `usize`, so a long unmatched run must round-trip to literal text.
+    for delimiter in ["*", "_", "~"] {
+        // 255 was already fine; 256 is the first value that overflowed `u8`.
+        for len in [255, 256, 512] {
+            let source = delimiter.repeat(len);
+            let parsed = parse_markdown(&source)
+                .unwrap_or_else(|_| panic!("{len} '{delimiter}' delimiters should parse"));
+            // An unmatched run carries no content to emphasize, so every
+            // character survives as literal text.
+            assert_eq!(
+                parsed.raw_text(),
+                format!("{source}\n"),
+                "{len} '{delimiter}' delimiters must round-trip without loss"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1705,6 +1804,70 @@ fn test_parse_autolinks_with_emphasis() {
                 ..Default::default()
             }
         }]
+    );
+}
+
+#[test]
+fn test_parse_emphasized_autolink_with_trailing_punctuation() {
+    assert_eq!(
+        parse_all("**https://example.com**.", parse_inline),
+        vec![
+            FormattedTextFragment {
+                text: "https://example.com".to_string(),
+                styles: FormattedTextStyles {
+                    weight: Some(CustomWeight::Bold),
+                    hyperlink: Some(Hyperlink::Url("https://example.com".to_string())),
+                    ..Default::default()
+                },
+            },
+            FormattedTextFragment::plain_text("."),
+        ]
+    );
+
+    assert_eq!(
+        parse_all("*https://example.com*!", parse_inline),
+        vec![
+            FormattedTextFragment {
+                text: "https://example.com".to_string(),
+                styles: FormattedTextStyles {
+                    italic: true,
+                    hyperlink: Some(Hyperlink::Url("https://example.com".to_string())),
+                    ..Default::default()
+                },
+            },
+            FormattedTextFragment::plain_text("!"),
+        ]
+    );
+}
+
+#[test]
+fn test_parse_autolink_strips_trailing_sentence_punctuation() {
+    assert_eq!(
+        parse_all("See https://example.com.", parse_inline),
+        vec![
+            FormattedTextFragment::plain_text("See "),
+            FormattedTextFragment::hyperlink("https://example.com", "https://example.com"),
+            FormattedTextFragment::plain_text("."),
+        ]
+    );
+}
+
+#[test]
+fn test_parse_autolink_preserves_escaped_trailing_punctuation() {
+    assert_eq!(
+        parse_all("https://example.com\\.", parse_inline),
+        vec![FormattedTextFragment::hyperlink(
+            "https://example.com.",
+            "https://example.com."
+        )]
+    );
+
+    assert_eq!(
+        parse_all("https://example.com\\\\.", parse_inline),
+        vec![
+            FormattedTextFragment::hyperlink("https://example.com\\", "https://example.com\\"),
+            FormattedTextFragment::plain_text("."),
+        ]
     );
 }
 
@@ -2751,4 +2914,94 @@ fn test_parse_table_with_strikethrough() {
     } else {
         panic!("Expected table");
     }
+}
+
+#[test]
+fn test_parse_html_comment_inline_is_stripped() {
+    let source = "Before <!-- TODO --> after\n";
+    assert_eq!(
+        test_parse_markdown(source),
+        vec![FormattedTextLine::Line(vec![
+            FormattedTextFragment::plain_text("Before  after")
+        ])]
+    );
+}
+
+#[test]
+fn test_parse_html_comment_single_line_block_is_stripped() {
+    let source = "# Heading\n<!-- section: quick-start -->\nBody text\n";
+    assert_eq!(
+        test_parse_markdown(source),
+        vec![
+            FormattedTextLine::Heading(FormattedTextHeader {
+                heading_size: 1,
+                text: vec![FormattedTextFragment::plain_text("Heading")]
+            }),
+            FormattedTextLine::Line(vec![FormattedTextFragment::plain_text("Body text")]),
+        ]
+    );
+}
+
+#[test]
+fn test_parse_html_comment_multi_line_block_is_stripped() {
+    let source = "Intro\n<!--\nnotes for maintainers\nspanning lines\n-->\nOutro\n";
+    assert_eq!(
+        test_parse_markdown(source),
+        vec![
+            FormattedTextLine::Line(vec![FormattedTextFragment::plain_text("Intro")]),
+            FormattedTextLine::Line(vec![FormattedTextFragment::plain_text("Outro")]),
+        ]
+    );
+}
+
+#[test]
+fn test_parse_unterminated_html_comment_stays_literal() {
+    // Per CommonMark, an unterminated `<!--` is not a comment, so it renders as text.
+    let source = "<!-- never closed\n";
+    assert_eq!(
+        test_parse_markdown(source),
+        vec![FormattedTextLine::Line(vec![
+            FormattedTextFragment::plain_text("<!-- never closed")
+        ])]
+    );
+}
+
+#[test]
+fn test_parse_html_comment_inside_code_block_is_preserved() {
+    let source = "```html\n<!-- keep me -->\n```";
+    assert_eq!(
+        test_parse_markdown(source),
+        vec![FormattedTextLine::CodeBlock(CodeBlockText {
+            lang: "html".to_string(),
+            code: "<!-- keep me -->\n".to_string()
+        })]
+    );
+}
+
+#[test]
+fn test_parse_html_comment_inside_code_span_is_preserved() {
+    let source = "Use `<!-- x -->` here\n";
+    assert_eq!(
+        test_parse_markdown(source),
+        vec![FormattedTextLine::Line(vec![
+            FormattedTextFragment::plain_text("Use "),
+            FormattedTextFragment::inline_code("<!-- x -->"),
+            FormattedTextFragment::plain_text(" here"),
+        ])]
+    );
+}
+
+#[test]
+fn test_parse_html_comment_with_trailing_same_line_content_is_not_block() {
+    // A comment is only a whole-line block comment when nothing but whitespace follows it on the
+    // same line. When content follows the closing `-->`, the line falls through to inline parsing:
+    // the comment is stripped inline and the trailing `# Heading` stays literal text rather than
+    // being reparsed as a fresh heading block.
+    let source = "<!-- hidden --> # Heading\n";
+    assert_eq!(
+        test_parse_markdown(source),
+        vec![FormattedTextLine::Line(vec![
+            FormattedTextFragment::plain_text(" # Heading")
+        ])]
+    );
 }
