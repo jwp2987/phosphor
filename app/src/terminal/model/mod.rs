@@ -29,6 +29,8 @@ pub mod find;
 pub mod grid;
 pub mod image_map;
 pub mod index;
+// Ported from Warp: the block-lifecycle transition coordinator. See `lifecycle/mod.rs`.
+pub(in crate::terminal) mod lifecycle;
 pub mod iterm_image;
 pub mod kitty;
 pub mod secrets;
