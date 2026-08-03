@@ -73,3 +73,7 @@ impl ReadDocumentsExecutor {
 impl Entity for ReadDocumentsExecutor {
     type Event = ();
 }
+
+#[cfg(test)]
+#[path = "read_documents_test.rs"]
+mod tests;
