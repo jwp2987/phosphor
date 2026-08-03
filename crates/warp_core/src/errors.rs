@@ -26,7 +26,7 @@ pub const LOG_TARGET: &str = "errors::report_error";
 /// upon.)
 #[macro_export]
 macro_rules! report_error {
-    ($err:expr) => {{
+    ($err:expr_2021) => {{
         #[allow(unused_imports)]
         use $crate::errors::{AnyhowErrorExt as _, ErrorExt as _, LOG_TARGET};
         let err = $err;
@@ -49,7 +49,7 @@ pub use report_error;
 /// upon.)
 #[macro_export]
 macro_rules! report_if_error {
-    ($result:expr) => {{
+    ($result:expr_2021) => {{
         if let Err(error) = &$result {
             $crate::report_error!(error);
         }
