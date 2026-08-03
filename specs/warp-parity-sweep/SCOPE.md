@@ -149,6 +149,13 @@ cluster; build non-cloud behavior + port the Warp tests that then become portabl
 - NLD heuristic feature flags (restore `nld_heuristic_v1/v2` → regain input-classifier coverage)
 - SettingSurfaces / SettingsMode / `surfaces_fn` (unblocks privacy/tui setting tests)
 
+### B6 — Fix-phase refinements (added to #11, ticked 2026-08-03)
+Surfaced while fixing Track-1 bugs; each bug is fixed to Warp's *behavior*, these reach exact-*mechanism* parity.
+- **`external_control_master` plumbing** — completes bug #37: thread the ownership signal (bootstrap shell scripts → DCS hook → session → `IsLegacySSHSession`) and pass `!external_control_master` at the two `remote_server_controller.rs` call sites, so the already-landed ControlMaster teardown guard actually engages. Cross-layer; the meaningful one.
+- **CJK link-boundary — align with Warp's mechanism** — replace #30's explicit Unicode ranges with the `unicode-general-category` crate (Ps/Pe/Pi/Pf/Po) for complete punctuation coverage. Small (add dep + swap).
+- **`"approve"` follow-up keyword** — restore `"approve"` to `input_classifier`'s `AGENT_FOLLOW_UP_INPUTS` (separate from #19's `agy`/`omp`). Trivial one-liner.
+- _Declined/deferred:_ theme portable-path machinery (#11) — left unticked; moot once gist-sync is removed (see `remove-ssh-manager/SCOPE.md`).
+
 ### B — Dropped (maintainer, 2026-08-02) — do NOT build
 OTEL trace-link header · VoiceInputLifecycle · AI codebase semantic-search · computer_use recording/overlay (and the `StartRecording` action). All need a cloud/BYO backend the fork lacks. Plus the already-cloud items left unticked in #11 (RunAgents orchestration, cloud-mode-v2, IsCloudConversationStorageEnabled, product telemetry, api::impl pending).
 
