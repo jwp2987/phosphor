@@ -15,12 +15,11 @@ use crate::test_utils::CompletionContext;
 // variants test a heuristic that no longer exists in this fork and are not
 // ported (see PORT task report, NEEDS-ADAPTATION).
 //
-// The one-off shell keyword set was also trimmed in this fork
-// (`ONE_OFF_SHELL_COMMAND_KEYWORDS` dropped "agy" and "omp"), so
-// `test_is_likely_shell_command_one_off_keyword_short_circuits` — which
-// exercises those two words as part of the same helper as "sudo"/"echo" — is
-// ported unmodified from Warp and is expected to fail on the "agy"/"omp"
-// cases; see PORT task report (FOUND REGRESSION).
+// The one-off shell keyword set previously dropped "agy" and "omp" from
+// `ONE_OFF_SHELL_COMMAND_KEYWORDS` (GitHub issue #19); they have been
+// restored to match Warp's oracle list, so
+// `test_is_likely_shell_command_one_off_keyword_short_circuits` — ported
+// unmodified from Warp — now passes.
 
 async fn mock_parsed_input_token(buffer_text: String) -> ParsedTokensSnapshot {
     warp_features::mark_initialized();
