@@ -7,6 +7,23 @@ pub enum LogDestination {
     Stderr,
 }
 
+/// Frontend that owns a logging session.
+///
+/// Selects the log subdirectory and rotation policy. The fork threads this in
+/// via [`LogConfig::is_cli`] today (see [`init`]); the enum keeps the internal
+/// rotation machinery aligned with the upstream shape and leaves room for a
+/// dedicated TUI directory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LogFrontend {
+    /// The desktop GUI frontend.
+    #[default]
+    Gui,
+    /// The headless terminal frontend.
+    Tui,
+    /// CLI and remote server processes.
+    Cli,
+}
+
 /// Configuration for initializing the logger.
 #[derive(Debug, Clone, Copy)]
 pub struct LogConfig {
@@ -20,6 +37,9 @@ pub struct LogConfig {
 #[cfg_attr(not(target_family = "wasm"), path = "native.rs")]
 #[cfg_attr(target_family = "wasm", path = "wasm.rs")]
 mod imp;
+
+#[cfg(not(target_family = "wasm"))]
+mod rotation;
 
 pub use imp::init;
 #[cfg(not(target_family = "wasm"))]
