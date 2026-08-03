@@ -162,3 +162,11 @@ Nothing fixed or built yet. Update this section as PRs land (`Fixes #N`).
 | --- | --- | --- | --- |
 | A — bug fixes | 0 | ~41 | tests-first; all red tests committed |
 | B — feature builds | 0 | ~40 ticked (BYOP-adapted) | see #11 |
+
+---
+
+## Related (non-parity)
+
+- **`specs/remove-ssh-manager/SCOPE.md`** — remove the fork-original SSH Manager +
+  SFTP browser + `zap_sync` gist-sync cluster (maintainer decision; not Warp-derived,
+  so outside this parity effort).
