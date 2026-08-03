@@ -27,6 +27,8 @@ cfg_if::cfg_if! {
             util::openable_file_type::FileTarget,
         };
         use std::path::PathBuf;
+        use unicode_general_category::{get_general_category, GeneralCategory};
+        use unicode_width::UnicodeWidthChar;
         use warp_util::path::CleanPathResult;
         use warp_util::path::LineAndColumnArg;
     }
@@ -42,6 +44,78 @@ const PREFIXES_TO_REMOVE: [&str; 2] = ["a/", "b/"];
 /// for `ls`.
 #[cfg(feature = "local_fs")]
 const SUFFIXES_TO_REMOVE: [&str; 1] = ["@"];
+
+#[cfg(feature = "local_fs")]
+struct TrimmedSentencePunctuation<'a> {
+    path: &'a str,
+    removed_width: usize,
+}
+
+#[cfg(feature = "local_fs")]
+fn is_trailing_sentence_punctuation(c: char) -> bool {
+    if c == '.' {
+        return true;
+    }
+    if c.is_ascii() {
+        return false;
+    }
+    matches!(
+        get_general_category(c),
+        GeneralCategory::ClosePunctuation
+            | GeneralCategory::FinalPunctuation
+            | GeneralCategory::OtherPunctuation
+    )
+}
+
+/// Strips trailing sentence punctuation from a captured path token when the
+/// punctuation is prose around the path rather than a meaningful path component.
+///
+/// File paths written at the end of a sentence frequently capture the trailing
+/// punctuation (e.g. `notes/README.md.` or `notes/README.md，`). On Windows the
+/// NT path normalizer silently strips a trailing `.` during path resolution, so
+/// without trimming, the captured token keeps the period in both the highlight
+/// range and the file extension, defeating extension-based classification (e.g.
+/// opening markdown in the viewer instead of as raw text).
+///
+/// Returns `None` when there is no trailing sentence punctuation, or when a
+/// trailing period is part of a `.`/`..` path component (e.g. `.`, `..`, `foo/.`,
+/// `foo/..`), which are legitimate path segments and must be preserved.
+#[cfg(feature = "local_fs")]
+fn path_without_trailing_sentence_punctuation(
+    path: &str,
+) -> Option<TrimmedSentencePunctuation<'_>> {
+    let mut trimmed = path;
+    let mut removed_width = 0;
+
+    while let Some(c) = trimmed.chars().next_back() {
+        if !is_trailing_sentence_punctuation(c) {
+            break;
+        }
+
+        let new_trimmed = trimmed.strip_suffix(c)?;
+        if new_trimmed.is_empty() {
+            break;
+        }
+
+        if c == '.' {
+            match new_trimmed.chars().next_back() {
+                // Empty (`.`) or a dot/separator immediately before the trailing
+                // `.` means the period is a real path component (`..`, `foo/.`,
+                // `foo\.`), not sentence punctuation.
+                None | Some('.') | Some('/') | Some('\\') => break,
+                _ => {}
+            }
+        }
+
+        trimmed = new_trimmed;
+        removed_width += UnicodeWidthChar::width(c).unwrap_or(1);
+    }
+
+    (removed_width > 0).then_some(TrimmedSentencePunctuation {
+        path: trimmed,
+        removed_width,
+    })
+}
 
 /// Highlighted link within a terminal model grid.
 #[derive(Debug, Clone)]
@@ -693,6 +767,41 @@ impl super::TerminalView {
         let mut link = None;
         'path_loop: for within_model_possible_path in possible_paths {
             let possible_path = within_model_possible_path.get_inner();
+
+            // A file path at the end of a sentence often captures trailing prose
+            // punctuation (e.g. `notes/README.md.` or `notes/README.md，`). Try the
+            // punctuation-trimmed candidate first so the resolved file, highlight
+            // range, and extension-based classification all exclude it. This must
+            // run before the untrimmed lookup because on Windows the NT path
+            // normalizer strips trailing dots, so the untrimmed path would
+            // otherwise resolve and leave the period inside the captured link.
+            if let Some(trimmed_path) =
+                path_without_trailing_sentence_punctuation(&possible_path.path.path)
+            {
+                let trimmed_cleaned_path = CleanPathResult {
+                    path: trimmed_path.path.into(),
+                    line_and_column_num: possible_path.path.line_and_column_num,
+                };
+                if let Some(absolute_path) = absolute_path_if_valid(
+                    &trimmed_cleaned_path,
+                    ShellPathType::ShellNative(working_directory.to_string()),
+                    shell_launch_data.as_ref(),
+                    &validation_ctx,
+                ) {
+                    let new_end_point = possible_path
+                        .range
+                        .end()
+                        .wrapping_sub(max_columns, trimmed_path.removed_width);
+                    link = Some(Self::create_valid_link(
+                        absolute_path,
+                        trimmed_cleaned_path.line_and_column_num,
+                        *possible_path.range.start()..=new_end_point,
+                        &within_model_possible_path,
+                    ));
+                    break 'path_loop;
+                }
+            }
+
             // We want to check if the clean path result is a valid path and get the canonical
             // absolute path back.
             let absolute_path = absolute_path_if_valid(
@@ -823,3 +932,7 @@ impl super::TerminalView {
         }
     }
 }
+
+#[cfg(all(test, feature = "local_fs"))]
+#[path = "link_detection_tests.rs"]
+mod tests;
