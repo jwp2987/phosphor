@@ -167,16 +167,20 @@ impl RequestFileEditsExecutor {
             return ActionExecution::InvalidAction;
         };
 
+        // If diff application failed, early exit. This MUST run before any storage-presence
+        // lookup so a failed apply is reported as DiffApplicationFailed rather than being
+        // masked as NotReady when no diff view/storage is registered for the action.
+        if let Some(errors) = self.diff_application_failures.remove(id) {
+            return ActionExecution::Sync(AIAgentActionResultType::RequestFileEdits(
+                RequestFileEditsResult::DiffApplicationFailed {
+                    error: DiffApplicationError::error_for_conversation(&errors),
+                },
+            ));
+        }
+
         // TUI path: the diff storage owns save + result reporting via a returned future,
         // so we bypass the GUI's diff-view event/oneshot flow entirely.
         if self.tui_diff_storages.contains_key(id) {
-            if let Some(errors) = self.diff_application_failures.remove(id) {
-                return ActionExecution::Sync(AIAgentActionResultType::RequestFileEdits(
-                    RequestFileEditsResult::DiffApplicationFailed {
-                        error: DiffApplicationError::error_for_conversation(&errors),
-                    },
-                ));
-            }
             let inner = self
                 .tui_diff_storages
                 .get(id)
@@ -197,15 +201,6 @@ impl RequestFileEditsExecutor {
             log::warn!("Tried to execute a RequestFileEdits action without a diff view");
             return ActionExecution::NotReady;
         };
-
-        // If diff application failed, early exit.
-        if let Some(errors) = self.diff_application_failures.remove(id) {
-            return ActionExecution::Sync(AIAgentActionResultType::RequestFileEdits(
-                RequestFileEditsResult::DiffApplicationFailed {
-                    error: DiffApplicationError::error_for_conversation(&errors),
-                },
-            ));
-        }
 
         let identifiers = self
             .generate_ai_identifiers(&input.conversation_id, id, ctx)
