@@ -12,6 +12,7 @@
 | **1 — Bug fixes** | Fix regressions the sweep caught (each has a committed red test) | [`warp-parity-sweep/SCOPE.md`](warp-parity-sweep/SCOPE.md) Workstream A | issues #3–#47 | ~41 | **Highest** |
 | **2 — Feature builds** | Restore ticked Warp gaps, BYOP-adapted | [`warp-parity-sweep/SCOPE.md`](warp-parity-sweep/SCOPE.md) Workstream B | issue #11 | ~40 | Medium / long-tail |
 | **3 — SSH-manager removal** | Delete the fork-original SSH/SFTP manager + `zap_sync` gist-sync | [`remove-ssh-manager/SCOPE.md`](remove-ssh-manager/SCOPE.md) | (fork-original, no issue) | 1 cluster / 7 steps | Independent |
+| **4 — Exhaustive test-gap audit** | Per-*function* triage of all missing Warp tests (close the sweep's sampling gap) | this doc, [§Track 4](#track-4--exhaustive-test-gap-audit) | (to file) | ~3,122 fns | Lowest / ongoing |
 
 ## How the tracks interlock
 
@@ -40,6 +41,7 @@ All ~41 **red** regression tests + these scopes currently live on branch
 3. **Track 3 — removal** (early; quick + independent; shrinks surface before building more).
 4. **Track 1 — remainder** (data/behavior → UX), sequencing the ~6 feature-overlap bugs.
 5. **Track 2 — features**, highest-value clusters first.
+6. **Track 4 — exhaustive test-gap audit** (lowest; ongoing — partly resolves as Track 2 lands).
 
 ## BYOP decisions already made (2026-08-02)
 
@@ -48,6 +50,35 @@ OTEL trace-link, VoiceInputLifecycle, AI semantic-search, computer_use recording
 **Split — build non-cloud half only:** AI skills (drop remote arm), history_model (drop
 cloud-metadata-merge/remote-child), context-window (drop pricing warning), persistence
 (drop team_uid). **Adapt:** autoupdate channels → the fork's own release repo.
+
+## Track 4 — exhaustive test-gap audit
+
+**Why:** the parity sweep triaged at the *file/module* level with sampling, not
+per-function. It swept every area, but the long tail (especially AI) was categorized
+fast, not verified line-by-line. This track closes that gap so we can honestly say
+"every Warp test is accounted for."
+
+**Goal:** for each of the ~3,122 missing Warp test *functions* (fork ~7,428 vs Warp
+~10,550), assign a **verified** disposition:
+- **ported** — brought over (regression net), or
+- **already-covered** — confirmed equivalent in the fork under a different name/inline, or
+- **cloud-drop** — confirmed cloud, legitimately dropped, or
+- **feature-blocked** — needs a #11 feature first (link the ledger item).
+
+**Method:** systematic per-function diff of `warp/master` test fns vs the fork, area
+by area, producing a definitive ledger (spreadsheet/issue checklist). Prioritize the
+sub-scopes agents flagged as **unfinished**:
+- `app/src/workspaces/*` (team/user_profiles/user_workspaces — not audited)
+- rest of `app/src/search/*` (mixer, searcher, command_palette, command_search)
+- large `remote_server` daemon subsystems (setup/version/lifecycle — "too big to port")
+- **AI area** — biggest under-covered surface; `history_model` (45 tests triaged, ~0 ported)
+
+**Priority: lowest.** Do it after Tracks 1 & 3; it partly resolves itself as Track 2
+features land (feature-blocked tests become portable). Lower ROI than fixing known
+bugs, but it's the only way to *guarantee* no high-signal regression is still hiding.
+
+**Models:** Sonnet for the mechanical per-function diff/triage; Opus for the AI-area
+judgment calls.
 
 ## Agent model guidance
 
