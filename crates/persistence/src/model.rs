@@ -913,45 +913,57 @@ impl AgentConversation {
     /// A conversation is restorable if:
     /// - It contains a single task or fewer, OR
     /// - It contains multiple tasks where every task other than the root task has a parent task ID.
+    /// See [`tasks_are_restorable`] for the exact rules.
     pub fn is_restorable(&self) -> bool {
-        if self.tasks.len() <= 1 {
-            return true;
-        }
+        tasks_are_restorable(self.tasks.iter())
+    }
+}
 
-        // Find the root task(s) - tasks with no parent_task_id or empty parent_task_id
-        let root_tasks: Vec<_> = self
-            .tasks
-            .iter()
-            .filter(|task| {
-                task.dependencies
-                    .as_ref()
-                    .map(|deps| deps.parent_task_id.is_empty())
-                    .unwrap_or(true)
-            })
-            .collect();
+/// Returns `true` if a conversation with the given task snapshot is
+/// restorable.
+///
+/// A conversation is restorable if:
+/// - It contains a single task or fewer, OR
+/// - It has exactly one parentless (root) task, OR
+/// - It has multiple parentless tasks but exactly one of them has
+///   non-empty `messages`. This permits restoring conversations whose
+///   persisted state was corrupted by the pre-QUALITY-774 optimistic-root
+///   writer bug, where a stub root row co-existed with the real server
+///   root row. `AIConversation::new_restored` deterministically picks
+///   the real root in that shape via its restore-side dedupe.
+///
+/// Non-root tasks need not be validated here: any task that does not
+/// match the parentless predicate has, by construction, a non-empty
+/// `parent_task_id`.
+pub fn tasks_are_restorable<'a>(tasks: impl IntoIterator<Item = &'a api::Task>) -> bool {
+    let tasks: Vec<&api::Task> = tasks.into_iter().collect();
+    if tasks.len() <= 1 {
+        return true;
+    }
 
-        // Must have exactly one root task
-        if root_tasks.len() != 1 {
-            return false;
-        }
-
-        // All non-root tasks must have a non-empty parent_task_id
-        self.tasks.iter().all(|task| {
-            // Root task is always valid
-            if task
-                .dependencies
+    // Find parentless (root) tasks - tasks with no dependencies or with an
+    // empty parent_task_id.
+    let root_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|task| {
+            task.dependencies
                 .as_ref()
                 .map(|deps| deps.parent_task_id.is_empty())
                 .unwrap_or(true)
-            {
-                return true;
-            }
-
-            // Non-root tasks must have a non-empty parent_task_id
-            task.dependencies
-                .as_ref()
-                .is_some_and(|deps| !deps.parent_task_id.is_empty())
         })
+        .collect();
+
+    match root_tasks.len() {
+        // Malformed: no parentless task means no root to anchor restore on.
+        0 => false,
+        // Single root: the normal happy path.
+        1 => true,
+        // Multi-root: only permit the specific [stub + real] shape
+        // produced by the pre-QUALITY-774 optimistic-root writer bug,
+        // where exactly one parentless row carries the real conversation
+        // content. The restore-side dedupe in `AIConversation::new_restored`
+        // will pick that real root.
+        _ => root_tasks.iter().filter(|t| !t.messages.is_empty()).count() == 1,
     }
 }
 
