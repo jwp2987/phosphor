@@ -16004,6 +16004,7 @@ dependencies = [
  "tauri-winrt-notification",
  "thiserror 2.0.18",
  "tini",
+ "url",
  "urlencoding",
  "vec1",
  "version-compare",
