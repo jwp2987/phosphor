@@ -53,6 +53,7 @@ thiserror.workspace = true
 vec1.workspace = true
 version-compare = { workspace = true, optional = true }
 warpui_core.workspace = true
+url.workspace = true
 wgpu = { workspace = true, optional = true }
 
 [dev-dependencies]
