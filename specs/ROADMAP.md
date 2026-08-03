@@ -115,11 +115,14 @@ to be reverted).
 Rule of thumb: **bug fixes lean Sonnet** (test-guided, oracle has the answer);
 **feature builds lean Opus + close review** (faithful-port risk); **removal = Sonnet**.
 
-## Current state
+## Current state (2026-08-03)
 
-- Branch `warp-test-parity-sweep`: all ported tests + scopes committed; tree clean; compiles (3997 pass / 31 fail = ~26 tracked red + 5 fd-flaky (#24) / 33 ignored).
-- GitHub `jwp2987/phosphor`: issues #3–#47 (bugs), #11 (feature ledger).
-- **Nothing fixed / built / removed.** Next action = pick a track and open the first PR.
+- **Track 1 (bug fixes): DONE.** Branch `parity-fixes` (off `warp-test-parity-sweep`) has **42 of 43 bugs fixed + closed** (issue→commit→close, each a verified oracle port). Only **#37** remains open (groundwork committed; needs `external_control_master` plumbing — a cross-layer follow-up). Full run: **4036 pass / 5 fail** = the FD-exhaustion flakies (#24, pass in isolation). #48/#49 were extra reds caught by the final verification.
+- Track 2 (features): not started — awaiting the #11 sign-off decisions.
+- Track 3 (SSH-manager removal): not started — see `remove-ssh-manager/SCOPE.md`.
+- Track 4 (exhaustive audit): not started.
+- **Nothing pushed.** `main` untouched. Next action: **push `parity-fixes` / open the fix PRs** (each fix is a clean commit with `Fixes #N`), then Tracks 2/3/4.
+- GitHub `jwp2987/phosphor` open: #37 (groundwork), #24 (FD test-health), #11 (feature ledger), #5/#4/#2 (deferred/tracking).
 
 ## Verify command (all tracks, flock-serialized — MANDATORY)
 

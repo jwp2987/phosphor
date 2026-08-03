@@ -160,8 +160,10 @@ Nothing fixed or built yet. Update this section as PRs land (`Fixes #N`).
 
 | Phase | Done | Total | Notes |
 | --- | --- | --- | --- |
-| A — bug fixes | 0 | ~41 | tests-first; all red tests committed |
+| A — bug fixes | **42** | 43 | DONE on branch `parity-fixes` (2026-08-03). Only #37 remains (groundwork-only, open — needs `external_control_master` plumbing). Full run 4036 pass / 5 fail = the FD flakies (#24, pass in isolation). Not pushed. |
 | B — feature builds | 0 | ~40 ticked (BYOP-adapted) | see #11 |
+
+Fix-phase notes: #48/#49 were surfaced by the final full-suite verification (un-filed reds). Deliberate scoped adaptations noted on their issues: #15 (TuiView→fork's tui_views map), #17 (theme path-scoped starts_with), #30 (CJK ranges vs general-category crate). Verify app/src fixes centrally; run full `cargo test -p warp` in the FOREGROUND (background jobs get reaped).
 
 ---
 
