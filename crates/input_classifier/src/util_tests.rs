@@ -188,3 +188,15 @@ fn test_is_likely_shell_command_downloads_log_path_true() {
         assert!(downloads_log_path_in_nl_prompt_is_shell().await);
     });
 }
+
+#[test]
+fn test_is_agent_follow_up_input() {
+    for input in ["yes", "continue", "do it", "approve"] {
+        assert!(
+            is_agent_follow_up_input(input),
+            "expected {input:?} to be recognized as an agent follow-up input"
+        );
+    }
+    assert!(!is_agent_follow_up_input("no"));
+    assert!(!is_agent_follow_up_input("approved"));
+}
