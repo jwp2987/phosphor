@@ -3541,9 +3541,10 @@ impl Workspace {
             NewWorkspaceSource::Restored {
                 window_snapshot, ..
             } => {
-                if should_default_open
-                    && *TabSettings::as_ref(ctx).show_vertical_tab_panel_in_restored_windows
-                {
+                if !should_default_open {
+                    // Stale "panel open" snapshot would leave a click-eating dismiss underlay (#9505).
+                    false
+                } else if *TabSettings::as_ref(ctx).show_vertical_tab_panel_in_restored_windows {
                     true
                 } else {
                     window_snapshot.vertical_tabs_panel_open
@@ -10048,9 +10049,13 @@ impl Workspace {
 
         match index.cmp(&self.active_tab_index) {
             Ordering::Equal => {
-                // If there's a previous tab, activate it. Otherwise, keep the active
-                // tab at index 0.
-                self.activate_tab_internal(index.saturating_sub(1), ctx);
+                // Activate the tab that was immediately after the closed one — to the
+                // right for horizontal tabs, below for vertical tabs. After removal that
+                // tab occupies the same index. If the closed tab was the last one, fall
+                // back to the new last tab (the previous neighbor). This matches the
+                // browser / macOS convention for both layouts.
+                let active_index = index.min(self.tabs.len() - 1);
+                self.activate_tab_internal(active_index, ctx);
             }
             Ordering::Less => {
                 // If we are closing a tab before the active tab we need to adjust
@@ -11099,6 +11104,28 @@ impl Workspace {
             self.restore_conversation_in_new_tab(conversation_id, ctx);
             return;
         };
+
+        // Fast path: the conversation is already loaded and live in the active pane.
+        // Just enter the agent view for it synchronously — no loading state, no reload.
+        let already_exists_in_active_pane = {
+            let terminal_view_id = terminal_view.as_ref(ctx).view_id();
+            let history_model = BlocklistAIHistoryModel::as_ref(ctx);
+            history_model.conversation(&conversation_id).is_some()
+                && history_model
+                    .all_live_conversations_for_terminal_view(terminal_view_id)
+                    .any(|conversation| conversation.id() == conversation_id)
+        };
+        if already_exists_in_active_pane {
+            terminal_view.update(ctx, |terminal_view, ctx| {
+                terminal_view.enter_agent_view_for_conversation(
+                    None,
+                    AgentViewEntryOrigin::RestoreExistingConversation,
+                    conversation_id,
+                    ctx,
+                );
+            });
+            return;
+        }
         // Check if there's an active long-running command in the active terminal.
         // If not, set the active terminal view to loading since we're going to restore in the active pane.
         // We do these operations together to hold the model lock across them.
@@ -16947,9 +16974,7 @@ impl Workspace {
             .platform_window(self.window_id)
             .map(|window| window.fullscreen_state() == FullscreenState::Fullscreen)
             .unwrap_or(false);
-        if self.current_workspace_state.is_left_panel_open() {
-            0.
-        } else if is_window_fullscreen && cfg!(target_os = "macos") {
+        if is_window_fullscreen && cfg!(target_os = "macos") {
             // Full-screen mode on MacOS does not need as much padding (traffic lights are hidden).
             TAB_BAR_PADDING_LEFT
         } else {
