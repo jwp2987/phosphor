@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use ordered_float::OrderedFloat;
-use warp_core::telemetry::testing::MockTelemetryContextProvider;
 use warpui_core::r#async::Timer;
 use warpui_core::{App, AppContext, Element};
 
@@ -139,8 +138,11 @@ impl AsyncDataSource for QueryDrivenDelayedAsyncSource {
     }
 }
 
-fn initialize_app(app: &mut App) {
-    app.update(MockTelemetryContextProvider::register);
+fn initialize_app(_app: &mut App) {
+    // Telemetry was physically removed in Zap, so the mock telemetry context
+    // provider this used to register no longer exists and the telemetry macros
+    // are no-op shims. No app setup is required here; kept as a stub so the
+    // call sites below stay unchanged.
 }
 
 #[test]
