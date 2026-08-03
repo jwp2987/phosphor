@@ -5607,7 +5607,7 @@ fn onekey_empty_candidates_with_empty_query_returns_empty_ordered() {
 fn ctrl_c_after_stop_takeover_cancels_conversation() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
-        FeatureFlag::AgentView.set_enabled(true);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
 
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
@@ -5671,7 +5671,7 @@ fn ctrl_c_after_stop_takeover_cancels_conversation() {
 fn ctrl_c_after_transfer_takeover_does_not_cancel_conversation() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
-        FeatureFlag::AgentView.set_enabled(true);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
 
         let terminal = add_window_with_terminal(&mut app, None);
         let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
