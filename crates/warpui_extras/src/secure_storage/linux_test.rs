@@ -44,3 +44,13 @@ fn test_decrypt_fails_on_malformed_data() {
         );
     }
 }
+
+#[test]
+fn default_fallback_does_not_create_missing_directory() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fallback_dir = temp_dir.path().join("secure-storage");
+    let storage = SecureStorage::new_with_fallback("darmok", fallback_dir.clone());
+
+    assert!(storage.write_fallback_value("key", "value").is_err());
+    assert!(!fallback_dir.exists());
+}

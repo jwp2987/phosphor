@@ -58,6 +58,89 @@ fn test_possible_file_paths_in_word() {
 }
 
 #[test]
+fn test_detect_urls_stops_at_fullwidth_punctuation() {
+    assert_eq!(detect_urls("go https://example.com，next"), vec![3..22]);
+    assert_eq!(detect_urls("go https://example.com。"), vec![3..22]);
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_detect_file_paths_stops_at_fullwidth_punctuation() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("warp-rich-content.md");
+    std::fs::write(&file, "# Hello\n").unwrap();
+
+    let text = "see warp-rich-content.md， and warp-rich-content.md。";
+    let detected_paths = detect_file_paths(dir.path().to_str().unwrap(), text, None);
+
+    let link_ranges = detected_paths.keys().cloned().collect_vec();
+    assert!(link_ranges.contains(&(4..24)));
+    assert!(link_ranges.contains(&(30..50)));
+    assert!(!link_ranges.contains(&(4..25)));
+    assert!(!link_ranges.contains(&(30..51)));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_detect_file_paths_keeps_fullwidth_punctuation_when_it_is_the_filename() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("warp-rich-content.md，");
+    std::fs::write(&file, "# Hello\n").unwrap();
+
+    let text = "see warp-rich-content.md，";
+    let detected_paths = detect_file_paths(dir.path().to_str().unwrap(), text, None);
+
+    assert!(detected_paths.contains_key(&(4..25)));
+}
+
+#[test]
+fn test_possible_file_paths_in_word_cjk_punctuation() {
+    // Fullwidth colon (U+FF1A) directly touching a path — common in CJK prose
+    // such as `路径：/path/to/file`.
+    let word = "路径：/path/to/file.md";
+    let possible_paths = possible_file_paths_in_word(word).collect_vec();
+    assert!(possible_paths.contains(&"/path/to/file.md"));
+    assert!(possible_paths.contains(&"路径"));
+
+    // Fullwidth parentheses (U+FF08 / U+FF09) wrapping a path.
+    let word = "（/path/to/file）";
+    let possible_paths = possible_file_paths_in_word(word).collect_vec();
+    assert!(possible_paths.contains(&"/path/to/file"));
+
+    // CJK corner brackets (U+300C / U+300D) wrapping a path.
+    let word = "「/path/to/file」";
+    let possible_paths = possible_file_paths_in_word(word).collect_vec();
+    assert!(possible_paths.contains(&"/path/to/file"));
+
+    // Ideographic full stop (U+3002) following a path.
+    let word = "/path/to/file。";
+    let possible_paths = possible_file_paths_in_word(word).collect_vec();
+    assert!(possible_paths.contains(&"/path/to/file"));
+
+    // Fullwidth comma (U+FF0C) between paths.
+    let word = "/a/b，/c/d";
+    let possible_paths = possible_file_paths_in_word(word).collect_vec();
+    assert!(possible_paths.contains(&"/a/b"));
+    assert!(possible_paths.contains(&"/c/d"));
+
+    // CJK letters (general category Lo) must NOT split a token, otherwise paths
+    // legitimately containing CJK characters would be fragmented.
+    let word = "/path/音楽/テスト.txt";
+    let possible_paths = possible_file_paths_in_word(word).collect_vec();
+    assert!(possible_paths.contains(&"/path/音楽/テスト.txt"));
+}
+
+// NOTE: upstream (warp/master) also has `link_tooltip_anchor_ids_are_unique_per_block`,
+// a regression guard for link tooltips not appearing in multi-block Agent Mode
+// conversations. It exercises `DetectedLinksState::tooltip_position_id` and
+// `resolved_tooltip_position_id()`, both of which are absent from this fork's
+// `DetectedLinksState` (only `detected_links_by_location`,
+// `currently_hovered_link_location`, and `link_location_open_tooltip` exist here).
+// That means the per-block tooltip-anchor fix itself was never ported, not just its
+// test — a real gap, tracked as a NEEDS-ADAPTATION / regression candidate rather than
+// silently dropped.
+
+#[test]
 fn test_possible_file_paths_in_word_multibyte() {
     let word = "/path/音楽/テストファイル.txt:16:ḧeĹḹo";
     let possible_paths = possible_file_paths_in_word(word).collect_vec();
