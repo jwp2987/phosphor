@@ -1413,10 +1413,31 @@ impl AppContext {
         view_id: EntityId,
         action: &dyn Action,
     ) {
-        let responder_chain = match self.presenter(window_id) {
-            Some(presenter) => presenter.borrow().ancestors(view_id),
-            // TUI path: no GUI presenter; use the `view_parents` hierarchy.
-            None => self.view_ancestors(window_id, view_id),
+        // A GUI window's presenter only tracks the parentage of GUI views
+        // (`views`); a Zap TUI view — whether it lives in a TUI-only window or
+        // is embedded as a child of a GUI window — has its ancestry recorded in
+        // `view_parents` instead (see `record_view_parent` /
+        // `report_view_embeddings`). Route by where the leaf view itself lives,
+        // not by whether the window happens to have a presenter: a TUI leaf
+        // under a GUI root would otherwise fall into the presenter branch,
+        // which has never heard of it, and resolve to a one-element responder
+        // chain that never reaches its GUI ancestors.
+        #[cfg(feature = "tui")]
+        let is_tui_view = self
+            .windows
+            .get(&window_id)
+            .is_some_and(|window| window.tui_views.contains_key(&view_id));
+        #[cfg(not(feature = "tui"))]
+        let is_tui_view = false;
+
+        let responder_chain = if is_tui_view {
+            self.view_ancestors(window_id, view_id)
+        } else {
+            match self.presenter(window_id) {
+                Some(presenter) => presenter.borrow().ancestors(view_id),
+                // TUI path: no GUI presenter; use the `view_parents` hierarchy.
+                None => self.view_ancestors(window_id, view_id),
+            }
         };
         self.dispatch_typed_action(window_id, &responder_chain, action, log::Level::Info);
     }
@@ -4753,10 +4774,17 @@ impl AppContext {
     }
 
     pub fn view_name(&self, window_id: WindowId, view_id: EntityId) -> Option<&str> {
-        self.windows
-            .get(&window_id)
-            .and_then(|window| window.views.get(&view_id))
-            .map(|view| view.ui_name())
+        let window = self.windows.get(&window_id)?;
+        // GUI view (`views`); fall back to Zap TUI view (`tui_views`) — see the
+        // module-level note on the dual view registry.
+        if let Some(view) = window.views.get(&view_id) {
+            return Some(view.ui_name());
+        }
+        #[cfg(feature = "tui")]
+        if let Some(view) = window.tui_views.get(&view_id) {
+            return Some(view.ui_name());
+        }
+        None
     }
 
     /// Returns all the views of type `T` within `window_id`.
