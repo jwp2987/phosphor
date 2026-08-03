@@ -136,6 +136,11 @@ impl FileDataSource {
             repo_root.and_then(|repo_root| opened_files.opened_files_for_repo(&repo_root));
 
         for item in contents.iter() {
+            // Never show directories -- there's no way to open them currently.
+            if item.is_directory {
+                continue;
+            }
+
             let mut file_ranking = if git_changed_files.contains(&item.path) {
                 FileRanking::ChangedInGit
             } else {
