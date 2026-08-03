@@ -981,15 +981,14 @@ impl LocalRepoMetadataModel {
                         let state =
                             FileTreeState::new(root_entry, gitignores_for_build, Some(repository_handle));
 
-                        if let Err(e) =
-                            model.add_repository_internal(std_repo_path.clone(), state, ctx)
-                        {
+                        match model.add_repository_internal(std_repo_path.clone(), state, ctx)
+                        { Err(e) => {
                             log::warn!("Failed to add repository {repo_path_str}: {e:?}");
                             // On failure, mark the repository as failed
                             model
                                 .repositories
                                 .insert(std_repo_path, IndexedRepoState::Failed(e));
-                        } else if indexed_with_limit {
+                        } _ => if indexed_with_limit {
                             safe_warn!(
                                 safe: ("Repository exceeded max file limit; indexed in degraded mode"),
                                 full: ("Repository {repo_path_str} exceeded max file limit ({MAX_FILES_PER_REPO}); indexed only first level — subdirectories load on expand")
@@ -1001,7 +1000,7 @@ impl LocalRepoMetadataModel {
                                 repo_path_str,
                                 files.len()
                             );
-                        }
+                        }}
                     }
                     Err(e) => {
                         safe_warn!(

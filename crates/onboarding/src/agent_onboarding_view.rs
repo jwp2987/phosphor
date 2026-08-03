@@ -276,7 +276,7 @@ impl View for AgentOnboardingView {
 
         let mut stack = Stack::new();
 
-        if let Some(img) = theme.background_image() {
+        match theme.background_image() { Some(img) => {
             // Render the image behind everything.
             stack.add_child(
                 Shrinkable::new(
@@ -295,13 +295,13 @@ impl View for AgentOnboardingView {
                     .with_background(theme.background().with_opacity(overlay_opacity))
                     .finish(),
             );
-        } else {
+        } _ => {
             stack.add_child(
                 Container::new(Empty::new().finish())
                     .with_background(theme.background())
                     .finish(),
             );
-        }
+        }}
 
         let selected_slide = self.onboarding_state.as_ref(app).step();
         let slide = match selected_slide {

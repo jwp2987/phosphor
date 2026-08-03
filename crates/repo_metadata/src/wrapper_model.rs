@@ -346,7 +346,7 @@ impl RepoMetadataModel {
     pub fn remote_repository_ids<'a>(
         &self,
         ctx: &'a AppContext,
-    ) -> impl Iterator<Item = &'a RemoteRepositoryIdentifier> {
+    ) -> impl Iterator<Item = &'a RemoteRepositoryIdentifier> + use<'a> {
         self.remote.as_ref(ctx).remote_repository_ids()
     }
 

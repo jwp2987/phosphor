@@ -2,7 +2,7 @@
 name = "warp_completer"
 authors = ["Warp Team <dev@warp.dev>"]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Warp completions engine"
 publish.workspace = true
 license.workspace = true
@@ -53,6 +53,11 @@ command = { path = "../command", features = ["test-util"] }
 anyhow.workspace = true
 # Enable the `test-util` feature for our own package when running tests.
 warp_completer = { path = ".", features = ["test-util"] }
+# The describe engine checks feature flags (e.g. ProviderCommand); in debug
+# builds that panics unless warp_features is initialized. Enabling its
+# `test-util` feature disables the init assertion for the standalone test
+# build, matching how the full workspace suite runs these tests.
+warp_features = { workspace = true, features = ["test-util"] }
 
 [features]
 # Enables the completions-on-js implementation of the completion engine.

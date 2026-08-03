@@ -800,15 +800,15 @@ impl RemoteServerClient {
                                 log::warn!("Event channel closed, dropping push message");
                             }
                         }
-                    } else if let Some((_, tx)) = pending_requests.remove(&request_id) {
+                    } else { match pending_requests.remove(&request_id) { Some((_, tx)) => {
                         // Ignore send failure — the caller may have dropped the receiver.
                         let _ = tx.send(Ok(msg));
-                    } else {
+                    } _ => {
                         log::warn!("Received unexpected response with request_id={request_id}");
-                    }
+                    }}}
                 }
                 Err(ProtocolError::Decode(ref err, Some(ref request_id))) => {
-                    if let Some((_, tx)) = pending_requests.remove(request_id) {
+                    match pending_requests.remove(request_id) { Some((_, tx)) => {
                         log::warn!(
                             "Reader task: malformed response \
                              (request_id={request_id}): {err}"
@@ -817,12 +817,12 @@ impl RemoteServerClient {
                             err.clone(),
                             Some(request_id.clone()),
                         ))));
-                    } else {
+                    } _ => {
                         log::warn!(
                             "Reader task: malformed response for \
                              unknown request (request_id={request_id}): {err}"
                         );
-                    }
+                    }}
                 }
                 Err(ProtocolError::Decode(ref err, None)) => {
                     log::warn!(

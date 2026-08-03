@@ -119,7 +119,7 @@ impl FileTreeMapStore {
     pub fn children(
         &self,
         path: &StandardizedPath,
-    ) -> impl Iterator<Item = &Arc<StandardizedPath>> {
+    ) -> impl Iterator<Item = &Arc<StandardizedPath>> + use<'_> {
         if self
             .state_map
             .get(path)

@@ -49,7 +49,7 @@ impl DetectedRepositories {
         active_directory: &str,
         source: RepoDetectionSource,
         ctx: &mut ModelContext<Self>,
-    ) -> impl Future<Output = Option<PathBuf>> {
+    ) -> impl Future<Output = Option<PathBuf>> + use<> {
         #[cfg(feature = "local_fs")]
         {
             use futures::channel::oneshot;
@@ -99,8 +99,7 @@ impl DetectedRepositories {
                             // Only treat as external if it's outside the working tree.
                             .filter(|p| !p.starts_with(&repo_root_path));
 
-                            if let Some(repository) =
-                                DirectoryWatcher::handle(ctx).update(ctx, |watcher, ctx| {
+                            match DirectoryWatcher::handle(ctx).update(ctx, |watcher, ctx| {
                                     watcher
                                         .add_directory_with_git_dir(
                                             repo_root_path,
@@ -109,16 +108,16 @@ impl DetectedRepositories {
                                         )
                                         .ok()
                                 })
-                            {
+                            { Some(repository) => {
                                 let repo_path = repository.as_ref(ctx).root_dir().to_local_path();
                                 ctx.emit(DetectedRepositoriesEvent::DetectedGitRepo {
                                     repository,
                                     source,
                                 });
                                 let _ = tx.send(repo_path);
-                            } else {
+                            } _ => {
                                 let _ = tx.send(None);
-                            }
+                            }}
                         } else {
                             // No working tree path; do not treat git_dir_path as a repository path.
                             let _ = tx.send(None);
