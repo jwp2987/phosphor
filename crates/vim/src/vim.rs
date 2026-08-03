@@ -1125,7 +1125,10 @@ impl VimFSA {
                     bound: WordBound::End,
                     word_type: WordType::from(c),
                 })),
-                'g' => VimEventType::Navigate(VimMotion::JumpToFirstLine),
+                'g' => match self.get_action_count() {
+                    Some(line_number) => VimEventType::Navigate(VimMotion::JumpToLine(line_number)),
+                    None => VimEventType::Navigate(VimMotion::JumpToFirstLine),
+                },
                 'd' => VimEventType::GotoDefinition,
                 'h' => VimEventType::ShowHover,
                 'r' => VimEventType::FindReferences,
@@ -1383,7 +1386,10 @@ impl VimFSA {
                 'g' => self.create_operation(
                     operator,
                     VimOperand::Motion {
-                        motion: VimMotion::JumpToFirstLine,
+                        motion: match self.get_operand_count() {
+                            Some(line_number) => VimMotion::JumpToLine(line_number),
+                            None => VimMotion::JumpToFirstLine,
+                        },
                         motion_type: MotionType::Linewise,
                     },
                 ),
@@ -1602,7 +1608,10 @@ impl VimFSA {
                     bound: WordBound::End,
                     word_type: WordType::from(c),
                 })),
-                'g' => VimEventType::Navigate(VimMotion::JumpToFirstLine),
+                'g' => match self.get_action_count() {
+                    Some(line_number) => VimEventType::Navigate(VimMotion::JumpToLine(line_number)),
+                    None => VimEventType::Navigate(VimMotion::JumpToFirstLine),
+                },
                 'c' => {
                     let motion_type = match self.mode {
                         VimMode::Visual(mt) => mt,
