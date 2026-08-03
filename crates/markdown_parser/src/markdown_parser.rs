@@ -46,8 +46,17 @@ const INDENT_TAG_MIN_COUNT: usize = 0;
 const INDENT_TAG_MAX_COUNT: usize = INDENT_MAX_LEVEL * NUM_SPACE_PER_INDENT_LEVEL;
 
 /// Formatting delimiter characters used for emphasis/strikethrough in Markdown.
-/// These are stripped from trailing URLs and used to detect valid autolink boundaries.
+/// Used to detect valid autolink boundaries (an autolink may follow one of these).
 const FORMATTING_DELIMITERS: &str = "*_~";
+
+/// Trailing punctuation that is not considered part of an autolink, per the GFM
+/// autolink extension: <https://github.github.com/gfm/#autolinks-extension->.
+/// This is a superset of [`FORMATTING_DELIMITERS`] and is stripped from the end
+/// of a parsed URL. Stripping the whole set (not just the formatting delimiters)
+/// matters when an emphasized autolink is followed by other punctuation — e.g.
+/// `**https://example.com**.` — so the closing `**` is freed from the URL and
+/// the emphasis can still be matched.
+const AUTOLINK_TRAILING_PUNCTUATION: &str = "?!.,:*_~";
 
 /// Tracks indentation context during list parsing to enable relative indentation calculation.
 #[derive(Debug, Clone)]
@@ -188,6 +197,14 @@ fn parse_markdown_internal<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     let mut remaining = markdown;
     let mut lines = Vec::new();
     while !remaining.is_empty() {
+        // Block-level comments produce no line at all, so they are handled outside `block`, which
+        // must yield a `FormattedTextLine`. This runs first because a comment can only start at
+        // `<!--`, which no other block construct claims.
+        if let Ok((remaining_after_comment, _)) = parse_html_comment_block::<E>(remaining) {
+            remaining = remaining_after_comment;
+            continue;
+        }
+
         let (remaining_after_block, mut line) = block(remaining)?;
         remaining = remaining_after_block;
 
@@ -228,6 +245,39 @@ fn parse_paragraph<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     context(
         "paragraph",
         map(parse_markdown_line, FormattedTextLine::Line),
+    )(markdown)
+}
+
+/// Parse an HTML comment (`<!-- ... -->`), which may span multiple lines.
+///
+/// The comment body is consumed and discarded; comments are metadata and should not render. Per
+/// CommonMark, an unterminated `<!--` is not a comment, so this parser fails when there is no
+/// closing `-->` and the text is left to be rendered literally.
+fn parse_html_comment<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
+    markdown: &'a str,
+) -> IResult<&'a str, &'a str, E> {
+    context(
+        "html_comment",
+        delimited(tag("<!--"), take_until("-->"), tag("-->")),
+    )(markdown)
+}
+
+/// Parse an HTML comment that occupies whole lines, consuming its trailing line ending so that it
+/// leaves no blank line behind.
+///
+/// Only whitespace may follow the closing `-->` on the same line: the trailing spaces must be
+/// terminated by a line ending or EOF. When other content follows on the same line, this fails so
+/// the line falls through to inline parsing (which strips the comment) instead of dropping the
+/// comment and reparsing the remainder as a fresh block.
+fn parse_html_comment_block<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
+    markdown: &'a str,
+) -> IResult<&'a str, &'a str, E> {
+    context(
+        "html_comment_block",
+        terminated(
+            preceded(space0, parse_html_comment),
+            pair(space0, alt((value((), parse_line_ending), value((), eof)))),
+        ),
     )(markdown)
 }
 
@@ -991,6 +1041,9 @@ fn parse_inline<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
             InlineToken::Text(text) => {
                 state.push_text(text);
             }
+            InlineToken::Comment => {
+                // Comments are metadata; drop them without emitting a fragment.
+            }
             InlineToken::AutoLink(url) => {
                 // Per GFM spec, autolinks can follow whitespace, line beginning, or formatting
                 // delimiters (`*`, `_`, `~`, `(`).
@@ -1003,7 +1056,7 @@ fn parse_inline<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
                         c.is_whitespace() || FORMATTING_DELIMITERS.contains(c) || c == '('
                     });
                 if can_autolink {
-                    state.push_closed_node(FormattedTextFragment::hyperlink(url, url));
+                    state.push_closed_node(FormattedTextFragment::hyperlink(url.clone(), url));
                 } else {
                     state.push_text(url);
                 }
@@ -1517,6 +1570,7 @@ fn parse_inline_token<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     let code_span = map(parse_code_span, InlineToken::CodeSpan);
     let backslash_escape = map(parse_escape, InlineToken::BackslashEscape);
     let html_entity = map(parse_html_entity, InlineToken::HtmlEntity);
+    let comment = value(InlineToken::Comment, parse_html_comment);
 
     // Split text runs at whitespace and punctuation so that we attempt the other token parsers.
     // This makes sure we can detect formatting within words and autolinks. It also makes the
@@ -1535,7 +1589,9 @@ fn parse_inline_token<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
         alt((
             backslash_escape,
             html_entity,
+            // Code spans win over comments, so that `` `<!-- x -->` `` renders literally.
             code_span,
+            comment,
             parse_inline_token_link_start,
             parse_inline_token_link_end,
             parse_inline_token_asterisk,
@@ -1688,12 +1744,15 @@ enum InlineToken<'a> {
     /// An entire code span. Code spans have higher precedence than all other inline constructs,
     /// so we parse them into discrete tokens.
     CodeSpan(&'a str),
-    /// An autolink URL.
-    AutoLink(&'a str),
+    /// An autolink URL. Owned because backslash escapes are processed (e.g., `\.` → `.`),
+    /// so the result may differ from the input slice.
+    AutoLink(String),
     /// A closing `]` bracket, which triggers link parsing.
     LinkEnd,
     /// A closing </u>, which triggers underline parsing.
     UnderlineEnd,
+    /// An HTML comment, which is discarded rather than rendered.
+    Comment,
 }
 
 /// An entry in the [delimiter stack](https://spec.commonmark.org/0.30/#delimiter-stack)
@@ -1849,25 +1908,38 @@ fn parse_url_prefix<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
 // This is NOT a great URL parser. For now, a URL is a string that
 // - starts with "https://" or "http://" or "www."
 // - has at least one alphanumeric char after the prefix
-// - does not include trailing formatting characters (*, _, ~)
+// - does not include trailing punctuation (? ! . , : * _ ~), per the GFM autolink extension
+// - backslash escapes are processed (e.g., `\.` → `.`)
 fn parse_url<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     i: &'a str,
-) -> IResult<&'a str, &'a str, E> {
+) -> IResult<&'a str, String, E> {
     // TODO: Look into other autolink rules here: https://github.github.com/gfm/#autolinks-extension-
-    let (_, url) = recognize(tuple((
+    let (_, raw_url) = recognize(tuple((
         parse_url_prefix,
         take_till1(|c: char| c.is_whitespace() || "[]<".find_token(c)),
     )))(i)?;
 
-    // Strip trailing formatting characters (*, _, ~) from the URL.
-    // Per GFM spec, autolinks should not include trailing punctuation that could be
-    // markdown formatting delimiters.
-    let trimmed_len = url
-        .trim_end_matches(|c| FORMATTING_DELIMITERS.contains(c))
-        .len();
+    // Strip trailing punctuation from the URL. Per the GFM autolink extension.
+    let bytes = raw_url.as_bytes();
+    let mut trimmed_len = raw_url.len();
+    while trimmed_len > 0 {
+        let last = bytes[trimmed_len - 1];
+        if !AUTOLINK_TRAILING_PUNCTUATION.contains(last as char) {
+            break;
+        }
+        let preceding_backslashes = bytes[..trimmed_len - 1]
+            .iter()
+            .rev()
+            .take_while(|&&b| b == b'\\')
+            .count();
+        if preceding_backslashes % 2 == 1 {
+            break;
+        }
+        trimmed_len -= 1;
+    }
 
     // If we trimmed everything after the prefix, the URL is invalid
-    let min_valid_len = match url.find("://") {
+    let min_valid_len = match raw_url.find("://") {
         Some(pos) => pos + "://".len(),
         None => "www.".len(),
     };
@@ -1875,9 +1947,22 @@ fn parse_url<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
         return Err(nom::Err::Error(make_error(i, ErrorKind::TakeWhile1)));
     }
 
-    // Return the trimmed URL and adjust remaining
-    let trimmed_url = &i[..trimmed_len];
+    let trimmed_raw_url = &i[..trimmed_len];
     let new_remaining = &i[trimmed_len..];
+
+    // Process backslash escapes within the URL using parse_escape (e.g., `\.` → `.`).
+    let mut trimmed_url = String::with_capacity(trimmed_len);
+    let mut remaining = trimmed_raw_url;
+    while !remaining.is_empty() {
+        if let Ok((rest, ch)) = parse_escape::<nom::error::Error<&str>>(remaining) {
+            trimmed_url.push(ch);
+            remaining = rest;
+        } else if let Some(ch) = remaining.chars().next() {
+            trimmed_url.push(ch);
+            remaining = &remaining[ch.len_utf8()..];
+        }
+    }
+
     Ok((new_remaining, trimmed_url))
 }
 
