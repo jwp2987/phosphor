@@ -120,7 +120,6 @@ pub(crate) enum TuiOptionSelectorEvent {
     /// hosts without their own Escape binding).
     Dismissed,
     /// The host-requested row order changed.
-    #[allow(dead_code)]
     RowsReordered { ordered_ids: Vec<String> },
     /// The selector's intrinsic height changed. `ctx.notify()` rerenders this
     /// view, but the block list may reuse a stable-width cached rich-content
@@ -153,8 +152,6 @@ pub(crate) enum TuiOptionSelectorAction {
     HandleEscape,
 }
 
-// The next stacked change consumes this row-reordering API.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TuiOptionSelectorMoveDirection {
     Backward,
@@ -490,7 +487,6 @@ impl TuiOptionSelector {
             .flatten()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn ordered_row_ids(&self) -> Vec<String> {
         self.page
             .snapshot
@@ -503,7 +499,6 @@ impl TuiOptionSelector {
     /// Moves `row_id` one step among the currently filtered rows, while
     /// updating the full unfiltered catalog and preserving the current
     /// selection.
-    #[allow(dead_code)]
     pub(crate) fn move_row(
         &mut self,
         row_id: &str,
@@ -542,7 +537,6 @@ impl TuiOptionSelector {
         else {
             return false;
         };
-        let row = self.page.snapshot.rows.remove(source_index);
         let Some(target_index) = self
             .page
             .snapshot
@@ -550,14 +544,17 @@ impl TuiOptionSelector {
             .iter()
             .position(|row| row.id == target_id)
         else {
-            self.page.snapshot.rows.insert(source_index, row);
             return false;
         };
-        let insertion_index = match direction {
-            TuiOptionSelectorMoveDirection::Backward => target_index,
-            TuiOptionSelectorMoveDirection::Forward => target_index + 1,
-        };
-        self.page.snapshot.rows.insert(insertion_index, row);
+        // Swap the moved row directly with its visible neighbor in the full
+        // catalog. Rows hidden by the active filter that sit between them
+        // keep their exact index: only `row_id` and `target_id` trade
+        // places. Removing `row_id` and reinserting it adjacent to
+        // `target_id` (the previous approach) would instead let it
+        // leapfrog every hidden row in between in a single "move one step"
+        // call, silently reordering rows the user can't currently see; it
+        // was also not reversible by a move in the opposite direction.
+        self.page.snapshot.rows.swap(source_index, target_index);
         self.select_id(selected_id);
         self.sync_after_items_changed();
         ctx.emit(TuiOptionSelectorEvent::RowsReordered {

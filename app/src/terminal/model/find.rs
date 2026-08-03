@@ -332,3 +332,7 @@ impl RegexDFAs {
 fn replace_unicode_word_boundaries(pattern: &str) -> String {
     pattern.replace("\\b", "(?-u:\\b)")
 }
+
+#[cfg(test)]
+#[path = "find_tests.rs"]
+mod tests;

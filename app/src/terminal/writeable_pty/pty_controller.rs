@@ -854,3 +854,7 @@ pub enum EventLoopSendError {
 pub trait EventLoopSender: 'static {
     fn send(&self, message: Message) -> Result<(), EventLoopSendError>;
 }
+
+#[cfg(test)]
+#[path = "pty_controller_command_bytes_tests.rs"]
+mod command_bytes_tests;

@@ -62,6 +62,7 @@ pub use crate::ai::blocklist::action_model::{
     AIActionStatus, BlocklistAIActionEvent, BlocklistAIActionModel, NewConversationDecision,
     ShellCommandExecutor, ShellCommandExecutorEvent,
 };
+pub use crate::ai::blocklist::permissions::BlocklistAIPermissions;
 pub use crate::ai::blocklist::agent_view::{
     AgentViewController, AgentViewDisplayMode, AgentViewEntryOrigin, AgentViewState,
     EnterAgentViewError, EphemeralMessageModel,

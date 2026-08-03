@@ -490,3 +490,7 @@ impl Debug for Event {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "event_tests.rs"]
+mod tests;

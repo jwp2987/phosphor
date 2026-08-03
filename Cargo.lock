@@ -6917,6 +6917,7 @@ dependencies = [
  "tempfile",
  "tokenizers",
  "warp_completer",
+ "warp_features",
 ]
 
 [[package]]
@@ -15855,6 +15856,7 @@ dependencies = [
  "channel_versions",
  "clap",
  "command",
+ "ctor",
  "dirs 6.0.0",
  "fs4",
  "futures",

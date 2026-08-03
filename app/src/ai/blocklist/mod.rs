@@ -17,7 +17,7 @@ pub(super) use controller::RequestInput;
 pub mod history_model;
 pub mod inline_action;
 pub mod input_model;
-mod permissions;
+pub(crate) mod permissions;
 pub(crate) mod persistence;
 pub mod prompt;
 pub mod suggested_agent_mode_workflow_modal;

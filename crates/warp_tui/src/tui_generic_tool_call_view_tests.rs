@@ -5,6 +5,7 @@ use serde_json::json;
 use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentActionType, AIConversationId,
     BlocklistAIActionEvent, SuggestNewConversationResult, TaskId, queue_tui_permission_action,
+    register_tui_session_view_test_singletons,
 };
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warpui::platform::WindowStyle;
@@ -20,6 +21,9 @@ use crate::tui_builder::TuiUiBuilder;
 #[test]
 fn mcp_permission_details_are_structured_and_human_readable() {
     App::test((), |mut app| async move {
+        // A CallMCPTool action blocks on confirmation through the real preprocess
+        // pipeline, which reads permissions/settings singletons; provision them.
+        register_tui_session_view_test_singletons(&mut app);
         let action_model = add_test_action_model(&mut app);
         let action = AIAgentAction {
             id: AIAgentActionId::from("mcp-action".to_owned()),
@@ -83,6 +87,8 @@ fn mcp_permission_details_are_structured_and_human_readable() {
         action_model.update(&mut app, |action_model, ctx| {
             queue_tui_permission_action(action_model, action_for_queue, conversation_id, ctx);
         });
+        // Pump the async preprocess so the action blocks and its prompt materializes.
+        crate::test_fixtures::settle().await;
         app.read(|ctx| {
             let prompt = view
                 .as_ref(ctx)
@@ -197,6 +203,10 @@ fn accepting_new_conversation_suggestion_completes_the_executor() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action_for_queue, conversation_id, ctx);
         });
+        // Let the spawned preprocessing land the action in the pending queue before
+        // approving it; otherwise `accept` no-ops and `finished_rx` never resolves,
+        // deadlocking the test.
+        crate::test_fixtures::settle().await;
 
         view.update(&mut app, |view, ctx| view.accept(ctx));
         finished_rx

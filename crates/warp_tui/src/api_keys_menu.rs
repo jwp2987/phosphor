@@ -201,6 +201,31 @@ impl TuiApiKeysMenuModel {
         ctx.emit(TuiApiKeysMenuEvent);
     }
 
+    /// Selects the row at absolute snapshot index `index` (for mouse click).
+    /// Returns `true` when the row was actually selected, `false` when the
+    /// index is out of bounds or the menu is not in the `List` sub-state.
+    pub(crate) fn select_at_snapshot_index(
+        &mut self,
+        index: usize,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let TuiApiKeysMenuState::List { list } = &mut self.state else {
+            return false;
+        };
+        let selected = list.select_absolute(index, MAX_VISIBLE_ROWS, |_| true);
+        ctx.emit(TuiApiKeysMenuEvent);
+        selected
+    }
+
+    /// Scrolls the viewport by `delta` rows without changing the selection.
+    pub(crate) fn scroll_by_delta(&mut self, delta: isize, ctx: &mut ModelContext<Self>) {
+        let TuiApiKeysMenuState::List { list } = &mut self.state else {
+            return;
+        };
+        list.scroll_by(delta, MAX_VISIBLE_ROWS);
+        ctx.emit(TuiApiKeysMenuEvent);
+    }
+
     /// Accepts the current sub-state's selection:
     /// - `List` + an "Edit" row: switches to `EnteringKey` for that provider (no persistence
     ///   yet -- that happens when the typed key is itself accepted).

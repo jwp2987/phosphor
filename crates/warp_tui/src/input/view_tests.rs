@@ -15,6 +15,7 @@ use warp::tui_export::{
     AcceptSlashCommandOrSavedPrompt, BlocklistAIHistoryModel, BlocklistAIInputModel,
     ConversationSelectionEvent, InputConfig, InputModePolicy, InputType, LLMId, PolicyConfigUpdate,
     SlashCommandId, SlashCommandMixer, blocklist_ai_history_model_with_queries,
+    register_tui_session_view_test_singletons,
 };
 use warp_editor::model::CoreEditorModel;
 use warpui::EntityIdMap;
@@ -156,7 +157,9 @@ fn build_view_with_prompt_history(
     ViewHandle<TuiInputView>,
     ModelHandle<TuiPromptHistoryMenuModel>,
 ) {
-    ctx.add_singleton_model(|_| Appearance::mock());
+    if !ctx.has_singleton_model::<Appearance>() {
+        ctx.add_singleton_model(|_| Appearance::mock());
+    }
     add_test_semantic_selection(ctx);
     ctx.add_singleton_model(|_| {
         blocklist_ai_history_model_with_queries(
@@ -476,7 +479,9 @@ fn build_view_with_orchestration_tabs(
 ) -> ViewHandle<TuiInputView> {
     // `CodeEditorModel::new_tui` reads syntax colors from the `Appearance`
     // singleton, so register a mock one before constructing the editor.
-    ctx.add_singleton_model(|_| Appearance::mock());
+    if !ctx.has_singleton_model::<Appearance>() {
+        ctx.add_singleton_model(|_| Appearance::mock());
+    }
     add_test_semantic_selection(ctx);
     let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
     let input_mode = BlocklistAIInputModel::mock(Rc::new(TestInputModePolicy), ctx);
@@ -525,7 +530,9 @@ fn build_view_with_conversation_menu(
     ModelHandle<TestConversationMenu>,
     TuiInlineMenu,
 ) {
-    ctx.add_singleton_model(|_| Appearance::mock());
+    if !ctx.has_singleton_model::<Appearance>() {
+        ctx.add_singleton_model(|_| Appearance::mock());
+    }
     add_test_semantic_selection(ctx);
     let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
     let input_mode = BlocklistAIInputModel::mock(Rc::new(TestInputModePolicy), ctx);
@@ -575,7 +582,9 @@ fn build_view_with_inline_menu_gate(
     ModelHandle<TuiSlashCommandModel>,
     [SlashCommandId; 2],
 ) {
-    ctx.add_singleton_model(|_| Appearance::mock());
+    if !ctx.has_singleton_model::<Appearance>() {
+        ctx.add_singleton_model(|_| Appearance::mock());
+    }
     add_test_semantic_selection(ctx);
     let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
     let input_mode = BlocklistAIInputModel::mock(Rc::new(TestInputModePolicy), ctx);
@@ -632,7 +641,9 @@ fn build_view_with_model_menu(
     ModelHandle<TuiModelMenuModel>,
     LLMId,
 ) {
-    ctx.add_singleton_model(|_| Appearance::mock());
+    if !ctx.has_singleton_model::<Appearance>() {
+        ctx.add_singleton_model(|_| Appearance::mock());
+    }
     add_test_semantic_selection(ctx);
     let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
     let input_mode = BlocklistAIInputModel::mock(Rc::new(TestInputModePolicy), ctx);
@@ -949,6 +960,8 @@ fn dispatch(view: &ViewHandle<TuiInputView>, ctx: &mut AppContext, actions: &[Tu
 #[test]
 fn shift_up_requests_focus_above_only_on_first_row_without_selection() {
     App::test((), |mut app| async move {
+        // Agent-mode reset on interaction reads `AISettings`; provision it.
+        register_tui_session_view_test_singletons(&mut app);
         let (view, requests, orchestration_tabs_available) = app.update(|ctx| {
             let orchestration_tabs_available = Rc::new(Cell::new(false));
             let view =
@@ -1303,7 +1316,7 @@ fn interior_empty_line_does_not_collapse() {
 #[test]
 fn move_up_through_empty_line_positions_cursor() {
     App::test((), |mut app| async move {
-        app.update(|ctx| {
+        let view = app.update(|ctx| {
             let view = build_view(ctx);
             type_str(&view, ctx, "a");
             dispatch(
@@ -1315,6 +1328,13 @@ fn move_up_through_empty_line_positions_cursor() {
                 ],
             );
             type_str(&view, ctx, "b");
+            view
+        });
+        // Vertical navigation reads the editor's soft-wrap layout, produced by an
+        // async layout stream on the foreground executor. Pump it so the empty
+        // middle row is laid out before MoveUp drives row-aware movement.
+        crate::test_fixtures::settle().await;
+        app.update(|ctx| {
             // Cursor on row 2 ("b"); move up to the empty row 1.
             dispatch(
                 &view,
@@ -1444,6 +1464,9 @@ fn kill_then_yank_round_trips() {
 #[test]
 fn clear_empties_buffer_and_resets_scroll() {
     App::test((), |mut app| async move {
+        // `clear` resets the agent mode, which reads `AISettings`; provision the
+        // settings/singletons the input model reads so the test is hermetic.
+        register_tui_session_view_test_singletons(&mut app);
         app.update(|ctx| {
             let view = build_view(ctx);
             type_lines(&view, ctx, 10); // 10 rows > 6-row viewport
@@ -1509,7 +1532,7 @@ fn select_word_right_selects_next_word() {
 #[test]
 fn move_to_line_start_and_end_multiline() {
     App::test((), |mut app| async move {
-        app.update(|ctx| {
+        let view = app.update(|ctx| {
             let view = build_view(ctx);
             type_str(&view, ctx, "abc");
             dispatch(
@@ -1520,6 +1543,12 @@ fn move_to_line_start_and_end_multiline() {
                 )],
             );
             type_str(&view, ctx, "def");
+            view
+        });
+        // Line-boundary navigation reads the editor's async soft-wrap layout;
+        // pump it so the multi-line buffer is laid out before Home/End movement.
+        crate::test_fixtures::settle().await;
+        app.update(|ctx| {
             // Cursor is at end of "def" (row 1, col 3).
             dispatch(
                 &view,
@@ -2168,6 +2197,8 @@ fn bang_mid_text_inserts_literally() {
 #[test]
 fn submit_keeps_buffer_until_cleared() {
     App::test((), |mut app| async move {
+        // `clear` resets the agent mode, which reads `AISettings`; provision it.
+        register_tui_session_view_test_singletons(&mut app);
         app.update(|ctx| {
             let view = build_view(ctx);
             type_str(&view, ctx, "ab");

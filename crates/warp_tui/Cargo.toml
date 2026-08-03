@@ -89,6 +89,10 @@ warp_editor = { workspace = true, features = ["test-util"] }
 command.workspace = true
 pathfinder_color.workspace = true
 warp = { workspace = true, features = ["tui", "test-util"] }
+# Runs a load-time (`#[ctor]`) initializer so the localizer is ready before any
+# test touches the static slash-command table (whose `t_static!` hints resolve
+# and cache once, at first access). A per-test init is too late.
+ctor = "0.1"
 
 [features]
 # Declared so the `warp_channel_config::load_config!` macro's

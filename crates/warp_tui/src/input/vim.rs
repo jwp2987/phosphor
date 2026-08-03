@@ -86,7 +86,10 @@ impl VimHandler for TuiInputView {
         let repeat_count = count.saturating_sub(u32::from(already_applied));
         self.model.update(ctx, |model, ctx| {
             if repeat_count > 0 {
-                model.vim_replace_text(&text.repeat(repeat_count as usize), ctx);
+                // Bounded the same way as paste: an unchecked `count` (e.g. from
+                // `999999999r` or continuous `R`-mode) would otherwise drive
+                // `text.repeat` to attempt a multi-gigabyte allocation.
+                model.vim_replace_text(&bounded_repeated_text(text, repeat_count), ctx);
             }
             if !text.is_empty() {
                 model.vim_move_horizontal_by_offset(1, &Direction::Backward, false, true, ctx);
@@ -638,3 +641,7 @@ fn select_vim_operand(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "vim_tests.rs"]
+mod tests;

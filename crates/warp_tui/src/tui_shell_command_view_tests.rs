@@ -5,8 +5,9 @@ use std::sync::Arc;
 use parking_lot::FairMutex;
 use string_offset::CharOffset;
 use warp::tui_export::{
-    AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId, Appearance, TaskId,
-    TerminalModel, queue_tui_permission_action,
+    AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId, Appearance,
+    BlocklistAIPermissions, TaskId, TerminalModel, queue_tui_permission_action,
+    register_tui_session_view_test_singletons,
 };
 use warpui::AddWindowOptions;
 use warpui::platform::WindowStyle;
@@ -64,6 +65,9 @@ fn blocked_command_card_matches_permission_layout() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
+        // Pump the async preprocess so the queued action reaches the pending
+        // queue and the permission card renders in its blocked state.
+        crate::test_fixtures::settle().await;
 
         let mut presenter = TuiPresenter::new();
         let frame = app.update(|ctx| {
@@ -136,6 +140,11 @@ fn finishing_command_editing_selects_yes_without_executing() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
+        // Queueing dispatches action preprocessing on the async executor
+        // (`queue_actions` -> `ctx.spawn`); pump it so the action reaches the
+        // pending queue and the permission prompt becomes active, exactly as it
+        // would before a user could interact in the running app.
+        crate::test_fixtures::settle().await;
 
         prompt.update(&mut app, |prompt, ctx| {
             prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
@@ -173,6 +182,65 @@ fn finishing_command_editing_selects_yes_without_executing() {
 }
 
 #[test]
+fn saving_an_edit_allows_a_later_streamed_update_to_resync() {
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let action = command_action("action-1", "echo original");
+        let view = add_shell_view(
+            &mut app,
+            action.clone(),
+            Arc::new(FairMutex::new(TerminalModel::mock(None, None))),
+        );
+        let (action_model, conversation_id, prompt) = app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            (
+                view.action_model.clone(),
+                view.conversation_id,
+                view.permission_prompt.clone(),
+            )
+        });
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
+        });
+        // Pump the async preprocess so the action blocks and the prompt is active.
+        crate::test_fixtures::settle().await;
+
+        prompt.update(&mut app, |prompt, ctx| {
+            prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
+        });
+        let command_editor = app.read(|ctx| view.as_ref(ctx).command_editor.clone());
+        command_editor.update(&mut app, |editor, ctx| {
+            editor.set_text("echo edited", ctx)
+        });
+        present_shell_view(&mut app, &view);
+        assert!(dispatch_focused_key(&mut app, &view, "enter"));
+
+        app.read(|ctx| {
+            assert!(
+                !view.as_ref(ctx).command_was_edited,
+                "command_was_edited should be cleared once the edit is saved"
+            );
+        });
+
+        // A later streamed update to the same action (e.g. a follow-up
+        // revision arriving from the model) should now resync the editor's
+        // text: the earlier edit was already saved and applied, so it no
+        // longer needs to be protected from being overwritten.
+        let streamed_action = command_action("action-1", "echo streamed-followup");
+        view.update(&mut app, |view, ctx| {
+            view.update_action(streamed_action, false, ctx);
+        });
+
+        app.read(|ctx| {
+            assert_eq!(
+                view.as_ref(ctx).command_editor.as_ref(ctx).text(ctx),
+                "echo streamed-followup"
+            );
+        });
+    });
+}
+
+#[test]
 fn escape_while_editing_exits_edit_mode_without_rejecting_or_discarding() {
     App::test((), |mut app| async move {
         app.update(super::init);
@@ -193,6 +261,11 @@ fn escape_while_editing_exits_edit_mode_without_rejecting_or_discarding() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
+        // Queueing dispatches action preprocessing on the async executor
+        // (`queue_actions` -> `ctx.spawn`); pump it so the action reaches the
+        // pending queue and the permission prompt becomes active, exactly as it
+        // would before a user could interact in the running app.
+        crate::test_fixtures::settle().await;
 
         prompt.update(&mut app, |prompt, ctx| {
             prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
@@ -255,6 +328,8 @@ fn escape_when_not_editing_still_rejects_the_command() {
             // read-only reviewing state a real "not editing" Escape targets.
             queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
         });
+        // Pump the async preprocess so the action blocks and the prompt is active.
+        crate::test_fixtures::settle().await;
         present_shell_view(&mut app, &view);
 
         assert!(dispatch_focused_key(&mut app, &view, "escape"));
@@ -296,6 +371,9 @@ fn command_editor_arrows_move_within_multiline_text_then_cycle_at_boundaries() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
+        // Pump the async preprocess so the action blocks and the prompt is active
+        // before entering edit mode.
+        crate::test_fixtures::settle().await;
         prompt.update(&mut app, |prompt, ctx| {
             prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
         });
@@ -309,6 +387,11 @@ fn command_editor_arrows_move_within_multiline_text_then_cycle_at_boundaries() {
         });
 
         present_shell_view(&mut app, &view);
+        // Vertical (line) cursor navigation reads the editor's soft-wrap layout,
+        // which is produced by an asynchronous layout stream on the foreground
+        // executor. Pump it so the multiline command text is laid out before the
+        // arrow keys drive row-aware movement.
+        crate::test_fixtures::settle().await;
         app.read(|ctx| {
             let window_id = view.window_id(ctx);
             let focused = ctx
@@ -476,6 +559,8 @@ fn ctrl_t_toggles_the_output_section_like_the_mouse_click_handler() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
+        // Pump the async preprocess so the action blocks and the prompt is active.
+        crate::test_fixtures::settle().await;
         present_shell_view(&mut app, &view);
 
         assert!(app.read(|ctx| !view.as_ref(ctx).is_expanded()));
@@ -550,6 +635,13 @@ fn add_shell_view(
     action: AIAgentAction,
     terminal_model: Arc<FairMutex<TerminalModel>>,
 ) -> ViewHandle<TuiShellCommandView> {
+    // Provision the full app singleton graph the real action preprocess/execute
+    // pipeline reads (permissions, settings, execution profiles, ...), so blocked
+    // commands surface through the real pipeline rather than injected state.
+    // Sentinel-guarded so repeated calls within one test don't double-register.
+    if !app.read(|ctx| ctx.has_singleton_model::<BlocklistAIPermissions>()) {
+        register_tui_session_view_test_singletons(app);
+    }
     let action_model = add_test_action_model(app);
     app.update(|ctx| {
         let (window_id, _) = ctx.add_tui_window(

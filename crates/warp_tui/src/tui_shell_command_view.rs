@@ -28,7 +28,7 @@ use crate::agent_block_sections::render_fallback_tool_call_section;
 use crate::editor_view::{TuiEditorView, TuiEditorViewEvent};
 use crate::keybindings::{TUI_BINDING_GROUP, is_tui_owned_binding};
 use crate::terminal_block::TerminalBlockElement;
-use crate::terminal_use::user_controls_running_command;
+use crate::terminal_use::user_controlled_running_command;
 use crate::tool_call_labels::{
     CommandBlockState, ResolvedCommandBlock, tool_call_display_state, tool_call_label,
 };
@@ -253,10 +253,14 @@ impl TuiShellCommandView {
         }
     }
 
-    fn save_command_edit(&self, ctx: &mut ViewContext<Self>) {
+    fn save_command_edit(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.command_editor.as_ref(ctx).is_focused() {
             return;
         }
+        // The displayed text is now the source of truth: a future streamed
+        // update to this same action is a genuinely new revision, not the
+        // edit we just applied, so allow `update_action` to resync again.
+        self.command_was_edited = false;
         self.permission_prompt
             .update(ctx, |prompt, ctx| prompt.restore_options_focus(ctx));
         self.invalidate_layout(ctx);
@@ -399,12 +403,18 @@ impl TuiShellCommandView {
         })
     }
 
+    /// Whether THIS view's block is the single active block the user is
+    /// currently interacting with. This must use the exclusive
+    /// [`user_controlled_running_command`] (not the block-local
+    /// `user_controls_running_command` predicate) so that only the truly
+    /// active block -- not merely any block that individually looks
+    /// user-controlled -- can gate collapse/expand behavior.
     fn user_controls_command(&self) -> bool {
-        self.terminal_model
-            .lock()
-            .block_list()
-            .block_for_ai_action_id(&self.action.id)
-            .is_some_and(user_controls_running_command)
+        let model = self.terminal_model.lock();
+        let Some(block) = model.block_list().block_for_ai_action_id(&self.action.id) else {
+            return false;
+        };
+        user_controlled_running_command(&model).is_some_and(|active| active.id() == block.id())
     }
 }
 

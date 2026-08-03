@@ -294,3 +294,7 @@ impl FileDataSource {
 impl Entity for FileDataSource {
     type Event = ();
 }
+
+#[cfg(test)]
+#[path = "data_source_tests.rs"]
+mod tests;

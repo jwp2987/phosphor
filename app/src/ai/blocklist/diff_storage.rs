@@ -298,3 +298,7 @@ fn inserted_content_range(start: usize, content: &str) -> Option<Range<usize>> {
     let line_count = content.lines().count();
     (line_count > 0).then_some(start..start + line_count)
 }
+
+#[cfg(test)]
+#[path = "diff_storage_tests.rs"]
+mod tests;

@@ -52,16 +52,81 @@ fn reordering_an_explicit_filtered_row_updates_the_full_catalog_and_preserves_se
             assert!(selector.move_row("alpine", TuiOptionSelectorMoveDirection::Backward, ctx));
         });
 
+        // `move_row` swaps "alpine" directly with its visible neighbor
+        // "alpha"; the hidden row keeps its original index (1) instead of
+        // trailing after whichever visible row it used to follow.
         assert_eq!(
             selector.read(&app, |selector, _| selector.ordered_row_ids()),
-            ["alpine", "alpha", "hidden"]
+            ["alpine", "hidden", "alpha"]
         );
         assert!(selected_line(&app, &selector).contains("alpha"));
         assert_eq!(
             primary_events(&events),
             [TuiOptionSelectorEvent::RowsReordered {
-                ordered_ids: vec!["alpine".to_owned(), "alpha".to_owned(), "hidden".to_owned(),],
+                ordered_ids: vec!["alpine".to_owned(), "hidden".to_owned(), "alpha".to_owned(),],
             }]
+        );
+    });
+}
+
+/// Regression test: a filtered "move one step" must only swap the moved row
+/// with its next *visible* neighbor. Every row hidden by the active search
+/// filter — whether it sits between the two swapped rows or entirely
+/// outside that range — must keep its exact original index in the full
+/// catalog. The previous implementation instead removed the moved row and
+/// reinserted it adjacent to its target, which let it leapfrog every hidden
+/// row in between in a single step and silently reordered rows the user
+/// could not currently see.
+#[test]
+fn moving_a_row_past_multiple_hidden_rows_only_swaps_the_two_visible_rows() {
+    App::test((), |mut app| async move {
+        let (selector, _events) = add_selector(&mut app);
+        set_searchable_page(
+            &mut app,
+            &selector,
+            snapshot(
+                &["skip-0", "keep-a", "skip-1", "skip-2", "keep-d", "skip-3"],
+                Some("keep-a"),
+            ),
+        );
+        selector.update(&mut app, |selector, ctx| {
+            selector.interaction.search_query = "keep".to_owned();
+            selector.sync_after_items_changed();
+            ctx.focus_self();
+            // Only "keep-a" and "keep-d" are visible; moving "keep-a"
+            // forward should land it just past "keep-d", without touching
+            // any "skip-*" row's position.
+            assert!(selector.move_row("keep-a", TuiOptionSelectorMoveDirection::Forward, ctx));
+        });
+
+        assert_eq!(
+            selector.read(&app, |selector, _| selector.ordered_row_ids()),
+            ["skip-0", "keep-d", "skip-1", "skip-2", "keep-a", "skip-3"]
+        );
+    });
+}
+
+/// Regression test: moving a row forward and then immediately back must
+/// restore the exact original order, including the position of every
+/// hidden row. The remove-and-reinsert-adjacent algorithm this replaces was
+/// not reversible this way.
+#[test]
+fn move_row_forward_then_backward_restores_the_original_order() {
+    App::test((), |mut app| async move {
+        let (selector, _events) = add_selector(&mut app);
+        let original = ["skip-0", "keep-a", "skip-1", "skip-2", "keep-d", "skip-3"];
+        set_searchable_page(&mut app, &selector, snapshot(&original, Some("keep-a")));
+        selector.update(&mut app, |selector, ctx| {
+            selector.interaction.search_query = "keep".to_owned();
+            selector.sync_after_items_changed();
+            ctx.focus_self();
+            assert!(selector.move_row("keep-a", TuiOptionSelectorMoveDirection::Forward, ctx));
+            assert!(selector.move_row("keep-a", TuiOptionSelectorMoveDirection::Backward, ctx));
+        });
+
+        assert_eq!(
+            selector.read(&app, |selector, _| selector.ordered_row_ids()),
+            original
         );
     });
 }
@@ -172,6 +237,7 @@ fn leading_editor_arrows_move_within_multiline_before_list_handoff() {
             );
         });
         render_lines(&app, &selector, 60);
+        crate::test_fixtures::settle().await;
 
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         assert!(leading_editor.read(&app, |editor, _| editor.is_focused()));

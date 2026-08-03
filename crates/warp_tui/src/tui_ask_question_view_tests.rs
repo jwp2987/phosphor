@@ -2,6 +2,7 @@ use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId, Appearance,
     AskUserQuestionAction, AskUserQuestionAnswerItem, AskUserQuestionItem, AskUserQuestionOption,
     AskUserQuestionType, TaskId, queue_tui_permission_action,
+    register_tui_session_view_test_singletons,
 };
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, WindowInvalidation};
@@ -54,7 +55,9 @@ fn add_view(
     app: &mut App,
     questions: Vec<AskUserQuestionItem>,
 ) -> (warpui::WindowId, ViewHandle<TuiAskQuestionView>) {
-    app.add_singleton_model(|_| Appearance::mock());
+    if !app.read(|ctx| ctx.has_singleton_model::<Appearance>()) {
+        app.add_singleton_model(|_| Appearance::mock());
+    }
     let action_model = add_test_action_model(app);
     app.update(|ctx| {
         ctx.add_tui_window(
@@ -348,6 +351,11 @@ fn opening_and_leaving_other_keeps_selector_and_shared_session_in_sync() {
 fn submitting_other_restores_question_navigation_focus() {
     App::test((), |mut app| async move {
         app.update(super::init);
+        // Left/right question navigation is gated on the ASK_QUESTION_ACTIVE
+        // keymap context, which requires the action to be blocked (waiting on
+        // answers). Provision the real pipeline's singletons so the queued
+        // action blocks through it.
+        register_tui_session_view_test_singletons(&mut app);
         let (_, view) = add_view(
             &mut app,
             vec![
@@ -356,6 +364,9 @@ fn submitting_other_restores_question_navigation_focus() {
             ],
         );
         queue_question_action(&mut app, &view);
+        // Pump the async preprocess so the action blocks and ASK_QUESTION_ACTIVE
+        // (and thus left/right navigation) becomes active.
+        crate::test_fixtures::settle().await;
         present_active_view(&mut app, &view);
 
         let selector = app.read(|ctx| view.as_ref(ctx).selector.clone());

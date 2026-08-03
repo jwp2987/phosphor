@@ -136,3 +136,7 @@ pub fn is_installed_binary(input: &ParsedTokensSnapshot) -> bool {
         .map(|token| token.token_description.is_some())
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+#[path = "util_tests.rs"]
+mod tests;

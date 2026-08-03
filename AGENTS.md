@@ -305,6 +305,17 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
   ```
 
 - Integration tests use the framework in `crates/integration`; examples are in `app/src/integration_testing/`.
+- **Failing tests MUST be fixed, never deferred.** A red test — whether it
+  fails, hangs/deadlocks, or is flaky/order-dependent — is a defect to fix
+  now, not a footnote to log in `todo.md` and move past. "It fails on clean
+  `main` too" / "it's a pre-existing harness issue" / "`cargo build` still
+  passes" are explanations of *cause*, never licenses to leave it red. This
+  includes test-isolation failures (a test that only passes when another
+  module runs first is not hermetic — make its setup explicit per-test) and
+  deadlocks that make the suite un-runnable end-to-end. Do not mark a task or
+  change complete while it leaves any test in the touched crate red; if a
+  green suite is genuinely blocked on something out of scope, stop and raise
+  it, don't silently ship around it.
 
 ### 5.7 Cross-process commands
 - Don't call `std::process::Command::new(...)` directly (it pops up a window on Windows, in particular); always go through `crates/command`.
@@ -325,6 +336,67 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 - **Steps to port a command**: (1) add a TUI handler in `execute_tui_slash_command` (menu commands: follow `model_menu` / `profile_menu`; prompt commands: follow `Compact | Plan`); (2) add the command name to `supports_tui()`; (3) the menu surfaces it automatically.
 - Gotcha: `slash_command_selection_behavior` — a command with an argument whose `should_execute_on_selection == false` (e.g. `/mcp`, `/plan`) **inserts `/cmd ` text on selection instead of executing**; submitting `/cmd` then routes through `handle_submitted_input`. Porting these requires handling the select/submit routing, not just adding `supports_tui`.
 - Current state and gap list: see memory `tui-slash-command-parity`.
+
+### 5.10 Warp behavioral parity — silent regressions are NOT acceptable
+A user who knows Warp MUST get the same observable behavior in this fork. The
+**only** sanctioned divergences are cloud/collab removal and BYOP additions
+(see the parity principle). Everything else must match Warp.
+
+- **"Simplifying" away a Warp mechanism that changes observable behavior is a
+  REGRESSION, not a simplification — and it is not acceptable.** When a Warp
+  sync/port drops a flag, enum-variant payload, struct field, or code branch
+  "to simplify," you MUST prove the drop does not change what the user sees. If
+  it does, keep the mechanism. Collapsing a data-carrying variant into a unit
+  variant (or replacing a per-instance flag with a hard-coded constant) is the
+  classic trap — it silently makes two previously-distinct cases behave the
+  same.
+- **Canonical example (do not repeat):** Warp's `UserTakeOverReason::Stop`
+  carried a resume flag so that a Ctrl-C takeover of an agent's long-running
+  command *resumes* the conversation on completion, while only genuine teardown
+  suppresses resume (Warp PR #12738). The port collapsed `Stop` to a unit
+  variant with `should_auto_resume => false`, reintroducing the exact
+  stuck-"Warping…" regression Warp had fixed. The porting comment ("unlike
+  Warp… never auto-resumes") *documented the regression as if it were a design
+  choice* — a comment describing a divergence is not the same as justifying it.
+- **When you diverge from Warp on purpose**, the reason must be cloud/BYOP (or
+  an explicitly-approved product decision recorded in `docs/DESIGN-PHOSPHOR-FORK.md`),
+  and the code comment must state *why the behavior change is acceptable*, not
+  merely *that* it differs.
+- **Test corollary (hard rule):** a test carried over from Warp encodes Warp's
+  intended behavior. If such a test fails after a sync/port, **suspect the code
+  (a regression) FIRST** — do not assume the test is stale. **Never change or
+  weaken a test's assertions to match a simplified fork behavior**; that hides
+  the regression instead of fixing it. Changing *what a test asserts* is only
+  allowed when the behavior change is itself sanctioned (cloud/BYOP/approved),
+  and the reason must be recorded.
+- **Mandatory Warp-mirrored coverage (hard rule).** Any behavior the fork ships
+  — new, changed, or carried over — MUST have test coverage that mirrors Warp's
+  for that behavior. Port Warp's tests (`warp/master`) rather than writing
+  thinner fork-specific substitutes. LLM-interaction behavior is covered by
+  running Warp's tests against the local/BYOP provider, NOT by dropping them.
+  "It's cloud" is never self-justifying — check for a local/BYOP equivalent
+  first; most of Warp's cloud-organized AI behavior (CLI-agent harnesses, the
+  agent loop, tool-calling, streaming, context/prompt building) has one.
+- **Any deviation requires maintainer sign-off + tracking (hard rule).**
+  Deviating from Warp behavior, OR from Warp's test coverage (dropping,
+  weakening, or not-porting a Warp test), requires **explicit sign-off from the
+  maintainer (josh)** AND a **GitHub tracking issue** recording exactly what
+  deviates and why. No silent deviations. No un-tracked coverage gaps. Do not
+  drop or weaken a Warp-derived test on your own judgment.
+- Reference for comparisons: real Warp is the `warp/master` git remote.
+
+### 5.11 Issue → fix → PR → merge workflow (hard rule)
+Every defect, regression, or Warp divergence follows this workflow — no
+exceptions, and nothing merges without it:
+1. **Log it as a GitHub issue first** (`gh issue create` on `jwp2987/phosphor`)
+   the moment it's found, *before* fixing — so it's never lost. Include the Warp
+   comparison / correct behavior where known.
+2. **Fix it on a branch**, together with the Warp-mirrored test(s) that prove
+   the fix (a red test that goes green, whose assertions come from Warp).
+3. **Open a PR that links the issue** (`Fixes #N` / `Closes #N` in the body).
+4. **The PR must be attached/linked to its issue before the merge happens** — a
+   merge without a linked issue and its accompanying test coverage is not
+   allowed.
 
 ---
 

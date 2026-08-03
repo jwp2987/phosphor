@@ -94,6 +94,49 @@ fn selecting_a_provider_row_switches_into_key_entry_for_that_provider() {
 }
 
 #[test]
+fn select_at_snapshot_index_and_scroll_by_delta_update_the_list() {
+    // Both are pure `List`-state operations (no `AgentProviderSecrets`/`AISettings` touch), so
+    // they're safe to exercise directly here -- unlike `accept_selected`'s Clear/EnteringKey
+    // paths, which need the app-side harness (see the module docs above).
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        app.update(|ctx| {
+            add_test_semantic_selection(ctx);
+            let editor = ctx.add_model(|ctx| CodeEditorModel::new_tui(80, ctx));
+            let mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
+            mode.update(ctx, |mode, ctx| {
+                mode.set_mode(TuiInputSuggestionsMode::ApiKeys, ctx);
+            });
+            let menu = ctx.add_model(|_| {
+                TuiApiKeysMenuModel::new_for_test(
+                    editor,
+                    mode,
+                    vec![("Local Ollama", false), ("DeepSeek Official", true)],
+                )
+            });
+
+            // Clicking the second row selects it directly, without stepping through it.
+            let selected = menu.update(ctx, |menu, ctx| menu.select_at_snapshot_index(1, ctx));
+            assert!(selected, "row 1 is in bounds and should be selectable");
+            let snapshot = menu.as_ref(ctx).snapshot(ctx).expect("menu should be open");
+            assert_eq!(snapshot.selected_index, Some(1));
+
+            // An out-of-bounds index is rejected and leaves the selection untouched.
+            let selected = menu.update(ctx, |menu, ctx| menu.select_at_snapshot_index(99, ctx));
+            assert!(!selected, "index 99 is out of bounds for a 2-row list");
+            let snapshot = menu.as_ref(ctx).snapshot(ctx).expect("menu should still be open");
+            assert_eq!(snapshot.selected_index, Some(1));
+
+            // Scrolling must not itself be treated as a bug if it doesn't move a 2-row list that
+            // fits entirely within the viewport -- this only checks that the call is safe to make
+            // (no panic) while the menu remains open.
+            menu.update(ctx, |menu, ctx| menu.scroll_by_delta(1, ctx));
+            assert!(menu.as_ref(ctx).snapshot(ctx).is_some(), "menu should still be open");
+        });
+    });
+}
+
+#[test]
 fn build_provider_rows_adds_a_clear_row_only_for_keyed_providers() {
     let rows = build_provider_rows(
         vec![

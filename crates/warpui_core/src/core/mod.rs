@@ -674,3 +674,7 @@ impl<T> RequestState<T> {
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "tui"))]
+#[path = "tui_view_tests.rs"]
+mod tui_view_tests;

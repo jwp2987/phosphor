@@ -488,3 +488,7 @@ impl RequestFileEditsExecutor {
 impl Entity for RequestFileEditsExecutor {
     type Event = ();
 }
+
+#[cfg(test)]
+#[path = "request_file_edits_tests.rs"]
+mod tests;

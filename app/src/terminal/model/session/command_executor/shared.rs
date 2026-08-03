@@ -46,3 +46,7 @@ pub fn shell_escape_single_quotes(command: &str, shell_type: ShellType) -> Strin
         }
     }
 }
+
+#[cfg(test)]
+#[path = "shared_tests.rs"]
+mod tests;

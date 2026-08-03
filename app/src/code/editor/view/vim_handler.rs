@@ -19,6 +19,21 @@ use warp_editor::{
 };
 use warpui::{SingletonEntity, ViewContext};
 
+/// Cap on the byte size of a single vim-driven repeated-text insertion (paste
+/// or `replace_text`). Without a cap, an unchecked repeat count taken from
+/// user input (e.g. `999999999r` or continuous `R`-mode) drives `text.repeat`
+/// to attempt a multi-gigabyte allocation, hanging or crashing the process.
+const MAX_VIM_PASTE_BYTES: usize = 1024 * 1024;
+
+/// Repeats `text` up to `count` times, capped so the result never exceeds
+/// `MAX_VIM_PASTE_BYTES`. Mirrors the identical helper in
+/// `crates/warp_tui/src/input/vim.rs` (not shared because the two crates
+/// don't otherwise share a vim-motion text-building module).
+fn bounded_repeated_text(text: &str, count: u32) -> String {
+    let max_count = (MAX_VIM_PASTE_BYTES / text.len().max(1)).max(1);
+    text.repeat((count as usize).min(max_count))
+}
+
 impl VimHandler for CodeEditorView {
     fn insert_char(&mut self, c: char, ctx: &mut ViewContext<Self>) {
         self.user_insert(&c.to_string(), ctx);
@@ -455,7 +470,7 @@ impl VimHandler for CodeEditorView {
         let repeat_count = count.saturating_sub(u32::from(already_applied));
         self.model.update(ctx, |model, ctx| {
             if repeat_count > 0 {
-                model.vim_replace_text(&text.repeat(repeat_count as usize), ctx);
+                model.vim_replace_text(&bounded_repeated_text(text, repeat_count), ctx);
             }
             if !text.is_empty() {
                 model.vim_move_horizontal_by_offset(1, &Direction::Backward, false, true, ctx);

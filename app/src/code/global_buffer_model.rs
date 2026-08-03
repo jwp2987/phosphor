@@ -1557,3 +1557,11 @@ impl Entity for GlobalBufferModel {
 }
 
 impl SingletonEntity for GlobalBufferModel {}
+
+// Server-local buffer sync tests. Ported from Warp's `buffer_location_tests`.
+// The exercised APIs (`open_server_local`, `apply_client_edit`) only exist
+// under the `local_fs` feature, so the whole module is gated to keep the
+// default build unaffected.
+#[cfg(all(test, feature = "local_fs"))]
+#[path = "buffer_location_tests.rs"]
+mod buffer_location_tests;

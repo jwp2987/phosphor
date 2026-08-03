@@ -24,8 +24,6 @@ use crate::tui_builder::TuiUiBuilder;
 
 const STATUSLINE_CONFIG_ACTIVE: &str = "TuiStatuslineConfigActive";
 const STATUSLINE_REORDER_ACTIVE: &str = "TuiStatuslineReorderActive";
-// The next stacked change mounts the picker and consumes this identifier.
-#[allow(dead_code)]
 const STATUSLINE_QUESTION_ID: &str = "statusline-items";
 
 pub(crate) fn init(app: &mut AppContext) {
@@ -87,8 +85,6 @@ pub(crate) enum TuiStatuslineConfigAction {
 pub(crate) enum TuiStatuslineConfigEvent {
     Saved(TuiStatuslineConfig),
     Cancelled,
-    // The next stacked change mounts the picker and handles layout updates.
-    #[allow(dead_code)]
     LayoutChanged,
 }
 
@@ -97,8 +93,6 @@ pub(crate) struct TuiStatuslineConfigView {
     selector: ViewHandle<TuiOptionSelector>,
 }
 
-// The next stacked change mounts the picker and consumes these lifecycle helpers.
-#[allow(dead_code)]
 impl TuiStatuslineConfigView {
     pub(crate) fn new(config: TuiStatuslineConfig, ctx: &mut ViewContext<Self>) -> Self {
         let config = config.normalized();
@@ -268,8 +262,6 @@ impl TuiStatuslineConfigView {
     }
 }
 
-// The next stacked change mounts the picker and builds this question.
-#[allow(dead_code)]
 fn statusline_question() -> AskUserQuestionItem {
     AskUserQuestionItem {
         question_id: STATUSLINE_QUESTION_ID.to_owned(),

@@ -41,7 +41,12 @@ const MAX_CHANGELOG_BULLETS: usize = 3;
 ///
 /// The project path *header* is rendered outside these constrained boxes so
 /// it can use the column's full natural width instead of being capped by
-/// this constant.
+/// this constant — trading a perfectly stable animation width for never
+/// clipping the path: when the resolved header exceeds this constant and
+/// still fits on one row, the text column (and therefore the row's
+/// flex-child animation, which only gets whatever width is left over) can
+/// end up narrower than it would be with the header capped here. See
+/// [`build_zero_state_text_column`] for the full tradeoff.
 const LEFT_COLUMN_COLS: u16 = 48;
 
 /// Maximum width of the starfield animation panel.  On wide terminals the
@@ -153,7 +158,23 @@ impl TuiView for TuiZeroStateView {
 /// Assembles the left text column: title/version/changelog and the project
 /// context body + MCP section constrained to [`LEFT_COLUMN_COLS`], with the
 /// project path header rendered between them at its natural (unconstrained)
-/// width so a long path wraps instead of losing content past 48 columns.
+/// width so a long path is never clipped: it wraps onto extra rows when the
+/// column is narrow, or renders past 48 columns on a single row when there
+/// is enough width, instead of losing content.
+///
+/// That single-row growth is not free. [`TuiZeroStateView::render`] composes
+/// this column and the starfield animation as `TuiFlex::row().child(text_column)
+/// .flex_child(animation)`; per `TuiFlex`'s layout policy, `.child()` is
+/// measured first, loosely, against the full offered row width, and only the
+/// leftover goes to `.flex_child()`. Because `path_header` is unconstrained,
+/// a resolved path wide enough to fit on one line can make this column
+/// measure wider than [`LEFT_COLUMN_COLS`], which narrows the animation's
+/// share of the row in exchange for showing the full path. This is an
+/// intentional tradeoff (full path content over a guaranteed-stable
+/// animation width), not a bug — see
+/// `zero_state_path_header_not_truncated_at_wide_terminal` in the test
+/// module, which locks in the "full path over stable animation width"
+/// choice.
 ///
 /// Both [`TuiZeroStateView::render`] and the regression tests call this
 /// function so a change to how `render` composes the column is caught by the
@@ -196,8 +217,15 @@ fn build_zero_state_text_column(
     .finish();
 
     // The project path header lives outside the LEFT_COLUMN_COLS-constrained
-    // boxes so it can use the column's full natural width and wrap onto
-    // later rows instead of being clipped at 48 columns.
+    // boxes so it can use the column's full natural width: it wraps onto
+    // later rows when the column is narrow, or grows past 48 columns on one
+    // row when there is enough width, rather than ever being clipped. That
+    // growth can narrow the sibling starfield animation in
+    // TuiZeroStateView::render (a `.child()` in that row's TuiFlex is
+    // measured loosely against the full row width before the `.flex_child()`
+    // animation gets whatever is left over) — an intentional tradeoff of a
+    // perfectly stable animation width for never losing path content. See
+    // the doc comment on this function for the full explanation.
     if let Some(path_header_text) = path_header_text {
         let header_style = builder.primary_text_style().add_modifier(Modifier::BOLD);
         let path_header = TuiText::new(path_header_text)

@@ -89,3 +89,7 @@ fn mermaid_diagram_size(
     let height = Pixels::new(width.as_f32() * intrinsic_height / intrinsic_width);
     Some((width, height))
 }
+
+#[cfg(test)]
+#[path = "mermaid_diagram_tests.rs"]
+mod tests;

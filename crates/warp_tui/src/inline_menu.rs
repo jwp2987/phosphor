@@ -885,6 +885,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiApiKeysMenuModel> {
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
     }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
+    }
 }
 
 impl TuiInlineMenuHandle for ModelHandle<TuiModelMenuModel> {
