@@ -34,6 +34,17 @@ All ~41 **red** regression tests + these scopes currently live on branch
 - **Feature PRs** and the **removal** work the same way (branch off `main`, own PR).
 - Net: `main` only ever gets green, self-contained PRs.
 
+## Definition of done — the test lands with the change (all tracks)
+
+Coverage grows as gaps close. A change is not complete until its test is green.
+
+- **Bug fix PR** = the fix **+ its red regression test** (already on the sweep branch), now passing. `Fixes #N`.
+- **Feature PR** = the feature **+ the Warp oracle tests that were blocked on it**, ported and passing. A feature is **not done** while its now-unblocked tests remain un-ported — that would silently re-open the coverage gap this effort exists to close.
+- **Removal** deletes fork-original tests *with* the code (no oracle → not a coverage regression).
+- **Track 4** "ported" disposition means the test is wired and passing, not just categorized.
+
+Net: total test count only goes **up** as gaps close; coverage tracks the code. Never weaken an assertion to make it pass (§5.10).
+
 ## Recommended sequence
 
 1. **Track 1 — security first:** #22 OSC 52 → #25 browser scheme → #7 file_glob injection → #12 log leak.
