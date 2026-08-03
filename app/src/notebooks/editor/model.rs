@@ -4,7 +4,6 @@ use std::{any::Any, borrow::Cow, collections::HashMap, ops::Range, time::Duratio
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use markdown_parser::FormattedText;
-use mermaid_to_svg::MermaidTheme;
 use num_traits::SaturatingSub;
 use regex::Regex;
 use url::Url;
@@ -146,7 +145,7 @@ fn mermaid_image_html(svg: &[u8]) -> String {
 }
 
 fn render_mermaid_clipboard_html(source: &str) -> Option<String> {
-    let svg = mermaid_to_svg::render_mermaid_to_svg(source, Some(&MermaidTheme::light()))
+    let svg = mermaid_to_svg::render_mermaid_to_svg(source, None)
         .ok()?
         .into_bytes();
     Some(mermaid_image_html(&svg))

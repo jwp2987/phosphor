@@ -4,7 +4,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use mermaid_to_svg::MermaidTheme;
 use warpui::{
     AppContext, SingletonEntity,
     assets::asset_cache::{AssetCache, AssetSource, AssetState, AsyncAssetId, AsyncAssetType},
@@ -27,7 +26,7 @@ pub fn mermaid_asset_source(source: &str) -> AssetSource {
     let source = source.to_string();
     let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);
-    let id = format!("light:{:x}", hasher.finish());
+    let id = format!("configured:{:x}", hasher.finish());
     let fetch_source = source.clone();
 
     AssetSource::Async {
@@ -35,7 +34,7 @@ pub fn mermaid_asset_source(source: &str) -> AssetSource {
         fetch: Arc::new(move || {
             let source = fetch_source.clone();
             Box::pin(async move {
-                mermaid_to_svg::render_mermaid_to_svg(&source, Some(&MermaidTheme::light()))
+                mermaid_to_svg::render_mermaid_to_svg(&source, None)
                     .map(|svg| Bytes::from(svg.into_bytes()))
                     .map_err(Into::into)
             })
