@@ -339,6 +339,13 @@ impl BlocklistAIHistoryModel {
                     .and_then(|data| data.artifacts_json.as_ref())
                     .and_then(|json| serde_json::from_str(json).ok())
                     .unwrap_or_default();
+                let parent_conversation_id = conversation_data
+                    .as_ref()
+                    .and_then(|data| data.parent_conversation_id.as_deref())
+                    .and_then(|s| AIConversationId::try_from(s.to_string()).ok());
+                let parent_agent_id = conversation_data
+                    .as_ref()
+                    .and_then(|data| data.parent_agent_id.clone());
                 let server_conversation_token = conversation_data
                     .and_then(|data| data.server_conversation_token)
                     .map(ServerConversationToken::new);
@@ -354,6 +361,8 @@ impl BlocklistAIHistoryModel {
                     is_restorable_locally: true,
                     artifacts,
                     ambient_agent_task_id: None,
+                    parent_conversation_id,
+                    parent_agent_id,
                 }))
             })
             .collect();
