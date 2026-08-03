@@ -171,6 +171,8 @@ impl EditorMetadata {
                     .unwrap()
                     .push_str(self.desktop_file_path.to_str().unwrap_or_default());
             }
+            // Deprecated field codes per the Desktop Entry spec; silently dropped.
+            'd' | 'D' | 'n' | 'N' | 'v' | 'm' => {}
             // Unknown field code: keep the character as-is per the spec
             other => parts.last_mut().unwrap().push(other),
         };
