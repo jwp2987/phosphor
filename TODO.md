@@ -128,11 +128,22 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   87/0, warp compiles. Commit `57e1b624b`. (skipped watcher-rewrite + remote/cloud incremental path;
   standing-query results queryable but app skill-watcher wiring is a follow-up)
 - [ ] Code review over SSH (`diff_state/{local,remote}`, `git_repo_model`)
-- [ ] Remote/SSH global search (`remote_matches_to_global`) — needs PREREQUISITE: host-scoped ripgrep
-  RPC in `crates/remote_server` (proto messages+codegen, `start_ripgrep_search`/`abort_host_request`/
-  `HostRequestError`/`RipgrepSearchParams`, client path) + remote-server DAEMON ripgrep handler; fork's
-  remote_server predates host-scoped requests. Multi-crate build (not design); hard to verify locally
-  (needs a real SSH remote round-trip). Sequence: build the RPC subsystem, then the global_search rework.
+- [~] Remote/SSH global search — PREREQUISITE **host-scoped ripgrep RPC = DONE** (commit `a580c03de`,
+  branch `parity-ripgrep-rpc`): proto `RipgrepSearch` request/response (+ Success/Error/Match/Submatch,
+  oneof tag 23, codegen verified), `RemoteServerClient::ripgrep_search`, server-side `ripgrep_search`
+  module (validate/run via `warp_ripgrep::search_streaming`/5000-match+8MB caps) + `server_model`
+  async handler, 2 ported tests pass, whole warp lib+tests compile. Adapted to the fork's per-host-client
+  manager (NO oracle `PendingRipgrepSearch`/`host_response`/`start_ripgrep_search` dispatch machinery —
+  consumers call `manager.client_for_host(host_id)?.ripgrep_search(req)` directly). Also unblocks
+  code-review-over-SSH, which consumes the client method WITHOUT the UI migration below.
+  REMAINING (the real blocker, a separate large workstream): the fork's global_search is entirely local —
+  `view.search_roots: Vec<PathBuf>`, `mod.rs` has no `GlobalSearchMatch`, and working-dir roots flow from
+  `left_panel` as plain `PathBuf` with NO host attribution. Wiring remote search needs a cross-cutting
+  `PathBuf → LocalOrRemotePath` migration of the workspace working-directory model + `left_panel` +
+  sibling `file_tree` + `global_search` mod/view/model (add `GlobalSearchMatch{location:LocalOrRemotePath,
+  column_num,..}`, multi-source local+per-host aggregation). `warp_util::{local_or_remote_path,remote_path,
+  standardized_path}` already exist in the fork. Settled-design (mirror Warp), but large + destabilizes
+  file_tree/left_panel, so verify each layer.
 - [x] URI local deep-links — Session/TabConfig/settings-widget/OpenFileEditor; 21 tests; warp 3850/0. Commit `f1c9dbaa1`. (cloud/team variants + fork-absent custom_router skipped)
 - [ ] Skill remote-path resolution (`get_scope_for_path`, `LocalOrRemotePath`)
 - [x] `ModelEventDispatcher` SSH gate — `SshRemoteServerSupport::{Enabled,Disabled}`; per-instance (GUI=Enabled/TUI=Disabled); 4 tests; warp 3850/0. Commit `1c1fff909`.
