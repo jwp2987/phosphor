@@ -1,0 +1,67 @@
+# Usage / acceptance test suite — headless GUI + TUI smoke tests.
+#
+# Runs `./script/usage-test` (see specs/usage-test-suite/SCOPE.md): the in-process
+# `warp_tui` view harness for the TUI surface, and the reliable-here GUI scenarios
+# via the `integration` binary (which boots the full app with a MOCK display — no
+# xvfb / GPU needed). Real-shell command-completion scenarios (the preexec race)
+# are gated behind `--include-flaky` and allowed to soft-fail until that race is
+# resolved. BYOP agent-round-trip scenarios (`--include-byop`) need a real provider
+# key + network and are not run in CI.
+#
+# Manual dispatch + nightly. PR validation stays in pr-check.yml (fast cargo check).
+name: Usage Test Suite
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_flaky:
+        description: "Also run real-shell (--include-flaky) scenarios (soft-fail)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 7 * * *" # nightly ~07:00 UTC
+
+concurrency:
+  group: usage-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  usage-test:
+    name: usage-test (Linux)
+    # ubuntu-22.04 (glibc 2.35) matches the release Linux job + pr-check.yml.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Free up disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
+          df -h /
+
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: linux
+          is_self_hosted: false
+
+      # The runner shells out to `cargo nextest` for the TUI surface; install it.
+      # (The runner degrades gracefully if it's missing, but CI should exercise TUI.)
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@9ba3ac3fd006a70c6e186a683577abc1ccf0ff3a # v2
+        with:
+          tool: nextest
+
+      - name: Usage suite — TUI + reliable-here GUI
+        shell: bash
+        run: ./script/usage-test --surface both
+
+      - name: Usage suite — real-shell (flaky, soft-fail)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_flaky }}
+        continue-on-error: true
+        shell: bash
+        run: ./script/usage-test --include-flaky
