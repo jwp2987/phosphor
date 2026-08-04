@@ -374,3 +374,359 @@ fn test_open_file_non_runnable_shebang_routes_to_editor() {
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(classify_open_file_action(&p), OpenFileAction::Editor);
 }
+
+// -- zap://tab_config deeplink parsing ---------------------------------------
+
+#[test]
+fn test_find_matching_tab_config() {
+    let configs = vec![
+        make_mock_tab_config("my tab", Some("/tab_configs/my_tab.toml")),
+        make_mock_tab_config("Deploy", Some("/tab_configs/Deploy.yaml")),
+        make_mock_tab_config("dotted", Some("/tab_configs/foo.bar.toml")),
+        make_mock_tab_config("orphan", None),
+    ];
+
+    // Stem match without extension.
+    assert_eq!(
+        find_matching_tab_config("my_tab", configs.clone()).map(|c| c.name),
+        Some(String::from("my tab")),
+    );
+
+    // Stem match with extension.
+    assert_eq!(
+        find_matching_tab_config("my_tab.toml", configs.clone()).map(|c| c.name),
+        Some(String::from("my tab")),
+    );
+
+    // Case-insensitive match.
+    assert_eq!(
+        find_matching_tab_config("deploy", configs.clone()).map(|c| c.name),
+        Some(String::from("Deploy")),
+    );
+
+    // Dotted stem resolves both with and without `.toml`.
+    assert_eq!(
+        find_matching_tab_config("foo.bar", configs.clone()).map(|c| c.name),
+        Some(String::from("dotted")),
+    );
+    assert_eq!(
+        find_matching_tab_config("foo.bar.toml", configs.clone()).map(|c| c.name),
+        Some(String::from("dotted")),
+    );
+
+    // Miss returns None.
+    assert!(find_matching_tab_config("unknown", configs.clone()).is_none());
+
+    // Configs without a `source_path` never match.
+    assert!(find_matching_tab_config("orphan", configs).is_none());
+}
+
+fn make_mock_tab_config(name: &str, source_path: Option<&str>) -> TabConfig {
+    TabConfig {
+        name: name.to_string(),
+        title: None,
+        color: None,
+        panes: vec![],
+        params: HashMap::new(),
+        source_path: source_path.map(PathBuf::from),
+    }
+}
+
+// -- zap://action/open_file_editor deeplink parsing --------------------------
+
+fn open_file_editor_test_path(file_name: &str) -> (String, PathBuf) {
+    #[cfg(windows)]
+    let path = format!("C:/tmp/{file_name}");
+    #[cfg(not(windows))]
+    let path = format!("/tmp/{file_name}");
+
+    (path.clone(), PathBuf::from(path))
+}
+
+#[test]
+fn test_action_open_file_editor_parse_with_path_only() {
+    let (path_param, expected_path) = open_file_editor_test_path("test.rs");
+    let url = Url::parse(&format!(
+        "{}://action/open_file_editor?path={path_param}",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+
+    let action = Action::parse(&url).unwrap();
+    match action {
+        Action::OpenFileEditor { path, line_col } => {
+            assert_eq!(path, expected_path);
+            assert_eq!(line_col, None);
+        }
+        _ => panic!("unexpected action: {action:?}"),
+    }
+}
+
+#[test]
+fn test_action_open_file_editor_parse_with_line_only() {
+    let (path_param, expected_path) = open_file_editor_test_path("test.rs");
+    let url = Url::parse(&format!(
+        "{}://action/open_file_editor?path={path_param}&line=120",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+
+    let action = Action::parse(&url).unwrap();
+    match action {
+        Action::OpenFileEditor { path, line_col } => {
+            assert_eq!(path, expected_path);
+            assert_eq!(
+                line_col,
+                Some(LineAndColumnArg {
+                    line_num: 120,
+                    column_num: None,
+                })
+            );
+        }
+        _ => panic!("unexpected action: {action:?}"),
+    }
+}
+
+#[test]
+fn test_action_open_file_editor_parse_with_line_and_column() {
+    let (path_param, expected_path) = open_file_editor_test_path("test.rs");
+    let url = Url::parse(&format!(
+        "{}://action/open_file_editor?path={path_param}&line=120&column=8",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+
+    let action = Action::parse(&url).unwrap();
+    match action {
+        Action::OpenFileEditor { path, line_col } => {
+            assert_eq!(path, expected_path);
+            assert_eq!(
+                line_col,
+                Some(LineAndColumnArg {
+                    line_num: 120,
+                    column_num: Some(8),
+                })
+            );
+        }
+        _ => panic!("unexpected action: {action:?}"),
+    }
+}
+
+#[test]
+fn test_action_open_file_editor_parse_decodes_percent_encoded_path() {
+    let (path_param, _) = open_file_editor_test_path("hello%20world.rs");
+    let (_, expected_path) = open_file_editor_test_path("hello world.rs");
+    let url = Url::parse(&format!(
+        "{}://action/open_file_editor?path={path_param}&line=1",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+
+    let action = Action::parse(&url).unwrap();
+    match action {
+        Action::OpenFileEditor { path, line_col } => {
+            assert_eq!(path, expected_path);
+            assert_eq!(
+                line_col,
+                Some(LineAndColumnArg {
+                    line_num: 1,
+                    column_num: None,
+                })
+            );
+        }
+        _ => panic!("unexpected action: {action:?}"),
+    }
+}
+
+#[test]
+fn test_action_open_file_editor_parse_expands_home_dir() {
+    let url = Url::parse(&format!(
+        "{}://action/open_file_editor?path=~/tmp/test.rs&line=1",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+
+    let action = Action::parse(&url).unwrap();
+    match action {
+        Action::OpenFileEditor { path, line_col } => {
+            assert_eq!(
+                path,
+                PathBuf::from(shellexpand::tilde("~/tmp/test.rs").into_owned())
+            );
+            assert_eq!(
+                line_col,
+                Some(LineAndColumnArg {
+                    line_num: 1,
+                    column_num: None,
+                })
+            );
+        }
+        _ => panic!("unexpected action: {action:?}"),
+    }
+}
+
+#[test]
+fn test_action_open_file_editor_parse_requires_path() {
+    let url = Url::parse(&format!(
+        "{}://action/open_file_editor?line=1",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+
+    assert!(Action::parse(&url).is_err());
+}
+
+#[test]
+fn test_action_open_file_editor_parse_rejects_relative_path() {
+    let url = Url::parse(&format!(
+        "{}://action/open_file_editor?path=src/main.rs&line=1",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+
+    assert!(Action::parse(&url).is_err());
+}
+
+#[test]
+fn test_action_open_file_editor_parse_rejects_column_without_line() {
+    let url = Url::parse(&format!(
+        "{}://action/open_file_editor?path=/tmp/test.rs&column=8",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+
+    assert!(Action::parse(&url).is_err());
+}
+
+#[test]
+fn test_action_open_file_editor_parse_rejects_invalid_line_or_column() {
+    let invalid_line = Url::parse(&format!(
+        "{}://action/open_file_editor?path=/tmp/test.rs&line=abc",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+    assert!(Action::parse(&invalid_line).is_err());
+
+    let zero_line = Url::parse(&format!(
+        "{}://action/open_file_editor?path=/tmp/test.rs&line=0",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+    assert!(Action::parse(&zero_line).is_err());
+
+    let invalid_column = Url::parse(&format!(
+        "{}://action/open_file_editor?path=/tmp/test.rs&line=1&column=0",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+    assert!(Action::parse(&invalid_column).is_err());
+}
+
+#[test]
+#[cfg(all(unix, feature = "local_fs"))]
+fn test_open_file_editor_executable_sh_opens_in_editor() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("run.sh");
+    std::fs::write(&p, b"#!/bin/sh\n:\n").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(can_open_file_editor_path(&p));
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_open_file_editor_rust_source_opens_in_editor() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("main.rs");
+    std::fs::write(&p, b"fn main() {}\n").unwrap();
+    assert!(can_open_file_editor_path(&p));
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_open_file_editor_binary_file_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("image.png");
+    std::fs::write(&p, b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+    assert!(!can_open_file_editor_path(&p));
+}
+
+// -- zap://settings?widget deeplink parsing ----------------------------------
+
+#[test]
+fn test_settings_widget_deeplink_target() {
+    assert_eq!(
+        settings_widget_deeplink_target("global_hotkey").map(|(section, _)| section),
+        Some(SettingsSection::Features),
+    );
+    // Fork adaptation: the upstream `custom_router` slug (custom model routers)
+    // has no counterpart here, so it is not linkable.
+    assert!(settings_widget_deeplink_target("custom_router").is_none());
+    #[cfg(not(target_family = "wasm"))]
+    assert_eq!(
+        settings_widget_deeplink_target("cli_agents").map(|(section, _)| section),
+        Some(SettingsSection::ThirdPartyCLIAgents),
+    );
+    // Unknown / empty slugs are not linkable (allowlist only).
+    assert!(settings_widget_deeplink_target("not_a_widget").is_none());
+    assert!(settings_widget_deeplink_target("").is_none());
+}
+
+// -- zap://session deeplink parsing ------------------------------------------
+
+#[test]
+fn test_session_uri_host_parsing() {
+    let result = UriHost::from_str("session");
+    assert!(matches!(result, Ok(UriHost::Session)));
+}
+
+#[test]
+fn test_session_uri_validation() {
+    let url = Url::parse(&format!(
+        "{}://session/A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+    let host = validate_custom_uri(&url).unwrap();
+    assert!(matches!(host, UriHost::Session));
+}
+
+#[test]
+fn test_session_uri_empty_path_does_not_panic() {
+    let url = Url::parse(&format!("{}://session/", ChannelState::url_scheme())).unwrap();
+    let host = validate_custom_uri(&url).unwrap();
+    assert!(matches!(host, UriHost::Session));
+}
+
+#[test]
+fn test_session_uri_invalid_hex_does_not_panic() {
+    let url = Url::parse(&format!(
+        "{}://session/ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+        ChannelState::url_scheme()
+    ))
+    .unwrap();
+    let host = validate_custom_uri(&url).unwrap();
+    assert!(matches!(host, UriHost::Session));
+}
+
+#[test]
+fn test_session_uri_case_insensitive_hex() {
+    let upper = "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4";
+    let lower = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4";
+    let upper_bytes = super::decode_uuid_hex(upper).expect("upper hex should decode");
+    let lower_bytes = super::decode_uuid_hex(lower).expect("lower hex should decode");
+    assert_eq!(upper_bytes, lower_bytes);
+    assert_eq!(upper_bytes.len(), 16);
+}
+
+#[test]
+fn test_decode_uuid_hex_rejects_wrong_length() {
+    assert!(super::decode_uuid_hex("ABCD").is_none());
+    assert!(super::decode_uuid_hex("").is_none());
+    assert!(super::decode_uuid_hex("A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4FF").is_none());
+}
+
+#[test]
+fn test_decode_uuid_hex_rejects_invalid_chars() {
+    assert!(super::decode_uuid_hex("ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ").is_none());
+}

@@ -104,6 +104,33 @@ pub use settings_page::{
     InputListItem, LocalOnlyIconState, ToggleState,
 };
 
+/// Resolves a stable, friendly deeplink slug (used by
+/// `zap://settings?widget=<slug>`) to the settings page and `&'static str`
+/// widget id it should scroll to.
+///
+/// Only allowlisted widgets are linkable, so the public URL contract stays
+/// stable and internal widget identifiers (Rust type names) are not exposed.
+/// Add an entry here to make a new widget deep-linkable.
+///
+/// Fork adaptation: the upstream `custom_router` slug (custom model routers)
+/// has no counterpart here — that widget was dropped along with the
+/// custom-model-routing feature — so only `global_hotkey` and `cli_agents`
+/// are linkable.
+pub fn settings_widget_deeplink_target(slug: &str) -> Option<(SettingsSection, &'static str)> {
+    match slug {
+        "global_hotkey" => Some((
+            SettingsSection::Features,
+            features_page::global_hotkey_widget_id(),
+        )),
+        #[cfg(not(target_family = "wasm"))]
+        "cli_agents" => Some((
+            SettingsSection::ThirdPartyCLIAgents,
+            cli_agent_settings_widget_id(),
+        )),
+        _ => None,
+    }
+}
+
 /// Original sidebar width used when the settings-file footer is not
 /// enabled. Preserved for Preview/Stable until `FeatureFlag::SettingsFile`
 /// is promoted.
