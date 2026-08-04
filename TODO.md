@@ -116,8 +116,14 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [ ] Launch-at-login — `app/src/login_item/` (macOS/Windows)
 
 ### Large subsystems — each needs a dedicated scope
-- [ ] `local_control` / `warpctrl` scripting IPC (~3,000 lines)
-- [ ] `repo_metadata` lazy/budget file-tree + `standing_queries`
+- [x] `local_control` / `warpctrl` IPC — CRATE done: `crates/local_control` (protocol/catalog/auth/
+  discovery/client, renamed zap/`zapctrl`); 40/0. Commit `baffca6c6`. ⛔ APP-SIDE deferred (prereqs
+  out of scope): `FeatureFlag::{WarpControlCli,AgentManagementView}`, `WorkspaceAction::Open*`
+  variants (fork has only Toggle*), and the fork has NO Agent-Management view subsystem. Follow-up.
+- [x] `repo_metadata` lazy/budget file-tree + `standing_queries` — async budget `build_tree`
+  (StopAndLazyLoad + force-included + standing-query hooks) + `standing_queries.rs`; repo_metadata
+  87/0, warp compiles. Commit `57e1b624b`. (skipped watcher-rewrite + remote/cloud incremental path;
+  standing-query results queryable but app skill-watcher wiring is a follow-up)
 - [ ] Code review over SSH (`diff_state/{local,remote}`, `git_repo_model`)
 - [ ] Remote/SSH global search (`remote_matches_to_global`) — needs PREREQUISITE: host-scoped ripgrep
   RPC in `crates/remote_server` (proto messages+codegen, `start_ripgrep_search`/`abort_host_request`/
