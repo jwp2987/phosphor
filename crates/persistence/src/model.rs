@@ -14,9 +14,9 @@ use super::schema::{
     generic_string_objects, ignored_suggestions, mcp_environment_variables,
     mcp_server_installations, mcp_server_panes, notebook_panes, notebooks, object_actions,
     object_metadata, object_permissions, pane_branches, pane_leaves, pane_nodes, panels,
-    project_rules, projects, server_experiments, settings_panes, tabs, team_members, team_settings,
-    teams, terminal_panes, user_profiles, welcome_panes, windows, workflow_panes, workflows,
-    workspace_teams, workspaces,
+    project_rules, projects, server_experiments, settings_panes, tab_groups, tabs, team_members,
+    team_settings, teams, terminal_panes, user_profiles, welcome_panes, windows, workflow_panes,
+    workflows, workspace_teams, workspaces,
 };
 
 #[derive(Insertable)]
@@ -318,6 +318,8 @@ pub struct Tab {
     pub window_id: i32,
     pub custom_title: Option<String>,
     pub color: Option<String>,
+    pub tab_group_id: Option<i32>,
+    pub pinned: bool,
 }
 
 #[derive(Insertable)]
@@ -326,6 +328,32 @@ pub struct NewTab {
     pub window_id: i32,
     pub custom_title: Option<String>,
     pub color: Option<String>,
+    pub tab_group_id: Option<i32>,
+    pub pinned: bool,
+}
+
+/// Persisted form of a tab group. `name` is optional — untitled groups omit
+/// it and the UI falls back to a default label.
+#[derive(Identifiable, Queryable, Associations)]
+#[diesel(belongs_to(Window))]
+#[diesel(table_name = tab_groups)]
+pub struct TabGroup {
+    pub id: i32,
+    pub window_id: i32,
+    pub name: Option<String>,
+    pub color: Option<String>,
+    pub collapsed: bool,
+    pub pinned: bool,
+}
+
+#[derive(Insertable)]
+#[diesel(table_name = tab_groups)]
+pub struct NewTabGroup {
+    pub window_id: i32,
+    pub name: Option<String>,
+    pub color: Option<String>,
+    pub collapsed: bool,
+    pub pinned: bool,
 }
 
 /// The panes data model includes pane_nodes, pane_leaves and pane_branches.
@@ -866,6 +894,12 @@ pub struct AgentConversationRecord {
     pub conversation_id: String,
     pub conversation_data: String,
     pub last_modified_at: NaiveDateTime,
+    /// Serialized [`AgentConversationSummary`], computed from the task
+    /// snapshot at write time so startup can list conversations without
+    /// loading or decoding `agent_tasks`. `None` on rows written before the
+    /// column existed; readers fall back to deriving from tasks (and
+    /// backfill the column).
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Queryable, Selectable)]
@@ -965,6 +999,135 @@ pub fn tasks_are_restorable<'a>(tasks: impl IntoIterator<Item = &'a api::Task>) 
         // will pick that real root.
         _ => root_tasks.iter().filter(|t| !t.messages.is_empty()).count() == 1,
     }
+}
+
+/// Returns the working directory of the first message in `task` that carries
+/// directory context, ignoring empty paths.
+pub fn api_task_initial_working_directory(task: &api::Task) -> Option<String> {
+    task.messages
+        .iter()
+        .find_map(|message| {
+            message.message.as_ref().and_then(|content| {
+                let context = match content {
+                    api::message::Message::UserQuery(user_query) => user_query.context.as_ref(),
+                    api::message::Message::ToolCallResult(tool_call_result) => {
+                        tool_call_result.context.as_ref()
+                    }
+                    api::message::Message::SystemQuery(system_query) => {
+                        system_query.context.as_ref()
+                    }
+                    _ => None,
+                };
+
+                context
+                    .and_then(|ctx| ctx.directory.as_ref())
+                    .map(|dir| dir.pwd.clone())
+            })
+        })
+        .filter(|pwd| !pwd.is_empty())
+}
+
+/// Task-derived conversation metadata, serialized into the `summary` column
+/// of `agent_conversations` at write time.
+///
+/// This lets startup build the conversation history list from
+/// `agent_conversations` rows alone, without loading or protobuf-decoding the
+/// (potentially very large) `agent_tasks` blobs.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AgentConversationSummary {
+    /// The conversation's initial user query (or passive diff summary).
+    /// Empty when the conversation has no root task with a user query.
+    #[serde(default)]
+    pub initial_query: String,
+    /// Display title: the root task description, falling back to
+    /// `initial_query`.
+    #[serde(default)]
+    pub title: String,
+    /// The working directory of the first message carrying directory context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_working_directory: Option<String>,
+    /// Mirror of [`tasks_are_restorable`] over the persisted task snapshot.
+    pub is_restorable: bool,
+    /// True when the conversation only contains passive `AutoCodeDiff` system
+    /// queries and no user queries; such conversations are hidden from the
+    /// history list.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_unlisted_auto_code_diff: bool,
+}
+
+impl AgentConversationSummary {
+    /// Derives the summary from a conversation's full task snapshot.
+    pub fn from_tasks<'a>(tasks: impl IntoIterator<Item = &'a api::Task>) -> Self {
+        let tasks: Vec<&api::Task> = tasks.into_iter().collect();
+
+        let mut has_user_query = false;
+        let mut has_auto_code_diff = false;
+        for task in &tasks {
+            for message in &task.messages {
+                match &message.message {
+                    Some(api::message::Message::UserQuery(_)) => {
+                        has_user_query = true;
+                    }
+                    Some(api::message::Message::SystemQuery(sys)) => {
+                        if let Some(api::message::system_query::Type::AutoCodeDiff(_)) = &sys.r#type
+                        {
+                            has_auto_code_diff = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let root_task = tasks.iter().find(|task| task.dependencies.is_none());
+
+        // The first user query in the root task (or, for a passive code
+        // diff, the summary of the diff).
+        let initial_query = root_task
+            .map(|task| {
+                task.messages
+                    .iter()
+                    .find_map(|msg| match &msg.message {
+                        Some(api::message::Message::UserQuery(user_query)) => {
+                            Some(user_query.query.clone())
+                        }
+                        Some(api::message::Message::ToolCall(tool_call)) => {
+                            match tool_call.tool.as_ref()? {
+                                api::message::tool_call::Tool::ApplyFileDiffs(diff_suggestion) => {
+                                    Some(diff_suggestion.summary.clone())
+                                }
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
+        // The title is the root task description, falling back to
+        // `initial_query` when the description is empty.
+        let title = root_task
+            .map(|task| task.description.clone())
+            .filter(|desc| !desc.is_empty())
+            .unwrap_or_else(|| initial_query.clone());
+
+        let initial_working_directory = tasks
+            .iter()
+            .find_map(|task| api_task_initial_working_directory(task));
+
+        Self {
+            initial_query,
+            title,
+            initial_working_directory,
+            is_restorable: tasks_are_restorable(tasks.iter().copied()),
+            is_unlisted_auto_code_diff: has_auto_code_diff && !has_user_query,
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq, Default)]
@@ -1321,7 +1484,7 @@ pub struct NewMCPServerInstallation {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentConversation, AgentConversationData, api};
+    use super::{AgentConversation, AgentConversationData, AgentConversationSummary, api};
 
     fn parentless_task(id: &str, message_count: usize) -> api::Task {
         api::Task {
@@ -1362,6 +1525,118 @@ mod tests {
             conversation: Default::default(),
             tasks,
         }
+    }
+
+    fn user_query_message(task_id: &str, query: &str, pwd: Option<&str>) -> api::Message {
+        let context = pwd.map(|pwd| api::InputContext {
+            directory: Some(api::input_context::Directory {
+                pwd: pwd.to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        api::Message {
+            id: format!("{task_id}-user-query"),
+            task_id: task_id.to_string(),
+            message: Some(api::message::Message::UserQuery(api::message::UserQuery {
+                query: query.to_string(),
+                context,
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn auto_code_diff_message(task_id: &str) -> api::Message {
+        api::Message {
+            id: format!("{task_id}-auto-code-diff"),
+            task_id: task_id.to_string(),
+            message: Some(api::message::Message::SystemQuery(
+                api::message::SystemQuery {
+                    context: None,
+                    r#type: Some(api::message::system_query::Type::AutoCodeDiff(
+                        api::message::AutoCodeDiff {
+                            query: "diff".to_string(),
+                        },
+                    )),
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn summary_from_tasks_derives_query_title_and_working_directory() {
+        let mut root = parentless_task("root", 0);
+        root.description = "Root title".to_string();
+        root.messages = vec![user_query_message("root", "Initial query", Some("/tmp/repo"))];
+
+        let summary = AgentConversationSummary::from_tasks([&root]);
+
+        assert_eq!(summary.initial_query, "Initial query");
+        assert_eq!(summary.title, "Root title");
+        assert_eq!(
+            summary.initial_working_directory.as_deref(),
+            Some("/tmp/repo")
+        );
+        assert!(summary.is_restorable);
+        assert!(!summary.is_unlisted_auto_code_diff);
+    }
+
+    #[test]
+    fn summary_from_tasks_falls_back_to_initial_query_when_description_is_empty() {
+        let mut root = parentless_task("root", 0);
+        root.messages = vec![user_query_message("root", "Initial query", None)];
+
+        let summary = AgentConversationSummary::from_tasks([&root]);
+
+        assert_eq!(summary.title, "Initial query");
+        assert_eq!(summary.initial_working_directory, None);
+    }
+
+    #[test]
+    fn summary_from_tasks_flags_auto_code_diff_only_conversations_as_unlisted() {
+        let mut root = parentless_task("root", 0);
+        root.messages = vec![auto_code_diff_message("root")];
+
+        let summary = AgentConversationSummary::from_tasks([&root]);
+        assert!(summary.is_unlisted_auto_code_diff);
+
+        // A user query alongside the passive diff keeps the conversation listed.
+        let mut interacted_root = parentless_task("root", 0);
+        interacted_root.messages = vec![
+            auto_code_diff_message("root"),
+            user_query_message("root", "Follow-up", None),
+        ];
+
+        let summary = AgentConversationSummary::from_tasks([&interacted_root]);
+        assert!(!summary.is_unlisted_auto_code_diff);
+    }
+
+    #[test]
+    fn summary_from_tasks_mirrors_restorability() {
+        // Two real roots is the genuinely ambiguous, non-restorable shape.
+        let summary = AgentConversationSummary::from_tasks([
+            &parentless_task("root-a", 1),
+            &parentless_task("root-b", 1),
+        ]);
+        assert!(!summary.is_restorable);
+
+        let summary = AgentConversationSummary::from_tasks([&parentless_task("root", 1)]);
+        assert!(summary.is_restorable);
+    }
+
+    #[test]
+    fn summary_roundtrips_through_json() {
+        let mut root = parentless_task("root", 0);
+        root.description = "Root title".to_string();
+        root.messages = vec![user_query_message("root", "Initial query", Some("/tmp/repo"))];
+
+        let summary = AgentConversationSummary::from_tasks([&root]);
+        let json = serde_json::to_string(&summary).expect("summary should serialize");
+        let roundtripped: AgentConversationSummary =
+            serde_json::from_str(&json).expect("summary should deserialize");
+        assert_eq!(roundtripped, summary);
     }
 
     /// Legacy [stub + real] root shape produced by the pre-QUALITY-774

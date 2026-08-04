@@ -4,7 +4,7 @@ use prost::Message;
 use std::collections::{HashMap, HashSet};
 use warp_multi_agent_api as api;
 
-use super::model::{AgentConversation, AgentConversationData};
+use super::model::{AgentConversation, AgentConversationData, AgentConversationSummary};
 use crate::persistence::model::{AgentConversationRecord, AgentTaskRecord};
 use crate::persistence::schema::{self, agent_conversations, agent_tasks};
 
@@ -18,6 +18,7 @@ const MAX_TASK_BLOB_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 struct NewAgentConversation {
     conversation_id: String,
     conversation_data: String,
+    summary: Option<String>,
 }
 
 #[derive(Debug, Insertable, AsChangeset)]
@@ -50,11 +51,22 @@ pub(super) fn upsert_agent_conversation<'a>(
 
     let serialized_conversation_data = serde_json::to_string(&conversation_data_param)?;
 
+    // Collect the task snapshot so we can both derive the summary and iterate
+    // it for per-task persistence below.
+    let tasks: Vec<&api::Task> = tasks.into_iter().collect();
+
+    // Derive the task-based summary here (on the writer thread) so every
+    // write path keeps the `summary` column in sync with the task snapshot,
+    // letting startup list conversations without loading `agent_tasks`.
+    let serialized_summary =
+        serde_json::to_string(&AgentConversationSummary::from_tasks(tasks.iter().copied())).ok();
+
     conn.transaction::<_, Error, _>(|conn| {
         // Upsert the conversation level metadata
         let new_conversation = NewAgentConversation {
             conversation_id: conversation_id_param.to_owned(),
             conversation_data: serialized_conversation_data,
+            summary: serialized_summary,
         };
 
         diesel::insert_into(agent_conversations::table())
@@ -162,6 +174,50 @@ pub(super) fn read_agent_conversations(
     }
 
     conversations_by_id.retain(|c_id, _| !invalid_conversation_ids.contains(c_id));
+
+    // Backfill the `summary` column for rows written before it existed (or
+    // whose serialized summary is invalid). The task snapshot is already
+    // decoded above, so deriving here is cheap; persisting keeps subsequent
+    // startups from re-deriving. Compare-and-set against the value observed at
+    // read time so a newer concurrent write is never clobbered, and restore
+    // `last_modified_at` afterwards so the `update_last_modified_at` trigger
+    // does not reorder the history list.
+    for conversation in conversations_by_id.values() {
+        let record = &conversation.conversation;
+        let has_valid_summary = record
+            .summary
+            .as_deref()
+            .is_some_and(|json| serde_json::from_str::<AgentConversationSummary>(json).is_ok());
+        if has_valid_summary {
+            continue;
+        }
+
+        let derived = AgentConversationSummary::from_tasks(conversation.tasks.iter());
+        let Ok(summary_json) = serde_json::to_string(&derived) else {
+            continue;
+        };
+
+        let update_target = agent_conversations.filter(conversation_id.eq(&record.conversation_id));
+        let updated = match record.summary.as_deref() {
+            Some(previous_summary) => {
+                diesel::update(update_target.filter(summary.eq(previous_summary)))
+                    .set(summary.eq(&summary_json))
+                    .execute(conn)?
+            }
+            None => diesel::update(update_target.filter(summary.is_null()))
+                .set(summary.eq(&summary_json))
+                .execute(conn)?,
+        };
+
+        // The `update_last_modified_at_for_agent_conversations` trigger bumps
+        // `last_modified_at` whenever an update leaves it unchanged; restore
+        // the original value so backfilling does not reorder the history list.
+        if updated > 0 {
+            diesel::update(agent_conversations.filter(conversation_id.eq(&record.conversation_id)))
+                .set(last_modified_at.eq(record.last_modified_at))
+                .execute(conn)?;
+        }
+    }
 
     Ok(conversations_by_id.into_values().collect())
 }

@@ -150,6 +150,7 @@ fn persisted_agent_conversation_for_test(
             conversation_data: serde_json::to_string(&empty_agent_conversation_data_for_test())
                 .expect("test conversation data should serialize"),
             last_modified_at,
+            summary: None,
         },
         tasks: vec![byop_test_task("root-task", messages)],
     }
@@ -838,6 +839,7 @@ fn test_initialize_historical_conversations_indexes_child_conversations() {
                 conversation_id: child_id.to_string(),
                 conversation_data: child_conversation_data,
                 last_modified_at: NaiveDateTime::default(),
+                summary: None,
             },
             tasks: vec![],
         }];

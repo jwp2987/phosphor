@@ -9,6 +9,7 @@ fn persisted_conversation(conversation_id: AIConversationId) -> AgentConversatio
             conversation_id: conversation_id.to_string(),
             conversation_data: r#"{"server_conversation_token":null}"#.to_string(),
             last_modified_at: chrono::NaiveDateTime::default(),
+            summary: None,
         },
         tasks: vec![warp_multi_agent_api::Task {
             id: task_id,
