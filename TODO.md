@@ -85,11 +85,15 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [x] Autoupdate per-channel repo + exit-code parsing — `repo_name` (adapted to fork's single-repo
   channels) + Windows `parse_forcekill_exit_code`/`parse_minidump_cleanup_exit_code`; warp autoupdate
   13/0. Commit `66884f3cb`. (Windows parsers compile-only here → run on Windows CI)
-- [ ] `external_control_master` signal plumbing (the #37 refinement; only comments today)
+- [x] `external_control_master` signal plumbing (#37 refinement) — DCS hook -> session -> controller;
+  `owns_control_master = !external_control_master`; 2 DCS tests; warp 3825/0. Commit `aaa436aad`.
 
 ### Build non-cloud half (per 2026-08-02 BYOP decisions on #11)
-- [ ] `history_model` reconciliation (rename / event-seq / fork-arity / `transient_network_error`;
-  DROP cloud-merge/remote-child/canonical-id)
+- [x] `history_model` reconciliation — PARTIAL: built optimistic rename, event-sequence persistence,
+  child-index cleanup (9 tests; warp 3825/0, commit `d472f292d`). DEFERRED (rippling, follow-up, NOT
+  design): `ConversationStatus::{WaitingForEvents,TransientError}` + `transient_network_error` (~20
+  match sites + auto-resume subsystem), wider-arity `start_new_conversation`/`prompt_history_candidates`
+  (constructor arity), harness-metadata child params. Dropped cloud-merge/remote-child.
 - [x] AI bundled skills — ALREADY DONE: ported inline in `skill_manager.rs` (BundledSkill,
   load_bundled_skills, activation) on Warp's older flat-HashMap design. Warp's newer `bundled.rs` is a
   remote-catalog rewrite whose net-new content is all the cloud/daemon arm. Ledger was stale.
@@ -97,8 +101,10 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   (`resolve_skill_repos` → amputated `cloud_environments::GithubRepo`); the only non-cloud fn
   (`filter_skills_by_spec`) has NO consumer in the fork = dead code, and rests on `LocalOrRemotePath`
   (fork uses `PathBuf`) — a faithful port is a workspace-wide type migration, not a skills-dir port.
-- [ ] Persistence: pinned tabs / tab groups / conversation summary + backfill
-  (DROP `add_team_uid_to_windows`)
+- [x] Persistence: pinned tabs / tab groups / conversation summary + backfill — 3 migrations +
+  schema/model/query + `AgentConversationSummary`; persistence 15/0. Commit `5fff5db83`. (dropped
+  `add_team_uid_to_windows` + `total_provider_cost_in_cents` cloud-billing; tab-group/pinned is
+  storage-only, GUI round-trip is a separate follow-up)
 
 ### Platform-gated (Windows/macOS — NOT verifiable on Linux; port compile-only + flag)
 - [ ] WSLENV passthrough vars — `wsl_env_allowlist()`
