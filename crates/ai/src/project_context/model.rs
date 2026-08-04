@@ -775,7 +775,9 @@ impl ProjectContextModel {
             MAX_SCAN_DEPTH,
             0,
             &ignore_behavior,
-        )?;
+            repo_metadata::entry::BudgetExceededBehavior::FailFast,
+        )
+        .await?;
 
         // Filter files to only include those matching RULES_FILE_PATTERN
         for file_metadata in files {

@@ -28,7 +28,10 @@ mod tests {
         fn new_for_test() -> Self {
             Self {
                 repositories: HashMap::new(),
+                standing_results: HashMap::new(),
                 lazy_loaded_paths: Default::default(),
+                force_included_paths: Vec::new(),
+                standing_query_definitions: Default::default(),
                 #[cfg(feature = "local_fs")]
                 watcher: Default::default(),
                 emit_incremental_updates: false,
@@ -574,10 +577,13 @@ mod tests {
             };
 
             // Compute mutations on the "background thread" then apply on the "main thread".
-            let mutations = block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
-                &update,
-                &gitignores,
-            ));
+            let (mutations, _standing_results, _removed_roots) =
+                block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                    &update,
+                    &gitignores,
+                    &[],
+                    &crate::standing_queries::StandingQueryDefinitions::default(),
+                ));
             LocalRepoMetadataModel::apply_file_tree_mutations(&mut root, mutations, false, false);
 
             // Verify that only the README.md was added (log file and target dir should be ignored)

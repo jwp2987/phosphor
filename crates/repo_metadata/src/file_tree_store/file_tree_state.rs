@@ -195,7 +195,11 @@ impl FileTreeMapStore {
             loaded: true,
         });
 
-        entry.load(gitignores)?;
+        // `Entry::load` is async (it drives async filesystem I/O internally);
+        // block on it here to preserve this method's synchronous signature and
+        // its callers. The I/O is the same blocking directory walk the sync
+        // builder previously performed.
+        futures_lite::future::block_on(entry.load(gitignores))?;
         self.insert_entry_at_path(child_path, entry);
         Ok(())
     }
