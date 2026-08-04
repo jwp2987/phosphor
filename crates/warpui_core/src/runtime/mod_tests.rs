@@ -434,7 +434,12 @@ fn synthetic_mouse_move_after_redraw_updates_hover() {
             })
         });
         let terminal = TestTerminal::new(TuiSize::new(20, 5));
-        let mut screen = TuiScreen::new(window_id, root.clone(), terminal);
+        let mut screen = TuiScreen::new(
+            window_id,
+            root.clone(),
+            terminal,
+            std::sync::Arc::new(std::sync::Mutex::new(())),
+        );
         app.update(|ctx| screen.draw(ctx)).unwrap();
 
         let mouse_moved = TuiEvent::MouseMoved {

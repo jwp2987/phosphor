@@ -12,6 +12,7 @@ fn text_styles_follow_light_theme_foreground() {
     let theme = light_theme();
     let builder = TuiUiBuilder {
         warp_theme: theme.clone(),
+        terminal_background: None,
     };
 
     let details = theme.details();
