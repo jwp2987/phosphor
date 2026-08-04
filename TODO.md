@@ -78,7 +78,9 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   Home/End) + keybinding rewire; same commit `b475f6d60`. (macOS bindings ported compile-only)
 - [x] Cross-window tab-drag placeholder collapse — `collapsed_source_placeholder_index`; 4 oracle
   tests; full warp lib 3814/0. Commit `c3f4b667a`. (adapted to fork's diverged drag-state)
-- [ ] Editable bindings `orchestration_cycle` / `toggle_maximize_pane` — `util/bindings.rs`
+- [x] Editable bindings — `toggle_maximize_pane` ALREADY present (action+handler+`CustomAction`
+  registered `bindings.rs:95`, `pane_group/mod.rs:426`); ledger was stale. `orchestration_cycle` is a
+  multi-agent-orchestration binding → KEEP-DROPPED (RunAgents/orchestration is dropped cloud per #11).
 - [x] Oversized data-URI image handling — `replace_oversized_data_uri_images` + `MAX_DATA_URI_PAYLOAD_BYTES`
   + `IMAGE_TOO_LARGE_PLACEHOLDER`; 2 oracle tests (asset_cache 1/0, warp_editor 438/0). Commit `c26ba8b5b`.
   (did not port the separate `data_uri_source` decode feature — out of scope)
