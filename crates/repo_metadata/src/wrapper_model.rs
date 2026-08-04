@@ -125,6 +125,12 @@ impl RepoMetadataModel {
                     update: update.clone(),
                 }
             }
+            // Standing-query results are exposed through
+            // `LocalRepoMetadataModel::standing_query_results`; they are not
+            // forwarded through the unified wrapper event (the fork's skill
+            // watcher still loads skills from the file tree on
+            // `RepositoryUpdated`, not from a standing-query delta stream).
+            RepositoryMetadataEvent::StandingQueryResultsUpdated { .. } => return,
         };
         ctx.emit(unified);
     }

@@ -55,7 +55,9 @@ pub async fn build_outline(
         MAX_DEPTH,
         0,
         &IgnoredPathStrategy::Exclude, // override_ignore_for_files
-    )?;
+        repo_metadata::entry::BudgetExceededBehavior::FailFast,
+    )
+    .await?;
 
     let (sender, receiver) = oneshot::channel();
 
