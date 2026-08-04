@@ -95,10 +95,11 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 
 ### Build non-cloud half (per 2026-08-02 BYOP decisions on #11)
 - [x] `history_model` reconciliation — PARTIAL: built optimistic rename, event-sequence persistence,
-  child-index cleanup (9 tests; warp 3825/0, commit `d472f292d`). DEFERRED (rippling, follow-up, NOT
-  design): `ConversationStatus::{WaitingForEvents,TransientError}` + `transient_network_error` (~20
-  match sites + auto-resume subsystem), wider-arity `start_new_conversation`/`prompt_history_candidates`
-  (constructor arity), harness-metadata child params. Dropped cloud-merge/remote-child.
+  child-index cleanup (9 tests; warp 3825/0, commit `d472f292d`). NOW ALSO built (commit `81e2e20cc`, warp 3876/0):
+  `ConversationStatus::{TransientError,WaitingForEvents}` + `TransientNetworkError`/`TransientNetworkErrorKind`
+  + recovery/auto-resume `recovery_pending` wiring (6+10 match sites). STILL deferred (separate features):
+  wider-arity `start_new_conversation`/`prompt_history_candidates` (constructor arity), the `WaitForEvents`
+  action subsystem (so `WaitingForEvents` never fires yet). Dropped cloud-merge/remote-child.
 - [x] AI bundled skills — ALREADY DONE: ported inline in `skill_manager.rs` (BundledSkill,
   load_bundled_skills, activation) on Warp's older flat-HashMap design. Warp's newer `bundled.rs` is a
   remote-catalog rewrite whose net-new content is all the cloud/daemon arm. Ledger was stale.
