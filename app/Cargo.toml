@@ -122,6 +122,12 @@ markdown_parser.workspace = true
 memchr.workspace = true
 memo-map.workspace = true
 mermaid_to_svg.workspace = true
+# Test-only, gated behind the `test-util` / `integration_tests` features via
+# `dep:mockito` (see [features]). Optional here so it is never pulled into a
+# release build, while still being reachable from non-`#[cfg(test)]` harness code
+# (e.g. the `integration` crate's usage scenarios) that enables those features.
+# A `[dev-dependencies]` entry also exists for plain `#[cfg(test)]` unit tests.
+mockito = { workspace = true, optional = true }
 num-traits.workspace = true
 num_cpus = "1.13.0"
 oauth2.workspace = true
@@ -411,7 +417,7 @@ autoupdate = []
 # to other crates' test builds (e.g. warp_tui tests). Propagates `warp_core/test-util`
 # so app helpers that depend on warp_core mocks (e.g. `Appearance::mock`) resolve when
 # the app is built standalone with this feature (warp_tui dev-deps also enable it).
-test-util = ["warp_core/test-util"]
+test-util = ["warp_core/test-util", "dep:mockito"]
 figma_detection = []
 bundled_skills = []
 windows_high_performance_gpu_default = []
@@ -709,6 +715,7 @@ integration_tests = [
     "warpui/integration_tests",
     "warpui/test-util",
     "warp_core/integration_tests",
+    "dep:mockito",
 ]
 traces = []
 workflow_aliases = []

@@ -448,5 +448,20 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     // Video recording test (manual only)
     register_test!(test_video_recording);
 
+    // Chunk B: GUI usage / acceptance smoke scenarios (`usage_*`).
+    register_test!(usage_launch_bootstrap);
+    register_test!(usage_open_close_settings);
+    register_test!(usage_open_command_palette);
+    register_test!(usage_tabs_add_switch_close);
+    register_test!(usage_theme_creator_modal);
+    register_test!(usage_block_navigation_select);
+    register_test!(usage_find_in_block);
+    register_test!(usage_agent_block_render);
+    register_test!(usage_run_command_output_block);
+    register_test!(usage_run_command_exit_code);
+    register_test!(usage_secret_redaction);
+    register_test!(usage_agent_roundtrip);
+    register_test!(usage_font_size_window_resize);
+
     tests
 }

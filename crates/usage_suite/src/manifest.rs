@@ -1,14 +1,15 @@
 //! Scenario manifest — the single source of truth for the usage suite.
 //!
-//! This is Chunk A's file (`specs/usage-test-suite/SCOPE.md` §6). It ships a
-//! small **stub manifest** so the runner (`main.rs`) works end-to-end before
-//! Chunk B (GUI `usage_*` scenarios in `crates/integration/src/test/usage.rs`)
-//! and Chunk C (TUI `usage_tui_*` tests in `crates/warp_tui/src/usage_tests.rs`)
-//! land real coverage.
+//! See `specs/usage-test-suite/SCOPE.md` §6. The runner (`main.rs`) drives the
+//! rows below across both surfaces:
+//! * GUI `usage_*` scenarios live in `crates/integration/src/test/usage.rs` and
+//!   are dispatched through the `integration` binary.
+//! * TUI `usage_tui_*` view-harness tests live in
+//!   `crates/warp_tui/src/usage_smoke_tests.rs` and are selected via a nextest
+//!   `test(/(^|::)usage_tui_/)` filter.
 //!
-//! Chunks B and C append rows **only** inside the clearly-marked
-//! `GUI_SCENARIOS` / `TUI_SCENARIOS` regions below — no other part of this
-//! file should change as part of those chunks.
+//! This file is the single place tags are declared; keep each scenario's tag
+//! here in sync with the doc comment on its test function.
 
 use serde::Serialize;
 
@@ -45,10 +46,6 @@ pub enum Tag {
     /// Needs a real BYOP provider (key + network). Only runs with
     /// `--include-byop`.
     NeedsByopProvider,
-    /// Chunk-A placeholder scenario that exercises the runner's plumbing
-    /// without asserting real app behavior. Removed once B/C replace it
-    /// with real coverage for that surface.
-    Stub,
 }
 
 impl Tag {
@@ -58,7 +55,6 @@ impl Tag {
             Tag::NeedsRealShell => "needs-real-shell",
             Tag::NeedsDesktop => "needs-desktop",
             Tag::NeedsByopProvider => "needs-byop-provider",
-            Tag::Stub => "stub",
         }
     }
 }
@@ -73,7 +69,7 @@ pub struct Scenario {
     ///
     /// For TUI: the `#[test]` function name in `warp_tui`. Real (non-stub)
     /// TUI scenario names MUST start with `usage_tui_` so the runner's
-    /// nextest filter `test(/^usage_tui_/)` selects them.
+    /// nextest filter `test(/(^|::)usage_tui_/)` selects them.
     pub name: &'static str,
     pub tags: &'static [Tag],
 }
@@ -91,39 +87,130 @@ impl Scenario {
 // ---------------------------------------------------------------------------
 // GUI scenarios (`integration` binary region)
 //
-// Chunk B appends real `usage_*` rows here as they land in
-// `crates/integration/src/test/usage.rs` — see SCOPE.md §4.1 for the target
-// catalog. Keep new rows inside this array literal; do not touch code above.
+// Real `usage_*` rows registered in `crates/integration/src/bin/integration.rs`
+// and defined in `crates/integration/src/test/usage.rs` — see SCOPE.md §4.1.
+// Add a row here when a new `usage_*` GUI scenario lands.
 // ---------------------------------------------------------------------------
 pub const GUI_SCENARIOS: &[Scenario] = &[
-    // Chunk-A stub: reuses an existing, already-registered `integration`
-    // scenario (not a `usage_*` name) purely so the runner's GUI path is
-    // exercised end-to-end before Chunk B lands the real `usage_*` GUI
-    // scenarios. Replace/supplement with real entries in Chunk B.
+    // In-process, no real shell / provider / GPU — trustworthy in the sandbox
+    // and run by default.
     Scenario {
         surface: Surface::Gui,
-        name: "test_open_and_close_settings",
-        tags: &[Tag::ReliableHere, Tag::Stub],
+        name: "usage_launch_bootstrap",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_open_close_settings",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_open_command_palette",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_tabs_add_switch_close",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_theme_creator_modal",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_agent_block_render",
+        tags: &[Tag::ReliableHere],
+    },
+    // Drives a real PTY shell to command completion; subject to the
+    // bash-preexec race in this sandbox. Only runs with `--include-flaky`.
+    // Block selection and find-in-block both operate over the real block list,
+    // so they need a genuine command block (an injected AI block is not a
+    // selectable/searchable participant) — hence the real-shell tag.
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_block_navigation_select",
+        tags: &[Tag::NeedsRealShell],
+    },
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_find_in_block",
+        tags: &[Tag::NeedsRealShell],
+    },
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_run_command_output_block",
+        tags: &[Tag::NeedsRealShell],
+    },
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_run_command_exit_code",
+        tags: &[Tag::NeedsRealShell],
+    },
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_secret_redaction",
+        tags: &[Tag::NeedsRealShell],
+    },
+    // Genuine agent round-trip needs a real BYOP provider (key + network);
+    // only runs with `--include-byop`. The Chunk-D provider mock
+    // (`app/src/integration_testing/mock_provider`) exists and is self-tested;
+    // wiring it into this scenario for a true no-key round-trip is a follow-up.
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_agent_roundtrip",
+        tags: &[Tag::NeedsByopProvider],
+    },
+    // Wants a real GPU window / pixel geometry; always skipped by this runner.
+    Scenario {
+        surface: Surface::Gui,
+        name: "usage_font_size_window_resize",
+        tags: &[Tag::NeedsDesktop],
     },
 ];
 
 // ---------------------------------------------------------------------------
 // TUI scenarios (`warp_tui` `usage_tui_*` tests region)
 //
-// Chunk C appends real rows here as they land in
-// `crates/warp_tui/src/usage_tests.rs` — see SCOPE.md §4.2 for the target
-// catalog. Every real (non-stub) name MUST start with `usage_tui_`. Keep new
-// rows inside this array literal; do not touch code above.
+// Real rows live in `crates/warp_tui/src/usage_smoke_tests.rs` — see SCOPE.md
+// §4.2. Every name MUST start with `usage_tui_` so the runner's nextest filter
+// `test(/(^|::)usage_tui_/)` selects it. Add a row here when a new one lands.
 // ---------------------------------------------------------------------------
 pub const TUI_SCENARIOS: &[Scenario] = &[
-    // Chunk-A stub: placeholder name. No `usage_tui_*` test exists in
-    // `warp_tui` yet (Chunk C adds them), so the runner's nextest filter
-    // matches zero tests today; the runner reports this row as `skip` with
-    // a clear "not landed yet" reason rather than failing the suite.
+    // In-process `warp_tui` view-harness renders — no shell/provider/GPU, so
+    // all are reliable-here and run by default. Live in
+    // `crates/warp_tui/src/usage_smoke_tests.rs`.
     Scenario {
         surface: Surface::Tui,
-        name: "usage_tui_stub_placeholder",
-        tags: &[Tag::Stub],
+        name: "usage_tui_zero_state_render",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Tui,
+        name: "usage_tui_transcript_render",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Tui,
+        name: "usage_tui_permission_prompt",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Tui,
+        name: "usage_tui_completions_menu",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Tui,
+        name: "usage_tui_conversation_menu",
+        tags: &[Tag::ReliableHere],
+    },
+    Scenario {
+        surface: Surface::Tui,
+        name: "usage_tui_slash_command_palette",
+        tags: &[Tag::ReliableHere],
     },
 ];
 

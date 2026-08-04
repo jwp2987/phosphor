@@ -86,6 +86,8 @@ mod tui_plan_view;
 mod tui_review_comments;
 mod tui_shell_command_view;
 mod usage;
+#[cfg(test)]
+mod usage_smoke_tests;
 mod warping_indicator;
 mod zero_state;
 mod zero_state_animation;

@@ -96,7 +96,7 @@ A **new, dependency-light crate** (`clap` + `serde_json` + `std::process` only;
    integration -- <name>` (reusing 1.1 verbatim, including the mock display and
    the `RERUN_EXIT_CODE` retry loop), captures exit status + duration.
 3. For selected **TUI** scenarios: runs `cargo nextest run -p warp_tui -E
-   'test(/^usage_tui_/)' --message-format libtest-json` (or `cargo test -p
+   'test(/(^|::)usage_tui_/)' --message-format libtest-json` (or `cargo test -p
    warp_tui usage_tui_ -- --format json -Z unstable-options` as fallback) and
    parses per-test outcomes.
 4. Emits a **unified report**: NDJSON per scenario on stdout + a
@@ -273,8 +273,9 @@ Append-only coordination:
   other test-module declarations
 
 Naming: prefix every test `usage_tui_` so the runner's nextest filter
-`test(/^usage_tui_/)` selects exactly this set. Append the TUI names to the
-manifest's `// TUI scenarios` region.
+`test(/(^|::)usage_tui_/)` selects exactly this set (the anchor matches the
+prefix at the crate root or inside a module such as `usage_smoke_tests`).
+Append the TUI names to the manifest's `// TUI scenarios` region.
 
 ### Chunk D — Provider / AI mock  *(owns new module; 1 append-only edit)*
 Owns:

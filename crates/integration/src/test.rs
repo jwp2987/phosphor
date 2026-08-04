@@ -30,6 +30,8 @@ mod ssh;
 mod subshell;
 mod sync_inputs;
 mod typeahead;
+// Chunk B: GUI usage / acceptance smoke scenarios (`usage_*`).
+pub mod usage;
 mod video_recording;
 mod workflows;
 mod workspace;
@@ -63,6 +65,7 @@ pub use ssh::*;
 pub use subshell::*;
 pub use sync_inputs::*;
 pub use typeahead::*;
+pub use usage::*;
 pub use video_recording::*;
 pub use workflows::*;
 pub use workspace::*;

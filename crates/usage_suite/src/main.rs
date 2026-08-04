@@ -2,10 +2,10 @@
 //! suite. See `specs/usage-test-suite/SCOPE.md` for the full design and
 //! `specs/usage-test-suite/README.md` for a short how-to.
 //!
-//! This is Chunk A ("runner scaffolding + docs"). It ships a small stub
-//! manifest (`manifest.rs`) so the runner works end-to-end; Chunks B/C
-//! append the real GUI/TUI scenarios to that manifest without touching this
-//! file.
+//! The runner reads the scenario manifest (`manifest.rs`) — the single source
+//! of truth for which GUI/TUI scenarios exist and how they're tagged — and
+//! dispatches each to its surface (the `integration` binary for GUI, a nextest
+//! `usage_tui_*` filter for TUI).
 //!
 //! Deliberately dependency-light: `clap` + `serde` + `serde_json` + `anyhow`
 //! only, **no** dependency on `warp`/`warpui`/`integration` or any other
@@ -270,7 +270,7 @@ fn run_gui_scenario(scenario: &Scenario) -> ScenarioReport {
 }
 
 // ---------------------------------------------------------------------------
-// TUI: runs `cargo nextest run -p warp_tui -E 'test(/^usage_tui_/)'` once for
+// TUI: runs `cargo nextest run -p warp_tui -E 'test(/(^|::)usage_tui_/)'` once for
 // the whole batch of selected TUI scenarios (SCOPE.md §1.2, §2), falling
 // back to `cargo test` if nextest isn't installed.
 // ---------------------------------------------------------------------------
@@ -324,9 +324,16 @@ fn run_tui_scenarios(scenarios: &[&Scenario], args: &Args) -> Vec<ScenarioReport
         }
     };
 
-    let (to_run, not_found): (Vec<&Scenario>, Vec<&Scenario>) = runnable
-        .into_iter()
-        .partition(|s| discovered.iter().any(|name| name.as_str() == s.name));
+    // Discovered nextest/libtest names include the module path
+    // (`usage_smoke_tests::usage_tui_foo`); the manifest lists the bare function
+    // name (`usage_tui_foo`). Compare on the final `::`-segment so the two line
+    // up regardless of the module the tests live in.
+    let (to_run, not_found): (Vec<&Scenario>, Vec<&Scenario>) =
+        runnable.into_iter().partition(|s| {
+            discovered
+                .iter()
+                .any(|name| name.rsplit("::").next().unwrap_or(name.as_str()) == s.name)
+        });
 
     for scenario in &not_found {
         reports.push(skip_report(
@@ -396,8 +403,13 @@ fn command_succeeds(program: &str, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-/// Runs `cargo nextest list -p warp_tui -E 'test(/^usage_tui_/)'` with JSON
+/// Runs `cargo nextest list -p warp_tui -E 'test(/(^|::)usage_tui_/)'` with JSON
 /// output and returns the set of matched test names.
+///
+/// The `(^|::)` anchor matches the `usage_tui_` function-name prefix whether the
+/// tests sit at the crate root or (as they do today) inside the
+/// `usage_smoke_tests` module — a plain `^usage_tui_` would miss the latter
+/// because nextest test names include the module path.
 fn discover_tui_tests_nextest() -> Result<Vec<String>> {
     let output = Command::new("cargo")
         .args([
@@ -406,7 +418,7 @@ fn discover_tui_tests_nextest() -> Result<Vec<String>> {
             "-p",
             "warp_tui",
             "-E",
-            "test(/^usage_tui_/)",
+            "test(/(^|::)usage_tui_/)",
             "--message-format",
             "json",
         ])
@@ -482,7 +494,7 @@ fn run_tui_tests_nextest() -> std::result::Result<(), String> {
             "-p",
             "warp_tui",
             "-E",
-            "test(/^usage_tui_/)",
+            "test(/(^|::)usage_tui_/)",
             "--no-fail-fast",
         ],
     )

@@ -60,8 +60,9 @@ clearly-marked regions:
   spawning `cargo run -q -p integration --bin integration -- <name>` per
   scenario (reusing the existing `RERUN_EXIT_CODE` retry loop).
 - `TUI_SCENARIOS` — names are `#[test]` functions in `warp_tui`, prefixed
-  `usage_tui_`. The runner drives these via `cargo nextest run -p warp_tui -E
-  'test(/^usage_tui_/)'` (falling back to `cargo test` if `cargo-nextest`
+  `usage_tui_` (today they live in the `usage_smoke_tests` module). The runner
+  drives these via `cargo nextest run -p warp_tui -E
+  'test(/(^|::)usage_tui_/)'` (falling back to `cargo test` if `cargo-nextest`
   isn't installed), discovering the matching test set first so scenarios that
   don't exist yet are reported as `skip` rather than failing the suite.
 
