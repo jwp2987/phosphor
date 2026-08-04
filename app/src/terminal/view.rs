@@ -5096,7 +5096,8 @@ impl TerminalView {
                 });
                 self.is_using_conversation_for_pane_header_title = false;
             }
-            BlocklistAIHistoryEvent::UpdatedConversationMetadata { .. } => {
+            BlocklistAIHistoryEvent::UpdatedConversationMetadata { .. }
+            | BlocklistAIHistoryEvent::UpdatedConversationTitle { .. } => {
                 self.update_pane_configuration(ctx);
             }
             BlocklistAIHistoryEvent::CreatedSubtask { .. }
