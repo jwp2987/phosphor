@@ -159,8 +159,6 @@ impl TryFrom<PaneNodeSnapshot> for PaneTemplateType {
                 | LeafContents::AIDocument(_)
                 // Zap Wave 7-3: the `EnvironmentManagement` arm was
                 // physically removed along with the ambient-agent UI subsystem.
-                | LeafContents::SshServer { .. }
-                | LeafContents::Sftp { .. }
                 | LeafContents::AmbientAgent(_) => {
                     // TODO: Handle AIDocument in launch config
                     Err(())

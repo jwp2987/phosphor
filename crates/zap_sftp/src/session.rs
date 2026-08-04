@@ -177,11 +177,10 @@ fn default_known_hosts_path() -> Option<PathBuf> {
 }
 
 /// Verifies the just-handshaked session's host key against `known_hosts_path`
-/// (trust-on-first-use + pinning), mirroring the precedent set by the
-/// terminal SSH path in `warp_ssh_manager` (which shells out to the real
-/// `ssh` binary and thus gets OpenSSH's own known_hosts checking for free).
-/// `zap_sftp` talks libssh2 directly, so that verification has to be done
-/// here explicitly.
+/// (trust-on-first-use + pinning), mirroring the precedent set by the terminal
+/// SSH path (which shells out to the real `ssh` binary and thus gets OpenSSH's
+/// own known_hosts checking for free). `zap_sftp` talks libssh2 directly, so
+/// that verification has to be done here explicitly.
 ///
 /// Must be called after `session.handshake()` and before any
 /// authentication is attempted, so a MITM never gets a shot at credentials.

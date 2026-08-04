@@ -56,8 +56,6 @@ use crate::ai::predict::prompt_suggestions::{
     is_accept_prompt_suggestion_bound_to_ctrl_enter,
 };
 use crate::search::slash_command_menu::static_commands::commands;
-use crate::ssh_manager::onekey::{load_saved_ssh_credentials, OneKeyCredentialKind};
-use crate::ssh_manager::password_prompt::bytes_look_like_password_prompt;
 use crate::terminal::input::inline_menu::InlineMenuPositioner;
 use crate::terminal::view::passive_suggestions::PromptSuggestionResolution;
 pub use crate::terminal::view::rich_content::{
@@ -321,7 +319,6 @@ use crate::terminal::shared_session::protocol::{
     ParticipantId, Role, WindowSize as SessionSharingWindowSize,
 };
 use async_channel::{Receiver, Sender};
-use async_stream::stream;
 use chrono::{DateTime, Local, NaiveDateTime};
 use command_corrections::rules::{Rule, RuleId as CommandCorrectionsRuleId};
 use command_corrections::{correct_command, Command, Correction, HistoryItem, SessionMetadata};
@@ -364,7 +361,7 @@ use warpui::elements::new_scrollable::{
     ScrollableAppearance, SingleAxisConfig,
 };
 use warpui::elements::{
-    get_rich_content_position_id, Border, ChildAnchor, ClippedScrollStateHandle, Container,
+    get_rich_content_position_id, ChildAnchor, ClippedScrollStateHandle, Container,
     CrossAxisAlignment, DispatchEventResult, DropTarget, DropTargetData, Empty, EventHandler, Flex,
     NewScrollable, OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds,
     PositionedElementAnchor, PositionedElementOffsetBounds, Radius, ScrollableElement,
@@ -408,11 +405,7 @@ use crate::banner::{
     DismissalType,
 };
 use crate::debounce::debounce;
-use crate::editor::{
-    AutosuggestionType, CrdtOperation, EditorAction, EditorView, Event as EditorEvent,
-    PropagateAndNoOpEscapeKey, PropagateAndNoOpNavigationKeys, SingleLineEditorOptions,
-    TextOptions,
-};
+use crate::editor::{AutosuggestionType, CrdtOperation, EditorAction};
 use crate::features::FeatureFlag;
 use crate::pane_group::SplitPaneState;
 use crate::pane_group::{
@@ -483,13 +476,11 @@ use crate::terminal::{
     TerminalModel,
 };
 use crate::view_components::find::{Event as FindEvent, Find, FindDirection, FindWithinBlockState};
-use fuzzy_match::match_indices_case_insensitive;
 use settings::{Setting, ToggleableSetting};
 use warp_core::semantic_selection::SemanticSelection;
-use warp_editor::editor::NavigationKey;
 use warpui::text::SelectionType;
 
-use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields, MenuVariant};
+use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields};
 use crate::server::telemetry::{BlockLatencyInfo, BootstrappingInfo};
 use crate::terminal::{block_list_element::BlockListMenuSource, prompt};
 use crate::terminal::{color, History, SizeInfo};
@@ -661,20 +652,6 @@ const P10K_UPDATE_INSTRUCTIONS_URL: &str =
     "https://github.com/romkatv/powerlevel10k#how-do-i-update-powerlevel10k";
 
 const CONTEXT_MENU_WIDTH: f32 = 280.;
-const ONEKEY_CONTEXT_MENU_WIDTH: f32 = 380.;
-const ONEKEY_PROMPT_THROTTLE: Duration = Duration::from_secs(2);
-const ONEKEY_PROMPT_SLIDING_WINDOW_BYTES: usize = 8 * 1024;
-const ONEKEY_PROMPT_BUFFER_HARD_LIMIT: usize = 16 * 1024;
-/// Estimated height of each OneKey candidate row (stacked label + padding), used to
-/// derive the Scrollable menu's target height from the candidate count. This is
-/// only a heuristic; it doesn't need to be pixel-precise.
-const ONEKEY_MENU_ROW_HEIGHT: f32 = 44.;
-/// Estimated height of the search header at the top of the OneKey menu (icon +
-/// EditorView + padding + border).
-const ONEKEY_SEARCH_HEADER_HEIGHT: f32 = 32.;
-/// Max height of the OneKey menu's Scrollable area, to avoid covering the terminal
-/// when there are dozens/hundreds of credentials.
-const ONEKEY_MENU_MAX_HEIGHT: f32 = 360.;
 
 /// The minimum amount of mouse-drag to consider a selection to
 /// be a text-selection as opposed to mouse-drag noise.
@@ -1920,10 +1897,6 @@ pub enum ContextMenuType {
     Prompt { position: Vector2F },
     /// Opened via right-clicking on the input box.
     Input { position: Vector2F },
-    /// Automatically opened after a password prompt is detected in the PTY output.
-    OneKeyPrompt,
-    /// Pops up a confirmation menu after a su root + password prompt is detected.
-    SuRootPasswordConfirm,
 
     /// Lists the block(s) or text attached as context to the query represented in the AI block
     /// whose view id is the given [`EntityId`]. The menu is opened by clicking on the attached
@@ -1961,7 +1934,6 @@ impl ContextMenuType {
             ContextMenuType::AltScreen { position } => Some(*position),
             ContextMenuType::Prompt { position } => Some(*position),
             ContextMenuType::Input { position } => Some(*position),
-            ContextMenuType::OneKeyPrompt | ContextMenuType::SuRootPasswordConfirm => None,
             ContextMenuType::AIBlockAttachedContext { .. } => None,
             ContextMenuType::AIBlockOverflowMenu { .. } => None,
         }
@@ -1980,7 +1952,6 @@ impl ContextMenuInfo {
             ContextMenuType::BlockList { .. } => "Block",
             ContextMenuType::Prompt { .. } => "Prompt",
             ContextMenuType::Input { .. } => "Input",
-            ContextMenuType::OneKeyPrompt | ContextMenuType::SuRootPasswordConfirm => "OneKeyPrompt",
             ContextMenuType::AltScreen { .. } => "AltScreen",
             ContextMenuType::AIBlockAttachedContext { .. } => "AIBlockContextList",
             ContextMenuType::AIBlockOverflowMenu { .. } => "AIBlockOverflowMenu",
@@ -2001,7 +1972,6 @@ impl ContextMenuInfo {
             },
             ContextMenuType::Prompt { .. } => "RightClick",
             ContextMenuType::Input { .. } => "RightClick",
-            ContextMenuType::OneKeyPrompt | ContextMenuType::SuRootPasswordConfirm => "PasswordPrompt",
             ContextMenuType::AltScreen { .. } => "AltScreen",
             ContextMenuType::AIBlockAttachedContext { .. } => "AIBlockAttachedBlockChipLeftClick",
             ContextMenuType::AIBlockOverflowMenu { .. } => "AIBlockOverflowMenuClick",
@@ -2278,13 +2248,6 @@ impl DropTargetData for TerminalDropTargetData {
     }
 }
 
-struct OneKeyPromptCandidate {
-    label: String,
-    subtitle: String,
-    secret: zeroize::Zeroizing<String>,
-    kind: OneKeyCredentialKind,
-}
-
 pub struct TerminalView {
     pub model: Arc<FairMutex<TerminalModel>>,
     view_handle: WeakViewHandle<Self>,
@@ -2328,26 +2291,6 @@ pub struct TerminalView {
 
     /// None iff there is no context menu open currently.
     context_menu_state: Option<ContextMenuState>,
-    onekey_prompt_candidates: Vec<OneKeyPromptCandidate>,
-    onekey_last_prompt_at: Option<Instant>,
-    /// The search input box at the top of the OneKey menu. A long-lived field with
-    /// the same lifetime as TerminalView; when the menu closes, its content is
-    /// reset via `clear_buffer` instead of destroying the ViewHandle — because the
-    /// framework provides no view-release API, dropping the handle wouldn't
-    /// unsubscribe it, and recreating it repeatedly would leak and let stale
-    /// subscriptions interfere with the new menu.
-    onekey_search_editor: ViewHandle<EditorView>,
-    /// The current query string in the OneKey search box, affecting the filtering
-    /// and sorting of the menu items list.
-    onekey_query: String,
-    /// True from when `secret_injector` starts until it completes/times out. The
-    /// OneKey listener skips directly when it sees true, to avoid popping up the
-    /// menu at the same time as auto-injection.
-    ssh_secret_auto_injection_in_flight: bool,
-    /// Stashes the root password when an su root password prompt is detected,
-    /// pending injection after user confirmation.
-    pub(crate) su_root_password: Option<zeroize::Zeroizing<String>>,
-    su_root_onekey_candidates: Vec<usize>,
 
     /// The search bar at the top of the terminal view.
     find_bar: ViewHandle<Find<TerminalFindModel>>,
@@ -3559,7 +3502,6 @@ impl TerminalView {
             me.handle_menu_event(event, ctx);
         });
 
-        let onekey_search_editor = Self::build_onekey_search_editor(ctx);
 
         let slow_bootstrap_banner = ctx.add_typed_action_view(|_| {
             Banner::<TerminalAction>::new_with_buttons(
@@ -3782,11 +3724,6 @@ impl TerminalView {
             });
         }
 
-        let onekey_pty_reads_rx = inactive_pty_reads_rx.clone();
-        if FeatureFlag::OneKeyPrompt.is_enabled() {
-            Self::spawn_onekey_prompt_listener(onekey_pty_reads_rx, ctx);
-        }
-
         // Here we initialize the block list mouse states for block zero.
         // Afterwards, we initialize all block list mouse states for a block when the
         // previous block sends a `BlockCompleted` event.
@@ -3876,13 +3813,6 @@ impl TerminalView {
             horizontal_clipped_scroll_state: Default::default(),
             is_selecting: false,
             context_menu_state: None,
-            onekey_prompt_candidates: Vec::new(),
-            onekey_last_prompt_at: None,
-            onekey_search_editor,
-            onekey_query: String::new(),
-            ssh_secret_auto_injection_in_flight: false,
-            su_root_password: None,
-            su_root_onekey_candidates: Vec::new(),
             context_menu,
             hovered_secret: None,
             open_secret_tool_tip: None,
@@ -7517,48 +7447,14 @@ impl TerminalView {
     }
 
     /// Exposes the PTY output broadcast receiver, for non-recording subscribers to
-    /// use (currently the SSH manager's SecretInjector, see
-    /// `app/src/ssh_manager/secret_injector.rs`). Returns `None` if the current
-    /// session isn't a local TTY (wasm / remote session).
+    /// use. Returns `None` if the current session isn't a local TTY (wasm /
+    /// remote session).
     pub fn inactive_pty_reads_rx(
         &self,
         ctx: &warpui::AppContext,
     ) -> Option<async_broadcast::InactiveReceiver<std::sync::Arc<Vec<u8>>>> {
         self.pty_recorder
             .read(ctx, |recorder, _| recorder.inactive_pty_reads_rx())
-    }
-
-    fn spawn_onekey_prompt_listener(
-        pty_reads_rx: Option<async_broadcast::InactiveReceiver<Arc<Vec<u8>>>>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let Some(rx) = pty_reads_rx else {
-            return;
-        };
-
-        let prompt_stream = stream! {
-            let mut active = rx.activate_cloned();
-            let mut buf: Vec<u8> = Vec::with_capacity(ONEKEY_PROMPT_SLIDING_WINDOW_BYTES);
-            while let Ok(chunk) = active.recv().await {
-                buf.extend_from_slice(&chunk);
-                if buf.len() > ONEKEY_PROMPT_BUFFER_HARD_LIMIT {
-                    let drop_n = buf.len() - ONEKEY_PROMPT_SLIDING_WINDOW_BYTES;
-                    buf.drain(..drop_n);
-                }
-                if bytes_look_like_password_prompt(&buf) {
-                    buf.clear();
-                    yield ();
-                }
-            }
-        };
-
-        let _ = ctx.spawn_stream_local(
-            prompt_stream,
-            |view, (), ctx| {
-                view.show_onekey_prompt_menu(ctx);
-            },
-            |_, _| {},
-        );
     }
 
     fn write_agent_bytes_to_pty<B: Into<Cow<'static, [u8]>>>(
@@ -15637,7 +15533,6 @@ impl TerminalView {
         ctx.update_view(&self.context_menu, |context_menu, view_ctx| {
             context_menu.set_origin(menu_state.menu_type.origin());
             let width = match menu_state.menu_type {
-                ContextMenuType::OneKeyPrompt | ContextMenuType::SuRootPasswordConfirm => ONEKEY_CONTEXT_MENU_WIDTH,
                 ContextMenuType::BlockList { .. }
                 | ContextMenuType::AltScreen { .. }
                 | ContextMenuType::Prompt { .. }
@@ -15670,426 +15565,6 @@ impl TerminalView {
             );
             ctx.notify();
         });
-    }
-
-    fn show_onekey_prompt_menu(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.context_menu_state.is_some()
-            || self.ssh_secret_auto_injection_in_flight
-            || self
-                .onekey_last_prompt_at
-                .is_some_and(|instant| instant.elapsed() < ONEKEY_PROMPT_THROTTLE)
-        {
-            return;
-        }
-
-        // Claim the throttle window preemptively, to prevent the stream from
-        // spawning another task on its very next yield.
-        self.onekey_last_prompt_at = Some(Instant::now());
-
-        // Keychain + SQLite are both synchronous blocking APIs and can't run on the
-        // UI thread. Use spawn_blocking, then return to the main thread to show the
-        // menu once it completes.
-        let future = async move {
-            tokio::task::spawn_blocking(load_saved_ssh_credentials)
-                .await
-                .unwrap_or_else(|e| Err(anyhow::anyhow!("onekey: join error: {e}")))
-        };
-        ctx.spawn(future, move |view, result, ctx| {
-            let credentials = match result {
-                Ok(credentials) => credentials,
-                Err(e) => {
-                    log::warn!("onekey: failed to load saved ssh credentials: {e:?}");
-                    return;
-                }
-            };
-            if credentials.is_empty() {
-                return;
-            }
-            // Double-check: while loading, the user may have already manually opened
-            // the menu, or the injector may have started.
-            if view.context_menu_state.is_some() || view.ssh_secret_auto_injection_in_flight {
-                return;
-            }
-
-            view.onekey_prompt_candidates = credentials
-                .into_iter()
-                .map(|credential| OneKeyPromptCandidate {
-                    label: credential.label,
-                    subtitle: credential.subtitle,
-                    secret: credential.secret,
-                    kind: credential.kind,
-                })
-                .collect();
-            view.onekey_query.clear();
-            // Reuse the long-lived editor: clear its content, and move focus over
-            // shortly after.
-            view.onekey_search_editor
-                .clone()
-                .update(ctx, |editor, ctx| {
-                    editor.clear_buffer(ctx);
-                });
-
-            let items = view.build_onekey_menu_items();
-            // There may be many candidates (a user may have saved dozens/hundreds of
-            // SSH servers), so derive a bounded height from the count and switch to
-            // Scrollable, so arrow-key navigation auto scroll-into-views and doesn't
-            // cover the main terminal body. The search box (pinned header) is
-            // counted separately at ~32px.
-            let candidate_count = view.onekey_prompt_candidates.len() as f32;
-            let target_height = (ONEKEY_SEARCH_HEADER_HEIGHT
-                + candidate_count * ONEKEY_MENU_ROW_HEIGHT)
-                .min(ONEKEY_MENU_MAX_HEIGHT);
-            let search_editor = view.onekey_search_editor.clone();
-            ctx.update_view(&view.context_menu, |context_menu, _| {
-                context_menu.set_menu_variant(MenuVariant::scrollable());
-                context_menu.set_height(target_height);
-                // The search box is a pinned header: it doesn't consume a selection
-                // index, and isn't scrolled. The closure is Fn, only capturing a
-                // ViewHandle clone, not depending on query — query changes rebuild
-                // the candidate rows via set_items, not the header.
-                context_menu.set_pinned_header_builder(move |app| {
-                    render_onekey_search_header(&search_editor, app)
-                });
-            });
-
-            view.show_context_menu(
-                ContextMenuState {
-                    menu_type: ContextMenuType::OneKeyPrompt,
-                },
-                items,
-                ctx,
-            );
-            // Move focus to the search box, so the user can type directly to filter
-            // candidates; Up/Down/Enter/Escape/Ctrl+N/Ctrl+P are converted to
-            // EditorEvents via the editor's navigation-key propagate mechanism to
-            // trigger the corresponding menu action.
-            ctx.focus(&view.onekey_search_editor);
-            // Selects the first candidate (items[0]) by default, keeping the original
-            // select_next semantics robust: if a non-selectable item like a
-            // separator is inserted before the candidates in the future, it will
-            // still be correctly skipped.
-            ctx.update_view(&view.context_menu, |context_menu, ctx| {
-                context_menu.select_next(ctx);
-            });
-        });
-    }
-
-    /// Creates the search input box at the top of the OneKey menu, with the same
-    /// lifetime as TerminalView. Subscribes to Edited to trigger live filtering;
-    /// Up/Down/Enter/Escape are forwarded to the menu via the editor's
-    /// navigation-key propagate mechanism. Ctrl+N/Ctrl+P are globally mapped to
-    /// EditorAction::Down/Up in EditorView (see app/src/editor/view/mod.rs:633,640),
-    /// so single-line + Always automatically emits Navigate(NavigationKey::Up/Down),
-    /// with no extra keymap needed.
-    fn build_onekey_search_editor(ctx: &mut ViewContext<Self>) -> ViewHandle<EditorView> {
-        let editor = ctx.add_typed_action_view(|ctx| {
-            let appearance = Appearance::as_ref(ctx);
-            let mut editor = EditorView::single_line(
-                SingleLineEditorOptions {
-                    text: TextOptions::ui_text(Some(appearance.ui_font_size()), appearance),
-                    select_all_on_focus: false,
-                    clear_selections_on_blur: true,
-                    propagate_and_no_op_vertical_navigation_keys:
-                        PropagateAndNoOpNavigationKeys::Always,
-                    // Let escape propagate to TerminalView first to close the menu,
-                    // aligning with ModelSelector (model_selector.rs:96) — this way,
-                    // even if vim mode has a pending operation, closing the menu
-                    // still takes priority.
-                    propagate_and_no_op_escape_key: PropagateAndNoOpEscapeKey::PropagateFirst,
-                    ..Default::default()
-                },
-                ctx,
-            );
-            editor.set_placeholder_text(crate::t!("terminal-onekey-search-placeholder"), ctx);
-            editor
-        });
-        ctx.subscribe_to_view(&editor, move |me, editor_view, event, ctx| {
-            me.on_onekey_search_editor_event(editor_view, event, ctx);
-        });
-        editor
-    }
-
-    fn on_onekey_search_editor_event(
-        &mut self,
-        editor_view: ViewHandle<EditorView>,
-        event: &EditorEvent,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // These events only matter while the OneKey menu is still open; otherwise
-        // this may be a stale event arriving while the editor is being
-        // replaced/destroyed.
-        if !matches!(
-            self.context_menu_state.map(|state| state.menu_type),
-            Some(ContextMenuType::OneKeyPrompt)
-        ) {
-            return;
-        }
-        match event {
-            EditorEvent::Edited(_) => {
-                self.onekey_query = editor_view.as_ref(ctx).buffer_text(ctx);
-                self.refresh_onekey_menu_items(ctx);
-            }
-            EditorEvent::Navigate(NavigationKey::Up) => {
-                ctx.update_view(&self.context_menu, |context_menu, ctx| {
-                    context_menu.select_previous(ctx);
-                });
-            }
-            EditorEvent::Navigate(NavigationKey::Down) => {
-                ctx.update_view(&self.context_menu, |context_menu, ctx| {
-                    context_menu.select_next(ctx);
-                });
-            }
-            EditorEvent::Enter => {
-                let selected_action = ctx.update_view(&self.context_menu, |context_menu, _| {
-                    context_menu.selected_item().and_then(|item| match item {
-                        MenuItem::Item(fields) => fields.on_select_action().cloned(),
-                        _ => None,
-                    })
-                });
-                if let Some(TerminalAction::OneKeyFillSecret { index }) = selected_action {
-                    self.fill_onekey_secret(index, ctx);
-                }
-            }
-            EditorEvent::Escape => {
-                // The Menu framework itself also registers an escape→Close
-                // keybinding. If EditorView doesn't stop_propagation,
-                // close_context_menu may get called twice, but
-                // self.context_menu_state.take() is idempotent — on the second
-                // call the state is already None, so no duplicate cleanup happens.
-                self.close_context_menu(ctx, true);
-            }
-            _ => {}
-        }
-    }
-
-    /// Filters & sorts candidates by fuzzy_match against the current query, and
-    /// rebuilds the menu's items list. The search box is a pinned header and isn't
-    /// in the items list; items index 0 is the first matched candidate (or the
-    /// empty-state disabled row).
-    fn refresh_onekey_menu_items(&mut self, ctx: &mut ViewContext<Self>) {
-        let items = self.build_onekey_menu_items();
-        ctx.update_view(&self.context_menu, |context_menu, ctx| {
-            context_menu.set_items(items, ctx);
-            // set_items triggers reset_selection; after a query change, select the
-            // first selectable candidate by default, so the user can just hit Enter
-            // to fill it in.
-            context_menu.select_next(ctx);
-        });
-        ctx.notify();
-    }
-
-    /// Builds the OneKey menu's items: candidate rows filtered and sorted by the
-    /// current query, where each row's on_select_action carries its index into the
-    /// full `onekey_prompt_candidates` set. The search box uses
-    /// `set_pinned_header_builder` and isn't in the items list.
-    fn build_onekey_menu_items(&self) -> Vec<MenuItem<TerminalAction>> {
-        let order = filter_and_sort_onekey_candidates(
-            self.onekey_prompt_candidates
-                .iter()
-                .map(|c| (c.label.as_str(), c.subtitle.as_str())),
-            &self.onekey_query,
-        );
-        match order {
-            // No matches: add a disabled hint row, so the menu doesn't look odd with
-            // only the search box left; disabled rows are automatically skipped by
-            // select_next/previous.
-            OnekeyMenuRows::NoMatches => {
-                vec![
-                    MenuItemFields::new(crate::t!("terminal-onekey-search-no-results"))
-                        .with_disabled(true)
-                        .into_item(),
-                ]
-            }
-            OnekeyMenuRows::Ordered(indices) => indices
-                .into_iter()
-                .map(|index| {
-                    let candidate = &self.onekey_prompt_candidates[index];
-                    MenuItemFields::new_with_stacked_label(
-                        candidate.label.clone(),
-                        candidate.subtitle.clone(),
-                    )
-                    .with_icon(icons::Icon::Key)
-                    .with_on_select_action(TerminalAction::OneKeyFillSecret { index })
-                    .into_item()
-                })
-                .collect(),
-        }
-    }
-
-    fn fill_onekey_secret(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
-        let Some(candidate) = self.onekey_prompt_candidates.get(index) else {
-            self.close_context_menu(ctx, true);
-            return;
-        };
-        // Hold this function's plaintext copy in a Zeroizing<Vec<u8>>, which
-        // auto-zeroes on return; write_to_pty receives a separate Cow, which can't
-        // be zeroized on the event-system/PTY path (an existing architectural
-        // limitation), but this at least minimizes the plaintext window on this
-        // frame's stack.
-        let mut bytes: zeroize::Zeroizing<Vec<u8>> =
-            zeroize::Zeroizing::new(candidate.secret.as_bytes().to_vec());
-        bytes.push(b'\n');
-        self.write_to_pty(bytes.to_vec(), ctx);
-        self.close_context_menu(ctx, true);
-    }
-
-    pub(crate) fn note_ssh_secret_auto_injected(&mut self, ctx: &mut ViewContext<Self>) {
-        self.onekey_last_prompt_at = Some(Instant::now());
-        if matches!(
-            self.context_menu_state.map(|state| state.menu_type),
-            Some(ContextMenuType::OneKeyPrompt)
-        ) {
-            self.close_context_menu(ctx, true);
-        }
-    }
-
-    /// Called only by `secret_injector` at start/end. See the field docs for details.
-    pub(crate) fn set_ssh_secret_auto_injection_in_flight(&mut self, in_flight: bool) {
-        self.ssh_secret_auto_injection_in_flight = in_flight;
-    }
-
-    /// Pops up a confirmation menu after an su root password prompt is detected.
-    pub(crate) fn show_su_root_confirm_menu(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.context_menu_state.is_some() {
-            return;
-        }
-        self.su_root_onekey_candidates.clear();
-        if self.su_root_password.is_some() {
-            let items = self.build_su_root_password_menu_items();
-            self.show_context_menu(
-                ContextMenuState {
-                    menu_type: ContextMenuType::SuRootPasswordConfirm,
-                },
-                items,
-                ctx,
-            );
-        }
-
-        let future = async move {
-            tokio::task::spawn_blocking(load_saved_ssh_credentials)
-                .await
-                .unwrap_or_else(|e| Err(anyhow::anyhow!("onekey: join error: {e}")))
-        };
-        ctx.spawn(future, move |view, result, ctx| {
-            let credentials = match result {
-                Ok(credentials) => credentials,
-                Err(e) => {
-                    log::warn!("onekey: failed to load su password candidates: {e:?}");
-                    return;
-                }
-            };
-            if view.context_menu_state.is_some()
-                && !matches!(
-                    view.context_menu_state.map(|state| state.menu_type),
-                    Some(ContextMenuType::SuRootPasswordConfirm)
-                )
-            {
-                return;
-            }
-            view.onekey_prompt_candidates = credentials
-                .into_iter()
-                .map(|credential| OneKeyPromptCandidate {
-                    label: credential.label,
-                    subtitle: credential.subtitle,
-                    secret: credential.secret,
-                    kind: credential.kind,
-                })
-                .collect();
-            view.su_root_onekey_candidates = view
-                .onekey_prompt_candidates
-                .iter()
-                .enumerate()
-                .filter_map(|(index, candidate)| {
-                    matches!(candidate.kind, OneKeyCredentialKind::Password).then_some(index)
-                })
-                .collect();
-            if view.su_root_password.is_none() && view.su_root_onekey_candidates.is_empty() {
-                return;
-            }
-            let items = view.build_su_root_password_menu_items();
-            if matches!(
-                view.context_menu_state.map(|state| state.menu_type),
-                Some(ContextMenuType::SuRootPasswordConfirm)
-            ) {
-                ctx.update_view(&view.context_menu, |context_menu, ctx| {
-                    context_menu.set_items(items, ctx);
-                    context_menu.select_next(ctx);
-                });
-            } else if view.context_menu_state.is_none() {
-                view.show_context_menu(
-                    ContextMenuState {
-                        menu_type: ContextMenuType::SuRootPasswordConfirm,
-                    },
-                    items,
-                    ctx,
-                );
-                ctx.update_view(&view.context_menu, |context_menu, ctx| {
-                    context_menu.select_next(ctx);
-                });
-            }
-            ctx.notify();
-        });
-    }
-
-    fn build_su_root_password_menu_items(&self) -> Vec<MenuItem<TerminalAction>> {
-        let mut items = Vec::new();
-        if self.su_root_password.is_some() {
-            items.push(
-                MenuItemFields::new_with_stacked_label(
-                    crate::t!("terminal-su-root-password-confirm"),
-                    crate::t!("terminal-su-root-password-confirm-subtitle"),
-                )
-                .with_icon(icons::Icon::Key)
-                .with_on_select_action(TerminalAction::SuRootFillRootPassword)
-                .into_item(),
-            );
-        }
-        items.extend(self.su_root_onekey_candidates.iter().map(|index| {
-            let candidate = &self.onekey_prompt_candidates[*index];
-            MenuItemFields::new_with_stacked_label(
-                candidate.label.clone(),
-                candidate.subtitle.clone(),
-            )
-            .with_icon(icons::Icon::Key)
-            .with_on_select_action(TerminalAction::SuRootFillOneKeyPassword { index: *index })
-            .into_item()
-        }));
-        items.push(
-            MenuItemFields::new(crate::t!("terminal-su-root-password-cancel"))
-                .with_on_select_action(TerminalAction::CloseContextMenu)
-                .into_item(),
-        );
-        items
-    }
-
-    /// Injects the stashed root password after the user confirms.
-    fn fill_su_root_password(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Some(password) = self.su_root_password.take() {
-            self.fill_su_password(&password, ctx);
-        }
-        self.close_context_menu(ctx, true);
-    }
-
-    fn fill_su_root_onekey_password(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
-        if let Some(password) = self
-            .onekey_prompt_candidates
-            .get(index)
-            .map(|candidate| candidate.secret.clone())
-        {
-            self.fill_su_password(&password, ctx);
-        }
-        self.close_context_menu(ctx, true);
-    }
-
-    fn fill_su_password(
-        &mut self,
-        password: &zeroize::Zeroizing<String>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let mut bytes: zeroize::Zeroizing<Vec<u8>> =
-            zeroize::Zeroizing::new(password.as_bytes().to_vec());
-        bytes.push(b'\n');
-        self.write_to_pty(bytes.to_vec(), ctx);
     }
 
     fn alt_mouse_action(&mut self, mouse_state: &MouseState, ctx: &mut ViewContext<Self>) {
@@ -18990,32 +18465,7 @@ impl TerminalView {
     }
 
     fn close_context_menu(&mut self, ctx: &mut ViewContext<Self>, should_redetermine_focus: bool) {
-        if let Some(state) = self.context_menu_state.take() {
-            if matches!(state.menu_type, ContextMenuType::OneKeyPrompt) {
-                self.onekey_prompt_candidates.clear();
-                self.onekey_query.clear();
-                // The search editor is a long-lived field (the framework provides no
-                // view-release API), so we clear its content here so it's in a
-                // clean state next time it's opened.
-                self.onekey_search_editor
-                    .clone()
-                    .update(ctx, |editor, ctx| {
-                        editor.clear_buffer(ctx);
-                    });
-                // This `Menu` instance is shared across all kinds of ContextMenu, so
-                // when closing the OneKey menu, switch the variant back to Fixed and
-                // clear the pinned header, to avoid affecting subsequent right-click
-                // / Alt-screen menus.
-                ctx.update_view(&self.context_menu, |context_menu, _| {
-                    context_menu.set_menu_variant(MenuVariant::Fixed);
-                    context_menu.clear_pinned_header_builder();
-                });
-            }
-            if matches!(state.menu_type, ContextMenuType::SuRootPasswordConfirm) {
-                self.su_root_password = None;
-                self.su_root_onekey_candidates.clear();
-                self.onekey_prompt_candidates.clear();
-            }
+        if self.context_menu_state.take().is_some() {
             ctx.notify();
             if should_redetermine_focus {
                 self.redetermine_global_focus(ctx);
@@ -23867,9 +23317,6 @@ impl TypedActionView for TerminalView {
             InsertCommandCorrection { .. }
             | BlockListContextMenu(_)
             | CloseContextMenu
-            | OneKeyFillSecret { .. }
-            | SuRootFillOneKeyPassword { .. }
-            | SuRootFillRootPassword
             | Paste
             | MiddleClickOnGrid { .. }
             | MiddleClickOnInput
@@ -24160,9 +23607,6 @@ impl TypedActionView for TerminalView {
                 }
             }
             CloseContextMenu => self.close_context_menu(ctx, true),
-            OneKeyFillSecret { index } => self.fill_onekey_secret(*index, ctx),
-            SuRootFillRootPassword => self.fill_su_root_password(ctx),
-            SuRootFillOneKeyPassword { index } => self.fill_su_root_onekey_password(*index, ctx),
             Paste => self.paste(false, ctx),
             Copy => self.copy(ctx),
             CopyOutputs => self.copy_outputs(ctx),
@@ -25201,27 +24645,6 @@ impl View for TerminalView {
                     }
                 },
             ),
-            Some(ContextMenuType::OneKeyPrompt) | Some(ContextMenuType::SuRootPasswordConfirm) => stack.add_positioned_overlay_child(
-                ChildView::new(&self.context_menu).finish(),
-                match input_mode {
-                    InputMode::PinnedToBottom | InputMode::Waterfall => {
-                        OffsetPositioning::offset_from_save_position_element(
-                            self.input.as_ref(app).save_position_id(),
-                            vec2f(0., -8.),
-                            PositionedElementOffsetBounds::WindowByPosition,
-                            PositionedElementAnchor::TopLeft,
-                            ChildAnchor::BottomLeft,
-                        )
-                    }
-                    InputMode::PinnedToTop => OffsetPositioning::offset_from_save_position_element(
-                        self.input.as_ref(app).save_position_id(),
-                        vec2f(0., 8.),
-                        PositionedElementOffsetBounds::WindowByPosition,
-                        PositionedElementAnchor::BottomLeft,
-                        ChildAnchor::TopLeft,
-                    ),
-                },
-            ),
             Some(ContextMenuType::AIBlockAttachedContext { ai_block_view_id }) => stack
                 .add_positioned_overlay_child(
                     ChildView::new(&self.context_menu).finish(),
@@ -25955,82 +25378,6 @@ fn command_first_word_and_suffix(command: &str) -> Option<(&str, &str)> {
     let word_start = command.find(first_word)?;
     let rest = &command[word_start + first_word.len()..];
     Some((first_word, rest))
-}
-
-/// The return value of `filter_and_sort_onekey_candidates`. Distinguishes an empty
-/// match set from "all matched," so the caller can decide whether to show the
-/// empty-state row or the candidate rows.
-#[derive(Debug, PartialEq, Eq)]
-enum OnekeyMenuRows {
-    /// Candidate indices into the full onekey_prompt_candidates set, in display order.
-    Ordered(Vec<usize>),
-    /// The query is non-empty but no candidate matched.
-    NoMatches,
-}
-
-/// Filters+sorts OneKey candidates by query using fuzzy_match, returning indices
-/// into the full set in display order. Keeps the original order when the query is
-/// empty; when non-empty, scores label / subtitle each and takes the highest score
-/// descending. Extracted as a pure function for unit testing (the skim algorithm
-/// matches over Unicode char sequences, so Chinese/English/Japanese/Korean
-/// characters can all be searched directly).
-fn filter_and_sort_onekey_candidates<'a, I>(candidates: I, query: &str) -> OnekeyMenuRows
-where
-    I: IntoIterator<Item = (&'a str, &'a str)>,
-{
-    let query = query.trim();
-    let candidates: Vec<(&str, &str)> = candidates.into_iter().collect();
-    if query.is_empty() {
-        return OnekeyMenuRows::Ordered((0..candidates.len()).collect());
-    }
-    let mut scored: Vec<(i64, usize)> = candidates
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (label, subtitle))| {
-            let label_score = match_indices_case_insensitive(label, query).map(|m| m.score);
-            let subtitle_score = match_indices_case_insensitive(subtitle, query).map(|m| m.score);
-            let score = label_score.into_iter().chain(subtitle_score).max()?;
-            Some((score, index))
-        })
-        .collect();
-    // Higher scores sort first; ties keep original order (stable sort).
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
-    if scored.is_empty() {
-        OnekeyMenuRows::NoMatches
-    } else {
-        OnekeyMenuRows::Ordered(scored.into_iter().map(|(_, index)| index).collect())
-    }
-}
-
-/// Renders the search header at the top of the OneKey menu (called by the pinned
-/// header builder). Extracted as a module-level function to avoid repeatedly
-/// constructing an Arc closure on every query change.
-fn render_onekey_search_header(
-    editor: &ViewHandle<EditorView>,
-    app: &AppContext,
-) -> Box<dyn Element> {
-    let appearance = Appearance::as_ref(app);
-    let theme = appearance.theme();
-    let search_icon = ConstrainedBox::new(
-        icons::Icon::SearchSmall
-            .to_warpui_icon(theme.sub_text_color(theme.surface_2()))
-            .finish(),
-    )
-    .with_width(16.)
-    .with_height(16.)
-    .finish();
-    let search_row = Flex::row()
-        .with_child(Container::new(search_icon).with_margin_right(8.).finish())
-        .with_child(Shrinkable::new(1., ChildView::new(editor).finish()).finish())
-        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-        .finish();
-    Container::new(search_row)
-        .with_padding_left(8.)
-        .with_padding_right(8.)
-        .with_padding_top(6.)
-        .with_padding_bottom(6.)
-        .with_border(Border::bottom(1.).with_border_fill(theme.surface_3()))
-        .finish()
 }
 
 /// Conditionally wrap a terminal element (altscreen / blocklist element) in a scrollable element.

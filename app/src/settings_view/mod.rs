@@ -69,7 +69,6 @@ mod about_page;
 mod agent_providers_widget;
 mod ai_page;
 mod appearance_page;
-mod cloud_sync_page;
 mod code_page;
 mod directory_color_add_picker;
 mod execution_profile_view;
@@ -194,8 +193,6 @@ pub enum SettingsSection {
     /// removed.
     Code,
     EditorAndCodeReview,
-    /// The cloud sync settings page.
-    CloudSync,
     // Zap Wave 3-1: the `OzCloudAPIKeys` enum variant was removed along with the Zap Inc API key
     // management UI.
     // Zap Wave 7-3: `CloudEnvironments` was removed along with the ambient-agent UI subsystem.
@@ -226,7 +223,6 @@ impl Display for SettingsSection {
             SettingsSection::EditorAndCodeReview => {
                 crate::t!("settings-section-editor-and-code-review")
             }
-            SettingsSection::CloudSync => crate::t!("settings-section-cloud-sync"),
             // The proxy settings page. The i18n key `settings-section-network` is fully present
             // in all three languages: en / zh-CN / ja.
             SettingsSection::Network => crate::t!("settings-section-network"),
@@ -311,7 +307,6 @@ impl FromStr for SettingsSection {
             "Third party CLI agents" | "ThirdPartyCLIAgents" => Ok(Self::ThirdPartyCLIAgents),
             "Editor and Code Review" | "EditorAndCodeReview" => Ok(Self::EditorAndCodeReview),
             "Network" | "网络" => Ok(Self::Network),
-            "CloudSync" | "Cloud Sync" | "云同步" => Ok(Self::CloudSync),
             // Zap Wave 3-1: `OzCloudAPIKeys` was removed along with the UI.
             // Zap Wave 7-3: the `CloudEnvironments` FromStr arm was removed along with the
             // variant.
@@ -357,7 +352,6 @@ pub mod flags {
     #[deprecated = "Use `SSH_TMUX_WRAPPER_CONTEXT_FLAG` for new ssh warpification logic"]
     pub const LEGACY_SSH_WRAPPER_CONTEXT_FLAG: &str = "SSH_Wrapper";
     pub const SSH_TMUX_WRAPPER_CONTEXT_FLAG: &str = "SSH_Tmux_Wrapper";
-    pub const SSH_AUTO_DISCOVERY_CONTEXT_FLAG: &str = "SSH_Auto_Discovery";
     pub const NOTIFICATIONS_CONTEXT_FLAG: &str = "Notifications_Enabled";
     pub const LINK_TOOLTIP_CONTEXT_FLAG: &str = "Link_Tooltip";
     pub const COMPACT_MODE_CONTEXT_FLAG: &str = "Compact_Mode_Enabled";
@@ -780,7 +774,6 @@ pub enum SettingsAction {
     AI(AISettingsPageAction),
     Code(CodeSettingsPageAction),
     ZapDrive(warp_drive_page::WarpDriveSettingsPageAction),
-    CloudSync(cloud_sync_page::CloudSyncPageAction),
     WarpifyPageToggle(WarpifyPageAction),
     Tab,
     Split(Direction),
@@ -940,7 +933,6 @@ macro_rules! update_page {
             SettingsPageViewHandle::ZapDrive(handle) => $ctx.update_view(handle, $update),
             // Issue #72: the global HTTP proxy settings page.
             SettingsPageViewHandle::Network(handle) => $ctx.update_view(handle, $update),
-            SettingsPageViewHandle::CloudSync(handle) => $ctx.update_view(handle, $update),
         }
     };
 }
@@ -1056,10 +1048,6 @@ impl SettingsView {
         // Network (HTTP proxy) settings page. Gated by FeatureFlag::HttpProxySettings.
         let network_page_handle = ctx.add_typed_action_view(network_page::NetworkPageView::new);
 
-        // Cloud Sync settings page.
-        let cloud_sync_page_handle =
-            ctx.add_typed_action_view(cloud_sync_page::CloudSyncPageView::new);
-
         let font_family = Appearance::as_ref(ctx).ui_font_family();
         let search_editor = ctx.add_typed_action_view(|ctx| {
             let options = SingleLineEditorOptions {
@@ -1109,8 +1097,6 @@ impl SettingsView {
             settings_pages.push(SettingsPage::new(network_page_handle));
         }
 
-        settings_pages.push(SettingsPage::new(cloud_sync_page_handle));
-
         // Decentralized branch: in local mode, all cloud account / billing / team / sync /
         // sharing settings entry points are removed.
         let mut nav_items = vec![
@@ -1123,7 +1109,6 @@ impl SettingsView {
             SettingsNavItem::Page(SettingsSection::Features),
             SettingsNavItem::Page(SettingsSection::Keybindings),
             SettingsNavItem::Page(SettingsSection::Warpify),
-            SettingsNavItem::Page(SettingsSection::CloudSync),
             SettingsNavItem::Page(SettingsSection::About),
         ];
 
@@ -1827,7 +1812,6 @@ impl SettingsView {
             SettingsPageViewHandle::ZapDrive(v) => v.as_ref(app).should_render(app),
             // Issue #72: the global HTTP proxy settings page.
             SettingsPageViewHandle::Network(v) => v.as_ref(app).should_render(app),
-            SettingsPageViewHandle::CloudSync(v) => v.as_ref(app).should_render(app),
         }
     }
 
@@ -2018,9 +2002,6 @@ impl SettingsView {
             SettingsPageViewHandle::MCPServers(view) => {
                 view.read(app, |view, _| view.get_modal_content(app))
             }
-            // The CloudSync modal renders itself centered in-page via a Stack; this doesn't
-            // take it over (because the SettingsView path can't route CloudSyncPageAction back
-            // to CloudSyncPageView).
             _ => None,
         }
     }
@@ -2391,15 +2372,6 @@ impl TypedActionView for SettingsView {
                     if let SettingsPageViewHandle::ZapDrive(view) = &warp_drive_page.view_handle {
                         view.update(ctx, |view, ctx| {
                             view.handle_action(warp_drive_action, ctx);
-                        })
-                    }
-                }
-            }
-            SettingsAction::CloudSync(cloud_sync_action) => {
-                if let Some(cloud_sync_page) = self.settings_page(SettingsSection::CloudSync) {
-                    if let SettingsPageViewHandle::CloudSync(view) = &cloud_sync_page.view_handle {
-                        view.update(ctx, |view, ctx| {
-                            view.handle_action(cloud_sync_action, ctx);
                         })
                     }
                 }

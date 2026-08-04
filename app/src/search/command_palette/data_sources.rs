@@ -8,7 +8,6 @@ use crate::search::command_palette::files;
 use crate::search::command_palette::launch_config;
 use crate::search::command_palette::mixer::{CommandPaletteItemAction, ItemSummary};
 use crate::search::command_palette::new_session::NewSessionDataSource;
-use crate::search::command_palette::ssh_servers::SshServersDataSource;
 use crate::search::command_palette::{navigation, CommandPaletteMixer};
 use crate::search::data_source::QueryResult;
 use crate::search::files::model::FileSearchModel;
@@ -33,7 +32,6 @@ pub struct DataSourceStore {
     new_session_data_source: Option<ModelHandle<NewSessionDataSource>>,
     historical_conversation_data_source: ModelHandle<conversations::DataSource>,
     all_conversation_data_source: ModelHandle<conversations::DataSource>,
-    ssh_servers_data_source: ModelHandle<SshServersDataSource>,
 }
 
 impl DataSourceStore {
@@ -62,8 +60,6 @@ impl DataSourceStore {
         let all_conversation_data_source: ModelHandle<conversations::DataSource> =
             ctx.add_model(|_| conversations::DataSource::new());
 
-        let ssh_servers_data_source = ctx.add_model(|_| SshServersDataSource::new());
-
         Self {
             actions_data_source,
             sessions_data_source,
@@ -72,7 +68,6 @@ impl DataSourceStore {
             new_session_data_source,
             historical_conversation_data_source,
             all_conversation_data_source,
-            ssh_servers_data_source,
         }
     }
 
@@ -160,11 +155,6 @@ impl DataSourceStore {
                     HashSet::from([QueryFilter::HistoricalConversations]),
                 );
             }
-
-            mixer.add_sync_source(
-                self.ssh_servers_data_source.clone(),
-                HashSet::from([QueryFilter::SshServers]),
-            );
 
             ctx.notify();
         });
@@ -268,13 +258,6 @@ impl DataSourceStore {
                 None
             }
 
-            ItemSummary::SshServer { node_id: _ } => {
-                // SSH server options aren't shown in recents for now — opening
-                // from the SSH manager tree is the primary path, and the
-                // palette option is supplementary. Returning None doesn't
-                // affect whether search can still match it.
-                None
-            }
             ItemSummary::NoOp => {
                 // No-op action (used for non-interactable separator items that don't do anything on click).
                 None

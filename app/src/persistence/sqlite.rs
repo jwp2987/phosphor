@@ -1297,28 +1297,8 @@ fn save_pane_state(
         LeafContents::Welcome { .. } => WELCOME_PANE_KIND,
         LeafContents::AIDocument(_) => AI_DOCUMENT_PANE_KIND,
         // Zap Wave 7-3: the `EnvironmentManagement` arm was physically removed along with the variant.
-        LeafContents::SshServer { .. } => {
-            // These pane types are filtered out before this function is
-            // called; see `LeafContents::is_persisted` and the skip in
-            // `save_app_state`. Reaching this arm would mean a `pane_nodes`
-            // row had already been inserted with no corresponding
-            // `pane_leaves` row, which would break restoration.
-            debug_assert!(
-                false,
-                "save_pane_state called for non-persisted LeafContents variant"
-            );
-            return Ok(());
-        }
-        LeafContents::Sftp { .. } => {
-            // The SFTP browser pane is not persisted; same logic as SshServer.
-            debug_assert!(
-                false,
-                "save_pane_state called for non-persisted LeafContents variant"
-            );
-            return Ok(());
-        }
         LeafContents::Image { .. } => {
-            // Image viewer panes are not persisted, logic identical to SshServer/Sftp.
+            // Image viewer panes are not persisted.
             debug_assert!(
                 false,
                 "save_pane_state called for non-persisted LeafContents variant"
@@ -1549,12 +1529,6 @@ fn save_pane_state(
             diesel::insert_into(schema::ambient_agent_panes::dsl::ambient_agent_panes)
                 .values(ambient_agent_pane)
                 .execute(conn)?;
-        }
-        LeafContents::SshServer { .. } => {
-            // Unreachable: filtered by `is_persisted` in `save_app_state`.
-        }
-        LeafContents::Sftp { .. } => {
-            // Unreachable: filtered by `is_persisted` in `save_app_state`.
         }
         LeafContents::Image { .. } => {
             // Unreachable: filtered by `is_persisted` in `save_app_state`.

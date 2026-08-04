@@ -256,7 +256,6 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_ssh_into_sh);
     register_test!(test_ssh_into_ash);
     register_test!(test_ssh_with_shell_override);
-    register_test!(test_ssh_server_group_dropdown);
     register_test!(test_custom_open_completions_menu_binding);
     register_test!(test_color_overrides_in_prompt_dont_crash);
     register_test!(test_copy_prompt_from_block_honor_ps1_disabled);
@@ -434,27 +433,6 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_goto_line_jumps_to_line);
     register_test!(test_goto_line_with_column);
     register_test!(test_goto_line_clamps_out_of_range);
-
-    // SFTP browser popup tests
-    register_test!(test_sftp_pane_opens_in_workspace);
-    register_test!(test_sftp_pane_focus_and_keyboard);
-    register_test!(test_sftp_pane_close);
-    register_test!(test_sftp_pane_tab_switch);
-    register_test!(test_sftp_pane_disconnected_render);
-    // SFTP mock backend UI integration tests
-    register_test!(test_sftp_mock_backend_connected);
-    register_test!(test_sftp_toolbar_refresh);
-    register_test!(test_sftp_toolbar_new_folder);
-    register_test!(test_sftp_toolbar_upload);
-    register_test!(test_sftp_toolbar_up);
-    register_test!(test_sftp_click_file_row_selects);
-    register_test!(test_sftp_right_click_opens_menu);
-    register_test!(test_sftp_ctx_menu_delete);
-    register_test!(test_sftp_ctx_menu_rename);
-    register_test!(test_sftp_breadcrumb_root_click);
-    register_test!(test_sftp_keyboard_backspace_up);
-    register_test!(test_sftp_keyboard_delete);
-    register_test!(test_sftp_keyboard_escape_close_dialog);
 
     // Keyboard protocol tests
     register_test!(test_keyboard_protocol_disabled_shift_enter);

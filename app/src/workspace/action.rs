@@ -141,15 +141,6 @@ pub enum WorkspaceAction {
     AddTerminalTab {
         hide_homepage: bool,
     },
-    /// Opens a new terminal pane in the center of the current tab and runs
-    /// `ssh user@host` (openWarp-only). Triggered by the Connect button on
-    /// SshServerView / right-click "Connect" on SshManagerPanel.
-    OpenSshTerminal {
-        node_id: String,
-        server: warp_ssh_manager::SshServerInfo,
-    },
-    /// Opens/closes the SSH manager view in the left panel (openWarp-only).
-    ToggleSshManager,
     /// Opens/closes the Skill manager view in the left panel (openWarp-only).
     ToggleSkillManager,
     AddTabWithShell {
@@ -680,8 +671,6 @@ impl WorkspaceAction {
             | ToggleTabColor { .. }
             | AddDefaultTab
             | AddTerminalTab { .. }
-            | OpenSshTerminal { .. }
-            | ToggleSshManager
             | ToggleSkillManager
             | AddTabWithShell { .. }
             | AddGetStartedTab

@@ -109,7 +109,6 @@ pub fn initialize_settings_for_tests_with_mode(
     // Settings that `register_all_settings` registers but this test helper had
     // drifted from; needed by the workspace-view tests.
     crate::settings::network::NetworkSettings::register(app);
-    crate::settings::cloud_sync::CloudSyncSettings::register(app);
     crate::settings::AutoupdateSettings::register(app);
 
     app.update(|ctx| {

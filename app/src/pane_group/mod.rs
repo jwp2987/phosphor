@@ -1802,23 +1802,6 @@ impl PaneGroup {
                     "Can't restore execution profile editor panes"
                 ))
             }
-            LeafContents::SshServer { .. } => {
-                // SSH server editor panes are intentionally not restored —
-                // they're transient editor surfaces over the persistent
-                // `ssh_servers` table. Users reopen via the SSH manager tree
-                // in the left panel.
-                Err(anyhow::anyhow!(
-                    "SSH server pane should not have been persisted, as it cannot be restored"
-                ))
-            }
-            LeafContents::Sftp { .. } => {
-                // The SFTP browser pane is not persisted; the remote
-                // filesystem depends on a live SSH connection and cannot be
-                // restored after a restart.
-                Err(anyhow::anyhow!(
-                    "SFTP pane should not have been persisted, as it cannot be restored"
-                ))
-            }
             LeafContents::Image { .. } => {
                 // Image viewer panes are intentionally not persisted (see
                 // `LeafContents::is_persisted`), so this should be unreachable.
