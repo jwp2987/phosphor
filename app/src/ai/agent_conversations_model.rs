@@ -199,12 +199,17 @@ impl AgentRunDisplayStatus {
     pub fn from_conversation_status(status: &ConversationStatus) -> Self {
         match status {
             ConversationStatus::InProgress => Self::ConversationInProgress,
+            // A recovery is in flight; the run is still working.
+            ConversationStatus::TransientError => Self::ConversationInProgress,
             ConversationStatus::Success => Self::ConversationSucceeded,
             ConversationStatus::Error => Self::ConversationError,
             ConversationStatus::Cancelled => Self::ConversationCancelled,
             ConversationStatus::Blocked { blocked_action } => Self::ConversationBlocked {
                 blocked_action: blocked_action.clone(),
             },
+            // Treat a yielded conversation as still in progress for the
+            // agent-run list display so it stays in the working bucket.
+            ConversationStatus::WaitingForEvents => Self::ConversationInProgress,
         }
     }
 

@@ -285,8 +285,9 @@ impl NotificationsModel {
         let title = latest_query.unwrap_or_else(|| "Agent task".to_owned());
 
         match status {
-            // The agent started working again → the previous notification is invalidated.
-            ConversationStatus::InProgress => {
+            // The agent started working again (or is automatically recovering from a
+            // transient failure) → the previous notification is invalidated.
+            ConversationStatus::InProgress | ConversationStatus::TransientError => {
                 self.remove_notification_by_source(origin, ctx);
             }
             ConversationStatus::Success => {
@@ -339,6 +340,11 @@ impl NotificationsModel {
                     artifacts,
                     ctx,
                 );
+            }
+            // Yielded conversations are still active; mirror the InProgress arm and
+            // clear any stale notification for this origin.
+            ConversationStatus::WaitingForEvents => {
+                self.remove_notification_by_source(origin, ctx);
             }
         }
     }

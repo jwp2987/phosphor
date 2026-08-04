@@ -3004,6 +3004,32 @@ pub fn render_failed_output(props: FailedOutputProps, app: &AppContext) -> Box<d
                 format!("{ERROR_APOLOGY_TEXT}\n\n{error_message}")
             }
         }
+        RenderableAIError::TransientNetworkError {
+            will_attempt_resume,
+            waiting_for_network,
+            ..
+        } => {
+            // Carries its own complete user-facing copy (via Display); append the same
+            // resume/waiting hint the `Other` arm shows when a recovery is pending.
+            let base = props.error.to_string();
+            if *will_attempt_resume {
+                if *waiting_for_network {
+                    format!(
+                        "{}\n\n{}",
+                        base,
+                        crate::t!("agent-error-will-resume-when-network-restored")
+                    )
+                } else {
+                    format!(
+                        "{}\n\n{}",
+                        base,
+                        crate::t!("agent-error-attempting-resume-conversation")
+                    )
+                }
+            } else {
+                base
+            }
+        }
         RenderableAIError::InvalidApiKey {
             provider,
             model_name,

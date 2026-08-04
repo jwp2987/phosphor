@@ -628,6 +628,16 @@ pub enum RenderableAIError {
     AwsBedrockCredentialsExpiredOrInvalid {
         model_name: String,
     },
+    /// A transient network failure (lost connection or truncated response stream). Carries its
+    /// own complete user-facing copy; `kind` preserves the structured cause so user reports can
+    /// disambiguate the different causes behind the shared message.
+    TransientNetworkError {
+        kind: TransientNetworkErrorKind,
+        will_attempt_resume: bool,
+        /// When `will_attempt_resume` is true, this indicates whether we're waiting for network
+        /// connectivity before attempting the resume.
+        waiting_for_network: bool,
+    },
     Other {
         error_message: String,
         will_attempt_resume: bool,
@@ -637,7 +647,46 @@ pub enum RenderableAIError {
     },
 }
 
+/// The cause behind a [`RenderableAIError::TransientNetworkError`]. Kept structured (rather than
+/// collapsed into the shared user-facing copy) so user reports preserve the raw cause; rendered to
+/// text only at display time.
+///
+/// BYOP adaptation: the fork's [`AIApiError`] is neither `Clone` nor serializable (and is already
+/// collapsed to a rendered string in [`RenderableAIError::from`]), and `RenderableAIError` itself
+/// derives `Serialize`/`Deserialize`/`Eq`/`Hash`. So the `Api` cause carries the debug-rendered
+/// error string (matching Warp's `#[error("{0:?}")]`) rather than an `Arc<AIApiError>`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum TransientNetworkErrorKind {
+    /// A lost connection or truncated response stream — the debug-rendered underlying API error.
+    #[error("{0}")]
+    Api(String),
+    /// The response stream completed with an unfinished exchange and no error event.
+    #[error("stream completed with an unfinished exchange and no error event")]
+    UnfinishedExchange,
+    /// The conversation was left in a transient-error state but the last exchange carried no
+    /// structured error to surface.
+    #[error("no structured error on the last exchange")]
+    MissingExchangeError,
+}
+
 impl RenderableAIError {
+    const TRANSIENT_NETWORK_ERROR_MESSAGE: &'static str =
+        "Zap lost connection while receiving the agent response. This is usually temporary.";
+
+    /// Creates a transient network error. `kind` is the structured cause, preserved so user
+    /// reports can disambiguate the different causes behind the shared user-facing copy.
+    pub fn transient_network_error(
+        will_attempt_resume: bool,
+        waiting_for_network: bool,
+        kind: TransientNetworkErrorKind,
+    ) -> Self {
+        Self::TransientNetworkError {
+            kind,
+            will_attempt_resume,
+            waiting_for_network,
+        }
+    }
+
     pub fn is_invalid_api_key(&self) -> bool {
         matches!(self, Self::InvalidApiKey { .. })
     }
@@ -651,6 +700,9 @@ impl RenderableAIError {
         matches!(
             self,
             Self::Other {
+                will_attempt_resume: true,
+                ..
+            } | Self::TransientNetworkError {
                 will_attempt_resume: true,
                 ..
             }
@@ -679,10 +731,16 @@ impl From<&AIApiError> for RenderableAIError {
                 Some(status) => {
                     format!("Your AI provider returned HTTP {}.\n\n{err}", status.as_u16())
                 }
-                None => format!(
-                    "Couldn't reach your AI provider. Check that it's running and its base URL is \
-                     correct.\n\n{err}"
-                ),
+                // A transport error with no HTTP status is a lost-connection failure: the
+                // server never responded. Surface it as a transient network error so the
+                // auto-resume/recovery path can treat it as non-terminal.
+                None => {
+                    return Self::transient_network_error(
+                        false,
+                        false,
+                        TransientNetworkErrorKind::Api(format!("{value:?}")),
+                    );
+                }
             },
             // A status error read with its response body (often the provider's
             // own error text, e.g. "model 'x' not found").
@@ -732,6 +790,13 @@ impl Display for RenderableAIError {
                 write!(
                     f,
                     "AWS Bedrock credentials expired or invalid for {model_name}"
+                )
+            }
+            Self::TransientNetworkError { kind, .. } => {
+                write!(
+                    f,
+                    "{}\n\nDebug info: {kind}",
+                    Self::TRANSIENT_NETWORK_ERROR_MESSAGE
                 )
             }
             Self::Other { error_message, .. } => write!(f, "{error_message}"),
