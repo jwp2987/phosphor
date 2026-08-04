@@ -1,0 +1,45 @@
+#!/bin/bash
+#
+# Wrapper for the GUI + TUI usage/acceptance smoke suite.
+#
+# Design doc: specs/usage-test-suite/SCOPE.md. Short how-to:
+# specs/usage-test-suite/README.md.
+#
+# All flags are forwarded verbatim to the `usage-suite` runner
+# (crates/usage_suite), e.g.:
+#
+#   ./script/usage-test                   # all default (non-flaky, non-BYOP) scenarios, both surfaces
+#   ./script/usage-test --surface gui      # GUI only
+#   ./script/usage-test --surface tui      # TUI only
+#   ./script/usage-test --only usage_launch_bootstrap,usage_run_command
+#   ./script/usage-test --include-flaky    # also run real-shell scenarios (preexec race; auto-retried)
+#   ./script/usage-test --include-byop     # also run scenarios needing a real provider (requires key+network)
+#   ./script/usage-test --json             # NDJSON only (suppress the human table)
+#
+# This script itself never runs cargo concurrently with anything else: it
+# holds the shared workspace cargo flock (AGENTS.md §5.8) for the whole
+# invocation, since `usage-suite` shells out to `cargo run -p integration`
+# and `cargo nextest -p warp_tui` internally (sequentially, never in
+# parallel) while that lock is held.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+cd "${REPO_ROOT}"
+
+# Shared cargo lock (AGENTS.md §5.8). Overridable via ZAP_CARGO_LOCK for
+# environments that don't have the default job-scoped path; falls back to a
+# repo-local lock file so the script still works standalone.
+DEFAULT_LOCK="/home/winters/.claude/jobs/d323e5af/tmp/zap-cargo.lock"
+if [ -n "${ZAP_CARGO_LOCK:-}" ]; then
+  LOCK_FILE="${ZAP_CARGO_LOCK}"
+elif [ -e "$(dirname "${DEFAULT_LOCK}")" ]; then
+  LOCK_FILE="${DEFAULT_LOCK}"
+else
+  LOCK_FILE="${REPO_ROOT}/target/.zap-cargo.lock"
+  mkdir -p "${REPO_ROOT}/target"
+fi
+
+ulimit -n 8192 2>/dev/null || true
+
+exec flock "${LOCK_FILE}" -c "cargo run -q -p usage_suite -- $(printf '%q ' "$@")"
