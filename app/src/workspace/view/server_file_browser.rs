@@ -562,7 +562,7 @@ impl ServerFileBrowserView {
             .and_then(|index| self.entries.get(index))
             .map(|entry| entry.path.clone());
 
-        if let Some(client) = self.client(ctx) {
+        match self.client(ctx) { Some(client) => {
             self.loading = true;
             if reset_tree {
                 self.status = None;
@@ -582,7 +582,7 @@ impl ServerFileBrowserView {
                     me.finish_directory_reload(result, selected_path, reset_tree, ctx);
                 },
             );
-        } else if let Some(session) = self.session.clone() {
+        } _ => { match self.session.clone() { Some(session) => {
             self.loading = true;
             if reset_tree {
                 self.status = None;
@@ -602,9 +602,9 @@ impl ServerFileBrowserView {
                     me.finish_directory_reload(result, selected_path, reset_tree, ctx);
                 },
             );
-        } else {
+        } _ => {
             self.set_listing_error(crate::t!("server-file-browser-no-session"), ctx);
-        }
+        }}}}
     }
 
     fn refresh_directory_tree(&mut self, ctx: &mut ViewContext<Self>) {
@@ -667,7 +667,7 @@ impl ServerFileBrowserView {
         let host_id = self.host_id.clone();
         let path_for_spawn = path.clone();
 
-        if let Some(client) = self.client(ctx) {
+        match self.client(ctx) { Some(client) => {
             self.loading = true;
             self.status = None;
             ctx.notify();
@@ -677,7 +677,7 @@ impl ServerFileBrowserView {
                     me.finish_resolve_and_open(result, host_id, ctx);
                 },
             );
-        } else if let Some(session) = self.session.clone() {
+        } _ => { match self.session.clone() { Some(session) => {
             self.loading = true;
             self.status = None;
             ctx.notify();
@@ -687,9 +687,9 @@ impl ServerFileBrowserView {
                     me.finish_resolve_and_open(result, host_id, ctx);
                 },
             );
-        } else {
+        } _ => {
             self.set_error(crate::t!("server-file-browser-no-session"), ctx);
-        }
+        }}}}
     }
 
     fn finish_resolve_and_open(
@@ -773,7 +773,7 @@ impl ServerFileBrowserView {
         }
 
         let path_for_spawn = path.clone();
-        if let Some(client) = self.client(ctx) {
+        match self.client(ctx) { Some(client) => {
             self.loading = true;
             ctx.notify();
             ctx.spawn(
@@ -797,7 +797,7 @@ impl ServerFileBrowserView {
                     ctx.notify();
                 },
             );
-        } else if let Some(session) = self.session.clone() {
+        } _ => { match self.session.clone() { Some(session) => {
             self.loading = true;
             ctx.notify();
             ctx.spawn(
@@ -821,9 +821,9 @@ impl ServerFileBrowserView {
                     ctx.notify();
                 },
             );
-        } else {
+        } _ => {
             self.set_listing_error(crate::t!("server-file-browser-no-session"), ctx);
-        }
+        }}}}
     }
 
     fn rebuild_entries(&mut self) {
@@ -1522,7 +1522,7 @@ impl ServerFileBrowserView {
             .and_then(|index| self.entries.get(index))
             .map(|entry| entry.path.clone());
 
-        if let Some(client) = self.client(ctx) {
+        match self.client(ctx) { Some(client) => {
             self.loading = true;
             ctx.notify();
             ctx.spawn(
@@ -1560,7 +1560,7 @@ impl ServerFileBrowserView {
                     ctx.notify();
                 },
             );
-        } else if let Some(session) = self.session.clone() {
+        } _ => { match self.session.clone() { Some(session) => {
             self.loading = true;
             ctx.notify();
             ctx.spawn(
@@ -1598,9 +1598,9 @@ impl ServerFileBrowserView {
                     ctx.notify();
                 },
             );
-        } else {
+        } _ => {
             ctx.notify();
-        }
+        }}}}
     }
 
     fn active_upload_batch(&self) -> Option<&ServerFileUploadBatch> {
@@ -4568,7 +4568,7 @@ async fn execute_remote_shell_script(
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(stderr.trim().to_string())
         }
-    } else if let (Some(client), Some(session_id)) = (client, remote_session_id) {
+    } else { match (client, remote_session_id) { (Some(client), Some(session_id)) => {
         let response = client
             .run_command(session_id, script, None, HashMap::new())
             .await
@@ -4589,9 +4589,9 @@ async fn execute_remote_shell_script(
                 error = "empty response"
             )),
         }
-    } else {
+    } _ => {
         Err(crate::t!("server-file-browser-no-session"))
-    }
+    }}}
 }
 
 fn child_path_prefix(path: &str) -> Option<String> {

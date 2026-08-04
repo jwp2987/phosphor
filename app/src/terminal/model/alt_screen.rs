@@ -276,7 +276,7 @@ impl AltScreen {
         })
     }
 
-    pub fn possible_file_paths_at_point(&self, point: Point) -> impl Iterator<Item = PossiblePath> {
+    pub fn possible_file_paths_at_point(&self, point: Point) -> impl Iterator<Item = PossiblePath> + use<> {
         self.grid_handler
             .possible_file_paths_at_point(point)
             .into_iter()
@@ -284,6 +284,14 @@ impl AltScreen {
 
     pub fn url_at_point(&self, point: &Point) -> Option<Link> {
         self.grid_handler.url_at_point(*point)
+    }
+
+    /// OSC 8 hyperlink span at `point`, paired with its URI (owned, cloned
+    /// out of the alt-screen's per-screen `HyperlinkRegistry`).
+    pub fn hyperlink_at_point(&self, point: &Point) -> Option<(Link, String)> {
+        let link = self.grid_handler.hyperlink_at_point(*point)?;
+        let uri = self.grid_handler.hyperlink_uri_at_point(*point)?.to_owned();
+        Some((link, uri))
     }
 
     pub fn fragment_boundary_at_point(&self, point: &Point) -> FragmentBoundary {
@@ -347,7 +355,7 @@ impl AltScreen {
         });
     }
 
-    fn ansi_handler(&mut self) -> &mut impl ansi::Handler {
+    fn ansi_handler(&mut self) -> &mut (impl ansi::Handler + use<>) {
         self.grid_handler.ansi_handler()
     }
 
@@ -383,6 +391,10 @@ impl ansi::Handler for AltScreen {
 
     fn input(&mut self, c: char) {
         self.ansi_handler().input(c);
+    }
+
+    fn set_hyperlink(&mut self, hyperlink: Option<warp_terminal::model::ansi::Hyperlink>) {
+        self.ansi_handler().set_hyperlink(hyperlink);
     }
 
     fn goto(&mut self, row: VisibleRow, col: usize) {
@@ -622,7 +634,7 @@ impl ansi::Handler for AltScreen {
 
     fn command_finished(&mut self, _: CommandFinishedValue) {}
 
-    fn precmd(&mut self, _: PrecmdValue) {}
+    fn precmd_with_completion_metadata(&mut self, _: PrecmdValue) {}
 
     fn preexec(&mut self, _: PreexecValue) {}
 

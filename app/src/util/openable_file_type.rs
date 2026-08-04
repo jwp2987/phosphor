@@ -121,7 +121,7 @@ pub fn is_runnable_shell_script(path: &Path) -> bool {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase());
     if let Some(ext) = ext.as_deref() {
-        return matches!(ext, "sh" | "bash" | "zsh" | "fish" | "ksh");
+        return matches!(ext, "sh" | "bash" | "zsh" | "fish" | "ksh" | "command");
     }
     starts_with_shebang(path)
 }

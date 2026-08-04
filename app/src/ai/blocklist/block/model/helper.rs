@@ -67,7 +67,7 @@ impl<T: ?Sized + AIBlockModel> AIBlockModelHelper for T {
     }
 
     fn contains_create_document_action(&self, app: &AppContext) -> bool {
-        if let Some(output) = self.status(app).output_to_render() {
+        match self.status(app).output_to_render() { Some(output) => {
             let output = output.get();
             output.messages.iter().any(|m| {
                 matches!(
@@ -78,13 +78,13 @@ impl<T: ?Sized + AIBlockModel> AIBlockModelHelper for T {
                     })
                 )
             })
-        } else {
+        } _ => {
             false
-        }
+        }}
     }
 
     fn contains_update_document_action(&self, app: &AppContext) -> bool {
-        if let Some(output) = self.status(app).output_to_render() {
+        match self.status(app).output_to_render() { Some(output) => {
             let output = output.get();
             output.messages.iter().any(|m| {
                 matches!(
@@ -95,9 +95,9 @@ impl<T: ?Sized + AIBlockModel> AIBlockModelHelper for T {
                     })
                 )
             })
-        } else {
+        } _ => {
             false
-        }
+        }}
     }
 
     fn is_latest_non_passive_exchange_in_root_task(&self, app: &AppContext) -> bool {

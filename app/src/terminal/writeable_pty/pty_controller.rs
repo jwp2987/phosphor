@@ -452,7 +452,7 @@ impl<T: EventLoopSender> PtyController<T> {
             // reduces the amount of reformatting that Fish tries to do and so improves
             // bootstrap speed. We need to add an explicit leading space, since Fish
             // automatically trims the input when performing a bracketed paste.
-            if let Some(file) = create_bootstrap_file(&bootstrap, shell_type, wsl_distribution) {
+            match create_bootstrap_file(&bootstrap, shell_type, wsl_distribution) { Some(file) => {
                 if let Some(path) = file.path_as_bytes() {
                     self.source_bootstrap_script(path, shell_type, ctx);
                 } else {
@@ -461,13 +461,13 @@ impl<T: EventLoopSender> PtyController<T> {
                 }
 
                 self.bootstrap_file = Some(file);
-            } else {
+            } _ => {
                 self.write_bytes(&b" "[..], ctx);
                 self.write_bytes(escape_sequences::BRACKETED_PASTE_START, ctx);
                 self.write_bytes(bootstrap, ctx);
                 self.write_bytes(escape_sequences::BRACKETED_PASTE_END, ctx);
                 self.write_terminating_bootstrap_bytes(ctx);
-            }
+            }}
         } else {
             self.write_bytes(bootstrap, ctx);
         }
@@ -546,8 +546,9 @@ impl<T: EventLoopSender> PtyController<T> {
         {
             let mut model = self.terminal_model.lock();
 
-            // Explicitly start the block now that the command is executed.
-            match source {
+            // Explicitly start the block now that the command is executed. The lifecycle
+            // coordinator's start outcome is not consumed on this path.
+            let _ = match source {
                 CommandExecutionSource::AI { metadata } => {
                     model.start_command_execution_with_ai_metadata(metadata)
                 }
@@ -560,7 +561,7 @@ impl<T: EventLoopSender> PtyController<T> {
                 CommandExecutionSource::EnvVarCollection { metadata } => {
                     model.start_command_execution_from_env_var_collection(metadata)
                 }
-            }
+            };
 
             // Ensure that the `TerminalModel` doesn't interpret any of the PTY output from the
             // following commands as in-band command output. If the in-band command output is not
@@ -786,7 +787,14 @@ fn bytes_to_execute_command(
     shell_type: ShellType,
     is_bracketed_paste_enabled: bool,
 ) -> Vec<u8> {
+    use warp_util::path::ShellFamily;
+
     let mut command_bytes = shell_type.kill_buffer_bytes().to_vec();
+    let command = match ShellFamily::from(shell_type) {
+        ShellFamily::Posix if cfg!(windows) => LINEFEED_REGEX.replace_all(command, "\n"),
+        ShellFamily::PowerShell => LINEFEED_REGEX.replace_all(command, "\r"),
+        _ => Cow::Borrowed(command),
+    };
 
     // Only execute the command via bracketed paste if the command is not empty. Some ZSH
     // bracketed paste magic functions return errors if bracketed paste is used without text
@@ -823,11 +831,7 @@ fn bytes_to_execute_command(
         }
     } else {
         let command_without_escapes = command.replace(escape_sequences::C0::ESC as char, "");
-        // This is a fix for PLAT-770 to allow multi-line commands in Powershell.
-        // In general, shells without bracketed paste don't handle `\n` that well,
-        // and in the case of PowerShell, it is explicitly ignored.
-        let command_without_newlines = LINEFEED_REGEX.replace_all(&command_without_escapes, "\r");
-        command_bytes.extend(command_without_newlines.as_bytes());
+        command_bytes.extend(command_without_escapes.as_bytes());
     }
     command_bytes.extend(shell_type.execute_command_bytes().to_vec());
     command_bytes
@@ -854,3 +858,7 @@ pub enum EventLoopSendError {
 pub trait EventLoopSender: 'static {
     fn send(&self, message: Message) -> Result<(), EventLoopSendError>;
 }
+
+#[cfg(test)]
+#[path = "pty_controller_command_bytes_tests.rs"]
+mod command_bytes_tests;

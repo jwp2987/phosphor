@@ -2,7 +2,7 @@
 authors = ["Zap Team"]
 default-run = "zap-oss"
 description = "The local-first agentic terminal"
-edition = "2021"
+edition = "2024"
 autobins = false
 name = "warp"
 version = "0.1.0"
@@ -122,6 +122,12 @@ markdown_parser.workspace = true
 memchr.workspace = true
 memo-map.workspace = true
 mermaid_to_svg.workspace = true
+# Test-only, gated behind the `test-util` / `integration_tests` features via
+# `dep:mockito` (see [features]). Optional here so it is never pulled into a
+# release build, while still being reachable from non-`#[cfg(test)]` harness code
+# (e.g. the `integration` crate's usage scenarios) that enables those features.
+# A `[dev-dependencies]` entry also exists for plain `#[cfg(test)]` unit tests.
+mockito = { workspace = true, optional = true }
 num-traits.workspace = true
 num_cpus = "1.13.0"
 oauth2.workspace = true
@@ -187,6 +193,7 @@ toml = "0.8.13"
 tracing.workspace = true
 ui_components.workspace = true
 unicase = "2.7.0"
+unicode-general-category.workspace = true
 unicode-width.workspace = true
 unindent = "0.1.7"
 url = { workspace = true, features = ["serde"] }
@@ -205,8 +212,6 @@ warp_completer.workspace = true
 warp_core.workspace = true
 warp_editor.workspace = true
 warp_js = { workspace = true, optional = true }
-warp_ssh_manager.workspace = true
-zap_sftp = { path = "../crates/zap_sftp" }
 warp_util.workspace = true
 warpui = { workspace = true, features = ["schema_gen", "settings_value"] }
 voice_input = { workspace = true, optional = true }
@@ -235,7 +240,6 @@ rmcp = { workspace = true, features = ["client"] }
 warp_isolation_platform.workspace = true
 warp_ripgrep.workspace = true
 warp_managed_secrets.workspace = true
-zap_sync = { path = "../crates/zap_sync" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block.workspace = true
@@ -413,7 +417,7 @@ autoupdate = []
 # to other crates' test builds (e.g. warp_tui tests). Propagates `warp_core/test-util`
 # so app helpers that depend on warp_core mocks (e.g. `Appearance::mock`) resolve when
 # the app is built standalone with this feature (warp_tui dev-deps also enable it).
-test-util = ["warp_core/test-util"]
+test-util = ["warp_core/test-util", "dep:mockito"]
 figma_detection = []
 bundled_skills = []
 windows_high_performance_gpu_default = []
@@ -580,7 +584,6 @@ default = [
     "open_warp_new_settings_modes",
     "settings_file",
     "ssh_tmux_wrapper",
-    "onekey_prompt",
 ]
 # Enable this feature to automatically perform heap profiling.  NOTE: This will
 # substantially slow down program execution.
@@ -611,7 +614,6 @@ gui = ["voice_input"]
 # feature. See specs/warp-oss-sync/SCOPE.md.
 tui = ["warpui/tui"]
 msys2_shells = []
-onekey_prompt = []
 file_retrieval_tools = []
 welcome_tab = []
 get_started_tab = []
@@ -713,6 +715,7 @@ integration_tests = [
     "warpui/integration_tests",
     "warpui/test-util",
     "warp_core/integration_tests",
+    "dep:mockito",
 ]
 traces = []
 workflow_aliases = []

@@ -229,6 +229,7 @@ impl TuiPermissionPrompt {
             TuiOptionSelectorEvent::LayoutInvalidated
             | TuiOptionSelectorEvent::CustomTextOpened
             | TuiOptionSelectorEvent::CustomTextClosed => self.invalidate_layout(ctx),
+            TuiOptionSelectorEvent::RowsReordered { .. } => {}
             TuiOptionSelectorEvent::Confirmed { .. } | TuiOptionSelectorEvent::RetryRequested => {}
         }
     }
@@ -241,11 +242,17 @@ impl TuiPermissionPrompt {
     /// Renders the context-sensitive interaction hints beneath the options.
     pub(crate) fn render_footer(&self, app: &AppContext) -> Box<dyn TuiElement> {
         let builder = TuiUiBuilder::from_app(app);
-        let mut spans = vec![
-            ("Esc".to_owned(), builder.primary_text_style()),
-            (" to cancel  ".to_owned(), builder.muted_text_style()),
-        ];
-        if self.body_editor.is_some() {
+        let editing = self.body_editor_is_focused(app);
+        let mut spans = vec![("Esc".to_owned(), builder.primary_text_style())];
+        spans.push(if editing {
+            (" to save  ".to_owned(), builder.muted_text_style())
+        } else {
+            (" to cancel  ".to_owned(), builder.muted_text_style())
+        });
+        // Only advertise the edit-entry shortcut while the body editor exists
+        // but isn't already focused -- once editing, Esc/Enter already save,
+        // so "Ctrl+E to edit/save" would be a stale affordance.
+        if self.body_editor.is_some() && !editing {
             spans.extend([
                 ("Ctrl+E".to_owned(), builder.primary_text_style()),
                 (" to edit/save  ".to_owned(), builder.muted_text_style()),

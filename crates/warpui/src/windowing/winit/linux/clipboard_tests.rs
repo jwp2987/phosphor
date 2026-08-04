@@ -4,8 +4,15 @@
 /// to avoid duplication. These tests focus on Linux-specific clipboard behavior.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod clipboard_tests {
+    use std::sync::Mutex;
+
     use crate::clipboard::{Clipboard, ClipboardContent};
     use crate::windowing::winit::linux::LinuxClipboard;
+
+    /// The tests below share the one process-global system clipboard. Serialize
+    /// them so parallel execution can't clobber one test's clipboard contents
+    /// between another test's write and read.
+    static CLIPBOARD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn create_test_clipboard() -> Option<LinuxClipboard> {
         LinuxClipboard::new().ok()
@@ -16,6 +23,9 @@ mod clipboard_tests {
     where
         F: FnOnce(&mut LinuxClipboard),
     {
+        let _guard = CLIPBOARD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut clipboard = match create_test_clipboard() {
             Some(clipboard) => clipboard,
             None => {
@@ -27,38 +37,33 @@ mod clipboard_tests {
     }
 
     /// Helper to assert that paths are correctly extracted from clipboard text.
+    ///
+    /// Exercises `parse_valid_filepaths_from_text` directly rather than
+    /// round-tripping through the real system clipboard: the round trip is
+    /// nondeterministic (other processes and parallel tests share the one OS
+    /// clipboard) and would mutate the user's live clipboard. The parser is the
+    /// actual unit under test, and it requires the paths to exist on disk, so
+    /// callers pass real (temp-file) paths.
     fn assert_paths_extracted(
         clipboard: &mut LinuxClipboard,
         input: &str,
         expected_paths: &[&str],
     ) {
-        let content = ClipboardContent::plain_text(input.to_string());
-        clipboard.write(content);
-        let read_content = clipboard.read();
-
-        if let Some(paths) = read_content.paths {
-            assert_eq!(paths.len(), expected_paths.len());
-            for expected_path in expected_paths {
-                assert!(
-                    paths.contains(&expected_path.to_string()),
-                    "Expected path '{expected_path}' not found in: {paths:?}"
-                );
+        match clipboard.parse_valid_filepaths_from_text(input) {
+            Some(paths) => {
+                let expected: Vec<String> =
+                    expected_paths.iter().map(|p| (*p).to_string()).collect();
+                assert_eq!(paths, expected, "parsed paths from '{input}'");
             }
-        } else {
-            panic!("Expected to extract paths from: '{input}'");
+            None => panic!("Expected to extract paths from: '{input}'"),
         }
     }
 
     /// Helper to assert that no paths are extracted from clipboard text.
     fn assert_no_paths_extracted(clipboard: &mut LinuxClipboard, input: &str) {
-        let content = ClipboardContent::plain_text(input.to_string());
-        clipboard.write(content);
-        let read_content = clipboard.read();
         assert!(
-            read_content.paths.is_none(),
-            "Expected no paths to be extracted from: '{}', but got: {:?}",
-            input,
-            read_content.paths
+            clipboard.parse_valid_filepaths_from_text(input).is_none(),
+            "Expected no paths to be extracted from: '{input}'",
         );
     }
 
@@ -141,38 +146,45 @@ mod clipboard_tests {
     #[test]
     fn test_absolute_paths_extracted() {
         with_test_clipboard(|clipboard| {
-            // Test single path
-            assert_paths_extracted(
-                clipboard,
-                "/home/user/document.txt",
-                &["/home/user/document.txt"],
-            );
+            // The parser only accepts absolute paths that exist on disk, so use
+            // real temp files rather than fabricated /home/user/... paths.
+            let dir = tempfile::tempdir().unwrap();
 
-            // Test multiple paths
-            assert_paths_extracted(
-                clipboard,
-                "/home/user/file1.txt\n/home/user/file2.pdf",
-                &["/home/user/file1.txt", "/home/user/file2.pdf"],
-            );
+            // Single path
+            let doc = dir.path().join("document.txt");
+            std::fs::write(&doc, "").unwrap();
+            let doc = doc.to_str().unwrap();
+            assert_paths_extracted(clipboard, doc, &[doc]);
+
+            // Multiple paths
+            let f1 = dir.path().join("file1.txt");
+            let f2 = dir.path().join("file2.pdf");
+            std::fs::write(&f1, "").unwrap();
+            std::fs::write(&f2, "").unwrap();
+            let (f1, f2) = (f1.to_str().unwrap(), f2.to_str().unwrap());
+            assert_paths_extracted(clipboard, &format!("{f1}\n{f2}"), &[f1, f2]);
         });
     }
 
     #[test]
     fn test_file_uri_decoded() {
         with_test_clipboard(|clipboard| {
-            // Test basic file:// URI
-            assert_paths_extracted(
-                clipboard,
-                "file:///home/user/document.txt",
-                &["/home/user/document.txt"],
-            );
+            let dir = tempfile::tempdir().unwrap();
 
-            // Test URL-encoded URI with spaces
-            assert_paths_extracted(
-                clipboard,
-                "file:///home/user/My%20Documents/file.txt",
-                &["/home/user/My Documents/file.txt"],
-            );
+            // Basic file:// URI (real file, so the exists() check passes)
+            let doc = dir.path().join("document.txt");
+            std::fs::write(&doc, "").unwrap();
+            let doc = doc.to_str().unwrap();
+            assert_paths_extracted(clipboard, &format!("file://{doc}"), &[doc]);
+
+            // URL-encoded URI with a space in the path
+            let sub = dir.path().join("My Documents");
+            std::fs::create_dir_all(&sub).unwrap();
+            let spaced = sub.join("file.txt");
+            std::fs::write(&spaced, "").unwrap();
+            let spaced = spaced.to_str().unwrap();
+            let encoded = spaced.replace(' ', "%20");
+            assert_paths_extracted(clipboard, &format!("file://{encoded}"), &[spaced]);
         });
     }
 

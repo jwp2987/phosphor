@@ -1,4 +1,5 @@
 mod blocks;
+mod code;
 mod commands;
 mod conversations;
 mod diffset;

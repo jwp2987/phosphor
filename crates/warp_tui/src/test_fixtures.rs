@@ -35,6 +35,24 @@ impl TerminalManagerTrait for TestTerminalManager {
     }
 }
 
+/// Pumps the foreground test executor so that work spawned via `ctx.spawn`
+/// runs to completion before the calling test makes assertions.
+///
+/// `queue_tui_permission_action` (and the wider action pipeline) enqueue action
+/// preprocessing through `ctx.spawn`, which only runs when the single-threaded
+/// test executor is ticked. Synchronous test bodies never reach an `.await`
+/// point on their own, so without this the queued action never lands in the
+/// model's pending queue, leaving the permission prompt inactive (no focus, no
+/// pending action) or — worse — deadlocking a test that then `.await`s a result
+/// that can never arrive. A handful of yields covers multi-stage spawn chains
+/// (preprocess future -> relay callback -> effect flush); extra yields are a
+/// no-op once the executor is parked.
+pub(crate) async fn settle() {
+    for _ in 0..8 {
+        futures_lite::future::yield_now().await;
+    }
+}
+
 /// A trivial typed-action root view for tests that need a TUI window whose
 /// real subject is a non-root child view.
 pub(crate) struct TestHostView;
@@ -107,9 +125,20 @@ pub(crate) fn add_test_action_model_and_events(
     if !app.read(|ctx| ctx.has_singleton_model::<Appearance>()) {
         app.add_singleton_model(|_| Appearance::mock());
     }
+    // The execute/preprocess pipeline reads the app-wide execution mode when
+    // deciding whether an action auto-executes or must block on confirmation.
+    // Register it here so every action-model-backed view test is hermetic rather
+    // than depending on a sibling test to have registered it first.
+    if !app.read(|ctx| ctx.has_singleton_model::<AppExecutionMode>()) {
+        app.add_singleton_model(|ctx| AppExecutionMode::new(ExecutionMode::App, false, ctx));
+    }
     app.update(|ctx| add_test_semantic_selection(ctx));
-    // Read as a singleton by the action model's executors.
-    app.add_singleton_model(|_| BlocklistAIHistoryModel::default());
+    // Read as a singleton by the action model's executors. Guarded so tests that
+    // provision the full harness (`register_tui_session_view_test_singletons`,
+    // which also registers this) don't double-register.
+    if !app.read(|ctx| ctx.has_singleton_model::<BlocklistAIHistoryModel>()) {
+        app.add_singleton_model(|_| BlocklistAIHistoryModel::default());
+    }
     let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
     let sessions = app.add_model(|_| Sessions::new_for_test());
     let (_tx, model_events_rx) = async_channel::unbounded();

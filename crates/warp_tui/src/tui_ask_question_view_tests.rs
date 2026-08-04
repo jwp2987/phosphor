@@ -2,6 +2,7 @@ use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId, Appearance,
     AskUserQuestionAction, AskUserQuestionAnswerItem, AskUserQuestionItem, AskUserQuestionOption,
     AskUserQuestionType, TaskId, queue_tui_permission_action,
+    register_tui_session_view_test_singletons,
 };
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, WindowInvalidation};
@@ -21,6 +22,17 @@ fn question(
     supports_other: bool,
     options: &[&str],
 ) -> AskUserQuestionItem {
+    question_with_recommended(id, text, is_multiselect, supports_other, options, &[])
+}
+
+fn question_with_recommended(
+    id: &str,
+    text: &str,
+    is_multiselect: bool,
+    supports_other: bool,
+    options: &[&str],
+    recommended_indices: &[usize],
+) -> AskUserQuestionItem {
     AskUserQuestionItem {
         question_id: id.to_owned(),
         question: text.to_owned(),
@@ -28,9 +40,10 @@ fn question(
             is_multiselect,
             options: options
                 .iter()
-                .map(|label| AskUserQuestionOption {
+                .enumerate()
+                .map(|(i, label)| AskUserQuestionOption {
                     label: (*label).to_owned(),
-                    recommended: false,
+                    recommended: recommended_indices.contains(&i),
                 })
                 .collect(),
             supports_other,
@@ -42,7 +55,9 @@ fn add_view(
     app: &mut App,
     questions: Vec<AskUserQuestionItem>,
 ) -> (warpui::WindowId, ViewHandle<TuiAskQuestionView>) {
-    app.add_singleton_model(|_| Appearance::mock());
+    if !app.read(|ctx| ctx.has_singleton_model::<Appearance>()) {
+        app.add_singleton_model(|_| Appearance::mock());
+    }
     let action_model = add_test_action_model(app);
     app.update(|ctx| {
         ctx.add_tui_window(
@@ -336,6 +351,11 @@ fn opening_and_leaving_other_keeps_selector_and_shared_session_in_sync() {
 fn submitting_other_restores_question_navigation_focus() {
     App::test((), |mut app| async move {
         app.update(super::init);
+        // Left/right question navigation is gated on the ASK_QUESTION_ACTIVE
+        // keymap context, which requires the action to be blocked (waiting on
+        // answers). Provision the real pipeline's singletons so the queued
+        // action blocks through it.
+        register_tui_session_view_test_singletons(&mut app);
         let (_, view) = add_view(
             &mut app,
             vec![
@@ -344,6 +364,9 @@ fn submitting_other_restores_question_navigation_focus() {
             ],
         );
         queue_question_action(&mut app, &view);
+        // Pump the async preprocess so the action blocks and ASK_QUESTION_ACTIVE
+        // (and thus left/right navigation) becomes active.
+        crate::test_fixtures::settle().await;
         present_active_view(&mut app, &view);
 
         let selector = app.read(|ctx| view.as_ref(ctx).selector.clone());
@@ -408,6 +431,45 @@ fn navigating_away_from_a_cleared_other_editor_removes_the_previous_answer() {
             assert_eq!(view.session.current_question_index(), 1);
             assert!(view.session.draft_for_question(0).is_none());
         });
+    });
+}
+
+#[test]
+fn recommended_option_renders_recommended_badge() {
+    App::test((), |mut app| async move {
+        let (_, view) = add_view(
+            &mut app,
+            vec![question_with_recommended(
+                "q1",
+                "Which shell?",
+                false,
+                false,
+                &["zsh", "fish", "bash"],
+                &[1], // fish is recommended
+            )],
+        );
+
+        let lines = render_active_lines(&mut app, &view);
+        // The recommended option should have "  (recommended)" appended.
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("fish") && line.contains("(recommended)")),
+            "expected a line with 'fish  (recommended)' but got: {lines:#?}"
+        );
+        // Non-recommended options must not show the badge.
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("zsh") || !line.contains("(recommended)")),
+            "expected zsh not to have (recommended) but got: {lines:#?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("bash") || !line.contains("(recommended)")),
+            "expected bash not to have (recommended) but got: {lines:#?}"
+        );
     });
 }
 

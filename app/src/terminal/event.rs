@@ -466,7 +466,7 @@ impl Debug for Event {
             }
             Event::RemoteServerFailed {
                 session_id,
-                ref error,
+                error,
             } => {
                 write!(
                     f,
@@ -481,12 +481,14 @@ impl Debug for Event {
                 write!(f, "ImageReceived(image_id: {image_id})")
             }
             Event::BootstrapPrecmdDone => write!(f, "BootstrapPrecmdDone"),
-            Event::PluggableNotification { title, body } => {
-                write!(f, "PluggableNotification(title: {title:?}, body: {body})")
-            }
+            Event::PluggableNotification { .. } => write!(f, "PluggableNotification"),
             Event::ExitShell { session_id } => {
                 write!(f, "ExitShell(session: {session_id:?})")
             }
         }
     }
 }
+
+#[cfg(test)]
+#[path = "event_tests.rs"]
+mod tests;

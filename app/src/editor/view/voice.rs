@@ -170,9 +170,9 @@ impl EditorView {
             voice_input.update(ctx, |voice_input, ctx| {
                 if cancel_transcription {
                     voice_input.abort_listening();
-                } else if let Err(e) = voice_input.stop_listening(ctx) {
+                } else { match voice_input.stop_listening(ctx) { Err(e) => {
                     log::error!("Failed to stop voice input: {e:?}");
-                }
+                } _ => {}}}
             });
         }
         if cancel_transcription {

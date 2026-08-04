@@ -1802,23 +1802,6 @@ impl PaneGroup {
                     "Can't restore execution profile editor panes"
                 ))
             }
-            LeafContents::SshServer { .. } => {
-                // SSH server editor panes are intentionally not restored —
-                // they're transient editor surfaces over the persistent
-                // `ssh_servers` table. Users reopen via the SSH manager tree
-                // in the left panel.
-                Err(anyhow::anyhow!(
-                    "SSH server pane should not have been persisted, as it cannot be restored"
-                ))
-            }
-            LeafContents::Sftp { .. } => {
-                // The SFTP browser pane is not persisted; the remote
-                // filesystem depends on a live SSH connection and cannot be
-                // restored after a restart.
-                Err(anyhow::anyhow!(
-                    "SFTP pane should not have been persisted, as it cannot be restored"
-                ))
-            }
             LeafContents::Image { .. } => {
                 // Image viewer panes are intentionally not persisted (see
                 // `LeafContents::is_persisted`), so this should be unreachable.
@@ -2268,7 +2251,7 @@ impl PaneGroup {
             pane.notebook_view(ctx).as_ref(ctx).selected_text(ctx)
         } else if let Some(pane) = self.downcast_pane_by_id::<AIDocumentPane>(focused_pane_id) {
             pane.document_view(ctx).as_ref(ctx).selected_text(ctx)
-        } else if let Some(terminal_view) = self.terminal_view_from_pane_id(focused_pane_id, ctx) {
+        } else { match self.terminal_view_from_pane_id(focused_pane_id, ctx) { Some(terminal_view) => {
             // NOTE: We currently don't have a way to track recency of selection events.
             // In lieu of this, we prefer selections to the input editor over the terminal view.
             // TODO(vkodithala): Once we have a way to track recency of selection events, we should use that instead.
@@ -2276,9 +2259,9 @@ impl PaneGroup {
                 .as_ref(ctx)
                 .selected_text_from_input(ctx)
                 .or_else(|| terminal_view.as_ref(ctx).selected_text(ctx))
-        } else {
+        } _ => {
             None
-        };
+        }}};
 
         text.filter(|text: &String| !text.is_empty())
     }
@@ -2595,7 +2578,7 @@ impl PaneGroup {
         let new_pane_id =
             self.insert_terminal_pane_hidden_for_child_agent(parent_pane_id, HashMap::new(), ctx);
 
-        if let Some(new_terminal_view) = self.terminal_view_from_pane_id(new_pane_id, ctx) {
+        match self.terminal_view_from_pane_id(new_pane_id, ctx) { Some(new_terminal_view) => {
             new_terminal_view.update(ctx, |terminal_view, ctx| {
                 terminal_view.restore_conversation_after_view_creation(
                     RestoredAIConversation::new(child_conversation),
@@ -2611,10 +2594,10 @@ impl PaneGroup {
             });
 
             self.child_agent_panes.insert(child_id, new_pane_id.into());
-        } else {
+        } _ => {
             log::error!("Failed to get terminal view for child agent pane {child_id:?}");
             self.discard_pane(new_pane_id.into(), ctx);
-        }
+        }}
     }
 
     /// Helper that creates the initial [`PaneData`] and [`InitialFocus`] given a terminal view.
@@ -4195,14 +4178,14 @@ impl PaneGroup {
     fn close_active_pane_with_confirmation(&mut self, ctx: &mut ViewContext<Self>) {
         if self.focused_pane_id(ctx).is_code_pane() {
             // If focused on a CodePane, close its active editor tab (optionally, the entire pane if it only has 1 tab).
-            if let Some(code_view) = self.code_view_from_pane_id(self.focused_pane_id(ctx), ctx) {
+            match self.code_view_from_pane_id(self.focused_pane_id(ctx), ctx) { Some(code_view) => {
                 code_view.update(ctx, |view, ctx| {
                     let index = view.active_tab_index();
                     view.handle_action(&CodeViewAction::RemoveTabAtIndex { index }, ctx);
                 });
-            } else {
+            } _ => {
                 self.close_pane_with_confirmation(self.focused_pane_id(ctx), ctx);
-            }
+            }}
         } else {
             self.close_pane_with_confirmation(self.focused_pane_id(ctx), ctx);
         }
@@ -4652,11 +4635,11 @@ impl PaneGroup {
             .pane_contents
             .keys()
             .find(|id| {
-                if let Some(terminal_view) = self.terminal_view_from_pane_id(**id, ctx) {
+                match self.terminal_view_from_pane_id(**id, ctx) { Some(terminal_view) => {
                     terminal_view_id == terminal_view.id()
-                } else {
+                } _ => {
                     false
-                }
+                }}
             })
             .cloned();
 
@@ -6124,12 +6107,12 @@ impl TypedActionView for PaneGroup {
         match action {
             Add(direction) => {
                 let chosen_shell = {
-                    if let Some(model) = self.active_session_terminal_model(ctx) {
+                    match self.active_session_terminal_model(ctx) { Some(model) => {
                         let model = model.lock();
                         model.shell_launch_state().available_shell()
-                    } else {
+                    } _ => {
                         None
-                    }
+                    }}
                 };
                 self.add_terminal_pane(*direction, chosen_shell, ctx);
             }

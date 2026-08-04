@@ -24,15 +24,17 @@
 use std::cell::{Cell, RefCell};
 use std::io::{self, Stdout, Write, stdout};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use instant::Instant;
 use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as CrosstermEvent, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event as CrosstermEvent, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -52,7 +54,9 @@ use event_conversion::ClickTracker;
 pub use event_conversion::crossterm_event_to_tui_event;
 pub use renderer::TuiFrameRenderer;
 pub use terminal_probe::{
-    BackgroundLuminance, ProbedRgb, ProbedTerminalColors, probe_terminal_colors,
+    BackgroundLuminance, ProbedRgb, ProbedTerminalColors, TuiProbe, background_luminance,
+    probe_terminal_background, probe_terminal_colors, read_terminal_background_reply,
+    write_terminal_background_query,
 };
 
 /// The host terminal the runtime draws to and reads input from. Abstracted so
@@ -86,10 +90,19 @@ struct TuiScreen<T, R: TuiTerminal> {
     /// a synthetic `MouseMoved` after each draw so hover state tracks elements
     /// that move under a stationary pointer.
     last_mouse_position: Option<TuiPoint>,
+    /// Shared with the input reader thread so a focus-triggered background
+    /// probe's OSC query cannot land in the middle of a frame write. Held
+    /// only for the duration of the frame flush below.
+    stdout_write_lock: Arc<Mutex<()>>,
 }
 
 impl<T: TuiView, R: TuiTerminal> TuiScreen<T, R> {
-    fn new(window_id: WindowId, root_view: ViewHandle<T>, terminal: R) -> Self {
+    fn new(
+        window_id: WindowId,
+        root_view: ViewHandle<T>,
+        terminal: R,
+        stdout_write_lock: Arc<Mutex<()>>,
+    ) -> Self {
         Self {
             window_id,
             root_view,
@@ -98,6 +111,7 @@ impl<T: TuiView, R: TuiTerminal> TuiScreen<T, R> {
             terminal,
             click_tracker: ClickTracker::default(),
             last_mouse_position: None,
+            stdout_write_lock,
         }
     }
 
@@ -138,6 +152,12 @@ impl<T: TuiView, R: TuiTerminal> TuiScreen<T, R> {
         }
         let frame = frame.expect("loop always presents at least once");
 
+        // Hold the lock through the complete frame write so a reader-thread
+        // OSC query cannot split the renderer's escape sequence.
+        let _frame_write_guard = self
+            .stdout_write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut writer = self.terminal.writer();
         self.renderer
             .draw(&mut writer, &frame.buffer, frame.cursor)?;
@@ -280,7 +300,7 @@ where
         let dirty_for_callback = dirty.clone();
         app.on_window_invalidated(window_id, move |_, _| dirty_for_callback.set(true));
         Self {
-            screen: TuiScreen::new(window_id, root_view, terminal),
+            screen: TuiScreen::new(window_id, root_view, terminal, Arc::new(Mutex::new(()))),
             dirty,
             last_size: None,
             pending_repaint: None,
@@ -442,8 +462,10 @@ impl TuiTerminalGuard {
 
 /// Keeps a headless TUI session alive. Store it for the lifetime of the app
 /// (e.g. in a singleton model) so the session lives as long as the app does;
-/// dropping it tears the session down. Fields drop in declaration order, which
-/// is also the teardown order:
+/// dropping it tears the session down. Its `Drop` implementation first stops
+/// the reader thread from starting another probe and waits for any in-flight
+/// probe I/O (see the `Drop` impl below), then fields drop in declaration
+/// order, which is also the teardown order:
 /// - `_task`: the input-dispatch loop. It is an [`async_task::Task`], so
 ///   dropping it *cancels* the future (we intentionally don't `detach()`),
 ///   which in turn drops the channel receiver feeding it.
@@ -459,6 +481,13 @@ pub struct TuiDriverHandle {
     /// [`draw_and_schedule_repaint`]). Dropping it cancels the timer.
     _repaint_timer: Rc<RefCell<Option<ForegroundTask>>>,
     _reader: thread::JoinHandle<()>,
+    /// Tells the reader thread to stop reading further events/probes at its
+    /// next loop boundary, checked before teardown restores the terminal.
+    reader_shutdown: Arc<AtomicBool>,
+    /// Held by the reader thread only while a focus-triggered probe's query
+    /// and reply are in flight; teardown waits on it so the terminal is never
+    /// restored mid-probe.
+    probe_lifecycle_lock: Arc<Mutex<()>>,
     _guard: TuiTerminalGuard,
 }
 
@@ -466,6 +495,18 @@ impl TuiDriverHandle {
     /// Whether the host terminal supports the Kitty keyboard-enhancement protocol.
     pub fn keyboard_enhancement_supported(&self) -> bool {
         self._guard.keyboard_enhancement_supported()
+    }
+}
+
+impl Drop for TuiDriverHandle {
+    fn drop(&mut self) {
+        self.reader_shutdown.store(true, Ordering::Release);
+        // Blocks until any probe I/O the reader thread already started
+        // completes, so `_guard`'s restore below never races a live query.
+        let _probe_lifecycle_guard = self
+            .probe_lifecycle_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
     }
 }
 
@@ -486,12 +527,22 @@ impl TuiDriverHandle {
 /// The returned [`TuiDriverHandle`] owns the session: keep it alive for as long
 /// as the session should run, and drop it (e.g. on app teardown) to restore the
 /// terminal.
+///
+/// `probe`, if given, registers a focus-triggered background re-probe on the
+/// input reader thread — the thread's sole ownership of stdin lets it write
+/// the OSC query and read the reply without racing normal input (see
+/// `terminal_probe::TuiProbe`).
 pub fn spawn_tui_driver<T: TuiView>(
     ctx: &mut AppContext,
     window_id: WindowId,
     root_view: ViewHandle<T>,
+    probe: Option<TuiProbe>,
 ) -> io::Result<TuiDriverHandle> {
     let guard = TuiTerminalGuard::enter()?;
+
+    // Shared with the reader thread so a focus-triggered probe's OSC query
+    // can never land in the middle of a frame write (see `TuiScreen::draw`).
+    let stdout_write_lock = Arc::new(Mutex::new(()));
 
     // The presenter + renderer + terminal live behind an `Rc<RefCell<_>>` owned
     // by the invalidation callback. The input path never borrows it, so painting
@@ -500,6 +551,7 @@ pub fn spawn_tui_driver<T: TuiView>(
         window_id,
         root_view,
         CrosstermTerminal::new(),
+        stdout_write_lock.clone(),
     )));
 
     // Repaint scheduling: at most one pending timer, held in this slot. Every
@@ -537,24 +589,28 @@ pub fn spawn_tui_driver<T: TuiView>(
     let weak_app = ctx.weak_app();
     let (sender, receiver) = async_channel::unbounded::<CrosstermEvent>();
 
+    let reader_shutdown = Arc::new(AtomicBool::new(false));
+    let probe_lifecycle_lock = Arc::new(Mutex::new(()));
+
     // Blocking terminal reads run off the main thread and are forwarded to the
-    // foreground executor through the channel, so the main thread's event loop is
-    // never blocked waiting for input.
+    // foreground executor through the channel, so the main thread's event loop
+    // is never blocked waiting for input. The reader also performs a
+    // background-color probe when the terminal regains focus, since it is the
+    // sole owner of stdin and can keep the reply out of the normal crossterm
+    // event stream.
     let reader = thread::Builder::new()
         .name("warp-tui-input".to_owned())
-        .spawn(move || loop {
-            match event::read() {
-                Ok(event) => {
-                    // The reader runs on a dedicated thread, so blocking on the
-                    // send is fine; an error means the receiver was dropped.
-                    if block_on(sender.send(event)).is_err() {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    log::error!("failed to read a terminal event: {error}");
-                    break;
-                }
+        .spawn({
+            let reader_shutdown = reader_shutdown.clone();
+            let probe_lifecycle_lock = probe_lifecycle_lock.clone();
+            move || {
+                run_tui_input_reader(
+                    sender,
+                    probe,
+                    stdout_write_lock,
+                    reader_shutdown,
+                    probe_lifecycle_lock,
+                )
             }
         })?;
 
@@ -585,8 +641,87 @@ pub fn spawn_tui_driver<T: TuiView>(
         _task: task,
         _repaint_timer: repaint_timer,
         _reader: reader,
+        reader_shutdown,
+        probe_lifecycle_lock,
         _guard: guard,
     })
+}
+
+/// Reads terminal input events on a dedicated thread and forwards them to the
+/// foreground executor via `sender`. When `probe` is registered and enabled,
+/// a `FocusGained` event (with no further input already queued behind it)
+/// triggers an inline background-color re-query before the event is
+/// forwarded: this thread is the sole reader of stdin, so the query/reply
+/// round-trip cannot race the normal event stream.
+fn run_tui_input_reader(
+    sender: async_channel::Sender<CrosstermEvent>,
+    probe: Option<TuiProbe>,
+    stdout_write_lock: Arc<Mutex<()>>,
+    reader_shutdown: Arc<AtomicBool>,
+    probe_lifecycle_lock: Arc<Mutex<()>>,
+) {
+    let mut stdout = stdout();
+    loop {
+        // Stop before another blocking read once teardown has requested a
+        // shutdown, or either downstream consumer has gone away.
+        if reader_shutdown.load(Ordering::Acquire)
+            || sender.is_closed()
+            || probe
+                .as_ref()
+                .is_some_and(|probe| probe.results.is_closed())
+        {
+            break;
+        }
+
+        match event::read() {
+            Ok(event) => {
+                let probe_enabled = probe.as_ref().is_some_and(|probe| (probe.is_enabled)());
+                // Only probe when no further input is already queued: a probe
+                // blocks this thread for up to its deadline, and a burst of
+                // typed-ahead keys should never be delayed behind one.
+                let should_probe = matches!(event, CrosstermEvent::FocusGained)
+                    && probe_enabled
+                    && !event::poll(Duration::ZERO).unwrap_or(true);
+                if should_probe {
+                    if let Some(probe) = probe.as_ref() {
+                        let background = {
+                            // Teardown waits on this lock before restoring
+                            // terminal modes, so a probe that is already
+                            // in flight always finishes cleanly.
+                            let _probe_lifecycle_guard = probe_lifecycle_lock
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            if reader_shutdown.load(Ordering::Acquire)
+                                || sender.is_closed()
+                                || probe.results.is_closed()
+                            {
+                                break;
+                            }
+                            let query_result = {
+                                let _query_write_guard = stdout_write_lock
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                (probe.write_query)(&mut stdout)
+                            };
+                            query_result.ok().and_then(|()| (probe.read_reply)())
+                        };
+                        if block_on(probe.results.send(background)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                // The reader runs on a dedicated thread, so blocking on the
+                // send is fine; an error means the receiver was dropped.
+                if block_on(sender.send(event)).is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                log::error!("failed to read a terminal event: {error}");
+                break;
+            }
+        }
+    }
 }
 
 /// Draws a frame and schedules a timer for its element-requested repaint
@@ -653,6 +788,9 @@ fn enter_terminal_screen(
         EnterAlternateScreen,
         EnableMouseCapture,
         EnableBracketedPaste,
+        // Lets the input reader thread re-probe the host terminal's
+        // background when the TUI regains focus (see `terminal_probe`).
+        EnableFocusChange,
         Hide
     )?;
 
@@ -683,6 +821,7 @@ fn leave_terminal_screen(
         Show,
         DisableBracketedPaste,
         DisableMouseCapture,
+        DisableFocusChange,
         LeaveAlternateScreen
     )
 }

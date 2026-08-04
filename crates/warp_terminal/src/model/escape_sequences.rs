@@ -140,6 +140,17 @@ pub mod C1 {
     }
 }
 
+/// Wraps an escape sequence in a tmux DCS passthrough, doubling inner escapes
+/// so tmux forwards the sequence to the hosting terminal rather than
+/// intercepting it.
+pub fn tmux_passthrough(sequence: &str) -> String {
+    let esc = char::from(C0::ESC);
+    let escaped = sequence.replace(esc, "\x1b\x1b");
+    let dcs = C1::to_utf8(C1::DCS);
+    let st = C1::to_utf8(C1::ST);
+    format!("{dcs}tmux;{escaped}{st}")
+}
+
 /// Escape sequences used to control 'bracketed paste' mode.
 ///
 /// If the shell supports bracketed paste mode, these control sequences should be inserted at the
@@ -250,6 +261,7 @@ impl<T: ModeProvider> ToEscapeSequence<T> for KeystrokeWithDetails<'_> {
             .or_else(|| keystroke_to_c0_control_code(keystroke, mode_provider))
             .or_else(|| cursor_movement_keystroke_to_escape_sequence(keystroke, mode_provider))
             .or_else(|| meta_keystroke_to_escape_sequence(keystroke, mode_provider))
+            .or_else(|| backspace_keystroke_to_escape_sequence(keystroke))
     }
 }
 
@@ -675,6 +687,19 @@ fn meta_keystroke_to_escape_sequence(
         Some([&[C0::ESC], bytes].concat())
     } else {
         Some([&[C0::ESC], key.as_bytes()].concat())
+    }
+}
+
+/// Returns DEL (0x7f) for an unmodified or Shift-only Backspace.
+/// Guards against winit on Windows reporting `\x08` (Ctrl+H) for Shift+Backspace,
+/// which readline-style TUIs interpret as `backward-kill-word`. See GH#11342.
+fn backspace_keystroke_to_escape_sequence(keystroke: &Keystroke) -> Option<Vec<u8>> {
+    if keystroke.ctrl || keystroke.alt || keystroke.meta || keystroke.cmd {
+        return None;
+    }
+    match keystroke.key.as_str() {
+        "backspace" => Some(vec![C0::DEL]),
+        _ => None,
     }
 }
 

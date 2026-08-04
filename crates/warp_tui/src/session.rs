@@ -19,7 +19,7 @@ use crate::resume::TuiExitSummaryHandle;
 use crate::root_view::RootTuiView;
 use crate::session_registry::{TuiSessions, TuiSessionsEvent};
 use crate::telemetry::TuiStartupTelemetryEvent;
-use crate::terminal_background::probe_and_select_theme;
+use crate::terminal_background::TuiHostTerminalBackground;
 use crate::terminal_session_view::{TuiConversationRestoreOrigin, TuiConversationRestoreTarget};
 
 #[derive(Parser)]
@@ -102,10 +102,13 @@ fn init(
     // restore files edited during this session (see tui_revert_registry).
     crate::tui_revert_registry::TuiFileEditRevertRegistry::register(ctx);
 
-    // Theme the transcript to match the host terminal. Keep this scoped to
-    // the TUI process by overriding the already-initialized Appearance theme at
-    // mount time, without changing normal GUI theme selection or font settings.
-    let theme = probe_and_select_theme();
+    // Theme the transcript to match the host terminal, and register the live
+    // focus-triggered re-probe so a later appearance change (e.g. switching
+    // the host terminal's profile) is picked up mid-session. Keep this scoped
+    // to the TUI process by overriding the already-initialized Appearance
+    // theme at mount time, without changing normal GUI theme selection or
+    // font settings.
+    let (theme, probe) = TuiHostTerminalBackground::register(ctx);
     Appearance::handle(ctx).update(ctx, |appearance, ctx| {
         appearance.set_theme(theme, ctx);
     });
@@ -117,7 +120,7 @@ fn init(
         },
         |_| RootTuiView::new(),
     );
-    match spawn_tui_driver(ctx, window_id, root.clone()) {
+    match spawn_tui_driver(ctx, window_id, root.clone(), Some(probe)) {
         Ok(driver) => {
             let sessions =
                 ctx.add_singleton_model(|_| TuiSessions::new(driver, exit_summary, resume_token));

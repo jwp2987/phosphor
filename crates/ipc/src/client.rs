@@ -208,16 +208,16 @@ impl Client {
                                 }
                             };
 
-                            if let Some(response_result_tx) = response_senders.remove(&request_id) {
+                            match response_senders.remove(&request_id) { Some(response_result_tx) => {
                                 // The channel might be closed if the task that called
                                 // `send_message` has been dropped, but that's ok.
                                 let _ = response_result_tx.send(response_result);
-                            } else {
+                            } _ => {
                                 // When there is no corresponding response_senders
                                 // entry for the message's request ID, we weren't
                                 // expecting it.
                                 log::warn!("Received unexpected message with id {request_id}.");
-                            }
+                            }}
                         }
                         Err(e) => {
                             match e {

@@ -31,7 +31,7 @@ impl ReadDocumentsExecutor {
         &mut self,
         input: ExecuteActionInput,
         ctx: &mut ModelContext<Self>,
-    ) -> impl Into<AnyActionExecution> {
+    ) -> impl Into<AnyActionExecution> + use<> {
         let ExecuteActionInput { action, .. } = input;
         let AIAgentAction {
             action: AIAgentActionType::ReadDocuments(ReadDocumentsRequest { document_ids }),
@@ -41,22 +41,42 @@ impl ReadDocumentsExecutor {
             return ActionExecution::<ReadDocumentsResult>::InvalidAction;
         };
 
-        // Access the model synchronously before the async block
+        // Access the model synchronously before the async block. Any requested
+        // document id that isn't loaded locally is reported as an error, matching
+        // Warp's behavior — silently succeeding with the document omitted would
+        // hide the failure from the LLM.
         let model = AIDocumentModel::handle(ctx);
-        let documents: Vec<DocumentContext> = document_ids
-            .iter()
-            .filter_map(|id| {
+        let mut documents = Vec::with_capacity(document_ids.len());
+        let mut missing_documents = Vec::new();
+        for id in document_ids.iter() {
+            let document = {
                 let model = model.as_ref(ctx);
-                let content = model.get_document_content(id, ctx)?;
-                let version = model.get_current_document(id)?.version;
-                Some(DocumentContext {
-                    document_id: *id,
-                    content,
-                    line_ranges: vec![],
-                    document_version: version,
+                model.get_document_content(id, ctx).and_then(|content| {
+                    let version = model.get_current_document(id)?.version;
+                    Some(DocumentContext {
+                        document_id: *id,
+                        content,
+                        line_ranges: vec![],
+                        document_version: version,
+                    })
                 })
-            })
-            .collect();
+            };
+            match document {
+                Some(document) => documents.push(document),
+                None => missing_documents.push(*id),
+            }
+        }
+
+        if !missing_documents.is_empty() {
+            let missing_list = missing_documents
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return ActionExecution::Sync(
+                ReadDocumentsResult::Error(format!("Document(s) not found: {missing_list}")).into(),
+            );
+        }
 
         ActionExecution::Sync(ReadDocumentsResult::Success { documents }.into())
     }
@@ -73,3 +93,7 @@ impl ReadDocumentsExecutor {
 impl Entity for ReadDocumentsExecutor {
     type Event = ();
 }
+
+#[cfg(test)]
+#[path = "read_documents_test.rs"]
+mod tests;

@@ -529,3 +529,7 @@ impl BlockPadding {
 
 #[cfg(test)]
 mod ref_tests;
+
+#[cfg(test)]
+#[path = "size_update_tests.rs"]
+mod size_update_tests;

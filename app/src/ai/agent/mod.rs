@@ -811,6 +811,7 @@ impl ProgrammingLanguage {
                 "clojure" | "clj" => Some("clj"),
                 "elm" => Some("elm"),
                 "cmake" => Some("cmake"),
+                "markdown" | "md" => Some("md"),
                 _ => None,
             },
             Self::Shell(ShellType::PowerShell) => Some("ps1"),

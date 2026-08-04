@@ -9,6 +9,7 @@ use crate::ai::facts::{AIFact, AIFactObject, AIFactObjectModel, AIMemory};
 use crate::ai::llms::LLMPreferences;
 use crate::ai::mcp::gallery::MCPGalleryManager;
 use crate::ai::mcp::templatable_manager::TemplatableMCPServerManager;
+use crate::ai::outline::RepoOutlines;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
 use crate::ai::AIRequestUsageModel;
@@ -51,7 +52,7 @@ use crate::workspaces::user_workspaces::UserWorkspaces;
 
 use crate::terminal::block_list_viewport::ScrollPosition;
 use crate::terminal::local_tty::shell::ShellStarter;
-use crate::terminal::model::ansi::{Handler, PrecmdValue};
+use crate::terminal::model::ansi::{Handler, PromptMetadata};
 use crate::terminal::model::block::SerializedBlock;
 use crate::terminal::model::blocks::{insert_block, BlockListPoint};
 use crate::terminal::model::grid::Dimensions as _;
@@ -147,7 +148,7 @@ pub fn initialize_app(app: &mut App) {
     app.add_singleton_model(|_| crate::code_review::git_status_update::GitStatusUpdateModel::new());
     app.add_singleton_model(RepoMetadataModel::new);
     app.add_singleton_model(FileSearchModel::new);
-    // Zap: RepoOutlines has been removed and is no longer registered.
+    app.add_singleton_model(RepoOutlines::new_for_test);
     #[cfg(feature = "voice_input")]
     app.add_singleton_model(voice_input::VoiceInput::new);
 
@@ -402,11 +403,15 @@ pub fn simulate_directory_for_completion<A, S>(
 {
     let directory = directory.into();
     terminal.update(app, |terminal, ctx| {
-        terminal.model.lock().block_list_mut().precmd(PrecmdValue {
-            pwd: Some(directory.clone()),
-            session_id: Some(session_id.into()),
-            ..Default::default()
-        });
+        terminal
+            .model
+            .lock()
+            .block_list_mut()
+            .prompt_only_precmd(PromptMetadata {
+                pwd: Some(directory.clone()),
+                session_id: Some(session_id.into()),
+                ..Default::default()
+            });
 
         // Normally, the precmd message should be sufficient to also set this block metadata.
         // However, in unit tests the foreground executor does not relay the event.
@@ -5830,7 +5835,7 @@ fn run_input_mode_prefix_test(
 }
 
 macro_rules! input_mode_prefix_tests {
-    ($($name:ident: ($nld_improvements_enabled:literal, $udi_enabled:literal, $input_mode:expr),)*) => {
+    ($($name:ident: ($nld_improvements_enabled:literal, $udi_enabled:literal, $input_mode:expr_2021),)*) => {
         $(
             #[test]
             fn $name() {

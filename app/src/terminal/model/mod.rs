@@ -4,7 +4,7 @@ pub use terminal_model::TerminalModel;
 #[cfg(test)]
 #[macro_export]
 macro_rules! assert_lines_approx_eq {
-    ($actual:expr, $expected:expr) => {{
+    ($actual:expr_2021, $expected:expr_2021) => {{
         float_cmp::assert_approx_eq!(
             warpui::units::Lines,
             $actual,
@@ -29,6 +29,8 @@ pub mod find;
 pub mod grid;
 pub mod image_map;
 pub mod index;
+// Ported from Warp: the block-lifecycle transition coordinator. See `lifecycle/mod.rs`.
+pub(in crate::terminal) mod lifecycle;
 pub mod iterm_image;
 pub mod kitty;
 pub mod secrets;

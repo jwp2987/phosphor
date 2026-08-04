@@ -7,6 +7,18 @@
 //!   and starts the transcript-capable TUI draw + input driver.
 //! - Binary entry points under `src/bin/`.
 
+/// Test-only: initialize the localizer once, at binary load, before any test
+/// runs. The static slash-command table resolves its `t_static!` argument hints
+/// on first access and caches them; if that first access happens before i18n is
+/// initialized (no test does so globally), the raw message key is cached
+/// permanently. A per-test init is too late — the cache is keyed by whichever
+/// test touches the table first. Running at load guarantees English resolution.
+#[cfg(test)]
+#[ctor::ctor]
+fn init_i18n_for_warp_tui_tests() {
+    warp::i18n::init(Some("en"));
+}
+
 mod report_error;
 mod agent_block;
 mod agent_block_sections;
@@ -22,6 +34,7 @@ mod tui_ask_question_view;
 mod tui_builder;
 mod ui;
 
+mod api_keys_menu;
 mod completions_menu;
 mod conversation_menu;
 mod conversation_selection;
@@ -47,6 +60,7 @@ mod resume;
 mod session_registry;
 mod skills_menu;
 mod slash_commands;
+mod statusline_config_view;
 pub mod tab_bar;
 mod terminal_background;
 mod terminal_block;
@@ -69,8 +83,11 @@ mod tui_generic_tool_call_view;
 mod tui_markdown;
 mod tui_permission_prompt;
 mod tui_plan_view;
+mod tui_review_comments;
 mod tui_shell_command_view;
 mod usage;
+#[cfg(test)]
+mod usage_smoke_tests;
 mod warping_indicator;
 mod zero_state;
 mod zero_state_animation;

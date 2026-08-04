@@ -212,6 +212,7 @@ impl BlocklistAIPermissions {
             context_window_limit: profile_data.context_window_limit,
             autosync_plans_to_warp_drive: profile_data.autosync_plans_to_warp_drive,
             web_search_enabled: profile_data.web_search_enabled,
+            codebase_context_enabled: profile_data.codebase_context_enabled,
             prompt_overrides: profile_data.prompt_overrides.clone(),
         }
     }
@@ -570,6 +571,29 @@ impl BlocklistAIPermissions {
         let active_profile =
             AIExecutionProfilesModel::as_ref(ctx).active_profile(terminal_view_id, ctx);
         self.get_web_search_enabled_for_profile(ctx, *active_profile.id())
+    }
+
+    pub fn get_codebase_context_enabled_for_profile(
+        &self,
+        ctx: &AppContext,
+        profile_id: ClientProfileId,
+    ) -> bool {
+        let profiles_model = AIExecutionProfilesModel::as_ref(ctx);
+        profiles_model
+            .get_profile_by_id(profile_id, ctx)
+            .unwrap_or_else(|| profiles_model.default_profile(ctx))
+            .data()
+            .codebase_context_enabled
+    }
+
+    pub fn get_codebase_context_enabled(
+        &self,
+        ctx: &AppContext,
+        terminal_view_id: Option<EntityId>,
+    ) -> bool {
+        let active_profile =
+            AIExecutionProfilesModel::as_ref(ctx).active_profile(terminal_view_id, ctx);
+        self.get_codebase_context_enabled_for_profile(ctx, *active_profile.id())
     }
 
     pub fn get_computer_use_setting_for_profile(

@@ -1,6 +1,22 @@
 use super::*;
 use std::path::PathBuf;
 
+/// Scans, then drops directory stamps for ancestors outside `root`.
+///
+/// `scan_fast_path` walks up to `MAX_WALK_DEPTH` ancestors and records each
+/// directory's mtime, which for a `tempfile` tempdir includes the shared
+/// system temp dir (e.g. `/tmp`). A concurrent test creating or dropping its
+/// own tempdir bumps that mtime, so an unscoped "still valid" check run in
+/// parallel flips nondeterministically. Restricting the recorded directory
+/// stamps to the test's own subtree removes that shared-ancestor dependency;
+/// rule detection is unaffected, since rules come from the file stamps.
+#[cfg(feature = "local_fs")]
+fn scan_fast_path_isolated(root: &Path) -> FastPathEntry {
+    let mut entry = ProjectContextModel::scan_fast_path(root);
+    entry.walked_dir_stamps.retain(|(dir, _)| dir.starts_with(root));
+    entry
+}
+
 #[test]
 fn test_find_applicable_rules_empty_rules() {
     let rules = ProjectRules { rules: vec![] };
@@ -266,7 +282,7 @@ fn fast_path_still_valid_when_nothing_changed() {
     let cwd = tmp.path().canonicalize().unwrap();
     std::fs::write(cwd.join("AGENTS.md"), "stable").unwrap();
 
-    let entry = ProjectContextModel::scan_fast_path(&cwd);
+    let entry = scan_fast_path_isolated(&cwd);
     assert!(ProjectContextModel::fast_path_entry_still_valid(&entry));
 }
 
@@ -280,7 +296,7 @@ fn fast_path_invalidated_when_rule_file_mtime_changes() {
     let rule = cwd.join("AGENTS.md");
     std::fs::write(&rule, "v1").unwrap();
 
-    let entry = ProjectContextModel::scan_fast_path(&cwd);
+    let entry = scan_fast_path_isolated(&cwd);
     assert!(ProjectContextModel::fast_path_entry_still_valid(&entry));
 
     // Push mtime forward by 10s → the cache should be detected as invalidated

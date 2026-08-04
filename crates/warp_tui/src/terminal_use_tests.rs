@@ -15,7 +15,7 @@ use warpui_core::elements::tui::{TuiLayoutContext, TuiViewportWindow, TuiViewpor
 use super::{
     TerminalUseInterruptAction, TuiInputTarget, hide_agent_requested_command_from_top_level,
     inline_process_owns_input, terminal_use_conversation_to_resume, terminal_use_interrupt_action,
-    tui_input_target, tui_input_target_for_state,
+    tui_input_target, tui_input_target_for_state, user_controlled_running_command,
 };
 use crate::tui_block_list_viewport_source::TuiBlockListViewportSource;
 
@@ -43,7 +43,31 @@ fn ordinary_long_running_command_owns_inline_input() {
     model.simulate_long_running_block("cat", "");
 
     assert!(inline_process_owns_input(&model));
+    assert_eq!(
+        user_controlled_running_command(&model).map(|block| block.id()),
+        Some(model.block_list().active_block().id())
+    );
 }
+
+#[test]
+fn unfinished_background_output_does_not_own_inline_input() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_block("true", "");
+    model.process_bytes("starship: scanning files timed out");
+
+    let background_block = model
+        .block_list()
+        .blocks()
+        .iter()
+        .find(|block| block.is_background())
+        .expect("early output should create a background block");
+    assert!(!background_block.finished());
+    assert!(background_block.is_active_and_long_running());
+    assert!(user_controlled_running_command(&model).is_none());
+    assert!(!inline_process_owns_input(&model));
+    assert_eq!(tui_input_target(&model), TuiInputTarget::AgentEditor);
+}
+
 #[test]
 fn shell_startup_routes_input_by_bootstrap_stage() {
     let mut model = TerminalModel::mock(None, None);
@@ -275,7 +299,9 @@ fn terminal_use_interrupt_follows_takeover_then_process_interrupt_policy() {
     );
 
     let stopped = LongRunningCommandControlState::User {
-        reason: UserTakeOverReason::Stop,
+        reason: UserTakeOverReason::Stop {
+            should_auto_resume: true,
+        },
     };
     assert_eq!(
         terminal_use_interrupt_action(Some(&stopped), true),
@@ -324,7 +350,9 @@ fn completed_user_controlled_requested_command_resumes_unless_tearing_down() {
             .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
             .expect("command should become agent monitored");
         block
-            .take_over_control_for_user(UserTakeOverReason::Stop)
+            .take_over_control_for_user(UserTakeOverReason::Stop {
+                should_auto_resume: true,
+            })
             .expect("user takeover should succeed");
         block.id().clone()
     };

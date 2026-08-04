@@ -413,3 +413,71 @@ fn test_extract_worktree_git_dir() {
         None
     );
 }
+
+// Regression tests for the filesystem-watcher symlink-traversal fix
+// (ported from warpdotdev/warp#14607 / #13943): a repository symlink such as
+// `result -> /nix/store/...` (a common Nix pattern) could make the watcher
+// recursively register watches on an enormous external tree, ballooning
+// memory (~20 GiB RSS observed). `is_within_symlink` is the pruning check
+// consumed by the watcher's filter closure in `watcher.rs`.
+
+#[cfg(unix)]
+#[test]
+fn is_within_symlink_prunes_symlinked_directory_and_its_descendants() {
+    use super::is_within_symlink;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(temp_dir.path()).unwrap();
+    std::fs::create_dir_all(root.join("target/tree")).unwrap();
+    std::os::unix::fs::symlink(root.join("target"), root.join("result")).unwrap();
+
+    // The symlink itself and anything reached through it must both be
+    // rejected -- the latter is what preserves the watcher's ancestor
+    // monotonicity invariant (a path is not itself a symlink, but an
+    // ancestor of it is).
+    assert!(is_within_symlink(&root.join("result"), &root));
+    assert!(is_within_symlink(&root.join("result/tree"), &root));
+
+    // A real (non-symlinked) sibling directory is unaffected.
+    assert!(!is_within_symlink(&root.join("target"), &root));
+    assert!(!is_within_symlink(&root.join("target/tree"), &root));
+}
+
+#[cfg(unix)]
+#[test]
+fn is_within_symlink_ignores_symlinks_above_repo_root() {
+    use super::is_within_symlink;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let real_parent = temp_dir.path().join("real-parent");
+    let symlinked_parent = temp_dir.path().join("linked-parent");
+    std::fs::create_dir_all(real_parent.join("repo/src")).unwrap();
+    std::os::unix::fs::symlink(&real_parent, &symlinked_parent).unwrap();
+
+    // Only symlinks strictly below repo_root are pruned; a symlink
+    // somewhere in the path ABOVE repo_root (e.g. how the workspace itself
+    // was opened) must not cause everything under it to be rejected.
+    let repo_root = symlinked_parent.join("repo");
+    assert!(!is_within_symlink(&repo_root.join("src"), &repo_root));
+}
+
+#[cfg(unix)]
+#[test]
+fn is_within_symlink_allows_symlinked_repo_root() {
+    use super::is_within_symlink;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let real_root = temp_dir.path().join("real-repo");
+    let symlinked_root = temp_dir.path().join("linked-repo");
+    std::fs::create_dir_all(real_root.join("src")).unwrap();
+    std::os::unix::fs::symlink(&real_root, &symlinked_root).unwrap();
+
+    // The watched root itself may be a symlink (e.g. a workspace opened
+    // through a user-created alias) -- that is the boundary of this check,
+    // not a symlinked directory to prune.
+    assert!(!is_within_symlink(&symlinked_root, &symlinked_root));
+    assert!(!is_within_symlink(
+        &symlinked_root.join("src"),
+        &symlinked_root
+    ));
+}

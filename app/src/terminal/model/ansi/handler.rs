@@ -242,8 +242,18 @@ pub trait Handler {
     /// Process a prompt marker control sequence.
     fn prompt_marker(&mut self, _marker: PromptMarker) {}
 
-    /// Callback for the Zap precmd hook.
-    fn precmd(&mut self, _data: PrecmdValue) {}
+    /// Set or clear the active OSC 8 hyperlink. Subsequent characters
+    /// written via [`Handler::input`] should carry this hyperlink (or none,
+    /// if `hyperlink` is `None`) until this is called again. The implementer
+    /// owns the active state; `BlockGrid`/`Block` delegate here rather than
+    /// keeping a shadow copy that could go stale.
+    fn set_hyperlink(&mut self, _hyperlink: Option<Hyperlink>) {}
+
+    /// Callback for a Zap precmd hook with completion metadata.
+    fn precmd_with_completion_metadata(&mut self, _data: PrecmdValue) {}
+
+    /// Callback for a prompt-only Zap precmd hook.
+    fn prompt_only_precmd(&mut self, _data: PromptMetadata) {}
 
     /// Callback for the Zap preexec hook.
     fn preexec(&mut self, _data: PreexecValue) {}

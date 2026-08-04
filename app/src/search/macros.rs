@@ -9,14 +9,14 @@ pub use type_to_field_type;
 
 #[macro_export]
 macro_rules! data_from_owned_value {
-    ($value:expr, $t:ty) => {
+    ($value:expr_2021, $t:ty) => {
         <$t as $crate::search::searcher::FromOwnedValue>::from_owned_value($value)
     };
 }
 
 #[macro_export]
 macro_rules! get_factor_or_default {
-    ($factor:expr) => {
+    ($factor:expr_2021) => {
         $factor
     };
     () => {
@@ -108,7 +108,7 @@ pub use get_factor_or_default;
 /// ```
 #[macro_export]
 macro_rules! define_search_schema {
-    (schema_name: $schema_name:ident, config_name: $config_name:ident, search_doc: $search_doc:ident, identifying_doc: $id_doc_name:ident, search_fields: [$($s_name:ident: $weight:literal$(,)?)*], id_fields: [$($i_name:ident: $value_type:ty$(,)?)*] $(, boost_factor: $boost_factor:expr)? $(,)?) => {
+    (schema_name: $schema_name:ident, config_name: $config_name:ident, search_doc: $search_doc:ident, identifying_doc: $id_doc_name:ident, search_fields: [$($s_name:ident: $weight:literal$(,)?)*], id_fields: [$($i_name:ident: $value_type:ty$(,)?)*] $(, boost_factor: $boost_factor:expr_2021)? $(,)?) => {
         lazy_static::lazy_static! {
             static ref $schema_name: $crate::search::searcher::FullTextSearchSchema<$config_name> = $crate::search::searcher::FullTextSearchSchema::new(
                 std::collections::HashMap::from([

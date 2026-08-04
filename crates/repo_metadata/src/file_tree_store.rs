@@ -60,7 +60,7 @@ impl FileTreeEntry {
     pub fn child_paths(
         &self,
         path: &StandardizedPath,
-    ) -> impl Iterator<Item = &Arc<StandardizedPath>> {
+    ) -> impl Iterator<Item = &Arc<StandardizedPath>> + use<'_> {
         self.state_map.children(path)
     }
 

@@ -114,9 +114,11 @@ fn is_installed_via_trait_with_claude_home_env() {
     )
     .unwrap();
 
-    std::env::set_var("CLAUDE_HOME", dir.path());
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("CLAUDE_HOME", dir.path()) };
     let result = ClaudeCodePluginManager::new(None, None, None).is_installed();
-    std::env::remove_var("CLAUDE_HOME");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("CLAUDE_HOME") };
 
     assert!(result);
 }
@@ -126,9 +128,11 @@ fn is_installed_via_trait_with_claude_home_env() {
 fn not_installed_via_trait_when_claude_home_empty() {
     let dir = tempfile::tempdir().unwrap();
 
-    std::env::set_var("CLAUDE_HOME", dir.path());
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("CLAUDE_HOME", dir.path()) };
     let result = ClaudeCodePluginManager::new(None, None, None).is_installed();
-    std::env::remove_var("CLAUDE_HOME");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("CLAUDE_HOME") };
 
     assert!(!result);
 }

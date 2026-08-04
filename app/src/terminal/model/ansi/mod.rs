@@ -604,7 +604,12 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
     fn handle_decoded_hook(&mut self, hook: Result<DProtoHook, serde_json::Error>) {
         match hook {
             Ok(DProtoHook::CommandFinished { value }) => self.handler.command_finished(value),
-            Ok(DProtoHook::Precmd { value }) => self.handler.precmd(value),
+            Ok(DProtoHook::Precmd { value }) => match value {
+                PrecmdHookValue::WithCompletionMetadata(value) => {
+                    self.handler.precmd_with_completion_metadata(value)
+                }
+                PrecmdHookValue::PromptOnly(value) => self.handler.prompt_only_precmd(value),
+            },
             Ok(DProtoHook::Preexec { value }) => self.handler.preexec(value),
             Ok(DProtoHook::Bootstrapped { value }) => self.handler.bootstrapped(*value),
             Ok(DProtoHook::PreInteractiveSSHSession { value }) => {
@@ -628,11 +633,11 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
                 self.handler.remote_warpification_is_unavailable(value)
             }
             Ok(DProtoHook::SshTmuxInstaller { value }) => {
-                if let Ok(tmux_installation) = TmuxInstallationState::from_str(&value) {
+                match TmuxInstallationState::from_str(&value) { Ok(tmux_installation) => {
                     self.handler.notify_ssh_tmux_is_installed(tmux_installation)
-                } else {
+                } _ => {
                     log::error!("Received invalid SSH tmux installer value: '{value}'");
-                }
+                }}
             }
             Ok(DProtoHook::TmuxInstallFailed { value }) => self.handler.tmux_install_failed(value),
             Ok(DProtoHook::ExitShell { value }) => self.handler.exit_shell(value),
@@ -708,7 +713,13 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
                 let Some(pending_shell_hook) = self.handler.finish_receiving_hook() else {
                     return;
                 };
-                let hook = pending_shell_hook.finish();
+                let hook = match pending_shell_hook.finish() {
+                    Ok(hook) => hook,
+                    Err(error) => {
+                        log::warn!("Rejected malformed key-value hook: {error}");
+                        return;
+                    }
+                };
                 safe_debug!(
                     safe: ("Decoded payload"),
                     full: ("Decoded payload string: {:?}", serde_json::to_string(&hook))
@@ -867,6 +878,23 @@ where
                     }
                 }
                 unhandled(params);
+            }
+
+            // OSC 8: Hyperlink (terminal anchor) sequences.
+            // Format: OSC 8 ; params ; URI ST. An empty URI closes the active
+            // hyperlink.
+            // Reference: https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda
+            b"8" if FeatureFlag::OscHyperlinks.is_enabled() => {
+                match Hyperlink::parse_osc_params(&params[1..]) {
+                    Ok(hyperlink) => self.handler.set_hyperlink(hyperlink),
+                    // A malformed, non-UTF-8, or over-length sequence closes any
+                    // active hyperlink so later unrelated output can't inherit a
+                    // stale URI.
+                    Err(_) => {
+                        self.handler.set_hyperlink(None);
+                        unhandled(params);
+                    }
+                }
             }
 
             // OSC 9: Desktop notification (iTerm2/xterm style)
@@ -1499,7 +1527,7 @@ where
         }
 
         macro_rules! configure_charset {
-            ($charset:path, $intermediates:expr) => {{
+            ($charset:path, $intermediates:expr_2021) => {{
                 let index: CharsetIndex = match $intermediates {
                     [b'('] => CharsetIndex::G0,
                     [b')'] => CharsetIndex::G1,

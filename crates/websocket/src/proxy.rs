@@ -57,11 +57,11 @@ fn slot() -> &'static RwLock<ProxyConfig> {
 /// Installs the global WebSocket proxy configuration. Should be called
 /// together with `http_client::set_global_proxy_config` at startup and when settings change.
 pub fn set_global_proxy_config(cfg: ProxyConfig) {
-    if let Ok(mut guard) = slot().write() {
+    match slot().write() { Ok(mut guard) => {
         *guard = cfg;
-    } else {
+    } _ => {
         log::error!("Failed to write WebSocket proxy config: RwLock poisoned");
-    }
+    }}
 }
 
 fn current_proxy_config() -> ProxyConfig {

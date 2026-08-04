@@ -12,8 +12,8 @@
 //! reply bytes that arrive after the deadline are left for the driver's
 //! crossterm parser to consume (which discards unrecognized sequences).
 
-use std::io::{self, IsTerminal};
-#[cfg(unix)]
+use std::io::{self, IsTerminal, Write};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ratatui::crossterm::terminal;
@@ -21,7 +21,6 @@ use ratatui::crossterm::terminal;
 /// How long the probe waits for the terminal's replies before giving up.
 /// Local terminals answer in single-digit milliseconds; keeping this short
 /// bounds startup latency on terminals (or transports) that never answer.
-#[cfg(unix)]
 const PROBE_DEADLINE: Duration = Duration::from_millis(100);
 
 /// An 8-bit RGB color reported by the terminal.
@@ -281,6 +280,171 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+/// Classifies a single probed background, falling back to the `COLORFGBG`
+/// environment variable when the terminal did not answer the OSC query. This
+/// is the live-probe counterpart of [`ProbedTerminalColors::background_luminance`]
+/// (which classifies a combined fg/bg startup probe); callers should likewise
+/// treat [`BackgroundLuminance::Unknown`] as dark.
+pub fn background_luminance(background: Option<ProbedRgb>) -> BackgroundLuminance {
+    match background {
+        Some(background) if background.is_light() => BackgroundLuminance::Light,
+        Some(_) => BackgroundLuminance::Dark,
+        None => match std::env::var("COLORFGBG") {
+            Ok(value) => colorfgbg_luminance(&value),
+            Err(_) => BackgroundLuminance::Unknown,
+        },
+    }
+}
+
+type TuiProbeEligibilityProvider = dyn Fn() -> bool + Send + Sync;
+type TuiProbeQueryWriter = dyn Fn(&mut dyn Write) -> io::Result<()> + Send + Sync;
+type TuiProbeReplyReader = dyn Fn() -> Option<ProbedRgb> + Send + Sync;
+
+/// Registration for a focus-triggered background re-probe on the TUI input
+/// reader thread: that thread is the sole owner of stdin, so it alone can
+/// write an OSC 11 query and read the reply without racing normal input.
+pub struct TuiProbe {
+    pub(super) is_enabled: Arc<TuiProbeEligibilityProvider>,
+    pub(super) write_query: Arc<TuiProbeQueryWriter>,
+    pub(super) read_reply: Arc<TuiProbeReplyReader>,
+    pub(super) results: async_channel::Sender<Option<ProbedRgb>>,
+}
+
+impl TuiProbe {
+    /// Creates a reader-thread probe registration. `is_enabled` is polled
+    /// before every focus-gained event and must be cheap (e.g. an atomic
+    /// load); `write_query`/`read_reply` run inline on the reader thread when
+    /// a probe fires, so they must not block indefinitely.
+    pub fn new(
+        is_enabled: impl Fn() -> bool + Send + Sync + 'static,
+        results: async_channel::Sender<Option<ProbedRgb>>,
+        write_query: impl Fn(&mut dyn Write) -> io::Result<()> + Send + Sync + 'static,
+        read_reply: impl Fn() -> Option<ProbedRgb> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            is_enabled: Arc::new(is_enabled),
+            write_query: Arc::new(write_query),
+            read_reply: Arc::new(read_reply),
+            results,
+        }
+    }
+}
+
+/// Queries the host terminal for its current default background color, for
+/// use by a live (mid-session) re-probe. Unlike [`probe_terminal_colors`],
+/// this does not manage raw mode itself: the TUI is already in raw mode by
+/// the time a live probe can fire, so callers own that lifecycle.
+///
+/// Returns `None` whenever the probe cannot run or the terminal does not
+/// answer within `deadline`: stdin/stdout is not a tty, the write fails, or
+/// the deadline passes without a reply.
+pub fn probe_terminal_background() -> Option<ProbedRgb> {
+    let mut stdout = io::stdout();
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return None;
+    }
+    let was_raw = terminal::is_raw_mode_enabled().unwrap_or(false);
+    if !was_raw && terminal::enable_raw_mode().is_err() {
+        return None;
+    }
+    let background = write_terminal_background_query(&mut stdout)
+        .map(|()| read_terminal_background_reply(PROBE_DEADLINE))
+        .unwrap_or_default();
+    if !was_raw {
+        let _ = terminal::disable_raw_mode();
+    }
+    background
+}
+
+/// Writes and flushes the OSC 11 background query and DA1 sentinel.
+#[cfg(unix)]
+pub fn write_terminal_background_query<W: Write + ?Sized>(writer: &mut W) -> io::Result<()> {
+    writer.write_all(b"\x1b]11;?\x07\x1b[c")?;
+    writer.flush()
+}
+
+/// Non-unix hosts skip the query because conhost does not answer OSC 11.
+#[cfg(not(unix))]
+pub fn write_terminal_background_query<W: Write + ?Sized>(_writer: &mut W) -> io::Result<()> {
+    Ok(())
+}
+
+/// Reads the background reply until a complete OSC 11 reply, the DA1
+/// sentinel, or `deadline_duration` elapses.
+///
+/// Callers must already own stdin (raw mode enabled, no concurrent reader).
+#[cfg(unix)]
+pub fn read_terminal_background_reply(deadline_duration: Duration) -> Option<ProbedRgb> {
+    if !io::stdin().is_terminal() {
+        return None;
+    }
+    read_background_reply(deadline_duration).unwrap_or_default()
+}
+
+/// Non-unix hosts skip the reply read because a non-blocking console read
+/// needs a different mechanism. Callers land on the dark default via
+/// [`BackgroundLuminance::Unknown`].
+#[cfg(not(unix))]
+pub fn read_terminal_background_reply(_deadline_duration: Duration) -> Option<ProbedRgb> {
+    None
+}
+
+#[cfg(unix)]
+fn read_background_reply(deadline_duration: Duration) -> io::Result<Option<ProbedRgb>> {
+    use instant::Instant;
+
+    let _nonblocking = NonBlockingStdin::enable()?;
+    let deadline = Instant::now() + deadline_duration;
+    let mut replies = Vec::new();
+    let mut chunk = [0u8; 512];
+    let mut background = None;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        if !poll_stdin(deadline - now)? {
+            break;
+        }
+        // SAFETY: reads into a valid, live local buffer of the given length.
+        let read =
+            unsafe { libc::read(libc::STDIN_FILENO, chunk.as_mut_ptr().cast(), chunk.len()) };
+        match read {
+            0 => break,
+            read if read < 0 => {
+                let error = io::Error::last_os_error();
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    continue;
+                }
+                return Err(error);
+            }
+            read => {
+                replies.extend_from_slice(&chunk[..read as usize]);
+                background = parse_complete_background_reply(&replies);
+                if background.is_some() || contains_da1_reply(&replies) {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(background.or_else(|| parse_osc_color_reply(&String::from_utf8_lossy(&replies), 11)))
+}
+
+/// Extracts a *complete*, BEL- or ST-terminated OSC 11 background reply —
+/// unlike [`parse_osc_color_reply`], an unterminated tail never matches, so a
+/// partial read never gets misparsed as the final answer.
+#[cfg(any(unix, test))]
+fn parse_complete_background_reply(replies: &[u8]) -> Option<ProbedRgb> {
+    let text = String::from_utf8_lossy(replies);
+    let prefix = "\x1b]11;";
+    let payload = &text[text.find(prefix)? + prefix.len()..];
+    let end = payload.find('\x07').or_else(|| payload.find("\x1b\\"))?;
+    parse_x11_color(&payload[..end])
 }
 
 /// Classifies the background from a `COLORFGBG` value (e.g. `"15;0"`): the

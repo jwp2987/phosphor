@@ -155,6 +155,10 @@ mod tests {
         DateTime::from_timestamp(seconds, 0).unwrap().into()
     }
 
+    fn bi(idx: usize) -> BlockIndex {
+        BlockIndex(idx)
+    }
+
     /// Regression test for the TUI/GUI restore-order divergence on tied timestamps
     /// (review finding #12): when a command block's timestamp exactly ties an
     /// exchange's timestamp, the exchange must be placed *after* that command block
@@ -190,5 +194,135 @@ mod tests {
 
         assert_eq!(result, vec![Some(BlockIndex(1))]);
     }
+
+    // ── Ported from Warp conversation_restoration_tests.rs ────────────────
+    // All blocks in increasing timestamp order.
+
+    #[test]
+    fn sorted_blocks_exchange_before_all_blocks() {
+        let blocks = vec![(bi(0), ts(10)), (bi(1), ts(20)), (bi(2), ts(30))];
+        let exchanges = vec![ts(1)];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &exchanges);
+        assert_eq!(result, vec![Some(bi(0))]);
+    }
+
+    #[test]
+    fn sorted_blocks_exchange_between_blocks() {
+        let blocks = vec![(bi(0), ts(10)), (bi(1), ts(20)), (bi(2), ts(30))];
+        let exchanges = vec![ts(15)];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &exchanges);
+        assert_eq!(result, vec![Some(bi(1))]);
+    }
+
+    // NOTE: Warp's `sorted_blocks_exchange_equal_to_block` (exchange ts == block ts →
+    // select that block) is intentionally NOT ported. The fork deliberately uses strict
+    // `>` tie-breaking to match the GUI two-pointer restore order (see the fork's own
+    // `tied_exchange_and_block_timestamps_match_gui_tie_breaking` above), so Warp's `>=`
+    // equality assertion does not apply here.
+
+    #[test]
+    fn sorted_blocks_exchange_after_all_blocks() {
+        let blocks = vec![(bi(0), ts(10)), (bi(1), ts(20)), (bi(2), ts(30))];
+        let exchanges = vec![ts(100)];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &exchanges);
+        assert_eq!(result, vec![None]);
+    }
+
+    #[test]
+    fn sorted_blocks_multiple_exchanges() {
+        let blocks = vec![
+            (bi(0), ts(10)),
+            (bi(1), ts(20)),
+            (bi(2), ts(30)),
+            (bi(3), ts(40)),
+        ];
+        let exchanges = vec![ts(5), ts(15), ts(25), ts(35), ts(45)];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &exchanges);
+        assert_eq!(
+            result,
+            vec![Some(bi(0)), Some(bi(1)), Some(bi(2)), Some(bi(3)), None]
+        );
+    }
+
+    // Sorted tail appended after a prefix of pre-existing terminal blocks. The
+    // backwards scan with break must only match against the tail.
+
+    #[test]
+    fn sorted_tail_exchange_before_tail() {
+        let blocks = vec![
+            (bi(0), ts(40)),
+            (bi(1), ts(50)),
+            (bi(2), ts(10)),
+            (bi(3), ts(30)),
+        ];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &[ts(5)]);
+        assert_eq!(result, vec![Some(bi(2))]);
+    }
+
+    #[test]
+    fn sorted_tail_exchange_between_tail_blocks() {
+        let blocks = vec![
+            (bi(0), ts(40)),
+            (bi(1), ts(50)),
+            (bi(2), ts(10)),
+            (bi(3), ts(30)),
+        ];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &[ts(15)]);
+        assert_eq!(result, vec![Some(bi(3))]);
+    }
+
+    #[test]
+    fn sorted_tail_exchange_after_tail() {
+        let blocks = vec![
+            (bi(0), ts(40)),
+            (bi(1), ts(50)),
+            (bi(2), ts(10)),
+            (bi(3), ts(30)),
+        ];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &[ts(35)]);
+        assert_eq!(result, vec![None]);
+    }
+
+    // NOTE: Warp's tie-case tail tests (`sorted_tail_exchange_equals_tail_block` and
+    // `sorted_tail_equal_timestamps_pick_first_inserted_block`) are intentionally NOT
+    // ported for the same reason as above: the fork uses strict `>` tie-breaking to match
+    // the GUI restore order, so Warp's `>=` equality assertions do not apply.
+
+    #[test]
+    fn sorted_tail_multiple_exchanges() {
+        let blocks = vec![
+            (bi(0), ts(40)),
+            (bi(1), ts(50)),
+            (bi(2), ts(10)),
+            (bi(3), ts(30)),
+        ];
+        let exchanges = vec![ts(5), ts(15), ts(35), ts(45), ts(55)];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &exchanges);
+        assert_eq!(
+            result,
+            vec![Some(bi(2)), Some(bi(3)), None, None, None]
+        );
+    }
+
+    // Edge cases.
+
+    #[test]
+    fn empty_blocks_returns_none_for_all_exchanges() {
+        let blocks: Vec<(BlockIndex, chrono::DateTime<Local>)> = vec![];
+        let exchanges = vec![ts(10), ts(20)];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &exchanges);
+        assert_eq!(result, vec![None, None]);
+    }
+
+    #[test]
+    fn empty_exchanges_returns_empty() {
+        let blocks = vec![(bi(0), ts(10))];
+        let exchanges: Vec<chrono::DateTime<Local>> = vec![];
+        let result = find_block_indices_for_exchange_timestamps(&blocks, &exchanges);
+        assert!(result.is_empty());
+    }
+
+    // NOTE: Warp's `single_block_at_same_time_as_exchange` (exchange ts == block ts)
+    // is intentionally NOT ported — same strict-`>` tie-breaking divergence as above.
 }
 

@@ -179,3 +179,7 @@ fn compute_find_matches(text: &str, options: &FindOptions) -> Vec<Range<usize>> 
             .collect_vec()
     }
 }
+
+#[cfg(test)]
+#[path = "find_tests.rs"]
+mod tests;

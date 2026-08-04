@@ -337,13 +337,15 @@ fn build_host_shell_command(
     builder.env("WARP_PATH_APPEND", path_append);
 
     if matches!(shell_starter.shell_type(), ShellType::Bash) {
-        // Set an initial very large value for HISTFILESIZE so that it
-        // doesn't get truncated on startup.
+        // Set initial very large values so bash imports the user's existing
+        // history without truncating the file or in-memory list on startup.
         let sentinel_value = "57265949261";
         builder.env("HISTFILESIZE", sentinel_value);
-        // Set a second environment variable that we can use to know whether
-        // the user rcfiles set HISTFILESIZE or not.
+        builder.env("HISTSIZE", sentinel_value);
+        // Set second environment variables that we can use to know whether
+        // the user rcfiles set these variables or not.
         builder.env("WARP_INITIAL_HISTFILESIZE", sentinel_value);
+        builder.env("WARP_INITIAL_HISTSIZE", sentinel_value);
     }
 
     // Pass the desired initial working directory as an environment variable
@@ -675,12 +677,12 @@ impl ToWinsize for &SizeInfo {
     }
 }
 
-unsafe fn set_nonblocking(fd: c_int) {
+unsafe fn set_nonblocking(fd: c_int) { unsafe {
     use libc::{fcntl, F_GETFL, F_SETFL, O_NONBLOCK};
 
     let res = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     assert_eq!(res, 0);
-}
+}}
 
 /// Spawn the PTY for a Docker sandbox session.
 ///
@@ -807,7 +809,9 @@ fn build_docker_sandbox_command(
     // matching the host-shell path's behavior for bash shells.
     let sentinel_value = "57265949261";
     builder.env("HISTFILESIZE", sentinel_value);
+    builder.env("HISTSIZE", sentinel_value);
     builder.env("WARP_INITIAL_HISTFILESIZE", sentinel_value);
+    builder.env("WARP_INITIAL_HISTSIZE", sentinel_value);
     // Intentionally do NOT set `WARP_INITIAL_WORKING_DIR` for sandboxes:
     // the container's init script cds into the sandbox home dir, not
     // the host's startup dir.
@@ -909,3 +913,7 @@ fn test_get_pw_entry() {
     let mut buf: [i8; 1024] = [0; 1024];
     let _pw = get_pw_entry(&mut buf);
 }
+
+#[cfg(test)]
+#[path = "unix_tests.rs"]
+mod tests;

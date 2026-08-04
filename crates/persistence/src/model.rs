@@ -14,9 +14,9 @@ use super::schema::{
     generic_string_objects, ignored_suggestions, mcp_environment_variables,
     mcp_server_installations, mcp_server_panes, notebook_panes, notebooks, object_actions,
     object_metadata, object_permissions, pane_branches, pane_leaves, pane_nodes, panels,
-    project_rules, projects, server_experiments, settings_panes, ssh_nodes, ssh_onekey_credentials,
-    ssh_servers, sync_meta, tabs, team_members, team_settings, teams, terminal_panes,
-    user_profiles, welcome_panes, windows, workflow_panes, workflows, workspace_teams, workspaces,
+    project_rules, projects, server_experiments, settings_panes, tabs, team_members, team_settings,
+    teams, terminal_panes, user_profiles, welcome_panes, windows, workflow_panes, workflows,
+    workspace_teams, workspaces,
 };
 
 #[derive(Insertable)]
@@ -913,45 +913,57 @@ impl AgentConversation {
     /// A conversation is restorable if:
     /// - It contains a single task or fewer, OR
     /// - It contains multiple tasks where every task other than the root task has a parent task ID.
+    /// See [`tasks_are_restorable`] for the exact rules.
     pub fn is_restorable(&self) -> bool {
-        if self.tasks.len() <= 1 {
-            return true;
-        }
+        tasks_are_restorable(self.tasks.iter())
+    }
+}
 
-        // Find the root task(s) - tasks with no parent_task_id or empty parent_task_id
-        let root_tasks: Vec<_> = self
-            .tasks
-            .iter()
-            .filter(|task| {
-                task.dependencies
-                    .as_ref()
-                    .map(|deps| deps.parent_task_id.is_empty())
-                    .unwrap_or(true)
-            })
-            .collect();
+/// Returns `true` if a conversation with the given task snapshot is
+/// restorable.
+///
+/// A conversation is restorable if:
+/// - It contains a single task or fewer, OR
+/// - It has exactly one parentless (root) task, OR
+/// - It has multiple parentless tasks but exactly one of them has
+///   non-empty `messages`. This permits restoring conversations whose
+///   persisted state was corrupted by the pre-QUALITY-774 optimistic-root
+///   writer bug, where a stub root row co-existed with the real server
+///   root row. `AIConversation::new_restored` deterministically picks
+///   the real root in that shape via its restore-side dedupe.
+///
+/// Non-root tasks need not be validated here: any task that does not
+/// match the parentless predicate has, by construction, a non-empty
+/// `parent_task_id`.
+pub fn tasks_are_restorable<'a>(tasks: impl IntoIterator<Item = &'a api::Task>) -> bool {
+    let tasks: Vec<&api::Task> = tasks.into_iter().collect();
+    if tasks.len() <= 1 {
+        return true;
+    }
 
-        // Must have exactly one root task
-        if root_tasks.len() != 1 {
-            return false;
-        }
-
-        // All non-root tasks must have a non-empty parent_task_id
-        self.tasks.iter().all(|task| {
-            // Root task is always valid
-            if task
-                .dependencies
+    // Find parentless (root) tasks - tasks with no dependencies or with an
+    // empty parent_task_id.
+    let root_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|task| {
+            task.dependencies
                 .as_ref()
                 .map(|deps| deps.parent_task_id.is_empty())
                 .unwrap_or(true)
-            {
-                return true;
-            }
-
-            // Non-root tasks must have a non-empty parent_task_id
-            task.dependencies
-                .as_ref()
-                .is_some_and(|deps| !deps.parent_task_id.is_empty())
         })
+        .collect();
+
+    match root_tasks.len() {
+        // Malformed: no parentless task means no root to anchor restore on.
+        0 => false,
+        // Single root: the normal happy path.
+        1 => true,
+        // Multi-root: only permit the specific [stub + real] shape
+        // produced by the pre-QUALITY-774 optimistic-root writer bug,
+        // where exactly one parentless row carries the real conversation
+        // content. The restore-side dedupe in `AIConversation::new_restored`
+        // will pick that real root.
+        _ => root_tasks.iter().filter(|t| !t.messages.is_empty()).count() == 1,
     }
 }
 
@@ -1309,7 +1321,103 @@ pub struct NewMCPServerInstallation {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentConversationData;
+    use super::{AgentConversation, AgentConversationData, api};
+
+    fn parentless_task(id: &str, message_count: usize) -> api::Task {
+        api::Task {
+            id: id.to_string(),
+            description: String::new(),
+            dependencies: None,
+            messages: (0..message_count)
+                .map(|i| api::Message {
+                    id: format!("{id}-msg-{i}"),
+                    task_id: id.to_string(),
+                    server_message_data: String::new(),
+                    citations: vec![],
+                    message: None,
+                    request_id: String::new(),
+                    timestamp: None,
+                })
+                .collect(),
+            summary: String::new(),
+            server_data: String::new(),
+        }
+    }
+
+    fn child_task(id: &str, parent_id: &str) -> api::Task {
+        api::Task {
+            id: id.to_string(),
+            description: String::new(),
+            dependencies: Some(api::task::Dependencies {
+                parent_task_id: parent_id.to_string(),
+            }),
+            messages: vec![],
+            summary: String::new(),
+            server_data: String::new(),
+        }
+    }
+
+    fn conversation_with_tasks(tasks: Vec<api::Task>) -> AgentConversation {
+        AgentConversation {
+            conversation: Default::default(),
+            tasks,
+        }
+    }
+
+    /// Legacy [stub + real] root shape produced by the pre-QUALITY-774
+    /// optimistic-root writer bug must be considered restorable so the
+    /// restore-side dedupe can pick the real root.
+    #[test]
+    fn is_restorable_accepts_legacy_stub_plus_real_root_shape() {
+        let conversation = conversation_with_tasks(vec![
+            parentless_task("optimistic-stub-uuid", 0),
+            parentless_task("server-root-id", 2),
+            child_task("child-1", "server-root-id"),
+        ]);
+        assert!(conversation.is_restorable());
+    }
+
+    /// Multi-root with multiple real roots (each non-empty) is genuinely
+    /// ambiguous and must remain rejected — the dedupe heuristic cannot
+    /// disambiguate between two real roots.
+    #[test]
+    fn is_restorable_rejects_multi_root_with_multiple_real_roots() {
+        let conversation = conversation_with_tasks(vec![
+            parentless_task("root-a", 1),
+            parentless_task("root-b", 1),
+        ]);
+        assert!(!conversation.is_restorable());
+    }
+
+    /// Multi-root where every candidate is empty has nothing to anchor
+    /// restore on and must remain rejected.
+    #[test]
+    fn is_restorable_rejects_multi_root_with_no_real_root() {
+        let conversation = conversation_with_tasks(vec![
+            parentless_task("stub-1", 0),
+            parentless_task("stub-2", 0),
+        ]);
+        assert!(!conversation.is_restorable());
+    }
+
+    /// Normal happy path: a single parentless root plus well-formed child
+    /// tasks remains restorable.
+    #[test]
+    fn is_restorable_accepts_single_root_plus_subtasks() {
+        let conversation = conversation_with_tasks(vec![
+            parentless_task("root", 1),
+            child_task("child-1", "root"),
+            child_task("child-2", "root"),
+        ]);
+        assert!(conversation.is_restorable());
+    }
+
+    /// Empty or single-task conversations are trivially restorable.
+    #[test]
+    fn is_restorable_accepts_empty_and_single_task_conversations() {
+        assert!(conversation_with_tasks(vec![]).is_restorable());
+        assert!(conversation_with_tasks(vec![parentless_task("root", 0)]).is_restorable());
+    }
 
     #[test]
     fn agent_conversation_data_roundtrips_last_event_sequence() {
@@ -1451,107 +1559,3 @@ pub struct Panel {
     pub right_panel: Option<String>,
 }
 
-// --- SSH Manager ---------------------------------------------------------
-// Tree of folders and servers in the left-panel SSH manager. `parent_id` is
-// nullable for root-level entries; `kind` is `'folder'` or `'server'`.
-// Server-only metadata lives in `ssh_servers`. Secrets (password/passphrase)
-// are NOT stored here — they go into the OS keychain keyed by `node_id`.
-// Shared OneKey credentials keep username/label in `ssh_onekey_credentials`;
-// their password also lives in the OS keychain keyed by credential id.
-
-#[derive(Identifiable, Queryable, Selectable, Clone, Debug)]
-#[diesel(table_name = ssh_nodes)]
-#[diesel(primary_key(id))]
-pub struct SshNodeRow {
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub kind: String,
-    pub name: String,
-    pub sort_order: i32,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
-    /// Only meaningful for folder; always false for server.
-    pub is_collapsed: bool,
-}
-
-#[derive(Insertable, AsChangeset, Clone, Debug)]
-#[diesel(table_name = ssh_nodes)]
-pub struct NewSshNode<'a> {
-    pub id: &'a str,
-    pub parent_id: Option<&'a str>,
-    pub kind: &'a str,
-    pub name: &'a str,
-    pub sort_order: i32,
-}
-
-#[derive(Identifiable, Queryable, Selectable, Clone, Debug)]
-#[diesel(table_name = ssh_onekey_credentials)]
-#[diesel(primary_key(id))]
-pub struct SshOneKeyCredentialRow {
-    pub id: String,
-    pub label: String,
-    pub username: String,
-    pub kind: String,
-    pub key_path: Option<String>,
-    pub created_at: NaiveDateTime,
-    pub updated_at: NaiveDateTime,
-}
-
-#[derive(Insertable, AsChangeset, Clone, Debug)]
-#[diesel(table_name = ssh_onekey_credentials)]
-pub struct NewSshOneKeyCredential<'a> {
-    pub id: &'a str,
-    pub label: &'a str,
-    pub username: &'a str,
-    pub kind: &'a str,
-    pub key_path: Option<&'a str>,
-}
-
-#[derive(Identifiable, Queryable, Selectable, Associations, Clone, Debug)]
-#[diesel(table_name = ssh_servers)]
-#[diesel(primary_key(node_id))]
-#[diesel(belongs_to(SshNodeRow, foreign_key = node_id))]
-#[diesel(belongs_to(SshOneKeyCredentialRow, foreign_key = credential_id))]
-pub struct SshServerRow {
-    pub node_id: String,
-    pub host: String,
-    pub port: i32,
-    pub username: String,
-    pub auth_type: String,
-    pub key_path: Option<String>,
-    pub startup_command: Option<String>,
-    pub notes: Option<String>,
-    pub last_connected_at: Option<NaiveDateTime>,
-    pub credential_id: Option<String>,
-}
-
-#[derive(Insertable, AsChangeset, Clone, Debug)]
-#[diesel(table_name = ssh_servers)]
-pub struct NewSshServer<'a> {
-    pub node_id: &'a str,
-    pub host: &'a str,
-    pub port: i32,
-    pub username: &'a str,
-    pub auth_type: &'a str,
-    pub key_path: Option<&'a str>,
-    pub startup_command: Option<&'a str>,
-    pub notes: Option<&'a str>,
-    pub credential_id: Option<&'a str>,
-}
-
-// --- Sync Meta ---------------------------------------------------------
-
-#[derive(Identifiable, Queryable, Selectable, Clone, Debug)]
-#[diesel(table_name = sync_meta)]
-#[diesel(primary_key(key))]
-pub struct SyncMetaRow {
-    pub key: String,
-    pub value: String,
-}
-
-#[derive(Insertable, AsChangeset, Clone, Debug)]
-#[diesel(table_name = sync_meta)]
-pub struct NewSyncMeta<'a> {
-    pub key: &'a str,
-    pub value: &'a str,
-}

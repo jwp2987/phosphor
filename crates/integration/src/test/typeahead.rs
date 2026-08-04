@@ -62,7 +62,7 @@ pub fn test_typeahead() -> Builder {
 /// happens in integration tests because of how quickly the
 /// command is entered.
 macro_rules! check_command {
-    ($command:expr, $expected:expr) => {
+    ($command:expr_2021, $expected:expr_2021) => {
         let command = $command;
         if command.contains("^[i") {
             return AssertionOutcome::PreconditionFailed(format!(

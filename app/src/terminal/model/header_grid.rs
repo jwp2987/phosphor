@@ -14,7 +14,7 @@ use warpui::units::{IntoLines as _, Lines};
 use crate::terminal::event::Event;
 
 use super::{
-    ansi::{self, Attr, Handler, PrecmdValue, PreexecValue, Processor},
+    ansi::{self, Attr, Handler, PrecmdValue, PreexecValue, Processor, PromptMetadata},
     block::{BlockGridPoint, BlockSize},
     blockgrid::BlockGrid,
     bootstrap::BootstrapStage,
@@ -28,7 +28,7 @@ use crate::terminal::{event_listener::ChannelEventListener, SizeInfo};
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 
 macro_rules! delegate {
-    ($self:ident.$method:ident( $( $arg:expr ),* )) => {
+    ($self:ident.$method:ident( $( $arg:expr_2021 ),* )) => {
         match $self.receiving_chars_for_prompt {
             Some(ansi::PromptKind::Initial) => {
                 let mut retval = None;
@@ -53,7 +53,7 @@ macro_rules! delegate {
 /// Any methods which write responses back to the shell process cannot have double delegation, since
 /// that would result in extra responses being sent back to the shell.
 macro_rules! delegate_with_writer {
-    ($self:ident.$method:ident( $( $arg:expr ),* )) => {
+    ($self:ident.$method:ident( $( $arg:expr_2021 ),* )) => {
         match $self.receiving_chars_for_prompt {
             Some(ansi::PromptKind::Initial) => {
                 if $self.honor_ps1 {
@@ -1145,7 +1145,11 @@ impl ansi::Handler for HeaderGrid {
         delegate_with_writer!(self.text_area_size_chars(writer));
     }
 
-    fn precmd(&mut self, data: PrecmdValue) {
+    fn precmd_with_completion_metadata(&mut self, data: PrecmdValue) {
+        self.prompt_only_precmd(data.prompt_metadata);
+    }
+
+    fn prompt_only_precmd(&mut self, data: PromptMetadata) {
         if let Some(honor_ps1) = data.honor_ps1 {
             if honor_ps1 != self.honor_ps1 {
                 log::debug!(

@@ -265,7 +265,7 @@ impl<T: Entity> WeakViewHandle<T> {
         #[cfg(feature = "tui")]
         let exists = exists || window.tui_views.contains_key(&self.view_id);
 
-        if exists {
+        if exists && !app.ref_counts.lock().is_view_dropped(self.view_id) {
             Some(ViewHandle::new(window_id, self.view_id, &app.ref_counts))
         } else {
             None

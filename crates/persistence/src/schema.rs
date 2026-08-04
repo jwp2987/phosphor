@@ -355,46 +355,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    ssh_nodes (id) {
-        id -> Text,
-        parent_id -> Nullable<Text>,
-        kind -> Text,
-        name -> Text,
-        sort_order -> Integer,
-        created_at -> Timestamp,
-        updated_at -> Timestamp,
-        is_collapsed -> Bool,
-    }
-}
-
-diesel::table! {
-    ssh_onekey_credentials (id) {
-        id -> Text,
-        label -> Text,
-        username -> Text,
-        kind -> Text,
-        key_path -> Nullable<Text>,
-        created_at -> Timestamp,
-        updated_at -> Timestamp,
-    }
-}
-
-diesel::table! {
-    ssh_servers (node_id) {
-        node_id -> Text,
-        host -> Text,
-        port -> Integer,
-        username -> Text,
-        auth_type -> Text,
-        key_path -> Nullable<Text>,
-        startup_command -> Nullable<Text>,
-        notes -> Nullable<Text>,
-        last_connected_at -> Nullable<Timestamp>,
-        credential_id -> Nullable<Text>,
-    }
-}
-
-diesel::table! {
     tabs (id) {
         id -> Integer,
         window_id -> Integer,
@@ -525,13 +485,6 @@ diesel::table! {
     }
 }
 
-diesel::table! {
-    sync_meta (key) {
-        key -> Text,
-        value -> Text,
-    }
-}
-
 diesel::joinable!(ambient_agent_panes -> pane_nodes (id));
 diesel::joinable!(app -> windows (active_window_id));
 diesel::joinable!(code_pane_tabs -> code_panes (code_pane_id));
@@ -540,8 +493,6 @@ diesel::joinable!(pane_branches -> pane_nodes (pane_node_id));
 diesel::joinable!(pane_leaves -> pane_nodes (pane_node_id));
 diesel::joinable!(pane_nodes -> tabs (tab_id));
 diesel::joinable!(panels -> tabs (tab_id));
-diesel::joinable!(ssh_servers -> ssh_onekey_credentials (credential_id));
-diesel::joinable!(ssh_servers -> ssh_nodes (node_id));
 diesel::joinable!(tabs -> windows (window_id));
 diesel::joinable!(team_members -> teams (team_id));
 diesel::joinable!(team_settings -> teams (team_id));
@@ -559,5 +510,3 @@ diesel::allow_tables_to_appear_in_same_query!(
 diesel::allow_tables_to_appear_in_same_query!(code_pane_tabs, code_panes,);
 diesel::allow_tables_to_appear_in_same_query!(object_metadata, object_permissions,);
 diesel::allow_tables_to_appear_in_same_query!(team_members, team_settings, teams,);
-diesel::allow_tables_to_appear_in_same_query!(sync_meta,);
-diesel::allow_tables_to_appear_in_same_query!(ssh_nodes, ssh_onekey_credentials, ssh_servers,);

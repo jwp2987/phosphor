@@ -30,26 +30,44 @@ use remote_server::transport::{Connection, RemoteTransport};
 pub struct SshTransport {
     socket_path: PathBuf,
     auth_context: Arc<RemoteServerAuthContext>,
+    /// Whether we own the ControlMaster behind `socket_path`. `false` when
+    /// the SSH wrapper attached to a master the user already had running,
+    /// in which case teardown must not run `ssh -O exit` against it (doing
+    /// so would kill the user's other multiplexed connections). See
+    /// GitHub issue #37.
+    owns_control_master: bool,
 }
 
 impl fmt::Debug for SshTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SshTransport")
             .field("socket_path", &self.socket_path)
+            .field("owns_control_master", &self.owns_control_master)
             .finish_non_exhaustive()
     }
 }
 
 impl SshTransport {
-    pub fn new(socket_path: PathBuf, auth_context: Arc<RemoteServerAuthContext>) -> Self {
+    pub fn new(
+        socket_path: PathBuf,
+        auth_context: Arc<RemoteServerAuthContext>,
+        owns_control_master: bool,
+    ) -> Self {
         Self {
             socket_path,
             auth_context,
+            owns_control_master,
         }
     }
 
     pub fn socket_path(&self) -> &PathBuf {
         &self.socket_path
+    }
+
+    /// Whether we created the ControlMaster (and must tear it down) versus
+    /// reused an existing user-owned one (which must be left running).
+    pub fn owns_control_master(&self) -> bool {
+        self.owns_control_master
     }
 
     pub fn remote_daemon_socket_path(&self) -> String {
@@ -64,6 +82,26 @@ impl SshTransport {
             "{}/server.pid",
             remote_server_daemon_dir(&self.auth_context.remote_server_identity_key())
         )
+    }
+
+    /// Maps ControlMaster ownership onto the `control_path` teardown token
+    /// returned in [`Connection`]. Only a master we created yields a path,
+    /// so teardown ([`RemoteServerManager`] -> [`stop_control_master`])
+    /// runs `ssh -O exit` against it. A reused, user-owned master maps to
+    /// `None`, so teardown leaves it running and does not kill the user's
+    /// other multiplexed connections (GitHub issue #37).
+    ///
+    /// [`RemoteServerManager`]: remote_server::manager::RemoteServerManager
+    /// [`stop_control_master`]: remote_server::ssh::stop_control_master
+    fn control_path_for_teardown(
+        owns_control_master: bool,
+        socket_path: PathBuf,
+    ) -> Option<PathBuf> {
+        if owns_control_master {
+            Some(socket_path)
+        } else {
+            None
+        }
     }
 
     fn remote_proxy_command(&self) -> String {
@@ -724,6 +762,7 @@ impl RemoteTransport for SshTransport {
         executor: Arc<executor::Background>,
     ) -> Pin<Box<dyn Future<Output = Result<Connection>> + Send>> {
         let socket_path = self.socket_path.clone();
+        let owns_control_master = self.owns_control_master;
         let remote_proxy_command = self.remote_proxy_command();
         Box::pin(async move {
             let mut args = ssh_args(&socket_path);
@@ -761,7 +800,10 @@ impl RemoteTransport for SshTransport {
                 client,
                 event_rx,
                 child,
-                control_path: Some(socket_path),
+                // Only tag the socket for teardown when we own the master;
+                // a reused user-owned master maps to `None` so teardown
+                // leaves it running (GitHub issue #37).
+                control_path: Self::control_path_for_teardown(owns_control_master, socket_path),
             })
         })
     }
@@ -805,11 +847,51 @@ mod tests {
         let transport = SshTransport::new(
             PathBuf::from("/tmp/control-master.sock"),
             static_auth_context(),
+            true,
         );
 
         let command = transport.remote_proxy_command();
 
         assert!(command.contains("remote-server-proxy --identity-key"));
         assert!(command.contains("'user id/with spaces'"));
+    }
+
+    // Regression test for GitHub issue #37: teardown unconditionally tore
+    // down the ControlMaster even when we reused (rather than created) it,
+    // killing the user's other multiplexed SSH connections. The
+    // `control_path` returned by `connect()` — which drives whether the
+    // manager runs `ssh -O exit` on teardown — must be gated on ownership.
+    #[test]
+    fn control_path_gated_on_control_master_ownership() {
+        let socket_path = PathBuf::from("/tmp/control-master.sock");
+
+        // We created the master: teardown must run, so a path is returned.
+        assert_eq!(
+            SshTransport::control_path_for_teardown(true, socket_path.clone()),
+            Some(socket_path.clone()),
+            "owned ControlMaster must yield a control_path so teardown runs `ssh -O exit`",
+        );
+
+        // We reused a user-owned master: teardown must NOT run, so `None`.
+        assert_eq!(
+            SshTransport::control_path_for_teardown(false, socket_path.clone()),
+            None,
+            "reused user-owned ControlMaster must yield None so teardown leaves it running",
+        );
+    }
+
+    // The `owns_control_master` flag passed to `new()` is exposed verbatim
+    // via the accessor the controller uses to thread ownership into the
+    // reconnect path.
+    #[test]
+    fn owns_control_master_accessor_reflects_constructor() {
+        let socket_path = PathBuf::from("/tmp/control-master.sock");
+        assert!(
+            SshTransport::new(socket_path.clone(), static_auth_context(), true)
+                .owns_control_master()
+        );
+        assert!(
+            !SshTransport::new(socket_path, static_auth_context(), false).owns_control_master()
+        );
     }
 }

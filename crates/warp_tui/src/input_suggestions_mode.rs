@@ -26,6 +26,8 @@ pub(crate) enum TuiInputSuggestionsMode {
     PromptsMenu,
     /// Conversation user-query exchange picker (`/fork-from`, `/rewind`).
     ExchangeMenu,
+    /// BYOP provider API-key manager (the `/api-keys` menu).
+    ApiKeys,
 }
 
 impl TuiInputSuggestionsMode {
@@ -87,7 +89,8 @@ impl TuiInputSuggestionsModeModel {
             | TuiInputSuggestionsMode::Completions
             | TuiInputSuggestionsMode::ProfileSelector
             | TuiInputSuggestionsMode::PromptsMenu
-            | TuiInputSuggestionsMode::ExchangeMenu => false,
+            | TuiInputSuggestionsMode::ExchangeMenu
+            | TuiInputSuggestionsMode::ApiKeys => false,
         }
     }
 

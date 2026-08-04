@@ -1,4 +1,5 @@
 //! Reusable active-menu routing and character-cell presentation for TUI inline menus.
+use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -8,14 +9,15 @@ use warp::tui_export::{
     LLMId, TuiMcpAction,
 };
 use warp_search_core::inline_menu::{InlineMenuResultsUpdate, InlineMenuSelection};
-use warpui_core::elements::CrossAxisAlignment;
 use warpui_core::elements::tui::{
-    TuiConstrainedBox, TuiConstraint, TuiContainer, TuiElement, TuiEvent, TuiEventContext, TuiFlex,
-    TuiLayoutContext, TuiPaintContext, TuiPaintSurface, TuiPresentationContext, TuiScreenPoint,
-    TuiScreenPosition, TuiSize, TuiText,
+    Modifier, TuiConstrainedBox, TuiConstraint, TuiContainer, TuiElement, TuiEvent,
+    TuiEventContext, TuiFlex, TuiHoverable, TuiLayoutContext, TuiPaintContext, TuiPaintSurface,
+    TuiPresentationContext, TuiScreenPoint, TuiScreenPosition, TuiSize, TuiText,
 };
+use warpui_core::elements::{CrossAxisAlignment, MouseStateHandle};
 use warpui_core::{AppContext, ModelHandle};
 
+use crate::api_keys_menu::TuiApiKeysMenuModel;
 use crate::completions_menu::{TuiAcceptedCompletion, TuiCompletionsMenuModel};
 use crate::conversation_menu::TuiConversationMenuModel;
 use crate::exchange_menu::{TuiExchangeMenuAction, TuiExchangeMenuModel};
@@ -100,6 +102,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiMcpMenuModel> {
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
     }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
+    }
 }
 
 /// A presentation-only row in a TUI inline menu.
@@ -140,6 +150,13 @@ pub(crate) enum TuiInlineMenuStatus {
     Empty(String),
 }
 
+/// Controls whether rendering follows the selection or an explicit wheel offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TuiInlineMenuScrollAnchor {
+    Selection,
+    ScrollOffset,
+}
+
 /// Render-friendly, domain-neutral state for a TUI inline menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TuiInlineMenuSnapshot {
@@ -147,6 +164,7 @@ pub(crate) struct TuiInlineMenuSnapshot {
     pub(crate) rows: Vec<TuiInlineMenuRow>,
     pub(crate) selected_index: Option<usize>,
     pub(crate) scroll_offset: usize,
+    pub(crate) scroll_anchor: TuiInlineMenuScrollAnchor,
     pub(crate) max_visible_rows: usize,
     pub(crate) status: Option<TuiInlineMenuStatus>,
 }
@@ -157,6 +175,7 @@ pub(crate) struct TuiInlineMenuListState<Row> {
     selection: InlineMenuSelection,
     is_loading: bool,
     scroll_offset: usize,
+    scroll_anchor: TuiInlineMenuScrollAnchor,
 }
 
 impl<Row> Default for TuiInlineMenuListState<Row> {
@@ -166,6 +185,7 @@ impl<Row> Default for TuiInlineMenuListState<Row> {
             selection: InlineMenuSelection::default(),
             is_loading: false,
             scroll_offset: 0,
+            scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
         }
     }
 }
@@ -193,6 +213,9 @@ impl<Row> TuiInlineMenuListState<Row> {
 
     pub(crate) fn scroll_offset(&self) -> usize {
         self.scroll_offset
+    }
+    pub(crate) fn scroll_anchor(&self) -> TuiInlineMenuScrollAnchor {
+        self.scroll_anchor
     }
 
     /// Replaces the current rows and applies a caller-selected preferred row.
@@ -259,14 +282,53 @@ impl<Row> TuiInlineMenuListState<Row> {
     }
 
     fn keep_selected_visible(&mut self, max_visible_rows: usize) {
+        self.scroll_anchor = TuiInlineMenuScrollAnchor::Selection;
         self.scroll_offset = inline_menu_viewport(
             self.rows.len(),
             self.selection.selected_index(),
             self.scroll_offset,
             max_visible_rows,
+            self.scroll_anchor,
         )
         .rows
         .start;
+    }
+
+    /// Selects the row at `index` directly (for mouse-click targeting) and
+    /// scrolls to keep it visible. Only moves the selection when
+    /// `is_selectable` returns true for the target row, matching the
+    /// behaviour of `select_next` / `select_previous` / `replace_rows`.
+    /// Returns `true` when the selection was actually moved to `index`, or
+    /// `false` when the index was out of bounds or the row is not selectable.
+    pub(crate) fn select_absolute(
+        &mut self,
+        index: usize,
+        max_visible_rows: usize,
+        mut is_selectable: impl FnMut(&Row) -> bool,
+    ) -> bool {
+        let rows_len = self.rows.len();
+        if index < rows_len && is_selectable(&self.rows[index]) {
+            self.selection.select(index, rows_len, |i| {
+                self.rows.get(i).is_some_and(&mut is_selectable)
+            });
+            self.keep_selected_visible(max_visible_rows);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Scrolls the viewport by `delta` rows without changing the selection.
+    pub(crate) fn scroll_by(&mut self, delta: isize, max_visible_rows: usize) {
+        let max_offset = max_inline_menu_scroll_offset(self.rows.len(), max_visible_rows);
+        let scroll_offset = self
+            .scroll_offset
+            .saturating_add_signed(delta)
+            .min(max_offset);
+        if scroll_offset != self.scroll_offset {
+            self.scroll_offset = scroll_offset;
+            self.scroll_anchor = TuiInlineMenuScrollAnchor::ScrollOffset;
+        }
     }
 }
 
@@ -288,6 +350,15 @@ pub(crate) enum TuiInlineMenuAccepted {
     /// An exchange accepted from the `/fork-from` or `/rewind` picker, with the
     /// action the picker was opened for.
     Exchange(AIAgentExchangeId, TuiExchangeMenuAction),
+}
+
+/// Type alias for mouse-interaction callbacks stored in the element tree.
+type InlineMenuAcceptFn = dyn Fn(usize, &mut TuiEventContext<'_>, &AppContext);
+type InlineMenuScrollFn = dyn Fn(isize, &mut TuiEventContext<'_>, &AppContext);
+fn reset_hover_states(states: &RefCell<Vec<MouseStateHandle>>) {
+    for state in states.borrow().iter() {
+        state.lock().unwrap().reset_hover_state();
+    }
 }
 
 /// Type-erased operations shared by TUI inline-menu model handles.
@@ -312,58 +383,122 @@ pub(crate) trait TuiInlineMenuHandle {
     fn dismiss(&self, ctx: &mut AppContext);
     /// Returns the menu's presentation snapshot.
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot>;
+    /// Selects the row at the given absolute snapshot index (for mouse-click
+    /// targeting). Returns `true` when the selection was (or could have been)
+    /// made so that the caller can safely fire `accept`. Returns `false` by
+    /// default so that a menu that forgets to override this method does not
+    /// silently accept whatever row happened to be keyboard-selected.
+    fn select_by_snapshot_index(&self, _index: usize, _ctx: &mut AppContext) -> bool {
+        false
+    }
+    /// Scrolls the menu viewport by `delta` rows without changing the
+    /// selection. No-op by default; models that support it override this.
+    fn scroll_by_delta(&self, _delta: isize, _ctx: &mut AppContext) {}
 }
 
-/// Cloneable type-erased handle for one TUI inline menu.
+/// Cloneable type-erased handle for one TUI inline menu, with retained
+/// per-row mouse state for hover and click interactions.
 #[derive(Clone)]
-pub(crate) struct TuiInlineMenu(Rc<dyn TuiInlineMenuHandle>);
+pub(crate) struct TuiInlineMenu {
+    handle: Rc<dyn TuiInlineMenuHandle>,
+    /// Per-row mouse state handles, grown on demand to match the snapshot's
+    /// row count. Shared across `Clone`s so both the session view and the
+    /// input view see the same hover/click state.
+    item_mouse_states: Rc<RefCell<Vec<MouseStateHandle>>>,
+}
 
 impl TuiInlineMenu {
     /// Erases a concrete menu-model handle behind the shared routing interface.
     pub(crate) fn new(handle: impl TuiInlineMenuHandle + 'static) -> Self {
-        Self(Rc::new(handle))
+        Self {
+            handle: Rc::new(handle),
+            item_mouse_states: Rc::new(RefCell::new(Vec::new())),
+        }
     }
     pub(crate) fn is_open(&self, ctx: &AppContext) -> bool {
-        self.0.is_open(ctx)
+        self.handle.is_open(ctx)
     }
     pub(crate) fn open(&self, ctx: &mut AppContext) {
-        self.0.open(ctx);
+        self.handle.open(ctx);
     }
 
     pub(crate) fn mode(&self) -> TuiInputSuggestionsMode {
-        self.0.mode()
+        self.handle.mode()
     }
 
+    /// Renders the menu without mouse interactions (used in tests and other
+    /// non-interactive contexts).
+    #[cfg(test)]
     pub(crate) fn render(&self, ctx: &AppContext) -> Option<Box<dyn TuiElement>> {
         self.snapshot(ctx)
             .map(|snapshot| render_inline_menu(&snapshot, &TuiUiBuilder::from_app(ctx)))
     }
+
+    /// Renders the menu with hover/click and scroll-wheel interactions.
+    /// `on_accept` is called with the clicked row's absolute snapshot index.
+    /// `on_scroll` is called with the scroll-wheel row delta.
+    pub(crate) fn render_with_interaction(
+        &self,
+        ctx: &AppContext,
+        on_accept: impl Fn(usize, &mut TuiEventContext<'_>, &AppContext) + 'static,
+        on_scroll: impl Fn(isize, &mut TuiEventContext<'_>, &AppContext) + 'static,
+    ) -> Option<Box<dyn TuiElement>> {
+        // Mouse-state growth happens in TuiInlineMenuElement::layout every
+        // frame, so there is no need to pre-grow the vec here.
+        self.snapshot(ctx).map(|snapshot| {
+            let on_accept: Rc<InlineMenuAcceptFn> = Rc::new(on_accept);
+            let on_scroll: Box<InlineMenuScrollFn> = Box::new(on_scroll);
+            TuiInlineMenuElement {
+                snapshot,
+                builder: TuiUiBuilder::from_app(ctx),
+                content: None,
+                item_mouse_states: Rc::clone(&self.item_mouse_states),
+                on_accept: Some(on_accept),
+                on_scroll: Some(on_scroll),
+            }
+            .finish()
+        })
+    }
+
+    pub(crate) fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.handle.select_by_snapshot_index(index, ctx)
+    }
+
+    pub(crate) fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.handle.scroll_by_delta(delta, ctx);
+    }
+
     pub(crate) fn input_highlight_range(&self, ctx: &AppContext) -> Option<Range<CharOffset>> {
-        self.0.input_highlight_range(ctx)
+        self.handle.input_highlight_range(ctx)
     }
 
     pub(crate) fn input_argument_hint_text(&self, ctx: &AppContext) -> Option<&'static str> {
-        self.0.input_argument_hint_text(ctx)
+        self.handle.input_argument_hint_text(ctx)
     }
 
     pub(crate) fn select_previous(&self, ctx: &mut AppContext) {
-        self.0.select_previous(ctx);
+        self.handle.select_previous(ctx);
     }
 
     pub(crate) fn select_next(&self, ctx: &mut AppContext) {
-        self.0.select_next(ctx);
+        self.handle.select_next(ctx);
     }
 
     pub(crate) fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
-        self.0.accept(ctx)
+        let result = self.handle.accept(ctx);
+        if result.is_some() {
+            reset_hover_states(&self.item_mouse_states);
+        }
+        result
     }
 
     pub(crate) fn dismiss(&self, ctx: &mut AppContext) {
-        self.0.dismiss(ctx);
+        self.handle.dismiss(ctx);
+        reset_hover_states(&self.item_mouse_states);
     }
 
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
-        self.0.snapshot(ctx)
+        self.handle.snapshot(ctx)
     }
 }
 
@@ -401,6 +536,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiSlashCommandModel> {
 
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
+    }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
     }
 }
 
@@ -442,6 +585,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiConversationMenuModel> {
 
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
+    }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
     }
 }
 
@@ -485,6 +636,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiPromptHistoryMenuModel> {
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
     }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
+    }
 }
 
 impl TuiInlineMenuHandle for ModelHandle<TuiCompletionsMenuModel> {
@@ -522,6 +681,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiCompletionsMenuModel> {
 
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
+    }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
     }
 }
 
@@ -565,6 +732,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiProfileMenuModel> {
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
     }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
+    }
 }
 
 impl TuiInlineMenuHandle for ModelHandle<TuiPromptsMenuModel> {
@@ -606,6 +781,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiPromptsMenuModel> {
 
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
+    }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
     }
 }
 
@@ -649,6 +832,67 @@ impl TuiInlineMenuHandle for ModelHandle<TuiExchangeMenuModel> {
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
     }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
+    }
+}
+
+impl TuiInlineMenuHandle for ModelHandle<TuiApiKeysMenuModel> {
+    fn mode(&self) -> TuiInputSuggestionsMode {
+        TuiInputSuggestionsMode::ApiKeys
+    }
+    fn is_open(&self, ctx: &AppContext) -> bool {
+        self.as_ref(ctx).is_open(ctx)
+    }
+    fn open(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.open(ctx));
+    }
+    fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
+        None
+    }
+
+    fn input_argument_hint_text(&self, _ctx: &AppContext) -> Option<&'static str> {
+        None
+    }
+
+    fn select_previous(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_previous(ctx));
+    }
+
+    fn select_next(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_next(ctx));
+    }
+
+    // Always returns `None`: unlike the other menus, accepting a row here never hands a
+    // domain value back out to `TuiTerminalSessionView` to route -- adding/clearing a key is
+    // fully self-contained (persisted straight through `AgentProviderSecrets` inside
+    // `accept_selected`), and "select a provider row" is itself just an internal transition
+    // into the key-entry sub-state, not something the caller needs to act on.
+    fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        self.update(ctx, |model, ctx| model.accept_selected(ctx));
+        None
+    }
+
+    fn dismiss(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.dismiss(ctx));
+    }
+
+    fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
+        self.as_ref(ctx).snapshot(ctx)
+    }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
+    }
 }
 
 impl TuiInlineMenuHandle for ModelHandle<TuiModelMenuModel> {
@@ -689,6 +933,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiModelMenuModel> {
 
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
+    }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
     }
 }
 
@@ -736,8 +988,17 @@ impl TuiInlineMenuHandle for ModelHandle<TuiSkillMenuModel> {
     fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
         self.as_ref(ctx).snapshot(ctx)
     }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
+    }
 }
 
+#[cfg(test)]
 pub(crate) fn render_inline_menu(
     snapshot: &TuiInlineMenuSnapshot,
     builder: &TuiUiBuilder,
@@ -746,6 +1007,9 @@ pub(crate) fn render_inline_menu(
         snapshot: snapshot.clone(),
         builder: builder.clone(),
         content: None,
+        item_mouse_states: Rc::new(RefCell::new(Vec::new())),
+        on_accept: None,
+        on_scroll: None,
     }
     .finish()
 }
@@ -754,6 +1018,12 @@ struct TuiInlineMenuElement {
     snapshot: TuiInlineMenuSnapshot,
     builder: TuiUiBuilder,
     content: Option<Box<dyn TuiElement>>,
+    /// Retained per-row mouse handles shared with the owning `TuiInlineMenu`.
+    item_mouse_states: Rc<RefCell<Vec<MouseStateHandle>>>,
+    /// Called with the absolute snapshot index when a row is clicked.
+    on_accept: Option<Rc<InlineMenuAcceptFn>>,
+    /// Called with the scroll-wheel row delta.
+    on_scroll: Option<Box<InlineMenuScrollFn>>,
 }
 
 impl TuiElement for TuiInlineMenuElement {
@@ -763,12 +1033,22 @@ impl TuiElement for TuiInlineMenuElement {
         ctx: &mut TuiLayoutContext,
         app: &AppContext,
     ) -> TuiSize {
+        {
+            let mut states = self.item_mouse_states.borrow_mut();
+            while states.len() < self.snapshot.rows.len() {
+                states.push(MouseStateHandle::default());
+            }
+        }
+        let mouse_states = self.item_mouse_states.borrow();
         let mut content = build_inline_menu(
             &self.snapshot,
             &self.builder,
             constraint.max.width,
             constraint.max.height,
+            &mouse_states,
+            self.on_accept.clone(),
         );
+        drop(mouse_states);
         let size = content.layout(constraint, ctx, app);
         self.content = Some(content);
         size
@@ -802,13 +1082,29 @@ impl TuiElement for TuiInlineMenuElement {
         }
     }
 
-    /// Delegates event dispatch to the laid-out content.
+    /// Handles scroll-wheel events over the menu bounds, then delegates
+    /// remaining events to the laid-out content (which forwards hover/click
+    /// through `TuiHoverable`).
     fn dispatch_event(
         &mut self,
         event: &TuiEvent,
         event_ctx: &mut TuiEventContext<'_>,
         app: &AppContext,
     ) -> bool {
+        if let TuiEvent::ScrollWheel {
+            position, delta, ..
+        } = event
+            && let Some(on_scroll) = &self.on_scroll
+            && let Some((origin, size)) = self.origin().zip(self.size())
+            && event_ctx.hit_test(origin, size, *position)
+            && delta.1 != 0
+        {
+            // Positive wheel delta scrolls toward the start of the list,
+            // matching `option_selector` and the transcript scrollable.
+            reset_hover_states(&self.item_mouse_states);
+            on_scroll(-delta.1, event_ctx, app);
+            return true;
+        }
         self.content
             .as_mut()
             .is_some_and(|content| content.dispatch_event(event, event_ctx, app))
@@ -843,6 +1139,8 @@ fn build_inline_menu(
     builder: &TuiUiBuilder,
     allocated_width: u16,
     allocated_height: u16,
+    mouse_states: &[MouseStateHandle],
+    on_accept: Option<Rc<InlineMenuAcceptFn>>,
 ) -> Box<dyn TuiElement> {
     let slash_command_row_text = snapshot
         .rows
@@ -901,6 +1199,7 @@ fn build_inline_menu(
             snapshot.selected_index,
             snapshot.scroll_offset,
             visible_rows,
+            snapshot.scroll_anchor,
         );
 
         if viewport.has_more_above {
@@ -914,12 +1213,31 @@ fn build_inline_menu(
             .skip(viewport.rows.start)
             .take(viewport.rows.len())
         {
-            column = column.child(menu_result_row(
+            // Check hover state from the retained mouse-state handle.
+            let is_hovered = mouse_states
+                .get(index)
+                .is_some_and(|s| s.lock().unwrap().is_hovered());
+            let base_element = menu_result_row(
                 row,
                 snapshot.selected_index == Some(index),
+                is_hovered,
                 slash_command_columns,
                 builder,
-            ));
+            );
+            // Wrap the row in a hoverable with a click callback when mouse
+            // interaction is enabled and the row is selectable.
+            let element = match (mouse_states.get(index), on_accept.as_ref()) {
+                (Some(mouse_state), Some(on_accept_fn)) if row.is_selectable => {
+                    let on_accept_clone = Rc::clone(on_accept_fn);
+                    TuiHoverable::new(mouse_state.clone(), base_element)
+                        .on_click(move |event_ctx, app| {
+                            on_accept_clone(index, event_ctx, app);
+                        })
+                        .finish()
+                }
+                _ => base_element,
+            };
+            column = column.child(element);
         }
 
         if viewport.has_more_below {
@@ -949,6 +1267,7 @@ fn inline_menu_viewport(
     selected_index: Option<usize>,
     scroll_offset: usize,
     visible_rows: usize,
+    scroll_anchor: TuiInlineMenuScrollAnchor,
 ) -> TuiInlineMenuViewport {
     if rows_len == 0 || visible_rows == 0 {
         return TuiInlineMenuViewport {
@@ -970,13 +1289,17 @@ fn inline_menu_viewport(
             selected_index,
             scroll_offset,
             visible_rows,
+            scroll_anchor,
         );
     }
 
     let bottom_start = rows_len.saturating_sub(visible_rows - 1);
     let mut start = scroll_offset.min(bottom_start);
     let mut end = inline_menu_viewport_end(rows_len, start, visible_rows);
-    if let Some(selected_index) = selected_index.filter(|index| *index < rows_len) {
+    if let Some(selected_index) = selected_index
+        .filter(|_| matches!(scroll_anchor, TuiInlineMenuScrollAnchor::Selection))
+        .filter(|index| *index < rows_len)
+    {
         if selected_index < start {
             start = selected_index;
         } else if selected_index >= end {
@@ -996,6 +1319,7 @@ fn inline_menu_viewport(
             selected_index,
             scroll_offset,
             visible_rows,
+            scroll_anchor,
         );
     }
     viewport
@@ -1006,9 +1330,13 @@ fn inline_menu_viewport_without_indicators(
     selected_index: Option<usize>,
     scroll_offset: usize,
     visible_rows: usize,
+    scroll_anchor: TuiInlineMenuScrollAnchor,
 ) -> TuiInlineMenuViewport {
     let mut start = scroll_offset.min(rows_len.saturating_sub(visible_rows));
-    if let Some(selected_index) = selected_index.filter(|index| *index < rows_len) {
+    if let Some(selected_index) = selected_index
+        .filter(|_| matches!(scroll_anchor, TuiInlineMenuScrollAnchor::Selection))
+        .filter(|index| *index < rows_len)
+    {
         if selected_index < start {
             start = selected_index;
         } else if selected_index >= start + visible_rows {
@@ -1022,6 +1350,13 @@ fn inline_menu_viewport_without_indicators(
     }
 }
 
+fn max_inline_menu_scroll_offset(rows_len: usize, visible_rows: usize) -> usize {
+    if visible_rows > MIN_REAL_ROWS_WITH_SCROLL_INDICATORS {
+        rows_len.saturating_sub(visible_rows - 1)
+    } else {
+        rows_len.saturating_sub(visible_rows)
+    }
+}
 fn inline_menu_viewport_end(rows_len: usize, start: usize, visible_rows: usize) -> usize {
     let upper_indicator_rows = usize::from(start > 0);
     let rows_without_lower_indicator = visible_rows - upper_indicator_rows;
@@ -1075,11 +1410,22 @@ fn menu_scroll_indicator_row(label: &str, builder: &TuiUiBuilder) -> Box<dyn Tui
 fn menu_result_row(
     row: &TuiInlineMenuRow,
     is_selected: bool,
+    is_hovered: bool,
     slash_command_columns: TuiTwoColumnLayout,
     builder: &TuiUiBuilder,
 ) -> Box<dyn TuiElement> {
     let title_style = if is_selected {
         builder.slash_command_selection_text_style()
+    } else if is_hovered && row.is_selectable {
+        // Hover: bold the text to indicate the row is interactive.
+        match row.style {
+            TuiInlineMenuRowStyle::InlineMenuItem => builder
+                .slash_command_text_style()
+                .add_modifier(Modifier::BOLD),
+            TuiInlineMenuRowStyle::Default => {
+                builder.primary_text_style().add_modifier(Modifier::BOLD)
+            }
+        }
     } else {
         match (row.is_selectable, row.style) {
             (true, TuiInlineMenuRowStyle::InlineMenuItem) => builder.slash_command_text_style(),
@@ -1114,6 +1460,15 @@ fn menu_result_row(
         .finish();
     let description_style = if is_selected {
         builder.slash_command_selection_text_style()
+    } else if is_hovered && row.is_selectable {
+        match row.style {
+            TuiInlineMenuRowStyle::Default => {
+                builder.muted_text_style().add_modifier(Modifier::BOLD)
+            }
+            TuiInlineMenuRowStyle::InlineMenuItem => {
+                builder.primary_text_style().add_modifier(Modifier::BOLD)
+            }
+        }
     } else {
         match row.style {
             TuiInlineMenuRowStyle::Default => builder.muted_text_style(),

@@ -1,3 +1,4 @@
+use super::commands;
 use super::Availability;
 
 /// Helper: constructs a session context for an agent view in a local session with a repo,
@@ -265,4 +266,22 @@ fn all_flags_required() {
         | Availability::NO_LRC_CONTROL
         | Availability::ACTIVE_CONVERSATION;
     assert!(!missing_view.contains(command));
+}
+
+// --- Ported from warp/master static_commands/mod_tests.rs ---
+
+#[test]
+fn argument_hint_uses_shared_command_prefix_and_text() {
+    // hint_text goes through i18n; initialize the loader to get the real English copy.
+    crate::i18n::init(Some("en"));
+
+    let hint = commands::EXPORT_TO_FILE
+        .argument_hint()
+        .expect("export-to-file has an argument hint");
+
+    assert_eq!(hint.input_prefix, "/export-to-file ");
+    assert_eq!(hint.text, "<optional filename>");
+    // `SlashCommandArgumentHint` doesn't derive `PartialEq` in this fork (unlike
+    // Warp's), so compare via `is_none()` instead of `assert_eq!(.., None)`.
+    assert!(commands::EXPORT_TO_CLIPBOARD.argument_hint().is_none());
 }

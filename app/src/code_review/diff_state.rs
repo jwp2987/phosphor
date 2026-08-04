@@ -1421,7 +1421,7 @@ impl DiffStateModel {
         &self,
         mode: DiffMode,
         repo_path: PathBuf,
-    ) -> impl Future<Output = Option<GitDiffData>> {
+    ) -> impl Future<Output = Option<GitDiffData>> + use<> {
         // Check if we have the data already loaded for this mode
         if let InternalDiffState::Loaded(diffs) = &self.state {
             if self.mode == mode {

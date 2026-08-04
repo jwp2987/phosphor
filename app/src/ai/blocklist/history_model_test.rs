@@ -33,7 +33,8 @@ use warp_multi_agent_api as api;
 
 use super::{
     convert_persisted_conversation_to_ai_conversation_with_metadata, AIConversationMetadata,
-    AIQueryHistoryOutputStatus, BlocklistAIHistoryModel, PersistedAIInput, PersistedAIInputType,
+    AIQueryHistoryOutputStatus, BlocklistAIHistoryModel, ForkConversationError, PersistedAIInput,
+    PersistedAIInputType,
 };
 
 fn initialize_history_model_test_app(app: &mut App) {
@@ -706,6 +707,8 @@ fn test_ambient_agent_conversations_excluded_from_list_but_accessible_by_id() {
                 is_restorable_locally: false,
                 artifacts: Vec::new(),
                 ambient_agent_task_id: None,
+                parent_conversation_id: None,
+                parent_agent_id: None,
             };
             model
                 .all_conversations_metadata
@@ -724,6 +727,8 @@ fn test_ambient_agent_conversations_excluded_from_list_but_accessible_by_id() {
                 is_restorable_locally: false,
                 artifacts: Vec::new(),
                 ambient_agent_task_id: Some(ambient_task_id),
+                parent_conversation_id: None,
+                parent_agent_id: None,
             };
             model
                 .all_conversations_metadata
@@ -744,6 +749,70 @@ fn test_ambient_agent_conversations_excluded_from_list_but_accessible_by_id() {
                 model.get_conversation_metadata(&ambient_id).unwrap().title,
                 "Ambient Conversation"
             );
+        });
+    });
+}
+
+#[test]
+fn test_child_agent_conversations_excluded_from_list_but_accessible_by_id() {
+    use crate::ai::agent::conversation::AIConversation;
+
+    App::test((), |mut app| async move {
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+
+        let regular_id = AIConversationId::new();
+
+        // One child linked via a local parent placeholder, one via the
+        // parent's server-side run identifier (driver-hosted processes).
+        let mut local_child = AIConversation::new(false);
+        local_child.set_parent_conversation_id(AIConversationId::new());
+        let local_child_id = local_child.id();
+        let mut driver_child = AIConversation::new(false);
+        driver_child.set_parent_agent_id("parent-run-id".to_string());
+        let driver_child_id = driver_child.id();
+
+        history_model.update(&mut app, |model, _| {
+            let regular_metadata = AIConversationMetadata {
+                id: regular_id,
+                title: "Regular Conversation".to_string(),
+                initial_query: String::new(),
+                last_modified_at: Utc::now().naive_utc(),
+                initial_working_directory: None,
+                credits_spent: Some(5.0),
+                server_conversation_token: Some(ServerConversationToken::new(
+                    "token-regular-child-test".to_string(),
+                )),
+                is_restorable_locally: false,
+                artifacts: Vec::new(),
+                ambient_agent_task_id: None,
+                parent_conversation_id: None,
+                parent_agent_id: None,
+            };
+            model
+                .all_conversations_metadata
+                .insert(regular_id, regular_metadata);
+            model
+                .all_conversations_metadata
+                .insert(local_child_id, AIConversationMetadata::from(&local_child));
+            model
+                .all_conversations_metadata
+                .insert(driver_child_id, AIConversationMetadata::from(&driver_child));
+        });
+
+        history_model.read(&app, |model, _| {
+            let listed: Vec<AIConversationId> = model
+                .get_local_conversations_metadata()
+                .map(|m| m.id)
+                .collect();
+            assert_eq!(
+                listed,
+                vec![regular_id],
+                "child agent conversations must be excluded from the navigable list"
+            );
+
+            // Both children remain accessible by ID.
+            assert!(model.get_conversation_metadata(&local_child_id).is_some());
+            assert!(model.get_conversation_metadata(&driver_child_id).is_some());
         });
     });
 }
@@ -1420,5 +1489,26 @@ fn test_set_server_conversation_token_rebinds_reverse_index() {
                 Some(conversation_id),
             );
         });
+    });
+}
+
+#[test]
+fn test_fork_conversation_rejects_an_empty_source() {
+    use crate::ai::agent::conversation::AIConversation;
+
+    App::test((), |mut app| async move {
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let source = AIConversation::new(false);
+
+        let error = history_model.update(&mut app, |model, ctx| {
+            model
+                .fork_conversation(&source, "[Fork] ", ctx)
+                .expect_err("forking an empty conversation should fail")
+        });
+
+        assert_eq!(
+            error.downcast_ref::<ForkConversationError>(),
+            Some(&ForkConversationError::EmptyConversation),
+        );
     });
 }

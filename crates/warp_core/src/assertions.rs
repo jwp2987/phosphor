@@ -6,7 +6,7 @@
 /// used in codepaths where the error log could be produced with high volume.
 #[macro_export]
 macro_rules! safe_assert {
-    ($cond:expr $(,)?) => {{
+    ($cond:expr_2021 $(,)?) => {{
         debug_assert!($cond);
         match &$cond {
             (cond) => {
@@ -16,7 +16,7 @@ macro_rules! safe_assert {
             }
         }
     }};
-    ($cond:expr, $($arg:tt)+) => {{
+    ($cond:expr_2021, $($arg:tt)+) => {{
         debug_assert!($cond, $($arg)+);
         match &$cond {
             (cond) => {
@@ -37,7 +37,7 @@ pub use safe_assert;
 /// used in codepaths where the error log could be produced with high volume.
 #[macro_export]
 macro_rules! safe_assert_eq {
-    ($left:expr, $right:expr $(,)?) => {{
+    ($left:expr_2021, $right:expr_2021 $(,)?) => {{
         debug_assert_eq!($left, $right);
         match (&$left, &$right) {
             (left_val, right_val) => {
@@ -47,7 +47,7 @@ macro_rules! safe_assert_eq {
             }
         }
     }};
-    ($left:expr, $right:expr, $($arg:tt)+) => {{
+    ($left:expr_2021, $right:expr_2021, $($arg:tt)+) => {{
         debug_assert_eq!($left, $right, $($arg)+);
         match (&$left, &$right) {
             (left_val, right_val) => {

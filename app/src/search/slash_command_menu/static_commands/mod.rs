@@ -127,6 +127,7 @@ pub enum SlashCommandKind {
     RenameTab,
     RenameConversation,
     SetTabColor,
+    Statusline,
     Fork,
     MoveToCloud,
     OpenCodeReview,
@@ -161,6 +162,12 @@ pub enum SlashCommandKind {
     Rewind,
     ExportToClipboard,
     ExportToFile,
+    /// `/api-keys`: opens the BYOP provider API-key manager. Fork-native -- this fork's entire
+    /// identity is BYOP, so unlike most `Other`-kind Zap additions this one *is* TUI-executable
+    /// and needs its own dispatch arm, not upstream Warp's hardcoded-~4-provider
+    /// `/add-api-key` / `/clear-provider-api-key`.
+    ApiKeys,
+    VimMode,
     /// A Zap command with no upstream `SlashCommandKind` (e.g. `/pr-comments`).
     Other,
 }
@@ -211,6 +218,7 @@ impl StaticCommand {
             "/open-file" => SlashCommandKind::Edit,
             "/rename-tab" => SlashCommandKind::RenameTab,
             "/set-tab-color" => SlashCommandKind::SetTabColor,
+            "/statusline" => SlashCommandKind::Statusline,
             "/fork" => SlashCommandKind::Fork,
             "/handoff" => SlashCommandKind::MoveToCloud,
             "/open-code-review" => SlashCommandKind::OpenCodeReview,
@@ -235,6 +243,8 @@ impl StaticCommand {
             "/rewind" => SlashCommandKind::Rewind,
             "/export-to-clipboard" => SlashCommandKind::ExportToClipboard,
             "/export-to-file" => SlashCommandKind::ExportToFile,
+            "/api-keys" => SlashCommandKind::ApiKeys,
+            "/vim-mode" => SlashCommandKind::VimMode,
             _ => SlashCommandKind::Other,
         }
     }
@@ -262,6 +272,9 @@ impl StaticCommand {
                 | "/conversations"
                 | "/export-to-clipboard"
                 | "/export-to-file"
+                | "/api-keys"
+                | "/statusline"
+                | "/vim-mode"
         )
     }
 }

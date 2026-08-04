@@ -88,6 +88,17 @@ pub struct AIConversationMetadata {
 
     /// Local marker for conversations owned by an ambient agent run.
     pub ambient_agent_task_id: Option<AmbientAgentTaskId>,
+
+    /// Local conversation ID of the parent that spawned this child, if any.
+    /// Mirrors [`AIConversation::parent_conversation_id`]; stored here so
+    /// child-agent status can be determined from metadata alone, without
+    /// loading the full conversation. See [`Self::is_child_agent_conversation`].
+    pub parent_conversation_id: Option<AIConversationId>,
+
+    /// Server-side parent agent identifier (the parent's run_id), if any.
+    /// Mirrors [`AIConversation::parent_agent_id`]; the same value the ambient
+    /// task carries as `parent_run_id`.
+    pub parent_agent_id: Option<String>,
 }
 
 impl From<&AIConversation> for AIConversationMetadata {
@@ -111,6 +122,8 @@ impl From<&AIConversation> for AIConversationMetadata {
             is_restorable_locally: true,
             artifacts: conversation.artifacts().to_vec(),
             ambient_agent_task_id: conversation.task_id(),
+            parent_conversation_id: conversation.parent_conversation_id(),
+            parent_agent_id: conversation.parent_agent_id().map(ToString::to_string),
         }
     }
 }
@@ -121,6 +134,13 @@ impl AIConversationMetadata {
     pub fn is_ambient_agent_conversation(&self) -> bool {
         self.ambient_agent_task_id.is_some()
     }
+
+    /// Whether this conversation was spawned by a parent orchestrator agent.
+    /// Uses the same predicate as [`AIConversation::is_child_agent_conversation`]
+    /// so the loaded and unloaded representations agree.
+    pub fn is_child_agent_conversation(&self) -> bool {
+        self.parent_conversation_id.is_some() || self.parent_agent_id.is_some()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -129,6 +149,12 @@ pub enum UpdateHistoryError {
     Conversation(#[from] UpdateConversationError),
     #[error("Failed to find conversation with ID {0:?}")]
     ConversationNotFound(AIConversationId),
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ForkConversationError {
+    #[error("cannot fork an empty conversation")]
+    EmptyConversation,
 }
 
 /// Responsible for managing the history of user and AI exchanges.
@@ -1012,6 +1038,16 @@ impl BlocklistAIHistoryModel {
         Ok(new_conversation_id)
     }
 
+    /// Checks whether a conversation can be forked without mutating history.
+    pub fn validate_fork_source(
+        source_conversation: &AIConversation,
+    ) -> Result<(), ForkConversationError> {
+        if source_conversation.is_empty() {
+            return Err(ForkConversationError::EmptyConversation);
+        }
+        Ok(())
+    }
+
     /// Forks an existing conversation by creating a new conversation
     /// and copying the existing conversation's tasks into the new conversation.
     ///
@@ -1023,6 +1059,7 @@ impl BlocklistAIHistoryModel {
         prefix: &str,
         app: &AppContext,
     ) -> Result<AIConversation, anyhow::Error> {
+        Self::validate_fork_source(source_conversation)?;
         let tasks: Vec<warp_multi_agent_api::Task> = source_conversation
             .all_tasks()
             .filter_map(|t| t.source().cloned())
@@ -1397,11 +1434,10 @@ impl BlocklistAIHistoryModel {
                 {
                     log::warn!("Failed to mark exchange as cancelled: {e}");
                 }
-            } else if let Err(e) =
-                conversation.mark_request_cancelled(stream_id, terminal_view_id, reason, ctx)
-            {
+            } else { match conversation.mark_request_cancelled(stream_id, terminal_view_id, reason, ctx)
+            { Err(e) => {
                 log::warn!("Failed to mark exchange as cancelled: {e}");
-            }
+            } _ => {}}}
         }
         AIDocumentModel::handle(ctx).update(ctx, |model, ctx| {
             model.clear_streaming_documents_for_conversation(&conversation_id, ctx);
@@ -1841,7 +1877,7 @@ impl BlocklistAIHistoryModel {
     ) -> impl Iterator<Item = &AIConversationMetadata> {
         self.all_conversations_metadata
             .values()
-            .filter(|m| !m.is_ambient_agent_conversation())
+            .filter(|m| !m.is_ambient_agent_conversation() && !m.is_child_agent_conversation())
     }
 
     /// Returns conversation metadata for a specific conversation ID.

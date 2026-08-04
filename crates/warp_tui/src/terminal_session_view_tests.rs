@@ -3,12 +3,12 @@ use std::time::Duration;
 
 use instant::Instant;
 use warp::appearance::Appearance;
-use warp::settings::AISettings;
+use warp::settings::{AISettings, TuiStatuslineConfig, TuiStatuslineItem};
 use warp::terminal::model::ansi::{Handler, InputBufferValue};
 use warp::tui_export::{
     AIAgentExchangeId, AIConversationAutoexecuteMode, AgentViewEntryOrigin, AgentViewState,
-    BlockPadding, BlocklistAIHistoryModel, ConversationStatus, Harness, LLMPreferences, PtyIntent,
-    PtyIntentEvent, SizeInfo, SizeUpdate, export_conversation_markdown,
+    BlockPadding, BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMPreferences,
+    PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, export_conversation_markdown,
     register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
@@ -31,12 +31,12 @@ use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalida
 use super::{
     AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME,
     COST_CONVERSATION_IN_PROGRESS_HINT, COST_EMPTY_CONVERSATION_HINT,
-    COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState, FooterSegments,
-    INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
+    COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState, FooterSegment,
+    FooterSegments, INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
     SHELL_MODE_HINT, TuiConversationRestoreOrigin, TuiTerminalSessionAction,
-    TuiTerminalSessionEvent, TuiTerminalSessionView, cost_command_unavailable_hint,
-    export_file_success_message, log_bundle_success_message, raw_prompt_if_not_blank,
-    render_status_footer_row,
+    TuiQueuedFollowUp, TuiTerminalSessionEvent, TuiTerminalSessionView,
+    cost_command_unavailable_hint, export_file_success_message, log_bundle_success_message,
+    raw_prompt_if_not_blank, render_status_footer_row,
 };
 use crate::autoupdate::TuiAutoupdater;
 use crate::inline_menu::MAX_INLINE_MENU_ROWS;
@@ -46,6 +46,7 @@ use crate::keybindings::{
 };
 use crate::root_view::RootTuiView;
 use crate::session_registry::{TuiSessionId, TuiSessions};
+use crate::statusline_config_view::TuiStatuslineConfigEvent;
 use crate::terminal_block::{block_content_rows, should_render_terminal_block};
 use crate::terminal_use::TuiInputTarget;
 use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_session};
@@ -56,6 +57,245 @@ use crate::usage::render_context_usage_entry;
 struct FocusTestFixture {
     window_id: warpui_core::WindowId,
     sessions: ModelHandle<TuiSessions>,
+}
+
+#[test]
+fn footer_supports_arbitrary_order_and_branch_without_a_leading_arrow() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let builder = TuiUiBuilder::from_app(ctx);
+            let row = render_status_footer_row(
+                FooterSegments {
+                    ordered: vec![
+                        FooterSegment::ContextWindowUsage(render_context_usage_entry(0.426, ctx)),
+                        FooterSegment::GitBranch("feature/statusline".to_owned()),
+                        FooterSegment::ActiveIndicator("Auto-queue"),
+                        FooterSegment::WorkingDirectory("/tmp/warp".to_owned()),
+                    ],
+                },
+                &builder,
+            )
+            .finish();
+            assert_eq!(
+                render_element(row, ctx, 120).to_lines(),
+                vec!["43% context • feature/statusline • Auto-queue • /tmp/warp".to_owned()],
+            );
+
+            let branch_only = render_status_footer_row(
+                FooterSegments {
+                    ordered: vec![FooterSegment::GitBranch("main".to_owned())],
+                },
+                &builder,
+            )
+            .finish();
+            assert_eq!(
+                render_element(branch_only, ctx, 80).to_lines(),
+                vec!["main".to_owned()],
+            );
+        });
+    });
+}
+
+#[test]
+fn empty_configurable_footer_has_zero_height() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let builder = TuiUiBuilder::from_app(ctx);
+            let row = render_status_footer_row(
+                FooterSegments {
+                    ordered: Vec::new(),
+                },
+                &builder,
+            )
+            .finish();
+            assert!(render_element(row, ctx, 80).to_lines().is_empty());
+        });
+    });
+}
+
+/// Adapted from warp/master: upstream's `AutoQueue` item reflects a
+/// persistent "auto-queue next prompt" *mode* (`QueuedQueryModel`), a
+/// feature Zap has not ported. Zap's `/queue` instead holds one specific
+/// prompt (`TuiTerminalSessionView::queued_follow_up`), so this test drives
+/// that field directly instead of `QueuedQueryModel`.
+#[test]
+fn enabled_auto_indicators_render_only_while_their_effective_states_are_on() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            // A fresh session's input defaults to `InputType::Shell` (see
+            // `BlocklistAIInputModel::new`) until the user types or NLD
+            // classifies otherwise. `render_footer` correctly hides the
+            // agent-only Auto-approve/Auto-queue indicators in shell mode
+            // (`FooterSegment::ActiveIndicator` is only pushed when
+            // `!shell_mode`), so this test — which is about those indicators
+            // specifically — must switch to AI input mode first, the same
+            // way a real conversation entry would.
+            view.ai_input_model.update(ctx, |input_model, ctx| {
+                input_model.set_input_type(InputType::AI, ctx);
+            });
+            view.conversation_selection.update(ctx, |selection, ctx| {
+                selection
+                    .try_start_new_conversation(AgentViewEntryOrigin::Tui, ctx)
+                    .expect("test conversation should start")
+            });
+            view.conversation_selection.update(ctx, |selection, ctx| {
+                selection.toggle_pending_query_autoexecute(ctx);
+            });
+            view.queued_follow_up = Some(TuiQueuedFollowUp {
+                conversation_id: view
+                    .conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+                    .expect("test conversation should be selected"),
+                prompt: "later".to_owned(),
+                seen_in_progress: false,
+            });
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .tui_statusline
+                    .set_value(
+                        TuiStatuslineConfig {
+                            order: vec![
+                                TuiStatuslineItem::AutoApprove,
+                                TuiStatuslineItem::AutoQueue,
+                            ],
+                            enabled: vec![
+                                TuiStatuslineItem::AutoApprove,
+                                TuiStatuslineItem::AutoQueue,
+                            ],
+                        }
+                        .normalized(),
+                        ctx,
+                    )
+                    .expect("statusline setting should persist");
+            });
+        });
+
+        // "Queued" (not upstream's "Auto-queue") matches the re-backed
+        // semantics documented on `TuiStatuslineItem`/above: this reflects a
+        // one-shot queued follow-up prompt, not a persistent auto-queue mode.
+        assert_eq!(
+            render_footer_lines(&mut app, &view, 80),
+            vec!["Auto-approve • Queued".to_owned()],
+        );
+
+        view.update(&mut app, |view, ctx| {
+            view.conversation_selection.update(ctx, |selection, ctx| {
+                selection.toggle_pending_query_autoexecute(ctx);
+            });
+            view.queued_follow_up = None;
+        });
+        assert!(render_footer_lines(&mut app, &view, 80).is_empty());
+
+        // See the comment in `saving_statusline_configuration_persists_and_restores_input_focus`:
+        // `tui_statusline` persists across tests in this process, so restore
+        // the default before this test ends.
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings
+                    .tui_statusline
+                    .set_value(TuiStatuslineConfig::default(), ctx);
+            });
+        });
+    });
+}
+
+#[test]
+fn statusline_slash_command_clears_input_focuses_one_picker_and_cancels_cleanly() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("/statusline", ctx);
+            });
+            view.execute_tui_slash_command(&slash_commands::STATUSLINE, None, ctx);
+        });
+
+        let picker_id = view.read(&app, |view, ctx| {
+            let picker = view
+                .statusline_config_view
+                .as_ref()
+                .expect("statusline picker should be open");
+            assert!(view.input_view.as_ref(ctx).is_empty(ctx));
+            assert!(picker.as_ref(ctx).is_focused(ctx));
+            picker.id()
+        });
+
+        // A second `/statusline` while one is already open does not mount a
+        // second picker.
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::STATUSLINE, None, ctx);
+        });
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.statusline_config_view.as_ref().map(ViewHandle::id)
+            }),
+            Some(picker_id),
+        );
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_statusline_config_event(&TuiStatuslineConfigEvent::Cancelled, ctx);
+        });
+        view.read(&app, |view, ctx| {
+            assert!(view.statusline_config_view.is_none());
+            assert!(view.input_view.is_focused(ctx));
+        });
+    });
+}
+
+#[test]
+fn saving_statusline_configuration_persists_and_restores_input_focus() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let config = TuiStatuslineConfig {
+            order: vec![
+                TuiStatuslineItem::ContextWindowUsage,
+                TuiStatuslineItem::GitBranch,
+            ],
+            enabled: Vec::new(),
+        }
+        .normalized();
+
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::STATUSLINE, None, ctx);
+            view.handle_statusline_config_event(
+                &TuiStatuslineConfigEvent::Saved(config.clone()),
+                ctx,
+            );
+        });
+
+        assert_eq!(
+            app.read(|ctx| AISettings::as_ref(ctx).tui_statusline.normalized()),
+            config,
+        );
+        view.read(&app, |view, ctx| {
+            assert!(view.statusline_config_view.is_none());
+            assert!(view.input_view.is_focused(ctx));
+            assert_eq!(
+                view.transient_hint.current().map(|(text, _)| text),
+                Some(super::STATUSLINE_SAVED_HINT),
+            );
+        });
+
+        // `tui_statusline` persists through the same on-disk settings path
+        // `AISettings` uses outside tests, so leaving a non-default value set
+        // here would leak into whichever test runs next in this process.
+        // Restore the default so other footer tests keep seeing it.
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings
+                    .tui_statusline
+                    .set_value(TuiStatuslineConfig::default(), ctx);
+            });
+        });
+    });
 }
 
 #[test]
@@ -256,18 +496,15 @@ fn render_usage_footer_row(app: &mut App, context_fraction: f32) -> Vec<String> 
         let usage = render_context_usage_entry(context_fraction, ctx);
         let row = render_status_footer_row(
             FooterSegments {
-                shell_mode: false,
-                model_label: Some(
-                    TuiText::new("TestModel")
-                        .with_style(builder.primary_text_style())
-                        .truncate()
-                        .finish(),
-                ),
-                cwd: None,
-                branch: None,
-                usage: Some(usage),
-                diff_additions: 0,
-                diff_deletions: 0,
+                ordered: vec![
+                    FooterSegment::Model(
+                        TuiText::new("TestModel")
+                            .with_style(builder.primary_text_style())
+                            .truncate()
+                            .finish(),
+                    ),
+                    FooterSegment::ContextWindowUsage(usage),
+                ],
             },
             &builder,
         )
@@ -1073,18 +1310,21 @@ fn footer_renders_agent_sections_left_aligned() {
             let usage = render_context_usage_entry(0.18, ctx);
             let row = render_status_footer_row(
                 FooterSegments {
-                    shell_mode: false,
-                    model_label: Some(
-                        TuiText::new("TestModel")
-                            .with_style(builder.primary_text_style())
-                            .truncate()
-                            .finish(),
-                    ),
-                    cwd: Some("/home/user/warp".to_owned()),
-                    branch: Some("main".to_owned()),
-                    usage: Some(usage),
-                    diff_additions: 3,
-                    diff_deletions: 1,
+                    ordered: vec![
+                        FooterSegment::Model(
+                            TuiText::new("TestModel")
+                                .with_style(builder.primary_text_style())
+                                .truncate()
+                                .finish(),
+                        ),
+                        FooterSegment::WorkingDirectory("/home/user/warp".to_owned()),
+                        FooterSegment::GitBranch("main".to_owned()),
+                        FooterSegment::ContextWindowUsage(usage),
+                        FooterSegment::GitDiff {
+                            additions: 3,
+                            deletions: 1,
+                        },
+                    ],
                 },
                 &builder,
             )
@@ -1094,7 +1334,7 @@ fn footer_renders_agent_sections_left_aligned() {
 
             assert_eq!(
                 lines,
-                vec!["TestModel /home/user/warp ↬ main • 18% context • +3 -1"],
+                vec!["TestModel • /home/user/warp ↬ main • 18% context • +3 -1"],
                 "agent footer is left-aligned in order model → cwd/branch → usage → diff"
             );
             assert!(
@@ -1131,21 +1371,21 @@ fn footer_renders_bash_sections_without_model_or_usage() {
         app.update(|ctx| {
             ctx.add_singleton_model(|_| Appearance::mock());
             let builder = TuiUiBuilder::from_app(ctx);
-            let usage = render_context_usage_entry(0.18, ctx);
+            // Model and usage are omitted entirely rather than passed and
+            // ignored: `render_footer` (the only real caller) never resolves
+            // those items while in shell mode, so this reflects the segments
+            // it would actually hand to `render_status_footer_row`.
             let row = render_status_footer_row(
                 FooterSegments {
-                    shell_mode: true,
-                    model_label: Some(
-                        TuiText::new("TestModel")
-                            .with_style(builder.primary_text_style())
-                            .truncate()
-                            .finish(),
-                    ),
-                    cwd: Some("/home/user/warp".to_owned()),
-                    branch: Some("main".to_owned()),
-                    usage: Some(usage),
-                    diff_additions: 3,
-                    diff_deletions: 1,
+                    ordered: vec![
+                        FooterSegment::ShellMode,
+                        FooterSegment::WorkingDirectory("/home/user/warp".to_owned()),
+                        FooterSegment::GitBranch("main".to_owned()),
+                        FooterSegment::GitDiff {
+                            additions: 3,
+                            deletions: 1,
+                        },
+                    ],
                 },
                 &builder,
             )
@@ -1451,5 +1691,183 @@ fn terminal_wakeup_redraws_only_the_focused_session() {
 
         assert!(foreground.update(&mut app, |view, ctx| { view.handle_terminal_wakeup(ctx) }));
         assert!(!background.update(&mut app, |view, ctx| { view.handle_terminal_wakeup(ctx) }));
+    });
+}
+
+// ── Vim mode tests ───────────────────────────────────────────────────────────
+
+/// The `/vim-mode` slash command static definition must be correctly
+/// populated and marked TUI-executable.
+///
+/// Unlike upstream Warp (which gates surfaces via a `supported_surfaces`
+/// field on `StaticCommand`), this fork gates TUI-executable commands via
+/// `StaticCommand::supports_tui()` (see `static_commands/mod.rs`), so that is
+/// what this test validates instead.
+#[test]
+fn vim_mode_slash_command_is_registered_in_command_registry() {
+    let cmd = &slash_commands::VIM_MODE;
+    assert_eq!(cmd.name, "/vim-mode");
+    assert!(
+        cmd.supports_tui(),
+        "/vim-mode must be marked supports_tui so the TUI slash-command menu surfaces it"
+    );
+}
+
+/// Executing the `/vim-mode` slash command must toggle and persist the
+/// `AppEditorSettings::vim_mode` setting on each invocation.
+#[test]
+fn vim_mode_slash_command_persists_toggle() {
+    App::test((), |mut app| async move {
+        use warp::settings::AppEditorSettings;
+        use warpui::SingletonEntity as _;
+
+        let fixture = focus_test_fixture(&mut app);
+        // AppEditorSettings is already registered by add_focus_test_session's
+        // underlying register_all_settings; no explicit registration needed here.
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        assert!(
+            !app.read(|ctx| AppEditorSettings::as_ref(ctx).vim_mode_enabled()),
+            "vim mode should start disabled"
+        );
+
+        // First toggle: off -> on.
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::VIM_MODE, None, ctx);
+        });
+        assert!(
+            app.read(|ctx| AppEditorSettings::as_ref(ctx).vim_mode_enabled()),
+            "/vim-mode should enable vim mode on the first toggle"
+        );
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, _)| text.to_owned())
+            }),
+            Some(super::VIM_MODE_ENABLED_HINT.to_owned()),
+            "should surface an enabled hint after enabling vim mode"
+        );
+
+        // Second toggle: on -> off.
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::VIM_MODE, None, ctx);
+        });
+        assert!(
+            !app.read(|ctx| AppEditorSettings::as_ref(ctx).vim_mode_enabled()),
+            "/vim-mode should disable vim mode on the second toggle"
+        );
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, _)| text.to_owned())
+            }),
+            Some(super::VIM_MODE_DISABLED_HINT.to_owned()),
+            "should surface a disabled hint after disabling vim mode"
+        );
+    });
+}
+
+/// The Vim mode indicator (INS/NOR/VIS/V-L/REP) must appear in the footer only
+/// while Vim mode is enabled.
+///
+/// This test validates the accessor and the full render path.
+#[test]
+fn vim_mode_indicator_shown_only_when_vim_mode_is_enabled() {
+    App::test((), |mut app| async move {
+        use warp::settings::AppEditorSettings;
+        use warpui::SingletonEntity as _;
+
+        let fixture = focus_test_fixture(&mut app);
+        // AppEditorSettings is already registered by add_focus_test_session's
+        // underlying register_all_settings; no explicit registration needed here.
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        // Vim mode off: vim_mode_indicator returns None regardless of mode.
+        app.read(|ctx| {
+            let indicator = view.as_ref(ctx).vim_mode_indicator(ctx);
+            assert!(
+                indicator.is_none(),
+                "indicator must be None when vim mode is disabled, got {indicator:?}"
+            );
+        });
+
+        // Enable vim mode. The FSA starts in Insert mode, so the indicator
+        // shows "INS", matching the GUI Vim status indicator.
+        app.update(|ctx| {
+            AppEditorSettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .vim_mode
+                    .set_value(true, ctx)
+                    .expect("failed to enable vim mode");
+            });
+        });
+        app.read(|ctx| {
+            let indicator = view.as_ref(ctx).vim_mode_indicator(ctx);
+            assert_eq!(
+                indicator,
+                Some("INS"),
+                "indicator must be INS in Insert mode when vim mode is enabled, got {indicator:?}"
+            );
+        });
+
+        // Drive the input to Normal mode (Escape from Insert): indicator -> Some("NOR").
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.handle_action(&crate::input::view::TuiInputAction::HandleEscape, ctx);
+            });
+        });
+        app.read(|ctx| {
+            let indicator = view.as_ref(ctx).vim_mode_indicator(ctx);
+            assert_eq!(
+                indicator,
+                Some("NOR"),
+                "indicator must be NOR in Normal mode when vim mode is enabled"
+            );
+        });
+        // Verify via the full render path: the footer must contain NOR.
+        let rendered = render_session(&mut app, &view, 80, 24).join("\n");
+        assert!(
+            rendered.contains("NOR"),
+            "rendered footer must contain 'NOR' after Insert->Normal transition, got:\n{rendered}"
+        );
+
+        // Uppercase R enters continuous Replace mode and the footer reflects it.
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.handle_action(
+                    &crate::input::view::TuiInputAction::Editor(
+                        crate::editor_element::TuiEditorAction::InsertChar('R'),
+                    ),
+                    ctx,
+                );
+            });
+        });
+        app.read(|ctx| {
+            assert_eq!(view.as_ref(ctx).vim_mode_indicator(ctx), Some("REP"));
+        });
+        let rendered = render_session(&mut app, &view, 80, 24).join("\n");
+        assert!(
+            rendered.contains("REP"),
+            "rendered footer must contain 'REP' in continuous Replace mode, got:\n{rendered}"
+        );
+
+        // Disable vim mode: indicator -> None again.
+        app.update(|ctx| {
+            AppEditorSettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .vim_mode
+                    .set_value(false, ctx)
+                    .expect("failed to disable vim mode");
+            });
+        });
+        app.read(|ctx| {
+            let indicator = view.as_ref(ctx).vim_mode_indicator(ctx);
+            assert!(
+                indicator.is_none(),
+                "indicator must be None after vim mode is disabled, got {indicator:?}"
+            );
+        });
     });
 }

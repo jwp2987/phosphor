@@ -5,6 +5,10 @@ use settings::Setting;
 use warpui::{App, SingletonEntity};
 
 use crate::ai::agent_providers::{llm_id, lookup_byop, AgentProviderSecrets};
+use crate::tui_export::{
+    tui_agent_provider_has_connected_key, tui_clear_agent_provider_api_key,
+    tui_list_agent_provider_keys, tui_set_agent_provider_api_key,
+};
 use crate::ai::llms::{DisableReason, LLMPreferences};
 use crate::auth::{AuthManager, AuthStateProvider};
 use crate::network::NetworkStatus;
@@ -292,6 +296,139 @@ fn smoke_disabled_model_is_excluded_from_picker_but_sibling_model_still_works() 
                 lookup_byop(ctx, &disabled_id).is_none(),
                 "lookup_byop must refuse a disabled model even by exact id"
             );
+        });
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TUI `/api-keys` menu support (crate::tui_export::tui_*_agent_provider_*)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn tui_list_agent_provider_keys_reflects_no_key_then_key_set_then_cleared() {
+    App::test((), |mut app| async move {
+        init_byop_test_app(&mut app);
+
+        let provider_id = "provider-tui-keys-1";
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings
+                    .agent_providers
+                    .set_value(vec![sample_provider(provider_id)], ctx);
+            });
+        });
+
+        // No key yet.
+        app.read(|ctx| {
+            let providers = tui_list_agent_provider_keys(ctx);
+            assert_eq!(providers.len(), 1);
+            assert_eq!(providers[0].provider_id, provider_id);
+            assert_eq!(providers[0].display_name, "Test Ollama");
+            assert!(!providers[0].has_key, "no key set yet");
+        });
+
+        // Setting a key persists it via AgentProviderSecrets and is immediately reflected.
+        app.update(|ctx| {
+            tui_set_agent_provider_api_key(ctx, provider_id, "sk-test-123".to_owned());
+        });
+        app.read(|ctx| {
+            let providers = tui_list_agent_provider_keys(ctx);
+            assert!(providers[0].has_key, "key should now be connected");
+            assert_eq!(
+                AgentProviderSecrets::as_ref(ctx).get(provider_id),
+                Some("sk-test-123"),
+                "key must be readable straight from AgentProviderSecrets, the same store the \
+                 GUI settings AI page writes to"
+            );
+        });
+
+        // Clearing removes it again.
+        app.update(|ctx| {
+            tui_clear_agent_provider_api_key(ctx, provider_id);
+        });
+        app.read(|ctx| {
+            let providers = tui_list_agent_provider_keys(ctx);
+            assert!(!providers[0].has_key, "key should be cleared");
+            assert_eq!(AgentProviderSecrets::as_ref(ctx).get(provider_id), None);
+        });
+    });
+}
+
+#[test]
+fn tui_list_agent_provider_keys_falls_back_to_id_for_unnamed_provider() {
+    App::test((), |mut app| async move {
+        init_byop_test_app(&mut app);
+
+        let provider_id = "provider-tui-keys-unnamed";
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let mut provider = sample_provider(provider_id);
+                provider.name.clear();
+                let _ = settings.agent_providers.set_value(vec![provider], ctx);
+            });
+        });
+
+        app.read(|ctx| {
+            let providers = tui_list_agent_provider_keys(ctx);
+            assert_eq!(providers[0].display_name, provider_id);
+        });
+    });
+}
+
+#[test]
+fn tui_agent_provider_has_connected_key_requires_both_usable_and_keyed() {
+    App::test((), |mut app| async move {
+        init_byop_test_app(&mut app);
+
+        let provider_id = "provider-tui-indicator-1";
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings
+                    .agent_providers
+                    .set_value(vec![sample_provider(provider_id)], ctx);
+            });
+        });
+        let model_id = llm_id::encode(provider_id, "llama3.2");
+
+        // Usable provider, no key yet -> not connected.
+        app.read(|ctx| {
+            assert!(!tui_agent_provider_has_connected_key(ctx, &model_id));
+        });
+
+        // Usable provider with a key -> connected. This is the model picker's
+        // "(key connected)" indicator.
+        app.update(|ctx| {
+            tui_set_agent_provider_api_key(ctx, provider_id, "sk-test-456".to_owned());
+        });
+        app.read(|ctx| {
+            assert!(tui_agent_provider_has_connected_key(ctx, &model_id));
+        });
+
+        // Disabling the provider (still keyed) must flip the indicator back off --
+        // effectively_disabled() providers don't show up in the model picker at all, so a
+        // stale "connected" reading here would be misleading busywork for a hidden model.
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                let mut providers = settings.agent_providers.value().clone();
+                providers[0].disabled = true;
+                let _ = settings.agent_providers.set_value(providers, ctx);
+            });
+        });
+        app.read(|ctx| {
+            assert!(!tui_agent_provider_has_connected_key(ctx, &model_id));
+        });
+    });
+}
+
+#[test]
+fn tui_agent_provider_has_connected_key_false_for_non_byop_id() {
+    App::test((), |mut app| async move {
+        init_byop_test_app(&mut app);
+        app.read(|ctx| {
+            assert!(!tui_agent_provider_has_connected_key(
+                ctx,
+                &LLMId::from("claude-4-sonnet")
+            ));
         });
     });
 }

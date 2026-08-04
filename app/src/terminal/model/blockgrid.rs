@@ -696,7 +696,7 @@ impl BlockGrid {
         self.grid_handler.reset_received_osc();
     }
 
-    fn ansi_handler(&mut self) -> &mut impl ansi::Handler {
+    fn ansi_handler(&mut self) -> &mut (impl ansi::Handler + use<>) {
         self.grid_handler.ansi_handler()
     }
 
@@ -726,6 +726,10 @@ impl ansi::Handler for BlockGrid {
 
     fn input(&mut self, c: char) {
         self.ansi_handler().input(c);
+    }
+
+    fn set_hyperlink(&mut self, hyperlink: Option<warp_terminal::model::ansi::Hyperlink>) {
+        self.ansi_handler().set_hyperlink(hyperlink);
     }
 
     fn goto(&mut self, row: VisibleRow, col: usize) {
@@ -952,7 +956,7 @@ impl ansi::Handler for BlockGrid {
         self.ansi_handler().text_area_size_chars(writer);
     }
 
-    fn precmd(&mut self, _: PrecmdValue) {
+    fn precmd_with_completion_metadata(&mut self, _: PrecmdValue) {
         unreachable!("Handled at block layer");
     }
 

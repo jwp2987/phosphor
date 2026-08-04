@@ -256,7 +256,6 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_ssh_into_sh);
     register_test!(test_ssh_into_ash);
     register_test!(test_ssh_with_shell_override);
-    register_test!(test_ssh_server_group_dropdown);
     register_test!(test_custom_open_completions_menu_binding);
     register_test!(test_color_overrides_in_prompt_dont_crash);
     register_test!(test_copy_prompt_from_block_honor_ps1_disabled);
@@ -323,6 +322,13 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_alt_screen_secret_detection);
     register_test!(test_secret_case_sensitivity);
     register_test!(test_secrets_are_always_redacted_in_ai_inputs);
+
+    // OSC 8 hyperlink tests (GH6393)
+    register_test!(test_osc8_open_close_renders_visible_text);
+    register_test!(test_osc8_copy_block_yields_visible_text_only);
+    register_test!(test_osc8_open_link_action_opens_url);
+    register_test!(test_osc8_file_scheme_opens_url);
+    register_test!(test_osc8_no_regression_on_url_autodetect);
 
     register_test!(test_context_chips_prompt_at_bootstrap);
 
@@ -428,27 +434,6 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_goto_line_with_column);
     register_test!(test_goto_line_clamps_out_of_range);
 
-    // SFTP browser popup tests
-    register_test!(test_sftp_pane_opens_in_workspace);
-    register_test!(test_sftp_pane_focus_and_keyboard);
-    register_test!(test_sftp_pane_close);
-    register_test!(test_sftp_pane_tab_switch);
-    register_test!(test_sftp_pane_disconnected_render);
-    // SFTP mock backend UI integration tests
-    register_test!(test_sftp_mock_backend_connected);
-    register_test!(test_sftp_toolbar_refresh);
-    register_test!(test_sftp_toolbar_new_folder);
-    register_test!(test_sftp_toolbar_upload);
-    register_test!(test_sftp_toolbar_up);
-    register_test!(test_sftp_click_file_row_selects);
-    register_test!(test_sftp_right_click_opens_menu);
-    register_test!(test_sftp_ctx_menu_delete);
-    register_test!(test_sftp_ctx_menu_rename);
-    register_test!(test_sftp_breadcrumb_root_click);
-    register_test!(test_sftp_keyboard_backspace_up);
-    register_test!(test_sftp_keyboard_delete);
-    register_test!(test_sftp_keyboard_escape_close_dialog);
-
     // Keyboard protocol tests
     register_test!(test_keyboard_protocol_disabled_shift_enter);
     register_test!(test_keyboard_protocol_enabled_shift_enter);
@@ -462,6 +447,21 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
 
     // Video recording test (manual only)
     register_test!(test_video_recording);
+
+    // Chunk B: GUI usage / acceptance smoke scenarios (`usage_*`).
+    register_test!(usage_launch_bootstrap);
+    register_test!(usage_open_close_settings);
+    register_test!(usage_open_command_palette);
+    register_test!(usage_tabs_add_switch_close);
+    register_test!(usage_theme_creator_modal);
+    register_test!(usage_block_navigation_select);
+    register_test!(usage_find_in_block);
+    register_test!(usage_agent_block_render);
+    register_test!(usage_run_command_output_block);
+    register_test!(usage_run_command_exit_code);
+    register_test!(usage_secret_redaction);
+    register_test!(usage_agent_roundtrip);
+    register_test!(usage_font_size_window_resize);
 
     tests
 }

@@ -438,6 +438,14 @@ impl RefCounts {
         }
     }
 
+    fn is_model_dropped(&self, model_id: EntityId) -> bool {
+        self.dropped.models.contains(&model_id)
+    }
+
+    fn is_view_dropped(&self, view_id: EntityId) -> bool {
+        self.dropped.views.iter().any(|(_, id)| *id == view_id)
+    }
+
     fn take_dropped(&mut self) -> DroppedItems {
         mem::take(&mut self.dropped)
     }
@@ -674,3 +682,7 @@ impl<T> RequestState<T> {
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "tui"))]
+#[path = "tui_view_tests.rs"]
+mod tui_view_tests;

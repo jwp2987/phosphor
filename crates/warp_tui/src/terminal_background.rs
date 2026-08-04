@@ -1,42 +1,223 @@
-//! The host terminal's default colors, captured once by the startup probe,
-//! and the transcript theme selection derived from them.
+//! Host terminal appearance detection and live auto-theme refresh for the TUI.
 //!
-//! Stored as process-wide state (like `ChannelState` and feature flags)
-//! rather than an app-model singleton: the probe runs once in `session::init`
-//! before any render and the result never changes for the process's lifetime.
-//! When the probe never ran (tests, non-tty), readers see empty colors and
-//! fall back to theme-derived styling.
+//! The singleton owns the detected terminal background and the complete live
+//! probe lifecycle. The foreground owns all domain state and shares only an
+//! atomic eligibility gate with the runtime reader thread.
+//!
+//! Upstream Warp gates live re-probing behind a user-facing TUI theme setting
+//! (`TuiTheme::Auto`/`Dark`/`Light`); this fork has not ported that setting
+//! yet, so the TUI always tracks the host terminal's background — the
+//! unconditional equivalent of upstream's `Auto` mode. When the setting is
+//! ported, gating probe eligibility on it here is the natural extension
+//! point (see `record_probe_result`/`TerminalBackgroundState::probe_enabled`).
 
-use std::sync::OnceLock;
+use std::io::IsTerminal;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use warp::tui_export::{dark_theme, light_theme};
+use warp::tui_export::{Appearance, dark_theme, light_theme};
 use warp_core::ui::theme::WarpTheme;
-use warpui_core::runtime::{BackgroundLuminance, ProbedTerminalColors, probe_terminal_colors};
+use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
+use warpui_core::runtime::{
+    BackgroundLuminance, ProbedRgb, TuiProbe, background_luminance, probe_terminal_background,
+    read_terminal_background_reply, write_terminal_background_query,
+};
 
-static PROBED_COLORS: OnceLock<ProbedTerminalColors> = OnceLock::new();
+/// Maximum time to wait for each focus-triggered OSC 11 reply.
+const LIVE_PROBE_DEADLINE: Duration = Duration::from_millis(50);
+/// Consecutive missing replies allowed before probing stops for this session.
+const CONSECUTIVE_MISS_CUTOFF: u8 = 3;
 
-/// Probes the host terminal for its default colors (via OSC 10/11 — call
-/// before the TUI driver takes over stdin), caches the result process-wide
-/// for style blending, and returns the matching transcript theme: a light
-/// background selects the light theme; dark and undetectable backgrounds
-/// keep the dark theme, the TUI's historical dark-only default.
-pub(crate) fn probe_and_select_theme() -> WarpTheme {
-    let probed = probe_terminal_colors();
-    set_probed_colors(probed);
-    match probed.background_luminance() {
+/// Tracks whether focus-triggered background probes may continue in this session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalBackgroundProbeBudget {
+    Available {
+        consecutive_misses: u8,
+    },
+    /// The missing-reply cutoff was reached; probing cannot resume this session.
+    Exhausted,
+}
+
+/// Foreground-owned terminal background and probe-budget state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalBackgroundState {
+    /// Latest terminal background returned by OSC 11.
+    background: Option<ProbedRgb>,
+    /// Whether this session may issue further focus-triggered probes.
+    probe_budget: TerminalBackgroundProbeBudget,
+}
+
+impl TerminalBackgroundState {
+    fn new(background: Option<ProbedRgb>) -> Self {
+        Self {
+            background,
+            probe_budget: TerminalBackgroundProbeBudget::Available {
+                consecutive_misses: 0,
+            },
+        }
+    }
+
+    /// Whether the reader thread may issue further focus-triggered probes.
+    /// Always tracks the host terminal (there is no explicit-theme override
+    /// to opt out with — see the module doc), so this only reflects budget.
+    fn probe_enabled(&self) -> bool {
+        matches!(
+            self.probe_budget,
+            TerminalBackgroundProbeBudget::Available { .. }
+        )
+    }
+
+    fn record_probe_result(
+        &mut self,
+        new_background: Option<ProbedRgb>,
+        current_theme: &WarpTheme,
+        consecutive_miss_cutoff: u8,
+    ) -> ProbeResultAction {
+        let TerminalBackgroundProbeBudget::Available { consecutive_misses } =
+            &mut self.probe_budget
+        else {
+            return ProbeResultAction::default();
+        };
+
+        let Some(new_background) = new_background else {
+            *consecutive_misses = consecutive_misses.saturating_add(1);
+            if *consecutive_misses >= consecutive_miss_cutoff {
+                self.probe_budget = TerminalBackgroundProbeBudget::Exhausted;
+            }
+            return ProbeResultAction::default();
+        };
+
+        *consecutive_misses = 0;
+        if self.background == Some(new_background) {
+            return ProbeResultAction::default();
+        }
+        self.background = Some(new_background);
+        let resolved_theme =
+            resolve_theme_for_background(background_luminance(Some(new_background)));
+        if resolved_theme != *current_theme {
+            ProbeResultAction::SetTheme(resolved_theme)
+        } else {
+            ProbeResultAction::Repaint
+        }
+    }
+}
+
+/// Foreground action required after processing a background probe result.
+#[derive(Clone, Debug, Default, PartialEq)]
+enum ProbeResultAction {
+    #[default]
+    None,
+    /// The exact RGB changed, so background-blended surfaces must repaint even
+    /// though the resolved light/dark theme is unchanged.
+    Repaint,
+    /// The resolved light/dark theme changed and must be applied.
+    SetTheme(WarpTheme),
+}
+
+/// Resolves the transcript theme for a probed background: a light background
+/// selects the light theme; dark and undetectable backgrounds keep the dark
+/// theme, the TUI's historical dark-only default.
+fn resolve_theme_for_background(luminance: BackgroundLuminance) -> WarpTheme {
+    match luminance {
         BackgroundLuminance::Light => light_theme(),
         BackgroundLuminance::Dark | BackgroundLuminance::Unknown => dark_theme(),
     }
 }
 
-/// Records the startup probe's result. Later calls are no-ops; the first
-/// result wins for the lifetime of the process.
-fn set_probed_colors(colors: ProbedTerminalColors) {
-    let _ = PROBED_COLORS.set(colors);
+/// Owns the host terminal appearance and live background-probe lifecycle.
+#[derive(Clone, Debug)]
+pub(crate) struct TuiHostTerminalBackground {
+    state: TerminalBackgroundState,
+    probe_enabled: Arc<AtomicBool>,
 }
 
-/// The probed terminal colors, or empty colors when the probe never ran or
-/// the terminal did not answer.
-pub(crate) fn probed_colors() -> ProbedTerminalColors {
-    PROBED_COLORS.get().copied().unwrap_or_default()
+impl Entity for TuiHostTerminalBackground {
+    type Event = ();
 }
+
+impl SingletonEntity for TuiHostTerminalBackground {}
+
+impl TuiHostTerminalBackground {
+    /// Probes the initial background, registers the singleton, and returns the
+    /// resolved initial theme plus the runtime's focus-triggered probe
+    /// registration (pass this to `spawn_tui_driver`).
+    pub(crate) fn register(ctx: &mut AppContext) -> (WarpTheme, TuiProbe) {
+        let background = probe_terminal_background();
+        let theme = resolve_theme_for_background(background_luminance(background));
+        let state = TerminalBackgroundState::new(background);
+        let probe_enabled = Arc::new(AtomicBool::new(state.probe_enabled()));
+        let reader_probe_enabled = probe_enabled.clone();
+        let live_probe_supported =
+            std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        let (probe_sender, probe_receiver) = async_channel::unbounded();
+        ctx.add_singleton_model(move |_| Self {
+            state,
+            probe_enabled,
+        });
+        Self::handle(ctx).update(ctx, |_, ctx| {
+            ctx.spawn_stream_local(
+                probe_receiver,
+                |host, background, ctx| {
+                    host.handle_background_probe_result(background, ctx);
+                },
+                |_, _| {},
+            );
+        });
+
+        let probe = TuiProbe::new(
+            move || live_probe_supported && reader_probe_enabled.load(Ordering::Relaxed),
+            probe_sender,
+            |writer| write_terminal_background_query(writer),
+            move || read_terminal_background_reply(LIVE_PROBE_DEADLINE),
+        );
+        (theme, probe)
+    }
+
+    /// Latest terminal background returned by OSC 11.
+    pub(crate) fn terminal_background(&self) -> Option<ProbedRgb> {
+        self.state.background
+    }
+
+    /// Applies one reader-thread OSC 11 result to the cached background, probe
+    /// lifecycle, and active Warp theme.
+    fn handle_background_probe_result(
+        &mut self,
+        background: Option<ProbedRgb>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let current_theme = Appearance::as_ref(ctx).theme().clone();
+        let decision =
+            self.state
+                .record_probe_result(background, &current_theme, CONSECUTIVE_MISS_CUTOFF);
+        self.update_probe_enabled();
+        match decision {
+            ProbeResultAction::None => {}
+            ProbeResultAction::Repaint => ctx.invalidate_all_views(),
+            ProbeResultAction::SetTheme(theme) => {
+                Appearance::handle(ctx).update(ctx, |appearance, ctx| {
+                    appearance.set_theme(theme, ctx);
+                });
+            }
+        }
+    }
+
+    fn update_probe_enabled(&self) {
+        self.probe_enabled
+            .store(self.state.probe_enabled(), Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register_for_test(background: Option<ProbedRgb>, ctx: &mut AppContext) {
+        let state = TerminalBackgroundState::new(background);
+        let probe_enabled = Arc::new(AtomicBool::new(state.probe_enabled()));
+        ctx.add_singleton_model(move |_| Self {
+            state,
+            probe_enabled,
+        });
+    }
+}
+
+#[cfg(test)]
+#[path = "terminal_background_tests.rs"]
+mod tests;

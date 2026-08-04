@@ -330,7 +330,7 @@ pub(super) fn sort_adapters(
     gpu_power_preference: &GPUPowerPreference,
     windowing_system: Option<windowing::System>,
     downrank_non_nvidia_vulkan_adapters: bool,
-) -> impl Iterator<Item = wgpu::Adapter> {
+) -> impl Iterator<Item = wgpu::Adapter> + use<> {
     adapters
         .into_iter()
         // Sort adapters by backend priority.
@@ -781,7 +781,7 @@ enum AdapterSupport {
 /// https://github.com/gfx-rs/wgpu/blob/v0.18/wgpu-core/src/instance.rs#L953-L954
 fn power_preference_adapter_sort_func(
     pref: &GPUPowerPreference,
-) -> impl FnMut(&wgpu::Adapter) -> usize {
+) -> impl FnMut(&wgpu::Adapter) -> usize + use<> {
     match pref {
         GPUPowerPreference::LowPower => {
             |adapter: &wgpu::Adapter| match adapter.get_info().device_type {

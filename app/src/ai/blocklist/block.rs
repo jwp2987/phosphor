@@ -1277,12 +1277,12 @@ impl AIBlock {
         if me.model.status(ctx).is_streaming() {
             me.model
                 .on_updated_output(Box::new(Self::on_output_status_update), ctx);
-        } else if let Some(output) = me.model.status(ctx).output_to_render() {
+        } else { match me.model.status(ctx).output_to_render() { Some(output) => {
             // "Simulate" receiving this output if output is already complete.
             let output = output.get();
             me.handle_updated_output(&output, ctx);
             me.handle_complete_output(&output, ctx);
-        }
+        } _ => {}}}
 
         match me.model.status(ctx) {
             AIBlockOutputStatus::Complete { .. } => {
@@ -1798,7 +1798,13 @@ impl AIBlock {
                     } else {
                         format!("MCP Tool: {name} ({display_input})")
                     };
-                    self.handle_mcp_tool_stream_update(action_id, &command_text, ctx);
+                    self.handle_mcp_tool_stream_update(
+                        action_id,
+                        name,
+                        &command_text,
+                        *server_id,
+                        ctx,
+                    );
                 }
                 AIAgentAction {
                     id: action_id,
@@ -3038,13 +3044,17 @@ impl AIBlock {
     fn handle_mcp_tool_stream_update(
         &mut self,
         action_id: &AIAgentActionId,
+        tool_name: &str,
         command_text: &str,
+        server_id: Option<uuid::Uuid>,
         ctx: &mut ViewContext<Self>,
     ) {
         match self.requested_mcp_tools.get_mut(action_id) {
             Some(requested_mcp_tool) => {
                 requested_mcp_tool.view.update(ctx, |view, ctx| {
                     view.apply_streamed_update(command_text, ctx);
+                    view.update_mcp_tool_name(tool_name);
+                    view.update_mcp_server_id(server_id);
                     ctx.notify();
                 });
             }
@@ -3065,6 +3075,8 @@ impl AIBlock {
                         ctx,
                     );
                     view.apply_streamed_update(command_text, ctx);
+                    view.update_mcp_tool_name(tool_name);
+                    view.update_mcp_server_id(server_id);
                     view
                 });
                 let action_id_clone = action_id.clone();

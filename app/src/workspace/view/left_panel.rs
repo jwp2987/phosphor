@@ -32,7 +32,6 @@ use crate::server::telemetry::CodePanelsFileOpenEntrypoint;
 use crate::server::telemetry::{FileTreeSource, WarpDriveSource};
 use crate::settings_view::keybindings::{KeybindingChangedEvent, KeybindingChangedNotifier};
 use crate::skill_manager::{SkillManagerPanel, SkillManagerPanelEvent};
-use crate::ssh_manager::SshManagerPanel;
 use crate::terminal::model::session::Session;
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
@@ -51,7 +50,7 @@ use crate::workspace::view::server_file_browser::{
 use crate::workspace::view::{
     LEFT_PANEL_AGENT_CONVERSATIONS_BINDING_NAME, LEFT_PANEL_GLOBAL_SEARCH_BINDING_NAME,
     LEFT_PANEL_PROJECT_EXPLORER_BINDING_NAME, LEFT_PANEL_SKILL_MANAGER_BINDING_NAME,
-    LEFT_PANEL_SSH_MANAGER_BINDING_NAME, LEFT_PANEL_WARP_DRIVE_BINDING_NAME,
+    LEFT_PANEL_WARP_DRIVE_BINDING_NAME,
     OPEN_GLOBAL_SEARCH_BINDING_NAME, TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME,
     TOGGLE_PROJECT_EXPLORER_BINDING_NAME, TOGGLE_WARP_DRIVE_BINDING_NAME,
 };
@@ -77,7 +76,6 @@ struct MouseStateHandles {
     global_search_button: MouseStateHandle,
     warp_drive_button: MouseStateHandle,
     conversation_list_view_button: MouseStateHandle,
-    ssh_manager_button: MouseStateHandle,
     server_file_browser_button: MouseStateHandle,
     skill_manager_button: MouseStateHandle,
     wire_inspector_button: MouseStateHandle,
@@ -89,7 +87,6 @@ pub enum LeftPanelAction {
     GlobalSearch { entry_focus: GlobalSearchEntryFocus },
     ZapDrive,
     ConversationListView,
-    SshManager,
     ServerFileBrowser,
     SkillManager,
 }
@@ -125,24 +122,6 @@ pub enum LeftPanelEvent {
         terminal_view_id: Option<warpui::EntityId>,
     },
     ShowDeleteAllConfirmationDialog,
-    /// The user clicks / double-clicks / right-clicks "Edit" on a server in
-    /// the SSH manager tree → the main window should open/focus a
-    /// `SshServerPane` in the central area (see `WorkspaceView::open_ssh_server`).
-    OpenSshServerEditor {
-        node_id: String,
-    },
-    /// The user right-clicks "Connect" in the SSH manager → the main window
-    /// runs `ssh ...` in a new terminal pane and starts a SecretInjector
-    /// (implemented in Commit 3; currently a placeholder event).
-    OpenSshTerminal {
-        node_id: String,
-        server: warp_ssh_manager::SshServerInfo,
-    },
-    /// The user right-clicks "SFTP browse" in the SSH manager → the main window opens the SFTP file browser pane.
-    OpenSftpPane {
-        node_id: String,
-        server: warp_ssh_manager::SshServerInfo,
-    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -151,7 +130,6 @@ pub enum ToolPanelView {
     GlobalSearch { entry_focus: GlobalSearchEntryFocus },
     ZapDrive,
     ConversationListView,
-    SshManager,
     ServerFileBrowser,
     SkillManager,
 }
@@ -220,7 +198,6 @@ pub struct LeftPanelView {
     close_button_mouse_state: MouseStateHandle,
     warp_drive_view: ViewHandle<DrivePanel>,
     conversation_list_view: ViewHandle<ConversationListView>,
-    ssh_manager_view: ViewHandle<SshManagerPanel>,
     server_file_browser_view: ViewHandle<ServerFileBrowserView>,
     skill_manager_view: ViewHandle<SkillManagerPanel>,
     active_view: active_view_state::ActiveViewState,
@@ -267,34 +244,8 @@ impl LeftPanelView {
         };
         let warp_drive_view = ctx.add_typed_action_view(DrivePanel::new);
         let conversation_list_view = ctx.add_typed_action_view(ConversationListView::new);
-        let ssh_manager_view = ctx.add_typed_action_view(SshManagerPanel::new);
         let server_file_browser_view = ctx.add_typed_action_view(ServerFileBrowserView::new);
         let skill_manager_view = ctx.add_typed_action_view(SkillManagerPanel::new);
-        ctx.subscribe_to_view(&ssh_manager_view, |_me, _, event, ctx| {
-            use crate::ssh_manager::SshManagerPanelEvent;
-            match event {
-                SshManagerPanelEvent::OpenServerEditor { node_id } => {
-                    ctx.emit(LeftPanelEvent::OpenSshServerEditor {
-                        node_id: node_id.clone(),
-                    });
-                }
-                SshManagerPanelEvent::OpenSshTerminal { node_id, server } => {
-                    ctx.emit(LeftPanelEvent::OpenSshTerminal {
-                        node_id: node_id.clone(),
-                        server: server.clone(),
-                    });
-                }
-                SshManagerPanelEvent::OpenSftpPane { node_id, server } => {
-                    ctx.emit(LeftPanelEvent::OpenSftpPane {
-                        node_id: node_id.clone(),
-                        server: server.clone(),
-                    });
-                }
-                SshManagerPanelEvent::PersistenceError(msg) => {
-                    log::error!("ssh_manager persistence error: {msg}");
-                }
-            }
-        });
         ctx.subscribe_to_view(&skill_manager_view, |_me, _, event, ctx| match event {
             SkillManagerPanelEvent::OpenSkillFile { path } => {
                 let reference = SkillManager::as_ref(ctx).reference_for_skill_path(path);
@@ -410,7 +361,6 @@ impl LeftPanelView {
             close_button_mouse_state: Default::default(),
             warp_drive_view,
             conversation_list_view,
-            ssh_manager_view,
             server_file_browser_view,
             skill_manager_view,
             active_view: active_view_state::new(active_view),
@@ -452,7 +402,6 @@ impl LeftPanelView {
             // Use discriminant comparison for GlobalSearch since it has inner data
             match (v, &current_view) {
                 (ToolPanelView::GlobalSearch { .. }, ToolPanelView::GlobalSearch { .. }) => true,
-                (ToolPanelView::SshManager, ToolPanelView::SshManager) => true,
                 (ToolPanelView::ServerFileBrowser, ToolPanelView::ServerFileBrowser) => true,
                 (ToolPanelView::SkillManager, ToolPanelView::SkillManager) => true,
                 _ => std::mem::discriminant(v) == std::mem::discriminant(&current_view),
@@ -543,18 +492,6 @@ impl LeftPanelView {
                     active_icon: Some(Icon::Conversation),
                     tooltip_text: crate::t!("workspace-left-panel-agent-conversations"),
                     action: LeftPanelAction::ConversationListView,
-                    render_with_active_state: false,
-                    tooltip_keybinding: toolbelt_tooltip_keybinding(&tooltip_keybinding_names, ctx),
-                    tooltip_keybinding_names,
-                }
-            }
-            ToolPanelView::SshManager => {
-                let tooltip_keybinding_names = vec![LEFT_PANEL_SSH_MANAGER_BINDING_NAME];
-                ToolbeltButtonConfig {
-                    icon: Icon::Server01,
-                    active_icon: None,
-                    tooltip_text: crate::t!("workspace-left-panel-ssh-manager"),
-                    action: LeftPanelAction::SshManager,
                     render_with_active_state: false,
                     tooltip_keybinding: toolbelt_tooltip_keybinding(&tooltip_keybinding_names, ctx),
                     tooltip_keybinding_names,
@@ -850,9 +787,6 @@ impl LeftPanelView {
                     view.on_left_panel_focused(ctx);
                 });
             }
-            ToolPanelView::SshManager => {
-                ctx.focus(&self.ssh_manager_view);
-            }
             ToolPanelView::ServerFileBrowser => {
                 ctx.focus(&self.server_file_browser_view);
                 self.server_file_browser_view.update(ctx, |view, ctx| {
@@ -1089,7 +1023,6 @@ impl LeftPanelView {
                 LeftPanelAction::ConversationListView => {
                     self.active_view.get() == ToolPanelView::ConversationListView
                 }
-                LeftPanelAction::SshManager => self.active_view.get() == ToolPanelView::SshManager,
                 LeftPanelAction::ServerFileBrowser => {
                     self.active_view.get() == ToolPanelView::ServerFileBrowser
                 }
@@ -1237,9 +1170,6 @@ impl LeftPanelView {
                 active_view_state::set(self, ToolPanelView::ConversationListView, ctx);
                 send_telemetry_from_ctx!(TelemetryEvent::ConversationListViewOpened, ctx);
             }
-            LeftPanelAction::SshManager => {
-                active_view_state::set(self, ToolPanelView::SshManager, ctx);
-            }
             LeftPanelAction::ServerFileBrowser => {
                 active_view_state::set(self, ToolPanelView::ServerFileBrowser, ctx);
             }
@@ -1345,7 +1275,6 @@ impl View for LeftPanelView {
                 }
                 ToolPanelView::ZapDrive => ctx.focus(&self.warp_drive_view),
                 ToolPanelView::ConversationListView => ctx.focus(&self.conversation_list_view),
-                ToolPanelView::SshManager => ctx.focus(&self.ssh_manager_view),
                 ToolPanelView::ServerFileBrowser => ctx.focus(&self.server_file_browser_view),
                 ToolPanelView::SkillManager => ctx.focus(&self.skill_manager_view),
             }
@@ -1362,7 +1291,6 @@ impl View for LeftPanelView {
             self.mouse_state_handles
                 .conversation_list_view_button
                 .clone(),
-            self.mouse_state_handles.ssh_manager_button.clone(),
             self.mouse_state_handles.server_file_browser_button.clone(),
             self.mouse_state_handles.skill_manager_button.clone(),
         ];
@@ -1388,7 +1316,7 @@ impl View for LeftPanelView {
 
         let content_area: Box<dyn Element> = match self.active_view.get() {
             ToolPanelView::ProjectExplorer => {
-                if let Some(file_tree_view) = self.active_file_tree_view(app) {
+                match self.active_file_tree_view(app) { Some(file_tree_view) => {
                     Shrinkable::new(
                         1.0,
                         Container::new(ChildView::new(&file_tree_view).finish())
@@ -1397,20 +1325,20 @@ impl View for LeftPanelView {
                             .finish(),
                     )
                     .finish()
-                } else {
+                } _ => {
                     Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish()
-                }
+                }}
             }
             ToolPanelView::GlobalSearch { .. } => {
-                if let Some(global_search_view) = self.active_global_search_view(app) {
+                match self.active_global_search_view(app) { Some(global_search_view) => {
                     Shrinkable::new(
                         1.0,
                         Container::new(ChildView::new(&global_search_view).finish()).finish(),
                     )
                     .finish()
-                } else {
+                } _ => {
                     Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish()
-                }
+                }}
             }
             ToolPanelView::ZapDrive => Shrinkable::new(
                 1.0,
@@ -1423,14 +1351,6 @@ impl View for LeftPanelView {
             ToolPanelView::ConversationListView => {
                 Shrinkable::new(1.0, ChildView::new(&self.conversation_list_view).finish()).finish()
             }
-            ToolPanelView::SshManager => Shrinkable::new(
-                1.0,
-                Container::new(ChildView::new(&self.ssh_manager_view).finish())
-                    .with_padding_left(2.)
-                    .with_padding_right(2.)
-                    .finish(),
-            )
-            .finish(),
             ToolPanelView::ServerFileBrowser => Shrinkable::new(
                 1.0,
                 Container::new(ChildView::new(&self.server_file_browser_view).finish())

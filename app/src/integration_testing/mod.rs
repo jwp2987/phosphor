@@ -17,6 +17,13 @@ pub mod goto_line;
 pub mod input;
 pub mod keybindings;
 pub mod launch_configs;
+// Test-only mock BYOP provider (canned streamed agent response + config helper).
+// Gated so it only compiles into test/harness builds, never a release build —
+// it pulls in `mockito`, which is an optional dependency enabled by the
+// `test-util` / `integration_tests` features (and a dev-dependency for
+// `#[cfg(test)]`). See `mock_provider/mod.rs`.
+#[cfg(any(test, feature = "test-util", feature = "integration_tests"))]
+pub mod mock_provider;
 pub mod navigation_palette;
 pub mod notebook;
 pub mod pane_group;
@@ -26,8 +33,6 @@ pub mod preview_config_migration;
 pub mod rules;
 pub mod secret_redaction;
 pub mod settings;
-pub mod sftp;
-pub mod ssh_manager;
 pub mod step;
 pub mod subshell;
 pub mod tab;

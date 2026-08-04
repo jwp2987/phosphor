@@ -58,7 +58,7 @@ impl Block {
 
     pub fn set_is_agent_tagged_in(&mut self, value: bool) {
         if let InteractionMode::User(UserMode {
-            ref mut did_user_tag_in_agent,
+            did_user_tag_in_agent,
         }) = &mut self.interaction_mode
         {
             if *did_user_tag_in_agent != value {
@@ -88,7 +88,7 @@ impl Block {
 
     pub fn upgrade_cli_subagent_task_id(&mut self, new_task_id: TaskId) -> anyhow::Result<()> {
         if let InteractionMode::Agent(AgentInteractionMetadata {
-            subagent_task_id: Some(ref mut task_id),
+            subagent_task_id: Some(task_id),
             ..
         }) = &mut self.interaction_mode
         {
@@ -157,7 +157,9 @@ impl Block {
         }
     }
 
-    /// Sets control to user with Stop reason if a long-running control state exists.
+    /// Hands control to the user with a non-resuming `Stop`. Used by teardown paths (rewind,
+    /// stop) where the conversation has been cancelled and must not resume when the command
+    /// completes.
     pub fn set_user_control_with_stop_reason(&mut self) {
         if let InteractionMode::Agent(AgentInteractionMetadata {
             long_running_control_state: Some(ref mut state),
@@ -165,7 +167,9 @@ impl Block {
         }) = self.interaction_mode
         {
             *state = LongRunningCommandControlState::User {
-                reason: UserTakeOverReason::Stop,
+                reason: UserTakeOverReason::Stop {
+                    should_auto_resume: false,
+                },
             };
         }
     }
@@ -281,7 +285,7 @@ impl Block {
             InteractionMode::Agent(AgentInteractionMetadata {
                 long_running_control_state:
                     Some(LongRunningCommandControlState::Agent {
-                        ref mut should_hide_responses,
+                        should_hide_responses,
                         ..
                     }),
                 ..
@@ -418,7 +422,7 @@ impl InteractionMode {
         reason: UserTakeOverReason,
     ) -> Result<(), UpdateInteractionModeError> {
         let Self::Agent(AgentInteractionMetadata {
-            ref mut long_running_control_state,
+            long_running_control_state,
             ..
         }) = self
         else {
@@ -438,7 +442,7 @@ impl InteractionMode {
 
     fn handoff_to_agent(&mut self) -> Result<(), UpdateInteractionModeError> {
         let Self::Agent(AgentInteractionMetadata {
-            ref mut long_running_control_state,
+            long_running_control_state,
             ..
         }) = self
         else {

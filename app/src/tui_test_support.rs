@@ -99,7 +99,11 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
     app.add_singleton_model(AuthManager::new_for_test);
     app.add_singleton_model(PrivacySettings::mock);
     app.add_singleton_model(|ctx| UserWorkspaces::mock(vec![], ctx));
-    app.add_singleton_model(|_| crate::appearance::Appearance::mock());
+    // Guarded: many isolated view tests register a mock Appearance themselves
+    // before provisioning the full harness, so tolerate a pre-registered one.
+    if !app.read(|ctx| ctx.has_singleton_model::<crate::appearance::Appearance>()) {
+        app.add_singleton_model(|_| crate::appearance::Appearance::mock());
+    }
 
     app.add_singleton_model(|_| TemplatableMCPServerManager::default());
     app.add_singleton_model(crate::ai::agent_providers::AgentProviderSecrets::new);

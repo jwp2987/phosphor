@@ -463,6 +463,30 @@ pub fn should_ignore_git_path(path: &Path) -> bool {
     !is_commit_related_git_file(path) && !is_index_lock_file(path)
 }
 
+/// Returns whether `path` is a symlink or is below one, relative to `repo_root`.
+///
+/// A repository symlink such as `result -> /nix/store/...` (a common Nix
+/// pattern) can otherwise make the filesystem watcher recursively register
+/// watches on an enormous tree outside the repository, ballooning memory.
+/// This check must be monotonic: if a symlinked directory is rejected, every
+/// descendant is rejected too, even though the descendant's own path is not
+/// itself a symlink.
+///
+/// The watched root itself may be a symlink (e.g. a workspace opened through
+/// a user-created alias); that is the boundary of this check, not something
+/// to prune.
+pub(crate) fn is_within_symlink(path: &Path, repo_root: &Path) -> bool {
+    // A path beneath a symlink can only be reached through a directory
+    // symlink, so walking ancestors (rather than resolving the full path)
+    // avoids a canonicalization syscall per watch event.
+    path.ancestors()
+        .take_while(|ancestor| *ancestor != repo_root && ancestor.starts_with(repo_root))
+        .any(|ancestor| {
+            std::fs::symlink_metadata(ancestor)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        })
+}
+
 pub fn path_passes_filters(path: &Path, gitignores: &[Gitignore]) -> bool {
     let to_check_path = if path.exists() {
         match dunce::canonicalize(path) {

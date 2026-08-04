@@ -4,6 +4,7 @@ use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::facts::manager::AIFactManager;
 use crate::ai::llms::LLMPreferences;
+use crate::ai::outline::RepoOutlines;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
 use crate::ai::AIRequestUsageModel;
@@ -77,13 +78,6 @@ use warpui::{platform::WindowStyle, App, ViewHandle};
 fn initialize_app(app: &mut App) {
     initialize_settings_for_tests(app);
 
-    // The SSH manager uses a process-global lazy SQLite connection; point it at a
-    // temp path so workspace init doesn't panic on an uninitialized DB path.
-    // Set-once: harmless if another test already initialized it.
-    let _ = warp_ssh_manager::set_database_path(
-        std::env::temp_dir().join("warp_ssh_manager_test.sqlite"),
-    );
-
     // Add the necessary singleton models to the App
     app.add_singleton_model(|_| AuthStateProvider::new_for_test());
     app.add_singleton_model(AuthManager::new_for_test);
@@ -99,7 +93,6 @@ fn initialize_app(app: &mut App) {
     app.add_singleton_model(MCPGalleryManager::new);
     app.add_singleton_model(crate::ai::agent_providers::AgentProviderSecrets::new);
     app.add_singleton_model(crate::settings::network_secrets::ProxyCredentials::new);
-    app.add_singleton_model(crate::settings::CloudSyncTokenStore::new);
     app.add_singleton_model(crate::terminal::cli_agent::CLIAgentInstallModel::new);
     app.add_singleton_model(ObjectStoreViewModel::mock);
     app.add_singleton_model(|_| Appearance::mock());
@@ -110,7 +103,6 @@ fn initialize_app(app: &mut App) {
     app.add_singleton_model(|_ctx| RelaunchModel::new());
     app.add_singleton_model(|_| ChangelogModel::new(Arc::new(http_client::Client::new())));
     app.add_singleton_model(|_| GitHubAuthNotifier::new());
-    app.add_singleton_model(|_| crate::ssh_manager::SshTreeChangedNotifier::new());
     app.add_singleton_model(|_ctx| SyncedInputState::mock());
     app.add_singleton_model(|_| ResizableData::default());
     app.add_singleton_model(LocalWorkflows::new);
@@ -141,7 +133,7 @@ fn initialize_app(app: &mut App) {
     app.add_singleton_model(|ctx| {
         AIExecutionProfilesModel::new(&crate::LaunchMode::new_for_unit_test(), ctx)
     });
-    // Zap: RepoOutlines was removed; no longer registered.
+    app.add_singleton_model(RepoOutlines::new_for_test);
     #[cfg(feature = "voice_input")]
     app.add_singleton_model(voice_input::VoiceInput::new);
     app.add_singleton_model(BlocklistAIPermissions::new);
@@ -2418,3 +2410,293 @@ fn test_standard_tab_context_menu_shows_hover_only_tab_bar() {
 
 // Removed: test_open_ambient_agent_setup_guide_action_opens_management_view_and_is_idempotent
 // The agent_management_view field, together with the entire agent setup guide feature, was removed in Phase 2c.
+
+// ── Ported from warp/master app/src/workspace/view_tests.rs ────────────────
+// Close-tab activation targeting: which neighboring tab becomes active after
+// closing the current one, for both horizontal and vertical tab layouts.
+
+#[test]
+fn test_close_active_horizontal_tab_activates_tab_to_right() {
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.update(|ctx| {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.use_vertical_tabs.set_value(false, ctx));
+            });
+        });
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            let tab_to_right_id = workspace.get_pane_group_view(2).unwrap().id();
+
+            workspace.activate_tab(1, ctx);
+            workspace.close_tab(1, true, true, ctx);
+
+            assert_eq!(workspace.tab_count(), 2);
+            assert_eq!(workspace.active_tab_index(), 1);
+            assert_eq!(workspace.active_tab_pane_group().id(), tab_to_right_id);
+        });
+    });
+}
+
+#[test]
+fn test_close_active_vertical_tab_activates_tab_below() {
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.update(|ctx| {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
+            });
+        });
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            let tab_below_id = workspace.get_pane_group_view(2).unwrap().id();
+
+            workspace.activate_tab(1, ctx);
+            workspace.close_tab(1, true, true, ctx);
+
+            assert_eq!(workspace.tab_count(), 2);
+            assert_eq!(workspace.active_tab_index(), 1);
+            assert_eq!(workspace.active_tab_pane_group().id(), tab_below_id);
+        });
+    });
+}
+
+#[test]
+fn test_close_last_horizontal_tab_activates_tab_to_left() {
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.update(|ctx| {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.use_vertical_tabs.set_value(false, ctx));
+            });
+        });
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            let tab_to_left_id = workspace.get_pane_group_view(1).unwrap().id();
+
+            workspace.activate_tab(2, ctx);
+            workspace.close_tab(2, true, true, ctx);
+
+            assert_eq!(workspace.tab_count(), 2);
+            assert_eq!(workspace.active_tab_index(), 1);
+            assert_eq!(workspace.active_tab_pane_group().id(), tab_to_left_id);
+        });
+    });
+}
+
+#[test]
+fn test_close_last_vertical_tab_activates_tab_above() {
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.update(|ctx| {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
+            });
+        });
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            let tab_above_id = workspace.get_pane_group_view(1).unwrap().id();
+
+            workspace.activate_tab(2, ctx);
+            workspace.close_tab(2, true, true, ctx);
+
+            assert_eq!(workspace.tab_count(), 2);
+            assert_eq!(workspace.active_tab_index(), 1);
+            assert_eq!(workspace.active_tab_pane_group().id(), tab_above_id);
+        });
+    });
+}
+
+// ── Tab-bar traffic-light padding regressions ───────────────────────────────
+
+#[test]
+fn test_theme_chooser_does_not_suppress_tab_bar_traffic_light_padding() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let closed_padding = workspace.compute_tab_bar_left_padding(ctx);
+            assert!(
+                closed_padding > 0.,
+                "Tab bar should reserve left padding when no left panel is open"
+            );
+
+            workspace.current_workspace_state.is_theme_chooser_open = true;
+            assert_eq!(
+                workspace.compute_tab_bar_left_padding(ctx),
+                closed_padding,
+                "Theme chooser should not be treated as a left panel for tab bar padding"
+            );
+
+            workspace.open_left_panel(ctx);
+            assert_eq!(
+                workspace.compute_tab_bar_left_padding(ctx),
+                closed_padding,
+                "Open tools panel should still reserve tab bar traffic light padding"
+            );
+        });
+    });
+}
+
+fn assert_vertical_tabs_tools_panel_preserves_padding(config: HeaderToolbarChipSelection) {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.update(|ctx| {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
+                report_if_error!(
+                    settings
+                        .header_toolbar_chip_selection
+                        .set_value(config, ctx)
+                );
+            });
+        });
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let closed_padding = workspace.compute_tab_bar_left_padding(ctx);
+            assert!(
+                closed_padding > 0.,
+                "Vertical tabs should reserve traffic light padding"
+            );
+
+            workspace.open_left_panel(ctx);
+            assert_eq!(
+                workspace.compute_tab_bar_left_padding(ctx),
+                closed_padding,
+                "An open tools panel should still reserve traffic light padding in vertical tabs"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_tools_panel_does_not_suppress_vertical_tab_bar_traffic_light_padding() {
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+    for config in [
+        HeaderToolbarChipSelection::Custom {
+            left: vec![HeaderToolbarItemKind::AgentManagement],
+            right: vec![
+                HeaderToolbarItemKind::TabsPanel,
+                HeaderToolbarItemKind::ToolsPanel,
+                HeaderToolbarItemKind::CodeReview,
+                HeaderToolbarItemKind::NotificationsMailbox,
+            ],
+        },
+        HeaderToolbarChipSelection::Custom {
+            left: vec![
+                HeaderToolbarItemKind::TabsPanel,
+                HeaderToolbarItemKind::ToolsPanel,
+                HeaderToolbarItemKind::AgentManagement,
+            ],
+            right: vec![
+                HeaderToolbarItemKind::CodeReview,
+                HeaderToolbarItemKind::NotificationsMailbox,
+            ],
+        },
+    ] {
+        assert_vertical_tabs_tools_panel_preserves_padding(config);
+    }
+}
+
+// ── Vertical-tabs panel persistence ─────────────────────────────────────────
+
+#[test]
+fn test_vertical_tabs_panel_closed_when_disabled_even_if_persisted_open() {
+    // Regression for #9505: when `vertical_tabs_panel_open=true` is persisted
+    // and the user then disables vertical tabs, restoring the workspace must
+    // not honor the stale snapshot — otherwise a dismiss underlay paints over
+    // the window and silently swallows every click.
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        // Snapshot the workspace with the panel open while vertical tabs are enabled.
+        app.update(|ctx| {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
+            });
+        });
+        let workspace = mock_workspace(&mut app);
+        let open_snapshot = workspace.update(&mut app, |workspace, ctx| {
+            workspace.vertical_tabs_panel_open = true;
+            workspace.snapshot(ctx.window_id(), false, ctx)
+        });
+
+        // Disable vertical tabs, then restore. The panel must stay closed.
+        app.update(|ctx| {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.use_vertical_tabs.set_value(false, ctx));
+            });
+        });
+        let restored = restored_workspace(&mut app, open_snapshot);
+        restored.read(&app, |workspace, _| {
+            assert!(!workspace.vertical_tabs_panel_open);
+        });
+    });
+}
+
+// ── AI conversation restore ─────────────────────────────────────────────────
+
+#[test]
+fn restore_conversation_in_active_pane_enters_existing_live_conversation_without_loading() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let terminal_view = workspace.read(&app, |workspace, ctx| {
+            workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .focused_session_view(ctx)
+                .expect("workspace should start with a terminal view")
+        });
+        let terminal_view_id = terminal_view.read(&app, |view, _| view.view_id());
+        // Note: fork's `start_new_conversation` dropped Warp's
+        // `is_cli_agent_transcript` 4th bool param (only
+        // `is_autoexecute_override` / `is_viewing_shared_session` remain).
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            assert_eq!(workspace.tab_count(), 1);
+
+            workspace.restore_conversation_in_active_pane(conversation_id, ctx);
+
+            assert_eq!(workspace.tab_count(), 1);
+        });
+
+        terminal_view.read(&app, |view, ctx| {
+            assert_eq!(view.active_conversation_id(ctx), Some(conversation_id));
+            assert_eq!(
+                view.model.lock().conversation_transcript_viewer_status(),
+                None
+            );
+        });
+    });
+}

@@ -177,6 +177,10 @@ pub enum FeatureFlag {
     /// Maximizes data in flat storage to reduce memory usage.
     MaximizeFlatStorage,
 
+    /// Recognizes the OSC 8 hyperlink escape sequence and makes the
+    /// linked text Cmd+click-able.
+    OscHyperlinks,
+
     ImeMarkedText,
 
     /// Enables partial next command suggestions with a prefix.
@@ -669,9 +673,6 @@ pub enum FeatureFlag {
     /// for command execution.
     SshRemoteServer,
 
-    /// Shows saved SSH credential candidates when a local PTY outputs a password prompt.
-    OneKeyPrompt,
-
     /// Enables summary mode in vertical tabs, showing condensed tab summaries
     /// instead of individual pane rows.
     VerticalTabsSummaryMode,
@@ -687,6 +688,11 @@ pub enum FeatureFlag {
     /// `Client::new()` falls back to reqwest's default (reads environment
     /// variables). See Issue #72.
     HttpProxySettings,
+
+    /// Enables state-mutating recovery for abnormal terminal lifecycle sequences.
+    /// Gates the block-lifecycle transition coordinator's corrective completion
+    /// recovery paths (see `app/src/terminal/model/lifecycle`).
+    TerminalLifecycleRecovery,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
@@ -719,6 +725,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::LazySceneBuilding,
     FeatureFlag::SshDragAndDrop,
     FeatureFlag::MultiWorkspace,
+    FeatureFlag::OscHyperlinks,
     FeatureFlag::ImeMarkedText,
     FeatureFlag::MSYS2Shells,
     FeatureFlag::RetryTruncatedCodeResponses,
@@ -749,6 +756,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::ConfigurableContextWindow,
     FeatureFlag::DragTabsToWindows,
     FeatureFlag::ServerFileBrowser,
+    FeatureFlag::TerminalLifecycleRecovery,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Zap).

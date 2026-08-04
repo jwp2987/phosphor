@@ -75,8 +75,6 @@ mod server_time;
 mod session_management;
 mod shell_indicator;
 mod skill_manager;
-mod sftp_manager;
-mod ssh_manager;
 mod suggestions;
 mod system;
 mod tab;
@@ -208,6 +206,7 @@ use crate::ai::facts::manager::AIFactManager;
 use crate::ai::llms::LLMPreferences;
 use crate::ai::mcp::MCPGalleryManager;
 use crate::ai::mcp::TemplatableMCPServerManager;
+use crate::ai::outline::RepoOutlines;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
 use crate::ai::AIRequestUsageModel;
@@ -419,7 +418,7 @@ impl LaunchMode {
     /// Add an URL to open. Only supported for [`LaunchMode::App`]
     #[allow(dead_code)]
     fn add_url(&mut self, url: Url) {
-        if let LaunchMode::App { ref mut args, .. } = self {
+        if let LaunchMode::App { args, .. } = self {
             args.urls.push(url);
         }
     }
@@ -609,7 +608,8 @@ pub fn run() -> Result<()> {
         && std::env::var_os("LC_ALL").is_none()
         && std::env::var_os("LC_CTYPE").is_none()
     {
-        std::env::set_var("LANG", "en_US.UTF-8");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("LANG", "en_US.UTF-8") };
     }
 
     // Perform any necessary platform-specific initialization.
@@ -860,6 +860,16 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
 /// in init_common instead.
 fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     let mut timer = IntervalTimer::new();
+
+    // i18n must be initialized before any UI `t!()` call. The GUI entry (`run`)
+    // does this early, before arg parsing; but the Test (`run_integration_test`)
+    // and TUI entries reach `run_internal` without passing through `run`, so
+    // without this their UI would render raw fluent keys (e.g. a Settings tab
+    // titled `settings-title`, or a command palette whose action labels never
+    // match a human-readable search). `init` is idempotent (OnceLock), so the
+    // GUI's earlier call is undisturbed. Workers that render no UI take the
+    // `init_common` path directly and intentionally skip this.
+    i18n::init(None);
 
     init_common(&launch_mode, Some(&mut timer))?;
 
@@ -1234,12 +1244,6 @@ fn initialize_app(
     let (sqlite_data, writer_handles) = persistence::initialize(ctx);
     timer.mark_interval_end("SQLITE_INITIALIZED");
 
-    // The SSH manager opens its own write connection outside the main write thread
-    // (WAL + busy_timeout keep this safe). The path must be set only after
-    // persistence::initialize has finished running migrations, otherwise the first
-    // SshManager operation could hit a missing-table error.
-    warp_ssh_manager::set_database_path(persistence::database_file_path());
-
     let persistence_writer = PersistenceWriter::new(writer_handles);
 
     let model_event_sender = persistence_writer.sender();
@@ -1364,9 +1368,6 @@ fn initialize_app(
     );
 
     ctx.add_singleton_model(AntivirusInfo::new);
-
-    // The cloud-sync token goes through the OS keychain; it is never persisted to TOML.
-    ctx.add_singleton_model(crate::settings::CloudSyncTokenStore::new);
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "crash_reporting")] {
@@ -1672,7 +1673,6 @@ fn initialize_app(
     ctx.add_singleton_model(|_| NetworkStatus::new());
     ctx.add_singleton_model(|_| SystemStats::new());
     ctx.add_singleton_model(|_| KeybindingChangedNotifier::new());
-    ctx.add_singleton_model(|_| crate::ssh_manager::SshTreeChangedNotifier::new());
     ctx.add_singleton_model(|_| search::command_palette::SelectedItems::new());
     ctx.add_singleton_model(search::files::model::FileSearchModel::new);
     ctx.add_singleton_model(|_| VimRegisters::new());
@@ -1772,6 +1772,8 @@ fn initialize_app(
     // Notification center singleton model: must be registered after BlocklistAIHistoryModel
     // and CLIAgentSessionsModel, because its constructor subscribes to both models.
     ctx.add_singleton_model(crate::notifications::model::NotificationsModel::new);
+
+    ctx.add_singleton_model(RepoOutlines::new);
 
     ctx.add_singleton_model(|_| UserProfiles::new(restored_user_profiles));
 
@@ -2507,8 +2509,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::AIRules,
         #[cfg(feature = "ssh_tmux_wrapper")]
         FeatureFlag::SSHTmuxWrapper,
-        #[cfg(feature = "onekey_prompt")]
-        FeatureFlag::OneKeyPrompt,
         #[cfg(feature = "less_horizontal_terminal_padding")]
         FeatureFlag::LessHorizontalTerminalPadding,
         #[cfg(feature = "shell_selector")]

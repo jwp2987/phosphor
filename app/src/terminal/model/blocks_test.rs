@@ -94,7 +94,7 @@ pub fn insert_block_with_prompt(
     command: &str,
     output: &str,
 ) -> BlockIndex {
-    block_list.precmd(PrecmdValue {
+    block_list.prompt_only_precmd(PromptMetadata {
         ps1: Some(hex::encode(prompt)),
         honor_ps1: Some(true),
         ..Default::default()
@@ -126,7 +126,7 @@ pub fn insert_block_with_prompt(
 /// view need to also call `precmd`.
 pub fn command_finished_and_precmd(block_list: &mut BlockList) {
     block_list.command_finished(Default::default());
-    block_list.precmd(Default::default());
+    block_list.prompt_only_precmd(Default::default());
 }
 
 /// Advances the block list to the ScriptExecution stage.

@@ -227,12 +227,12 @@ impl TerminalFindModel {
             if let Some(run) = self.alt_screen_find_run.take() {
                 self.alt_screen_find_run = Some(run.cleared());
             }
-        } else if let Some(run) = self.block_list_find_run.take() {
+        } else { match self.block_list_find_run.take() { Some(run) => {
             for (_, rich_content_view) in self.rich_content_views.iter() {
                 rich_content_view.clear_matches(ctx);
             }
             self.block_list_find_run = Some(run.cleared());
-        }
+        } _ => {}}}
         ctx.emit(FindEvent::RanFind);
     }
 

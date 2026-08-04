@@ -29,6 +29,7 @@ use warp_core::semantic_selection::{SemanticSelection, SMART_SELECT_MATCH_WINDOW
 use warp_core::{safe_assert, safe_assert_eq};
 use warp_terminal::model::grid::CellType;
 use warp_terminal::model::grid::FlatStorage;
+use warp_terminal::model::grid::{HyperlinkId, HyperlinkRegistry};
 pub use warp_terminal::model::TermMode;
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 use warp_util::path::CleanPathResult;
@@ -318,6 +319,18 @@ pub struct GridHandler {
 
     ansi_handler_state: ansi_handler::State,
 
+    /// Per-grid OSC 8 hyperlink registry. Owns the URI strings; cells store
+    /// `HyperlinkId` handles into this registry. No reclamation: entries
+    /// are appended on intern and live until this `GridHandler` is dropped.
+    hyperlink_registry: HyperlinkRegistry,
+
+    /// Active OSC 8 hyperlink, set by `set_hyperlink` and consumed by
+    /// `write_at_cursor` when stamping new cells. `None` means subsequent
+    /// `input(c)` writes plain (non-clickable) cells. This `GridHandler` is
+    /// the single owner — `BlockGrid` and `Block` delegate `set_hyperlink`
+    /// here rather than carrying their own copies.
+    active_hyperlink_id: Option<HyperlinkId>,
+
     /// Info about the subset of rows we want to show to the user. If None, we
     /// show the entire blockgrid to the user.
     displayed_output: Option<DisplayedOutput>,
@@ -383,6 +396,8 @@ impl GridHandler {
             flat_storage: FlatStorage::new(size_info.columns(), Some(max_scroll_limit), None),
             finished: false,
             ansi_handler_state,
+            hyperlink_registry: Default::default(),
+            active_hyperlink_id: None,
             displayed_output: None,
             filter_state: None,
             secrets: Default::default(),
@@ -429,7 +444,7 @@ impl GridHandler {
         )
     }
 
-    pub(in crate::terminal::model) fn ansi_handler(&mut self) -> &mut impl ansi::Handler {
+    pub(in crate::terminal::model) fn ansi_handler(&mut self) -> &mut (impl ansi::Handler + use<>) {
         self
     }
 
@@ -507,6 +522,12 @@ impl GridHandler {
             flat_storage: FlatStorage::new(self.columns(), self.flat_storage.max_rows(), None),
             finished: self.finished,
             ansi_handler_state,
+            // Cloning the source registry preserves any URIs already
+            // referenced by the cells we're about to copy over (the cells'
+            // `HyperlinkId`s remain valid handles into the cloned registry).
+            // Active state resets — splitting is not a continuation of input.
+            hyperlink_registry: self.hyperlink_registry.clone(),
+            active_hyperlink_id: None,
             displayed_output: None,
             filter_state: None,
             secrets: Default::default(),
@@ -759,6 +780,76 @@ impl GridHandler {
             }
             Some(url)
         }
+    }
+
+    /// Returns the contiguous OSC 8 hyperlink span at `displayed_point`, if
+    /// the cell there is part of one. The returned range is contiguous;
+    /// cross-run grouping by `id` is intentionally out of scope.
+    ///
+    /// Mirrors the shape of [`Self::url_at_point`] but skips
+    /// `urlocator`: the URI doesn't live in the visible cell text, so
+    /// detection reduces to "walk left/right while the next adjacent cell
+    /// carries the same `HyperlinkId`."
+    pub fn hyperlink_at_point(&self, displayed_point: Point) -> Option<Link> {
+        if !FeatureFlag::OscHyperlinks.is_enabled() {
+            return None;
+        }
+        let original_point = self.maybe_translate_point_from_displayed_to_original(displayed_point);
+        let row_idx = original_point.row;
+
+        let grid_line = self.row(row_idx)?;
+        if original_point.col >= grid_line.line_length() {
+            return None;
+        }
+        let target_id = grid_line.get(original_point.col)?.hyperlink_id()?;
+
+        // Walk backward across cells while the same hyperlink_id is present.
+        let mut start_point = original_point;
+        let mut back_cursor =
+            self.grapheme_cursor_from(original_point, grapheme_cursor::Wrap::Soft);
+        back_cursor.move_backward();
+        while let Some(item) = back_cursor.current_item() {
+            if item.cell().hyperlink_id() != Some(target_id) {
+                break;
+            }
+            start_point = item.point();
+            back_cursor.move_backward();
+        }
+
+        // Walk forward across cells while the same hyperlink_id is present.
+        let mut end_point = original_point;
+        let mut fwd_cursor = self.grapheme_cursor_from(original_point, grapheme_cursor::Wrap::Soft);
+        fwd_cursor.move_forward();
+        while let Some(item) = fwd_cursor.current_item() {
+            if item.cell().hyperlink_id() != Some(target_id) {
+                break;
+            }
+            end_point = item.point();
+            fwd_cursor.move_forward();
+        }
+
+        let displayed_start = self.maybe_translate_point_from_original_to_displayed(start_point);
+        let displayed_end = self.maybe_translate_point_from_original_to_displayed(end_point);
+        Some(Link {
+            range: displayed_start..=displayed_end,
+            is_empty: false,
+        })
+    }
+
+    /// Returns the URI of the OSC 8 hyperlink covering `displayed_point`, if
+    /// any. Cheaper than `hyperlink_at_point` when the caller only needs the
+    /// destination (e.g. tooltip text or click-open).
+    pub fn hyperlink_uri_at_point(&self, displayed_point: Point) -> Option<&str> {
+        if !FeatureFlag::OscHyperlinks.is_enabled() {
+            return None;
+        }
+        let original_point = self.maybe_translate_point_from_displayed_to_original(displayed_point);
+        let grid_line = self.row(original_point.row)?;
+        if original_point.col >= grid_line.line_length() {
+            return None;
+        }
+        let id = grid_line.get(original_point.col)?.hyperlink_id()?;
+        Some(self.hyperlink_registry.get(id)?.uri.as_str())
     }
 
     /// Converts a cell to a string, with ansi escape sequences

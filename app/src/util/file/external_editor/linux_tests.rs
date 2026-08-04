@@ -393,3 +393,213 @@ fn test_sublime_command_line_and_col_numbers() {
         },
     );
 }
+
+// ---------- Shell-metacharacter / quoting behavior of build_default_command ----------
+//
+// Ported from warp/master's linux_tests.rs. Upstream also exercises a hand-rolled
+// `tokenize_exec` function directly; this fork instead delegates tokenization to the
+// `shell_words` crate (see `EditorMetadata::build_command`), so the `tokenize_exec`-specific
+// unit tests (and the exact `DesktopExecError::UnterminatedQuote` variant, which no longer
+// exists here — unterminated quotes surface as `MalformedFieldCode` instead) are not portable
+// as literal ports. The behavioral tests below go through the same public
+// `try_new`/`build_default_command` surface as the tests above and still apply.
+
+#[test]
+fn test_file_path_with_shell_metacharacters_is_single_arg() {
+    // Verify that shell metacharacters in file paths are treated as literal
+    // characters, not interpreted by a shell.
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=/usr/bin/editor %f
+    "#;
+
+    let malicious_path = PathBuf::from("/tmp/foo; rm -rf /");
+    with_files(
+        "test_file_path_with_shell_metacharacters",
+        data,
+        |desktop, _content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let result = metadata.build_default_command(&malicious_path);
+
+            assert!(result.is_ok());
+            let cmd = result.unwrap();
+            // The program is the editor, not "sh".
+            assert_eq!(cmd.get_program(), "/usr/bin/editor");
+            // The malicious path is a single argument, not split by shell.
+            assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["/tmp/foo; rm -rf /"]);
+            Ok(())
+        },
+    );
+}
+
+#[test]
+fn test_file_path_with_spaces_is_single_arg() {
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=/usr/bin/editor %f
+    "#;
+
+    let path_with_spaces = PathBuf::from("/home/user/my documents/file.txt");
+    with_files("test_file_path_with_spaces", data, |desktop, _content| {
+        let metadata = EditorMetadata::try_new(desktop)?;
+        let result = metadata.build_default_command(&path_with_spaces);
+
+        assert!(result.is_ok());
+        let cmd = result.unwrap();
+        assert_eq!(cmd.get_program(), "/usr/bin/editor");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["/home/user/my documents/file.txt"]
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn test_quoted_executable_path() {
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec="/opt/My App/editor" --flag %f
+    "#;
+    with_files("test_quoted_executable_path", data, |desktop, content| {
+        let metadata = EditorMetadata::try_new(desktop)?;
+        let file_path = content.display().to_string();
+        let result = metadata.build_default_command(&content);
+
+        assert!(result.is_ok());
+        let cmd = result.unwrap();
+        assert_eq!(cmd.get_program(), "/opt/My App/editor");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["--flag", file_path.as_str()]
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn test_quoted_field_code_is_still_expanded() {
+    // The spec says field codes must not be used inside a quoted argument and
+    // the result is undefined. Our implementation expands them anyway since
+    // quotes are stripped before field code processing.
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=/usr/bin/editor "%f"
+    "#;
+    with_files(
+        "test_quoted_field_code_is_still_expanded",
+        data,
+        |desktop, content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let file_path = content.display().to_string();
+            let result = metadata.build_default_command(&content);
+
+            assert!(result.is_ok());
+            let cmd = result.unwrap();
+            assert_eq!(cmd.get_program(), "/usr/bin/editor");
+            assert_eq!(cmd.get_args().collect::<Vec<_>>(), [file_path.as_str()]);
+            Ok(())
+        },
+    );
+}
+
+#[test]
+fn test_localized_name_with_spaces_is_single_arg() {
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=/usr/bin/app --title %c %f
+    Name=My Cool Application
+    "#;
+    with_files(
+        "test_localized_name_with_spaces",
+        data,
+        |desktop, content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let file_path = content.display().to_string();
+            let result = metadata.build_default_command(&content);
+
+            assert!(result.is_ok());
+            let cmd = result.unwrap();
+            assert_eq!(cmd.get_program(), "/usr/bin/app");
+            // %c expands to a single arg even though the name contains spaces.
+            assert_eq!(
+                cmd.get_args().collect::<Vec<_>>(),
+                ["--title", "My Cool Application", file_path.as_str()]
+            );
+            Ok(())
+        },
+    );
+}
+
+#[test]
+fn test_shell_constructs_in_exec_are_literal() {
+    // Subcommand syntax and backticks in the Exec string itself are not
+    // interpreted because we execute directly, not via sh -c.
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=/usr/bin/app $(whoami) `id` %f
+    "#;
+    with_files(
+        "test_shell_constructs_in_exec_are_literal",
+        data,
+        |desktop, content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let file_path = content.display().to_string();
+            let result = metadata.build_default_command(&content);
+
+            assert!(result.is_ok());
+            let cmd = result.unwrap();
+            assert_eq!(cmd.get_program(), "/usr/bin/app");
+            assert_eq!(
+                cmd.get_args().collect::<Vec<_>>(),
+                ["$(whoami)", "`id`", file_path.as_str()]
+            );
+            Ok(())
+        },
+    );
+}
+
+// Regression check: upstream Warp drops the deprecated FreeDesktop field codes
+// (%d %D %n %N %v %m) entirely per spec. This fork's `process_field_code` has no
+// explicit arm for them, so they fall into the `other => parts.last_mut().push(other)`
+// catch-all and are kept as literal single-character arguments instead of being
+// dropped. If this test is red, that confirms the fork emits extra bogus argv
+// entries ("d", "D", "n", "N", "v", "m") when launching an external editor whose
+// .desktop Exec line still has these legacy codes.
+#[test]
+fn test_deprecated_field_codes_are_dropped() {
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=/usr/bin/app %d %D %n %N %v %m %f
+    "#;
+    with_files(
+        "test_deprecated_field_codes_are_dropped",
+        data,
+        |desktop, content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let file_path = content.display().to_string();
+            let result = metadata.build_default_command(&content);
+
+            assert!(result.is_ok());
+            let cmd = result.unwrap();
+            assert_eq!(cmd.get_program(), "/usr/bin/app");
+            // All deprecated codes are silently dropped; only %f remains.
+            assert_eq!(cmd.get_args().collect::<Vec<_>>(), [file_path.as_str()]);
+            Ok(())
+        },
+    );
+}

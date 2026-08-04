@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use warp::tui_export::{
-    AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId, Appearance, TaskId,
-    queue_tui_permission_action,
+    AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId, Appearance,
+    BlocklistAIPermissions, TaskId, queue_tui_permission_action,
+    register_tui_session_view_test_singletons,
 };
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, App, WindowInvalidation};
@@ -21,6 +22,12 @@ use crate::option_selector::{TuiOptionSelectorAction, TuiOptionSelectorEvent};
 use crate::test_fixtures::{TestHostView, add_test_action_model};
 fn add_prompt(app: &mut App, body_editable: bool) -> ViewHandle<TuiPermissionPrompt> {
     app.add_singleton_model(|_| Appearance::mock());
+    // Provision the full app singleton graph the real action preprocess/execute
+    // pipeline reads, so queued actions block through the real pipeline rather
+    // than injected state. Sentinel-guarded against repeated calls in one test.
+    if !app.read(|ctx| ctx.has_singleton_model::<BlocklistAIPermissions>()) {
+        register_tui_session_view_test_singletons(app);
+    }
     let action_model = add_test_action_model(app);
     app.update(|ctx| {
         let (window_id, _) = ctx.add_tui_window(
@@ -147,6 +154,7 @@ fn leading_editor_participates_in_selector_focus_cycle() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, AIConversationId::new(), ctx);
         });
+        crate::test_fixtures::settle().await;
         render_lines(&mut app, &prompt);
 
         assert!(dispatch_focused_key(&mut app, &prompt, "up"));
@@ -196,6 +204,7 @@ fn editable_prompt_renders_other_and_e_focuses_the_body_editor() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, AIConversationId::new(), ctx);
         });
+        crate::test_fixtures::settle().await;
         let selector = app.read(|ctx| prompt.as_ref(ctx).selector.clone());
         assert!(dispatch_focused_key(&mut app, &prompt, "e"));
         assert!(app.read(|ctx| {
@@ -246,10 +255,22 @@ fn editable_prompt_renders_other_and_e_focuses_the_body_editor() {
 }
 
 fn pending_action(prompt: &TuiPermissionPrompt) -> AIAgentAction {
+    // A command action that requires confirmation, so the real preprocess
+    // pipeline leaves it blocked (pending) for the prompt to act on. An
+    // auto-executing action (e.g. `OpenCodeReview`) would be dispatched straight
+    // out of the pending queue and never surface a confirmation prompt.
     AIAgentAction {
         id: prompt.action_id.clone(),
         task_id: TaskId::new("task".to_owned()),
-        action: AIAgentActionType::OpenCodeReview,
+        action: AIAgentActionType::RequestCommandOutput {
+            command: "echo hi".to_owned(),
+            is_read_only: Some(true),
+            is_risky: Some(false),
+            wait_until_completion: true,
+            uses_pager: Some(false),
+            rationale: None,
+            citations: Vec::new(),
+        },
         requires_result: true,
     }
 }
@@ -269,6 +290,7 @@ fn no_requests_rejection_without_resolving_in_the_selector() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
+        crate::test_fixtures::settle().await;
         let rejected = Rc::new(RefCell::new(false));
         let rejected_for_event = rejected.clone();
         app.update(|ctx| {
@@ -315,6 +337,7 @@ fn other_emits_guidance_without_requesting_rejection() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
+        crate::test_fixtures::settle().await;
         let submitted = Rc::new(RefCell::new(Vec::new()));
         let submitted_for_event = submitted.clone();
         let rejected = Rc::new(RefCell::new(false));
@@ -367,6 +390,50 @@ fn editable_prompt_includes_the_edit_hint() {
             render_lines(&mut app, &prompt)
                 .iter()
                 .any(|line| line == "Esc to cancel  Ctrl+E to edit/save  Enter to run")
+        );
+    });
+}
+
+#[test]
+fn footer_hint_reflects_what_esc_does_in_the_current_focus_state() {
+    App::test((), |mut app| async move {
+        app.update(super::init);
+        let prompt = add_prompt(&mut app, true);
+        let (action_model, action) = app.read(|ctx| {
+            let prompt = prompt.as_ref(ctx);
+            (prompt.action_model.clone(), pending_action(prompt))
+        });
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action, AIConversationId::new(), ctx);
+        });
+        crate::test_fixtures::settle().await;
+        // Before editing, Esc cancels the whole prompt, and the footer
+        // advertises the shortcut to enter edit mode.
+        assert!(
+            render_lines(&mut app, &prompt)
+                .iter()
+                .any(|line| line == "Esc to cancel  Ctrl+E to edit/save  Enter to run")
+        );
+
+        assert!(dispatch_focused_key(&mut app, &prompt, "e"));
+        assert!(app.read(|ctx| {
+            prompt
+                .as_ref(ctx)
+                .body_editor
+                .as_ref()
+                .expect("editable prompt has a body editor")
+                .as_ref(ctx)
+                .is_focused()
+        }));
+
+        // While the body editor is focused, Esc saves the edit and returns
+        // to the options list instead of cancelling -- the footer must say
+        // so, and the now-redundant edit-entry hint should not be shown.
+        assert!(
+            render_lines(&mut app, &prompt)
+                .iter()
+                .any(|line| line == "Esc to save  Enter to run"),
+            "footer should reflect Esc's save behavior while editing"
         );
     });
 }

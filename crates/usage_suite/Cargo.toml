@@ -1,0 +1,22 @@
+[package]
+name = "usage_suite"
+version = "0.1.0"
+edition = "2024"
+authors = ["Warp Team <dev@warp.dev>"]
+description = "Dependency-light orchestrator for the GUI+TUI usage/acceptance smoke suite (see specs/usage-test-suite/SCOPE.md)"
+publish.workspace = true
+license.workspace = true
+
+# The whole point of this crate is to stay independent of the heavy app
+# graph (`warp`, `warpui`, `integration`, ...) so it builds fast and never
+# fights the workspace cargo lock. Keep this dependency list minimal;
+# additions should be rare and justified in review.
+[[bin]]
+name = "usage-suite"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }

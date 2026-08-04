@@ -1171,7 +1171,7 @@ impl Buffer {
         if line_text.trim().is_empty() {
             line_start
         } else {
-            self.indented_line_start(offset).unwrap_or(line_start)
+            LineIndentation::from_line_start(self, line_start).first_character()
         }
     }
 
@@ -4493,6 +4493,9 @@ impl Buffer {
         ctx: &mut ModelContext<Self>,
     ) {
         if edits.is_empty() {
+            // TODO: This is temporary. We will add support to properly maintain the undo stack after incremental updates.
+            self.reset_undo_stack();
+            self.set_version(new_version);
             return;
         }
 

@@ -151,3 +151,7 @@ pub enum InlineMenuModelEvent {
 impl<A: InlineMenuAction, T: 'static + Send + Sync> Entity for InlineMenuModel<A, T> {
     type Event = InlineMenuModelEvent;
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

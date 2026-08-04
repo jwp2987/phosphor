@@ -1,3 +1,4 @@
+mod box_drawing;
 mod cell_glyph_cache;
 mod cell_type;
 
@@ -94,7 +95,7 @@ impl ColorSampler {
     pub fn most_common(&self) -> Option<ColorU> {
         self.counts
             .iter()
-            .max_by_key(|(_, &count)| count)
+            .max_by_key(|&(_, &count)| count)
             .map(|(&color, _)| color)
     }
 
@@ -161,6 +162,9 @@ struct NativeGlyph {
 /// Describes a specific type of glyph that we are able to render natively.
 #[derive(Debug)]
 enum NativeGlyphType {
+    /// A supported solid Unicode box-drawing character (`U+2500..=U+257F`),
+    /// rendered as cell-filling rects so adjacent cells tile seamlessly.
+    BoxDrawing(char),
     UpperHalfBlock,
     PowerlineLeftHardDivider,
     PowerlineRightHardDivider,
@@ -1897,6 +1901,12 @@ fn render_image(
 /// if it should be rendered with a font glyph.
 fn native_glyph_for_cell(cell: &Cell) -> Option<NativeGlyphType> {
     let glyph_type = match cell.c {
+        // Supported solid box-drawing lines render as cell-filling rects so
+        // adjacent cells tile seamlessly. Other box-drawing glyphs use the font.
+        c @ '\u{2500}'..='\u{257F}' if box_drawing::is_supported(c) => {
+            NativeGlyphType::BoxDrawing(c)
+        }
+
         // Unicode upper half block (U+2580).
         '▀' => NativeGlyphType::UpperHalfBlock,
         // Unicode bottom-aligned fractional block characters (U+2581 - U+2588).
@@ -2026,6 +2036,36 @@ fn render_native_glyph(native_glyph: NativeGlyph, ctx: &mut PaintContext, app: &
         glyph_type,
     } = native_glyph;
     let svg_data = match glyph_type {
+        NativeGlyphType::BoxDrawing(c) => {
+            let scale_factor = ctx.scene.scale_factor();
+            let metrics = box_drawing::StrokeMetrics::new(
+                cell_bounds.width() * scale_factor,
+                cell_bounds.height() * scale_factor,
+            );
+            // Snap the cell box to the integer device-pixel grid so adjacent
+            // cells share exact edges and the strokes tile with no seam.
+            let left = (cell_bounds.origin().x() * scale_factor).round();
+            let right = ((cell_bounds.origin().x() + cell_bounds.width()) * scale_factor).round();
+            let top = (cell_bounds.origin().y() * scale_factor).round();
+            let bottom = ((cell_bounds.origin().y() + cell_bounds.height()) * scale_factor).round();
+            for cell_rect in box_drawing::rects(c, right - left, bottom - top, metrics) {
+                let origin = cell_rect.origin();
+                let rect = RectF::new(
+                    vec2f(
+                        (left + origin.x()) / scale_factor,
+                        (top + origin.y()) / scale_factor,
+                    ),
+                    vec2f(
+                        cell_rect.width() / scale_factor,
+                        cell_rect.height() / scale_factor,
+                    ),
+                );
+                ctx.scene
+                    .draw_rect_without_hit_recording(rect)
+                    .with_background(Fill::Solid(foreground_color));
+            }
+            None
+        }
         NativeGlyphType::UpperHalfBlock => {
             let rect = RectF::new(
                 cell_bounds.origin(),

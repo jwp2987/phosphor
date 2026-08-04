@@ -114,6 +114,17 @@ pub static RENAME_TAB: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand 
     argument: Some(Argument::required().with_hint_text(t_static!("slash-cmd-rename-tab-hint"))),
 });
 
+// TUI-only: configures which items appear in the bottom statusline and their order. Not
+// executable in the GUI (see `execute_slash_command`'s explicit guard for this command).
+pub static STATUSLINE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/statusline",
+    description: t_static!("slash-cmd-statusline-desc"),
+    icon_path: "bundled/svg/sliders-04.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 pub static FORK: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     name: "/fork",
     description: t_static!("slash-cmd-fork-desc"),
@@ -215,6 +226,19 @@ pub static MODEL: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     icon_path: "bundled/svg/oz.svg",
     availability: Availability::AGENT_VIEW | Availability::AI_ENABLED,
     auto_enter_ai_mode: true,
+    argument: None,
+});
+
+/// Fork-native: opens the BYOP provider API-key manager (list configured providers, see which
+/// have a key connected, add/update/clear one) without leaving the terminal or TUI. This fork's
+/// entire identity is BYOP, so unlike upstream Warp's cloud-gated `/add-api-key` this is always
+/// available whenever AI is enabled, with no fixed provider list and no billing/credit concepts.
+pub static API_KEYS: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/api-keys",
+    description: t_static!("slash-cmd-api-keys-desc"),
+    icon_path: "bundled/svg/key.svg",
+    availability: Availability::AI_ENABLED,
+    auto_enter_ai_mode: false,
     argument: None,
 });
 
@@ -353,6 +377,18 @@ pub static EXPORT_TO_FILE: LazyLock<StaticCommand> = LazyLock::new(|| StaticComm
     argument: Some(Argument::optional().with_hint_text(t_static!("slash-cmd-export-to-file-hint"))),
 });
 
+/// Toggles the shared `text_editing.vim_mode_enabled` setting. Primarily useful on the
+/// ratatui TUI surface (see `crates/warp_tui`'s `supports_tui` gate below), where there is
+/// no Settings UI; on the GUI the same effect is available from Settings > Text Editing.
+pub static VIM_MODE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/vim-mode",
+    description: t_static!("slash-cmd-vim-mode-desc"),
+    icon_path: "bundled/svg/keyboard.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 pub static COMMAND_REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::new);
 
 /// A unique identifier for a static slash command.
@@ -435,9 +471,11 @@ fn all_commands() -> Vec<StaticCommand> {
         NEW.clone(),
         PLAN.clone(),
         RENAME_TAB.clone(),
+        STATUSLINE.clone(),
         CONVERSATIONS.clone(),
         EXPORT_TO_CLIPBOARD.clone(),
         MODEL.clone(),
+        API_KEYS.clone(),
     ];
 
     if FeatureFlag::LocalDockerSandbox.is_enabled() {
@@ -507,6 +545,8 @@ fn all_commands() -> Vec<StaticCommand> {
         commands.push(OPEN_SETTINGS_FILE.clone());
     }
 
+    commands.push(VIM_MODE.clone());
+
     commands
 }
 
@@ -523,6 +563,21 @@ mod tests {
         for name in names {
             assert!(seen.insert(name), "duplicate slash command name: {name}");
         }
+    }
+
+    #[test]
+    fn statusline_command_is_registered_and_tui_only() {
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(STATUSLINE.name)
+            .expect("expected /statusline to be registered");
+        assert_eq!(
+            command.kind(),
+            crate::search::slash_command_menu::static_commands::SlashCommandKind::Statusline
+        );
+        assert_eq!(command.availability, Availability::ALWAYS);
+        assert!(!command.auto_enter_ai_mode);
+        assert!(command.argument.is_none());
+        assert!(command.supports_tui());
     }
 
     #[test]

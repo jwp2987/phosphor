@@ -354,7 +354,9 @@ impl CurrentPrompt {
     fn update_on_click_value(&mut self, chip_kind: &ContextChipKind, value: Option<Vec<String>>) {
         log::debug!("Updating prompt on_click value of {chip_kind:?} to {value:?}");
         let filter_values = match chip_kind {
-            ContextChipKind::ShellGitBranch => self.filter_git_branch_on_click_values(value),
+            ContextChipKind::ShellGitBranch | ContextChipKind::GitBranchStatus => {
+                self.filter_git_branch_on_click_values(value)
+            }
             _ => value,
         };
         if let Some(state) = self.states.get_mut(chip_kind) {
@@ -1472,8 +1474,23 @@ impl CurrentPrompt {
         }
     }
 
+    /// Re-run the branch-list generator for a git-branch-backed chip so its
+    /// on-click dropdown stays in sync after the current branch changes.
+    #[cfg(feature = "local_fs")]
+    fn refresh_git_branch_dropdown(
+        &mut self,
+        chip_kind: ContextChipKind,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if let Some(chip) = chip_kind.to_chip() {
+            if let Some(on_click_gen) = chip.on_click_generator().cloned() {
+                self.refresh_on_click_values(&chip_kind, on_click_gen, ctx);
+            }
+        }
+    }
+
     /// Read the current `GitRepoStatusModel` metadata and push it into the
-    /// `ShellGitBranch` and `GitDiffStats` chip states.
+    /// git-backed chip states (`ShellGitBranch`, `GitBranchStatus`, `GitDiffStats`).
     #[cfg(feature = "local_fs")]
     fn apply_git_repo_metadata(&mut self, ctx: &mut ModelContext<Self>) {
         let metadata = self
@@ -1494,11 +1511,25 @@ impl CurrentPrompt {
         if current_branch.as_ref() != Some(&new_branch) {
             self.update_chip_value(&ContextChipKind::ShellGitBranch, Some(new_branch));
             // Refresh the branch dropdown so it stays in sync.
-            let chip_kind = ContextChipKind::ShellGitBranch;
-            if let Some(chip) = chip_kind.to_chip() {
-                if let Some(on_click_gen) = chip.on_click_generator().cloned() {
-                    self.refresh_on_click_values(&chip_kind, on_click_gen, ctx);
-                }
+            self.refresh_git_branch_dropdown(ContextChipKind::ShellGitBranch, ctx);
+        }
+
+        // Update GitBranchStatus with structured ahead/behind tracking data.
+        let new_branch_status = ChipValue::GitBranchStatus(metadata.branch_tracking_status.clone());
+        let current_branch_status = self
+            .latest_chip_value(&ContextChipKind::GitBranchStatus)
+            .cloned();
+        if current_branch_status.as_ref() != Some(&new_branch_status) {
+            // Only a branch change affects the dropdown's branch list;
+            // ahead/behind count updates don't warrant re-running it.
+            let branch_changed = !matches!(
+                current_branch_status.as_ref(),
+                Some(ChipValue::GitBranchStatus(current))
+                    if current.branch == metadata.branch_tracking_status.branch
+            );
+            self.update_chip_value(&ContextChipKind::GitBranchStatus, Some(new_branch_status));
+            if branch_changed {
+                self.refresh_git_branch_dropdown(ContextChipKind::GitBranchStatus, ctx);
             }
         }
 
@@ -1521,7 +1552,9 @@ impl CurrentPrompt {
         {
             if matches!(
                 chip_kind,
-                ContextChipKind::ShellGitBranch | ContextChipKind::GitDiffStats
+                ContextChipKind::ShellGitBranch
+                    | ContextChipKind::GitBranchStatus
+                    | ContextChipKind::GitDiffStats
             ) {
                 return self.git_repo_status.is_some();
             }

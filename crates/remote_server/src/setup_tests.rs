@@ -203,7 +203,7 @@ fn oss_remote_server_dir_uses_zap_namespace() {
 
 #[test]
 fn oss_binary_name_matches_zap_cli() {
-    assert_eq!(binary_name(), "warp-oss");
+    assert_eq!(binary_name(), "zap-oss");
 }
 
 #[test]

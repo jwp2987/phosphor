@@ -625,14 +625,14 @@ impl Action {
                     return;
                 };
 
-                if let Some(workspace) = workspaces.pop() {
+                match workspaces.pop() { Some(workspace) => {
                     workspace.update(ctx, |workspace, ctx| {
                         workspace
                             .handle_action(&WorkspaceAction::OpenRepository { path: None }, ctx);
                     });
-                } else {
+                } _ => {
                     log::warn!("no workspace views in window {window_id} for open repo action");
-                }
+                }}
             }
             Action::NewAgentConversation => {
                 let window_id =
@@ -1112,3 +1112,7 @@ fn safe_url_log_fields(url: &Url) -> String {
         url.path(),
     )
 }
+
+#[cfg(test)]
+#[path = "uri_test.rs"]
+mod tests;

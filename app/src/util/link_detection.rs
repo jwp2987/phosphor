@@ -178,12 +178,49 @@ pub(crate) fn add_link_detection_mouse_interactions<T: PartialClickableElement, 
     element
 }
 
+/// Returns true if `c` is fullwidth or CJK punctuation that should act as a boundary
+/// for link/file-path detection — e.g. the fullwidth comma `，`, ideographic full stop
+/// `。`, fullwidth colon `：`, fullwidth parentheses `（` `）`, or CJK corner brackets
+/// `「` `」`. This lets URLs/paths embedded in CJK prose (which typically uses fullwidth
+/// punctuation instead of ASCII whitespace around inline links) be detected correctly.
+///
+/// CJK *letters* (e.g. 音, 楽, テ, ス, ト) are intentionally excluded so that paths or
+/// URLs containing CJK characters aren't fragmented. The fullwidth hyphen-minus
+/// (U+FF0D) and fullwidth low line (U+FF3F) are also excluded since, like their ASCII
+/// counterparts `-` and `_`, they commonly appear inside identifiers and filenames
+/// rather than as prose punctuation.
+fn is_fullwidth_or_cjk_punctuation(c: char) -> bool {
+    matches!(c,
+        // CJK Symbols and Punctuation block: 、。「」『』【】〜 etc.
+        '\u{3000}'..='\u{303F}'
+        // Fullwidth ASCII punctuation (Halfwidth and Fullwidth Forms block),
+        // skipping the fullwidth hyphen-minus (U+FF0D) and fullwidth low line
+        // (U+FF3F).
+        | '\u{FF01}'..='\u{FF0C}' | '\u{FF0E}' | '\u{FF0F}'
+        | '\u{FF1A}'..='\u{FF20}'
+        | '\u{FF3B}'..='\u{FF3E}' | '\u{FF40}'
+        | '\u{FF5B}'..='\u{FF65}'
+    )
+}
+
 /// Returns the char ranges of detected URLs in the given text.
 fn detect_urls(text: &str) -> Vec<Range<usize>> {
     let mut locator = UrlLocator::new();
     let mut url_ranges = vec![];
     let (mut start, mut end) = (None, None);
     for (i, c) in text.chars().enumerate() {
+        // Fullwidth/CJK punctuation always terminates a URL, even though the
+        // `urlocator` crate (which only knows about ASCII separators) would
+        // otherwise happily keep parsing through it.
+        if is_fullwidth_or_cjk_punctuation(c) {
+            if let Some((start, end)) = start.zip(end) {
+                url_ranges.push(start..end);
+            }
+            start = None;
+            end = None;
+            locator = UrlLocator::new();
+            continue;
+        }
         // Reference to https://docs.rs/urlocator/latest/urlocator/#example-url-boundaries
         // We know we have fully parsed an url when the locator advances from the `UrlLocation::Url`
         // to the `UrlLocation::Reset` stage.
@@ -244,7 +281,7 @@ fn separator_byte_ranges_for_file_path_search(word: &str) -> Vec<SeparatorByteRa
     // We use char_indices() to get byte indices of each char which are used to index the string,
     // rather than chars().enumerate() would give char indices.
     for (i, c) in word.char_indices() {
-        if FILE_LINK_SEPARATORS.contains(&c) {
+        if FILE_LINK_SEPARATORS.contains(&c) || is_fullwidth_or_cjk_punctuation(c) {
             if separator_byte_ranges.len() > MAX_SEPARATORS_PER_WORD {
                 return Vec::new();
             }

@@ -266,7 +266,7 @@ impl EarlyOutputHandler<'_> {
             }
         }
 
-        if let Some(mut block) = self.inner().pending_background_block.take() {
+        match self.inner().pending_background_block.take() { Some(mut block) => {
             debug_assert!(
                 !block.started(),
                 "Started background blocks should be in the block list"
@@ -274,21 +274,21 @@ impl EarlyOutputHandler<'_> {
             let retval = f(&mut block);
             store_pending_block(self.block_list, block);
             retval
-        } else if let Some(block) = self.block_list.background_block_mut() {
+        } _ => if let Some(block) = self.block_list.background_block_mut() {
             f(block)
         } else {
             let mut block = self.block_list.create_pending_background_block();
             let retval = f(&mut block);
             store_pending_block(self.block_list, block);
             retval
-        }
+        }}
     }
 }
 
 /// Delegate for `EarlyOutput` that will eventually delegate the method to the
 /// background block/grid
 macro_rules! delegate {
-    ($self:ident.$method:ident( $( $arg:expr ),* )) => {
+    ($self:ident.$method:ident( $( $arg:expr_2021 ),* )) => {
         $self.with_background_output(|block| {
             block.$method($( $arg ),*)
         })
@@ -420,8 +420,16 @@ impl ansi::Handler for EarlyOutputHandler<'_> {
         );
     }
 
-    fn precmd(&mut self, _data: ansi::PrecmdValue) {
-        panic!("Called EarlyOutput::precmd handler method instead of Block::precmd");
+    fn precmd_with_completion_metadata(&mut self, _data: ansi::PrecmdValue) {
+        panic!(
+            "Called EarlyOutput::precmd_with_completion_metadata handler method instead of Block::precmd_with_completion_metadata"
+        );
+    }
+
+    fn prompt_only_precmd(&mut self, _data: ansi::PromptMetadata) {
+        panic!(
+            "Called EarlyOutput::prompt_only_precmd handler method instead of Block::prompt_only_precmd"
+        );
     }
 
     /*

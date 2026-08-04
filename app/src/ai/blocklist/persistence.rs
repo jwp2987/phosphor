@@ -477,3 +477,7 @@ pub fn maybe_build_ai_query_upsert_event(
         }),
     })
 }
+
+#[cfg(test)]
+#[path = "persistence_test.rs"]
+mod tests;

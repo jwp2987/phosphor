@@ -214,7 +214,7 @@ impl TerminalDriver {
         &mut self,
         command: &str,
         ctx: &mut ModelContext<Self>,
-    ) -> Result<impl Future<Output = Result<CommandHandle, AgentDriverError>>, AgentDriverError>
+    ) -> Result<impl Future<Output = Result<CommandHandle, AgentDriverError>> + use<>, AgentDriverError>
     {
         let (exit_tx, exit_rx) = oneshot::channel::<ExitCode>();
         let (start_tx, start_rx) = oneshot::channel::<BlockId>();
@@ -254,7 +254,7 @@ impl TerminalDriver {
         &self,
         command: String,
         ctx: &ModelContext<Self>,
-    ) -> impl Future<Output = Result<CommandOutput, AgentDriverError>> {
+    ) -> impl Future<Output = Result<CommandOutput, AgentDriverError>> + use<> {
         let session = self.terminal_view.read(ctx, |terminal, app| {
             terminal
                 .active_block_session_id()
@@ -299,7 +299,7 @@ impl TerminalDriver {
         &mut self,
         target: &str,
         ctx: &mut ModelContext<Self>,
-    ) -> Result<impl Future<Output = Result<CommandHandle, AgentDriverError>>, AgentDriverError>
+    ) -> Result<impl Future<Output = Result<CommandHandle, AgentDriverError>> + use<>, AgentDriverError>
     {
         let cd_command = self.build_cd_command(target, ctx);
         self.execute_command(&cd_command, ctx)
@@ -317,7 +317,7 @@ impl TerminalDriver {
         &self,
         target: &str,
         ctx: &ModelContext<Self>,
-    ) -> impl Future<Output = Result<CommandOutput, AgentDriverError>> {
+    ) -> impl Future<Output = Result<CommandOutput, AgentDriverError>> + use<> {
         let cd_command = self.build_cd_command(target, ctx);
         self.execute_silent_command(cd_command, ctx)
     }
@@ -336,7 +336,7 @@ impl TerminalDriver {
     /// This only waits for the `SessionBootstrapped` terminal view event.
     pub fn wait_for_session_bootstrapped(
         &self,
-    ) -> impl Future<Output = Result<(), AgentDriverError>> {
+    ) -> impl Future<Output = Result<(), AgentDriverError>> + use<> {
         let session_bootstrapped = self.session_bootstrapped.clone();
 
         async move {

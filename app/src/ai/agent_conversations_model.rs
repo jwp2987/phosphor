@@ -893,7 +893,7 @@ impl AgentConversationsModel {
         &self,
         filters: &AgentManagementFilters,
         app: &AppContext,
-    ) -> impl Iterator<Item = ConversationOrTask<'_>> {
+    ) -> impl Iterator<Item = ConversationOrTask<'_>> + use<'_> {
         let conversation_ids_shadowed_by_tasks = self.conversation_ids_shadowed_by_tasks(app);
         let owner_creator_filter = move |t: &ConversationOrTask| {
             t.matches_owner_and_creator(&filters.owners, &filters.creator, app)

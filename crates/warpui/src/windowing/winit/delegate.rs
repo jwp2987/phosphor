@@ -67,8 +67,15 @@ static MAIN_THREAD_ID: OnceLock<thread::ThreadId> = OnceLock::new();
 pub fn open_url_in_system(url: &str) {
     #[cfg(target_family = "wasm")]
     if let Some(window) = web_sys::window() {
-        // Try to open the URL in a new tab.
-        let _ = window.open_with_url_and_target(url, "_blank");
+        match crate::browser::safe_browser_open_url(url) {
+            Some(safe_url) => {
+                // Try to open the URL in a new tab.
+                let _ = window.open_with_url_and_target(&safe_url, "_blank");
+            }
+            None => {
+                log::warn!("Skipping browser URL open for invalid or unsafe URL");
+            }
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -80,7 +87,8 @@ pub fn open_url_in_system(url: &str) {
         //    "native" opening of files is not necessarily going to work.
         // We choose to do the following:
         // 1. First attempt to open with `wslview`, since that is basically made to open stuff in wsl
-        // 2. Use `cmd.exe /c start {url}` to open in the user's default windows browser
+        // 2. Use `rundll32.exe url.dll,FileProtocolHandler {url}` to open in the user's default
+        //    windows browser
         //    - If a user does not want this behavior, and wants all opening to go through
         //      WSL, they can set the env variable WARP_FORCE_WSL_BROWSER.
         // 3. Fall back to default linux url opening behavior.
@@ -92,23 +100,39 @@ pub fn open_url_in_system(url: &str) {
                 ),
             };
 
-            // Attempt to open by
             if !use_wsl_browser() {
-                let mut cmd = command::blocking::Command::new("cmd.exe");
-                cmd.args(["/c", "start", url]);
+                // Validate the URL scheme before passing to Windows to prevent injection
+                // via unrecognized or file-system-targeting schemes (e.g. file:, ms-msdt:,
+                // search-ms:, javascript:). We use the re-serialized URL from the parser
+                // rather than the raw input so that characters like `"` are percent-encoded
+                // (e.g. %22) before they reach explorer.exe's command line.
+                let safe_url = url::Url::parse(url)
+                    .ok()
+                    .and_then(|u| matches!(u.scheme(), "http" | "https").then(|| u.to_string()));
 
-                // Note: Ideally, we would be calling detached like open::that_detached does.
-                // However, it is probably fine.
-                match cmd
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                {
-                    Ok(_) => return,
-                    Err(e) => log::info!(
-                        "Failed to open url with cmd.exe {e:?}, falling back to another method"
-                    ),
+                if let Some(safe_url) = safe_url {
+                    let mut cmd = command::blocking::Command::new("rundll32.exe");
+                    cmd.args(["url.dll,FileProtocolHandler", &safe_url]);
+
+                    // Note: Ideally, we would be calling detached like open::that_detached does.
+                    // However, it is probably fine.
+                    match cmd
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                    {
+                        Ok(status) if status.success() => return,
+                        Ok(status) => log::info!(
+                            "Failed to open url with rundll32.exe: process exited with {status}, \
+                             falling back to another method"
+                        ),
+                        Err(e) => log::info!(
+                            "Failed to open url with rundll32.exe {e:?}, falling back to another method"
+                        ),
+                    }
+                } else {
+                    log::warn!("Skipping Windows URL open for unrecognized or unsafe URL scheme");
                 }
             }
         }

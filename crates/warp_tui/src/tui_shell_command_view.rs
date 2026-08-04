@@ -28,7 +28,7 @@ use crate::agent_block_sections::render_fallback_tool_call_section;
 use crate::editor_view::{TuiEditorView, TuiEditorViewEvent};
 use crate::keybindings::{TUI_BINDING_GROUP, is_tui_owned_binding};
 use crate::terminal_block::TerminalBlockElement;
-use crate::terminal_use::user_controls_running_command;
+use crate::terminal_use::user_controlled_running_command;
 use crate::tool_call_labels::{
     CommandBlockState, ResolvedCommandBlock, tool_call_display_state, tool_call_label,
 };
@@ -45,12 +45,11 @@ pub(crate) fn init(app: &mut AppContext) {
     app.register_fixed_bindings([
         FixedBinding::new(
             "escape",
-            TuiShellCommandViewAction::CancelCommandEdit,
-            predicate.clone(),
-        )
-        .with_group(TUI_BINDING_GROUP),
-        FixedBinding::new(
-            "ctrl-e",
+            // Esc while the command body editor is focused exits the editor
+            // and restores Yes as the highlighted option -- it does NOT
+            // cancel the tool call. A subsequent Esc (with the list
+            // focused) cancels via the PERMISSION_PROMPT_ACTIVE ->
+            // CancelOrBack path.
             TuiShellCommandViewAction::SaveCommandEdit,
             predicate.clone(),
         )
@@ -144,12 +143,6 @@ pub(super) enum TuiShellCommandViewEvent {
 /// User interactions handled by the shell-command view.
 #[derive(Clone, Debug)]
 pub(super) enum TuiShellCommandViewAction {
-    /// Rejects the blocked command outright (Escape while *not* editing).
-    CancelPermission,
-    /// Escape while actively editing the proposed command: exits edit mode
-    /// and discards the in-progress edit, without rejecting the command
-    /// itself. Distinct from [`Self::CancelPermission`].
-    CancelCommandEdit,
     SaveCommandEdit,
     ToggleExpanded,
 }
@@ -260,27 +253,13 @@ impl TuiShellCommandView {
         }
     }
 
-    fn save_command_edit(&self, ctx: &mut ViewContext<Self>) {
+    fn save_command_edit(&mut self, ctx: &mut ViewContext<Self>) {
         if !self.command_editor.as_ref(ctx).is_focused() {
             return;
         }
-        self.permission_prompt
-            .update(ctx, |prompt, ctx| prompt.restore_options_focus(ctx));
-        self.invalidate_layout(ctx);
-    }
-
-    /// Escape while editing: exits edit mode back to the read-only reviewing
-    /// state, discarding the in-progress edit and restoring the original
-    /// proposed command, rather than rejecting the whole request (that's
-    /// [`Self::reject`], still reachable via Escape once edit mode is
-    /// exited).
-    fn cancel_command_edit(&mut self, ctx: &mut ViewContext<Self>) {
-        if !self.command_editor.as_ref(ctx).is_focused() {
-            return;
-        }
-        let original_command = Self::action_command(&self.action).to_owned();
-        self.command_editor
-            .update(ctx, |editor, ctx| editor.set_text(original_command, ctx));
+        // The displayed text is now the source of truth: a future streamed
+        // update to this same action is a genuinely new revision, not the
+        // edit we just applied, so allow `update_action` to resync again.
         self.command_was_edited = false;
         self.permission_prompt
             .update(ctx, |prompt, ctx| prompt.restore_options_focus(ctx));
@@ -424,12 +403,18 @@ impl TuiShellCommandView {
         })
     }
 
+    /// Whether THIS view's block is the single active block the user is
+    /// currently interacting with. This must use the exclusive
+    /// [`user_controlled_running_command`] (not the block-local
+    /// `user_controls_running_command` predicate) so that only the truly
+    /// active block -- not merely any block that individually looks
+    /// user-controlled -- can gate collapse/expand behavior.
     fn user_controls_command(&self) -> bool {
-        self.terminal_model
-            .lock()
-            .block_list()
-            .block_for_ai_action_id(&self.action.id)
-            .is_some_and(user_controls_running_command)
+        let model = self.terminal_model.lock();
+        let Some(block) = model.block_list().block_for_ai_action_id(&self.action.id) else {
+            return false;
+        };
+        user_controlled_running_command(&model).is_some_and(|active| active.id() == block.id())
     }
 }
 
@@ -530,8 +515,6 @@ impl TypedActionView for TuiShellCommandView {
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
-            TuiShellCommandViewAction::CancelPermission => self.reject(ctx),
-            TuiShellCommandViewAction::CancelCommandEdit => self.cancel_command_edit(ctx),
             TuiShellCommandViewAction::SaveCommandEdit => self.save_command_edit(ctx),
             TuiShellCommandViewAction::ToggleExpanded => {
                 if self.user_controls_command() {

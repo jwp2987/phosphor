@@ -163,13 +163,13 @@ impl<T: EventLoopSender> RemoteServerController<T> {
     /// Extracts the `SessionInfo` from the stash and writes the bootstrap
     /// script to the PTY via `PtyController::initialize_shell`.
     fn flush_stashed_bootstrap(&mut self, session_info: SessionInfo, ctx: &mut ModelContext<Self>) {
-        if let Some(pty) = self.pty_controller.upgrade(ctx) {
+        match self.pty_controller.upgrade(ctx) { Some(pty) => {
             pty.update(ctx, |pty, ctx| {
                 pty.initialize_shell(&session_info, ctx);
             });
-        } else {
+        } _ => {
             log::warn!("PtyController dropped before bootstrap could be flushed");
-        }
+        }}
     }
 
     /// Idle -> AwaitingCheck
@@ -201,7 +201,15 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 self.flush_stashed_bootstrap(old_info, ctx);
             }
         }
-        let transport = SshTransport::new(socket_path, self.auth_context.clone());
+        // TODO(#37): thread real ControlMaster ownership through here. The
+        // fork's `IsLegacySSHSession::Yes` does not yet carry the wrapper's
+        // `external_control_master` flag, so we conservatively assume we own
+        // the master (matching prior always-teardown behavior). Once the
+        // flag is plumbed from the bootstrap SSH hook through session info,
+        // pass `!external_control_master` here.
+        let owns_control_master = true;
+        let transport =
+            SshTransport::new(socket_path, self.auth_context.clone(), owns_control_master);
         self.did_install = false;
         self.remote_platform = None;
         self.preinstall_check = None;
@@ -517,7 +525,12 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         socket_path: PathBuf,
         ctx: &mut ModelContext<Self>,
     ) {
-        let transport = SshTransport::new(socket_path, self.auth_context.clone());
+        // TODO(#37): see `on_ssh_init_shell_requested` — thread real
+        // ControlMaster ownership here once the wrapper's
+        // `external_control_master` flag is plumbed through session info.
+        let owns_control_master = true;
+        let transport =
+            SshTransport::new(socket_path, self.auth_context.clone(), owns_control_master);
         let auth_context = self.auth_context.clone();
         RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
             mgr.connect_session(session_id, transport, auth_context, ctx);

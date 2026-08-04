@@ -42,14 +42,29 @@ fn create_default_serialized_block() -> SerializedBlock {
     }
 }
 
+/// Drives a bootstrap-style completion: an early `CommandFinished` followed by a `Precmd` that
+/// carries the same completion metadata, matching what the shell now emits during bootstrap.
+fn command_finished_and_precmd(terminal: &mut TerminalModel) {
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(0),
+        next_block_id: BlockId::new(),
+    };
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata::default(),
+    });
+}
+
 // Ensures that an ssh session successfully bootstraps even if the block list is empty.
 #[test]
 fn ssh_bootstraps_if_blocklist_empty() {
     let mut terminal = TerminalModel::mock(None, None);
-    terminal.command_finished(Default::default());
-    terminal.precmd(Default::default());
-    terminal.command_finished(Default::default());
-    terminal.precmd(Default::default());
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
 
     let bootstrapped_value = BootstrappedValue {
         histfile: None,
@@ -75,8 +90,15 @@ fn ssh_bootstraps_if_blocklist_empty() {
         shell_path: None,
     };
     terminal.bootstrapped(bootstrapped_value.clone());
-    terminal.command_finished(Default::default());
-    terminal.block_list_mut().precmd(Default::default());
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: BlockId::new(),
+        },
+    });
+    terminal
+        .block_list_mut()
+        .prompt_only_precmd(Default::default());
 
     assert!(terminal.is_active_block_bootstrapped());
 
@@ -95,13 +117,10 @@ fn ssh_bootstraps_if_blocklist_empty() {
     // The active block should no longer be considered bootstrapped after the init shell call.
     assert!(!terminal.is_active_block_bootstrapped());
 
-    terminal.command_finished(Default::default());
-    terminal.precmd(PrecmdValue::default());
-    terminal.command_finished(Default::default());
-    terminal.precmd(Default::default());
+    command_finished_and_precmd(&mut terminal);
+    command_finished_and_precmd(&mut terminal);
     terminal.bootstrapped(bootstrapped_value);
-    terminal.command_finished(Default::default());
-    terminal.precmd(Default::default());
+    command_finished_and_precmd(&mut terminal);
 
     assert!(terminal.is_active_block_bootstrapped());
 }
@@ -667,29 +686,267 @@ fn test_reset_state() {
 #[test]
 fn test_exit_alt_screen_on_command_finished() {
     let mut terminal: TerminalModel = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
 
     terminal.enter_alt_screen(true);
 
     terminal.command_finished(CommandFinishedValue {
-        exit_code: ExitCode::from(0),
-        next_block_id: BlockId::new(),
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: BlockId::new(),
+        },
     });
 
     assert!(!terminal.alt_screen_active);
 }
 
+// Lifecycle-coordinator integration tests. These exercise `BlockLifecycleCoordinator` through the
+// live `TerminalModel` command-start and exit paths. Ported and adapted from Warp's
+// `terminal_model_tests.rs`; the fork drives the coordinator through its split `CommandFinished` /
+// `Precmd` hooks (see the coordinator wiring in `terminal_model.rs`).
+
+#[test]
+fn lifecycle_repeated_and_executing_command_starts_are_safely_gated() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let active_block_id = terminal.active_block_id().clone();
+
+    // The first start is accepted; a second start before execution is coalesced rather than
+    // starting a fresh block.
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::Accepted
+    );
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::Coalesced
+    );
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+
+    // Once the block is executing, a further start is rejected instead of clobbering the running
+    // command.
+    terminal.preexec(PreexecValue {
+        command: "running".to_owned(),
+    });
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::RejectedExecuting
+    );
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(
+        terminal.block_list().active_block().state(),
+        BlockState::Executing
+    );
+}
+
+#[test]
+fn lifecycle_terminal_exit_absorbs_later_inputs() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.exit(ExitReason::PtyDisconnected);
+    let active_block_id = terminal.active_block_id().clone();
+    let block_count = terminal.block_list().blocks().len();
+    let pending_session_id = terminal.pending_session_id();
+
+    // After exit the terminal is terminated (absorbing): a start is ignored, and later completion,
+    // preexec, and init-shell inputs must not mutate block or session state.
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::IgnoredTerminated
+    );
+    terminal.preexec(PreexecValue {
+        command: "ignored".to_owned(),
+    });
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(1),
+            next_block_id: BlockId::new(),
+        },
+    });
+    terminal.init_shell(InitShellValue {
+        shell: "bash".to_owned(),
+        session_id: 42.into(),
+        ..Default::default()
+    });
+
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(terminal.block_list().blocks().len(), block_count);
+    assert_eq!(terminal.pending_session_id(), pending_session_id);
+}
+
 #[test]
 fn test_unset_bracketed_paste_mode_on_command_finished() {
     let mut terminal: TerminalModel = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
 
     terminal.set_mode(Mode::BracketedPaste);
 
     terminal.command_finished(CommandFinishedValue {
-        exit_code: ExitCode::from(0),
-        next_block_id: BlockId::new(),
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: BlockId::new(),
+        },
     });
 
     assert!(!terminal.is_term_mode_set(TermMode::BRACKETED_PASTE));
+}
+
+// Ported from Warp's lifecycle-completion refactor: a `Precmd` carrying completion metadata for a
+// block whose `CommandFinished` was never observed must recover the missed completion, applying the
+// exact same block state, active-block advance, prompt, and once-per-command side effects.
+#[test]
+fn precmd_with_completion_metadata_recovers_missing_completion_with_exact_side_effects() {
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    while event_rx.try_recv().is_ok() {}
+
+    let (ordered_tx, ordered_rx) = async_channel::unbounded();
+    terminal.set_ordered_terminal_events_for_shared_session_tx(ordered_tx);
+    let completed_block_id = terminal.active_block_id().clone();
+    terminal.start_command_execution();
+    for c in "missing-finish".chars() {
+        terminal.block_list_mut().active_block_for_test().input(c);
+    }
+    let next_block_id = BlockId::new();
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(17),
+        next_block_id: next_block_id.clone(),
+    };
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: completion_metadata.clone(),
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/recovered".to_owned()),
+            ..Default::default()
+        },
+    });
+
+    let completed_block = terminal
+        .block_list()
+        .block_with_id(&completed_block_id)
+        .expect("The recovered completed block should remain in the block list.");
+    assert_eq!(completed_block.state(), BlockState::DoneWithExecution);
+    assert_eq!(completed_block.exit_code(), ExitCode::from(17));
+    assert_eq!(completed_block.command_to_string(), "missing-finish");
+    assert_eq!(terminal.active_block_id(), &next_block_id);
+    assert_eq!(
+        terminal.block_list().active_block().pwd().map(String::as_str),
+        Some("/recovered")
+    );
+
+    let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    for expected in [
+        "BlockCompleted",
+        "AfterBlockCompleted",
+        "BlockMetadataReceived",
+        "CommandFinished",
+        "Precmd",
+    ] {
+        let count = events
+            .iter()
+            .filter(|event| match expected {
+                "BlockCompleted" => matches!(event, Event::BlockCompleted(_)),
+                "AfterBlockCompleted" => matches!(event, Event::AfterBlockCompleted(_)),
+                "BlockMetadataReceived" => matches!(event, Event::BlockMetadataReceived(_)),
+                "CommandFinished" => matches!(
+                    event,
+                    Event::Handler(HandlerEvent::CommandFinished {
+                        command_type: CommandType::User
+                    })
+                ),
+                "Precmd" => matches!(event, Event::Handler(HandlerEvent::Precmd { .. })),
+                _ => unreachable!("Every expected event kind is handled."),
+            })
+            .count();
+        assert_eq!(count, 1, "Expected exactly one {expected} event.");
+    }
+    assert!(matches!(
+        ordered_rx.try_recv(),
+        Ok(OrderedTerminalEventType::CommandExecutionFinished { .. })
+    ));
+    assert!(ordered_rx.try_recv().is_err());
+
+    // A duplicate completion for the already-finished block is idempotent: it advances the list but
+    // must not re-emit the completion side effects.
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/recovered".to_owned()),
+            ..Default::default()
+        },
+    });
+    let repeated_events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    assert!(!repeated_events.iter().any(|event| {
+        matches!(
+            event,
+            Event::BlockCompleted(_)
+                | Event::AfterBlockCompleted(_)
+                | Event::BlockMetadataReceived(_)
+                | Event::Handler(HandlerEvent::CommandFinished { .. })
+                | Event::Handler(HandlerEvent::Precmd { .. })
+        )
+    }));
+}
+
+// Ported from Warp: a completion-recovering precmd must run the same cleanup (exit alt screen,
+// unset bracketed paste) that a normal `CommandFinished` runs.
+#[test]
+fn precmd_with_completion_metadata_recovery_cleans_up_alt_screen_and_bracketed_paste() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "vim".to_owned(),
+    });
+    let completed_block_id = terminal.active_block_id().clone();
+    terminal.set_mode(Mode::BracketedPaste);
+    terminal.enter_alt_screen(true);
+    assert!(terminal.alt_screen_active);
+    assert!(terminal.is_term_mode_set(TermMode::BRACKETED_PASTE));
+
+    let next_block_id = BlockId::new();
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: next_block_id.clone(),
+        },
+        prompt_metadata: PromptMetadata::default(),
+    });
+
+    let completed_block = terminal
+        .block_list()
+        .block_with_id(&completed_block_id)
+        .expect("The recovered alt-screen block should remain in the block list.");
+    assert_eq!(completed_block.state(), BlockState::DoneWithExecution);
+    assert_eq!(terminal.active_block_id(), &next_block_id);
+    assert!(!terminal.alt_screen_active);
+    assert!(!terminal.is_term_mode_set(TermMode::BRACKETED_PASTE));
+}
+
+// Ported from Warp: with the recovery feature flag disabled, a completion-carrying precmd whose
+// completion was never observed is dropped entirely — no block advance, no prompt application.
+#[test]
+fn precmd_with_completion_metadata_completion_recovery_is_disabled_by_default() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let _recovery_disabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(false);
+    let active_block_id = terminal.active_block_id().clone();
+    let block_count = terminal.block_list().blocks().len();
+
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(17),
+            next_block_id: BlockId::new(),
+        },
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/ignored-recovery".to_owned()),
+            ..Default::default()
+        },
+    });
+
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(terminal.block_list().blocks().len(), block_count);
+    assert_eq!(terminal.block_list().active_block().pwd(), None);
 }
 
 #[test]

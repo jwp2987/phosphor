@@ -19,7 +19,10 @@ use crate::terminal::{
 };
 
 use super::{
-    ansi::{CommandFinishedValue, Handler, PrecmdValue, PreexecValue, Processor},
+    ansi::{
+        CommandFinishedValue, CompletionMetadata, Handler, PrecmdValue, PreexecValue, Processor,
+        PromptMetadata,
+    },
     block::{Block, BlockId, BlockSize},
     blocks::BlockList,
     bootstrap::BootstrapStage,
@@ -312,24 +315,19 @@ impl TerminalModel {
     /// Simulates the completion of a block.
     /// Assumes that a block was running to begin with.
     pub fn finish_block(&mut self) {
-        self.command_finished(CommandFinishedValue {
+        let completion_metadata = CompletionMetadata {
             exit_code: ExitCode::from(0),
             next_block_id: BlockId::new(),
+        };
+        self.command_finished(CommandFinishedValue {
+            completion_metadata: completion_metadata.clone(),
         });
-        self.precmd(PrecmdValue {
-            pwd: None,
-            git_head: None,
-            git_branch: None,
-            virtual_env: None,
-            conda_env: None,
-            node_version: None,
-            session_id: Some(0),
-            kube_config: None,
-            ps1: None,
-            honor_ps1: None,
-            rprompt: None,
-            ps1_is_encoded: Some(true),
-            is_after_in_band_command: false,
+        self.precmd_with_completion_metadata(PrecmdValue {
+            completion_metadata,
+            prompt_metadata: PromptMetadata {
+                session_id: Some(0),
+                ..Default::default()
+            },
         });
     }
 

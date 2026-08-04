@@ -20,13 +20,13 @@ lazy_static! {
     /// claude code, codex CLI, or gemini CLI) suck, because the user often thinks we're
     /// intentionally trying to push them away from those CLIs into Agent Mode, so we mitigate the
     /// risk by always treating as shell.
-    static ref ONE_OFF_SHELL_COMMAND_KEYWORDS: HashSet<&'static str> = HashSet::from(["#", "echo", "man", "sudo", "claude", "codex", "gemini"]);
+    static ref ONE_OFF_SHELL_COMMAND_KEYWORDS: HashSet<&'static str> = HashSet::from(["#", "echo", "man", "sudo", "claude", "codex", "gemini", "agy", "omp"]);
 
     static ref ONE_OFF_NATURAL_LANGUAGE_WORDS: HashSet<&'static str> = HashSet::from(["hello", "hi", "hey", "hola", "thanks", "explain", "yes", "no", "what", "nice", "1. "]);
 
     /// A set of words that should trigger an AI classification if they are the entire input
     /// and the input is a follow-up to an agent response.
-    static ref AGENT_FOLLOW_UP_INPUTS: HashSet<&'static str> = HashSet::from(["yes", "continue", "do it"]);
+    static ref AGENT_FOLLOW_UP_INPUTS: HashSet<&'static str> = HashSet::from(["yes", "continue", "do it", "approve"]);
 }
 
 pub fn is_agent_follow_up_input(input: &str) -> bool {
@@ -136,3 +136,7 @@ pub fn is_installed_binary(input: &ParsedTokensSnapshot) -> bool {
         .map(|token| token.token_description.is_some())
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+#[path = "util_tests.rs"]
+mod tests;

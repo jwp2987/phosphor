@@ -134,7 +134,7 @@ impl ObjectStoreModel {
     }
 
     /// Waits for the local object store to become readable. Under Zap this condition is satisfied immediately after SQLite restore.
-    pub fn initial_load_complete(&self) -> impl Future<Output = ()> {
+    pub fn initial_load_complete(&self) -> impl Future<Output = ()> + use<> {
         self.initial_load_complete.wait()
     }
 

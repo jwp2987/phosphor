@@ -13,14 +13,26 @@ use vim::vim::{
     VimMotion, VimOperand, VimOperator, VimTextObject, WordMotion,
 };
 use warp_editor::{
-    content::buffer::{
-        AutoScrollBehavior, BufferEditAction, EditOrigin, SelectionOffsets,
-        ToBufferCharOffset as _, VimInsertPoint,
-    },
+    content::buffer::{AutoScrollBehavior, BufferEditAction, EditOrigin, SelectionOffsets, VimInsertPoint},
     model::{CoreEditorModel, PlainTextEditorModel},
     selection::{TextDirection, TextUnit},
 };
-use warpui::{text::point::Point, SingletonEntity, ViewContext};
+use warpui::{SingletonEntity, ViewContext};
+
+/// Cap on the byte size of a single vim-driven repeated-text insertion (paste
+/// or `replace_text`). Without a cap, an unchecked repeat count taken from
+/// user input (e.g. `999999999r` or continuous `R`-mode) drives `text.repeat`
+/// to attempt a multi-gigabyte allocation, hanging or crashing the process.
+const MAX_VIM_PASTE_BYTES: usize = 1024 * 1024;
+
+/// Repeats `text` up to `count` times, capped so the result never exceeds
+/// `MAX_VIM_PASTE_BYTES`. Mirrors the identical helper in
+/// `crates/warp_tui/src/input/vim.rs` (not shared because the two crates
+/// don't otherwise share a vim-motion text-building module).
+fn bounded_repeated_text(text: &str, count: u32) -> String {
+    let max_count = (MAX_VIM_PASTE_BYTES / text.len().max(1)).max(1);
+    text.repeat((count as usize).min(max_count))
+}
 
 impl VimHandler for CodeEditorView {
     fn insert_char(&mut self, c: char, ctx: &mut ViewContext<Self>) {
@@ -200,8 +212,11 @@ impl VimHandler for CodeEditorView {
                             VimMotion::Paragraph(direction) => {
                                 model.vim_move_by_paragraph(operand_count, direction, true, ctx);
                                 if *motion_type == MotionType::Linewise {
-                                    let include_newline = *operator != VimOperator::Change;
-                                    model.vim_extend_selection_linewise(include_newline, ctx);
+                                    model.vim_extend_selection_linewise(
+                                        *operator != VimOperator::Change,
+                                        *operator == VimOperator::Delete,
+                                        ctx,
+                                    );
                                 }
                             }
                             VimMotion::JumpToLastLine => {
@@ -209,6 +224,7 @@ impl VimHandler for CodeEditorView {
                                 if *motion_type == MotionType::Linewise {
                                     model.vim_extend_selection_linewise(
                                         *operator != VimOperator::Change,
+                                        *operator == VimOperator::Delete,
                                         ctx,
                                     );
                                 }
@@ -218,6 +234,7 @@ impl VimHandler for CodeEditorView {
                                 if *motion_type == MotionType::Linewise {
                                     model.vim_extend_selection_linewise(
                                         *operator != VimOperator::Change,
+                                        *operator == VimOperator::Delete,
                                         ctx,
                                     );
                                 }
@@ -232,31 +249,7 @@ impl VimHandler for CodeEditorView {
                                 );
                             }
                             VimMotion::JumpToLine(line_number) => {
-                                let buffer = model.content().as_ref(ctx);
-                                let selection_model = model.buffer_selection_model().as_ref(ctx);
-                                let current_selections = selection_model.selection_offsets();
-
-                                let new_selections = current_selections.mapped(|selection| {
-                                    let cursor_pos = selection.head;
-                                    let target_pos =
-                                        Point::new(*line_number, 0).to_buffer_char_offset(buffer);
-
-                                    SelectionOffsets {
-                                        head: target_pos,
-                                        tail: cursor_pos,
-                                    }
-                                });
-
-                                model.vim_set_selections(
-                                    new_selections,
-                                    AutoScrollBehavior::Selection,
-                                    ctx,
-                                );
-
-                                if *motion_type == MotionType::Linewise {
-                                    let include_newline = *operator != VimOperator::Change;
-                                    model.vim_extend_selection_linewise(include_newline, ctx);
-                                }
+                                model.vim_select_to_line(*line_number, motion_type, operator, ctx);
                             }
                             _ => {
                                 // TODO: Implement other motions (find char, brackets, etc.)
@@ -276,7 +269,11 @@ impl VimHandler for CodeEditorView {
 
                         let include_newline = operator != &VimOperator::Change
                             && operator != &VimOperator::ToggleComment;
-                        model.vim_extend_selection_linewise(include_newline, ctx);
+                        model.vim_extend_selection_linewise(
+                            include_newline,
+                            *operator == VimOperator::Delete,
+                            ctx,
+                        );
                     }
                     VimOperand::TextObject(text_object) => {
                         model.vim_select_text_object(text_object, Some(operator), ctx);
@@ -307,16 +304,24 @@ impl VimHandler for CodeEditorView {
                     let selected_text = buffer
                         .selected_text_as_plain_text(selection_model, ctx)
                         .into_string();
-                    if !selected_text.is_empty() {
+                    let register_text =
+                        if selected_text.is_empty() && motion_type == MotionType::Linewise {
+                            Some("\n".to_owned())
+                        } else {
+                            (!selected_text.is_empty()).then(|| selected_text.clone())
+                        };
+                    if let Some(register_text) = register_text {
                         VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
                             registers.write_to_register(
                                 register_name,
-                                selected_text,
+                                register_text,
                                 motion_type,
                                 ctx,
                             );
                         });
+                    }
 
+                    if !selected_text.is_empty() {
                         if *operator == VimOperator::Change && motion_type == MotionType::Linewise {
                             // Use smart indent to position the cursor when changing the entire
                             // line.
@@ -346,11 +351,17 @@ impl VimHandler for CodeEditorView {
                     let selected_text = buffer
                         .selected_text_as_plain_text(selection_model, ctx)
                         .into_string();
-                    if !selected_text.is_empty() {
+                    let register_text =
+                        if selected_text.is_empty() && motion_type == MotionType::Linewise {
+                            Some("\n".to_owned())
+                        } else {
+                            (!selected_text.is_empty()).then_some(selected_text)
+                        };
+                    if let Some(register_text) = register_text {
                         VimRegisters::handle(ctx).update(ctx, |registers, ctx| {
                             registers.write_to_register(
                                 register_name,
-                                selected_text,
+                                register_text,
                                 motion_type,
                                 ctx,
                             );
@@ -430,12 +441,41 @@ impl VimHandler for CodeEditorView {
         }
     }
 
-    fn replace_char(&mut self, c: char, char_count: u32, ctx: &mut ViewContext<Self>) {
+    fn replace_char(
+        &mut self,
+        c: char,
+        char_count: u32,
+        advance: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
         self.model.update(ctx, |model, ctx| {
-            model.replace_char(c, char_count, ctx);
+            if advance {
+                model.vim_replace_text(&c.to_string(), ctx);
+            } else {
+                model.replace_char(c, char_count, ctx);
+            }
         });
 
         // Explicit call to ctx.notify() in the case that we don't make any updates to the model
+        ctx.notify();
+    }
+
+    fn replace_text(
+        &mut self,
+        text: &str,
+        count: u32,
+        already_applied: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let repeat_count = count.saturating_sub(u32::from(already_applied));
+        self.model.update(ctx, |model, ctx| {
+            if repeat_count > 0 {
+                model.vim_replace_text(&bounded_repeated_text(text, repeat_count), ctx);
+            }
+            if !text.is_empty() {
+                model.vim_move_horizontal_by_offset(1, &Direction::Backward, false, true, ctx);
+            }
+        });
         ctx.notify();
     }
 
@@ -658,15 +698,16 @@ impl VimHandler for CodeEditorView {
 
     fn jump_to_last_line(&mut self, ctx: &mut ViewContext<Self>) {
         self.model.update(ctx, |model, ctx| {
-            let buffer = model.content().as_ref(ctx);
-            let max_point = buffer.max_point();
-            model.jump_to_line_column(max_point.row as usize, None, ctx);
+            model.vim_move_to_last_line(ctx);
         });
     }
 
     fn jump_to_line(&mut self, line_number: u32, ctx: &mut ViewContext<Self>) {
         self.model.update(ctx, |model, ctx| {
-            model.jump_to_line_column(line_number as usize, None, ctx);
+            let buffer = model.content().as_ref(ctx);
+            let max_row = buffer.max_point().row;
+            let row = line_number.max(1).min(max_row);
+            model.jump_to_line_column(row as usize, None, ctx);
         });
     }
 
@@ -882,7 +923,11 @@ impl VimHandler for CodeEditorView {
                     model.vim_set_visual_tail_to_selection_heads(ctx);
                 });
             }
-            _ => {}
+            VimMode::Replace => {
+                self.model.update(ctx, |model, ctx| {
+                    model.vim_enforce_cursor_line_cap(ctx);
+                });
+            }
         }
         ctx.notify();
     }

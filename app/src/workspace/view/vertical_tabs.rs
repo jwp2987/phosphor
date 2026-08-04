@@ -2384,14 +2384,14 @@ fn resolve_icon_with_status_variant(
             }
         }
         TypedPane::Code(_) => {
-            if let Some(icon_element) = icon_from_file_path(title, appearance) {
+            match icon_from_file_path(title, appearance) { Some(icon_element) => {
                 IconWithStatusVariant::NeutralElement { icon_element }
-            } else {
+            } _ => {
                 IconWithStatusVariant::Neutral {
                     icon: WarpIcon::Code2,
                     icon_color: sub_text,
                 }
-            }
+            }}
         }
         // Settings and environment management use the foreground color per design spec
         // Zap Wave 7-3: `TypedPane::EnvironmentManagement` was physically removed along with the ambient-agent UI subsystem.
@@ -3274,8 +3274,6 @@ impl PaneGroup {
             IPaneType::ExecutionProfileEditor => TypedPane::ExecutionProfileEditor,
             IPaneType::ImageViewer
             | IPaneType::GetStarted
-            | IPaneType::SshServer
-            | IPaneType::Sftp
             | IPaneType::Welcome
             | IPaneType::DeferredPlaceholder => TypedPane::Other,
             #[cfg(test)]
@@ -4317,14 +4315,14 @@ fn compute_tab_group_color_mode(
     let per_pane: HashMap<PaneId, Option<AnsiColorIdentifier>> = visible_pane_ids
         .iter()
         .map(|&pane_id| {
-            let color = if let Some(tv) = pane_group.terminal_view_from_pane_id(pane_id, app) {
+            let color = match pane_group.terminal_view_from_pane_id(pane_id, app) { Some(tv) => {
                 // Terminal pane: determine color from CWD.
                 tv.as_ref(app).pwd_if_local(app).and_then(|cwd| {
                     dir_colors
                         .color_for_directory(Path::new(&cwd))
                         .and_then(|c| c.ansi_color())
                 })
-            } else if let Some(code_view) = pane_group.code_view_from_pane_id(pane_id, app) {
+            } _ => { match pane_group.code_view_from_pane_id(pane_id, app) { Some(code_view) => {
                 // Code pane: determine color from the open file path using longest-prefix
                 // matching against configured directories, so e.g. warp-internal/code.rs
                 // inherits the color assigned to warp-internal.
@@ -4337,11 +4335,11 @@ fn compute_tab_group_color_mode(
                             .color_for_directory(file_path)
                             .and_then(|c| c.ansi_color())
                     })
-            } else {
+            } _ => {
                 // Other non-terminal panes (notebook, workflow, etc.): fall back to the
                 // cached directory color from the tab's last active terminal.
                 tab.default_directory_color
-            };
+            }}}};
             (pane_id, color)
         })
         .collect();

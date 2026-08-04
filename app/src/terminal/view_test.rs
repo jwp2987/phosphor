@@ -1583,7 +1583,7 @@ fn test_alt_screen_select_with_sgr_mouse() {
         // We need to manually trigger re-renders to ensure the AltScreenElement is recreated, e.g.
         // so its `is_terminal_selecting` property will be up-to-date.
         macro_rules! rerender {
-            ($app:ident, $presenter:expr, $invalidation:expr, $size_info:expr) => {
+            ($app:ident, $presenter:expr_2021, $invalidation:expr_2021, $size_info:expr_2021) => {
                 app.update(enclose!((presenter, invalidation) move |ctx| {
                     presenter
                         .borrow_mut()
@@ -5491,112 +5491,134 @@ fn linear_deeplink_via_default_entrypoint_does_not_auto_submit_in_fullscreen() {
     })
 }
 
-// ---- OneKey search-filter pure-function tests ----
-//
-// These tests target only the `filter_and_sort_onekey_candidates` pure path,
-// with no need to build a TerminalView / ctx. The skim algorithm's Unicode handling is owned by the
-// fuzzy_match crate; here we only verify that our use of it in view.rs behaves as expected.
+// Ported from Warp view_tests.rs. `UserTakeOverReason::Stop` carries a `should_auto_resume`
+// flag; a live Ctrl-C takeover uses `should_auto_resume: true`.
+#[test]
+fn ctrl_c_after_stop_takeover_cancels_conversation() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
 
-use super::filter_and_sort_onekey_candidates;
-use super::OnekeyMenuRows;
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
 
-fn rows_indices(rows: OnekeyMenuRows) -> Vec<usize> {
-    match rows {
-        OnekeyMenuRows::Ordered(v) => v,
-        OnekeyMenuRows::NoMatches => panic!("expected Ordered, got NoMatches"),
-    }
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            let conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 20", "running");
+            let task_id = TaskId::new("test-cli-subagent".to_owned());
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                .expect("command should become agent monitored");
+
+            view.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(
+                    UserTakeOverReason::Stop {
+                        should_auto_resume: true,
+                    },
+                    ctx,
+                );
+            });
+
+            conversation_id
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+        });
+
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![vec![warp_terminal::model::escape_sequences::C0::ETX]]
+        );
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::Cancelled);
+        });
+    })
 }
 
+// Ported from Warp view_tests.rs.
 #[test]
-fn onekey_empty_query_returns_full_set_in_original_order() {
-    let candidates = vec![
-        ("prod-db", "deploy@10.0.0.5:22"),
-        ("staging-web", "ubuntu@stage.foo.com:22"),
-        ("生产数据库", "ops@db.example.com:22"),
-    ];
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "");
-    assert_eq!(rows_indices(result), vec![0, 1, 2]);
-}
+fn ctrl_c_after_transfer_takeover_does_not_cancel_conversation() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
 
-#[test]
-fn onekey_empty_query_after_trim_returns_full_set() {
-    let candidates = vec![("a", "1"), ("b", "2")];
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "   ");
-    assert_eq!(rows_indices(result), vec![0, 1]);
-}
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
 
-#[test]
-fn onekey_query_filters_out_non_matches() {
-    let candidates = vec![("apple", "x"), ("banana", "x"), ("apricot", "x")];
-    // "ap" should match apple / apricot, not banana.
-    // We don't assert the relative order of apple / apricot here — the exact scoring is decided by skim,
-    // we only guarantee banana is filtered out.
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "ap");
-    let indices = rows_indices(result);
-    assert!(indices.contains(&0)); // apple
-    assert!(indices.contains(&2)); // apricot
-    assert!(!indices.contains(&1)); // banana
-}
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            let conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
 
-#[test]
-fn onekey_query_matches_subtitle() {
-    let candidates = vec![
-        ("server-1", "alice@prod.example.com:22"),
-        ("server-2", "bob@stage.example.com:22"),
-    ];
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "prod");
-    let indices = rows_indices(result);
-    // Only server-1's subtitle contains prod.
-    assert_eq!(indices, vec![0]);
-}
+            view.model
+                .lock()
+                .simulate_long_running_block("ssh localhost", "Password:");
+            let task_id = TaskId::new("test-cli-subagent".to_owned());
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                .expect("command should become agent monitored");
 
-#[test]
-fn onekey_query_no_match_returns_no_matches() {
-    let candidates = vec![("a", "1"), ("b", "2")];
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "zzz-not-present");
-    assert_eq!(result, OnekeyMenuRows::NoMatches);
-}
+            view.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(
+                    UserTakeOverReason::TransferFromAgent {
+                        reason: "Enter your password".to_owned(),
+                    },
+                    ctx,
+                );
+            });
 
-#[test]
-fn onekey_query_matches_chinese_characters() {
-    // Chinese character-sequence matching: the skim algorithm processes by Unicode char.
-    let candidates = vec![
-        ("生产数据库", "ops@db.example.com:22"),
-        ("测试服务器", "qa@test.example.com:22"),
-    ];
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "生产");
-    let indices = rows_indices(result);
-    assert_eq!(indices, vec![0]);
-}
+            conversation_id
+        });
 
-#[test]
-fn onekey_query_matches_japanese_characters() {
-    let candidates = vec![
-        ("本番データベース", "ops@db.example.com:22"),
-        ("ステージング", "stage@example.com:22"),
-    ];
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "データ");
-    let indices = rows_indices(result);
-    assert_eq!(indices, vec![0]);
-}
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_action(&TerminalAction::CtrlC, ctx);
+        });
 
-#[test]
-fn onekey_query_case_insensitive() {
-    let candidates = vec![("ProductionDB", "ops@example.com:22")];
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "production");
-    assert_eq!(rows_indices(result), vec![0]);
-}
-
-#[test]
-fn onekey_empty_candidates_with_query_returns_no_matches() {
-    let candidates: Vec<(&str, &str)> = vec![];
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "anything");
-    assert_eq!(result, OnekeyMenuRows::NoMatches);
-}
-
-#[test]
-fn onekey_empty_candidates_with_empty_query_returns_empty_ordered() {
-    let candidates: Vec<(&str, &str)> = vec![];
-    let result = filter_and_sort_onekey_candidates(candidates.iter().copied(), "");
-    assert_eq!(rows_indices(result), Vec::<usize>::new());
+        assert_eq!(
+            *pty_writes.borrow(),
+            vec![vec![warp_terminal::model::escape_sequences::C0::ETX]]
+        );
+        terminal.read(&app, |_, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            // Transfer takeover is still waiting to report control handback or command
+            // completion to the agent, so Ctrl-C should interrupt the command without
+            // cancelling the conversation.
+            assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+        });
+    })
 }

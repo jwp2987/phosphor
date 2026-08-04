@@ -49,9 +49,17 @@ define_settings_group!(ThemeSettings, settings: [
 
 impl Theme {
     fn current_value_is_syncable(&self) -> bool {
-        let current_value = self.value();
-        // Custom themes reference local files, so they remain local-only.
-        !matches!(current_value, ThemeKind::Custom(_))
+        // Custom themes reference local files, so they're only syncable when the file lives
+        // under the themes directory (portable across machines with the same layout). This
+        // mirrors Warp's `ThemeKind::is_custom_theme_reference_syncable` scoping, simplified to
+        // this fork's `CustomTheme`, which stores an absolute path rather than Warp's portable
+        // relative-storage-string representation.
+        match self.value() {
+            ThemeKind::Custom(custom_theme) | ThemeKind::CustomBase16(custom_theme) => {
+                custom_theme.path().starts_with(crate::user_config::themes_dir())
+            }
+            _ => true,
+        }
     }
 }
 
@@ -81,3 +89,7 @@ pub fn derived_theme_kind(theme_settings: &ThemeSettings, system_theme: SystemTh
 pub fn active_theme_kind(theme_settings: &ThemeSettings, app: &AppContext) -> ThemeKind {
     derived_theme_kind(theme_settings, app.system_theme())
 }
+
+#[cfg(test)]
+#[path = "theme_tests.rs"]
+mod tests;

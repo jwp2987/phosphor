@@ -891,12 +891,6 @@ impl View {
             CommandPaletteItemAction::NewSession { source } => {
                 self.dispatch_typed_action_on_view(source.action().deref(), ctx);
             }
-            CommandPaletteItemAction::OpenSshServer { node_id, server } => {
-                self.dispatch_typed_action_on_view(
-                    &crate::workspace::WorkspaceAction::OpenSshTerminal { node_id, server },
-                    ctx,
-                );
-            }
             CommandPaletteItemAction::OpenFile {
                 path,
                 project_directory,
