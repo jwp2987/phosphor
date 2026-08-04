@@ -134,7 +134,11 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [ ] Skill remote-path resolution (`get_scope_for_path`, `LocalOrRemotePath`)
 - [x] `ModelEventDispatcher` SSH gate — `SshRemoteServerSupport::{Enabled,Disabled}`; per-instance (GUI=Enabled/TUI=Disabled); 4 tests; warp 3850/0. Commit `1c1fff909`.
 - [x] Managed-secrets BYO-endpoint APIs — `seal_with_context` + `ByoFirstPartyPayload`/`ByoEndpointPayload` + `validate_field_sizes`; warp_managed_secrets 25/0, wasm 5/0. Commit `e2c5ecfc9`.
-- [ ] Pending-edit-batch conflict-discard (verify SSH-remote vs cloud-collab FIRST)
+- [ ] Pending-edit-batch conflict-discard — ⛔ ASSESS/DESIGN: `PendingEditBatch` lives in the fork's
+  `code/global_buffer_model.rs`, which uses a DIFFERENT (working) buffer-sync design. It reads as
+  SSH-remote (not cloud-collab: helpers are `seed_remote_buffer_for_test`/`sync_clock_for_remote_test`),
+  so buildable per the maintainer note — BUT restoring Warp's design means re-architecting the fork's
+  working buffer model (§5.10 risk). Needs a dedicated assess: additive vs rewrite. Not a quick build.
 
 ---
 
