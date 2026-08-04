@@ -59,14 +59,18 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [ ] Queued-prompts-while-busy panel — `view/queued_prompts_panel.rs`
 - [x] `TuiStack` element — `warpui_core/elements/tui/stack.rs`; 15 oracle tests; full warpui_core
   521/0 (no regression). Commit `9901ff460`. (also ported the opaque-region prereq into container.rs)
-- [ ] Content-version-aware asset invalidation — `warpui_core` `LocalFileContentVersion`
+- [x] Content-version-aware asset invalidation — `warpui_core` `LocalFileContentVersion`; 4 oracle
+  tests; verified across all 4 rippled crates (warpui_core 529/0, warp 3814/0, warp_editor 437/0,
+  warp_core 86/0). Commit `29ebd2222`. (AssetSource::LocalFile gained `content_version`; mechanical
+  constructor updates across editor/warp_core/app)
 - [x] Image load-failure/timeout fallback — `warpui_core` `Image`; 4 oracle tests; full warpui_core
   525/0 (no regression). Commit `f21c31f44`. (fork's Image is at `elements/image.rs`)
 - [x] Soft-wrap row bounds — `FrameLayouts::soft_wrapped_row_bounds` + `DisplayMap` wrapper;
   oracle tests; full warp lib 3810/0. Commit `b475f6d60`.
 - [x] Home/End on soft-wrapped lines — `EditorAction::MoveToVisualLineStart`/`End` (renamed from
   Home/End) + keybinding rewire; same commit `b475f6d60`. (macOS bindings ported compile-only)
-- [ ] Cross-window tab-drag placeholder collapse — `collapsed_source_placeholder_index`
+- [x] Cross-window tab-drag placeholder collapse — `collapsed_source_placeholder_index`; 4 oracle
+  tests; full warp lib 3814/0. Commit `c3f4b667a`. (adapted to fork's diverged drag-state)
 - [ ] Editable bindings `orchestration_cycle` / `toggle_maximize_pane` — `util/bindings.rs`
 - [ ] Oversized data-URI image handling — `replace_oversized_data_uri_images`
 - [x] `remote_server_controller` connection-label helpers — `connection_label_from_session_hosts`;
@@ -113,6 +117,11 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   (`completed_user_controlled_lrc_{resumes_when_not_suppressed,skips_resume_when_suppressed}`);
   broader 379-module sweep ongoing. (Anchor Stop/auto-resume regression already code-fixed.)
 - [ ] **#5 deferred low-sev** — 5 latent items, all still present; low priority.
+- [ ] **warp-suite i18n test-isolation** (found 2026-08-04) — `drive::export::test_export_untitled_notebook`
+  (and likely others) PASS in the full suite but FAIL in isolation: the export default name is a
+  localized `t!()` string, and `App::test` never globally inits i18n, so it only resolves when an
+  earlier test happens to trigger init. Same class as #4's `slash_commands` note. A test-binary-global
+  i18n init would fix both. Pre-existing; NOT a parity-work regression.
 - [ ] get_relevant_files: live end-to-end smoke against a real BYOP provider (unit + lib green).
 
 ## Issue reconciliation status
