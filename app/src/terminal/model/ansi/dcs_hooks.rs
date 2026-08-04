@@ -697,6 +697,12 @@ pub struct PreInteractiveSSHSessionValue {}
 pub struct SSHValue {
     pub socket_path: PathBuf,
     pub remote_shell: String,
+    /// `true` when `socket_path` points at a ControlMaster the user already
+    /// had running (the SSH wrapper attached to it instead of creating its
+    /// own). Warp must not tear down such a master on session exit. Defaults
+    /// to `false` for hooks emitted by older bootstrap scripts.
+    #[serde(default)]
+    pub external_control_master: bool,
 }
 
 /// Received from the pty after the shell session has been initialized, marking

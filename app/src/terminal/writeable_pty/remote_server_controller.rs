@@ -174,11 +174,16 @@ impl<T: EventLoopSender> RemoteServerController<T> {
 
     /// Idle -> AwaitingCheck
     fn on_ssh_init_shell_requested(&mut self, info: SessionInfo, ctx: &mut ModelContext<Self>) {
-        let IsLegacySSHSession::Yes { socket_path } = &info.is_legacy_ssh_session else {
+        let IsLegacySSHSession::Yes {
+            socket_path,
+            external_control_master,
+        } = &info.is_legacy_ssh_session
+        else {
             return;
         };
         let session_id = info.session_id;
         let socket_path = socket_path.clone();
+        let warp_owns_control_master = !external_control_master;
         debug_assert!(matches!(self.state, SshInitState::Idle));
         match std::mem::replace(&mut self.state, SshInitState::Idle) {
             SshInitState::Idle => {}
@@ -201,15 +206,15 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 self.flush_stashed_bootstrap(old_info, ctx);
             }
         }
-        // TODO(#37): thread real ControlMaster ownership through here. The
-        // fork's `IsLegacySSHSession::Yes` does not yet carry the wrapper's
-        // `external_control_master` flag, so we conservatively assume we own
-        // the master (matching prior always-teardown behavior). Once the
-        // flag is plumbed from the bootstrap SSH hook through session info,
-        // pass `!external_control_master` here.
-        let owns_control_master = true;
-        let transport =
-            SshTransport::new(socket_path, self.auth_context.clone(), owns_control_master);
+        // ControlMaster ownership is driven by the bootstrap SSH hook's
+        // `external_control_master` flag (parsed from the DCS hook into
+        // `IsLegacySSHSession::Yes`). Warp owns the master only when the
+        // wrapper created it, i.e. when the flag is `false`.
+        let transport = SshTransport::new(
+            socket_path,
+            self.auth_context.clone(),
+            warp_owns_control_master,
+        );
         self.did_install = false;
         self.remote_platform = None;
         self.preinstall_check = None;
@@ -277,12 +282,18 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         match result {
             Ok(true) => {
                 let socket_path = transport.socket_path().clone();
+                let owns_control_master = transport.owns_control_master();
                 self.state = SshInitState::AwaitingConnect {
                     session_id,
                     session_info,
                     setup_start,
                 };
-                self.connect_session_for_current_identity(session_id, socket_path, ctx);
+                self.connect_session_for_current_identity(
+                    session_id,
+                    socket_path,
+                    owns_control_master,
+                    ctx,
+                );
             }
             Ok(false) if has_old_binary => {
                 // Auto-update: a prior install exists, so skip the modal
@@ -505,12 +516,18 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         match result {
             Ok(()) => {
                 let socket_path = transport.socket_path().clone();
+                let owns_control_master = transport.owns_control_master();
                 self.state = SshInitState::AwaitingConnect {
                     session_id,
                     session_info,
                     setup_start,
                 };
-                self.connect_session_for_current_identity(session_id, socket_path, ctx);
+                self.connect_session_for_current_identity(
+                    session_id,
+                    socket_path,
+                    owns_control_master,
+                    ctx,
+                );
             }
             Err(err) => {
                 log::error!("Binary install failed for {session_id:?}: {err}");
@@ -523,12 +540,13 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         &mut self,
         session_id: SessionId,
         socket_path: PathBuf,
+        owns_control_master: bool,
         ctx: &mut ModelContext<Self>,
     ) {
-        // TODO(#37): see `on_ssh_init_shell_requested` — thread real
-        // ControlMaster ownership here once the wrapper's
-        // `external_control_master` flag is plumbed through session info.
-        let owns_control_master = true;
+        // ControlMaster ownership was decided once in
+        // `on_ssh_init_shell_requested` from the wrapper's
+        // `external_control_master` flag; carry it through here so a
+        // re-created transport does not tear down an external master.
         let transport =
             SshTransport::new(socket_path, self.auth_context.clone(), owns_control_master);
         let auth_context = self.auth_context.clone();
