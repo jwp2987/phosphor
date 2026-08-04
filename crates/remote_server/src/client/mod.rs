@@ -16,7 +16,8 @@ use crate::proto::{
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
     read_file_chunk_response, ReadFileChunkResponse, ReadFileContextRequest,
     ReadFileContextResponse, ResolveConflict,
-    ResolveConflictResponse, ResolvePath, ResolvePathResponse, RunCommandRequest,
+    ResolveConflictResponse, ResolvePath, ResolvePathResponse, RipgrepSearchRequest,
+    RipgrepSearchResponse, RunCommandRequest,
     RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
     TextEdit, WriteFile, WriteFileChunk, WriteFileChunkResponse,
 };
@@ -348,6 +349,27 @@ impl RemoteServerClient {
             Some(server_message::Message::ReadFileContextResponse(resp)) => Ok(resp),
             other => {
                 log::error!("Unexpected response variant for ReadFileContext: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Runs a ripgrep search over the given root directories on the remote host.
+    /// Used by global search for SSH-remote sessions.
+    pub async fn ripgrep_search(
+        &self,
+        request: RipgrepSearchRequest,
+    ) -> Result<RipgrepSearchResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage {
+            request_id: request_id.to_string(),
+            message: Some(client_message::Message::RipgrepSearch(request)),
+        };
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::RipgrepSearchResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for RipgrepSearch: {other:?}");
                 Err(ClientError::UnexpectedResponse)
             }
         }
