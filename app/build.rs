@@ -454,7 +454,8 @@ END
     let target = env::var("TARGET").unwrap();
     if let Some(tool) = cc::windows_registry::find_tool(target.as_str(), "cl.exe") {
         for (key, value) in tool.env() {
-            env::set_var(key, value);
+            // SAFETY: build scripts run single-threaded; no concurrent env access.
+            unsafe { env::set_var(key, value) };
         }
     }
     embed_resource::compile(resource_file_path, embed_resource::NONE)

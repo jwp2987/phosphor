@@ -13,7 +13,7 @@ use std::slice;
 use super::make_nsstring;
 use warpui_core::clipboard::{ClipboardContent, ImageData};
 
-extern "C" {
+unsafe extern "C" {
     fn getFilePathsFromPasteboard() -> id;
 }
 

@@ -15,7 +15,7 @@ use warpui::{platform::mac::make_nsstring, ApplicationBundleInfo};
 use super::*;
 
 // Functions implemented in objC files.
-extern "C" {
+unsafe extern "C" {
     fn get_default_app_bundle_for_file(file_path: id) -> id;
 }
 

@@ -21,7 +21,7 @@ mod ffi {
     use wasm_bindgen::prelude::*;
 
     #[wasm_bindgen]
-    extern "C" {
+    unsafe extern "C" {
         /// Emit an event to the host app. This uses a global event bus implemented in JavaScript.
         ///
         /// If we need to support more complicated embeddings (like having multiple WoW instances

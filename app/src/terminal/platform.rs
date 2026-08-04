@@ -55,13 +55,16 @@ mod mac {
             // Set the LANG variable to suggest (but not require) use of the
             // given locale.  This avoids errors when ssh-ing into a remote
             // machine which doesn't have the given locale available.
-            env::set_var("LANG", system_locale);
+            // SAFETY: runs during early single-threaded startup (before any
+            // threads are spawned), so there is no concurrent env access.
+            unsafe { env::set_var("LANG", system_locale) };
         } else {
             // Use fallback locale.
             log::debug!("Using fallback locale ({FALLBACK_LOCALE}) for LC_CTYPE");
 
             // When using a fallback, only set LC_CTYPE.
-            env::set_var("LC_CTYPE", FALLBACK_LOCALE);
+            // SAFETY: see above — single-threaded startup, no concurrent access.
+            unsafe { env::set_var("LC_CTYPE", FALLBACK_LOCALE) };
         }
     }
 
