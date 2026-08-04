@@ -133,6 +133,10 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 ---
 
 ## Other outstanding (non-#11)
+- [ ] ⭐ **SMOKE TESTS (REQUIRED after all parity work is merged to main)** — run
+  `./script/usage-test --surface both` (GUI+TUI acceptance smokes) on the merged main,
+  plus a warp_tui + warp lib sanity pass, to confirm the app still boots and behaves with
+  all parity changes in. Do this ONCE everything is merged. (user explicitly requested)
 - [ ] **Edition-2024 cross-platform build** — mac/wasm/windows `unsafe` syntax fixed on
   branch `fix/edition-2024-native-targets`; awaiting local macOS `script/run --release`
   verification (no CI-discovery builds). May surface more latent mac errors.
