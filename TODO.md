@@ -56,7 +56,11 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [x] **Banner-immune PATH capture** — `__ZAP_PATH_CAPTURE_*` markers + `extract_captured_path`;
   6 oracle tests 6/0 (verified). Commit `c2404b5eb`. (markers rebranded __WARP_→__ZAP_, identity-only)
 - [ ] Async (background-thread) find — `find/model/async_find.rs`
-- [ ] Queued-prompts-while-busy panel — `view/queued_prompts_panel.rs`
+- [ ] Queued-prompts-while-busy panel — `view/queued_prompts_panel.rs`. ⛔ BLOCKED / DECISION:
+  the panel is a thin layer over Warp's `QueuedQueryModel` subsystem (845+1066 lines), which the fork
+  DELIBERATELY dropped for a simpler one-shot `/queue` (`settings/ai.rs:407`). Restoring needs porting
+  that subsystem + `drain_queued_prompts` AND a maintainer call (keep one-shot `/queue` vs restore
+  Warp's persistent auto-queue). Not a simple restore — hold for decision.
 - [x] `TuiStack` element — `warpui_core/elements/tui/stack.rs`; 15 oracle tests; full warpui_core
   521/0 (no regression). Commit `9901ff460`. (also ported the opaque-region prereq into container.rs)
 - [x] Content-version-aware asset invalidation — `warpui_core` `LocalFileContentVersion`; 4 oracle
@@ -72,11 +76,15 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [x] Cross-window tab-drag placeholder collapse — `collapsed_source_placeholder_index`; 4 oracle
   tests; full warp lib 3814/0. Commit `c3f4b667a`. (adapted to fork's diverged drag-state)
 - [ ] Editable bindings `orchestration_cycle` / `toggle_maximize_pane` — `util/bindings.rs`
-- [ ] Oversized data-URI image handling — `replace_oversized_data_uri_images`
+- [x] Oversized data-URI image handling — `replace_oversized_data_uri_images` + `MAX_DATA_URI_PAYLOAD_BYTES`
+  + `IMAGE_TOO_LARGE_PLACEHOLDER`; 2 oracle tests (asset_cache 1/0, warp_editor 438/0). Commit `c26ba8b5b`.
+  (did not port the separate `data_uri_source` decode feature — out of scope)
 - [x] `remote_server_controller` connection-label helpers — `connection_label_from_session_hosts`;
   3 helpers + 3 oracle tests 3/0. Commit `b6fc0cab1`. ⚠️ *follow-up:* helpers restored + tested but
   not yet wired into the connect_session display flow (fork's `connect_session` signature diverged)
-- [ ] Autoupdate per-channel repo + exit-code parsing — `repo_name`/`parse_forcekill_exit_code`
+- [x] Autoupdate per-channel repo + exit-code parsing — `repo_name` (adapted to fork's single-repo
+  channels) + Windows `parse_forcekill_exit_code`/`parse_minidump_cleanup_exit_code`; warp autoupdate
+  13/0. Commit `66884f3cb`. (Windows parsers compile-only here → run on Windows CI)
 - [ ] `external_control_master` signal plumbing (the #37 refinement; only comments today)
 
 ### Build non-cloud half (per 2026-08-02 BYOP decisions on #11)
