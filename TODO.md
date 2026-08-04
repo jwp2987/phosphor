@@ -90,7 +90,13 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 ### Build non-cloud half (per 2026-08-02 BYOP decisions on #11)
 - [ ] `history_model` reconciliation (rename / event-seq / fork-arity / `transient_network_error`;
   DROP cloud-merge/remote-child/canonical-id)
-- [ ] AI bundled + global skills (`ai/skills/{bundled,global_skills}.rs`; DROP the `remote` daemon arm)
+- [x] AI bundled skills — ALREADY DONE: ported inline in `skill_manager.rs` (BundledSkill,
+  load_bundled_skills, activation) on Warp's older flat-HashMap design. Warp's newer `bundled.rs` is a
+  remote-catalog rewrite whose net-new content is all the cloud/daemon arm. Ledger was stale.
+- [ ] AI global skills (`global_skills.rs`) — ⛔ DECISION → recommend KEEP-DROPPED: cloud-dominant
+  (`resolve_skill_repos` → amputated `cloud_environments::GithubRepo`); the only non-cloud fn
+  (`filter_skills_by_spec`) has NO consumer in the fork = dead code, and rests on `LocalOrRemotePath`
+  (fork uses `PathBuf`) — a faithful port is a workspace-wide type migration, not a skills-dir port.
 - [ ] Persistence: pinned tabs / tab groups / conversation summary + backfill
   (DROP `add_team_uid_to_windows`)
 
