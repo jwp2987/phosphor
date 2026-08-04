@@ -60,9 +60,12 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [x] `TuiStack` element — `warpui_core/elements/tui/stack.rs`; 15 oracle tests; full warpui_core
   521/0 (no regression). Commit `9901ff460`. (also ported the opaque-region prereq into container.rs)
 - [ ] Content-version-aware asset invalidation — `warpui_core` `LocalFileContentVersion`
-- [ ] Image load-failure/timeout fallback — `warpui_core` `Image` `on_load_failure`/`on_load_timeout`
-- [ ] Soft-wrap row bounds — `FrameLayouts::soft_wrapped_row_bounds` (`app/src/editor`)
-- [ ] Home/End on soft-wrapped lines — `EditorAction::MoveToVisualLineStart`/`End`
+- [x] Image load-failure/timeout fallback — `warpui_core` `Image`; 4 oracle tests; full warpui_core
+  525/0 (no regression). Commit `f21c31f44`. (fork's Image is at `elements/image.rs`)
+- [x] Soft-wrap row bounds — `FrameLayouts::soft_wrapped_row_bounds` + `DisplayMap` wrapper;
+  oracle tests; full warp lib 3810/0. Commit `b475f6d60`.
+- [x] Home/End on soft-wrapped lines — `EditorAction::MoveToVisualLineStart`/`End` (renamed from
+  Home/End) + keybinding rewire; same commit `b475f6d60`. (macOS bindings ported compile-only)
 - [ ] Cross-window tab-drag placeholder collapse — `collapsed_source_placeholder_index`
 - [ ] Editable bindings `orchestration_cycle` / `toggle_maximize_pane` — `util/bindings.rs`
 - [ ] Oversized data-URI image handling — `replace_oversized_data_uri_images`
