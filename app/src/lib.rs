@@ -861,6 +861,16 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
 fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     let mut timer = IntervalTimer::new();
 
+    // i18n must be initialized before any UI `t!()` call. The GUI entry (`run`)
+    // does this early, before arg parsing; but the Test (`run_integration_test`)
+    // and TUI entries reach `run_internal` without passing through `run`, so
+    // without this their UI would render raw fluent keys (e.g. a Settings tab
+    // titled `settings-title`, or a command palette whose action labels never
+    // match a human-readable search). `init` is idempotent (OnceLock), so the
+    // GUI's earlier call is undisturbed. Workers that render no UI take the
+    // `init_common` path directly and intentionally skip this.
+    i18n::init(None);
+
     init_common(&launch_mode, Some(&mut timer))?;
 
     // SQLite prewarm: kick off init_db() (connection + migration) on a background
