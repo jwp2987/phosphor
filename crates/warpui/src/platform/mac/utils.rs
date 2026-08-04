@@ -34,7 +34,7 @@ const NUMPAD_ENTER_KEY: u16 = 0x03;
 const ESCAPE_KEY: u16 = 0x1b;
 const TAB_KEY: u16 = '\t' as u16;
 const SHIFTED_TAB_KEY: u16 = 0x19;
-extern "C" {
+unsafe extern "C" {
     fn CGColorGetComponents(color: CGColorRef) -> *const CGFloat;
 }
 

@@ -169,7 +169,7 @@ impl<'a> ParagraphStyle<'a> {
     }
 }
 
-extern "C" {
+unsafe extern "C" {
     fn CFAttributedStringBeginEditing(mutable_string: CFMutableAttributedStringRef);
 
     fn CFAttributedStringEndEditing(mutable_string: CFMutableAttributedStringRef);

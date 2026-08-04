@@ -116,7 +116,7 @@ impl MenuItemData {
 /// We hand Cocoa a void* which is really an unwrapped Box<Rc<MenuItemData>>.
 /// The NSMenuItem logically holds a reference count on this Rc, which is balanced in our dealloc callback below.
 /// The following functions are invoked from Cocoa.
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C-unwind" fn warp_menu_item_needs_update(item: id, ctx: *mut c_void) {
     let ctx = MenuItemData::read_context(ctx);
     let props: MenuItemProperties = ctx.props.borrow().clone();
@@ -140,20 +140,20 @@ extern "C-unwind" fn warp_menu_item_needs_update(item: id, ctx: *mut c_void) {
     unsafe { apply_changes(updated_properties, item) };
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C-unwind" fn warp_menu_item_triggered(_item: id, ctx: *mut c_void) {
     let func = &MenuItemData::read_context(ctx).triggered;
     callback_dispatcher().menu_item_triggered(func);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 extern "C-unwind" fn warp_menu_item_deallocated(ctx: *mut c_void) {
     MenuItemData::consume_context(ctx)
 }
 
 // Declarations of functions implemented in ObjC files.
 // These signatures must be manually synced - there's no type checking here.
-extern "C" {
+unsafe extern "C" {
     fn make_delegated_menu(title: id) -> id;
     fn make_warp_custom_menu_item(ctx: *mut c_void) -> id;
     fn set_menu_item_submenu(item: id, submenu: id);

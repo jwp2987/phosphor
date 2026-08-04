@@ -8,7 +8,7 @@ pub use warp_web_event_bus::{emit_event, WarpEvent};
 /// static variables are initialized.
 pub(super) fn init() {
     unsafe {
-        extern "C" {
+        unsafe extern "C" {
             /// __wasm_call_ctors is a function defined by the `wasm-ld` linker, and is used to
             /// initialize static variables.
             ///
@@ -24,7 +24,7 @@ mod ffi {
     use wasm_bindgen::prelude::*;
 
     #[wasm_bindgen]
-    extern "C" {
+    unsafe extern "C" {
         #[wasm_bindgen(js_name = "warpUserHandoff", catch)]
         pub fn user_handoff() -> Result<Option<String>, JsValue>;
     }

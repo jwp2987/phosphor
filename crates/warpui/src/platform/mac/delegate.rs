@@ -27,7 +27,7 @@ use warpui_core::{
 };
 
 // Functions implemented in objC files.
-extern "C" {
+unsafe extern "C" {
     // Requests permissions to send desktop notifications.
     fn requestNotificationPermissions(on_completion_callback: *const c_void);
     // Sends a desktop notification.
@@ -438,7 +438,7 @@ impl platform::Delegate for AppDelegate {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// This function is marked unsafe because it retrieves the pointer to the callback
 /// function that we sent down to the Objective-C code.
@@ -455,7 +455,7 @@ pub unsafe extern "C-unwind" fn warp_on_request_notification_permissions_complet
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// # Safety
 /// This function is marked unsafe because it retrieves the pointer to the callback
 /// function that we sent down to the Objective-C code.
