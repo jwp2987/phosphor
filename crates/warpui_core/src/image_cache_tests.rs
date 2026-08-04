@@ -31,6 +31,7 @@ impl AssetProvider for Assets {
 fn new_asset_cache() -> AssetCache {
     AssetCache::new(
         Box::new(Assets),
+        ImageCache::new(),
         Foreground::test().into(),
         Background::default().into(),
     )

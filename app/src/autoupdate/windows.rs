@@ -168,6 +168,47 @@ fn autoupdate_log_file() -> Result<PathBuf> {
     warp_logging::log_directory().map(|dir| dir.join(UPDATE_LOG_FILENAME))
 }
 
+fn parse_exit_code_after_marker(contents_lowercase: &[u8], failed_marker: &[u8]) -> Option<i32> {
+    const EXIT_CODE_MARKER: &[u8] = b"exit code: ";
+
+    let failed_pos = memchr::memmem::find(contents_lowercase, failed_marker)?;
+    let after_failed = &contents_lowercase[failed_pos..];
+    let marker_pos = memchr::memmem::find(after_failed, EXIT_CODE_MARKER)?;
+    let after_marker = &after_failed[marker_pos + EXIT_CODE_MARKER.len()..];
+    let sign_len = if after_marker.first() == Some(&b'-') {
+        1
+    } else {
+        0
+    };
+    let digit_len = after_marker[sign_len..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if digit_len == 0 {
+        return None;
+    }
+    std::str::from_utf8(&after_marker[..sign_len + digit_len])
+        .ok()?
+        .parse()
+        .ok()
+}
+
+/// Parses the taskkill exit code from an Inno Setup log containing a
+/// "force-kill failed for" line. Returns `None` if no such line is found or
+/// the exit code cannot be parsed.
+fn parse_forcekill_exit_code(contents_lowercase: &[u8]) -> Option<i32> {
+    const FAILED_MARKER: &[u8] = b"force-kill failed for";
+    parse_exit_code_after_marker(contents_lowercase, FAILED_MARKER)
+}
+
+/// Parses the PowerShell exit code from an Inno Setup log containing a
+/// "minidump-server cleanup failed" line. Returns `None` if no such line is
+/// found or the exit code cannot be parsed.
+fn parse_minidump_cleanup_exit_code(contents_lowercase: &[u8]) -> Option<i32> {
+    const FAILED_MARKER: &[u8] = b"minidump-server cleanup failed";
+    parse_exit_code_after_marker(contents_lowercase, FAILED_MARKER)
+}
+
 /// Checks the autoupdate log file from a previous update attempt.
 /// Records known issues found during the previous update attempt.
 /// The log file is renamed after processing to avoid duplicate reports on subsequent launches.
@@ -225,10 +266,21 @@ pub(super) fn check_and_report_update_errors(ctx: &mut AppContext) {
     }
 
     // Fired when taskkill returned non-zero after the mutex timeout.
-    let has_forcekill_failed =
-        memchr::memmem::find(&contents_lowercase, b"force-kill failed for").is_some();
-    if has_forcekill_failed {
+    // Exit code 128 means "no matching process found" — the process was already
+    // gone when taskkill ran — so suppress that harmless race condition.
+    if let Some(exit_code) = parse_forcekill_exit_code(&contents_lowercase)
+        && exit_code != 128
+    {
+        log::warn!("openWarp: autoupdate force-kill failed (exit code {exit_code})");
         crate::send_telemetry_sync_from_app_ctx!(TelemetryEvent::AutoupdateForcekillFailed, ctx);
+    }
+
+    // The PowerShell cleanup of the orphaned minidump-server process returned a
+    // non-zero exit code. The fork has no dedicated telemetry event for this
+    // (cloud telemetry is amputated), so it is recorded in the local log
+    // instead — matching how the fork records autoupdate errors locally below.
+    if let Some(exit_code) = parse_minidump_cleanup_exit_code(&contents_lowercase) {
+        log::warn!("openWarp: autoupdate minidump-server cleanup failed (exit code {exit_code})");
     }
 
     // openWarp doesn't upload autoupdate failure logs; it only records the
@@ -369,3 +421,7 @@ fn app_name_prefix(channel: Channel) -> &'static str {
         Channel::Oss => "Phosphor",
     }
 }
+
+#[cfg(test)]
+#[path = "windows_tests.rs"]
+mod tests;

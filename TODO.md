@@ -53,26 +53,50 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 ## 🔨 Remaining — 31 of the `[x]` keeps still missing
 
 ### Small / local — good next builds
-- [ ] **Banner-immune PATH capture** ⚠️ *functional risk* — `__WARP_PATH_CAPTURE_START__/__END__`
-  markers + `extract_captured_path`; `app/src/terminal/local_shell/mod.rs:244`
+- [x] **Banner-immune PATH capture** — `__ZAP_PATH_CAPTURE_*` markers + `extract_captured_path`;
+  6 oracle tests 6/0 (verified). Commit `c2404b5eb`. (markers rebranded __WARP_→__ZAP_, identity-only)
 - [ ] Async (background-thread) find — `find/model/async_find.rs`
-- [ ] Queued-prompts-while-busy panel — `view/queued_prompts_panel.rs`
-- [ ] `TuiStack` element — `warpui_core/elements/tui/`
-- [ ] Content-version-aware asset invalidation — `warpui_core` `LocalFileContentVersion`
-- [ ] Image load-failure/timeout fallback — `warpui_core` `Image` `on_load_failure`/`on_load_timeout`
-- [ ] Soft-wrap row bounds — `FrameLayouts::soft_wrapped_row_bounds` (`app/src/editor`)
-- [ ] Home/End on soft-wrapped lines — `EditorAction::MoveToVisualLineStart`/`End`
-- [ ] Cross-window tab-drag placeholder collapse — `collapsed_source_placeholder_index`
+- [ ] Queued-prompts-while-busy panel — `view/queued_prompts_panel.rs`. ⛔ BLOCKED / DECISION:
+  the panel is a thin layer over Warp's `QueuedQueryModel` subsystem (845+1066 lines), which the fork
+  DELIBERATELY dropped for a simpler one-shot `/queue` (`settings/ai.rs:407`). Restoring needs porting
+  that subsystem + `drain_queued_prompts` AND a maintainer call (keep one-shot `/queue` vs restore
+  Warp's persistent auto-queue). Not a simple restore — hold for decision.
+- [x] `TuiStack` element — `warpui_core/elements/tui/stack.rs`; 15 oracle tests; full warpui_core
+  521/0 (no regression). Commit `9901ff460`. (also ported the opaque-region prereq into container.rs)
+- [x] Content-version-aware asset invalidation — `warpui_core` `LocalFileContentVersion`; 4 oracle
+  tests; verified across all 4 rippled crates (warpui_core 529/0, warp 3814/0, warp_editor 437/0,
+  warp_core 86/0). Commit `29ebd2222`. (AssetSource::LocalFile gained `content_version`; mechanical
+  constructor updates across editor/warp_core/app)
+- [x] Image load-failure/timeout fallback — `warpui_core` `Image`; 4 oracle tests; full warpui_core
+  525/0 (no regression). Commit `f21c31f44`. (fork's Image is at `elements/image.rs`)
+- [x] Soft-wrap row bounds — `FrameLayouts::soft_wrapped_row_bounds` + `DisplayMap` wrapper;
+  oracle tests; full warp lib 3810/0. Commit `b475f6d60`.
+- [x] Home/End on soft-wrapped lines — `EditorAction::MoveToVisualLineStart`/`End` (renamed from
+  Home/End) + keybinding rewire; same commit `b475f6d60`. (macOS bindings ported compile-only)
+- [x] Cross-window tab-drag placeholder collapse — `collapsed_source_placeholder_index`; 4 oracle
+  tests; full warp lib 3814/0. Commit `c3f4b667a`. (adapted to fork's diverged drag-state)
 - [ ] Editable bindings `orchestration_cycle` / `toggle_maximize_pane` — `util/bindings.rs`
-- [ ] Oversized data-URI image handling — `replace_oversized_data_uri_images`
-- [ ] `remote_server_controller` connection-label helpers — `connection_label_from_session_hosts`
-- [ ] Autoupdate per-channel repo + exit-code parsing — `repo_name`/`parse_forcekill_exit_code`
+- [x] Oversized data-URI image handling — `replace_oversized_data_uri_images` + `MAX_DATA_URI_PAYLOAD_BYTES`
+  + `IMAGE_TOO_LARGE_PLACEHOLDER`; 2 oracle tests (asset_cache 1/0, warp_editor 438/0). Commit `c26ba8b5b`.
+  (did not port the separate `data_uri_source` decode feature — out of scope)
+- [x] `remote_server_controller` connection-label helpers — `connection_label_from_session_hosts`;
+  3 helpers + 3 oracle tests 3/0. Commit `b6fc0cab1`. ⚠️ *follow-up:* helpers restored + tested but
+  not yet wired into the connect_session display flow (fork's `connect_session` signature diverged)
+- [x] Autoupdate per-channel repo + exit-code parsing — `repo_name` (adapted to fork's single-repo
+  channels) + Windows `parse_forcekill_exit_code`/`parse_minidump_cleanup_exit_code`; warp autoupdate
+  13/0. Commit `66884f3cb`. (Windows parsers compile-only here → run on Windows CI)
 - [ ] `external_control_master` signal plumbing (the #37 refinement; only comments today)
 
 ### Build non-cloud half (per 2026-08-02 BYOP decisions on #11)
 - [ ] `history_model` reconciliation (rename / event-seq / fork-arity / `transient_network_error`;
   DROP cloud-merge/remote-child/canonical-id)
-- [ ] AI bundled + global skills (`ai/skills/{bundled,global_skills}.rs`; DROP the `remote` daemon arm)
+- [x] AI bundled skills — ALREADY DONE: ported inline in `skill_manager.rs` (BundledSkill,
+  load_bundled_skills, activation) on Warp's older flat-HashMap design. Warp's newer `bundled.rs` is a
+  remote-catalog rewrite whose net-new content is all the cloud/daemon arm. Ledger was stale.
+- [ ] AI global skills (`global_skills.rs`) — ⛔ DECISION → recommend KEEP-DROPPED: cloud-dominant
+  (`resolve_skill_repos` → amputated `cloud_environments::GithubRepo`); the only non-cloud fn
+  (`filter_skills_by_spec`) has NO consumer in the fork = dead code, and rests on `LocalOrRemotePath`
+  (fork uses `PathBuf`) — a faithful port is a workspace-wide type migration, not a skills-dir port.
 - [ ] Persistence: pinned tabs / tab groups / conversation summary + backfill
   (DROP `add_team_uid_to_windows`)
 
@@ -107,6 +131,11 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   (`completed_user_controlled_lrc_{resumes_when_not_suppressed,skips_resume_when_suppressed}`);
   broader 379-module sweep ongoing. (Anchor Stop/auto-resume regression already code-fixed.)
 - [ ] **#5 deferred low-sev** — 5 latent items, all still present; low priority.
+- [ ] **warp-suite i18n test-isolation** (found 2026-08-04) — `drive::export::test_export_untitled_notebook`
+  (and likely others) PASS in the full suite but FAIL in isolation: the export default name is a
+  localized `t!()` string, and `App::test` never globally inits i18n, so it only resolves when an
+  earlier test happens to trigger init. Same class as #4's `slash_commands` note. A test-binary-global
+  i18n init would fix both. Pre-existing; NOT a parity-work regression.
 - [ ] get_relevant_files: live end-to-end smoke against a real BYOP provider (unit + lib green).
 
 ## Issue reconciliation status

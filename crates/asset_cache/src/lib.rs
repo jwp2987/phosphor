@@ -15,6 +15,8 @@ use warpui_core::assets::asset_cache::{
 pub struct UrlAssetWithoutPersistence;
 impl AsyncAssetType for UrlAssetWithoutPersistence {}
 
+pub const MAX_DATA_URI_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+
 /// Namespace marker for URL-based async asset sources with persistence.
 ///
 /// This is intentionally separate from `UrlAssetWithoutPersistence` to allow
@@ -38,6 +40,22 @@ pub fn url_source(url: impl Into<String>) -> AssetSource {
             })
         }),
     }
+}
+
+/// Returns `true` if `source` is a base64 `data:` URI whose encoded payload
+/// exceeds `MAX_DATA_URI_PAYLOAD_BYTES`. Non-`data:` URIs and `data:` URIs
+/// without a `;base64` marker return `false`.
+pub fn data_uri_exceeds_limit(source: &str) -> bool {
+    let Some((header, payload)) = source
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(','))
+    else {
+        return false;
+    };
+    header
+        .split(';')
+        .any(|segment| segment.eq_ignore_ascii_case("base64"))
+        && payload.len() > MAX_DATA_URI_PAYLOAD_BYTES
 }
 
 /// Creates an [`AssetSource::Async`] that fetches bytes from the given URL,
@@ -174,3 +192,7 @@ async fn fetch_asset_from_url(url: Url, file: Option<PathBuf>) -> Result<Bytes> 
         _ => fetch_file_and_persist_bytes(url, file).await,
     }
 }
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

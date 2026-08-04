@@ -538,6 +538,39 @@ impl<T: EventLoopSender> RemoteServerController<T> {
     }
 }
 
+/// Builds the short connection label shown for an SSH session, preferring the
+/// SSH host from the connection info over the remote-reported hostname.
+fn connection_label_from_session_hosts(
+    user: &str,
+    hostname: &str,
+    ssh_host: Option<&str>,
+) -> String {
+    let host = ssh_host
+        .filter(|host| !host.is_empty())
+        .map(connection_label_from_ssh_host)
+        .or_else(|| (!hostname.is_empty()).then(|| hostname.to_string()));
+
+    connection_label_from_user_and_host(user, host.as_deref())
+}
+
+/// Formats a connection label from a user and optional host, matching the UDI
+/// (user-defined identifier) display format.
+fn connection_label_from_user_and_host(user: &str, host: Option<&str>) -> String {
+    match (user.is_empty(), host.filter(|host| !host.is_empty())) {
+        (false, Some(host)) => format!("{user}@{host}"),
+        (false, None) => user.to_string(),
+        (true, Some(host)) => host.to_string(),
+        (true, None) => "Remote host".to_string(),
+    }
+}
+
+/// Strips any `user@` prefix from an SSH host string, keeping just the host.
+fn connection_label_from_ssh_host(host: &str) -> String {
+    host.rsplit_once('@')
+        .map_or(host, |(_user, host)| host)
+        .to_string()
+}
+
 /// Describes a [`RemoteLibc`] as a short string for telemetry.
 fn describe_libc(libc: &RemoteLibc) -> String {
     match libc {
@@ -576,3 +609,7 @@ fn send_unsupported_telemetry<T: EventLoopSender>(
         ctx
     );
 }
+
+#[cfg(test)]
+#[path = "remote_server_controller_tests.rs"]
+mod tests;

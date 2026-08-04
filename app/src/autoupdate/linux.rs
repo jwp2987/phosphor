@@ -91,13 +91,15 @@ mod appimage {
                         release.tag_name
                     );
                     format!(
-                        "https://github.com/jwp2987/phosphor/releases/download/v{}/{asset}",
+                        "https://github.com/{}/releases/download/v{}/{asset}",
+                        repo_name(channel),
                         version_info.version
                     )
                 }
             } else {
                 format!(
-                    "https://github.com/jwp2987/phosphor/releases/download/v{}/{asset}",
+                    "https://github.com/{}/releases/download/v{}/{asset}",
+                    repo_name(channel),
                     version_info.version
                 )
             }
@@ -484,3 +486,33 @@ impl std::fmt::Display for PackageManager {
         }
     }
 }
+
+/// The GitHub `owner/repo` slug that publishes this channel's release assets.
+///
+/// Warp derives a *package-repository* name per channel (`warpdotdev`,
+/// `warpdotdev-dev`, ...) identifying its self-hosted apt/dnf/pacman
+/// repositories on releases.warp.dev. This fork has no self-hosted package
+/// repositories — that cloud release infrastructure was amputated — so rather
+/// than a package-repo name this returns the GitHub repository that actually
+/// serves the fork's release assets. Deriving the repo from the channel (rather
+/// than hardcoding the slug inline) mirrors Warp's per-channel design and keeps
+/// the two AppImage download-URL fallbacks above in sync from a single source.
+///
+/// The fork ships every channel it publishes — in practice the open-source
+/// `Oss` build — from one GitHub repository, so all channels resolve to the
+/// same slug today; the exhaustive `match` leaves room to point a future
+/// channel at its own repository without touching the call sites.
+fn repo_name(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Stable
+        | Channel::Preview
+        | Channel::Dev
+        | Channel::Local
+        | Channel::Integration
+        | Channel::Oss => "jwp2987/phosphor",
+    }
+}
+
+#[cfg(test)]
+#[path = "linux_tests.rs"]
+mod tests;
