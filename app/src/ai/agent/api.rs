@@ -114,6 +114,17 @@ pub struct RequestParams {
     pub autonomy_level: warp_multi_agent_api::AutonomyLevel,
     pub isolation_level: warp_multi_agent_api::IsolationLevel,
     pub web_search_enabled: bool,
+    /// Zap BYOP-only, standalone local setting mirroring `web_search_enabled`: gates the local
+    /// `search_codebase` tool. When false, `build_tools_array` / `available_tool_names` filter
+    /// the tool out and the `chat_stream` interceptor rejects any call.
+    pub codebase_context_enabled: bool,
+    /// Zap BYOP-only: a request-scoped snapshot of the active repository's local
+    /// `RepoOutlines` code symbols. Materialized once in `new()` (where `AppContext` is
+    /// available) only when `codebase_context_enabled` is on; the `chat_stream` interceptor
+    /// (which has no `AppContext`) fuzzy-searches this snapshot. `Arc` keeps `Clone` cheap.
+    pub codebase_symbols: std::sync::Arc<
+        Vec<crate::ai::agent_providers::tools::codebase_runtime::CodebaseSymbol>,
+    >,
     pub computer_use_enabled: bool,
     pub ask_user_question_enabled: bool,
     pub research_agent_enabled: bool,
@@ -236,6 +247,8 @@ impl RequestParams {
             autonomy_level: warp_multi_agent_api::AutonomyLevel::Supervised,
             isolation_level: warp_multi_agent_api::IsolationLevel::None,
             web_search_enabled: false,
+            codebase_context_enabled: false,
+            codebase_symbols: std::sync::Arc::new(Vec::new()),
             computer_use_enabled: false,
             ask_user_question_enabled: false,
             research_agent_enabled: false,
@@ -365,6 +378,17 @@ impl RequestParams {
 
         let web_search_enabled =
             BlocklistAIPermissions::as_ref(app).get_web_search_enabled(app, terminal_view_id);
+        // Standalone local codebase-search setting (no cloud/team gating). When on, snapshot
+        // the active repo's local symbol index so the tool interceptor (which has no
+        // AppContext) can search it. When off, the snapshot is empty and the tool is filtered
+        // out of the tools array entirely.
+        let codebase_context_enabled = BlocklistAIPermissions::as_ref(app)
+            .get_codebase_context_enabled(app, terminal_view_id);
+        let codebase_symbols = std::sync::Arc::new(if codebase_context_enabled {
+            crate::ai::agent_providers::tools::codebase_runtime::collect_codebase_symbols(app)
+        } else {
+            Vec::new()
+        });
         let research_agent_enabled = app
             .private_user_preferences()
             .read_value("ResearchAgentEnabled")
@@ -444,6 +468,8 @@ impl RequestParams {
             autonomy_level,
             isolation_level,
             web_search_enabled,
+            codebase_context_enabled,
+            codebase_symbols,
             computer_use_enabled,
             ask_user_question_enabled,
             research_agent_enabled,

@@ -21,6 +21,8 @@
 //! serializes the result into `role=tool, tool_call_id=...` content for the upstream model.
 
 pub mod ask;
+pub mod codebase;
+pub mod codebase_runtime;
 pub mod coerce;
 pub mod documents;
 pub mod edit;
@@ -108,6 +110,12 @@ pub const REGISTRY: &[&OpenAiTool] = &[
     // Gating: when profile.web_search_enabled=false, build_tools_array filters these out.
     &webfetch::WEBFETCH,
     &websearch::WEBSEARCH,
+    // BYOP-only local codebase search: the cloud `Tool::SearchCodebase` proto variant was
+    // deleted, so this tool is NOT mapped to a protobuf executor variant either. chat_stream
+    // intercepts it by name before parse_incoming_tool_call and answers it from a local
+    // RepoOutlines symbol snapshot (see codebase_runtime).
+    // Gating: when profile.codebase_context_enabled=false, build_tools_array filters it out.
+    &codebase::SEARCH_CODEBASE,
 ];
 
 /// Looks up the registry by OpenAI function name.

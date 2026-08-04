@@ -3128,6 +3128,7 @@ const PLAN_MODE_BLOCKED_TOOLS: &[&str] = &[
 pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     let is_lrc = params.lrc_command_id.is_some();
     let web_enabled = params.web_search_enabled;
+    let codebase_enabled = params.codebase_context_enabled;
     let plan_mode = is_plan_mode_turn(&params.input);
     let mut names: Vec<String> = tools::REGISTRY
         .iter()
@@ -3138,6 +3139,9 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
             if !web_enabled
                 && (t.name == tools::webfetch::TOOL_NAME || t.name == tools::websearch::TOOL_NAME)
             {
+                return false;
+            }
+            if !codebase_enabled && t.name == tools::codebase::TOOL_NAME {
                 return false;
             }
             if t.name == "suggest_new_conversation" {
@@ -3178,6 +3182,7 @@ fn build_tools_array(params: &RequestParams) -> Vec<GenaiTool> {
     // do necessary information gathering and ask clarifying questions.
     let is_lrc = params.lrc_command_id.is_some();
     let web_enabled = params.web_search_enabled;
+    let codebase_enabled = params.codebase_context_enabled;
     let plan_mode = is_plan_mode_turn(&params.input);
     // Zap BYOP: the `suggest_prompt` chip UI has been restored via the view layer
     // subscribing to PromptSuggestionExecutorEvent (see `terminal/view.rs::
@@ -3203,6 +3208,12 @@ fn build_tools_array(params: &RequestParams) -> Vec<GenaiTool> {
             if !web_enabled
                 && (t.name == tools::webfetch::TOOL_NAME || t.name == tools::websearch::TOOL_NAME)
             {
+                return false;
+            }
+            // BYOP local codebase search is gated by the standalone
+            // profile.codebase_context_enabled setting (opt-in). When off, don't advertise
+            // the tool to the upstream model at all.
+            if !codebase_enabled && t.name == tools::codebase::TOOL_NAME {
                 return false;
             }
             // suggest_new_conversation: no UI implementation; Zap changed the executor to
@@ -4783,6 +4794,7 @@ pub async fn generate_byop_output(
                     // avoid a meaningless "calling todowrite" card.
                     if call.fn_name != tools::webfetch::TOOL_NAME
                         && call.fn_name != tools::websearch::TOOL_NAME
+                        && call.fn_name != tools::codebase::TOOL_NAME
                         && call.fn_name != tools::todowrite::TOOL_NAME
                     {
                         if let Some(msg_id) = tool_msg_ids.get(&call.call_id).cloned() {
@@ -5315,6 +5327,42 @@ pub async fn generate_byop_output(
                 continue;
             }
 
+            // Zap BYOP local codebase-search interception: `search_codebase` doesn't map to a
+            // protobuf executor variant (the cloud `Tool::SearchCodebase` was deleted).
+            // Answer it locally from the request-scoped `RepoOutlines` symbol snapshot on
+            // `params`, synthesizing a (carrier ToolCall, ToolCallResult) message pair,
+            // bypassing parse_incoming_tool_call. Pure local: no network, no cloud, no proto.
+            if call.fn_name == tools::codebase::TOOL_NAME {
+                let args_str = if call.fn_arguments.is_string() {
+                    call.fn_arguments.as_str().unwrap_or("").to_owned()
+                } else {
+                    call.fn_arguments.to_string()
+                };
+
+                let result_json = dispatch_byop_codebase_tool(
+                    &args_str,
+                    params.codebase_context_enabled,
+                    &params.codebase_symbols,
+                );
+
+                let result_content = serde_json::to_string(&result_json)
+                    .unwrap_or_else(|_| r#"{"status":"serialize_error"}"#.to_owned());
+                final_messages.push(make_tool_call_carrier_message(
+                    &current_task_id,
+                    &request_id,
+                    &call.call_id,
+                    &call.fn_name,
+                    &args_str,
+                ));
+                final_messages.push(make_tool_call_result_message(
+                    &current_task_id,
+                    &request_id,
+                    call.call_id.clone(),
+                    result_content,
+                ));
+                continue;
+            }
+
             match parse_incoming_tool_call(&call, mcp_context.as_ref()) {
                 Ok(warp_tool) => {
                     // If a placeholder card was already emitted during the ToolCallChunk
@@ -5740,6 +5788,38 @@ fn make_append_event(task_id: &str, message_id: &str, kind: AppendKind) -> api::
                 }],
             },
         )),
+    }
+}
+
+/// Local dispatcher for the BYOP `search_codebase` tool.
+///
+/// Pure and synchronous: fuzzy-searches the request-scoped `RepoOutlines` symbol snapshot
+/// (`params.codebase_symbols`) locally — no protobuf executor, no network, no cloud, no server
+/// API. Errors and empty/unavailable indexes are serialized as standard tool_results carrying
+/// the `_byop_intercepted` sentinel, so the model always gets a well-formed result.
+///
+/// `codebase_context_enabled` is re-checked here, at the dispatch site, using the same flag
+/// `build_tools_array` / `available_tool_names` use to advertise the tool — the tools-array
+/// gate only controls what the model is *told* it can call, so a stale/replayed tool_call must
+/// still be rejected here.
+fn dispatch_byop_codebase_tool(
+    args_str: &str,
+    codebase_context_enabled: bool,
+    symbols: &[tools::codebase_runtime::CodebaseSymbol],
+) -> Value {
+    use tools::codebase_runtime;
+    if !codebase_context_enabled {
+        log::warn!("[byop] codebase tool call rejected: codebase_context_enabled=false");
+        return codebase_runtime::error_to_json(&anyhow::anyhow!(
+            "codebase_context_enabled is disabled for this profile"
+        ));
+    }
+    match serde_json::from_str::<codebase_runtime::SearchCodebaseArgs>(args_str) {
+        Ok(args) => {
+            let out = codebase_runtime::run_search_codebase(args, symbols);
+            codebase_runtime::search_output_to_json(&out)
+        }
+        Err(e) => codebase_runtime::error_to_json(&anyhow::anyhow!("invalid_arguments: {e}")),
     }
 }
 

@@ -373,6 +373,13 @@ pub struct AIExecutionProfile {
     /// Whether the agent may use web search when helpful for completing tasks
     pub web_search_enabled: bool,
 
+    /// Zap BYOP-only, standalone local setting: whether the agent may use the local
+    /// `search_codebase` tool to fuzzy-search the repository's on-device symbol index.
+    /// Purely local (no cloud / proto / team gating); distinct from the removed cloud
+    /// `is_codebase_context_enabled`. Opt-in (default off) because it materializes a
+    /// per-request symbol snapshot from `RepoOutlines`.
+    pub codebase_context_enabled: bool,
+
     /// Per-model-slot system prompt overrides. Absent field / all-`None` slots =
     /// Auto (pick by model family), the historical behavior. See [`PromptSource`].
     pub prompt_overrides: ProfilePromptOverrides,
@@ -405,6 +412,7 @@ impl Default for AIExecutionProfile {
             context_window_limit: None,
             autosync_plans_to_warp_drive: false,
             web_search_enabled: true,
+            codebase_context_enabled: false,
             prompt_overrides: ProfilePromptOverrides::default(),
         }
     }
@@ -491,6 +499,7 @@ impl AIExecutionProfile {
             context_window_limit: None,
             autosync_plans_to_warp_drive: false,
             web_search_enabled: true,
+            codebase_context_enabled: false,
             prompt_overrides: ProfilePromptOverrides::default(),
         }
     }
@@ -550,6 +559,7 @@ impl AIExecutionProfile {
             context_window_limit: None,
             autosync_plans_to_warp_drive: FeatureFlag::SyncAmbientPlans.is_enabled(),
             web_search_enabled: true,
+            codebase_context_enabled: false,
             prompt_overrides: ProfilePromptOverrides::default(),
         }
     }
