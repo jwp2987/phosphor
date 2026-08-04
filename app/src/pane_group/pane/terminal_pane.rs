@@ -1093,6 +1093,7 @@ fn handle_ai_history_event(
         | BlocklistAIHistoryEvent::CreatedSubtask { .. }
         | BlocklistAIHistoryEvent::UpgradedTask { .. }
         | BlocklistAIHistoryEvent::UpdatedConversationMetadata { .. }
+        | BlocklistAIHistoryEvent::UpdatedConversationTitle { .. }
         | BlocklistAIHistoryEvent::UpdatedConversationArtifacts { .. }
         | BlocklistAIHistoryEvent::ConversationAgentIdAssigned { .. } => (),
     }

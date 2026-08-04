@@ -914,6 +914,20 @@ impl AIConversation {
         self.task_id = Some(id);
     }
 
+    /// Returns the last observed orchestration event sequence number, if any.
+    /// The cursor is durable across restarts so a resumed poller does not
+    /// replay events it already drained.
+    pub fn last_event_sequence(&self) -> Option<i64> {
+        self.last_event_sequence
+    }
+
+    /// Updates the last observed orchestration event sequence number. Callers
+    /// must follow up with `write_updated_conversation_state` to push the
+    /// change to SQLite.
+    pub fn set_last_event_sequence(&mut self, sequence: i64) {
+        self.last_event_sequence = Some(sequence);
+    }
+
     /// Returns the best available server-side agent identifier for parent/child linking.
     pub fn agent_link_id(&self) -> Option<String> {
         self.run_id().or_else(|| {
@@ -1312,6 +1326,30 @@ impl AIConversation {
                 }
             })
             .or_else(|| self.fallback_display_title.clone())
+    }
+
+    /// Updates the conversation title (the root task description) and persists
+    /// the conversation. Used by optimistic conversation renames.
+    pub(crate) fn update_conversation_title(
+        &mut self,
+        title: String,
+        ctx: &mut ModelContext<BlocklistAIHistoryModel>,
+    ) {
+        self.task_store
+            .modify_root_task(|root_task| root_task.update_description(title));
+        self.write_updated_conversation_state(ctx);
+    }
+
+    /// Restores a previous title snapshot (root task description) and persists
+    /// the conversation. Used to roll back a failed optimistic rename.
+    pub(crate) fn restore_conversation_title(
+        &mut self,
+        root_task_description: String,
+        ctx: &mut ModelContext<BlocklistAIHistoryModel>,
+    ) {
+        self.task_store
+            .modify_root_task(|root_task| root_task.update_description(root_task_description));
+        self.write_updated_conversation_state(ctx);
     }
 
     /// Set a fallback title used when no task description or initial query exists.

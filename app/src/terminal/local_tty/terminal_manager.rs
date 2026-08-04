@@ -39,7 +39,7 @@ use crate::settings::{PrivacySettings, SshSettings};
 
 use crate::terminal::model::session::Sessions;
 
-use crate::terminal::model_events::ModelEventDispatcher;
+use crate::terminal::model_events::{ModelEventDispatcher, SshRemoteServerSupport};
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
 use crate::terminal::session_settings::SessionSettings;
 use crate::terminal::shared_session::SharedSessionStatus;
@@ -301,6 +301,7 @@ impl TerminalManager<TerminalView> {
             initial_size,
             model_event_sender,
             chosen_shell,
+            SshRemoteServerSupport::Enabled,
             ctx,
             create_surface,
             |manager| Box::new(manager),
@@ -342,6 +343,7 @@ impl<S> TerminalManager<S> {
             initial_size,
             model_event_sender,
             chosen_shell,
+            SshRemoteServerSupport::Disabled,
             ctx,
             create_surface,
             |manager| Box::new(TuiTerminalManager(manager)),
@@ -366,6 +368,7 @@ impl<S> TerminalManager<S> {
         initial_size: Vector2F,
         model_event_sender: Option<SyncSender<ModelEvent>>,
         chosen_shell: Option<AvailableShell>,
+        ssh_remote_server_support: SshRemoteServerSupport,
         ctx: &mut AppContext,
         create_surface: impl FnOnce(TerminalSurfaceInit, &mut AppContext) -> TerminalSurfaceResult<S, PostWire>,
         box_manager: BoxManager,
@@ -393,8 +396,14 @@ impl<S> TerminalManager<S> {
         // Initialize the sessions model.
         let sessions = ctx.add_model(|ctx| Sessions::new(executor_command_tx.clone(), ctx));
 
-        let model_events =
-            ctx.add_model(|ctx| ModelEventDispatcher::new(events_rx, sessions.clone(), ctx));
+        let model_events = ctx.add_model(|ctx| {
+            ModelEventDispatcher::new_with_ssh_remote_server_support(
+                events_rx,
+                sessions.clone(),
+                ssh_remote_server_support,
+                ctx,
+            )
+        });
 
         // Have ApiKeyManager subscribe to block completion events for AWS credential refresh
         ai::api_keys::ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| {

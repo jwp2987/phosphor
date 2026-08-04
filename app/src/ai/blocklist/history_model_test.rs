@@ -33,8 +33,8 @@ use warp_multi_agent_api as api;
 
 use super::{
     convert_persisted_conversation_to_ai_conversation_with_metadata, AIConversationMetadata,
-    AIQueryHistoryOutputStatus, BlocklistAIHistoryModel, ForkConversationError, PersistedAIInput,
-    PersistedAIInputType,
+    AIQueryHistoryOutputStatus, BeginConversationRenameError, BlocklistAIHistoryModel,
+    ForkConversationError, PersistedAIInput, PersistedAIInputType,
 };
 
 fn initialize_history_model_test_app(app: &mut App) {
@@ -150,6 +150,7 @@ fn persisted_agent_conversation_for_test(
             conversation_data: serde_json::to_string(&empty_agent_conversation_data_for_test())
                 .expect("test conversation data should serialize"),
             last_modified_at,
+            summary: None,
         },
         tasks: vec![byop_test_task("root-task", messages)],
     }
@@ -838,6 +839,7 @@ fn test_initialize_historical_conversations_indexes_child_conversations() {
                 conversation_id: child_id.to_string(),
                 conversation_data: child_conversation_data,
                 last_modified_at: NaiveDateTime::default(),
+                summary: None,
             },
             tasks: vec![],
         }];
@@ -1510,5 +1512,409 @@ fn test_fork_conversation_rejects_an_empty_source() {
             error.downcast_ref::<ForkConversationError>(),
             Some(&ForkConversationError::EmptyConversation),
         );
+    });
+}
+
+/// Builds a restored conversation with a single root task whose description
+/// serves as the initial (generated) title.
+#[cfg(test)]
+fn restored_conversation_with_title(
+    conversation_id: AIConversationId,
+    description: &str,
+) -> crate::ai::agent::conversation::AIConversation {
+    use crate::ai::agent::conversation::AIConversation;
+    AIConversation::new_restored(
+        conversation_id,
+        vec![api::Task {
+            id: "root-task".to_string(),
+            messages: vec![],
+            dependencies: None,
+            description: description.to_string(),
+            summary: String::new(),
+            server_data: String::new(),
+        }],
+        None,
+    )
+    .expect("conversation should restore")
+}
+
+#[test]
+fn begin_conversation_rename_updates_title_and_cached_metadata() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let conversation_id = AIConversationId::new();
+        let conversation = restored_conversation_with_title(conversation_id, "Generated title");
+
+        history_model.update(&mut app, |model, ctx| {
+            model.restore_conversations(terminal_view_id, vec![conversation], ctx);
+            model.set_server_conversation_token_for_conversation(
+                conversation_id,
+                "server-conversation-token".to_string(),
+            );
+            let metadata = AIConversationMetadata::from(
+                model
+                    .conversation(&conversation_id)
+                    .expect("conversation should exist"),
+            );
+            model
+                .all_conversations_metadata
+                .insert(conversation_id, metadata);
+            let server_conversation_token = model
+                .begin_conversation_rename(conversation_id, "Manual title".to_string(), ctx)
+                .expect("rename should begin");
+            assert_eq!(server_conversation_token, "server-conversation-token");
+        });
+
+        history_model.read(&app, |model, _| {
+            let conversation = model
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.title().as_deref(), Some("Manual title"));
+            assert_eq!(
+                conversation
+                    .get_root_task()
+                    .map(|root_task| root_task.description()),
+                Some("Manual title"),
+            );
+            assert_eq!(
+                model
+                    .get_conversation_metadata(&conversation_id)
+                    .map(|metadata| metadata.title.as_str()),
+                Some("Manual title"),
+            );
+            assert!(model
+                .in_flight_conversation_renames
+                .contains_key(&conversation_id));
+        });
+    });
+}
+
+#[test]
+fn begin_conversation_rename_rejects_conversation_without_server_token() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let conversation_id = AIConversationId::new();
+        let conversation = restored_conversation_with_title(conversation_id, "Generated title");
+
+        let result = history_model.update(&mut app, |model, ctx| {
+            model.restore_conversations(terminal_view_id, vec![conversation], ctx);
+            let metadata = AIConversationMetadata::from(
+                model
+                    .conversation(&conversation_id)
+                    .expect("conversation should exist"),
+            );
+            model
+                .all_conversations_metadata
+                .insert(conversation_id, metadata);
+            model.begin_conversation_rename(conversation_id, "Manual title".to_string(), ctx)
+        });
+
+        assert_eq!(
+            result,
+            Err(BeginConversationRenameError::MissingServerConversationToken)
+        );
+        history_model.read(&app, |model, _| {
+            let conversation = model
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.title().as_deref(), Some("Generated title"));
+            assert_eq!(
+                model
+                    .get_conversation_metadata(&conversation_id)
+                    .map(|metadata| metadata.title.as_str()),
+                Some("Generated title"),
+            );
+            assert!(!model
+                .in_flight_conversation_renames
+                .contains_key(&conversation_id));
+        });
+    });
+}
+
+#[test]
+fn begin_conversation_rename_rejects_optimistic_root_task() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+        let (conversation_id, result) = history_model.update(&mut app, |model, ctx| {
+            let conversation_id = model.start_new_conversation(terminal_view_id, false, false, ctx);
+            model.set_server_conversation_token_for_conversation(
+                conversation_id,
+                "server-conversation-token".to_string(),
+            );
+            let result =
+                model.begin_conversation_rename(conversation_id, "Manual title".to_string(), ctx);
+            (conversation_id, result)
+        });
+
+        assert_eq!(
+            result,
+            Err(BeginConversationRenameError::ConversationNotReady)
+        );
+        history_model.read(&app, |model, _| {
+            let conversation = model
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            let root_task = conversation
+                .get_root_task()
+                .expect("conversation should have a root task");
+            assert!(root_task.source().is_none());
+            assert_eq!(root_task.description(), "");
+            assert!(!model
+                .in_flight_conversation_renames
+                .contains_key(&conversation_id));
+        });
+    });
+}
+
+#[test]
+fn complete_conversation_rename_applies_normalized_title_and_clears_in_flight_state() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let conversation_id = AIConversationId::new();
+        let conversation = restored_conversation_with_title(conversation_id, "Generated title");
+
+        history_model.update(&mut app, |model, ctx| {
+            model.restore_conversations(terminal_view_id, vec![conversation], ctx);
+            model.set_server_conversation_token_for_conversation(
+                conversation_id,
+                "server-conversation-token".to_string(),
+            );
+            let metadata = AIConversationMetadata::from(
+                model
+                    .conversation(&conversation_id)
+                    .expect("conversation should exist"),
+            );
+            model
+                .all_conversations_metadata
+                .insert(conversation_id, metadata);
+            model
+                .begin_conversation_rename(conversation_id, "Manual title".to_string(), ctx)
+                .expect("rename should begin");
+            model.complete_conversation_rename(conversation_id, "Normalized title".to_string(), ctx);
+        });
+
+        history_model.read(&app, |model, _| {
+            let conversation = model
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.title().as_deref(), Some("Normalized title"));
+            assert_eq!(
+                conversation
+                    .get_root_task()
+                    .map(|root_task| root_task.description()),
+                Some("Normalized title"),
+            );
+            assert_eq!(
+                model
+                    .get_conversation_metadata(&conversation_id)
+                    .map(|metadata| metadata.title.as_str()),
+                Some("Normalized title"),
+            );
+            assert!(!model
+                .in_flight_conversation_renames
+                .contains_key(&conversation_id));
+        });
+    });
+}
+
+#[test]
+fn fail_conversation_rename_reverts_title_and_cached_metadata() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let conversation_id = AIConversationId::new();
+        let conversation = restored_conversation_with_title(conversation_id, "Generated title");
+
+        history_model.update(&mut app, |model, ctx| {
+            model.restore_conversations(terminal_view_id, vec![conversation], ctx);
+            model.set_server_conversation_token_for_conversation(
+                conversation_id,
+                "server-conversation-token".to_string(),
+            );
+            let metadata = AIConversationMetadata::from(
+                model
+                    .conversation(&conversation_id)
+                    .expect("conversation should exist"),
+            );
+            model
+                .all_conversations_metadata
+                .insert(conversation_id, metadata);
+            model
+                .begin_conversation_rename(conversation_id, "Manual title".to_string(), ctx)
+                .expect("rename should begin");
+            model.fail_conversation_rename(conversation_id, ctx);
+        });
+
+        history_model.read(&app, |model, _| {
+            let conversation = model
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.title().as_deref(), Some("Generated title"));
+            assert_eq!(
+                conversation
+                    .get_root_task()
+                    .map(|root_task| root_task.description()),
+                Some("Generated title"),
+            );
+            assert_eq!(
+                model
+                    .get_conversation_metadata(&conversation_id)
+                    .map(|metadata| metadata.title.as_str()),
+                Some("Generated title"),
+            );
+            assert!(!model
+                .in_flight_conversation_renames
+                .contains_key(&conversation_id));
+        });
+    });
+}
+
+#[test]
+fn begin_conversation_rename_rejects_second_rename_while_in_flight() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let conversation_id = AIConversationId::new();
+        let conversation = restored_conversation_with_title(conversation_id, "Generated title");
+
+        let second_result = history_model.update(&mut app, |model, ctx| {
+            model.restore_conversations(terminal_view_id, vec![conversation], ctx);
+            model.set_server_conversation_token_for_conversation(
+                conversation_id,
+                "server-conversation-token".to_string(),
+            );
+            model
+                .begin_conversation_rename(conversation_id, "Manual title".to_string(), ctx)
+                .expect("rename should begin");
+            model.begin_conversation_rename(conversation_id, "Second title".to_string(), ctx)
+        });
+
+        assert_eq!(
+            second_result,
+            Err(BeginConversationRenameError::RenameInProgress)
+        );
+        history_model.read(&app, |model, _| {
+            let conversation = model
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.title().as_deref(), Some("Manual title"));
+            assert!(model
+                .in_flight_conversation_renames
+                .contains_key(&conversation_id));
+        });
+    });
+}
+
+#[test]
+fn test_update_event_sequence_persists_updated_conversation_state() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let mut global_resource_handles = GlobalResourceHandles::mock(&mut app);
+        global_resource_handles.model_event_sender = Some(sender);
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let terminal_view_id = EntityId::new();
+
+        let conversation_id = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+
+        history_model.update(&mut app, |history_model, ctx| {
+            history_model.update_event_sequence(conversation_id, 42, ctx);
+        });
+
+        let event = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let ModelEvent::UpdateMultiAgentConversation {
+            conversation_id: persisted_conversation_id,
+            conversation_data,
+            ..
+        } = event
+        else {
+            panic!("expected UpdateMultiAgentConversation event");
+        };
+
+        assert_eq!(persisted_conversation_id, conversation_id.to_string());
+        assert_eq!(conversation_data.last_event_sequence, Some(42));
+
+        history_model.read(&app, |history_model, _| {
+            let conversation = history_model
+                .conversation(&conversation_id)
+                .expect("conversation should exist");
+            assert_eq!(conversation.last_event_sequence(), Some(42));
+        });
+    });
+}
+
+#[test]
+fn test_remove_child_conversation_cleans_parent_index() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let parent_id = history_model.update(&mut app, |model, ctx| {
+            model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let child_id = history_model.update(&mut app, |model, ctx| {
+            let child_id = model.start_new_conversation(terminal_view_id, false, false, ctx);
+            model.set_parent_for_conversation(child_id, parent_id);
+            child_id
+        });
+
+        history_model.update(&mut app, |model, ctx| {
+            model.remove_conversation(child_id, terminal_view_id, ctx);
+        });
+
+        history_model.read(&app, |model, _| {
+            assert!(model.conversation(&child_id).is_none());
+            assert!(model.child_conversation_ids_of(&parent_id).is_empty());
+        });
+    });
+}
+
+#[test]
+fn test_remove_parent_conversation_cleans_incoming_and_outgoing_index_entries() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let grandparent_id = history_model.update(&mut app, |model, ctx| {
+            model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let parent_id = history_model.update(&mut app, |model, ctx| {
+            let parent_id = model.start_new_conversation(terminal_view_id, false, false, ctx);
+            model.set_parent_for_conversation(parent_id, grandparent_id);
+            parent_id
+        });
+        let child_id = history_model.update(&mut app, |model, ctx| {
+            let child_id = model.start_new_conversation(terminal_view_id, false, false, ctx);
+            model.set_parent_for_conversation(child_id, parent_id);
+            child_id
+        });
+
+        history_model.update(&mut app, |model, ctx| {
+            model.remove_conversation(parent_id, terminal_view_id, ctx);
+        });
+
+        history_model.read(&app, |model, _| {
+            assert!(model.conversation(&parent_id).is_none());
+            assert!(model.conversation(&child_id).is_some());
+            assert!(model.child_conversation_ids_of(&grandparent_id).is_empty());
+            assert!(model.child_conversation_ids_of(&parent_id).is_empty());
+        });
     });
 }

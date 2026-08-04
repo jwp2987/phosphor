@@ -3137,6 +3137,13 @@ impl ansi::Handler for TerminalModel {
     fn ssh(&mut self, value: SSHValue) {
         if !self.ignore_bootstrapping_messages {
             let remote_shell = value.remote_shell.clone();
+            if value.external_control_master {
+                log::info!(
+                    "SSH wrapper attached to an external ControlMaster at {}; \
+                     Warp will not tear it down on session exit",
+                    value.socket_path.display()
+                );
+            }
             self.pending_legacy_ssh_session = Some(value);
             self.event_proxy
                 .send_terminal_event(Event::SSH(remote_shell));

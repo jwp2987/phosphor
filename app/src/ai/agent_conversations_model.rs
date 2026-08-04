@@ -839,6 +839,7 @@ impl AgentConversationsModel {
             | BlocklistAIHistoryEvent::RemoveConversation { .. }
             | BlocklistAIHistoryEvent::DeletedConversation { .. }
             | BlocklistAIHistoryEvent::ClearedConversationsInTerminalView { .. }
+            | BlocklistAIHistoryEvent::UpdatedConversationTitle { .. }
             | BlocklistAIHistoryEvent::ClearedActiveConversation { .. } => {
                 self.sync_conversations(ctx);
             }

@@ -2,6 +2,18 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// Maximum length in bytes of a `KEY=VALUE` env string, one less than Linux's `MAX_ARG_STRLEN`
+/// (128 KiB). The kernel stores each env string NUL-terminated, so the `KEY=VALUE` content must
+/// be strictly shorter than `MAX_ARG_STRLEN` to leave room for the trailing `\0`.
+pub(crate) const MAX_SECRET_FIELD_BYTES: usize = 128 * 1024 - 1;
+
+pub(crate) const ENV_VAR_ANTHROPIC_API_KEY: &str = "ANTHROPIC_API_KEY";
+pub(crate) const ENV_VAR_AWS_BEARER_TOKEN_BEDROCK: &str = "AWS_BEARER_TOKEN_BEDROCK";
+pub(crate) const ENV_VAR_AWS_REGION: &str = "AWS_REGION";
+pub(crate) const ENV_VAR_AWS_ACCESS_KEY_ID: &str = "AWS_ACCESS_KEY_ID";
+pub(crate) const ENV_VAR_AWS_SECRET_ACCESS_KEY: &str = "AWS_SECRET_ACCESS_KEY";
+pub(crate) const ENV_VAR_AWS_SESSION_TOKEN: &str = "AWS_SESSION_TOKEN";
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum ManagedSecretType {
     AnthropicApiKey,
@@ -81,6 +93,57 @@ impl ManagedSecretValue {
         Self::AnthropicBedrockApiKey {
             aws_bearer_token_bedrock: token.into(),
             aws_region: region.into(),
+        }
+    }
+
+    /// Returns an error if any env var produced by this secret would exceed [`MAX_SECRET_FIELD_BYTES`] bytes.
+    pub fn validate_field_sizes(&self, name: &str) -> anyhow::Result<()> {
+        let check = |env_key: &str, value: &str| -> anyhow::Result<()> {
+            // Guard against a pathologically long key name causing usize underflow below.
+            if env_key.len() + 1 >= MAX_SECRET_FIELD_BYTES {
+                anyhow::bail!(
+                    "Secret name is too long ({} bytes) to be used as an environment variable \
+                     name; the maximum is {} bytes.",
+                    env_key.len(),
+                    MAX_SECRET_FIELD_BYTES - 2,
+                );
+            }
+            let max_value_len = MAX_SECRET_FIELD_BYTES - env_key.len() - 1 /* '=' */;
+            if value.len() > max_value_len {
+                anyhow::bail!(
+                    "Secret '{env_key}' value is too large to inject as an environment variable \
+                     ({} bytes); the maximum is {max_value_len} bytes. Use a shorter value.",
+                    value.len()
+                );
+            }
+            Ok(())
+        };
+
+        match self {
+            ManagedSecretValue::RawValue { value } => check(name, value),
+            ManagedSecretValue::AnthropicApiKey { api_key } => {
+                check(ENV_VAR_ANTHROPIC_API_KEY, api_key)
+            }
+            ManagedSecretValue::AnthropicBedrockApiKey {
+                aws_bearer_token_bedrock,
+                aws_region,
+            } => {
+                check(ENV_VAR_AWS_BEARER_TOKEN_BEDROCK, aws_bearer_token_bedrock)?;
+                check(ENV_VAR_AWS_REGION, aws_region)
+            }
+            ManagedSecretValue::AnthropicBedrockAccessKey {
+                aws_access_key_id,
+                aws_secret_access_key,
+                aws_session_token,
+                aws_region,
+            } => {
+                check(ENV_VAR_AWS_ACCESS_KEY_ID, aws_access_key_id)?;
+                check(ENV_VAR_AWS_SECRET_ACCESS_KEY, aws_secret_access_key)?;
+                if let Some(token) = aws_session_token {
+                    check(ENV_VAR_AWS_SESSION_TOKEN, token)?;
+                }
+                check(ENV_VAR_AWS_REGION, aws_region)
+            }
         }
     }
 

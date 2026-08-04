@@ -55,7 +55,10 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 ### Small / local — good next builds
 - [x] **Banner-immune PATH capture** — `__ZAP_PATH_CAPTURE_*` markers + `extract_captured_path`;
   6 oracle tests 6/0 (verified). Commit `c2404b5eb`. (markers rebranded __WARP_→__ZAP_, identity-only)
-- [ ] Async (background-thread) find — `find/model/async_find.rs`
+- [x] Async (background-thread) find — full subsystem: grid `find_dirty_rows_range` substrate +
+  `async_find` module + `is_scanning` trait + `AsyncFindEnabled`/`FeatureFlag::AsyncFind` +
+  `BlockFindRenderData` render path; 21 tests; full warp 3871/0 (no regression). Commit `e2226e40a`.
+  (additive — gated behind `experimental.async_find_enabled`, off by default)
 - [ ] Queued-prompts-while-busy panel — `view/queued_prompts_panel.rs`. ⛔ BLOCKED / DECISION:
   the panel is a thin layer over Warp's `QueuedQueryModel` subsystem (845+1066 lines), which the fork
   DELIBERATELY dropped for a simpler one-shot `/queue` (`settings/ai.rs:407`). Restoring needs porting
@@ -85,11 +88,15 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [x] Autoupdate per-channel repo + exit-code parsing — `repo_name` (adapted to fork's single-repo
   channels) + Windows `parse_forcekill_exit_code`/`parse_minidump_cleanup_exit_code`; warp autoupdate
   13/0. Commit `66884f3cb`. (Windows parsers compile-only here → run on Windows CI)
-- [ ] `external_control_master` signal plumbing (the #37 refinement; only comments today)
+- [x] `external_control_master` signal plumbing (#37 refinement) — DCS hook -> session -> controller;
+  `owns_control_master = !external_control_master`; 2 DCS tests; warp 3825/0. Commit `aaa436aad`.
 
 ### Build non-cloud half (per 2026-08-02 BYOP decisions on #11)
-- [ ] `history_model` reconciliation (rename / event-seq / fork-arity / `transient_network_error`;
-  DROP cloud-merge/remote-child/canonical-id)
+- [x] `history_model` reconciliation — PARTIAL: built optimistic rename, event-sequence persistence,
+  child-index cleanup (9 tests; warp 3825/0, commit `d472f292d`). DEFERRED (rippling, follow-up, NOT
+  design): `ConversationStatus::{WaitingForEvents,TransientError}` + `transient_network_error` (~20
+  match sites + auto-resume subsystem), wider-arity `start_new_conversation`/`prompt_history_candidates`
+  (constructor arity), harness-metadata child params. Dropped cloud-merge/remote-child.
 - [x] AI bundled skills — ALREADY DONE: ported inline in `skill_manager.rs` (BundledSkill,
   load_bundled_skills, activation) on Warp's older flat-HashMap design. Warp's newer `bundled.rs` is a
   remote-catalog rewrite whose net-new content is all the cloud/daemon arm. Ledger was stale.
@@ -97,8 +104,10 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   (`resolve_skill_repos` → amputated `cloud_environments::GithubRepo`); the only non-cloud fn
   (`filter_skills_by_spec`) has NO consumer in the fork = dead code, and rests on `LocalOrRemotePath`
   (fork uses `PathBuf`) — a faithful port is a workspace-wide type migration, not a skills-dir port.
-- [ ] Persistence: pinned tabs / tab groups / conversation summary + backfill
-  (DROP `add_team_uid_to_windows`)
+- [x] Persistence: pinned tabs / tab groups / conversation summary + backfill — 3 migrations +
+  schema/model/query + `AgentConversationSummary`; persistence 15/0. Commit `5fff5db83`. (dropped
+  `add_team_uid_to_windows` + `total_provider_cost_in_cents` cloud-billing; tab-group/pinned is
+  storage-only, GUI round-trip is a separate follow-up)
 
 ### Platform-gated (Windows/macOS — NOT verifiable on Linux; port compile-only + flag)
 - [ ] WSLENV passthrough vars — `wsl_env_allowlist()`
@@ -110,11 +119,15 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [ ] `local_control` / `warpctrl` scripting IPC (~3,000 lines)
 - [ ] `repo_metadata` lazy/budget file-tree + `standing_queries`
 - [ ] Code review over SSH (`diff_state/{local,remote}`, `git_repo_model`)
-- [ ] Remote/SSH global search (`remote_matches_to_global`)
-- [ ] URI local deep-links (`UriHost::Session`, `find_terminal_pane_by_session_uuid`)
+- [ ] Remote/SSH global search (`remote_matches_to_global`) — needs PREREQUISITE: host-scoped ripgrep
+  RPC in `crates/remote_server` (proto messages+codegen, `start_ripgrep_search`/`abort_host_request`/
+  `HostRequestError`/`RipgrepSearchParams`, client path) + remote-server DAEMON ripgrep handler; fork's
+  remote_server predates host-scoped requests. Multi-crate build (not design); hard to verify locally
+  (needs a real SSH remote round-trip). Sequence: build the RPC subsystem, then the global_search rework.
+- [x] URI local deep-links — Session/TabConfig/settings-widget/OpenFileEditor; 21 tests; warp 3850/0. Commit `f1c9dbaa1`. (cloud/team variants + fork-absent custom_router skipped)
 - [ ] Skill remote-path resolution (`get_scope_for_path`, `LocalOrRemotePath`)
-- [ ] `ModelEventDispatcher` SSH gate (`SshRemoteServerSupport::should_use_remote_server`)
-- [ ] Managed-secrets BYO-endpoint APIs (`seal_with_context`, `ByoEndpointPayload`)
+- [x] `ModelEventDispatcher` SSH gate — `SshRemoteServerSupport::{Enabled,Disabled}`; per-instance (GUI=Enabled/TUI=Disabled); 4 tests; warp 3850/0. Commit `1c1fff909`.
+- [x] Managed-secrets BYO-endpoint APIs — `seal_with_context` + `ByoFirstPartyPayload`/`ByoEndpointPayload` + `validate_field_sizes`; warp_managed_secrets 25/0, wasm 5/0. Commit `e2c5ecfc9`.
 - [ ] Pending-edit-batch conflict-discard (verify SSH-remote vs cloud-collab FIRST)
 
 ---
