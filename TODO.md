@@ -117,10 +117,10 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [ ] `repo_metadata` lazy/budget file-tree + `standing_queries`
 - [ ] Code review over SSH (`diff_state/{local,remote}`, `git_repo_model`)
 - [ ] Remote/SSH global search (`remote_matches_to_global`)
-- [ ] URI local deep-links (`UriHost::Session`, `find_terminal_pane_by_session_uuid`)
+- [x] URI local deep-links — Session/TabConfig/settings-widget/OpenFileEditor; 21 tests; warp 3850/0. Commit `f1c9dbaa1`. (cloud/team variants + fork-absent custom_router skipped)
 - [ ] Skill remote-path resolution (`get_scope_for_path`, `LocalOrRemotePath`)
-- [ ] `ModelEventDispatcher` SSH gate (`SshRemoteServerSupport::should_use_remote_server`)
-- [ ] Managed-secrets BYO-endpoint APIs (`seal_with_context`, `ByoEndpointPayload`)
+- [x] `ModelEventDispatcher` SSH gate — `SshRemoteServerSupport::{Enabled,Disabled}`; per-instance (GUI=Enabled/TUI=Disabled); 4 tests; warp 3850/0. Commit `1c1fff909`.
+- [x] Managed-secrets BYO-endpoint APIs — `seal_with_context` + `ByoFirstPartyPayload`/`ByoEndpointPayload` + `validate_field_sizes`; warp_managed_secrets 25/0, wasm 5/0. Commit `e2c5ecfc9`.
 - [ ] Pending-edit-batch conflict-discard (verify SSH-remote vs cloud-collab FIRST)
 
 ---
