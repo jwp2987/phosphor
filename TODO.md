@@ -53,11 +53,12 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 ## 🔨 Remaining — 31 of the `[x]` keeps still missing
 
 ### Small / local — good next builds
-- [ ] **Banner-immune PATH capture** ⚠️ *functional risk* — `__WARP_PATH_CAPTURE_START__/__END__`
-  markers + `extract_captured_path`; `app/src/terminal/local_shell/mod.rs:244`
+- [x] **Banner-immune PATH capture** — `__ZAP_PATH_CAPTURE_*` markers + `extract_captured_path`;
+  6 oracle tests 6/0 (verified). Commit `c2404b5eb`. (markers rebranded __WARP_→__ZAP_, identity-only)
 - [ ] Async (background-thread) find — `find/model/async_find.rs`
 - [ ] Queued-prompts-while-busy panel — `view/queued_prompts_panel.rs`
-- [ ] `TuiStack` element — `warpui_core/elements/tui/`
+- [x] `TuiStack` element — `warpui_core/elements/tui/stack.rs`; 15 oracle tests; full warpui_core
+  521/0 (no regression). Commit `9901ff460`. (also ported the opaque-region prereq into container.rs)
 - [ ] Content-version-aware asset invalidation — `warpui_core` `LocalFileContentVersion`
 - [ ] Image load-failure/timeout fallback — `warpui_core` `Image` `on_load_failure`/`on_load_timeout`
 - [ ] Soft-wrap row bounds — `FrameLayouts::soft_wrapped_row_bounds` (`app/src/editor`)
@@ -65,7 +66,9 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [ ] Cross-window tab-drag placeholder collapse — `collapsed_source_placeholder_index`
 - [ ] Editable bindings `orchestration_cycle` / `toggle_maximize_pane` — `util/bindings.rs`
 - [ ] Oversized data-URI image handling — `replace_oversized_data_uri_images`
-- [ ] `remote_server_controller` connection-label helpers — `connection_label_from_session_hosts`
+- [x] `remote_server_controller` connection-label helpers — `connection_label_from_session_hosts`;
+  3 helpers + 3 oracle tests 3/0. Commit `b6fc0cab1`. ⚠️ *follow-up:* helpers restored + tested but
+  not yet wired into the connect_session display flow (fork's `connect_session` signature diverged)
 - [ ] Autoupdate per-channel repo + exit-code parsing — `repo_name`/`parse_forcekill_exit_code`
 - [ ] `external_control_master` signal plumbing (the #37 refinement; only comments today)
 
