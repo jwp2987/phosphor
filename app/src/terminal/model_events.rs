@@ -34,6 +34,26 @@ use crate::features::FeatureFlag;
 use crate::terminal::shell::ShellType;
 use crate::{send_telemetry_from_ctx, TelemetryEvent};
 
+/// Per-instance override controlling whether the dispatcher routes legacy SSH
+/// sessions through the remote server.
+///
+/// The `SshRemoteServer` feature flag gates the behavior globally, but an
+/// individual `ModelEventDispatcher` can additionally opt out via
+/// [`SshRemoteServerSupport::Disabled`] (e.g. a dispatcher that already runs
+/// inside a remote-server session and must not recurse into another one).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SshRemoteServerSupport {
+    Enabled,
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    Disabled,
+}
+
+impl SshRemoteServerSupport {
+    fn should_use_remote_server(self, feature_enabled: bool, is_legacy_ssh_session: bool) -> bool {
+        matches!(self, Self::Enabled) && feature_enabled && is_legacy_ssh_session
+    }
+}
+
 /// Model that dispatches events that have been emitted by the [`crate::terminal::TerminalModel`],
 /// allowing other models/views to subscribe to `TerminalModel` events like it would any other
 /// entity within the UI framework.
@@ -41,12 +61,27 @@ pub struct ModelEventDispatcher {
     last_start_prompt_marker: Option<PromptKind>,
     active_session_id: Option<SessionId>,
     sessions: ModelHandle<Sessions>,
+    ssh_remote_server_support: SshRemoteServerSupport,
 }
 
 impl ModelEventDispatcher {
     pub fn new(
         model_events_rx: Receiver<Event>,
         sessions: ModelHandle<Sessions>,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
+        Self::new_with_ssh_remote_server_support(
+            model_events_rx,
+            sessions,
+            SshRemoteServerSupport::Enabled,
+            ctx,
+        )
+    }
+
+    pub(crate) fn new_with_ssh_remote_server_support(
+        model_events_rx: Receiver<Event>,
+        sessions: ModelHandle<Sessions>,
+        ssh_remote_server_support: SshRemoteServerSupport,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         ctx.spawn_stream_local(
@@ -58,7 +93,15 @@ impl ModelEventDispatcher {
             active_session_id: None,
             last_start_prompt_marker: None,
             sessions,
+            ssh_remote_server_support,
         }
+    }
+
+    fn should_use_ssh_remote_server(&self, is_legacy_ssh: bool) -> bool {
+        self.ssh_remote_server_support.should_use_remote_server(
+            FeatureFlag::SshRemoteServer.is_enabled(),
+            is_legacy_ssh,
+        )
     }
 
     /// Returns the active session to which the PTY is currently attached.
@@ -89,7 +132,7 @@ impl ModelEventDispatcher {
                     pending_session_info.is_legacy_ssh_session,
                     IsLegacySSHSession::Yes { .. }
                 );
-                if FeatureFlag::SshRemoteServer.is_enabled() && is_legacy_ssh {
+                if self.should_use_ssh_remote_server(is_legacy_ssh) {
                     ModelEvent::SshInitShell {
                         pending_session_info,
                     }
@@ -343,7 +386,7 @@ impl ModelEventDispatcher {
             );
         });
 
-        if FeatureFlag::SshRemoteServer.is_enabled() && is_legacy_ssh {
+        if self.should_use_ssh_remote_server(is_legacy_ssh) {
             RemoteServerManager::handle(ctx).update(ctx, |mgr, _ctx| {
                 mgr.notify_session_bootstrapped(
                     session_id,
@@ -519,3 +562,7 @@ pub enum AnsiHandlerEvent {
 impl Entity for ModelEventDispatcher {
     type Event = ModelEvent;
 }
+
+#[cfg(test)]
+#[path = "model_events_tests.rs"]
+mod tests;
