@@ -10,7 +10,6 @@ pub mod new_session;
 pub mod render_util;
 mod selected_items;
 pub mod separator_search_item;
-pub mod ssh_servers;
 pub mod view;
 pub mod warp_drive;
 mod zero_state;

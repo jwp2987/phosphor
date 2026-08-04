@@ -24,8 +24,6 @@ pub(super) mod image_pane;
 pub(super) mod local_harness_launch;
 pub(super) mod notebook_pane;
 pub(super) mod settings_pane;
-pub(crate) mod sftp_pane;
-pub(crate) mod ssh_server_pane;
 pub(super) mod terminal_pane;
 pub mod view;
 pub(super) mod welcome_pane;
@@ -36,8 +34,6 @@ use std::{any::Any, fmt::Display};
 
 use crate::pane_group::focus_state::PaneFocusHandle;
 use crate::pane_group::pane::get_started_view::GetStartedView;
-use crate::ssh_manager::server_view::SshServerView;
-use crate::sftp_manager::browser::SftpBrowserView;
 use crate::view_components::action_button::ActionButton;
 use crate::{
     ai::execution_profiles::editor::ExecutionProfileEditorView,
@@ -152,8 +148,6 @@ pub(crate) enum IPaneType {
     AIDocument,
     ExecutionProfileEditor,
     GetStarted,
-    SshServer,
-    Sftp,
     Welcome,
     DeferredPlaceholder,
     /// A pane type only for tests.
@@ -178,8 +172,6 @@ impl Display for IPaneType {
             IPaneType::AIDocument => write!(f, "AI Document"),
             IPaneType::ExecutionProfileEditor => write!(f, "Execution Profile Editor"),
             IPaneType::GetStarted => write!(f, "GetStarted"),
-            IPaneType::SshServer => write!(f, "SSH Server"),
-            IPaneType::Sftp => write!(f, "SFTP"),
             IPaneType::Welcome => write!(f, "Welcome"),
             IPaneType::DeferredPlaceholder => write!(f, "Placeholder"),
             #[cfg(test)]
@@ -278,15 +270,6 @@ impl PaneId {
         Self::new_from_ctx(IPaneType::GetStarted, ctx)
     }
 
-    pub fn from_ssh_server_pane_ctx(ctx: &ViewContext<PaneView<SshServerView>>) -> Self {
-        Self::new_from_ctx(IPaneType::SshServer, ctx)
-    }
-
-    /// Creates a [`PaneId`] from a [`ViewContext<PaneView<SftpBrowserView>>`]
-    pub fn from_sftp_pane_ctx(ctx: &ViewContext<PaneView<SftpBrowserView>>) -> Self {
-        Self::new_from_ctx(IPaneType::Sftp, ctx)
-    }
-
     /// Creates a [`PaneId`] from a [`PaneView<TerminalView>`] entity ID.
     pub fn from_terminal_pane_view(
         terminal_pane_view: &ViewHandle<terminal_pane::TerminalPaneView>,
@@ -373,19 +356,6 @@ impl PaneId {
         get_started_pane_view: &ViewHandle<PaneView<GetStartedView>>,
     ) -> Self {
         Self::new(IPaneType::GetStarted, get_started_pane_view)
-    }
-
-    pub fn from_ssh_server_pane_view(
-        ssh_server_pane_view: &ViewHandle<PaneView<SshServerView>>,
-    ) -> Self {
-        Self::new(IPaneType::SshServer, ssh_server_pane_view)
-    }
-
-    /// Creates a [`PaneId`] from a [`PaneView<SftpBrowserView>`] entity ID.
-    pub fn from_sftp_pane_view(
-        sftp_pane_view: &ViewHandle<PaneView<SftpBrowserView>>,
-    ) -> Self {
-        Self::new(IPaneType::Sftp, sftp_pane_view)
     }
 
     pub fn from_welcome_pane_view(welcome_pane_view: &ViewHandle<PaneView<WelcomeView>>) -> Self {
@@ -507,12 +477,6 @@ impl PaneId {
             }
             IPaneType::GetStarted => {
                 ChildView::<PaneView<GetStartedView>>::with_id(self.0.pane_view_id).finish()
-            }
-            IPaneType::SshServer => {
-                ChildView::<PaneView<SshServerView>>::with_id(self.0.pane_view_id).finish()
-            }
-            IPaneType::Sftp => {
-                ChildView::<PaneView<SftpBrowserView>>::with_id(self.0.pane_view_id).finish()
             }
             IPaneType::Welcome => {
                 ChildView::<PaneView<WelcomeView>>::with_id(self.0.pane_view_id).finish()

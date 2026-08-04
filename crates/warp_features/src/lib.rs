@@ -673,9 +673,6 @@ pub enum FeatureFlag {
     /// for command execution.
     SshRemoteServer,
 
-    /// Shows saved SSH credential candidates when a local PTY outputs a password prompt.
-    OneKeyPrompt,
-
     /// Enables summary mode in vertical tabs, showing condensed tab summaries
     /// instead of individual pane rows.
     VerticalTabsSummaryMode,

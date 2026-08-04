@@ -147,18 +147,6 @@ pub enum LeafContents {
     },
     /// A new first-time user experience which prioritizes choosing a coding repository.
     GetStarted,
-    /// The SSH server editor pane (openWarp-only). Loads/saves by referencing
-    /// the `ssh_servers.node_id` primary key. **Not persisted** — the user
-    /// reopens it from the SSH manager tree on the left after a restart.
-    SshServer {
-        node_id: String,
-    },
-    /// The SFTP file browser pane. Associates with the remote server by
-    /// referencing the `ssh_servers.node_id` primary key.
-    /// **Not persisted** — the user reopens it from the SSH manager tree on the left after a restart.
-    Sftp {
-        node_id: String,
-    },
 }
 
 #[cfg(feature = "local_fs")]
@@ -176,13 +164,6 @@ impl LeafContents {
         match self {
             // Zap Wave 7-3: the `EnvironmentManagement` arm was physically
             // removed along with the variant.
-            // SSH server editor: the data (host/user/...) is persisted in the
-            // ssh_servers table; the pane itself is just a view, so closing
-            // and reopening it makes no difference.
-            LeafContents::SshServer { .. } => false,
-            // SFTP browser: the remote filesystem depends on an active SSH
-            // connection, so the pane cannot be restored.
-            LeafContents::Sftp { .. } => false,
             // Image viewer panes are intentionally not persisted: they render in-session but
             // are not restored after restart.
             LeafContents::Image { .. } => false,
@@ -330,7 +311,6 @@ pub enum LeftPanelDisplayedTab {
     GlobalSearch,
     ZapDrive,
     ConversationListView,
-    SshManager,
     ServerFileBrowser,
     SkillManager,
 }
@@ -342,7 +322,6 @@ impl From<ToolPanelView> for LeftPanelDisplayedTab {
             ToolPanelView::GlobalSearch { .. } => LeftPanelDisplayedTab::GlobalSearch,
             ToolPanelView::ZapDrive => LeftPanelDisplayedTab::ZapDrive,
             ToolPanelView::ConversationListView => LeftPanelDisplayedTab::ConversationListView,
-            ToolPanelView::SshManager => LeftPanelDisplayedTab::SshManager,
             ToolPanelView::ServerFileBrowser => LeftPanelDisplayedTab::ServerFileBrowser,
             ToolPanelView::SkillManager => LeftPanelDisplayedTab::SkillManager,
         }

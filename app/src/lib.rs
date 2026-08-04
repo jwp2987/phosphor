@@ -75,8 +75,6 @@ mod server_time;
 mod session_management;
 mod shell_indicator;
 mod skill_manager;
-mod sftp_manager;
-mod ssh_manager;
 mod suggestions;
 mod system;
 mod tab;
@@ -1236,12 +1234,6 @@ fn initialize_app(
     let (sqlite_data, writer_handles) = persistence::initialize(ctx);
     timer.mark_interval_end("SQLITE_INITIALIZED");
 
-    // The SSH manager opens its own write connection outside the main write thread
-    // (WAL + busy_timeout keep this safe). The path must be set only after
-    // persistence::initialize has finished running migrations, otherwise the first
-    // SshManager operation could hit a missing-table error.
-    warp_ssh_manager::set_database_path(persistence::database_file_path());
-
     let persistence_writer = PersistenceWriter::new(writer_handles);
 
     let model_event_sender = persistence_writer.sender();
@@ -1366,9 +1358,6 @@ fn initialize_app(
     );
 
     ctx.add_singleton_model(AntivirusInfo::new);
-
-    // The cloud-sync token goes through the OS keychain; it is never persisted to TOML.
-    ctx.add_singleton_model(crate::settings::CloudSyncTokenStore::new);
 
     cfg_if::cfg_if! {
         if #[cfg(feature = "crash_reporting")] {
@@ -1674,7 +1663,6 @@ fn initialize_app(
     ctx.add_singleton_model(|_| NetworkStatus::new());
     ctx.add_singleton_model(|_| SystemStats::new());
     ctx.add_singleton_model(|_| KeybindingChangedNotifier::new());
-    ctx.add_singleton_model(|_| crate::ssh_manager::SshTreeChangedNotifier::new());
     ctx.add_singleton_model(|_| search::command_palette::SelectedItems::new());
     ctx.add_singleton_model(search::files::model::FileSearchModel::new);
     ctx.add_singleton_model(|_| VimRegisters::new());
@@ -2511,8 +2499,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::AIRules,
         #[cfg(feature = "ssh_tmux_wrapper")]
         FeatureFlag::SSHTmuxWrapper,
-        #[cfg(feature = "onekey_prompt")]
-        FeatureFlag::OneKeyPrompt,
         #[cfg(feature = "less_horizontal_terminal_padding")]
         FeatureFlag::LessHorizontalTerminalPadding,
         #[cfg(feature = "shell_selector")]

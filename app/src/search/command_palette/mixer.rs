@@ -74,12 +74,6 @@ pub enum CommandPaletteItemAction {
     },
     /// Start a new AI conversation
     NewConversation,
-    /// Open an SSH server (openWarp-only) → routes to
-    /// WorkspaceAction::OpenSshTerminal via SecretInjector + a new tab.
-    OpenSshServer {
-        node_id: String,
-        server: warp_ssh_manager::SshServerInfo,
-    },
     /// No-op action (used for non-interactable separator items that don't do anything on click).
     NoOp,
 }
@@ -142,9 +136,6 @@ impl CommandPaletteItemAction {
                 ItemSummary::Project { path: path.clone() }
             }
             CommandPaletteItemAction::NewConversation => ItemSummary::NewConversation,
-            CommandPaletteItemAction::OpenSshServer { node_id, .. } => ItemSummary::SshServer {
-                node_id: node_id.clone(),
-            },
             CommandPaletteItemAction::NoOp => ItemSummary::NoOp,
         }
     }
@@ -203,10 +194,6 @@ pub enum ItemSummary {
     },
     ForkConversation,
     NewConversation,
-    /// An SSH server (openWarp-only). `node_id` is the UUID from the ssh_nodes table.
-    SshServer {
-        node_id: String,
-    },
     /// No-op action (used for non-interactable separator items that don't do anything on click).
     NoOp,
 }

@@ -78,13 +78,6 @@ use warpui::{platform::WindowStyle, App, ViewHandle};
 fn initialize_app(app: &mut App) {
     initialize_settings_for_tests(app);
 
-    // The SSH manager uses a process-global lazy SQLite connection; point it at a
-    // temp path so workspace init doesn't panic on an uninitialized DB path.
-    // Set-once: harmless if another test already initialized it.
-    let _ = warp_ssh_manager::set_database_path(
-        std::env::temp_dir().join("warp_ssh_manager_test.sqlite"),
-    );
-
     // Add the necessary singleton models to the App
     app.add_singleton_model(|_| AuthStateProvider::new_for_test());
     app.add_singleton_model(AuthManager::new_for_test);
@@ -100,7 +93,6 @@ fn initialize_app(app: &mut App) {
     app.add_singleton_model(MCPGalleryManager::new);
     app.add_singleton_model(crate::ai::agent_providers::AgentProviderSecrets::new);
     app.add_singleton_model(crate::settings::network_secrets::ProxyCredentials::new);
-    app.add_singleton_model(crate::settings::CloudSyncTokenStore::new);
     app.add_singleton_model(crate::terminal::cli_agent::CLIAgentInstallModel::new);
     app.add_singleton_model(ObjectStoreViewModel::mock);
     app.add_singleton_model(|_| Appearance::mock());
@@ -111,7 +103,6 @@ fn initialize_app(app: &mut App) {
     app.add_singleton_model(|_ctx| RelaunchModel::new());
     app.add_singleton_model(|_| ChangelogModel::new(Arc::new(http_client::Client::new())));
     app.add_singleton_model(|_| GitHubAuthNotifier::new());
-    app.add_singleton_model(|_| crate::ssh_manager::SshTreeChangedNotifier::new());
     app.add_singleton_model(|_ctx| SyncedInputState::mock());
     app.add_singleton_model(|_| ResizableData::default());
     app.add_singleton_model(LocalWorkflows::new);

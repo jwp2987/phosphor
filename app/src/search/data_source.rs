@@ -97,10 +97,6 @@ lazy_static! {
         primary_text: "repos:",
         aliases: vec![]
     };
-    static ref SSH_SERVERS_FILTER_ATOM: FilterAtom = FilterAtom {
-        primary_text: "ssh:",
-        aliases: vec![]
-    };
     static ref DIFFSETS_FILTER_ATOM: FilterAtom = FilterAtom {
         primary_text: "diffsets:",
         aliases: vec!["diffs:"]
@@ -207,9 +203,6 @@ pub enum QueryFilter {
     /// Filter results for known/indexed code repos.
     Repos,
 
-    /// Filter results for SSH servers in the openWarp SSH manager tree.
-    SshServers,
-
     /// Filter results for diff sets.
     DiffSets,
 
@@ -266,7 +259,6 @@ impl QueryFilter {
             QueryFilter::Code => crate::t!("search-filter-placeholder-code"),
             QueryFilter::Rules => crate::t!("search-filter-placeholder-rules"),
             QueryFilter::Repos => crate::t!("search-filter-placeholder-repos"),
-            QueryFilter::SshServers => crate::t!("search-filter-placeholder-ssh-servers"),
             QueryFilter::DiffSets => crate::t!("search-filter-placeholder-diff-sets"),
             QueryFilter::StaticSlashCommands => {
                 crate::t!("search-filter-placeholder-static-slash-commands")
@@ -304,7 +296,6 @@ impl QueryFilter {
             QueryFilter::Code => &CODE_FILTER_ATOM,
             QueryFilter::Rules => &RULES_FILTER_ATOM,
             QueryFilter::Repos => &REPOS_FILTER_ATOM,
-            QueryFilter::SshServers => &SSH_SERVERS_FILTER_ATOM,
             QueryFilter::DiffSets => &DIFFSETS_FILTER_ATOM,
             QueryFilter::StaticSlashCommands => &STATIC_SLASH_COMMANDS_FILTER_ATOM,
             QueryFilter::HistoricalConversations => &NO_FILTER_ATOM,
@@ -343,7 +334,6 @@ impl QueryFilter {
             QueryFilter::Code => crate::t!("search-filter-display-code"),
             QueryFilter::Rules => crate::t!("search-filter-display-rules"),
             QueryFilter::Repos => crate::t!("search-filter-display-repos"),
-            QueryFilter::SshServers => crate::t!("search-filter-display-ssh-servers"),
             QueryFilter::DiffSets => crate::t!("search-filter-display-diff-sets"),
             QueryFilter::StaticSlashCommands => {
                 crate::t!("search-filter-display-static-slash-commands")
@@ -393,7 +383,6 @@ impl QueryFilter {
             QueryFilter::Code => Some("bundled/svg/code-02.svg"),
             QueryFilter::Rules => Some("bundled/svg/book-open.svg"),
             QueryFilter::Repos => Some("bundled/svg/folder.svg"),
-            QueryFilter::SshServers => Some("bundled/svg/key.svg"),
             QueryFilter::DiffSets => Some("bundled/svg/diff.svg"),
             QueryFilter::StaticSlashCommands => None,
             QueryFilter::Skills => None,

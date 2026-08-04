@@ -1,0 +1,4 @@
+-- Zap does not maintain a down migration here: the fork-original SSH Manager
+-- feature (and its gist-sync metadata) has been permanently removed, so there
+-- is no reasonable rollback target. This empty file is kept to satisfy the
+-- diesel migration directory convention.

@@ -616,7 +616,6 @@ fn realistic_nav_items() -> Vec<SettingsNavItem> {
         SettingsNavItem::Page(SettingsSection::Features),
         SettingsNavItem::Page(SettingsSection::Keybindings),
         SettingsNavItem::Page(SettingsSection::Warpify),
-        SettingsNavItem::Page(SettingsSection::CloudSync),
         SettingsNavItem::Page(SettingsSection::About),
     ]
 }
@@ -637,8 +636,8 @@ fn collapsed_umbrella_is_a_single_nav_stop() {
     let stops = build_nav_stops(&nav_items, |_| true);
 
     // Expect: <Agents umbrella>, Code, Appearance, Features, Keybindings,
-    // Warpify, CloudSync, About.
-    assert_eq!(stops.len(), 8);
+    // Warpify, About.
+    assert_eq!(stops.len(), 7);
     assert!(matches!(
         stops[0],
         NavStop::CollapsedUmbrella {
@@ -653,7 +652,7 @@ fn collapsed_umbrella_is_a_single_nav_stop() {
         NavStop::Section(SettingsSection::Appearance)
     ));
     assert!(matches!(
-        stops[7],
+        stops[6],
         NavStop::Section(SettingsSection::About)
     ));
 }
@@ -668,7 +667,7 @@ fn expanded_umbrella_produces_section_stop_per_subpage() {
 
     // Expect: WarpAgent, AgentProfiles, AgentProviders, AgentMCPServers,
     // Knowledge, ThirdPartyCLIAgents, Code, Appearance, Features,
-    // Keybindings, Warpify, CloudSync, About.
+    // Keybindings, Warpify, About.
     let sections: Vec<_> = stops
         .iter()
         .map(|s| match s {
@@ -690,7 +689,6 @@ fn expanded_umbrella_produces_section_stop_per_subpage() {
             "Features",
             "Keybindings",
             "Warpify",
-            "CloudSync",
             "About",
         ]
     );
@@ -764,13 +762,13 @@ fn umbrella_with_no_visible_subpages_is_skipped_entirely() {
 fn filtered_out_top_level_page_is_skipped() {
     let nav_items = realistic_nav_items();
 
-    let stops = build_nav_stops(&nav_items, |section| section != SettingsSection::CloudSync);
+    let stops = build_nav_stops(&nav_items, |section| section != SettingsSection::Warpify);
 
     assert!(
         !stops
             .iter()
-            .any(|s| matches!(s, NavStop::Section(SettingsSection::CloudSync))),
-        "CloudSync should be filtered out entirely"
+            .any(|s| matches!(s, NavStop::Section(SettingsSection::Warpify))),
+        "Warpify should be filtered out entirely"
     );
     // But other pages remain.
     assert!(

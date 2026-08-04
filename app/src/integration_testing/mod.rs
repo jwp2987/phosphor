@@ -26,8 +26,6 @@ pub mod preview_config_migration;
 pub mod rules;
 pub mod secret_redaction;
 pub mod settings;
-pub mod sftp;
-pub mod ssh_manager;
 pub mod step;
 pub mod subshell;
 pub mod tab;

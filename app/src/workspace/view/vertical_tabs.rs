@@ -3274,8 +3274,6 @@ impl PaneGroup {
             IPaneType::ExecutionProfileEditor => TypedPane::ExecutionProfileEditor,
             IPaneType::ImageViewer
             | IPaneType::GetStarted
-            | IPaneType::SshServer
-            | IPaneType::Sftp
             | IPaneType::Welcome
             | IPaneType::DeferredPlaceholder => TypedPane::Other,
             #[cfg(test)]

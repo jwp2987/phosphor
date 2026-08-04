@@ -582,7 +582,6 @@ pub(crate) const LEFT_PANEL_GLOBAL_SEARCH_BINDING_NAME: &str = "workspace:left_p
 pub(crate) const LEFT_PANEL_WARP_DRIVE_BINDING_NAME: &str = "workspace:left_panel_warp_drive";
 pub(crate) const LEFT_PANEL_AGENT_CONVERSATIONS_BINDING_NAME: &str =
     "workspace:left_panel_agent_conversations";
-pub(crate) const LEFT_PANEL_SSH_MANAGER_BINDING_NAME: &str = "workspace:left_panel_ssh_manager";
 pub(crate) const LEFT_PANEL_SKILL_MANAGER_BINDING_NAME: &str = "workspace:left_panel_skill_manager";
 
 const KEYBINDINGS_TO_CACHE: [&str; 4] = [
@@ -3600,7 +3599,6 @@ impl Workspace {
                 },
                 LeftPanelDisplayedTab::ZapDrive => ToolPanelView::ZapDrive,
                 LeftPanelDisplayedTab::ConversationListView => ToolPanelView::ConversationListView,
-                LeftPanelDisplayedTab::SshManager => ToolPanelView::SshManager,
                 LeftPanelDisplayedTab::ServerFileBrowser => ToolPanelView::ServerFileBrowser,
                 LeftPanelDisplayedTab::SkillManager => ToolPanelView::SkillManager,
             };
@@ -5408,51 +5406,7 @@ impl Workspace {
                     ctx,
                 );
             }
-            LeftPanelEvent::OpenSshServerEditor { node_id } => {
-                self.open_ssh_server(node_id.clone(), ctx);
-            }
-            LeftPanelEvent::OpenSshTerminal { node_id, server } => {
-                self.open_ssh_terminal(node_id.clone(), server.clone(), ctx);
-            }
-            LeftPanelEvent::OpenSftpPane { node_id, server: _ } => {
-                self.open_sftp_pane(node_id.clone(), ctx);
-            }
         }
-    }
-
-    /// Opens an editing pane for the given SSH node in the central area. MVP
-    /// implementation: **always opens a new pane** (dedup / find_pane isn't
-    /// done yet); starting in Phase 2 a manager singleton will add dedupe +
-    /// cross-window focus.
-    pub fn open_ssh_server(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
-        use crate::pane_group::pane::ssh_server_pane::SshServerPane;
-        self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
-            let pane = SshServerPane::new(node_id, ctx);
-            let smart_split_direction =
-                pane_group.smart_split_direction(ctx, WORKFLOW_AND_ENV_VAR_SPLIT_RATIO);
-            pane_group.add_pane_with_direction(
-                smart_split_direction,
-                pane,
-                true, /* focus_new_pane */
-                ctx,
-            );
-        });
-    }
-
-    /// Opens the SFTP file browser pane for the given SSH node in the central area.
-    pub fn open_sftp_pane(&mut self, node_id: String, ctx: &mut ViewContext<Self>) {
-        use crate::pane_group::pane::sftp_pane::SftpPane;
-        self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
-            let pane = SftpPane::new(node_id, ctx);
-            let smart_split_direction =
-                pane_group.smart_split_direction(ctx, WORKFLOW_AND_ENV_VAR_SPLIT_RATIO);
-            pane_group.add_pane_with_direction(
-                smart_split_direction,
-                pane,
-                true, /* focus_new_pane */
-                ctx,
-            );
-        });
     }
 
     /// Opens a file via the buffer-sync protocol after it's clicked in the remote file tree.
@@ -5500,144 +5454,6 @@ impl Workspace {
             &[],   /* additional_paths */
             ctx,
         );
-    }
-
-    /// Opens a new terminal pane in the current tab, automatically runs
-    /// `ssh ...`, and spawns a SecretInjector that watches the PTY output and
-    /// auto-injects the secret from the keychain when a `password:` /
-    /// `passphrase:` prompt appears.
-    ///
-    /// **Boundary for public-key passwordless login**: if the user has set up
-    /// authorized_keys on the server side and the client's default private
-    /// key handshake succeeds → no prompt ever appears → the injector times
-    /// out silently (15s) and exits — **it will never mistakenly inject into
-    /// the post-login shell**. This is an inherent property of SecretInjector:
-    /// strict end-of-line matching + one-shot trigger + a deadline.
-    ///
-    /// **Shell bootstrap timing**: `execute_command_or_set_pending` puts the
-    /// ssh command into a pending queue and flushes it only after the
-    /// `BootstrapPrecmdDone` event — this avoids concatenating it with the
-    /// bootstrap script and hanging the shell entirely (verified in testing on 2026-05-04).
-    pub fn open_ssh_terminal(
-        &mut self,
-        node_id: String,
-        server: warp_ssh_manager::SshServerInfo,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        use warp_ssh_manager::{KeychainSecretStore, SecretKind, SshRepository, SshSecretStore};
-
-        let (server_for_connection, secret_lookup_id, secret_kind) =
-            match warp_ssh_manager::with_conn(|conn| {
-                let resolved_auth = SshRepository::resolve_server_auth(conn, &server)?;
-                let mut server_for_connection = server.clone();
-                server_for_connection.username = resolved_auth.username;
-                server_for_connection.auth_type = resolved_auth.auth_type;
-                server_for_connection.key_path = resolved_auth.key_path;
-                Ok((
-                    server_for_connection,
-                    resolved_auth.secret_lookup_id,
-                    resolved_auth.secret_kind,
-                ))
-            }) {
-                Ok(resolved) => resolved,
-                Err(e) => {
-                    log::warn!("ssh auth resolution failed (will continue without injection): {e}");
-                    let fallback_kind = match server.auth_type {
-                        warp_ssh_manager::AuthType::Password => SecretKind::Password,
-                        warp_ssh_manager::AuthType::Key => SecretKind::Passphrase,
-                        warp_ssh_manager::AuthType::OneKey => SecretKind::OneKeyPassword,
-                    };
-                    (server.clone(), node_id.clone(), fallback_kind)
-                }
-            };
-        let cmd = warp_ssh_manager::build_ssh_command_line(&server_for_connection);
-        let window_id = ctx.window_id();
-
-        // Open a new tab (not a split — previously using
-        // add_terminal_pane(Direction::Right) would split left/right, and
-        // users reported not liking that). The new tab automatically becomes
-        // the active tab once added.
-        self.add_new_session_tab_internal_with_default_session_mode_behavior(
-            NewSessionSource::Tab,
-            Some(window_id),
-            None, /* chosen_shell */
-            None, /* conversation_restoration */
-            true, /* hide_homepage */
-            DefaultSessionModeBehavior::Ignore,
-            ctx,
-        );
-
-        // Get the focused terminal view of the new tab.
-        let pane_group = self.active_tab_pane_group();
-        let focused_pane_id = pane_group.as_ref(ctx).focused_pane_id(ctx);
-        let Some(terminal_view) = pane_group
-            .as_ref(ctx)
-            .terminal_view_from_pane_id(focused_pane_id, ctx)
-        else {
-            log::warn!("open_ssh_terminal: no terminal in newly added tab");
-            return;
-        };
-
-        if AISettings::as_ref(ctx).default_session_mode(ctx) == DefaultSessionMode::Agent {
-            terminal_view.update(ctx, |view, _| {
-                view.set_enter_agent_view_after_ssh_bootstrap();
-            });
-        }
-
-        // 1. Read the keychain synchronously (fine on the main thread). The OneKey server uses a shared credential id.
-        let secret = match KeychainSecretStore.get(&secret_lookup_id, secret_kind) {
-            Ok(opt) => opt.unwrap_or_else(|| zeroize::Zeroizing::new(String::new())),
-            Err(e) => {
-                log::warn!("ssh keychain read failed (will continue without injection): {e}");
-                zeroize::Zeroizing::new(String::new())
-            }
-        };
-
-        // 2. The injector must be spawned before execute_command — otherwise
-        //    the password prompt may already have been broadcast before spawn, and the injector would miss it.
-        let pty_reads_rx = terminal_view.read(ctx, |v, c| v.inactive_pty_reads_rx(c));
-        crate::ssh_manager::secret_injector::spawn_password_injector(
-            pty_reads_rx,
-            terminal_view.downgrade(),
-            secret,
-            ctx,
-        );
-
-        // Startup command injector — waits for the shell to be ready, then automatically runs startup_command
-        if let Some(ref startup_cmd) = server.startup_command {
-            if !startup_cmd.is_empty() {
-                crate::ssh_manager::startup_command_injector::spawn_startup_command_injector(
-                    terminal_view.read(ctx, |v, c| v.inactive_pty_reads_rx(c)),
-                    terminal_view.downgrade(),
-                    startup_cmd.clone(),
-                    ctx,
-                );
-            }
-        }
-
-        // su password injector — watches for the su password prompt and automatically enters the root password
-        let root_secret = match KeychainSecretStore.get(&node_id, SecretKind::RootPassword) {
-            Ok(opt) => opt,
-            Err(e) => {
-                log::debug!("ssh root password keychain read failed: {e}");
-                None
-            }
-        };
-        if crate::ssh_manager::su_password_injector::should_spawn_su_password_injector(
-            root_secret.as_ref(),
-        ) {
-            crate::ssh_manager::su_password_injector::spawn_su_password_injector(
-                terminal_view.read(ctx, |v, c| v.inactive_pty_reads_rx(c)),
-                terminal_view.downgrade(),
-                root_secret,
-                ctx,
-            );
-        }
-
-        // 3. Queue the ssh command; it flushes automatically once bootstrap completes.
-        terminal_view.update(ctx, |view, ctx| {
-            view.execute_command_or_set_pending(&cmd, ctx);
-        });
     }
 
     fn handle_right_panel_event(&mut self, event: RightPanelEvent, ctx: &mut ViewContext<Self>) {
@@ -16027,9 +15843,6 @@ impl Workspace {
                         ToolPanelView::ConversationListView => {
                             crate::t!("workspace-left-panel-agent-conversations")
                         }
-                        ToolPanelView::SshManager => {
-                            crate::t!("workspace-left-panel-ssh-manager")
-                        }
                         ToolPanelView::ServerFileBrowser => {
                             crate::t!("workspace-left-panel-server-file-browser")
                         }
@@ -16095,9 +15908,6 @@ impl Workspace {
                 ToolPanelView::ZapDrive => crate::t!("workspace-left-panel-warp-drive"),
                 ToolPanelView::ConversationListView => {
                     crate::t!("workspace-left-panel-agent-conversations")
-                }
-                ToolPanelView::SshManager => {
-                    crate::t!("workspace-left-panel-ssh-manager")
                 }
                 ToolPanelView::ServerFileBrowser => {
                     crate::t!("workspace-left-panel-server-file-browser")
@@ -18453,10 +18263,6 @@ impl Workspace {
             context.set.insert(flags::LEGACY_SSH_WRAPPER_CONTEXT_FLAG);
         }
 
-        if *ssh_settings.enable_ssh_auto_discovery.value() {
-            context.set.insert(flags::SSH_AUTO_DISCOVERY_CONTEXT_FLAG);
-        }
-
         if *warpify_settings.use_ssh_tmux_wrapper.value() {
             context.set.insert(flags::SSH_TMUX_WRAPPER_CONTEXT_FLAG);
         }
@@ -18859,8 +18665,6 @@ impl Workspace {
         if WarpDriveSettings::is_warp_drive_enabled(ctx) {
             views.push(ToolPanelView::ZapDrive);
         }
-        // openWarp-only: the SSH manager has no feature flag and is always shown by default.
-        views.push(ToolPanelView::SshManager);
         if FeatureFlag::ServerFileBrowser.is_enabled() && FeatureFlag::SshRemoteServer.is_enabled() {
             views.push(ToolPanelView::ServerFileBrowser);
         }
@@ -19043,9 +18847,6 @@ impl TypedActionView for Workspace {
                     ctx,
                 );
                 ctx.notify();
-            }
-            OpenSshTerminal { node_id, server } => {
-                self.open_ssh_terminal(node_id.clone(), server.clone(), ctx);
             }
             AddTabWithShell { shell, source } => {
                 self.add_tab_with_shell(shell.clone(), *source, ctx)
@@ -20473,11 +20274,6 @@ impl TypedActionView for Workspace {
                         self.left_panel_view.as_ref(ctx).active_view() == ToolPanelView::ZapDrive;
                     self.toggle_left_panel_view(&LeftPanelAction::ZapDrive, is_showing, ctx);
                 }
-            }
-            ToggleSshManager => {
-                let is_showing =
-                    self.left_panel_view.as_ref(ctx).active_view() == ToolPanelView::SshManager;
-                self.toggle_left_panel_view(&LeftPanelAction::SshManager, is_showing, ctx);
             }
             ToggleSkillManager => {
                 let is_showing =
