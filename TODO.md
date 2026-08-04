@@ -55,7 +55,10 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 ### Small / local — good next builds
 - [x] **Banner-immune PATH capture** — `__ZAP_PATH_CAPTURE_*` markers + `extract_captured_path`;
   6 oracle tests 6/0 (verified). Commit `c2404b5eb`. (markers rebranded __WARP_→__ZAP_, identity-only)
-- [ ] Async (background-thread) find — `find/model/async_find.rs`
+- [x] Async (background-thread) find — full subsystem: grid `find_dirty_rows_range` substrate +
+  `async_find` module + `is_scanning` trait + `AsyncFindEnabled`/`FeatureFlag::AsyncFind` +
+  `BlockFindRenderData` render path; 21 tests; full warp 3871/0 (no regression). Commit `e2226e40a`.
+  (additive — gated behind `experimental.async_find_enabled`, off by default)
 - [ ] Queued-prompts-while-busy panel — `view/queued_prompts_panel.rs`. ⛔ BLOCKED / DECISION:
   the panel is a thin layer over Warp's `QueuedQueryModel` subsystem (845+1066 lines), which the fork
   DELIBERATELY dropped for a simpler one-shot `/queue` (`settings/ai.rs:407`). Restoring needs porting
