@@ -405,6 +405,77 @@ impl CrossWindowTabDrag {
             .is_some_and(|d| d.source_placeholder_consumed)
     }
 
+    /// Returns the index of the detached-placeholder slot that the source
+    /// window's **horizontal** tab bar should collapse to zero width, or
+    /// `None` to keep every slot at full width.
+    ///
+    /// The placeholder is collapsed only while the dragged tab is actually
+    /// away from `window_id` — floating in the dedicated preview window, or
+    /// handed off into another window. While the dragged tab has been handed
+    /// back into this window's own tab bar (the back-to-caller reorder) the
+    /// placeholder has been replaced by the real, in-place-reordered tab, so
+    /// it must stay full width. Collapsing it there hides the drop zone and,
+    /// because a zero-width slot makes the adjacent-swap thresholds in
+    /// `Workspace::calculate_updated_tab_index` (`left.max_x` vs `right.min_x`)
+    /// overlap, makes the placeholder oscillate every frame — the "fuzzy
+    /// shake". The vertical tabs panel never collapses the placeholder, which
+    /// is why it does not exhibit this.
+    ///
+    /// Adapted from Warp master's `collapsed_source_placeholder_index`: where
+    /// master keys the "stay full width" case off a dedicated
+    /// `reordering_in_source` flag (which stays in `Floating`), the fork
+    /// represents that back-to-caller reorder as a live handoff whose target
+    /// window IS the source window (`InsertedInTarget { target_window_id ==
+    /// source_window_id }`).
+    pub fn collapsed_source_placeholder_index(&self, window_id: WindowId) -> Option<usize> {
+        let drag = self.active_drag.as_ref()?;
+        if drag.source_window_id != window_id {
+            return None;
+        }
+        // Back-to-caller reorder: the dragged tab has been handed back into the
+        // source window's own tab bar and is being reordered in place. The
+        // placeholder is the live drag slot, so keep it full width to avoid the
+        // "fuzzy shake".
+        if let DragPhase::InsertedInTarget {
+            target_window_id, ..
+        } = &drag.phase
+        {
+            if *target_window_id == drag.source_window_id {
+                return None;
+            }
+        }
+        let has_handoff = matches!(drag.phase, DragPhase::InsertedInTarget { .. });
+        if drag.has_dedicated_preview_window() || has_handoff {
+            self.source_placeholder_tab_index()
+        } else {
+            None
+        }
+    }
+
+    /// Test-only override that drives the in-progress drag into (or out of) the
+    /// "reordering back in the source window" state, so unit tests can exercise
+    /// [`Self::collapsed_source_placeholder_index`] without driving a full
+    /// multi-window drag.
+    ///
+    /// In Warp master this toggles a dedicated `reordering_in_source` flag that
+    /// stays in `Floating`; the fork instead represents a back-to-caller
+    /// reorder as a live handoff whose target IS the source window, so this
+    /// helper flips the drag phase between that `InsertedInTarget` state and
+    /// `Floating`.
+    #[cfg(test)]
+    pub(crate) fn set_reordering_in_source_for_test(&mut self, reordering_in_source: bool) {
+        if let Some(drag) = self.active_drag.as_mut() {
+            drag.phase = if reordering_in_source {
+                DragPhase::InsertedInTarget {
+                    target_window_id: drag.source_window_id,
+                    target_insertion_index: drag.source_tab_index(),
+                }
+            } else {
+                DragPhase::Floating
+            };
+        }
+    }
+
     pub fn has_dedicated_preview_window(&self) -> bool {
         self.active_drag
             .as_ref()
@@ -1847,3 +1918,7 @@ fn compute_insertion_index_for_window(
         0
     }}
 }
+
+#[cfg(test)]
+#[path = "cross_window_tab_drag_tests.rs"]
+mod tests;
