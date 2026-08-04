@@ -4,6 +4,7 @@ use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::facts::manager::AIFactManager;
 use crate::ai::llms::LLMPreferences;
+use crate::ai::outline::RepoOutlines;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
 use crate::ai::AIRequestUsageModel;
@@ -141,7 +142,7 @@ fn initialize_app(app: &mut App) {
     app.add_singleton_model(|ctx| {
         AIExecutionProfilesModel::new(&crate::LaunchMode::new_for_unit_test(), ctx)
     });
-    // Zap: RepoOutlines was removed; no longer registered.
+    app.add_singleton_model(RepoOutlines::new_for_test);
     #[cfg(feature = "voice_input")]
     app.add_singleton_model(voice_input::VoiceInput::new);
     app.add_singleton_model(BlocklistAIPermissions::new);

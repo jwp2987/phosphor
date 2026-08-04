@@ -52,6 +52,7 @@ pub mod facts;
 // BlockClient trait signature, with no other local code path.
 pub(crate) mod loading;
 pub mod mcp;
+pub mod outline;
 
 pub(crate) use ai::paths;
 

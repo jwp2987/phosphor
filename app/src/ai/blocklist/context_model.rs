@@ -3,7 +3,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
@@ -29,6 +29,7 @@ use crate::{
         },
         document::ai_document_model::AIDocumentId,
         llms::{LLMPreferences, LLMPreferencesEvent},
+        outline::RepoOutlines,
     },
     terminal::{
         event::{BlockCompletedEvent, BlockType},
@@ -731,10 +732,13 @@ impl BlocklistAIContextModel {
     /// If false, excludes these user-specific contexts but includes everything else.
     pub fn pending_context(&self, app: &AppContext, is_user_query: bool) -> Vec<AIAgentContext> {
         let pwd = self.current_pwd();
-        // Zap: this used to check RepoOutlines to determine whether the repo under
-        // the current pwd had been indexed, so "use codebase semantic search" could
-        // be offered as context. Now that outline is retired, this is always false.
-        let is_pwd_indexed = false;
+        let is_pwd_indexed = if cfg!(feature = "agent_mode_evals") {
+            // In evals, we want to disable file outline based search.
+            false
+        } else {
+            pwd.as_ref()
+                .is_some_and(|pwd| RepoOutlines::as_ref(app).is_directory_indexed(Path::new(&pwd)))
+        };
 
         let project_rules = if let Some(pwd) = pwd.clone().and_then(|path| {
             PathBuf::from_str(&path)

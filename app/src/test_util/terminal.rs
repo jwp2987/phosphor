@@ -24,6 +24,7 @@ use crate::ai::blocklist::BlocklistAIPermissions;
 use crate::ai::blocklist::SerializedBlockListItem;
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::llms::LLMPreferences;
+use crate::ai::outline::RepoOutlines;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::auth::AuthManager;
 use crate::auth::AuthStateProvider;
@@ -93,7 +94,7 @@ pub fn initialize_app_for_terminal_view(app: &mut App) {
     app.add_singleton_model(RepoMetadataModel::new);
     app.add_singleton_model(FileSearchModel::new);
     app.add_singleton_model(|_| GitStatusUpdateModel::new());
-    // Zap: RepoOutlines has been removed and is no longer registered.
+    app.add_singleton_model(RepoOutlines::new_for_test);
     app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
     app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
     app.add_singleton_model(SkillManager::new);

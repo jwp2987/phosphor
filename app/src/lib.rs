@@ -208,6 +208,7 @@ use crate::ai::facts::manager::AIFactManager;
 use crate::ai::llms::LLMPreferences;
 use crate::ai::mcp::MCPGalleryManager;
 use crate::ai::mcp::TemplatableMCPServerManager;
+use crate::ai::outline::RepoOutlines;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
 use crate::ai::AIRequestUsageModel;
@@ -1773,6 +1774,8 @@ fn initialize_app(
     // Notification center singleton model: must be registered after BlocklistAIHistoryModel
     // and CLIAgentSessionsModel, because its constructor subscribes to both models.
     ctx.add_singleton_model(crate::notifications::model::NotificationsModel::new);
+
+    ctx.add_singleton_model(RepoOutlines::new);
 
     ctx.add_singleton_model(|_| UserProfiles::new(restored_user_profiles));
 

@@ -9,6 +9,7 @@ use crate::ai::facts::{AIFact, AIFactObject, AIFactObjectModel, AIMemory};
 use crate::ai::llms::LLMPreferences;
 use crate::ai::mcp::gallery::MCPGalleryManager;
 use crate::ai::mcp::templatable_manager::TemplatableMCPServerManager;
+use crate::ai::outline::RepoOutlines;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
 use crate::ai::AIRequestUsageModel;
@@ -147,7 +148,7 @@ pub fn initialize_app(app: &mut App) {
     app.add_singleton_model(|_| crate::code_review::git_status_update::GitStatusUpdateModel::new());
     app.add_singleton_model(RepoMetadataModel::new);
     app.add_singleton_model(FileSearchModel::new);
-    // Zap: RepoOutlines has been removed and is no longer registered.
+    app.add_singleton_model(RepoOutlines::new_for_test);
     #[cfg(feature = "voice_input")]
     app.add_singleton_model(voice_input::VoiceInput::new);
 
