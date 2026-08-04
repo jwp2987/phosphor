@@ -794,11 +794,15 @@ struct RenderedImageCacheKey {
     animated_image_behavior: AnimatedImageBehavior,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ImageCache {
     /// Map of images of any ImageType already scaled to a certain size.
     /// Uses the hashed AssetSource and rendered-image properties as a key.
-    images: RwLock<HashMap<u64, HashMap<RenderedImageCacheKey, Rc<Image>>>>,
+    ///
+    /// Wrapped in an `Rc` so the cache can be cloned into background tasks
+    /// (e.g. the asset cache's versioned-local-file eviction pass) while all
+    /// clones share the same underlying map.
+    images: Rc<RwLock<HashMap<u64, HashMap<RenderedImageCacheKey, Rc<Image>>>>>,
 }
 
 impl ImageCache {

@@ -85,6 +85,7 @@ impl ImageViewerView {
         });
         self.source = Some(AssetSource::LocalFile {
             path: local_path.to_string_lossy().into_owned(),
+            content_version: None,
         });
         self.path = Some(local_path);
 

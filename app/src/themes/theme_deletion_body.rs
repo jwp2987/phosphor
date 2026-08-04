@@ -80,7 +80,7 @@ impl ThemeDeletionBody {
                     if let Some(image) = theme_from_yaml.background_image() {
                         // Only delete the image if it is in the ./warp/themes directory.
                         // We don't want to delete images from other parts of the user's filesystem.
-                        match image.source() { AssetSource::LocalFile { path } => {
+                        match image.source() { AssetSource::LocalFile { path, .. } => {
                             let image_path_in_themes_dir = dir.join(path.as_str());
                             let _ = remove_file(image_path_in_themes_dir);
                         } _ => {
