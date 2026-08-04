@@ -241,57 +241,77 @@ pub mod relevant_files {
         pub symbols: String,
     }
 
-    pub struct Input {
-        pub query: String,
-        pub files: Vec<FileEntry>,
+    /// The query-independent half of a relevant-files request, resolved while an
+    /// `&AppContext` is still available (in `RequestParams::new`): the BYOP oneshot
+    /// config + the rendered system prompt + options. Carried across the spawn
+    /// boundary to the (AppContext-less) `chat_stream` tool interceptor, which pairs
+    /// it with the model's query via [`run_with_context`].
+    #[derive(Clone)]
+    pub struct PreparedContext {
+        pub cfg: OneshotConfig,
+        pub system: String,
+        pub opts: OneshotOptions,
     }
 
-    pub struct Prepared {
-        pub req: RenderedRequest,
-        pub input_paths: Vec<String>,
+    // Manual `Debug`: never print `cfg` — it holds the provider `api_key`. This type
+    // rides on `RequestParams` (which derives `Debug`), so a derived impl would risk
+    // leaking the key into any `{:?}` log line.
+    impl std::fmt::Debug for PreparedContext {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("PreparedContext")
+                .field("model_id", &self.cfg.model_id)
+                .field("system_len", &self.system.len())
+                .finish_non_exhaustive()
+        }
     }
 
-    pub fn dispatch(
+    /// Phase 1 (pre-spawn, needs `&AppContext`): resolve the BYOP oneshot config and
+    /// render the query-independent system prompt. Returns `None` when no BYOP
+    /// active-AI oneshot is configured (the caller then has nothing to run).
+    pub fn prepare_context(
         app: &AppContext,
         terminal_view_id: Option<EntityId>,
-        input: Input,
-    ) -> Option<Prepared> {
+    ) -> Option<PreparedContext> {
         let cfg = resolve_active_ai_oneshot(app, terminal_view_id)?;
-        let input_paths: Vec<String> = input.files.iter().map(|f| f.path.clone()).collect();
         let overrides = active_prompt_overrides(app, terminal_view_id);
         let system = render_with_override(
             "relevant_files_system.j2",
             overrides.relevant_files.as_ref(),
             context! {},
         );
-        let user = render(
-            "relevant_files_user.j2",
-            context! {
-                query => input.query,
-                files => input.files,
+        Some(PreparedContext {
+            cfg,
+            system,
+            opts: OneshotOptions {
+                response_format_json: true,
+                max_chars: Some(12000),
+                ..Default::default()
             },
-        );
-        Some(Prepared {
-            req: RenderedRequest {
-                cfg,
-                system,
-                user,
-                opts: OneshotOptions {
-                    response_format_json: true,
-                    max_chars: Some(12000),
-                    ..Default::default()
-                },
-            },
-            input_paths,
         })
     }
 
-    pub async fn run(prepared: Prepared) -> Vec<String> {
+    /// Phase 2 (in the spawn / tool interceptor, no `AppContext`): render the user
+    /// prompt from `query` + `files`, run the BYOP oneshot, and parse the response
+    /// into the subset of `files` the model judged relevant. Returns an empty vec on
+    /// any error (mirrors the original ServerApi-less no-op behavior).
+    pub async fn run_with_context(
+        prepared: &PreparedContext,
+        query: &str,
+        files: &[FileEntry],
+    ) -> Vec<String> {
+        let input_paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
+        let user = render(
+            "relevant_files_user.j2",
+            context! {
+                query => query,
+                files => files,
+            },
+        );
         let raw = match byop_oneshot_completion(
-            &prepared.req.cfg,
-            &prepared.req.system,
-            &prepared.req.user,
-            &prepared.req.opts,
+            &prepared.cfg,
+            &prepared.system,
+            &user,
+            &prepared.opts,
         )
         .await
         {
@@ -301,7 +321,7 @@ pub mod relevant_files {
                 return Vec::new();
             }
         };
-        parsing::parse_relevant_files(&raw, &prepared.input_paths)
+        parsing::parse_relevant_files(&raw, &input_paths)
     }
 }
 

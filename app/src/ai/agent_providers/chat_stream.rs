@@ -3141,7 +3141,10 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
             {
                 return false;
             }
-            if !codebase_enabled && t.name == tools::codebase::TOOL_NAME {
+            if !codebase_enabled
+                && (t.name == tools::codebase::TOOL_NAME
+                    || t.name == tools::get_relevant_files::TOOL_NAME)
+            {
                 return false;
             }
             if t.name == "suggest_new_conversation" {
@@ -3213,7 +3216,10 @@ fn build_tools_array(params: &RequestParams) -> Vec<GenaiTool> {
             // BYOP local codebase search is gated by the standalone
             // profile.codebase_context_enabled setting (opt-in). When off, don't advertise
             // the tool to the upstream model at all.
-            if !codebase_enabled && t.name == tools::codebase::TOOL_NAME {
+            if !codebase_enabled
+                && (t.name == tools::codebase::TOOL_NAME
+                    || t.name == tools::get_relevant_files::TOOL_NAME)
+            {
                 return false;
             }
             // suggest_new_conversation: no UI implementation; Zap changed the executor to
@@ -4795,6 +4801,7 @@ pub async fn generate_byop_output(
                     if call.fn_name != tools::webfetch::TOOL_NAME
                         && call.fn_name != tools::websearch::TOOL_NAME
                         && call.fn_name != tools::codebase::TOOL_NAME
+                        && call.fn_name != tools::get_relevant_files::TOOL_NAME
                         && call.fn_name != tools::todowrite::TOOL_NAME
                     {
                         if let Some(msg_id) = tool_msg_ids.get(&call.call_id).cloned() {
@@ -5363,6 +5370,43 @@ pub async fn generate_byop_output(
                 continue;
             }
 
+            // Zap BYOP local relevant-files interception: `get_relevant_files` maps to no
+            // protobuf executor variant either. Answer it locally by running the
+            // request-scoped relevant-files snapshot's BYOP one-shot filter (async, like the
+            // web tools), synthesizing a (carrier ToolCall, ToolCallResult) pair. Local model
+            // only: no network to any cloud, no proto, no server API.
+            if call.fn_name == tools::get_relevant_files::TOOL_NAME {
+                let args_str = if call.fn_arguments.is_string() {
+                    call.fn_arguments.as_str().unwrap_or("").to_owned()
+                } else {
+                    call.fn_arguments.to_string()
+                };
+
+                let result_json = dispatch_byop_get_relevant_files_tool(
+                    &args_str,
+                    params.codebase_context_enabled,
+                    params.relevant_files.as_deref(),
+                )
+                .await;
+
+                let result_content = serde_json::to_string(&result_json)
+                    .unwrap_or_else(|_| r#"{"status":"serialize_error"}"#.to_owned());
+                final_messages.push(make_tool_call_carrier_message(
+                    &current_task_id,
+                    &request_id,
+                    &call.call_id,
+                    &call.fn_name,
+                    &args_str,
+                ));
+                final_messages.push(make_tool_call_result_message(
+                    &current_task_id,
+                    &request_id,
+                    call.call_id.clone(),
+                    result_content,
+                ));
+                continue;
+            }
+
             match parse_incoming_tool_call(&call, mcp_context.as_ref()) {
                 Ok(warp_tool) => {
                     // If a placeholder card was already emitted during the ToolCallChunk
@@ -5821,6 +5865,57 @@ fn dispatch_byop_codebase_tool(
         }
         Err(e) => codebase_runtime::error_to_json(&anyhow::anyhow!("invalid_arguments: {e}")),
     }
+}
+
+/// Local dispatcher for the BYOP `get_relevant_files` tool.
+///
+/// Async (it runs a BYOP one-shot, like the web tools), but local-only: no protobuf
+/// executor, no network to any cloud, no server API. Runs the request-scoped
+/// relevant-files snapshot's filter. A disabled gate, a missing snapshot, or invalid
+/// args are serialized as standard tool_results carrying the `_byop_intercepted`
+/// sentinel, so the model always gets a well-formed result.
+///
+/// `codebase_context_enabled` is re-checked here, at the dispatch site, using the same
+/// flag that advertises the tool — the tools-array gate only controls what the model is
+/// *told* it can call, so a stale/replayed tool_call must still be rejected here.
+async fn dispatch_byop_get_relevant_files_tool(
+    args_str: &str,
+    codebase_context_enabled: bool,
+    snapshot: Option<&tools::get_relevant_files_runtime::RelevantFilesSnapshot>,
+) -> Value {
+    use tools::get_relevant_files_runtime;
+    if !codebase_context_enabled {
+        log::warn!(
+            "[byop] get_relevant_files tool call rejected: codebase_context_enabled=false"
+        );
+        return get_relevant_files_runtime::error_to_json(&anyhow::anyhow!(
+            "codebase_context_enabled is disabled for this profile"
+        ));
+    }
+    let args = match serde_json::from_str::<get_relevant_files_runtime::GetRelevantFilesArgs>(
+        args_str,
+    ) {
+        Ok(args) => args,
+        Err(e) => {
+            return get_relevant_files_runtime::error_to_json(&anyhow::anyhow!(
+                "invalid_arguments: {e}"
+            ));
+        }
+    };
+    let Some(snapshot) = snapshot else {
+        // The gate is on but no snapshot materialized (no BYOP one-shot configured, or the
+        // outline isn't ready). Graceful `no_context`, not an error.
+        return get_relevant_files_runtime::output_to_json(
+            &get_relevant_files_runtime::GetRelevantFilesOutput {
+                query: args.query,
+                status: "no_context".to_owned(),
+                total_candidates: 0,
+                relevant_files: Vec::new(),
+            },
+        );
+    };
+    let out = get_relevant_files_runtime::run_get_relevant_files(args, snapshot).await;
+    get_relevant_files_runtime::output_to_json(&out)
 }
 
 /// Local dispatcher for the BYOP web tools (`webfetch` / `websearch`).

@@ -23,6 +23,8 @@
 pub mod ask;
 pub mod codebase;
 pub mod codebase_runtime;
+pub mod get_relevant_files;
+pub mod get_relevant_files_runtime;
 pub mod coerce;
 pub mod documents;
 pub mod edit;
@@ -116,6 +118,12 @@ pub const REGISTRY: &[&OpenAiTool] = &[
     // RepoOutlines symbol snapshot (see codebase_runtime).
     // Gating: when profile.codebase_context_enabled=false, build_tools_array filters it out.
     &codebase::SEARCH_CODEBASE,
+    // BYOP-only local relevance filter: given a query, a cheap on-device one-shot picks the
+    // relevant repository files from the local RepoOutlines index. The BYOP realization of
+    // Warp's cloud GetRelevantFiles action; not mapped to a protobuf executor variant.
+    // chat_stream intercepts it by name and runs get_relevant_files_runtime directly.
+    // Gating: shares codebase_context_enabled with search_codebase; filtered out when off.
+    &get_relevant_files::GET_RELEVANT_FILES,
 ];
 
 /// Looks up the registry by OpenAI function name.
