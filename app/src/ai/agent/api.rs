@@ -125,6 +125,17 @@ pub struct RequestParams {
     pub codebase_symbols: std::sync::Arc<
         Vec<crate::ai::agent_providers::tools::codebase_runtime::CodebaseSymbol>,
     >,
+    /// Zap BYOP-only: request-scoped snapshot powering the local `get_relevant_files`
+    /// tool (candidate file+symbol list + the query-independent one-shot context).
+    /// Materialized in `new()` (where `AppContext` is available) only when
+    /// `codebase_context_enabled` is on AND a BYOP active-AI one-shot resolves AND the
+    /// active repo's outline is ready; `None` otherwise (the tool is then filtered out /
+    /// rejected). `Arc` keeps `Clone` cheap.
+    pub relevant_files: Option<
+        std::sync::Arc<
+            crate::ai::agent_providers::tools::get_relevant_files_runtime::RelevantFilesSnapshot,
+        >,
+    >,
     pub computer_use_enabled: bool,
     pub ask_user_question_enabled: bool,
     pub research_agent_enabled: bool,
@@ -249,6 +260,7 @@ impl RequestParams {
             web_search_enabled: false,
             codebase_context_enabled: false,
             codebase_symbols: std::sync::Arc::new(Vec::new()),
+            relevant_files: None,
             computer_use_enabled: false,
             ask_user_question_enabled: false,
             research_agent_enabled: false,
@@ -389,6 +401,18 @@ impl RequestParams {
         } else {
             Vec::new()
         });
+        // Shares the same codebase-context gate as `search_codebase`; additionally needs a
+        // BYOP active-AI one-shot config and a ready outline (else `None` and the tool is
+        // filtered out / rejected).
+        let relevant_files = if codebase_context_enabled {
+            crate::ai::agent_providers::tools::get_relevant_files_runtime::collect_relevant_files_snapshot(
+                app,
+                terminal_view_id,
+            )
+            .map(std::sync::Arc::new)
+        } else {
+            None
+        };
         let research_agent_enabled = app
             .private_user_preferences()
             .read_value("ResearchAgentEnabled")
@@ -470,6 +494,7 @@ impl RequestParams {
             web_search_enabled,
             codebase_context_enabled,
             codebase_symbols,
+            relevant_files,
             computer_use_enabled,
             ask_user_question_enabled,
             research_agent_enabled,
