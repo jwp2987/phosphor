@@ -28,7 +28,8 @@ use crate::terminal::cli_agent_sessions::{
 use crate::{
     ai::{
         agent::{
-            AIAgentExchange, AIAgentInput, AIAgentOutput, CancellationReason, RenderableAIError,
+            AIAgentExchange, AIAgentInput, AIAgentOutput, AIAgentOutputStatus, CancellationReason,
+            FinishedAIAgentOutput, RenderableAIError, TransientNetworkErrorKind,
         },
         agent_events::DisabledAgentEventStreamClient,
         ambient_agents::{
@@ -1303,6 +1304,42 @@ impl AgentDriver {
                     if conversation.status().is_in_progress() {
                         // Conversation resumed or a new one started; cancel any pending idle timeout.
                         run_exit.cancel_idle_timeout();
+                        return;
+                    }
+
+                    // wait_for_events keeps the run alive via the action_model's
+                    // running_actions; the executor owns the watchdog. Don't resolve run_exit.
+                    if conversation.status().is_waiting_for_events() {
+                        return;
+                    }
+
+                    if conversation.status().is_transient_error() {
+                        // An automatic recovery is in flight. Don't terminate yet, but bound
+                        // the wait so the CLI doesn't hang if it never completes; a successful
+                        // recovery returns to InProgress, which cancels this deadline.
+                        log::info!(
+                            "Error occurred but automatic resume is pending; waiting up to {AUTO_RESUME_TIMEOUT:?} for retry"
+                        );
+                        let error = conversation
+                            .root_task_exchanges()
+                            .last()
+                            .and_then(|exchange| match &exchange.output_status {
+                                AIAgentOutputStatus::Finished {
+                                    finished_output: FinishedAIAgentOutput::Error { error, .. },
+                                } => Some(error.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| {
+                                RenderableAIError::transient_network_error(
+                                    false,
+                                    false,
+                                    TransientNetworkErrorKind::MissingExchangeError,
+                                )
+                            });
+                        run_exit.end_run_after(
+                            AUTO_RESUME_TIMEOUT,
+                            SDKConversationOutputStatus::Error { error },
+                        );
                         return;
                     }
 

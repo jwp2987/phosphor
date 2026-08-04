@@ -854,7 +854,10 @@ impl AIConversation {
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<BlocklistAIHistoryModel>,
     ) {
-        self.status_error_message = if matches!(&status, ConversationStatus::Error) {
+        self.status_error_message = if matches!(
+            &status,
+            ConversationStatus::Error | ConversationStatus::TransientError
+        ) {
             error_message.filter(|message| !message.trim().is_empty())
         } else {
             None
@@ -2059,6 +2062,7 @@ impl AIConversation {
         &mut self,
         stream_id: &ResponseStreamId,
         error: RenderableAIError,
+        recovery_pending: bool,
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<BlocklistAIHistoryModel>,
     ) -> Result<(), UpdateConversationError> {
@@ -2085,6 +2089,9 @@ impl AIConversation {
         let will_attempt_to_resume = matches!(
             &error,
             RenderableAIError::Other {
+                will_attempt_resume: true,
+                ..
+            } | RenderableAIError::TransientNetworkError {
                 will_attempt_resume: true,
                 ..
             }
@@ -2152,8 +2159,15 @@ impl AIConversation {
         }
 
         self.write_updated_conversation_state(ctx);
+        // A resume scheduled for this failure keeps the conversation in the
+        // non-terminal TransientError status instead of Error.
+        let status = if recovery_pending {
+            ConversationStatus::TransientError
+        } else {
+            ConversationStatus::Error
+        };
         self.update_status_with_error_message(
-            ConversationStatus::Error,
+            status,
             Some(error.to_string()),
             terminal_view_id,
             ctx,
@@ -4241,11 +4255,20 @@ pub enum ConversationStatus {
     /// The last turn of the agent completed with error.
     Error,
 
+    /// The last turn failed transiently and an automatic recovery (retry or resume)
+    /// is pending. Non-terminal: returns to `InProgress` when the recovery request
+    /// sends, or falls to `Error` if recovery is exhausted.
+    TransientError,
+
     /// The last turn of the agent was cancelled by the user.
     Cancelled,
 
     /// The last turn of the agent resulted in an action whose execution is blocked by the user.
     Blocked { blocked_action: String },
+
+    /// Agent yielded via wait_for_events and is listening for inbound
+    /// input. Quiescent but not terminal.
+    WaitingForEvents,
 }
 
 impl std::fmt::Display for ConversationStatus {
@@ -4254,8 +4277,10 @@ impl std::fmt::Display for ConversationStatus {
             ConversationStatus::InProgress => write!(f, "In progress"),
             ConversationStatus::Success => write!(f, "Done"),
             ConversationStatus::Error => write!(f, "Error"),
+            ConversationStatus::TransientError => write!(f, "Reconnecting"),
             ConversationStatus::Cancelled => write!(f, "Cancelled"),
             ConversationStatus::Blocked { .. } => write!(f, "Blocked"),
+            ConversationStatus::WaitingForEvents => write!(f, "Waiting"),
         }
     }
 }
@@ -4267,7 +4292,10 @@ impl ConversationStatus {
             ConversationStatus::Success => succeeded_icon(appearance),
             ConversationStatus::Blocked { .. } => yellow_stop_icon(appearance),
             ConversationStatus::Error => failed_icon(appearance),
+            // Recovery pending: keep the in-progress treatment rather than an error one.
+            ConversationStatus::TransientError => in_progress_icon(appearance),
             ConversationStatus::Cancelled => gray_stop_icon(appearance),
+            ConversationStatus::WaitingForEvents => in_progress_icon(appearance),
         }
     }
 
@@ -4276,13 +4304,26 @@ impl ConversationStatus {
             ConversationStatus::InProgress => (Icon::ClockLoader, theme.ansi_fg_magenta()),
             ConversationStatus::Success => (Icon::Check, theme.ansi_fg_green()),
             ConversationStatus::Error => (Icon::Triangle, theme.ansi_fg_red()),
+            ConversationStatus::TransientError => (Icon::ClockLoader, theme.ansi_fg_yellow()),
             ConversationStatus::Cancelled => (Icon::StopFilled, internal_colors::neutral_5(theme)),
             ConversationStatus::Blocked { .. } => (Icon::StopFilled, theme.ansi_fg_yellow()),
+            ConversationStatus::WaitingForEvents => (Icon::ClockLoader, theme.ansi_fg_magenta()),
         }
     }
 
     pub fn is_in_progress(&self) -> bool {
         matches!(self, ConversationStatus::InProgress)
+    }
+
+    /// True while a transient failure is being automatically recovered.
+    pub fn is_transient_error(&self) -> bool {
+        matches!(self, ConversationStatus::TransientError)
+    }
+
+    /// True iff the agent has yielded via `wait_for_events` and is listening
+    /// for inbound input.
+    pub fn is_waiting_for_events(&self) -> bool {
+        matches!(self, ConversationStatus::WaitingForEvents)
     }
 
     pub fn is_blocked(&self) -> bool {

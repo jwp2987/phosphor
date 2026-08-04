@@ -6,7 +6,8 @@ use warp_multi_agent_api::{FileContent, FileContentLineRange};
 use crate::ai::agent::{
     AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType, AIAgentText, AIAgentTextSection,
     AgentOutputImage, AgentOutputImageLayout, AgentOutputMermaidDiagram, AnyFileContent,
-    FileContext, FormattedTextWrapper, MessageId, ProgrammingLanguage,
+    FileContext, FormattedTextWrapper, MessageId, ProgrammingLanguage, RenderableAIError,
+    TransientNetworkErrorKind,
 };
 use crate::terminal::shell::ShellType;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
@@ -270,4 +271,41 @@ fn format_for_copy_preserves_visual_markdown_sections() {
         output.format_for_copy(None),
         "Intro\n![Diagram](./diagram.png)\n```mermaid\ngraph TD\nA --> B\n```"
     );
+}
+
+#[test]
+fn transient_network_error_includes_user_facing_message_and_debug_details() {
+    // BYOP adaptation: `AIApiError` is neither `Clone` nor serializable, so the
+    // structured cause is carried as its debug-rendered string (mirroring Warp's
+    // `Api(Arc<AIApiError>)` rendered via `{0:?}`).
+    let error = RenderableAIError::transient_network_error(
+        false,
+        false,
+        TransientNetworkErrorKind::Api("connection reset".to_string()),
+    );
+
+    let rendered = error.to_string();
+    assert!(
+        rendered.starts_with(
+            "Zap lost connection while receiving the agent response. This is usually temporary.\n\nDebug info: "
+        ),
+        "unexpected rendering: {rendered}"
+    );
+    // The raw underlying API error must survive into the debug section.
+    assert!(
+        rendered.contains("connection reset"),
+        "raw error detail should surface in debug info: {rendered}"
+    );
+    assert!(!error.will_attempt_resume());
+}
+
+#[test]
+fn transient_network_error_reports_pending_resume() {
+    let error = RenderableAIError::transient_network_error(
+        true,
+        false,
+        TransientNetworkErrorKind::Api("connection reset".to_string()),
+    );
+
+    assert!(error.will_attempt_resume());
 }

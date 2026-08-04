@@ -108,6 +108,12 @@ pub enum AmbientConversationStatus {
 pub fn conversation_output_status_from_conversation(
     conversation: &AIConversation,
 ) -> Option<AmbientConversationStatus> {
+    // A pending recovery is not a terminal outcome: keep the run alive rather than
+    // deriving a terminal error/success from the (already-finished) last exchange.
+    if conversation.status().is_transient_error() {
+        return None;
+    }
+
     if let ConversationStatus::Blocked { blocked_action } = conversation.status() {
         return Some(AmbientConversationStatus::Blocked {
             blocked_action: blocked_action.clone(),

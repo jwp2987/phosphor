@@ -78,7 +78,9 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   Home/End) + keybinding rewire; same commit `b475f6d60`. (macOS bindings ported compile-only)
 - [x] Cross-window tab-drag placeholder collapse — `collapsed_source_placeholder_index`; 4 oracle
   tests; full warp lib 3814/0. Commit `c3f4b667a`. (adapted to fork's diverged drag-state)
-- [ ] Editable bindings `orchestration_cycle` / `toggle_maximize_pane` — `util/bindings.rs`
+- [x] Editable bindings — `toggle_maximize_pane` ALREADY present (action+handler+`CustomAction`
+  registered `bindings.rs:95`, `pane_group/mod.rs:426`); ledger was stale. `orchestration_cycle` is a
+  multi-agent-orchestration binding → KEEP-DROPPED (RunAgents/orchestration is dropped cloud per #11).
 - [x] Oversized data-URI image handling — `replace_oversized_data_uri_images` + `MAX_DATA_URI_PAYLOAD_BYTES`
   + `IMAGE_TOO_LARGE_PLACEHOLDER`; 2 oracle tests (asset_cache 1/0, warp_editor 438/0). Commit `c26ba8b5b`.
   (did not port the separate `data_uri_source` decode feature — out of scope)
@@ -93,10 +95,11 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 
 ### Build non-cloud half (per 2026-08-02 BYOP decisions on #11)
 - [x] `history_model` reconciliation — PARTIAL: built optimistic rename, event-sequence persistence,
-  child-index cleanup (9 tests; warp 3825/0, commit `d472f292d`). DEFERRED (rippling, follow-up, NOT
-  design): `ConversationStatus::{WaitingForEvents,TransientError}` + `transient_network_error` (~20
-  match sites + auto-resume subsystem), wider-arity `start_new_conversation`/`prompt_history_candidates`
-  (constructor arity), harness-metadata child params. Dropped cloud-merge/remote-child.
+  child-index cleanup (9 tests; warp 3825/0, commit `d472f292d`). NOW ALSO built (commit `81e2e20cc`, warp 3876/0):
+  `ConversationStatus::{TransientError,WaitingForEvents}` + `TransientNetworkError`/`TransientNetworkErrorKind`
+  + recovery/auto-resume `recovery_pending` wiring (6+10 match sites). STILL deferred (separate features):
+  wider-arity `start_new_conversation`/`prompt_history_candidates` (constructor arity), the `WaitForEvents`
+  action subsystem (so `WaitingForEvents` never fires yet). Dropped cloud-merge/remote-child.
 - [x] AI bundled skills — ALREADY DONE: ported inline in `skill_manager.rs` (BundledSkill,
   load_bundled_skills, activation) on Warp's older flat-HashMap design. Warp's newer `bundled.rs` is a
   remote-catalog rewrite whose net-new content is all the cloud/daemon arm. Ledger was stale.
@@ -134,7 +137,11 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 - [ ] Skill remote-path resolution (`get_scope_for_path`, `LocalOrRemotePath`)
 - [x] `ModelEventDispatcher` SSH gate — `SshRemoteServerSupport::{Enabled,Disabled}`; per-instance (GUI=Enabled/TUI=Disabled); 4 tests; warp 3850/0. Commit `1c1fff909`.
 - [x] Managed-secrets BYO-endpoint APIs — `seal_with_context` + `ByoFirstPartyPayload`/`ByoEndpointPayload` + `validate_field_sizes`; warp_managed_secrets 25/0, wasm 5/0. Commit `e2c5ecfc9`.
-- [ ] Pending-edit-batch conflict-discard (verify SSH-remote vs cloud-collab FIRST)
+- [ ] Pending-edit-batch conflict-discard — ⛔ ASSESS/DESIGN: `PendingEditBatch` lives in the fork's
+  `code/global_buffer_model.rs`, which uses a DIFFERENT (working) buffer-sync design. It reads as
+  SSH-remote (not cloud-collab: helpers are `seed_remote_buffer_for_test`/`sync_clock_for_remote_test`),
+  so buildable per the maintainer note — BUT restoring Warp's design means re-architecting the fork's
+  working buffer model (§5.10 risk). Needs a dedicated assess: additive vs rewrite. Not a quick build.
 
 ---
 
