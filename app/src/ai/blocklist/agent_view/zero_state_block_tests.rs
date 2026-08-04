@@ -1,6 +1,9 @@
 use super::{display_working_directory, format_session_location};
 use crate::ai::blocklist::agent_view::zero_state_block::current_working_directory_for_zero_state;
-use crate::terminal::model::ansi::{Handler, InitShellValue, PrecmdValue, SSHValue};
+use crate::features::FeatureFlag;
+use crate::terminal::model::ansi::{
+    CompletionMetadata, Handler, InitShellValue, PrecmdValue, PromptMetadata, SSHValue,
+};
 use crate::terminal::model::test_utils::block_size;
 use crate::terminal::model::{session::Session, TerminalModel};
 use crate::terminal::{
@@ -76,10 +79,16 @@ fn display_working_directory_abbreviates_subdirectory_under_home() {
 #[test]
 fn cwd_for_recent_conversations_prefers_active_block_pwd() {
     let mut terminal = prebootstrap_terminal_with_startup_path("/startup/path");
-    terminal.precmd(PrecmdValue {
-        pwd: Some("/active/path".to_owned()),
-        session_id: Some(0),
-        ..Default::default()
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    // `reinit_shell` left a fresh prompt block whose execution the coordinator never observed, so a
+    // completion-carrying precmd is what applies the new prompt (recovering the missed completion).
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata::default(),
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/active/path".to_owned()),
+            session_id: Some(0),
+            ..Default::default()
+        },
     });
 
     let cwd = current_working_directory_for_zero_state(&terminal);

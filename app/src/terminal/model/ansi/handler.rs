@@ -249,8 +249,11 @@ pub trait Handler {
     /// keeping a shadow copy that could go stale.
     fn set_hyperlink(&mut self, _hyperlink: Option<Hyperlink>) {}
 
-    /// Callback for the Zap precmd hook.
-    fn precmd(&mut self, _data: PrecmdValue) {}
+    /// Callback for a Zap precmd hook with completion metadata.
+    fn precmd_with_completion_metadata(&mut self, _data: PrecmdValue) {}
+
+    /// Callback for a prompt-only Zap precmd hook.
+    fn prompt_only_precmd(&mut self, _data: PromptMetadata) {}
 
     /// Callback for the Zap preexec hook.
     fn preexec(&mut self, _data: PreexecValue) {}

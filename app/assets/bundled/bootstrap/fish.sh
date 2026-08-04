@@ -278,7 +278,11 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
         set exit_code 1
     end
 
-    warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"precmd-$WARP_SESSION_ID-$block_id\"}}"
+    # Compute the next block ID once so the CommandFinished hook and the following Precmd hook
+    # report the same ID. The Precmd carries this completion metadata so the client can classify it
+    # and, if the CommandFinished was missed, recover the completion.
+    set -l next_block_id "precmd-$WARP_SESSION_ID-$block_id"
+    warp_send_json_message "{\"hook\": \"CommandFinished\", \"value\": {\"exit_code\": $exit_code, \"next_block_id\": \"$next_block_id\"}}"
     warp_maybe_send_reset_grid_osc
 
     set block_id (math $block_id + 1)
@@ -286,6 +290,8 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
     if ! test -z $_WARP_GENERATOR_COMMAND
         set -e _WARP_GENERATOR_COMMAND
         set -l escaped_json "{\"hook\": \"Precmd\", \"value\": {
+        \"exit_code\": $exit_code,
+        \"next_block_id\": \"$next_block_id\",
         \"pwd\": \"\",
         \"ps1\": \"\",
         \"git_head\": \"\",
@@ -414,6 +420,8 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
     if test "$WARP_HONOR_PS1" = "1"
       # Don't send lprompt or rprompt in this case - we'll use prompt markers for both directly!
       set escaped_json "{\"hook\": \"Precmd\", \"value\": {
+      \"exit_code\": $exit_code,
+      \"next_block_id\": \"$next_block_id\",
       \"pwd\": \"$escaped_pwd\",
       \"ps1\": \"\",
       \"rprompt\": \"\",
@@ -427,6 +435,8 @@ function warp_precmd --on-event fish_prompt --on-event fish_posterror
     else
       # We send an lprompt to use for prompt preview purposes only (we still use prompt markers for active prompts).
       set escaped_json "{\"hook\": \"Precmd\", \"value\": {
+      \"exit_code\": $exit_code,
+      \"next_block_id\": \"$next_block_id\",
       \"pwd\": \"$escaped_pwd\",
       \"ps1\": \"$escaped_prompt\",
       \"rprompt\": \"\",

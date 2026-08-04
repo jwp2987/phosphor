@@ -42,6 +42,7 @@ use super::kitty::{
     create_kitty_error_reply, create_kitty_ok_reply, DeletionType, KittyAction, KittyChunk,
     KittyMessage, KittyResponse, PendingKittyMessage,
 };
+use super::blocks::ActiveBlockCompletion;
 use super::lifecycle::{
     BlockLifecycleCoordinator, CommandStartKind, IgnoreReason, LifecycleAction, LifecycleInput,
     LifecycleSnapshot, LifecycleTransition, PreexecObservation, StartCommandOutcome,
@@ -56,9 +57,9 @@ use super::{
 };
 use super::{tmux, Secret, SecretHandle};
 use crate::terminal::model::ansi::{
-    ClearValue, CommandFinishedValue, ExitShellValue, InitShellValue, InitSshValue,
-    InitSubshellValue, PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue, SSHValue,
-    SourcedRcFileForWarpValue,
+    ClearValue, CommandFinishedValue, CompletionMetadata, ExitShellValue, InitShellValue,
+    InitSshValue, InitSubshellValue, PreInteractiveSSHSessionValue, PrecmdValue, PreexecValue,
+    PromptMetadata, SSHValue, SourcedRcFileForWarpValue,
 };
 use crate::terminal::model::grid::IndexRegion;
 use crate::terminal::model::session::SessionInfo;
@@ -1089,8 +1090,19 @@ impl TerminalModel {
             shell: "zsh".to_string(),
             ..Default::default()
         });
-        terminal_model.command_finished(Default::default());
-        terminal_model.precmd(Default::default());
+        // A real bootstrap block is started by the shell writing its bootstrap script into the PTY
+        // before the completion arrives, so the coordinator observes the completion from a
+        // `Submitted` block rather than treating it as a recovery. This synthetic fixture never
+        // feeds that input, so start the active block explicitly to reproduce the same phase.
+        terminal_model.block_list_mut().start_active_block();
+        let completion_metadata = CompletionMetadata::default();
+        terminal_model.command_finished(CommandFinishedValue {
+            completion_metadata: completion_metadata.clone(),
+        });
+        terminal_model.precmd_with_completion_metadata(PrecmdValue {
+            completion_metadata,
+            prompt_metadata: PromptMetadata::default(),
+        });
         terminal_model
     }
 
@@ -2565,6 +2577,80 @@ pub enum HandlerEvent {
     RunTmuxCommand(TmuxCommand),
 }
 
+impl TerminalModel {
+    /// Applies the normal command-completion pipeline and its once-per-command side effects.
+    ///
+    /// Callers invoke this only when the lifecycle coordinator authorizes the completion
+    /// (`AcceptCommandFinished` or `ReconcileCompletionThenApplyPrecmd`). It reconciles a missed
+    /// execution (`ensure_active_block_executing_for_completion`) so a recovery completion still
+    /// records that the block ran, advances the block list, and emits the completion side effects
+    /// only when a running block was actually finished.
+    fn complete_command(&mut self, data: CompletionMetadata) {
+        // If we ssh from a doesn't-understand-bracketed-paste shell into one
+        // that enables it, then get disconnected, we'll be stuck in a state
+        // of bracketed paste being enabled, but the local shell doesn't know
+        // how to turn it off (and will never do so).  We forcibly unset the
+        // mode to avoid getting stuck in this state.
+        self.unset_mode(Mode::BracketedPaste);
+
+        // Similar to bracketed paste, above, make sure we quit out of the
+        // alt screen if we're currently in it.  This prevents issues where we
+        // remain in the alt screen after disconnect when we should return to
+        // the blocklist (for the local shell).
+        self.exit_alt_screen(true);
+
+        let block_id = data.next_block_id.to_string();
+        self.block_list
+            .ensure_active_block_executing_for_completion();
+        let is_for_in_band_command = self.block_list().active_block().is_in_band_command_block();
+        let finished_block_bootstrap_stage = self.block_list().active_block().bootstrap_stage();
+        let active_block_completion = self.block_list.complete_active_block_and_advance(data);
+
+        if active_block_completion == ActiveBlockCompletion::NewlyFinished {
+            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
+                if let Err(e) = tx.try_send(OrderedTerminalEventType::CommandExecutionFinished {
+                    next_block_id: block_id.into(),
+                }) {
+                    log::warn!("Failed to send OrderedTerminalEventType::CommandFinished: {e}");
+                }
+            }
+
+            self.emit_handler_event(HandlerEvent::CommandFinished {
+                command_type: if is_for_in_band_command {
+                    CommandType::InBandCommand
+                } else if finished_block_bootstrap_stage == BootstrapStage::PostBootstrapPrecmd {
+                    CommandType::User
+                } else {
+                    CommandType::Bootstrap
+                },
+            });
+        }
+    }
+
+    /// Applies prompt metadata through the normal once-per-block path.
+    fn apply_precmd_to_fresh_block(&mut self, data: PromptMetadata) {
+        self.ignore_bootstrapping_messages = false;
+        let session_id = data.session_id;
+        let mut env_vars = HashMap::new();
+        if let Some(kube_config) = data.kube_config.clone() {
+            env_vars.insert("KUBECONFIG".to_string(), kube_config);
+        }
+        let handled_after_inband = data.was_sent_after_in_band_command();
+        self.block_list.apply_precmd_to_active(data);
+
+        self.emit_handler_event(HandlerEvent::Precmd {
+            session_id: session_id.map(|id| id.into()),
+            handled_after_inband,
+            env_vars,
+        });
+    }
+
+    fn apply_preexec(&mut self, data: PreexecValue) {
+        self.block_list.apply_preexec_to_active(data);
+        self.emit_handler_event(HandlerEvent::Preexec);
+    }
+}
+
 impl ansi::Handler for TerminalModel {
     fn set_title(&mut self, title: Option<String>) {
         // Don't set the tab title if the title event is for a running in-band command.
@@ -2930,96 +3016,56 @@ impl ansi::Handler for TerminalModel {
     }
 
     fn command_finished(&mut self, data: CommandFinishedValue) {
-        // Feed the coordinator so its remembered phase advances with the completion. The mutation
-        // itself is not gated here: this fork forked before Warp's lifecycle-completion refactor,
-        // so a completion arrives via this dedicated `CommandFinished` hook (never via `Precmd`)
-        // and the fork's bootstrap drives it before the active block is provably started. Gating it
-        // on the coordinator's feature-gated recovery decision would drop legitimate completions.
-        // The state-machine still tracks the transition for the gated start/exit decisions below.
-        let disposition = self.block_list.classify_next_block_id(&data.next_block_id);
+        let disposition = self
+            .block_list
+            .classify_next_block_id(&data.completion_metadata.next_block_id);
         let transition = self.plan_lifecycle_transition(
             LifecycleInput::CommandFinished(disposition),
-            Some(&data.next_block_id),
-            Some(data.exit_code),
+            Some(&data.completion_metadata.next_block_id),
+            Some(data.completion_metadata.exit_code),
             None,
         );
-
-        if !matches!(
-            transition.action,
-            LifecycleAction::Ignore(IgnoreReason::IgnoredTerminated)
-        ) {
-            // If we ssh from a doesn't-understand-bracketed-paste shell into one
-            // that enables it, then get disconnected, we'll be stuck in a state
-            // of bracketed paste being enabled, but the local shell doesn't know
-            // how to turn it off (and will never do so).  We forcibly unset the
-            // mode to avoid getting stuck in this state.
-            self.unset_mode(Mode::BracketedPaste);
-
-            // Similar to bracketed paste, above, make sure we quit out of the
-            // alt screen if we're currently in it.  This prevents issues where we
-            // remain in the alt screen after disconnect when we should return to
-            // the blocklist (for the local shell).
-            self.exit_alt_screen(true);
-
-            let block_id = data.next_block_id.to_string();
-            let is_for_in_band_command =
-                self.block_list().active_block().is_in_band_command_block();
-            let finished_block_bootstrap_stage =
-                self.block_list().active_block().bootstrap_stage();
-            delegate!(self.command_finished(data));
-
-            if let Some(tx) = &self.ordered_terminal_events_for_shared_session_tx {
-                if let Err(e) = tx.try_send(OrderedTerminalEventType::CommandExecutionFinished {
-                    next_block_id: block_id.into(),
-                }) {
-                    log::warn!("Failed to send OrderedTerminalEventType::CommandFinished: {e}");
-                }
-            }
-
-            self.emit_handler_event(HandlerEvent::CommandFinished {
-                command_type: if is_for_in_band_command {
-                    CommandType::InBandCommand
-                } else if finished_block_bootstrap_stage == BootstrapStage::PostBootstrapPrecmd {
-                    CommandType::User
-                } else {
-                    CommandType::Bootstrap
-                },
-            });
+        if matches!(transition.action, LifecycleAction::AcceptCommandFinished) {
+            self.complete_command(data.completion_metadata);
         }
         self.commit_lifecycle_transition(&transition);
     }
 
-    fn precmd(&mut self, data: PrecmdValue) {
-        // In this fork's shell protocol the `Precmd` hook carries prompt metadata only; command
-        // completion is signalled separately by the `CommandFinished` hook. It maps to the
-        // coordinator's prompt-only input for phase tracking. As with `command_finished`, the
-        // mutation is not gated on the coordinator's feature-gated recovery decision, since the
-        // fork's bootstrap applies prompt metadata from phases the recovery machinery would
-        // otherwise suppress while the flag is disabled.
+    fn precmd_with_completion_metadata(&mut self, data: PrecmdValue) {
+        let disposition = self
+            .block_list
+            .classify_next_block_id(&data.completion_metadata.next_block_id);
+        let transition = self.plan_lifecycle_transition(
+            LifecycleInput::PrecmdWithCompletionMetadata(disposition),
+            Some(&data.completion_metadata.next_block_id),
+            Some(data.completion_metadata.exit_code),
+            data.prompt_metadata.session_id,
+        );
+        match transition.action {
+            LifecycleAction::ApplyPrecmd => self.apply_precmd_to_fresh_block(data.prompt_metadata),
+            LifecycleAction::ReconcileCompletionThenApplyPrecmd => {
+                self.complete_command(data.completion_metadata);
+                self.apply_precmd_to_fresh_block(data.prompt_metadata);
+            }
+            LifecycleAction::StartActiveBlock
+            | LifecycleAction::ApplyPreexec
+            | LifecycleAction::AcceptCommandFinished
+            | LifecycleAction::BeginEpoch
+            | LifecycleAction::Terminate
+            | LifecycleAction::Ignore(_) => {}
+        }
+        self.commit_lifecycle_transition(&transition);
+    }
+
+    fn prompt_only_precmd(&mut self, data: PromptMetadata) {
         let transition = self.plan_lifecycle_transition(
             LifecycleInput::PromptOnlyPrecmd,
             None,
             None,
             data.session_id,
         );
-        if !matches!(
-            transition.action,
-            LifecycleAction::Ignore(IgnoreReason::IgnoredTerminated)
-        ) {
-            self.ignore_bootstrapping_messages = false;
-            let session_id = data.session_id;
-            let mut env_vars = HashMap::new();
-            if let Some(kube_config) = data.kube_config.clone() {
-                env_vars.insert("KUBECONFIG".to_string(), kube_config);
-            }
-            let handled_after_inband = data.was_sent_after_in_band_command();
-            delegate!(self.precmd(data));
-
-            self.emit_handler_event(HandlerEvent::Precmd {
-                session_id: session_id.map(|id| id.into()),
-                handled_after_inband,
-                env_vars,
-            });
+        if matches!(transition.action, LifecycleAction::ApplyPrecmd) {
+            self.apply_precmd_to_fresh_block(data);
         }
         self.commit_lifecycle_transition(&transition);
     }
@@ -3035,17 +3081,10 @@ impl ansi::Handler for TerminalModel {
         } else {
             PreexecObservation::First
         };
-        // Feed the coordinator so its remembered phase advances to `Executing`, which the gated
-        // start decisions rely on (a start while executing is rejected). The mutation is not gated
-        // on the recovery decision, matching the fork's pre-refactor completion flow.
         let transition =
             self.plan_lifecycle_transition(LifecycleInput::Preexec(observation), None, None, None);
-        if !matches!(
-            transition.action,
-            LifecycleAction::Ignore(IgnoreReason::IgnoredTerminated)
-        ) {
-            delegate!(self.preexec(data));
-            self.emit_handler_event(HandlerEvent::Preexec);
+        if matches!(transition.action, LifecycleAction::ApplyPreexec) {
+            self.apply_preexec(data);
         }
         self.commit_lifecycle_transition(&transition);
     }
