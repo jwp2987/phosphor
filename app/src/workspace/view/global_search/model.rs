@@ -1,5 +1,5 @@
 use crate::workspace::view::global_search::view::GlobalSearchEvent;
-use crate::workspace::view::global_search::SearchConfig;
+use crate::workspace::view::global_search::{GlobalSearchMatch, SearchConfig};
 use anyhow::Result;
 use futures::StreamExt as _;
 use instant::Instant;
@@ -8,6 +8,7 @@ use regex::escape;
 use std::path::PathBuf;
 use string_offset::ByteOffset;
 use warp_ripgrep::search::{Match as RipgrepMatch, Submatch};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::r#async::SpawnedFutureHandle;
 use warpui::{Entity, ModelContext, ModelSpawner};
 
@@ -28,7 +29,7 @@ impl Entity for GlobalSearch {
 async fn flush_batch(
     spawner: &ModelSpawner<GlobalSearch>,
     search_id: u32,
-    batch: &mut Vec<RipgrepMatch>,
+    batch: &mut Vec<GlobalSearchMatch>,
 ) {
     if batch.is_empty() {
         return;
@@ -135,13 +136,14 @@ impl GlobalSearch {
 
         let mut total_match_count: usize = 0;
         let mut num_unbatched_emitted: usize = 0;
-        let mut batch: Vec<RipgrepMatch> = Vec::new();
+        let mut batch: Vec<GlobalSearchMatch> = Vec::new();
         let mut last_batch_flush_at = Instant::now();
 
         while let Some(raw_match) = stream.next().await {
             // Expand each submatch into its own result row (matching
             // the old per-submatch behavior). Each row gets the line
             // text trimmed up to that particular submatch.
+            let raw_match = Self::local_match_to_global(raw_match);
             for per_submatch in Self::expand_submatches(raw_match) {
                 total_match_count += 1;
 
@@ -178,40 +180,68 @@ impl GlobalSearch {
         Ok(total_match_count)
     }
 
-    /// Expand a single ripgrep match (which may contain multiple submatches
+    /// Wrap a raw local ripgrep match as a `GlobalSearchMatch` rooted on the
+    /// local filesystem. Column capture and per-submatch expansion happen in
+    /// `expand_submatches`, which runs against the untrimmed line.
+    fn local_match_to_global(m: RipgrepMatch) -> GlobalSearchMatch {
+        GlobalSearchMatch {
+            location: LocalOrRemotePath::Local(m.file_path),
+            line_number: m.line_number,
+            column_num: None,
+            line_text: m.line_text,
+            submatches: m.submatches,
+        }
+    }
+
+    /// Expand a single match (which may contain multiple submatches
     /// on the same line) into one result per submatch. Each result gets the
     /// line text trimmed of leading whitespace up to that submatch.
-    fn expand_submatches(m: RipgrepMatch) -> Vec<RipgrepMatch> {
+    fn expand_submatches(m: GlobalSearchMatch) -> Vec<GlobalSearchMatch> {
         if m.submatches.len() <= 1 {
+            let submatch = m.submatches.into_iter().next();
+            let column_num = Self::column_from_submatch(&m.line_text, submatch.as_ref());
             return vec![Self::trim_leading_whitespace_for_submatch(
                 &m.line_text,
-                m.file_path,
+                m.location,
                 m.line_number,
-                m.submatches.into_iter().next(),
+                column_num,
+                submatch,
             )];
         }
 
         m.submatches
             .into_iter()
             .map(|sub| {
+                let column_num = Self::column_from_submatch(&m.line_text, Some(&sub));
                 Self::trim_leading_whitespace_for_submatch(
                     &m.line_text,
-                    m.file_path.clone(),
+                    m.location.clone(),
                     m.line_number,
+                    column_num,
                     Some(sub),
                 )
             })
             .collect()
     }
 
+    /// Returns the original 1-based character column for a submatch.
+    fn column_from_submatch(line_text: &str, submatch: Option<&Submatch>) -> Option<usize> {
+        let byte_start = submatch?.byte_start.as_usize();
+        if byte_start > line_text.len() || !line_text.is_char_boundary(byte_start) {
+            return None;
+        }
+        Some(line_text[..byte_start].chars().count() + 1)
+    }
+
     /// Trim leading whitespace from a line up to the given submatch,
     /// adjusting the submatch offset accordingly.
     fn trim_leading_whitespace_for_submatch(
         original_line: &str,
-        file_path: PathBuf,
+        location: LocalOrRemotePath,
         line_number: u32,
+        column_num: Option<usize>,
         submatch: Option<Submatch>,
-    ) -> RipgrepMatch {
+    ) -> GlobalSearchMatch {
         let submatch_start = submatch
             .as_ref()
             .map(|s| s.byte_start)
@@ -239,9 +269,10 @@ impl GlobalSearch {
             Vec::new()
         };
 
-        RipgrepMatch {
-            file_path,
+        GlobalSearchMatch {
+            location,
             line_number,
+            column_num,
             line_text: trimmed_line,
             submatches,
         }

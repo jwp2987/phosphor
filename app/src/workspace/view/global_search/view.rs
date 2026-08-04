@@ -11,7 +11,7 @@ use async_channel::Sender;
 use pathfinder_geometry::vector::vec2f;
 use string_offset::{ByteOffset, CharCounter};
 use warp_editor::editor::NavigationKey;
-use warp_ripgrep::search::{Match as RipgrepMatch, Submatch};
+use warp_ripgrep::search::Submatch;
 
 use crate::code::icon_from_file_path;
 use crate::debounce::debounce;
@@ -26,7 +26,7 @@ use crate::ui_components::item_highlight::{ImageOrIcon, ItemHighlightState};
 use crate::ui_components::render_file_search_row::{render_file_search_row, FileSearchRowOptions};
 use crate::view_components::action_button::{ActionButton, ButtonSize, NakedTheme};
 use crate::workspace::view::global_search::model::GlobalSearch;
-use crate::workspace::view::global_search::SearchConfig;
+use crate::workspace::view::global_search::{GlobalSearchMatch, SearchConfig};
 use crate::TelemetryEvent;
 use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::appearance::Appearance;
@@ -111,11 +111,11 @@ pub enum GlobalSearchEvent {
     },
     Progress {
         search_id: u32,
-        result: RipgrepMatch,
+        result: GlobalSearchMatch,
     },
     ProgressBatch {
         search_id: u32,
-        items: Vec<RipgrepMatch>,
+        items: Vec<GlobalSearchMatch>,
     },
     Completed {
         search_id: u32,
@@ -757,12 +757,18 @@ impl GlobalSearchView {
             .filter(move |root| file_path.starts_with(root))
     }
 
-    fn apply_progress_item(&mut self, result: RipgrepMatch, ctx: &mut ViewContext<Self>) {
+    fn apply_progress_item(&mut self, result: GlobalSearchMatch, ctx: &mut ViewContext<Self>) {
         if self.total_match_count >= MAX_MATCH_COUNT {
             return;
         }
 
-        let file_path = result.file_path.clone();
+        // Layer 1: the view model is still keyed on local `PathBuf`. Remote
+        // matches are not produced yet; drop any that somehow arrive rather
+        // than mis-attributing them to a local path.
+        let Some(file_path) = result.location.to_local_path().map(|p| p.to_path_buf()) else {
+            log::warn!("[Global search] dropping non-local match (remote roots not wired yet)");
+            return;
+        };
 
         // Find all directories that this file belongs to
         let mut matching_directories = self.find_matching_directories(&file_path).peekable();
