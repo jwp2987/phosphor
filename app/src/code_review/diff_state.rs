@@ -3023,6 +3023,9 @@ impl warpui::Entity for LocalDiffStateModel {
 /// call sites settle on the dispatching API before the remote backend lands.
 pub enum DiffStateModel {
     Local(ModelHandle<LocalDiffStateModel>),
+    /// Remote (SSH) backend. Native-only — it talks to the RemoteServerManager.
+    #[cfg(not(target_family = "wasm"))]
+    Remote(ModelHandle<crate::code_review::diff_state_remote::RemoteDiffStateModel>),
 }
 
 impl warpui::Entity for DiffStateModel {
@@ -3037,6 +3040,22 @@ impl DiffStateModel {
         let local = ctx.add_model(|ctx| LocalDiffStateModel::new(repo_path, ctx));
         ctx.subscribe_to_model(&local, |me, event, ctx| me.forward_event(event, ctx));
         Self::Local(local)
+    }
+
+    /// Creates a remote-backed `DiffStateModel` for a repository on an SSH host.
+    /// Subscribes to the inner remote model to forward its events, mirroring
+    /// `new`. The caller must ensure a session for the host is connected.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn new_remote(
+        remote_path: crate::code::buffer_location::RemotePath,
+        mode: DiffMode,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
+        let remote = ctx.add_model(|ctx| {
+            crate::code_review::diff_state_remote::RemoteDiffStateModel::new(remote_path, mode, ctx)
+        });
+        ctx.subscribe_to_model(&remote, |me, event, ctx| me.forward_event(event, ctx));
+        Self::Remote(remote)
     }
 
     /// Re-emits an inner backend event as the wrapper's own event so existing
@@ -3069,84 +3088,112 @@ impl DiffStateModel {
     pub fn get(&self, ctx: &AppContext) -> DiffState {
         match self {
             Self::Local(m) => m.as_ref(ctx).get(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).get(),
         }
     }
 
     pub fn diff_mode(&self, ctx: &AppContext) -> DiffMode {
         match self {
             Self::Local(m) => m.as_ref(ctx).diff_mode(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).diff_mode(),
         }
     }
 
     pub fn get_uncommitted_stats(&self, ctx: &AppContext) -> Option<DiffStats> {
         match self {
             Self::Local(m) => m.as_ref(ctx).get_uncommitted_stats(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).get_uncommitted_stats(),
         }
     }
 
     pub fn get_stats_for_current_mode(&self, ctx: &AppContext) -> Option<DiffStats> {
         match self {
             Self::Local(m) => m.as_ref(ctx).get_stats_for_current_mode(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).get_stats_for_current_mode(),
         }
     }
 
     pub fn get_main_branch_name(&self, ctx: &AppContext) -> Option<String> {
         match self {
             Self::Local(m) => m.as_ref(ctx).get_main_branch_name(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).get_main_branch_name(),
         }
     }
 
     pub fn get_current_branch_name(&self, ctx: &AppContext) -> Option<String> {
         match self {
             Self::Local(m) => m.as_ref(ctx).get_current_branch_name(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).get_current_branch_name(),
         }
     }
 
     pub fn is_on_main_branch(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).is_on_main_branch(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).is_on_main_branch(),
         }
     }
 
     pub fn unpushed_commits<'a>(&self, ctx: &'a AppContext) -> &'a [Commit] {
         match self {
             Self::Local(m) => m.as_ref(ctx).unpushed_commits(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).unpushed_commits(),
         }
     }
 
     pub fn upstream_ref<'a>(&self, ctx: &'a AppContext) -> Option<&'a str> {
         match self {
             Self::Local(m) => m.as_ref(ctx).upstream_ref(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).upstream_ref(),
         }
     }
 
     pub fn upstream_differs_from_main(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).upstream_differs_from_main(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).upstream_differs_from_main(),
         }
     }
 
     pub fn pr_info<'a>(&self, ctx: &'a AppContext) -> Option<&'a PrInfo> {
         match self {
             Self::Local(m) => m.as_ref(ctx).pr_info(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).pr_info(),
         }
     }
 
     pub fn is_git_operation_blocked(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).is_git_operation_blocked(ctx),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).is_git_operation_blocked(ctx),
         }
     }
 
     pub fn has_head(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).has_head(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).has_head(),
         }
     }
 
     pub fn active_repository_path(&self, ctx: &AppContext) -> Option<PathBuf> {
         match self {
             Self::Local(m) => m.as_ref(ctx).active_repository_path(ctx),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).active_repository_path(ctx),
         }
     }
 
@@ -3162,12 +3209,20 @@ impl DiffStateModel {
             Self::Local(m) => {
                 m.update(ctx, |local, ctx| local.set_diff_mode(mode, should_fetch_base, ctx))
             }
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => {
+                m.update(ctx, |local, ctx| local.set_diff_mode(mode, should_fetch_base, ctx))
+            }
         }
     }
 
     pub fn set_diff_mode_and_fetch_base(&mut self, mode: DiffMode, ctx: &mut ModelContext<Self>) {
         match self {
             Self::Local(m) => {
+                m.update(ctx, |local, ctx| local.set_diff_mode_and_fetch_base(mode, ctx))
+            }
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => {
                 m.update(ctx, |local, ctx| local.set_diff_mode_and_fetch_base(mode, ctx))
             }
         }
@@ -3180,6 +3235,10 @@ impl DiffStateModel {
     ) {
         match self {
             Self::Local(m) => {
+                m.update(ctx, |local, ctx| local.load_diffs_for_current_repo(should_fetch_base, ctx))
+            }
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => {
                 m.update(ctx, |local, ctx| local.load_diffs_for_current_repo(should_fetch_base, ctx))
             }
         }
@@ -3196,6 +3255,10 @@ impl DiffStateModel {
             Self::Local(m) => m.update(ctx, |local, ctx| {
                 local.discard_files(file_infos, should_stash, branch_name, ctx)
             }),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.update(ctx, |local, ctx| {
+                local.discard_files(file_infos, should_stash, branch_name, ctx)
+            }),
         }
     }
 
@@ -3206,6 +3269,10 @@ impl DiffStateModel {
     ) {
         match self {
             Self::Local(m) => m.update(ctx, |local, ctx| {
+                local.set_code_review_metadata_refresh_enabled(enabled, ctx)
+            }),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.update(ctx, |local, ctx| {
                 local.set_code_review_metadata_refresh_enabled(enabled, ctx)
             }),
         }
@@ -3220,18 +3287,26 @@ impl DiffStateModel {
             Self::Local(m) => m.update(ctx, |local, ctx| {
                 local.refresh_diff_metadata_for_current_repo(invalidation_behavior, ctx)
             }),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.update(ctx, |local, ctx| {
+                local.refresh_diff_metadata_for_current_repo(invalidation_behavior, ctx)
+            }),
         }
     }
 
     pub fn stop_active_watcher(&mut self, ctx: &mut ModelContext<Self>) {
         match self {
             Self::Local(m) => m.update(ctx, |local, ctx| local.stop_active_watcher(ctx)),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.update(ctx, |local, ctx| local.stop_active_watcher(ctx)),
         }
     }
 
     pub fn refresh_pr_info(&mut self, ctx: &mut ModelContext<Self>) {
         match self {
             Self::Local(m) => m.update(ctx, |local, ctx| local.refresh_pr_info(ctx)),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.update(ctx, |local, ctx| local.refresh_pr_info(ctx)),
         }
     }
 }
