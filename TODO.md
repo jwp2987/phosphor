@@ -127,7 +127,20 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   (StopAndLazyLoad + force-included + standing-query hooks) + `standing_queries.rs`; repo_metadata
   87/0, warp compiles. Commit `57e1b624b`. (skipped watcher-rewrite + remote/cloud incremental path;
   standing-query results queryable but app skill-watcher wiring is a follow-up)
-- [ ] Code review over SSH (`diff_state/{local,remote}`, `git_repo_model`)
+- [~] Code review over SSH — IN PROGRESS (branch `parity-remote-getbranches`). Needs ~8 remote-server
+  RPCs + a `DiffStateModel` Local/Remote backend refactor + branch-picker/diff wiring. Building the
+  request/response RPCs first (foundational, self-contained), then the DiffState subscription
+  (snapshot/metadata/delta — the harder subscription model) + consumer refactor.
+  DONE (branch, req/resp RPCs — the "what changed" queries):
+  • **GetBranches** (`af78b3185`) — proto tag 24, client `get_branches`, daemon reuses
+    `DiffStateModel::get_all_branches` (`git for-each-ref`), 3 tests.
+  • **GetCommittedBranchFiles** (`1cd53973c`) — proto tag 25, client `get_committed_branch_files`,
+    daemon reuses new `DiffStateModel::get_committed_branch_file_entries` (merge-base + `diff --numstat`),
+    3 tests.
+  NEXT (larger): DiffState snapshot/metadata/delta (the diff CONTENT — a subscription model, harder) +
+  the `DiffStateModel` Local/Remote backend refactor + branch-picker/diff wiring (makes it user-visible),
+  then git ops (commit/push; BYOP-gate GenerateCommitMessage, keep CreatePr).
+  Fork transport: direct ClientMessage oneof entries (no oracle `host_scoped_request`).
 - [x] Remote/SSH global search — **DONE** on branch `parity-ripgrep-rpc` (5 commits). Layers:
   (1) host-scoped ripgrep RPC `a580c03de` — proto `RipgrepSearch` req/resp (+Success/Error/Match/Submatch,
   oneof tag 23), `RemoteServerClient::ripgrep_search`, server `ripgrep_search` module (validate/run via
