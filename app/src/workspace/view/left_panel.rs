@@ -335,7 +335,7 @@ impl LeftPanelView {
                 // roots are supplied separately via the server-file-browser seam.
                 let roots: Vec<LocalOrRemotePath> = directories
                     .iter()
-                    .map(|d| LocalOrRemotePath::Local(d.path.clone()))
+                    .map(|d| d.path.clone())
                     .collect();
 
                 let global_search_view =
@@ -344,8 +344,10 @@ impl LeftPanelView {
                     view.set_root_directories(roots, view_ctx);
                 });
 
-                let directories: Vec<PathBuf> =
-                    directories.iter().map(|dir| dir.path.clone()).collect();
+                let directories: Vec<PathBuf> = directories
+                    .iter()
+                    .filter_map(|dir| dir.path.to_local_path().map(|p| p.to_path_buf()))
+                    .collect();
 
                 // Directories are already in display order (most recent first) from the model
                 let directories = deduplicate_by_directory_name(directories);
@@ -735,7 +737,7 @@ impl LeftPanelView {
         // supplied separately via the server-file-browser seam.
         let roots: Vec<LocalOrRemotePath> = active_directories
             .iter()
-            .map(|d| LocalOrRemotePath::Local(d.path.clone()))
+            .map(|d| d.path.clone())
             .collect();
         let global_search_view =
             self.get_or_create_global_search_view_for_pane_group(pane_group_id, ctx);
@@ -745,7 +747,7 @@ impl LeftPanelView {
 
         let directories: Vec<PathBuf> = active_directories
             .iter()
-            .map(|dir| dir.path.clone())
+            .filter_map(|dir| dir.path.to_local_path().map(|p| p.to_path_buf()))
             .collect();
         let directories = deduplicate_by_directory_name(directories);
         let active_file_model = pane_group.as_ref(ctx).active_file_model().clone();
