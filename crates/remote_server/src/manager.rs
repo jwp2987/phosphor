@@ -325,6 +325,25 @@ pub enum RemoteServerManagerEvent {
         edits: Vec<crate::proto::TextEdit>,
     },
 
+    // --- Diff-state events (forwarded from ClientEvent push channel) ---
+    /// A full diff-state snapshot was pushed by the server for a subscribed
+    /// (repo, mode) pair. Carries the raw proto message; the `DiffStateModel`
+    /// remote backend (in `app`) converts it to domain types.
+    DiffStateSnapshotReceived {
+        host_id: HostId,
+        snapshot: crate::proto::DiffStateSnapshot,
+    },
+    /// A metadata-only diff-state update was pushed by the server.
+    DiffStateMetadataUpdateReceived {
+        host_id: HostId,
+        update: crate::proto::DiffStateMetadataUpdate,
+    },
+    /// A single-file diff-state delta was pushed by the server.
+    DiffStateFileDeltaReceived {
+        host_id: HostId,
+        delta: crate::proto::DiffStateFileDelta,
+    },
+
     // --- Setup events ---
     /// Intermediate state change during the binary check/install flow.
     SetupStateChanged {
@@ -399,7 +418,10 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::RepoMetadataSnapshot { .. }
             | RemoteServerManagerEvent::RepoMetadataUpdated { .. }
             | RemoteServerManagerEvent::RepoMetadataDirectoryLoaded { .. }
-            | RemoteServerManagerEvent::BufferUpdated { .. } => None,
+            | RemoteServerManagerEvent::BufferUpdated { .. }
+            | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
+            | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
+            | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. } => None,
         }
     }
 }
@@ -1258,6 +1280,18 @@ impl RemoteServerManager {
                     expected_client_version,
                     edits,
                 });
+            }
+            ClientEvent::DiffStateSnapshotReceived { snapshot } => {
+                ctx.emit(RemoteServerManagerEvent::DiffStateSnapshotReceived { host_id, snapshot });
+            }
+            ClientEvent::DiffStateMetadataUpdateReceived { update } => {
+                ctx.emit(RemoteServerManagerEvent::DiffStateMetadataUpdateReceived {
+                    host_id,
+                    update,
+                });
+            }
+            ClientEvent::DiffStateFileDeltaReceived { delta } => {
+                ctx.emit(RemoteServerManagerEvent::DiffStateFileDeltaReceived { host_id, delta });
             }
             ClientEvent::MessageDecodingError => {
                 ctx.emit(RemoteServerManagerEvent::ServerMessageDecodingError { session_id });
