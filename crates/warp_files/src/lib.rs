@@ -8,6 +8,7 @@ use std::io;
 use std::ops::Range;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use std::{
     collections::HashMap,
@@ -19,8 +20,9 @@ use remote_server::manager::RemoteServerManager;
 use warp_core::HostId;
 use warp_util::standardized_path::StandardizedPath;
 
+use futures::channel::oneshot;
 use futures::io::{AsyncBufReadExt, BufReader};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 
 use async_channel::Sender;
 use notify_debouncer_full::notify::{RecursiveMode, WatchFilter};
@@ -302,6 +304,10 @@ pub struct FileModel {
     /// Maps repository root path to its subscription. One subscription per repo.
     repo_subscriptions: HashMap<PathBuf, RepositorySubscription>,
     repo_path_mapping: RepoPathMappingState,
+    /// One-shot senders awaiting the next save/delete/rename completion for a
+    /// file. Saves are event-based (dispatch returns before the write lands);
+    /// [`FileModel::save_completion`] lets a caller await the actual outcome.
+    save_waiters: HashMap<FileId, Vec<oneshot::Sender<Result<(), Arc<FileSaveError>>>>>,
 }
 
 impl FileModel {
@@ -319,6 +325,7 @@ impl FileModel {
             abort_handles: HashMap::new(),
             repo_subscriptions: HashMap::new(),
             repo_path_mapping: RepoPathMappingState::default(),
+            save_waiters: HashMap::new(),
         }
     }
 
@@ -659,6 +666,69 @@ impl FileModel {
         // Remote files have no watcher to clean up.
     }
 
+    /// Reports a completed save/delete/rename write: updates the tracked
+    /// version and emits `FileSaved`/`FailedToSave` (unchanged behavior), and
+    /// additionally resolves any [`FileModel::save_completion`] waiters for the
+    /// file. The single funnel every write-completion callback routes through.
+    fn report_save_outcome(
+        &mut self,
+        file_id: FileId,
+        version: ContentVersion,
+        result: Result<(), FileSaveError>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // Build the waiter payload while the error is still borrowable; the
+        // event keeps the original error (`Rc`), so the waiter gets an
+        // equivalent user-facing message wrapped in a fresh `Other`.
+        let waiter_result = match &result {
+            Ok(()) => Ok(()),
+            Err(FileSaveError::IOError { error, path }) => Err(Arc::new(FileSaveError::Other(
+                format!("Failed to save file {path:?}: {error}"),
+            ))),
+            Err(other) => Err(Arc::new(FileSaveError::Other(other.to_string()))),
+        };
+        match result {
+            Ok(()) => {
+                self.set_version(file_id, version);
+                ctx.emit(FileModelEvent::FileSaved {
+                    id: file_id,
+                    version,
+                });
+            }
+            Err(err) => ctx.emit(FileModelEvent::FailedToSave {
+                id: file_id,
+                error: Rc::new(err),
+            }),
+        }
+        if let Some(waiters) = self.save_waiters.remove(&file_id) {
+            for tx in waiters {
+                let _ = tx.send(waiter_result.clone());
+            }
+        }
+    }
+
+    /// Returns a future that resolves when the next save/delete/rename write
+    /// dispatched for `file_id` actually completes — `Ok(())` on success or the
+    /// failure otherwise. The save methods return as soon as the write is
+    /// *scheduled* (completion is reported later via `FileSaved`/`FailedToSave`),
+    /// so a caller that must observe the real outcome registers this waiter
+    /// before dispatching, then awaits it.
+    pub fn save_completion(
+        &mut self,
+        file_id: FileId,
+    ) -> futures::future::BoxFuture<'static, Result<(), Arc<FileSaveError>>> {
+        let (tx, rx) = oneshot::channel();
+        self.save_waiters.entry(file_id).or_default().push(tx);
+        async move {
+            rx.await.unwrap_or_else(|_| {
+                Err(Arc::new(FileSaveError::Other(
+                    "File save was interrupted before completion".to_owned(),
+                )))
+            })
+        }
+        .boxed()
+    }
+
     pub fn save(
         &mut self,
         file_id: FileId,
@@ -693,19 +763,7 @@ impl FileModel {
                         })
                     },
                     move |me, write_result: Result<(), FileSaveError>, ctx| {
-                        match write_result {
-                            Ok(_) => {
-                                me.set_version(file_id, version);
-                                ctx.emit(FileModelEvent::FileSaved {
-                                    id: file_id,
-                                    version,
-                                })
-                            }
-                            Err(err) => ctx.emit(FileModelEvent::FailedToSave {
-                                id: file_id,
-                                error: Rc::new(err),
-                            }),
-                        };
+                        me.report_save_outcome(file_id, version, write_result, ctx);
                     },
                 );
             }
@@ -720,20 +778,13 @@ impl FileModel {
                 };
                 ctx.spawn(
                     future,
-                    move |me, result: Result<(), String>, ctx| match result {
-                        Ok(()) => {
-                            me.set_version(file_id, version);
-                            ctx.emit(FileModelEvent::FileSaved {
-                                id: file_id,
-                                version,
-                            });
-                        }
-                        Err(err) => {
-                            ctx.emit(FileModelEvent::FailedToSave {
-                                id: file_id,
-                                error: Rc::new(FileSaveError::RemoteError(err)),
-                            });
-                        }
+                    move |me, result: Result<(), String>, ctx| {
+                        me.report_save_outcome(
+                            file_id,
+                            version,
+                            result.map_err(FileSaveError::RemoteError),
+                            ctx,
+                        );
                     },
                 );
             }
@@ -791,19 +842,7 @@ impl FileModel {
                     })
             },
             move |me, write_result: Result<(), FileSaveError>, ctx| {
-                match write_result {
-                    Ok(_) => {
-                        me.set_version(file_id, version);
-                        ctx.emit(FileModelEvent::FileSaved {
-                            id: file_id,
-                            version,
-                        })
-                    }
-                    Err(err) => ctx.emit(FileModelEvent::FailedToSave {
-                        id: file_id,
-                        error: Rc::new(err),
-                    }),
-                };
+                me.report_save_outcome(file_id, version, write_result, ctx);
             },
         );
 
@@ -844,19 +883,7 @@ impl FileModel {
                         })
                     },
                     move |me, delete_result: Result<(), FileSaveError>, ctx| {
-                        match delete_result {
-                            Ok(_) => {
-                                me.set_version(file_id, version);
-                                ctx.emit(FileModelEvent::FileSaved {
-                                    id: file_id,
-                                    version,
-                                })
-                            }
-                            Err(err) => ctx.emit(FileModelEvent::FailedToSave {
-                                id: file_id,
-                                error: Rc::new(err),
-                            }),
-                        };
+                        me.report_save_outcome(file_id, version, delete_result, ctx);
                     },
                 );
             }
@@ -867,20 +894,13 @@ impl FileModel {
                     async move { client.delete_file(path).await.map_err(|e| e.to_string()) };
                 ctx.spawn(
                     future,
-                    move |me, result: Result<(), String>, ctx| match result {
-                        Ok(()) => {
-                            me.set_version(file_id, version);
-                            ctx.emit(FileModelEvent::FileSaved {
-                                id: file_id,
-                                version,
-                            });
-                        }
-                        Err(err) => {
-                            ctx.emit(FileModelEvent::FailedToSave {
-                                id: file_id,
-                                error: Rc::new(FileSaveError::RemoteError(err)),
-                            });
-                        }
+                    move |me, result: Result<(), String>, ctx| {
+                        me.report_save_outcome(
+                            file_id,
+                            version,
+                            result.map_err(FileSaveError::RemoteError),
+                            ctx,
+                        );
                     },
                 );
             }
