@@ -144,7 +144,14 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   (real SSH remote round-trip) + wasm-target build still pending. Also unblocks code-review-over-SSH
   (consumes the client method directly, no UI migration).
 - [x] URI local deep-links — Session/TabConfig/settings-widget/OpenFileEditor; 21 tests; warp 3850/0. Commit `f1c9dbaa1`. (cloud/team variants + fork-absent custom_router skipped)
-- [ ] Skill remote-path resolution (`get_scope_for_path`, `LocalOrRemotePath`)
+- [~] Skill remote-path resolution — `get_scope_for_path` **DONE** (branch `parity-skill-scope`,
+  commit `28dd8faf5`): restored Warp's `SkillScope::Home` variant + `get_scope_for_path(&Path)`;
+  `parse_skill` now derives scope instead of hardcoding `Project` (real regression — home skills wrongly
+  showed the picker's "Project Skill" badge); `conversion.rs` maps Home↔API both ways. crates/ai 33/0,
+  warp app skills 57/0. REMAINING: the `LocalOrRemotePath` half — migrate `get_provider_for_path` +
+  `ParsedSkill.path` + skill discovery to `LocalOrRemotePath` for remote-repo skill discovery. That is
+  prep-without-consumer in the fork (no remote skill-discovery pipeline; local file-watchers only), so
+  DEFER like [[global_skills]] until a remote-skill consumer exists.
 - [x] `ModelEventDispatcher` SSH gate — `SshRemoteServerSupport::{Enabled,Disabled}`; per-instance (GUI=Enabled/TUI=Disabled); 4 tests; warp 3850/0. Commit `1c1fff909`.
 - [x] Managed-secrets BYO-endpoint APIs — `seal_with_context` + `ByoFirstPartyPayload`/`ByoEndpointPayload` + `validate_field_sizes`; warp_managed_secrets 25/0, wasm 5/0. Commit `e2c5ecfc9`.
 - [ ] Pending-edit-batch conflict-discard — ⛔ ASSESS/DESIGN: `PendingEditBatch` lives in the fork's
