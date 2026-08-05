@@ -476,6 +476,34 @@ pub(super) fn build_snapshot(
     }
 }
 
+/// Builds a `DiffStateSnapshot` from a headless computation's parts. `metadata`
+/// is `None` when the repo could not be read (→ NotInRepository); `Some` with
+/// `diff_data` `None` means the diff computation failed (→ Error); both present
+/// means Loaded. Shared by the daemon's subscribe reply and its live pushes so
+/// the state decision is identical.
+pub(crate) fn snapshot_from_parts(
+    repo_path: String,
+    mode: &DiffMode,
+    metadata: Option<DiffMetadata>,
+    diff_data: Option<GitDiffData>,
+) -> proto::DiffStateSnapshot {
+    match metadata {
+        Some(metadata) => {
+            let state = match diff_data {
+                Some(data) => DiffState::Loaded(data),
+                None => DiffState::Error("Failed to compute diff".to_string()),
+            };
+            build_snapshot(repo_path, mode, &state, &metadata)
+        }
+        None => build_snapshot(
+            repo_path,
+            mode,
+            &DiffState::NotInRepository,
+            &DiffMetadata::default(),
+        ),
+    }
+}
+
 pub(super) fn snapshot_response(snapshot: proto::DiffStateSnapshot) -> proto::GetDiffStateResponse {
     proto::GetDiffStateResponse {
         result: Some(proto::get_diff_state_response::Result::Snapshot(snapshot)),

@@ -413,6 +413,47 @@ fn decode_snapshot_not_in_repository_has_no_diffs() {
 }
 
 #[test]
+fn snapshot_from_parts_picks_state_by_inputs() {
+    let gdd = GitDiffData {
+        files: vec![sample_file_diff()],
+        total_additions: 1,
+        total_deletions: 0,
+        files_changed: 1,
+    };
+    // metadata Some + diff Some → Loaded
+    let loaded = snapshot_from_parts(
+        "/r".to_string(),
+        &DiffMode::Head,
+        Some(DiffMetadata::default()),
+        Some(gdd.clone()),
+    );
+    assert!(matches!(
+        loaded.state.and_then(|s| s.state),
+        Some(proto::diff_state::State::Loaded(_))
+    ));
+    assert!(loaded.diffs.is_some());
+
+    // metadata Some + diff None → Error
+    let err = snapshot_from_parts(
+        "/r".to_string(),
+        &DiffMode::Head,
+        Some(DiffMetadata::default()),
+        None,
+    );
+    assert!(matches!(
+        err.state.and_then(|s| s.state),
+        Some(proto::diff_state::State::Error(_))
+    ));
+
+    // metadata None → NotInRepository
+    let nir = snapshot_from_parts("/r".to_string(), &DiffMode::Head, None, Some(gdd));
+    assert!(matches!(
+        nir.state.and_then(|s| s.state),
+        Some(proto::diff_state::State::NotInRepository(_))
+    ));
+}
+
+#[test]
 fn decode_file_delta_decodes_path_diff_and_metadata() {
     let mut metadata = DiffMetadata::default();
     metadata.main_branch_name = "main".to_string();
