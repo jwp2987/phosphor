@@ -1,10 +1,13 @@
 # Warp parity sweep — fix & feature scope
 
-> **STATUS: PLANNING (2026-08-02).** The test-parity sweep is complete: ~150 Warp
-> tests ported back onto branch `warp-test-parity-sweep`, ~41 regressions filed,
-> and the #11 feature-gap ledger triaged + BYOP-decided. **Nothing is fixed or
-> built yet** — the sweep was strictly tests-first, so every red test already maps
-> to an issue. This doc is the durable tracker for the two remaining workstreams.
+> **STATUS: Workstream A COMPLETE & MERGED (updated 2026-08-05).** The test-parity
+> sweep ported ~150 Warp tests back, filed ~41 regressions, and triaged the #11
+> feature-gap ledger. **Workstream A (all bug fixes #3–#47) is now fixed and merged
+> to `main`** — every bug issue is closed (spot-verified on `main`: #3's
+> `Stop { should_auto_resume }` + `LegacyStop`, #37's `owns_control_master`). The
+> only remaining parity work is **Workstream B — the #11 feature-build ledger**
+> (~40 BYOP-adapted feature builds, still 0/~40). This doc remains the durable
+> tracker for Workstream B.
 
 ## Context
 
@@ -163,12 +166,17 @@ OTEL trace-link header · VoiceInputLifecycle · AI codebase semantic-search · 
 
 ## Progress
 
-Nothing fixed or built yet. Update this section as PRs land (`Fixes #N`).
+Update this section as PRs land (`Fixes #N`).
 
 | Phase | Done | Total | Notes |
 | --- | --- | --- | --- |
-| A — bug fixes | **42** | 43 | DONE on branch `parity-fixes` (2026-08-03). Only #37 remains (groundwork-only, open — needs `external_control_master` plumbing). Full run 4036 pass / 5 fail = the FD flakies (#24, pass in isolation). Not pushed. |
-| B — feature builds | 0 | ~40 ticked (BYOP-adapted) | see #11 |
+| A — bug fixes | **43** | 43 | **DONE & merged to `main`** (all bug issues #3–#47 closed; verified on `main`). Includes #37 (`owns_control_master` teardown guard + `external_control_master` plumbing). Follow-on: #4 (warp_tui serial suite — 8 fixed, PRs #72–#76; parallel flakies retried #77) and #5 (deferred review findings — #78 + won't-fix triage) both closed 2026-08-05. |
+| B — feature builds | 0 | ~40 ticked (BYOP-adapted) | see #11 — the only remaining parity workstream |
+
+**Next up (Workstream B):** the #11 ledger, ordered by cluster (B1 terminal/rendering
+→ B5 platform/infra). Sizes range from one-liners to `local_control`/`warpctrl`
+(~3000 lines). Needs maintainer prioritization before building — the clusters are
+independent, so pick by trust/impact rather than doing all of B1 first.
 
 Fix-phase notes: #48/#49 were surfaced by the final full-suite verification (un-filed reds). Deliberate scoped adaptations noted on their issues: #15 (TuiView→fork's tui_views map), #17 (theme path-scoped starts_with), #30 (CJK ranges vs general-category crate). Verify app/src fixes centrally; run full `cargo test -p warp` in the FOREGROUND (background jobs get reaped).
 
