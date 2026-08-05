@@ -612,7 +612,9 @@ gui = ["voice_input"]
 # Headless terminal-UI front-end support. Enables warpui_core's ratatui backend
 # (via the warpui umbrella crate). The warp_tui crate builds `warp` with this
 # feature. See specs/warp-oss-sync/SCOPE.md.
-tui = ["warpui/tui"]
+# Also pins the v2 shell-command heuristic on for the TUI, matching Warp's
+# `warp_tui` (which enables `input_classifier/nld_heuristic_v2`).
+tui = ["warpui/tui", "input_classifier/nld_heuristic_v2"]
 msys2_shells = []
 file_retrieval_tools = []
 welcome_tab = []
@@ -752,6 +754,10 @@ simulate_github_unauthed = []
 reload_stale_conversation_files = []
 nld_fasttext_model = ["input_classifier/fasttext"]
 nld_onnx_model = ["input_classifier/onnx_candle"]
+# Shell-command heuristic selection (see input_classifier). The `tui` feature
+# turns v2 on to match Warp's TUI; these expose the choice explicitly too.
+nld_heuristic_v1 = ["input_classifier/nld_heuristic_v1"]
+nld_heuristic_v2 = ["input_classifier/nld_heuristic_v2"]
 retry_truncated_code_responses = []
 ai_context_menu = []
 at_menu_outside_of_ai_mode = []

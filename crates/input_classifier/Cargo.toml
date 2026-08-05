@@ -10,6 +10,11 @@ name = "evaluate"
 path = "src/bin/evaluate.rs"
 
 [features]
+# v1 is the default shell-command heuristic (the fork's historical behavior);
+# the app's `tui` feature adds v2 on top, and v2 wins when both are set. Keeping
+# v1 in the default set means `cargo test -p input_classifier` runs the v1-gated
+# heuristic tests without extra flags.
+default = ["nld_heuristic_v1"]
 onnx_candle = [
     "onnx",
     "dep:candle-core",
@@ -25,6 +30,10 @@ onnx_ort = [
 ]
 fasttext = ["dep:fasttext", "dep:rust-embed", "dep:tempfile"]
 onnx = ["dep:rust-embed", "dep:tokenizers"]
+# Selects which shell-command heuristic `is_likely_shell_command` uses. If both
+# are enabled, v2 wins (see the function's doc comment).
+nld_heuristic_v1 = []
+nld_heuristic_v2 = []
 
 [dependencies]
 anyhow.workspace = true
