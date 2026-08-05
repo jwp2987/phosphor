@@ -3,6 +3,9 @@ use std::{collections::HashSet, future::Future, path::PathBuf};
 
 #[cfg(test)]
 use virtual_fs::{Stub, VirtualFS};
+use warp_util::host_id::HostId;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
 use warp_util::standardized_path::StandardizedPath;
 #[cfg(test)]
 use warpui::r#async::FutureId;
@@ -35,6 +38,13 @@ pub enum DetectedRepositoriesEvent {
 #[derive(Default)]
 pub struct DetectedRepositories {
     repository_roots: HashSet<StandardizedPath>,
+    /// Repository roots detected on remote (SSH) hosts. Populated by the
+    /// remote-server layer (from the daemon's RepoMetadata) via
+    /// [`register_remote_repo_root`](Self::register_remote_repo_root); resolved
+    /// by [`get_root_for_lor_path`](Self::get_root_for_lor_path) for
+    /// `LocalOrRemotePath::Remote` inputs. Kept separate from the local set so
+    /// the existing local detection path is unchanged.
+    remote_repository_roots: HashSet<RemotePath>,
     #[cfg(test)]
     /// List of spawned background tasks, for testing.
     spawned_futures: Vec<FutureId>,
@@ -177,6 +187,44 @@ impl DetectedRepositories {
             current = ancestor.parent();
         }
         None
+    }
+
+    /// Location-agnostic repo-root lookup. Mirrors Warp's
+    /// `get_root_for_path(&LocalOrRemotePath)`: local paths resolve against the
+    /// local detection cache; remote paths resolve against the registered
+    /// remote roots for their host.
+    pub fn get_root_for_lor_path(&self, path: &LocalOrRemotePath) -> Option<LocalOrRemotePath> {
+        match path {
+            LocalOrRemotePath::Local(local_path) => {
+                self.get_root_for_path(local_path).map(LocalOrRemotePath::Local)
+            }
+            LocalOrRemotePath::Remote(remote_path) => self.find_remote_repository_root(remote_path),
+        }
+    }
+
+    /// Find the remote repository root containing `remote_path`, by walking its
+    /// ancestors on the same host and checking the registered remote roots.
+    fn find_remote_repository_root(&self, remote_path: &RemotePath) -> Option<LocalOrRemotePath> {
+        let mut current = Some(remote_path.path.clone());
+        while let Some(ancestor) = current {
+            let candidate = RemotePath::new(remote_path.host_id.clone(), ancestor.clone());
+            if let Some(root) = self.remote_repository_roots.get(&candidate) {
+                return Some(LocalOrRemotePath::Remote(root.clone()));
+            }
+            current = ancestor.parent();
+        }
+        None
+    }
+
+    /// Registers a repository root detected on a remote host. Idempotent.
+    pub fn register_remote_repo_root(&mut self, remote_path: RemotePath) {
+        self.remote_repository_roots.insert(remote_path);
+    }
+
+    /// Removes all remote repository roots for a host (called on disconnect).
+    pub fn remove_roots_for_host(&mut self, host_id: &HostId) {
+        self.remote_repository_roots
+            .retain(|remote| &remote.host_id != host_id);
     }
 }
 
