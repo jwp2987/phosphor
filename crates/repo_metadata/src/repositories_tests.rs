@@ -198,3 +198,43 @@ fn test_find_git_repo_with_worktree() {
         });
     });
 }
+
+#[test]
+fn remote_repo_root_registration_and_lookup() {
+    use std::path::Path;
+    use warp_util::host_id::HostId;
+    use warp_util::local_or_remote_path::LocalOrRemotePath;
+    use warp_util::remote_path::RemotePath;
+
+    let mut repos = DetectedRepositories::default();
+    let host = HostId::new("host-1".to_string());
+    let root = StandardizedPath::from_local_absolute_unchecked(Path::new("/home/u/proj"));
+    let nested = StandardizedPath::from_local_absolute_unchecked(Path::new("/home/u/proj/src/x"));
+
+    let remote = |h: &HostId, p: &StandardizedPath| {
+        LocalOrRemotePath::Remote(RemotePath::new(h.clone(), p.clone()))
+    };
+
+    // Nothing registered yet.
+    assert!(repos.get_root_for_lor_path(&remote(&host, &nested)).is_none());
+
+    // Register the repo root; a nested path on the same host resolves to it.
+    repos.register_remote_repo_root(RemotePath::new(host.clone(), root.clone()));
+    assert_eq!(
+        repos.get_root_for_lor_path(&remote(&host, &nested)),
+        Some(remote(&host, &root))
+    );
+    // The root itself resolves to itself.
+    assert_eq!(
+        repos.get_root_for_lor_path(&remote(&host, &root)),
+        Some(remote(&host, &root))
+    );
+
+    // A different host with the same path does not match.
+    let other_host = HostId::new("host-2".to_string());
+    assert!(repos.get_root_for_lor_path(&remote(&other_host, &nested)).is_none());
+
+    // Removing the host's roots clears the lookup.
+    repos.remove_roots_for_host(&host);
+    assert!(repos.get_root_for_lor_path(&remote(&host, &nested)).is_none());
+}
