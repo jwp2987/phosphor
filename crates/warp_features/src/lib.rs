@@ -597,6 +597,12 @@ pub enum FeatureFlag {
     /// while the agent is mid-response.
     QueueSlashCommand,
 
+    /// Extends [`FeatureFlag::QueueSlashCommand`] to the full multi-prompt queued-prompts
+    /// panel: queueing shell commands (not just agent prompts) and routing a prompt
+    /// submitted during summarization into the panel. Off without this flag, only the
+    /// single-prompt auto-queue behavior applies.
+    QueuedPromptsV2,
+
     /// Enables an agent tool for the CLI subagent to explicitly transfer command control to the
     /// user.
     TransferControlTool,
@@ -746,6 +752,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::AgentViewBlockContext,
     FeatureFlag::PendingUserQueryIndicator,
     FeatureFlag::QueueSlashCommand,
+    FeatureFlag::QueuedPromptsV2,
     // End manually enabled Code features.
     FeatureFlag::DirectoryTabColors,
     FeatureFlag::EditableMarkdownMermaid,
