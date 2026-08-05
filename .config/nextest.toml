@@ -10,6 +10,16 @@ filter = 'package(integration)'
 # of the test suite, despite running fewer integration tests at a time.
 threads-required = 2
 
+[[profile.default.overrides]]
+# A handful of warp_tui view tests drive async work (layout drains, executor
+# pumps, i18n) that races the asserting pump under heavy full-suite
+# concurrency: they pass in isolation, in small groups, and fully serially,
+# but a few flake when the executor threads are starved. Retry them (only the
+# failed test re-runs) instead of serializing the whole package (~600 tests),
+# mirroring the integration/update_manager flaky-test handling below.
+filter = 'package(warp_tui)'
+retries = 2
+
 [profile.ci]
 # Print out output for failing tests as soon as they fail, and also at the end
 # of the run (for easy scrollability).
@@ -21,6 +31,12 @@ fail-fast = false
 filter = 'package(integration)'
 # On CI, try integration tests up to 3 times (in total) to reduce the impact of
 # flaky tests.
+retries = 2
+
+[[profile.ci.overrides]]
+# See the default-profile note: a few warp_tui view tests flake under heavy
+# concurrency (executor starvation), so retry the failed test on CI too.
+filter = 'package(warp_tui)'
 retries = 2
 
 [profile.ci.junit]
