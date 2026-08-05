@@ -176,10 +176,11 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
 ---
 
 ## Other outstanding (non-#11)
-- [ ] ⭐ **SMOKE TESTS (REQUIRED after all parity work is merged to main)** — run
-  `./script/usage-test --surface both` (GUI+TUI acceptance smokes) on the merged main,
-  plus a warp_tui + warp lib sanity pass, to confirm the app still boots and behaves with
-  all parity changes in. Do this ONCE everything is merged. (user explicitly requested)
+- [x] ⭐ **SMOKE TESTS** — on merged main (2026-08-05, after the 6 diff-state PRs #59-#64):
+  `./script/usage-test --surface both` = **12 pass / 0 fail / 7 skip** (skips are
+  needs-real-shell / needs-byop / needs-desktop — environmental), EXIT 0. Full warp lib
+  sanity: `cargo test -p warp --lib` = **3910 pass / 0 fail / 33 ignored**. App boots and
+  behaves with all parity + diff-state-over-SSH changes in.
 - [ ] **Edition-2024 cross-platform build** — mac/wasm/windows `unsafe` syntax fixed on
   branch `fix/edition-2024-native-targets`; awaiting local macOS `script/run --release`
   verification (no CI-discovery builds). May surface more latent mac errors.
@@ -187,9 +188,12 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   `tui_generic_tool_call_view::accepting_new_conversation_suggestion_completes_the_executor`
   (reconfirmed 2026-08-04). The #4 fix may only hold under nextest. Re-investigate;
   do NOT force-green. Also its listed real bugs (diff ghost-blocks, transcript-clear).
-- [ ] **#2 sweep** — port the 2 missing GUI auto-resume oracle tests
-  (`completed_user_controlled_lrc_{resumes_when_not_suppressed,skips_resume_when_suppressed}`);
-  broader 379-module sweep ongoing. (Anchor Stop/auto-resume regression already code-fixed.)
+- [ ] **#2 sweep** — the 2 missing GUI auto-resume oracle tests
+  (`completed_user_controlled_lrc_{resumes_when_not_suppressed,skips_resume_when_suppressed}`)
+  are now PORTED to `terminal/view_test.rs` (2/0; the resumes case needed a
+  `GlobalResourceHandlesProvider` mock for the subagent-sidecar persist path; the fork's
+  teardown method is `set_user_control_with_stop_reason`, Warp's is `set_user_control_for_teardown`).
+  Broader 379-module sweep still ongoing. (Anchor Stop/auto-resume regression already code-fixed.)
 - [ ] **#5 deferred low-sev** — 5 latent items, all still present; low priority.
 - [ ] **warp-suite i18n test-isolation** (found 2026-08-04) — `drive::export::test_export_untitled_notebook`
   (and likely others) PASS in the full suite but FAIL in isolation: the export default name is a
