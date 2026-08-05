@@ -173,6 +173,18 @@ const MAX_BRANCH_COUNT_CAP: usize = 500;
 /// Receives `ClientMessage`s from connected proxy sessions and routes
 /// `ServerMessage` responses and push notifications back through each
 /// connection's dedicated sender channel.
+/// A single active diff-state subscription. `canonical_path` (canonicalized on
+/// this host) is matched against repository-change events; `wire_repo_path` is
+/// the exact string the client sent, echoed back in pushed snapshots so the
+/// client's `RemoteDiffStateModel` can key on it.
+#[cfg(feature = "local_fs")]
+#[derive(Clone)]
+struct DiffStateSubscription {
+    canonical_path: StandardizedPath,
+    wire_repo_path: String,
+    mode: crate::code_review::diff_state::DiffMode,
+}
+
 pub struct ServerModel {
     /// Per-connection outbound channels, keyed by `ConnectionId`.
     ///
@@ -187,6 +199,13 @@ pub struct ServerModel {
     /// Used to avoid sending duplicate snapshots on repeated
     /// `NavigatedToDirectory` calls while the user `cd`s within the same repo.
     snapshot_sent_roots_by_connection: HashMap<ConnectionId, HashSet<StandardizedPath>>,
+    /// Active diff-state subscriptions, keyed by connection. Each entry is a
+    /// `(repo, mode)` the client subscribed to via `GetDiffState`; on a
+    /// repository change the daemon recomputes and pushes a fresh snapshot to
+    /// the subscribing connection. Cleared per-entry on `UnsubscribeDiffState`
+    /// and wholesale on connection teardown.
+    #[cfg(feature = "local_fs")]
+    diff_state_subscriptions: HashMap<ConnectionId, Vec<DiffStateSubscription>>,
     /// Abort handle for the active grace timer, if any.
     /// Calling `.abort()` cancels the timer before it fires.
     grace_timer_cancel: Option<SpawnedFutureHandle>,
@@ -232,6 +251,8 @@ impl ServerModel {
         let mut model = Self {
             connection_senders: HashMap::new(),
             snapshot_sent_roots_by_connection: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            diff_state_subscriptions: HashMap::new(),
             grace_timer_cancel: None,
             in_progress: HashMap::new(),
             host_id,
@@ -332,6 +353,10 @@ impl ServerModel {
                             sent_roots.insert(path.clone());
                         }
                     }
+                    // The repository's contents changed — push a fresh diff-state
+                    // snapshot to any connection subscribed to it.
+                    #[cfg(feature = "local_fs")]
+                    me.push_diff_state_for_repo(path, ctx);
                 }
                 RepoMetadataEvent::RepositoryRemoved { .. }
                 | RepoMetadataEvent::FileTreeUpdated { .. }
@@ -549,6 +574,8 @@ impl ServerModel {
     /// and starts the grace timer if no connections remain.
     pub fn deregister_connection(&mut self, conn_id: ConnectionId, ctx: &mut ModelContext<Self>) {
         self.snapshot_sent_roots_by_connection.remove(&conn_id);
+        #[cfg(feature = "local_fs")]
+        self.diff_state_subscriptions.remove(&conn_id);
         // Guard against double-deregister (reader and writer tasks both call
         // this on connection close; the second call must be a safe no-op).
         if self.connection_senders.remove(&conn_id).is_none() {
@@ -1036,13 +1063,9 @@ impl ServerModel {
     }
 
     /// Handles `GetDiffState` — computes the current diff-state snapshot for a
-    /// (repo, mode) pair on the remote filesystem and replies with it.
-    ///
-    /// This delivers the initial snapshot on subscribe. Live push on
-    /// working-tree change (the DiffStateSnapshot / MetadataUpdate / FileDelta
-    /// broadcasts + per-connection subscription tracking) lands in a following
-    /// increment; `handle_unsubscribe_diff_state` is the no-op counterpart
-    /// until then.
+    /// (repo, mode) pair on the remote filesystem and replies with it, then
+    /// registers a subscription so subsequent repository changes push a fresh
+    /// snapshot to this connection (see `push_diff_state_for_repo`).
     #[cfg(feature = "local_fs")]
     fn handle_get_diff_state(
         &mut self,
@@ -1051,28 +1074,37 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        use crate::code_review::diff_state::{
-            DiffMetadata, DiffMode, DiffState, LocalDiffStateModel,
-        };
+        use crate::code_review::diff_state::{DiffMode, LocalDiffStateModel};
 
-        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-            Ok(p) => p.to_local_path_lossy(),
-            Err(e) => {
-                return HandlerOutcome::Sync(server_message::Message::GetDiffStateResponse(
-                    super::diff_state_proto::error_response(format!("Invalid repo_path: {e}")),
-                ));
-            }
-        };
+        let canonical_path =
+            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+                Ok(p) => p,
+                Err(e) => {
+                    return HandlerOutcome::Sync(server_message::Message::GetDiffStateResponse(
+                        super::diff_state_proto::error_response(format!("Invalid repo_path: {e}")),
+                    ));
+                }
+            };
 
         let mode = super::diff_state_proto::proto_to_diff_mode(&msg.mode.unwrap_or_default());
         // Only compare against a base branch when the mode requires it.
         let include_base_branch = !matches!(mode, DiffMode::Head);
-        let repo_path_str = msg.repo_path.clone();
-        let repo_pathbuf = std::path::PathBuf::from(&repo_path);
+        // Echoed verbatim in the snapshot so the client's RemoteDiffStateModel
+        // (which keys on the string it sent) matches pushes.
+        let wire_repo_path = msg.repo_path.clone();
+        let repo_pathbuf = std::path::PathBuf::from(canonical_path.to_local_path_lossy());
 
         log::info!(
             "Handling GetDiffState repo={} mode={mode:?} (request_id={request_id})",
             msg.repo_path,
+        );
+
+        // Register the subscription for live pushes on repository change.
+        self.register_diff_state_subscription(
+            conn_id,
+            canonical_path,
+            wire_repo_path.clone(),
+            mode.clone(),
         );
 
         let request_id_for_response = request_id.clone();
@@ -1088,44 +1120,114 @@ impl ServerModel {
                 (metadata, diff_data)
             },
             move |me, (metadata_result, diff_data), _ctx| {
-                let response = match metadata_result {
-                    Ok(metadata) => {
-                        // `load_diff_data_for_mode` returns None only when the
-                        // diff computation itself failed (a clean repo yields an
-                        // empty GitDiffData, i.e. Some).
-                        let state = match diff_data {
-                            Some(data) => DiffState::Loaded(data),
-                            None => DiffState::Error("Failed to compute diff".to_string()),
-                        };
-                        let snapshot = super::diff_state_proto::build_snapshot(
-                            repo_path_str,
-                            &mode,
-                            &state,
-                            &metadata,
-                        );
-                        super::diff_state_proto::snapshot_response(snapshot)
-                    }
-                    // Metadata failed (not a git repository, or git errored):
-                    // report NotInRepository with empty metadata.
-                    Err(_) => {
-                        let snapshot = super::diff_state_proto::build_snapshot(
-                            repo_path_str,
-                            &mode,
-                            &DiffState::NotInRepository,
-                            &DiffMetadata::default(),
-                        );
-                        super::diff_state_proto::snapshot_response(snapshot)
-                    }
-                };
+                let snapshot = super::diff_state_proto::snapshot_from_parts(
+                    wire_repo_path,
+                    &mode,
+                    metadata_result.ok(),
+                    diff_data,
+                );
                 me.send_server_message(
                     Some(conn_id),
                     Some(&request_id_for_response),
-                    server_message::Message::GetDiffStateResponse(response),
+                    server_message::Message::GetDiffStateResponse(
+                        super::diff_state_proto::snapshot_response(snapshot),
+                    ),
                 );
             },
             ctx,
         );
         HandlerOutcome::Async(Some(handle))
+    }
+
+    /// Records a `(repo, mode)` diff-state subscription for `conn_id`,
+    /// deduplicating against an existing identical entry.
+    #[cfg(feature = "local_fs")]
+    fn register_diff_state_subscription(
+        &mut self,
+        conn_id: ConnectionId,
+        canonical_path: StandardizedPath,
+        wire_repo_path: String,
+        mode: crate::code_review::diff_state::DiffMode,
+    ) {
+        let subs = self.diff_state_subscriptions.entry(conn_id).or_default();
+        if !subs
+            .iter()
+            .any(|s| s.canonical_path == canonical_path && s.mode == mode)
+        {
+            subs.push(DiffStateSubscription {
+                canonical_path,
+                wire_repo_path,
+                mode,
+            });
+        }
+    }
+
+    /// Pushes a fresh diff-state snapshot to every connection subscribed to
+    /// `changed_repo`. Called when a repository's contents change.
+    #[cfg(feature = "local_fs")]
+    fn push_diff_state_for_repo(
+        &mut self,
+        changed_repo: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // Snapshot the matching subscriptions first so the async spawns don't
+        // hold a borrow of `self.diff_state_subscriptions`.
+        let matches: Vec<(ConnectionId, DiffStateSubscription)> = self
+            .diff_state_subscriptions
+            .iter()
+            .flat_map(|(conn_id, subs)| {
+                let conn_id = *conn_id;
+                subs.iter()
+                    .filter(|s| &s.canonical_path == changed_repo)
+                    .cloned()
+                    .map(move |s| (conn_id, s))
+            })
+            .collect();
+        for (conn_id, sub) in matches {
+            self.spawn_push_diff_state_snapshot(conn_id, sub, ctx);
+        }
+    }
+
+    /// Recomputes the snapshot for one subscription and pushes it (unsolicited,
+    /// no request_id) to `conn_id`.
+    #[cfg(feature = "local_fs")]
+    fn spawn_push_diff_state_snapshot(
+        &mut self,
+        conn_id: ConnectionId,
+        sub: DiffStateSubscription,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        use crate::code_review::diff_state::{DiffMode, LocalDiffStateModel};
+
+        let include_base_branch = !matches!(sub.mode, DiffMode::Head);
+        let repo_pathbuf = std::path::PathBuf::from(sub.canonical_path.to_local_path_lossy());
+        let mode = sub.mode.clone();
+        let mode_for_compute = sub.mode;
+        let wire_repo_path = sub.wire_repo_path;
+        ctx.spawn_abortable(
+            async move {
+                let metadata =
+                    LocalDiffStateModel::load_metadata_for_repo(repo_pathbuf.clone(), include_base_branch)
+                        .await;
+                let diff_data =
+                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf).await;
+                (metadata, diff_data)
+            },
+            move |me, (metadata_result, diff_data), _ctx| {
+                let snapshot = super::diff_state_proto::snapshot_from_parts(
+                    wire_repo_path,
+                    &mode,
+                    metadata_result.ok(),
+                    diff_data,
+                );
+                me.send_server_message(
+                    Some(conn_id),
+                    None,
+                    server_message::Message::DiffStateSnapshot(snapshot),
+                );
+            },
+            |_me, _ctx| {},
+        );
     }
 
     #[cfg(not(feature = "local_fs"))]
@@ -1144,8 +1246,29 @@ impl ServerModel {
     }
 
     /// Handles `UnsubscribeDiffState` — fire-and-forget removal of a diff-state
-    /// subscription. The daemon does not yet push live updates (see the note on
-    /// `handle_get_diff_state`), so there is nothing to tear down yet.
+    /// subscription for a `(repo, mode)` pair on this connection.
+    #[cfg(feature = "local_fs")]
+    fn handle_unsubscribe_diff_state(
+        &mut self,
+        msg: UnsubscribeDiffState,
+        conn_id: ConnectionId,
+        _ctx: &mut ModelContext<Self>,
+    ) {
+        let Ok(canonical_path) =
+            StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        else {
+            return;
+        };
+        let mode = super::diff_state_proto::proto_to_diff_mode(&msg.mode.unwrap_or_default());
+        if let Some(subs) = self.diff_state_subscriptions.get_mut(&conn_id) {
+            subs.retain(|s| !(s.canonical_path == canonical_path && s.mode == mode));
+            if subs.is_empty() {
+                self.diff_state_subscriptions.remove(&conn_id);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "local_fs"))]
     fn handle_unsubscribe_diff_state(
         &mut self,
         _msg: UnsubscribeDiffState,

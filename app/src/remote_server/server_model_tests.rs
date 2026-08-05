@@ -16,6 +16,8 @@ fn test_model() -> ServerModel {
     ServerModel {
         connection_senders: HashMap::new(),
         snapshot_sent_roots_by_connection: HashMap::new(),
+        #[cfg(feature = "local_fs")]
+        diff_state_subscriptions: HashMap::new(),
         grace_timer_cancel: None,
         in_progress: HashMap::new(),
         host_id: "test-host-id".to_string(),
