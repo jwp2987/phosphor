@@ -5,6 +5,9 @@ use settings::Setting;
 use warpui::{App, SingletonEntity};
 
 use crate::ai::agent_providers::{llm_id, lookup_byop, AgentProviderSecrets};
+// `tui_export` only exists under the `tui` feature; the tests that use it are
+// likewise gated below, so a `--features gui` (no tui) check still compiles.
+#[cfg(feature = "tui")]
 use crate::tui_export::{
     tui_agent_provider_has_connected_key, tui_clear_agent_provider_api_key,
     tui_list_agent_provider_keys, tui_set_agent_provider_api_key,
@@ -304,6 +307,7 @@ fn smoke_disabled_model_is_excluded_from_picker_but_sibling_model_still_works() 
 // TUI `/api-keys` menu support (crate::tui_export::tui_*_agent_provider_*)
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "tui")]
 #[test]
 fn tui_list_agent_provider_keys_reflects_no_key_then_key_set_then_cleared() {
     App::test((), |mut app| async move {
@@ -354,6 +358,7 @@ fn tui_list_agent_provider_keys_reflects_no_key_then_key_set_then_cleared() {
     });
 }
 
+#[cfg(feature = "tui")]
 #[test]
 fn tui_list_agent_provider_keys_falls_back_to_id_for_unnamed_provider() {
     App::test((), |mut app| async move {
@@ -375,6 +380,7 @@ fn tui_list_agent_provider_keys_falls_back_to_id_for_unnamed_provider() {
     });
 }
 
+#[cfg(feature = "tui")]
 #[test]
 fn tui_agent_provider_has_connected_key_requires_both_usable_and_keyed() {
     App::test((), |mut app| async move {
@@ -420,6 +426,7 @@ fn tui_agent_provider_has_connected_key_requires_both_usable_and_keyed() {
     });
 }
 
+#[cfg(feature = "tui")]
 #[test]
 fn tui_agent_provider_has_connected_key_false_for_non_byop_id() {
     App::test((), |mut app| async move {
