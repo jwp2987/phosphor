@@ -9,6 +9,11 @@ license.workspace = true
 test-util = []
 
 [dependencies]
+# Used by the cross-platform `wsl` module (log::warn on the fallback path).
+log.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 async-process = { workspace = true }
@@ -17,7 +22,6 @@ futures-lite.workspace = true
 [target.'cfg(windows)'.dependencies]
 anyhow.workspace = true
 lazy_static.workspace = true
-log.workspace = true
 thiserror.workspace = true
 win32job = "2.0.2"
 windows.workspace = true
