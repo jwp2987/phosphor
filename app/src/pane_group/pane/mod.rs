@@ -1075,6 +1075,9 @@ pub enum PaneEvent {
     RemoteRepoNavigated {
         host_id: HostId,
         indexed_path: String,
+        /// Whether the server detected a git repository at this path (drives
+        /// remote code-review registration).
+        is_git: bool,
     },
     /// Split the current pane into two. If `initial_query` is `Some` fill the new pane's input with
     /// its value.

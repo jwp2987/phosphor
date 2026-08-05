@@ -525,6 +525,8 @@ pub enum Event {
     RemoteRepoNavigated {
         host_id: HostId,
         indexed_path: String,
+        /// Whether the server detected a git repository at this path.
+        is_git: bool,
     },
     /// Refresh the workspace-level active session state.
     ActiveSessionChanged,
@@ -4129,10 +4131,12 @@ impl PaneGroup {
             PaneEvent::RemoteRepoNavigated {
                 host_id,
                 indexed_path,
+                is_git,
             } => {
                 ctx.emit(Event::RemoteRepoNavigated {
                     host_id: host_id.clone(),
                     indexed_path: indexed_path.clone(),
+                    is_git: *is_git,
                 });
             }
         }

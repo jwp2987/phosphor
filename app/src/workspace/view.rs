@@ -12851,11 +12851,12 @@ impl Workspace {
             pane_group::Event::RemoteRepoNavigated {
                 host_id,
                 indexed_path,
+                is_git,
             } => {
                 use warp_util::standardized_path::StandardizedPath;
 
                 if let Ok(std_path) = StandardizedPath::try_new(indexed_path) {
-                    let remote_id = RemoteRepositoryIdentifier::new(host_id.clone(), std_path);
+                    let remote_id = RemoteRepositoryIdentifier::new(host_id.clone(), std_path.clone());
                     let pane_group_id = pane_group.id();
                     self.left_panel_view.update(ctx, |left_panel, ctx| {
                         left_panel.navigate_server_file_browser(
@@ -12872,6 +12873,41 @@ impl Workspace {
                         file_tree_view.update(ctx, |view, ctx| {
                             view.set_remote_root_directories(std::slice::from_ref(&remote_id), ctx);
                         });
+                    }
+
+                    // When the remote dir is a git repository, register it so the
+                    // code-review panel lists it and can create a remote-backed
+                    // DiffStateModel. The event's warp_core HostId is bridged to
+                    // the warp_util family used by the diff-state remote path.
+                    if *is_git {
+                        let util_host =
+                            crate::code::buffer_location::core_host_id_to_util(host_id);
+                        let remote_path =
+                            warp_util::remote_path::RemotePath::new(util_host, std_path);
+                        repo_metadata::repositories::DetectedRepositories::handle(ctx).update(
+                            ctx,
+                            |repos, _| {
+                                repos.register_remote_repo_root(remote_path.clone());
+                            },
+                        );
+                        if let Some(terminal_id) = pane_group
+                            .as_ref(ctx)
+                            .active_session_view(ctx)
+                            .map(|tv| tv.id())
+                        {
+                            let remote_key =
+                                warp_util::local_or_remote_path::LocalOrRemotePath::Remote(
+                                    remote_path,
+                                );
+                            self.working_directories_model.update(ctx, |model, ctx| {
+                                model.register_remote_repo(
+                                    pane_group_id,
+                                    remote_key,
+                                    terminal_id,
+                                    ctx,
+                                );
+                            });
+                        }
                     }
                 }
             }
