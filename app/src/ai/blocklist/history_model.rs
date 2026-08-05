@@ -350,6 +350,19 @@ impl BlocklistAIHistoryModel {
             .flatten()
     }
 
+    /// Returns the ids of every conversation cleared from `terminal_view_id`, or an empty
+    /// slice if none. Used by `QueuedQueryModel` to drop the queues of conversations cleared
+    /// via `ClearedConversationsInTerminalView` (whose event does not carry the ids).
+    pub fn cleared_conversation_ids_for_terminal_view(
+        &self,
+        terminal_view_id: EntityId,
+    ) -> &[AIConversationId] {
+        self.cleared_conversation_ids_for_terminal_view
+            .get(&terminal_view_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     /// Returns a list of all conversations that have been cleared across all terminal views.
     pub fn all_cleared_conversations(&self) -> Vec<(EntityId, &AIConversation)> {
         self.cleared_conversation_ids_for_terminal_view

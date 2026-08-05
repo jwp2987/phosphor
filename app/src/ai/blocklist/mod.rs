@@ -20,6 +20,11 @@ pub mod input_model;
 pub(crate) mod permissions;
 pub(crate) mod persistence;
 pub mod prompt;
+// The persistent queued-prompts model (`QueuedQueryModel`). Ported from warp/master.
+// Consumers (slash commands, the warping indicator, the queued-prompts panel) are wired
+// in a follow-up increment; `allow(dead_code)` covers the not-yet-called API until then.
+#[allow(dead_code)]
+pub(crate) mod queued_query;
 pub mod suggested_agent_mode_workflow_modal;
 pub mod suggested_rule_modal;
 mod suggestion_chip_view;
