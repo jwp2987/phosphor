@@ -188,6 +188,17 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   `tui_generic_tool_call_view::accepting_new_conversation_suggestion_completes_the_executor`
   (reconfirmed 2026-08-04). The #4 fix may only hold under nextest. Re-investigate;
   do NOT force-green. Also its listed real bugs (diff ghost-blocks, transcript-clear).
+  UPDATE 2026-08-05: `cargo nextest run -p warp_tui --no-fail-fast` = **579 pass / 18 fail**
+  (589 → 597 total). PRE-EXISTING (confirmed: `git log dc885a802..HEAD -- crates/warp_tui`
+  is EMPTY — this session's diff-state PRs #61-65 never touched warp_tui). Failures span
+  input::view, root_view, session_registry, terminal_session_view, transcript_view,
+  tui_diff_storage (×4), tui_file_edits_view, tui_permission_prompt (×2),
+  tui_shell_command_view (×4). Spot-check: `input::view::move_up_through_empty_line_positions_cursor`
+  PASSES in isolation (nextest parallel-ordering artifact — shared global-state pollution,
+  same class as the i18n-isolation item below); `session_registry::focus_drives_events`
+  FAILS in isolation (real). So the 18 are a MIX of real bugs + isolation-order artifacts.
+  Dedicated #4 effort — not a diff-state regression. (usage-suite's warp_tui-nextest subset
+  is green, which is why smoke passed.)
 - [ ] **#2 sweep** — the 2 missing GUI auto-resume oracle tests
   (`completed_user_controlled_lrc_{resumes_when_not_suppressed,skips_resume_when_suppressed}`)
   are now PORTED to `terminal/view_test.rs` (2/0; the resumes case needed a
