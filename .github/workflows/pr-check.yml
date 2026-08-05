@@ -1,8 +1,10 @@
-# PR validation — Linux `cargo check` for the app (gui + tui) and the warp_tui crate.
+# PR validation — Linux + Windows `cargo check` for the app (gui + tui) and the
+# warp_tui crate.
 #
 # phosphor_release.yml intentionally only runs on tags (full 3-platform packaging, ~3h),
-# and delegates PR validation to this workflow. This keeps PRs fast: a single Linux
-# `cargo check`, no packaging.
+# and delegates PR validation to this workflow. This keeps PRs fast: a `cargo check`
+# (no packaging). The Windows job compile-checks the `cfg(windows)` code paths
+# (e.g. PATHEXT resolution, login-item registration) that the Linux job can't reach.
 #
 # `crates/warp_tui` is a non-default workspace member (kept out of `default-members`
 # so the default build stays light and platform-portable), so it is checked
@@ -58,6 +60,32 @@ jobs:
         run: cargo check -p warp --features tui
 
       # The warp_tui crate is not in default-members; check it explicitly.
+      - name: cargo check -p warp_tui
+        shell: bash
+        run: cargo check -p warp_tui
+
+  check-windows:
+    name: cargo check (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: windows
+          is_self_hosted: false
+
+      # Compile-checks the `cfg(windows)` code the Linux job can't reach
+      # (PATHEXT executable resolution, login-item registration, etc.).
+      - name: cargo check -p warp --features gui
+        shell: bash
+        run: cargo check -p warp --features gui --lib --tests
+
+      - name: cargo check -p warp --features tui
+        shell: bash
+        run: cargo check -p warp --features tui
+
       - name: cargo check -p warp_tui
         shell: bash
         run: cargo check -p warp_tui
