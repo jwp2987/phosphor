@@ -7,6 +7,8 @@ pub mod auth_context;
 #[cfg(not(target_family = "wasm"))]
 pub mod server_buffer_tracker;
 #[cfg(not(target_family = "wasm"))]
+pub mod ripgrep_search;
+#[cfg(not(target_family = "wasm"))]
 pub mod server_model;
 #[cfg(not(target_family = "wasm"))]
 pub mod ssh_transport;

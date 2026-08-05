@@ -21,7 +21,8 @@ use super::proto::{
     write_file_response, Abort, Authenticate, ClientMessage, DeleteFile, DeleteFileResponse,
     DeleteFileSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
     FileOperationError, Initialize, InitializeResponse, NavigatedToDirectory,
-    NavigatedToDirectoryResponse, ReadFileContextResponse, RunCommandError, RunCommandErrorCode,
+    NavigatedToDirectoryResponse, ReadFileContextResponse, RipgrepSearchRequest, RunCommandError,
+    RunCommandErrorCode,
     RunCommandRequest, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionBootstrapped,
     WriteFile, WriteFileResponse, WriteFileSuccess,
 };
@@ -614,6 +615,9 @@ impl ServerModel {
             Some(client_message::Message::RunCommand(req)) => {
                 self.handle_run_command(req, &request_id, conn_id, ctx)
             }
+            Some(client_message::Message::RipgrepSearch(req)) => {
+                self.handle_ripgrep_search(req, &request_id, conn_id, ctx)
+            }
             Some(client_message::Message::NavigatedToDirectory(msg)) => {
                 self.handle_navigated_to_directory(msg, &request_id, conn_id, ctx)
             }
@@ -865,6 +869,44 @@ impl ServerModel {
     /// On success, returns a `HandlerOutcome::Async` whose task resolves the
     /// request with a `RunCommandResponse`. On validation failure (missing
     /// executor), returns a `HandlerOutcome::Sync` error response.
+    fn handle_ripgrep_search(
+        &mut self,
+        msg: RipgrepSearchRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        log::info!(
+            "Handling RipgrepSearch ({} roots, request_id={request_id})",
+            msg.roots.len()
+        );
+
+        let params = match super::ripgrep_search::validate_request(msg) {
+            Ok(params) => params,
+            Err(message) => {
+                return HandlerOutcome::Sync(server_message::Message::RipgrepSearchResponse(
+                    super::ripgrep_search::error_response(message),
+                ));
+            }
+        };
+
+        let request_id_for_response = request_id.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move { super::ripgrep_search::run_search(params).await },
+            move |me, result, _ctx| {
+                let response = super::ripgrep_search::search_result_to_response(result);
+                me.send_server_message(
+                    Some(conn_id),
+                    Some(&request_id_for_response),
+                    server_message::Message::RipgrepSearchResponse(response),
+                );
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
     fn handle_run_command(
         &mut self,
         req: RunCommandRequest,

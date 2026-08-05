@@ -128,11 +128,21 @@ Reconciled 2026-08-04 against the actual code state. `[x]` items in issue #11 =
   87/0, warp compiles. Commit `57e1b624b`. (skipped watcher-rewrite + remote/cloud incremental path;
   standing-query results queryable but app skill-watcher wiring is a follow-up)
 - [ ] Code review over SSH (`diff_state/{local,remote}`, `git_repo_model`)
-- [ ] Remote/SSH global search (`remote_matches_to_global`) — needs PREREQUISITE: host-scoped ripgrep
-  RPC in `crates/remote_server` (proto messages+codegen, `start_ripgrep_search`/`abort_host_request`/
-  `HostRequestError`/`RipgrepSearchParams`, client path) + remote-server DAEMON ripgrep handler; fork's
-  remote_server predates host-scoped requests. Multi-crate build (not design); hard to verify locally
-  (needs a real SSH remote round-trip). Sequence: build the RPC subsystem, then the global_search rework.
+- [x] Remote/SSH global search — **DONE** on branch `parity-ripgrep-rpc` (5 commits). Layers:
+  (1) host-scoped ripgrep RPC `a580c03de` — proto `RipgrepSearch` req/resp (+Success/Error/Match/Submatch,
+  oneof tag 23), `RemoteServerClient::ripgrep_search`, server `ripgrep_search` module (validate/run via
+  `warp_ripgrep::search_streaming`, 5000-match+8MB caps) + `server_model` async handler, 2 tests.
+  (2) `GlobalSearchMatch` substrate `0d80e7618`. (3) view+model `LocalOrRemotePath` migration `14fa9a59d`
+  — directory/match model rekeyed, per-host remote dispatch via `client_for_host().ripgrep_search()`
+  (fork per-host-client idiom, NO oracle `PendingRipgrepSearch` machinery), `remote_matches_to_global`,
+  `ActiveSearch` multi-source aggregation, richer `Started{remote_host_count}`/`Completed{capped,
+  local/remote failures}`, remote-open via `OpenRemoteFile{line_col}` → `open_remote_file_with_target`,
+  pre-trim `column_num`, `buffer_location` core↔util `HostId` bridges. (4) seam wiring `bac2561c2` —
+  remote root bound through `set_server_file_browser_root` (local `DirectoriesChanged` is local-only since
+  `active_session_path_if_local` is None for remote); view merges local + server roots in `recompute_roots`.
+  Verified: warp lib 3878/0 (33 ignored); 2 pre-existing doctest fails in untouched modules. Manual QA
+  (real SSH remote round-trip) + wasm-target build still pending. Also unblocks code-review-over-SSH
+  (consumes the client method directly, no UI migration).
 - [x] URI local deep-links — Session/TabConfig/settings-widget/OpenFileEditor; 21 tests; warp 3850/0. Commit `f1c9dbaa1`. (cloud/team variants + fork-absent custom_router skipped)
 - [ ] Skill remote-path resolution (`get_scope_for_path`, `LocalOrRemotePath`)
 - [x] `ModelEventDispatcher` SSH gate — `SshRemoteServerSupport::{Enabled,Disabled}`; per-instance (GUI=Enabled/TUI=Disabled); 4 tests; warp 3850/0. Commit `1c1fff909`.

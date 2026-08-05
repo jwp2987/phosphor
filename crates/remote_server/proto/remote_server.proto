@@ -33,6 +33,7 @@ message ClientMessage {
     CreateDirectory create_directory = 20;
     ReadFileChunk read_file_chunk = 21;
     WriteFileChunk write_file_chunk = 22;
+    RipgrepSearchRequest ripgrep_search = 23;
   }
 }
 // Top-level envelope for all server → client messages.
@@ -60,6 +61,7 @@ message ServerMessage {
     CreateDirectoryResponse create_directory_response = 20;
     ReadFileChunkResponse read_file_chunk_response = 21;
     WriteFileChunkResponse write_file_chunk_response = 22;
+    RipgrepSearchResponse ripgrep_search_response = 23;
   }
 }
 
@@ -540,4 +542,55 @@ message WriteFileChunkResponse {
     WriteFileChunkSuccess success = 1;
     FileOperationError error = 2;
   }
+}
+
+// ── Ripgrep search (global search over an SSH-remote session) ──────
+// Client → server: run a ripgrep search over the given root directories on the
+// host. Used by global search for remote sessions. Routing is implicit: the
+// request travels on the target host's own connection (the fork keeps one
+// per-session/per-host connection), so no host-scoped envelope is needed.
+message RipgrepSearchRequest {
+  // Regex pattern. Already escaped client-side for literal (non-regex) searches,
+  // matching local global search behavior.
+  string pattern = 1;
+  // Absolute directories on the host to search.
+  repeated string roots = 2;
+  bool ignore_case = 3;
+  bool multiline = 4;
+  // Maximum number of matched lines to return. The server also applies its own
+  // match and approximate payload caps.
+  uint32 max_matches = 5;
+}
+
+// Server → client: result of a RipgrepSearchRequest.
+message RipgrepSearchResponse {
+  oneof result {
+    RipgrepSearchSuccess success = 1;
+    RipgrepSearchError error = 2;
+  }
+}
+
+message RipgrepSearchSuccess {
+  repeated RipgrepSearchMatch matches = 1;
+  // True when the search stopped early because the match cap was reached.
+  bool capped = 2;
+}
+
+message RipgrepSearchError {
+  string message = 1;
+}
+
+// A single matched line in a file. A line may contain multiple submatches; the
+// client expands them into per-submatch result rows.
+message RipgrepSearchMatch {
+  string file_path = 1;
+  uint32 line_number = 2;
+  string line_text = 3;
+  repeated RipgrepSearchSubmatch submatches = 4;
+}
+
+// Byte offsets into `line_text` for one submatch (end exclusive).
+message RipgrepSearchSubmatch {
+  uint64 byte_start = 1;
+  uint64 byte_end = 2;
 }
