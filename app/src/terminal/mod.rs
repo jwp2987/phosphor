@@ -38,6 +38,7 @@ pub mod conversation_restoration;
 pub mod dynamic_enum_suggestions;
 pub mod event;
 pub mod event_listener;
+pub(crate) mod focus_env;
 pub mod find;
 pub mod general_settings;
 pub mod grid_renderer;
