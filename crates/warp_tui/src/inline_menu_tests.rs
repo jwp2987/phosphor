@@ -728,7 +728,10 @@ fn interactive_menu_scrolls_only_within_its_bounds() {
         app.read(move |ctx| {
             let mut menu = InteractiveMenuHarness::new(rows_snapshot(3, 0, 0, 5), ctx);
             assert!(menu.scroll_at(1, 2, ctx));
-            assert_eq!(menu.scroll_delta.borrow_mut().take(), Some(-2));
+            // Two wheel notches move 2 * WHEEL_STEP rows, matching the editor
+            // and transcript scrollables (2 rows/notch), negated so a positive
+            // wheel delta scrolls toward the top of the list.
+            assert_eq!(menu.scroll_delta.borrow_mut().take(), Some(-4));
             assert!(!menu.scroll_at(10, 1, ctx));
             assert_eq!(*menu.scroll_delta.borrow(), None);
             assert_eq!(*menu.accepted_index.borrow(), None);

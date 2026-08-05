@@ -1100,9 +1100,12 @@ impl TuiElement for TuiInlineMenuElement {
             && delta.1 != 0
         {
             // Positive wheel delta scrolls toward the start of the list,
-            // matching `option_selector` and the transcript scrollable.
+            // matching `option_selector` and the transcript scrollable. Scale
+            // by `WHEEL_STEP` so a notch moves the same number of rows as the
+            // editor/transcript scrollables (which use `TuiScrollable`), rather
+            // than the 1 row/notch this handler used before.
             reset_hover_states(&self.item_mouse_states);
-            on_scroll(-delta.1, event_ctx, app);
+            on_scroll(-delta.1 * crate::editor_element::WHEEL_STEP, event_ctx, app);
             return true;
         }
         self.content
