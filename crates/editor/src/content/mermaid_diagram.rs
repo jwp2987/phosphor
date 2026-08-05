@@ -17,6 +17,7 @@ use crate::render::{
 };
 
 const DEFAULT_MERMAID_HEIGHT_LINE_MULTIPLIER: f32 = 10.0;
+const FAILED_MERMAID_HEIGHT_LINE_MULTIPLIER: f32 = 2.0;
 
 struct MermaidDiagramAsset;
 
@@ -50,10 +51,13 @@ pub fn mermaid_diagram_layout(
 ) -> (AssetSource, ImageBlockConfig) {
     let asset_source = mermaid_asset_source(source);
     let max_width = layout.max_width() - spacing.x_axis_offset();
-    let default_height = layout.rich_text_styles().base_line_height()
-        * DEFAULT_MERMAID_HEIGHT_LINE_MULTIPLIER.into_pixels();
-    let (width, height) =
-        mermaid_diagram_size(&asset_source, max_width, app).unwrap_or((max_width, default_height));
+    let (width, height) = mermaid_diagram_size(&asset_source, max_width, app).unwrap_or_else(|| {
+        // A diagram that failed to render collapses to a short placeholder
+        // height instead of reserving the full loading-state height.
+        let height = layout.rich_text_styles().base_line_height()
+            * mermaid_diagram_fallback_height_line_multiplier(&asset_source, app).into_pixels();
+        (max_width, height)
+    });
 
     (
         asset_source,
@@ -63,6 +67,19 @@ pub fn mermaid_diagram_layout(
             spacing,
         },
     )
+}
+
+/// The line-height multiplier for a diagram with no intrinsic size yet: a
+/// short placeholder once it has failed to load, otherwise the taller
+/// loading/default reservation.
+fn mermaid_diagram_fallback_height_line_multiplier(asset_source: &AssetSource, app: &AppContext) -> f32 {
+    let asset_cache = AssetCache::as_ref(app);
+    match asset_cache.load_asset::<ImageType>(asset_source.clone()) {
+        AssetState::FailedToLoad(_) => FAILED_MERMAID_HEIGHT_LINE_MULTIPLIER,
+        AssetState::Loading { .. } | AssetState::Loaded { .. } | AssetState::Evicted => {
+            DEFAULT_MERMAID_HEIGHT_LINE_MULTIPLIER
+        }
+    }
 }
 
 fn mermaid_diagram_size(
