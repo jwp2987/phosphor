@@ -240,7 +240,7 @@ impl From<&GitDiffWithBaseContent> for GitDiffData {
 }
 
 /// Represents the complete git diff information for a repository
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GitDiffData {
     pub files: Vec<FileDiff>,
     pub total_additions: usize,
@@ -376,7 +376,7 @@ pub struct DiffStateModel {
     metadata_refresh_enabled: bool,
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub struct DiffStats {
     pub files_changed: usize,
     pub total_additions: usize,

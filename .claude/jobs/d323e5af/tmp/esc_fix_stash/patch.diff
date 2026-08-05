@@ -1,0 +1,111 @@
+diff --git a/crates/warp_tui/src/tui_shell_command_view.rs b/crates/warp_tui/src/tui_shell_command_view.rs
+index 66b98c99e..dfb384613 100644
+--- a/crates/warp_tui/src/tui_shell_command_view.rs
++++ b/crates/warp_tui/src/tui_shell_command_view.rs
+@@ -45,12 +45,11 @@ pub(crate) fn init(app: &mut AppContext) {
+     app.register_fixed_bindings([
+         FixedBinding::new(
+             "escape",
+-            TuiShellCommandViewAction::CancelCommandEdit,
+-            predicate.clone(),
+-        )
+-        .with_group(TUI_BINDING_GROUP),
+-        FixedBinding::new(
+-            "ctrl-e",
++            // Esc while the command body editor is focused exits the editor
++            // and restores Yes as the highlighted option -- it does NOT
++            // cancel the tool call. A subsequent Esc (with the list
++            // focused) cancels via the PERMISSION_PROMPT_ACTIVE ->
++            // CancelOrBack path.
+             TuiShellCommandViewAction::SaveCommandEdit,
+             predicate.clone(),
+         )
+@@ -144,12 +143,6 @@ pub(super) enum TuiShellCommandViewEvent {
+ /// User interactions handled by the shell-command view.
+ #[derive(Clone, Debug)]
+ pub(super) enum TuiShellCommandViewAction {
+-    /// Rejects the blocked command outright (Escape while *not* editing).
+-    CancelPermission,
+-    /// Escape while actively editing the proposed command: exits edit mode
+-    /// and discards the in-progress edit, without rejecting the command
+-    /// itself. Distinct from [`Self::CancelPermission`].
+-    CancelCommandEdit,
+     SaveCommandEdit,
+     ToggleExpanded,
+ }
+@@ -269,24 +262,6 @@ impl TuiShellCommandView {
+         self.invalidate_layout(ctx);
+     }
+ 
+-    /// Escape while editing: exits edit mode back to the read-only reviewing
+-    /// state, discarding the in-progress edit and restoring the original
+-    /// proposed command, rather than rejecting the whole request (that's
+-    /// [`Self::reject`], still reachable via Escape once edit mode is
+-    /// exited).
+-    fn cancel_command_edit(&mut self, ctx: &mut ViewContext<Self>) {
+-        if !self.command_editor.as_ref(ctx).is_focused() {
+-            return;
+-        }
+-        let original_command = Self::action_command(&self.action).to_owned();
+-        self.command_editor
+-            .update(ctx, |editor, ctx| editor.set_text(original_command, ctx));
+-        self.command_was_edited = false;
+-        self.permission_prompt
+-            .update(ctx, |prompt, ctx| prompt.restore_options_focus(ctx));
+-        self.invalidate_layout(ctx);
+-    }
+-
+     fn accept(&mut self, ctx: &mut ViewContext<Self>) {
+         let command = self.command_editor.as_ref(ctx).text(ctx);
+         if command.trim().is_empty() {
+@@ -530,8 +505,6 @@ impl TypedActionView for TuiShellCommandView {
+ 
+     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
+         match action {
+-            TuiShellCommandViewAction::CancelPermission => self.reject(ctx),
+-            TuiShellCommandViewAction::CancelCommandEdit => self.cancel_command_edit(ctx),
+             TuiShellCommandViewAction::SaveCommandEdit => self.save_command_edit(ctx),
+             TuiShellCommandViewAction::ToggleExpanded => {
+                 if self.user_controls_command() {
+diff --git a/crates/warp_tui/src/tui_shell_command_view_tests.rs b/crates/warp_tui/src/tui_shell_command_view_tests.rs
+index e4b1613dc..4dd15984c 100644
+--- a/crates/warp_tui/src/tui_shell_command_view_tests.rs
++++ b/crates/warp_tui/src/tui_shell_command_view_tests.rs
+@@ -173,7 +173,7 @@ fn finishing_command_editing_selects_yes_without_executing() {
+ }
+ 
+ #[test]
+-fn escape_while_editing_exits_edit_mode_without_rejecting() {
++fn escape_while_editing_exits_edit_mode_without_rejecting_or_discarding() {
+     App::test((), |mut app| async move {
+         app.update(super::init);
+         let action = command_action("action-1", "echo original");
+@@ -203,7 +203,7 @@ fn escape_while_editing_exits_edit_mode_without_rejecting() {
+         });
+         let command_editor = app.read(|ctx| view.as_ref(ctx).command_editor.clone());
+         command_editor.update(&mut app, |editor, ctx| {
+-            editor.set_text("echo edited but abandoned", ctx)
++            editor.set_text("echo edited", ctx)
+         });
+         present_shell_view(&mut app, &view);
+ 
+@@ -212,14 +212,15 @@ fn escape_while_editing_exits_edit_mode_without_rejecting() {
+         app.read(|ctx| {
+             let view = view.as_ref(ctx);
+             // Edit mode was exited (focus returned to the read-only reviewing
+-            // state), not the whole request rejected.
++            // state, Yes highlighted), not the whole request rejected.
+             assert!(!view.command_editor.as_ref(ctx).is_focused());
+             assert_eq!(view.permission_prompt.as_ref(ctx).highlighted_index(ctx), Some(0));
+-            // The in-progress edit was discarded; the original proposed
+-            // command is restored.
++            // Escape while editing SAVES the edit, matching Enter/the old
++            // ctrl-e -- it does not cancel the tool call, and it does not
++            // discard the in-progress edit either.
+             assert_eq!(
+                 view.command_editor.as_ref(ctx).text(ctx),
+-                "echo original"
++                "echo edited"
+             );
+             // The command is still pending/blocked, not rejected.
+             assert!(

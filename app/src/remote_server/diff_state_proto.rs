@@ -1,0 +1,377 @@
+//! Conversions between the diff-state proto wire messages and the fork's
+//! domain types in `code_review::diff_state`, `code_review::diff_size_limits`,
+//! and `util::git`.
+//!
+//! The proto schema was ported faithfully from Warp's `diff_state.proto`, which
+//! carries a few fields the fork's domain types do not have yet (per-file
+//! `files` on `Commit` / `DiffMetadataAgainstBase`, the extra `PrInfo` fields,
+//! `FileDiff.content_at_base`, and the `DIFF_SIZE_UNRENDERABLE_FILE_TOO_LARGE`
+//! size). Those are handled lossily here: dropped on decode, defaulted on
+//! encode. `content_at_base` is threaded explicitly rather than stored on the
+//! fork's plain `FileDiff` (the fork keeps base content in the separate
+//! `FileDiffAndContent`).
+//!
+//! These live in `app` rather than the `remote_server` crate because the
+//! domain types are defined here and `remote_server` cannot depend on `app`.
+
+// The non-test consumers (client methods, daemon handler, DiffStateModel remote
+// backend) land in the following diff-state increments; until then these
+// converters are exercised only by the unit tests below.
+#![allow(dead_code)]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use crate::code_review::diff_size_limits::DiffSize;
+use crate::code_review::diff_state::{
+    DiffHunk, DiffLine, DiffLineType, DiffMode, DiffState, FileDiff, FileStatusInfo, GitDiffData,
+    GitFileStatus,
+};
+use crate::util::git::{Commit, FileChangeEntry, PrInfo};
+
+use super::proto;
+
+// ── DiffLineType ─────────────────────────────────────────────────
+
+pub(super) fn diff_line_type_to_proto(value: &DiffLineType) -> proto::DiffLineType {
+    match value {
+        DiffLineType::Context => proto::DiffLineType::Context,
+        DiffLineType::Add => proto::DiffLineType::Add,
+        DiffLineType::Delete => proto::DiffLineType::Delete,
+        DiffLineType::HunkHeader => proto::DiffLineType::HunkHeader,
+    }
+}
+
+pub(super) fn proto_to_diff_line_type(value: i32) -> DiffLineType {
+    match proto::DiffLineType::try_from(value).unwrap_or(proto::DiffLineType::Unspecified) {
+        proto::DiffLineType::Add => DiffLineType::Add,
+        proto::DiffLineType::Delete => DiffLineType::Delete,
+        proto::DiffLineType::HunkHeader => DiffLineType::HunkHeader,
+        // The fork's domain has no Unspecified; treat it (and Context) as Context.
+        proto::DiffLineType::Context | proto::DiffLineType::Unspecified => DiffLineType::Context,
+    }
+}
+
+// ── DiffLine ─────────────────────────────────────────────────────
+
+pub(super) fn diff_line_to_proto(line: &DiffLine) -> proto::DiffLine {
+    proto::DiffLine {
+        line_type: diff_line_type_to_proto(&line.line_type) as i32,
+        old_line_number: line.old_line_number.map(|n| n as u64),
+        new_line_number: line.new_line_number.map(|n| n as u64),
+        text: line.text.clone(),
+        no_trailing_newline: line.no_trailing_newline,
+    }
+}
+
+pub(super) fn proto_to_diff_line(line: &proto::DiffLine) -> DiffLine {
+    DiffLine {
+        line_type: proto_to_diff_line_type(line.line_type),
+        old_line_number: line.old_line_number.map(|n| n as usize),
+        new_line_number: line.new_line_number.map(|n| n as usize),
+        text: line.text.clone(),
+        no_trailing_newline: line.no_trailing_newline,
+    }
+}
+
+// ── DiffHunk ─────────────────────────────────────────────────────
+
+pub(super) fn diff_hunk_to_proto(hunk: &DiffHunk) -> proto::DiffHunk {
+    proto::DiffHunk {
+        old_start_line: hunk.old_start_line as u64,
+        old_line_count: hunk.old_line_count as u64,
+        new_start_line: hunk.new_start_line as u64,
+        new_line_count: hunk.new_line_count as u64,
+        lines: hunk.lines.iter().map(diff_line_to_proto).collect(),
+        unified_diff_start: hunk.unified_diff_start as u64,
+        unified_diff_end: hunk.unified_diff_end as u64,
+    }
+}
+
+pub(super) fn proto_to_diff_hunk(hunk: &proto::DiffHunk) -> DiffHunk {
+    DiffHunk {
+        old_start_line: hunk.old_start_line as usize,
+        old_line_count: hunk.old_line_count as usize,
+        new_start_line: hunk.new_start_line as usize,
+        new_line_count: hunk.new_line_count as usize,
+        lines: hunk.lines.iter().map(proto_to_diff_line).collect(),
+        unified_diff_start: hunk.unified_diff_start as usize,
+        unified_diff_end: hunk.unified_diff_end as usize,
+    }
+}
+
+// ── GitFileStatus ────────────────────────────────────────────────
+
+pub(super) fn git_file_status_to_proto(status: &GitFileStatus) -> proto::GitFileStatus {
+    use proto::git_file_status::Status;
+    let status = match status {
+        GitFileStatus::New => Status::NewFile(proto::GitFileStatusNew {}),
+        GitFileStatus::Modified => Status::Modified(proto::GitFileStatusModified {}),
+        GitFileStatus::Deleted => Status::Deleted(proto::GitFileStatusDeleted {}),
+        GitFileStatus::Renamed { old_path } => Status::Renamed(proto::GitFileStatusRenamed {
+            old_path: old_path.clone(),
+        }),
+        GitFileStatus::Copied { old_path } => Status::Copied(proto::GitFileStatusCopied {
+            old_path: old_path.clone(),
+        }),
+        GitFileStatus::Untracked => Status::Untracked(proto::GitFileStatusUntracked {}),
+        GitFileStatus::Conflicted => Status::Conflicted(proto::GitFileStatusConflicted {}),
+    };
+    proto::GitFileStatus {
+        status: Some(status),
+    }
+}
+
+pub(super) fn proto_to_git_file_status(status: &proto::GitFileStatus) -> GitFileStatus {
+    use proto::git_file_status::Status;
+    match &status.status {
+        Some(Status::NewFile(_)) => GitFileStatus::New,
+        Some(Status::Modified(_)) => GitFileStatus::Modified,
+        Some(Status::Deleted(_)) => GitFileStatus::Deleted,
+        Some(Status::Renamed(r)) => GitFileStatus::Renamed {
+            old_path: r.old_path.clone(),
+        },
+        Some(Status::Copied(c)) => GitFileStatus::Copied {
+            old_path: c.old_path.clone(),
+        },
+        Some(Status::Untracked(_)) => GitFileStatus::Untracked,
+        Some(Status::Conflicted(_)) => GitFileStatus::Conflicted,
+        // Missing oneof: fall back to Modified (the domain's TryFrom default).
+        None => GitFileStatus::Modified,
+    }
+}
+
+// ── DiffSize ─────────────────────────────────────────────────────
+
+pub(super) fn diff_size_to_proto(size: &DiffSize) -> proto::DiffSize {
+    match size {
+        DiffSize::Normal => proto::DiffSize::Normal,
+        DiffSize::Large => proto::DiffSize::Large,
+        DiffSize::Unrenderable => proto::DiffSize::UnrenderableDiffTooLarge,
+    }
+}
+
+pub(super) fn proto_to_diff_size(size: i32) -> DiffSize {
+    match proto::DiffSize::try_from(size).unwrap_or(proto::DiffSize::Unspecified) {
+        proto::DiffSize::Large => DiffSize::Large,
+        proto::DiffSize::UnrenderableDiffTooLarge | proto::DiffSize::UnrenderableFileTooLarge => {
+            DiffSize::Unrenderable
+        }
+        // The fork has no Unspecified; treat it (and Normal) as Normal.
+        proto::DiffSize::Normal | proto::DiffSize::Unspecified => DiffSize::Normal,
+    }
+}
+
+// ── FileDiff ─────────────────────────────────────────────────────
+// The fork's `FileDiff` has no base-content field (that lives in the separate
+// `FileDiffAndContent`), so `content_at_base` is passed in / returned out.
+
+pub(super) fn file_diff_to_proto(diff: &FileDiff, content_at_base: Option<String>) -> proto::FileDiff {
+    proto::FileDiff {
+        file_path: diff.file_path.to_string_lossy().into_owned(),
+        status: Some(git_file_status_to_proto(&diff.status)),
+        hunks: diff.hunks.iter().map(diff_hunk_to_proto).collect(),
+        is_binary: diff.is_binary,
+        is_autogenerated: diff.is_autogenerated,
+        max_line_number: diff.max_line_number as u64,
+        has_hidden_bidi_chars: diff.has_hidden_bidi_chars,
+        size: diff_size_to_proto(&diff.size) as i32,
+        content_at_base,
+    }
+}
+
+/// Decodes a proto `FileDiff` into the fork's `FileDiff` plus its detached
+/// base content (`None` when the wire omitted it).
+pub(super) fn proto_to_file_diff(diff: &proto::FileDiff) -> (FileDiff, Option<String>) {
+    let file_diff = FileDiff {
+        file_path: PathBuf::from(&diff.file_path),
+        status: diff
+            .status
+            .as_ref()
+            .map(proto_to_git_file_status)
+            .unwrap_or(GitFileStatus::Modified),
+        hunks: Arc::new(diff.hunks.iter().map(proto_to_diff_hunk).collect()),
+        is_binary: diff.is_binary,
+        is_autogenerated: diff.is_autogenerated,
+        max_line_number: diff.max_line_number as usize,
+        has_hidden_bidi_chars: diff.has_hidden_bidi_chars,
+        size: proto_to_diff_size(diff.size),
+    };
+    (file_diff, diff.content_at_base.clone())
+}
+
+// ── GitDiffData ──────────────────────────────────────────────────
+
+pub(super) fn git_diff_data_to_proto(data: &GitDiffData) -> proto::GitDiffData {
+    proto::GitDiffData {
+        files: data
+            .files
+            .iter()
+            .map(|f| file_diff_to_proto(f, None))
+            .collect(),
+        total_additions: data.total_additions as u64,
+        total_deletions: data.total_deletions as u64,
+        files_changed: data.files_changed as u64,
+    }
+}
+
+pub(super) fn proto_to_git_diff_data(data: &proto::GitDiffData) -> GitDiffData {
+    GitDiffData {
+        files: data
+            .files
+            .iter()
+            .map(|f| proto_to_file_diff(f).0)
+            .collect(),
+        total_additions: data.total_additions as usize,
+        total_deletions: data.total_deletions as usize,
+        files_changed: data.files_changed as usize,
+    }
+}
+
+// ── DiffMode ─────────────────────────────────────────────────────
+
+pub(super) fn diff_mode_to_proto(mode: &DiffMode) -> proto::DiffMode {
+    use proto::diff_mode::Mode;
+    let mode = match mode {
+        DiffMode::Head => Mode::Head(proto::DiffModeHead {}),
+        DiffMode::MainBranch => Mode::MainBranch(proto::DiffModeMainBranch {}),
+        DiffMode::OtherBranch(branch_name) => Mode::OtherBranch(proto::DiffModeOtherBranch {
+            branch_name: branch_name.clone(),
+        }),
+    };
+    proto::DiffMode { mode: Some(mode) }
+}
+
+pub(super) fn proto_to_diff_mode(mode: &proto::DiffMode) -> DiffMode {
+    use proto::diff_mode::Mode;
+    match &mode.mode {
+        Some(Mode::MainBranch(_)) => DiffMode::MainBranch,
+        Some(Mode::OtherBranch(b)) => DiffMode::OtherBranch(b.branch_name.clone()),
+        // Missing oneof or Head → Head (the domain default).
+        Some(Mode::Head(_)) | None => DiffMode::Head,
+    }
+}
+
+// ── DiffState ────────────────────────────────────────────────────
+// The proto `DiffState` carries only the variant tag; the Loaded diff payload
+// travels separately (in `DiffStateSnapshot.diffs`), matching Warp's split.
+
+pub(super) fn diff_state_to_proto(state: &DiffState) -> proto::DiffState {
+    use proto::diff_state::State;
+    let state = match state {
+        DiffState::NotInRepository => State::NotInRepository(proto::DiffStateNotInRepository {}),
+        DiffState::Loading => State::Loading(proto::DiffStateLoading {}),
+        DiffState::Error(message) => State::Error(proto::DiffStateErrorValue {
+            message: message.clone(),
+        }),
+        DiffState::Loaded(_) => State::Loaded(proto::DiffStateLoaded {}),
+    };
+    proto::DiffState { state: Some(state) }
+}
+
+/// Rebuilds the domain `DiffState`, folding the separately-carried `diffs`
+/// payload back into the `Loaded` variant.
+pub(super) fn proto_to_diff_state(state: &proto::DiffState, diffs: Option<GitDiffData>) -> DiffState {
+    use proto::diff_state::State;
+    match &state.state {
+        Some(State::NotInRepository(_)) | None => DiffState::NotInRepository,
+        Some(State::Loading(_)) => DiffState::Loading,
+        Some(State::Error(e)) => DiffState::Error(e.message.clone()),
+        Some(State::Loaded(_)) => {
+            DiffState::Loaded(diffs.unwrap_or_else(|| GitDiffData {
+                files: Vec::new(),
+                total_additions: 0,
+                total_deletions: 0,
+                files_changed: 0,
+            }))
+        }
+    }
+}
+
+// ── FileStatusInfo ───────────────────────────────────────────────
+
+pub(super) fn file_status_info_to_proto(info: &FileStatusInfo) -> proto::FileStatusInfo {
+    proto::FileStatusInfo {
+        path: info.path.to_string_lossy().into_owned(),
+        status: Some(git_file_status_to_proto(&info.status)),
+    }
+}
+
+pub(super) fn proto_to_file_status_info(info: &proto::FileStatusInfo) -> FileStatusInfo {
+    FileStatusInfo {
+        path: PathBuf::from(&info.path),
+        status: info
+            .status
+            .as_ref()
+            .map(proto_to_git_file_status)
+            .unwrap_or(GitFileStatus::Modified),
+    }
+}
+
+// ── FileChangeEntry (util/git.rs) ────────────────────────────────
+
+pub(super) fn file_change_entry_to_proto(entry: &FileChangeEntry) -> proto::FileChangeEntry {
+    proto::FileChangeEntry {
+        path: entry.path.clone(),
+        additions: entry.additions as u64,
+        deletions: entry.deletions as u64,
+    }
+}
+
+pub(super) fn proto_to_file_change_entry(entry: &proto::FileChangeEntry) -> FileChangeEntry {
+    FileChangeEntry {
+        path: entry.path.clone(),
+        additions: entry.additions as usize,
+        deletions: entry.deletions as usize,
+    }
+}
+
+// ── Commit (util/git.rs) ─────────────────────────────────────────
+// The fork's `Commit` has no per-file `files`; encoded as empty, dropped on
+// decode.
+
+pub(super) fn commit_to_proto(commit: &Commit) -> proto::Commit {
+    proto::Commit {
+        hash: commit.hash.clone(),
+        subject: commit.subject.clone(),
+        files_changed: commit.files_changed as u64,
+        additions: commit.additions as u64,
+        deletions: commit.deletions as u64,
+        files: Vec::new(),
+    }
+}
+
+pub(super) fn proto_to_commit(commit: &proto::Commit) -> Commit {
+    Commit {
+        hash: commit.hash.clone(),
+        subject: commit.subject.clone(),
+        files_changed: commit.files_changed as usize,
+        additions: commit.additions as usize,
+        deletions: commit.deletions as usize,
+    }
+}
+
+// ── PrInfo (util/git.rs) ─────────────────────────────────────────
+// The fork's `PrInfo` carries only number + url; the extra proto fields
+// (state / draft / base_branch) are defaulted on encode, dropped on decode.
+
+pub(super) fn pr_info_to_proto(pr: &PrInfo) -> proto::PrInfo {
+    proto::PrInfo {
+        number: pr.number,
+        url: pr.url.clone(),
+        state: String::new(),
+        draft: false,
+        base_branch: String::new(),
+    }
+}
+
+pub(super) fn proto_to_pr_info(pr: &proto::PrInfo) -> PrInfo {
+    PrInfo {
+        number: pr.number,
+        url: pr.url.clone(),
+    }
+}
+
+#[cfg(test)]
+#[path = "diff_state_proto_tests.rs"]
+mod tests;

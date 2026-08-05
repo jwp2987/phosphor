@@ -311,7 +311,7 @@ pub async fn get_repo_git_summary(repo_root: &Path) -> Option<RepoGitSummary> {
 }
 
 /// Short summary of a commit: hash and subject line.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     pub hash: String,
     pub subject: String,
@@ -321,7 +321,7 @@ pub struct Commit {
 }
 
 /// A single changed file with per-file addition/deletion counts.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChangeEntry {
     pub path: String,
     pub additions: usize,
@@ -742,7 +742,7 @@ pub async fn run_push(_repo_path: &Path, _branch: &str, _path_env: Option<&str>)
 // ── gh CLI helpers ───────────────────────────────────────────────────────────
 
 /// PR information returned by `gh pr view`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrInfo {
     pub number: u64,
     pub url: String,

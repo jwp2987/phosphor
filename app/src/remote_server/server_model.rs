@@ -17,10 +17,12 @@ use warp_util::content_version::ContentVersion;
 use warp_util::file::FileId;
 
 use super::proto::{
-    client_message, delete_file_response, run_command_response, server_message,
-    write_file_response, Abort, Authenticate, ClientMessage, DeleteFile, DeleteFileResponse,
+    client_message, delete_file_response, get_diff_state_response, run_command_response,
+    server_message, write_file_response, Abort, Authenticate, ClientMessage, DiffStateError,
+    UnsubscribeDiffState, DeleteFile, DeleteFileResponse,
     DeleteFileSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
-    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, Initialize, InitializeResponse,
+    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
+    GetDiffStateResponse, Initialize, InitializeResponse,
     NavigatedToDirectory,
     NavigatedToDirectoryResponse, ReadFileContextResponse, RipgrepSearchRequest, RunCommandError,
     RunCommandErrorCode,
@@ -629,6 +631,13 @@ impl ServerModel {
             Some(client_message::Message::GetCommittedBranchFiles(req)) => {
                 self.handle_get_committed_branch_files(req, &request_id, conn_id, ctx)
             }
+            Some(client_message::Message::GetDiffState(req)) => {
+                self.handle_get_diff_state(req, &request_id, conn_id, ctx)
+            }
+            Some(client_message::Message::UnsubscribeDiffState(msg)) => {
+                self.handle_unsubscribe_diff_state(msg, conn_id, ctx);
+                return; // fire-and-forget notification
+            }
             Some(client_message::Message::NavigatedToDirectory(msg)) => {
                 self.handle_navigated_to_directory(msg, &request_id, conn_id, ctx)
             }
@@ -1024,6 +1033,41 @@ impl ServerModel {
             ctx,
         );
         HandlerOutcome::Async(Some(handle))
+    }
+
+    /// Handles `GetDiffState` — subscribe to diff state for a (repo, mode)
+    /// pair, replying with an initial snapshot and then pushing changes.
+    ///
+    /// TODO(diff-state increment 4): the real subscription + push logic (per
+    /// connection tracking, headless diff computation, watcher-driven pushes)
+    /// lands next. Until then the daemon answers with an explicit
+    /// not-yet-supported error rather than dropping the request.
+    fn handle_get_diff_state(
+        &mut self,
+        _msg: GetDiffState,
+        _request_id: &RequestId,
+        _conn_id: ConnectionId,
+        _ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        HandlerOutcome::Sync(server_message::Message::GetDiffStateResponse(
+            GetDiffStateResponse {
+                result: Some(get_diff_state_response::Result::Error(DiffStateError {
+                    message: "Diff state subscription is not yet supported on this server"
+                        .to_string(),
+                })),
+            },
+        ))
+    }
+
+    /// Handles `UnsubscribeDiffState` — fire-and-forget removal of a diff-state
+    /// subscription. No subscriptions exist yet (see increment 4), so this is a
+    /// no-op for now.
+    fn handle_unsubscribe_diff_state(
+        &mut self,
+        _msg: UnsubscribeDiffState,
+        _conn_id: ConnectionId,
+        _ctx: &mut ModelContext<Self>,
+    ) {
     }
 
     fn handle_run_command(
