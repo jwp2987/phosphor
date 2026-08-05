@@ -1,0 +1,1708 @@
+diff --git a/app/src/ai/blocklist/block.rs b/app/src/ai/blocklist/block.rs
+index b6586d10f..bd025d54c 100644
+--- a/app/src/ai/blocklist/block.rs
++++ b/app/src/ai/blocklist/block.rs
+@@ -1798,7 +1798,13 @@ impl AIBlock {
+                     } else {
+                         format!("MCP Tool: {name} ({display_input})")
+                     };
+-                    self.handle_mcp_tool_stream_update(action_id, &command_text, ctx);
++                    self.handle_mcp_tool_stream_update(
++                        action_id,
++                        name,
++                        &command_text,
++                        *server_id,
++                        ctx,
++                    );
+                 }
+                 AIAgentAction {
+                     id: action_id,
+@@ -3038,13 +3044,17 @@ impl AIBlock {
+     fn handle_mcp_tool_stream_update(
+         &mut self,
+         action_id: &AIAgentActionId,
++        tool_name: &str,
+         command_text: &str,
++        server_id: Option<uuid::Uuid>,
+         ctx: &mut ViewContext<Self>,
+     ) {
+         match self.requested_mcp_tools.get_mut(action_id) {
+             Some(requested_mcp_tool) => {
+                 requested_mcp_tool.view.update(ctx, |view, ctx| {
+                     view.apply_streamed_update(command_text, ctx);
++                    view.update_mcp_tool_name(tool_name);
++                    view.update_mcp_server_id(server_id);
+                     ctx.notify();
+                 });
+             }
+@@ -3065,6 +3075,8 @@ impl AIBlock {
+                         ctx,
+                     );
+                     view.apply_streamed_update(command_text, ctx);
++                    view.update_mcp_tool_name(tool_name);
++                    view.update_mcp_server_id(server_id);
+                     view
+                 });
+                 let action_id_clone = action_id.clone();
+diff --git a/app/src/ai/blocklist/block/view_impl/common.rs b/app/src/ai/blocklist/block/view_impl/common.rs
+index 4cb7e9989..9c6b487f7 100644
+--- a/app/src/ai/blocklist/block/view_impl/common.rs
++++ b/app/src/ai/blocklist/block/view_impl/common.rs
+@@ -347,8 +347,15 @@ pub fn render_warping_indicator<V: View>(
+             .map(|action| &action.action)
+         {
+             Some(AIAgentActionType::Grep { .. }) => LOAD_OUTPUT_MESSAGE_FOR_GREP.to_owned(),
+-            Some(AIAgentActionType::CallMCPTool { name, .. }) => {
+-                format!("Calling \"{name}\" MCP tool...")
++            Some(AIAgentActionType::CallMCPTool {
++                server_id, name, ..
++            }) => {
++                match server_id.as_ref().and_then(|id| {
++                    crate::ai::mcp::TemplatableMCPServerManager::get_mcp_name(id, app)
++                }) {
++                    Some(server) => format!("Calling \"{name}\" MCP tool on {server}..."),
++                    None => format!("Calling \"{name}\" MCP tool..."),
++                }
+             }
+             Some(AIAgentActionType::ReadMCPResource { name, .. }) => {
+                 format!("Reading \"{name}\" MCP resource...")
+diff --git a/app/src/ai/blocklist/inline_action/requested_command.rs b/app/src/ai/blocklist/inline_action/requested_command.rs
+index a924dfcf8..72318ff2b 100644
+--- a/app/src/ai/blocklist/inline_action/requested_command.rs
++++ b/app/src/ai/blocklist/inline_action/requested_command.rs
+@@ -7,6 +7,7 @@ use std::cmp::{Ordering, PartialEq};
+ use std::collections::HashMap;
+ use std::rc::Rc;
+ use std::sync::Arc;
++use uuid::Uuid;
+ use warp_core::ui::appearance::Appearance;
+ use warp_core::ui::Icon;
+ use warp_editor::render::element::VerticalExpansionBehavior;
+@@ -38,6 +39,7 @@ use crate::ai::blocklist::model::{AIBlockModel, AIBlockModelHelper};
+ use crate::ai::blocklist::{
+     AIBlock, BlocklistAIActionEvent, BlocklistAIHistoryModel, ClientIdentifiers,
+ };
++use crate::ai::mcp::TemplatableMCPServerManager;
+ use crate::ai::{
+     agent::{AIAgentActionId, AIAgentCitation, AIAgentOutputMessageType, CallMCPToolResult},
+     blocklist::{
+@@ -255,6 +257,16 @@ pub struct RequestedCommandView {
+     // Selection support for MCP tool call detail text
+     mcp_content_selection_handle: SelectionHandle,
+     mcp_content_selected_text: Arc<std::sync::RwLock<Option<String>>>,
++
++    // The originating MCP server id for this tool call, captured when the
++    // action streams in so the header can surface the server name across
++    // every lifecycle state (blocked, queued, running, finished) — even after
++    // the action leaves the pending queue and is no longer retrievable. `None`
++    // for legacy/flat MCP calls with no server id.
++    mcp_server_id: Option<Uuid>,
++    // The MCP tool name is kept separately from the formatted command text so
++    // headers never need to parse a presentation label to recover identity.
++    mcp_tool_name: Option<String>,
+ }
+ 
+ impl RequestedCommandView {
+@@ -489,6 +501,8 @@ impl RequestedCommandView {
+             ai_block_view_id,
+             mcp_content_selection_handle: SelectionHandle::default(),
+             mcp_content_selected_text: Arc::new(std::sync::RwLock::new(None)),
++            mcp_server_id: None,
++            mcp_tool_name: None,
+         }
+     }
+ 
+@@ -995,14 +1009,43 @@ impl RequestedCommandView {
+         });
+     }
+ 
+-    /// Extracts the tool name from MCP tool command text, removing parameters.
+-    /// For example, "tool_name(param1, param2)" becomes "tool_name".
+-    fn extract_mcp_tool_name(&self, command_text: &str) -> String {
+-        if let Some(paren_pos) = command_text.find('(') {
+-            command_text[..paren_pos].trim().to_string()
+-        } else {
+-            command_text.trim().to_string()
+-        }
++    /// Stores the originating MCP server id for this tool call, so the header
++    /// can surface the server name across lifecycle states. Captured once when
++    /// the action streams in; `None` for legacy/flat MCP calls with no server.
++    pub(crate) fn update_mcp_server_id(&mut self, server_id: Option<Uuid>) {
++        self.mcp_server_id = server_id;
++    }
++
++    /// Stores the MCP tool name independently of the formatted command text.
++    pub(crate) fn update_mcp_tool_name(&mut self, tool_name: &str) {
++        self.mcp_tool_name = Some(tool_name.to_owned());
++    }
++
++    /// Returns the MCP tool name for sentence-form titles like the blocked
++    /// confirmation card and the expanded detail header.
++    fn mcp_clean_tool_name(&self) -> String {
++        self.mcp_tool_name.clone().unwrap_or_default()
++    }
++
++    /// Resolves the user-facing name of the MCP tool's originating server.
++    /// Returns `None` when the server id is absent (legacy/flat MCP call) or
++    /// the server can't be named (e.g. not installed). Non-panicking.
++    fn mcp_server_name(&self, app: &AppContext) -> Option<String> {
++        self.mcp_server_id
++            .as_ref()
++            .and_then(|id| TemplatableMCPServerManager::get_mcp_name(id, app))
++    }
++
++    /// Builds the blocked/confirmation title for an MCP tool call, surfacing
++    /// both the tool name and its originating server when known:
++    /// `OK if I call MCP tool {tool} on server {server}`. Falls back to the
++    /// tool name alone when the server can't be named, and to the generic
++    /// waiting message when the tool name is also unavailable.
++    fn mcp_blocked_title(&self, app: &AppContext) -> String {
++        mcp_blocked_title_text(
++            &self.mcp_clean_tool_name(),
++            self.mcp_server_name(app).as_deref(),
++        )
+     }
+ 
+     fn render_header(
+@@ -1030,7 +1073,7 @@ impl RequestedCommandView {
+ 
+         match action_status {
+             Some(AIActionStatus::Preprocessing) => {
+-                title = self.get_header_title_text().into();
++                title = self.get_header_title_text(app).into();
+                 font_override = Some(appearance.monospace_font_family());
+                 if !self
+                     .block_model
+@@ -1043,7 +1086,7 @@ impl RequestedCommandView {
+                 }
+             }
+             Some(AIActionStatus::Queued) => {
+-                title = self.get_header_title_text().into();
++                title = self.get_header_title_text(app).into();
+                 font_override = Some(appearance.monospace_font_family());
+                 font_color_override = Some(blended_colors::text_disabled(
+                     appearance.theme(),
+@@ -1053,7 +1096,7 @@ impl RequestedCommandView {
+             Some(AIActionStatus::Blocked) => {
+                 title = match &self.action_type {
+                     RequestedActionViewType::Command => COMMAND_WAITING_FOR_USER_MESSAGE.into(),
+-                    RequestedActionViewType::McpTool => MCP_TOOL_WAITING_FOR_USER_MESSAGE.into(),
++                    RequestedActionViewType::McpTool => self.mcp_blocked_title(app).into(),
+                 };
+             }
+             Some(AIActionStatus::RunningAsync) | Some(AIActionStatus::Finished(..))
+@@ -1088,7 +1131,11 @@ impl RequestedCommandView {
+                             VIEWING_COMMAND_DETAIL_MESSAGE.into()
+                         }
+                     }
+-                    RequestedActionViewType::McpTool => VIEWING_MCP_TOOL_DETAIL_MESSAGE.into(),
++                    RequestedActionViewType::McpTool => mcp_viewing_detail_title_text(
++                        &self.mcp_clean_tool_name(),
++                        self.mcp_server_name(app).as_deref(),
++                    )
++                    .into(),
+                 };
+             }
+             None => {
+@@ -1107,7 +1154,7 @@ impl RequestedCommandView {
+                 } else {
+                     // If there is no action status and response is not streaming, it was cancelled
+                     // mid-flight.
+-                    let title_str = self.get_header_title_text();
++                    let title_str = self.get_header_title_text(app);
+                     title = if title_str.trim().is_empty() {
+                         LOADING_MESSAGE.into()
+                     } else {
+@@ -1123,7 +1170,7 @@ impl RequestedCommandView {
+                 }
+             }
+             _ => {
+-                title = self.get_header_title_text().into();
++                title = self.get_header_title_text(app).into();
+ 
+                 // Show cancelled command loading message when the command was cancelled during generation,
+                 // and then restored with an empty title as a result.
+@@ -1277,10 +1324,16 @@ impl RequestedCommandView {
+         config.render(app)
+     }
+ 
+-    fn get_header_title_text(&self) -> String {
++    fn get_header_title_text(&self, app: &AppContext) -> String {
+         match &self.action_type {
+             RequestedActionViewType::Command => format_command_text(self.command_text()),
+-            RequestedActionViewType::McpTool => self.extract_mcp_tool_name(self.command_text()),
++            RequestedActionViewType::McpTool => {
++                let tool = self.mcp_clean_tool_name();
++                match self.mcp_server_name(app) {
++                    Some(server) if !tool.is_empty() => format!("{tool} on {server}"),
++                    _ => tool,
++                }
++            }
+         }
+     }
+ 
+@@ -1449,7 +1502,7 @@ impl View for RequestedCommandView {
+             } else if self.is_header_expanded {
+                 command_text.to_string()
+             } else {
+-                self.extract_mcp_tool_name(command_text)
++                self.mcp_clean_tool_name()
+             };
+ 
+             let text_element = Text::new(
+@@ -1668,6 +1721,35 @@ pub fn format_command_text(text: &str) -> String {
+     }
+ }
+ 
++/// Builds the blocked/confirmation title for an MCP tool call from the
++/// already-resolved tool and server names, so the formatting is unit-testable
++/// without a full app/view context. Surfaces both identities when the server
++/// is known: `OK if I call MCP tool {tool} on server {server}`; falls back to
++/// the tool name alone when the server can't be named, and to the generic
++/// waiting message when the tool name is also unavailable.
++fn mcp_blocked_title_text(tool_name: &str, server_name: Option<&str>) -> String {
++    if tool_name.is_empty() {
++        return MCP_TOOL_WAITING_FOR_USER_MESSAGE.to_owned();
++    }
++    match server_name {
++        Some(server) => format!("OK if I call MCP tool {tool_name} on server {server}"),
++        None => format!("OK if I call MCP tool {tool_name}"),
++    }
++}
++
++/// Builds the expanded-detail header title for an MCP tool call from the
++/// already-resolved tool and server names. Falls back to the generic
++/// "Viewing MCP tool call detail" message when the tool name is unavailable.
++fn mcp_viewing_detail_title_text(tool_name: &str, server_name: Option<&str>) -> String {
++    if tool_name.is_empty() {
++        return VIEWING_MCP_TOOL_DETAIL_MESSAGE.to_owned();
++    }
++    match server_name {
++        Some(server) => format!("Viewing MCP tool {tool_name} on {server}"),
++        None => format!("Viewing MCP tool {tool_name}"),
++    }
++}
++
+ #[cfg(test)]
+ #[path = "requested_command_test.rs"]
+ mod tests;
+diff --git a/app/src/ai/blocklist/inline_action/requested_command_test.rs b/app/src/ai/blocklist/inline_action/requested_command_test.rs
+index 9dc82db8a..bed44a050 100644
+--- a/app/src/ai/blocklist/inline_action/requested_command_test.rs
++++ b/app/src/ai/blocklist/inline_action/requested_command_test.rs
+@@ -1,6 +1,6 @@
+ //! Unit tests for format_command_text in requested_command.rs
+ 
+-use super::format_command_text;
++use super::{format_command_text, mcp_blocked_title_text, mcp_viewing_detail_title_text};
+ 
+ #[test]
+ fn single_line_without_newline_is_unchanged_ascii() {
+@@ -60,6 +60,54 @@ fn preserves_combining_characters_when_newline_is_after_cluster() {
+     assert_eq!(reconstructed, output);
+ }
+ 
++#[test]
++fn mcp_blocked_title_surfaces_tool_and_server_when_known() {
++    assert_eq!(
++        mcp_blocked_title_text("create_issue", Some("github")),
++        "OK if I call MCP tool create_issue on server github"
++    );
++}
++
++#[test]
++fn mcp_blocked_title_falls_back_to_tool_name_when_server_unknown() {
++    assert_eq!(
++        mcp_blocked_title_text("create_issue", None),
++        "OK if I call MCP tool create_issue"
++    );
++}
++
++#[test]
++fn mcp_blocked_title_falls_back_to_generic_message_when_tool_name_empty() {
++    assert_eq!(
++        mcp_blocked_title_text("", Some("github")),
++        "OK if I call this MCP tool?"
++    );
++    assert_eq!(
++        mcp_blocked_title_text("", None),
++        "OK if I call this MCP tool?"
++    );
++}
++
++#[test]
++fn mcp_viewing_detail_title_surfaces_tool_and_server_when_known() {
++    assert_eq!(
++        mcp_viewing_detail_title_text("create_issue", Some("github")),
++        "Viewing MCP tool create_issue on github"
++    );
++    assert_eq!(
++        mcp_viewing_detail_title_text("create_issue", None),
++        "Viewing MCP tool create_issue"
++    );
++}
++
++#[test]
++fn mcp_viewing_detail_title_falls_back_to_generic_message_when_tool_name_empty() {
++    assert_eq!(
++        mcp_viewing_detail_title_text("", Some("github")),
++        "Viewing MCP tool call detail"
++    );
++}
++
+ #[test]
+ fn newline_then_multibyte_results_in_ellipsis_only() {
+     let input = "\n🚀";
+diff --git a/app/src/code_review/comments/flatten.rs b/app/src/code_review/comments/flatten.rs
+index ff40b79b7..314e6e5e0 100644
+--- a/app/src/code_review/comments/flatten.rs
++++ b/app/src/code_review/comments/flatten.rs
+@@ -1,6 +1,9 @@
+-use std::collections::{HashMap, HashSet};
+ use std::path::Path;
+ 
++use ai::agent::action::{
++    ReviewCommentThread, format_review_comment_thread, group_review_comment_threads,
++};
++
+ use super::comment::{
+     AttachedReviewComment, AttachedReviewCommentTarget, CommentId, CommentOrigin,
+ };
+@@ -18,61 +21,31 @@ pub(crate) fn attach_pending_imported_comments(
+         return Vec::new();
+     }
+ 
+-    // Build a set of all GitHub comment IDs for orphan detection.
+-    let existing_ids: HashSet<&str> = pending_comments
+-        .iter()
+-        .map(|c| c.github_comment_id())
+-        .collect();
+-
+-    let mut roots: HashMap<&str, &PendingImportedReviewComment> = HashMap::new();
+-    let mut parent_to_children: HashMap<&str, Vec<&PendingImportedReviewComment>> = HashMap::new();
+-
+-    for comment in pending_comments.iter() {
+-        match comment.github_parent_comment_id() {
+-            Some(parent_id) if existing_ids.contains(parent_id) => {
+-                parent_to_children
+-                    .entry(parent_id)
+-                    .or_default()
+-                    .push(comment);
+-            }
+-            Some(missing_parent_id) => {
++    group_review_comment_threads(&pending_comments)
++        .into_iter()
++        .map(|thread| {
++            if let Some(missing_parent_id) = thread.missing_parent_id() {
+                 // Orphaned comment - parent doesn't exist, treat as root.
+                 log::warn!(
+                     "Importing orphaned comment (ID {:?}) with parent ID {:?}",
+-                    comment.github_comment_id(),
++                    thread.root().github_comment_id(),
+                     missing_parent_id
+                 );
+-                roots.insert(comment.github_comment_id(), comment);
+-            }
+-            None => {
+-                // Already a root comment.
+-                roots.insert(comment.github_comment_id(), comment);
+             }
+-        };
+-    }
+-
+-    let mut root_comments: Vec<_> = roots.values().copied().collect();
+-    root_comments.sort_by_key(|c| c.github_comment_id());
+-
+-    root_comments
+-        .into_iter()
+-        .map(|root| flatten_pending_imported_thread(root, &parent_to_children, repo_path))
++            attach_pending_imported_thread(thread, repo_path)
++        })
+         .collect()
+ }
+ 
+-fn flatten_pending_imported_thread(
+-    root: &PendingImportedReviewComment,
+-    children_map: &HashMap<&str, Vec<&PendingImportedReviewComment>>,
++fn attach_pending_imported_thread(
++    thread: ReviewCommentThread<'_, PendingImportedReviewComment>,
+     repo_path: &Path,
+ ) -> AttachedReviewComment {
+-    const THREAD_REPLY_DIVIDER: &str = "\n---\n";
+-
+-    let mut thread_comments = Vec::new();
+-    collect_pending_imported_thread_dfs(root, children_map, &mut thread_comments);
+-
+-    let last_update_time = thread_comments
++    let root = thread.root();
++    let last_update_time = thread
++        .comments()
+         .iter()
+-        .map(|c| c.last_update_time)
++        .map(|comment| comment.last_update_time)
+         .max()
+         .unwrap_or(root.last_update_time);
+ 
+@@ -94,24 +67,11 @@ fn flatten_pending_imported_thread(
+         PendingImportedReviewCommentTarget::General => AttachedReviewCommentTarget::General,
+     };
+ 
+-    let mut combined_body = String::new();
+-    for (i, comment) in thread_comments.iter().enumerate() {
+-        if i > 0 {
+-            combined_body.push_str(THREAD_REPLY_DIVIDER);
+-        }
+-
+-        combined_body.push_str(&format!(
+-            "**@{}**:\n{}",
+-            comment.author(),
+-            comment.body.as_str()
+-        ));
+-    }
+-
+     let origin = CommentOrigin::ImportedFromGitHub(root.github_details_without_parent());
+ 
+     AttachedReviewComment {
+         id: CommentId::new(),
+-        content: combined_body,
++        content: format_review_comment_thread(&thread),
+         target,
+         last_update_time,
+         base: None,
+@@ -120,20 +80,3 @@ fn flatten_pending_imported_thread(
+         origin,
+     }
+ }
+-
+-fn collect_pending_imported_thread_dfs<'a>(
+-    comment: &'a PendingImportedReviewComment,
+-    children_map: &HashMap<&str, Vec<&'a PendingImportedReviewComment>>,
+-    result: &mut Vec<&'a PendingImportedReviewComment>,
+-) {
+-    result.push(comment);
+-
+-    // Get children of this comment.
+-    if let Some(children) = children_map.get(comment.github_comment_id()) {
+-        let mut sorted_children = children.to_vec();
+-        sorted_children.sort_by(|a, b| a.last_update_time.cmp(&b.last_update_time));
+-        for child in sorted_children {
+-            collect_pending_imported_thread_dfs(child, children_map, result);
+-        }
+-    }
+-}
+diff --git a/app/src/code_review/comments/pending_imported.rs b/app/src/code_review/comments/pending_imported.rs
+index 9277187e9..68c589e51 100644
+--- a/app/src/code_review/comments/pending_imported.rs
++++ b/app/src/code_review/comments/pending_imported.rs
+@@ -1,5 +1,7 @@
+ use crate::code::editor::line::EditorLineLocation;
++use ai::agent::action::ReviewCommentThreadItem;
+ use chrono::{DateTime, Local};
++use std::cmp::Ordering;
+ use std::path::PathBuf;
+ 
+ use super::comment::{ImportedCommentDetails, LineDiffContent};
+@@ -51,6 +53,28 @@ impl PendingImportedReviewComment {
+     }
+ }
+ 
++impl ReviewCommentThreadItem for PendingImportedReviewComment {
++    fn comment_id(&self) -> &str {
++        self.github_comment_id()
++    }
++
++    fn parent_comment_id(&self) -> Option<&str> {
++        self.github_parent_comment_id()
++    }
++
++    fn author(&self) -> &str {
++        self.author()
++    }
++
++    fn body(&self) -> &str {
++        &self.body
++    }
++
++    fn compare_last_modified(&self, other: &Self) -> Ordering {
++        self.last_update_time.cmp(&other.last_update_time)
++    }
++}
++
+ /// Where a pending imported review comment applies.
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub(crate) enum PendingImportedReviewCommentTarget {
+diff --git a/app/src/tui_export.rs b/app/src/tui_export.rs
+index ea882703b..d778265ed 100644
+--- a/app/src/tui_export.rs
++++ b/app/src/tui_export.rs
+@@ -563,3 +563,11 @@ pub fn tui_agent_provider_has_connected_key(app: &warpui::AppContext, id: &LLMId
+         .get(&provider_id)
+         .is_some_and(|key| !key.is_empty())
+ }
++
++/// Resolves the user-facing name for an MCP server from its installation/template
++/// UUID. Returns `None` when the server is unknown (e.g. a legacy/flat MCP call
++/// with no server id, or the server is not installed). Used by the TUI to surface
++/// tool/server identity in permission cards and transcript labels.
++pub fn mcp_server_name_for_id(uuid: &uuid::Uuid, app: &warpui::AppContext) -> Option<String> {
++    crate::ai::mcp::TemplatableMCPServerManager::get_mcp_name(uuid, app)
++}
+diff --git a/crates/ai/src/agent/action/mod.rs b/crates/ai/src/agent/action/mod.rs
+index 50e04d196..2e96c5e0a 100644
+--- a/crates/ai/src/agent/action/mod.rs
++++ b/crates/ai/src/agent/action/mod.rs
+@@ -1,8 +1,13 @@
+ mod convert;
++mod review_comments;
+ 
+ use std::{fmt::Display, ops::Range, path::PathBuf, time::Duration};
+ 
+ use itertools::Itertools as _;
++pub use review_comments::{
++    ReviewCommentThread, ReviewCommentThreadItem, format_review_comment_thread,
++    group_review_comment_threads,
++};
+ use serde::{Deserialize, Serialize};
+ use strum_macros::EnumDiscriminants;
+ use uuid::Uuid;
+diff --git a/crates/ai/src/agent/action/review_comments.rs b/crates/ai/src/agent/action/review_comments.rs
+new file mode 100644
+index 000000000..12c1ebc37
+--- /dev/null
++++ b/crates/ai/src/agent/action/review_comments.rs
+@@ -0,0 +1,145 @@
++use std::cmp::Ordering;
++use std::collections::{HashMap, HashSet};
++
++use chrono::DateTime;
++
++use super::InsertReviewComment;
++
++const THREAD_REPLY_DIVIDER: &str = "\n---\n";
++
++/// Presentation-neutral data needed to reconstruct provider review comment threads.
++pub trait ReviewCommentThreadItem {
++    fn comment_id(&self) -> &str;
++    fn parent_comment_id(&self) -> Option<&str>;
++    fn author(&self) -> &str;
++    fn body(&self) -> &str;
++    fn compare_last_modified(&self, other: &Self) -> Ordering;
++}
++
++/// One root review comment and its replies in display order.
++#[derive(Debug, PartialEq, Eq)]
++pub struct ReviewCommentThread<'a, T> {
++    comments: Vec<&'a T>,
++    missing_parent_id: Option<&'a str>,
++}
++
++impl<'a, T> ReviewCommentThread<'a, T> {
++    pub fn root(&self) -> &'a T {
++        self.comments[0]
++    }
++
++    pub fn comments(&self) -> &[&'a T] {
++        &self.comments
++    }
++
++    pub fn missing_parent_id(&self) -> Option<&'a str> {
++        self.missing_parent_id
++    }
++}
++
++/// Groups review comments into deterministic, depth-first provider threads.
++///
++/// Roots are ordered by comment ID. Replies are stably ordered by their
++/// last-modified value. A comment whose parent is absent is retained as a root
++/// and exposes that missing parent ID.
++pub fn group_review_comment_threads<T: ReviewCommentThreadItem>(
++    comments: &[T],
++) -> Vec<ReviewCommentThread<'_, T>> {
++    if comments.is_empty() {
++        return Vec::new();
++    }
++
++    let existing_ids: HashSet<&str> = comments.iter().map(T::comment_id).collect();
++    let mut roots: HashMap<&str, (&T, Option<&str>)> = HashMap::new();
++    let mut parent_to_children: HashMap<&str, Vec<&T>> = HashMap::new();
++
++    for comment in comments {
++        match comment.parent_comment_id() {
++            Some(parent_id) if existing_ids.contains(parent_id) => {
++                parent_to_children
++                    .entry(parent_id)
++                    .or_default()
++                    .push(comment);
++            }
++            missing_parent_id => {
++                roots.insert(comment.comment_id(), (comment, missing_parent_id));
++            }
++        }
++    }
++
++    let mut roots: Vec<_> = roots.into_values().collect();
++    roots.sort_by(|(a, _), (b, _)| a.comment_id().cmp(b.comment_id()));
++    roots
++        .into_iter()
++        .map(|(root, missing_parent_id)| {
++            let mut thread_comments = Vec::new();
++            collect_review_comment_thread(root, &parent_to_children, &mut thread_comments);
++            ReviewCommentThread {
++                comments: thread_comments,
++                missing_parent_id,
++            }
++        })
++        .collect()
++}
++
++/// Formats a provider thread using the Markdown representation shared by clients.
++pub fn format_review_comment_thread<T: ReviewCommentThreadItem>(
++    thread: &ReviewCommentThread<'_, T>,
++) -> String {
++    thread
++        .comments()
++        .iter()
++        .map(|comment| format!("**@{}**:\n{}", comment.author(), comment.body()))
++        .collect::<Vec<_>>()
++        .join(THREAD_REPLY_DIVIDER)
++}
++
++fn collect_review_comment_thread<'a, T: ReviewCommentThreadItem>(
++    comment: &'a T,
++    children_map: &HashMap<&str, Vec<&'a T>>,
++    result: &mut Vec<&'a T>,
++) {
++    result.push(comment);
++
++    if let Some(children) = children_map.get(comment.comment_id()) {
++        let mut sorted_children = children.to_vec();
++        sorted_children.sort_by(|a, b| a.compare_last_modified(b));
++        for child in sorted_children {
++            collect_review_comment_thread(child, children_map, result);
++        }
++    }
++}
++
++impl ReviewCommentThreadItem for InsertReviewComment {
++    fn comment_id(&self) -> &str {
++        &self.comment_id
++    }
++
++    fn parent_comment_id(&self) -> Option<&str> {
++        self.parent_comment_id.as_deref()
++    }
++
++    fn author(&self) -> &str {
++        &self.author
++    }
++
++    fn body(&self) -> &str {
++        &self.comment_body
++    }
++
++    fn compare_last_modified(&self, other: &Self) -> Ordering {
++        match (
++            DateTime::parse_from_rfc3339(&self.last_modified_timestamp),
++            DateTime::parse_from_rfc3339(&other.last_modified_timestamp),
++        ) {
++            (Ok(this), Ok(other)) => this.cmp(&other),
++            _ => self
++                .last_modified_timestamp
++                .cmp(&other.last_modified_timestamp),
++        }
++    }
++}
++
++#[cfg(test)]
++#[path = "review_comments_tests.rs"]
++mod tests;
+diff --git a/crates/ai/src/agent/action/review_comments_tests.rs b/crates/ai/src/agent/action/review_comments_tests.rs
+new file mode 100644
+index 000000000..9b17dc559
+--- /dev/null
++++ b/crates/ai/src/agent/action/review_comments_tests.rs
+@@ -0,0 +1,64 @@
++use super::*;
++
++fn comment(
++    id: &str,
++    author: &str,
++    body: &str,
++    parent_id: Option<&str>,
++    timestamp: &str,
++) -> InsertReviewComment {
++    InsertReviewComment {
++        comment_id: id.to_owned(),
++        author: author.to_owned(),
++        last_modified_timestamp: timestamp.to_owned(),
++        comment_body: body.to_owned(),
++        parent_comment_id: parent_id.map(str::to_owned),
++        comment_location: None,
++        html_url: None,
++    }
++}
++
++#[test]
++fn groups_roots_and_depth_first_replies_deterministically() {
++    let comments = vec![
++        comment("4", "dana", "Early", Some("1"), "2024-01-01T00:30:00Z"),
++        comment("2", "bob", "Later", Some("1"), "2024-01-01T01:00:00Z"),
++        comment("3", "charlie", "Nested", Some("2"), "2024-01-01T02:00:00Z"),
++        comment("5", "eve", "Second root", None, "2024-01-01T00:00:00Z"),
++        comment("1", "alice", "Root", None, "2024-01-01T00:00:00Z"),
++    ];
++
++    let threads = group_review_comment_threads(&comments);
++
++    assert_eq!(threads.len(), 2);
++    assert_eq!(
++        threads[0]
++            .comments()
++            .iter()
++            .map(|comment| comment.comment_id())
++            .collect::<Vec<_>>(),
++        vec!["1", "4", "2", "3"]
++    );
++    assert_eq!(threads[1].root().comment_id(), "5");
++    assert_eq!(
++        format_review_comment_thread(&threads[0]),
++        "**@alice**:\nRoot\n---\n**@dana**:\nEarly\n---\n**@bob**:\nLater\n---\n**@charlie**:\nNested"
++    );
++}
++
++#[test]
++fn retains_orphaned_replies_as_roots() {
++    let comments = vec![comment(
++        "2",
++        "bob",
++        "Orphan",
++        Some("missing"),
++        "2024-01-01T00:00:00Z",
++    )];
++
++    let threads = group_review_comment_threads(&comments);
++
++    assert_eq!(threads.len(), 1);
++    assert_eq!(threads[0].root().comment_id(), "2");
++    assert_eq!(threads[0].missing_parent_id(), Some("missing"));
++}
+diff --git a/crates/warp_tui/src/agent_block.rs b/crates/warp_tui/src/agent_block.rs
+index cabc87900..96c5bd4b0 100644
+--- a/crates/warp_tui/src/agent_block.rs
++++ b/crates/warp_tui/src/agent_block.rs
+@@ -52,6 +52,7 @@ use crate::tui_markdown::{
+ };
+ use crate::tui_permission_prompt::TuiPermissionPrompt;
+ use crate::tui_plan_view::{TuiPlanView, TuiPlanViewEvent};
++use crate::tui_review_comments::render_review_comments_tool_call;
+ const PLANS_URL: &str = "https://www.warp.dev/pricing";
+ const BYOK_DOCS_URL: &str =
+     "https://docs.warp.dev/agent-platform/inference/bring-your-own-api-key/";
+@@ -1113,25 +1114,39 @@ impl TuiAIBlock {
+                 self.render_rich_text_section(section, false, app)
+             }
+             TuiAIBlockSection::ToolCall(action) => {
+-                if let Some(view) = self.action_views.get(&action.id) {
+-                    match view {
+-                        TuiToolCallView::Generic(view)
+-                            if view.as_ref(app).active_permission_prompt(app).is_none() => {}
+-                        TuiToolCallView::AskQuestion(_)
+-                        | TuiToolCallView::FileEdits(_)
+-                        | TuiToolCallView::Generic(_)
+-                        | TuiToolCallView::Plan(_)
+-                        | TuiToolCallView::ShellCommand(_) => return None,
++                let status = self.action_model.as_ref(app).get_action_status(&action.id);
++                match &action.action {
++                    AIAgentActionType::InsertCodeReviewComments { comments, .. } => {
++                        render_review_comments_tool_call(
++                            action,
++                            comments,
++                            status.as_ref(),
++                            output_streaming,
++                            app,
++                        )
++                    }
++                    _ => {
++                        if let Some(view) = self.action_views.get(&action.id) {
++                            match view {
++                                TuiToolCallView::Generic(view)
++                                    if view.as_ref(app).active_permission_prompt(app).is_none() => {
++                                }
++                                TuiToolCallView::AskQuestion(_)
++                                | TuiToolCallView::FileEdits(_)
++                                | TuiToolCallView::Generic(_)
++                                | TuiToolCallView::Plan(_)
++                                | TuiToolCallView::ShellCommand(_) => return None,
++                            }
++                        }
++                        render_fallback_tool_call_section(
++                            action,
++                            status.as_ref(),
++                            output_streaming,
++                            None,
++                            app,
++                        )
+                     }
+                 }
+-                let status = self.action_model.as_ref(app).get_action_status(&action.id);
+-                render_fallback_tool_call_section(
+-                    action,
+-                    status.as_ref(),
+-                    output_streaming,
+-                    None,
+-                    app,
+-                )
+             }
+             TuiAIBlockSection::Thinking {
+                 message_id,
+@@ -1461,40 +1476,57 @@ impl TuiAIBlock {
+                 }
+                 // Stateful tool calls render their registered child view; every
+                 // other tool call stays a pure render fn.
+-                TuiAIBlockSection::ToolCall(action) => match self.action_views.get(&action.id) {
+-                    Some(TuiToolCallView::Plan(view)) if !view.as_ref(app).renders_rich_body() => {
+-                        let status = self.action_model.as_ref(app).get_action_status(&action.id);
+-                        render_fallback_tool_call_section(
+-                            action,
+-                            status.as_ref(),
+-                            output_streaming,
+-                            None,
+-                            app,
+-                        )
+-                    }
+-                    Some(TuiToolCallView::Generic(view))
+-                        if view.as_ref(app).active_permission_prompt(app).is_none() =>
+-                    {
++                TuiAIBlockSection::ToolCall(action) => match &action.action {
++                    AIAgentActionType::InsertCodeReviewComments { comments, .. } => {
+                         let status = self.action_model.as_ref(app).get_action_status(&action.id);
+-                        render_fallback_tool_call_section(
++                        render_review_comments_tool_call(
+                             action,
++                            comments,
+                             status.as_ref(),
+                             output_streaming,
+-                            None,
+-                            app,
+-                        )
+-                    }
+-                    Some(view) => TuiContainer::new(Box::new(view.render_child())).finish(),
+-                    None => {
+-                        let status = self.action_model.as_ref(app).get_action_status(&action.id);
+-                        render_fallback_tool_call_section(
+-                            action,
+-                            status.as_ref(),
+-                            output_streaming,
+-                            None,
+                             app,
+                         )
+                     }
++                    _ => match self.action_views.get(&action.id) {
++                        Some(TuiToolCallView::Plan(view))
++                            if !view.as_ref(app).renders_rich_body() =>
++                        {
++                            let status =
++                                self.action_model.as_ref(app).get_action_status(&action.id);
++                            render_fallback_tool_call_section(
++                                action,
++                                status.as_ref(),
++                                output_streaming,
++                                None,
++                                app,
++                            )
++                        }
++                        Some(TuiToolCallView::Generic(view))
++                            if view.as_ref(app).active_permission_prompt(app).is_none() =>
++                        {
++                            let status =
++                                self.action_model.as_ref(app).get_action_status(&action.id);
++                            render_fallback_tool_call_section(
++                                action,
++                                status.as_ref(),
++                                output_streaming,
++                                None,
++                                app,
++                            )
++                        }
++                        Some(view) => TuiContainer::new(Box::new(view.render_child())).finish(),
++                        None => {
++                            let status =
++                                self.action_model.as_ref(app).get_action_status(&action.id);
++                            render_fallback_tool_call_section(
++                                action,
++                                status.as_ref(),
++                                output_streaming,
++                                None,
++                                app,
++                            )
++                        }
++                    },
+                 },
+                 TuiAIBlockSection::Thinking {
+                     message_id,
+diff --git a/crates/warp_tui/src/agent_block_sections.rs b/crates/warp_tui/src/agent_block_sections.rs
+index 460efc528..ed5e80d53 100644
+--- a/crates/warp_tui/src/agent_block_sections.rs
++++ b/crates/warp_tui/src/agent_block_sections.rs
+@@ -18,7 +18,10 @@ use warpui_core::elements::tui::{
+ };
+ 
+ use crate::agent_block::{CollapsibleSectionStates, TuiAIBlockAction};
+-use crate::tool_call_labels::{ResolvedCommandBlock, tool_call_display_state, tool_call_label};
++use crate::tool_call_labels::{
++    ResolvedCommandBlock, mcp_server_name_for_action, tool_call_display_state,
++    tool_call_label_with_server,
++};
+ use crate::tui_builder::TuiUiBuilder;
+ 
+ const INPUT_PREFIX: &str = "> ";
+@@ -93,7 +96,14 @@ pub(crate) fn render_fallback_tool_call_section(
+     let state = tool_call_display_state(status, output_streaming, block.map(|block| block.state));
+     let glyph_style = state.glyph_style(&builder);
+     let label_style = state.label_style(&builder);
+-    let label = tool_call_label(action, status, output_streaming, block);
++    let server_name = mcp_server_name_for_action(&action.action, app);
++    let label = tool_call_label_with_server(
++        action,
++        status,
++        output_streaming,
++        block,
++        server_name.as_deref(),
++    );
+     TuiFlex::row()
+         .child(
+             TuiText::new(format!("{} ", state.glyph()))
+diff --git a/crates/warp_tui/src/lib.rs b/crates/warp_tui/src/lib.rs
+index 421feb880..adc383b78 100644
+--- a/crates/warp_tui/src/lib.rs
++++ b/crates/warp_tui/src/lib.rs
+@@ -71,6 +71,7 @@ mod tui_generic_tool_call_view;
+ mod tui_markdown;
+ mod tui_permission_prompt;
+ mod tui_plan_view;
++mod tui_review_comments;
+ mod tui_shell_command_view;
+ mod usage;
+ mod warping_indicator;
+diff --git a/crates/warp_tui/src/tool_call_labels.rs b/crates/warp_tui/src/tool_call_labels.rs
+index e1dc1786b..fd83aab07 100644
+--- a/crates/warp_tui/src/tool_call_labels.rs
++++ b/crates/warp_tui/src/tool_call_labels.rs
+@@ -6,9 +6,10 @@ use std::path::Path;
+ use warp::tui_export::{
+     AIActionStatus, AIAgentAction, AIAgentActionResultType, AIAgentActionType,
+     AskUserQuestionResult, FileGlobV2Result, GrepResult, RequestCommandOutputResult,
+-    SuggestNewConversationResult,
++    SuggestNewConversationResult, mcp_server_name_for_id,
+ };
+ use warp_core::command::ExitCode;
++use warpui_core::AppContext;
+ use warpui_core::elements::tui::TuiStyle;
+ 
+ use self::ToolCallDisplayState as State;
+@@ -137,18 +138,35 @@ pub(crate) fn tool_call_display_state(
+     }
+ }
+ 
+-/// Returns the transcript label for a tool call in its current state.
++/// Returns the one-line transcript label for a tool call in its current state.
++///
++/// Equivalent to [`tool_call_label_with_server`] with no MCP server name; use
++/// that variant when rendering an MCP tool call whose originating server is
++/// known so the label surfaces both the tool name and the server.
+ pub(crate) fn tool_call_label(
+     action: &AIAgentAction,
+     status: Option<&AIActionStatus>,
+     output_streaming: bool,
+     block: Option<&ResolvedCommandBlock>,
++) -> String {
++    tool_call_label_with_server(action, status, output_streaming, block, None)
++}
++
++/// Like [`tool_call_label`], but interpolates the MCP tool's originating server
++/// name (when known) into the per-state label so MCP tool calls surface both
++/// their tool name and server identity across the transcript lifecycle.
++pub(crate) fn tool_call_label_with_server(
++    action: &AIAgentAction,
++    status: Option<&AIActionStatus>,
++    output_streaming: bool,
++    block: Option<&ResolvedCommandBlock>,
++    server_name: Option<&str>,
+ ) -> String {
+     let state = tool_call_display_state(status, output_streaming, block.map(|block| block.state));
+     let result = status
+         .and_then(AIActionStatus::finished_result)
+         .map(|result| &result.result);
+-    let label = label_for_action(&action.action, state, result, block);
++    let label = label_for_action(&action.action, state, result, block, server_name);
+     match state {
+         State::Blocked => format!("{label} (awaiting approval)"),
+         State::Constructing
+@@ -160,6 +178,21 @@ pub(crate) fn tool_call_label(
+     }
+ }
+ 
++/// Resolves the user-facing name of the originating MCP server for an MCP
++/// tool-call action, for use in transcript labels. Returns `None` for non-
++/// MCP-tool actions, legacy/flat calls with no server id, or unknown servers.
++pub(crate) fn mcp_server_name_for_action(
++    action: &AIAgentActionType,
++    app: &AppContext,
++) -> Option<String> {
++    match action {
++        AIAgentActionType::CallMCPTool { server_id, .. } => server_id
++            .as_ref()
++            .and_then(|id| mcp_server_name_for_id(id, app)),
++        _ => None,
++    }
++}
++
+ /// Builds the per-tool label body; the awaiting-approval suffix is applied by
+ /// [`tool_call_label`]. `result` is the finished result, when there is one.
+ ///
+@@ -172,6 +205,7 @@ fn label_for_action(
+     state: State,
+     result: Option<&AIAgentActionResultType>,
+     block: Option<&ResolvedCommandBlock>,
++    server_name: Option<&str>,
+ ) -> String {
+     let block_state = block.map(|block| block.state);
+     match action {
+@@ -303,16 +337,23 @@ fn label_for_action(
+         }
+         AIAgentActionType::CallMCPTool { name, .. } => {
+             let name = single_line(name);
++            // Append the originating server when known so MCP tool calls
++            // surface both identities, with a deterministic no-server fallback.
++            let suffix = server_name
++                .map(|server| format!(" on {server}"))
++                .unwrap_or_default();
+             match state {
+                 // Like the GUI's "Calling \"{name}\" MCP tool..." loading
+                 // text; the tool name is available before its args finish.
+-                State::Constructing if name.is_empty() => "Calling MCP tool…".to_owned(),
+-                State::Constructing => format!("Calling \"{name}\" MCP tool…"),
+-                State::Pending | State::Blocked => format!("Call MCP tool {name}"),
+-                State::Running => format!("Calling MCP tool {name}"),
+-                State::Succeeded => format!("Called MCP tool {name}"),
+-                State::Failed => format!("MCP tool {name} failed"),
+-                State::Cancelled => format!("MCP tool {name} cancelled"),
++                State::Constructing if name.is_empty() => {
++                    format!("Calling MCP tool{suffix}…")
++                }
++                State::Constructing => format!("Calling \"{name}\" MCP tool{suffix}…"),
++                State::Pending | State::Blocked => format!("Call MCP tool {name}{suffix}"),
++                State::Running => format!("Calling MCP tool {name}{suffix}"),
++                State::Succeeded => format!("Called MCP tool {name}{suffix}"),
++                State::Failed => format!("MCP tool {name}{suffix} failed"),
++                State::Cancelled => format!("MCP tool {name}{suffix} cancelled"),
+             }
+         }
+         AIAgentActionType::SuggestNewConversation { .. } => match state {
+diff --git a/crates/warp_tui/src/tool_call_labels_tests.rs b/crates/warp_tui/src/tool_call_labels_tests.rs
+index 460d419ac..95443b37b 100644
+--- a/crates/warp_tui/src/tool_call_labels_tests.rs
++++ b/crates/warp_tui/src/tool_call_labels_tests.rs
+@@ -7,8 +7,8 @@ use warp::tui_export::{
+ use warp_core::command::ExitCode;
+ 
+ use super::{
+-    CommandBlockState, ResolvedCommandBlock, ToolCallDisplayState,
+-    tool_call_display_state, tool_call_label,
++    CommandBlockState, ResolvedCommandBlock, ToolCallDisplayState, tool_call_display_state,
++    tool_call_label, tool_call_label_with_server,
+ };
+ 
+ /// Builds a `Finished` status wrapping the given result.
+@@ -46,6 +46,22 @@ fn command_action(command: &str) -> AIAgentAction {
+     }
+ }
+ 
++/// Builds a `CallMCPTool` action for `tool`. The `server_id` is left `None`
++/// because `tool_call_label_with_server` takes the resolved server name as a
++/// direct argument, bypassing the action's server-id -> name lookup.
++fn mcp_tool_action(tool: &str) -> AIAgentAction {
++    AIAgentAction {
++        id: AIAgentActionId::from("action-1".to_owned()),
++        task_id: TaskId::new("task-1".to_owned()),
++        action: AIAgentActionType::CallMCPTool {
++            server_id: None,
++            name: tool.to_owned(),
++            input: serde_json::Value::Null,
++        },
++        requires_result: true,
++    }
++}
++
+ #[test]
+ fn tool_call_statuses_map_to_tool_call_display_states() {
+     assert_eq!(
+@@ -224,3 +240,93 @@ fn shell_command_label_preserves_a_long_path_without_an_ellipsis() {
+         format!("Run `{command}`")
+     );
+ }
++
++/// An MCP tool call's transcript label must surface both the tool name and its
++/// originating server across every lifecycle state, with a deterministic
++/// no-server fallback (legacy/flat MCP call or unknown server).
++#[test]
++fn mcp_tool_call_label_surfaces_tool_and_server_across_lifecycle() {
++    let action = mcp_tool_action("create_issue");
++    let server = Some("github");
++
++    // Constructing: the tool name may still be empty while args stream in.
++    let constructing_empty = mcp_tool_action("");
++    assert_eq!(
++        tool_call_label_with_server(&constructing_empty, None, true, None, None),
++        "Calling MCP tool…"
++    );
++    assert_eq!(
++        tool_call_label_with_server(&constructing_empty, None, true, None, server),
++        "Calling MCP tool on github…"
++    );
++    assert_eq!(
++        tool_call_label_with_server(&action, None, true, None, None),
++        "Calling \"create_issue\" MCP tool…"
++    );
++    assert_eq!(
++        tool_call_label_with_server(&action, None, true, None, server),
++        "Calling \"create_issue\" MCP tool on github…"
++    );
++
++    // Pending.
++    assert_eq!(
++        tool_call_label_with_server(&action, None, false, None, None),
++        "Call MCP tool create_issue"
++    );
++    assert_eq!(
++        tool_call_label_with_server(&action, None, false, None, server),
++        "Call MCP tool create_issue on github"
++    );
++
++    // Blocked / awaiting approval.
++    assert_eq!(
++        tool_call_label_with_server(&action, Some(&AIActionStatus::Blocked), false, None, None),
++        "Call MCP tool create_issue (awaiting approval)"
++    );
++    assert_eq!(
++        tool_call_label_with_server(&action, Some(&AIActionStatus::Blocked), false, None, server),
++        "Call MCP tool create_issue on github (awaiting approval)"
++    );
++
++    // Running.
++    assert_eq!(
++        tool_call_label_with_server(
++            &action,
++            Some(&AIActionStatus::RunningAsync),
++            false,
++            None,
++            server
++        ),
++        "Calling MCP tool create_issue on github"
++    );
++
++    // Terminal states are driven through a resolved command block so the label
++    // text can be exercised without constructing an MCP tool-call result.
++    let succeeded = block(CommandBlockState::Finished {
++        exit_code: ExitCode::from(0),
++    });
++    assert_eq!(
++        tool_call_label_with_server(&action, None, false, Some(&succeeded), server),
++        "Called MCP tool create_issue on github"
++    );
++    let failed = block(CommandBlockState::Finished {
++        exit_code: ExitCode::from(1),
++    });
++    assert_eq!(
++        tool_call_label_with_server(&action, None, false, Some(&failed), server),
++        "MCP tool create_issue on github failed"
++    );
++    let cancelled = block(CommandBlockState::Finished {
++        exit_code: ExitCode::from(130),
++    });
++    assert_eq!(
++        tool_call_label_with_server(&action, None, false, Some(&cancelled), server),
++        "MCP tool create_issue on github cancelled"
++    );
++
++    // No server (legacy/flat MCP call or unknown server): tool name only.
++    assert_eq!(
++        tool_call_label_with_server(&action, None, false, Some(&succeeded), None),
++        "Called MCP tool create_issue"
++    );
++}
+diff --git a/crates/warp_tui/src/tui_generic_tool_call_view.rs b/crates/warp_tui/src/tui_generic_tool_call_view.rs
+index aa37a2daf..9558b034f 100644
+--- a/crates/warp_tui/src/tui_generic_tool_call_view.rs
++++ b/crates/warp_tui/src/tui_generic_tool_call_view.rs
+@@ -2,7 +2,7 @@
+ 
+ use warp::tui_export::{
+     AIActionStatus, AIAgentAction, AIAgentActionType, AIConversationId, BlocklistAIActionModel,
+-    CancellationReason, NewConversationDecision,
++    CancellationReason, NewConversationDecision, mcp_server_name_for_id,
+ };
+ use warpui_core::elements::tui::{TuiElement, TuiText};
+ use warpui_core::{AppContext, Entity, EntityId, ModelHandle, TuiView, ViewContext, ViewHandle};
+@@ -180,14 +180,30 @@ impl TuiGenericToolCallView {
+     }
+ 
+     /// Builds the user-facing question shown above the action details.
+-    fn permission_question(&self) -> String {
++    ///
++    /// `server_name` is the pre-resolved originating MCP server name (when
++    /// known) for an MCP tool call, so the question surfaces both the tool and
++    /// its server. `None` for non-MCP actions or unknown/legacy servers.
++    fn permission_question(&self, server_name: Option<&str>) -> String {
+         match &self.action.action {
+             AIAgentActionType::ReadFiles(_) => "Is it OK if I read these files?".to_owned(),
+             AIAgentActionType::Grep { .. } => "Is it OK if I search these files?".to_owned(),
+             AIAgentActionType::FileGlob { .. } | AIAgentActionType::FileGlobV2 { .. } => {
+                 "Is it OK if I find files matching these patterns?".to_owned()
+             }
+-            AIAgentActionType::CallMCPTool { .. } => "Is it OK if I call this MCP tool?".to_owned(),
++            AIAgentActionType::CallMCPTool { name, .. } => {
++                if name.is_empty() {
++                    match server_name {
++                        Some(server) => format!("Is it OK if I call an MCP tool on {server}?"),
++                        None => "Is it OK if I call this MCP tool?".to_owned(),
++                    }
++                } else {
++                    match server_name {
++                        Some(server) => format!("Is it OK if I call MCP tool {name} on {server}?"),
++                        None => format!("Is it OK if I call MCP tool {name}?"),
++                    }
++                }
++            }
+             AIAgentActionType::ReadMCPResource { .. } => {
+                 "Is it OK if I read this MCP resource?".to_owned()
+             }
+@@ -205,7 +221,11 @@ impl TuiGenericToolCallView {
+     }
+ 
+     /// Formats the action arguments needed to make an approval decision.
+-    fn details(&self) -> String {
++    ///
++    /// `server_name` is the pre-resolved originating MCP server name (when
++    /// known) for an MCP tool call, so the details body labels the tool with
++    /// its server. `None` for non-MCP actions or unknown/legacy servers.
++    fn details(&self, server_name: Option<&str>) -> String {
+         match &self.action.action {
+             AIAgentActionType::ReadFiles(request) => request
+                 .locations
+@@ -230,10 +250,14 @@ impl TuiGenericToolCallView {
+             AIAgentActionType::CallMCPTool { name, input, .. } => {
+                 let input =
+                     serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string());
++                let header = match server_name {
++                    Some(server) => format!("{name} on {server}"),
++                    None => name.clone(),
++                };
+                 if input == "{}" || input == "null" {
+-                    name.clone()
++                    header
+                 } else {
+-                    format!("{name}\n{input}")
++                    format!("{header}\n{input}")
+                 }
+             }
+             AIAgentActionType::ReadMCPResource { name, uri, .. } => {
+@@ -250,18 +274,31 @@ impl TuiGenericToolCallView {
+         }
+     }
+ 
++    /// Resolves the user-facing name of the MCP tool's originating server for
++    /// the blocked permission card. Returns `None` for non-MCP-tool actions,
++    /// legacy/flat calls with no server id, or unknown servers. Non-panicking.
++    fn mcp_server_name(&self, app: &AppContext) -> Option<String> {
++        match &self.action.action {
++            AIAgentActionType::CallMCPTool { server_id, .. } => server_id
++                .as_ref()
++                .and_then(|id| mcp_server_name_for_id(id, app)),
++            _ => None,
++        }
++    }
++
+     /// Renders the complete blocked-action card.
+     fn render_blocked(&self, app: &AppContext) -> Box<dyn TuiElement> {
+         let builder = TuiUiBuilder::from_app(app);
++        let server_name = self.mcp_server_name(app);
+         let prompt = self
+             .permission_prompt
+             .as_ref()
+             .expect("blocked generic actions should own a permission prompt");
+         render_permission_card(
+             prompt,
+-            self.permission_question(),
++            self.permission_question(server_name.as_deref()),
+             Some(
+-                TuiText::new(self.details())
++                TuiText::new(self.details(server_name.as_deref()))
+                     .with_style(builder.primary_text_style())
+                     .finish(),
+             ),
+diff --git a/crates/warp_tui/src/tui_generic_tool_call_view_tests.rs b/crates/warp_tui/src/tui_generic_tool_call_view_tests.rs
+index 0d20fee97..68ecf3a06 100644
+--- a/crates/warp_tui/src/tui_generic_tool_call_view_tests.rs
++++ b/crates/warp_tui/src/tui_generic_tool_call_view_tests.rs
+@@ -59,14 +59,25 @@ fn mcp_permission_details_are_structured_and_human_readable() {
+         app.read(|ctx| {
+             let view = view.as_ref(ctx);
+             assert!(view.permission_prompt.is_none());
++            // No server id on this action, so the question falls back to naming
++            // just the tool (not the old "this MCP tool" phrasing).
+             assert_eq!(
+-                view.permission_question(),
+-                "Is it OK if I call this MCP tool?"
++                view.permission_question(None),
++                "Is it OK if I call MCP tool create_issue?"
+             );
+-            let details = view.details();
++            // With a known server, both identities surface in the question.
++            assert_eq!(
++                view.permission_question(Some("github")),
++                "Is it OK if I call MCP tool create_issue on github?"
++            );
++            let details = view.details(None);
+             assert!(details.starts_with("create_issue\n{"));
+             assert!(details.contains("\"priority\": 1"));
+             assert!(details.contains("\"title\": \"Fix permission UI\""));
++            // The details body labels the tool with its server when known.
++            let details_with_server = view.details(Some("github"));
++            assert!(details_with_server.starts_with("create_issue on github\n{"));
++            assert!(details_with_server.contains("\"priority\": 1"));
+         });
+ 
+         action_model.update(&mut app, |action_model, ctx| {
+@@ -122,7 +133,7 @@ fn mcp_permission_details_are_structured_and_human_readable() {
+         assert!(
+             lines
+                 .iter()
+-                .any(|line| line.contains("■ Is it OK if I call this MCP tool?"))
++                .any(|line| line.contains("■ Is it OK if I call MCP tool create_issue?"))
+         );
+         assert!(lines.iter().any(|line| line.contains("create_issue")));
+         assert!(lines.iter().any(|line| line.contains("(1) yes")));
+diff --git a/crates/warp_tui/src/tui_review_comments.rs b/crates/warp_tui/src/tui_review_comments.rs
+new file mode 100644
+index 000000000..3633550d5
+--- /dev/null
++++ b/crates/warp_tui/src/tui_review_comments.rs
+@@ -0,0 +1,98 @@
++use ai::agent::action::{
++    CommentSide, InsertReviewComment, InsertedCommentLocation, format_review_comment_thread,
++    group_review_comment_threads,
++};
++use markdown_parser::parse_markdown;
++use warp::tui_export::{AIActionStatus, AIAgentAction};
++use warpui_core::AppContext;
++use warpui_core::elements::tui::{Modifier, TuiContainer, TuiElement, TuiFlex, TuiText};
++
++use crate::agent_block_sections::render_fallback_tool_call_section;
++use crate::tui_builder::TuiUiBuilder;
++use crate::tui_markdown::{TuiMarkdownBlockHooks, TuiMarkdownPalette, render_formatted_text};
++
++pub(crate) fn render_review_comments_tool_call(
++    action: &AIAgentAction,
++    comments: &[InsertReviewComment],
++    status: Option<&AIActionStatus>,
++    output_streaming: bool,
++    app: &AppContext,
++) -> Box<dyn TuiElement> {
++    let status_row = render_fallback_tool_call_section(action, status, output_streaming, None, app);
++    if !status.is_some_and(AIActionStatus::is_success) || comments.is_empty() {
++        return status_row;
++    }
++
++    let builder = TuiUiBuilder::from_app(app);
++    let palette = TuiMarkdownPalette::from_builder(&builder);
++    let mut column = TuiFlex::column().child(status_row);
++    for thread in group_review_comment_threads(comments) {
++        let root = thread.root();
++        let body = format_review_comment_thread(&thread);
++        let rendered_body = match parse_markdown(&body) {
++            Ok(formatted) => {
++                render_formatted_text(&formatted, palette, &TuiMarkdownBlockHooks::default())
++            }
++            Err(_) => TuiText::new(body).with_style(palette.body).finish(),
++        };
++
++        let mut comment = TuiFlex::column()
++            .child(
++                TuiText::new(format_comment_target(root))
++                    .with_style(builder.muted_text_style().add_modifier(Modifier::BOLD))
++                    .finish(),
++            )
++            .child(rendered_body);
++        if let Some(url) = &root.html_url {
++            comment = comment.child(
++                TuiText::new(url.clone())
++                    .with_style(
++                        builder
++                            .accent_text_style()
++                            .add_modifier(Modifier::UNDERLINED),
++                    )
++                    .finish(),
++            );
++        }
++
++        column = column.child(
++            TuiContainer::new(comment.finish())
++                .with_padding_top(1)
++                .with_padding_left(2)
++                .finish(),
++        );
++    }
++
++    column.finish()
++}
++
++fn format_comment_target(comment: &InsertReviewComment) -> String {
++    let Some(location) = &comment.comment_location else {
++        return "Pull request".to_owned();
++    };
++    format_location(location)
++}
++
++fn format_location(location: &InsertedCommentLocation) -> String {
++    let Some(line) = &location.line else {
++        return location.relative_file_path.clone();
++    };
++    let range = &line.comment_line_range;
++    let line_label = if range.start == 0 {
++        range.end.to_string()
++    } else if range.end == 0 || range.start == range.end {
++        range.start.to_string()
++    } else {
++        format!("{}-{}", range.start, range.end)
++    };
++    let side = match line.side {
++        Some(CommentSide::Right) => "new",
++        Some(CommentSide::Left) => "old",
++        None => "diff",
++    };
++    format!("{}:{line_label} ({side})", location.relative_file_path)
++}
++
++#[cfg(test)]
++#[path = "tui_review_comments_tests.rs"]
++mod tests;
+diff --git a/crates/warp_tui/src/tui_review_comments_tests.rs b/crates/warp_tui/src/tui_review_comments_tests.rs
+new file mode 100644
+index 000000000..8525d7466
+--- /dev/null
++++ b/crates/warp_tui/src/tui_review_comments_tests.rs
+@@ -0,0 +1,213 @@
++use std::path::PathBuf;
++use std::sync::Arc;
++
++use ai::agent::action::{
++    CommentSide, InsertReviewComment, InsertedCommentLine, InsertedCommentLocation,
++};
++use ai::agent::action_result::InsertReviewCommentsResult;
++use warp::tui_export::{
++    AIActionStatus, AIAgentAction, AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
++    AIAgentActionType, Appearance, TaskId,
++};
++use warpui_core::App;
++use warpui_core::elements::tui::{TuiBufferExt, TuiRect};
++use warpui_core::presenter::tui::TuiPresenter;
++
++use super::{format_comment_target, render_review_comments_tool_call};
++
++fn comment(
++    id: &str,
++    author: &str,
++    body: &str,
++    parent_id: Option<&str>,
++    location: Option<InsertedCommentLocation>,
++) -> InsertReviewComment {
++    InsertReviewComment {
++        comment_id: id.to_owned(),
++        author: author.to_owned(),
++        last_modified_timestamp: format!("2024-01-01T00:00:0{id}Z"),
++        comment_body: body.to_owned(),
++        parent_comment_id: parent_id.map(str::to_owned),
++        comment_location: location,
++        html_url: Some(format!("https://github.com/warp/warp/pull/1#comment-{id}")),
++    }
++}
++
++fn action(comments: Vec<InsertReviewComment>) -> AIAgentAction {
++    AIAgentAction {
++        id: AIAgentActionId::from("comments-action".to_owned()),
++        task_id: TaskId::new("task-1".to_owned()),
++        action: AIAgentActionType::InsertCodeReviewComments {
++            repo_path: PathBuf::from("/repo"),
++            comments,
++            base_branch: Some("master".to_owned()),
++        },
++        requires_result: true,
++    }
++}
++
++fn finished_status(action: &AIAgentAction, result: InsertReviewCommentsResult) -> AIActionStatus {
++    AIActionStatus::Finished(Arc::new(AIAgentActionResult {
++        id: action.id.clone(),
++        task_id: action.task_id.clone(),
++        result: AIAgentActionResultType::InsertReviewComments(result),
++    }))
++}
++
++#[test]
++fn formats_pull_request_file_and_line_targets() {
++    assert_eq!(
++        format_comment_target(&comment("1", "alice", "body", None, None)),
++        "Pull request"
++    );
++    assert_eq!(
++        format_comment_target(&comment(
++            "1",
++            "alice",
++            "body",
++            None,
++            Some(InsertedCommentLocation {
++                relative_file_path: "src/main.rs".to_owned(),
++                line: None,
++            }),
++        )),
++        "src/main.rs"
++    );
++    assert_eq!(
++        format_comment_target(&comment(
++            "1",
++            "alice",
++            "body",
++            None,
++            Some(InsertedCommentLocation {
++                relative_file_path: "src/main.rs".to_owned(),
++                line: Some(InsertedCommentLine {
++                    comment_line_range: 10..12,
++                    diff_hunk_line_range: 8..14,
++                    diff_hunk_text: String::new(),
++                    side: Some(CommentSide::Right),
++                }),
++            }),
++        )),
++        "src/main.rs:10-12 (new)"
++    );
++    assert_eq!(
++        format_comment_target(&comment(
++            "1",
++            "alice",
++            "body",
++            None,
++            Some(InsertedCommentLocation {
++                relative_file_path: "src/main.rs".to_owned(),
++                line: Some(InsertedCommentLine {
++                    comment_line_range: 15..15,
++                    diff_hunk_line_range: 15..15,
++                    diff_hunk_text: String::new(),
++                    side: Some(CommentSide::Left),
++                }),
++            }),
++        )),
++        "src/main.rs:15 (old)"
++    );
++}
++
++#[test]
++fn renders_shared_markdown_thread_only_after_success() {
++    App::test((), |app| async move {
++        app.add_singleton_model(|_| Appearance::mock());
++        let action = action(vec![
++            comment("1", "alice", "**Root**", None, None),
++            comment("2", "bob", "Reply", Some("1"), None),
++        ]);
++        let AIAgentActionType::InsertCodeReviewComments { comments, .. } = &action.action else {
++            unreachable!("expected review comment action");
++        };
++        app.read(|ctx| {
++            let mut presenter = TuiPresenter::new();
++            let frame = presenter.present_element(
++                render_review_comments_tool_call(
++                    &action,
++                    comments,
++                    Some(&finished_status(
++                        &action,
++                        InsertReviewCommentsResult::Success {
++                            repo_path: "/repo".to_owned(),
++                        },
++                    )),
++                    false,
++                    ctx,
++                ),
++                TuiRect::new(0, 0, 80, 20),
++                ctx,
++            );
++            let lines = frame
++                .buffer
++                .to_lines()
++                .into_iter()
++                .map(|line| line.trim_end().to_owned())
++                .filter(|line| !line.is_empty())
++                .collect::<Vec<_>>();
++            assert_eq!(
++                lines,
++                vec![
++                    "✓ Inserted 2 review comments",
++                    "  Pull request",
++                    "  @alice:",
++                    "  Root",
++                    "  ──────────────────────────────────────────────────────────────────────────────",
++                    "  @bob:",
++                    "  Reply",
++                    "  https://github.com/warp/warp/pull/1#comment-1",
++                ]
++            );
++
++            let mut presenter = TuiPresenter::new();
++            let pending = presenter.present_element(
++                render_review_comments_tool_call(&action, comments, None, false, ctx),
++                TuiRect::new(0, 0, 80, 4),
++                ctx,
++            );
++            assert_eq!(
++                pending.buffer.to_lines()[0].trim_end(),
++                "○ Insert 2 review comments"
++            );
++
++            for (result, expected) in [
++                (
++                    InsertReviewCommentsResult::Error {
++                        repo_path: "/repo".to_owned(),
++                        message: "failed".to_owned(),
++                    },
++                    "× Failed to insert review comments",
++                ),
++                (
++                    InsertReviewCommentsResult::Cancelled,
++                    "■ Insert review comments cancelled",
++                ),
++            ] {
++                let mut presenter = TuiPresenter::new();
++                let status = finished_status(&action, result);
++                let frame = presenter.present_element(
++                    render_review_comments_tool_call(
++                        &action,
++                        comments,
++                        Some(&status),
++                        false,
++                        ctx,
++                    ),
++                    TuiRect::new(0, 0, 80, 4),
++                    ctx,
++                );
++                assert_eq!(frame.buffer.to_lines()[0].trim_end(), expected);
++                assert!(
++                    frame
++                        .buffer
++                        .to_lines()
++                        .iter()
++                        .skip(1)
++                        .all(|line| line.trim().is_empty())
++                );
++            }
++        });
++    });
++}

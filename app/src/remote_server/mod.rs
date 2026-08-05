@@ -11,6 +11,8 @@ pub mod get_branches;
 #[cfg(not(target_family = "wasm"))]
 pub mod get_committed_branch_files;
 #[cfg(not(target_family = "wasm"))]
+pub mod diff_state_proto;
+#[cfg(not(target_family = "wasm"))]
 pub mod ripgrep_search;
 #[cfg(not(target_family = "wasm"))]
 pub mod server_model;

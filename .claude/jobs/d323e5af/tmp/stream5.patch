@@ -1,0 +1,1633 @@
+diff --git a/app/i18n/en/warp.ftl b/app/i18n/en/warp.ftl
+index 1f3342a43..730bfe15f 100644
+--- a/app/i18n/en/warp.ftl
++++ b/app/i18n/en/warp.ftl
+@@ -2503,6 +2503,7 @@ slash-cmd-open-file-desc = Open a file in Phosphor's code editor
+ slash-cmd-open-file-hint = <path/to/file[:line[:col]]> or "@" to search
+ slash-cmd-rename-tab-desc = Rename the current tab
+ slash-cmd-rename-tab-hint = <tab name>
++slash-cmd-statusline-desc = Configure the statusline
+ slash-cmd-fork-desc = Fork the current conversation in a new pane or a new tab
+ slash-cmd-fork-hint = <optional prompt to send in forked conversation>
+ slash-cmd-open-code-review-desc = Open code review
+diff --git a/app/src/search/slash_command_menu/static_commands/commands.rs b/app/src/search/slash_command_menu/static_commands/commands.rs
+index 7f45e0b34..82f7eaff8 100644
+--- a/app/src/search/slash_command_menu/static_commands/commands.rs
++++ b/app/src/search/slash_command_menu/static_commands/commands.rs
+@@ -114,6 +114,17 @@ pub static RENAME_TAB: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand
+     argument: Some(Argument::required().with_hint_text(t_static!("slash-cmd-rename-tab-hint"))),
+ });
+ 
++// TUI-only: configures which items appear in the bottom statusline and their order. Not
++// executable in the GUI (see `execute_slash_command`'s explicit guard for this command).
++pub static STATUSLINE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
++    name: "/statusline",
++    description: t_static!("slash-cmd-statusline-desc"),
++    icon_path: "bundled/svg/sliders-04.svg",
++    availability: Availability::ALWAYS,
++    auto_enter_ai_mode: false,
++    argument: None,
++});
++
+ pub static FORK: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+     name: "/fork",
+     description: t_static!("slash-cmd-fork-desc"),
+@@ -435,6 +446,7 @@ fn all_commands() -> Vec<StaticCommand> {
+         NEW.clone(),
+         PLAN.clone(),
+         RENAME_TAB.clone(),
++        STATUSLINE.clone(),
+         CONVERSATIONS.clone(),
+         EXPORT_TO_CLIPBOARD.clone(),
+         MODEL.clone(),
+@@ -525,6 +537,21 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn statusline_command_is_registered_and_tui_only() {
++        let command = COMMAND_REGISTRY
++            .get_command_with_name(STATUSLINE.name)
++            .expect("expected /statusline to be registered");
++        assert_eq!(
++            command.kind(),
++            crate::search::slash_command_menu::static_commands::SlashCommandKind::Statusline
++        );
++        assert_eq!(command.availability, Availability::ALWAYS);
++        assert!(!command.auto_enter_ai_mode);
++        assert!(command.argument.is_none());
++        assert!(command.supports_tui());
++    }
++
+     #[test]
+     fn rename_tab_command_requires_argument() {
+         // hint_text goes through i18n; initialize the loader to get the real English copy
+diff --git a/app/src/search/slash_command_menu/static_commands/mod.rs b/app/src/search/slash_command_menu/static_commands/mod.rs
+index c78bbb777..338a72fdf 100644
+--- a/app/src/search/slash_command_menu/static_commands/mod.rs
++++ b/app/src/search/slash_command_menu/static_commands/mod.rs
+@@ -127,6 +127,7 @@ pub enum SlashCommandKind {
+     RenameTab,
+     RenameConversation,
+     SetTabColor,
++    Statusline,
+     Fork,
+     MoveToCloud,
+     OpenCodeReview,
+@@ -211,6 +212,7 @@ impl StaticCommand {
+             "/open-file" => SlashCommandKind::Edit,
+             "/rename-tab" => SlashCommandKind::RenameTab,
+             "/set-tab-color" => SlashCommandKind::SetTabColor,
++            "/statusline" => SlashCommandKind::Statusline,
+             "/fork" => SlashCommandKind::Fork,
+             "/handoff" => SlashCommandKind::MoveToCloud,
+             "/open-code-review" => SlashCommandKind::OpenCodeReview,
+@@ -262,6 +264,7 @@ impl StaticCommand {
+                 | "/conversations"
+                 | "/export-to-clipboard"
+                 | "/export-to-file"
++                | "/statusline"
+         )
+     }
+ }
+diff --git a/app/src/settings/ai.rs b/app/src/settings/ai.rs
+index 0ffd8a0c7..fb8c47479 100644
+--- a/app/src/settings/ai.rs
++++ b/app/src/settings/ai.rs
+@@ -395,6 +395,125 @@ impl ThinkingDisplayMode {
+     }
+ }
+ 
++/// One configurable item in the TUI statusline.
++///
++/// Ported from warp/master's `TuiStatuslineItem`. Upstream also carries a `CreditUsage`
++/// variant tied to Warp's cloud credits/billing system; Zap has no credits system (it
++/// already replaced Warp's credits UI with a local BYOP context-window-usage footer), so
++/// that variant is dropped and `ContextWindowUsage` covers the equivalent local-only need.
++///
++/// `AutoQueue` is kept but has different backing semantics than upstream: upstream's
++/// variant reflects a persistent "auto-queue next prompt" *mode* toggle backed by
++/// `QueuedQueryModel`, a feature not yet ported to Zap. Zap's `/queue` is a one-shot
++/// "hold this specific prompt until the current turn finishes" action instead, so this
++/// item indicates whether such a queued follow-up is currently pending.
++#[derive(
++    Debug,
++    serde::Serialize,
++    serde::Deserialize,
++    PartialEq,
++    Eq,
++    Copy,
++    Clone,
++    Hash,
++    EnumIter,
++    schemars::JsonSchema,
++    settings_value::SettingsValue,
++)]
++#[schemars(
++    description = "A configurable item in the Zap Agent CLI statusline.",
++    rename_all = "snake_case"
++)]
++#[serde(rename_all = "snake_case")]
++pub enum TuiStatuslineItem {
++    AutoApprove,
++    AutoQueue,
++    Model,
++    WorkingDirectory,
++    GitBranch,
++    GitDiffStatus,
++    ContextWindowUsage,
++}
++
++impl TuiStatuslineItem {
++    pub const ALL: [Self; 7] = [
++        Self::AutoApprove,
++        Self::AutoQueue,
++        Self::Model,
++        Self::WorkingDirectory,
++        Self::GitBranch,
++        Self::GitDiffStatus,
++        Self::ContextWindowUsage,
++    ];
++
++    pub fn label(self) -> &'static str {
++        match self {
++            Self::AutoApprove => "Auto-approve indicator",
++            Self::AutoQueue => "Queued follow-up prompt indicator",
++            Self::Model => "Model",
++            Self::WorkingDirectory => "Working directory",
++            Self::GitBranch => "Git branch",
++            Self::GitDiffStatus => "Git diff status",
++            Self::ContextWindowUsage => "Context window usage",
++        }
++    }
++}
++
++/// Ordered and enabled items in the TUI statusline.
++#[derive(
++    Debug,
++    serde::Serialize,
++    serde::Deserialize,
++    PartialEq,
++    Eq,
++    Clone,
++    schemars::JsonSchema,
++    settings_value::SettingsValue,
++)]
++pub struct TuiStatuslineConfig {
++    pub order: Vec<TuiStatuslineItem>,
++    pub enabled: Vec<TuiStatuslineItem>,
++}
++
++impl Default for TuiStatuslineConfig {
++    fn default() -> Self {
++        Self {
++            order: TuiStatuslineItem::ALL.to_vec(),
++            enabled: vec![
++                TuiStatuslineItem::Model,
++                TuiStatuslineItem::WorkingDirectory,
++                TuiStatuslineItem::GitBranch,
++                TuiStatuslineItem::GitDiffStatus,
++            ],
++        }
++    }
++}
++
++impl TuiStatuslineConfig {
++    /// Returns a complete, duplicate-free catalog and a valid enabled subset.
++    pub fn normalized(&self) -> Self {
++        let mut order = Vec::with_capacity(TuiStatuslineItem::ALL.len());
++        for item in self.order.iter().copied().chain(TuiStatuslineItem::ALL) {
++            if !order.contains(&item) {
++                order.push(item);
++            }
++        }
++
++        let mut enabled = Vec::with_capacity(self.enabled.len());
++        for item in self.enabled.iter().copied() {
++            if order.contains(&item) && !enabled.contains(&item) {
++                enabled.push(item);
++            }
++        }
++
++        Self { order, enabled }
++    }
++
++    pub fn is_enabled(&self, item: TuiStatuslineItem) -> bool {
++        self.enabled.contains(&item)
++    }
++}
++
+ /// Tracks the state of the quota reset banner
+ #[derive(
+     Debug,
+@@ -1514,6 +1633,21 @@ define_settings_group!(AISettings, settings: [
+     // This field is used to store the key used for voice input toggling.
+     // Note this is not the named key, but rather corresponds to the physical key.
+     voice_input_toggle_key: VoiceInputToggleKey,
++    // Ordered visibility configuration for the TUI's bottom statusline.
++    // TUI-only and local so separate devices can use different terminal layouts.
++    //
++    // Upstream tags this `surface: settings::SettingSurfaces::TUI`; Zap's settings macro
++    // predates that concept (see app/src/settings/tui_autoupdate.rs), so it's just a regular
++    // shared-settings entry here — behaviorally the same since it's only ever read by the TUI.
++    tui_statusline: TuiStatusline {
++        type: TuiStatuslineConfig,
++        default: TuiStatuslineConfig::default(),
++        supported_platforms: SupportedPlatforms::ALL,
++        sync_to_cloud: SyncToCloud::Never,
++        private: false,
++        toml_path: "agents.statusline",
++        description: "Controls the order and visibility of Zap Agent CLI statusline items.",
++    },
+     // This is not a user-visible setting - it's merely a one-time flag to track if the user has
+     // explicitly interacted with voice input. We use this to determine whether we should show a toast
+     // to inform the user about voice input and auto-set the keybinding.
+diff --git a/app/src/settings/ai_tests.rs b/app/src/settings/ai_tests.rs
+index 02ee1db8a..e669cf184 100644
+--- a/app/src/settings/ai_tests.rs
++++ b/app/src/settings/ai_tests.rs
+@@ -28,6 +28,58 @@ fn create_test_request_limit_info(
+     }
+ }
+ 
++#[test]
++fn tui_statusline_default_matches_figma() {
++    let config = TuiStatuslineConfig::default();
++    assert_eq!(config.order, TuiStatuslineItem::ALL);
++    assert_eq!(
++        config.enabled,
++        vec![
++            TuiStatuslineItem::Model,
++            TuiStatuslineItem::WorkingDirectory,
++            TuiStatuslineItem::GitBranch,
++            TuiStatuslineItem::GitDiffStatus,
++        ]
++    );
++}
++
++#[test]
++fn tui_statusline_normalization_preserves_custom_order_and_appends_missing_items() {
++    let config = TuiStatuslineConfig {
++        order: vec![
++            TuiStatuslineItem::GitBranch,
++            TuiStatuslineItem::Model,
++            TuiStatuslineItem::GitBranch,
++        ],
++        enabled: vec![
++            TuiStatuslineItem::Model,
++            TuiStatuslineItem::Model,
++            TuiStatuslineItem::ContextWindowUsage,
++        ],
++    }
++    .normalized();
++
++    assert_eq!(
++        config.order,
++        vec![
++            TuiStatuslineItem::GitBranch,
++            TuiStatuslineItem::Model,
++            TuiStatuslineItem::AutoApprove,
++            TuiStatuslineItem::AutoQueue,
++            TuiStatuslineItem::WorkingDirectory,
++            TuiStatuslineItem::GitDiffStatus,
++            TuiStatuslineItem::ContextWindowUsage,
++        ]
++    );
++    assert_eq!(
++        config.enabled,
++        vec![
++            TuiStatuslineItem::Model,
++            TuiStatuslineItem::ContextWindowUsage,
++        ]
++    );
++}
++
+ // FocusedTerminalInfo Tests
+ 
+ #[test]
+diff --git a/app/src/terminal/input/slash_commands/mod.rs b/app/src/terminal/input/slash_commands/mod.rs
+index 4c595d5dc..786be30c3 100644
+--- a/app/src/terminal/input/slash_commands/mod.rs
++++ b/app/src/terminal/input/slash_commands/mod.rs
+@@ -923,6 +923,14 @@ impl Input {
+                 // of handling user queries with specific slash command prefixes.
+                 return false;
+             }
++            tui_only if command.name == commands::STATUSLINE.name => {
++                debug_assert!(
++                    false,
++                    "Attempted to execute TUI-only slash command in the GUI: {}",
++                    command.name
++                );
++                return false;
++            }
+             _ => {
+                 debug_assert!(
+                     false,
+diff --git a/app/src/tui_export.rs b/app/src/tui_export.rs
+index 3bf880850..29c505454 100644
+--- a/app/src/tui_export.rs
++++ b/app/src/tui_export.rs
+@@ -22,6 +22,7 @@ pub use ::ai::agent::action::{AskUserQuestionItem, AskUserQuestionOption, AskUse
+ pub use ::ai::agent::action_result::AskUserQuestionAnswerItem;
+ pub use ::ai::agent::ask_user_question_session::{
+     AskUserQuestionAction, AskUserQuestionEffect, AskUserQuestionPhase, AskUserQuestionSession,
++    QuestionDraft,
+ };
+ pub use repo_metadata::repositories::RepoDetectionSource;
+ pub use crate::util::repo_detection::{detect_possible_git_repo, RepoDetectionSessionType};
+diff --git a/crates/ai/src/agent/ask_user_question_session.rs b/crates/ai/src/agent/ask_user_question_session.rs
+index c2aeade29..db68da466 100644
+--- a/crates/ai/src/agent/ask_user_question_session.rs
++++ b/crates/ai/src/agent/ask_user_question_session.rs
+@@ -1,4 +1,4 @@
+-use std::collections::HashSet;
++use std::collections::{HashMap, HashSet};
+ 
+ use itertools::Itertools;
+ 
+@@ -63,13 +63,6 @@ struct AskUserQuestionEditingState {
+ }
+ 
+ impl AskUserQuestionEditingState {
+-    fn new(draft_count: usize) -> Self {
+-        Self {
+-            current_question_index: 0,
+-            drafts: vec![QuestionDraftState::Unanswered; draft_count],
+-        }
+-    }
+-
+     fn current_question_index(&self) -> usize {
+         self.current_question_index
+     }
+@@ -159,12 +152,32 @@ pub struct AskUserQuestionSession {
+ }
+ 
+ impl AskUserQuestionSession {
+-    pub fn new(mut questions: Vec<AskUserQuestionItem>) -> Self {
++    pub fn new(questions: Vec<AskUserQuestionItem>) -> Self {
++        Self::new_with_drafts(questions, HashMap::new())
++    }
++
++    pub fn new_with_drafts(
++        mut questions: Vec<AskUserQuestionItem>,
++        mut drafts_by_question_id: HashMap<String, QuestionDraft>,
++    ) -> Self {
+         // Put multi-select questions before single-select so the last question
+         // can auto-submit after a single option toggle.
+         questions.sort_by_key(|question| !question.is_multiselect());
++        let drafts = questions
++            .iter()
++            .map(|question| {
++                drafts_by_question_id
++                    .remove(&question.question_id)
++                    .filter(|draft| !draft.is_empty())
++                    .map(QuestionDraftState::Answered)
++                    .unwrap_or(QuestionDraftState::Unanswered)
++            })
++            .collect();
+         Self {
+-            state: AskUserQuestionState::Editing(AskUserQuestionEditingState::new(questions.len())),
++            state: AskUserQuestionState::Editing(AskUserQuestionEditingState {
++                current_question_index: 0,
++                drafts,
++            }),
+             questions,
+         }
+     }
+diff --git a/crates/warp_tui/src/keybindings.rs b/crates/warp_tui/src/keybindings.rs
+index bb200c986..a6a071d65 100644
+--- a/crates/warp_tui/src/keybindings.rs
++++ b/crates/warp_tui/src/keybindings.rs
+@@ -84,6 +84,7 @@ pub(crate) fn init(app: &mut AppContext) {
+         TuiEditorViewAction::Command,
+     );
+     crate::tui_ask_question_view::init(app);
++    crate::statusline_config_view::init(app);
+     crate::tui_permission_prompt::init(app);
+     crate::tui_shell_command_view::init(app);
+     crate::tui_file_edits_view::init(app);
+diff --git a/crates/warp_tui/src/lib.rs b/crates/warp_tui/src/lib.rs
+index d601cc31d..301e51c6a 100644
+--- a/crates/warp_tui/src/lib.rs
++++ b/crates/warp_tui/src/lib.rs
+@@ -47,6 +47,7 @@ mod resume;
+ mod session_registry;
+ mod skills_menu;
+ mod slash_commands;
++mod statusline_config_view;
+ pub mod tab_bar;
+ mod terminal_background;
+ mod terminal_block;
+diff --git a/crates/warp_tui/src/option_selector.rs b/crates/warp_tui/src/option_selector.rs
+index 37d8e3df3..4e82b6811 100644
+--- a/crates/warp_tui/src/option_selector.rs
++++ b/crates/warp_tui/src/option_selector.rs
+@@ -119,6 +119,9 @@ pub(crate) enum TuiOptionSelectorEvent {
+     /// The selector asked to be dismissed (element-level Escape fallback for
+     /// hosts without their own Escape binding).
+     Dismissed,
++    /// The host-requested row order changed.
++    #[allow(dead_code)]
++    RowsReordered { ordered_ids: Vec<String> },
+     /// The selector's intrinsic height changed. `ctx.notify()` rerenders this
+     /// view, but the block list may reuse a stable-width cached rich-content
+     /// height. The host forwards this event so the containing rich-content
+@@ -150,6 +153,14 @@ pub(crate) enum TuiOptionSelectorAction {
+     HandleEscape,
+ }
+ 
++// The next stacked change consumes this row-reordering API.
++#[allow(dead_code)]
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum TuiOptionSelectorMoveDirection {
++    Backward,
++    Forward,
++}
++
+ /// One navigable entry in the selector, in display order.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ enum SelectorItem {
+@@ -479,6 +490,83 @@ impl TuiOptionSelector {
+             .flatten()
+     }
+ 
++    #[allow(dead_code)]
++    pub(crate) fn ordered_row_ids(&self) -> Vec<String> {
++        self.page
++            .snapshot
++            .rows
++            .iter()
++            .map(|row| row.id.clone())
++            .collect()
++    }
++
++    /// Moves `row_id` one step among the currently filtered rows, while
++    /// updating the full unfiltered catalog and preserving the current
++    /// selection.
++    #[allow(dead_code)]
++    pub(crate) fn move_row(
++        &mut self,
++        row_id: &str,
++        direction: TuiOptionSelectorMoveDirection,
++        ctx: &mut ViewContext<Self>,
++    ) -> bool {
++        let selected_id = self.selected_row_id();
++        let visible_row_ids = self
++            .items()
++            .into_iter()
++            .filter_map(|item| match item {
++                SelectorItem::Row(index) => {
++                    self.page.snapshot.rows.get(index).map(|row| row.id.clone())
++                }
++                SelectorItem::Retry | SelectorItem::CustomText => None,
++            })
++            .collect::<Vec<_>>();
++        let Some(visible_index) = visible_row_ids.iter().position(|id| id == row_id) else {
++            return false;
++        };
++        let target_visible_index = match direction {
++            TuiOptionSelectorMoveDirection::Backward => visible_index.checked_sub(1),
++            TuiOptionSelectorMoveDirection::Forward => visible_index.checked_add(1),
++        };
++        let Some(target_id) =
++            target_visible_index.and_then(|index| visible_row_ids.get(index).cloned())
++        else {
++            return false;
++        };
++        let Some(source_index) = self
++            .page
++            .snapshot
++            .rows
++            .iter()
++            .position(|row| row.id == row_id)
++        else {
++            return false;
++        };
++        let row = self.page.snapshot.rows.remove(source_index);
++        let Some(target_index) = self
++            .page
++            .snapshot
++            .rows
++            .iter()
++            .position(|row| row.id == target_id)
++        else {
++            self.page.snapshot.rows.insert(source_index, row);
++            return false;
++        };
++        let insertion_index = match direction {
++            TuiOptionSelectorMoveDirection::Backward => target_index,
++            TuiOptionSelectorMoveDirection::Forward => target_index + 1,
++        };
++        self.page.snapshot.rows.insert(insertion_index, row);
++        self.select_id(selected_id);
++        self.sync_after_items_changed();
++        ctx.emit(TuiOptionSelectorEvent::RowsReordered {
++            ordered_ids: self.ordered_row_ids(),
++        });
++        self.invalidate_layout(ctx);
++        true
++    }
++
+     /// Whether host shortcuts scoped to the bare option list should be active.
+     pub(crate) fn list_is_focused(&self, ctx: &AppContext) -> bool {
+         matches!(self.focus_zone(ctx), SelectorFocusZone::List)
+@@ -722,7 +810,7 @@ impl TuiOptionSelector {
+     }
+ 
+     /// The row id currently selected, when the selection is on a row.
+-    fn selected_row_id(&self) -> Option<String> {
++    pub(crate) fn selected_row_id(&self) -> Option<String> {
+         let items = self.items();
+         match self
+             .interaction
+diff --git a/crates/warp_tui/src/option_selector_tests.rs b/crates/warp_tui/src/option_selector_tests.rs
+index 66c7eb487..c0127785d 100644
+--- a/crates/warp_tui/src/option_selector_tests.rs
++++ b/crates/warp_tui/src/option_selector_tests.rs
+@@ -17,6 +17,7 @@ use warpui_core::{App, AppContext, TuiView as _, TypedActionView as _, ViewHandl
+ use super::{
+     OptionSelectorHeader, OptionSelectorPage, SELECTOR_NAVIGATION_ACTIVE, SelectorFocusZone,
+     SelectorItem, TuiOptionSelector, TuiOptionSelectorAction, TuiOptionSelectorEvent,
++    TuiOptionSelectorMoveDirection,
+ };
+ use crate::editor_element::TuiEditorAction;
+ use crate::editor_interaction::TuiEditorCommand;
+@@ -35,6 +36,60 @@ fn row(id: &str) -> OptionRow {
+     }
+ }
+ 
++#[test]
++fn reordering_an_explicit_filtered_row_updates_the_full_catalog_and_preserves_selection() {
++    App::test((), |mut app| async move {
++        let (selector, events) = add_selector(&mut app);
++        set_searchable_page(
++            &mut app,
++            &selector,
++            snapshot(&["alpha", "hidden", "alpine"], Some("alpha")),
++        );
++        selector.update(&mut app, |selector, ctx| {
++            selector.interaction.search_query = "al".to_owned();
++            selector.sync_after_items_changed();
++            ctx.focus_self();
++            assert!(selector.move_row("alpine", TuiOptionSelectorMoveDirection::Backward, ctx));
++        });
++
++        assert_eq!(
++            selector.read(&app, |selector, _| selector.ordered_row_ids()),
++            ["alpine", "alpha", "hidden"]
++        );
++        assert!(selected_line(&app, &selector).contains("alpha"));
++        assert_eq!(
++            primary_events(&events),
++            [TuiOptionSelectorEvent::RowsReordered {
++                ordered_ids: vec!["alpine".to_owned(), "alpha".to_owned(), "hidden".to_owned(),],
++            }]
++        );
++    });
++}
++
++#[test]
++fn moving_a_hidden_or_boundary_row_is_a_noop() {
++    App::test((), |mut app| async move {
++        let (selector, events) = add_selector(&mut app);
++        set_searchable_page(
++            &mut app,
++            &selector,
++            snapshot(&["alpha", "hidden", "alpine"], Some("alpha")),
++        );
++        selector.update(&mut app, |selector, ctx| {
++            selector.interaction.search_query = "al".to_owned();
++            selector.sync_after_items_changed();
++            assert!(!selector.move_row("hidden", TuiOptionSelectorMoveDirection::Forward, ctx));
++            assert!(!selector.move_row("alpha", TuiOptionSelectorMoveDirection::Backward, ctx));
++        });
++
++        assert_eq!(
++            selector.read(&app, |selector, _| selector.ordered_row_ids()),
++            ["alpha", "hidden", "alpine"]
++        );
++        assert!(primary_events(&events).is_empty());
++    });
++}
++
+ #[test]
+ fn focus_zone_tracks_each_selector_surface() {
+     App::test((), |mut app| async move {
+diff --git a/crates/warp_tui/src/terminal_session_view.rs b/crates/warp_tui/src/terminal_session_view.rs
+index a51422620..1f567d36b 100644
+--- a/crates/warp_tui/src/terminal_session_view.rs
++++ b/crates/warp_tui/src/terminal_session_view.rs
+@@ -10,7 +10,7 @@ use async_channel::Sender;
+ use instant::Instant;
+ use parking_lot::FairMutex;
+ use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
+-use warp::settings::{AISettings, AISettingsChangedEvent};
++use warp::settings::{AISettings, AISettingsChangedEvent, TuiStatuslineConfig, TuiStatuslineItem};
+ use warp::tui_export::{
+     AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
+     AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
+@@ -99,6 +99,7 @@ use crate::resume::TuiExitSummaryHandle;
+ use crate::session_registry::TuiSessions;
+ use crate::skills_menu::{TuiSkillMenuEvent, TuiSkillMenuModel};
+ use crate::slash_commands::TuiSlashCommandModel;
++use crate::statusline_config_view::{TuiStatuslineConfigEvent, TuiStatuslineConfigView};
+ use crate::terminal_content_element::TuiTerminalContentElement;
+ use crate::terminal_use::{
+     TerminalUseInterruptAction, TuiInputTarget, hide_agent_requested_command_from_top_level,
+@@ -202,6 +203,8 @@ const REWOUND_HINT: &str = "Rewound conversation and reverted file edits";
+ /// guidance lives in the input's placeholder ghost text, so the footer only
+ /// names the mode.
+ const SHELL_MODE_HINT: &str = "shell mode";
++const STATUSLINE_SAVED_HINT: &str = "Statusline configuration saved.";
++const STATUSLINE_PERSISTENCE_FAILED_HINT: &str = "Could not save the statusline configuration.";
+ const COPY_SELECTION_HINT: &str = "copied to clipboard";
+ const COPY_FAILED_HINT: &str = "failed to copy to clipboard";
+ const LOG_BUNDLE_FAILED_HINT: &str = "Failed to create log bundle (check logs)";
+@@ -232,116 +235,122 @@ fn cost_command_unavailable_hint(
+     }
+ }
+ 
+-/// Resolved segments for the footer's left-aligned sectioned status row.
+-/// [`TuiTerminalSessionView::render_footer`] builds this from view state and
+-/// delegates to [`render_status_footer_row`]; keeping the row layout separate
+-/// makes the left alignment, section order, and bash-mode omissions directly
+-/// render-to-lines testable without view-state plumbing.
++/// One resolved item in the footer's configured presentation order.
++enum FooterSegment {
++    ShellMode,
++    ActiveIndicator(&'static str),
++    Model(Box<dyn TuiElement>),
++    WorkingDirectory(String),
++    GitBranch(String),
++    /// The selected conversation's context-window usage. BYOP has no cloud
++    /// credits/cost, so unlike upstream's clickable credits⇄cost toggle this
++    /// wraps Zap's informational context-% entry (`crate::usage`).
++    ContextWindowUsage(Box<dyn TuiElement>),
++    GitDiff { additions: usize, deletions: usize },
++}
++
++impl FooterSegment {
++    fn separator_to(&self, next: &Self) -> &'static str {
++        match (self, next) {
++            // Only a shell-mode label directly preceding the working directory
++            // gets a plain space; a leading Model label falls through to the
++            // default " • " below so model and cwd don't visually run
++            // together (fixes a missing divider present in an earlier
++            // revision of this port — see warp upstream 311deab98).
++            (Self::ShellMode, Self::WorkingDirectory(_)) => " ",
++            (Self::WorkingDirectory(_), Self::GitBranch(_)) => " ↬ ",
++            (
++                Self::ShellMode
++                | Self::ActiveIndicator(_)
++                | Self::Model(_)
++                | Self::WorkingDirectory(_)
++                | Self::GitBranch(_)
++                | Self::ContextWindowUsage(_)
++                | Self::GitDiff { .. },
++                Self::ShellMode
++                | Self::ActiveIndicator(_)
++                | Self::Model(_)
++                | Self::WorkingDirectory(_)
++                | Self::GitBranch(_)
++                | Self::ContextWindowUsage(_)
++                | Self::GitDiff { .. },
++            ) => " • ",
++        }
++    }
++}
++
++/// Resolved segments for the footer's left-aligned status row.
+ struct FooterSegments {
+-    /// Whether the input is in `!` shell mode: the shell-mode indicator leads
+-    /// the row and the model/usage segments are hidden.
+-    shell_mode: bool,
+-    /// The clickable active-model label. Hidden in shell mode.
+-    model_label: Option<Box<dyn TuiElement>>,
+-    /// The session's compacted working directory. Part of the combined
+-    /// cwd/branch section.
+-    cwd: Option<String>,
+-    /// The current branch name, appended to the cwd segment as ` ↬ branch`.
+-    branch: Option<String>,
+-    /// The clickable usage entry. Hidden in shell mode.
+-    usage: Option<Box<dyn TuiElement>>,
+-    /// Uncommitted diff additions; rendered as `+N` when > 0.
+-    diff_additions: usize,
+-    /// Uncommitted diff deletions; rendered as `-M` when > 0.
+-    diff_deletions: usize,
++    ordered: Vec<FooterSegment>,
+ }
+ 
+-/// Builds the left-aligned sectioned status row from resolved segments.
+-///
+-/// Agent mode orders the sections `[model] [cwd ↬ branch] • [usage] •
+-/// [+N -M]`; shell mode leads with the shell-mode indicator and hides the
+-/// model and usage segments, yielding `[shell mode] [cwd ↬ branch] •
+-/// [+N -M]`. A plain space separates the model from cwd/branch; a ` • `
+-/// separator precedes usage and diff. Absent metadata never leaves a stray
+-/// separator. Every child truncates to a single row, so the row lays out one
+-/// row tall.
++/// Builds the status row from resolved segments. Working directory follows a
++/// leading model or shell-mode label with a plain space; an immediately
++/// following branch uses the existing ` ↬ ` relationship marker. Every other
++/// adjacent pair uses ` • `, and the first item never receives a separator.
++/// Every child truncates to a single row, so the row lays out one row tall.
+ fn render_status_footer_row(segments: FooterSegments, builder: &TuiUiBuilder) -> TuiFlex {
+     let muted = builder.muted_text_style();
+     let mut row = TuiFlex::row();
+-    let mut has_segment = false;
+-
+-    // First segment: the shell-mode indicator (shell mode) or the clickable
+-    // model label (agent mode). Shell mode hides the model segment so the
+-    // indicator leads.
+-    if segments.shell_mode {
+-        row = row.child(
+-            TuiText::new(SHELL_MODE_HINT)
+-                .with_style(builder.shell_mode_accent_style())
+-                .truncate()
+-                .finish(),
+-        );
+-        has_segment = true;
+-    } else if let Some(model_label) = segments.model_label {
+-        row = row.child(model_label);
+-        has_segment = true;
+-    }
+-
+-    // Combined cwd/branch section: the branch stays contextual to its path.
+-    // A plain space separates this from the leading model/shell-mode segment,
+-    // matching master's layout where model and cwd run together without a dot.
+-    if segments.cwd.is_some() || segments.branch.is_some() {
+-        if has_segment {
+-            row = row.child(TuiText::new(" ").truncate().finish());
+-        }
+-        if let Some(cwd) = segments.cwd {
+-            row = row.child(TuiText::new(cwd).with_style(muted).truncate().finish());
++    let mut segments = segments.ordered.into_iter().peekable();
++    while let Some(segment) = segments.next() {
++        let separator = segments.peek().map(|next| segment.separator_to(next));
++        match segment {
++            FooterSegment::ShellMode => {
++                row = row.child(
++                    TuiText::new(SHELL_MODE_HINT)
++                        .with_style(builder.shell_mode_accent_style())
++                        .truncate()
++                        .finish(),
++                );
++            }
++            FooterSegment::ActiveIndicator(label) => {
++                row = row.child(
++                    TuiText::new(label)
++                        .with_style(builder.success_glyph_style())
++                        .truncate()
++                        .finish(),
++                );
++            }
++            FooterSegment::Model(model) | FooterSegment::ContextWindowUsage(model) => {
++                row = row.child(model);
++            }
++            FooterSegment::WorkingDirectory(cwd) | FooterSegment::GitBranch(cwd) => {
++                row = row.child(TuiText::new(cwd).with_style(muted).truncate().finish());
++            }
++            FooterSegment::GitDiff {
++                additions,
++                deletions,
++            } => {
++                if additions > 0 {
++                    row = row.child(
++                        TuiText::new(format!("+{additions}"))
++                            .with_style(builder.diff_added_style())
++                            .truncate()
++                            .finish(),
++                    );
++                }
++                if deletions > 0 {
++                    if additions > 0 {
++                        row = row.child(TuiText::new(" ").truncate().finish());
++                    }
++                    row = row.child(
++                        TuiText::new(format!("-{deletions}"))
++                            .with_style(builder.diff_removed_style())
++                            .truncate()
++                            .finish(),
++                    );
++                }
++            }
+         }
+-        if let Some(branch) = segments.branch {
++        if let Some(separator) = separator {
+             row = row.child(
+-                TuiText::new(format!(" ↬ {branch}"))
++                TuiText::new(separator)
+                     .with_style(muted)
+                     .truncate()
+                     .finish(),
+             );
+         }
+-        has_segment = true;
+-    }
+-
+-    // Usage entry (agent mode only): the clickable credits/cost toggle.
+-    if !segments.shell_mode
+-        && let Some(usage) = segments.usage
+-    {
+-        if has_segment {
+-            row = row.child(TuiText::new(" • ").with_style(muted).truncate().finish());
+-        }
+-        row = row.child(usage);
+-        has_segment = true;
+-    }
+-
+-    // Diff counts retain their existing added/removed styles.
+-    if segments.diff_additions > 0 || segments.diff_deletions > 0 {
+-        if has_segment {
+-            row = row.child(TuiText::new(" • ").with_style(muted).truncate().finish());
+-        }
+-        if segments.diff_additions > 0 {
+-            row = row.child(
+-                TuiText::new(format!("+{}", segments.diff_additions))
+-                    .with_style(builder.diff_added_style())
+-                    .truncate()
+-                    .finish(),
+-            );
+-        }
+-        if segments.diff_deletions > 0 {
+-            if segments.diff_additions > 0 {
+-                row = row.child(TuiText::new(" ").truncate().finish());
+-            }
+-            row = row.child(
+-                TuiText::new(format!("-{}", segments.diff_deletions))
+-                    .with_style(builder.diff_removed_style())
+-                    .truncate()
+-                    .finish(),
+-            );
+-        }
+     }
+ 
+     row
+@@ -544,6 +553,9 @@ pub(crate) struct TuiTerminalSessionView {
+     /// detect blocker transitions in [`Self::sync_blocker_focus`]. Input
+     /// visibility itself is derived at render time, never stored.
+     active_blocker_view_id: Option<EntityId>,
++    /// The `/statusline` configuration picker, mounted in place of the input
++    /// box while open.
++    statusline_config_view: Option<ViewHandle<TuiStatuslineConfigView>>,
+     zero_state_view: ViewHandle<TuiZeroStateView>,
+ }
+ 
+@@ -702,6 +714,8 @@ impl TuiTerminalSessionView {
+             TuiInputTarget::Disabled | TuiInputTarget::AgentEditor => {
+                 if let Some(blocker) = self.active_blocking_child(ctx) {
+                     Self::focus_blocking_child(blocker, ctx);
++                } else if let Some(statusline_config_view) = self.statusline_config_view.as_ref() {
++                    statusline_config_view.update(ctx, |view, ctx| view.focus(ctx));
+                 } else {
+                     ctx.focus(&self.input_view);
+                 }
+@@ -1414,11 +1428,16 @@ impl TuiTerminalSessionView {
+         // The footer shows the active model and working directory: re-render
+         // when the active model or its display name changes, or when the
+         // session's working directory changes. (The context-usage entry
+-        // re-renders via the conversation-model events above.)
++        // re-renders via the conversation-model events above.) Also re-render
++        // when the configured statusline items/order change (`/statusline`
++        // save or settings-file hot reload).
+         ctx.subscribe_to_model(&AISettings::handle(ctx), |view, _, event, ctx| {
+             if matches!(event, AISettingsChangedEvent::AIAutoDetectionEnabled { .. }) {
+                 view.schedule_input_detection(ctx);
+             }
++            if matches!(event, AISettingsChangedEvent::TuiStatusline { .. }) {
++                ctx.notify();
++            }
+         });
+         ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |_, _, event, ctx| {
+             if matches!(
+@@ -1536,6 +1555,7 @@ impl TuiTerminalSessionView {
+             next_restore_request_id: 0,
+             exit_summary,
+             active_blocker_view_id: None,
++            statusline_config_view: None,
+             zero_state_view,
+         }
+     }
+@@ -2224,13 +2244,13 @@ impl TuiTerminalSessionView {
+         render_warping_indicator_row(label, elapsed, auto_approve, ctx)
+     }
+ 
+-    /// Builds the status footer under the input box. The row is left-aligned:
+-    /// in agent mode `[model] [cwd ↬ branch] • [usage] • [+N -M]`, and in shell
+-    /// mode `[shell mode] [cwd ↬ branch] • [+N -M]` (model and usage hidden).
+-    /// A replacing hint — the ctrl-c exit confirmation while armed, the
+-    /// conversation-list loading hint, or an active transient notice — occupies
+-    /// the whole row instead. Every child truncates to a single row, so the row
+-    /// lays out one row tall.
++    /// Builds the configured statusline under the input box. Normal mode uses
++    /// the persisted item order and visibility (`/statusline`); shell mode
++    /// always leads with its mode label and only resolves configured
++    /// working-directory and git items. A replacing hint — the ctrl-c exit
++    /// confirmation while armed, the conversation-list loading hint, or an
++    /// active transient notice — occupies the whole row instead. An empty
++    /// resolved configuration consumes no row.
+     fn render_footer(&self, ctx: &AppContext) -> TuiFlex {
+         let builder = TuiUiBuilder::from_app(ctx);
+         let muted = builder.muted_text_style();
+@@ -2272,83 +2292,99 @@ impl TuiTerminalSessionView {
+             );
+         }
+         let shell_mode = self.is_shell_mode(ctx);
+-
+-        // Normal left-aligned sectioned status row.
++        let config = AISettings::as_ref(ctx).tui_statusline.normalized();
+         let git_metadata = self.git_status_metadata(ctx);
+-        let model_label = if shell_mode {
+-            None
+-        } else {
+-            let model_name = LLMPreferences::as_ref(ctx)
+-                .get_active_base_model(ctx, Some(self.terminal_surface_id))
+-                .display_name
+-                .clone();
+-            // The active-model label is clickable: a left click toggles the
+-            // inline model picker (the same menu `/model` surfaces). The hover
+-            // state lives on a retained [`MouseStateHandle`] so it survives
+-            // element-tree rebuilds, and the click dispatches a typed action
+-            // since the element pass only has an immutable [`AppContext`] —
+-            // mirroring the usage entry.
+-            let model_label_hovered = self
+-                .model_label_hover
+-                .lock()
+-                .is_ok_and(|state| state.is_hovered());
+-            let model_label_style = if model_label_hovered {
+-                builder.primary_text_style()
+-            } else {
+-                builder.muted_text_style()
+-            };
+-            Some(
+-                TuiHoverable::new(
+-                    self.model_label_hover.clone(),
+-                    TuiText::new(model_name)
+-                        .with_style(model_label_style)
+-                        .truncate()
++        let mut ordered = Vec::new();
++        if shell_mode {
++            ordered.push(FooterSegment::ShellMode);
++        }
++        for item in config.order.iter().copied() {
++            if !config.is_enabled(item) {
++                continue;
++            }
++            let segment = match item {
++                TuiStatuslineItem::AutoApprove => (!shell_mode
++                    && self
++                        .conversation_selection
++                        .as_ref(ctx)
++                        .pending_query_autoexecute_override(ctx)
++                        .is_autoexecute_any_action())
++                .then_some(FooterSegment::ActiveIndicator("Auto-approve")),
++                // Zap has no persistent "auto-queue" mode (`/queue` holds a
++                // single specific prompt instead — see `TuiStatuslineItem`'s
++                // doc comment), so this indicates a queued follow-up prompt.
++                TuiStatuslineItem::AutoQueue => (!shell_mode && self.queued_follow_up.is_some())
++                    .then_some(FooterSegment::ActiveIndicator("Queued")),
++                TuiStatuslineItem::Model => (!shell_mode).then(|| {
++                    let model_name = LLMPreferences::as_ref(ctx)
++                        .get_active_base_model(ctx, Some(self.terminal_surface_id))
++                        .display_name
++                        .clone();
++                    // The active-model label is clickable: a left click
++                    // toggles the inline model picker (the same menu
++                    // `/model` surfaces). The hover state lives on a
++                    // retained [`MouseStateHandle`] so it survives
++                    // element-tree rebuilds, and the click dispatches a
++                    // typed action since the element pass only has an
++                    // immutable [`AppContext`] — mirroring the usage entry.
++                    let model_label_hovered = self
++                        .model_label_hover
++                        .lock()
++                        .is_ok_and(|state| state.is_hovered());
++                    let model_label_style = if model_label_hovered {
++                        builder.primary_text_style()
++                    } else {
++                        builder.muted_text_style()
++                    };
++                    FooterSegment::Model(
++                        TuiHoverable::new(
++                            self.model_label_hover.clone(),
++                            TuiText::new(model_name)
++                                .with_style(model_label_style)
++                                .truncate()
++                                .finish(),
++                        )
++                        .on_click(|event_ctx, _| {
++                            event_ctx
++                                .dispatch_typed_action(TuiTerminalSessionAction::ToggleModelMenu);
++                        })
+                         .finish(),
+-                )
+-                .on_click(|event_ctx, _| {
+-                    event_ctx.dispatch_typed_action(TuiTerminalSessionAction::ToggleModelMenu);
+-                })
+-                .finish(),
+-            )
+-        };
+-        let cwd = self
+-            .current_working_directory(ctx)
+-            .map(|cwd| compact_footer_path(&cwd));
+-        let branch = git_metadata.map(|metadata| metadata.current_branch_name.clone());
+-        // Usage entry: the selected conversation's context-window occupancy,
+-        // hidden until any usage has been reported (and hidden in shell mode,
+-        // where it is stale AI-conversation metadata). BYOP has no cloud
+-        // credits/cost, so this is the informational context-% indicator
+-        // (see `crate::usage`) rather than Warp's clickable credits⇄cost entry.
+-        let usage = if shell_mode {
+-            None
+-        } else {
+-            self.selected_conversation_context_usage(ctx)
+-                .map(|fraction| render_context_usage_entry(fraction, ctx))
+-        };
+-        let (diff_additions, diff_deletions) = git_metadata
+-            .filter(|metadata| {
+-                let stats = metadata.stats_against_head;
+-                stats.total_additions > 0 || stats.total_deletions > 0
+-            })
+-            .map(|metadata| {
+-                let stats = metadata.stats_against_head;
+-                (stats.total_additions, stats.total_deletions)
+-            })
+-            .unwrap_or_default();
+-
+-        render_status_footer_row(
+-            FooterSegments {
+-                shell_mode,
+-                model_label,
+-                cwd,
+-                branch,
+-                usage,
+-                diff_additions,
+-                diff_deletions,
+-            },
+-            &builder,
+-        )
++                    )
++                }),
++                TuiStatuslineItem::WorkingDirectory => self
++                    .current_working_directory(ctx)
++                    .map(|cwd| FooterSegment::WorkingDirectory(compact_footer_path(&cwd))),
++                TuiStatuslineItem::GitBranch => git_metadata
++                    .map(|metadata| FooterSegment::GitBranch(metadata.current_branch_name.clone())),
++                TuiStatuslineItem::GitDiffStatus => git_metadata.and_then(|metadata| {
++                    let stats = metadata.stats_against_head;
++                    (stats.total_additions > 0 || stats.total_deletions > 0).then_some(
++                        FooterSegment::GitDiff {
++                            additions: stats.total_additions,
++                            deletions: stats.total_deletions,
++                        },
++                    )
++                }),
++                // Selected conversation's context-window occupancy, hidden
++                // until any usage has been reported (and hidden in shell
++                // mode, where it is stale AI-conversation metadata). BYOP
++                // has no cloud credits/cost, so this reuses Zap's existing
++                // informational context-% entry (`crate::usage`) rather than
++                // upstream's clickable credits⇄cost toggle.
++                TuiStatuslineItem::ContextWindowUsage => (!shell_mode)
++                    .then(|| self.selected_conversation_context_usage(ctx))
++                    .flatten()
++                    .map(|fraction| {
++                        FooterSegment::ContextWindowUsage(render_context_usage_entry(
++                            fraction, ctx,
++                        ))
++                    }),
++            };
++            if let Some(segment) = segment {
++                ordered.push(segment);
++            }
++        }
++        render_status_footer_row(FooterSegments { ordered }, &builder)
+     }
+ 
+     /// Updates the watcher-backed git-status subscription after repository
+@@ -3218,6 +3254,9 @@ impl TuiTerminalSessionView {
+                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                 record_static_slash_command_accepted(command.name, true, ctx);
+             }
++            SlashCommandKind::Statusline => {
++                self.open_statusline_config(command.name, ctx);
++            }
+             SlashCommandKind::Cost => {
+                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                 ctx.dispatch_typed_action_deferred(
+@@ -3556,6 +3595,62 @@ impl TuiTerminalSessionView {
+         }
+     }
+ 
++    /// Mounts the `/statusline` configuration picker in place of the input
++    /// box. No-ops while a blocker or an already-open picker owns the slot.
++    fn open_statusline_config(&mut self, command_name: &'static str, ctx: &mut ViewContext<Self>) {
++        if self.active_blocking_child(ctx).is_some() || self.statusline_config_view.is_some() {
++            return;
++        }
++        let config = AISettings::as_ref(ctx).tui_statusline.normalized();
++        let statusline_config_view =
++            ctx.add_typed_action_tui_view(|ctx| TuiStatuslineConfigView::new(config, ctx));
++        ctx.subscribe_to_view(&statusline_config_view, |view, _, event, ctx| {
++            view.handle_statusline_config_event(event, ctx);
++        });
++        self.statusline_config_view = Some(statusline_config_view);
++        self.input_view.update(ctx, |input, ctx| input.clear(ctx));
++        self.focus_current_owner_if_active(ctx);
++        record_static_slash_command_accepted(command_name, true, ctx);
++        ctx.notify();
++    }
++
++    fn handle_statusline_config_event(
++        &mut self,
++        event: &TuiStatuslineConfigEvent,
++        ctx: &mut ViewContext<Self>,
++    ) {
++        match event {
++            TuiStatuslineConfigEvent::Saved(config) => {
++                self.persist_statusline_config(config.clone(), ctx);
++            }
++            TuiStatuslineConfigEvent::Cancelled => {
++                self.statusline_config_view = None;
++                self.focus_current_owner_if_active(ctx);
++                ctx.notify();
++            }
++            TuiStatuslineConfigEvent::LayoutChanged => ctx.notify(),
++        }
++    }
++
++    fn persist_statusline_config(
++        &mut self,
++        config: TuiStatuslineConfig,
++        ctx: &mut ViewContext<Self>,
++    ) {
++        let result = AISettings::handle(ctx).update(ctx, |settings, ctx| {
++            settings.tui_statusline.set_value(config.normalized(), ctx)
++        });
++        self.statusline_config_view = None;
++        self.focus_current_owner_if_active(ctx);
++        match result {
++            Ok(()) => self.show_success_hint(STATUSLINE_SAVED_HINT.to_owned(), ctx),
++            Err(error) => {
++                log::warn!("Failed to persist the TUI statusline config: {error}");
++                self.show_transient_hint(STATUSLINE_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
++            }
++        }
++    }
++
+     /// Persists the natural-language-detection (NLD) setting to `enabled`, reports the
+     /// toggle via telemetry, and surfaces a confirmation hint. Shared by the
+     /// `/enable-natural-language-detection` and `/disable-natural-language-detection`
+@@ -3667,12 +3762,16 @@ impl TuiView for TuiTerminalSessionView {
+     }
+ 
+     fn child_view_ids(&self, _ctx: &AppContext) -> Vec<EntityId> {
+-        vec![
++        let mut child_view_ids = vec![
+             self.transcript.id(),
+             self.input_view.id(),
+             self.attachment_bar.id(),
+             self.zero_state_view.id(),
+-        ]
++        ];
++        if let Some(statusline_config_view) = self.statusline_config_view.as_ref() {
++            child_view_ids.push(statusline_config_view.id());
++        }
++        child_view_ids
+     }
+ 
+     fn keymap_context(&self, ctx: &AppContext) -> keymap::Context {
+@@ -3802,7 +3901,11 @@ impl TuiView for TuiTerminalSessionView {
+             .and_then(|conversation_id| {
+                 BlocklistAIHistoryModel::as_ref(ctx).conversation(&conversation_id)
+             })
+-            .filter(|_| !blocker_active && input_target.agent_editor_owns_input());
++            .filter(|_| {
++                !blocker_active
++                    && self.statusline_config_view.is_none()
++                    && input_target.agent_editor_owns_input()
++            });
+         if let Some(conversation) = selected_conversation {
+             if conversation.status().is_in_progress() {
+                 let warping_elapsed = conversation
+@@ -3870,6 +3973,16 @@ impl TuiView for TuiTerminalSessionView {
+             );
+         }
+         if !blocker_active
++            && let Some(statusline_config_view) = self.statusline_config_view.as_ref()
++        {
++            content = content.child(
++                TuiContainer::new(TuiChildView::new(statusline_config_view).finish())
++                    .with_padding_top(1)
++                    .finish(),
++            );
++        }
++        if !blocker_active
++            && self.statusline_config_view.is_none()
+             && (input_target.agent_editor_owns_input()
+                 || matches!(input_target, TuiInputTarget::Disabled))
+         {
+diff --git a/crates/warp_tui/src/terminal_session_view_tests.rs b/crates/warp_tui/src/terminal_session_view_tests.rs
+index a311ead77..4b49c6c99 100644
+--- a/crates/warp_tui/src/terminal_session_view_tests.rs
++++ b/crates/warp_tui/src/terminal_session_view_tests.rs
+@@ -3,7 +3,7 @@ use std::time::Duration;
+ 
+ use instant::Instant;
+ use warp::appearance::Appearance;
+-use warp::settings::AISettings;
++use warp::settings::{AISettings, TuiStatuslineConfig, TuiStatuslineItem};
+ use warp::terminal::model::ansi::{Handler, InputBufferValue};
+ use warp::tui_export::{
+     AIAgentExchangeId, AIConversationAutoexecuteMode, AgentViewEntryOrigin, AgentViewState,
+@@ -31,12 +31,12 @@ use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalida
+ use super::{
+     AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME,
+     COST_CONVERSATION_IN_PROGRESS_HINT, COST_EMPTY_CONVERSATION_HINT,
+-    COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState, FooterSegments,
+-    INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
++    COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState, FooterSegment,
++    FooterSegments, INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
+     SHELL_MODE_HINT, TuiConversationRestoreOrigin, TuiTerminalSessionAction,
+-    TuiTerminalSessionEvent, TuiTerminalSessionView, cost_command_unavailable_hint,
+-    export_file_success_message, log_bundle_success_message, raw_prompt_if_not_blank,
+-    render_status_footer_row,
++    TuiQueuedFollowUp, TuiTerminalSessionEvent, TuiTerminalSessionView,
++    cost_command_unavailable_hint, export_file_success_message, log_bundle_success_message,
++    raw_prompt_if_not_blank, render_status_footer_row,
+ };
+ use crate::autoupdate::TuiAutoupdater;
+ use crate::inline_menu::MAX_INLINE_MENU_ROWS;
+@@ -46,6 +46,7 @@ use crate::keybindings::{
+ };
+ use crate::root_view::RootTuiView;
+ use crate::session_registry::{TuiSessionId, TuiSessions};
++use crate::statusline_config_view::TuiStatuslineConfigEvent;
+ use crate::terminal_block::{block_content_rows, should_render_terminal_block};
+ use crate::terminal_use::TuiInputTarget;
+ use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_session};
+@@ -58,6 +59,231 @@ struct FocusTestFixture {
+     sessions: ModelHandle<TuiSessions>,
+ }
+ 
++#[test]
++fn footer_supports_arbitrary_order_and_branch_without_a_leading_arrow() {
++    App::test((), |mut app| async move {
++        app.update(|ctx| {
++            ctx.add_singleton_model(|_| Appearance::mock());
++            let builder = TuiUiBuilder::from_app(ctx);
++            let row = render_status_footer_row(
++                FooterSegments {
++                    ordered: vec![
++                        FooterSegment::ContextWindowUsage(render_context_usage_entry(0.426, ctx)),
++                        FooterSegment::GitBranch("feature/statusline".to_owned()),
++                        FooterSegment::ActiveIndicator("Auto-queue"),
++                        FooterSegment::WorkingDirectory("/tmp/warp".to_owned()),
++                    ],
++                },
++                &builder,
++            )
++            .finish();
++            assert_eq!(
++                render_element(row, ctx, 120).to_lines(),
++                vec!["43% context • feature/statusline • Auto-queue • /tmp/warp".to_owned()],
++            );
++
++            let branch_only = render_status_footer_row(
++                FooterSegments {
++                    ordered: vec![FooterSegment::GitBranch("main".to_owned())],
++                },
++                &builder,
++            )
++            .finish();
++            assert_eq!(
++                render_element(branch_only, ctx, 80).to_lines(),
++                vec!["main".to_owned()],
++            );
++        });
++    });
++}
++
++#[test]
++fn empty_configurable_footer_has_zero_height() {
++    App::test((), |mut app| async move {
++        app.update(|ctx| {
++            ctx.add_singleton_model(|_| Appearance::mock());
++            let builder = TuiUiBuilder::from_app(ctx);
++            let row = render_status_footer_row(
++                FooterSegments {
++                    ordered: Vec::new(),
++                },
++                &builder,
++            )
++            .finish();
++            assert!(render_element(row, ctx, 80).to_lines().is_empty());
++        });
++    });
++}
++
++/// Adapted from warp/master: upstream's `AutoQueue` item reflects a
++/// persistent "auto-queue next prompt" *mode* (`QueuedQueryModel`), a
++/// feature Zap has not ported. Zap's `/queue` instead holds one specific
++/// prompt (`TuiTerminalSessionView::queued_follow_up`), so this test drives
++/// that field directly instead of `QueuedQueryModel`.
++#[test]
++fn enabled_auto_indicators_render_only_while_their_effective_states_are_on() {
++    App::test((), |mut app| async move {
++        let fixture = focus_test_fixture(&mut app);
++        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
++        view.update(&mut app, |view, ctx| {
++            view.conversation_selection.update(ctx, |selection, ctx| {
++                selection
++                    .try_start_new_conversation(AgentViewEntryOrigin::Tui, ctx)
++                    .expect("test conversation should start")
++            });
++            view.conversation_selection.update(ctx, |selection, ctx| {
++                selection.toggle_pending_query_autoexecute(ctx);
++            });
++            view.queued_follow_up = Some(TuiQueuedFollowUp {
++                conversation_id: view
++                    .conversation_selection
++                    .as_ref(ctx)
++                    .selected_conversation_id(ctx)
++                    .expect("test conversation should be selected"),
++                prompt: "later".to_owned(),
++                seen_in_progress: false,
++            });
++            AISettings::handle(ctx).update(ctx, |settings, ctx| {
++                settings
++                    .tui_statusline
++                    .set_value(
++                        TuiStatuslineConfig {
++                            order: vec![
++                                TuiStatuslineItem::AutoApprove,
++                                TuiStatuslineItem::AutoQueue,
++                            ],
++                            enabled: vec![
++                                TuiStatuslineItem::AutoApprove,
++                                TuiStatuslineItem::AutoQueue,
++                            ],
++                        }
++                        .normalized(),
++                        ctx,
++                    )
++                    .expect("statusline setting should persist");
++            });
++        });
++
++        assert_eq!(
++            render_footer_lines(&mut app, &view, 80),
++            vec!["Auto-approve • Auto-queue".to_owned()],
++        );
++
++        view.update(&mut app, |view, ctx| {
++            view.conversation_selection.update(ctx, |selection, ctx| {
++                selection.toggle_pending_query_autoexecute(ctx);
++            });
++            view.queued_follow_up = None;
++        });
++        assert!(render_footer_lines(&mut app, &view, 80).is_empty());
++
++        // See the comment in `saving_statusline_configuration_persists_and_restores_input_focus`:
++        // `tui_statusline` persists across tests in this process, so restore
++        // the default before this test ends.
++        app.update(|ctx| {
++            AISettings::handle(ctx).update(ctx, |settings, ctx| {
++                let _ = settings
++                    .tui_statusline
++                    .set_value(TuiStatuslineConfig::default(), ctx);
++            });
++        });
++    });
++}
++
++#[test]
++fn statusline_slash_command_clears_input_focuses_one_picker_and_cancels_cleanly() {
++    App::test((), |mut app| async move {
++        let fixture = focus_test_fixture(&mut app);
++        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
++
++        view.update(&mut app, |view, ctx| {
++            view.input_view.update(ctx, |input, ctx| {
++                input.set_text("/statusline", ctx);
++            });
++            view.execute_tui_slash_command(&slash_commands::STATUSLINE, None, ctx);
++        });
++
++        let picker_id = view.read(&app, |view, ctx| {
++            let picker = view
++                .statusline_config_view
++                .as_ref()
++                .expect("statusline picker should be open");
++            assert!(view.input_view.as_ref(ctx).is_empty(ctx));
++            assert!(picker.as_ref(ctx).is_focused(ctx));
++            picker.id()
++        });
++
++        // A second `/statusline` while one is already open does not mount a
++        // second picker.
++        view.update(&mut app, |view, ctx| {
++            view.execute_tui_slash_command(&slash_commands::STATUSLINE, None, ctx);
++        });
++        assert_eq!(
++            view.read(&app, |view, _| {
++                view.statusline_config_view.as_ref().map(ViewHandle::id)
++            }),
++            Some(picker_id),
++        );
++
++        view.update(&mut app, |view, ctx| {
++            view.handle_statusline_config_event(&TuiStatuslineConfigEvent::Cancelled, ctx);
++        });
++        view.read(&app, |view, ctx| {
++            assert!(view.statusline_config_view.is_none());
++            assert!(view.input_view.is_focused(ctx));
++        });
++    });
++}
++
++#[test]
++fn saving_statusline_configuration_persists_and_restores_input_focus() {
++    App::test((), |mut app| async move {
++        let fixture = focus_test_fixture(&mut app);
++        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
++        let config = TuiStatuslineConfig {
++            order: vec![
++                TuiStatuslineItem::ContextWindowUsage,
++                TuiStatuslineItem::GitBranch,
++            ],
++            enabled: Vec::new(),
++        }
++        .normalized();
++
++        view.update(&mut app, |view, ctx| {
++            view.execute_tui_slash_command(&slash_commands::STATUSLINE, None, ctx);
++            view.handle_statusline_config_event(
++                &TuiStatuslineConfigEvent::Saved(config.clone()),
++                ctx,
++            );
++        });
++
++        assert_eq!(
++            app.read(|ctx| AISettings::as_ref(ctx).tui_statusline.normalized()),
++            config,
++        );
++        view.read(&app, |view, ctx| {
++            assert!(view.statusline_config_view.is_none());
++            assert!(view.input_view.is_focused(ctx));
++            assert_eq!(
++                view.transient_hint.current().map(|(text, _)| text),
++                Some(super::STATUSLINE_SAVED_HINT),
++            );
++        });
++
++        // `tui_statusline` persists through the same on-disk settings path
++        // `AISettings` uses outside tests, so leaving a non-default value set
++        // here would leak into whichever test runs next in this process.
++        // Restore the default so other footer tests keep seeing it.
++        app.update(|ctx| {
++            AISettings::handle(ctx).update(ctx, |settings, ctx| {
++                let _ = settings
++                    .tui_statusline
++                    .set_value(TuiStatuslineConfig::default(), ctx);
++            });
++        });
++    });
++}
++
+ #[test]
+ fn log_bundle_success_message_includes_the_absolute_path() {
+     let path = std::path::Path::new("/tmp/warp-20260718-132640.zip");
+@@ -256,18 +482,15 @@ fn render_usage_footer_row(app: &mut App, context_fraction: f32) -> Vec<String>
+         let usage = render_context_usage_entry(context_fraction, ctx);
+         let row = render_status_footer_row(
+             FooterSegments {
+-                shell_mode: false,
+-                model_label: Some(
+-                    TuiText::new("TestModel")
+-                        .with_style(builder.primary_text_style())
+-                        .truncate()
+-                        .finish(),
+-                ),
+-                cwd: None,
+-                branch: None,
+-                usage: Some(usage),
+-                diff_additions: 0,
+-                diff_deletions: 0,
++                ordered: vec![
++                    FooterSegment::Model(
++                        TuiText::new("TestModel")
++                            .with_style(builder.primary_text_style())
++                            .truncate()
++                            .finish(),
++                    ),
++                    FooterSegment::ContextWindowUsage(usage),
++                ],
+             },
+             &builder,
+         )
+@@ -1073,18 +1296,21 @@ fn footer_renders_agent_sections_left_aligned() {
+             let usage = render_context_usage_entry(0.18, ctx);
+             let row = render_status_footer_row(
+                 FooterSegments {
+-                    shell_mode: false,
+-                    model_label: Some(
+-                        TuiText::new("TestModel")
+-                            .with_style(builder.primary_text_style())
+-                            .truncate()
+-                            .finish(),
+-                    ),
+-                    cwd: Some("/home/user/warp".to_owned()),
+-                    branch: Some("main".to_owned()),
+-                    usage: Some(usage),
+-                    diff_additions: 3,
+-                    diff_deletions: 1,
++                    ordered: vec![
++                        FooterSegment::Model(
++                            TuiText::new("TestModel")
++                                .with_style(builder.primary_text_style())
++                                .truncate()
++                                .finish(),
++                        ),
++                        FooterSegment::WorkingDirectory("/home/user/warp".to_owned()),
++                        FooterSegment::GitBranch("main".to_owned()),
++                        FooterSegment::ContextWindowUsage(usage),
++                        FooterSegment::GitDiff {
++                            additions: 3,
++                            deletions: 1,
++                        },
++                    ],
+                 },
+                 &builder,
+             )
+@@ -1094,7 +1320,7 @@ fn footer_renders_agent_sections_left_aligned() {
+ 
+             assert_eq!(
+                 lines,
+-                vec!["TestModel /home/user/warp ↬ main • 18% context • +3 -1"],
++                vec!["TestModel • /home/user/warp ↬ main • 18% context • +3 -1"],
+                 "agent footer is left-aligned in order model → cwd/branch → usage → diff"
+             );
+             assert!(
+@@ -1131,21 +1357,21 @@ fn footer_renders_bash_sections_without_model_or_usage() {
+         app.update(|ctx| {
+             ctx.add_singleton_model(|_| Appearance::mock());
+             let builder = TuiUiBuilder::from_app(ctx);
+-            let usage = render_context_usage_entry(0.18, ctx);
++            // Model and usage are omitted entirely rather than passed and
++            // ignored: `render_footer` (the only real caller) never resolves
++            // those items while in shell mode, so this reflects the segments
++            // it would actually hand to `render_status_footer_row`.
+             let row = render_status_footer_row(
+                 FooterSegments {
+-                    shell_mode: true,
+-                    model_label: Some(
+-                        TuiText::new("TestModel")
+-                            .with_style(builder.primary_text_style())
+-                            .truncate()
+-                            .finish(),
+-                    ),
+-                    cwd: Some("/home/user/warp".to_owned()),
+-                    branch: Some("main".to_owned()),
+-                    usage: Some(usage),
+-                    diff_additions: 3,
+-                    diff_deletions: 1,
++                    ordered: vec![
++                        FooterSegment::ShellMode,
++                        FooterSegment::WorkingDirectory("/home/user/warp".to_owned()),
++                        FooterSegment::GitBranch("main".to_owned()),
++                        FooterSegment::GitDiff {
++                            additions: 3,
++                            deletions: 1,
++                        },
++                    ],
+                 },
+                 &builder,
+             )
+diff --git a/crates/warp_tui/src/tui_ask_question_view.rs b/crates/warp_tui/src/tui_ask_question_view.rs
+index 51282c69d..3e65bff96 100644
+--- a/crates/warp_tui/src/tui_ask_question_view.rs
++++ b/crates/warp_tui/src/tui_ask_question_view.rs
+@@ -302,7 +302,9 @@ impl TuiAskQuestionView {
+                 self.handle_effect(effect, ctx);
+             }
+             TuiOptionSelectorEvent::LayoutInvalidated => self.invalidate_layout(ctx),
+-            TuiOptionSelectorEvent::RetryRequested | TuiOptionSelectorEvent::Dismissed => {}
++            TuiOptionSelectorEvent::RetryRequested
++            | TuiOptionSelectorEvent::Dismissed
++            | TuiOptionSelectorEvent::RowsReordered { .. } => {}
+         }
+     }
+ 
+diff --git a/crates/warp_tui/src/tui_permission_prompt.rs b/crates/warp_tui/src/tui_permission_prompt.rs
+index 5ef656b90..0cec53147 100644
+--- a/crates/warp_tui/src/tui_permission_prompt.rs
++++ b/crates/warp_tui/src/tui_permission_prompt.rs
+@@ -229,6 +229,7 @@ impl TuiPermissionPrompt {
+             TuiOptionSelectorEvent::LayoutInvalidated
+             | TuiOptionSelectorEvent::CustomTextOpened
+             | TuiOptionSelectorEvent::CustomTextClosed => self.invalidate_layout(ctx),
++            TuiOptionSelectorEvent::RowsReordered { .. } => {}
+             TuiOptionSelectorEvent::Confirmed { .. } | TuiOptionSelectorEvent::RetryRequested => {}
+         }
+     }

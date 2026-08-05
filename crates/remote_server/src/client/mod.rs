@@ -11,9 +11,10 @@ use warpui::r#async::{executor, FutureExt as _};
 
 use crate::proto::{
     client_message, server_message, Abort, Authenticate, BufferEdit, ClientMessage, CloseBuffer,
-    CreateDirectory, CreateDirectoryResponse, DeleteFile, ErrorCode, GetBranches,
+    CreateDirectory, CreateDirectoryResponse, DeleteFile, DiffStateFileDelta,
+    DiffStateMetadataUpdate, DiffStateSnapshot, ErrorCode, GetBranches,
     GetBranchesResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
-    Initialize,
+    GetDiffState, GetDiffStateResponse, Initialize,
     InitializeResponse, ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
     read_file_chunk_response, ReadFileChunkResponse, ReadFileContextRequest,
@@ -21,7 +22,7 @@ use crate::proto::{
     ResolveConflictResponse, ResolvePath, ResolvePathResponse, RipgrepSearchRequest,
     RipgrepSearchResponse, RunCommandRequest,
     RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
-    TextEdit, WriteFile, WriteFileChunk, WriteFileChunkResponse,
+    TextEdit, UnsubscribeDiffState, WriteFile, WriteFileChunk, WriteFileChunkResponse,
 };
 
 use crate::protocol::{self, ProtocolError, RequestId};
@@ -82,6 +83,14 @@ pub enum ClientEvent {
         expected_client_version: u64,
         edits: Vec<TextEdit>,
     },
+    /// A full diff-state snapshot was pushed by the server for a subscribed
+    /// (repo, mode) pair. Carries the raw proto message; the consumer
+    /// (`DiffStateModel` remote backend, in `app`) converts it to domain types.
+    DiffStateSnapshotReceived { snapshot: DiffStateSnapshot },
+    /// A metadata-only diff-state update was pushed by the server.
+    DiffStateMetadataUpdateReceived { update: DiffStateMetadataUpdate },
+    /// A single-file diff-state delta was pushed by the server.
+    DiffStateFileDeltaReceived { delta: DiffStateFileDelta },
     /// A server message could not be decoded and had no parseable request_id.
     MessageDecodingError,
 }
@@ -419,6 +428,40 @@ impl RemoteServerClient {
         }
     }
 
+    /// Subscribes to diff state for a (repo, mode) pair. Returns the server's
+    /// initial `GetDiffStateResponse` (snapshot or error); subsequent changes
+    /// arrive asynchronously as `ClientEvent::DiffState*Received` push events.
+    /// Call [`unsubscribe_diff_state`](Self::unsubscribe_diff_state) to stop
+    /// the updates.
+    pub async fn get_diff_state(
+        &self,
+        request: GetDiffState,
+    ) -> Result<GetDiffStateResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage {
+            request_id: request_id.to_string(),
+            message: Some(client_message::Message::GetDiffState(request)),
+        };
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GetDiffStateResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for GetDiffState: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Unsubscribes from diff-state updates for a (repo, mode) pair.
+    /// Fire-and-forget: the server sends no response.
+    pub fn unsubscribe_diff_state(&self, request: UnsubscribeDiffState) {
+        let msg = ClientMessage {
+            request_id: String::new(),
+            message: Some(client_message::Message::UnsubscribeDiffState(request)),
+        };
+        self.send_notification(msg);
+    }
+
     /// Deletes a file on the remote host.
     pub async fn delete_file(&self, path: String) -> Result<(), ClientError> {
         let request_id = RequestId::new();
@@ -707,6 +750,15 @@ impl RemoteServerClient {
                 expected_client_version: push.expected_client_version,
                 edits: push.edits,
             }),
+            server_message::Message::DiffStateSnapshot(snapshot) => {
+                Some(ClientEvent::DiffStateSnapshotReceived { snapshot })
+            }
+            server_message::Message::DiffStateMetadataUpdate(update) => {
+                Some(ClientEvent::DiffStateMetadataUpdateReceived { update })
+            }
+            server_message::Message::DiffStateFileDelta(delta) => {
+                Some(ClientEvent::DiffStateFileDeltaReceived { delta })
+            }
             other => {
                 log::warn!("Unhandled push message variant: {other:?}");
                 None
