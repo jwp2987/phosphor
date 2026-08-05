@@ -114,3 +114,62 @@ fn refresh_working_directories_preserves_non_repo_paths_and_dedupes() {
         );
     });
 }
+
+#[test]
+fn register_remote_repo_persists_across_local_refresh() {
+    use warp_util::host_id::HostId;
+    use warp_util::local_or_remote_path::LocalOrRemotePath;
+    use warp_util::remote_path::RemotePath;
+    use warp_util::standardized_path::StandardizedPath;
+
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| DetectedRepositories::default());
+
+        let pane_group_id = EntityId::new();
+        let remote_terminal = EntityId::new();
+        let local_terminal = EntityId::new();
+
+        let host = HostId::new("host-1".to_string());
+        let remote_root = LocalOrRemotePath::Remote(RemotePath::new(
+            host,
+            StandardizedPath::from_local_absolute_unchecked(std::path::Path::new("/remote/proj")),
+        ));
+
+        let temp_dir = tempfile::TempDir::new().expect("temp dir");
+        let local_cwd = temp_dir.path().join("localdir");
+        fs::create_dir_all(&local_cwd).expect("create local dir");
+
+        let working_directories_handle = app.add_model(|_| WorkingDirectoriesModel::new());
+
+        // Register a remote repo, then run a local-only refresh; the remote
+        // root must survive the refresh (it is not rederivable from local CWDs).
+        let repos: Vec<LocalOrRemotePath> = working_directories_handle.update(&mut app, |model, ctx| {
+            model.register_remote_repo(pane_group_id, remote_root.clone(), remote_terminal, ctx);
+
+            model.refresh_working_directories_for_pane_group(
+                pane_group_id,
+                vec![(local_terminal, local_cwd.to_string_lossy().to_string())],
+                vec![],
+                Some(local_terminal),
+                ctx,
+            );
+
+            model
+                .most_recent_repositories_for_pane_group(pane_group_id)
+                .expect("pane group exists")
+                .collect()
+        });
+
+        assert!(
+            repos.contains(&remote_root),
+            "remote repo root should persist across a local-only refresh, got {repos:?}"
+        );
+        // The remote root's terminal mapping is also preserved.
+        working_directories_handle.read(&app, |model, _| {
+            assert_eq!(
+                model.get_terminal_id_for_root_path(pane_group_id, &remote_root),
+                Some(remote_terminal)
+            );
+        });
+    });
+}
