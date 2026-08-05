@@ -4162,7 +4162,7 @@ impl TerminalView {
                         session_id: nav_session_id,
                         host_id,
                         indexed_path,
-                        ..
+                        is_git,
                     } => {
                         // Check if this navigation belongs to our active session
                         // using exact session_id match (no CWD heuristics).
@@ -4173,6 +4173,7 @@ impl TerminalView {
                             ctx.emit(Event::Pane(PaneEvent::RemoteRepoNavigated {
                                 host_id: host_id.clone(),
                                 indexed_path: indexed_path.clone(),
+                                is_git: *is_git,
                             }));
                         }
                     }
