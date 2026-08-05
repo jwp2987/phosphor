@@ -1561,7 +1561,9 @@ impl DiffStateModel {
         }
 
         self.state = InternalDiffState::Loaded((&diffs).into());
-        ctx.emit(DiffStateModelEvent::NewDiffsComputed(diffs.changes.ok()));
+        ctx.emit(DiffStateModelEvent::NewDiffsComputed(
+            diffs.changes.ok().map(Arc::new),
+        ));
     }
 
     /// Returns the number of lines in a given file. Returns `None` if the file is a binary file
@@ -2995,7 +2997,12 @@ pub enum DiffStateModelEvent {
     /// Event dispatched whenever the diff metadata changes in any way.
     DiffMetadataChanged(InvalidationBehavior),
     /// Event dispatched when new diffs are computed.
-    NewDiffsComputed(Option<GitDiffWithBaseContent>),
+    ///
+    /// The payload is wrapped in `Arc` so the `DiffStateModel` enum wrapper can
+    /// forward the event from its inner backend model without cloning the
+    /// expensive base-content (the whole reason `GitDiffWithBaseContent` is
+    /// itself non-Clone); the Arc shares it instead of copying.
+    NewDiffsComputed(Option<Arc<GitDiffWithBaseContent>>),
     /// Event dispatched when new diff mode is set.
     /// The boolean indicates whether the next diff load should attempt to
     /// fetch the base branch from origin if it is not available locally.

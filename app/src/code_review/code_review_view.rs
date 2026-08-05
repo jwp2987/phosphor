@@ -2307,7 +2307,7 @@ impl CodeReviewView {
                 ctx.notify();
             }
             DiffStateModelEvent::NewDiffsComputed(diffs) => {
-                self.invalidate_all(diffs.as_ref(), ctx);
+                self.invalidate_all(diffs.as_deref(), ctx);
                 // After the view state is refreshed with fresh diffs, re-evaluate
                 // the git operations button (Commit / Push / Create PR) so that
                 // e.g. committing shows "Push" instead of staying on "Commit".
