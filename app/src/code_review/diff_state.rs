@@ -2132,6 +2132,49 @@ impl DiffStateModel {
             .await
     }
 
+    /// Returns the committed-only changed files for the current branch against
+    /// its merge base with the main branch, as `(path, additions, deletions)`.
+    ///
+    /// This is the `main...HEAD` committed diff (`git diff --numstat
+    /// <merge_base> HEAD`): no working-tree edits, no untracked files. Binary
+    /// files render as `-\t-\t<path>`; unparsable counts fall back to 0.
+    /// Reused by the remote-server `GetCommittedBranchFiles` handler to back
+    /// code review over SSH.
+    pub async fn get_committed_branch_file_entries(
+        repo_path: &Path,
+    ) -> Result<Vec<(String, u64, u64)>> {
+        let main_branch = detect_main_branch(repo_path).await?;
+        let merge_base =
+            match run_git_command(repo_path, &["merge-base", "HEAD", main_branch.trim()]).await {
+                Ok(output) => output.trim().to_string(),
+                Err(err) => {
+                    log::warn!(
+                        "Could not determine merge base against branch {main_branch}: {err:?}"
+                    );
+                    return Ok(Vec::new());
+                }
+            };
+
+        let output = run_git_command(repo_path, &["diff", "--numstat", &merge_base, "HEAD"])
+            .await
+            .unwrap_or_default();
+        let mut entries = Vec::new();
+        for line in output.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = line.split('\t').collect();
+            if parts.len() >= 3 {
+                entries.push((
+                    parts[2].to_string(),
+                    parts[0].parse().unwrap_or(0),
+                    parts[1].parse().unwrap_or(0),
+                ));
+            }
+        }
+        Ok(entries)
+    }
+
     /// Shared implementation for [`Self::get_all_branches`] and
     /// [`Self::get_all_branches_with_known_main`]. Runs `git for-each-ref` and
     /// marks each branch as main or not based on the supplied `main_branch` string.
