@@ -624,8 +624,16 @@ fn footer_model_label_is_a_bounded_click_target() {
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
         // Force the bootstrap (Disabled) state so the footer — and its
         // clickable model label — render deterministically.
-        view.update(&mut app, |view, _| {
+        view.update(&mut app, |view, ctx| {
             view.terminal_model.lock().block_list_mut().reinit_shell();
+            // A fresh session's input defaults to `InputType::Shell`, and
+            // `render_footer` only emits the model label when `!shell_mode`
+            // (`FooterSegment::Model`). Switch to AI input mode first — the
+            // same way a real conversation entry would — so the clickable
+            // model label actually renders.
+            view.ai_input_model.update(ctx, |input_model, ctx| {
+                input_model.set_input_type(InputType::AI, ctx);
+            });
         });
 
         let model_name = view.read(&app, |view, ctx| {
@@ -954,6 +962,15 @@ fn agent_hint_tracks_transcript_emptiness_without_input_invalidation() {
     App::test((), |mut app| async move {
         let fixture = focus_test_fixture(&mut app);
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        // The agent-mode input hints (`← for conversations` / `Ask the agent
+        // anything`) only render when the input is not in shell mode; a fresh
+        // session defaults to `InputType::Shell` (which shows `SHELL_HINT`).
+        // Switch to AI input mode the same way a real conversation entry would.
+        view.update(&mut app, |view, ctx| {
+            view.ai_input_model.update(ctx, |input_model, ctx| {
+                input_model.set_input_type(InputType::AI, ctx);
+            });
+        });
         let mut presenter = TuiPresenter::new();
 
         // Initial full present: every child renders once and is cached.
@@ -1472,6 +1489,25 @@ fn footer_conversations_callout_no_longer_renders() {
         let fixture = focus_test_fixture(&mut app);
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
 
+        // The model-led status row only renders in AI input mode (a fresh
+        // session defaults to `InputType::Shell`); switch to it the same way
+        // a real conversation entry would, so the row replaces any callout.
+        view.update(&mut app, |view, ctx| {
+            view.ai_input_model.update(ctx, |input_model, ctx| {
+                input_model.set_input_type(InputType::AI, ctx);
+            });
+        });
+
+        // The active-model label leads the row. In this BYOP harness (no
+        // provider configured) that is the "add one in Settings" prompt; read
+        // it from the source of truth rather than hardcoding a cloud model.
+        let model_name = view.read(&app, |view, ctx| {
+            LLMPreferences::as_ref(ctx)
+                .get_active_base_model(ctx, Some(view.terminal_surface_id))
+                .display_name
+                .clone()
+        });
+
         // With an empty input and no replacing hint, the footer renders the
         // left-aligned sectioned row — never the obsolete `← for conversations`
         // callout (render_left_footer_hint and the show_conversations_hint
@@ -1487,7 +1523,7 @@ fn footer_conversations_callout_no_longer_renders() {
             "no conversations-callout glyph remains: {row}"
         );
         assert!(
-            row.starts_with("auto (cost-efficient) "),
+            row.starts_with(&format!("{model_name} ")),
             "the model-led status row renders in place of the callout: {row}"
         );
     });
