@@ -1055,3 +1055,90 @@ fn vertex_model_family_routes_claude_to_anthropic_else_gemini() {
     assert_eq!(vertex_model_family("gemini-2.5-flash"), AgentProviderApiType::Gemini);
     assert_eq!(vertex_model_family("llama-3"), AgentProviderApiType::Gemini);
 }
+
+#[test]
+fn prompt_submission_mode_defaults_match_upstream() {
+    // The queued-prompts feature relies on these defaults: a new prompt interrupts
+    // the in-flight response, but a prompt submitted during a long-running command
+    // queues until the command completes.
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        app.read(|ctx| {
+            assert_eq!(
+                AISettings::as_ref(ctx).default_prompt_submission_mode,
+                PromptSubmissionMode::Interrupt,
+            );
+            assert_eq!(
+                AISettings::as_ref(ctx).long_running_command_submission_mode,
+                LongRunningCommandSubmissionMode::QueueUntilCommandCompletes,
+            );
+        });
+    });
+}
+
+#[test]
+fn prompt_submission_mode_set_value_round_trips() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            report_if_error!(
+                settings
+                    .default_prompt_submission_mode
+                    .set_value(PromptSubmissionMode::Queue, ctx)
+            );
+            report_if_error!(
+                settings
+                    .long_running_command_submission_mode
+                    .set_value(LongRunningCommandSubmissionMode::SendImmediately, ctx)
+            );
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                AISettings::as_ref(ctx).default_prompt_submission_mode,
+                PromptSubmissionMode::Queue,
+            );
+            assert_eq!(
+                AISettings::as_ref(ctx).long_running_command_submission_mode,
+                LongRunningCommandSubmissionMode::SendImmediately,
+            );
+        });
+    });
+}
+
+#[test]
+fn submission_mode_file_value_uses_snake_case() {
+    // The settings-file (toml/JSON) wire form is produced by the `SettingsValue`
+    // derive, which converts enum variants to snake_case (it bypasses serde).
+    // The model and settings page round-trip through these string keys, so lock
+    // them down against the real persistence path.
+    use settings_value::SettingsValue;
+
+    assert_eq!(
+        PromptSubmissionMode::Interrupt.to_file_value(),
+        serde_json::json!("interrupt")
+    );
+    assert_eq!(
+        PromptSubmissionMode::Queue.to_file_value(),
+        serde_json::json!("queue")
+    );
+    assert_eq!(
+        LongRunningCommandSubmissionMode::SendImmediately.to_file_value(),
+        serde_json::json!("send_immediately")
+    );
+    assert_eq!(
+        LongRunningCommandSubmissionMode::QueueUntilCommandCompletes.to_file_value(),
+        serde_json::json!("queue_until_command_completes")
+    );
+
+    // And the file value parses back to the same variant.
+    assert_eq!(
+        PromptSubmissionMode::from_file_value(&serde_json::json!("queue")),
+        Some(PromptSubmissionMode::Queue)
+    );
+    assert_eq!(
+        LongRunningCommandSubmissionMode::from_file_value(&serde_json::json!(
+            "send_immediately"
+        )),
+        Some(LongRunningCommandSubmissionMode::SendImmediately)
+    );
+}
