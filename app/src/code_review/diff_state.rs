@@ -365,7 +365,7 @@ impl DiffMetadataAgainstBase {
 }
 
 /// Model that contains all state related to the current pane's open git repository.
-pub struct DiffStateModel {
+pub struct LocalDiffStateModel {
     #[cfg(feature = "local_fs")]
     repository: Option<ModelHandle<Repository>>,
     #[cfg(feature = "local_fs")]
@@ -408,7 +408,7 @@ struct GitNumStatMetadata {
     is_binary_file: bool,
 }
 
-impl DiffStateModel {
+impl LocalDiffStateModel {
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
     pub fn new(repo_path: Option<String>, ctx: &mut ModelContext<Self>) -> Self {
         let model = Self {
@@ -2968,7 +2968,7 @@ impl DiffStateModel {
     pub fn refresh_pr_info(&mut self, _ctx: &mut ModelContext<Self>) {}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InvalidationBehavior {
     All(InvalidationSource),
     /// Like `All`, but the git index was locked when the update was detected.
@@ -2979,7 +2979,7 @@ pub enum InvalidationBehavior {
     PromptRefresh,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InvalidationSource {
     /// This is from an actual underlying metadata change.
     MetadataChange,
@@ -3009,8 +3009,231 @@ pub enum DiffStateModelEvent {
     DiffModeChanged { should_fetch_base: bool },
 }
 
+impl warpui::Entity for LocalDiffStateModel {
+    type Event = DiffStateModelEvent;
+}
+
+/// Unified diff-state model: a thin wrapper that dispatches to a backend and
+/// forwards the backend's [`DiffStateModelEvent`]s. All consumers hold a
+/// `DiffStateModel` rather than a backend directly.
+///
+/// Currently only the local backend ([`LocalDiffStateModel`]) exists; the
+/// remote backend (code-review diff-state over SSH) is added as a second
+/// `Remote` variant in a following increment. Keeping the wrapper now lets the
+/// call sites settle on the dispatching API before the remote backend lands.
+pub enum DiffStateModel {
+    Local(ModelHandle<LocalDiffStateModel>),
+}
+
 impl warpui::Entity for DiffStateModel {
     type Event = DiffStateModelEvent;
+}
+
+impl DiffStateModel {
+    /// Creates a local-backed `DiffStateModel`. The wrapper subscribes to the
+    /// inner model so it can forward its events to the wrapper's own
+    /// subscribers.
+    pub fn new(repo_path: Option<String>, ctx: &mut ModelContext<Self>) -> Self {
+        let local = ctx.add_model(|ctx| LocalDiffStateModel::new(repo_path, ctx));
+        ctx.subscribe_to_model(&local, |me, event, ctx| me.forward_event(event, ctx));
+        Self::Local(local)
+    }
+
+    /// Re-emits an inner backend event as the wrapper's own event so existing
+    /// `subscribe_to_model(&diff_state_model, ...)` consumers are unaffected by
+    /// the wrapper.
+    fn forward_event(&mut self, event: &DiffStateModelEvent, ctx: &mut ModelContext<Self>) {
+        match event {
+            DiffStateModelEvent::RepositoryChanged => {
+                ctx.emit(DiffStateModelEvent::RepositoryChanged);
+            }
+            DiffStateModelEvent::CurrentBranchChanged => {
+                ctx.emit(DiffStateModelEvent::CurrentBranchChanged);
+            }
+            DiffStateModelEvent::DiffMetadataChanged(behavior) => {
+                ctx.emit(DiffStateModelEvent::DiffMetadataChanged(behavior.clone()));
+            }
+            DiffStateModelEvent::NewDiffsComputed(diffs) => {
+                ctx.emit(DiffStateModelEvent::NewDiffsComputed(diffs.clone()));
+            }
+            DiffStateModelEvent::DiffModeChanged { should_fetch_base } => {
+                ctx.emit(DiffStateModelEvent::DiffModeChanged {
+                    should_fetch_base: *should_fetch_base,
+                });
+            }
+        }
+    }
+
+    // ── Read API (dispatched to the backend) ─────────────────────────
+
+    pub fn get(&self, ctx: &AppContext) -> DiffState {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).get(),
+        }
+    }
+
+    pub fn diff_mode(&self, ctx: &AppContext) -> DiffMode {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).diff_mode(),
+        }
+    }
+
+    pub fn get_uncommitted_stats(&self, ctx: &AppContext) -> Option<DiffStats> {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).get_uncommitted_stats(),
+        }
+    }
+
+    pub fn get_stats_for_current_mode(&self, ctx: &AppContext) -> Option<DiffStats> {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).get_stats_for_current_mode(),
+        }
+    }
+
+    pub fn get_main_branch_name(&self, ctx: &AppContext) -> Option<String> {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).get_main_branch_name(),
+        }
+    }
+
+    pub fn get_current_branch_name(&self, ctx: &AppContext) -> Option<String> {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).get_current_branch_name(),
+        }
+    }
+
+    pub fn is_on_main_branch(&self, ctx: &AppContext) -> bool {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).is_on_main_branch(),
+        }
+    }
+
+    pub fn unpushed_commits<'a>(&self, ctx: &'a AppContext) -> &'a [Commit] {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).unpushed_commits(),
+        }
+    }
+
+    pub fn upstream_ref<'a>(&self, ctx: &'a AppContext) -> Option<&'a str> {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).upstream_ref(),
+        }
+    }
+
+    pub fn upstream_differs_from_main(&self, ctx: &AppContext) -> bool {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).upstream_differs_from_main(),
+        }
+    }
+
+    pub fn pr_info<'a>(&self, ctx: &'a AppContext) -> Option<&'a PrInfo> {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).pr_info(),
+        }
+    }
+
+    pub fn is_git_operation_blocked(&self, ctx: &AppContext) -> bool {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).is_git_operation_blocked(ctx),
+        }
+    }
+
+    pub fn has_head(&self, ctx: &AppContext) -> bool {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).has_head(),
+        }
+    }
+
+    pub fn active_repository_path(&self, ctx: &AppContext) -> Option<PathBuf> {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).active_repository_path(ctx),
+        }
+    }
+
+    // ── Mutation API (dispatched to the backend) ─────────────────────
+
+    pub fn set_diff_mode(
+        &mut self,
+        mode: DiffMode,
+        should_fetch_base: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match self {
+            Self::Local(m) => {
+                m.update(ctx, |local, ctx| local.set_diff_mode(mode, should_fetch_base, ctx))
+            }
+        }
+    }
+
+    pub fn set_diff_mode_and_fetch_base(&mut self, mode: DiffMode, ctx: &mut ModelContext<Self>) {
+        match self {
+            Self::Local(m) => {
+                m.update(ctx, |local, ctx| local.set_diff_mode_and_fetch_base(mode, ctx))
+            }
+        }
+    }
+
+    pub fn load_diffs_for_current_repo(
+        &mut self,
+        should_fetch_base: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match self {
+            Self::Local(m) => {
+                m.update(ctx, |local, ctx| local.load_diffs_for_current_repo(should_fetch_base, ctx))
+            }
+        }
+    }
+
+    pub fn discard_files(
+        &mut self,
+        file_infos: Vec<FileStatusInfo>,
+        should_stash: bool,
+        branch_name: Option<String>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match self {
+            Self::Local(m) => m.update(ctx, |local, ctx| {
+                local.discard_files(file_infos, should_stash, branch_name, ctx)
+            }),
+        }
+    }
+
+    pub fn set_code_review_metadata_refresh_enabled(
+        &mut self,
+        enabled: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match self {
+            Self::Local(m) => m.update(ctx, |local, ctx| {
+                local.set_code_review_metadata_refresh_enabled(enabled, ctx)
+            }),
+        }
+    }
+
+    pub fn refresh_diff_metadata_for_current_repo(
+        &mut self,
+        invalidation_behavior: InvalidationBehavior,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match self {
+            Self::Local(m) => m.update(ctx, |local, ctx| {
+                local.refresh_diff_metadata_for_current_repo(invalidation_behavior, ctx)
+            }),
+        }
+    }
+
+    pub fn stop_active_watcher(&mut self, ctx: &mut ModelContext<Self>) {
+        match self {
+            Self::Local(m) => m.update(ctx, |local, ctx| local.stop_active_watcher(ctx)),
+        }
+    }
+
+    pub fn refresh_pr_info(&mut self, ctx: &mut ModelContext<Self>) {
+        match self {
+            Self::Local(m) => m.update(ctx, |local, ctx| local.refresh_pr_info(ctx)),
+        }
+    }
 }
 
 #[cfg(feature = "local_fs")]

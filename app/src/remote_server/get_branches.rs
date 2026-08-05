@@ -8,7 +8,7 @@ use super::proto::{
 };
 
 /// Builds a success response from `(branch_name, is_main)` pairs, as returned
-/// by `DiffStateModel::get_all_branches`.
+/// by `LocalDiffStateModel::get_all_branches`.
 pub(super) fn success_response(branches: Vec<(String, bool)>) -> GetBranchesResponse {
     GetBranchesResponse {
         result: Some(get_branches_response::Result::Success(GetBranchesSuccess {

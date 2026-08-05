@@ -285,7 +285,7 @@ impl GitRepoStatusModel {
 
     /// Compute metadata for a repo — branch names and diff stats against HEAD.
     ///
-    /// This reuses logic extracted from `DiffStateModel::load_metadata_for_repo`
+    /// This reuses logic extracted from `LocalDiffStateModel::load_metadata_for_repo`
     /// but only computes the HEAD (uncommitted) stats since that's all the git
     /// chip needs.
     async fn load_metadata(repo_path: PathBuf) -> anyhow::Result<GitStatusMetadata> {
@@ -296,7 +296,7 @@ impl GitRepoStatusModel {
         let current_branch_name = detect_current_branch_display(&repo_path).await?;
         // Diff stats against HEAD.
         let stats_against_head =
-            super::diff_state::DiffStateModel::diff_metadata_against_head(&repo_path).await?;
+            super::diff_state::LocalDiffStateModel::diff_metadata_against_head(&repo_path).await?;
         let branch_tracking_status =
             Self::branch_tracking_status(&repo_path, &current_branch_name).await;
 

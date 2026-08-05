@@ -930,7 +930,7 @@ impl ServerModel {
     /// Handles `GetBranches` — lists the git branches of a repo on the remote
     /// host, backing the code-review branch picker over SSH. Reuses the same
     /// `git for-each-ref` listing used by local code review
-    /// ([`DiffStateModel::get_all_branches`]).
+    /// ([`LocalDiffStateModel::get_all_branches`]).
     fn handle_get_branches(
         &mut self,
         msg: GetBranches,
@@ -962,7 +962,7 @@ impl ServerModel {
         let handle = self.spawn_request_handler(
             request_id.clone(),
             async move {
-                crate::code_review::diff_state::DiffStateModel::get_all_branches(
+                crate::code_review::diff_state::LocalDiffStateModel::get_all_branches(
                     &repo_path,
                     max_branch_count,
                     include_remotes,
@@ -985,7 +985,7 @@ impl ServerModel {
     /// Handles `GetCommittedBranchFiles` — lists the committed-only changed
     /// files of the current branch (`main...HEAD`) on the remote host, backing
     /// the code-review file list over SSH. Reuses the same git listing as local
-    /// code review ([`DiffStateModel::get_committed_branch_file_entries`]).
+    /// code review ([`LocalDiffStateModel::get_committed_branch_file_entries`]).
     fn handle_get_committed_branch_files(
         &mut self,
         msg: GetCommittedBranchFilesRequest,
@@ -1016,7 +1016,7 @@ impl ServerModel {
         let handle = self.spawn_request_handler(
             request_id.clone(),
             async move {
-                crate::code_review::diff_state::DiffStateModel::get_committed_branch_file_entries(
+                crate::code_review::diff_state::LocalDiffStateModel::get_committed_branch_file_entries(
                     &repo_path,
                 )
                 .await
@@ -1051,7 +1051,9 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        use crate::code_review::diff_state::{DiffMetadata, DiffMode, DiffState, DiffStateModel};
+        use crate::code_review::diff_state::{
+            DiffMetadata, DiffMode, DiffState, LocalDiffStateModel,
+        };
 
         let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
             Ok(p) => p.to_local_path_lossy(),
@@ -1079,10 +1081,10 @@ impl ServerModel {
             request_id.clone(),
             async move {
                 let metadata =
-                    DiffStateModel::load_metadata_for_repo(repo_pathbuf.clone(), include_base_branch)
+                    LocalDiffStateModel::load_metadata_for_repo(repo_pathbuf.clone(), include_base_branch)
                         .await;
                 let diff_data =
-                    DiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf).await;
+                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf).await;
                 (metadata, diff_data)
             },
             move |me, (metadata_result, diff_data), _ctx| {
