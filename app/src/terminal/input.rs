@@ -32,7 +32,10 @@ use crate::ai::blocklist::agent_view::shortcuts::AgentShortcutViewModel;
 use crate::ai::blocklist::agent_view::{AgentViewEntryOrigin, EphemeralMessageModel};
 use crate::ai::blocklist::block::cli_controller::CLISubagentController;
 use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBar;
-use crate::ai::blocklist::{ai_indicator_height, BlocklistAIActionModel, SlashCommandRequest};
+use crate::ai::blocklist::{
+    ai_indicator_height, BlocklistAIActionModel, QueuedQueryId, QueuedQueryModel,
+    SlashCommandRequest,
+};
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::predict::prompt_suggestions::{
@@ -336,6 +339,7 @@ use crate::ai::blocklist::agent_view::{
     AgentInputFooter, AgentInputFooterEvent, AgentViewController,
 };
 use crate::terminal::view::ambient_agent::{HarnessSelector, HostSelector, NakedHeaderButtonTheme};
+use crate::terminal::view::queued_prompts_panel::{QueuedPromptsPanelEvent, QueuedPromptsPanelView};
 use async_channel::Sender;
 use futures::stream::AbortHandle;
 use parking_lot::FairMutex;
@@ -1648,6 +1652,11 @@ pub struct Input {
     /// we snapshot the current input contents here so we can restore them after the command
     /// completes and the buffer would normally be cleared.
     input_contents_before_prompt_chip_command: Option<String>,
+
+    /// The multi-prompt queued-prompts panel, present only when
+    /// [`FeatureFlag::QueueSlashCommand`] is enabled. Rendered between the warping indicator
+    /// and the input editor; reads the `QueuedQueryModel` singleton for the active conversation.
+    queued_prompts_panel: Option<ViewHandle<QueuedPromptsPanelView>>,
 }
 
 #[derive(Clone)]
@@ -3086,6 +3095,29 @@ impl Input {
             ctx.notify();
         });
 
+        let queued_prompts_panel = FeatureFlag::QueueSlashCommand.is_enabled().then(|| {
+            let cli_subagent_controller = cli_subagent_controller.clone();
+            let host_editor = editor.clone();
+            let panel = ctx.add_typed_action_view(|ctx| {
+                QueuedPromptsPanelView::new(
+                    terminal_view_id,
+                    suggestions_mode_model.clone(),
+                    cli_subagent_controller,
+                    host_editor,
+                    ctx,
+                )
+            });
+            ctx.subscribe_to_view(&panel, |me, _, event, ctx| {
+                me.handle_queued_prompts_panel_event(event, ctx);
+            });
+            // Seed the host-pushed send permission; a read-only shared-session viewer cannot send.
+            let can_send_prompt = !model.lock().shared_session_status().is_reader();
+            panel.update(ctx, |panel, ctx| {
+                panel.set_can_send_prompt(can_send_prompt, ctx);
+            });
+            panel
+        });
+
         let agent_status_view = ctx.add_typed_action_view(|ctx| {
             BlocklistAIStatusBar::new(
                 ai_controller.clone(),
@@ -3200,6 +3232,7 @@ impl Input {
             slash_command_data_source,
             ephemeral_message_model,
             input_contents_before_prompt_chip_command: None,
+            queued_prompts_panel,
         };
 
         #[cfg(feature = "local_fs")]
@@ -12121,6 +12154,139 @@ impl Input {
     /// Cancels the in-flight stream first so slash/skill paths don't trip the in-flight assertion.
     /// `is_for_same_conversation: true` keeps the conversation status `InProgress` so the warping
     /// indicator stays visible.
+    /// Handles an event emitted by the multi-prompt queued-prompts panel.
+    fn handle_queued_prompts_panel_event(
+        &mut self,
+        event: &QueuedPromptsPanelEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            QueuedPromptsPanelEvent::SendNow {
+                conversation_id,
+                query_id,
+                text,
+                is_command,
+            } => {
+                self.send_queued_row_immediately(
+                    *conversation_id,
+                    *query_id,
+                    text.clone(),
+                    *is_command,
+                    ctx,
+                );
+            }
+            QueuedPromptsPanelEvent::RowDeleted => self.focus_input_box(ctx),
+            QueuedPromptsPanelEvent::EditEnded => self.focus_input_box(ctx),
+        }
+    }
+
+    /// Dispatches a queued row immediately: commands execute in the terminal, prompts submit to
+    /// the row's conversation. On dispatch, removes the fired row and refocuses the input. Shared
+    /// by the row's send-now button and (later) empty-buffer Enter.
+    fn send_queued_row_immediately(
+        &mut self,
+        conversation_id: AIConversationId,
+        query_id: QueuedQueryId,
+        text: String,
+        is_command: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let dispatched = if is_command {
+            self.execute_queued_command(&text, conversation_id, ctx)
+        } else {
+            self.submit_queued_prompt_for_active_pane(text, conversation_id, ctx);
+            true
+        };
+        if !dispatched {
+            return;
+        }
+        QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+            model.remove_fired_row(conversation_id, query_id, ctx);
+        });
+        self.focus_input_box(ctx);
+    }
+
+    /// Executes a queued shell command in the terminal, arming the in-flight-command marker on
+    /// the model so the next drain waits for it to finish. Returns whether it started.
+    pub(crate) fn execute_queued_command(
+        &mut self,
+        command: &str,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let started = self.try_execute_command(command, ctx);
+        if started {
+            QueuedQueryModel::handle(ctx).update(ctx, |model, _| {
+                model.arm_command_in_flight(conversation_id);
+            });
+        }
+        started
+    }
+
+    /// Routes a fired queued prompt to its conversation. Zap has no cloud-follow-up or
+    /// shared-session-viewer send paths (those are Warp cloud features), so a fired row always
+    /// submits into its own local conversation. Mirrors [`Self::submit_queued_prompt`] but
+    /// targets the row's `conversation_id` rather than the currently-selected conversation.
+    pub(crate) fn submit_queued_prompt_for_active_pane(
+        &mut self,
+        prompt: String,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.ai_controller.update(ctx, |controller, ctx| {
+            controller.cancel_conversation_progress(
+                conversation_id,
+                CancellationReason::FollowUpSubmitted {
+                    is_for_same_conversation: true,
+                },
+                ctx,
+            );
+        });
+
+        let detected = self
+            .slash_command_model
+            .as_ref(ctx)
+            .detect_command(&prompt, ctx);
+        let handled = match detected {
+            SlashCommandEntryState::SlashCommand(detected_command) => self.execute_slash_command(
+                &detected_command.command,
+                detected_command.argument.as_ref(),
+                SlashCommandTrigger::input(),
+                /*is_queued_prompt*/ true,
+                ctx,
+            ),
+            SlashCommandEntryState::SkillCommand(detected_skill) => self.execute_skill_command(
+                detected_skill.reference,
+                detected_skill.argument,
+                /*is_queued_prompt*/ true,
+                ctx,
+            ),
+            _ => false,
+        };
+        if handled {
+            return;
+        }
+
+        self.ai_controller.update(ctx, move |controller, ctx| {
+            controller.send_queued_user_query_in_conversation(prompt, conversation_id, None, ctx);
+        });
+        ctx.emit(Event::ExecuteAIQuery);
+    }
+
+    /// The queued prompts panel, when [`FeatureFlag::QueueSlashCommand`] is enabled.
+    #[allow(dead_code)] // consumed by the panel render + focus wiring in a follow-up increment
+    pub(crate) fn queued_prompts_panel(&self) -> Option<&ViewHandle<QueuedPromptsPanelView>> {
+        self.queued_prompts_panel.as_ref()
+    }
+
+    /// Whether this input's queued-prompt inline editor is currently focused.
+    #[allow(dead_code)] // consumed by the focus wiring in a follow-up increment
+    pub(crate) fn is_queued_prompt_inline_editor_focused(&self, ctx: &AppContext) -> bool {
+        self.queued_prompts_panel
+            .as_ref()
+            .is_some_and(|panel| panel.as_ref(ctx).is_inline_edit_editor_focused(ctx))
+    }
+
     pub(crate) fn submit_queued_prompt(&mut self, prompt: String, ctx: &mut ViewContext<Self>) {
         if let Some(conversation_id) = self
             .ai_context_model
