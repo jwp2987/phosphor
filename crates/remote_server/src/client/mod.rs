@@ -12,7 +12,8 @@ use warpui::r#async::{executor, FutureExt as _};
 use crate::proto::{
     client_message, server_message, Abort, Authenticate, BufferEdit, ClientMessage, CloseBuffer,
     CreateDirectory, CreateDirectoryResponse, DeleteFile, ErrorCode, GetBranches,
-    GetBranchesResponse, Initialize,
+    GetBranchesResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
+    Initialize,
     InitializeResponse, ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
     read_file_chunk_response, ReadFileChunkResponse, ReadFileContextRequest,
@@ -392,6 +393,27 @@ impl RemoteServerClient {
             Some(server_message::Message::GetBranchesResponse(resp)) => Ok(resp),
             other => {
                 log::error!("Unexpected response variant for GetBranches: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Lists the committed-only changed files of the current branch on the
+    /// remote host (`main...HEAD`) — backs the code-review file list over SSH.
+    pub async fn get_committed_branch_files(
+        &self,
+        request: GetCommittedBranchFilesRequest,
+    ) -> Result<GetCommittedBranchFilesResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage {
+            request_id: request_id.to_string(),
+            message: Some(client_message::Message::GetCommittedBranchFiles(request)),
+        };
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GetCommittedBranchFilesResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for GetCommittedBranchFiles: {other:?}");
                 Err(ClientError::UnexpectedResponse)
             }
         }

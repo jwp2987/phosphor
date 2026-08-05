@@ -20,7 +20,8 @@ use super::proto::{
     client_message, delete_file_response, run_command_response, server_message,
     write_file_response, Abort, Authenticate, ClientMessage, DeleteFile, DeleteFileResponse,
     DeleteFileSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
-    FileOperationError, GetBranches, Initialize, InitializeResponse, NavigatedToDirectory,
+    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, Initialize, InitializeResponse,
+    NavigatedToDirectory,
     NavigatedToDirectoryResponse, ReadFileContextResponse, RipgrepSearchRequest, RunCommandError,
     RunCommandErrorCode,
     RunCommandRequest, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionBootstrapped,
@@ -625,6 +626,9 @@ impl ServerModel {
             Some(client_message::Message::GetBranches(req)) => {
                 self.handle_get_branches(req, &request_id, conn_id, ctx)
             }
+            Some(client_message::Message::GetCommittedBranchFiles(req)) => {
+                self.handle_get_committed_branch_files(req, &request_id, conn_id, ctx)
+            }
             Some(client_message::Message::NavigatedToDirectory(msg)) => {
                 self.handle_navigated_to_directory(msg, &request_id, conn_id, ctx)
             }
@@ -962,6 +966,59 @@ impl ServerModel {
                     Some(conn_id),
                     Some(&request_id_for_response),
                     server_message::Message::GetBranchesResponse(response),
+                );
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    /// Handles `GetCommittedBranchFiles` — lists the committed-only changed
+    /// files of the current branch (`main...HEAD`) on the remote host, backing
+    /// the code-review file list over SSH. Reuses the same git listing as local
+    /// code review ([`DiffStateModel::get_committed_branch_file_entries`]).
+    fn handle_get_committed_branch_files(
+        &mut self,
+        msg: GetCommittedBranchFilesRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        let repo_path =
+            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+                Ok(p) => p.to_local_path_lossy(),
+                Err(e) => {
+                    return HandlerOutcome::Sync(
+                        server_message::Message::GetCommittedBranchFilesResponse(
+                            super::get_committed_branch_files::error_response(format!(
+                                "Invalid repo_path: {e}"
+                            )),
+                        ),
+                    );
+                }
+            };
+
+        log::info!(
+            "Handling GetCommittedBranchFiles repo={} (request_id={request_id})",
+            msg.repo_path,
+        );
+
+        let request_id_for_response = request_id.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                crate::code_review::diff_state::DiffStateModel::get_committed_branch_file_entries(
+                    &repo_path,
+                )
+                .await
+            },
+            move |me, files_result, _ctx| {
+                let response =
+                    super::get_committed_branch_files::files_result_to_response(files_result);
+                me.send_server_message(
+                    Some(conn_id),
+                    Some(&request_id_for_response),
+                    server_message::Message::GetCommittedBranchFilesResponse(response),
                 );
             },
             ctx,

@@ -35,6 +35,7 @@ message ClientMessage {
     WriteFileChunk write_file_chunk = 22;
     RipgrepSearchRequest ripgrep_search = 23;
     GetBranches get_branches = 24;
+    GetCommittedBranchFilesRequest get_committed_branch_files = 25;
   }
 }
 // Top-level envelope for all server → client messages.
@@ -64,6 +65,7 @@ message ServerMessage {
     WriteFileChunkResponse write_file_chunk_response = 22;
     RipgrepSearchResponse ripgrep_search_response = 23;
     GetBranchesResponse get_branches_response = 24;
+    GetCommittedBranchFilesResponse get_committed_branch_files_response = 25;
   }
 }
 
@@ -628,5 +630,35 @@ message GetBranchesSuccess {
 }
 
 message GetBranchesError {
+  string message = 1;
+}
+
+// ── GetCommittedBranchFiles ──────────────────────────────────────
+// Client → server: list the committed-only changed files of the current
+// branch on the remote host (`main...HEAD`), backing the code-review file
+// list over SSH. Mirrors the local `get_committed_branch_file_entries`.
+message GetCommittedBranchFilesRequest {
+  string repo_path = 1;
+}
+
+// One changed file with its line-change counts.
+message FileChangeEntry {
+  string path = 1;
+  uint64 additions = 2;
+  uint64 deletions = 3;
+}
+
+message GetCommittedBranchFilesResponse {
+  oneof result {
+    GetCommittedBranchFilesSuccess success = 1;
+    GetCommittedBranchFilesError error = 2;
+  }
+}
+
+message GetCommittedBranchFilesSuccess {
+  repeated FileChangeEntry files = 1;
+}
+
+message GetCommittedBranchFilesError {
   string message = 1;
 }
