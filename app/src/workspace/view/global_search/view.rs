@@ -320,6 +320,13 @@ pub struct GlobalSearchView {
     query_change_tx: Sender<()>,
     /// All terminal working directories for display grouping (preserved as-is)
     root_directories: Vec<LocalOrRemotePath>,
+    /// Local terminal working directories, as delivered by `DirectoriesChanged`.
+    /// Combined with `server_search_root` to form the effective roots.
+    local_root_directories: Vec<LocalOrRemotePath>,
+    /// Remote (SSH) search root for the active server session, delivered
+    /// separately via the server-file-browser seam. `None` when no remote
+    /// session is bound.
+    server_search_root: Option<LocalOrRemotePath>,
     /// Deduplicated roots for ripgrep search (excludes nested subdirectories)
     search_roots: Vec<LocalOrRemotePath>,
     last_searched_pattern: Option<String>,
@@ -716,6 +723,8 @@ impl GlobalSearchView {
             query_editor,
             query_change_tx,
             root_directories: Vec::new(),
+            local_root_directories: Vec::new(),
+            server_search_root: None,
             search_roots: Vec::new(),
             last_searched_pattern: None,
             directory_entries: Vec::new(),
@@ -1020,6 +1029,39 @@ impl GlobalSearchView {
         roots: Vec<LocalOrRemotePath>,
         _ctx: &mut ViewContext<Self>,
     ) {
+        // Local terminal working directories. The remote (SSH) root is bound
+        // separately via `set_server_search_root`; the two are merged in
+        // `recompute_roots`.
+        self.local_root_directories = roots;
+        self.recompute_roots();
+    }
+
+    /// Bind (or clear) the remote search root for the active server session.
+    /// Delivered via the server-file-browser seam, which is the only channel
+    /// carrying remote working directories (local `DirectoriesChanged` only
+    /// reports paths for local sessions).
+    pub fn set_server_search_root(
+        &mut self,
+        root: Option<LocalOrRemotePath>,
+        _ctx: &mut ViewContext<Self>,
+    ) {
+        if self.server_search_root == root {
+            return;
+        }
+        self.server_search_root = root;
+        self.recompute_roots();
+    }
+
+    /// Recompute the display + search roots from the local terminal roots plus
+    /// the optional remote server root.
+    fn recompute_roots(&mut self) {
+        let roots: Vec<LocalOrRemotePath> = self
+            .local_root_directories
+            .iter()
+            .cloned()
+            .chain(self.server_search_root.clone())
+            .collect();
+
         // Ancestor-dedup search roots so we don't search the same file twice
         // when terminal directories are nested (e.g. `~/code` + `~/code/a`).
         // Local and remote roots share `group_roots_by_common_ancestor` with

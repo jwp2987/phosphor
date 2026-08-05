@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
+use warp_util::standardized_path::StandardizedPath;
 use std::sync::Arc;
 
 use warp_core::ui::theme::color::internal_colors;
@@ -621,8 +623,30 @@ impl LeftPanelView {
         ctx: &mut ViewContext<Self>,
     ) {
         self.server_file_browser_view.update(ctx, |view, ctx| {
-            view.set_remote_root(host_id, path, session_id, session, ctx);
+            view.set_remote_root(host_id.clone(), path.clone(), session_id, session, ctx);
         });
+
+        // Bind the same remote root as a global-search source so global search
+        // can query the host over the ripgrep RPC. Uses the pane group's own
+        // GlobalSearchView; local terminal roots are merged in alongside.
+        if let Some(pane_group_id) = self
+            .active_pane_group
+            .as_ref()
+            .and_then(|pane_group| pane_group.upgrade(ctx))
+            .map(|pane_group| pane_group.id())
+        {
+            let server_root = StandardizedPath::try_new(&path).ok().map(|std_path| {
+                LocalOrRemotePath::Remote(RemotePath::new(
+                    crate::code::buffer_location::core_host_id_to_util(&host_id),
+                    std_path,
+                ))
+            });
+            let global_search_view =
+                self.get_or_create_global_search_view_for_pane_group(pane_group_id, ctx);
+            global_search_view.update(ctx, |view, view_ctx| {
+                view.set_server_search_root(server_root, view_ctx);
+            });
+        }
     }
 
     pub fn navigate_server_file_browser(
