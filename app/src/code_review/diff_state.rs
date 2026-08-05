@@ -337,21 +337,25 @@ struct DiffsWithBaseContent {
     repository_path: PathBuf,
 }
 
-#[derive(Default)]
-struct DiffMetadata {
-    main_branch_name: String,
-    current_branch_name: String,
-    against_head: DiffMetadataAgainstBase,
-    against_base_branch: Option<DiffMetadataAgainstBase>,
-    has_head_commit: bool,
-    unpushed_commits: Vec<Commit>,
-    upstream_ref: Option<String>,
-    pr_info: Option<PrInfo>,
+// `pub` (with public fields) so the remote-server daemon can build a diff-state
+// snapshot from a headless `load_metadata_for_repo` and convert it to the wire
+// proto (see app/src/remote_server/diff_state_proto.rs). Warp treats this
+// metadata as a first-class serialized type; the fork mirrors that.
+#[derive(Default, Debug, PartialEq)]
+pub struct DiffMetadata {
+    pub main_branch_name: String,
+    pub current_branch_name: String,
+    pub against_head: DiffMetadataAgainstBase,
+    pub against_base_branch: Option<DiffMetadataAgainstBase>,
+    pub has_head_commit: bool,
+    pub unpushed_commits: Vec<Commit>,
+    pub upstream_ref: Option<String>,
+    pub pr_info: Option<PrInfo>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, PartialEq)]
 pub struct DiffMetadataAgainstBase {
-    pub(super) aggregate_stats: DiffStats,
+    pub aggregate_stats: DiffStats,
 }
 
 impl DiffMetadataAgainstBase {
@@ -1357,7 +1361,7 @@ impl DiffStateModel {
         Self::get_merge_base(repo_path, &origin_branch).await
     }
 
-    async fn load_metadata_for_repo(
+    pub async fn load_metadata_for_repo(
         repo_path: PathBuf,
         include_base_branch: bool,
     ) -> Result<DiffMetadata> {

@@ -24,8 +24,8 @@ use std::sync::Arc;
 
 use crate::code_review::diff_size_limits::DiffSize;
 use crate::code_review::diff_state::{
-    DiffHunk, DiffLine, DiffLineType, DiffMode, DiffState, FileDiff, FileStatusInfo, GitDiffData,
-    GitFileStatus,
+    DiffHunk, DiffLine, DiffLineType, DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState,
+    DiffStats, FileDiff, FileStatusInfo, GitDiffData, GitFileStatus,
 };
 use crate::util::git::{Commit, FileChangeEntry, PrInfo};
 
@@ -369,6 +369,123 @@ pub(super) fn proto_to_pr_info(pr: &proto::PrInfo) -> PrInfo {
     PrInfo {
         number: pr.number,
         url: pr.url.clone(),
+    }
+}
+
+// ── DiffStats ────────────────────────────────────────────────────
+
+pub(super) fn diff_stats_to_proto(stats: &DiffStats) -> proto::DiffStats {
+    proto::DiffStats {
+        files_changed: stats.files_changed as u64,
+        total_additions: stats.total_additions as u64,
+        total_deletions: stats.total_deletions as u64,
+    }
+}
+
+pub(super) fn proto_to_diff_stats(stats: &proto::DiffStats) -> DiffStats {
+    DiffStats {
+        files_changed: stats.files_changed as usize,
+        total_additions: stats.total_additions as usize,
+        total_deletions: stats.total_deletions as usize,
+    }
+}
+
+// ── DiffMetadataAgainstBase ──────────────────────────────────────
+// The fork's `DiffMetadataAgainstBase` carries only aggregate stats; the
+// proto's per-file `files` list is encoded empty and dropped on decode.
+
+pub(super) fn diff_metadata_against_base_to_proto(
+    base: &DiffMetadataAgainstBase,
+) -> proto::DiffMetadataAgainstBase {
+    proto::DiffMetadataAgainstBase {
+        aggregate_stats: Some(diff_stats_to_proto(&base.aggregate_stats)),
+        files: Vec::new(),
+    }
+}
+
+pub(super) fn proto_to_diff_metadata_against_base(
+    base: &proto::DiffMetadataAgainstBase,
+) -> DiffMetadataAgainstBase {
+    DiffMetadataAgainstBase {
+        aggregate_stats: base
+            .aggregate_stats
+            .as_ref()
+            .map(proto_to_diff_stats)
+            .unwrap_or_default(),
+    }
+}
+
+// ── DiffMetadata ─────────────────────────────────────────────────
+
+pub(super) fn diff_metadata_to_proto(metadata: &DiffMetadata) -> proto::DiffMetadata {
+    proto::DiffMetadata {
+        main_branch_name: metadata.main_branch_name.clone(),
+        current_branch_name: metadata.current_branch_name.clone(),
+        against_head: Some(diff_metadata_against_base_to_proto(&metadata.against_head)),
+        against_base_branch: metadata
+            .against_base_branch
+            .as_ref()
+            .map(diff_metadata_against_base_to_proto),
+        has_head_commit: metadata.has_head_commit,
+        unpushed_commits: metadata.unpushed_commits.iter().map(commit_to_proto).collect(),
+        upstream_ref: metadata.upstream_ref.clone(),
+        pr_info: metadata.pr_info.as_ref().map(pr_info_to_proto),
+    }
+}
+
+pub(super) fn proto_to_diff_metadata(metadata: &proto::DiffMetadata) -> DiffMetadata {
+    DiffMetadata {
+        main_branch_name: metadata.main_branch_name.clone(),
+        current_branch_name: metadata.current_branch_name.clone(),
+        against_head: metadata
+            .against_head
+            .as_ref()
+            .map(proto_to_diff_metadata_against_base)
+            .unwrap_or_default(),
+        against_base_branch: metadata
+            .against_base_branch
+            .as_ref()
+            .map(proto_to_diff_metadata_against_base),
+        has_head_commit: metadata.has_head_commit,
+        unpushed_commits: metadata.unpushed_commits.iter().map(proto_to_commit).collect(),
+        upstream_ref: metadata.upstream_ref.clone(),
+        pr_info: metadata.pr_info.as_ref().map(proto_to_pr_info),
+    }
+}
+
+// ── GetDiffState response builders ───────────────────────────────
+// Assemble the daemon's reply to a GetDiffState subscription. The Loaded diff
+// payload is carried in `DiffStateSnapshot.diffs`, separate from the state tag.
+
+pub(super) fn build_snapshot(
+    repo_path: String,
+    mode: &DiffMode,
+    state: &DiffState,
+    metadata: &DiffMetadata,
+) -> proto::DiffStateSnapshot {
+    proto::DiffStateSnapshot {
+        repo_path,
+        mode: Some(diff_mode_to_proto(mode)),
+        metadata: Some(diff_metadata_to_proto(metadata)),
+        state: Some(diff_state_to_proto(state)),
+        diffs: match state {
+            DiffState::Loaded(data) => Some(git_diff_data_to_proto(data)),
+            _ => None,
+        },
+    }
+}
+
+pub(super) fn snapshot_response(snapshot: proto::DiffStateSnapshot) -> proto::GetDiffStateResponse {
+    proto::GetDiffStateResponse {
+        result: Some(proto::get_diff_state_response::Result::Snapshot(snapshot)),
+    }
+}
+
+pub(super) fn error_response(message: String) -> proto::GetDiffStateResponse {
+    proto::GetDiffStateResponse {
+        result: Some(proto::get_diff_state_response::Result::Error(
+            proto::DiffStateError { message },
+        )),
     }
 }
 

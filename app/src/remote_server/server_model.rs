@@ -17,12 +17,12 @@ use warp_util::content_version::ContentVersion;
 use warp_util::file::FileId;
 
 use super::proto::{
-    client_message, delete_file_response, get_diff_state_response, run_command_response,
-    server_message, write_file_response, Abort, Authenticate, ClientMessage, DiffStateError,
-    UnsubscribeDiffState, DeleteFile, DeleteFileResponse,
+    client_message, delete_file_response, run_command_response, server_message,
+    write_file_response, Abort, Authenticate, ClientMessage, UnsubscribeDiffState, DeleteFile,
+    DeleteFileResponse,
     DeleteFileSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
-    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
-    GetDiffStateResponse, Initialize, InitializeResponse,
+    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState, Initialize,
+    InitializeResponse,
     NavigatedToDirectory,
     NavigatedToDirectoryResponse, ReadFileContextResponse, RipgrepSearchRequest, RunCommandError,
     RunCommandErrorCode,
@@ -1035,13 +1035,98 @@ impl ServerModel {
         HandlerOutcome::Async(Some(handle))
     }
 
-    /// Handles `GetDiffState` — subscribe to diff state for a (repo, mode)
-    /// pair, replying with an initial snapshot and then pushing changes.
+    /// Handles `GetDiffState` — computes the current diff-state snapshot for a
+    /// (repo, mode) pair on the remote filesystem and replies with it.
     ///
-    /// TODO(diff-state increment 4): the real subscription + push logic (per
-    /// connection tracking, headless diff computation, watcher-driven pushes)
-    /// lands next. Until then the daemon answers with an explicit
-    /// not-yet-supported error rather than dropping the request.
+    /// This delivers the initial snapshot on subscribe. Live push on
+    /// working-tree change (the DiffStateSnapshot / MetadataUpdate / FileDelta
+    /// broadcasts + per-connection subscription tracking) lands in a following
+    /// increment; `handle_unsubscribe_diff_state` is the no-op counterpart
+    /// until then.
+    #[cfg(feature = "local_fs")]
+    fn handle_get_diff_state(
+        &mut self,
+        msg: GetDiffState,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        use crate::code_review::diff_state::{DiffMetadata, DiffMode, DiffState, DiffStateModel};
+
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+            Ok(p) => p.to_local_path_lossy(),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GetDiffStateResponse(
+                    super::diff_state_proto::error_response(format!("Invalid repo_path: {e}")),
+                ));
+            }
+        };
+
+        let mode = super::diff_state_proto::proto_to_diff_mode(&msg.mode.unwrap_or_default());
+        // Only compare against a base branch when the mode requires it.
+        let include_base_branch = !matches!(mode, DiffMode::Head);
+        let repo_path_str = msg.repo_path.clone();
+        let repo_pathbuf = std::path::PathBuf::from(&repo_path);
+
+        log::info!(
+            "Handling GetDiffState repo={} mode={mode:?} (request_id={request_id})",
+            msg.repo_path,
+        );
+
+        let request_id_for_response = request_id.clone();
+        let mode_for_compute = mode.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                let metadata =
+                    DiffStateModel::load_metadata_for_repo(repo_pathbuf.clone(), include_base_branch)
+                        .await;
+                let diff_data =
+                    DiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf).await;
+                (metadata, diff_data)
+            },
+            move |me, (metadata_result, diff_data), _ctx| {
+                let response = match metadata_result {
+                    Ok(metadata) => {
+                        // `load_diff_data_for_mode` returns None only when the
+                        // diff computation itself failed (a clean repo yields an
+                        // empty GitDiffData, i.e. Some).
+                        let state = match diff_data {
+                            Some(data) => DiffState::Loaded(data),
+                            None => DiffState::Error("Failed to compute diff".to_string()),
+                        };
+                        let snapshot = super::diff_state_proto::build_snapshot(
+                            repo_path_str,
+                            &mode,
+                            &state,
+                            &metadata,
+                        );
+                        super::diff_state_proto::snapshot_response(snapshot)
+                    }
+                    // Metadata failed (not a git repository, or git errored):
+                    // report NotInRepository with empty metadata.
+                    Err(_) => {
+                        let snapshot = super::diff_state_proto::build_snapshot(
+                            repo_path_str,
+                            &mode,
+                            &DiffState::NotInRepository,
+                            &DiffMetadata::default(),
+                        );
+                        super::diff_state_proto::snapshot_response(snapshot)
+                    }
+                };
+                me.send_server_message(
+                    Some(conn_id),
+                    Some(&request_id_for_response),
+                    server_message::Message::GetDiffStateResponse(response),
+                );
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    #[cfg(not(feature = "local_fs"))]
     fn handle_get_diff_state(
         &mut self,
         _msg: GetDiffState,
@@ -1050,18 +1135,15 @@ impl ServerModel {
         _ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
         HandlerOutcome::Sync(server_message::Message::GetDiffStateResponse(
-            GetDiffStateResponse {
-                result: Some(get_diff_state_response::Result::Error(DiffStateError {
-                    message: "Diff state subscription is not yet supported on this server"
-                        .to_string(),
-                })),
-            },
+            super::diff_state_proto::error_response(
+                "Diff state requires the local_fs feature".to_string(),
+            ),
         ))
     }
 
     /// Handles `UnsubscribeDiffState` — fire-and-forget removal of a diff-state
-    /// subscription. No subscriptions exist yet (see increment 4), so this is a
-    /// no-op for now.
+    /// subscription. The daemon does not yet push live updates (see the note on
+    /// `handle_get_diff_state`), so there is nothing to tear down yet.
     fn handle_unsubscribe_diff_state(
         &mut self,
         _msg: UnsubscribeDiffState,

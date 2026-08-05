@@ -6,8 +6,8 @@ use std::sync::Arc;
 use super::*;
 use crate::code_review::diff_size_limits::DiffSize;
 use crate::code_review::diff_state::{
-    DiffHunk, DiffLine, DiffLineType, DiffMode, DiffState, FileDiff, FileStatusInfo, GitDiffData,
-    GitFileStatus,
+    DiffHunk, DiffLine, DiffLineType, DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState,
+    DiffStats, FileDiff, FileStatusInfo, GitDiffData, GitFileStatus,
 };
 use crate::util::git::{Commit, FileChangeEntry, PrInfo};
 
@@ -236,4 +236,115 @@ fn pr_info_round_trips_forks_fields_and_defaults_extras() {
     assert_eq!(encoded.base_branch, "");
     let back = proto_to_pr_info(&encoded);
     assert_eq!(original, back);
+}
+
+fn sample_stats(files: usize) -> DiffStats {
+    DiffStats {
+        files_changed: files,
+        total_additions: files * 10,
+        total_deletions: files * 3,
+    }
+}
+
+#[test]
+fn diff_stats_round_trips() {
+    let original = sample_stats(4);
+    let back = proto_to_diff_stats(&diff_stats_to_proto(&original));
+    assert_eq!(original, back);
+}
+
+#[test]
+fn diff_metadata_against_base_round_trips_and_encodes_empty_files() {
+    let original = DiffMetadataAgainstBase {
+        aggregate_stats: sample_stats(2),
+    };
+    let encoded = diff_metadata_against_base_to_proto(&original);
+    // The fork carries no per-file list here; it must encode empty.
+    assert!(encoded.files.is_empty());
+    let back = proto_to_diff_metadata_against_base(&encoded);
+    assert_eq!(original, back);
+}
+
+#[test]
+fn diff_metadata_round_trips() {
+    let original = DiffMetadata {
+        main_branch_name: "main".to_string(),
+        current_branch_name: "feature/x".to_string(),
+        against_head: DiffMetadataAgainstBase {
+            aggregate_stats: sample_stats(3),
+        },
+        against_base_branch: Some(DiffMetadataAgainstBase {
+            aggregate_stats: sample_stats(5),
+        }),
+        has_head_commit: true,
+        unpushed_commits: vec![Commit {
+            hash: "deadbeef".to_string(),
+            subject: "feat: y".to_string(),
+            files_changed: 2,
+            additions: 9,
+            deletions: 1,
+        }],
+        upstream_ref: Some("origin/feature/x".to_string()),
+        pr_info: Some(PrInfo {
+            number: 7,
+            url: "https://example.com/pr/7".to_string(),
+        }),
+    };
+    let back = proto_to_diff_metadata(&diff_metadata_to_proto(&original));
+    assert_eq!(original, back);
+}
+
+#[test]
+fn diff_metadata_default_round_trips() {
+    let original = DiffMetadata::default();
+    let back = proto_to_diff_metadata(&diff_metadata_to_proto(&original));
+    assert_eq!(original, back);
+}
+
+#[test]
+fn build_snapshot_loaded_carries_diffs_payload() {
+    let diffs = GitDiffData {
+        files: vec![sample_file_diff()],
+        total_additions: 3,
+        total_deletions: 1,
+        files_changed: 1,
+    };
+    let snapshot = build_snapshot(
+        "/repo".to_string(),
+        &DiffMode::Head,
+        &DiffState::Loaded(diffs.clone()),
+        &DiffMetadata::default(),
+    );
+    assert_eq!(snapshot.repo_path, "/repo");
+    assert!(matches!(
+        snapshot.state.as_ref().and_then(|s| s.state.as_ref()),
+        Some(proto::diff_state::State::Loaded(_))
+    ));
+    // The diff payload rides separately in `diffs`, not inside the state tag.
+    let decoded = proto_to_git_diff_data(snapshot.diffs.as_ref().expect("loaded → diffs present"));
+    assert_eq!(decoded, diffs);
+}
+
+#[test]
+fn build_snapshot_not_in_repository_omits_diffs() {
+    let snapshot = build_snapshot(
+        "/repo".to_string(),
+        &DiffMode::Head,
+        &DiffState::NotInRepository,
+        &DiffMetadata::default(),
+    );
+    assert!(snapshot.diffs.is_none());
+    assert!(matches!(
+        snapshot.state.as_ref().and_then(|s| s.state.as_ref()),
+        Some(proto::diff_state::State::NotInRepository(_))
+    ));
+}
+
+#[test]
+fn error_response_wraps_message() {
+    let resp = error_response("nope".to_string());
+    match resp.result {
+        Some(proto::get_diff_state_response::Result::Error(e)) => assert_eq!(e.message, "nope"),
+        _ => panic!("expected error result"),
+    }
 }
