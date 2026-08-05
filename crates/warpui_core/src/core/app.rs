@@ -4341,15 +4341,30 @@ impl AppContext {
             Some(id) => id,
             None => return false,
         };
-        let presenter = match self.presenter(window_id) {
-            Some(p) => p,
-            None => return false,
-        };
 
-        let borrowed_presenter = presenter.borrow();
-        borrowed_presenter
-            .ancestors(focused_view_id)
-            .contains(view_id)
+        // Resolve the focused view's ancestor chain the same way action
+        // dispatch does (see `dispatch_typed_action_to_focused`): a Zap TUI
+        // view's parentage lives in `view_parents`, not the GUI presenter
+        // (which only tracks `views`). Route by where the focused leaf view
+        // lives so a TUI leaf — including one under a GUI window's presenter —
+        // resolves its real ancestor chain instead of a one-element one.
+        #[cfg(feature = "tui")]
+        let is_tui_view = self
+            .windows
+            .get(&window_id)
+            .is_some_and(|window| window.tui_views.contains_key(&focused_view_id));
+        #[cfg(not(feature = "tui"))]
+        let is_tui_view = false;
+
+        let ancestors = if is_tui_view {
+            self.view_ancestors(window_id, focused_view_id)
+        } else {
+            match self.presenter(window_id) {
+                Some(presenter) => presenter.borrow().ancestors(focused_view_id),
+                None => self.view_ancestors(window_id, focused_view_id),
+            }
+        };
+        ancestors.contains(view_id)
     }
 
     fn relay_task_output(&mut self, task_id: usize, output: Box<dyn Any>) -> Result<()> {
