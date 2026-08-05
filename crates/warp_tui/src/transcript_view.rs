@@ -255,9 +255,17 @@ impl TuiTranscriptView {
             | BlocklistAIHistoryEvent::DeletedConversation {
                 conversation_id, ..
             } => self.remove_conversation(*conversation_id, ctx),
+            // BYOP: Zap's `ClearedConversationsInTerminalView` carries no cleared-id
+            // list — the `active_conversation_id` *is* the conversation that was
+            // cleared (same reduction `conversation_selection` uses). Drop its
+            // blocks from the transcript so the cleared conversation stops
+            // rendering, leaving restored/other conversations intact.
+            BlocklistAIHistoryEvent::ClearedConversationsInTerminalView {
+                active_conversation_id: Some(conversation_id),
+                ..
+            } => self.remove_conversation(*conversation_id, ctx),
             // Zap dropped Warp's cross-surface transfer + cloud/orchestration history
-            // events, and its ClearedConversationsInTerminalView carries no cleared-id
-            // list; the transcript ignores the remaining events.
+            // events; the transcript ignores the remaining events.
             _ => {}
         }
     }
