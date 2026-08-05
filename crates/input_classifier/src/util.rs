@@ -56,11 +56,19 @@ pub fn is_prefix_of_natural_language_word(input: &str) -> bool {
         .any(|word| word.starts_with(input))
 }
 
+/// Shell-vs-natural-language heuristic. Two variants, selected at compile time:
+/// - `nld_heuristic_v1`: uses `check_if_token_has_shell_syntax` and a threshold
+///   that loosens with input length (the fork's historical behavior).
+/// - `nld_heuristic_v2`: drops `check_if_token_has_shell_syntax` and pins the
+///   threshold to 1 for all inputs, so a shell classification requires every
+///   token to be a recognized command. Enabled for the TUI (matching Warp),
+///   where it wins if both features are set.
 pub async fn is_likely_shell_command(
     input: &ParsedTokensSnapshot,
     word_tokens_count: usize,
 ) -> bool {
     const YIELD_BATCH_SIZE: usize = 5;
+    let use_nld_heuristic_v2 = cfg!(feature = "nld_heuristic_v2");
 
     let mut likely_command_token_count = 0;
     let total_token_count = input.parsed_tokens.len();
@@ -77,9 +85,9 @@ pub async fn is_likely_shell_command(
             return true;
         }
 
-        if token.token_description.is_some()
-            || check_if_token_has_shell_syntax(token.token.as_str())
-        {
+        let check_if_token_has_shell_syntax =
+            !use_nld_heuristic_v2 && check_if_token_has_shell_syntax(token.token.as_str());
+        if token.token_description.is_some() || check_if_token_has_shell_syntax {
             likely_command_token_count += 1;
         }
 
@@ -90,7 +98,7 @@ pub async fn is_likely_shell_command(
 
     // When token count is lower than 2, we should make sure all tokens
     // are matching the target classification category.
-    let command_threshold = if total_token_count <= 2 {
+    let command_threshold = if use_nld_heuristic_v2 || total_token_count <= 2 {
         1.0
     } else if total_token_count <= 4 {
         DETECT_AS_COMMAND_LOW_TOKEN_THRESHOLD

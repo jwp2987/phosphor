@@ -4,22 +4,18 @@ use warp_completer::ParsedTokensSnapshot;
 use super::*;
 use crate::test_utils::CompletionContext;
 
-// NOTE: This fork's `crates/input_classifier/src/util.rs` no longer has the
-// `nld_heuristic_v1` / `nld_heuristic_v2` cargo features that Warp's
-// `util_tests.rs` gates each test variant behind (see `Cargo.toml`: neither
-// feature is declared here). The `is_likely_shell_command` product code was
-// simplified to always follow the old `nld_heuristic_v1` code path (the
-// `use_nld_heuristic_v2` branches were deleted outright, not merely
-// feature-gated out), so only the Warp tests gated on
-// `nld_heuristic_v1` are meaningful here; the `nld_heuristic_v2`-gated
-// variants test a heuristic that no longer exists in this fork and are not
-// ported (see PORT task report, NEEDS-ADAPTATION).
+// The shell-command heuristic tests are paired: a `_for_nld_heuristic_v1`
+// variant (gated on v1 with v2 off) and a `_for_nld_heuristic_v2` variant
+// (gated on v2). Both `is_likely_shell_command` code paths are restored, so the
+// scenarios where the stricter v2 heuristic disagrees with v1 (shell-syntax
+// voting, the below-threshold described-token majority, the log-path prompt)
+// each assert the opposite outcome under v2. `nld_heuristic_v1` is a default
+// feature, so `cargo test -p input_classifier` runs the v1 variants; run with
+// `--features nld_heuristic_v2` for the v2 variants.
 //
 // The one-off shell keyword set previously dropped "agy" and "omp" from
 // `ONE_OFF_SHELL_COMMAND_KEYWORDS` (GitHub issue #19); they have been
-// restored to match Warp's oracle list, so
-// `test_is_likely_shell_command_one_off_keyword_short_circuits` — ported
-// unmodified from Warp — now passes.
+// restored to match Warp's oracle list.
 
 async fn mock_parsed_input_token(buffer_text: String) -> ParsedTokensSnapshot {
     warp_features::mark_initialized();
@@ -141,51 +137,121 @@ async fn majority_described_tokens_returns_true() {
     assert!(is_likely_shell_command(&token, word_tokens_count).await);
 }
 
+// Cases where nld_heuristic_v1 and nld_heuristic_v2 should both mark input as shell.
+#[cfg(all(feature = "nld_heuristic_v1", not(feature = "nld_heuristic_v2")))]
 #[test]
-fn test_is_likely_shell_command_one_off_keyword_short_circuits() {
+fn test_is_likely_shell_command_one_off_keyword_short_circuits_true_for_nld_heuristic_v1() {
     futures::executor::block_on(one_off_keyword_short_circuits());
 }
 
+#[cfg(feature = "nld_heuristic_v2")]
 #[test]
-fn test_is_likely_shell_command_first_token_with_description_short_input_true() {
+fn test_is_likely_shell_command_one_off_keyword_short_circuits_true_for_nld_heuristic_v2() {
+    futures::executor::block_on(one_off_keyword_short_circuits());
+}
+
+#[cfg(all(feature = "nld_heuristic_v1", not(feature = "nld_heuristic_v2")))]
+#[test]
+fn test_is_likely_shell_command_first_token_with_description_short_input_true_for_nld_heuristic_v1()
+{
     futures::executor::block_on(first_token_with_description_short_input_is_shell());
 }
 
+#[cfg(feature = "nld_heuristic_v2")]
 #[test]
-fn test_is_likely_shell_command_majority_described_tokens_true() {
+fn test_is_likely_shell_command_first_token_with_description_short_input_true_for_nld_heuristic_v2()
+{
+    futures::executor::block_on(first_token_with_description_short_input_is_shell());
+}
+
+#[cfg(all(feature = "nld_heuristic_v1", not(feature = "nld_heuristic_v2")))]
+#[test]
+fn test_is_likely_shell_command_majority_described_tokens_true_for_nld_heuristic_v1() {
     futures::executor::block_on(majority_described_tokens_returns_true());
 }
 
+#[cfg(feature = "nld_heuristic_v2")]
 #[test]
-fn test_is_likely_shell_command_no_descriptions_false() {
+fn test_is_likely_shell_command_majority_described_tokens_true_for_nld_heuristic_v2() {
+    futures::executor::block_on(majority_described_tokens_returns_true());
+}
+
+// Cases where nld_heuristic_v1 and nld_heuristic_v2 should both not mark input as shell.
+#[cfg(all(feature = "nld_heuristic_v1", not(feature = "nld_heuristic_v2")))]
+#[test]
+fn test_is_likely_shell_command_no_descriptions_false_for_nld_heuristic_v1() {
     futures::executor::block_on(no_descriptions_returns_false());
 }
 
+#[cfg(feature = "nld_heuristic_v2")]
 #[test]
-fn test_is_likely_shell_command_file_path_in_nl_prompt_false() {
+fn test_is_likely_shell_command_no_descriptions_false_for_nld_heuristic_v2() {
+    futures::executor::block_on(no_descriptions_returns_false());
+}
+
+#[cfg(all(feature = "nld_heuristic_v1", not(feature = "nld_heuristic_v2")))]
+#[test]
+fn test_is_likely_shell_command_file_path_in_nl_prompt_false_for_nld_heuristic_v1() {
     futures::executor::block_on(async move {
         assert!(!file_path_in_nl_prompt_is_shell().await);
     });
 }
 
+#[cfg(feature = "nld_heuristic_v2")]
 #[test]
-fn test_is_likely_shell_command_shell_syntax_votes_true() {
+fn test_is_likely_shell_command_file_path_in_nl_prompt_false_for_nld_heuristic_v2() {
+    futures::executor::block_on(async move {
+        assert!(!file_path_in_nl_prompt_is_shell().await);
+    });
+}
+
+// Cases where nld_heuristic_v1 marks input as shell and the stricter
+// nld_heuristic_v2 does not.
+#[cfg(all(feature = "nld_heuristic_v1", not(feature = "nld_heuristic_v2")))]
+#[test]
+fn test_is_likely_shell_command_shell_syntax_votes_true_for_nld_heuristic_v1() {
     futures::executor::block_on(async move {
         assert!(shell_syntax_tokens_with_only_first_token_description().await);
     });
 }
 
+#[cfg(feature = "nld_heuristic_v2")]
 #[test]
-fn test_is_likely_shell_command_described_token_majority_true() {
+fn test_is_likely_shell_command_shell_syntax_does_not_vote_false_for_nld_heuristic_v2() {
+    futures::executor::block_on(async move {
+        assert!(!shell_syntax_tokens_with_only_first_token_description().await);
+    });
+}
+
+#[cfg(all(feature = "nld_heuristic_v1", not(feature = "nld_heuristic_v2")))]
+#[test]
+fn test_is_likely_shell_command_described_token_majority_true_for_nld_heuristic_v1() {
     futures::executor::block_on(async move {
         assert!(described_token_majority_below_v2_threshold().await);
     });
 }
 
+#[cfg(feature = "nld_heuristic_v2")]
 #[test]
-fn test_is_likely_shell_command_downloads_log_path_true() {
+fn test_is_likely_shell_command_described_token_majority_false_for_nld_heuristic_v2() {
+    futures::executor::block_on(async move {
+        assert!(!described_token_majority_below_v2_threshold().await);
+    });
+}
+
+#[cfg(all(feature = "nld_heuristic_v1", not(feature = "nld_heuristic_v2")))]
+#[test]
+fn test_is_likely_shell_command_downloads_log_path_true_for_nld_heuristic_v1() {
     futures::executor::block_on(async move {
         assert!(downloads_log_path_in_nl_prompt_is_shell().await);
+    });
+}
+
+#[cfg(feature = "nld_heuristic_v2")]
+#[test]
+fn test_is_likely_shell_command_downloads_log_path_false_for_nld_heuristic_v2() {
+    futures::executor::block_on(async move {
+        assert!(!downloads_log_path_in_nl_prompt_is_shell().await);
     });
 }
 
