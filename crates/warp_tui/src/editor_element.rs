@@ -39,7 +39,9 @@ use crate::tui_builder::TuiUiBuilder;
 const GUTTER_GAP: u16 = 2;
 
 /// Logical rows scrolled per mouse-wheel notch (matches `TuiScrollable`).
-const WHEEL_STEP: isize = 2;
+/// Shared so other hand-rolled wheel handlers (e.g. `inline_menu`) scroll at
+/// the same rate as the editor and transcript scrollables.
+pub(crate) const WHEEL_STEP: isize = 2;
 
 /// Editor-generic actions the element emits from its event handling. The
 /// owning view translates them into its own typed actions and applies them to
