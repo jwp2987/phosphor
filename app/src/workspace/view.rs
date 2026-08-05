@@ -5331,8 +5331,11 @@ impl Workspace {
                 );
             }
             #[cfg(feature = "local_tty")]
-            LeftPanelEvent::OpenRemoteFile { remote_path } => {
-                self.open_remote_file(remote_path.clone(), ctx);
+            LeftPanelEvent::OpenRemoteFile {
+                remote_path,
+                line_col,
+            } => {
+                self.open_remote_file_with_target(remote_path.clone(), *line_col, ctx);
             }
             #[cfg(not(feature = "local_tty"))]
             LeftPanelEvent::OpenRemoteFile { .. } => {}

@@ -36,6 +36,30 @@ impl RemotePath {
     }
 }
 
+/// Bridge between the two structurally-identical `HostId` newtypes the fork
+/// carries: `warp_core::HostId` (spoken by the remote-server manager and this
+/// module's [`RemotePath`]) and `warp_util::host_id::HostId` (spoken by
+/// `warp_util::RemotePath` / `LocalOrRemotePath`, used by the global-search
+/// roots). They are both `HostId(String)`; these helpers convert by value.
+#[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
+pub fn core_host_id_to_util(id: &HostId) -> warp_util::host_id::HostId {
+    warp_util::host_id::HostId::new(id.as_str().to_string())
+}
+
+/// See [`core_host_id_to_util`].
+#[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
+pub fn util_host_id_to_core(id: &warp_util::host_id::HostId) -> HostId {
+    HostId::new(id.as_str().to_string())
+}
+
+/// Convert a `warp_util::RemotePath` (as carried by the global-search
+/// `LocalOrRemotePath` roots/matches) into this module's manager-facing
+/// [`RemotePath`], bridging the `HostId` newtype in the process.
+#[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
+pub fn util_remote_path_to_buffer(remote: &warp_util::remote_path::RemotePath) -> RemotePath {
+    RemotePath::new(util_host_id_to_core(&remote.host_id), remote.path.clone())
+}
+
 /// Uniquely identifies where a buffer's content lives.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum BufferLocation {

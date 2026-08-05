@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use std::sync::Arc;
 
 use warp_core::ui::theme::color::internal_colors;
@@ -109,6 +111,9 @@ pub enum LeftPanelEvent {
     #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
     OpenRemoteFile {
         remote_path: crate::code::buffer_location::RemotePath,
+        /// Optional line/column jump (set by global search; `None` from the
+        /// file tree, which just opens the file).
+        line_col: Option<LineAndColumnArg>,
     },
     /// The user clicks an image in the remote file tree → the main window should open it with the remote image viewer.
     #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
@@ -323,8 +328,13 @@ impl LeftPanelView {
                 }
                 let has_terminal_session = directories.iter().any(|dir| dir.terminal_id.is_some());
 
-                // Update GlobalSearchView root directories based on all working directories
-                let roots: Vec<PathBuf> = directories.iter().map(|d| d.path.clone()).collect();
+                // Update GlobalSearchView root directories based on all working
+                // directories. Terminal working dirs are local; remote (SSH)
+                // roots are supplied separately via the server-file-browser seam.
+                let roots: Vec<LocalOrRemotePath> = directories
+                    .iter()
+                    .map(|d| LocalOrRemotePath::Local(d.path.clone()))
+                    .collect();
 
                 let global_search_view =
                     me.get_or_create_global_search_view_for_pane_group(active_pane_group.id(), ctx);
@@ -696,8 +706,13 @@ impl LeftPanelView {
             .iter()
             .any(|dir| dir.terminal_id.is_some());
 
-        // Update GlobalSearchView root directories based on all working directories
-        let roots: Vec<PathBuf> = active_directories.iter().map(|d| d.path.clone()).collect();
+        // Update GlobalSearchView root directories based on all working
+        // directories. Terminal working dirs are local; remote (SSH) roots are
+        // supplied separately via the server-file-browser seam.
+        let roots: Vec<LocalOrRemotePath> = active_directories
+            .iter()
+            .map(|d| LocalOrRemotePath::Local(d.path.clone()))
+            .collect();
         let global_search_view =
             self.get_or_create_global_search_view_for_pane_group(pane_group_id, ctx);
         global_search_view.update(ctx, |view, view_ctx| {
@@ -815,7 +830,7 @@ impl LeftPanelView {
     ) {
         match event {
             GlobalSearchViewEvent::OpenMatch {
-                path,
+                location,
                 line_number,
                 column_num,
             } => {
@@ -824,28 +839,42 @@ impl LeftPanelView {
                     column_num: *column_num,
                 };
 
-                let settings = EditorSettings::as_ref(ctx);
-                let target = resolve_file_target_with_editor_choice(
-                    path,
-                    *settings.open_code_panels_file_editor,
-                    *settings.prefer_markdown_viewer,
-                    *settings.open_file_layout,
-                    None,
-                );
+                match location {
+                    LocalOrRemotePath::Local(path) => {
+                        let settings = EditorSettings::as_ref(ctx);
+                        let target = resolve_file_target_with_editor_choice(
+                            path,
+                            *settings.open_code_panels_file_editor,
+                            *settings.prefer_markdown_viewer,
+                            *settings.open_file_layout,
+                            None,
+                        );
 
-                send_telemetry_from_ctx!(
-                    TelemetryEvent::CodePanelsFileOpened {
-                        entrypoint: CodePanelsFileOpenEntrypoint::GlobalSearch,
-                        target: target.clone(),
-                    },
-                    ctx
-                );
+                        send_telemetry_from_ctx!(
+                            TelemetryEvent::CodePanelsFileOpened {
+                                entrypoint: CodePanelsFileOpenEntrypoint::GlobalSearch,
+                                target: target.clone(),
+                            },
+                            ctx
+                        );
 
-                ctx.emit(LeftPanelEvent::OpenFileWithTarget {
-                    path: path.clone(),
-                    target,
-                    line_col: Some(line_col),
-                });
+                        ctx.emit(LeftPanelEvent::OpenFileWithTarget {
+                            path: path.clone(),
+                            target,
+                            line_col: Some(line_col),
+                        });
+                    }
+                    LocalOrRemotePath::Remote(remote) => {
+                        // Remote match: open the file as a remote buffer on its
+                        // host, carrying the line/column jump through.
+                        ctx.emit(LeftPanelEvent::OpenRemoteFile {
+                            remote_path: crate::code::buffer_location::util_remote_path_to_buffer(
+                                remote,
+                            ),
+                            line_col: Some(line_col),
+                        });
+                    }
+                }
             }
         }
     }
@@ -894,6 +923,7 @@ impl LeftPanelView {
                 #[cfg(feature = "local_tty")]
                 ctx.emit(LeftPanelEvent::OpenRemoteFile {
                     remote_path: remote_path.clone(),
+                    line_col: None,
                 });
                 #[cfg(not(feature = "local_tty"))]
                 let _ = remote_path;
