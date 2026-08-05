@@ -1,7 +1,13 @@
 #[cfg(feature = "local_fs")]
 use indexmap::IndexSet;
 #[cfg(feature = "local_fs")]
+use remote_server::manager::RemoteServerManager;
+#[cfg(feature = "local_fs")]
 use repo_metadata::repositories::DetectedRepositories;
+#[cfg(feature = "local_fs")]
+use warp_util::local_or_remote_path::LocalOrRemotePath;
+#[cfg(feature = "local_fs")]
+use crate::code::buffer_location::util_remote_path_to_buffer;
 use std::collections::HashMap;
 #[cfg(feature = "local_fs")]
 use std::collections::HashSet;
@@ -81,10 +87,15 @@ pub struct WorkingDirectoriesModel {
     /// Note, a single root path can be associated with multiple terminals.
     /// we're just storing an arbitrary terminal ID for each root path.
     directory_to_terminal: HashMap<EntityId, HashMap<PathBuf, EntityId>>,
-    /// Global mapping from repository root paths to their DiffStateModel.
+    /// Global mapping from repository roots to their DiffStateModel.
     /// Since git state is inherently tied to a repository (not a pane group),
     /// this is stored globally and shared across all pane groups viewing the same repo.
-    diff_state_models: HashMap<PathBuf, ModelHandle<DiffStateModel>>,
+    ///
+    /// Keyed by `LocalOrRemotePath` so a repository on an SSH host gets a
+    /// remote-backed model, distinct from a same-path local repo. Today only
+    /// `Local` keys are produced (the per-pane-group root maps are still local
+    /// only); `Remote` keys land once remote repo-root detection is wired.
+    diff_state_models: HashMap<LocalOrRemotePath, ModelHandle<DiffStateModel>>,
     /// Global mapping from repository root paths to their CommentBatch.
     /// Like the DiffStateModel mapping, comments are inherently tied to git diffs
     /// and are shared across all pane groups viewing the same repo.
@@ -172,29 +183,45 @@ impl WorkingDirectoriesModel {
             .and_then(|roots| roots.get(root_path).copied())
     }
 
-    /// Get or create a DiffStateModel for a specific repository.
-    /// If the model doesn't exist, it will be created.
+    /// Get or create a DiffStateModel for a specific repository, local or
+    /// remote. Local repos get a local-backed model; remote (SSH) repos get a
+    /// remote-backed model, but only when a session for the host is connected —
+    /// otherwise `None` is returned so the caller treats the panel as
+    /// unavailable rather than holding a model that cannot subscribe.
     pub fn get_or_create_diff_state_model(
         &mut self,
-        repo_path: PathBuf,
+        key: LocalOrRemotePath,
         ctx: &mut ModelContext<Self>,
     ) -> Option<ModelHandle<DiffStateModel>> {
-        if let Some(model) = self.diff_state_models.get(&repo_path) {
+        if let Some(model) = self.diff_state_models.get(&key) {
             return Some(model.clone());
         }
 
-        // Create new DiffStateModel for this repo
-        let diff_state_model =
-            ctx.add_model(|ctx| DiffStateModel::new(Some(repo_path.display().to_string()), ctx));
+        let diff_state_model = match &key {
+            LocalOrRemotePath::Local(path) => {
+                ctx.add_model(|ctx| DiffStateModel::new(Some(path.display().to_string()), ctx))
+            }
+            LocalOrRemotePath::Remote(remote) => {
+                let remote = util_remote_path_to_buffer(remote);
+                // Require a connected session for the host; without one the
+                // remote model could not issue GetDiffState.
+                RemoteServerManager::as_ref(ctx).client_for_host(&remote.host_id)?;
+                ctx.add_model(|ctx| DiffStateModel::new_remote(remote, DiffMode::default(), ctx))
+            }
+        };
 
         self.diff_state_models
-            .insert(repo_path.clone(), diff_state_model.clone());
+            .insert(key, diff_state_model.clone());
 
         Some(diff_state_model)
     }
 
     /// DiffStateModels are shared across tabs. When you delete repos from one tab,
     /// we should check if its still in use in any tab. If not, stop its watcher and delete it.
+    ///
+    /// `removed_repos` are local repository roots (the per-pane-group root maps
+    /// are local-only today), so the diff-state models to drop are their
+    /// `Local` keys.
     fn drop_unused_diff_state_models(
         &mut self,
         removed_repos: impl Iterator<Item = PathBuf>,
@@ -206,7 +233,10 @@ impl WorkingDirectoriesModel {
                 .values()
                 .all(|tab| !tab.contains(&repo_path))
             {
-                if let Some(model) = self.diff_state_models.remove(&repo_path) {
+                if let Some(model) = self
+                    .diff_state_models
+                    .remove(&LocalOrRemotePath::Local(repo_path))
+                {
                     model.update(ctx, |model, ctx| {
                         model.stop_active_watcher(ctx);
                     });

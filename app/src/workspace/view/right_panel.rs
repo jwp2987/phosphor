@@ -1600,7 +1600,7 @@ impl RightPanelView {
             }
         } else {
             let diff_state_model = self.working_directories_model.update(ctx, |model, ctx| {
-                model.get_or_create_diff_state_model(repo_path.to_path_buf(), ctx)
+                model.get_or_create_diff_state_model(warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.to_path_buf()), ctx)
             });
 
             let Some(diff_state_model) = diff_state_model else {
