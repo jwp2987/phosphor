@@ -246,7 +246,15 @@ impl Input {
                 app,
             ));
         }
-        column.add_children([ChildView::new(&self.agent_status_view).finish(), input]);
+        column.add_child(ChildView::new(&self.agent_status_view).finish());
+        // The multi-prompt queued-prompts panel renders between the warping indicator and the
+        // input editor, and only when it has something to show for the active conversation.
+        if let Some(panel) = self.queued_prompts_panel.as_ref()
+            && panel.as_ref(app).should_render(app)
+        {
+            column.add_child(ChildView::new(panel).finish());
+        }
+        column.add_child(input);
 
         let mut outer_stack = Stack::new().with_constrain_absolute_children();
         outer_stack.add_child(column.finish());
