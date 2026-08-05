@@ -25,7 +25,8 @@ use std::sync::Arc;
 use crate::code_review::diff_size_limits::DiffSize;
 use crate::code_review::diff_state::{
     DiffHunk, DiffLine, DiffLineType, DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState,
-    DiffStats, FileDiff, FileStatusInfo, GitDiffData, GitFileStatus,
+    DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo, GitDiffData, GitDiffWithBaseContent,
+    GitFileStatus,
 };
 use crate::util::git::{Commit, FileChangeEntry, PrInfo};
 
@@ -487,6 +488,103 @@ pub(super) fn error_response(message: String) -> proto::GetDiffStateResponse {
             proto::DiffStateError { message },
         )),
     }
+}
+
+// ── Decode API for the remote diff-state consumer ────────────────
+// The RemoteDiffStateModel lives in the `code_review` module, so it cannot use
+// the `pub(super)` converters above; these `pub(crate)` entry points give it
+// clean domain values decoded from the server's push messages.
+
+/// Decodes a proto `GitDiffData` into the fork's `GitDiffWithBaseContent`,
+/// preserving the per-file base content (proto `content_at_base` →
+/// `FileDiffAndContent::content_at_head`).
+pub(crate) fn proto_to_git_diff_with_base_content(
+    data: &proto::GitDiffData,
+) -> GitDiffWithBaseContent {
+    GitDiffWithBaseContent {
+        files: data
+            .files
+            .iter()
+            .map(|f| {
+                let (file_diff, content_at_head) = proto_to_file_diff(f);
+                FileDiffAndContent {
+                    file_diff,
+                    content_at_head,
+                }
+            })
+            .collect(),
+        total_additions: data.total_additions as usize,
+        total_deletions: data.total_deletions as usize,
+        files_changed: data.files_changed as usize,
+    }
+}
+
+/// A diff-state snapshot decoded into the fork's domain types.
+pub(crate) struct DecodedSnapshot {
+    /// The user-visible diff state, with the `Loaded` payload folded back in.
+    pub state: DiffState,
+    pub metadata: DiffMetadata,
+    /// The full diff-with-base-content, kept separately so the model can emit
+    /// it in `NewDiffsComputed` (the editor needs the base content). Present
+    /// only when the snapshot carried diffs.
+    pub diffs: Option<GitDiffWithBaseContent>,
+}
+
+pub(crate) fn decode_snapshot(snapshot: &proto::DiffStateSnapshot) -> DecodedSnapshot {
+    let diffs = snapshot
+        .diffs
+        .as_ref()
+        .map(proto_to_git_diff_with_base_content);
+    let git_diff_data = diffs.as_ref().map(GitDiffData::from);
+    let state = snapshot
+        .state
+        .as_ref()
+        .map(|st| proto_to_diff_state(st, git_diff_data))
+        .unwrap_or(DiffState::NotInRepository);
+    let metadata = snapshot
+        .metadata
+        .as_ref()
+        .map(proto_to_diff_metadata)
+        .unwrap_or_default();
+    DecodedSnapshot {
+        state,
+        metadata,
+        diffs,
+    }
+}
+
+/// Decodes the metadata-only push.
+pub(crate) fn decode_metadata_update(update: &proto::DiffStateMetadataUpdate) -> Option<DiffMetadata> {
+    update.metadata.as_ref().map(proto_to_diff_metadata)
+}
+
+/// A single-file diff-state delta decoded into domain types.
+pub(crate) struct DecodedFileDelta {
+    pub file_path: String,
+    /// The updated file diff (with base content), or `None` when the file no
+    /// longer has changes.
+    pub diff: Option<FileDiffAndContent>,
+    pub metadata: Option<DiffMetadata>,
+}
+
+pub(crate) fn decode_file_delta(delta: &proto::DiffStateFileDelta) -> DecodedFileDelta {
+    let diff = delta.diff.as_ref().map(|f| {
+        let (file_diff, content_at_head) = proto_to_file_diff(f);
+        FileDiffAndContent {
+            file_diff,
+            content_at_head,
+        }
+    });
+    DecodedFileDelta {
+        file_path: delta.file_path.clone(),
+        diff,
+        metadata: delta.metadata.as_ref().map(proto_to_diff_metadata),
+    }
+}
+
+/// Encodes a domain `DiffMode` to proto (used by the client when subscribing).
+pub(crate) fn encode_diff_mode(mode: &DiffMode) -> proto::DiffMode {
+    diff_mode_to_proto(mode)
 }
 
 #[cfg(test)]

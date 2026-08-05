@@ -4,6 +4,11 @@ pub mod context;
 pub mod diff_size_limits;
 #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
 pub mod diff_state;
+// The remote diff-state backend talks to the RemoteServerManager (native-only;
+// there is a separate wasm path for other remote consumers), so it is gated off
+// wasm along with the enum's `Remote` variant in `diff_state`.
+#[cfg(not(target_family = "wasm"))]
+pub mod diff_state_remote;
 pub mod editor_state;
 pub(crate) mod find_model;
 pub(crate) mod git_dialog;

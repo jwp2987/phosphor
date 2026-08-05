@@ -348,3 +348,91 @@ fn error_response_wraps_message() {
         _ => panic!("expected error result"),
     }
 }
+
+#[test]
+fn git_diff_with_base_content_preserves_per_file_content() {
+    let proto_data = proto::GitDiffData {
+        files: vec![file_diff_to_proto(
+            &sample_file_diff(),
+            Some("base content".to_string()),
+        )],
+        total_additions: 5,
+        total_deletions: 2,
+        files_changed: 1,
+    };
+    let decoded = proto_to_git_diff_with_base_content(&proto_data);
+    assert_eq!(decoded.files.len(), 1);
+    // The proto `content_at_base` lands on `FileDiffAndContent::content_at_head`.
+    assert_eq!(
+        decoded.files[0].content_at_head.as_deref(),
+        Some("base content")
+    );
+    assert_eq!(decoded.files[0].file_diff, sample_file_diff());
+    assert_eq!(decoded.files_changed, 1);
+}
+
+#[test]
+fn decode_snapshot_folds_loaded_diffs_and_metadata() {
+    let diffs = GitDiffData {
+        files: vec![sample_file_diff()],
+        total_additions: 3,
+        total_deletions: 1,
+        files_changed: 1,
+    };
+    let mut metadata = DiffMetadata::default();
+    metadata.current_branch_name = "feature/x".to_string();
+    let snapshot = build_snapshot(
+        "/repo".to_string(),
+        &DiffMode::Head,
+        &DiffState::Loaded(diffs.clone()),
+        &metadata,
+    );
+
+    let decoded = decode_snapshot(&snapshot);
+    match decoded.state {
+        DiffState::Loaded(data) => assert_eq!(data, diffs),
+        _ => panic!("expected Loaded"),
+    }
+    assert_eq!(decoded.metadata.current_branch_name, "feature/x");
+    // The base-content payload is available separately for NewDiffsComputed.
+    assert!(decoded.diffs.is_some());
+    assert_eq!(decoded.diffs.unwrap().files_changed, 1);
+}
+
+#[test]
+fn decode_snapshot_not_in_repository_has_no_diffs() {
+    let snapshot = build_snapshot(
+        "/repo".to_string(),
+        &DiffMode::Head,
+        &DiffState::NotInRepository,
+        &DiffMetadata::default(),
+    );
+    let decoded = decode_snapshot(&snapshot);
+    assert!(matches!(decoded.state, DiffState::NotInRepository));
+    assert!(decoded.diffs.is_none());
+}
+
+#[test]
+fn decode_file_delta_decodes_path_diff_and_metadata() {
+    let mut metadata = DiffMetadata::default();
+    metadata.main_branch_name = "main".to_string();
+    let delta = proto::DiffStateFileDelta {
+        repo_path: "/repo".to_string(),
+        mode: Some(diff_mode_to_proto(&DiffMode::Head)),
+        file_path: "src/x.rs".to_string(),
+        diff: Some(file_diff_to_proto(
+            &sample_file_diff(),
+            Some("c".to_string()),
+        )),
+        metadata: Some(diff_metadata_to_proto(&metadata)),
+    };
+    let decoded = decode_file_delta(&delta);
+    assert_eq!(decoded.file_path, "src/x.rs");
+    let file = decoded.diff.expect("delta carried a diff");
+    assert_eq!(file.content_at_head.as_deref(), Some("c"));
+    assert_eq!(file.file_diff, sample_file_diff());
+    assert_eq!(
+        decoded.metadata.expect("delta carried metadata").main_branch_name,
+        "main"
+    );
+}
