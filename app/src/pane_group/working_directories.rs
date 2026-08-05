@@ -217,6 +217,38 @@ impl WorkingDirectoriesModel {
         Some(diff_state_model)
     }
 
+    /// Registers a remote (SSH) repository root for a pane group, mapping it to
+    /// the terminal it was navigated in. Adds it to the display roots,
+    /// repository roots, and terminal map, and emits change events when newly
+    /// added so the code-review panel lists it. Called from the
+    /// RemoteRepoNavigated flow — the refresh path only handles local CWDs, so
+    /// remote roots come in here (and are preserved across refreshes).
+    pub fn register_remote_repo(
+        &mut self,
+        pane_group_id: EntityId,
+        remote_key: LocalOrRemotePath,
+        terminal_id: EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let newly_added = self
+            .repository_roots
+            .entry(pane_group_id)
+            .or_default()
+            .insert(remote_key.clone());
+        self.pane_groups
+            .entry(pane_group_id)
+            .or_default()
+            .insert(remote_key.clone());
+        self.directory_to_terminal
+            .entry(pane_group_id)
+            .or_default()
+            .insert(remote_key, terminal_id);
+        if newly_added {
+            self.emit_repositories_changed(pane_group_id, ctx);
+            self.emit_directories_changed(pane_group_id, ctx);
+        }
+    }
+
     /// DiffStateModels are shared across tabs. When you delete repos from one tab,
     /// we should check if its still in use in any tab. If not, stop its watcher and delete it.
     ///
@@ -444,13 +476,23 @@ impl WorkingDirectoriesModel {
 
         // Get or create the IndexSet for this pane group
         // (IndexSet maintains insertion order and auto-deduplicates)
-        // Local-only inputs today, so every display root is a `Local` key; the
-        // per-pane-group maps carry `LocalOrRemotePath` so remote roots slot in
-        // once remote CWDs are wired (5c-2c).
+        // The refresh inputs are local CWDs, so it only recomputes the `Local`
+        // display roots; `Remote` roots are registered out-of-band via
+        // `register_remote_repo` (from RemoteRepoNavigated), so preserve them
+        // across the refresh instead of letting `update_index_set` drop them.
+        let existing_remote_display: Vec<LocalOrRemotePath> = self
+            .pane_groups
+            .get(&pane_group_id)
+            .map(|dirs| dirs.iter().filter(|r| r.is_remote()).cloned().collect())
+            .unwrap_or_default();
         let pane_group_roots = self.pane_groups.entry(pane_group_id).or_default();
         update_index_set(
             pane_group_roots,
-            new_root_paths.iter().cloned().map(LocalOrRemotePath::Local),
+            new_root_paths
+                .iter()
+                .cloned()
+                .map(LocalOrRemotePath::Local)
+                .chain(existing_remote_display),
         );
 
         // Build repo roots and their terminal associations
@@ -502,13 +544,32 @@ impl WorkingDirectoriesModel {
 
         // Get or create the IndexSet for repository roots
         // (IndexSet maintains insertion order and auto-deduplicates)
+        // Preserve out-of-band remote repo roots (see the display-roots note).
+        let existing_remote_repos: Vec<LocalOrRemotePath> = self
+            .repository_roots
+            .get(&pane_group_id)
+            .map(|repos| repos.iter().filter(|r| r.is_remote()).cloned().collect())
+            .unwrap_or_default();
         let pane_group_repos = self.repository_roots.entry(pane_group_id).or_default();
         update_index_set(
             pane_group_repos,
-            new_repo_roots.into_iter().map(LocalOrRemotePath::Local),
+            new_repo_roots
+                .into_iter()
+                .map(LocalOrRemotePath::Local)
+                .chain(existing_remote_repos),
         );
 
-        // Update the repo to terminal mapping
+        // Update the repo to terminal mapping, preserving remote terminal
+        // associations (the refresh only rebuilds local ones).
+        if let Some(existing) = self.directory_to_terminal.get(&pane_group_id) {
+            for (key, terminal_id) in existing {
+                if key.is_remote() {
+                    new_root_to_terminal
+                        .entry(key.clone())
+                        .or_insert(*terminal_id);
+                }
+            }
+        }
         self.directory_to_terminal
             .insert(pane_group_id, new_root_to_terminal);
 
@@ -689,6 +750,15 @@ impl WorkingDirectoriesModel {
         _ctx: &mut ModelContext<Self>,
     ) -> Option<ModelHandle<DiffStateModel>> {
         None
+    }
+
+    pub fn register_remote_repo(
+        &mut self,
+        _pane_group_id: EntityId,
+        _remote_key: LocalOrRemotePath,
+        _terminal_id: EntityId,
+        _ctx: &mut ModelContext<Self>,
+    ) {
     }
 
     pub fn get_or_create_code_review_comments(
