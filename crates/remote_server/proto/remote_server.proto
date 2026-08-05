@@ -34,6 +34,7 @@ message ClientMessage {
     ReadFileChunk read_file_chunk = 21;
     WriteFileChunk write_file_chunk = 22;
     RipgrepSearchRequest ripgrep_search = 23;
+    GetBranches get_branches = 24;
   }
 }
 // Top-level envelope for all server → client messages.
@@ -62,6 +63,7 @@ message ServerMessage {
     ReadFileChunkResponse read_file_chunk_response = 21;
     WriteFileChunkResponse write_file_chunk_response = 22;
     RipgrepSearchResponse ripgrep_search_response = 23;
+    GetBranchesResponse get_branches_response = 24;
   }
 }
 
@@ -593,4 +595,38 @@ message RipgrepSearchMatch {
 message RipgrepSearchSubmatch {
   uint64 byte_start = 1;
   uint64 byte_end = 2;
+}
+
+// ── GetBranches ──────────────────────────────────────────────────
+// Client → server: list the git branches of a repo on the remote host,
+// backing the code-review branch picker over SSH. Mirrors the local
+// `DiffStateModel::get_all_branches`.
+message GetBranches {
+  string repo_path = 1;
+  // Maximum number of branches to return. Absent = server default (100).
+  optional uint32 max_branch_count = 2;
+  // Whether to include remote-tracking branches (refs/remotes).
+  bool include_remotes = 3;
+}
+
+// A single branch entry.
+message BranchInfo {
+  string name = 1;
+  bool is_main = 2;
+}
+
+// Server → client: result of a GetBranches request.
+message GetBranchesResponse {
+  oneof result {
+    GetBranchesSuccess success = 1;
+    GetBranchesError error = 2;
+  }
+}
+
+message GetBranchesSuccess {
+  repeated BranchInfo branches = 1;
+}
+
+message GetBranchesError {
+  string message = 1;
 }

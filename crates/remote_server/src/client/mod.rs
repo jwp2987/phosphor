@@ -11,7 +11,8 @@ use warpui::r#async::{executor, FutureExt as _};
 
 use crate::proto::{
     client_message, server_message, Abort, Authenticate, BufferEdit, ClientMessage, CloseBuffer,
-    CreateDirectory, CreateDirectoryResponse, DeleteFile, ErrorCode, Initialize,
+    CreateDirectory, CreateDirectoryResponse, DeleteFile, ErrorCode, GetBranches,
+    GetBranchesResponse, Initialize,
     InitializeResponse, ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
     read_file_chunk_response, ReadFileChunkResponse, ReadFileContextRequest,
@@ -370,6 +371,27 @@ impl RemoteServerClient {
             Some(server_message::Message::RipgrepSearchResponse(resp)) => Ok(resp),
             other => {
                 log::error!("Unexpected response variant for RipgrepSearch: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Lists the git branches of a repo on the remote host — backs the
+    /// code-review branch picker over SSH.
+    pub async fn get_branches(
+        &self,
+        request: GetBranches,
+    ) -> Result<GetBranchesResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage {
+            request_id: request_id.to_string(),
+            message: Some(client_message::Message::GetBranches(request)),
+        };
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GetBranchesResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for GetBranches: {other:?}");
                 Err(ClientError::UnexpectedResponse)
             }
         }
