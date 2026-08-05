@@ -57,8 +57,10 @@ pub enum SkillProvider {
     VariantNames,
 )]
 pub enum SkillScope {
-    /// Skills from a project directory (e.g., `./repo/.agents/skills`).
+    /// Skills from the user's home directory (e.g., `~/.agents/skills`).
     #[default]
+    Home,
+    /// Skills from a project directory (e.g., `./repo/.agents/skills`).
     Project,
     /// Bundled skills distributed with Zap.
     Bundled,
@@ -193,9 +195,26 @@ pub fn get_provider_for_path(path: &Path) -> Option<SkillProvider> {
     None
 }
 
+/// Returns the skill scope (Home or Project) for a given path.
+/// A skill is considered a "Home" skill if its path starts with the user's home directory.
+/// Otherwise, it's a "Project" skill.
+pub fn get_scope_for_path(path: &Path) -> SkillScope {
+    for def in SKILL_PROVIDER_DEFINITIONS.iter() {
+        if home_skills_path(def.provider)
+            .into_iter()
+            .any(|home_skills_path| path.starts_with(home_skills_path))
+        {
+            return SkillScope::Home;
+        }
+    }
+    SkillScope::Project
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{get_provider_for_path, home_skills_path, SkillProvider};
+    use super::{
+        get_provider_for_path, get_scope_for_path, home_skills_path, SkillProvider, SkillScope,
+    };
 
     #[test]
     fn warp_home_skills_path_uses_warp_home_path() {
@@ -214,5 +233,30 @@ mod tests {
         let path = warp_home_skills_dir.join("my-skill").join("SKILL.md");
 
         assert_eq!(get_provider_for_path(&path), Some(SkillProvider::Zap));
+    }
+
+    #[test]
+    fn home_skill_path_is_home_scope() {
+        let Some(warp_home_skills_dir) = warp_core::paths::warp_home_skills_dir() else {
+            eprintln!("Skipping test: home directory not available");
+            return;
+        };
+        let path = warp_home_skills_dir.join("my-skill").join("SKILL.md");
+
+        // Regression guard: home-directory skills must be Home scope, not
+        // Project (which would render a misleading "Project Skill" badge).
+        assert_eq!(get_scope_for_path(&path), SkillScope::Home);
+    }
+
+    #[test]
+    fn project_skill_path_is_project_scope() {
+        let path = std::env::temp_dir()
+            .join("repo")
+            .join(".claude")
+            .join("skills")
+            .join("my-skill")
+            .join("SKILL.md");
+
+        assert_eq!(get_scope_for_path(&path), SkillScope::Project);
     }
 }
