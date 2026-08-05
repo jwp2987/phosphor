@@ -43,8 +43,36 @@ pub fn resolve_executable_in_path<'a>(command: &'a str, path_env: &OsStr) -> Opt
         if file_exists_and_is_executable(&resolved) {
             return Some(Cow::Owned(resolved));
         }
+
+        // On Windows an extensionless command also matches its PATHEXT
+        // variants (e.g. `git` → `git.exe`, `codex` → `codex.cmd`), the way
+        // the shell resolves it. Other platforms rely on the direct join above.
+        #[cfg(windows)]
+        if Path::new(command).extension().is_none() {
+            for ext in windows_path_extensions() {
+                let resolved = path_dir.join(format!("{command}{ext}"));
+                if file_exists_and_is_executable(&resolved) {
+                    return Some(Cow::Owned(resolved));
+                }
+            }
+        }
     }
     None
+}
+
+/// The executable extensions to try for a bare command on Windows, from the
+/// `PATHEXT` environment variable (e.g. `.COM;.EXE;.BAT;.CMD`).
+#[cfg(windows)]
+fn windows_path_extensions() -> impl Iterator<Item = String> {
+    env::var_os("PATHEXT")
+        .unwrap_or_default()
+        .to_string_lossy()
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 #[cfg(test)]
