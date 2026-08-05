@@ -1,18 +1,11 @@
-use warpui::assets::asset_cache::AssetSource;
+use warpui::assets::asset_cache::{AssetCache, AssetSource, AssetState};
+use warpui::image_cache::ImageType;
 use warpui::text_layout::LayoutCache;
 use warpui::App;
 
 use super::*;
 use crate::render::layout::TextLayout;
 use crate::render::model::test_utils::TEST_STYLES;
-
-// NOTE: Warp's `failed_mermaid_layout_uses_compact_height` test is not ported.
-// It exercises `mermaid_diagram_config` + `FAILED_MERMAID_HEIGHT_LINE_MULTIPLIER`
-// / the "shrink layout height when the mermaid render failed" behavior, none of
-// which exist in this fork's `mermaid_diagram.rs`: `mermaid_diagram_config` was
-// fused directly into `mermaid_diagram_layout`, which always reserves
-// `DEFAULT_MERMAID_HEIGHT_LINE_MULTIPLIER` regardless of asset load state (no
-// compact fallback on failure). See PORT task report, NEEDS-ADAPTATION.
 
 fn mermaid_block_spacing() -> BlockSpacing {
     TEST_STYLES.block_spacings.from_block_style(
@@ -40,6 +33,33 @@ fn loading_mermaid_layout_uses_default_height() {
                 * DEFAULT_MERMAID_HEIGHT_LINE_MULTIPLIER.into_pixels();
 
             assert!((config.height.as_f32() - expected_height.as_f32()).abs() < 0.5);
+        });
+    })
+}
+
+// Adapted from Warp's `failed_mermaid_layout_uses_compact_height`. Warp injects
+// an already-failed `AssetSource` into `mermaid_diagram_config`; the fork fuses
+// that into `mermaid_diagram_layout` (which takes a source string and always
+// starts an async load), so the failed branch is exercised directly through the
+// height-multiplier helper that implements it.
+#[test]
+fn failed_mermaid_layout_uses_compact_height() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let asset_source = AssetSource::Raw {
+                id: "missing-mermaid-test-asset".to_string(),
+            };
+            let asset_cache = AssetCache::as_ref(ctx);
+            assert!(matches!(
+                asset_cache.load_asset::<ImageType>(asset_source.clone()),
+                AssetState::FailedToLoad(_)
+            ));
+
+            assert_eq!(
+                mermaid_diagram_fallback_height_line_multiplier(&asset_source, ctx),
+                FAILED_MERMAID_HEIGHT_LINE_MULTIPLIER,
+                "a failed mermaid diagram collapses to the compact fallback height"
+            );
         });
     })
 }
