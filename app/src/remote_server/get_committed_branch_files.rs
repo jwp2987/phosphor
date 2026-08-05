@@ -9,7 +9,7 @@ use super::proto::{
 };
 
 /// Builds a success response from `(path, additions, deletions)` tuples, as
-/// returned by `DiffStateModel::get_committed_branch_file_entries`.
+/// returned by `LocalDiffStateModel::get_committed_branch_file_entries`.
 pub(super) fn success_response(
     files: Vec<(String, u64, u64)>,
 ) -> GetCommittedBranchFilesResponse {

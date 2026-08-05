@@ -863,7 +863,7 @@ impl RightPanelView {
         let repo_path = crv.repo_path();
         let branch_name = crv
             .diff_state_model()
-            .read(app, |model, _| model.get_current_branch_name());
+            .read(app, |model, cx| model.get_current_branch_name(cx));
         let diff_stats = crv.loaded_diff_stats();
 
         let repo_path_element = repo_path.map(|repo_path| {
