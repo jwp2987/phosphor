@@ -3032,6 +3032,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "log",
+ "tempfile",
  "thiserror 2.0.18",
  "win32job",
  "windows 0.62.2",
