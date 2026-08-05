@@ -9,6 +9,7 @@ use warpui::{notification::UserNotification, Presenter, WindowInvalidation};
 
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
 use crate::ai::agent::task::TaskId;
+use crate::ai::agent::AIAgentActionId;
 #[cfg(windows)]
 use crate::ai::blocklist::block::cli::CLISubagentViewEvent;
 use crate::ai::blocklist::block::cli_controller::{
@@ -3955,6 +3956,118 @@ fn inline_agent_view_persists_across_transfer_takeover_for_monitored_long_runnin
             let active_block = model.block_list().active_block();
             assert!(active_block.is_agent_in_control());
             assert!(view.is_input_box_visible(&model, ctx));
+        });
+    })
+}
+
+/// Ported from Warp (`completed_user_controlled_lrc_resumes_when_not_suppressed`):
+/// a Ctrl-C takeover (Stop) with `should_auto_resume: true` resumes the
+/// conversation once the monitored command completes.
+#[test]
+fn completed_user_controlled_lrc_resumes_when_not_suppressed() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        // The auto-resume path persists a subagent sidecar, which needs
+        // GlobalResourceHandlesProvider registered.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                history.start_new_conversation(view.view_id, false, false, ctx)
+            });
+
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 20", "running");
+            let task_id = TaskId::new("test-cli-subagent".to_owned());
+            let block_id = {
+                let mut model = view.model.lock();
+                let active_block = model.block_list_mut().active_block_mut();
+                active_block.set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("requested-command".to_owned()),
+                    Some(task_id.clone()),
+                    conversation_id,
+                );
+                active_block
+                    .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                    .expect("command should become agent monitored");
+                active_block
+                    .take_over_control_for_user(UserTakeOverReason::Stop {
+                        should_auto_resume: true,
+                    })
+                    .expect("user takeover should succeed");
+                active_block.id().clone()
+            };
+
+            assert!(
+                !view
+                    .ai_controller
+                    .as_ref(ctx)
+                    .has_active_stream_for_conversation(conversation_id, ctx)
+            );
+
+            view.on_user_block_completed(&block_id, ctx);
+
+            // A Ctrl-C takeover (Stop) without an explicit teardown should resume
+            // the conversation once the command completes.
+            assert!(
+                view.ai_controller
+                    .as_ref(ctx)
+                    .has_active_stream_for_conversation(conversation_id, ctx)
+            );
+        });
+    })
+}
+
+/// Ported from Warp (`completed_user_controlled_lrc_skips_resume_when_suppressed`):
+/// a teardown-style takeover (rewind / stop, `should_auto_resume: false`) does
+/// NOT resume when the command completes. The fork's teardown method is
+/// `set_user_control_with_stop_reason` (Warp: `set_user_control_for_teardown`).
+#[test]
+fn completed_user_controlled_lrc_skips_resume_when_suppressed() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                history.start_new_conversation(view.view_id, false, false, ctx)
+            });
+
+            view.model
+                .lock()
+                .simulate_long_running_block("sleep 20", "running");
+            let task_id = TaskId::new("test-cli-subagent".to_owned());
+            let block_id = {
+                let mut model = view.model.lock();
+                let active_block = model.block_list_mut().active_block_mut();
+                active_block.set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("requested-command".to_owned()),
+                    Some(task_id.clone()),
+                    conversation_id,
+                );
+                active_block
+                    .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                    .expect("command should become agent monitored");
+                // Mirrors rewind / stop tearing down the conversation.
+                active_block.set_user_control_with_stop_reason();
+                active_block.id().clone()
+            };
+
+            view.on_user_block_completed(&block_id, ctx);
+
+            assert!(
+                !view
+                    .ai_controller
+                    .as_ref(ctx)
+                    .has_active_stream_for_conversation(conversation_id, ctx)
+            );
         });
     })
 }
