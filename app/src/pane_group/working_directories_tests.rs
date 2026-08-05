@@ -55,7 +55,7 @@ fn refresh_working_directories_collapses_subroots_to_nearest_repo_root() {
             model
                 .most_recent_directories_for_pane_group(pane_group_id)
                 .expect("pane group exists")
-                .map(|dir| dir.path)
+                .map(|dir| dir.path.to_local_path().expect("local").to_path_buf())
                 .collect()
         });
 
@@ -103,7 +103,7 @@ fn refresh_working_directories_preserves_non_repo_paths_and_dedupes() {
             model
                 .most_recent_directories_for_pane_group(pane_group_id)
                 .expect("pane group exists")
-                .map(|dir| dir.path)
+                .map(|dir| dir.path.to_local_path().expect("local").to_path_buf())
                 .collect()
         });
 

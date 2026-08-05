@@ -246,7 +246,7 @@ impl TestContext {
         let working_directories_model = app.add_model(|_| WorkingDirectoriesModel::new());
         let code_review_comment_batch =
             working_directories_model.update(app, |working_directories, ctx| {
-                working_directories.get_or_create_code_review_comments(repo_path.as_path(), ctx)
+                working_directories.get_or_create_code_review_comments(&warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()), ctx)
             });
 
         let code_review_view = app.add_view(window_id, |ctx| {

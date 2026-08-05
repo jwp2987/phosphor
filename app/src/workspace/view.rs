@@ -7803,7 +7803,7 @@ impl Workspace {
                 .repo_path
                 .as_ref()
                 .is_some_and(|target_repo_path| {
-                    self.right_panel_view.as_ref(ctx).selected_repo_path() == Some(target_repo_path)
+                    self.right_panel_view.as_ref(ctx).selected_repo_path().and_then(|p| p.to_local_path()) == Some(target_repo_path.as_path())
                 });
         if panel_already_showing_repo {
             return;
@@ -7964,7 +7964,7 @@ impl Workspace {
         if pane_group_handle.as_ref(ctx).right_panel_open {
             if let Some(repo_path) = &context.repo_path {
                 self.right_panel_view.update(ctx, |right_panel, ctx| {
-                    right_panel.update_selected_repo(repo_path.clone(), ctx);
+                    right_panel.update_selected_repo(warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()), ctx);
                 });
             }
             return;
@@ -7982,7 +7982,7 @@ impl Workspace {
         );
         if let Some(repo_path) = &context.repo_path {
             self.right_panel_view.update(ctx, |right_panel, ctx| {
-                right_panel.update_selected_repo(repo_path.clone(), ctx);
+                right_panel.update_selected_repo(warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()), ctx);
             });
         }
     }
@@ -13399,7 +13399,7 @@ impl Workspace {
                     .update(ctx, |working_directories, ctx| {
                         working_directories.insert_code_review_comments(
                             pane_group.id(),
-                            repo_path.as_path(),
+                            &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()),
                             comments,
                             diff_mode,
                             ctx,
@@ -13419,7 +13419,7 @@ impl Workspace {
                 self.working_directories_model
                     .update(ctx, |working_directories, ctx| {
                         working_directories.upsert_flattened_code_review_comments(
-                            repo_path,
+                            &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()),
                             vec![comment.clone()],
                             ctx,
                         );
@@ -13428,7 +13428,7 @@ impl Workspace {
                 let Some(code_review_view) = self
                     .working_directories_model
                     .as_ref(ctx)
-                    .get_code_review_view(pane_group.id(), repo_path)
+                    .get_code_review_view(pane_group.id(), &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()))
                 else {
                     return;
                 };
@@ -13449,7 +13449,7 @@ impl Workspace {
                 self.working_directories_model
                     .update(ctx, |working_directories, ctx| {
                         working_directories.upsert_flattened_code_review_comments(
-                            repo_path,
+                            &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()),
                             comments.clone(),
                             ctx,
                         );
@@ -13458,7 +13458,7 @@ impl Workspace {
                 if let Some(code_review_view) = self
                     .working_directories_model
                     .as_ref(ctx)
-                    .get_code_review_view(pane_group.id(), repo_path.as_path())
+                    .get_code_review_view(pane_group.id(), &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()))
                 {
                     code_review_view.update(ctx, |code_review_view, ctx| {
                         code_review_view.set_diff_base(diff_mode.clone(), ctx);
