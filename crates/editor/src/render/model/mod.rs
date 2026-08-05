@@ -2507,6 +2507,23 @@ impl RenderState {
     }
 
     fn layout_temporary_blocks(&self, blocks: Vec<TemporaryBlock>, app: &AppContext) {
+        // Char-cell (TUI) rendering interleaves ghost rows from its own
+        // parallel block list rather than the GUI block tree, so translate the
+        // temporary blocks into `CharCellTemporaryBlock`s and store them there.
+        // Without this the diff body renders no removed/replaced (ghost) lines.
+        if let Some(char_cell) = self.char_cell() {
+            let ghosts = {
+                let text_index = char_cell.text_index.borrow();
+                blocks
+                    .into_iter()
+                    .map(|block| {
+                        CharCellTemporaryBlock::from_temporary_block(block, &text_index)
+                    })
+                    .collect()
+            };
+            char_cell.set_temporary_blocks(ghosts);
+            return;
+        }
         let layout_cache = LayoutCache::new();
         let layout_context = self.layout_context(&layout_cache, app);
         let laid_out_blocks = layout_temporary_blocks(blocks, &layout_context);
