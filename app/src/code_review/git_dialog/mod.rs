@@ -31,6 +31,7 @@ use warpui::{
 #[cfg(feature = "local_tty")]
 use crate::terminal::local_shell::LocalShellState;
 use crate::{
+    code::buffer_location::RemotePath,
     code::editor::{add_color, remove_color},
     settings::AISettings,
     ui_components::{
@@ -89,6 +90,19 @@ pub(super) fn interactive_path_future(
 ) -> futures::future::BoxFuture<'static, Option<String>> {
     use futures::FutureExt;
     futures::future::ready(None).boxed()
+}
+
+/// Looks up the connected remote-server client for `remote`'s host, or `None`
+/// when no session is connected. Used by the git-dialog modes to address git
+/// write-op RPCs to the daemon when the code-review repo is remote (#116).
+#[cfg(not(target_family = "wasm"))]
+pub(super) fn remote_client_for(
+    remote: &RemotePath,
+    ctx: &AppContext,
+) -> Option<std::sync::Arc<remote_server::client::RemoteServerClient>> {
+    remote_server::manager::RemoteServerManager::as_ref(ctx)
+        .client_for_host(&remote.host_id)
+        .cloned()
 }
 
 /// Top-level action dispatched to `GitDialog`.
@@ -481,6 +495,10 @@ pub enum GitDialogMode {
 
 pub struct GitDialog {
     repo_path: PathBuf,
+    /// When set, the code-review repo lives on this SSH host: git write-ops run
+    /// on the daemon via RPC instead of against `repo_path` on the local FS
+    /// (#116). `None` for a local repo.
+    remote: Option<RemotePath>,
     branch_name: String,
     mode: GitDialogMode,
     loading: bool,
@@ -490,11 +508,16 @@ pub struct GitDialog {
 }
 
 impl GitDialog {
+    #[allow(clippy::too_many_arguments)]
     pub fn new_for_commit(
         repo_path: PathBuf,
+        remote: Option<RemotePath>,
         branch_name: String,
         allow_create_pr: bool,
         has_upstream: bool,
+        // Prepopulated Changes list, used only for remote repos (which can't
+        // read the working tree); empty for local, which loads it itself.
+        initial_file_changes: Vec<FileChangeEntry>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         // Commit's confirm button is a static "Confirm" with no icon; the
@@ -503,9 +526,17 @@ impl GitDialog {
         // will actually run on click.
         let (confirm_button, cancel_button, close_button) =
             Self::build_dialog_buttons(crate::t!("common-confirm"), None, ctx);
-        let state = commit::new_state(&repo_path, allow_create_pr, has_upstream, ctx);
+        let state = commit::new_state(
+            &repo_path,
+            allow_create_pr,
+            has_upstream,
+            remote.is_some(),
+            initial_file_changes,
+            ctx,
+        );
         let this = Self {
             repo_path,
+            remote,
             branch_name,
             mode: GitDialogMode::Commit(state),
             loading: false,
@@ -519,6 +550,7 @@ impl GitDialog {
 
     pub fn new_for_push(
         repo_path: PathBuf,
+        remote: Option<RemotePath>,
         branch_name: String,
         publish: bool,
         commits: Vec<Commit>,
@@ -532,6 +564,7 @@ impl GitDialog {
         let state = push::new_state(publish, commits);
         Self {
             repo_path,
+            remote,
             branch_name,
             mode: GitDialogMode::Push(state),
             loading: false,
@@ -543,15 +576,25 @@ impl GitDialog {
 
     pub fn new_for_pr(
         repo_path: PathBuf,
+        remote: Option<RemotePath>,
         branch_name: String,
         base_branch_name: Option<String>,
+        // Prepopulated Changes list for remote repos; empty for local.
+        initial_file_changes: Vec<FileChangeEntry>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let (confirm_button, cancel_button, close_button) =
             Self::build_dialog_buttons(pr::confirm_label_for(), Some(pr::confirm_icon_for()), ctx);
-        let state = pr::new_state(&repo_path, base_branch_name, ctx);
+        let state = pr::new_state(
+            &repo_path,
+            base_branch_name,
+            remote.is_some(),
+            initial_file_changes,
+            ctx,
+        );
         Self {
             repo_path,
+            remote,
             branch_name,
             mode: GitDialogMode::CreatePr(state),
             loading: false,
@@ -599,6 +642,18 @@ impl GitDialog {
         &self.repo_path
     }
 
+    /// The remote host + path when the code-review repo lives on an SSH host;
+    /// `None` for a local repo. Git write-ops target the daemon over this
+    /// instead of running against `repo_path` on the local FS (#116).
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn remote(&self) -> Option<&RemotePath> {
+        self.remote.as_ref()
+    }
+
+    fn is_remote(&self) -> bool {
+        self.remote.is_some()
+    }
+
     fn branch_name(&self) -> &str {
         &self.branch_name
     }
@@ -639,10 +694,11 @@ impl GitDialog {
         if self.loading {
             return;
         }
+        let is_remote = self.is_remote();
         let (disabled, tooltip) = match &self.mode {
             GitDialogMode::Commit(state) => (
-                !commit::is_ready_to_confirm(state, ctx),
-                commit::confirm_tooltip(state, ctx),
+                !commit::is_ready_to_confirm(state, is_remote, ctx),
+                commit::confirm_tooltip(state, is_remote, ctx),
             ),
             GitDialogMode::Push(_) => (false, None),
             GitDialogMode::CreatePr(state) => (!pr::is_ready_to_confirm(state), None),

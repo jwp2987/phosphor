@@ -739,6 +739,88 @@ pub async fn run_push(_repo_path: &Path, _branch: &str, _path_env: Option<&str>)
     Err(anyhow!("Not supported on wasm"))
 }
 
+/// What to run after the commit succeeds. Shared vocabulary for the commit
+/// chain, mirroring Warp's `CommitChainMode` (Warp keeps it on
+/// `code_review::diff_state`; the fork keeps it next to the git primitives it
+/// composes). Maps to/from the wire enum `proto::GitCommitChainMode` at the
+/// remote-server daemon boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitChainMode {
+    CommitOnly,
+    CommitAndPush,
+    CommitAndCreatePr,
+}
+
+/// Runs the commit chain — always commits, then optionally pushes, then
+/// optionally creates a PR per `mode` — and returns the post-chain delta
+/// (refreshed unpushed commits + upstream ref) plus any created PR. The delta
+/// is computed once after the whole chain settles.
+///
+/// Deterministic, backend-agnostic composition of the single-command
+/// primitives above; the local code-review dialog and the remote-server daemon
+/// both drive the same sequence, so local and remote behave identically.
+///
+/// Phosphor (BYOP) divergence from Warp: the create-PR stage always runs
+/// `gh pr create --fill` — the fork drops Warp's cloud AIClient, so there is no
+/// title/body autogeneration here (see #116). The `autogenerate_*` request
+/// flags are accepted on the wire for protocol parity but currently fall back
+/// to `--fill` because the daemon has no BYOP provider reachable.
+pub async fn run_commit_chain(
+    repo_path: &Path,
+    mode: CommitChainMode,
+    message: &str,
+    include_unstaged: bool,
+    branch: &str,
+    path_env: Option<&str>,
+) -> Result<(Vec<Commit>, Option<String>, Option<PrInfo>)> {
+    run_commit(repo_path, message, include_unstaged, path_env).await?;
+    let pr_info = match mode {
+        CommitChainMode::CommitOnly => None,
+        CommitChainMode::CommitAndPush => {
+            run_push(repo_path, branch, path_env).await?;
+            None
+        }
+        CommitChainMode::CommitAndCreatePr => {
+            run_push(repo_path, branch, path_env).await?;
+            Some(create_pr(repo_path, None, None, path_env).await?)
+        }
+    };
+    let (commits, upstream_ref) = compute_unpushed_state(repo_path).await;
+    Ok((commits, upstream_ref, pr_info))
+}
+
+/// Computes the branch's unpushed commits together with its upstream
+/// tracking ref, so callers that need both (metadata refresh, the remote
+/// git-operation delta returned to the client) don't repeat the work.
+/// Returns `(Vec::new(), None)` on failure rather than erroring, since the
+/// caller treats "no upstream" and "detection failed" the same way.
+/// Ported verbatim from Warp (`warp/master:app/src/util/git.rs`).
+#[cfg(feature = "local_fs")]
+pub async fn compute_unpushed_state(repo_path: &Path) -> (Vec<Commit>, Option<String>) {
+    let current_branch = detect_current_branch(repo_path).await.ok();
+    let upstream_ref = run_git_command(
+        repo_path,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )
+    .await
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
+    let unpushed = get_unpushed_commits(
+        repo_path,
+        current_branch.as_deref(),
+        upstream_ref.as_deref(),
+    )
+    .await
+    .unwrap_or_default();
+    (unpushed, upstream_ref)
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub async fn compute_unpushed_state(_repo_path: &Path) -> (Vec<Commit>, Option<String>) {
+    (Vec::new(), None)
+}
+
 // ── gh CLI helpers ───────────────────────────────────────────────────────────
 
 /// PR information returned by `gh pr view`.

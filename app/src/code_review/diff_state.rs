@@ -3197,6 +3197,52 @@ impl DiffStateModel {
         }
     }
 
+    /// The remote host + path this model is bound to, or `None` for a local
+    /// repository. The code-review git dialog uses this to address git write-op
+    /// RPCs (#116) when the repo lives on an SSH host, rather than running git
+    /// against a (nonexistent) local path.
+    pub fn remote_target(
+        &self,
+        #[cfg_attr(target_family = "wasm", allow(unused_variables))] ctx: &AppContext,
+    ) -> Option<crate::code::buffer_location::RemotePath> {
+        match self {
+            Self::Local(_) => None,
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => Some(m.as_ref(ctx).remote_path().clone()),
+        }
+    }
+
+    /// File-change entries for the currently loaded diff, with per-file counts
+    /// derived from the loaded hunks. Used to populate the git dialog's Changes
+    /// box for remote repos, which can't read the working tree directly and so
+    /// source the list from the synced diff state instead of `get_file_change_entries`.
+    pub fn loaded_file_entries(&self, ctx: &AppContext) -> Vec<crate::util::git::FileChangeEntry> {
+        let DiffState::Loaded(data) = self.get(ctx) else {
+            return Vec::new();
+        };
+        data.files
+            .iter()
+            .map(|file| {
+                let mut additions = 0usize;
+                let mut deletions = 0usize;
+                for hunk in file.hunks.iter() {
+                    for line in &hunk.lines {
+                        match line.line_type {
+                            DiffLineType::Add => additions += 1,
+                            DiffLineType::Delete => deletions += 1,
+                            DiffLineType::Context | DiffLineType::HunkHeader => {}
+                        }
+                    }
+                }
+                crate::util::git::FileChangeEntry {
+                    path: file.file_path.to_string_lossy().into_owned(),
+                    additions,
+                    deletions,
+                }
+            })
+            .collect()
+    }
+
     // ── Mutation API (dispatched to the backend) ─────────────────────
 
     pub fn set_diff_mode(

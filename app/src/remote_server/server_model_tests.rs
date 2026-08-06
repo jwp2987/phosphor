@@ -234,3 +234,22 @@ fn create_directory_creates_nested_directories() {
     ));
     assert!(nested.is_dir());
 }
+
+#[test]
+fn commit_chain_mode_from_proto_maps_each_variant() {
+    use super::super::proto::GitCommitChainMode;
+    use crate::util::git::CommitChainMode;
+
+    assert_eq!(
+        ServerModel::commit_chain_mode_from_proto(GitCommitChainMode::CommitOnly),
+        CommitChainMode::CommitOnly
+    );
+    assert_eq!(
+        ServerModel::commit_chain_mode_from_proto(GitCommitChainMode::CommitAndPush),
+        CommitChainMode::CommitAndPush
+    );
+    assert_eq!(
+        ServerModel::commit_chain_mode_from_proto(GitCommitChainMode::CommitAndCreatePr),
+        CommitChainMode::CommitAndCreatePr
+    );
+}

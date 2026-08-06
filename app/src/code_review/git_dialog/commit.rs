@@ -34,6 +34,9 @@ use crate::{
     view_components::action_button::{ActionButton, ButtonSize, SecondaryTheme},
 };
 
+#[cfg(not(target_family = "wasm"))]
+use crate::code::buffer_location::RemotePath;
+
 /// What should happen after a successful commit.
 #[allow(clippy::enum_variant_names)] // `Commit` prefix is intentional: describes the always-present first stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +89,11 @@ pub(super) fn new_state(
     repo_path: &Path,
     allow_create_pr: bool,
     has_upstream: bool,
+    is_remote: bool,
+    // For remote repos, the Changes list is sourced from the synced diff state
+    // (the working tree isn't readable locally) and passed in here. Empty for
+    // local repos, which load it from the working tree below.
+    initial_file_changes: Vec<FileChangeEntry>,
     ctx: &mut ViewContext<GitDialog>,
 ) -> CommitState {
     // Dialog always opens with the plain commit intent; the user picks
@@ -171,30 +179,35 @@ pub(super) fn new_state(
     };
 
     let include_unstaged = true;
-    let repo_path_for_load = repo_path.to_path_buf();
-    ctx.spawn(
-        async move { get_file_change_entries(&repo_path_for_load, include_unstaged).await },
-        move |me, result, ctx| {
-            let GitDialogMode::Commit(state) = &mut me.mode else {
-                return;
-            };
-            match result {
-                Ok(entries) => {
-                    state.file_changes = entries;
-                }
-                Err(err) => {
-                    log::warn!("Failed to load file changes: {err}");
-                }
-            };
-            me.refresh_confirm_enabled(ctx);
-            ctx.notify();
-        },
-    );
+    // Remote repos can't read the working tree client-side; their Changes list
+    // comes from the synced diff state (`initial_file_changes`). Local repos
+    // load it directly from the working tree.
+    if !is_remote {
+        let repo_path_for_load = repo_path.to_path_buf();
+        ctx.spawn(
+            async move { get_file_change_entries(&repo_path_for_load, include_unstaged).await },
+            move |me, result, ctx| {
+                let GitDialogMode::Commit(state) = &mut me.mode else {
+                    return;
+                };
+                match result {
+                    Ok(entries) => {
+                        state.file_changes = entries;
+                    }
+                    Err(err) => {
+                        log::warn!("Failed to load file changes: {err}");
+                    }
+                };
+                me.refresh_confirm_enabled(ctx);
+                ctx.notify();
+            },
+        );
+    }
 
     let state = CommitState {
         intent,
         include_unstaged,
-        file_changes: Vec::new(),
+        file_changes: initial_file_changes,
         changes_expanded: true,
         switch_state: SwitchStateHandle::default(),
         summary_mouse_state: MouseStateHandle::default(),
@@ -212,18 +225,27 @@ pub(super) fn on_focus(state: &CommitState, ctx: &mut ViewContext<GitDialog>) {
     ctx.focus(&state.message_editor);
 }
 
-pub(super) fn is_ready_to_confirm(state: &CommitState, app: &AppContext) -> bool {
+pub(super) fn is_ready_to_confirm(state: &CommitState, is_remote: bool, app: &AppContext) -> bool {
     // Confirm requires at least one file change and a non-empty commit
     // message. While open-time autogen is in flight the editor is still
     // empty, so this keeps the button disabled until the draft lands (or the
     // user types something).
-    !state.file_changes.is_empty() && commit_message(state, app).is_some()
+    //
+    // Remote repos source the Changes list from synced metadata, which can be
+    // transiently empty; the daemon-side commit rejects an empty staged set, so
+    // gate only on a non-empty message there (mirrors Warp).
+    let has_changes = is_remote || !state.file_changes.is_empty();
+    has_changes && commit_message(state, app).is_some()
 }
 
 /// Returns a tooltip to show on the disabled Confirm button when the
 /// user needs to take action, or `None` when no tooltip is needed.
-pub(super) fn confirm_tooltip(state: &CommitState, app: &AppContext) -> Option<&'static str> {
-    if !state.file_changes.is_empty() && commit_message(state, app).is_none() {
+pub(super) fn confirm_tooltip(
+    state: &CommitState,
+    is_remote: bool,
+    app: &AppContext,
+) -> Option<&'static str> {
+    if (is_remote || !state.file_changes.is_empty()) && commit_message(state, app).is_none() {
         Some("Enter a commit message")
     } else {
         None
@@ -288,6 +310,14 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
         editor.set_interaction_state(InteractionState::Disabled, ctx);
     });
 
+    // Remote repos run the whole commit chain on the daemon over one RPC
+    // instead of executing git against a (nonexistent) local path (#116).
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(remote) = me.remote().cloned() {
+        start_confirm_remote(remote, message, intent, include_unstaged, branch_name, ctx);
+        return;
+    }
+
     let path_future = interactive_path_future(ctx);
 
     ctx.spawn(
@@ -332,6 +362,81 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
     );
 }
 
+/// Sends the commit chain to the remote host's daemon and surfaces the same
+/// toasts as the local path. Mirrors `start_confirm`'s local branch; the daemon
+/// runs the equivalent `run_commit_chain` host-local.
+#[cfg(not(target_family = "wasm"))]
+fn start_confirm_remote(
+    remote: RemotePath,
+    message: String,
+    intent: CommitIntent,
+    include_unstaged: bool,
+    branch: String,
+    ctx: &mut ViewContext<GitDialog>,
+) {
+    use crate::code_review::git_dialog::remote_client_for;
+    use crate::remote_server::proto;
+
+    let mode = match intent {
+        CommitIntent::CommitOnly => proto::GitCommitChainMode::CommitOnly,
+        CommitIntent::CommitAndPush => proto::GitCommitChainMode::CommitAndPush,
+        CommitIntent::CommitAndCreatePr => proto::GitCommitChainMode::CommitAndCreatePr,
+    };
+    let Some(client) = remote_client_for(&remote, ctx) else {
+        show_toast(user_facing_git_error("could not resolve host"), ctx);
+        ctx.emit(GitDialogEvent::Completed);
+        return;
+    };
+    let request = proto::GitCommitChainRequest {
+        repo_path: remote.path.to_string(),
+        message,
+        include_unstaged,
+        branch,
+        mode: mode as i32,
+        // BYOP: the fork's daemon has no cloud/BYOP PR autogen, so it falls back
+        // to `gh pr create --fill` regardless of this flag (#116).
+        autogenerate_pr_content: false,
+    };
+    ctx.spawn(
+        async move { client.git_commit_chain(request).await },
+        move |_me, result, ctx| {
+            match result {
+                Ok(response) => match response.result {
+                    Some(proto::git_commit_chain_response::Result::Success(success)) => {
+                        match success.pr_info {
+                            Some(pr) => {
+                                let pr = PrInfo {
+                                    number: pr.number,
+                                    url: pr.url,
+                                };
+                                show_pr_created_toast(&pr, ctx);
+                            }
+                            None => {
+                                let msg = if matches!(intent, CommitIntent::CommitOnly) {
+                                    "Changes successfully committed."
+                                } else {
+                                    "Changes committed and pushed."
+                                };
+                                show_toast(msg, ctx);
+                            }
+                        }
+                    }
+                    Some(proto::git_commit_chain_response::Result::Error(e)) => {
+                        log::error!("Remote commit chain failed: {}", e.message);
+                        show_toast(user_facing_git_error(&e.message), ctx);
+                    }
+                    None => show_toast(user_facing_git_error(""), ctx),
+                },
+                Err(e) => {
+                    log::error!("Remote commit chain RPC failed: {e}");
+                    show_toast(user_facing_git_error(&format!("{e}")), ctx);
+                }
+            }
+            ctx.emit(GitDialogEvent::Completed);
+        },
+    );
+}
+
 fn handle_editor_event(me: &mut GitDialog, event: &EditorEvent, ctx: &mut ViewContext<GitDialog>) {
     match event {
         EditorEvent::Escape => {
@@ -362,6 +467,11 @@ fn apply_intent_selector(state: &CommitState, ctx: &mut ViewContext<GitDialog>) 
 }
 
 fn reload_file_changes(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>) {
+    // Remote repos can't re-scope the working-tree read; they keep the synced
+    // Changes list. The daemon-side commit honors `include_unstaged`.
+    if me.is_remote() {
+        return;
+    }
     let repo_path = me.repo_path().clone();
     let include_unstaged = match me.mode() {
         GitDialogMode::Commit(state) => state.include_unstaged,

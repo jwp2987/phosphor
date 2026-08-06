@@ -25,6 +25,9 @@ use crate::{
     workspace::ToastStack,
 };
 
+#[cfg(not(target_family = "wasm"))]
+use crate::code::buffer_location::RemotePath;
+
 /// PR-mode sub-actions, dispatched wrapped in `GitDialogAction::Pr`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PrSubAction {
@@ -60,32 +63,41 @@ pub(super) fn is_ready_to_confirm(_state: &PrState) -> bool {
 pub(super) fn new_state(
     repo_path: &Path,
     base_branch_name: Option<String>,
+    is_remote: bool,
+    // For remote repos, the Changes list is sourced from the synced diff state
+    // (the working tree isn't readable locally). Empty for local repos, which
+    // load it from git below.
+    initial_file_changes: Vec<FileChangeEntry>,
     ctx: &mut ViewContext<GitDialog>,
 ) -> PrState {
-    let diff_repo_path = repo_path.to_path_buf();
-    ctx.spawn(
-        async move { get_branch_diff_entries(&diff_repo_path).await },
-        |me, result, ctx| {
-            if let GitDialogMode::CreatePr(state) = &mut me.mode {
-                match result {
-                    Ok(entries) => {
-                        state.file_changes = entries;
-                        ctx.notify();
-                    }
-                    Err(err) => {
-                        log::error!("Failed to load branch diff entries: {err}");
+    // Remote repos can't read the branch diff client-side; their Changes list
+    // comes from the synced diff state (`initial_file_changes`).
+    if !is_remote {
+        let diff_repo_path = repo_path.to_path_buf();
+        ctx.spawn(
+            async move { get_branch_diff_entries(&diff_repo_path).await },
+            |me, result, ctx| {
+                if let GitDialogMode::CreatePr(state) = &mut me.mode {
+                    match result {
+                        Ok(entries) => {
+                            state.file_changes = entries;
+                            ctx.notify();
+                        }
+                        Err(err) => {
+                            log::error!("Failed to load branch diff entries: {err}");
+                        }
                     }
                 }
-            }
-        },
-    );
+            },
+        );
+    }
 
     PrState {
         base_branch_name: base_branch_name.map(|name| {
             let name = name.trim();
             name.strip_prefix("origin/").unwrap_or(name).to_string()
         }),
-        file_changes: Vec::new(),
+        file_changes: initial_file_changes,
         changes_expanded: false,
         summary_mouse_state: MouseStateHandle::default(),
         changes_scroll_state: ClippedScrollStateHandle::default(),
@@ -115,6 +127,14 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 
     me.set_loading(loading_label_for(), ctx);
 
+    // Remote repos create the PR on the daemon over RPC (#116).
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(remote) = me.remote().cloned() {
+        let branch = me.branch_name().to_string();
+        start_confirm_remote(remote, branch, ctx);
+        return;
+    }
+
     let path_future = interactive_path_future(ctx);
 
     ctx.spawn(
@@ -130,6 +150,52 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                 Err(err) => {
                     log::error!("Failed to create PR: {err}");
                     show_toast(user_facing_git_error(&err.to_string()), ctx);
+                }
+            }
+            ctx.emit(GitDialogEvent::Completed);
+        },
+    );
+}
+
+/// Sends the create-PR request to the remote host's daemon and surfaces the
+/// same toast as the local path. The daemon runs `gh pr create --fill` (BYOP:
+/// no daemon-side autogen, #116).
+#[cfg(not(target_family = "wasm"))]
+fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContext<GitDialog>) {
+    use crate::code_review::git_dialog::remote_client_for;
+    use crate::remote_server::proto;
+
+    let Some(client) = remote_client_for(&remote, ctx) else {
+        show_toast(user_facing_git_error("could not resolve host"), ctx);
+        ctx.emit(GitDialogEvent::Completed);
+        return;
+    };
+    let request = proto::GitCreatePrRequest {
+        repo_path: remote.path.to_string(),
+        branch,
+        autogenerate_content: false,
+    };
+    ctx.spawn(
+        async move { client.git_create_pr(request).await },
+        move |_me, result, ctx| {
+            match result {
+                Ok(response) => match response.result {
+                    Some(proto::git_create_pr_response::Result::Success(pr)) => {
+                        let pr = PrInfo {
+                            number: pr.number,
+                            url: pr.url,
+                        };
+                        show_pr_created_toast(&pr, ctx);
+                    }
+                    Some(proto::git_create_pr_response::Result::Error(e)) => {
+                        log::error!("Remote create PR failed: {}", e.message);
+                        show_toast(user_facing_git_error(&e.message), ctx);
+                    }
+                    None => show_toast(user_facing_git_error(""), ctx),
+                },
+                Err(e) => {
+                    log::error!("Remote create PR RPC failed: {e}");
+                    show_toast(user_facing_git_error(&format!("{e}")), ctx);
                 }
             }
             ctx.emit(GitDialogEvent::Completed);

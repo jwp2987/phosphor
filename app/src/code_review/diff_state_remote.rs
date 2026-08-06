@@ -80,6 +80,13 @@ impl RemoteDiffStateModel {
         self.remote_path.path.to_string()
     }
 
+    /// The remote host + repo path this model is bound to. Used by the
+    /// code-review git dialog to address git write-op RPCs (#116) at the same
+    /// host/path the diff state is subscribed to.
+    pub fn remote_path(&self) -> &RemotePath {
+        &self.remote_path
+    }
+
     /// Issues a `GetDiffState` subscription RPC for the current `(repo, mode)`
     /// over the host's connected session. The initial snapshot arrives as the
     /// RPC response; later changes arrive as manager push events.
