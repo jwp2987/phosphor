@@ -2,6 +2,7 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::{collections::BTreeMap, ffi::OsString};
 
 use crate::terminal::cli_agent_sessions::event::current_protocol_version;
+use crate::terminal::focus_env::{FOCUS_URL_ENV, TERMINAL_SESSION_UUID_ENV};
 use crate::terminal::local_tty::shell::{extra_path_entries, ssh_socket_dir};
 use itertools::Itertools;
 use warp_core::channel::ChannelState;
@@ -27,6 +28,8 @@ const SSH_SOCKET_DIR: &str = "SSH_SOCKET_DIR";
 const PATH_APPEND_NAME: &str = "WARP_PATH_APPEND";
 const WSLENV: &str = "WSLENV";
 const HISTIGNORE: &str = "HISTIGNORE";
+const WARP_CLIENT_VERSION_ENV: &str = "WARP_CLIENT_VERSION";
+const WARP_CLI_AGENT_PROTOCOL_VERSION_ENV: &str = "WARP_CLI_AGENT_PROTOCOL_VERSION";
 
 /// Wraps the value of an env var plus its key with preferred casing.
 #[derive(Clone, Debug)]
@@ -102,18 +105,18 @@ pub(super) fn get_shell_environment_variables(options: &PtyOptions) -> Vec<u16> 
 
     let client_version = ChannelState::app_version().unwrap_or("local");
     env.insert(
-        map_key("WARP_CLIENT_VERSION".into()),
+        map_key(WARP_CLIENT_VERSION_ENV.into()),
         EnvEntry {
-            preferred_key: "WARP_CLIENT_VERSION".into(),
+            preferred_key: WARP_CLIENT_VERSION_ENV.into(),
             value: client_version.into(),
         },
     );
 
     if FeatureFlag::HOANotifications.is_enabled() {
         env.insert(
-            map_key("WARP_CLI_AGENT_PROTOCOL_VERSION".into()),
+            map_key(WARP_CLI_AGENT_PROTOCOL_VERSION_ENV.into()),
             EnvEntry {
-                preferred_key: "WARP_CLI_AGENT_PROTOCOL_VERSION".into(),
+                preferred_key: WARP_CLI_AGENT_PROTOCOL_VERSION_ENV.into(),
                 value: current_protocol_version().to_string().into(),
             },
         );
@@ -153,19 +156,8 @@ pub(super) fn get_shell_environment_variables(options: &PtyOptions) -> Vec<u16> 
             );
         }
         ShellStarter::Wsl(_) => {
-            // See https://devblogs.microsoft.com/commandline/share-environment-vars-between-wsl-and-windows/
-            // for more on how WSLENV should be formatted.
             // TODO(CORE-3107): Hook this up to a new setting "Working directory for new sessions" setting for WSL.
-            let mut wslenv = format!(
-                "{HONOR_PS1_NAME}/u:{USE_SSH_WRAPPER_NAME}/u:{SHELL_DEBUG_MODE_NAME}/u:\
-                {TERM_PROGRAM_NAME}/u:{IS_LOCAL_SESSION_NAME}/u:{SSH_SOCKET_DIR}/u"
-            );
-            if options.start_dir.is_some() {
-                wslenv.push(':');
-                wslenv.push_str(INITIAL_WORKING_DIR_NAME);
-                wslenv.push_str("/pu");
-            }
-            let mut wslenv = OsString::from(wslenv);
+            let mut wslenv = wsl_env_allowlist(options.start_dir.is_some());
             if let Some(user_val) = env.get(&map_key(WSLENV.into())) {
                 wslenv.push(":");
                 wslenv.push(&user_val.value);
@@ -193,6 +185,42 @@ pub(super) fn get_shell_environment_variables(options: &PtyOptions) -> Vec<u16> 
     }
 
     environment_block(env.into_iter())
+}
+
+/// Build the WSLENV allowlist for variables that Windows should forward into WSL.
+///
+/// See https://devblogs.microsoft.com/commandline/share-environment-vars-between-wsl-and-windows/
+/// for more on how WSLENV should be formatted.
+///
+/// Ported from Warp (`app/src/terminal/local_tty/windows/environment.rs`,
+/// `wsl_env_allowlist`). Warp's list also forwards
+/// `WARP_SSH_REUSE_CONTROL_MASTER` and `WARP_PROMPT_NODE_VERSION_ENABLED`;
+/// this fork hasn't ported the SSH control-master-reuse setting or the
+/// Node.js Version prompt chip yet (no `PtyOptions` field backs either var),
+/// so there's nothing to forward for them. Add both here once those features
+/// land — see the tracking issue referenced from this file's port commit.
+fn wsl_env_allowlist(include_initial_working_dir: bool) -> OsString {
+    let mut entries = vec![
+        format!("{HONOR_PS1_NAME}/u"),
+        format!("{USE_SSH_WRAPPER_NAME}/u"),
+        format!("{SHELL_DEBUG_MODE_NAME}/u"),
+        format!("{TERM_PROGRAM_NAME}/u"),
+        format!("{IS_LOCAL_SESSION_NAME}/u"),
+        format!("{SSH_SOCKET_DIR}/u"),
+        format!("{WARP_CLIENT_VERSION_ENV}/u"),
+        format!("{TERMINAL_SESSION_UUID_ENV}/u"),
+        format!("{FOCUS_URL_ENV}/u"),
+    ];
+
+    if FeatureFlag::HOANotifications.is_enabled() {
+        entries.push(format!("{WARP_CLI_AGENT_PROTOCOL_VERSION_ENV}/u"));
+    }
+
+    if include_initial_working_dir {
+        entries.push(format!("{INITIAL_WORKING_DIR_NAME}/pu"));
+    }
+
+    OsString::from(entries.join(":"))
 }
 
 /// Merges the local machine and user env var scopes
@@ -345,3 +373,7 @@ fn environment_block(env: impl Iterator<Item = (OsString, EnvEntry)>) -> Vec<u16
 
     block
 }
+
+#[cfg(test)]
+#[path = "environment_tests.rs"]
+mod tests;

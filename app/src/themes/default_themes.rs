@@ -918,3 +918,7 @@ pub(super) fn received_referral_reward() -> WarpTheme {
         None,
     )
 }
+
+#[cfg(test)]
+#[path = "default_themes_tests.rs"]
+mod tests;
