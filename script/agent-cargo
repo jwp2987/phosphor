@@ -22,8 +22,8 @@
 #   - Caps per-invocation parallelism so N concurrent slots stay within RAM.
 set -euo pipefail
 
-SLOTS="${PHOSPHOR_BUILD_SLOTS:-3}"
-JOBS="${PHOSPHOR_BUILD_JOBS:-7}"
+SLOTS="${PHOSPHOR_BUILD_SLOTS:-4}"
+JOBS="${PHOSPHOR_BUILD_JOBS:-6}"
 LOCK_DIR="${PHOSPHOR_LOCK_DIR:-/cache/git/.phosphor-build/locks}"
 TARGET_ROOT="${PHOSPHOR_TARGET_ROOT:-/cache/git/.phosphor-build/targets}"
 
