@@ -3238,8 +3238,8 @@ impl RenderState {
 
         let start_offset =
             self.softwrap_point_to_offset(SoftWrapPoint::new(line_row, ColumnUnit::pixels_zero()));
-        let end_offset =
-            self.softwrap_point_to_offset(SoftWrapPoint::new(line_row + 1, ColumnUnit::pixels_zero()));
+        let end_offset = self
+            .softwrap_point_to_offset(SoftWrapPoint::new(line_row + 1, ColumnUnit::pixels_zero()));
 
         (start_offset, end_offset)
     }

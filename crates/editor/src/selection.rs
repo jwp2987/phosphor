@@ -972,8 +972,10 @@ impl SelectionModel {
                     match content.indented_line_start(start) {
                         Some(indented_start) if indented_start > start => indented_start,
                         _ => {
-                            let next_row_start =
-                                SoftWrapPoint::new(start_point.row() + 1, ColumnUnit::pixels_zero());
+                            let next_row_start = SoftWrapPoint::new(
+                                start_point.row() + 1,
+                                ColumnUnit::pixels_zero(),
+                            );
                             // TODO(CLD-558): This should have a -1.
                             render.softwrap_point_to_offset(next_row_start)
                         }

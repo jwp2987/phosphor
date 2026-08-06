@@ -28,7 +28,8 @@ use crate::{
         },
     },
     render::model::{
-        ColumnUnit, Height, LayoutSummary, LineCount, RenderedSelection, SoftWrapPoint, TEXT_SPACING,
+        ColumnUnit, Height, LayoutSummary, LineCount, RenderedSelection, SoftWrapPoint,
+        TEXT_SPACING,
         test_utils::{TEST_STYLES, laid_out_paragraph, mock_paragraph},
     },
 };
