@@ -219,7 +219,6 @@ impl BlocklistAIStatusBar {
             if matches!(
                 event,
                 BlocklistAIContextEvent::PendingQueryStateUpdated
-                    | BlocklistAIContextEvent::QueueNextPromptToggled
             ) {
                 ctx.notify();
             }

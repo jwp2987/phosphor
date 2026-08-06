@@ -4572,6 +4572,7 @@ impl TerminalView {
             }
 
             if let Some(reason) = finish_reason {
+                let queued_prompt = self.queued_prompt_callback.take();
                 let callbacks = self
                     .conversation_completed_callbacks
                     .drain(..)
@@ -4579,8 +4580,13 @@ impl TerminalView {
                 for callback in callbacks {
                     callback(self, reason, ctx);
                 }
-                // Auto-fire the head of this conversation's queued-prompts queue. Replaces the
-                // legacy one-shot `queued_prompt_callback` fire with the multi-row model drain.
+                // Fire the pending single-prompt follow-up set by `/compact-and` and
+                // `/fork-and-compact` (the `PendingUserQueryIndicator` path), then auto-fire the
+                // head of the multi-prompt queued-prompts queue. Both mechanisms coexist: the
+                // former is a one-shot armed by those commands, the latter drains the panel model.
+                if let Some(callback) = queued_prompt {
+                    callback(self, reason, ctx);
+                }
                 self.drain_queued_prompts(*conversation_id, reason, ctx);
             }
 
@@ -4901,9 +4907,6 @@ impl TerminalView {
                 // When the pending query state is updated (i.e. a conversation is selected or un-selected),
                 // update the title to reflect that selected conversation change.
                 self.update_pane_configuration(ctx);
-                ctx.notify();
-            }
-            BlocklistAIContextEvent::QueueNextPromptToggled => {
                 ctx.notify();
             }
         }

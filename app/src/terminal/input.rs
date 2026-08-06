@@ -2853,7 +2853,6 @@ impl Input {
                         })
                         .collect_vec();
                 }
-                BlocklistAIContextEvent::QueueNextPromptToggled => {}
             }
             ctx.notify();
         });
