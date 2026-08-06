@@ -1,19 +1,19 @@
 ---
 name: write-product-spec
-description: Write a PRODUCT.md spec for a significant user-facing feature in Zap, focused on detailed behavior and validation. Use when the user asks for a product spec, desired behavior doc, or PRD, wants to define feature behavior before implementation, or when the feature is substantial or behaviorally ambiguous enough that a written spec would improve implementation or review.
+description: Write a PRODUCT.md spec for a significant user-facing feature in Phosphor, focused on detailed behavior and validation. Use when the user asks for a product spec, desired behavior doc, or PRD, wants to define feature behavior before implementation, or when the feature is substantial or behaviorally ambiguous enough that a written spec would improve implementation or review.
 ---
 
 # write-product-spec
 
-Write a `PRODUCT.md` spec for a significant feature in Zap.
+Write a `PRODUCT.md` spec for a significant feature in Phosphor.
 
 ## Overview
 
 The product spec should make the desired behavior unambiguous enough that an agent can implement it correctly and avoid regressions. Describe the feature purely from the user's perspective — what the user sees, does, and experiences, and the invariants that must hold for them. Do not include implementation details (internal types, state layout, module boundaries, data flow, algorithms).
 
-"User" is not limited to the end user of the Zap app. It means whoever consumes the surface being designed:
+"User" is not limited to the end user of the Phosphor app. It means whoever consumes the surface being designed:
 
-- For UI / UX features: the human using Zap.
+- For UI / UX features: the human using Phosphor.
 - For a data model: the code that reads and writes that model.
 - For an API, protocol, or library: the callers of that API — other services, client code, plugins, or agents.
 - For a CLI tool or developer-facing surface: the developer invoking it.
@@ -113,7 +113,7 @@ For large features, the implementer may optionally keep a `DECISIONS.md` file su
 
 ## Example Behavior section
 
-A sample Behavior section for a hypothetical feature: rendering GitHub-flavored Markdown tables in the Zap block list. It demonstrates the expected shape — numbered, testable, user-perspective invariants that enumerate defaults, edge cases, malformed input, streaming, selection/copy, search, sharing, theming, and cross-surface consistency, with one inline open question.
+A sample Behavior section for a hypothetical feature: rendering GitHub-flavored Markdown tables in the Phosphor block list. It demonstrates the expected shape — numbered, testable, user-perspective invariants that enumerate defaults, edge cases, malformed input, streaming, selection/copy, search, sharing, theming, and cross-surface consistency, with one inline open question.
 
 ````markdown
 ## Behavior

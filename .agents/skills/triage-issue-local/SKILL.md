@@ -13,12 +13,12 @@ marks as overridable.
 
 ## Heuristics
 
-- `warp-external` is the public-facing Zap desktop client repository. Treat public issue reports as potentially incomplete and avoid asking for secrets, tokens, private workspace names, private repository names, or account identifiers in the public issue thread.
-- Distinguish the user's observed Zap behavior from their guesses about Rust modules, UI components, server behavior, feature flags, or product intent.
-- For issue reports that mention another terminal, editor, shell, or CLI tool, identify whether the problem is Zap-specific or generally reproducible outside Zap before assigning Zap ownership.
+- `warp-external` is the public-facing Phosphor desktop client repository. Treat public issue reports as potentially incomplete and avoid asking for secrets, tokens, private workspace names, private repository names, or account identifiers in the public issue thread.
+- Distinguish the user's observed Phosphor behavior from their guesses about Rust modules, UI components, server behavior, feature flags, or product intent.
+- For issue reports that mention another terminal, editor, shell, or CLI tool, identify whether the problem is Phosphor-specific or generally reproducible outside Phosphor before assigning Phosphor ownership.
 - When the issue includes screenshots, videos, logs, stack traces, or command output, use them as primary evidence and ask follow-up questions only for missing details that cannot be inferred from that evidence.
-- Before asking any follow-up questions, check the Zap documentation and the repository's existing feature set to determine whether the desired behavior the reporter is describing is already supported. If an existing feature, setting, or workflow satisfies the request, recommend it to the reporter instead of treating the issue as a bug or feature gap.
-- If the report is about billing (pricing, plans, subscriptions, payments, refunds, invoices, AI request quotas, charges) or about appeals (account suspensions, bans, takedowns, abuse decisions, or other account-status disputes), do not attempt to triage it as an actionable bug or feature request. Instead, notify the reporter that these requests must go through Zap's support channels (https://docs.warp.dev/support-and-community/troubleshooting-and-support/sending-us-feedback) and direct them there for resolution. Apply the relevant `area:billing` or `area:auth` label as appropriate so the issue is still routed correctly.
+- Before asking any follow-up questions, check the Phosphor documentation and the repository's existing feature set to determine whether the desired behavior the reporter is describing is already supported. If an existing feature, setting, or workflow satisfies the request, recommend it to the reporter instead of treating the issue as a bug or feature gap.
+- If the report is about billing (pricing, plans, subscriptions, payments, refunds, invoices, AI request quotas, charges) or about appeals (account suspensions, bans, takedowns, abuse decisions, or other account-status disputes), do not attempt to triage it as an actionable bug or feature request. Instead, notify the reporter that these requests must go through Phosphor's support channels (https://docs.warp.dev/support-and-community/troubleshooting-and-support/sending-us-feedback) and direct them there for resolution. Apply the relevant `area:billing` or `area:auth` label as appropriate so the issue is still routed correctly.
 
 ## Follow-up question limit
 
@@ -38,31 +38,31 @@ Use area labels based on the user's reported surface:
 - `area:code-review` for git diff views, review UI, review comments, and PR-focused agent flows.
 - `area:mcp` for MCP server connection, tool/resource discovery, OAuth, and integration issues.
 - `area:settings-keybindings` for settings UI, preferences, keyboard shortcuts, and keybinding configuration.
-- `area:warp-drive` for Zap Drive objects, sync, sharing, workflows, notebooks, tab configs, and persisted artifacts.
+- `area:warp-drive` for Phosphor Drive objects, sync, sharing, workflows, notebooks, tab configs, and persisted artifacts.
 - `area:performance:*` when the report includes CPU, memory, GPU, startup, rendering, latency, or responsiveness symptoms. Add the more specific CPU, memory, or GPU label when the evidence points to that resource.
 
 ## Information to check for before asking follow-up questions
 
 Before asking the reporter for more information, check the issue body, comments, attachments, logs, labels, and repository context for:
 
-- Zap channel and version/build number, especially whether the report is for Dev, Canary, Preview, Beta, or Stable.
+- Phosphor channel and version/build number, especially whether the report is for Dev, Canary, Preview, Beta, or Stable.
 - OS and version, architecture, display setup, window manager or desktop environment on Linux, and whether the issue is platform-specific.
 - Shell and terminal context: shell name/version, prompt framework, shell integration status, command being run, terminal mode, local vs SSH/remote/tmux, and whether the behavior reproduces in a fresh session.
-- Clear reproduction steps, expected behavior, actual behavior, frequency, regression timing, and whether the user can reproduce outside Zap.
+- Clear reproduction steps, expected behavior, actual behavior, frequency, regression timing, and whether the user can reproduce outside Phosphor.
 - Visual evidence for UI, rendering, layout, font, cursor, focus, window, pane, tab, and accessibility issues. Prefer a screenshot or short recording when the symptom is visual.
 - Logs and diagnostics for crashes, hangs, startup failures, update failures, authentication failures, MCP failures, and agent execution failures. Ask for redacted logs only when the report lacks actionable evidence.
 - For AI/agent reports: whether the agent is local or cloud, the model if known, relevant conversation/session link, repository context, tool or MCP server involved, and the exact user action that triggered the failure.
 - For performance reports: approximate project/session size, command output size, CPU/memory/GPU observations, profile or diagnostics if provided, and whether the issue appears after long-running sessions.
 - For keyboard or input reports: keyboard layout, custom keybindings, IME usage, conflicting OS shortcuts, focused surface, and whether the same keys work in other apps.
-- For account, billing, or auth reports: account tier or authentication method only if the user already provided it. Do not ask for private identifiers in public; direct the user to support when private account details are required. For billing or appeals reports specifically, do not pursue further triage questions in the public thread—redirect the reporter to Zap's support channels per the heuristic above.
+- For account, billing, or auth reports: account tier or authentication method only if the user already provided it. Do not ask for private identifiers in public; direct the user to support when private account details are required. For billing or appeals reports specifically, do not pursue further triage questions in the public thread—redirect the reporter to Phosphor's support channels per the heuristic above.
 
 ## Recurring follow-up patterns
 
 - Visual UI/rendering issue with no media: ask for a screenshot or short screen recording first.
-- Environment-sensitive terminal issue: ask for Zap version/channel, OS/version, shell, and whether it reproduces in a fresh local session.
+- Environment-sensitive terminal issue: ask for Phosphor version/channel, OS/version, shell, and whether it reproduces in a fresh local session.
 - SSH/tmux/remote issue: ask for local OS, remote OS, shell, whether tmux is involved, and the minimal command or workflow that reproduces it.
 - Agent/MCP issue: ask for the failing workflow, local vs cloud execution, relevant session link, MCP server/tool name, and any redacted error text.
-- Performance issue: ask for approximate scale, how long Zap has been running, what action triggers the spike or hang, and whether logs or a profile are available.
+- Performance issue: ask for approximate scale, how long Phosphor has been running, what action triggers the spike or hang, and whether logs or a profile are available.
 
 ## Owner-inference hints
 

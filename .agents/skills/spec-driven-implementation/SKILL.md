@@ -5,7 +5,7 @@ description: Drive a spec-first workflow for substantial features by writing PRO
 
 # spec-driven-implementation
 
-Drive a spec-first workflow for substantial features in Warp.
+Drive a spec-first workflow for substantial features in Phosphor.
 
 ## Overview
 

@@ -1,17 +1,17 @@
 ---
 name: warp-ui-guidelines
-description: Catalog of guidelines for writing UI code in the Warp client. Read whenever doing any UI work in this repo, up front before writing the change, so the relevant guidelines shape the implementation.
+description: Catalog of guidelines for writing UI code in the Phosphor client. Read whenever doing any UI work in this repo, up front before writing the change, so the relevant guidelines shape the implementation.
 ---
 
 # warp-ui-guidelines
 
-This skill is a growing catalog of guidelines for working on Warp's UI code. Each guideline captures a lesson that would otherwise be re-learned through review — typically because an agent or contributor reinvented a component, drifted from the design system, or bypassed a shared abstraction.
+This skill is a growing catalog of guidelines for working on Phosphor's UI code. Each guideline captures a lesson that would otherwise be re-learned through review — typically because an agent or contributor reinvented a component, drifted from the design system, or bypassed a shared abstraction.
 
 **How to use this skill:**
 
 - Read through the guidelines below once at the start of any UI task, then keep them in mind while implementing. The list is short enough to scan.
 - Each guideline is self-contained. Not every one will apply to every task — use judgment. But if a guideline *does* apply, follow it.
-- When in doubt, prefer reusing an existing abstraction over introducing a new one. The Warp UI has accumulated a well-factored set of shared components and themes; new one-offs almost always drift.
+- When in doubt, prefer reusing an existing abstraction over introducing a new one. The Phosphor UI has accumulated a well-factored set of shared components and themes; new one-offs almost always drift.
 
 New guidelines get added here over time. If you discover a recurring UI mistake that would have been caught by a written rule, add it.
 

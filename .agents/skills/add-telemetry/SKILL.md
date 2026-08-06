@@ -1,13 +1,13 @@
 ---
 name: add-telemetry
-description: Add telemetry events to track user behavior or system events in the Warp codebase. Use when instrumenting new features, debugging issues, or measuring product metrics.
+description: Add telemetry events to track user behavior or system events in the Phosphor codebase. Use when instrumenting new features, debugging issues, or measuring product metrics.
 ---
 
 # add-telemetry
 
 ## Overview
 
-Warp uses a trait-based telemetry system where feature-specific enums implement the `TelemetryEvent` trait. This approach keeps telemetry events organized by domain rather than in one giant enum.
+Phosphor uses a trait-based telemetry system where feature-specific enums implement the `TelemetryEvent` trait. This approach keeps telemetry events organized by domain rather than in one giant enum.
 
 **Important**: Before implementing telemetry, collaborate with the user to:
 - Define what events should be tracked and when
@@ -147,7 +147,7 @@ For code with only `AppContext`, use `send_telemetry_from_app_ctx!` instead.
 
 ### 7. Test locally
 
-Run Warp with the `log_named_telemetry_events` feature flag to see telemetry events logged to the console:
+Run Phosphor with the `log_named_telemetry_events` feature flag to see telemetry events logged to the console:
 
 ```bash
 cargo run --features log_named_telemetry_events

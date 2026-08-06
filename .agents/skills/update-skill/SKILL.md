@@ -54,7 +54,7 @@ Avoid vague descriptions like "Helps with code" or "Does development tasks". For
 
 ### Skill Structure
 
-Typical sections in Warp skills:
+Typical sections in Phosphor skills:
 
 1. **Title and brief summary** – Clear title and a concise overview of the skill's purpose and primary use cases. Link to sections, reference files or related skills if useful
 2. **Overview** - Context about the skill's purpose (optional but common), extends the summary with more details and context
