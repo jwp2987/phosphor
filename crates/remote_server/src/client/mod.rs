@@ -14,6 +14,8 @@ use crate::proto::{
     CreateDirectory, CreateDirectoryResponse, DeleteFile, DiffStateFileDelta,
     DiffStateMetadataUpdate, DiffStateSnapshot, ErrorCode, GetBranches,
     GetBranchesResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
+    GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest, GitCreatePrResponse,
+    GitPushRequest, GitPushResponse,
     GetDiffState, GetDiffStateResponse, Initialize,
     InitializeResponse, ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
@@ -83,6 +85,10 @@ pub enum ClientEvent {
         expected_client_version: u64,
         edits: Vec<TextEdit>,
     },
+    /// The file changed on disk while the client had unsaved edits. The
+    /// server did NOT apply the disk change; the client should show a
+    /// conflict resolution banner and discard any in-flight edit batch.
+    BufferConflictDetected { path: String },
     /// A full diff-state snapshot was pushed by the server for a subscribed
     /// (repo, mode) pair. Carries the raw proto message; the consumer
     /// (`DiffStateModel` remote backend, in `app`) converts it to domain types.
@@ -428,6 +434,70 @@ impl RemoteServerClient {
         }
     }
 
+    /// Runs the commit chain (commit, then optionally push, then optionally
+    /// create-PR) on the remote host in a single round trip. Backs code-review
+    /// commit / commit-and-push / commit-and-create-PR over SSH.
+    pub async fn git_commit_chain(
+        &self,
+        request: GitCommitChainRequest,
+    ) -> Result<GitCommitChainResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage {
+            request_id: request_id.to_string(),
+            message: Some(client_message::Message::GitCommitChain(request)),
+        };
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GitCommitChainResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for GitCommitChain: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Pushes `branch` to origin on the remote host, setting upstream tracking.
+    /// Backs the code-review push action over SSH.
+    pub async fn git_push(
+        &self,
+        request: GitPushRequest,
+    ) -> Result<GitPushResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage {
+            request_id: request_id.to_string(),
+            message: Some(client_message::Message::GitPush(request)),
+        };
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GitPushResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for GitPush: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Creates a PR for the current branch on the remote host (branch must be
+    /// pushed). Backs the code-review create-PR action over SSH.
+    pub async fn git_create_pr(
+        &self,
+        request: GitCreatePrRequest,
+    ) -> Result<GitCreatePrResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage {
+            request_id: request_id.to_string(),
+            message: Some(client_message::Message::GitCreatePr(request)),
+        };
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GitCreatePrResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for GitCreatePr: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
     /// Subscribes to diff state for a (repo, mode) pair. Returns the server's
     /// initial `GetDiffStateResponse` (snapshot or error); subsequent changes
     /// arrive asynchronously as `ClientEvent::DiffState*Received` push events.
@@ -750,6 +820,9 @@ impl RemoteServerClient {
                 expected_client_version: push.expected_client_version,
                 edits: push.edits,
             }),
+            server_message::Message::BufferConflictDetected(push) => {
+                Some(ClientEvent::BufferConflictDetected { path: push.path })
+            }
             server_message::Message::DiffStateSnapshot(snapshot) => {
                 Some(ClientEvent::DiffStateSnapshotReceived { snapshot })
             }

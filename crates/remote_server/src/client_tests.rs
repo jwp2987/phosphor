@@ -2,10 +2,13 @@ use futures::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::proto::{
-    client_message, read_file_chunk_response, resolve_path_response, run_command_response,
+    client_message, git_commit_chain_response, git_create_pr_response, git_push_response,
+    read_file_chunk_response, resolve_path_response, run_command_response,
     server_message, write_file_chunk_response, ClientMessage, ErrorCode, FileSystemEntryKind,
-    InitializeResponse, ReadFileChunkResponse, ReadFileChunkSuccess, ResolvePathResponse,
-    ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage,
+    GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
+    GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPushRequest,
+    GitPushResponse, InitializeResponse, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess,
+    ResolvePathResponse, ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage,
     WriteFileChunkResponse, WriteFileChunkSuccess,
 };
 use crate::protocol;
@@ -398,5 +401,115 @@ async fn server_returns_error_for_malformed_message_with_parseable_id() {
             assert_eq!(e.code(), ErrorCode::InvalidRequest);
         }
         other => panic!("expected ErrorResponse, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn git_commit_chain_round_trip() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
+        let req = match &msg.message {
+            Some(client_message::Message::GitCommitChain(req)) => req.clone(),
+            other => panic!("Expected GitCommitChain, got {other:?}"),
+        };
+        assert_eq!(req.repo_path, "/remote/repo");
+        assert_eq!(req.message, "a commit");
+        assert_eq!(req.mode(), GitCommitChainMode::CommitAndCreatePr);
+        server_message::Message::GitCommitChainResponse(GitCommitChainResponse {
+            result: Some(git_commit_chain_response::Result::Success(GitCommitChainSuccess {
+                delta: Some(GitOpDelta {
+                    unpushed_commits: Vec::new(),
+                    upstream_ref: Some("origin/feature".to_string()),
+                }),
+                pr_info: Some(PrInfo {
+                    number: 7,
+                    url: "https://example.test/pr/7".to_string(),
+                    state: "OPEN".to_string(),
+                    draft: false,
+                    base_branch: "main".to_string(),
+                }),
+            })),
+        })
+    });
+
+    let resp = client
+        .git_commit_chain(GitCommitChainRequest {
+            repo_path: "/remote/repo".to_string(),
+            message: "a commit".to_string(),
+            include_unstaged: true,
+            branch: "feature".to_string(),
+            mode: GitCommitChainMode::CommitAndCreatePr as i32,
+            autogenerate_pr_content: false,
+        })
+        .await
+        .unwrap();
+    let success = match resp.result {
+        Some(git_commit_chain_response::Result::Success(s)) => s,
+        other => panic!("Expected GitCommitChainSuccess, got {other:?}"),
+    };
+    assert_eq!(success.delta.unwrap().upstream_ref.as_deref(), Some("origin/feature"));
+    assert_eq!(success.pr_info.unwrap().number, 7);
+}
+
+#[tokio::test]
+async fn git_push_round_trip() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
+        let req = match &msg.message {
+            Some(client_message::Message::GitPush(req)) => req.clone(),
+            other => panic!("Expected GitPush, got {other:?}"),
+        };
+        assert_eq!(req.repo_path, "/remote/repo");
+        assert_eq!(req.branch, "feature");
+        server_message::Message::GitPushResponse(GitPushResponse {
+            result: Some(git_push_response::Result::Success(GitOpDelta {
+                unpushed_commits: Vec::new(),
+                upstream_ref: Some("origin/feature".to_string()),
+            })),
+        })
+    });
+
+    let resp = client
+        .git_push(GitPushRequest {
+            repo_path: "/remote/repo".to_string(),
+            branch: "feature".to_string(),
+        })
+        .await
+        .unwrap();
+    match resp.result {
+        Some(git_push_response::Result::Success(delta)) => {
+            assert_eq!(delta.upstream_ref.as_deref(), Some("origin/feature"));
+        }
+        other => panic!("Expected GitPush success, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn git_create_pr_round_trip_error() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
+        let req = match &msg.message {
+            Some(client_message::Message::GitCreatePr(req)) => req.clone(),
+            other => panic!("Expected GitCreatePr, got {other:?}"),
+        };
+        assert_eq!(req.repo_path, "/remote/repo");
+        assert!(!req.autogenerate_content);
+        server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
+            result: Some(git_create_pr_response::Result::Error(GitOpError {
+                message: "branch has no upstream".to_string(),
+            })),
+        })
+    });
+
+    let resp = client
+        .git_create_pr(GitCreatePrRequest {
+            repo_path: "/remote/repo".to_string(),
+            branch: "feature".to_string(),
+            autogenerate_content: false,
+        })
+        .await
+        .unwrap();
+    match resp.result {
+        Some(git_create_pr_response::Result::Error(e)) => {
+            assert_eq!(e.message, "branch has no upstream");
+        }
+        other => panic!("Expected GitCreatePr error, got {other:?}"),
     }
 }

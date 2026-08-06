@@ -144,6 +144,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             | RemoteServerManagerEvent::RepoMetadataUpdated { .. }
             | RemoteServerManagerEvent::RepoMetadataDirectoryLoaded { .. }
             | RemoteServerManagerEvent::BufferUpdated { .. }
+            | RemoteServerManagerEvent::BufferConflictDetected { .. }
             | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
             | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
             | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. }
