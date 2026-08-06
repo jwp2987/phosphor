@@ -8,9 +8,8 @@
 //! Zap-adapted port of warp/master's `queued_prompts_tests.rs`: the cloud-mode integration tests
 //! (dispatched cloud prompt/follow-up, cloud-setup enter/cleanup, promptless-setup, the
 //! `InitialCloudMode` locked-row and its copy affordance) are dropped, since Cloud Mode is a Warp
-//! cloud feature Zap does not have. The `/compact-and` `enqueue_followup_prompt` and
-//! `send_lrc_queued_prompts` command-finish tests are left for the follow-up that ports those
-//! methods.
+//! cloud feature Zap does not have. The `send_lrc_queued_prompts` tests are left for the follow-up
+//! that ports that method (LRC rows currently fire at turn-finish via the main drain).
 use warpui::{App, SingletonEntity};
 
 use crate::ai::agent::conversation::AIConversationId;
@@ -383,6 +382,40 @@ fn complete_drain_keeps_command_row_when_dispatch_fails_with_draft() {
             assert_eq!(queue[0].id(), query_id);
             assert_eq!(queue[0].text(), "echo 1");
             assert!(queue[0].is_command());
+        });
+    });
+}
+
+#[test]
+fn on_queued_command_finished_clears_in_flight_and_drains_next() {
+    // When a dispatched queued command's block completes, the in-flight marker is cleared and
+    // the next queued row auto-fires (here an empty queue, so the drain simply no-ops).
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                history.set_active_conversation_id(id, terminal_view_id, ctx);
+                id
+            });
+
+        QueuedQueryModel::handle(&app).update(&mut app, |model, _ctx| {
+            model.arm_command_in_flight(conversation_id);
+        });
+        terminal.read(&app, |_, ctx| {
+            assert!(QueuedQueryModel::as_ref(ctx).has_command_in_flight(conversation_id));
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.on_queued_command_finished(ctx);
+        });
+
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(!model.has_command_in_flight(conversation_id));
+            assert!(model.queue(conversation_id).is_empty());
         });
     });
 }

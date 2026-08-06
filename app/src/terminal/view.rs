@@ -4422,6 +4422,21 @@ impl TerminalView {
         }
     }
 
+    /// Advances the queued-prompts queue when a dispatched queued *command* finishes. Clears the
+    /// in-flight-command marker and drains the next row. No-ops unless a queued command is in
+    /// flight for this terminal view (so ordinary command blocks don't advance the queue).
+    pub(crate) fn on_queued_command_finished(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(conversation_id) = QueuedQueryModel::as_ref(ctx)
+            .command_in_flight_for_terminal_view(self.view_id, BlocklistAIHistoryModel::as_ref(ctx))
+        else {
+            return;
+        };
+        QueuedQueryModel::handle(ctx).update(ctx, |model, _ctx| {
+            model.clear_command_in_flight(conversation_id);
+        });
+        self.drain_queued_prompts(conversation_id, FinishReason::Complete, ctx);
+    }
+
     /// Drains the head of `conversation_id`'s queued-prompts queue when its turn finishes.
     /// On a clean finish, auto-fires the head row (prompt submit, command execute, or restore
     /// from edit mode). On error/cancel, restores the head into an empty input if the user is
@@ -10472,6 +10487,12 @@ impl TerminalView {
                         }
 
                         self.maybe_suggest_open_in_warp(block_completed, ctx);
+
+                        // Advance the queued-prompts queue when a dispatched queued command's
+                        // block completes. No-ops unless a queued command is in flight; the
+                        // `!was_part_of_agent_interaction` filter keeps agent-executed command
+                        // blocks (including LRC snapshots) from advancing the queue.
+                        self.on_queued_command_finished(ctx);
                     }
 
                     // Check if the user tried to run an AWS login command but AWS CLI wasn't installed.
