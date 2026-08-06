@@ -41,8 +41,9 @@ use super::block_list::{
 };
 use super::model::{
     self, ActiveMCPServer, CurrentUserInformation, MCPEnvironmentVariables, NewActiveMCPServer,
-    NewApp, NewCommand, NewFolder, NewNotebook, NewServerExperiment, NewTab, NewTeam, NewWindow,
-    NewWorkspace, NewWorkspaceTeam, ObjectMetadata, ObjectPermissions, Project, Tab, Window,
+    NewApp, NewCommand, NewFolder, NewNotebook, NewServerExperiment, NewTab, NewTabGroup, NewTeam,
+    NewWindow, NewWorkspace, NewWorkspaceTeam, ObjectMetadata, ObjectPermissions, Project, Tab,
+    TabGroup, Window,
     AI_DOCUMENT_PANE_KIND, AI_FACT_PANE_KIND, CODE_PANE_KIND, ENV_VAR_COLLECTION_PANE_KIND,
     EXECUTION_PROFILE_EDITOR_PANE_KIND, MCP_SERVER_PANE_KIND, NOTEBOOK_PANE_KIND,
     SETTINGS_PANE_KIND, TERMINAL_PANE_KIND, WELCOME_PANE_KIND, WORKFLOW_PANE_KIND,
@@ -101,6 +102,7 @@ use crate::terminal::ShellLaunchData;
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::workflows::workflow_enum::{WorkflowEnumObject, WorkflowEnumObjectModel};
 use crate::workflows::{WorkflowId, WorkflowObject};
+use crate::workspace::tab_group::TabGroupId;
 use crate::workspaces::team::Team as TeamMetadata;
 use crate::workspaces::workspace::Workspace as WorkspaceMetadata;
 use crate::workspaces::workspace::WorkspaceUid;
@@ -108,7 +110,7 @@ use crate::{
     app_state::{
         AppState, BranchSnapshot, CodePaneSnapShot, CodePaneTabSnapshot, LeafContents,
         LeafSnapshot, NotebookPaneSnapshot, PaneFlex, PaneNodeSnapshot, SplitDirection,
-        TabSnapshot, TerminalPaneSnapshot, WindowSnapshot,
+        TabGroupSnapshot, TabSnapshot, TerminalPaneSnapshot, WindowSnapshot,
     },
     workspaces::user_profiles::UserProfileWithUID,
 };
@@ -1060,6 +1062,7 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
         diesel::delete(schema::pane_branches::dsl::pane_branches).execute(conn)?;
         diesel::delete(schema::pane_nodes::dsl::pane_nodes).execute(conn)?;
         diesel::delete(schema::tabs::dsl::tabs).execute(conn)?;
+        diesel::delete(schema::tab_groups::dsl::tab_groups).execute(conn)?;
         diesel::delete(schema::windows::dsl::windows).execute(conn)?;
         diesel::delete(schema::active_mcp_servers::dsl::active_mcp_servers).execute(conn)?;
         diesel::delete(schema::panels::dsl::panels).execute(conn)?;
@@ -1130,6 +1133,40 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
                 active_window_id = Some(window_id)
             }
 
+            // Insert tab groups first so we can map each `TabGroupId` to a
+            // DB row id when inserting the tabs below.
+            let mut tab_group_row_ids: HashMap<TabGroupId, i32> = HashMap::new();
+            if !window.tab_groups.is_empty() {
+                let new_tab_groups: Vec<NewTabGroup> = window
+                    .tab_groups
+                    .iter()
+                    .map(|group| NewTabGroup {
+                        window_id,
+                        name: group.name.clone(),
+                        color: match group.color {
+                            SelectedTabColor::Unset => None,
+                            _ => serde_yaml::to_string(&group.color).ok(),
+                        },
+                        collapsed: group.collapsed,
+                        pinned: group.pinned,
+                    })
+                    .collect();
+                diesel::insert_into(schema::tab_groups::dsl::tab_groups)
+                    .values(new_tab_groups)
+                    .execute(conn)?;
+
+                // SQLite assigns ids in insertion order, so the inserted rows
+                // share the order of `window.tab_groups`.
+                let inserted_ids: Vec<i32> = schema::tab_groups::dsl::tab_groups
+                    .filter(schema::tab_groups::columns::window_id.eq(window_id))
+                    .select(schema::tab_groups::columns::id)
+                    .order(schema::tab_groups::columns::id.asc())
+                    .load(conn)?;
+                for (group, row_id) in window.tab_groups.iter().zip(inserted_ids.iter()) {
+                    tab_group_row_ids.insert(group.id, *row_id);
+                }
+            }
+
             let tabs: Vec<NewTab> = window
                 .tabs
                 .iter()
@@ -1143,8 +1180,10 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
                         SelectedTabColor::Unset => None,
                         _ => serde_yaml::to_string(&tab.selected_color).ok(),
                     },
-                    tab_group_id: None,
-                    pinned: false,
+                    tab_group_id: tab
+                        .group_id
+                        .and_then(|group_id| tab_group_row_ids.get(&group_id).copied()),
+                    pinned: tab.pinned,
                 })
                 .collect();
 
@@ -2730,15 +2769,46 @@ fn read_sqlite_data(
         .map(|p| (p.tab_id, p))
         .collect::<HashMap<_, _>>();
 
+    // Load tab groups grouped per window so we can resolve `tabs.tab_group_id`
+    // through a per-window row-id lookup.
+    let db_tab_groups = TabGroup::belonging_to(&db_windows)
+        .order_by(schema::tab_groups::columns::id.asc())
+        .load::<TabGroup>(conn)?
+        .grouped_by(&db_windows);
+
     let saved_windows: Vec<_> = db_windows
         .into_iter()
         .enumerate()
         .zip(db_tabs)
-        .map(|((idx, window), tabs_for_window)| {
+        .zip(db_tab_groups)
+        .map(|(((idx, window), tabs_for_window), tab_groups_for_window)| {
+            // Mint a fresh `TabGroupId` per row and build a `row id -> TabGroupId`
+            // map so tabs can be reattached to their group below.
+            let mut tab_group_id_by_row_id: HashMap<i32, TabGroupId> = HashMap::new();
+            let mut tab_groups_snapshots: Vec<TabGroupSnapshot> = Vec::new();
+            for group in tab_groups_for_window {
+                let tab_group_id = TabGroupId::new();
+                tab_group_id_by_row_id.insert(group.id, tab_group_id);
+                let color = group
+                    .color
+                    .as_deref()
+                    .and_then(|s| serde_yaml::from_str::<SelectedTabColor>(s).ok())
+                    .unwrap_or_default();
+                tab_groups_snapshots.push(TabGroupSnapshot {
+                    id: tab_group_id,
+                    name: group.name,
+                    color,
+                    collapsed: group.collapsed,
+                    pinned: group.pinned,
+                });
+            }
             let saved_tabs: Vec<_> = tabs_for_window
                 .into_iter()
                 .filter_map(|tab| {
                     let root = read_root_node(conn, tab.id).ok()?;
+                    let group_id = tab
+                        .tab_group_id
+                        .and_then(|row_id| tab_group_id_by_row_id.get(&row_id).copied());
                     let panel = db_panels.get(&tab.id);
 
                     let left_panel = panel
@@ -2769,6 +2839,8 @@ fn read_sqlite_data(
                             .unwrap_or_default(),
                         left_panel,
                         right_panel,
+                        group_id,
+                        pinned: tab.pinned,
                     })
                 })
                 .collect();
@@ -2859,6 +2931,7 @@ fn read_sqlite_data(
                 theme_override: window
                     .theme_override
                     .and_then(|s| serde_json::from_str(&s).ok()),
+                tab_groups: tab_groups_snapshots,
             }
         })
         .collect();

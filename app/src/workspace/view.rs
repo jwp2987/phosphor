@@ -9539,6 +9539,11 @@ impl Workspace {
                         .unwrap_or_default(),
                     left_panel,
                     right_panel,
+                    // Live tab-group / pin membership is not yet wired into the
+                    // workspace view (tracked in #108); persist defaults so the
+                    // snapshot round-trip stays lossless once it is.
+                    group_id: None,
+                    pinned: false,
                 }
             })
             .filter(|tab| {
@@ -9634,6 +9639,7 @@ impl Workspace {
             cli_subagent_height,
             agent_management_filters: None,
             theme_override: self.theme_override.clone(),
+            tab_groups: vec![],
         }
     }
 

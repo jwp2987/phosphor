@@ -18,6 +18,8 @@ fn single_tab_snapshot(root: PaneNodeSnapshot) -> AppState {
                 custom_title: None,
                 default_directory_color: None,
                 selected_color: SelectedTabColor::default(),
+                group_id: None,
+                pinned: false,
                 root,
                 left_panel: None,
                 right_panel: None,
@@ -38,6 +40,7 @@ fn single_tab_snapshot(root: PaneNodeSnapshot) -> AppState {
             cli_subagent_height: None,
             agent_management_filters: None,
             theme_override: None,
+            tab_groups: vec![],
         }],
         active_window_index: Some(0),
         block_lists: Default::default(),
@@ -65,6 +68,7 @@ fn multi_tab_snapshot(active_tab_index: usize, tabs: Vec<TabSnapshot>) -> AppSta
             cli_subagent_height: None,
             agent_management_filters: None,
             theme_override: None,
+            tab_groups: vec![],
         }],
         active_window_index: Some(0),
         block_lists: Default::default(),
@@ -240,6 +244,8 @@ fn test_config_with_active_tab_index() {
                 custom_title: None,
                 default_directory_color: None,
                 selected_color: SelectedTabColor::default(),
+                group_id: None,
+                pinned: false,
                 root: PaneNodeSnapshot::Branch(BranchSnapshot {
                     direction: SplitDirection::Vertical,
                     children: vec![(
@@ -282,6 +288,8 @@ fn test_config_with_active_tab_index_and_filtered_tabs() {
                 custom_title: None,
                 default_directory_color: None,
                 selected_color: SelectedTabColor::default(),
+                group_id: None,
+                pinned: false,
                 root: PaneNodeSnapshot::Branch(BranchSnapshot {
                     direction: SplitDirection::Vertical,
                     children: vec![(
@@ -305,6 +313,8 @@ fn test_config_with_active_tab_index_and_filtered_tabs() {
                 custom_title: None,
                 default_directory_color: None,
                 selected_color: SelectedTabColor::default(),
+                group_id: None,
+                pinned: false,
                 root: PaneNodeSnapshot::Branch(BranchSnapshot {
                     direction: SplitDirection::Vertical,
                     children: vec![(
@@ -346,6 +356,8 @@ fn test_config_with_active_tab_being_filtered() {
                 custom_title: None,
                 default_directory_color: None,
                 selected_color: SelectedTabColor::default(),
+                group_id: None,
+                pinned: false,
                 root: PaneNodeSnapshot::Branch(BranchSnapshot {
                     direction: SplitDirection::Vertical,
                     children: vec![(
@@ -375,6 +387,8 @@ fn test_config_with_active_tab_being_filtered() {
                 custom_title: None,
                 default_directory_color: None,
                 selected_color: SelectedTabColor::default(),
+                group_id: None,
+                pinned: false,
                 root: PaneNodeSnapshot::Branch(BranchSnapshot {
                     direction: SplitDirection::Vertical,
                     children: vec![(

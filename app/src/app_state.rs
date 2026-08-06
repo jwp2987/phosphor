@@ -20,6 +20,7 @@ use crate::settings_view::SettingsSection;
 use crate::tab::SelectedTabColor;
 use crate::terminal::ShellLaunchData;
 use crate::themes::theme::{AnsiColorIdentifier, ThemeKind};
+use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::view::left_panel::ToolPanelView;
 use crate::workspace::WorkspaceRegistry;
 use warpui::SingletonEntity as _;
@@ -62,6 +63,18 @@ pub struct WindowSnapshot {
     /// The per-window theme override for this window, if the user set one via the
     /// theme chooser's "This window" scope. Re-applied on restore.
     pub theme_override: Option<ThemeKind>,
+    /// Tab groups defined in this window. Group order is implicit from
+    /// member tabs' positions, so no explicit ordering is persisted.
+    pub tab_groups: Vec<TabGroupSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabGroupSnapshot {
+    pub id: TabGroupId,
+    pub name: Option<String>,
+    pub color: SelectedTabColor,
+    pub collapsed: bool,
+    pub pinned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +85,10 @@ pub struct TabSnapshot {
     pub selected_color: SelectedTabColor,
     pub left_panel: Option<LeftPanelSnapshot>,
     pub right_panel: Option<RightPanelSnapshot>,
+    /// Tab group this tab belongs to, if any.
+    pub group_id: Option<TabGroupId>,
+    /// True when this tab is pinned to the front of the tab list.
+    pub pinned: bool,
 }
 
 impl TabSnapshot {
