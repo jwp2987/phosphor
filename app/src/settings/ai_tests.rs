@@ -1049,6 +1049,63 @@ fn vertex_endpoint_url_normalizes_location_case() {
 }
 
 #[test]
+fn vertex_endpoint_url_with_empty_project_still_has_no_stray_double_slash_when_project_present() {
+    // Regression guard for the malformed-URL bug: a non-empty project must never collapse
+    // into an empty `projects//` segment. This asserts the well-formed shape stays well-formed
+    // (the actual defense against an *empty* project reaching this function at all is
+    // `AgentProvider::validation_error`, exercised at save time).
+    let url = vertex_endpoint_url("my-proj", "global");
+    assert!(
+        !url.contains("projects//"),
+        "a non-empty project must not produce an empty projects// segment: {url}"
+    );
+    assert!(url.contains("/projects/my-proj/"));
+}
+
+#[test]
+fn vertex_endpoint_url_with_empty_project_produces_the_malformed_segment_the_bug_was_about() {
+    // Documents the exact defect `AgentProvider::validation_error` exists to prevent from ever
+    // reaching this function: `vertex_endpoint_url` itself has no project-emptiness guard, so an
+    // empty project interpolates straight into the URL path as an empty segment.
+    let url = vertex_endpoint_url("", "global");
+    assert_eq!(
+        url, "https://aiplatform.googleapis.com/v1/projects//locations/global/",
+        "empty project produces the malformed projects// segment -- callers must validate \
+         before reaching here"
+    );
+}
+
+#[test]
+fn validation_error_flags_vertex_provider_with_empty_project() {
+    let mut provider = AgentProvider::new_empty();
+    provider.api_type = AgentProviderApiType::Vertex;
+    assert!(
+        provider.validation_error().is_some(),
+        "Vertex provider with an empty project must fail validation"
+    );
+
+    // Whitespace-only counts as empty too (matches the `.trim()` applied when saving).
+    provider.vertex_project = "   ".to_string();
+    assert!(provider.validation_error().is_some());
+
+    provider.vertex_project = "my-gcp-project".to_string();
+    assert!(
+        provider.validation_error().is_none(),
+        "a non-empty project should pass validation"
+    );
+}
+
+#[test]
+fn validation_error_ignores_empty_vertex_project_for_non_vertex_providers() {
+    // vertex_project is meaningless (and always empty) for non-Vertex api types -- validation
+    // must not flag it there, matching the existing "harmless when not Vertex" treatment
+    // documented on `AgentProvider::vertex_project`.
+    let provider = AgentProvider::new_empty();
+    assert_eq!(provider.api_type, AgentProviderApiType::OpenAi);
+    assert!(provider.validation_error().is_none());
+}
+
+#[test]
 fn vertex_model_family_routes_claude_to_anthropic_else_gemini() {
     assert_eq!(vertex_model_family("claude-sonnet-4-6"), AgentProviderApiType::Anthropic);
     assert_eq!(vertex_model_family("Claude-Opus"), AgentProviderApiType::Anthropic);

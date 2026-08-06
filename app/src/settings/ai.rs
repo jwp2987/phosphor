@@ -1177,6 +1177,23 @@ impl AgentProvider {
         }
     }
 
+    /// Validates the fields required for this provider's api type, catching problems that
+    /// [`Self::has_endpoint`]/[`Self::is_usable`] would otherwise swallow silently -- an
+    /// invalid provider just never shows up in the model picker, with no indication why.
+    ///
+    /// Currently the only case: [`AgentProviderApiType::Vertex`] requires a non-empty
+    /// `vertex_project`, since [`vertex_endpoint_url`] interpolates it directly into the URL
+    /// path (`.../projects/{project}/locations/.../`); an empty project produces a malformed
+    /// `.../projects//locations/.../` endpoint. Save-time callers (`ai_page.rs`) surface the
+    /// returned message as an error toast instead of persisting an unusable provider without
+    /// feedback.
+    pub fn validation_error(&self) -> Option<String> {
+        if self.api_type.is_vertex() && self.vertex_project.trim().is_empty() {
+            return Some(crate::t!("settings-agent-providers-vertex-project-required"));
+        }
+        None
+    }
+
     /// Whether this provider should be treated as off: either the user explicitly disabled
     /// it, every model it has (including the case of having none at all) is unable to serve
     /// anything, or it has no configured endpoint. All three are deliberately *computed*,
