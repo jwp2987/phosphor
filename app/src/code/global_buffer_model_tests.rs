@@ -274,3 +274,49 @@ fn pending_batch_bumps_client_version_immediately() {
         });
     })
 }
+
+#[test]
+fn pending_batch_discarded_on_conflict_detected() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let host_id = test_host_id();
+        let path = test_path();
+
+        let _buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.seed_remote_buffer_for_test(host_id.clone(), path.clone(), "hello", 1, ctx)
+        });
+        let file_id = _buffer_state.file_id;
+
+        // Insert a pending batch.
+        let client_cv = ContentVersion::new();
+        gbm(&app).update(&mut app, |gbm, _ctx| {
+            gbm.insert_pending_batch_for_test(
+                file_id,
+                1,
+                vec![text_edit(6, 6, " edit")],
+                client_cv,
+            );
+        });
+
+        let handle = gbm(&app);
+        app.read(|ctx| {
+            assert!(handle.as_ref(ctx).has_pending_batch_for_test(file_id));
+        });
+
+        // BufferConflictDetected arrives.
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.handle_buffer_conflict_detected(&host_id, path.as_str(), ctx);
+        });
+
+        // Batch should be discarded.
+        let handle = gbm(&app);
+        app.read(|ctx| {
+            assert!(
+                !handle.as_ref(ctx).has_pending_batch_for_test(file_id),
+                "Pending batch should be discarded on conflict detected"
+            );
+        });
+    })
+}

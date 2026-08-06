@@ -38,6 +38,9 @@ message ClientMessage {
     GetCommittedBranchFilesRequest get_committed_branch_files = 25;
     GetDiffState get_diff_state = 26;
     UnsubscribeDiffState unsubscribe_diff_state = 27;
+    GitCommitChainRequest git_commit_chain = 28;
+    GitPushRequest git_push = 29;
+    GitCreatePrRequest git_create_pr = 30;
   }
 }
 // Top-level envelope for all server → client messages.
@@ -72,6 +75,10 @@ message ServerMessage {
     DiffStateSnapshot diff_state_snapshot = 27;
     DiffStateMetadataUpdate diff_state_metadata_update = 28;
     DiffStateFileDelta diff_state_file_delta = 29;
+    BufferConflictDetected buffer_conflict_detected = 30;
+    GitCommitChainResponse git_commit_chain_response = 31;
+    GitPushResponse git_push_response = 32;
+    GitCreatePrResponse git_create_pr_response = 33;
   }
 }
 
@@ -396,6 +403,13 @@ message BufferUpdatedPush {
   repeated TextEdit edits = 4;
 }
 
+// Server → client push: the file changed on disk while the client had
+// unsaved edits. The server does NOT apply the disk change to its buffer;
+// the client should show a conflict resolution banner.
+message BufferConflictDetected {
+  string path = 1;
+}
+
 // Client → server: close a buffer (stop watching).
 message CloseBuffer {
   string path = 1;
@@ -667,6 +681,96 @@ message GetCommittedBranchFilesSuccess {
 
 message GetCommittedBranchFilesError {
   string message = 1;
+}
+
+// ── Git write operations (commit / push / create-PR over SSH) ─────
+// These let code-review over a remote (SSH) host run git write actions on the
+// remote host, mirroring the local git flow. The daemon runs the underlying
+// git / gh subprocesses; the client sends one request and awaits the result.
+
+// Shared error payload for git operation responses. The message is the raw
+// git/gh error, mapped to user-facing copy on the client.
+message GitOpError {
+  string message = 1;
+}
+
+// Post-operation delta applied to the diff metadata so the client refreshes
+// the header immediately, without waiting for the next watcher-driven snapshot.
+message GitOpDelta {
+  repeated Commit unpushed_commits = 1;
+  optional string upstream_ref = 2;
+}
+
+// Client → server: run the commit chain (commit, then optionally push, then
+// optionally create-PR) host-local in a single round trip. The daemon
+// sequences the underlying git / gh subprocesses, so the SSH link carries one
+// request/response instead of the 2–3 a client-side chain would send.
+message GitCommitChainRequest {
+  string repo_path = 1;
+  string message = 2;
+  bool include_unstaged = 3;
+  // Branch to push / open the PR against. Ignored for COMMIT_ONLY.
+  string branch = 4;
+  GitCommitChainMode mode = 5;
+  // When mode is COMMIT_AND_CREATE_PR, generate the PR title/body on the
+  // daemon. Phosphor divergence from Warp: this routes through the locally
+  // configured (BYOP) provider, never Warp cloud, falling back to
+  // `gh pr create --fill`. Ignored for the other modes.
+  bool autogenerate_pr_content = 6;
+}
+
+// What to run after the commit succeeds.
+enum GitCommitChainMode {
+  GIT_COMMIT_CHAIN_MODE_COMMIT_ONLY = 0;
+  GIT_COMMIT_CHAIN_MODE_COMMIT_AND_PUSH = 1;
+  GIT_COMMIT_CHAIN_MODE_COMMIT_AND_CREATE_PR = 2;
+}
+
+message GitCommitChainResponse {
+  oneof result {
+    GitCommitChainSuccess success = 1;
+    GitOpError error = 2;
+  }
+}
+
+// Final post-chain delta plus the PR when one was created (absent for
+// COMMIT_ONLY / COMMIT_AND_PUSH).
+message GitCommitChainSuccess {
+  GitOpDelta delta = 1;
+  optional PrInfo pr_info = 2;
+}
+
+// Client → server: push `branch` to origin, setting upstream tracking.
+message GitPushRequest {
+  string repo_path = 1;
+  string branch = 2;
+}
+
+message GitPushResponse {
+  oneof result {
+    GitOpDelta success = 1;
+    GitOpError error = 2;
+  }
+}
+
+// Client → server: create a PR for the current branch (must be pushed).
+// With autogenerate_content unset, the daemon runs `gh pr create --fill`.
+message GitCreatePrRequest {
+  string repo_path = 1;
+  // Current branch name, passed as context to daemon-side generation.
+  string branch = 2;
+  // When true, the daemon generates the PR title + body before running
+  // `gh pr create`. Phosphor divergence from Warp: generation routes through
+  // the locally configured (BYOP) provider, never Warp cloud, falling back to
+  // `--fill` on failure.
+  bool autogenerate_content = 3;
+}
+
+message GitCreatePrResponse {
+  oneof result {
+    PrInfo success = 1;
+    GitOpError error = 2;
+  }
 }
 
 // ── Diff state ───────────────────────────────────────────────────

@@ -17,11 +17,13 @@ use warp_util::content_version::ContentVersion;
 use warp_util::file::FileId;
 
 use super::proto::{
-    client_message, delete_file_response, run_command_response, server_message,
+    client_message, delete_file_response, git_commit_chain_response, git_create_pr_response,
+    git_push_response, run_command_response, server_message,
     write_file_response, Abort, Authenticate, ClientMessage, UnsubscribeDiffState, DeleteFile,
     DeleteFileResponse,
     DeleteFileSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
-    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState, Initialize,
+    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
+    GitCommitChainResponse, GitCreatePrResponse, GitOpError, GitPushResponse, Initialize,
     InitializeResponse,
     NavigatedToDirectory,
     NavigatedToDirectoryResponse, ReadFileContextResponse, RipgrepSearchRequest, RunCommandError,
@@ -661,6 +663,35 @@ impl ServerModel {
             Some(client_message::Message::GetDiffState(req)) => {
                 self.handle_get_diff_state(req, &request_id, conn_id, ctx)
             }
+            // Git write-ops over SSH: the RPC surface (proto + client) is in
+            // place, but the daemon-side handlers (running git / gh subprocesses
+            // on the remote host, with BYOP autogen) are not yet implemented.
+            // Tracked in #116. Reply with a GitOpError so the client surfaces a
+            // clear error instead of hanging on an unhandled request.
+            Some(client_message::Message::GitCommitChain(_)) => HandlerOutcome::Sync(
+                server_message::Message::GitCommitChainResponse(GitCommitChainResponse {
+                    result: Some(git_commit_chain_response::Result::Error(GitOpError {
+                        message: "Remote git commit is not yet implemented on the daemon (#116)"
+                            .to_string(),
+                    })),
+                }),
+            ),
+            Some(client_message::Message::GitPush(_)) => HandlerOutcome::Sync(
+                server_message::Message::GitPushResponse(GitPushResponse {
+                    result: Some(git_push_response::Result::Error(GitOpError {
+                        message: "Remote git push is not yet implemented on the daemon (#116)"
+                            .to_string(),
+                    })),
+                }),
+            ),
+            Some(client_message::Message::GitCreatePr(_)) => HandlerOutcome::Sync(
+                server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
+                    result: Some(git_create_pr_response::Result::Error(GitOpError {
+                        message: "Remote git create-PR is not yet implemented on the daemon (#116)"
+                            .to_string(),
+                    })),
+                }),
+            ),
             Some(client_message::Message::UnsubscribeDiffState(msg)) => {
                 self.handle_unsubscribe_diff_state(msg, conn_id, ctx);
                 return; // fire-and-forget notification

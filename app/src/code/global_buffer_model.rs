@@ -299,15 +299,14 @@ impl GlobalBufferModel {
     pub fn subscribe_to_remote_server_manager(ctx: &mut ModelContext<Self>) {
         use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
         let mgr = RemoteServerManager::handle(ctx);
-        ctx.subscribe_to_model(&mgr, |me, event, ctx| {
-            if let RemoteServerManagerEvent::BufferUpdated {
+        ctx.subscribe_to_model(&mgr, |me, event, ctx| match event {
+            RemoteServerManagerEvent::BufferUpdated {
                 host_id,
                 path,
                 new_server_version,
                 expected_client_version,
                 edits,
-            } = event
-            {
+            } => {
                 // The wire offset is a 1-indexed char offset (aligned with CharOffset).
                 // Use a saturating conversion to avoid `as usize` truncating high
                 // bits on 32-bit platforms; equivalent on native 64-bit.
@@ -330,6 +329,10 @@ impl GlobalBufferModel {
                     ctx,
                 );
             }
+            RemoteServerManagerEvent::BufferConflictDetected { host_id, path } => {
+                me.handle_buffer_conflict_detected(host_id, path, ctx);
+            }
+            _ => {}
         });
     }
 
@@ -1306,6 +1309,46 @@ impl GlobalBufferModel {
         }
 
         BufferState::new(file_id, buffer)
+    }
+
+    /// Handle a `BufferConflictDetected` push from the remote server: the file
+    /// changed on disk while the client had unsaved edits. Emits
+    /// `RemoteBufferConflict` so the UI shows the conflict resolution banner.
+    /// Discards any pending edit batch since conflict resolution will re-sync.
+    #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
+    pub(crate) fn handle_buffer_conflict_detected(
+        &mut self,
+        host_id: &warp_core::HostId,
+        path: &str,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        log::debug!("[remote-buffer] BufferConflictDetected: host={host_id} path={path}");
+
+        // Find the buffer by scanning for a Remote source with matching host+path
+        // (mirrors the lookup in `handle_buffer_updated_push`).
+        let file_id = self.buffers.iter().find_map(|(id, state)| {
+            if let BufferSource::Remote { remote_path, .. } = &state.source {
+                if remote_path.host_id == *host_id && remote_path.path.as_str() == path {
+                    return Some(*id);
+                }
+            }
+            None
+        });
+
+        let Some(file_id) = file_id else {
+            log::warn!("[remote-buffer] BufferConflictDetected for unknown buffer: {path}");
+            return;
+        };
+
+        // Discard any pending batch — conflict resolution handles re-sync.
+        if let Some(state) = self.buffers.get_mut(&file_id)
+            && let BufferSource::Remote { pending_batch, .. } = &mut state.source
+            && let Some(batch) = pending_batch.take()
+        {
+            batch.discard();
+        }
+
+        ctx.emit(GlobalBufferModelEvent::RemoteBufferConflict { file_id });
     }
 
     /// Handle an incoming `BufferUpdatedPush` from the remote server.

@@ -324,6 +324,12 @@ pub enum RemoteServerManagerEvent {
         expected_client_version: u64,
         edits: Vec<crate::proto::TextEdit>,
     },
+    /// A remote buffer conflict was detected on the server (the file changed
+    /// on disk while the client had unsaved edits). Forwarded from the
+    /// client's `ClientEvent::BufferConflictDetected` push channel so
+    /// `GlobalBufferModel` can discard its pending edit batch and surface
+    /// the conflict resolution banner.
+    BufferConflictDetected { host_id: HostId, path: String },
 
     // --- Diff-state events (forwarded from ClientEvent push channel) ---
     /// A full diff-state snapshot was pushed by the server for a subscribed
@@ -419,6 +425,7 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::RepoMetadataUpdated { .. }
             | RemoteServerManagerEvent::RepoMetadataDirectoryLoaded { .. }
             | RemoteServerManagerEvent::BufferUpdated { .. }
+            | RemoteServerManagerEvent::BufferConflictDetected { .. }
             | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
             | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
             | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. } => None,
@@ -1280,6 +1287,9 @@ impl RemoteServerManager {
                     expected_client_version,
                     edits,
                 });
+            }
+            ClientEvent::BufferConflictDetected { path } => {
+                ctx.emit(RemoteServerManagerEvent::BufferConflictDetected { host_id, path });
             }
             ClientEvent::DiffStateSnapshotReceived { snapshot } => {
                 ctx.emit(RemoteServerManagerEvent::DiffStateSnapshotReceived { host_id, snapshot });
