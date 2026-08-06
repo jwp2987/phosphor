@@ -419,3 +419,43 @@ fn on_queued_command_finished_clears_in_flight_and_drains_next() {
         });
     });
 }
+
+#[test]
+fn send_lrc_queued_prompts_delivers_lrc_rows_when_no_active_subagent() {
+    // With no active subagent for the conversation, `send_lrc_queued_prompts` fires the leading
+    // `LrcAutoQueue` rows immediately (removing them from the queue).
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // The prompt-submission path (`send_queued_user_query_in_conversation`) reads the global
+        // model-event sender, so the provider must be registered for delivery to run.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                history.set_active_conversation_id(id, terminal_view_id, ctx);
+                id
+            });
+
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                QueuedQuery::new("lrc prompt".to_owned(), QueuedQueryOrigin::LrcAutoQueue),
+                ctx,
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.send_lrc_queued_prompts(conversation_id, ctx);
+        });
+
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(model.queue(conversation_id).is_empty());
+        });
+    });
+}

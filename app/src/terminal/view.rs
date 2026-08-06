@@ -84,8 +84,8 @@ use crate::ai::blocklist::usage::conversation_usage_view::{
     ConversationUsageInfo, ConversationUsageView, DisplayMode, TimingInfo,
 };
 use crate::ai::blocklist::{
-    block_context_from_terminal_model, AutofireAction, QueuedQuery, QueuedQueryModel,
-    QueuedQueryOrigin, SlashCommandRequest,
+    block_context_from_terminal_model, AutofireAction, QueuedQuery, QueuedQueryId,
+    QueuedQueryModel, QueuedQueryOrigin, SlashCommandRequest,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel, AIDocumentVersion};
 use crate::ai::loading::shimmering_warp_loading_text;
@@ -2650,6 +2650,10 @@ pub struct TerminalView {
     /// Stored separately from `conversation_completed_callbacks` so that queuing a prompt
     /// (via `/queue`, `/compact-and`, etc.) does not wipe unrelated callbacks.
     queued_prompt_callback: Option<ConversationFinishedCallback>,
+    /// Tracks, per conversation, whether an agent-requested-command subagent was active as of the
+    /// last observed history event. Used to detect the subagent active->inactive handoff so
+    /// LRC-auto-queued prompts deferred by `send_lrc_queued_prompts` can be delivered.
+    last_observed_active_subagent: HashMap<AIConversationId, bool>,
 
     /// Per-session PTY recorder for writing PTY bytes to a file.
     pty_recorder: ModelHandle<PtyRecorder>,
@@ -3941,6 +3945,7 @@ impl TerminalView {
             ephemeral_message_model,
             pending_user_query_view_id: None,
             queued_prompt_callback: None,
+            last_observed_active_subagent: Default::default(),
             pty_recorder: ctx
                 .add_model(|ctx| PtyRecorder::new(inactive_pty_reads_rx, window_id, ctx)),
             active_viewer_driven_size: None,
@@ -4435,6 +4440,89 @@ impl TerminalView {
             model.clear_command_in_flight(conversation_id);
         });
         self.drain_queued_prompts(conversation_id, FinishReason::Complete, ctx);
+    }
+
+    /// Sends the leading prompts that were auto-queued during an agent-requested long-running
+    /// command ([`QueuedQueryOrigin::LrcAutoQueue`]) to the agent, in queue order. Command finish
+    /// may happen before the CLI subagent has handed its result back to the main agent; in that
+    /// case the rows stay queued and are delivered later via
+    /// [`Self::maybe_send_lrc_queued_prompts_after_subagent_handoff`].
+    pub(crate) fn send_lrc_queued_prompts(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let has_active_subagent = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .is_some_and(|conversation| conversation.has_active_subagent());
+        if has_active_subagent {
+            self.last_observed_active_subagent
+                .insert(conversation_id, true);
+            return;
+        }
+        // If the front LRC row is being edited, commit the live editor text before sending.
+        let editing_front_lrc_row = QueuedQueryModel::as_ref(ctx)
+            .editing_row(conversation_id)
+            .is_some_and(|query_id| {
+                QueuedQueryModel::as_ref(ctx)
+                    .queue(conversation_id)
+                    .first()
+                    .is_some_and(|row| {
+                        row.id() == query_id && row.origin() == QueuedQueryOrigin::LrcAutoQueue
+                    })
+            });
+        if editing_front_lrc_row {
+            let queued_prompts_panel = self.input.as_ref(ctx).queued_prompts_panel().cloned();
+            let Some(queued_prompts_panel) = queued_prompts_panel else {
+                return;
+            };
+            queued_prompts_panel.update(ctx, |panel, ctx| {
+                panel.commit_edit(ctx);
+            });
+        }
+
+        let rows: Vec<(QueuedQueryId, String)> = QueuedQueryModel::as_ref(ctx)
+            .queue(conversation_id)
+            .iter()
+            .take_while(|row| row.origin() == QueuedQueryOrigin::LrcAutoQueue)
+            .map(|row| (row.id(), row.text().to_owned()))
+            .collect();
+        for (query_id, text) in rows {
+            self.input.update(ctx, |input, ctx| {
+                input.submit_queued_prompt_for_active_pane(text, conversation_id, ctx);
+            });
+            QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                model.remove_fired_row(conversation_id, query_id, ctx);
+            });
+        }
+    }
+
+    /// Delivers LRC-auto-queued prompts that [`Self::send_lrc_queued_prompts`] deferred because a
+    /// subagent was still active. Detects the subagent active->inactive transition per
+    /// conversation and, on handoff, retries delivery. No-ops unless the queue head is an
+    /// `LrcAutoQueue` row.
+    fn maybe_send_lrc_queued_prompts_after_subagent_handoff(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let has_lrc_queued_prompt = QueuedQueryModel::as_ref(ctx)
+            .queue(conversation_id)
+            .first()
+            .is_some_and(|row| row.origin() == QueuedQueryOrigin::LrcAutoQueue);
+        if !has_lrc_queued_prompt {
+            return;
+        }
+        let has_active_subagent = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .is_some_and(|conversation| conversation.has_active_subagent());
+        let previously_had_active_subagent = self
+            .last_observed_active_subagent
+            .insert(conversation_id, has_active_subagent)
+            .unwrap_or(false);
+        if previously_had_active_subagent && !has_active_subagent {
+            self.send_lrc_queued_prompts(conversation_id, ctx);
+        }
     }
 
     /// Drains the head of `conversation_id`'s queued-prompts queue when its turn finishes.
@@ -4978,6 +5066,8 @@ impl TerminalView {
                 response_stream_id,
                 ..
             } => {
+                self.maybe_send_lrc_queued_prompts_after_subagent_handoff(*conversation_id, ctx);
+
                 // Close any open usage footer(s) when a new AI block is added
                 if !self.usage_footer_view_ids.is_empty() {
                     let owner_block_ids: Vec<EntityId> =
@@ -5172,8 +5262,11 @@ impl TerminalView {
 
                 ai_render_context.exchange_ids = Some(HashSet::new());
             }
-            BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. } => {
+            BlocklistAIHistoryEvent::UpdatedStreamingExchange {
+                conversation_id, ..
+            } => {
                 self.update_context_blocks_and_exchanges(ctx);
+                self.maybe_send_lrc_queued_prompts_after_subagent_handoff(*conversation_id, ctx);
             }
             BlocklistAIHistoryEvent::SetActiveConversation { .. } => {
                 // When the conversation state changes or a new conversation
@@ -5211,6 +5304,11 @@ impl TerminalView {
                 is_restored,
                 ..
             } => {
+                // A conversation-status change is the primary signal for an
+                // agent-requested-command subagent going inactive; deliver any deferred
+                // LRC-auto-queued prompts on that handoff.
+                self.maybe_send_lrc_queued_prompts_after_subagent_handoff(*conversation_id, ctx);
+
                 // When the conversation state changes or a new conversation
                 // is selected, update the title to reflect that change.
                 self.update_pane_configuration(ctx);
@@ -5530,6 +5628,17 @@ impl TerminalView {
                     ctx,
                 );
                 self.cli_subagent_views.remove(block_id);
+
+                // The command ended — drop any LRC-scoped auto-queue override so the conversation
+                // reverts to its pre-command queue state, then try to deliver the prompts queued
+                // for this LRC. Delivery defers until subagent handoff if a subagent is still
+                // active.
+                if let Some(conversation_id) = conversation_id {
+                    QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                        model.clear_queue_next_lrc_prompt_override(*conversation_id, ctx);
+                    });
+                    self.send_lrc_queued_prompts(*conversation_id, ctx);
+                }
 
                 // After an interactive CLI subagent session (e.g. SSH) ends, the Live
                 // card gets reclaimed, but the user should still be able to see a
