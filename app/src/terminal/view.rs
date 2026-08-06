@@ -25611,3 +25611,7 @@ fn is_rich_input_chip_in_cli_toolbar(app: &AppContext) -> bool {
 #[cfg(test)]
 #[path = "view_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "view/queued_prompts_tests.rs"]
+mod queued_prompts_tests;
