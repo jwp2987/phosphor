@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# agent-cargo — build-concurrency governor for parallel agents on this host.
+#
+# Why this exists: the workspace is large enough that unbounded concurrent
+# compiles exhaust RAM and take the whole session down. Rather than the old
+# single global lock (one compile at a time), this host has enough RAM/cores
+# to run a small, fixed number of compiles concurrently, so this script hands
+# out N slots from a semaphore instead of 1.
+#
+# Usage:
+#   script/agent-cargo <agent-name> <cargo-args...>
+#
+# Example:
+#   script/agent-cargo pinned-tabs check -p warp --features gui
+#
+# Behavior:
+#   - Blocks until one of PHOSPHOR_BUILD_SLOTS slots is free, then runs cargo.
+#   - Pins the invocation to its own CARGO_TARGET_DIR keyed by <agent-name>,
+#     so concurrent agents on different branches cannot contaminate each
+#     other's build artifacts (the shared-target contamination that produced
+#     phantom "missing symbol" errors on the previous host).
+#   - Caps per-invocation parallelism so N concurrent slots stay within RAM.
+set -euo pipefail
+
+SLOTS="${PHOSPHOR_BUILD_SLOTS:-3}"
+JOBS="${PHOSPHOR_BUILD_JOBS:-7}"
+LOCK_DIR="${PHOSPHOR_LOCK_DIR:-/cache/git/.phosphor-build/locks}"
+TARGET_ROOT="${PHOSPHOR_TARGET_ROOT:-/cache/git/.phosphor-build/targets}"
+
+if [[ $# -lt 2 ]]; then
+  echo "usage: $0 <agent-name> <cargo-args...>" >&2
+  exit 2
+fi
+
+agent="$1"
+shift
+
+mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent"
+
+export CARGO_TARGET_DIR="$TARGET_ROOT/$agent"
+export CARGO_BUILD_JOBS="$JOBS"
+ulimit -n 8192
+
+# Acquire any free slot. Poll rather than queueing on a single fd so that a
+# long build in slot 1 does not block a short one that could use slot 2.
+while :; do
+  for ((i = 1; i <= SLOTS; i++)); do
+    exec {fd}>"$LOCK_DIR/slot$i"
+    if flock -n "$fd"; then
+      echo "[agent-cargo] agent=$agent slot=$i jobs=$JOBS target=$CARGO_TARGET_DIR" >&2
+      cargo "$@"
+      exit $?
+    fi
+    exec {fd}>&-
+  done
+  sleep 5
+done
