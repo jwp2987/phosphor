@@ -359,23 +359,13 @@ pub fn init_for_crash_recovery_process() -> Result<()> {
 
 /// Initializes the global logger for the application.
 /// If `config.log_destination` is `Some`, always use the specified destination regardless of
-/// environment. If `config.is_cli` is true, logs are written to a separate "oz" subdirectory with
-/// a higher rotation limit so that CLI invocations don't evict GUI application logs.
+/// environment. The frontend selects the log subdirectory and rotation policy.
 pub fn init(config: LogConfig) -> Result<()> {
-    let frontend = if config.is_cli {
-        LogFrontend::Cli
-    } else {
-        LogFrontend::Gui
-    };
     init_internal(
         false, /* is_from_crash_recovery_process */
-        frontend,
+        config.frontend,
         config.log_destination,
-        // The public `LogConfig` does not yet carry a size threshold, so
-        // in-session size rotation stays disabled at this call site; the
-        // machinery below is wired and ready once callers thread a value
-        // through (see the crate-level notes on `max_file_size_bytes`).
-        None,
+        config.max_file_size_bytes,
     )
 }
 

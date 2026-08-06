@@ -289,7 +289,7 @@ use crate::terminal::CustomSecretRegexUpdater;
 use crate::util::bindings::is_binding_cross_platform;
 use crate::workspace::{PaneViewLocator, Workspace, WorkspaceAction};
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use warp_logging::LogDestination;
+use warp_logging::{LogDestination, LogFrontend};
 
 // Re-export the send_telemetry_from_ctx macro at the crate root level
 pub use warp_core::send_telemetry_from_app_ctx;
@@ -537,6 +537,21 @@ impl LaunchMode {
             // file like the GUI; the warp_tui front-end has its own stdout
             // escape hatch (ZAP_LOG_STDOUT).
             LaunchMode::Tui { .. } => Some(LogDestination::File),
+        }
+    }
+
+    /// Log frontend for this mode. Selects the log subdirectory and rotation
+    /// policy (`crates/warp_logging`); the TUI gets its own subdirectory
+    /// (`warp-cli`) distinct from both the GUI and the `oz` CLI subdirectory,
+    /// so a long-running TUI session's logs don't compete with CLI
+    /// invocations for the same rotation slots.
+    fn log_frontend(&self) -> LogFrontend {
+        match self {
+            LaunchMode::Tui { .. } => LogFrontend::Tui,
+            LaunchMode::App { .. } | LaunchMode::Test { .. } => LogFrontend::Gui,
+            LaunchMode::CommandLine { .. }
+            | LaunchMode::RemoteServerProxy
+            | LaunchMode::RemoteServerDaemon => LogFrontend::Cli,
         }
     }
 
@@ -819,17 +834,24 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
     }
 
     let log_destination = launch_mode.log_destination();
-    let is_cli = log_destination.is_some();
 
     cfg_if::cfg_if! {
         if #[cfg(enable_crash_recovery)] {
             if crash_recovery::is_crash_recovery_process(launch_mode.args().as_ref()) {
                 warp_logging::init_for_crash_recovery_process()?;
             } else {
-                warp_logging::init(warp_logging::LogConfig { is_cli, log_destination })?;
+                warp_logging::init(warp_logging::LogConfig {
+                    frontend: launch_mode.log_frontend(),
+                    log_destination,
+                    ..Default::default()
+                })?;
             }
         } else {
-            warp_logging::init(warp_logging::LogConfig { is_cli, log_destination })?;
+            warp_logging::init(warp_logging::LogConfig {
+                frontend: launch_mode.log_frontend(),
+                log_destination,
+                ..Default::default()
+            })?;
         }
     }
 
@@ -1571,6 +1593,25 @@ fn initialize_app(
 
         ctx.add_singleton_model(|ctx| {
             let model = RepoMetadataModel::new(ctx);
+
+            // Force-include project skill-provider directories even when
+            // gitignored, and register them as standing-query targets so the
+            // skill watcher's `StandingQueryResultsUpdated` subscription
+            // (app/src/ai/skills/file_watchers/skill_watcher.rs) sees skill
+            // files as soon as they're discovered, without waiting on a full
+            // `RepositoryUpdated` tree rebuild.
+            model.register_force_included_paths(
+                ::ai::skills::SKILL_PROVIDER_DEFINITIONS
+                    .iter()
+                    .map(|provider| provider.skills_path.clone()),
+                ctx,
+            );
+            model.set_project_skill_provider_paths(
+                ::ai::skills::SKILL_PROVIDER_DEFINITIONS
+                    .iter()
+                    .map(|provider| provider.skills_path.clone()),
+                ctx,
+            );
 
             // Subscribe to RemoteServerManager push events so that remote repo
             // metadata snapshots and incremental updates populate the remote
