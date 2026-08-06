@@ -514,6 +514,7 @@ impl GitDialog {
             close_button,
         };
         this.refresh_confirm_enabled(ctx);
+        commit::maybe_start_commit_message_autogen(&this, ctx);
         this
     }
 
