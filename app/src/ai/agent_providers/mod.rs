@@ -34,6 +34,93 @@ mod tests;
 #[cfg(test)]
 mod cache_stability_tests;
 
+// ---------------------------------------------------------------------------
+// http:// endpoint safety (defense-in-depth against plaintext key leakage)
+// ---------------------------------------------------------------------------
+//
+// BYOP's `Authorization: Bearer <api_key>` header is attached regardless of scheme.
+// `https://` protects it in transit; a loopback `http://` endpoint (the documented use
+// case — Ollama / LM Studio / vLLM running on the same machine) never puts it on a wire
+// at all. Any other `http://` host would carry the key in cleartext across the network,
+// so [`chat_stream`] and [`openai_compatible`] both gate on [`is_plaintext_bearer_risk`]
+// before sending it.
+
+/// Whether `host` is a loopback address: `localhost`, `127.0.0.0/8`, or `::1`.
+///
+/// Deliberately a literal check, not a DNS lookup: the supported use case is a local
+/// runtime addressed by one of these forms, and resolving arbitrary hostnames here would
+/// add a network round-trip to every request-build for no real security gain (a host that
+/// merely *resolves* to loopback today can trivially be repointed elsewhere tomorrow).
+pub(crate) fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // `Url::host_str()` already strips the brackets from a bracketed IPv6 literal, but
+    // tolerate a caller passing the raw bracketed form too.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Whether sending the BYOP API key as `Authorization: Bearer <key>` to `url_str` would
+/// put it on the wire in cleartext: an `http://` URL whose host is not loopback.
+/// `https://` is always fine (TLS terminates the risk); a malformed/unparseable URL is
+/// treated as "not this function's problem" — the request itself will fail downstream.
+pub(crate) fn is_plaintext_bearer_risk(url_str: &str) -> bool {
+    match url::Url::parse(url_str.trim()) {
+        Ok(u) => u.scheme() == "http" && !u.host_str().is_some_and(is_loopback_host),
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod plaintext_bearer_risk_tests {
+    use super::*;
+
+    #[test]
+    fn https_is_never_a_risk() {
+        assert!(!is_plaintext_bearer_risk("https://api.example.com/v1/"));
+        assert!(!is_plaintext_bearer_risk("https://evil.example.com/v1/"));
+    }
+
+    #[test]
+    fn http_loopback_is_not_a_risk() {
+        assert!(!is_plaintext_bearer_risk("http://localhost:11434/v1/"));
+        assert!(!is_plaintext_bearer_risk("http://127.0.0.1:11434/v1/"));
+        assert!(!is_plaintext_bearer_risk("http://127.0.0.8:11434/v1/"));
+        assert!(!is_plaintext_bearer_risk("http://[::1]:11434/v1/"));
+        assert!(!is_plaintext_bearer_risk("HTTP://LOCALHOST:11434/v1/"));
+    }
+
+    #[test]
+    fn http_non_loopback_is_a_risk() {
+        assert!(is_plaintext_bearer_risk("http://api.example.com/v1/"));
+        assert!(is_plaintext_bearer_risk("http://192.168.1.50:11434/v1/"));
+        assert!(is_plaintext_bearer_risk("http://10.0.0.5:8080/v1/"));
+        assert!(is_plaintext_bearer_risk("http://box:11434/v1/"));
+    }
+
+    #[test]
+    fn malformed_url_is_not_flagged_as_a_risk() {
+        assert!(!is_plaintext_bearer_risk("not a url"));
+        assert!(!is_plaintext_bearer_risk(""));
+    }
+
+    #[test]
+    fn loopback_host_recognizes_all_forms() {
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("LocalHost"));
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("127.0.0.8"));
+        assert!(is_loopback_host("127.255.255.255"));
+        assert!(is_loopback_host("::1"));
+        assert!(is_loopback_host("[::1]"));
+        assert!(!is_loopback_host("192.168.1.1"));
+        assert!(!is_loopback_host("example.com"));
+        assert!(!is_loopback_host("0.0.0.0"));
+    }
+}
+
 // Current external use sites:
 // - `fetch_openai_compatible_models`: the FetchAgentProviderModels handler in
 //   ai_page.rs

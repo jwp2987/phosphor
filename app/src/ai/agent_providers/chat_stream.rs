@@ -3542,7 +3542,23 @@ fn build_client_uncached(
     let resolver = if api_type == AgentProviderApiType::Vertex {
         build_vertex_resolver(endpoint_url.clone(), api_key.clone())
     } else {
-    let key_for_resolver = api_key.clone();
+    // Defense-in-depth: don't hand the API key to `AuthData` at all when the endpoint
+    // would carry it as a plaintext `Authorization: Bearer` header over the network (see
+    // `super::is_plaintext_bearer_risk`). Loopback `http://` (Ollama et al.) is untouched;
+    // this only strips the key for a non-loopback `http://` endpoint, which then behaves
+    // like "no key configured" (same as an intentionally unauthenticated local service)
+    // instead of silently leaking the key to whoever can observe the wire.
+    let key_for_resolver = if !api_key.is_empty() && super::is_plaintext_bearer_risk(&endpoint_url) {
+        log::warn!(
+            "[byop] refusing to send the API key as a plaintext Authorization header to \
+             insecure endpoint {endpoint_url} — only https:// or a loopback http:// \
+             (localhost/127.0.0.1) endpoint may carry it; use https, or point this \
+             provider at a local runtime"
+        );
+        String::new()
+    } else {
+        api_key.clone()
+    };
     ServiceTargetResolver::from_resolver_fn(
         move |service_target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
             let ServiceTarget { model, .. } = service_target;

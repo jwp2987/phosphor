@@ -54,6 +54,21 @@ static MINT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub async fn access_token(credential: &str) -> Result<String, String> {
     let credential = credential.trim().to_string();
 
+    // Defense-in-depth: `credential` came from Settings -> AI -> Vertex provider config
+    // (persisted as an ordinary secret string, no schema enforcement) and is about to be
+    // forwarded verbatim into a `gcloud` argv entry. It isn't attacker-controlled input in
+    // the usual sense (no other user reaches this path), but a garbled/pasted-wrong value
+    // should fail here with a clear message rather than being handed to `gcloud
+    // --impersonate-service-account=<value>` and producing a confusing shell/gcloud-side
+    // error instead.
+    if !credential.is_empty() && !is_plausible_service_account_email(&credential) {
+        return Err(format!(
+            "invalid Vertex impersonation service-account email {credential:?} — expected \
+             the form name@project-id.iam.gserviceaccount.com; leave the field empty to use \
+             the active gcloud account / Application Default Credentials instead"
+        ));
+    }
+
     if let Some(token) = cached_token(&credential) {
         return Ok(token);
     }
@@ -69,6 +84,25 @@ pub async fn access_token(credential: &str) -> Result<String, String> {
     let token = mint_via_gcloud(&credential).await?;
     store_token(&credential, &token);
     Ok(token)
+}
+
+/// A loose `local-part@domain` shape check for a service-account email, not full RFC 5321
+/// validation (GCP's own API is the real authority on whether the SA exists/is impersonable).
+/// Rejects: empty local/domain parts, no `@` or more than one `@`, a domain with no dot (SA
+/// emails are always under a real domain, e.g. `*.iam.gserviceaccount.com`), a domain starting
+/// or ending with `.`, and any whitespace/control character anywhere (in particular `\n`/`\r`,
+/// which must never reach a subprocess argument unexamined).
+fn is_plausible_service_account_email(email: &str) -> bool {
+    if email.is_empty() || email.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    if email.matches('@').count() != 1 {
+        return false;
+    }
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    !local.is_empty() && !domain.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
 fn cached_token(credential: &str) -> Option<String> {
@@ -189,6 +223,77 @@ async fn mint_via_gcloud(credential: &str) -> Result<String, String> {
         return Err("gcloud returned an empty access token".to_owned());
     }
     Ok(token)
+}
+
+#[cfg(test)]
+mod service_account_email_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_typical_gcp_service_account_emails() {
+        assert!(is_plausible_service_account_email(
+            "my-sa@my-project-123.iam.gserviceaccount.com"
+        ));
+        assert!(is_plausible_service_account_email(
+            "deploy@internal-tools.example.com"
+        ));
+    }
+
+    #[test]
+    fn rejects_missing_or_doubled_at() {
+        assert!(!is_plausible_service_account_email("not-an-email"));
+        assert!(!is_plausible_service_account_email("a@b@c.com"));
+    }
+
+    #[test]
+    fn rejects_empty_local_or_domain_part() {
+        assert!(!is_plausible_service_account_email("@example.com"));
+        assert!(!is_plausible_service_account_email("sa@"));
+        assert!(!is_plausible_service_account_email(""));
+    }
+
+    #[test]
+    fn rejects_domain_without_a_dot() {
+        assert!(!is_plausible_service_account_email("sa@localhost"));
+    }
+
+    #[test]
+    fn rejects_domain_with_leading_or_trailing_dot() {
+        assert!(!is_plausible_service_account_email("sa@.example.com"));
+        assert!(!is_plausible_service_account_email("sa@example.com."));
+    }
+
+    #[test]
+    fn rejects_embedded_control_and_whitespace_characters() {
+        // The concrete risk this guards against: a value that would smuggle extra bytes into
+        // the `gcloud --impersonate-service-account=<value>` subprocess argument.
+        assert!(!is_plausible_service_account_email("sa@example.com\n--verbosity=debug"));
+        assert!(!is_plausible_service_account_email("sa@example.com\r"));
+        assert!(!is_plausible_service_account_email("sa @example.com"));
+        assert!(!is_plausible_service_account_email("sa@exa mple.com"));
+    }
+
+    #[tokio::test]
+    async fn access_token_rejects_a_malformed_credential_before_touching_gcloud() {
+        let err = access_token("not-an-email")
+            .await
+            .expect_err("a malformed SA email must be rejected up front");
+        assert!(
+            err.contains("invalid Vertex impersonation service-account email"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn access_token_rejects_a_credential_with_an_embedded_newline() {
+        let err = access_token("sa@example.com\n--extra-flag")
+            .await
+            .expect_err("a credential with an embedded newline must be rejected up front");
+        assert!(
+            err.contains("invalid Vertex impersonation service-account email"),
+            "{err}"
+        );
+    }
 }
 
 #[cfg(all(test, unix))]
