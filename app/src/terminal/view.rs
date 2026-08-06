@@ -84,7 +84,8 @@ use crate::ai::blocklist::usage::conversation_usage_view::{
     ConversationUsageInfo, ConversationUsageView, DisplayMode, TimingInfo,
 };
 use crate::ai::blocklist::{
-    block_context_from_terminal_model, AutofireAction, QueuedQueryModel, SlashCommandRequest,
+    block_context_from_terminal_model, AutofireAction, QueuedQuery, QueuedQueryModel,
+    QueuedQueryOrigin, SlashCommandRequest,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel, AIDocumentVersion};
 use crate::ai::loading::shimmering_warp_loading_text;
@@ -4389,6 +4390,35 @@ impl TerminalView {
             }
         } else if self.git_repo_status.is_some() {
             self.clear_git_repo_status_subscription(ctx);
+        }
+    }
+
+    /// Queues a follow-up prompt (from `/compact-and` or `/fork-and-compact`) to fire after the
+    /// current summarization finishes. Under `QueuedPromptsV2` it appends to the multi-row queue
+    /// (rendered in the panel); otherwise it falls back to the single-prompt pending-user-query
+    /// mechanism.
+    pub fn enqueue_followup_prompt(
+        &mut self,
+        prompt: String,
+        origin: QueuedQueryOrigin,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if FeatureFlag::QueuedPromptsV2.is_enabled() {
+            let attachments = self.ai_context_model.update(ctx, |context_model, ctx| {
+                context_model.take_pending_attachments(ctx)
+            });
+            QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                model.append(
+                    conversation_id,
+                    QueuedQuery::new_with_attachments(prompt, origin, attachments),
+                    ctx,
+                );
+            });
+        } else {
+            self.send_user_query_after_next_conversation_finished(
+                prompt, /* show_close_button */ true, /* show_send_now_button */ false, ctx,
+            );
         }
     }
 

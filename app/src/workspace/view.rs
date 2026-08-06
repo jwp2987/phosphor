@@ -374,7 +374,9 @@ use warpui::{elements::MouseStateHandle, fonts::Properties};
 
 use crate::{autoupdate, channel::ChannelState};
 
-use crate::ai::blocklist::{BlocklistAIHistoryEvent, PendingQueryState, SerializedBlockListItem};
+use crate::ai::blocklist::{
+    BlocklistAIHistoryEvent, PendingQueryState, QueuedQueryOrigin, SerializedBlockListItem,
+};
 use crate::editor::{
     EditorView, Event as EditorEvent, PropagateAndNoOpNavigationKeys, SingleLineEditorOptions,
     TextOptions,
@@ -11419,10 +11421,10 @@ impl Workspace {
                     });
 
                 if let Some(prompt) = initial_prompt {
-                    terminal_view.send_user_query_after_next_conversation_finished(
+                    terminal_view.enqueue_followup_prompt(
                         prompt,
-                        /* show_close_button */ true,
-                        /* show_send_now_button */ false,
+                        QueuedQueryOrigin::ForkAndCompactSlashCommand,
+                        forked_conversation_id,
                         terminal_view_ctx,
                     );
                 }
@@ -11521,10 +11523,18 @@ impl Workspace {
             });
 
             if let Some(prompt) = initial_prompt {
-                terminal.send_user_query_after_next_conversation_finished(
-                    prompt, /* show_close_button */ true,
-                    /* show_send_now_button */ false, ctx,
-                );
+                // The `/compact-and` slash-command handler short-circuits when there is no active
+                // conversation, so `selected_conversation_id` is set by the time we get here.
+                if let Some(conversation_id) =
+                    terminal.ai_context_model().as_ref(ctx).selected_conversation_id(ctx)
+                {
+                    terminal.enqueue_followup_prompt(
+                        prompt,
+                        QueuedQueryOrigin::CompactAndSlashCommand,
+                        conversation_id,
+                        ctx,
+                    );
+                }
             }
         });
     }
