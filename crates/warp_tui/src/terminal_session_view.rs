@@ -1395,6 +1395,10 @@ impl TuiTerminalSessionView {
                 view.handle_accepted_exchange(*exchange_id, *action, ctx);
             }
             // No orchestration tab bar in Zap: nothing above the input to focus.
+            TuiInputViewEvent::ClipboardCopySucceeded => view.show_copy_hint(ctx),
+            TuiInputViewEvent::ClipboardCopyFailed => {
+                view.show_transient_hint(COPY_FAILED_HINT.to_owned(), ctx);
+            }
             TuiInputViewEvent::MoveFocusUp => {}
             // The vim mode changed - re-render so the footer indicator (NOR/VIS/REP)
             // updates. The indicator is rendered by this view's render_footer, not

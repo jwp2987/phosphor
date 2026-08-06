@@ -881,6 +881,8 @@ fn multiline_paste_emits_once_and_fallback_inserts_without_submitting() {
                 | TuiInputViewEvent::AcceptedExchange(..)
                 | TuiInputViewEvent::BackspaceAtEmptyInput
                 | TuiInputViewEvent::MoveFocusUp
+                | TuiInputViewEvent::ClipboardCopySucceeded
+                | TuiInputViewEvent::ClipboardCopyFailed
                 | TuiInputViewEvent::VimModeChanged => {}
             });
             (view, pasted, submitted)
@@ -2740,5 +2742,87 @@ fn submit_accepts_highlighted_prompt_history_entry() {
         app.read(|_| {
             assert_eq!(accepted.borrow().as_slice(), &["deploy the app".to_owned()]);
         });
+    });
+}
+
+/// Regression: `TuiInputView` opts in to `copy_on_mouse_highlight`. Completing a
+/// mouse drag-selection (left-up → `SelectionEnd`) must emit
+/// `ClipboardCopySucceeded` — pinning the one-liner at `input/view.rs` that
+/// enables the feature. If that line is reverted the event is never emitted.
+#[test]
+fn copy_on_mouse_highlight_emits_clipboard_copy_succeeded_for_input_view() {
+    App::test((), |mut app| async move {
+        let (view, copy_succeeded_count) = app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "hello world");
+            let count = Rc::new(Cell::new(0u32));
+            let count_for_sub = count.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if matches!(event, TuiInputViewEvent::ClipboardCopySucceeded) {
+                    count_for_sub.set(count_for_sub.get() + 1);
+                }
+            });
+            (view, count)
+        });
+
+        // Simulate drag: left-down, drag across "hello", left-up.
+        app.update(|ctx| {
+            mouse(&view, ctx, &left_down(0, 0, 1, false));
+            mouse(&view, ctx, &left_drag(5, 0));
+        });
+        assert_eq!(
+            copy_succeeded_count.get(),
+            0,
+            "no copy should be emitted while dragging"
+        );
+
+        app.update(|ctx| {
+            // left_up maps to SelectionEnd; with copy_on_mouse_highlight enabled on
+            // TuiInputView's behavior, this must emit ClipboardCopySucceeded.
+            mouse(&view, ctx, &left_up(5, 0));
+        });
+        assert_eq!(
+            copy_succeeded_count.get(),
+            1,
+            "copy_on_mouse_highlight must emit ClipboardCopySucceeded on mouse-up"
+        );
+    });
+}
+
+/// Regression: a plain click (no drag) in the input produces a collapsed
+/// selection. Even though `SelectionEnd` fires with `copy_on_mouse_highlight` enabled,
+/// the empty-selection guard in `apply_editor_clipboard_action` must prevent a
+/// clipboard write and suppress `ClipboardCopySucceeded`/`ClipboardCopyFailed`.
+#[test]
+fn copy_on_mouse_highlight_does_not_copy_empty_selection() {
+    App::test((), |mut app| async move {
+        let (view, clipboard_event_count) = app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "hello world");
+            let count = Rc::new(Cell::new(0u32));
+            let count_for_sub = count.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if matches!(
+                    event,
+                    TuiInputViewEvent::ClipboardCopySucceeded
+                        | TuiInputViewEvent::ClipboardCopyFailed
+                ) {
+                    count_for_sub.set(count_for_sub.get() + 1);
+                }
+            });
+            (view, count)
+        });
+
+        // A plain left-down + left-up at the same position emits SelectionStartAt
+        // then SelectionEnd with no intervening drag, so the selection is empty.
+        app.update(|ctx| {
+            mouse(&view, ctx, &left_down(3, 0, 1, false));
+            mouse(&view, ctx, &left_up(3, 0));
+        });
+        assert_eq!(
+            clipboard_event_count.get(),
+            0,
+            "collapsed selection must not write the clipboard or emit clipboard events"
+        );
     });
 }
