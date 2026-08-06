@@ -51,6 +51,14 @@ mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent" "$LOG_DIR"
 
 export CARGO_TARGET_DIR="$TARGET_ROOT/$agent"
 export CARGO_BUILD_JOBS="$JOBS"
+# CARGO_BUILD_JOBS bounds COMPILATION only. nextest defaults its test-execution
+# parallelism to the CPU count, so a test run spawns up to `nproc` concurrent
+# test processes regardless of the jobs cap — and in this workspace each one
+# stands up an App. Measured: a single `nextest -p warp_tui -p warp_editor` drove
+# host available memory down to 4.4 GB and load above 49 on 24 cores. Bound test
+# threads to the same budget as compile jobs.
+export NEXTEST_TEST_THREADS="$JOBS"
+export RUST_TEST_THREADS="$JOBS"
 ulimit -n 8192
 
 available_mb() { awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo; }
