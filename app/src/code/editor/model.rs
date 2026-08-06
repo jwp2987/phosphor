@@ -2164,6 +2164,51 @@ impl CodeEditorModel {
         &self.vim_visual_tails
     }
 
+    /// The visual-mode range for a single cursor given its stored
+    /// `visual_tail` and current selection `head`, before any
+    /// `include_newline` adjustment.
+    ///
+    /// Shared by [`Self::vim_visual_selection_ranges`] and
+    /// [`Self::vim_visual_selection_range`] so the tail/head swap, the
+    /// inclusive-end bump, and the linewise expansion live in exactly one
+    /// place.
+    fn vim_visual_base_range(
+        visual_tail: CharOffset,
+        selection_head: CharOffset,
+        motion_type: MotionType,
+        buffer: &Buffer,
+    ) -> Range<CharOffset> {
+        let mut start = visual_tail;
+        let mut end = selection_head;
+        if start > end {
+            mem::swap(&mut start, &mut end);
+        }
+
+        let max_offset = buffer.max_charoffset();
+        // Include the char under the block cursor for charwise/visual. For
+        // linewise, only include +1 if it won't move onto the next line (i.e.
+        // the current char at `end` is not a newline).
+        if end < max_offset
+            && (motion_type != MotionType::Linewise
+                || buffer.char_at(end).is_some_and(|c| c != '\n'))
+        {
+            end += 1;
+        }
+
+        if motion_type == MotionType::Linewise {
+            let start_point = start.to_buffer_point(buffer);
+            start = Point::new(start_point.row, 0).to_buffer_char_offset(buffer);
+
+            let end_point = end.to_buffer_point(buffer);
+            if end_point.column != 0 {
+                end = Point::new(end_point.row, buffer.line_len(end_point.row))
+                    .to_buffer_char_offset(buffer);
+            }
+        }
+
+        start..end
+    }
+
     /// Return the ranges represented by the current Vim visual tails and
     /// selection heads without consuming the tails.
     pub fn vim_visual_selection_ranges(
@@ -2174,37 +2219,21 @@ impl CodeEditorModel {
         let selection_model = self.selection_model.as_ref(ctx);
         let buffer = self.content().as_ref(ctx);
 
-        selection_model
-            .selection_offsets()
+        let selection_offsets = selection_model.selection_offsets();
+        // Each selection carries a matching stored tail; a length divergence
+        // means the tails fell out of sync with the selections and `.zip`
+        // would silently drop the extra entries.
+        debug_assert_eq!(
+            selection_offsets.len(),
+            self.vim_visual_tails.len(),
+            "vim visual tails must track the active selections",
+        );
+
+        selection_offsets
             .iter()
             .zip(self.vim_visual_tails.iter())
             .map(|(selection, visual_tail)| {
-                let mut start = *visual_tail;
-                let mut end = selection.head;
-                if start > end {
-                    mem::swap(&mut start, &mut end);
-                }
-
-                let max_offset = buffer.max_charoffset();
-                if end < max_offset
-                    && (motion_type != MotionType::Linewise
-                        || buffer.char_at(end).is_some_and(|c| c != '\n'))
-                {
-                    end += 1;
-                }
-
-                if motion_type == MotionType::Linewise {
-                    let start_point = start.to_buffer_point(buffer);
-                    start = Point::new(start_point.row, 0).to_buffer_char_offset(buffer);
-
-                    let end_point = end.to_buffer_point(buffer);
-                    if end_point.column != 0 {
-                        end = Point::new(end_point.row, buffer.line_len(end_point.row))
-                            .to_buffer_char_offset(buffer);
-                    }
-                }
-
-                start..end
+                Self::vim_visual_base_range(*visual_tail, selection.head, motion_type, buffer)
             })
             .collect()
     }
@@ -2224,55 +2253,38 @@ impl CodeEditorModel {
         let buffer = self.content().as_ref(ctx);
         let vim_visual_tails = mem::take(&mut self.vim_visual_tails);
 
-        let new_selections = selection_model
-            .selection_offsets()
+        let selection_offsets = selection_model.selection_offsets();
+        // Each selection carries a matching stored tail; a length divergence
+        // means the tails fell out of sync with the selections and `.zip`
+        // would silently drop the extra entries.
+        debug_assert_eq!(
+            selection_offsets.len(),
+            vim_visual_tails.len(),
+            "vim visual tails must track the active selections",
+        );
+
+        let new_selections = selection_offsets
             .iter()
             .zip(vim_visual_tails.iter())
             .map(|(selection, visual_tail)| {
-                let mut start = *visual_tail;
-                let mut end = selection.head;
-                if start > end {
-                    mem::swap(&mut start, &mut end);
-                }
+                let range =
+                    Self::vim_visual_base_range(*visual_tail, selection.head, motion_type, buffer);
+                let mut start = range.start;
+                let mut end = range.end;
 
-                let max_offset = buffer.max_charoffset();
-                // Include the char under the block cursor for charwise/visual.
-                // For linewise, only include +1 if it won't move onto the next line (i.e., the
-                // current char at `end` is not a newline).
-                if end < max_offset
-                    && (motion_type != MotionType::Linewise
-                        || buffer.char_at(end).map(|c| c != '\n').unwrap_or(false))
-                {
-                    end += 1;
-                }
+                if motion_type == MotionType::Linewise && include_newline {
+                    let max_offset = buffer.max_charoffset();
+                    let start_newline = start.as_usize() > 0
+                        && buffer
+                            .char_at(start.saturating_sub(&1.into()))
+                            .map(|c| c == '\n')
+                            .unwrap_or(false);
+                    let end_newline = buffer.char_at(end).map(|c| c == '\n').unwrap_or(false);
 
-                if motion_type == MotionType::Linewise {
-                    let point = start.to_buffer_point(buffer);
-
-                    let start_point = Point::new(point.row, 0);
-                    let end_point = end.to_buffer_point(buffer);
-                    let new_end = if end_point.column == 0 {
-                        end_point
-                    } else {
-                        Point::new(end_point.row, buffer.line_len(end_point.row))
-                    };
-
-                    start = start_point.to_buffer_char_offset(buffer);
-                    end = new_end.to_buffer_char_offset(buffer);
-
-                    if include_newline {
-                        let start_newline = start.as_usize() > 0
-                            && buffer
-                                .char_at(start.saturating_sub(&1.into()))
-                                .map(|c| c == '\n')
-                                .unwrap_or(false);
-                        let end_newline = buffer.char_at(end).map(|c| c == '\n').unwrap_or(false);
-
-                        if end_newline && end < max_offset {
-                            end += 1;
-                        } else if start_newline {
-                            start = start.saturating_sub(&1.into());
-                        }
+                    if end_newline && end < max_offset {
+                        end += 1;
+                    } else if start_newline {
+                        start = start.saturating_sub(&1.into());
                     }
                 }
 

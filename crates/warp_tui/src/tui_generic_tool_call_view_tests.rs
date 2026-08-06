@@ -1,10 +1,7 @@
-use std::cell::RefCell;
-
-use futures::channel::oneshot;
 use serde_json::json;
 use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentActionType, AIConversationId,
-    BlocklistAIActionEvent, SuggestNewConversationResult, TaskId, queue_tui_permission_action,
+    SuggestNewConversationResult, TaskId, queue_tui_permission_action,
     register_tui_session_view_test_singletons,
 };
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
@@ -167,7 +164,6 @@ fn accepting_new_conversation_suggestion_completes_the_executor() {
             requires_result: true,
         };
         let action_for_queue = action.clone();
-        let action_id = action.id.clone();
         let action_model_for_view = action_model.clone();
         let view = app.update(|ctx| {
             let (window_id, _) = ctx.add_tui_window(
@@ -187,36 +183,42 @@ fn accepting_new_conversation_suggestion_completes_the_executor() {
                 )
             })
         });
-        let (finished_tx, finished_rx) = oneshot::channel();
-        let finished_tx = RefCell::new(Some(finished_tx));
-        app.update(|ctx| {
-            ctx.subscribe_to_model(&action_model, move |_, event, _| {
-                if matches!(
-                    event,
-                    BlocklistAIActionEvent::FinishedAction { action_id: id, .. } if id == &action_id
-                ) && let Some(tx) = finished_tx.borrow_mut().take()
-                {
-                    let _ = tx.send(());
-                }
-            });
-        });
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action_for_queue, conversation_id, ctx);
         });
         // Let the spawned preprocessing land the action in the pending queue before
-        // approving it; otherwise `accept` no-ops and `finished_rx` never resolves,
-        // deadlocking the test.
+        // approving it; otherwise `accept` no-ops and no result is ever recorded.
         crate::test_fixtures::settle().await;
 
         view.update(&mut app, |view, ctx| view.accept(ctx));
-        finished_rx
-            .await
-            .expect("accepted suggestion should reach a terminal result");
+        // Wait for the executor to reach a terminal result instead of awaiting a
+        // `oneshot` fired from the `FinishedAction` subscription. The action
+        // executes on the background executor (`ModelContext::spawn`) and its
+        // result is handed back to the foreground, so a blocking `.await` here
+        // took `async_io::block_on`'s park-for-notification path (its `Reactor`
+        // lock is process-global and, under parallel test execution, held by
+        // another thread) and depended on a cross-thread wake that was lost
+        // intermittently — deadlocking the whole in-process suite at this test.
+        // `settle_until` keeps `block_on` in its notified re-poll fast path while
+        // briefly sleeping the thread so the background execution actually
+        // completes and its result is delivered to the foreground.
+        let result_id = AIAgentActionId::from("suggest-conversation".to_owned());
+        let result_id_for_wait = result_id.clone();
+        let action_model_for_wait = action_model.clone();
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| {
+                action_model_for_wait
+                    .as_ref(ctx)
+                    .get_action_result(&result_id_for_wait)
+                    .is_some()
+            })
+        })
+        .await;
 
         app.read(|ctx| {
             let result = action_model
                 .as_ref(ctx)
-                .get_action_result(&AIAgentActionId::from("suggest-conversation".to_owned()))
+                .get_action_result(&result_id)
                 .expect("suggestion result");
             assert!(matches!(
                 &result.result,

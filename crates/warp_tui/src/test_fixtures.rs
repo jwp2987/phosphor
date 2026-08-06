@@ -53,6 +53,37 @@ pub(crate) async fn settle() {
     }
 }
 
+/// Pumps the foreground executor and relinquishes the OS thread until `done`
+/// holds (or a generous bound elapses, which panics).
+///
+/// Prefer this over a fixed number of [`settle`] yields whenever the work being
+/// awaited completes on the **background** executor. `ModelContext::spawn` runs
+/// its future on a background thread and hands the result back to the foreground
+/// via a channel, so the whole blocked-action pipeline (`queue_actions` ->
+/// preprocess -> execute -> `FinishedAction`) resolves across threads. A fixed
+/// yield count races that cross-thread hand-off; worse, a tight foreground
+/// yield-loop keeps the block-on thread busy and starves the single-threaded
+/// test background executor of CPU. Under parallel test execution that made
+/// these tests flaky (and, when combined with a blocking `.await`, could
+/// deadlock via a lost `async_io::block_on` wakeup).
+///
+/// Each iteration runs [`settle`] (which self-wakes via `yield_now`, keeping
+/// `block_on` in its notified re-poll fast path rather than parking, so no
+/// cross-thread wake can be lost) and then briefly *sleeps* the block-on thread.
+/// The sleep is deliberate: it frees the CPU so the (single-worker, in tests)
+/// background executor can actually run — a tight foreground spin-loop instead
+/// starves it and livelocks the wait. The total bound stays well under a second.
+pub(crate) async fn settle_until(app: &mut App, mut done: impl FnMut(&mut App) -> bool) {
+    for _ in 0..600 {
+        settle().await;
+        if done(app) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    panic!("settle_until: condition was not met within the iteration bound");
+}
+
 /// A trivial typed-action root view for tests that need a TUI window whose
 /// real subject is a non-root child view.
 pub(crate) struct TestHostView;
