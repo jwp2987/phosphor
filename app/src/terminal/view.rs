@@ -84,7 +84,8 @@ use crate::ai::blocklist::usage::conversation_usage_view::{
     ConversationUsageInfo, ConversationUsageView, DisplayMode, TimingInfo,
 };
 use crate::ai::blocklist::{
-    block_context_from_terminal_model, AutofireAction, QueuedQueryModel, SlashCommandRequest,
+    block_context_from_terminal_model, AutofireAction, QueuedQuery, QueuedQueryModel,
+    QueuedQueryOrigin, SlashCommandRequest,
 };
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel, AIDocumentVersion};
 use crate::ai::loading::shimmering_warp_loading_text;
@@ -4390,6 +4391,50 @@ impl TerminalView {
         } else if self.git_repo_status.is_some() {
             self.clear_git_repo_status_subscription(ctx);
         }
+    }
+
+    /// Queues a follow-up prompt (from `/compact-and` or `/fork-and-compact`) to fire after the
+    /// current summarization finishes. Under `QueuedPromptsV2` it appends to the multi-row queue
+    /// (rendered in the panel); otherwise it falls back to the single-prompt pending-user-query
+    /// mechanism.
+    pub fn enqueue_followup_prompt(
+        &mut self,
+        prompt: String,
+        origin: QueuedQueryOrigin,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if FeatureFlag::QueuedPromptsV2.is_enabled() {
+            let attachments = self.ai_context_model.update(ctx, |context_model, ctx| {
+                context_model.take_pending_attachments(ctx)
+            });
+            QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                model.append(
+                    conversation_id,
+                    QueuedQuery::new_with_attachments(prompt, origin, attachments),
+                    ctx,
+                );
+            });
+        } else {
+            self.send_user_query_after_next_conversation_finished(
+                prompt, /* show_close_button */ true, /* show_send_now_button */ false, ctx,
+            );
+        }
+    }
+
+    /// Advances the queued-prompts queue when a dispatched queued *command* finishes. Clears the
+    /// in-flight-command marker and drains the next row. No-ops unless a queued command is in
+    /// flight for this terminal view (so ordinary command blocks don't advance the queue).
+    pub(crate) fn on_queued_command_finished(&mut self, ctx: &mut ViewContext<Self>) {
+        let Some(conversation_id) = QueuedQueryModel::as_ref(ctx)
+            .command_in_flight_for_terminal_view(self.view_id, BlocklistAIHistoryModel::as_ref(ctx))
+        else {
+            return;
+        };
+        QueuedQueryModel::handle(ctx).update(ctx, |model, _ctx| {
+            model.clear_command_in_flight(conversation_id);
+        });
+        self.drain_queued_prompts(conversation_id, FinishReason::Complete, ctx);
     }
 
     /// Drains the head of `conversation_id`'s queued-prompts queue when its turn finishes.
@@ -10442,6 +10487,12 @@ impl TerminalView {
                         }
 
                         self.maybe_suggest_open_in_warp(block_completed, ctx);
+
+                        // Advance the queued-prompts queue when a dispatched queued command's
+                        // block completes. No-ops unless a queued command is in flight; the
+                        // `!was_part_of_agent_interaction` filter keeps agent-executed command
+                        // blocks (including LRC snapshots) from advancing the queue.
+                        self.on_queued_command_finished(ctx);
                     }
 
                     // Check if the user tried to run an AWS login command but AWS CLI wasn't installed.
