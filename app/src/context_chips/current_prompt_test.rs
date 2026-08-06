@@ -1438,3 +1438,29 @@ impl CommandExecutor for RecordingCommandExecutor {
         false
     }
 }
+
+// ─── Ported from Warp: `warp/master:app/src/util/git_tests.rs` ───────────────
+//
+// Warp's `detects_gh_auth_errors` targets `util::git::is_gh_auth_error`. The
+// fork carries the same predicate — same three phrases, same lowercasing — as
+// `CurrentPrompt::is_gh_auth_error`, so only the function path is adapted;
+// every assertion is Warp's, unchanged.
+#[test]
+fn detects_gh_auth_errors() {
+    assert!(CurrentPrompt::is_gh_auth_error(
+        "You are not logged in to any GitHub hosts"
+    ));
+    assert!(CurrentPrompt::is_gh_auth_error(
+        "GraphQL: authentication required; run gh auth login"
+    ));
+    assert!(CurrentPrompt::is_gh_auth_error(
+        "To get started with GitHub CLI, run: gh auth login"
+    ));
+
+    assert!(!CurrentPrompt::is_gh_auth_error(
+        "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host"
+    ));
+    assert!(!CurrentPrompt::is_gh_auth_error(
+        "no pull requests found for branch"
+    ));
+}
