@@ -102,6 +102,12 @@ impl ExportTest {
 }
 
 fn initialize_app(app: &mut App) {
+    // Load the i18n bundle so tests that assert on displayed text (e.g. the
+    // "Untitled" export filename, which is now a `t!("common-untitled")`
+    // string) see resolved English strings instead of raw fluent keys. `init`
+    // is a global OnceLock; pin English here for determinism and hermeticity.
+    crate::i18n::init(Some("en"));
+
     app.add_singleton_model(ObjectStoreModel::mock);
     app.add_singleton_model(ExportManager::new);
     app.add_singleton_model(UserWorkspaces::default_mock);
