@@ -450,7 +450,7 @@ impl TuiEditorElement {
             let mut column = TuiFlex::column();
             for (vis_idx, row) in visible_slice.iter().enumerate() {
                 column.add_child(self.render_row(row, &chars, &lattice));
-                if let Some((start_col, end_col)) = self.selection_span_in_row(row, &lattice) {
+                for (start_col, end_col) in self.selection_spans_in_row(row, &lattice) {
                     selected_spans.push((
                         vis_idx as u16,
                         start_col + self.gutter_cols,
@@ -575,17 +575,22 @@ impl TuiEditorElement {
         }
     }
 
-    /// The selection's display-column span within `row`, if the selection
+    /// The display-column spans within `row` for every selection range that
     /// overlaps it. Selection offsets are char indices; terminal highlighting
     /// works in display columns, so query the lattice's retained widths.
-    fn selection_span_in_row(
+    ///
+    /// Multiple ranges can intersect a single row under a multi-cursor
+    /// selection, so every overlapping range contributes its own span rather
+    /// than only the first one found.
+    fn selection_spans_in_row(
         &self,
         row: &DisplayRow,
         lattice: &DisplayLattice<'_>,
-    ) -> Option<(u16, u16)> {
+    ) -> Vec<(u16, u16)> {
         self.selection_ranges
             .iter()
-            .find_map(|selection| Self::char_range_span_in_row(row, lattice, selection.clone()))
+            .filter_map(|selection| Self::char_range_span_in_row(row, lattice, selection.clone()))
+            .collect()
     }
 
     fn char_range_span_in_row(

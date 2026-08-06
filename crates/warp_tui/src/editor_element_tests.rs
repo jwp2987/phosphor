@@ -49,6 +49,28 @@ fn selection_span_uses_grapheme_width() {
     });
 }
 #[test]
+fn multiple_selection_ranges_highlight_every_span_in_a_row() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let model = model(ctx, "abcdef");
+            let mut element = TuiEditorElement::new(&model, ctx);
+            // Two disjoint selections on the same display row: "a" and "cd".
+            // Both must be highlighted, not just the first one found.
+            element.selection_ranges =
+                vec![CharOffset::range(0..1), CharOffset::range(2..4)];
+            let buffer = render_buffer(ctx, element, 10, 1);
+
+            let selection_bg = TuiUiBuilder::from_app(ctx).selection_style().bg;
+            assert_eq!(Some(buffer[(0, 0)].bg), selection_bg, "first range 'a'");
+            assert_ne!(Some(buffer[(1, 0)].bg), selection_bg, "gap 'b'");
+            assert_eq!(Some(buffer[(2, 0)].bg), selection_bg, "second range 'c'");
+            assert_eq!(Some(buffer[(3, 0)].bg), selection_bg, "second range 'd'");
+            assert_ne!(Some(buffer[(4, 0)].bg), selection_bg, "trailing 'e'");
+        });
+    });
+}
+#[test]
 fn text_overrides_follow_soft_wrapped_character_ranges() {
     App::test((), |mut app| async move {
         app.update(|ctx| {
