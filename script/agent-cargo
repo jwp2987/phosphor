@@ -32,8 +32,8 @@
 #   queued build costs minutes, an OOM costs every running agent at once.
 set -euo pipefail
 
-SLOTS="${PHOSPHOR_BUILD_SLOTS:-2}"
-JOBS="${PHOSPHOR_BUILD_JOBS:-4}"
+SLOTS="${PHOSPHOR_BUILD_SLOTS:-3}"
+JOBS="${PHOSPHOR_BUILD_JOBS:-5}"
 MIN_FREE_MB="${PHOSPHOR_MIN_FREE_MB:-8000}"
 LOCK_DIR="${PHOSPHOR_LOCK_DIR:-/cache/git/.phosphor-build/locks}"
 TARGET_ROOT="${PHOSPHOR_TARGET_ROOT:-/cache/git/.phosphor-build/targets}"
