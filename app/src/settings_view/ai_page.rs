@@ -36,8 +36,9 @@ use crate::terminal::cli_agent::{CLIAgentInstallEvent, CLIAgentInstallModel};
 use crate::terminal::CLIAgent;
 use crate::view_components::{
     action_button::{ActionButton, ButtonSize, SecondaryTheme},
-    FilterableDropdown, SubmittableTextInput, SubmittableTextInputEvent,
+    DismissibleToast, FilterableDropdown, SubmittableTextInput, SubmittableTextInputEvent,
 };
+use crate::workspace::ToastStack;
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
 use ::ai::api_keys::ApiKeyManager;
 use enum_iterator::all;
@@ -2242,30 +2243,20 @@ impl AISettingsPageView {
             .collect()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn save_agent_provider_edits(
-        provider_id: &str,
-        name: &str,
-        base_url: &str,
-        api_key: &str,
-        vertex_project: &str,
-        vertex_location: &str,
-        headers: &[(String, String)],
-        models: &[(usize, String, String, u32, u32)],
-        ctx: &mut ViewContext<Self>,
-    ) {
+    fn save_agent_provider_edits(fields: &ProviderEditFields, ctx: &mut ViewContext<Self>) {
+        let mut validation_error = None;
         AISettings::handle(ctx).update(ctx, |settings, ctx| {
             let mut providers = settings.agent_providers.value().clone();
-            if let Some(p) = providers.iter_mut().find(|p| p.id == provider_id) {
-                p.name = name.to_owned();
-                p.base_url = base_url.to_owned();
+            if let Some(p) = providers.iter_mut().find(|p| p.id == fields.provider_id) {
+                p.name = fields.name.clone();
+                p.base_url = fields.base_url.clone();
                 // Vertex-only fields; harmless (kept empty) for other provider types.
-                p.vertex_project = vertex_project.trim().to_owned();
-                p.vertex_location = vertex_location.trim().to_owned();
-                p.extra_headers = headers.to_vec();
+                p.vertex_project = fields.vertex_project.trim().to_owned();
+                p.vertex_location = fields.vertex_location.trim().to_owned();
+                p.extra_headers = fields.headers.clone();
                 // Updates by model_index, skipping out-of-range indices (the form and settings
                 // may briefly disagree mid-rebuild).
-                for (idx, m_name, m_id, ctx_window, max_out) in models {
+                for (idx, m_name, m_id, ctx_window, max_out) in &fields.models {
                     if let Some(m) = p.models.get_mut(*idx) {
                         m.name = m_name.clone();
                         m.id = m_id.clone();
@@ -2273,15 +2264,27 @@ impl AISettingsPageView {
                         m.max_output_tokens = *max_out;
                     }
                 }
+                // Still persists the edit even when invalid (so the user doesn't lose other
+                // in-progress edits like name/headers/models on a typo'd project id) -- the
+                // provider just stays excluded from the picker via `AgentProvider::is_usable`,
+                // same as any other unconfigured provider. The toast below is what's new: it
+                // tells the user *why*, instead of the model silently never appearing.
+                validation_error = p.validation_error();
             }
             let _ = settings.agent_providers.set_value(providers, ctx);
         });
         crate::ai::agent_providers::AgentProviderSecrets::handle(ctx).update(
             ctx,
             |secrets, ctx| {
-                secrets.set(provider_id, api_key.to_owned(), ctx);
+                secrets.set(&fields.provider_id, fields.api_key.clone(), ctx);
             },
         );
+        if let Some(message) = validation_error {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+            });
+        }
     }
 }
 
@@ -2312,6 +2315,33 @@ pub enum PerAgentDimension {
     Toolbar,
     TabMenu,
     Titlebar,
+}
+
+/// All fields the provider-edit form's "Save" button writes in one shot: name / base_url /
+/// api_key / vertex_project / vertex_location / extra_headers / models.
+///
+/// Previously these 8 values were carried as separate positional arguments duplicated across
+/// `SaveAgentProviderEdits`, `SaveAgentProviderEditsThen`, the `to_save_action_with` closure
+/// type, and `save_agent_provider_edits` -- four call sites kept in lockstep by hand (hence the
+/// `#[allow(clippy::too_many_arguments)]` that used to sit on the save function). A transposed
+/// argument at any one of those sites would silently swap two fields (e.g. `api_key` <->
+/// `vertex_project`) with no compiler error. Grouping them into a struct passed by value means
+/// there is exactly one field order to get right, and every call site names its fields instead
+/// of relying on position.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderEditFields {
+    pub provider_id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    /// Vertex AI only (empty for other types): GCP project id + location.
+    pub vertex_project: String,
+    pub vertex_location: String,
+    pub headers: Vec<(String, String)>,
+    /// Only carries the editable part: `(model_index, name, id, context_window,
+    /// max_output_tokens)`. reasoning / tool_call / image / pdf / audio are maintained by
+    /// separate chip actions and don't go through here.
+    pub models: Vec<(usize, String, String, u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2424,34 +2454,8 @@ pub enum AISettingsPageAction {
     /// Saves all editable fields on a provider card in one shot (name / base_url / api_key /
     /// extra_headers / models). Replaces the original "push field-by-field on blur/Enter" UX --
     /// they're all sent together after the user clicks the "Save" button in settings_view.
-    SaveAgentProviderEdits {
-        provider_id: String,
-        name: String,
-        base_url: String,
-        api_key: String,
-        /// Vertex AI only (empty for other types): GCP project id + location.
-        vertex_project: String,
-        vertex_location: String,
-        headers: Vec<(String, String)>,
-        /// Only carries the editable part: `(model_index, name, id, context_window,
-        /// max_output_tokens)`. reasoning / tool_call / image / pdf / audio are maintained by
-        /// separate chip actions and don't go through here.
-        models: Vec<(usize, String, String, u32, u32)>,
-    },
-    SaveAgentProviderEditsThen {
-        provider_id: String,
-        name: String,
-        base_url: String,
-        api_key: String,
-        /// Vertex AI only (empty for other types): GCP project id + location.
-        vertex_project: String,
-        vertex_location: String,
-        headers: Vec<(String, String)>,
-        /// Only carries the editable part: `(model_index, name, id, context_window,
-        /// max_output_tokens)`.
-        models: Vec<(usize, String, String, u32, u32)>,
-        action: Box<AISettingsPageAction>,
-    },
+    SaveAgentProviderEdits(ProviderEditFields),
+    SaveAgentProviderEditsThen(ProviderEditFields, Box<AISettingsPageAction>),
     UpdateAgentProviderModels {
         provider_id: String,
         models: Vec<crate::settings::AgentProviderModel>,
@@ -3384,51 +3388,12 @@ impl TypedActionView for AISettingsPageView {
                 );
                 ctx.notify();
             }
-            AISettingsPageAction::SaveAgentProviderEdits {
-                provider_id,
-                name,
-                base_url,
-                api_key,
-                vertex_project,
-                vertex_location,
-                headers,
-                models,
-            } => {
-                Self::save_agent_provider_edits(
-                    provider_id,
-                    name,
-                    base_url,
-                    api_key,
-                    vertex_project,
-                    vertex_location,
-                    headers,
-                    models,
-                    ctx,
-                );
+            AISettingsPageAction::SaveAgentProviderEdits(fields) => {
+                Self::save_agent_provider_edits(fields, ctx);
                 ctx.notify();
             }
-            AISettingsPageAction::SaveAgentProviderEditsThen {
-                provider_id,
-                name,
-                base_url,
-                api_key,
-                vertex_project,
-                vertex_location,
-                headers,
-                models,
-                action,
-            } => {
-                Self::save_agent_provider_edits(
-                    provider_id,
-                    name,
-                    base_url,
-                    api_key,
-                    vertex_project,
-                    vertex_location,
-                    headers,
-                    models,
-                    ctx,
-                );
+            AISettingsPageAction::SaveAgentProviderEditsThen(fields, action) => {
+                Self::save_agent_provider_edits(fields, ctx);
                 self.handle_action(action.as_ref(), ctx);
             }
             AISettingsPageAction::UpdateAgentProviderModels {

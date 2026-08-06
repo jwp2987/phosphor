@@ -47,7 +47,9 @@ use crate::editor::{
 use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProviderModel};
 use strum::IntoEnumIterator;
 
-use super::ai_page::{AISettingsPageAction, AISettingsPageView, ModelCapabilityKind};
+use super::ai_page::{
+    AISettingsPageAction, AISettingsPageView, ModelCapabilityKind, ProviderEditFields,
+};
 use super::settings_page::{
     build_sub_header, render_customer_type_badge, SettingsWidget, HEADER_PADDING,
 };
@@ -327,21 +329,7 @@ impl ProviderDraftEditors {
     }
 
     fn to_save_action(&self, app: &AppContext) -> AISettingsPageAction {
-        self.to_save_action_with(
-            app,
-            |provider_id, name, base_url, api_key, vertex_project, vertex_location, headers, models| {
-                AISettingsPageAction::SaveAgentProviderEdits {
-                    provider_id,
-                    name,
-                    base_url,
-                    api_key,
-                    vertex_project,
-                    vertex_location,
-                    headers,
-                    models,
-                }
-            },
-        )
+        AISettingsPageAction::SaveAgentProviderEdits(self.collect_fields(app))
     }
 
     fn to_save_then_action(
@@ -349,38 +337,16 @@ impl ProviderDraftEditors {
         app: &AppContext,
         action: AISettingsPageAction,
     ) -> AISettingsPageAction {
-        self.to_save_action_with(
-            app,
-            |provider_id, name, base_url, api_key, vertex_project, vertex_location, headers, models| {
-                AISettingsPageAction::SaveAgentProviderEditsThen {
-                    provider_id,
-                    name,
-                    base_url,
-                    api_key,
-                    vertex_project,
-                    vertex_location,
-                    headers,
-                    models,
-                    action: Box::new(action),
-                }
-            },
+        AISettingsPageAction::SaveAgentProviderEditsThen(
+            self.collect_fields(app),
+            Box::new(action),
         )
     }
 
-    fn to_save_action_with(
-        &self,
-        app: &AppContext,
-        build: impl FnOnce(
-            String,
-            String,
-            String,
-            String,
-            String,
-            String,
-            Vec<(String, String)>,
-            Vec<(usize, String, String, u32, u32)>,
-        ) -> AISettingsPageAction,
-    ) -> AISettingsPageAction {
+    /// Reads every draft editor's current buffer text into a [`ProviderEditFields`], shared by
+    /// [`Self::to_save_action`] and [`Self::to_save_then_action`] so there's a single place that
+    /// knows how to collect the form state.
+    fn collect_fields(&self, app: &AppContext) -> ProviderEditFields {
         let name = self.name_editor.as_ref(app).buffer_text(app);
         let base_url = self.base_url_editor.as_ref(app).buffer_text(app);
         let api_key = self.api_key_editor.as_ref(app).buffer_text(app);
@@ -408,8 +374,8 @@ impl ProviderDraftEditors {
             })
             .collect();
 
-        build(
-            self.provider_id.clone(),
+        ProviderEditFields {
+            provider_id: self.provider_id.clone(),
             name,
             base_url,
             api_key,
@@ -417,7 +383,7 @@ impl ProviderDraftEditors {
             vertex_location,
             headers,
             models,
-        )
+        }
     }
 }
 

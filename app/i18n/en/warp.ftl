@@ -1543,6 +1543,7 @@ settings-agent-providers-remove = Remove
 settings-agent-providers-disable = Disable
 settings-agent-providers-enable = Enable
 settings-agent-providers-disabled-badge = Disabled
+settings-agent-providers-vertex-project-required = Vertex requires a GCP Project ID — enter one before saving, or this provider's models won't appear in the picker.
 settings-agent-providers-disabled-section-expand = ▸ Disabled providers ({$count})
 settings-agent-providers-disabled-section-collapse = ▾ Disabled providers ({$count})
 settings-agent-providers-hidden-catalog-expand = ▸ Hidden providers ({$count})
