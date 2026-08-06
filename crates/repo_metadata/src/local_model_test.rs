@@ -11,11 +11,12 @@ mod tests {
     };
     use crate::repositories::DetectedRepositories;
     use crate::watcher::DirectoryWatcher;
+    use crate::standing_queries::StandingQueryResultsDelta;
     use futures::channel::oneshot;
     use futures::executor::block_on;
     use ignore::gitignore::Gitignore;
     use std::cell::RefCell;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
     use std::rc::Rc;
     use std::time::Duration;
@@ -23,6 +24,7 @@ mod tests {
     use warp_util::standardized_path::StandardizedPath;
     use warpui::r#async::FutureExt as _;
     use warpui::App;
+    use watcher::BulkFilesystemWatcherEvent;
 
     impl LocalRepoMetadataModel {
         fn new_for_test() -> Self {
@@ -295,6 +297,120 @@ mod tests {
                         .entry
                         .contains(&StandardizedPath::try_from_local(&source_file).unwrap()));
                 });
+            });
+        });
+    }
+
+    /// A newly created project-skill file discovered by the filesystem
+    /// watcher (not the initial full index) must produce a
+    /// `StandingQueryResultsUpdated` event carrying the new skill in its
+    /// delta. This is the event the app-side skill watcher
+    /// (`app/src/ai/skills/file_watchers/skill_watcher.rs`) subscribes to via
+    /// `RepoMetadataModel`/`RepoMetadataEvent::StandingQueryResultsUpdated`
+    /// so it can rescan without waiting on a full `RepositoryUpdated`. Also
+    /// exercises `set_project_skill_provider_paths`, which the app must call
+    /// (see `app/src/lib.rs`) for any project skill to be recognized at all.
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn test_watcher_event_emits_standing_query_results_for_new_project_skill() {
+        VirtualFS::test("standing_query_new_project_skill", |dirs, mut vfs| {
+            vfs.mkdir("repo/.git/objects").with_files(vec![
+                Stub::FileWithContent("repo/.git/HEAD", "ref: refs/heads/main"),
+                Stub::FileWithContent(
+                    "repo/.git/config",
+                    "[core]\n\trepositoryformatversion = 0",
+                ),
+            ]);
+
+            let repo_root = dirs.tests().join("repo");
+            let skill_file = repo_root.join(".agents").join("skills").join("my-skill").join("SKILL.md");
+
+            App::test((), |mut app| async move {
+                let directory_watcher = app.add_singleton_model(DirectoryWatcher::new);
+                let repository_handle = directory_watcher.update(&mut app, |watcher, ctx| {
+                    watcher
+                        .add_directory(
+                            StandardizedPath::from_local_canonicalized(&repo_root).unwrap(),
+                            ctx,
+                        )
+                        .unwrap()
+                });
+                let model_handle = app.add_model(|_| {
+                    let mut model = LocalRepoMetadataModel::new_for_test();
+                    model.set_project_skill_provider_paths([PathBuf::from(".agents/skills")]);
+                    model
+                });
+
+                // Initial full index — no skill file exists yet, so this only
+                // establishes the `Indexed` repository state that
+                // `handle_watcher_event` requires.
+                let (indexed_tx, indexed_rx) = oneshot::channel();
+                let indexed_tx = Rc::new(RefCell::new(Some(indexed_tx)));
+                let indexed_tx_for_event = indexed_tx.clone();
+                let repo_root_for_event = repo_root.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_model(&model_handle, move |_, event, _ctx| {
+                        if matches!(
+                            event,
+                            RepositoryMetadataEvent::RepositoryUpdated { path }
+                                if path.to_local_path().as_deref() == Some(repo_root_for_event.as_path())
+                        ) && let Some(tx) = indexed_tx_for_event.borrow_mut().take()
+                        {
+                            let _ = tx.send(());
+                        }
+                    });
+                });
+                model_handle.update(&mut app, |model, ctx| {
+                    model.index_directory(repository_handle, ctx).unwrap();
+                });
+                indexed_rx
+                    .with_timeout(Duration::from_secs(5))
+                    .await
+                    .expect("timed out waiting for initial index")
+                    .expect("initial index sender dropped");
+
+                // Now create the skill file on disk and feed a synthetic
+                // watcher event for it, as the real `BulkFilesystemWatcher`
+                // would after detecting the new file.
+                std::fs::create_dir_all(skill_file.parent().unwrap()).unwrap();
+                std::fs::write(
+                    &skill_file,
+                    "---\nname: my-skill\ndescription: test skill\n---\ncontent\n",
+                )
+                .unwrap();
+
+                let (delta_tx, delta_rx) = oneshot::channel::<StandingQueryResultsDelta>();
+                let delta_tx = Rc::new(RefCell::new(Some(delta_tx)));
+                let delta_tx_for_event = delta_tx.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_model(&model_handle, move |_, event, _ctx| {
+                        if let RepositoryMetadataEvent::StandingQueryResultsUpdated { delta, .. } =
+                            event
+                            && let Some(tx) = delta_tx_for_event.borrow_mut().take()
+                        {
+                            let _ = tx.send(delta.clone());
+                        }
+                    });
+                });
+
+                let watcher_event = BulkFilesystemWatcherEvent {
+                    added: HashSet::from([skill_file.clone()]),
+                    ..Default::default()
+                };
+                model_handle.update(&mut app, |model, ctx| {
+                    model.handle_watcher_event(&watcher_event, ctx);
+                });
+
+                let delta = delta_rx
+                    .with_timeout(Duration::from_secs(5))
+                    .await
+                    .expect("timed out waiting for standing query results")
+                    .expect("delta sender dropped");
+
+                assert!(delta.project_skills_changed());
+                assert!(delta.upserted_project_skills.iter().any(|content| {
+                    content.path.to_local_path().as_deref() == Some(skill_file.as_path())
+                }));
             });
         });
     }

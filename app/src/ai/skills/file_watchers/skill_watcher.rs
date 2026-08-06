@@ -183,6 +183,20 @@ impl SkillWatcher {
                 RepoMetadataEvent::FileTreeEntryUpdated { .. } => {
                     me.handle_queued_project_directory_creations(ctx);
                 }
+                // Standing queries re-evaluate project-skill-provider paths on
+                // every file tree change, independent of the coarser
+                // `RepositoryUpdated` signal above. Rescan whenever the set of
+                // matched skill paths actually changed, so a new/removed
+                // SKILL.md is picked up without waiting for the whole tree to
+                // be rebuilt.
+                RepoMetadataEvent::StandingQueryResultsUpdated { id, delta } => {
+                    if delta.project_skills_changed()
+                        && let RepositoryIdentifier::Local(path) = id
+                        && let Some(local_path) = path.to_local_path()
+                    {
+                        me.scan_repository_for_skills(&local_path, ctx);
+                    }
+                }
                 RepoMetadataEvent::RepositoryUpdated { .. }
                 | RepoMetadataEvent::RepositoryRemoved { .. }
                 | RepoMetadataEvent::FileTreeUpdated { .. }

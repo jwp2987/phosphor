@@ -286,6 +286,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             Ok(true) => {
                 let socket_path = transport.socket_path().clone();
                 let owns_control_master = transport.owns_control_master();
+                let connection_label = connection_label_for_session_info(&session_info);
                 self.state = SshInitState::AwaitingConnect {
                     session_id,
                     session_info,
@@ -295,6 +296,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                     session_id,
                     socket_path,
                     owns_control_master,
+                    connection_label,
                     ctx,
                 );
             }
@@ -520,6 +522,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             Ok(()) => {
                 let socket_path = transport.socket_path().clone();
                 let owns_control_master = transport.owns_control_master();
+                let connection_label = connection_label_for_session_info(&session_info);
                 self.state = SshInitState::AwaitingConnect {
                     session_id,
                     session_info,
@@ -529,6 +532,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                     session_id,
                     socket_path,
                     owns_control_master,
+                    connection_label,
                     ctx,
                 );
             }
@@ -544,6 +548,7 @@ impl<T: EventLoopSender> RemoteServerController<T> {
         session_id: SessionId,
         socket_path: PathBuf,
         owns_control_master: bool,
+        connection_label: String,
         ctx: &mut ModelContext<Self>,
     ) {
         // ControlMaster ownership was decided once in
@@ -554,9 +559,28 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             SshTransport::new(socket_path, self.auth_context.clone(), owns_control_master);
         let auth_context = self.auth_context.clone();
         RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
-            mgr.connect_session(session_id, transport, auth_context, ctx);
+            mgr.connect_session(
+                session_id,
+                transport,
+                auth_context,
+                Some(connection_label),
+                ctx,
+            );
         });
     }
+}
+
+/// Builds the connection label for a session from its [`SessionInfo`],
+/// preferring the SSH host parsed from the interactive `ssh` command over
+/// the remote-reported hostname. Passed to `RemoteServerManager::connect_session`
+/// so it can be surfaced later via `host_label` instead of the raw `HostId`.
+fn connection_label_for_session_info(session_info: &SessionInfo) -> String {
+    let ssh_host = session_info
+        .subshell_info
+        .as_ref()
+        .and_then(|info| info.ssh_connection_info.as_ref())
+        .and_then(|ssh| ssh.host.as_deref());
+    connection_label_from_session_hosts(&session_info.user, &session_info.hostname, ssh_host)
 }
 
 /// Builds the short connection label shown for an SSH session, preferring the

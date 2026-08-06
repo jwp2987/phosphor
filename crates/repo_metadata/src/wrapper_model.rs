@@ -19,6 +19,7 @@ use crate::local_model::{
 };
 use crate::remote_model::{RemoteRepoMetadataModel, RemoteRepositoryMetadataEvent};
 use crate::repository_identifier::{RemoteRepositoryIdentifier, RepositoryIdentifier};
+use crate::standing_queries::StandingQueryResultsDelta;
 use crate::RepoMetadataError;
 
 /// Unified events emitted by the [`RepoMetadataModel`] wrapper.
@@ -41,6 +42,13 @@ pub enum RepoMetadataEvent {
     /// client. Only emitted when the local model has
     /// `emit_incremental_updates` enabled.
     IncrementalUpdateReady { update: RepoMetadataUpdate },
+    /// The paths retained for standing queries (project skills, project rule
+    /// files) changed for a repository. Only emitted by local repositories
+    /// today — the remote sub-model does not evaluate standing queries.
+    StandingQueryResultsUpdated {
+        id: RepositoryIdentifier,
+        delta: StandingQueryResultsDelta,
+    },
 }
 
 /// Singleton wrapper that provides a unified API over local and remote
@@ -125,12 +133,12 @@ impl RepoMetadataModel {
                     update: update.clone(),
                 }
             }
-            // Standing-query results are exposed through
-            // `LocalRepoMetadataModel::standing_query_results`; they are not
-            // forwarded through the unified wrapper event (the fork's skill
-            // watcher still loads skills from the file tree on
-            // `RepositoryUpdated`, not from a standing-query delta stream).
-            RepositoryMetadataEvent::StandingQueryResultsUpdated { .. } => return,
+            RepositoryMetadataEvent::StandingQueryResultsUpdated { path, delta } => {
+                RepoMetadataEvent::StandingQueryResultsUpdated {
+                    id: RepositoryIdentifier::local(path.clone()),
+                    delta: delta.clone(),
+                }
+            }
         };
         ctx.emit(unified);
     }
@@ -284,6 +292,38 @@ impl RepoMetadataModel {
         let path = path.clone();
         self.local
             .update(ctx, |local, ctx| local.remove_lazy_loaded_path(&path, ctx));
+    }
+
+    /// Registers paths that must be loaded even when gitignored or beyond the
+    /// tree's size limit.
+    ///
+    /// This delegates to the local model because force-included path matching
+    /// happens while building local file trees. Remote repositories receive the
+    /// resulting file-tree metadata over the existing remote sync protocol.
+    pub fn register_force_included_paths(
+        &self,
+        paths: impl IntoIterator<Item = std::path::PathBuf>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let paths: Vec<_> = paths.into_iter().collect();
+        self.local.update(ctx, |local, _| {
+            local.register_force_included_paths(paths);
+        });
+    }
+
+    /// Configures the directories treated as project-skill providers for
+    /// standing-query discovery (e.g. `.agents/skills`). Delegates to the
+    /// local model, which is the only side that evaluates standing queries
+    /// while building the file tree.
+    pub fn set_project_skill_provider_paths(
+        &self,
+        paths: impl IntoIterator<Item = std::path::PathBuf>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let paths: Vec<_> = paths.into_iter().collect();
+        self.local.update(ctx, |local, _| {
+            local.set_project_skill_provider_paths(paths);
+        });
     }
 
     // ── Remote-specific operations ─────────────────────────────────

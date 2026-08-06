@@ -67,7 +67,8 @@ impl FileSearchModel {
                 }
                 RepoMetadataEvent::FileTreeEntryUpdated { .. }
                 | RepoMetadataEvent::UpdatingRepositoryFailed { .. }
-                | RepoMetadataEvent::IncrementalUpdateReady { .. } => {}
+                | RepoMetadataEvent::IncrementalUpdateReady { .. }
+                | RepoMetadataEvent::StandingQueryResultsUpdated { .. } => {}
             },
         );
 
