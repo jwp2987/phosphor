@@ -1743,6 +1743,9 @@ fn initialize_app(
         let conversations = &multi_agent_conversations;
         ctx.add_singleton_model(move |_| BlocklistAIHistoryModel::new(ai_queries, conversations));
     }
+    // Per-conversation queued prompts. Registered after the history model since it subscribes to
+    // history events for cleanup.
+    ctx.add_singleton_model(ai::blocklist::QueuedQueryModel::new);
     {
         let (restored, failed_to_restore) =
             RestoredAgentConversations::new(multi_agent_conversations);

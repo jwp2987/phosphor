@@ -1407,6 +1407,22 @@ impl BlocklistAIContextModel {
         self.pending_inline_at_context_attachments.clear();
     }
 
+    /// Removes and returns all pending attachments, emitting a resync so the staged context
+    /// clears. Used when a queued prompt captures the currently-staged attachments.
+    pub fn take_pending_attachments(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> Vec<PendingAttachment> {
+        if !self.pending_attachments.is_empty() {
+            ctx.emit(BlocklistAIContextEvent::UpdatedPendingContext {
+                previous_block_ids: self.pending_context_block_ids.clone(),
+                requires_block_resync: false,
+                requires_text_resync: false,
+            });
+        }
+        std::mem::take(&mut self.pending_attachments)
+    }
+
     /// Appends attachments to the pending list.
     pub fn append_pending_attachments(
         &mut self,
