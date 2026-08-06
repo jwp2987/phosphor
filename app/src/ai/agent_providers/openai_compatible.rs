@@ -47,6 +47,13 @@ pub enum OpenAiCompatibleError {
 
     #[error("Request failed: {0}")]
     Other(String),
+
+    #[error(
+        "refusing to send the API key to {0} over plaintext HTTP — only https:// or a \
+         loopback endpoint (localhost/127.0.0.1) may carry a key; use https, or point this \
+         provider at a local runtime"
+    )]
+    InsecureEndpoint(String),
 }
 
 /// Normalizes a user-supplied base_url into an absolute URL, tolerating a
@@ -82,6 +89,14 @@ pub async fn fetch_openai_compatible_models(
 
     let mut req = client.get(&url);
     if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {
+        // Defense-in-depth: never carry the API key as a plaintext `Authorization: Bearer`
+        // header outside loopback. `https://` is fine (TLS); `http://localhost` /
+        // `http://127.0.0.1` (Ollama et al.) never leaves the machine. Any other `http://`
+        // host would leak the key to whoever can observe the wire, so refuse outright
+        // rather than silently sending it or silently dropping it.
+        if super::is_plaintext_bearer_risk(&base) {
+            return Err(OpenAiCompatibleError::InsecureEndpoint(base));
+        }
         req = req.bearer_auth(key);
     }
 
@@ -104,4 +119,109 @@ pub async fn fetch_openai_compatible_models(
     models.sort_by(|a, b| a.id.cmp(&b.id));
     models.dedup_by(|a, b| a.id == b.id);
     Ok(models)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Caps a fetch attempt so a regression that starts making a real network call (instead
+    /// of failing fast, either via our own guard or a loopback connection refusal) fails the
+    /// test in a few seconds rather than hanging the suite.
+    async fn fetch_bounded(
+        client: Client,
+        base_url: &str,
+        api_key: Option<&str>,
+    ) -> Result<Vec<OpenAiCompatibleModel>, OpenAiCompatibleError> {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fetch_openai_compatible_models(client, base_url, api_key),
+        )
+        .await
+        .expect("fetch must not hang — either our guard or a loopback connection refusal should return promptly")
+    }
+
+    #[tokio::test]
+    async fn refuses_bearer_over_plaintext_http_to_non_loopback_host() {
+        let err = fetch_bounded(
+            Client::new_for_test(),
+            "http://example.com",
+            Some("super-secret-key"),
+        )
+        .await
+        .expect_err("must refuse to send the key over plaintext HTTP to a non-loopback host");
+
+        assert!(
+            matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
+            "expected InsecureEndpoint, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("example.com"),
+            "error should name the offending endpoint: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_bearer_over_plaintext_http_to_non_loopback_ip() {
+        let err = fetch_bounded(
+            Client::new_for_test(),
+            "http://192.168.1.50:11434",
+            Some("super-secret-key"),
+        )
+        .await
+        .expect_err("a LAN IP is not loopback and must be refused");
+
+        assert!(matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)));
+    }
+
+    #[tokio::test]
+    async fn allows_bearer_over_plaintext_http_to_loopback() {
+        // Port 1 is a reserved port essentially never listening, so this fails fast with a
+        // connection error -- what matters is that it is NOT our InsecureEndpoint guard,
+        // proving the local-Ollama-with-a-key use case still gets past the check.
+        let err = fetch_bounded(
+            Client::new_for_test(),
+            "http://127.0.0.1:1",
+            Some("some-local-key"),
+        )
+        .await
+        .expect_err("nothing should be listening on port 1");
+
+        assert!(
+            !matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
+            "loopback http:// with a key must not be treated as insecure: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn allows_bearer_over_https_to_any_host() {
+        let err = fetch_bounded(
+            Client::new_for_test(),
+            "https://127.0.0.1:1",
+            Some("some-key"),
+        )
+        .await
+        .expect_err("nothing should be listening on port 1");
+
+        assert!(
+            !matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
+            "https:// must never be flagged as insecure: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_key_never_triggers_the_insecure_endpoint_guard() {
+        // No key -> no Authorization header is attempted at all, so the guard must not
+        // fire even for a plain http:// endpoint (matches the existing "unauthenticated
+        // local service" tolerance -- absence of a key is never itself insecure). Uses a
+        // loopback address so the test never makes a real network call either way.
+        let err = fetch_bounded(Client::new_for_test(), "http://127.0.0.1:1", None)
+            .await
+            .expect_err("nothing should be listening on port 1");
+
+        assert!(
+            !matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
+            "no key configured should never trip the insecure-endpoint guard: {err}"
+        );
+    }
 }

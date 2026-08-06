@@ -983,6 +983,21 @@ fn render_custom_file_value(
         ));
     }
     let path = dir.join(rel_path);
+    // Defense in depth beyond the `..`/absolute check above (mirrors `custom_prompt_raw`):
+    // resolve symlinks and confirm the target still lives inside the prompt dir, so a
+    // symlink placed in the dir (e.g. `system/local.j2` -> `/etc/shadow`) can't be used to
+    // render an arbitrary file outside it into the system prompt sent to the model / shown
+    // in the UI. A canonicalize failure (missing file, broken link) is left to the
+    // `read_to_string` below, which reports it as an ordinary read error.
+    if let (Ok(canon_dir), Ok(canon_path)) =
+        (std::fs::canonicalize(dir), std::fs::canonicalize(&path))
+    {
+        if !canon_path.starts_with(&canon_dir) {
+            return Err(format!(
+                "path {rel:?} resolves outside the prompt dir; refusing"
+            ));
+        }
+    }
     let source = std::fs::read_to_string(&path)
         .map_err(|e| format!("read {} failed: {e}", path.display()))?;
     env.render_named_str(rel, &source, ctx)
@@ -1905,6 +1920,52 @@ mod tests {
             render_custom_file_from(&env, tmp.path(), "nope.j2", &ctx).is_err(),
             "a missing file should return Err (caller falls back to auto)"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn custom_file_override_rejects_symlink_escape() {
+        // The `..`/absolute check in render_custom_file_value only inspects the *requested*
+        // relative path string; a symlink living inside the allowed dir but pointing outside
+        // it bypasses that check entirely (the path string itself is innocuous, e.g.
+        // "system/local.j2"). Regression test for the canonicalize + starts_with containment
+        // check added alongside it.
+        let prompt_dir = tempfile::tempdir().unwrap();
+        let secret_dir = tempfile::tempdir().unwrap();
+        let secret_path = secret_dir.path().join("secret.txt");
+        std::fs::write(&secret_path, "TOP SECRET, should never render").unwrap();
+
+        let link_path = prompt_dir.path().join("escape.j2");
+        std::os::unix::fs::symlink(&secret_path, &link_path).unwrap();
+
+        let env = build_env();
+        let ctx = PromptContext::default();
+        let result = render_custom_file_from(&env, prompt_dir.path(), "escape.j2", &ctx);
+        assert!(
+            result.is_err(),
+            "a symlink resolving outside the prompt dir must be refused, got: {result:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn custom_file_override_allows_symlink_within_the_prompt_dir() {
+        // A symlink is fine as long as it still resolves inside the allowed dir (e.g. a user
+        // aliasing one custom prompt to another) -- the containment check must not be
+        // overzealous and break that.
+        let prompt_dir = tempfile::tempdir().unwrap();
+        let real_path = prompt_dir.path().join("real.j2");
+        std::fs::write(&real_path, "REAL {{ model_id }}").unwrap();
+        let link_path = prompt_dir.path().join("alias.j2");
+        std::os::unix::fs::symlink(&real_path, &link_path).unwrap();
+
+        let env = build_env();
+        let ctx = PromptContext {
+            model_id: "aliased-model".into(),
+            ..Default::default()
+        };
+        let out = render_custom_file_from(&env, prompt_dir.path(), "alias.j2", &ctx).unwrap();
+        assert_eq!(out, "REAL aliased-model");
     }
 
     // -- active-ai templates in the shared hot-reload env --------------------
