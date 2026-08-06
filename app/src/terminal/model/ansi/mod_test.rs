@@ -1130,3 +1130,19 @@ fn tmux_pane_writer_returns_original_byte_count() {
     assert!(output_str.starts_with("send-keys -Ht %42"));
     assert!(output_str.ends_with('\n'));
 }
+
+/// Ported from warp/master `app/src/terminal/model/ansi/mod_tests.rs`
+/// (`parse_osc1337_without_second_param_does_not_panic`). Assertions unchanged.
+#[test]
+fn parse_osc1337_without_second_param_does_not_panic() {
+    // Regression for #12817: a bare OSC 1337 with no second parameter
+    // (`ESC ] 1337 BEL`) used to index `params[1]` unconditionally and panic
+    // with "index out of bounds". Untrusted PTY output must never crash the
+    // parser; a malformed sequence should be ignored instead.
+    let bytes: &[u8] = b"\x1b]1337\x07";
+    let (_, _handler) = parse_bytes(bytes);
+
+    // Also exercise the ST-terminated form.
+    let bytes: &[u8] = b"\x1b]1337\x1b\\";
+    let (_, _handler) = parse_bytes(bytes);
+}
