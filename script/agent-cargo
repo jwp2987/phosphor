@@ -78,8 +78,23 @@ watch_memory() {
   done
 }
 
+# Re-read the slot count on every poll pass rather than trusting the value bash
+# captured at start-up. A queued invocation can wait a long time, and raising
+# the cap mid-flight would otherwise never reach it: bash has already read the
+# script, so an edit cannot change a running process's loop bound, and the new
+# slot sits idle until every waiting invocation happens to exit. Reading the
+# override file each pass makes tuning take effect on the queue that is
+# actually waiting.
+slot_count() {
+  local n
+  n="$(cat "$LOCK_DIR/../slots" 2>/dev/null)"
+  [[ "$n" =~ ^[0-9]+$ ]] && ((n > 0)) && { echo "$n"; return; }
+  echo "$SLOTS"
+}
+
 while :; do
-  for ((i = 1; i <= SLOTS; i++)); do
+  live_slots="$(slot_count)"
+  for ((i = 1; i <= live_slots; i++)); do
     exec {fd}>"$LOCK_DIR/slot$i"
     if flock -n "$fd"; then
       # Hold the slot but wait for headroom: a free slot does not imply a safe
