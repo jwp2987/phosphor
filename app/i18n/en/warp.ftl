@@ -1785,6 +1785,16 @@ keybinding-desc-workspace-toggle-block-snackbar = Toggle sticky command header
 
 # Window / tab close
 keybinding-desc-workspace-rename-active-tab = Rename the current tab
+
+# Tab grouping / pinning
+keybinding-desc-workspace-new-tab-group = Create new tab group
+keybinding-desc-workspace-new-tab-group-from-active-or-selected-tabs = Create tab group from active or selected tab(s)
+keybinding-desc-workspace-remove-active-or-selected-tabs-from-group = Remove active or selected tab(s) from group
+keybinding-desc-workspace-pin-active-tab = Pin current tab
+keybinding-desc-workspace-unpin-active-tab = Unpin current tab
+keybinding-desc-workspace-pin-active-tab-group = Pin current tab group
+keybinding-desc-workspace-unpin-active-tab-group = Unpin current tab group
+
 keybinding-desc-workspace-terminate-app = Quit Phosphor
 keybinding-desc-workspace-close-window = Close Window
 keybinding-desc-workspace-close-active-tab = Close the current tab

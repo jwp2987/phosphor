@@ -25,6 +25,7 @@ use crate::util::truncation::truncate_from_end;
 
 use crate::window_settings::WindowSettings;
 use crate::workspace::sync_inputs::SyncedInputState;
+use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::tab_settings::{TabCloseButtonPosition, TabSettings};
 use crate::workspace::{
     PaneViewLocator, TabBarDropTargetData, TabBarLocation, TabContextMenuAnchor, WorkspaceAction,
@@ -115,7 +116,13 @@ pub enum NewSessionMenuItem {
     OpenLaunchConfig(LaunchConfig),
     OpenLaunchConfigDocs,
     CreateNewTabConfig,
+    /// Creates a new, empty tab group containing a single new tab.
+    CreateNewTabGroup,
 }
+
+/// Label for the "Move to group" tab context-menu submenu. The submenu itself
+/// (and its sidecar) is a #108 follow-up, so this currently has no consumer.
+pub const MOVE_TO_GROUP_LABEL: &str = "Move to group";
 
 #[derive(Clone, Copy)]
 pub struct PaneNameMenuTarget {
@@ -144,6 +151,13 @@ pub struct TabData {
     pub indicator_hover_state: MouseStateHandle,
     // Used by a later drag-tab branch to distinguish tabs that have moved into detached windows.
     pub detached: bool,
+    /// Tab group this tab belongs to, if any. Gated by `FeatureFlag::GroupedTabs`.
+    pub group_id: Option<TabGroupId>,
+    /// True while this tab is part of the active multi-selection (cmd/shift click).
+    pub in_multi_selection: bool,
+    /// True when this (ungrouped) tab is pinned to the front of the tab list.
+    /// Gated by `FeatureFlag::PinnedTabs`.
+    pub pinned: bool,
 }
 
 const TAB_COLOR_ICON_PATH: &str = "bundled/svg/ellipse.svg";
@@ -161,6 +175,9 @@ impl TabData {
             selected_color: SelectedTabColor::Unset,
             indicator_hover_state: Default::default(),
             detached: false,
+            group_id: None,
+            in_multi_selection: false,
+            pinned: false,
         }
     }
 
@@ -191,6 +208,7 @@ impl TabData {
         let mut menu_items = vec![];
 
         for section_items in [
+            self.pin_menu_items(index),
             self.session_sharing_menu_items(index, ctx),
             self.modify_tab_menu_items(index, tabs_len, pane_name_target, ctx),
             self.close_tab_menu_items(index, tabs_len, ctx),
@@ -206,6 +224,22 @@ impl TabData {
             menu_items.extend(section_items);
         }
         menu_items
+    }
+
+    /// Pin/unpin entry for the per-tab right-click menu.
+    fn pin_menu_items(&self, index: usize) -> Vec<MenuItem<WorkspaceAction>> {
+        if !FeatureFlag::PinnedTabs.is_enabled() {
+            return vec![];
+        }
+
+        let (label, action) = if self.pinned {
+            ("Unpin tab", WorkspaceAction::UnpinTab(index))
+        } else {
+            ("Pin tab", WorkspaceAction::PinTab(index))
+        };
+        vec![MenuItemFields::new(label)
+            .with_on_select_action(action)
+            .into_item()]
     }
 
     fn session_sharing_menu_items(
