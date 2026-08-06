@@ -22,22 +22,21 @@ file is the live tracker: **mark an item `- [x]` the moment it's verified done.*
 
 ## #11 status — verified against code on `main` 2026-08-06
 
-Of issue #11's **56 checked `[x]` items: 44 done, 12 outstanding.** (The 13
-unchecked `[ ]` items are all keep-dropped/cloud — OTEL, VoiceInputLifecycle,
-semantic-search, RunAgents orchestration, computer-use recording, cloud-mode-v2,
-product-analytics telemetry, `IsCloudConversationStorageEnabled`, etc. — not
-work, by decision.)
+Of issue #11's **56 checked `[x]` items: 44 built + 2 resolved 2026-08-06 eve
+(pending-edit-batch core merged via #105; history_model remainder keep-dropped
+per #107) = 46. 10 remain**, of which 3 are decisions/holds (global-skills,
+skill-remote-path, local_control app-side) and **7 are buildable — now in-flight
+on the overnight agent fleet**. (The 13 unchecked `[ ]` items are all
+keep-dropped/cloud — OTEL, VoiceInputLifecycle, semantic-search, RunAgents
+orchestration, computer-use recording, cloud-mode-v2, product-analytics
+telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
 
-Each of the 12 below was confirmed **not-done by symbol-checking `main`**
-(evidence in parens).
-
-### Done on a branch this session (not merged to main)
-- [~] **Pending-edit-batch conflict-discard** — CORE BUILT on branch
-  `parity-pending-edit-batch` (commit `2d32ead93`, `Fixes #101`): `PendingEditBatch`
-  200 ms debounce + push-conflict-discard + save-flush; 3 oracle tests green in
-  isolation. Deferred sub-part = `BufferConflictDetected` server→client push,
-  tracked as **#102** (blocks `handle_buffer_conflict_detected` + its 4th test).
-  Assessment: `specs/pending-edit-batch/ASSESS.md`. → review + merge.
+### Merged this session
+- [x] **Pending-edit-batch conflict-discard** — CORE MERGED (PR #105, `Fixes #101`):
+  `PendingEditBatch` 200 ms debounce + push-conflict-discard + save-flush; 3 oracle
+  tests green in isolation. Deferred sub-part `BufferConflictDetected` server→client
+  push tracked as **#102** (blocks `handle_buffer_conflict_detected` + its 4th test);
+  now being built by the fleet. Assessment: `specs/pending-edit-batch/ASSESS.md`.
 
 ### Not started — true gaps
 - [ ] **WSLENV passthrough vars** — `wsl_env_allowlist` absent (0 hits). Windows-only;
@@ -49,11 +48,18 @@ Each of the 12 below was confirmed **not-done by symbol-checking `main`**
   KEEP-DROPPED (needs maintainer sign-off): the one non-cloud fn has no consumer and
   rests on a `LocalOrRemotePath` type migration.
 
+### Keep-dropped (decided this session)
+- [x] **history_model reconciliation** — non-cloud parts DONE (optimistic rename /
+  event-sequence / child-index cleanup + `TransientError` recovery). Remaining
+  `WaitForEvents`/orchestration part is **KEEP-DROPPED (maintainer 2026-08-06)**: it
+  is cloud orchestration (only a Warp-server tool call triggers it; RunAgents /
+  OrchestrationEventStreamer are the dropped cloud surface). The BYOP recovery
+  equivalent (`recovery_pending`→`TransientError`) already covers the local case, so
+  `WaitingForEvents` never firing is correct, not a bug. The constructor-arity bits
+  (`start_new_conversation`/`prompt_history_candidates`) have no consumer (tie to the
+  undecided NLD-flags item). Recorded on #11; tracking issue #107 closed.
+
 ### Core landed — sub-part / wiring still outstanding
-- [ ] **history_model reconciliation** — optimistic rename / event-sequence /
-  child-index cleanup + `TransientError`/`WaitingForEvents` status landed; but the
-  `WaitForEvents` **action subsystem** + wider-arity `prompt_history_candidates` /
-  `start_new_conversation` are absent (0 hits) — so `WaitingForEvents` never fires yet.
 - [ ] **Skill remote-path** — `get_scope_for_path` done (`#59`); but
   `get_provider_for_path(path: &Path)` (`crates/ai/src/skills/skill_provider.rs:174`)
   is still `&Path`, not `LocalOrRemotePath`. DEFER: no remote-skill consumer exists.
