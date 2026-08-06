@@ -16,6 +16,13 @@ if [ "${GITHUB_ACTIONS}" == "true" ]; then
 fi
 
 # Install Rust.
+#
+# Note the guard is deliberately `command -v cargo`, so a host that already has
+# a distro-packaged cargo (e.g. /usr/bin/cargo from apt) is left alone. The
+# trade-off: rustup is then never installed, so `rust-toolchain.toml`'s channel
+# pin and its `components = ["rustfmt", "clippy"]` are silently ignored. On such
+# hosts rustfmt must come from the distro instead — see
+# `script/linux/install_test_deps`.
 if ! command -v cargo; then
   echo "⬇️  Installing rust..."
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh $CI_FLAGS
