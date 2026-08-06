@@ -99,9 +99,20 @@ while :; do
       status=$?
       set -e
       kill "$watcher" 2>/dev/null || true
-      echo "$(date -Is) agent=$agent low_avail_mb=$(cat "$low_file" 2>/dev/null) args=$*" \
+      echo "$(date -Is) agent=$agent low_avail_mb=$(cat "$low_file" 2>/dev/null) exit=$status args=$*" \
         >>"$LOG_DIR/mem-$agent.log"
       rm -f "$low_file"
+      # Emit the outcome on stderr as well as exiting with it. Piping this
+      # script through `| head` / `| tail` / `| grep` replaces the pipeline's
+      # exit status with the filter's, silently turning a failed build into an
+      # apparent success — a mistake made twice on this repo in one day, once
+      # via `| head` and once via `|| true`. stderr is not consumed by those
+      # filters, so this line survives them and is the value to trust.
+      if [[ $status -eq 0 ]]; then
+        echo "[agent-cargo] RESULT agent=$agent exit=0 OK" >&2
+      else
+        echo "[agent-cargo] RESULT agent=$agent exit=$status FAILED" >&2
+      fi
       exit $status
     fi
     exec {fd}>&-
