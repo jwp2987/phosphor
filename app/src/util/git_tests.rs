@@ -4,7 +4,10 @@ use command::r#async::Command;
 use command::Stdio;
 use tempfile::TempDir;
 
-use super::{detect_current_branch, detect_current_branch_display, get_pr_for_branch, PrInfo};
+use super::{
+    detect_current_branch, detect_current_branch_display, get_pr_for_branch, is_gh_missing_error,
+    PrInfo, RepositoryInfo,
+};
 
 /// Helper: run a git command inside the given repo directory.
 async fn git(repo: &Path, args: &[&str]) -> String {
@@ -173,4 +176,168 @@ async fn get_pr_for_branch_returns_none_when_gh_cannot_resolve_github_repo() {
         get_pr_for_branch(&repo, Some(&path_env)).await.unwrap(),
         None
     );
+}
+
+// ─── Ported from Warp: `gh repo view` / error-classification coverage ────────
+//
+// These target helpers that did not exist in the fork until issue #135 was
+// fixed (`RepositoryInfo`, `repository_info_from_gh_output`,
+// `get_repository_info`, `is_gh_missing_error`, `is_no_pr_for_branch_error`,
+// `is_repository_lookup_not_applicable_error`). Warp's assertions are verbatim;
+// the only change is reusing the `fake_gh` shim above instead of re-inlining
+// Warp's identical copy in each test.
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_parses_name_and_owner() {
+    // No url in the output => host is absent.
+    assert_eq!(
+        super::repository_info_from_gh_output(
+            r#"{"name":"warp-internal","owner":{"login":"warpdotdev"}}"#
+        )
+        .unwrap(),
+        RepositoryInfo {
+            name: "warp-internal".to_owned(),
+            owner: Some("warpdotdev".to_owned()),
+            host: None,
+        }
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_parses_host_from_url() {
+    assert_eq!(
+        super::repository_info_from_gh_output(
+            r#"{"name":"warp-internal","owner":{"login":"warpdotdev"},"url":"https://github.com/warpdotdev/warp-internal"}"#
+        )
+        .unwrap(),
+        RepositoryInfo {
+            name: "warp-internal".to_owned(),
+            owner: Some("warpdotdev".to_owned()),
+            host: Some("github.com".to_owned()),
+        }
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_rejects_missing_name() {
+    assert!(super::repository_info_from_gh_output(r#"{"owner":{"login":"warpdotdev"}}"#).is_err());
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_rejects_missing_owner_login() {
+    assert!(
+        super::repository_info_from_gh_output(r#"{"name":"warp-internal","owner":{}}"#).is_err()
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_rejects_empty_fields() {
+    assert!(
+        super::repository_info_from_gh_output(r#"{"name":"","owner":{"login":"warpdotdev"}}"#)
+            .is_err()
+    );
+    assert!(
+        super::repository_info_from_gh_output(r#"{"name":"warp-internal","owner":{"login":""}}"#)
+            .is_err()
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_rejects_malformed_json() {
+    assert!(super::repository_info_from_gh_output("not json").is_err());
+}
+
+#[cfg(all(feature = "local_fs", unix))]
+#[tokio::test]
+async fn get_repository_info_reads_gh_repo_view() {
+    let (_dir, repo) = init_repo().await;
+    let (_fake_bin, path_env) = fake_gh(
+        "#!/bin/sh\nprintf '{\"name\":\"warp-internal\",\"owner\":{\"login\":\"warpdotdev\"}}\\n'\n",
+    );
+
+    assert_eq!(
+        super::get_repository_info(&repo, Some(&path_env))
+            .await
+            .unwrap(),
+        Some(RepositoryInfo {
+            name: "warp-internal".to_owned(),
+            owner: Some("warpdotdev".to_owned()),
+            host: None,
+        })
+    );
+}
+
+#[cfg(all(feature = "local_fs", unix))]
+#[tokio::test]
+async fn get_repository_info_returns_none_when_gh_cannot_resolve_github_repo() {
+    let (_dir, repo) = init_repo().await;
+    let (_fake_bin, path_env) = fake_gh(
+        "#!/bin/sh\nprintf 'none of the git remotes configured for this repository point to a known GitHub host\\n' >&2\nexit 1\n",
+    );
+
+    assert_eq!(
+        super::get_repository_info(&repo, Some(&path_env))
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn detects_missing_gh_errors() {
+    assert!(is_gh_missing_error(
+        "Failed to execute gh command: No such file or directory (os error 2)"
+    ));
+    assert!(is_gh_missing_error(
+        "Failed to execute gh command: program not found"
+    ));
+
+    assert!(!is_gh_missing_error(
+        "gh command failed: GraphQL: authentication required; run gh auth login"
+    ));
+    assert!(!is_gh_missing_error(
+        "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host"
+    ));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn detects_no_pr_for_branch_errors() {
+    assert!(super::is_no_pr_for_branch_error(
+        "gh command failed: no pull requests found for branch \"feature-a\""
+    ));
+    assert!(super::is_no_pr_for_branch_error(
+        "gh command failed: no open pull requests found for branch \"feature-a\""
+    ));
+    assert!(super::is_no_pr_for_branch_error(
+        "GraphQL: NO OPEN PULL REQUESTS FOUND FOR BRANCH feature-a"
+    ));
+    assert!(!super::is_no_pr_for_branch_error("authentication required"));
+    assert!(!super::is_no_pr_for_branch_error("repository not found"));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn detects_repository_lookup_not_applicable_errors() {
+    assert!(super::is_repository_lookup_not_applicable_error(
+        "gh command failed: none of the git remotes configured for this repository point to a known GitHub host"
+    ));
+    assert!(super::is_repository_lookup_not_applicable_error(
+        "gh command failed: no GitHub remotes"
+    ));
+    assert!(super::is_repository_lookup_not_applicable_error(
+        "gh command failed: not a GitHub repository"
+    ));
+    assert!(!super::is_repository_lookup_not_applicable_error(
+        "authentication required"
+    ));
+    assert!(!super::is_repository_lookup_not_applicable_error(
+        "repository not found"
+    ));
 }
