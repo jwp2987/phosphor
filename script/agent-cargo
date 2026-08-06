@@ -2,10 +2,8 @@
 # agent-cargo — build-concurrency governor for parallel agents on this host.
 #
 # Why this exists: the workspace is large enough that unbounded concurrent
-# compiles exhaust RAM and take the whole session down. Rather than the old
-# single global lock (one compile at a time), this host has enough RAM/cores
-# to run a small, fixed number of compiles concurrently, so this script hands
-# out N slots from a semaphore instead of 1.
+# compiles exhaust RAM and take the whole session down. This hands out a small,
+# fixed number of slots so concurrency stays inside what the host can take.
 #
 # Usage:
 #   script/agent-cargo <agent-name> <cargo-args...>
@@ -14,18 +12,32 @@
 #   script/agent-cargo pinned-tabs check -p warp --features gui
 #
 # Behavior:
-#   - Blocks until one of PHOSPHOR_BUILD_SLOTS slots is free, then runs cargo.
+#   - Blocks until one of PHOSPHOR_BUILD_SLOTS slots is free AND the host has
+#     PHOSPHOR_MIN_FREE_MB available, then runs cargo.
 #   - Pins the invocation to its own CARGO_TARGET_DIR keyed by <agent-name>,
 #     so concurrent agents on different branches cannot contaminate each
 #     other's build artifacts (the shared-target contamination that produced
-#     phantom "missing symbol" errors on the previous host).
-#   - Caps per-invocation parallelism so N concurrent slots stay within RAM.
+#     phantom "missing symbol" errors on a previous host).
+#   - Records the low-water mark of available memory per run to
+#     $LOG_DIR/mem-<agent>.log, so slot sizing can be driven by measurement
+#     rather than guesswork.
+#
+# SIZING — read before changing:
+#   Slot count must be sized against the HEAVIEST cargo invocation agents
+#   actually run, which is `nextest run` / `--all-targets`, NOT `cargo check`.
+#   A check peaks around 1-2 GB over baseline; building and LINKING the test
+#   binaries is several GB *per parallel job*, and mold deliberately trades
+#   memory for link speed. Sizing slots from a `check` measurement is how this
+#   host got OOM-reaped once already. When in doubt, lower the numbers: a
+#   queued build costs minutes, an OOM costs every running agent at once.
 set -euo pipefail
 
-SLOTS="${PHOSPHOR_BUILD_SLOTS:-4}"
-JOBS="${PHOSPHOR_BUILD_JOBS:-6}"
+SLOTS="${PHOSPHOR_BUILD_SLOTS:-2}"
+JOBS="${PHOSPHOR_BUILD_JOBS:-4}"
+MIN_FREE_MB="${PHOSPHOR_MIN_FREE_MB:-8000}"
 LOCK_DIR="${PHOSPHOR_LOCK_DIR:-/cache/git/.phosphor-build/locks}"
 TARGET_ROOT="${PHOSPHOR_TARGET_ROOT:-/cache/git/.phosphor-build/targets}"
+LOG_DIR="${PHOSPHOR_LOG_DIR:-/cache/git/.phosphor-build/logs}"
 
 if [[ $# -lt 2 ]]; then
   echo "usage: $0 <agent-name> <cargo-args...>" >&2
@@ -35,21 +47,54 @@ fi
 agent="$1"
 shift
 
-mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent"
+mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent" "$LOG_DIR"
 
 export CARGO_TARGET_DIR="$TARGET_ROOT/$agent"
 export CARGO_BUILD_JOBS="$JOBS"
 ulimit -n 8192
 
-# Acquire any free slot. Poll rather than queueing on a single fd so that a
-# long build in slot 1 does not block a short one that could use slot 2.
+available_mb() { awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo; }
+
+# Samples available memory while the build runs and reports the low-water mark.
+# A run that dips near zero means the slot count is too high for this host,
+# even if it happened to survive.
+watch_memory() {
+  local low
+  low="$(available_mb)"
+  while :; do
+    local now
+    now="$(available_mb)"
+    ((now < low)) && low="$now"
+    echo "$low" >"$1"
+    sleep 5
+  done
+}
+
 while :; do
   for ((i = 1; i <= SLOTS; i++)); do
     exec {fd}>"$LOCK_DIR/slot$i"
     if flock -n "$fd"; then
-      echo "[agent-cargo] agent=$agent slot=$i jobs=$JOBS target=$CARGO_TARGET_DIR" >&2
+      # Hold the slot but wait for headroom: a free slot does not imply a safe
+      # moment to start, since the other slots' builds may be at peak.
+      while (($(available_mb) < MIN_FREE_MB)); do
+        echo "[agent-cargo] agent=$agent waiting for memory ($(available_mb)MB < ${MIN_FREE_MB}MB)" >&2
+        sleep 15
+      done
+
+      echo "[agent-cargo] agent=$agent slot=$i jobs=$JOBS avail=$(available_mb)MB target=$CARGO_TARGET_DIR" >&2
+
+      low_file="$(mktemp)"
+      watch_memory "$low_file" &
+      watcher=$!
+      set +e
       cargo "$@"
-      exit $?
+      status=$?
+      set -e
+      kill "$watcher" 2>/dev/null || true
+      echo "$(date -Is) agent=$agent low_avail_mb=$(cat "$low_file" 2>/dev/null) args=$*" \
+        >>"$LOG_DIR/mem-$agent.log"
+      rm -f "$low_file"
+      exit $status
     fi
     exec {fd}>&-
   done
