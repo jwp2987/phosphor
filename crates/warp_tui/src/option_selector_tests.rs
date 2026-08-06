@@ -237,7 +237,14 @@ fn leading_editor_arrows_move_within_multiline_before_list_handoff() {
             );
         });
         render_lines(&app, &selector, 60);
-        crate::test_fixtures::settle().await;
+        // The leading editor's row-aware navigation (and its handoff to the
+        // list) reads the *persisted* char-cell layout, produced by an async
+        // layout stream. Pump it until all three visual rows are laid out before
+        // driving MoveDown; a fixed yield count races the layout under load.
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            leading_editor.read(app, |editor, ctx| editor.persisted_display_rows(ctx) == Some(3))
+        })
+        .await;
 
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         assert!(leading_editor.read(&app, |editor, _| editor.is_focused()));

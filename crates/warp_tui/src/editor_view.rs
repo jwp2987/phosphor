@@ -184,6 +184,20 @@ impl TuiEditorView {
             TuiEditorVerticalDirection::Down => cursor.row + 1 < lattice.rows().len(),
         }
     }
+
+    /// The number of visual rows in the editor's *persisted* char-cell layout —
+    /// the soft-wrap lattice the vertical-navigation handoff above reads. Tests
+    /// await this to know the asynchronously-produced layout has settled before
+    /// driving row-aware movement; returns `None` until the layout stream has
+    /// populated the char-cell state.
+    #[cfg(test)]
+    pub(crate) fn persisted_display_rows(&self, ctx: &AppContext) -> Option<usize> {
+        let model = self.model.as_ref(ctx);
+        let render = model.render_state().as_ref(ctx);
+        let char_cell = render.char_cell()?;
+        let hidden = char_cell.hidden_line_ranges(ctx);
+        Some(char_cell.display_lattice(&hidden).rows().len())
+    }
 }
 
 impl Entity for TuiEditorView {
