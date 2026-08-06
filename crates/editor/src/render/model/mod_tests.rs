@@ -28,7 +28,7 @@ use crate::{
         },
     },
     render::model::{
-        Height, LayoutSummary, LineCount, RenderedSelection, SoftWrapPoint, TEXT_SPACING,
+        ColumnUnit, Height, LayoutSummary, LineCount, RenderedSelection, SoftWrapPoint, TEXT_SPACING,
         test_utils::{TEST_STYLES, laid_out_paragraph, mock_paragraph},
     },
 };
@@ -160,6 +160,10 @@ fn test_soft_wrap_point() {
     fn char_x(chars: usize) -> Pixels {
         TEXT_SPACING.left_offset() + (chars as f32 * TEST_STYLES.base_text.font_size).into_pixels()
     }
+    /// Wraps a Pixels value as a ColumnUnit for constructing SoftWrapPoints in Pixels mode.
+    fn px(p: Pixels) -> ColumnUnit {
+        ColumnUnit::Pixels(p)
+    }
 
     let mut model =
         RenderState::new_for_test(TEST_STYLES.clone(), 40.0.into_pixels(), 60.0.into_pixels());
@@ -181,82 +185,82 @@ fn test_soft_wrap_point() {
     // Last point on the first softwrapped line.
     assert_eq!(
         model.offset_to_softwrap_point(CharOffset::from(3)),
-        SoftWrapPoint::new(0, char_x(3))
+        SoftWrapPoint::new(0, px(char_x(3)))
     );
 
     // A point slightly closer to 2 than 3 should round to 2.
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(0, char_x(2) + 4.0.into_pixels())),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(0, px(char_x(2) + 4.0.into_pixels()))),
         CharOffset::from(2)
     );
 
     // A point slightly closer to 3 than 2 should round to 3.
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(0, char_x(3) - 4.0.into_pixels())),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(0, px(char_x(3) - 4.0.into_pixels()))),
         CharOffset::from(3)
     );
 
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(0, char_x(4))),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(0, px(char_x(4)))),
         CharOffset::from(4)
     );
 
     // Point on the second softwrapped line in the first paragraph.
     assert_eq!(
         model.offset_to_softwrap_point(CharOffset::from(7)),
-        SoftWrapPoint::new(1, char_x(3))
+        SoftWrapPoint::new(1, px(char_x(3)))
     );
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(1, char_x(3))),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(1, px(char_x(3)))),
         CharOffset::from(7)
     );
 
     // Non-softwrapped line should work as well.
     assert_eq!(
         model.offset_to_softwrap_point(CharOffset::from(10)),
-        SoftWrapPoint::new(2, char_x(2))
+        SoftWrapPoint::new(2, px(char_x(2)))
     );
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(2, char_x(2))),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(2, px(char_x(2)))),
         CharOffset::from(10)
     );
 
     assert_eq!(
         model.offset_to_softwrap_point(CharOffset::from(19)),
-        SoftWrapPoint::new(4, char_x(2))
+        SoftWrapPoint::new(4, px(char_x(2)))
     );
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(4, char_x(2))),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(4, px(char_x(2)))),
         CharOffset::from(19)
     );
 
     // Softwrapping on an empty line should work.
     assert_eq!(
         model.offset_to_softwrap_point(CharOffset::from(21)),
-        SoftWrapPoint::new(5, TEXT_SPACING.left_offset())
+        SoftWrapPoint::new(5, px(TEXT_SPACING.left_offset()))
     );
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(5, Pixels::zero())),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(5, ColumnUnit::pixels_zero())),
         CharOffset::from(21)
     );
 
     // Out of bound points should be bounded to the trailing newline.
     assert_eq!(
         model.offset_to_softwrap_point(CharOffset::from(40)),
-        SoftWrapPoint::new(8, Pixels::zero())
+        SoftWrapPoint::new(8, ColumnUnit::pixels_zero())
     );
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(7, Pixels::zero())),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(7, ColumnUnit::pixels_zero())),
         CharOffset::from(26)
     );
 
     // Points are bounded to their line's contents.
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(5, char_x(3))),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(5, px(char_x(3)))),
         CharOffset::from(21)
     );
     assert_eq!(
-        model.softwrap_point_to_offset(SoftWrapPoint::new(5, char_x(2))),
+        model.softwrap_point_to_offset(SoftWrapPoint::new(5, px(char_x(2)))),
         CharOffset::from(21)
     );
 }

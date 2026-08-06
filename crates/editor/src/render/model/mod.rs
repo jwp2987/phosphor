@@ -707,39 +707,107 @@ impl RenderLineLocation {
     }
 }
 
+/// The unit used for the horizontal column component of a [`SoftWrapPoint`].
+///
+/// - [`ColumnUnit::Pixels`] is used by the GUI (font-aware, proportional) rendering path.
+///   Pixels — rather than an integer count — are what make GUI visual navigation work: moving
+///   up or down should land on the point *visually* above or below the starting point, which
+///   shares its pixel x-offset but, with variable padding and glyph widths, not its character
+///   offset.
+/// - [`ColumnUnit::Chars`] is used by the TUI (monospace, char-cell) rendering path, where the
+///   visually-aligned column *is* a display-cell count and there is no font layout to consult.
+///
+/// The two variants must never be mixed in a single comparison or arithmetic expression.
+/// Call sites that work in only one coordinate space should pattern-match and unwrap the
+/// expected variant; cross-variant operations panic.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ColumnUnit {
+    /// Horizontal offset in pixels, used by the GPU-rendered GUI path.
+    Pixels(Pixels),
+    /// Horizontal offset in terminal character columns, used by the TUI path.
+    Chars(u16),
+}
+
+impl ColumnUnit {
+    /// Zero column in pixel units (GUI path).
+    pub fn pixels_zero() -> Self {
+        ColumnUnit::Pixels(Pixels::zero())
+    }
+
+    /// Zero column in char units (TUI path).
+    pub fn chars_zero() -> Self {
+        ColumnUnit::Chars(0)
+    }
+
+    /// Returns the element-wise max of two same-variant values.
+    /// Variants must match; mixing Pixels and Chars is always a bug.
+    pub fn col_max(self, other: ColumnUnit) -> ColumnUnit {
+        match (self, other) {
+            (ColumnUnit::Pixels(a), ColumnUnit::Pixels(b)) => ColumnUnit::Pixels(a.max(b)),
+            (ColumnUnit::Chars(a), ColumnUnit::Chars(b)) => ColumnUnit::Chars(a.max(b)),
+            (ColumnUnit::Pixels(_), ColumnUnit::Chars(_))
+            | (ColumnUnit::Chars(_), ColumnUnit::Pixels(_)) => {
+                debug_assert!(
+                    false,
+                    "ColumnUnit::col_max: mixed Pixels and Chars variants — this is a bug"
+                );
+                self // graceful fallback: keep self unchanged
+            }
+        }
+    }
+
+    /// Unwraps the pixel value.
+    /// Calling this on a `Chars` variant is always a bug; in debug builds it asserts,
+    /// in release builds it returns [`Pixels::zero()`] as a safe fallback.
+    pub fn as_pixels(self) -> Pixels {
+        match self {
+            ColumnUnit::Pixels(p) => p,
+            ColumnUnit::Chars(_) => {
+                debug_assert!(
+                    false,
+                    "ColumnUnit::as_pixels called on a Chars variant — this is a bug"
+                );
+                Pixels::zero()
+            }
+        }
+    }
+
+    /// Unwraps the char-column value.
+    /// Calling this on a `Pixels` variant is always a bug; in debug builds it asserts,
+    /// in release builds it returns `0` as a safe fallback.
+    pub fn as_chars(self) -> u16 {
+        match self {
+            ColumnUnit::Chars(c) => c,
+            ColumnUnit::Pixels(_) => {
+                debug_assert!(
+                    false,
+                    "ColumnUnit::as_chars called on a Pixels variant — this is a bug"
+                );
+                0
+            }
+        }
+    }
+}
+
 /// A point within the editor. Unlike character and hard-wrap offsets/points, this accounts for
 /// soft-wrapping, the layout of different block types, and proportional fonts.
 ///
 /// Because soft-wrapping depends on the fonts and viewport size, `SoftWrapPoint` is not stable
 /// across resizes or style changes.
+///
+/// The `column` field uses [`ColumnUnit`] to distinguish GUI (pixel) and TUI (char-cell)
+/// coordinate spaces. Callers must use the same variant consistently within a rendering path.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct SoftWrapPoint {
     /// A soft-wrapped line index within the laid-out document.
     row: u32,
-    /// The point's x-offset in pixels. We use pixels here, rather than an integer count, to
-    /// support visual navigation. When navigating up or down, we want to move to the point
-    /// visually above or below the starting point. That point has the same pixel x-offset,
-    /// but, due to variable padding and character widths, not necessarily the same character
-    /// offset.
-    ///
-    /// For example, imagine the given text laid out with a non-monospace font, where the
-    /// middle line is a list item:
-    ///
-    /// ```text
-    /// aaaaaaa
-    /// * mmmmmm
-    /// iiiiiii
-    /// ```
-    ///
-    /// If the cursor is at the start of the middle line, the characters above and below it are
-    /// in the **middle** of their respective lines. Furthermore, the `a` and `i` glyphs are
-    /// different widths, so the character offsets on all 3 lines are different. However, they
-    /// have the same pixel x-offset.
-    column: Pixels,
+    /// The point's horizontal position, in either pixels (GUI) or character columns (TUI).
+    /// See [`ColumnUnit`] for details.
+    column: ColumnUnit,
 }
 
 impl SoftWrapPoint {
-    pub fn new(row: u32, column: Pixels) -> Self {
+    pub fn new(row: u32, column: ColumnUnit) -> Self {
         Self { row, column }
     }
 
@@ -764,7 +832,7 @@ impl SoftWrapPoint {
         self.row
     }
 
-    pub fn column(&self) -> Pixels {
+    pub fn column(&self) -> ColumnUnit {
         self.column
     }
 }
@@ -3127,17 +3195,29 @@ impl RenderState {
     }
 
     pub fn offset_to_softwrap_point(&self, offset: CharOffset) -> SoftWrapPoint {
+        // CharCell path: compute visual row/col from char-cell display-width arithmetic.
+        if let LayoutMode::CharCell(ref cc) = self.layout_mode {
+            return cc.offset_to_softwrap_point(offset);
+        }
+
+        // Pixels path: use the font-laid-out SumTree<BlockItem>.
         let content = self.content.borrow();
         let mut cursor = content.cursor::<CharOffset, LayoutSummary>();
 
         cursor.seek(&offset, SeekBias::Right);
         match cursor.positioned_item() {
             Some(item) => item.offset_to_softwrap_point(offset),
-            None => SoftWrapPoint::new(self.max_line().as_u32(), Pixels::zero()),
+            None => SoftWrapPoint::new(self.max_line().as_u32(), ColumnUnit::pixels_zero()),
         }
     }
 
     pub fn softwrap_point_to_offset(&self, point: SoftWrapPoint) -> CharOffset {
+        // CharCell path.
+        if let LayoutMode::CharCell(ref cc) = self.layout_mode {
+            return cc.softwrap_point_to_offset(point);
+        }
+
+        // Pixels path.
         let content = self.content.borrow();
         let mut cursor = content.cursor::<LineCount, LayoutSummary>();
 
@@ -3157,9 +3237,9 @@ impl RenderState {
         let line_row = line_number.as_u32().saturating_sub(1);
 
         let start_offset =
-            self.softwrap_point_to_offset(SoftWrapPoint::new(line_row, Pixels::zero()));
+            self.softwrap_point_to_offset(SoftWrapPoint::new(line_row, ColumnUnit::pixels_zero()));
         let end_offset =
-            self.softwrap_point_to_offset(SoftWrapPoint::new(line_row + 1, Pixels::zero()));
+            self.softwrap_point_to_offset(SoftWrapPoint::new(line_row + 1, ColumnUnit::pixels_zero()));
 
         (start_offset, end_offset)
     }
@@ -3808,7 +3888,7 @@ impl Positioned<'_, BlockItem> {
                 paragraphs
                     .find(|paragraph| paragraph.end_char_offset() > offset)
                     .map_or(
-                        SoftWrapPoint::new(self.end_line().as_u32(), Pixels::zero()),
+                        SoftWrapPoint::new(self.end_line().as_u32(), ColumnUnit::pixels_zero()),
                         |paragraph| paragraph.offset_to_softwrap_point(offset),
                     )
             }
@@ -3833,12 +3913,12 @@ impl Positioned<'_, BlockItem> {
                 paragraphs
                     .find(|paragraph| paragraph.end_char_offset() > offset)
                     .map_or(
-                        SoftWrapPoint::new(self.end_line().as_u32(), Pixels::zero()),
+                        SoftWrapPoint::new(self.end_line().as_u32(), ColumnUnit::pixels_zero()),
                         |paragraph| paragraph.offset_to_softwrap_point(offset),
                     )
             }
             BlockItem::MermaidDiagram { .. } => {
-                SoftWrapPoint::new(self.start_line.as_u32(), Pixels::zero())
+                SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero())
             }
             BlockItem::TrailingNewLine(_)
             | BlockItem::Embedded(_)
@@ -3846,7 +3926,7 @@ impl Positioned<'_, BlockItem> {
             | BlockItem::Image { .. }
             | BlockItem::TemporaryBlock { .. }
             | BlockItem::Hidden { .. } => {
-                SoftWrapPoint::new(self.start_line.as_u32(), Pixels::zero())
+                SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero())
             }
             BlockItem::Table(laid_out_table) => {
                 let relative_offset = offset.saturating_sub(&self.start_char_offset);
@@ -3855,7 +3935,7 @@ impl Positioned<'_, BlockItem> {
                     .cell_at_offset(relative_offset)
                     .map(|c| c.row)
                     .unwrap_or(0);
-                SoftWrapPoint::new(self.start_line.as_u32() + row as u32, Pixels::zero())
+                SoftWrapPoint::new(self.start_line.as_u32() + row as u32, ColumnUnit::pixels_zero())
             }
         }
     }
@@ -4058,9 +4138,9 @@ impl<'a> Positioned<'a, Paragraph> {
         match self.lines().last() {
             Some(line) => SoftWrapPoint::new(
                 line.start_line.as_u32(),
-                line.item.width.into_pixels() + self.style.left_offset(),
+                ColumnUnit::Pixels(line.item.width.into_pixels() + self.style.left_offset()),
             ),
-            None => SoftWrapPoint::new(self.start_line.as_u32(), Pixels::zero()),
+            None => SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero()),
         }
     }
 
@@ -4454,10 +4534,12 @@ impl<'a> Positioned<'a, Paragraph> {
 
         SoftWrapPoint::new(
             line.start_line.as_u32(),
-            line.item
-                .caret_position_for_index(self.frame_index(offset).as_usize())
-                .into_pixels()
-                + self.style.left_offset(),
+            ColumnUnit::Pixels(
+                line.item
+                    .caret_position_for_index(self.frame_index(offset).as_usize())
+                    .into_pixels()
+                    + self.style.left_offset(),
+            ),
         )
     }
 
@@ -4473,7 +4555,7 @@ impl<'a> Positioned<'a, Paragraph> {
         let line_end = self.buffer_index(line.end_index().into());
         let paragraph_last_char = self.end_char_offset().saturating_sub(&1.into());
 
-        let adjusted_x = point.column() - self.style.left_offset();
+        let adjusted_x = point.column().as_pixels() - self.style.left_offset();
         let frame_index = match line.caret_index_for_x(adjusted_x.as_f32()) {
             Some(caret) => FrameOffset::from(caret),
             None => {
@@ -5257,6 +5339,60 @@ impl CharCellState {
     pub fn max_line(&self) -> LineCount {
         let text_index = self.text_index.borrow();
         LineCount(text_index.visual_row_char_starts.len())
+    }
+
+    pub fn offset_to_softwrap_point(&self, offset: CharOffset) -> SoftWrapPoint {
+        let text_index = self.text_index.borrow();
+        let line_index = text_index.logical_line_for_offset(offset);
+        let line_range = text_index.logical_line_char_range(line_index);
+        let char_index = offset.as_usize().min(line_range.end);
+        let visual_row = text_index.visual_row_for_offset(line_index, offset);
+        let visual_range = text_index.visual_row_char_range(line_index, visual_row);
+        let col = text_index.char_widths[visual_range.start..char_index]
+            .iter()
+            .map(|&width| width as usize)
+            .sum::<usize>();
+        if char_index == line_range.end
+            && self.terminal_width.get() > 0
+            && col == self.terminal_width.get() as usize
+        {
+            SoftWrapPoint::new((visual_row + 1) as u32, ColumnUnit::Chars(0))
+        } else {
+            SoftWrapPoint::new(visual_row as u32, ColumnUnit::Chars(col as u16))
+        }
+    }
+
+    pub fn softwrap_point_to_offset(&self, point: SoftWrapPoint) -> CharOffset {
+        let text_index = self.text_index.borrow();
+        if point.row() as usize >= text_index.visual_row_char_starts.len() {
+            return CharOffset::from(text_index.char_widths.len());
+        }
+        let visual_row =
+            (point.row() as usize).min(text_index.visual_row_char_starts.len().saturating_sub(1));
+        let line_index = text_index
+            .line_visual_row_starts
+            .partition_point(|&start| start <= visual_row)
+            .saturating_sub(1)
+            .min(text_index.line_starts.len() - 1);
+        let row_range = text_index.visual_row_char_range(line_index, visual_row);
+        // Accept either variant: `Chars` is the normal CharCell column; `Pixels` is produced
+        // by shared navigation helpers (e.g. `navigate_line_boundary`) that hard-code
+        // `ColumnUnit::pixels_zero()` to mean "start of row". Treat any `Pixels` value as 0.
+        let target_col = match point.column() {
+            ColumnUnit::Chars(col) => col as usize,
+            ColumnUnit::Pixels(_) => 0,
+        };
+        let mut col = 0usize;
+        let mut char_index = row_range.start;
+        while char_index < row_range.end {
+            let width = text_index.char_widths[char_index] as usize;
+            if col + width > target_col {
+                break;
+            }
+            col += width;
+            char_index += 1;
+        }
+        CharOffset::from(char_index)
     }
 
     pub fn set_test_temporary_blocks(&self, blocks: Vec<(String, usize)>) {
