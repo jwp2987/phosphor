@@ -1,6 +1,6 @@
 ---
 name: promote-feature
-description: Promote a feature-flagged feature to Dogfood, Preview, or Stable in the Warp codebase. Use when a feature behind a FeatureFlag is ready to roll out to a broader audience, including wiring up the compile-time/runtime bridge and deferring flag cleanup safely.
+description: Promote a feature-flagged feature to Dogfood, Preview, or Stable in the Phosphor codebase. Use when a feature behind a FeatureFlag is ready to roll out to a broader audience, including wiring up the compile-time/runtime bridge and deferring flag cleanup safely.
 ---
 
 # promote-feature

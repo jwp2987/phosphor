@@ -1,4 +1,4 @@
-# Best Practices for Warp Skills
+# Best Practices for Phosphor Skills
 
 Detailed authoring guidance for creating effective skills in `.agents/skills/`.
 
@@ -66,7 +66,7 @@ The description field enables skill discovery. the agent uses it to decide when 
 ### Description Best Practices
 
 1. **Be specific and include key terms**
-   - Good: "Add a new feature flag to gate code changes in the Warp codebase."
+   - Good: "Add a new feature flag to gate code changes in the Phosphor codebase."
    - Avoid: "Helps with features."
 
 2. **Include both what and when**

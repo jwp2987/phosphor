@@ -1,15 +1,15 @@
 ---
 name: add-feature-flag
-description: Add a new feature flag to gate code changes in the Warp codebase.
+description: Add a new feature flag to gate code changes in the Phosphor codebase.
 ---
 
 # add-feature-flag
 
-Add a new feature flag to gate code changes in the Warp codebase.
+Add a new feature flag to gate code changes in the Phosphor codebase.
 
 ## Overview
 
-Feature flags in Warp are compile-time flags that allow features to be selectively enabled for different channels (e.g.: Dev, Stable). They use a small runtime plumbing layer that checks if a flag is enabled.
+Feature flags in Phosphor are compile-time flags that allow features to be selectively enabled for different channels (e.g.: Dev, Stable). They use a small runtime plumbing layer that checks if a flag is enabled.
 
 ## Steps
 
@@ -84,7 +84,7 @@ EditableBinding::new(
 
 ## Rolling Out to Stable
 
-When ready to enable the feature for all Warp Stable users, add it to the `default` array in `app/Cargo.toml`:
+When ready to enable the feature for all Phosphor Stable users, add it to the `default` array in `app/Cargo.toml`:
 
 ```toml
 [features]

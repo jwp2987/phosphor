@@ -56,6 +56,9 @@ app/src/persistence/schema.rs.orig
 # Don't include Claude Code worktrees
 .claude/worktrees/
 
+# Don't include Claude Code session scratch (patch diffs, message files, etc.)
+.claude/jobs/
+
 # Tab drag development notes
 pr_cleanup.md
 desired_behavior.md
