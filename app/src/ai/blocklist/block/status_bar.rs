@@ -37,7 +37,7 @@ use crate::{
             },
             BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextEvent,
             BlocklistAIContextModel, BlocklistAIController, BlocklistAIHistoryEvent,
-            BlocklistAIInputEvent, BlocklistAIInputModel, ResponseStreamId,
+            BlocklistAIInputEvent, BlocklistAIInputModel, QueuedQueryModel, ResponseStreamId,
         },
         llms::LLMPreferences,
         AgentTip,
@@ -832,10 +832,13 @@ impl BlocklistAIStatusBar {
                     ButtonProps {
                         button_handle: &self.state_handles.queue_next_prompt_button,
                         keystroke: self.queue_next_prompt_keystroke.as_ref(),
-                        is_active: self
-                            .context_model
-                            .as_ref(app)
-                            .is_queue_next_prompt_enabled(),
+                        is_active: model
+                            .conversation(app)
+                            .map(|c| c.id())
+                            .is_some_and(|conversation_id| {
+                                QueuedQueryModel::as_ref(app)
+                                    .is_queue_next_prompt_toggle_enabled(conversation_id)
+                            }),
                     },
                 ),
                 stop_button: Some(ButtonProps {

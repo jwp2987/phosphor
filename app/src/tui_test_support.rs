@@ -117,6 +117,7 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
     app.add_singleton_model(|_| AIDocumentModel::new_for_test());
 
     app.add_singleton_model(|_| BlocklistAIHistoryModel::default());
+    app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
     app.add_singleton_model(|_| CLIAgentSessionsModel::new());
     app.add_singleton_model(AgentConversationsModel::new);
     let global_resources = crate::GlobalResourceHandles::mock(app);

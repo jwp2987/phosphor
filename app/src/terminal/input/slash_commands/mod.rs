@@ -23,12 +23,14 @@ use crate::ai::blocklist::agent_view::{
     AgentViewEntryOrigin, DismissalStrategy, EphemeralMessage, ENTER_OR_EXIT_CONFIRMATION_WINDOW,
 };
 use crate::ai::blocklist::drive_object_attachment_for_reference;
-use crate::ai::blocklist::{BlocklistAIHistoryModel, SlashCommandRequest};
+use crate::ai::blocklist::{
+    BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel, QueuedQueryOrigin, SlashCommandRequest,
+};
 use crate::cloud_object::{model::persistence::ObjectStoreModel, ObjectType};
 use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
 use crate::search::slash_command_menu::static_commands::commands::{self, COMMAND_REGISTRY};
 use crate::search::slash_command_menu::static_commands::Availability;
-use crate::search::slash_command_menu::{SlashCommandId, StaticCommand};
+use crate::search::slash_command_menu::{SlashCommandId, SlashCommandKind, StaticCommand};
 use crate::server::ids::SyncId;
 use crate::server::telemetry::{AgentModeAutoDetectionSettingOrigin, SlashCommandAcceptedDetails};
 use crate::workflows::command_parser::compute_workflow_display_data;
@@ -63,6 +65,16 @@ pub enum SlashCommandSelectionBehavior {
 /// Returns whether selecting `command` inserts its text (to await an argument) or executes it.
 ///
 /// Ported verbatim from Warp OSS.
+/// Whether a slash command is submitted into the conversation as a prompt (rather than
+/// emitting an action that executes immediately). Used by prompt queueing to decide whether a
+/// queued input is captured as a queued prompt; action-emitting commands (e.g. `/fork`) are not.
+pub fn slash_command_is_submitted_as_prompt(command: &StaticCommand) -> bool {
+    matches!(
+        command.kind(),
+        SlashCommandKind::Compact | SlashCommandKind::Plan | SlashCommandKind::Orchestrate
+    )
+}
+
 pub fn slash_command_selection_behavior(command: &StaticCommand) -> SlashCommandSelectionBehavior {
     if command
         .argument
@@ -871,8 +883,14 @@ impl Input {
                     .is_some_and(|c| c.status().is_in_progress() || c.status().is_blocked());
 
                 if is_in_progress {
-                    ctx.dispatch_typed_action(&WorkspaceAction::QueuePromptForConversation {
-                        prompt,
+                    // Append to the multi-prompt queue; the panel renders it and
+                    // `TerminalView::drain_queued_prompts` fires it when the turn finishes.
+                    QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                        model.append(
+                            conversation_id,
+                            QueuedQuery::new(prompt, QueuedQueryOrigin::QueueSlashCommand),
+                            ctx,
+                        );
                     });
                 } else {
                     self.submit_queued_prompt(prompt, ctx);

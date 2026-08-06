@@ -400,6 +400,19 @@ impl BlocklistAIActionModel {
         });
     }
 
+    /// Whether the shell-command action `action_id` is currently running for `conversation_id`.
+    /// Used by prompt queueing to detect an in-flight agent-requested command whose snapshot has
+    /// not yet fired, so a submitted prompt queues as `PendingLrcAutoQueue` instead of racing it.
+    pub fn is_shell_command_action_pending(
+        &self,
+        action_id: &AIAgentActionId,
+        conversation_id: AIConversationId,
+    ) -> bool {
+        self.running_actions
+            .get(&conversation_id)
+            .is_some_and(|r| r.contains(action_id))
+    }
+
     fn blocked_action_for_conversation(
         &self,
         conversation_id: &AIConversationId,
