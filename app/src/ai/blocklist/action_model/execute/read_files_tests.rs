@@ -6,7 +6,9 @@
 //! mixed batch still returns the files that were read. The fork's
 //! `read_local_file_context` cannot name the individual reason (see
 //! `FAILED_FILE_REASON`), so the reason-accuracy assertions are expressed here
-//! as "the message must not claim the file is merely absent".
+//! as "the message must not claim the file is merely absent". Issue #161 tracks
+//! porting Warp's four `read_file_failures` tests verbatim once the fork can
+//! distinguish missing from oversized from unprocessable.
 
 use warp_multi_agent_api as api;
 
