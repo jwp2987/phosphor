@@ -124,3 +124,51 @@ So:
 - Agents **cannot** receive asynchronous notifications. No `run_in_background`,
   no Monitor waiting. They hang forever.
 - The scratchpad is shared, not per-agent. Prefix scratch filenames.
+
+## Never call a failure "pre-existing" without measuring it
+
+This has now been wrong four times in one round — three times by the
+coordinator, once by an agent — and every instance looked convincing.
+
+**A failure is pre-existing only if you have observed it failing without your
+change.** Not "it looks unrelated". Not "it is in a module I did not touch".
+Measure it:
+
+```bash
+git stash                      # or: git worktree add /tmp/base origin/main
+<re-run the same filtered command>
+git stash pop
+```
+
+If it fails there too, it is pre-existing — say so *and say you verified it*.
+If it passes, it is yours.
+
+The cost of getting this wrong is asymmetric: a real regression waved through as
+"pre-existing" is invisible until someone else pays for it, whereas a
+double-check costs one build.
+
+`script/known_test_failures.txt` is the authoritative list of what genuinely
+fails on `main`. If a failure is not in that file, it is not pre-existing.
+
+## Filtered test runs can break `#[serial]` tests
+
+`cargo nextest -E 'test(foo)'` is the right way to run a narrow slice, but it
+interacts badly with tests that must not run concurrently.
+
+The secrets tests are the known case: several are `#[serial]` because they mutate
+a **global** regex state (`SECRETS_REGEX` / `set_user_and_enterprise_secret_regexes`).
+Under a narrow filter, nextest's scheduling can run them alongside tests that
+touch the same global, and they fail in ways that look like a product defect and
+are not.
+
+If a secrets test fails in a filtered run:
+
+1. Re-run it **alone** (`-E 'test(=full::path::to::test)'`).
+2. Check `known_test_failures.txt`.
+3. Check CI — the full-suite run is authoritative, and as of this round all 69
+   secrets tests pass there.
+
+The same hazard applies to any `#[serial]` group; secrets is simply the one that
+has bitten. `crates/warp_tui` view tests have a related requirement (real-pipeline
+provisioning via `register_tui_session_view_test_singletons` plus a `settle()`
+pump).
