@@ -549,11 +549,27 @@ fn prepare_claude_settings_merges_existing_settings() {
 // ── Tests ported from the pinned Warp oracle (`02b53fcd8`) ───────────────────
 //
 // Source: `app/src/ai/agent_sdk/driver/harness/claude_code_tests.rs` at the pin.
-// The remaining oracle tests in that file need source this fork does not ship
-// (`claude_transcript`, `serialize_claude_mcp_config`, the parent-bridge event
-// cursor, `MessageBridgeCleanupDisposition`, `--resume`, `prepare_local_wake_command`).
-// All 13 are enumerated in issue #252, and the missing `claude_transcript` module
-// itself in issue #289. Re-verified against the pin in round 4: still unportable.
+// All 13 remaining oracle tests are enumerated in issue #252 (`claude_transcript`
+// itself in #289). Re-verified against the pin again in round 5 (2026-08-07) by
+// tracing each test's actual imports, refining round 4's framing:
+//
+// - 10 are a genuine **feature gap**, non-cloud: 4 need `serialize_claude_mcp_config`,
+//   2 need the parent-bridge event cursor (`read/write_parent_bridge_event_cursor`
+//   — pure local disk I/O, despite living in a `parent_bridge.rs` that also has
+//   cloud-tied code elsewhere), 2 need `MessageBridgeCleanupDisposition`
+//   (`MessageBridge::cleanup()` here takes no argument), 1 needs `--resume`
+//   support in `claude_command()`, and 1 (`write_session_index_entry_creates_expected_entry`)
+//   needs the local `claude_transcript` module (#289).
+// - 2 are **cloud**, not merely "local wake absent" as round 4 characterized them:
+//   `prepare_local_wake_command_rehydrates_transcript_with_self_managed_listener`
+//   calls `ServerApiProvider::new_for_test()` directly, and
+//   `prime_parent_bridge_staged_for_self_managed_wake_keeps_message_in_staged`
+//   mocks `crate::server::server_api::ai::AIClient` — both need the dropped
+//   `ServerApi`/`AIClient` cloud plumbing regardless of the "local" naming.
+// - 1 (`resolve_suffix_from_resolved_env_vars`) is a **signature divergence**:
+//   `resolve_anthropic_api_key_suffix` here takes the managed-secrets map
+//   (post-#249) instead of the pin's resolved-env-var map, so the pin test has
+//   no fork-side equivalent to run against — not a missing capability.
 
 #[test]
 #[serial_test::serial]
