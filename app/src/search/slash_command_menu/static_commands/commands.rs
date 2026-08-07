@@ -565,6 +565,46 @@ mod tests {
         }
     }
 
+    // Ported from Warp's `command_names_and_kinds_are_unique_per_surface` (name uniqueness is
+    // already covered by `command_names_are_unique` above; this covers the `kind()` half). Zap
+    // derives `kind()` from the command name rather than storing it, and multiple Zap-native
+    // commands (e.g. `/pr-comments`) intentionally share `SlashCommandKind::Other` -- see the
+    // doc comment on `SlashCommandKind::Other` -- so those are excluded from the uniqueness check.
+    #[test]
+    fn command_kinds_are_unique_excluding_other() {
+        let mut kinds = HashSet::new();
+        for command in COMMAND_REGISTRY.all_commands() {
+            let kind = command.kind();
+            if kind == crate::search::slash_command_menu::static_commands::SlashCommandKind::Other
+            {
+                continue;
+            }
+            assert!(
+                kinds.insert(kind),
+                "duplicate slash command kind for {}: {kind:?}",
+                command.name
+            );
+        }
+    }
+
+    // Ported from Warp's `api_keys_command_is_tui_only_and_has_no_arguments`. Unlike Warp,
+    // `/api-keys` is Zap-native (see the doc comment on `SlashCommandKind::ApiKeys`) and is not
+    // restricted to the TUI surface, so this only checks what still applies: registration,
+    // metadata, and TUI support.
+    #[test]
+    fn api_keys_command_has_no_arguments_and_supports_tui() {
+        crate::i18n::init(Some("en"));
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(API_KEYS.name)
+            .expect("expected /api-keys to be registered");
+        assert_eq!(command, &*API_KEYS);
+        assert!(!command.auto_enter_ai_mode);
+        assert_eq!(command.availability, Availability::AI_ENABLED);
+        assert!(command.argument.is_none());
+        assert_eq!(command.description, "Add, view, or clear a provider's API key");
+        assert!(command.supports_tui());
+    }
+
     #[test]
     fn statusline_command_is_registered_and_tui_only() {
         let command = COMMAND_REGISTRY
@@ -595,6 +635,23 @@ mod tests {
         assert!(!argument.is_optional);
         assert!(!argument.should_execute_on_selection);
         assert_eq!(argument.hint_text, Some("<tab name>"));
+    }
+
+    #[test]
+    fn version_command_is_not_registered() {
+        assert!(
+            COMMAND_REGISTRY
+                .all_commands()
+                .all(|command| command.name != "/version")
+        );
+    }
+
+    #[test]
+    fn strip_command_prefix_matches_orchestrate() {
+        // `/orchestrate` has no Zap-native StaticCommand (cloud orchestration), but
+        // `strip_command_prefix` is a plain string helper so this still exercises it.
+        let result = strip_command_prefix("/orchestrate deploy services", "/orchestrate");
+        assert_eq!(result, Some("deploy services".to_string()));
     }
 
     #[test]

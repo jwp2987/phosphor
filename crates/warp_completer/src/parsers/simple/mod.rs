@@ -89,6 +89,21 @@ pub fn all_parsed_commands<S: AsRef<str>>(
     })
 }
 
+/// Returns the source command with leading env-var assignments removed.
+///
+/// For example, if the source is "PAGER=0 git log", this returns "git log".
+pub fn command_without_leading_env_vars<S: AsRef<str>>(
+    source: S,
+    escape_char: EscapeChar,
+) -> Option<String> {
+    let source = source.as_ref();
+    let parser = Parser::new(Lexer::new(source, escape_char, false));
+    let mut command = parser.parse().commands.into_iter().next()?;
+    command.item.remove_leading_env_vars();
+
+    command.item.source(source)
+}
+
 /// Given a `command` string, returns:
 /// 1. the subcommands that make it up, including the recomposed commands at each level of nesting.
 ///    For example, given "ls $(foo | echo)", this API returns ["foo", "echo", "foo | echo", "ls $(foo | echo)"]
@@ -226,6 +241,14 @@ impl Command {
         }
 
         all_commands
+    }
+
+    /// Returns the source text spanned by this command's parts, if it has any.
+    fn source(&self, src: &str) -> Option<String> {
+        self.parts
+            .first()
+            .zip(self.parts.last())
+            .map(|(first, last)| src[first.span.start()..last.span.end()].trim().to_string())
     }
 
     /// Removes the leading env-var assignments (i.e. 'KEY=VALUE' literals) from the command.

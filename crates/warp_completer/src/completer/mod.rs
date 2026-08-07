@@ -17,8 +17,9 @@ pub use describe::{describe, describe_given_token, Description, TopLevelCommandC
 pub use engine::{EngineDirEntry, EngineFileType, LocationType};
 pub use matchers::{Match, MatchStrategy, MatchType};
 pub use suggest::{
-    suggestions, CompleterOptions, CompletionsFallbackStrategy, MatchedSuggestion, Priority,
-    Suggestion, SuggestionResults, SuggestionType, SuggestionTypeName,
+    suggestions, CompleterOptions, CompletionsFallbackStrategy, ExplicitTabCompletion,
+    MatchedSuggestion, PreparedSuggestion, Priority, Suggestion, SuggestionResults,
+    SuggestionType, SuggestionTypeName,
 };
 
 #[cfg(feature = "v2")]
