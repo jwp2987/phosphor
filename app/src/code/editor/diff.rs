@@ -86,10 +86,7 @@ pub(crate) fn remove_inline_overlay_color(appearance: &Appearance) -> ColorU {
 }
 
 pub enum DiffModelEvent {
-    DiffUpdated {
-        version: BufferVersion,
-        should_recalculate_hidden_lines: bool,
-    },
+    DiffUpdated { version: BufferVersion },
     UnifiedDiffComputed(Rc<DiffResult>),
 }
 
@@ -597,7 +594,6 @@ impl DiffModel {
     pub fn compute_diff(
         &mut self,
         new: MultilineString<LF>,
-        should_recalculate_hidden_lines: bool,
         version: BufferVersion,
         ctx: &mut ModelContext<Self>,
     ) {
@@ -622,10 +618,7 @@ impl DiffModel {
                     model.status.change_mapping = change_mapping;
                     model.status.deletion_mapping = deletion_mapping;
                     log::debug!("diff status updated: {:#?}", &model.status);
-                    ctx.emit(DiffModelEvent::DiffUpdated {
-                        should_recalculate_hidden_lines,
-                        version,
-                    });
+                    ctx.emit(DiffModelEvent::DiffUpdated { version });
                 },
             )
             .abort_handle();

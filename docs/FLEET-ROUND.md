@@ -18,9 +18,21 @@ without meaningfully touching the queue.
 
 **Agents: write, and self-check cheaply. Never run the full suite.**
 
+**Run `script/precheck` before every push.** It runs every gate CI runs, except
+the full suite: rustfmt on your changed files, both fork-boundary guards, and --
+with `--with-tests` -- only the tests currently listed in
+`known_test_failures.txt`. That last one is the cheap half of the CI test gate
+and catches the case where your fix retires a known failure but leaves its entry
+on the books.
+
+CI is the FINAL check, not the check that finds a problem for the first time.
+Anything CI reports first is a 15-minute round trip that a local run would have
+caught in seconds.
+
 | gate | cost | catches |
 |---|---|---|
-| `rustfmt --check --edition 2024 <changed files>` | ~1s | syntax damage, unclosed delimiters, bad merges |
+| `script/precheck` | ~seconds | everything below, in one command |
+| `rustfmt --check --config-path .rustfmt.toml <changed files>` | ~1s | syntax damage, unclosed delimiters, bad merges |
 | `cargo check -p <own crate>` | seconds–minutes | type errors, missing imports |
 | **full suite** | **~10-50 min cold** | **coordinator only, batched** |
 
@@ -112,3 +124,82 @@ So:
 - Agents **cannot** receive asynchronous notifications. No `run_in_background`,
   no Monitor waiting. They hang forever.
 - The scratchpad is shared, not per-agent. Prefix scratch filenames.
+
+## Keep agent worktrees on a current base
+
+`main` moves fast during a round — 105 commits in one session is normal. A
+worktree created from a stale ref, or left sitting while the round lands 25 PRs,
+produces failures that are **real, reproducible, and entirely about the wrong
+tree**.
+
+This bit for real: an agent branched 105 commits behind, so its tree lacked the
+already-merged secret-detection fix. It hit the multibyte redaction failure,
+reported it as an "unrelated pre-existing" defect, and two people then spent time
+diagnosing a bug that had been fixed hours earlier.
+
+Use the helper rather than `git worktree add` by hand — it fetches first, so the
+base is current by construction:
+
+```bash
+script/agent-worktree new <slug> <branch>     # always from fresh origin/main
+script/agent-worktree refresh <slug>          # before final verification, and again before pushing
+script/agent-worktree status                  # how stale is everything
+```
+
+`script/precheck` also fails when the branch is more than 25 commits behind
+`origin/main`, so this cannot silently reach a PR.
+
+Being a few commits behind is normal and fine. Being tens behind is not.
+
+## Never call a failure "pre-existing" without measuring it
+
+This has now been wrong four times in one round — three times by the
+coordinator, once by an agent — and every instance looked convincing.
+
+**A failure is pre-existing only if you have observed it failing without your
+change.** Not "it looks unrelated". Not "it is in a module I did not touch".
+Measure it:
+
+```bash
+git stash                      # or: git worktree add /tmp/base origin/main
+<re-run the same filtered command>
+git stash pop
+```
+
+If it fails there too, it is pre-existing — say so *and say you verified it*.
+If it passes, it is yours.
+
+The cost of getting this wrong is asymmetric: a real regression waved through as
+"pre-existing" is invisible until someone else pays for it, whereas a
+double-check costs one build.
+
+`script/known_test_failures.txt` is the authoritative list of what genuinely
+fails on `main`. If a failure is not in that file, it is not pre-existing.
+
+**Check your base first.** The last time this was got wrong, the failure was
+neither pre-existing nor caused by the change — the worktree was 105 commits
+behind and simply lacked the fix. Run `script/agent-worktree status` before
+concluding anything about a failure.
+
+## Filtered test runs can break `#[serial]` tests
+
+`cargo nextest -E 'test(foo)'` is the right way to run a narrow slice, but it
+interacts badly with tests that must not run concurrently.
+
+The secrets tests are the known case: several are `#[serial]` because they mutate
+a **global** regex state (`SECRETS_REGEX` / `set_user_and_enterprise_secret_regexes`).
+Under a narrow filter, nextest's scheduling can run them alongside tests that
+touch the same global, and they fail in ways that look like a product defect and
+are not.
+
+If a secrets test fails in a filtered run:
+
+1. Re-run it **alone** (`-E 'test(=full::path::to::test)'`).
+2. Check `known_test_failures.txt`.
+3. Check CI — the full-suite run is authoritative, and as of this round all 69
+   secrets tests pass there.
+
+The same hazard applies to any `#[serial]` group; secrets is simply the one that
+has bitten. `crates/warp_tui` view tests have a related requirement (real-pipeline
+provisioning via `register_tui_session_view_test_singletons` plus a `settle()`
+pump).
