@@ -419,3 +419,7 @@ pub struct RequestUsage {
     pub inference_cost: Option<f64>,
     pub compute_cost: Option<f64>,
 }
+
+#[cfg(test)]
+#[path = "task_tests.rs"]
+mod tests;
