@@ -489,6 +489,7 @@ impl AIConversation {
             reverted_action_ids,
             artifacts,
             parent_agent_id,
+            is_remote_child,
             agent_name,
             parent_conversation_id,
             run_id,
@@ -555,6 +556,7 @@ impl AIConversation {
                 reverted_action_ids,
                 artifacts,
                 parent_agent_id,
+                is_remote_child,
                 agent_name,
                 parent_conversation_id,
                 run_id,
@@ -572,6 +574,7 @@ impl AIConversation {
                 Default::default(),
                 Vec::new(),
                 None,
+                false,
                 None,
                 None,
                 None,
@@ -3161,6 +3164,7 @@ impl AIConversation {
                 .filter_map(|task| task.source().cloned())
                 .collect(),
             conversation_data: AgentConversationData {
+                is_remote_child: false,
                 server_conversation_token: self
                     .server_conversation_token
                     .clone()

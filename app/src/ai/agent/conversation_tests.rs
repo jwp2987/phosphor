@@ -226,7 +226,9 @@ fn cli_subagent_tool(subtask_id: &str, command_id: &str) -> api::message::tool_c
 }
 
 fn empty_agent_conversation_data_for_test() -> AgentConversationData {
+    is_remote_child: false,
     AgentConversationData {
+        is_remote_child: false,
         server_conversation_token: None,
         conversation_usage_metadata: None,
         reverted_action_ids: None,

@@ -119,7 +119,9 @@ fn byop_test_task(task_id: &str, messages: Vec<api::Message>) -> api::Task {
 }
 
 fn empty_agent_conversation_data_for_test() -> AgentConversationData {
+    is_remote_child: false,
     AgentConversationData {
+        is_remote_child: false,
         server_conversation_token: None,
         conversation_usage_metadata: None,
         reverted_action_ids: None,
@@ -1346,6 +1348,7 @@ fn test_find_by_token_after_insert_forked_conversation_from_tasks() {
 
         let forked_conversation_id = AIConversationId::new();
         let conversation_data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: Some("forked-token".to_string()),
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -2590,6 +2593,7 @@ fn straddle_rewind_followup_requests_are_clean_and_durable() {
         // used and only the server token — the one field the oracle sets to a
         // non-default value — is overridden.
         let conversation_data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: Some("token-1".to_string()),
             ..empty_agent_conversation_data_for_test()
         };
@@ -3040,6 +3044,7 @@ fn test_initialize_historical_conversations_uses_root_task_description_title() {
                 // for the oracle's struct literal; only the server token is
                 // overridden, as in the oracle.
                 conversation_data: serde_json::to_string(&AgentConversationData {
+                    is_remote_child: false,
                     server_conversation_token: Some("renamed-title-token".to_string()),
                     ..empty_agent_conversation_data_for_test()
                 })
