@@ -22,6 +22,12 @@ if [[ "$(source /etc/os-release; echo $ID $ID_LIKE)" = *"debian"* ]]; then
     zsh fish
     # We run vim in some integration tests to test the altscreen.
     vim
+    # crates/integration drives a real (albeit off-screen) GUI window through
+    # winit, so it needs a display server to open one even when nothing is
+    # visible -- there is no headless winit backend on Linux (#208). Xvfb
+    # provides that display in CI and on hosts with no DISPLAY/WAYLAND_DISPLAY;
+    # wrap the test run with `xvfb-run`.
+    xvfb
     # rustfmt normally arrives as a rustup component via rust-toolchain.toml
     # (`components = ["rustfmt", "clippy"]`). On a host whose cargo comes from
     # the distro rather than rustup, `script/install_rust` short-circuits (its

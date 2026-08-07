@@ -166,6 +166,74 @@ jobs:
         shell: bash
         run: ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui
 
+  # crates/integration (#208): ~300 GUI-driving scenarios that link, register,
+  # and are enumerated by `--list`, but until this job existed were never
+  # actually EXECUTED anywhere -- not in CI, not on any dev host in this fleet.
+  # That is worse than having no suite: every green build read as if these
+  # scenarios were covered, when not one assertion inside them had ever run.
+  #
+  # Why nothing ran them: the harness boots the real GUI app (`LaunchMode::Test`
+  # is not headless -- see `app/src/lib.rs`), and on Linux window creation goes
+  # through the real winit backend unconditionally (`crates/warpui/src/platform/
+  # linux/mod.rs` is a bare re-export of the winit `App`; the mac-only "skip the
+  # Metal device, keep the window off-screen" branch in `platform/mac/window.rs`
+  # has no Linux equivalent). So even an invisible window needs a live X/Wayland
+  # connection to open at all, and this fleet's hosts (and, historically, CI)
+  # have none. `xvfb-run` supplies that connection; `mesa-vulkan-drivers`
+  # (installed by `install_test_deps`) supplies the software renderer behind it.
+  # The code already anticipated exactly this ("Propagate XAUTHORITY so we can
+  # run headless tests using xvfb", `crates/integration/tests/common/mod.rs`) --
+  # it was just never wired to anything that supplies an Xvfb.
+  #
+  # NOT a required status check, and deliberately NOT gated through
+  # `script/check_test_failures`: unlike the `warp`/`warp_tui` suite, nobody has
+  # ever run this suite to completion, so there is no known-good baseline to
+  # diff against -- `known_test_failures.txt`'s own header records that the
+  # `cargo nextest (Linux)` job above only got ITS baseline from a first real
+  # run (2026-08-07: 4280 tests). Follow the same path here: let this job run
+  # honestly for a while, then have a human triage the failures into a
+  # baseline file and switch this job to `check_test_failures`, same as that
+  # one. Until then a red run here is signal to read, not a blocked merge --
+  # many of these scenarios exercise SSH, specific shells, or flags this runner
+  # may not satisfy, and some are already `#[ignore]`d in-file for reasons
+  # unrelated to display (feature-flag churn, known CI flakiness).
+  integration-linux:
+    name: cargo nextest -p integration (Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Free up disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
+          df -h /
+
+      # install_test_deps (not the default build-only path) is what pulls in
+      # the shells (bash/zsh/fish), vim, mesa-vulkan-drivers, the X11/Wayland
+      # runtime libs, and xvfb that this specific suite -- and only this
+      # suite, among the pr-check jobs -- actually needs.
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: linux
+          is_self_hosted: false
+          install_test_deps: true
+
+      # nextest, not `cargo test`: same process-per-test isolation rationale
+      # as the warp/warp_tui job above, and required here for another reason
+      # too -- each test opens its own GUI window, and a shared test process
+      # would leak windowing state across tests that `cargo test`'s in-process
+      # model cannot isolate.
+      - name: Install cargo-nextest
+        shell: bash
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+      - name: cargo nextest -p integration (headless via Xvfb)
+        shell: bash
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --no-fail-fast
+
   check-windows:
     name: cargo check (Windows)
     runs-on: windows-latest

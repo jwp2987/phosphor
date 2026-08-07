@@ -114,6 +114,25 @@ To run a specific integration test you can use:
 
 The `WARPUI_USE_REAL_DISPLAY_IN_INTEGRATION_TESTS="1"` will force the new terminal window to open, which helps a lot when iterating on your integration test implementation!
 
+### Running headlessly (no DISPLAY, e.g. a dev sandbox or CI)
+
+Without `WARPUI_USE_REAL_DISPLAY_IN_INTEGRATION_TESTS`, the window stays
+off-screen -- but on Linux it is still a real winit window under the hood
+(there is no headless windowing backend for this platform), so opening it
+still requires a live X or Wayland connection. A host with no `DISPLAY` (most
+containers and CI runners) needs a virtual one:
+
+```sh
+sudo apt-get install -y xvfb mesa-vulkan-drivers
+xvfb-run -a cargo nextest run -p integration
+# or, for a single test:
+xvfb-run -a cargo run -p integration -- test_simple_example
+```
+
+`mesa-vulkan-drivers` provides the software renderer Xvfb has no GPU to back.
+`.github/workflows/pr-check.yml`'s `integration-linux` job runs the whole
+suite this way (see #208); it installs both via `script/linux/install_test_deps`.
+
 ### Known issues / limitations
 * To determine (from the `TestStep`) which shell is used for the test, you can try checking `WARP_SHELL_PATH` environment variable (that works within the CI on github) or check the passwd for the user (for local runs).
 * Similarly you can run the test with a specific shell by setting the `WARP_SHELL_PATH` and then running the test. Note that if you're running with fish, you also need to pass in `--features fish_shell` until that feature flag is removed. For example: `WARP_SHELL_PATH=/usr/local/bin/fish`, then `cargo run --bin integration --features fish_shell -- test_simple_example`
