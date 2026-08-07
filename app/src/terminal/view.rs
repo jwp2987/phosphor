@@ -387,8 +387,8 @@ use warpui::{
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
     elements::SavePosition,
     elements::{
-        Align, Clipped, ConstrainedBox, CornerRadius, Fill, Hoverable, Icon, MouseStateHandle,
-        Rect, ScrollStateHandle, Scrollable,
+        Align, Clipped, ConstrainedBox, CornerRadius, Fill, Hoverable, Icon, LiveElement,
+        MouseStateHandle, Rect, ScrollStateHandle, Scrollable,
     },
     fonts::{Cache as FontCache, FamilyId},
     ui_components::components::UiComponent,
@@ -642,6 +642,9 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// a user needing to type in one or many secret manager passwords
 /// during the bootstrap period.
 const ENV_VAR_BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(60);
+/// Repaint interval for the live elapsed-duration counter shown on a still-executing
+/// block's label. See issue #426.
+const LIVE_COMMAND_DURATION_REPAINT_INTERVAL: Duration = Duration::from_secs(1);
 const KNOWN_ISSUES_URL: &str =
     "";
 
@@ -4804,6 +4807,35 @@ impl TerminalView {
         }
     }
 
+    /// Fires the pane-scoped one-shot conversation-finished callbacks: the pending
+    /// single-prompt follow-up set by `/compact-and` and `/fork-and-compact` (the
+    /// `PendingUserQueryIndicator` path), then `conversation_completed_callbacks`. Both
+    /// mechanisms coexist: the former is a one-shot armed by those commands, the latter is a
+    /// general-purpose queue drained on every call.
+    ///
+    /// This is deliberately driven by the pane-global finish reason
+    /// ([`Self::last_ai_block`]), not [`Self::finish_reason_for_conversation`] — these
+    /// callbacks are armed against "the pane's current turn ending", not a specific
+    /// conversation. Draining the *queued-prompts* queue is a separate, conversation-scoped
+    /// concern; see the call site in [`Self::handle_ai_controller_event`].
+    fn fire_conversation_finished_callbacks(
+        &mut self,
+        finish_reason: FinishReason,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let queued_prompt = self.queued_prompt_callback.take();
+        let callbacks = self
+            .conversation_completed_callbacks
+            .drain(..)
+            .collect_vec();
+        for callback in callbacks {
+            callback(self, finish_reason, ctx);
+        }
+        if let Some(callback) = queued_prompt {
+            callback(self, finish_reason, ctx);
+        }
+    }
+
     fn handle_ai_controller_event(
         &mut self,
         _: ModelHandle<BlocklistAIController>,
@@ -4823,13 +4855,11 @@ impl TerminalView {
             // handing off to it — not the end of the overall turn. Defer
             // conversation-finished side effects (e.g. firing a queued `/queue`
             // prompt) until the entire turn is actually done.
-            let has_active_subagent = || {
-                BlocklistAIHistoryModel::as_ref(ctx)
-                    .conversation(conversation_id)
-                    .is_some_and(|c| c.has_active_subagent())
-            };
+            let has_active_subagent = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(conversation_id)
+                .is_some_and(|c| c.has_active_subagent());
 
-            let mut finish_reason: Option<FinishReason> = None;
+            let mut pane_finish_reason: Option<FinishReason> = None;
             if let Some(active_ai_block) = self.active_ai_block(ctx) {
                 // Focus the block so that the user can interact
                 // with any blocking actions (if any).
@@ -4850,29 +4880,30 @@ impl TerminalView {
                 if self.pending_user_query_view_id.is_some() && !is_same_conversation {
                     self.remove_pending_user_query_block(ctx);
                 }
-            } else if !has_active_subagent() {
+            } else if !has_active_subagent {
                 if let Some(last_ai_block) = self.last_ai_block() {
-                    finish_reason = last_ai_block.as_ref(ctx).finish_reason();
+                    pane_finish_reason = last_ai_block.as_ref(ctx).finish_reason();
                 }
             }
 
-            if let Some(reason) = finish_reason {
-                let queued_prompt = self.queued_prompt_callback.take();
-                let callbacks = self
-                    .conversation_completed_callbacks
-                    .drain(..)
-                    .collect_vec();
-                for callback in callbacks {
-                    callback(self, reason, ctx);
+            // Pane-scoped: the one-shot conversation-finished callbacks fire when the
+            // pane's most recent block is done.
+            if let Some(reason) = pane_finish_reason {
+                self.fire_conversation_finished_callbacks(reason, ctx);
+            }
+
+            // Conversation-scoped: drain this conversation's queued prompts keyed off its
+            // own most recent block. The pane-global lookup above (`last_ai_block`) can
+            // observe a sibling conversation's block instead — orchestration panes host the
+            // lead and local child conversations in one view — so it can't drive the drain
+            // decision or supply the finish reason; a still-streaming sibling block would
+            // read as `finish_reason() == None` and silently swallow this conversation's
+            // queued prompt. `finish_reason_for_conversation` scopes the lookup to
+            // `conversation_id` instead.
+            if !has_active_subagent {
+                if let Some(reason) = self.finish_reason_for_conversation(*conversation_id, ctx) {
+                    self.drain_queued_prompts(*conversation_id, reason, ctx);
                 }
-                // Fire the pending single-prompt follow-up set by `/compact-and` and
-                // `/fork-and-compact` (the `PendingUserQueryIndicator` path), then auto-fire the
-                // head of the multi-prompt queued-prompts queue. Both mechanisms coexist: the
-                // former is a one-shot armed by those commands, the latter drains the panel model.
-                if let Some(callback) = queued_prompt {
-                    callback(self, reason, ctx);
-                }
-                self.drain_queued_prompts(*conversation_id, reason, ctx);
             }
 
             // If the most recent action in the current interaction turn created or updated a plan
@@ -18928,6 +18959,24 @@ impl TerminalView {
         })
     }
 
+    /// Returns the finish reason of the most recent AI block belonging to
+    /// `conversation_id`, or `None` when the conversation has no AI blocks in
+    /// this view or its most recent block is still in flight.
+    ///
+    /// Scoped to `conversation_id` rather than the pane-global most-recent
+    /// block ([`Self::last_ai_block`]) so that an orchestration pane's
+    /// still-streaming sibling conversation can't be mistaken for the
+    /// finished conversation's own turn ending. See issue #365.
+    fn finish_reason_for_conversation(
+        &self,
+        conversation_id: AIConversationId,
+        ctx: &AppContext,
+    ) -> Option<FinishReason> {
+        self.ai_block_metadata_for_current_thread(&conversation_id, ctx)
+            .next()
+            .and_then(|ai_metadata| ai_metadata.ai_block_handle.as_ref(ctx).finish_reason())
+    }
+
     fn ai_block_handle_by_view_id(&self, view_id: EntityId) -> Option<&ViewHandle<AIBlock>> {
         self.rich_content_views.iter().find_map(|rich_content| {
             let ai_metadata = rich_content.ai_block_metadata()?;
@@ -20624,6 +20673,29 @@ impl TerminalView {
         output: String,
         ctx: &mut ViewContext<Self>,
     ) -> ViewHandle<AIBlock> {
+        self.insert_dummy_ai_block_internal(query, Some(output), ctx)
+    }
+
+    /// Inserts a dummy AI block that is still streaming (unfinished), for tests that need an
+    /// in-flight block in the pane. Refs #365.
+    #[cfg(any(test, feature = "integration_tests"))]
+    pub fn insert_dummy_streaming_ai_block(
+        &mut self,
+        query: String,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<AIBlock> {
+        self.insert_dummy_ai_block_internal(query, None, ctx)
+    }
+
+    /// Shared body for the dummy AI block insertion helpers. Creates a fresh conversation for
+    /// the block; a `None` output models a block that is still streaming (unfinished).
+    #[cfg(any(test, feature = "integration_tests"))]
+    fn insert_dummy_ai_block_internal(
+        &mut self,
+        query: String,
+        output: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<AIBlock> {
         use rand::distributions::{Alphanumeric, DistString};
 
         use crate::ai::{
@@ -20649,7 +20721,7 @@ impl TerminalView {
             intended_agent: None,
         }];
 
-        let output = AIAgentOutput {
+        let output = output.map(|output| AIAgentOutput {
             messages: vec![AIAgentOutputMessage::text(
                 MessageId::new("fake-id".to_owned()),
                 AIAgentText {
@@ -20663,7 +20735,7 @@ impl TerminalView {
                 Alphanumeric.sample_string(&mut rand::thread_rng(), 24)
             ))),
             ..Default::default()
-        };
+        });
 
         // Create a real conversation in the history model for this dummy block so it renders.
         let terminal_view_id = ctx.view_id();
@@ -20676,7 +20748,10 @@ impl TerminalView {
         });
         let conversation_id = new_conversation_id.expect("conversation created for dummy AI block");
 
-        let ai_block_model = Rc::new(FakeAIBlockModel::new(inputs, output));
+        let ai_block_model = Rc::new(match output {
+            Some(output) => FakeAIBlockModel::new(inputs, output),
+            None => FakeAIBlockModel::new_streaming(inputs),
+        });
         let ai_block = ctx.add_typed_action_view(|ctx| {
             AIBlock::new(
                 ai_block_model,
@@ -21001,6 +21076,23 @@ impl TerminalView {
             .block_list()
             .block_at(block_index)?
             .formatted_duration_string()
+    }
+
+    fn is_block_duration_live(model: &TerminalModel, block_index: BlockIndex) -> bool {
+        model
+            .block_list()
+            .block_at(block_index)
+            .is_some_and(|block| block.is_duration_live())
+    }
+
+    /// Returns `true` when the block is actively executing (has started but not yet
+    /// completed). Used to kick off the repaint timer before the first whole-second tick so
+    /// the live duration counter appears promptly.
+    fn is_block_executing(model: &TerminalModel, block_index: BlockIndex) -> bool {
+        model
+            .block_list()
+            .block_at(block_index)
+            .is_some_and(|block| block.is_executing())
     }
 
     fn block_start_and_completed_ts(model: &TerminalModel, block_index: BlockIndex) -> String {
@@ -21329,6 +21421,7 @@ impl TerminalView {
 
         let mut label_row = Flex::row().with_child(prompt);
 
+        let is_live = Self::is_block_duration_live(model, index);
         if let Some(duration_string) = Self::block_duration_text(model, index) {
             let duration = Text::new_inline(
                 duration_string,
@@ -21338,6 +21431,14 @@ impl TerminalView {
             .with_style(Properties::default().weight(appearance.monospace_font_weight()))
             .with_color(terminal_theme_prompt)
             .finish();
+
+            // Wrap in LiveElement to trigger periodic repaints while the command is still
+            // running, so the elapsed-duration counter updates live. See issue #426.
+            let duration: Box<dyn Element> = if is_live {
+                LiveElement::new(duration, LIVE_COMMAND_DURATION_REPAINT_INTERVAL).finish()
+            } else {
+                duration
+            };
 
             label_row.add_child(if let Some(state) = mouse_state {
                 Hoverable::new(state.clone(), |state| {
@@ -21377,6 +21478,20 @@ impl TerminalView {
             } else {
                 duration
             });
+        } else if Self::is_block_executing(model, index) {
+            // Block is executing but less than 1 second has elapsed — no duration text to
+            // show yet. Add an invisible LiveElement to kick off the repaint timer so the
+            // counter appears as soon as 1s elapses. See issue #426.
+            label_row.add_child(
+                LiveElement::new(
+                    ConstrainedBox::new(Empty::new().finish())
+                        .with_width(0.)
+                        .with_height(0.)
+                        .finish(),
+                    LIVE_COMMAND_DURATION_REPAINT_INTERVAL,
+                )
+                .finish(),
+            );
         }
 
         SavePosition::new(

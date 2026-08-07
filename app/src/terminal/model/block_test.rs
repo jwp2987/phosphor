@@ -651,6 +651,37 @@ pub fn test_elapsed_duration_for_background_block_is_not_live() {
     assert!(!block.is_duration_live());
 }
 
+/// New coverage (not present at the pin) for issue #426: `formatted_duration_string`
+/// must fall back to the live elapsed counter while a command is still running, rather
+/// than returning `None` until the block finishes.
+#[test]
+pub fn test_formatted_duration_string_falls_back_to_elapsed_duration() {
+    let mut block = TestBlockBuilder::new().build();
+
+    // Not yet executing: no final duration and no live elapsed counter, so nothing renders.
+    assert_eq!(block.formatted_duration_string(), None);
+
+    // Executing with no completed_ts yet: falls back to the live elapsed counter instead of
+    // showing nothing. `start_ts` is set far enough in the past that sub-millisecond
+    // test-execution jitter can't flip which whole second `Local::now()` lands on.
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.preexec(Default::default());
+    block.override_start_ts(chrono::Local::now() - chrono::Duration::seconds(120));
+    assert_eq!(
+        block.formatted_duration_string(),
+        Some(Block::format_duration(chrono::Duration::seconds(120)))
+    );
+
+    // Once the block finishes, the final `duration()` (exact, from `completed_ts`) takes
+    // over from the live elapsed counter.
+    block.finish(0);
+    assert!(!block.is_duration_live());
+    assert_eq!(
+        block.formatted_duration_string(),
+        block.duration().map(Block::format_duration)
+    );
+}
+
 /// Tests the multiline lprompt and multiline command case for selecting text across grids.
 #[test]
 fn test_selection_bounds_all_grids_multiline_lprompt_command() {

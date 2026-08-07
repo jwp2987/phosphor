@@ -2458,7 +2458,9 @@ impl Block {
     }
 
     pub fn formatted_duration_string(&self) -> Option<String> {
-        self.duration().map(Self::format_duration)
+        self.duration()
+            .or_else(|| self.elapsed_duration_whole_secs())
+            .map(Self::format_duration)
     }
 
     pub fn format_duration(duration: Duration) -> String {
@@ -2699,8 +2701,7 @@ impl Block {
     /// `duration()`).
     ///
     /// This is kept in lock-step with [`Self::elapsed_duration_whole_secs`] so the view layer can
-    /// decide whether to wrap the duration in a periodically-repainting element. The view-side
-    /// wiring is not in place yet — see issue #426.
+    /// decide whether to wrap the duration in a periodically-repainting element. Refs #426.
     pub fn is_duration_live(&self) -> bool {
         self.elapsed_duration_whole_secs().is_some()
     }
