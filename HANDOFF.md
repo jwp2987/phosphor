@@ -25,9 +25,42 @@ host.
 
 ## Where main is
 
-`78dab7899` — **31 PRs merged on 2026-08-06/07.** Both CI jobs green (Linux and
-Windows), full suite **4195/4195** on `warp --lib --features gui` and **349/349**
-on `warpui`+`warpui_core`.
+`af79b705d` — **39 PRs merged on 2026-08-06/07.** Both CI jobs green.
+
+**`main` currently has 11 FAILING tests** (batch run: 4946 tests, 4935 passed).
+All attributed, none unexplained:
+
+| count | tests | why |
+|---|---|---|
+| 5 | `ai::blocklist::history_model::*` rewind/fork | **Deliberate** — PR #259 pinned real divergences #251/#253 rather than ship unverified fixes to the conversation-rewind path |
+| 3 | `code::editor::view::vim_handler::test_vim_{c,d,y}_percent_*` | PR #246's uncompiled hunks |
+| 3 | `terminal::input::{lrc_queued_prompts_wait…, slash_fork_bypasses…, test_classic_tab_completions_close…}` | PR #258's uncompiled hunks |
+
+The 6 uncompiled-hunk failures are **not** deliberate — fix them. Both agents
+flagged exactly these when builds were frozen mid-round, so the locations are
+known: the last two fixes in `app/src/terminal/input.rs`, and the `c%`/`d%`/`y%`
+matching-bracket ports in `vim_handler_tests.rs`.
+
+### Round 2 result (the batch model working)
+
+Six agents, six PRs, merged into one integration branch with **zero conflicts**,
+verified by **one** build (~26s of test time) instead of six cold builds.
+**110 tests ported, 12 real defects found** — including **#248**, a shell
+injection in prompt-chip commands reachable from git branch names. That is the
+third security defect test-porting surfaced, after the OSC 1337 panic and the
+`cat {history_file}` injection.
+
+### Remaining work
+
+~1,185 verdict-A tests across 191 files, but **A is overstated** (see below), so
+the genuinely portable remainder is likely half that. At ~3-4 files per agent,
+that is **4-6 more rounds of 6-8 agents**. Run more agents per round, not more
+rounds: the batch model means extra agents cost nothing in build time, and the
+only real constraint is carving disjoint file sets.
+
+Feature gaps are now enumerated **with blocking counts** — #252 (68 tests),
+#254 (33), #236 (31), #256 (4) — so they can be scheduled as feature work rather
+than miscounted as test debt.
 
 Two remotely-triggerable security defects closed this session (#171, PR #224):
 an **OSC 1337 parser panic on untrusted PTY output** (any process writing to the
