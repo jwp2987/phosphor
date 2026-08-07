@@ -15,7 +15,9 @@ use warpui::{App, EntityId, ModelHandle};
 use super::{BlocklistAIContextModel, PendingAttachment, PendingFile};
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::{AIAgentAttachment, ImageContext};
-use crate::ai::blocklist::agent_view::{AgentViewController, EphemeralMessageModel};
+use crate::ai::blocklist::agent_view::{
+    AgentViewController, AgentViewEntryOrigin, EphemeralMessageModel,
+};
 use crate::ai::blocklist::{
     BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel, QueuedQueryOrigin,
 };
@@ -312,6 +314,53 @@ fn enqueue_moves_staged_attachments_onto_the_row_and_clears_input() {
             assert_eq!(attachments.len(), 2);
             assert_eq!(attachments[0].file_name(), "a.png");
             assert_eq!(attachments[1].file_name(), "notes.txt");
+        });
+    });
+}
+
+/// Builds a context model for the TUI surface, which has no agent-view controller and
+/// therefore tracks the selected conversation purely through `pending_query_state`.
+fn build_tui_context_model(app: &mut App) -> ModelHandle<BlocklistAIContextModel> {
+    let terminal_model = Arc::new(FairMutex::new(TerminalModel::new_for_test(
+        block_size(),
+        color::List::from(&Colors::default()),
+        ChannelEventListener::new_for_test(),
+        Arc::new(Background::default()),
+        false, /* should_show_bootstrap_block */
+        None,  /* restored_blocks */
+        false, /* honor_ps1 */
+        false, /* is_inverted */
+        None,  /* session_startup_path */
+    )));
+    let terminal_surface_id = EntityId::new();
+
+    app.add_model(|_| {
+        BlocklistAIContextModel::mock_agent_view_less(terminal_model, terminal_surface_id)
+    })
+}
+
+#[test]
+fn tui_context_tracks_selected_conversation() {
+    App::test((), |mut app| async move {
+        let model = build_tui_context_model(&mut app);
+        let conversation_id = AIConversationId::new();
+
+        model.update(&mut app, |model, ctx| {
+            model.set_pending_query_state_for_existing_conversation(
+                conversation_id,
+                AgentViewEntryOrigin::Cli,
+                ctx,
+            );
+        });
+        model.read(&app, |model, ctx| {
+            assert_eq!(model.selected_conversation_id(ctx), Some(conversation_id));
+        });
+
+        model.update(&mut app, |model, ctx| {
+            model.set_pending_query_state_for_new_conversation(AgentViewEntryOrigin::Cli, ctx);
+        });
+        model.read(&app, |model, ctx| {
+            assert_eq!(model.selected_conversation_id(ctx), None);
         });
     });
 }
