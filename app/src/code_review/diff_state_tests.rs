@@ -274,6 +274,10 @@ async fn init_repo_with_branches() -> (TempDir, PathBuf) {
     git(&path, &["checkout", "-b", "feature/one"]).await;
     git(&path, &["checkout", "-b", "feature/two"]).await;
     git(&path, &["checkout", "main"]).await;
+
+    (dir, path)
+}
+
 // ─── Ported from Warp: `warp/master:app/src/util/git_tests.rs` ───────────────
 //
 // Warp keeps `committed_branch_files_excludes_uncommitted_and_untracked` next
