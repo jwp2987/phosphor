@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Run the suite and compare failures against script/known_test_failures.txt.
+#
+# WHY THIS EXISTS
+# ---------------
+# `main` carries known red tests. A CI job that simply fails while they exist is
+# red on every PR forever, and a job that is always red teaches everyone to
+# ignore it -- which is exactly how a merge past a red `fork boundary guards`
+# job cascaded into fourteen broken PRs on 2026-08-07.
+#
+# So this fails on CHANGE, not on redness:
+#
+#   - a test fails that is not on the list  -> regression, exit 1
+#   - a test on the list passes             -> stale entry, exit 1 (delete it)
+#   - the listed failures and only those    -> exit 0
+#
+# The second rule matters as much as the first. Without it the list is a place
+# failures go to be forgotten; with it, fixing a test FORCES the debt to be
+# retired in the same PR. Same contract as script/cloud_boundary_allowlist.txt.
+#
+# This is NOT a way to make a red test acceptable. AGENTS.md 5.6 still applies:
+# a red test gets fixed, and adding a line here needs a tracking issue and
+# maintainer sign-off.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+KNOWN="script/known_test_failures.txt"
+[[ -f "$KNOWN" ]] || { echo "error: $KNOWN is missing" >&2; exit 2; }
+
+out="$(mktemp)"; expected="$(mktemp)"; actual="$(mktemp)"
+trap 'rm -f "$out" "$expected" "$actual"' EXIT
+
+echo "running: cargo nextest run ${*}" >&2
+cargo nextest run "$@" --no-fail-fast 2>&1 | tee "$out"
+
+# nextest prints a summary line per failure:  "        FAIL [   0.1s] (n/m) warp  path::to::test"
+# Take the last whitespace-delimited field, stripped of ANSI colour.
+sed -E 's/\x1b\[[0-9;]*m//g' "$out" \
+    | grep -E '^\s+FAIL ' \
+    | awk '{print $NF}' \
+    | sort -u > "$actual"
+
+grep -vE '^\s*(#|$)' "$KNOWN" | tr -d ' \r' | sort -u > "$expected"
+
+new="$(comm -23 "$actual" "$expected")"
+fixed="$(comm -13 "$actual" "$expected")"
+
+status=0
+
+if [[ -n "$new" ]]; then
+    status=1
+    echo "" >&2
+    echo "error: test(s) failed that are not in $KNOWN:" >&2
+    echo "$new" | sed 's/^/  + /' >&2
+    cat >&2 <<'EOF'
+
+This is a regression introduced by this change. Fix the CODE, not the test
+(AGENTS.md 5.6/5.11): do not weaken the assertion, do not #[ignore] it, and do
+not add it to the known-failures list to get green. Adding a line there needs a
+tracking issue and maintainer sign-off.
+EOF
+fi
+
+if [[ -n "$fixed" ]]; then
+    status=1
+    echo "" >&2
+    echo "error: test(s) listed in $KNOWN now PASS -- delete these lines:" >&2
+    echo "$fixed" | sed 's/^/  - /' >&2
+    cat >&2 <<'EOF'
+
+Good news, but the list must shrink when the debt does, or it silently becomes
+a graveyard. Remove the entries (and close the issue they cite) in this PR.
+EOF
+fi
+
+if [[ $status -eq 0 ]]; then
+    echo ""
+    echo "tests: ok ($(wc -l < "$expected" | tr -d ' ') known failure(s), no regressions)"
+fi
+
+exit $status
