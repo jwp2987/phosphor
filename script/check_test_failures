@@ -51,6 +51,9 @@ status=0
 if [[ -n "$new" ]]; then
     status=1
     echo "" >&2
+    echo "=============================================================" >&2
+    echo "REGRESSION -- this change broke test(s). Fix the code." >&2
+    echo "=============================================================" >&2
     echo "error: test(s) failed that are not in $KNOWN:" >&2
     echo "$new" | sed 's/^/  + /' >&2
     cat >&2 <<'EOF'
@@ -65,12 +68,21 @@ fi
 if [[ -n "$fixed" ]]; then
     status=1
     echo "" >&2
-    echo "error: test(s) listed in $KNOWN now PASS -- delete these lines:" >&2
+    echo "=============================================================" >&2
+    echo "BOOKKEEPING -- nothing is broken. Your change FIXED test(s)." >&2
+    echo "To go green: delete the line(s) below from" >&2
+    echo "  $KNOWN" >&2
+    echo "and commit that deletion in this same PR. Nothing else needed." >&2
+    echo "=============================================================" >&2
+    echo "test(s) listed in $KNOWN now PASS:" >&2
     echo "$fixed" | sed 's/^/  - /' >&2
     cat >&2 <<'EOF'
 
-Good news, but the list must shrink when the debt does, or it silently becomes
-a graveyard. Remove the entries (and close the issue they cite) in this PR.
+Why this is enforced rather than ignored: if the list never shrinks, it stops
+describing reality within a few weeks -- and at that point a REAL regression in
+a listed test is invisible, because the list already excuses it.
+
+Also close the issue each deleted line cites.
 EOF
 fi
 
