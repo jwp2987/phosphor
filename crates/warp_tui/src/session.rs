@@ -103,6 +103,12 @@ fn init(
     // restore files edited during this session (see tui_revert_registry).
     crate::tui_revert_registry::TuiFileEditRevertRegistry::register(ctx);
 
+    // Load the zero-state rotating-object animation's config (built-in mark
+    // vs. a user-supplied `TuiZeroStateObject::AsciiFile`, rotation period,
+    // extrusion depth) from settings, and keep it live-reloading on setting
+    // changes. See zero_state_animation_config.rs and #384.
+    crate::zero_state_animation::ZeroStateAnimationConfig::register(ctx);
+
     // Theme the transcript to match the host terminal, and register the live
     // focus-triggered re-probe so a later appearance change (e.g. switching
     // the host terminal's profile) is picked up mid-session. Keep this scoped

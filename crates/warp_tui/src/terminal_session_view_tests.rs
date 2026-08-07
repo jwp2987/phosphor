@@ -3,8 +3,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use instant::Instant;
+use tempfile::TempDir;
 use warp::appearance::Appearance;
-use warp::settings::{AISettings, TuiStatuslineConfig, TuiStatuslineItem};
+use warp::settings::{AISettings, TuiStatuslineConfig, TuiStatuslineItem, TuiZeroStateObject};
 use warp::terminal::model::ansi::{Handler, InputBufferValue};
 use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
@@ -56,6 +57,9 @@ use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_sessio
 use crate::transcript_view::TRANSCRIPT_BLOCK_SPACING;
 use crate::tui_builder::TuiUiBuilder;
 use crate::usage::render_context_usage_entry;
+use crate::zero_state_animation::{
+    ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationLoadFailure,
+};
 
 struct FocusTestFixture {
     window_id: warpui_core::WindowId,
@@ -1693,6 +1697,77 @@ fn footer_transient_state_replaces_all_sections() {
         });
         let lines = render_footer_lines(&mut app, &view, 80);
         assert_eq!(lines, vec![CTRL_C_EXIT_HINT]);
+    });
+}
+
+/// Ported from Warp's `crates/warp_tui/src/terminal_session_view_tests.rs` at
+/// the pinned oracle (`02b53fcd8` — see `ORACLE.md`) as part of #384. A
+/// reload failure (e.g. the linked `TuiZeroStateObject::AsciiFile` was
+/// deleted or edited into something invalid) surfaces as an error-toned
+/// transient footer hint rather than failing silently.
+#[test]
+fn zero_state_reload_failure_renders_as_an_error_footer_hint() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        app.update(|ctx| {
+            ZeroStateAnimationConfig::handle(ctx).update(ctx, |_, ctx| {
+                ctx.emit(ZeroStateAnimationConfigEvent::LoadFailed(
+                    ZeroStateAnimationLoadFailure::Reload,
+                ));
+            });
+        });
+
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                super::ZERO_STATE_ASCII_RELOAD_FAILED_HINT.to_owned(),
+                super::TransientHintTone::Error
+            ))
+        );
+
+        let lines = render_footer_lines(&mut app, &view, 120);
+        assert_eq!(lines, vec![super::ZERO_STATE_ASCII_RELOAD_FAILED_HINT]);
+    });
+}
+
+/// Ported from Warp's `crates/warp_tui/src/terminal_session_view_tests.rs` at
+/// the pinned oracle (`02b53fcd8`) as part of #384. An initial-load failure
+/// (a configured `TuiZeroStateObject::AsciiFile` that never resolves, e.g. a
+/// missing file) also surfaces as an error-toned hint, checked at session
+/// construction rather than via a later `LoadFailed` event.
+#[test]
+fn zero_state_initial_load_failure_shows_an_error_footer_hint() {
+    App::test((), |mut app| async move {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ZeroStateAnimationConfig::load(
+            &TuiZeroStateObject::AsciiFile {
+                path: "missing.txt".into(),
+            },
+            5.0,
+            0.18,
+            temp_dir.path(),
+        );
+        app.add_singleton_model(move |_| config);
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                super::ZERO_STATE_ASCII_INITIAL_LOAD_FAILED_HINT.to_owned(),
+                super::TransientHintTone::Error
+            ))
+        );
     });
 }
 
