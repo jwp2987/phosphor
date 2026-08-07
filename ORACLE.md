@@ -58,48 +58,85 @@ an approximation.
 
 ## Gap at the pin — 2026-08-06
 
-Measured by **test-function count**, not filename. Filename matching is
-unreliable here: the fork renames Warp's `*_tests.rs` to `*_test.rs`, and
-same-path matching counts those as missing. That is where the long-quoted "468
-missing test files" figure came from; it is wrong and should not be repeated.
+Measured by **test-function count**, not filename, and classified **per file by
+reading source imports** — not by path. Every test-bearing file at the pin (854)
+was classified. See `SCOPE-AI.md`, `SCOPE-TERMINAL.md`, `SCOPE-REST.md` (#2).
+
+> **Read this before quoting any number here.** A *net* count and a *workload*
+> are different quantities, and conflating them is why this project spent weeks
+> unable to say what the scope was (#218).
+
+### Two numbers, deliberately kept apart
 
 ```
-warp @ pin (02b53fcd8)   10,123
-fork main                 7,884
-                         ------
-net gap                   2,239   (2,744 behind, 505 ahead)
+pin 10,123  −  fork 7,884  =  2,239      <- NET. Not a workload.
 ```
 
-Largest areas behind:
+Net is what you get by subtracting totals. It is wrong in **both** directions:
+it hides Warp tests we lack behind fork-original tests that cover *fork*
+behaviour, and it counts out-of-scope cloud tests as if they were work.
 
-| area | warp | fork | gap |
-|---|---:|---:|---:|
-| `app/ai` | 1847 | 1229 | 618 |
-| `app/terminal` | 1538 | 1148 | 390 |
-| `crates/ai` | 352 | 142 | 210 |
-| `app/server` | 177 | 5 | 172 |
-| `app/settings_view` | 228 | 84 | 144 |
-| `crates/warp_cli` | 216 | 76 | 140 |
-| `crates/warp_tui` | 745 | 608 | 137 |
-| `app/pane_group` | 106 | 29 | 77 |
-| `crates/computer_use` | 69 | 0 | 69 |
-| `app/remote_server` | 100 | 49 | 51 |
+```
+Warp tests genuinely ABSENT from the fork      3,902
+  of which:
+    A  test debt      — fork ships the code    1,605   <- THE WORKLOAD
+    D  feature gap    — port the feature first    792
+    C  out of scope   — cloud / dropped         1,505
+fork-original tests offsetting the net figure  1,663
+```
 
-**Not all of this is debt.** Roughly 340 sit in areas the fork drops by design —
-`app/server`, `crates/warp_server_client`, `crates/warp_server_auth`,
-`crates/cloud_object_*`, `crates/graphql`, `crates/computer_use`. Subtracting
-those puts the real target near **1,900**.
+**The actionable queue is 1,605.** Not 2,239, and not 3,902.
 
-Two caveats on the numbers above:
+### By slice
 
-- **Path is not scope.** Classify a test by what it *targets*, not where it
-  lives. `server/server_api/ai_tests.rs` reads as pure cloud, but 14 of its 40
-  tests cover retained non-cloud code. The ~340 figure is an upper bound on
-  legitimate drops.
-- **Single-file rows double-count.** In the per-area breakdown, top-level files
-  appear in both the "behind" and "ahead" columns because of the `_tests.rs` →
-  `_test.rs` rename (`app/menu_tests.rs` −6 alongside `app/menu_test.rs` +14).
-  That inflates both sides by roughly 49. Directory-level rows are sound.
+| slice | absent | A debt | D feature | C out-of-scope |
+|---|---:|---:|---:|---:|
+| `app/ai` + `crates/ai` | 1,511 | 571 | 412 | 528 |
+| `terminal` + `warp_tui` | 729 | 420 | 114 | 195 |
+| everything else | 1,662 | 614 | 266 | 782 |
+| **total** | **3,902** | **1,605** | **792** | **1,505** |
+
+Largest verdict-A concentrations: `input_tests.rs` (60), `terminal_session_view_tests.rs`
+(57), `view_tests.rs` (55), `view_impl_tests.rs` (36).
+
+### What the classification overturned
+
+Every one of these was believed true and was wrong. They are recorded because
+the *method* that produced each error is still available to repeat:
+
+- **`crates/computer_use` is not dropped.** The fork ships 28 of 45 files. Only
+  11 tests are a feature gap.
+- **`crates/ai/src/api_keys_tests.rs` yields zero straight debt.** All 57 need a
+  feature ported first — the fork's `api_keys.rs` is 229 lines vs 776, with no
+  Grok, no GEAP, and zero repo-wide hits for `CustomEndpoint`. A feature gap
+  hiding inside a file the fork appears to ship.
+- **`request_usage_model_tests.rs` is out of scope despite the fork shipping the
+  source** — that source is a 260-line no-op stub. A source-presence check calls
+  this debt. It isn't.
+- **101 of 177 terminal files are fully covered** under renamed or inlined paths.
+  Path matching calls all 101 missing; that is the origin of the discredited
+  "468 missing test files" figure.
+- **Same filename ≠ same code.** `codex.rs` is 61 fork lines vs 492 (0 of 39
+  tests survive); `zero_state_animation.rs` is a fork-original starfield vs
+  Warp's rotating mark (0 of 26).
+- **Path is not scope, in either direction.** `settings_view/environments_page.rs`
+  reads local but is entirely cloud (#211). `server/server_api/ai_tests.rs` reads
+  cloud but 14 of its 40 tests cover retained non-cloud code. Mixed files must be
+  classified per *test*.
+
+### Rules for anyone re-measuring
+
+1. Match by **test-function name across the whole fork tree**. The fork renames
+   `*_tests.rs` → `*_test.rs` and flattens `a/b/c_tests.rs` → `a/b_c_tests.rs`,
+   so a path miss is never evidence of absence.
+2. Justify every out-of-scope verdict by **quoting the source file's imports**.
+   "It's cloud" is never self-justifying — most of Warp's cloud-organised AI code
+   (agent loop, tool-calling, streaming, context building) has a BYOP equivalent
+   and is in scope.
+3. Check for **name collisions** before declaring a test covered
+   (`selection_cursor_tests.rs::test_cursor` vs
+   `grapheme_cursor_tests.rs::test_cursor` are different tests).
+4. Report **behind / ahead / net separately**. Never a single number.
 
 ## Rate of change (why the pin matters)
 
