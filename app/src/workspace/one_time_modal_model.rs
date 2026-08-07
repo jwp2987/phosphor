@@ -1,5 +1,5 @@
 use super::hoa_onboarding;
-use super::view::feature_intro_modal::{FEATURE_INTROS, FeatureIntroId};
+use super::view::feature_intro_modal::{FeatureIntroId, FEATURE_INTROS};
 use crate::auth::{AuthManager, AuthManagerEvent};
 use crate::channel::{Channel, ChannelState};
 // Zap (localization, Phase 5): `PreferencesSyncer` has been physically removed.
@@ -120,11 +120,10 @@ impl OneTimeModalModel {
             // workspace only renders / populates the view when
             // `target_window_id` matches, and `on_active_window_changed` may not
             // have run yet when the startup modal queue fires.
-            if intro.is_some()
-                && self.target_window_id.is_none()
-                && let Some(window_id) = ctx.windows().active_window()
-            {
-                self.target_window_id = Some(window_id);
+            if intro.is_some() && self.target_window_id.is_none() {
+                if let Some(window_id) = ctx.windows().active_window() {
+                    self.target_window_id = Some(window_id);
+                }
             }
             ctx.emit(OneTimeModalEvent::VisibilityChanged {
                 is_open: intro.is_some(),

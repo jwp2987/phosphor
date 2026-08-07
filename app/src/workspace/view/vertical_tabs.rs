@@ -975,7 +975,12 @@ fn summary_search_text_fragments(
     if let Some(title_override) = title_override.and_then(normalize_summary_text) {
         fragments.push(title_override);
     }
-    fragments.extend(summary.primary_labels.iter().map(|label| label.text.clone()));
+    fragments.extend(
+        summary
+            .primary_labels
+            .iter()
+            .map(|label| label.text.clone()),
+    );
     fragments.extend(summary.working_directories.iter().cloned());
     for entry in &summary.branch_entries {
         fragments.push(entry.branch_name.clone());

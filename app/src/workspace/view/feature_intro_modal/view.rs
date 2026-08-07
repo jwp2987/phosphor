@@ -360,7 +360,7 @@ impl View for FeatureIntroModal {
             )
             .with_background(modal_background(appearance))
             .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
-            .with_foreground_border(appearance.theme().outline().into_solid())
+            .with_border(appearance.theme().outline().into_solid())
             .finish(),
         )
         .with_width(MODAL_WIDTH)
