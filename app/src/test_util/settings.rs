@@ -17,24 +17,27 @@ pub fn initialize_settings_for_tests_with_mode(
         drive::settings::WarpDriveSettings,
         search::command_search::settings::CommandSearchSettings,
         settings::{
-            app_icon::AppIconSettings, init_and_register_user_preferences,
-            manager::SettingsManager, AISettings, AccessibilitySettings, AliasExpansionSettings,
-            AppEditorSettings, BlockVisibilitySettings, CodeSettings, DebugSettings,
-            EmacsBindingsSettings, FontSettings, GPUSettings, InputModeSettings, InputSettings,
+            app_icon::AppIconSettings, app_installation_detection::UserAppInstallDetectionSettings,
+            init_and_register_user_preferences, manager::SettingsManager, AISettings,
+            AccessibilitySettings, AliasExpansionSettings, AppEditorSettings,
+            BlockVisibilitySettings, CodeSettings, DebugSettings, EmacsBindingsSettings,
+            FontSettings, GPUSettings, InputModeSettings, InputSettings, LocalControlSettings,
             NativePreferenceSettings, PaneSettings, PreferencesSettings,
             SameLinePromptBlockSettings, ScrollSettings, SelectionSettings, SshSettings,
-            ThemeSettings, VimBannerSettings,
+            ThemeSettings, TuiAutoupdateSettings, TuiThemeSettings, TuiZeroStateSettings,
+            VimBannerSettings, WarpDrivePrivacySettings,
         },
         terminal::{
-            general_settings::GeneralSettings, keys_settings::KeysSettings,
-            ligature_settings::LigatureSettings, safe_mode_settings::SafeModeSettings,
-            session_settings::SessionSettings, settings::TerminalSettings,
-            shared_session::settings::SharedSessionSettings, warpify::settings::WarpifySettings,
-            BlockListSettings,
+            alt_screen_reporting::AltScreenReporting, general_settings::GeneralSettings,
+            keys_settings::KeysSettings, ligature_settings::LigatureSettings,
+            safe_mode_settings::SafeModeSettings, session_settings::SessionSettings,
+            settings::TerminalSettings, shared_session::settings::SharedSessionSettings,
+            warpify::settings::WarpifySettings, BlockListSettings,
         },
         undo_close::UndoCloseSettings,
         user_config::WarpConfig,
         window_settings::WindowSettings,
+        workflows::aliases::WorkflowAliases,
         workspace::tab_settings::TabSettings,
     };
     use warp_core::{execution_mode::AppExecutionMode, semantic_selection::SemanticSelection};
@@ -111,9 +114,31 @@ pub fn initialize_settings_for_tests_with_mode(
     crate::settings::network::NetworkSettings::register(app);
     crate::settings::AutoupdateSettings::register(app);
 
+    // Settings that `register_all_settings` registers but this test helper had
+    // drifted from, found by script/check_settings_registry. Each of these
+    // reads only from the mocked in-memory preferences already set up above
+    // (`init_and_register_user_preferences`), so registering them here is
+    // safe -- unlike `LocalControlSettings` below, which reads from secure
+    // storage and so cannot be registered this early.
+    AltScreenReporting::register(app);
+    TuiAutoupdateSettings::register(app);
+    TuiThemeSettings::register(app);
+    TuiZeroStateSettings::register(app);
+    UserAppInstallDetectionSettings::register(app);
+    WarpDrivePrivacySettings::register(app);
+    WorkflowAliases::register(app);
+
     app.update(|ctx| {
         // Register a no-op secure storage provider for testing.
         warpui_extras::secure_storage::register_noop("test", ctx);
+
+        // `LocalControlSettings` reads its value from secure storage (not
+        // user preferences) at registration time, so it must come after the
+        // no-op secure storage provider directly above, not in the drifted-
+        // settings group further up. Registering it any earlier panics the
+        // same way an unregistered settings model does, just for the
+        // secure-storage singleton instead.
+        LocalControlSettings::register(ctx);
 
         // Add settings models that are backed by secure storage, not user preferences.
         ctx.add_singleton_model(ai::api_keys::ApiKeyManager::new);
