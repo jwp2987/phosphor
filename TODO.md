@@ -69,9 +69,14 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
 - [ ] **`local_control` / `warpctrl` app-side** — crate `crates/local_control` exists;
   `app/src/local_control/` is absent. Blocked on `FeatureFlag::{WarpControlCli,
   AgentManagementView}` + a missing Agent-Management view subsystem.
-- [ ] **Persistence pinned-tabs / tab-groups GUI round-trip** — migrations + schema on
-  main (`crates/persistence/migrations/2026-08-05-*`, storage done); no
-  `toggle_pin`/`is_pinned`/`PinTab` in `app/src/workspace` → GUI wiring not done.
+- [ ] **Pinned-tabs / tab-groups remaining GUI surfaces** — storage (migrations +
+  schema), the live model (`Workspace::tab_groups`, `TabData::{group_id, pinned}`),
+  the `PinTab`/`UngroupTabs`/… actions, snapshot round-trip, keybindings, the
+  per-tab Pin/Unpin + tab-group context-menu entries, the multi-tab right-click
+  menu, shift/cmd-click multi-selection and the "Move to group" submenu sidecar
+  all landed. Still to port from `warp/master`: the vertical-tabs group-header
+  row, the tab-group right-click menu (which hangs off that header), the inline
+  group-rename editor, and group-aware drag-and-drop reordering.
 - [ ] **repo_metadata standing-queries wiring** — `standing_queries.rs` on main;
   the app skill-watcher wiring that drives it is the follow-up.
 - [ ] **Log-rotation deferred wiring** — machinery built (`simple_logger` + `warp_logging`
