@@ -508,6 +508,15 @@ impl PaneData {
         self.root.adjust_pane_size(border_id, delta, ctx);
     }
 
+    /// Resets every pane's flex in the [`PaneBranch`] that owns `border_id`
+    /// (a [`Divider::id`]) back to [`DEFAULT_FLEX_SIZE`], leaving sibling or
+    /// nested branches' custom sizes untouched. Backs the "double-click a
+    /// divider to reset that split to equal sizes" convenience. Returns
+    /// `true` if a branch owning the divider was found.
+    pub fn reset_pane_sizes(&mut self, border_id: EntityId) -> bool {
+        self.root.reset_pane_sizes(border_id)
+    }
+
     pub fn adjust_pane_size_by_id(
         &mut self,
         pane_id: PaneId,
@@ -733,6 +742,13 @@ impl PaneNode {
         match self {
             PaneNode::Leaf(_) => false,
             PaneNode::Branch(branch) => branch.adjust_pane_size(border_id, delta, ctx),
+        }
+    }
+
+    pub fn reset_pane_sizes(&mut self, border_id: EntityId) -> bool {
+        match self {
+            PaneNode::Leaf(_) => false,
+            PaneNode::Branch(branch) => branch.reset_pane_sizes(border_id),
         }
     }
 
@@ -1149,6 +1165,23 @@ impl PaneBranch {
 
         for (_, node) in &mut self.nodes {
             if node.adjust_pane_size(border_id, delta, ctx) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn reset_pane_sizes(&mut self, border_id: EntityId) -> bool {
+        if self.dividers.iter().any(|divider| divider.id == border_id) {
+            for (flex, _) in &mut self.nodes {
+                *flex = DEFAULT_FLEX_SIZE;
+            }
+            return true;
+        }
+
+        for (_, node) in &mut self.nodes {
+            if node.reset_pane_sizes(border_id) {
                 return true;
             }
         }
