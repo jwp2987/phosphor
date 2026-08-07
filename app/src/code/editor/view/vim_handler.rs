@@ -251,6 +251,9 @@ impl VimHandler for CodeEditorView {
                             VimMotion::JumpToLine(line_number) => {
                                 model.vim_select_to_line(*line_number, motion_type, operator, ctx);
                             }
+                            VimMotion::JumpToMatchingBracket => {
+                                model.vim_select_to_matching_bracket(ctx);
+                            }
                             _ => {
                                 // TODO: Implement other motions (find char, brackets, etc.)
                             }

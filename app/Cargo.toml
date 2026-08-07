@@ -30,6 +30,7 @@ test = false
 [dependencies]
 addr = "0.15.6"
 ai.workspace = true
+alphanumeric-sort.workspace = true
 anyhow.workspace = true
 arrayvec.workspace = true
 asset_cache.workspace = true

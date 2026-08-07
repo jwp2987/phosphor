@@ -5,7 +5,7 @@ use std::{
 
 use crate::terminal::shared_session::protocol::{
     InputReplicaId, ParticipantInfo, ParticipantList, ParticipantPresenceUpdate, PresenceUpdate,
-    Role, RoleRequestId, Selection,
+    Role, RoleRequestId, Selection, Viewer,
 };
 use futures::future::BoxFuture;
 use futures_util::future::join_all;
@@ -769,6 +769,25 @@ impl PresenceManager {
     /// user UID.
     pub fn present_viewer_id_for_uid(&self, viewer_uid: UserUid) -> Option<&ParticipantId> {
         self.present_viewer_ids_for_uid(viewer_uid).next()
+    }
+
+    /// Returns the user UID shared by every *present* viewer in `viewers`, or
+    /// `None` if there are zero present viewers or more than one distinct
+    /// present-viewer UID (a single user can appear more than once, e.g. with
+    /// multiple tabs open onto the shared session).
+    pub(crate) fn single_distinct_present_viewer_uid_from_viewers<'a>(
+        viewers: impl Iterator<Item = &'a Viewer>,
+    ) -> Option<&'a str> {
+        Self::single_distinct_uid(
+            viewers
+                .filter(|v| v.is_present)
+                .map(|v| v.info.profile_data.user_uid.as_str()),
+        )
+    }
+
+    fn single_distinct_uid<'a>(mut uids: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+        let uid = uids.next()?;
+        uids.all(|other_uid| other_uid == uid).then_some(uid)
     }
 }
 
