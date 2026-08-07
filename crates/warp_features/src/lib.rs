@@ -647,6 +647,10 @@ pub enum FeatureFlag {
     /// Requires HOANotifications to also be enabled.
     CodexNotifications,
 
+    /// Enables the Codex Phosphor plugin marketplace integration.
+    /// When disabled, Codex uses native OSC9 notifications.
+    CodexPlugin,
+
     /// Enables the install/update chip for the Gemini CLI Zap extension.
     /// Requires HOANotifications to also be enabled.
     GeminiNotifications,
