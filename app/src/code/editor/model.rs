@@ -3679,6 +3679,65 @@ impl CodeEditorModel {
         self.vim_set_selections(new_selections, AutoScrollBehavior::Selection, ctx);
     }
 
+    /// Selects from the cursor through Vim's matching bracket (`%` used as an
+    /// operator motion, e.g. `d%`/`c%`/`y%`). `%` is an inclusive motion: the
+    /// operator must act on both brackets, not just move the cursor to the
+    /// second one. This differs from [`Self::vim_jump_to_matching_bracket`],
+    /// whose `keep_selection` selection stops one character short of the
+    /// matched bracket, which is correct for the bare navigation command but
+    /// wrong as an operator range (it would drop the closing bracket, or the
+    /// opening bracket when matching backward).
+    pub fn vim_select_to_matching_bracket(&mut self, ctx: &mut ModelContext<Self>) {
+        let buffer = self.content().as_ref(ctx);
+        let selection_model = self.selection_model.as_ref(ctx);
+        let current_selections = selection_model.selection_offsets();
+
+        let new_selections = current_selections.mapped(|selection| {
+            let cursor = selection.head;
+
+            // Create char iterator from current position to the end of the line
+            let line_end = buffer.containing_line_end(selection.head);
+            let line_text = buffer.text_in_range(cursor..line_end).into_string();
+            let mut iter = line_text.chars();
+
+            let Some(c) = iter.next() else {
+                return selection;
+            };
+
+            let (bracket, start_offset) = match BracketChar::try_from(c) {
+                Ok(bracket) => (bracket, cursor),
+
+                Err(_) => match iter
+                    .enumerate()
+                    .find_map(|(i, c)| Some((i, BracketChar::try_from(c).ok()?)))
+                {
+                    None => return selection,
+                    Some((i, bracket)) => (bracket, cursor + i + 1),
+                },
+            };
+
+            let Some(bracket_position) = vim_find_matching_bracket(buffer, &bracket, start_offset)
+            else {
+                return selection;
+            };
+
+            // Cover both brackets regardless of which direction the match lies
+            // in: the higher of the two offsets is included (+1, since
+            // selection ranges are half-open), and the lower is the anchor.
+            let (low, high) = if bracket_position >= cursor {
+                (cursor, bracket_position)
+            } else {
+                (bracket_position, cursor)
+            };
+            SelectionOffsets {
+                head: high + 1,
+                tail: low,
+            }
+        });
+
+        self.vim_set_selections(new_selections, AutoScrollBehavior::Selection, ctx);
+    }
+
     /// This method does Vim's `[` command. It moves to the enclosing bracket around the cursor. It
     /// is similar to the `%` command, but it does not require the cursor to start on a bracket.
     pub fn vim_jump_to_unmatched_bracket(
