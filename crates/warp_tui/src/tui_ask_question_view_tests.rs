@@ -180,7 +180,7 @@ fn active_card_matches_question_panel_structure() {
                 "│ Which targets should be tested? (select all that apply)                      │",
                 "│ (1)   Stable                                                                 │",
                 "│ (2)   Nightly                                                                │",
-                "│ (3) Other…                                                                   │",
+                "│ (3) [ ] Other…                                                               │",
                 "│                                                                              │",
                 "│ Enter or number to select Tab or ← → to navigate Ctrl + C to cancel question │",
                 "│                                                                              │",

@@ -318,11 +318,7 @@ fn agent_mode_render_has_prompt_gutter() {
     App::test((), |mut app| async move {
         app.update(|ctx| {
             let view = build_view(ctx);
-            // Adapted from the pin's single `render_view` helper (buffer +
-            // cursor + height): the fork splits that into
-            // `render_input_buffer` and `cursor_and_height`.
-            let buffer = render_input_buffer(&view, ctx);
-            let (cursor, height) = cursor_and_height(&view, ctx);
+            let (buffer, cursor, height) = render_view(&view, ctx);
             assert!(buffer.to_lines()[0].starts_with("> "));
             assert_eq!(cursor, Some((2, 0)));
             assert_eq!(height, 1);
@@ -343,7 +339,7 @@ fn agent_mode_render_has_prompt_gutter() {
 
             type_str(&view, ctx, &"x".repeat(usize::from(W) - 1));
             assert_eq!(
-                cursor_and_height(&view, ctx).1,
+                render_view(&view, ctx).2,
                 2,
                 "agent input should wrap at the gutter-narrowed width"
             );
@@ -1097,11 +1093,42 @@ fn type_str(view: &ViewHandle<TuiInputView>, ctx: &mut AppContext, s: &str) {
 }
 
 /// Render the view, lay it out at width `W`, and return `(cursor, height)`.
+/// Lays out the **whole input row** — prompt gutter plus editor — returning the
+/// painted buffer, cursor and height. Mirrors the pin's `render_view`. Use this
+/// when the gutter is under test; use [`cursor_and_height`] for editor-relative
+/// coordinates.
+fn render_view(
+    view: &ViewHandle<TuiInputView>,
+    ctx: &AppContext,
+) -> (TuiBuffer, Option<(u16, u16)>, u16) {
+    let mut element = view.as_ref(ctx).render(ctx);
+    let mut rendered_views = EntityIdMap::default();
+    let mut lctx = TuiLayoutContext {
+        rendered_views: &mut rendered_views,
+    };
+    let size = element.layout(TuiConstraint::loose(TuiSize::new(W, 20)), &mut lctx, ctx);
+    let area = TuiRect::new(0, 0, size.width, size.height);
+    let mut buffer = TuiBuffer::empty(area);
+    let mut paint_ctx = TuiPaintContext::new(&mut rendered_views);
+    {
+        let mut surface = TuiPaintSurface::new(&mut buffer);
+        element.render(TuiScreenPosition::new(0, 0), &mut surface, &mut paint_ctx);
+    }
+    let cursor = paint_ctx
+        .terminal_cursor()
+        .and_then(|point| Some((u16::try_from(point.x).ok()?, u16::try_from(point.y).ok()?)));
+    (buffer, cursor, size.height)
+}
+
+/// Lays out the **editor alone**, so coordinates are relative to the editable
+/// area and exclude the prompt gutter. Matches the pin's helper of the same
+/// name, which also targets `render_element`. Use [`render_view`] when the
+/// gutter itself is under test.
 fn cursor_and_height(
     view: &ViewHandle<TuiInputView>,
     ctx: &AppContext,
 ) -> (Option<(u16, u16)>, u16) {
-    let mut element = view.as_ref(ctx).render(ctx);
+    let mut element: Box<dyn TuiElement> = Box::new(view.as_ref(ctx).render_element(ctx));
     let mut rendered_views = EntityIdMap::default();
     let mut lctx = TuiLayoutContext {
         rendered_views: &mut rendered_views,
@@ -2364,13 +2391,14 @@ fn keymap_context_flags_shell_mode() {
     });
 }
 
-/// Lays out the shell-mode composition (the `!` gutter row wrapping the
-/// editor) at width `W`, returning the boxed row element and its area.
+/// Lays out the prompt-gutter composition (the gutter row wrapping the editor)
+/// at width `W`, returning the boxed row element and its area. Callers put the
+/// view in shell mode first, so this lays out the `!` variant.
 fn laid_out_shell_row(
     view: &ViewHandle<TuiInputView>,
     ctx: &AppContext,
 ) -> (Box<dyn TuiElement>, TuiRect) {
-    let mut element = view.as_ref(ctx).shell_element(ctx);
+    let mut element = view.as_ref(ctx).prompt_row(ctx);
     let mut rendered_views = EntityIdMap::default();
     let mut lctx = TuiLayoutContext {
         rendered_views: &mut rendered_views,
