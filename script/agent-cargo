@@ -35,6 +35,20 @@ set -euo pipefail
 SLOTS="${PHOSPHOR_BUILD_SLOTS:-3}"
 JOBS="${PHOSPHOR_BUILD_JOBS:-5}"
 MIN_FREE_MB="${PHOSPHOR_MIN_FREE_MB:-8000}"
+# Ceiling enforced in code, not prose. The SIZING note above was the only thing
+# standing between this host and an OOM reap, and prose does not execute: the
+# slots override file was set to 6 and the whole fleet was killed, losing three
+# agents' unpushed work. 3 is the measured-safe value on a 24-core/45 GB host;
+# 4 has OOM-reaped this box before. Raising this requires re-measuring the
+# low-water marks in logs/mem-*.log, not editing the override file.
+MAX_SLOTS="${PHOSPHOR_MAX_SLOTS:-4}"
+# Minimum seconds between two builds STARTING. MIN_FREE_MB is a start-time
+# admission check only: N invocations can each observe plenty of free memory in
+# the same poll pass, all be admitted, and then reach their peak LINK phase
+# simultaneously -- at which point nothing re-checks anything. That, not the raw
+# slot number, is the mechanism that reaps this host. Staggering the starts
+# de-synchronises the peaks.
+RAMP_STAGGER_SECS="${PHOSPHOR_RAMP_STAGGER_SECS:-45}"
 LOCK_DIR="${PHOSPHOR_LOCK_DIR:-/cache/git/.phosphor-build/locks}"
 TARGET_ROOT="${PHOSPHOR_TARGET_ROOT:-/cache/git/.phosphor-build/targets}"
 LOG_DIR="${PHOSPHOR_LOG_DIR:-/cache/git/.phosphor-build/logs}"
@@ -60,6 +74,48 @@ export CARGO_BUILD_JOBS="$JOBS"
 export NEXTEST_TEST_THREADS="$JOBS"
 export RUST_TEST_THREADS="$JOBS"
 ulimit -n 8192
+
+# ---------------------------------------------------------------- toolchain
+# Every build on this host goes through this script, so this is the one place
+# that can guarantee the compiler is the pinned one. Shell config cannot:
+# ~/.bashrc returns early for non-interactive shells, and agents, hooks and CI
+# helpers all run non-interactively -- which is precisely how this host ran
+# rustc 1.93.1 against a 1.92.0 pin for weeks without anyone noticing.
+#
+# The skew runs the dangerous direction. CI has rustup and honours the pin, so
+# anything stabilised in a newer local compiler builds clean here and fails
+# there. A green measured on the wrong compiler is worse than no green: it is
+# a confident answer to a question nobody asked.
+if [[ -x "$HOME/.cargo/bin/rustup" ]]; then
+  case ":$PATH:" in
+    *:"$HOME/.cargo/bin":*) ;;
+    *) export PATH="$HOME/.cargo/bin:$PATH" ;;
+  esac
+fi
+
+# Walk up from the invocation directory for the pin, the same way rustup does.
+find_pin() {
+  local d="$PWD"
+  while [[ "$d" != "/" ]]; do
+    if [[ -f "$d/rust-toolchain.toml" ]]; then
+      sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$d/rust-toolchain.toml" | head -1
+      return
+    fi
+    d="$(dirname "$d")"
+  done
+}
+pinned="$(find_pin)"
+actual="$(rustc --version 2>/dev/null | awk '{print $2}')"
+if [[ "$pinned" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ && "$actual" != "$pinned" ]]; then
+  echo "[agent-cargo] REFUSING: rustc ${actual:-none} does not match the pin $pinned" >&2
+  echo "[agent-cargo]   rustc:  $(command -v rustc)" >&2
+  echo "[agent-cargo]   fix:    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \\" >&2
+  echo "[agent-cargo]             | sh -s -- -y --no-modify-path --default-toolchain $pinned \\" >&2
+  echo "[agent-cargo]                 --profile minimal -c rustfmt -c clippy" >&2
+  echo "[agent-cargo] RESULT agent=$agent exit=3 FAILED" >&2
+  exit 3
+fi
 
 available_mb() { awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo; }
 
@@ -88,7 +144,17 @@ watch_memory() {
 slot_count() {
   local n
   n="$(cat "$LOCK_DIR/../slots" 2>/dev/null)"
-  [[ "$n" =~ ^[0-9]+$ ]] && ((n > 0)) && { echo "$n"; return; }
+  if [[ "$n" =~ ^[0-9]+$ ]] && ((n > 0)); then
+    # Clamp. An override file is a convenience for tuning DOWN under load; it
+    # must not be able to exceed what the host was measured to survive.
+    if ((n > MAX_SLOTS)); then
+      echo "[agent-cargo] slots override $n exceeds MAX_SLOTS=$MAX_SLOTS; clamping" >&2
+      echo "$MAX_SLOTS"
+    else
+      echo "$n"
+    fi
+    return
+  fi
   echo "$SLOTS"
 }
 
@@ -103,6 +169,14 @@ while :; do
         echo "[agent-cargo] agent=$agent waiting for memory ($(available_mb)MB < ${MIN_FREE_MB}MB)" >&2
         sleep 15
       done
+
+      # Stagger the start against every other slot. Held only across the sleep,
+      # so this delays the START of each build without serialising the builds
+      # themselves: no two can enter their memory-hungry link phase in lockstep.
+      exec {rampfd}>"$LOCK_DIR/ramp"
+      flock "$rampfd"
+      sleep "$RAMP_STAGGER_SECS"
+      exec {rampfd}>&-
 
       echo "[agent-cargo] agent=$agent slot=$i jobs=$JOBS avail=$(available_mb)MB target=$CARGO_TARGET_DIR" >&2
 

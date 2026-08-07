@@ -17,13 +17,35 @@ fi
 
 # Install Rust.
 #
-# Note the guard is deliberately `command -v cargo`, so a host that already has
-# a distro-packaged cargo (e.g. /usr/bin/cargo from apt) is left alone. The
-# trade-off: rustup is then never installed, so `rust-toolchain.toml`'s channel
-# pin and its `components = ["rustfmt", "clippy"]` are silently ignored. On such
-# hosts rustfmt must come from the distro instead — see
-# `script/linux/install_test_deps`.
-if ! command -v cargo; then
+# The guard asserts the PINNED toolchain is active, not merely that some cargo
+# exists. The previous guard was `command -v cargo`, which meant "any cargo will
+# do" -- so a host with a distro-packaged cargo (e.g. /usr/bin/cargo from apt)
+# short-circuited this script, rustup was never installed, and
+# rust-toolchain.toml's channel pin plus its `components = ["rustfmt", "clippy"]`
+# were ignored with no diagnostic.
+#
+# That is not a tidiness issue. CI runners have rustup and therefore honour the
+# pin, so such a host builds with a different compiler than CI does, in the
+# dangerous direction: anything stabilised in the newer local compiler builds
+# clean locally and fails in CI. This host ran 1.93.1 against a 1.92.0 pin for
+# weeks, and every local green issued in that window was measured on the wrong
+# rustc. `script/precheck` now asserts this too, so it fails in seconds rather
+# than surfacing as a confusing red CI job.
+PINNED_CHANNEL="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "$(dirname "$0")/../rust-toolchain.toml" 2>/dev/null | head -1)"
+ACTIVE_RUSTC="$(rustc --version 2>/dev/null | awk '{print $2}')"
+
+# Only a concrete x.y.z pin can be checked by equality; a floating channel
+# (stable/nightly) is left to rustup to resolve.
+needs_rustup=0
+if ! command -v cargo >/dev/null 2>&1; then
+  needs_rustup=1
+elif [[ "$PINNED_CHANNEL" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ && "$ACTIVE_RUSTC" != "$PINNED_CHANNEL" ]]; then
+  echo "⚠️  rustc ${ACTIVE_RUSTC:-none} does not match the pin $PINNED_CHANNEL; installing rustup so the pin is honoured."
+  needs_rustup=1
+fi
+
+if [ "$needs_rustup" -eq 1 ]; then
   echo "⬇️  Installing rust..."
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh $CI_FLAGS
   CARGO_ENV_FILE="$HOME/.cargo/env"
