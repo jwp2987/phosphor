@@ -95,6 +95,22 @@ jobs:
         shell: bash
         run: cargo check -p warp --features gui --lib --tests
 
+      # Single-package checks miss feature-unified code. `warp`'s
+      # `integration_tests` feature gates `app/src/integration_testing`
+      # (e.g. `llm_judge/mod.rs`), and `gui` above does not enable it -- it
+      # only turns on via Cargo feature unification, when `warp` is checked
+      # in the SAME invocation as a crate that depends on
+      # `warp = { features = ["integration_tests"] }` (`crates/integration`).
+      # A real build break lived on `main` unnoticed for exactly this reason
+      # (#230): `cargo check -p warp --features gui` above stayed green while
+      # `llm_judge/mod.rs` didn't compile, because nothing in this workflow
+      # ever checked `warp` and `integration` together. This is the same
+      # multi-package command from #230 that first caught it -- keep it here
+      # as the regression test for the gap, not just for the one break.
+      - name: cargo check (feature-unified, multi-package)
+        shell: bash
+        run: cargo check -p warp -p warp_completer -p integration -p app-installation-detection -p warp_ripgrep --features gui
+
       # The app crate carries the TUI via its own `tui` feature.
       - name: cargo check -p warp --features tui
         shell: bash
