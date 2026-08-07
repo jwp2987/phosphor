@@ -5,7 +5,7 @@ use oauth2::{RefreshToken, TokenResponse as _};
 use rmcp::transport::{
     auth::{
         AuthClient, AuthorizationManager, CredentialStore, InMemoryCredentialStore,
-        OAuthClientConfig, OAuthState, OAuthTokenResponse, StoredCredentials,
+        OAuthClientConfig, OAuthState, StoredCredentials,
     },
     AuthError, AuthorizationSession,
 };
@@ -38,9 +38,18 @@ static GITHUB_OAUTH_SCOPES: [&str; 7] = [
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedCredentials {
-    client_id: String,
+    /// The credential information that `rmcp` wants us to store and retrieve.
+    /// Flattened (rather than duplicating `client_id`/`token_response` as
+    /// top-level fields) so `token_received_at` is captured too — without
+    /// it, rmcp's pre-emptive refresh check is permanently disabled for a
+    /// session restored from secure storage after an app restart.
+    #[serde(flatten)]
+    credentials: StoredCredentials,
+    /// The client secret for the OAuth application.
+    ///
+    /// This is needed to properly refresh tokens when using DCR (Dynamic Client Registration),
+    /// as the server expects the client to provide the secret when refreshing.
     client_secret: Option<String>,
-    token_response: OAuthTokenResponse,
 }
 
 /// Maps cloud MCP installation UUID to its OAuth credentials in secure storage.
@@ -110,11 +119,11 @@ impl CredentialStore for PersistingCredentialStore {
 
         self.inner.save(credentials.clone()).await?;
 
-        if let Some(token_response) = credentials.token_response {
+        // Only persist credentials if we actually have any.
+        if credentials.token_response.is_some() {
             let _ = self.persist_tx.try_send(PersistedCredentials {
-                client_id: credentials.client_id,
+                credentials,
                 client_secret: self.client_secret.clone(),
-                token_response,
             });
         }
         Ok(())
@@ -229,19 +238,23 @@ pub async fn make_authenticated_client(
 
     // If we have cached credentials, use them.
     if let Some(credentials) = persisted_credentials {
-        let provider = ChannelState::mcp_oauth_provider_by_client_id(&credentials.client_id);
+        let provider =
+            ChannelState::mcp_oauth_provider_by_client_id(&credentials.credentials.client_id);
         let client_secret = credentials
             .client_secret
             .or_else(|| provider.as_ref().map(|p| p.client_secret.to_string()));
-        oauth_state
-            .set_credentials(&credentials.client_id, credentials.token_response)
-            .await?;
+        let client_id = credentials.credentials.client_id.clone();
+        if let Some(token_response) = credentials.credentials.token_response {
+            oauth_state
+                .set_credentials(&client_id, token_response)
+                .await?;
+        }
         if let OAuthState::Authorized(mut auth_manager) = oauth_state {
             // If this is a client for which we have a known client secret,
             // update our client config accordingly.
             if let Some(client_secret) = &client_secret {
                 auth_manager.configure_client(OAuthClientConfig {
-                    client_id: credentials.client_id.clone(),
+                    client_id: client_id.clone(),
                     client_secret: Some(client_secret.clone()),
                     scopes: vec![],
                     redirect_uri: redirect_uri.clone(),
@@ -410,10 +423,20 @@ pub async fn make_authenticated_client(
     // Save the credentials to secure storage.
     let (client_id, token_response) = oauth_state.get_credentials().await?;
     if let Some(token_response) = token_response {
+        // The token was just issued by the callback handled above, so "now" is
+        // an accurate `token_received_at` for rmcp's pre-emptive refresh check.
+        let token_received_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .ok();
         let credentials = PersistedCredentials {
-            client_id,
+            credentials: StoredCredentials {
+                client_id,
+                token_response: Some(token_response),
+                granted_scopes: Vec::new(),
+                token_received_at,
+            },
             client_secret: client_secret.clone(),
-            token_response,
         };
         spawner
             .spawn(move |manager, ctx| {
@@ -569,3 +592,7 @@ pub(crate) fn write_to_secure_storage<T: Serialize>(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "oauth_tests.rs"]
+mod tests;
