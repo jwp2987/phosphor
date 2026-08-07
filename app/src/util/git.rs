@@ -746,6 +746,9 @@ pub async fn run_push(_repo_path: &Path, _branch: &str, _path_env: Option<&str>)
 pub struct PrInfo {
     pub number: u64,
     pub url: String,
+    pub state: String,
+    pub draft: bool,
+    pub base_branch: String,
 }
 
 /// Repository information returned by `gh repo view`.
@@ -885,7 +888,18 @@ pub async fn get_pr_for_branch(repo_path: &Path, path_env: Option<&str>) -> Resu
         return Ok(None);
     }
 
-    match run_gh_command(repo_path, &["pr", "view", "--json", "number,url"], path_env).await {
+    match run_gh_command(
+        repo_path,
+        &[
+            "pr",
+            "view",
+            "--json",
+            "number,url,state,isDraft,baseRefName",
+        ],
+        path_env,
+    )
+    .await
+    {
         Ok(stdout) => {
             let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
                 .map_err(|e| anyhow!("Failed to parse gh output: {e}"))?;
@@ -896,7 +910,24 @@ pub async fn get_pr_for_branch(repo_path: &Path, path_env: Option<&str>) -> Resu
                 .as_str()
                 .ok_or_else(|| anyhow!("Missing 'url' in gh output"))?
                 .to_string();
-            Ok(Some(PrInfo { number, url }))
+            let state = parsed["state"]
+                .as_str()
+                .ok_or_else(|| anyhow!("Missing 'state' in gh output"))?
+                .to_string();
+            let draft = parsed["isDraft"]
+                .as_bool()
+                .ok_or_else(|| anyhow!("Missing 'isDraft' in gh output"))?;
+            let base_branch = parsed["baseRefName"]
+                .as_str()
+                .ok_or_else(|| anyhow!("Missing 'baseRefName' in gh output"))?
+                .to_string();
+            Ok(Some(PrInfo {
+                number,
+                url,
+                state,
+                draft,
+                base_branch,
+            }))
         }
         Err(e) => {
             let msg = e.to_string();
@@ -1055,7 +1086,13 @@ pub async fn create_pr(
         .next()
         .and_then(|s| s.parse::<u64>().ok())
         .ok_or_else(|| anyhow!("Could not parse PR number from URL: {url}"))?;
-    Ok(PrInfo { number, url })
+    Ok(PrInfo {
+        number,
+        url,
+        state: "OPEN".to_string(),
+        draft: false,
+        base_branch: base.to_string(),
+    })
 }
 
 /// Trims an AI-generated PR title to a single line and caps its length.

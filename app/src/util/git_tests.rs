@@ -136,16 +136,14 @@ async fn get_pr_for_branch_does_not_require_origin_remote() {
         "#!/bin/sh\nprintf '{\"number\":123,\"url\":\"https://github.com/warp/warp/pull/123\",\"state\":\"OPEN\",\"isDraft\":true,\"baseRefName\":\"main\"}\\n'\n",
     );
 
-    // Shape adaptation: Warp's `PrInfo` also carries `state`, `draft` and
-    // `base_branch`, which the fork's `PrInfo` does not have — the fork never
-    // requests those `gh` fields. Warp's assertions on the two fields the fork
-    // does have are unchanged; the absent payload is a separate parity gap
-    // tracked under issue #2, not a weakening of this test.
     assert_eq!(
         get_pr_for_branch(&repo, Some(&path_env)).await.unwrap(),
         Some(PrInfo {
             number: 123,
             url: "https://github.com/warp/warp/pull/123".to_string(),
+            state: "OPEN".to_string(),
+            draft: true,
+            base_branch: "main".to_string(),
         })
     );
 }

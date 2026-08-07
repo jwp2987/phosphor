@@ -4,9 +4,8 @@
 //!
 //! The proto schema was ported faithfully from Warp's `diff_state.proto`, which
 //! carries a few fields the fork's domain types do not have yet (per-file
-//! `files` on `Commit` / `DiffMetadataAgainstBase`, the extra `PrInfo` fields,
-//! `FileDiff.content_at_base`, and the `DIFF_SIZE_UNRENDERABLE_FILE_TOO_LARGE`
-//! size). Those are handled lossily here: dropped on decode, defaulted on
+//! `files` on `Commit` / `DiffMetadataAgainstBase`, `FileDiff.content_at_base`,
+//! and the `DIFF_SIZE_UNRENDERABLE_FILE_TOO_LARGE` size). Those are handled lossily here: dropped on decode, defaulted on
 //! encode. `content_at_base` is threaded explicitly rather than stored on the
 //! fork's plain `FileDiff` (the fork keeps base content in the separate
 //! `FileDiffAndContent`).
@@ -353,16 +352,14 @@ pub(super) fn proto_to_commit(commit: &proto::Commit) -> Commit {
 }
 
 // ── PrInfo (util/git.rs) ─────────────────────────────────────────
-// The fork's `PrInfo` carries only number + url; the extra proto fields
-// (state / draft / base_branch) are defaulted on encode, dropped on decode.
 
 pub(super) fn pr_info_to_proto(pr: &PrInfo) -> proto::PrInfo {
     proto::PrInfo {
         number: pr.number,
         url: pr.url.clone(),
-        state: String::new(),
-        draft: false,
-        base_branch: String::new(),
+        state: pr.state.clone(),
+        draft: pr.draft,
+        base_branch: pr.base_branch.clone(),
     }
 }
 
@@ -370,6 +367,9 @@ pub(super) fn proto_to_pr_info(pr: &proto::PrInfo) -> PrInfo {
     PrInfo {
         number: pr.number,
         url: pr.url.clone(),
+        state: pr.state.clone(),
+        draft: pr.draft,
+        base_branch: pr.base_branch.clone(),
     }
 }
 
