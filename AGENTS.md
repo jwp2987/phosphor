@@ -392,7 +392,14 @@ A user who knows Warp MUST get the same observable behavior in this fork. The
   maintainer (josh)** AND a **GitHub tracking issue** recording exactly what
   deviates and why. No silent deviations. No un-tracked coverage gaps. Do not
   drop or weaken a Warp-derived test on your own judgment.
-- Reference for comparisons: real Warp is the `warp/master` git remote.
+- **Reference for comparisons: the pinned Warp stable release, NOT `warp/master`.**
+  See `ORACLE.md` for the current pin, and use that commit in place of
+  `warp/master` in every diff, grep and coverage measurement. `warp/master` is
+  unreleased trunk that moves 50-80 tests/day; comparing against it makes the
+  parity gap unmeasurable and every burndown look flat. The pin tracks the
+  **latest stable** release and moves only by a recorded update to `ORACLE.md` —
+  never implicitly by fetching. Porting something newer than the pin is fine when
+  there's a reason; note it on the issue, and do not move the pin for it.
 
 ### 5.11 Issue → fix → PR → merge workflow (hard rule)
 Every defect, regression, or Warp divergence follows this workflow — no
