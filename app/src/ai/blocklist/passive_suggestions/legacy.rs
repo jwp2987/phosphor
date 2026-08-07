@@ -420,10 +420,10 @@ impl PassiveSuggestionsModel {
 
                 let content = match content {
                     Ok(content) => {
-                        if !content.missing_files.is_empty() {
+                        if !content.failed_files.is_empty() {
                             log::warn!(
-                                "Missing files when retrieving file content for suggested code diffs: {:?}",
-                                content.missing_files
+                                "Failed to read files when retrieving file content for suggested code diffs: {:?}",
+                                content.failed_files
                             );
                             ctx.emit(PassiveSuggestionsEvent::PassiveCodeDiffFailed {
                                 reason: PromptSuggestionFallbackReason::MissingFile,

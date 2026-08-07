@@ -158,23 +158,28 @@ impl TryFrom<ReadFilesResult> for api::request::input::tool_call_result::Result 
 
     fn try_from(result: ReadFilesResult) -> Result<Self, Self::Error> {
         match result {
-            ReadFilesResult::Success { files } => Ok(
-                api::request::input::tool_call_result::Result::ReadFiles(api::ReadFilesResult {
+            ReadFilesResult::Success {
+                files,
+                failed_files,
+            } => Ok(api::request::input::tool_call_result::Result::ReadFiles(
+                api::ReadFilesResult {
                     result: Some(api::read_files_result::Result::AnyFilesSuccess(
                         api::read_files_result::AnyFilesSuccess {
                             files: files
                                 .into_iter()
                                 .flat_map(Into::<Vec<api::AnyFileContent>>::into)
                                 .collect(),
-                            // Upstream can report per-file read failures alongside the
-                            // successful reads. This fork's `ReadFilesResult` has no such
-                            // channel yet, so the list stays empty and behavior is
-                            // unchanged by the re-pin. Wiring it up is #136.
-                            failed_reads: Vec::new(),
+                            failed_reads: failed_files
+                                .into_iter()
+                                .map(|failed_file| api::read_files_result::FailedRead {
+                                    path: failed_file.path,
+                                    message: failed_file.message,
+                                })
+                                .collect(),
                         },
                     )),
-                }),
-            ),
+                },
+            )),
             ReadFilesResult::Error(error) => Ok(
                 api::request::input::tool_call_result::Result::ReadFiles(api::ReadFilesResult {
                     result: Some(api::read_files_result::Result::Error(
