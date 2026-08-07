@@ -725,6 +725,27 @@ impl BlocklistAIActionExecutor {
         }
     }
 
+    /// Drops executor-held per-action state now that the action has reached a
+    /// terminal result. Called from the action model's terminal-result choke
+    /// point (`handle_action_result`), which every outcome — success, failure,
+    /// or cancellation via any path — funnels through.
+    ///
+    /// Participation is per-executor opt-in: an executor may only be added
+    /// here if its per-action state is never read after the action's terminal
+    /// result. Prepared file edits qualify (consumed by execute, dead
+    /// otherwise). Do NOT add state that outlives completion, e.g. the
+    /// long-running-command state (the command outlives its action's snapshot
+    /// result).
+    pub(super) fn discard_action_state(
+        &mut self,
+        action_id: &AIAgentActionId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.request_file_edits_executor.update(ctx, |executor, _| {
+            executor.discard_pending(action_id);
+        });
+    }
+
     pub fn cancel_all_running_async_actions_for_conversation(
         &mut self,
         conversation_id: AIConversationId,
@@ -1075,8 +1096,8 @@ async fn read_binary_file_context(
     })
 }
 
-/// Returns true if the given path is a regular file on the session's filesystem.
-/// Runs a shell command on the session so it works for both local and remote sessions.
+
+
 /// Builds the "is this a file?" probe with the path passed as data, not shell syntax.
 fn build_is_file_path_command(path: &str, shell_type: ShellType) -> String {
     let escaped_path = shell_quote_arg(path, shell_type);
@@ -1095,6 +1116,8 @@ fn build_is_git_repository_command(absolute_path: &str, shell_type: ShellType) -
     )
 }
 
+/// Returns true if the given path is a regular file on the session's filesystem.
+/// Runs a shell command on the session so it works for both local and remote sessions.
 async fn is_file_path(path: &str, session: &Session) -> bool {
     let command = build_is_file_path_command(path, session.shell().shell_type());
     session
