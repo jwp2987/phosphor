@@ -85,3 +85,74 @@ fn manual_reexpand_while_streaming_stays_expanded_after_finish() {
         ));
     });
 }
+
+// Ported from the pinned Warp oracle `02b53fcd8`
+// (`app/src/ai/blocklist/block_tests.rs`).
+
+#[test]
+fn collapsed_initializer_starts_collapsed() {
+    let state = CollapsibleElementState::collapsed();
+
+    assert!(matches!(
+        state.expansion_state,
+        CollapsibleExpansionState::Collapsed
+    ));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn open_code_action_routes_links_to_configured_editor_and_non_links_to_warp() {
+    use ai::skills::SkillReference;
+    use std::path::PathBuf;
+    use warp_util::path::LineAndColumnArg;
+
+    use super::{AIBlockEvent, open_code_action_event};
+    use crate::code::editor_management::CodeSource;
+
+    let linked_source = CodeSource::Link {
+        path: PathBuf::from("/workspace/project/src/main.rs"),
+        range_start: Some(LineAndColumnArg {
+            line_num: 42,
+            column_num: Some(7),
+        }),
+        range_end: None,
+    };
+
+    assert!(matches!(
+        open_code_action_event(
+            &linked_source,
+            crate::util::file::external_editor::settings::EditorLayout::SplitPane,
+        ),
+        AIBlockEvent::OpenDetectedFilePath {
+            absolute_path,
+            line_and_column_num: Some(LineAndColumnArg {
+                line_num: 42,
+                column_num: Some(7),
+            }),
+            target_override: None,
+        } if absolute_path.as_path() == std::path::Path::new("/workspace/project/src/main.rs")
+    ));
+
+    // Adaptation: this fork's `CodeSource::Skill` carries a plain `PathBuf`
+    // `path` rather than the oracle's `location: LocalOrRemotePath`, and its
+    // `SkillReference::Path` wraps a `PathBuf` rather than a
+    // `LocalOrRemotePath`. The routing behaviour under test is unchanged.
+    let skill_source = CodeSource::Skill {
+        reference: SkillReference::Path(PathBuf::from(
+            "/workspace/project/.warp/skills/example/SKILL.md",
+        )),
+        path: PathBuf::from("/workspace/project/.warp/skills/example/SKILL.md"),
+        origin: crate::ai::skills::SkillOpenOrigin::ReadSkill,
+    };
+
+    assert!(matches!(
+        open_code_action_event(
+            &skill_source,
+            crate::util::file::external_editor::settings::EditorLayout::NewTab,
+        ),
+        AIBlockEvent::OpenCodeInWarp {
+            source,
+            layout: crate::util::file::external_editor::settings::EditorLayout::NewTab,
+        } if source == skill_source
+    ));
+}
