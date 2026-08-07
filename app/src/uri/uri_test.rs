@@ -303,7 +303,7 @@ fn test_open_file_executable_sh_routes_to_execute() {
     let p = dir.path().join("run.sh");
     std::fs::write(&p, b"#!/bin/sh\n:\n").unwrap();
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let action = classify_open_file_action(&p);
+    let action = classify_open_file_action(&p, true);
     assert_eq!(action, OpenFileAction::ExecuteInSession);
 }
 
@@ -315,7 +315,7 @@ fn test_open_file_non_executable_sh_routes_to_editor() {
     let p = dir.path().join("view.sh");
     std::fs::write(&p, b"#!/bin/sh\n:\n").unwrap();
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert_eq!(classify_open_file_action(&p), OpenFileAction::Editor);
+    assert_eq!(classify_open_file_action(&p, true), OpenFileAction::Editor);
 }
 
 #[test]
@@ -328,7 +328,7 @@ fn test_open_file_executable_bash_zsh_fish_route_to_execute() {
         std::fs::write(&p, b"#!/bin/sh\n:\n").unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
-            classify_open_file_action(&p),
+            classify_open_file_action(&p, true),
             OpenFileAction::ExecuteInSession,
             "{name} should route to ExecuteInSession",
         );
@@ -340,7 +340,35 @@ fn test_open_file_markdown_routes_to_notebook() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("README.md");
     std::fs::write(&p, b"# hi\n").unwrap();
-    assert_eq!(classify_open_file_action(&p), OpenFileAction::Notebook);
+    assert_eq!(
+        classify_open_file_action(&p, true),
+        OpenFileAction::Notebook
+    );
+}
+
+// Ported from the pin (app/src/uri/uri_tests.rs). Porting these surfaced a real bug:
+// `classify_open_file_action` ignored `EditorSettings::prefer_markdown_viewer` entirely
+// and always routed Markdown to the notebook viewer, even though the setting already
+// exists and is respected everywhere else (openable_file_type.rs, file_tree/view.rs,
+// workspace/view.rs, code_review_view.rs). Fixed by threading the flag through
+// `classify_open_file_action` and `open_file`, matching the pin.
+#[test]
+fn test_open_file_markdown_routes_to_notebook_when_viewer_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("README.md");
+    std::fs::write(&p, b"# hi\n").unwrap();
+    assert_eq!(
+        classify_open_file_action(&p, true),
+        OpenFileAction::Notebook
+    );
+}
+
+#[test]
+fn test_open_file_markdown_routes_to_editor_when_viewer_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("README.md");
+    std::fs::write(&p, b"# hi\n").unwrap();
+    assert_eq!(classify_open_file_action(&p, false), OpenFileAction::Editor);
 }
 
 #[test]
@@ -349,14 +377,14 @@ fn test_open_file_rust_source_still_opens_in_editor() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("main.rs");
     std::fs::write(&p, b"fn main() {}\n").unwrap();
-    assert_eq!(classify_open_file_action(&p), OpenFileAction::Editor);
+    assert_eq!(classify_open_file_action(&p, true), OpenFileAction::Editor);
 }
 
 #[test]
 fn test_open_file_directory_routes_to_session() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        classify_open_file_action(dir.path()),
+        classify_open_file_action(dir.path(), true),
         OpenFileAction::ExecuteInSession
     );
 }
@@ -372,7 +400,7 @@ fn test_open_file_non_runnable_shebang_routes_to_editor() {
     let p = dir.path().join("noext");
     std::fs::write(&p, b"#!/bin/sh\necho hi\n").unwrap();
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert_eq!(classify_open_file_action(&p), OpenFileAction::Editor);
+    assert_eq!(classify_open_file_action(&p, true), OpenFileAction::Editor);
 }
 
 // -- zap://tab_config deeplink parsing ---------------------------------------
@@ -729,4 +757,88 @@ fn test_decode_uuid_hex_rejects_wrong_length() {
 #[test]
 fn test_decode_uuid_hex_rejects_invalid_chars() {
     assert!(super::decode_uuid_hex("ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ").is_none());
+}
+
+// -- warp.dev web link -> app-open-item resolution ---------------------------
+//
+// Ported from the pin (app/src/uri/uri_tests.rs). `get_item_data_from_warp_link` /
+// `WarpWebLink` already exist in app/src/uri/parse_url_paths.rs; only the tests were
+// missing. Adapted for the fork's renamed types: the pin's `OpenWarpDriveObjectArgs` /
+// `OpenWarpDriveObjectSettings` are `ZapDriveObjectArgs` / `ZapDriveObjectSettings` here
+// (same fields/shape, renamed as part of the fork's de-branding).
+
+#[test]
+fn test_warp_web_link_notebook() {
+    use crate::cloud_object::ObjectType;
+    use crate::drive::{ZapDriveObjectArgs, ZapDriveObjectSettings};
+    use crate::server::ids::ServerId;
+    use crate::uri::parse_url_paths::{WarpWebLink, get_item_data_from_warp_link};
+
+    assert_eq!(
+        get_item_data_from_warp_link(
+            &Url::parse(&format!(
+                "{}/drive/notebook/Performance-Analysis-LkDlnAe34vfYD2JXsAkssc?focused_folder_id=test_uid00000000000123&invitee_email=test@example.com",
+                ChannelState::server_root_url()
+            ))
+            .unwrap()
+        ),
+        Some(WarpWebLink::DriveObject(Box::new(ZapDriveObjectArgs {
+            object_type: ObjectType::Notebook,
+            server_id: ServerId::from_string_lossy("LkDlnAe34vfYD2JXsAkssc"),
+            settings: ZapDriveObjectSettings {
+                focused_folder_id: Some(ServerId::from(123)),
+                invitee_email: Some(String::from("test@example.com")),
+            },
+        })))
+    );
+}
+
+#[test]
+fn test_warp_web_link_session() {
+    use crate::uri::parse_url_paths::{WarpWebLink, get_item_data_from_warp_link};
+
+    assert_eq!(
+        get_item_data_from_warp_link(
+            &Url::parse(&format!(
+                "{}/session/317d0686-7a0b-4b67-806b-aaa3e9df501b?
+                pwd=6f727249-af9f-4025-a240-59df40a4c64b",
+                ChannelState::server_root_url()
+            ))
+            .unwrap()
+        ),
+        Some(WarpWebLink::Session)
+    );
+}
+
+#[test]
+fn test_warp_web_link_workflow() {
+    use crate::cloud_object::ObjectType;
+    use crate::drive::{ZapDriveObjectArgs, ZapDriveObjectSettings};
+    use crate::server::ids::ServerId;
+    use crate::uri::parse_url_paths::{WarpWebLink, get_item_data_from_warp_link};
+
+    assert_eq!(
+        get_item_data_from_warp_link(
+            &Url::parse(&format!(
+                "{}/drive/workflow/Remove-all-stopped-docker-container-image-and-volumes-ZCJSkai2gpwTqpBFs5HOfZ",
+                ChannelState::server_root_url()
+            ))
+            .unwrap()
+        ),
+        Some(WarpWebLink::DriveObject(Box::new(ZapDriveObjectArgs {
+            object_type: ObjectType::Workflow,
+            server_id: ServerId::from_string_lossy("ZCJSkai2gpwTqpBFs5HOfZ"),
+            settings: ZapDriveObjectSettings::default(),
+        })))
+    );
+}
+
+#[test]
+fn test_warp_web_link_failure() {
+    use crate::uri::parse_url_paths::get_item_data_from_warp_link;
+
+    assert_eq!(
+        get_item_data_from_warp_link(&Url::parse("https://google.com").unwrap()),
+        None
+    );
 }
