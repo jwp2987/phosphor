@@ -15,7 +15,8 @@ use warpui::r#async::{executor, FutureExt as _};
 use remote_server::auth::RemoteServerAuthContext;
 use remote_server::client::RemoteServerClient;
 use remote_server::setup::{
-    parse_uname_output, remote_server_daemon_dir, PreinstallCheckResult, RemotePlatform,
+    PreinstallCheckResult, RemotePlatform, daemon_pid_name, daemon_socket_name, parse_uname_output,
+    remote_server_daemon_dir,
 };
 use remote_server::ssh::ssh_args;
 use remote_server::transport::{Connection, RemoteTransport};
@@ -72,15 +73,17 @@ impl SshTransport {
 
     pub fn remote_daemon_socket_path(&self) -> String {
         format!(
-            "{}/server.sock",
-            remote_server_daemon_dir(&self.auth_context.remote_server_identity_key())
+            "{}/{}",
+            remote_server_daemon_dir(&self.auth_context.remote_server_identity_key()),
+            daemon_socket_name()
         )
     }
 
     pub fn remote_daemon_pid_path(&self) -> String {
         format!(
-            "{}/server.pid",
-            remote_server_daemon_dir(&self.auth_context.remote_server_identity_key())
+            "{}/{}",
+            remote_server_daemon_dir(&self.auth_context.remote_server_identity_key()),
+            daemon_pid_name()
         )
     }
 

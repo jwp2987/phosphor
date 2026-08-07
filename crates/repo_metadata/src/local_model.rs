@@ -22,15 +22,15 @@ pub enum RepoContent<'a> {
 use warp_util::standardized_path::StandardizedPath;
 
 use crate::{
+    RepoMetadataError,
     entry::{
         BudgetExceededBehavior, BuildTreeError, BuildTreeOptions, Entry, FileId,
-        IgnoredPathStrategy,
+        IgnoredPathStrategy, matches_force_included_path,
     },
     gitignores_for_directory, matches_gitignores,
     repository::Repository,
     standing_queries::{StandingQueryDefinitions, StandingQueryResults, StandingQueryResultsDelta},
     telemetry::RepoMetadataTelemetryEvent,
-    RepoMetadataError,
 };
 use std::sync::Arc;
 cfg_if::cfg_if! {
@@ -345,7 +345,7 @@ impl LocalRepoMetadataModel {
             if should_ignore_git_path(path) {
                 continue;
             }
-            if let Some(repo_path) = self.find_repository_for_path(path) {
+            if let Some(repo_path) = self.find_repository_for_watcher_entry_path(path) {
                 let repo_update = repo_updates.entry(repo_path).or_default();
                 repo_update.added.push(path.to_path_buf());
             }
@@ -371,7 +371,7 @@ impl LocalRepoMetadataModel {
             if should_ignore_git_path(to_path) && should_ignore_git_path(from_path) {
                 continue;
             }
-            if let Some(repo_path) = self.find_repository_for_path(to_path) {
+            if let Some(repo_path) = self.find_repository_for_watcher_entry_path(to_path) {
                 let repo_update = repo_updates.entry(repo_path).or_default();
                 repo_update
                     .moved
@@ -469,6 +469,35 @@ impl LocalRepoMetadataModel {
             Ok(std_path) => self.find_repository_for_path_string(std_path.as_str()),
             Err(_) => None,
         }
+    }
+
+    /// Resolves the owning repository for a raw path delivered by the
+    /// filesystem watcher.
+    ///
+    /// Regression fix, found porting `added_external_target_skill_symlink_routes_to_lexical_repository`
+    /// from the pinned oracle (see `local_model_test.rs`): [`find_repository_for_path`]
+    /// canonicalizes `path` before matching, which *resolves* directory
+    /// symlinks. A newly-created symlink whose target lies outside the
+    /// repository (e.g. a project-skill symlink under `.agents/skills/`
+    /// pointing at a directory elsewhere on disk) would canonicalize to a
+    /// path outside the repo root, so `find_repository_for_path` silently
+    /// failed to attribute the watcher event to any repository — the added
+    /// symlink was dropped instead of being recorded (and, via
+    /// `compute_file_tree_mutations`'s `BuildTreeError::Symlink` handling,
+    /// refreshing the standing project-skill results for its provider
+    /// directory).
+    ///
+    /// This tries the literal (non-canonicalizing) path first — matching the
+    /// symlink's own location inside the repo, without following it — and
+    /// only falls back to the canonicalizing lookup if that fails (e.g. for
+    /// paths outside any watched root that still resolve into one, such as
+    /// a bind mount).
+    #[cfg(feature = "local_fs")]
+    fn find_repository_for_watcher_entry_path(&self, path: &Path) -> Option<StandardizedPath> {
+        StandardizedPath::try_from_local(path)
+            .ok()
+            .and_then(|std_path| self.find_repository_for_path_string(std_path.as_str()))
+            .or_else(|| self.find_repository_for_path(path))
     }
 
     /// The gitignore set (repo root + global) and force-included path list
@@ -770,6 +799,28 @@ impl LocalRepoMetadataModel {
             let is_ignored = Self::path_is_ignored(path_to_add, gitignores);
 
             if path_to_add.is_dir() {
+                // Regression fix, found porting `incremental_deep_event_under_unloaded_ignored_dir_is_collapsed`
+                // from the pinned oracle (see `local_model_test.rs`): an
+                // ignored, non-force-included directory reported by the
+                // watcher must become an unloaded placeholder rather than
+                // being eagerly walked. Without this, a watcher event for a
+                // newly created ignored directory (e.g. `target/`,
+                // `node_modules/`) would recursively materialize its entire
+                // contents through the incremental update path — unbounded
+                // by the budget that protects the initial full index — and
+                // would also incorrectly auto-vivify loaded intermediate
+                // directory entries underneath an existing *unloaded*
+                // ancestor placeholder (via `ensure_parent_directories_exist`
+                // in `apply_file_tree_mutations`), silently expanding a
+                // placeholder the user never asked to load.
+                if is_ignored && !matches_force_included_path(path_to_add, force_included_paths) {
+                    mutations.push(FileTreeMutation::AddEmptyDirectory {
+                        path: path_to_add.clone(),
+                        is_ignored,
+                    });
+                    continue;
+                }
+
                 let mut files = Vec::new();
                 let mut gitignores = gitignores.to_owned();
                 let mut file_limit = MAX_FILES_PER_REPO;
@@ -875,7 +926,18 @@ impl LocalRepoMetadataModel {
                     let Some(std_path) = StandardizedPath::try_from_local(path).ok() else {
                         continue;
                     };
-                    if lazy_load && !Self::is_parent_loaded_in_entry(root_entry, &std_path) {
+                    // Regression fix (see the doc comment on the `is_ignored`
+                    // short-circuit in `compute_file_tree_mutations`): also
+                    // gate on `is_ignored`, not just `lazy_load`. An ignored
+                    // file surfacing under a currently-unloaded ancestor
+                    // (e.g. a build artifact written inside a not-yet-expanded
+                    // `target/`) must not be materialized — like `lazy_load`,
+                    // don't expand a collapsed ignored placeholder just
+                    // because the watcher happened to see one of its
+                    // descendants change.
+                    if (lazy_load || is_ignored)
+                        && !Self::is_parent_loaded_in_entry(root_entry, &std_path)
+                    {
                         continue;
                     }
                     let Some(parent) = std_path.parent() else {
@@ -952,7 +1014,21 @@ impl LocalRepoMetadataModel {
                     let Some(std_path) = StandardizedPath::try_from_local(path).ok() else {
                         continue;
                     };
-                    if lazy_load && !Self::is_parent_loaded_in_entry(root_entry, &std_path) {
+                    // Never downgrade an already-loaded directory back to an
+                    // unloaded placeholder (e.g. a stale/duplicate "added"
+                    // watcher event for a directory that was since expanded).
+                    if matches!(
+                        root_entry.get(&std_path),
+                        Some(FileTreeEntryState::Directory(dir)) if dir.loaded
+                    ) {
+                        continue;
+                    }
+                    // See the `AddFile` branch above: gitignored placeholders
+                    // are lazy too, so also gate on `is_ignored`, not just
+                    // `lazy_load`.
+                    if (lazy_load || is_ignored)
+                        && !Self::is_parent_loaded_in_entry(root_entry, &std_path)
+                    {
                         continue;
                     }
                     let Some(parent) = std_path.parent() else {
