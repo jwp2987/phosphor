@@ -138,6 +138,8 @@ if ./script/check_cloud_boundary >/dev/null 2>&1; then ok "cloud boundary"; else
     fail "cloud boundary -- run ./script/check_cloud_boundary for detail"; fi
 if ./script/check_stub_coverage >/dev/null 2>&1; then ok "stub coverage"; else
     fail "stub coverage -- run ./script/check_stub_coverage for detail"; fi
+if ./script/check_settings_registry >/dev/null 2>&1; then ok "settings registry"; else
+    fail "settings registry -- run ./script/check_settings_registry for detail"; fi
 
 # ------------------------------------------------- known-failure bookkeeping
 # The cheap half of the CI test gate: run ONLY the listed failures. If one now

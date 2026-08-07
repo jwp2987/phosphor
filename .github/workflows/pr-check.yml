@@ -28,7 +28,7 @@ jobs:
   # Fork-boundary guards. Pure grep/git -- no build -- so this job finishes in
   # under a minute and gives fast feedback ahead of the cargo jobs.
   #
-  # These exist because two classes of regression are invisible to the compiler:
+  # These exist because three classes of regression are invisible to the compiler:
   #   1. Cloud creep. The cloud *crates* were deleted, so the compiler blocks
   #      those. But app/src/server and app/src/cloud_object survive as stubs for
   #      retained call sites, and nothing stopped a port from reaching into them
@@ -37,6 +37,10 @@ jobs:
   #      backend was dropped. A test ported against a stub compiles and passes
   #      while asserting nothing -- worse than a missing test, because it reads
   #      as progress and can never fail.
+  #   3. Settings-registry drift. The test harness hand-maintains a second copy
+  #      of production's settings registration list. A group added to
+  #      production and missed in the test harness compiles fine and only
+  #      panics at runtime, in whichever test is first to touch it (PR #480).
   guards:
     name: fork boundary guards
     runs-on: ubuntu-22.04
@@ -65,6 +69,10 @@ jobs:
       - name: Stub coverage (no tests against gutted no-op stubs)
         shell: bash
         run: ./script/check_stub_coverage
+
+      - name: Settings registry (test harness matches production registration)
+        shell: bash
+        run: ./script/check_settings_registry
 
   check-linux:
     name: cargo check (Linux)
