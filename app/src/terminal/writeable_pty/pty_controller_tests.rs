@@ -1,54 +1,28 @@
-use crate::terminal::color::List;
-use crate::terminal::event::UserBlockCompleted;
-use crate::terminal::event_listener::ChannelEventListener;
-use crate::terminal::model::block::{BlockSize, SerializedBlock};
-use crate::terminal::shell::ShellType;
-use crate::terminal::BlockPadding;
-use crate::theme::WarpTheme;
+use std::sync::Arc;
+
+use parking_lot::{FairMutex, Mutex};
+use warpui::App;
 
 use super::*;
+use crate::terminal::event_listener::ChannelEventListener;
+use crate::terminal::model::session::Sessions;
 
-impl PtyController {
-    /// Flushes PTY writes by sending a "dummy" test write, and blocking until the test write is
-    /// handled.
-    ///
-    /// When the "dummy write" is handled, an event is emitted through a channel. This method
-    /// blocks on receiving this event through the channel. Since async writes are handled in order
-    /// that they are queued, this ensures all queued writes have been handled/"flushed".
-    fn flush_pty_writes(&mut self) {
-        let (tx, rx) = futures::channel::oneshot::channel();
-        let _ = self.queue_async_write(AsyncPtyWrite {
-            bytes: vec![],
-            delay: None,
-            on_write_fn: Some(Box::new(move || {
-                let _ = tx.send(());
-            })),
-        });
-        let _ = warpui::r#async::block_on(rx);
+#[derive(Clone, Default)]
+struct TestEventLoopSender {
+    messages: Arc<Mutex<Vec<Message>>>,
+}
+
+impl EventLoopSender for TestEventLoopSender {
+    fn send(&self, message: Message) -> Result<(), EventLoopSendError> {
+        self.messages.lock().push(message);
+        Ok(())
     }
 }
 
-fn terminal_model(background_executor: Arc<Background>) -> Arc<FairMutex<TerminalModel>> {
-    Arc::new(FairMutex::new(TerminalModel::new_for_test(
-        // This BlockSize contains arbitrary values.
-        BlockSize {
-            block_padding: BlockPadding {
-                padding_top: 0.5,
-                command_padding_top: 0.5,
-                middle: 0.5,
-                bottom: 0.5,
-            },
-            size: SizeInfo::new_for_test_with_width_and_height(7., 10.5),
-            max_block_scroll_limit: 1000,
-            prompt_height: 1.,
-        },
-        List::from(&WarpTheme::default().into()),
-        ChannelEventListener::new_for_test(),
-        background_executor,
-        false,
+fn terminal_model() -> Arc<FairMutex<TerminalModel>> {
+    Arc::new(FairMutex::new(TerminalModel::mock(
         None,
-        false,
-        None,
+        Some(ChannelEventListener::new_for_test()),
     )))
 }
 
@@ -56,178 +30,269 @@ fn assert_input_matches(message: &Message, expected_bytes: Vec<u8>) {
     assert!(matches!(message, Message::Input(bytes) if bytes.to_vec() == expected_bytes));
 }
 
-/// Returns a vector containing the bytes we expect to be written to the PTY to execute the given
-/// `command` in the given `Shell`.
-fn expected_command_bytes(command: &str, shell: &Shell) -> Vec<u8> {
-    let mut bytes = shell.shell_type().kill_buffer_bytes().to_vec();
-    bytes.extend(command.as_bytes().to_vec());
-    bytes.extend(shell.shell_type().execute_command_bytes());
-    bytes
+// Every test below builds its own `PtyController` wired to a fresh, idle `TerminalModel` and a
+// `TestEventLoopSender` that records every message it is asked to send -- the same harness shape
+// used in pty_controller_lifecycle_tests.rs. The line editor starts out inactive (this is
+// `LineEditorStatus`'s default state, and nothing here drives the precmd/end-prompt hooks that
+// would activate it), so `PtyController` queues writes in `pending_writes` rather than sending
+// them immediately. Tests that care about what actually reaches the event loop drain
+// `pending_writes` themselves and call `send_write_to_event_loop` directly -- the same function
+// the real queue-draining path (`execute_next_queued_write`) calls once the line editor becomes
+// active. This mirrors the pattern `rejected_queued_in_band_start_is_cancelled_without_writing_bytes`
+// already uses in pty_controller_lifecycle_tests.rs.
+
+/// `queue_in_band_command` formats its bytes the same way a user command does: the shell's
+/// kill-buffer sequence, then the command text, then the shell's execute-command sequence.
+///
+/// This exercises the current in-band write path end-to-end (`queue_in_band_command` ->
+/// `send_write_to_event_loop` -> `bytes_to_execute_command`), which is the closest surviving
+/// analog to the orphaned `test_pty_controller_writes_in_band_command`; that test called a
+/// `write_in_band_command` method that no longer exists anywhere in the crate.
+#[test]
+fn queue_in_band_command_sends_expected_bytes_to_event_loop() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+        let (cancel_tx, cancel_rx) = async_channel::unbounded();
+        let shell_type = ShellType::Zsh;
+
+        let sent = controller.update(&mut app, |controller, ctx| {
+            controller.queue_in_band_command(
+                "echo foo",
+                shell_type,
+                "command-id".to_owned(),
+                cancel_tx,
+                ctx,
+            );
+            let write = controller
+                .pending_writes
+                .pop_front()
+                .expect("the in-band command should be queued while the line editor is inactive.");
+            controller.send_write_to_event_loop(write, ctx)
+        });
+
+        assert!(
+            sent,
+            "an in-band command accepted by the model should be written to the event loop."
+        );
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 1);
+        assert_input_matches(
+            &messages[0],
+            bytes_to_execute_command("echo foo", shell_type, false),
+        );
+        assert!(
+            cancel_rx.try_recv().is_err(),
+            "an accepted in-band command must not be cancelled."
+        );
+
+        drop(model_events_tx);
+    });
 }
 
+/// Writing an in-band command marks the block list as writing/executing an in-band command, via
+/// the `before_write_fn` callback that `queue_in_band_command` attaches (which calls
+/// `TerminalModel::start_in_band_command_execution`).
+///
+/// This is the current-API analog of the orphaned
+/// `test_pty_controller_updates_block_list_when_writing_in_band_command`, which asserted the
+/// same `BlockList::is_writing_or_executing_in_band_command()` flag through a
+/// `write_in_band_command` method that no longer exists.
 #[test]
-fn test_pty_controller_writes_user_command() {
-    let (event_loop_tx, event_loop_rx) = mio_extras::channel::channel();
-    let background_executor = Arc::new(Background::default());
-    let mut controller = PtyController::new(
-        event_loop_tx,
-        background_executor.clone(),
-        terminal_model(background_executor),
-    );
+fn queue_in_band_command_marks_block_list_as_writing_in_band_command() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+        let (cancel_tx, _cancel_rx) = async_channel::unbounded();
 
-    let shell = Shell::new(ShellType::Zsh, None, None, Default::default(), None);
-    assert!(controller.write_user_command("echo foo", &shell).is_ok());
-    controller.flush_pty_writes();
+        assert!(!model
+            .lock()
+            .block_list()
+            .is_writing_or_executing_in_band_command());
 
-    let message = event_loop_rx
-        .try_recv()
-        .expect("PtyController should have sent write.");
-    assert!(
-        matches!(message, Message::Input(bytes) if bytes.to_vec() == expected_command_bytes("echo foo", &shell))
-    );
+        let sent = controller.update(&mut app, |controller, ctx| {
+            controller.queue_in_band_command(
+                "echo foo",
+                ShellType::Zsh,
+                "command-id".to_owned(),
+                cancel_tx,
+                ctx,
+            );
+            let write = controller
+                .pending_writes
+                .pop_front()
+                .expect("the in-band command should be queued while the line editor is inactive.");
+            controller.send_write_to_event_loop(write, ctx)
+        });
+        assert!(sent);
+
+        assert!(model
+            .lock()
+            .block_list()
+            .is_writing_or_executing_in_band_command());
+
+        drop(model_events_tx);
+    });
 }
 
+/// `write_command` unconditionally clears `pending_writes` before queueing the new command, so
+/// issuing a user command drops whatever was previously queued.
+///
+/// This is the current-API analog of the orphaned
+/// `test_pty_controller_cancels_async_writes_upon_user_command`. That test pinned a different
+/// mechanism -- a delayed `AsyncPtyWrite` (queued via a since-removed `queue_async_write` API)
+/// being cancelled by a subsequent user command. `AsyncPtyWrite`/`queue_async_write` no longer
+/// exist anywhere in the crate; the surviving mechanism with the same intent -- a new user
+/// command discards previously queued-but-not-yet-sent writes -- is the `pending_writes.clear()`
+/// call in `write_command`, which this test pins instead.
 #[test]
-fn test_pty_controller_writes_in_band_command() {
-    let (event_loop_tx, event_loop_rx) = mio_extras::channel::channel();
-    let background_executor = Arc::new(Background::default());
-    let mut controller = PtyController::new(
-        event_loop_tx,
-        background_executor.clone(),
-        terminal_model(background_executor),
-    );
+fn write_command_replaces_previously_pending_write() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
 
-    let shell = Shell::new(ShellType::Zsh, None, None, Default::default(), None);
-    assert!(controller.write_in_band_command("echo foo", &shell).is_ok());
-    controller.flush_pty_writes();
+        controller.update(&mut app, |controller, _| {
+            controller.pending_writes.push_back(PtyWrite::Bytes {
+                bytes: b"stale-pending-write".to_vec().into(),
+            });
+        });
 
-    let message = event_loop_rx
-        .try_recv()
-        .expect("PtyController should have sent write.");
-    assert_input_matches(&message, expected_command_bytes("echo foo", &shell));
+        let outcome = controller.update(&mut app, |controller, ctx| {
+            controller.write_command(
+                "echo new",
+                ShellType::Zsh,
+                CommandExecutionSource::User,
+                ctx,
+            )
+        });
+        assert_eq!(outcome, StartCommandOutcome::Accepted);
+
+        controller.read(&app, |controller, _| {
+            assert_eq!(
+                controller.pending_writes.len(),
+                1,
+                "write_command should have replaced the stale queued write, not appended to it."
+            );
+            assert!(matches!(
+                &controller.pending_writes[0],
+                PtyWrite::Command { command, .. } if command == "echo new"
+            ));
+        });
+        // The line editor is inactive, so the new command stays queued rather than being sent.
+        assert!(sender.messages.lock().is_empty());
+
+        drop(model_events_tx);
+    });
 }
 
+/// `write_command` builds a `PtyWrite::Command` whose bytes -- once actually written to the
+/// event loop -- match `bytes_to_execute_command` for the given shell, the same formatting a
+/// directly-queued in-band command goes through.
+///
+/// This is the current-API analog of the orphaned `test_pty_controller_writes_user_command`,
+/// which called a `write_user_command` method that no longer exists; `write_command` (with
+/// `CommandExecutionSource::User`) is the surviving equivalent.
 #[test]
-fn test_pty_controller_updates_block_list_when_writing_in_band_command() {
-    let (event_loop_tx, _) = mio_extras::channel::channel();
-    let background_executor = Arc::new(Background::default());
-    let terminal_model = terminal_model(background_executor.clone());
-    let mut controller =
-        PtyController::new(event_loop_tx, background_executor, terminal_model.clone());
+fn write_command_sends_expected_bytes_for_user_source() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+        let shell_type = ShellType::Zsh;
 
-    let shell = Shell::new(ShellType::Zsh, None, None, Default::default(), None);
-    assert!(controller.write_in_band_command("echo foo", &shell).is_ok());
-    controller.flush_pty_writes();
+        let sent = controller.update(&mut app, |controller, ctx| {
+            let outcome =
+                controller.write_command("echo foo", shell_type, CommandExecutionSource::User, ctx);
+            assert_eq!(outcome, StartCommandOutcome::Accepted);
+            let write = controller
+                .pending_writes
+                .pop_front()
+                .expect("the user command should be queued while the line editor is inactive.");
+            controller.send_write_to_event_loop(write, ctx)
+        });
 
-    assert!(terminal_model
-        .lock()
-        .block_list()
-        .is_writing_or_executing_in_band_command());
-}
+        assert!(
+            sent,
+            "an accepted user command should be written to the event loop."
+        );
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 1);
+        assert_input_matches(
+            &messages[0],
+            bytes_to_execute_command("echo foo", shell_type, false),
+        );
 
-#[test]
-fn test_pty_controller_writes_input_buffer_sequence_after_block_completed() {
-    let (event_loop_tx, event_loop_rx) = mio_extras::channel::channel();
-    let background_executor = Arc::new(Background::default());
-
-    let mut controller = PtyController::new(
-        event_loop_tx,
-        background_executor.clone(),
-        terminal_model(background_executor),
-    );
-    controller.set_state_after_block_completed(
-        &BlockType::User(UserBlockCompleted {
-            serialized_block: SerializedBlock::new_for_test("echo foo".as_bytes().to_vec(), vec![])
-                .into(),
-            command: "echo foo".to_owned(),
-            output_truncated: "".to_owned(),
-            started_at: None,
-            num_output_lines: 0,
-            num_output_lines_truncated: 0,
-            shell_type: None,
-        }),
-        true,
-    );
-    controller.flush_pty_writes();
-
-    let message = event_loop_rx
-        .try_recv()
-        .expect("PtyController should have sent write.");
-    assert_input_matches(&message, vec![escape_sequences::C0::ESC, b'i']);
-}
-
-#[test]
-fn test_pty_controller_writes_in_band_command_after_input_buffer_sequence() {
-    let (event_loop_tx, event_loop_rx) = mio_extras::channel::channel();
-    let background_executor = Arc::new(Background::default());
-    let mut controller = PtyController::new(
-        event_loop_tx,
-        background_executor.clone(),
-        terminal_model(background_executor),
-    );
-
-    let shell = Shell::new(ShellType::Zsh, None, None, Default::default(), None);
-    controller.set_state_after_block_completed(
-        &BlockType::User(UserBlockCompleted {
-            serialized_block: SerializedBlock::new_for_test("echo foo".as_bytes().to_vec(), vec![])
-                .into(),
-            command: "echo foo".to_owned(),
-            output_truncated: "".to_owned(),
-            started_at: None,
-            num_output_lines: 0,
-            num_output_lines_truncated: 0,
-            shell_type: None,
-        }),
-        true,
-    );
-    assert!(controller.write_in_band_command("echo foo", &shell).is_ok());
-    controller.flush_pty_writes();
-
-    let mut messages = vec![];
-    while let Ok(message) = event_loop_rx.try_recv() {
-        messages.push(message);
-    }
-    assert_eq!(messages.len(), 2);
-    assert_input_matches(&messages[0], vec![escape_sequences::C0::ESC, b'i']);
-
-    assert_input_matches(&messages[1], expected_command_bytes("echo foo", &shell));
-}
-
-#[test]
-fn test_pty_controller_cancels_async_writes_upon_user_command() {
-    let (event_loop_tx, event_loop_rx) = mio_extras::channel::channel();
-    let background_executor = Arc::new(Background::default());
-    let mut controller = PtyController::new(
-        event_loop_tx,
-        background_executor.clone(),
-        terminal_model(background_executor),
-    );
-
-    controller.set_state_after_block_completed(
-        &BlockType::User(UserBlockCompleted {
-            serialized_block: SerializedBlock::new_for_test("echo foo".as_bytes().to_vec(), vec![])
-                .into(),
-            command: "echo foo".to_owned(),
-            output_truncated: "".to_owned(),
-            started_at: None,
-            num_output_lines: 0,
-            num_output_lines_truncated: 0,
-            shell_type: None,
-        }),
-        true,
-    );
-    let shell = Shell::new(ShellType::Zsh, None, None, Default::default(), None);
-    // Writing this command should cancel writing the input buffer escape sequence, which is
-    // written after a 50ms delay. Since only ~25 ms has passed the write should not have
-    // occurred yet.
-    assert!(controller.write_user_command("echo foo", &shell).is_ok());
-    controller.flush_pty_writes();
-
-    let mut messages = vec![];
-    while let Ok(message) = event_loop_rx.try_recv() {
-        messages.push(message);
-    }
-    assert_eq!(messages.len(), 1);
-
-    assert_input_matches(&messages[0], expected_command_bytes("echo foo", &shell));
+        drop(model_events_tx);
+    });
 }
