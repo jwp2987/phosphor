@@ -74,7 +74,7 @@ not hidden by a cloud-availability check.
 | what | issue | note |
 |---|---|---|
 | **Codebase indexing / `RepoOutlines`** | #11 | Deliberately removed (`d84dd8e4d`). Blocks the code-symbol source and `SearchCodebase`. Re-porting is parity-legitimate (local, non-cloud) but is a keep-dropped-vs-restore decision. |
-| **Screen recording** | #367 | **Not cloud** — local `ffmpeg` capture; only `upload_artifact` touched Warp's servers. 26 tests. Restore-vs-keep-dropped decision, still open. |
+| **Screen recording** | #367 | **Declined.** Not cloud — the pin's capture is local `ffmpeg`, and only `upload_artifact` touched Warp's servers — but Phosphor is not shipping it. 26 pinned tests are out of scope. **Nothing to remove:** the subsystem was never ported, so there is no `recording_controller` / capture / finalize code here. What remains are `Tool::StartRecording` / `StopRecording` variants on the shared `warp_multi_agent_api` types, handled as unreachable no-ops — those must stay for exhaustive matching against the external crate. |
 | **`SettingSurfaces` / `SettingsMode`** | — | Explicitly documented as dropped in `app/src/settings/ai.rs` and `tui_autoupdate.rs`. |
 | **warp.dev Drive link resolution** | #267 | The fork still resolves `warp.dev/drive/...` links into `ZapDriveObjectArgs`. Warp Drive is the cloud product, so this may be dead code that should go — along with its two tests and two allowlist lines. **Undecided.** |
 
