@@ -4,23 +4,23 @@
 //! probe lifecycle. The foreground owns all domain state and shares only an
 //! atomic eligibility gate with the runtime reader thread.
 //!
-//! Upstream Warp gates live re-probing behind a user-facing TUI theme setting
-//! (`TuiTheme::Auto`/`Dark`/`Light`); this fork has not ported that setting
-//! yet, so the TUI always tracks the host terminal's background — the
-//! unconditional equivalent of upstream's `Auto` mode. When the setting is
-//! ported, gating probe eligibility on it here is the natural extension
-//! point (see `record_probe_result`/`TerminalBackgroundState::probe_enabled`).
+//! Live re-probing is gated behind the user-facing `TuiTheme` setting
+//! (`Auto`/`Light`/`Dark`), matching upstream Warp: an explicit `Light` or
+//! `Dark` choice disables further focus-triggered probes (there is nothing to
+//! auto-detect for), while `Auto` keeps tracking the host terminal's
+//! background (see `record_probe_result`/`TerminalBackgroundState::probe_enabled`).
 
 use std::io::IsTerminal;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use warp::tui_export::{Appearance, dark_theme, light_theme};
+use warp::settings::{TuiTheme, TuiThemeSettings};
+use warp::tui_export::Appearance;
 use warp_core::ui::theme::WarpTheme;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 use warpui_core::runtime::{
-    BackgroundLuminance, ProbedRgb, TuiProbe, background_luminance, probe_terminal_background,
+    ProbedRgb, TuiProbe, background_luminance, probe_terminal_background,
     read_terminal_background_reply, write_terminal_background_query,
 };
 
@@ -58,14 +58,15 @@ impl TerminalBackgroundState {
         }
     }
 
-    /// Whether the reader thread may issue further focus-triggered probes.
-    /// Always tracks the host terminal (there is no explicit-theme override
-    /// to opt out with — see the module doc), so this only reflects budget.
-    fn probe_enabled(&self) -> bool {
-        matches!(
-            self.probe_budget,
-            TerminalBackgroundProbeBudget::Available { .. }
-        )
+    /// Whether the reader thread may issue further focus-triggered probes: an
+    /// explicit `Light`/`Dark` choice has nothing to auto-detect, so only
+    /// `Auto` probes, and only while the miss budget remains.
+    fn probe_enabled(&self, selected_theme: TuiTheme) -> bool {
+        selected_theme == TuiTheme::Auto
+            && matches!(
+                self.probe_budget,
+                TerminalBackgroundProbeBudget::Available { .. }
+            )
     }
 
     fn record_probe_result(
@@ -94,7 +95,7 @@ impl TerminalBackgroundState {
         }
         self.background = Some(new_background);
         let resolved_theme =
-            resolve_theme_for_background(background_luminance(Some(new_background)));
+            TuiTheme::Auto.resolve_for_background(background_luminance(Some(new_background)));
         if resolved_theme != *current_theme {
             ProbeResultAction::SetTheme(resolved_theme)
         } else {
@@ -115,16 +116,6 @@ enum ProbeResultAction {
     SetTheme(WarpTheme),
 }
 
-/// Resolves the transcript theme for a probed background: a light background
-/// selects the light theme; dark and undetectable backgrounds keep the dark
-/// theme, the TUI's historical dark-only default.
-fn resolve_theme_for_background(luminance: BackgroundLuminance) -> WarpTheme {
-    match luminance {
-        BackgroundLuminance::Light => light_theme(),
-        BackgroundLuminance::Dark | BackgroundLuminance::Unknown => dark_theme(),
-    }
-}
-
 /// Owns the host terminal appearance and live background-probe lifecycle.
 #[derive(Clone, Debug)]
 pub(crate) struct TuiHostTerminalBackground {
@@ -140,13 +131,16 @@ impl SingletonEntity for TuiHostTerminalBackground {}
 
 impl TuiHostTerminalBackground {
     /// Probes the initial background, registers the singleton, and returns the
-    /// resolved initial theme plus the runtime's focus-triggered probe
-    /// registration (pass this to `spawn_tui_driver`).
-    pub(crate) fn register(ctx: &mut AppContext) -> (WarpTheme, TuiProbe) {
+    /// theme resolved for `selected_theme` plus the runtime's focus-triggered
+    /// probe registration (pass this to `spawn_tui_driver`).
+    pub(crate) fn register(
+        selected_theme: TuiTheme,
+        ctx: &mut AppContext,
+    ) -> (WarpTheme, TuiProbe) {
         let background = probe_terminal_background();
-        let theme = resolve_theme_for_background(background_luminance(background));
+        let theme = selected_theme.resolve_for_background(background_luminance(background));
         let state = TerminalBackgroundState::new(background);
-        let probe_enabled = Arc::new(AtomicBool::new(state.probe_enabled()));
+        let probe_enabled = Arc::new(AtomicBool::new(state.probe_enabled(selected_theme)));
         let reader_probe_enabled = probe_enabled.clone();
         let live_probe_supported =
             std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -180,17 +174,25 @@ impl TuiHostTerminalBackground {
     }
 
     /// Applies one reader-thread OSC 11 result to the cached background, probe
-    /// lifecycle, and active Warp theme.
+    /// lifecycle, and active Warp theme. A probe result that arrives after the
+    /// setting was switched away from `Auto` (e.g. a reply for an in-flight
+    /// query) only refreshes probe eligibility and is otherwise ignored —
+    /// an explicit Light/Dark choice must not be silently overridden.
     fn handle_background_probe_result(
         &mut self,
         background: Option<ProbedRgb>,
         ctx: &mut ModelContext<Self>,
     ) {
+        let selected_theme = TuiThemeSettings::as_ref(ctx).selected_theme();
+        if selected_theme != TuiTheme::Auto {
+            self.update_probe_enabled(selected_theme);
+            return;
+        }
         let current_theme = Appearance::as_ref(ctx).theme().clone();
         let decision =
             self.state
                 .record_probe_result(background, &current_theme, CONSECUTIVE_MISS_CUTOFF);
-        self.update_probe_enabled();
+        self.update_probe_enabled(selected_theme);
         match decision {
             ProbeResultAction::None => {}
             ProbeResultAction::Repaint => ctx.invalidate_all_views(),
@@ -202,15 +204,19 @@ impl TuiHostTerminalBackground {
         }
     }
 
-    fn update_probe_enabled(&self) {
+    fn update_probe_enabled(&self, selected_theme: TuiTheme) {
         self.probe_enabled
-            .store(self.state.probe_enabled(), Ordering::Relaxed);
+            .store(self.state.probe_enabled(selected_theme), Ordering::Relaxed);
     }
 
     #[cfg(test)]
-    pub(crate) fn register_for_test(background: Option<ProbedRgb>, ctx: &mut AppContext) {
+    pub(crate) fn register_for_test(
+        background: Option<ProbedRgb>,
+        selected_theme: TuiTheme,
+        ctx: &mut AppContext,
+    ) {
         let state = TerminalBackgroundState::new(background);
-        let probe_enabled = Arc::new(AtomicBool::new(state.probe_enabled()));
+        let probe_enabled = Arc::new(AtomicBool::new(state.probe_enabled(selected_theme)));
         ctx.add_singleton_model(move |_| Self {
             state,
             probe_enabled,
