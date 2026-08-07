@@ -199,6 +199,27 @@ it mid-fleet.
 8. **Verify the union before merging** — but know when it adds nothing. If the PR
    and main touch disjoint crates with no dependency between them, disjointness is
    a stronger argument than a green build.
+9. **`cd` inside every cargo command string; never rely on persisted shell cwd.**
+   Three agents hit this in one session. The Bash cwd defaults to `/cache/git/zap`
+   (the main checkout), and a backgrounded call resets it for subsequent commands
+   — the tool says so explicitly: *"Session cwd remains /cache/git/zap; directory
+   changes made by the backgrounded command do not apply to subsequent commands."*
+   The failure is **silent and worse than an error**: cargo happily builds the
+   unmodified main-branch tree and reports a clean green that means nothing. One
+   agent only caught it by inspecting cargo's `.fingerprint` dep-info files and
+   noticing they listed the *old* file set. Write
+   `cd /cache/git/zap/.worktrees/<name> && agent-cargo …` as one string, every time.
+10. **A baseline number is only valid for the tree it was measured on.** The
+   "4025/0/33" figure circulated all session as if it were main's; it was PR #132's
+   *branch* number. It made a clean re-pin look like it had lost 22 tests and
+   nearly cost a full re-measurement. The real baseline at `44bf4daa6` is
+   **4005/0/33** (measured directly, and independently corroborated by two agents'
+   deltas). Always state which commit a count belongs to.
+11. **Check call-site *counts* against the oracle, not just symbol presence.** PR
+   #195 ported `readable_chip_label_color` verbatim but wired it to 1 of Warp's 2
+   call sites, leaving `chip_configurator` sub-WCAG-AA (#196). A same-symbol grep
+   reports that as covered. This is the "ported but never wired" class in its
+   hardest-to-spot form.
 
 ---
 
