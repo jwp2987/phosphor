@@ -5,8 +5,8 @@ use command::Stdio;
 use tempfile::TempDir;
 
 use super::{
-    detect_current_branch, detect_current_branch_display, get_pr_for_branch, is_gh_missing_error,
-    PrInfo, RepositoryInfo,
+    detect_current_branch, detect_current_branch_display, get_pr_for_branch, is_gh_auth_error,
+    is_gh_missing_error, PrInfo, RepositoryInfo,
 };
 
 /// Helper: run a git command inside the given repo directory.
@@ -136,16 +136,14 @@ async fn get_pr_for_branch_does_not_require_origin_remote() {
         "#!/bin/sh\nprintf '{\"number\":123,\"url\":\"https://github.com/warp/warp/pull/123\",\"state\":\"OPEN\",\"isDraft\":true,\"baseRefName\":\"main\"}\\n'\n",
     );
 
-    // Shape adaptation: Warp's `PrInfo` also carries `state`, `draft` and
-    // `base_branch`, which the fork's `PrInfo` does not have — the fork never
-    // requests those `gh` fields. Warp's assertions on the two fields the fork
-    // does have are unchanged; the absent payload is a separate parity gap
-    // tracked under issue #2, not a weakening of this test.
     assert_eq!(
         get_pr_for_branch(&repo, Some(&path_env)).await.unwrap(),
         Some(PrInfo {
             number: 123,
             url: "https://github.com/warp/warp/pull/123".to_string(),
+            state: "OPEN".to_string(),
+            draft: true,
+            base_branch: "main".to_string(),
         })
     );
 }
@@ -287,6 +285,24 @@ async fn get_repository_info_returns_none_when_gh_cannot_resolve_github_repo() {
             .unwrap(),
         None
     );
+}
+
+#[test]
+fn detects_gh_auth_errors() {
+    assert!(is_gh_auth_error(
+        "You are not logged in to any GitHub hosts"
+    ));
+    assert!(is_gh_auth_error(
+        "GraphQL: authentication required; run gh auth login"
+    ));
+    assert!(is_gh_auth_error(
+        "To get started with GitHub CLI, run: gh auth login"
+    ));
+
+    assert!(!is_gh_auth_error(
+        "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host"
+    ));
+    assert!(!is_gh_auth_error("no pull requests found for branch"));
 }
 
 #[test]
