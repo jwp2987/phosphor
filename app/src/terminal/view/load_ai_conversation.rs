@@ -1064,6 +1064,7 @@ impl TerminalView {
         let conversation_id = AIConversationId::new();
 
         let conversation_data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,

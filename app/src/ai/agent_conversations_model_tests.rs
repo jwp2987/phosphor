@@ -141,6 +141,7 @@ fn test_display_status_uses_matching_conversation_for_in_progress_task() {
             conversation_id,
             "root-task",
             AgentConversationData {
+                is_remote_child: false,
                 server_conversation_token: None,
                 conversation_usage_metadata: None,
                 reverted_action_ids: None,
@@ -195,6 +196,7 @@ fn test_display_status_updates_when_blocked_conversation_resumes() {
             conversation_id,
             "root-task",
             AgentConversationData {
+                is_remote_child: false,
                 server_conversation_token: None,
                 conversation_usage_metadata: None,
                 reverted_action_ids: None,
@@ -273,6 +275,7 @@ fn test_display_status_terminal_task_state_overrides_matching_conversation() {
             conversation_id,
             "root-task",
             AgentConversationData {
+                is_remote_child: false,
                 server_conversation_token: None,
                 conversation_usage_metadata: None,
                 reverted_action_ids: None,
@@ -327,6 +330,7 @@ fn test_status_filter_uses_display_status_for_task_backed_conversations() {
             conversation_id,
             "root-task",
             AgentConversationData {
+                is_remote_child: false,
                 server_conversation_token: None,
                 conversation_usage_metadata: None,
                 reverted_action_ids: None,
@@ -611,6 +615,7 @@ fn test_get_tasks_and_conversations_prefers_task_when_task_id_matches_conversati
             conversation_id,
             "root-task",
             AgentConversationData {
+                is_remote_child: false,
                 server_conversation_token: None,
                 conversation_usage_metadata: None,
                 reverted_action_ids: None,
@@ -671,6 +676,7 @@ fn test_get_tasks_and_conversations_prefers_task_when_server_token_matches() {
             conversation_id,
             "root-task",
             AgentConversationData {
+                is_remote_child: false,
                 server_conversation_token: Some(server_token.to_string()),
                 conversation_usage_metadata: None,
                 reverted_action_ids: None,
@@ -730,6 +736,7 @@ fn test_get_tasks_and_conversations_keeps_unrelated_tasks_and_conversations() {
             conversation_id,
             "root-task",
             AgentConversationData {
+                is_remote_child: false,
                 server_conversation_token: Some("server-token-123".to_string()),
                 conversation_usage_metadata: None,
                 reverted_action_ids: None,

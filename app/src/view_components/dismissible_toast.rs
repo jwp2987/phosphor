@@ -590,3 +590,7 @@ impl ToastFlavor {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "dismissible_toast_tests.rs"]
+mod tests;

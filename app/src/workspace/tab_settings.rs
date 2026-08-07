@@ -269,6 +269,10 @@ impl HeaderToolbarChipSelection {
             Self::Custom { right, .. } => right.clone(),
         }
     }
+
+    pub fn contains_item(&self, item: &super::header_toolbar_item::HeaderToolbarItemKind) -> bool {
+        self.left_items().contains(item) || self.right_items().contains(item)
+    }
 }
 
 settings::macros::implement_setting_for_enum!(
@@ -492,6 +496,15 @@ define_settings_group!(TabSettings, settings: [
         private: false,
         toml_path: "appearance.vertical_tabs.show_panel_in_restored_windows",
         description: "When restoring a window, open the vertical tabs panel even if it was closed when the session was saved.",
+    },
+    hide_title_bar_search_bar_in_vertical_tabs: HideTitleBarSearchBarInVerticalTabs {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "appearance.vertical_tabs.hide_title_bar_search_bar",
+        description: "When using the vertical tab layout, hide the search bar in the title bar. Search stays available via the command palette and keyboard shortcuts.",
     },
     show_title_bar_search_bar: ShowTitleBarSearchBar {
         type: bool,

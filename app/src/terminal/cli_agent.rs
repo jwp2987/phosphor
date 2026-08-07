@@ -295,7 +295,11 @@ impl CLIAgent {
     pub fn supports_bash_mode(&self) -> bool {
         matches!(
             self,
-            CLIAgent::Claude | CLIAgent::Codex | CLIAgent::OpenCode | CLIAgent::DeepSeek
+            CLIAgent::Claude
+                | CLIAgent::Codex
+                | CLIAgent::OpenCode
+                | CLIAgent::DeepSeek
+                | CLIAgent::Omp
         )
     }
 

@@ -22,6 +22,80 @@ const NUM_CHANNELS: u16 = 1;
 const TARGET_SAMPLE_RATE: f32 = 16000.0;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(60 * 6);
 
+/// Surface-independent voice-input lifecycle state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VoiceInputLifecycleState {
+    #[default]
+    Idle,
+    Listening,
+    Transcribing,
+}
+
+/// Lifecycle shared by voice-input surfaces.
+///
+/// Surfaces retain ownership of presentation, telemetry, async handles, and
+/// transcription destinations. This type centralizes valid state transitions;
+/// surfaces abort their owned handles before cancelling or replacing a session.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VoiceInputLifecycle {
+    state: VoiceInputLifecycleState,
+}
+
+impl VoiceInputLifecycle {
+    pub fn state(&self) -> VoiceInputLifecycleState {
+        self.state
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.state != VoiceInputLifecycleState::Idle
+    }
+
+    /// Starts listening when idle.
+    pub fn start(&mut self) -> bool {
+        if self.is_active() {
+            return false;
+        }
+        self.state = VoiceInputLifecycleState::Listening;
+        true
+    }
+
+    /// Advances listening to transcription.
+    pub fn begin_transcribing(&mut self) -> bool {
+        if self.state != VoiceInputLifecycleState::Listening {
+            return false;
+        }
+        self.state = VoiceInputLifecycleState::Transcribing;
+        true
+    }
+
+    /// Completes the active transcription.
+    pub fn complete(&mut self) -> bool {
+        if self.state != VoiceInputLifecycleState::Transcribing {
+            return false;
+        }
+        self.state = VoiceInputLifecycleState::Idle;
+        true
+    }
+
+    /// Fails the active session.
+    pub fn fail(&mut self) -> bool {
+        if !self.is_active() {
+            return false;
+        }
+        self.state = VoiceInputLifecycleState::Idle;
+        true
+    }
+
+    /// Cancels the current session.
+    pub fn cancel(&mut self) -> bool {
+        if !self.is_active() {
+            return false;
+        }
+        self.state = VoiceInputLifecycleState::Idle;
+        true
+    }
+}
+
 pub struct VoiceInput {
     state: VoiceInputState,
     pub should_suppress_new_feature_popup: bool,
@@ -138,7 +212,7 @@ impl VoiceInput {
         ctx: &mut ModelContext<Self>,
         source: VoiceInputToggledFrom,
     ) -> Result<VoiceSession, StartListeningError> {
-        if self.is_listening() {
+        if self.is_active() {
             log::debug!("Already listening, not starting again");
             return Err(StartListeningError::AlreadyRunning);
         }
@@ -420,3 +494,7 @@ impl Entity for VoiceInput {
 }
 
 impl SingletonEntity for VoiceInput {}
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

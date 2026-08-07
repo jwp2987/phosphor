@@ -29,10 +29,11 @@ use super::ansi::{
     WarpificationUnavailableReason,
 };
 use super::block::{
-    AgentInteractionMetadata, Block, BlockId, BlockMetadata, BlockSize, BlocklistEnvVarMetadata,
-    BlockState, SerializedBlock,
+    AgentInteractionMetadata, Block, BlockId, BlockMetadata, BlockSize, BlockState,
+    BlocklistEnvVarMetadata, SerializedBlock,
 };
 use super::blockgrid::BlockGrid;
+use super::blocks::ActiveBlockCompletion;
 use super::grid::grid_handler::{
     ContainsPoint, FragmentBoundary, GridHandler, Link, PossiblePath, TermMode,
 };
@@ -42,7 +43,6 @@ use super::kitty::{
     create_kitty_error_reply, create_kitty_ok_reply, DeletionType, KittyAction, KittyChunk,
     KittyMessage, KittyResponse, PendingKittyMessage,
 };
-use super::blocks::ActiveBlockCompletion;
 use super::lifecycle::{
     BlockLifecycleCoordinator, CommandStartKind, IgnoreReason, LifecycleAction, LifecycleInput,
     LifecycleSnapshot, LifecycleTransition, PreexecObservation, StartCommandOutcome,
@@ -1738,6 +1738,12 @@ impl TerminalModel {
     /// the user's behalf, we consider the active block started.
     pub fn start_command_execution(&mut self) -> StartCommandOutcome {
         self.start_command_execution_for_kind(CommandStartKind::UserOrQueued)
+    }
+
+    /// Starts the active block for an in-band command (e.g. one dispatched over IPC/JSON-RPC),
+    /// following the same lifecycle coordination as [`Self::start_command_execution`].
+    pub fn start_in_band_command_execution(&mut self) -> StartCommandOutcome {
+        self.start_command_execution_for_kind(CommandStartKind::InBand)
     }
 
     pub fn start_command_execution_from_env_var_collection(

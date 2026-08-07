@@ -1096,6 +1096,9 @@ async fn read_binary_file_context(
     })
 }
 
+
+
+/// Builds the "is this a file?" probe with the path passed as data, not shell syntax.
 fn build_is_file_path_command(path: &str, shell_type: ShellType) -> String {
     let escaped_path = shell_quote_arg(path, shell_type);
     if shell_type == ShellType::PowerShell {
@@ -1105,6 +1108,7 @@ fn build_is_file_path_command(path: &str, shell_type: ShellType) -> String {
     }
 }
 
+/// Builds the git-repository probe with the path passed as data, not shell syntax.
 fn build_is_git_repository_command(absolute_path: &str, shell_type: ShellType) -> String {
     format!(
         "git -C {} rev-parse",
