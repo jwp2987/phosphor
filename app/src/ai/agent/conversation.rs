@@ -435,7 +435,12 @@ impl AIConversation {
             .collect();
 
         let mut tasks_by_id = HashMap::new();
-        let mut root_task = None;
+        // Defer root selection until we've seen every parentless task so we can
+        // deterministically prefer a candidate with non-empty messages. Heals legacy DB
+        // rows that contain an orphan optimistic-UUID stub alongside the real server
+        // root; without this dedupe, `HashMap` iteration order picks between them
+        // non-deterministically.
+        let mut parentless_candidates: Vec<(api::Task, Vec<AIAgentExchange>)> = Vec::new();
         for task_id in task_ids {
             let Some((task, exchanges)) = api_tasks_and_exchanges_by_id.remove(&task_id) else {
                 continue;
@@ -454,14 +459,24 @@ impl AIConversation {
                         task.id
                     );
                 }
-            } else if root_task.is_none() {
-                root_task = Some(Task::new_restored_root(task, exchanges.into_iter()));
+            } else {
+                parentless_candidates.push((task, exchanges));
             }
         }
 
-        let Some(root_task) = root_task else {
+        // Prefer the parentless candidate with non-empty messages (the real server root)
+        // over an empty stub. If multiple have messages or none have messages, fall back
+        // to the first-encountered candidate.
+        let root_task_pick = parentless_candidates
+            .iter()
+            .position(|(task, _)| !task.messages.is_empty())
+            .or_else(|| (!parentless_candidates.is_empty()).then_some(0))
+            .map(|idx| parentless_candidates.swap_remove(idx));
+
+        let Some((root_api_task, root_exchanges)) = root_task_pick else {
             return Err(RestoreConversationError::NoRootTask);
         };
+        let root_task = Task::new_restored_root(root_api_task, root_exchanges.into_iter());
         // Derive todo lists from tasks by replaying UpdateTodos operations
         let todo_lists = derive_todo_lists_from_root_task(&root_task);
         let root_task_id = root_task.id().clone();
