@@ -911,6 +911,19 @@ pub fn init(app: &mut AppContext) {
     .with_custom_action(CustomAction::RenameTab)
     .with_context_predicate(id!("Workspace"))]);
 
+    // Pane rename — same shape as RenameActiveTab but acts on the focused pane
+    // in the active tab. Ships with no default keybinding so it surfaces in
+    // Settings -> Keyboard shortcuts as remappable; resolves Warp #9351,
+    // where the action existed only in the right-click context menu and was
+    // not reachable via the binding registry.
+    app.register_editable_bindings([EditableBinding::new(
+        "workspace:rename_active_pane",
+        crate::t!("keybinding-desc-workspace-rename-active-pane"),
+        WorkspaceAction::RenameActivePane,
+    )
+    .with_group(bindings::BindingGroup::Settings.as_str())
+    .with_context_predicate(id!("Workspace"))]);
+
     app.register_editable_bindings([
         EditableBinding::new(
             "workspace:terminate_app",
@@ -1232,6 +1245,16 @@ pub fn init(app: &mut AppContext) {
     }
 
     app.register_editable_bindings([
+        EditableBinding::new(
+            "workspace:copy_current_path",
+            BindingDescription::new(crate::t!("keybinding-desc-workspace-copy-current-path"))
+                .with_custom_description(
+                    bindings::MAC_MENUS_CONTEXT,
+                    crate::t!("keybinding-desc-workspace-copy-current-path-menu"),
+                ),
+            WorkspaceAction::CopyCurrentPath,
+        )
+        .with_context_predicate(id!("Workspace")),
         EditableBinding::new(
             "workspace:open_repository",
             BindingDescription::new(crate::t!("keybinding-desc-workspace-open-repository"))

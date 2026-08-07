@@ -2700,3 +2700,96 @@ fn restore_conversation_in_active_pane_enters_existing_live_conversation_without
         });
     });
 }
+
+// Regression tests for https://github.com/jwp2987/phosphor/issues/11: Warp registers
+// `workspace:copy_current_path` and `workspace:rename_active_pane` as editable bindings
+// (`app/src/workspace/mod.rs`), but this fork's binding registry was missing both, making
+// `WorkspaceAction::CopyCurrentPath` and `WorkspaceAction::RenameActivePane` unreachable from
+// the Command Palette / keybindings editor even though the underlying handlers existed.
+
+#[test]
+fn test_copy_current_path_and_rename_active_pane_bindings_are_registered() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        app.update(|ctx| {
+            let copy_current_path = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == "workspace:copy_current_path")
+                .expect("workspace:copy_current_path should be a registered editable binding");
+            assert!(matches!(
+                copy_current_path.action.as_any().downcast_ref::<WorkspaceAction>(),
+                Some(WorkspaceAction::CopyCurrentPath)
+            ));
+
+            let rename_active_pane = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == "workspace:rename_active_pane")
+                .expect("workspace:rename_active_pane should be a registered editable binding");
+            assert!(matches!(
+                rename_active_pane.action.as_any().downcast_ref::<WorkspaceAction>(),
+                Some(WorkspaceAction::RenameActivePane)
+            ));
+        });
+    });
+}
+
+#[test]
+fn test_rename_active_pane_dispatches_to_rename_pane() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            assert!(!workspace.current_workspace_state.is_any_pane_being_renamed());
+
+            let pane_group = workspace.active_tab_pane_group().clone();
+            let expected_locator = PaneViewLocator {
+                pane_group_id: pane_group.id(),
+                pane_id: pane_group.as_ref(ctx).focused_pane_id(ctx),
+            };
+
+            // This mirrors the right-click "Rename pane" menu path (`RenamePane(locator)`),
+            // which already worked; `RenameActivePane` must reach the same `rename_pane` state
+            // mutation via the keyboard-bindable / Command Palette route.
+            workspace.handle_action(&WorkspaceAction::RenameActivePane, ctx);
+
+            assert!(workspace.current_workspace_state.is_any_pane_being_renamed());
+            assert_eq!(
+                workspace.current_workspace_state.pane_being_renamed(),
+                Some(expected_locator)
+            );
+        });
+    });
+}
+
+#[test]
+fn test_copy_current_path_is_a_noop_without_a_focused_path() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            // A freshly-created terminal pane has no working directory reported yet (no block
+            // metadata has been received), so `path_from_focused_pane` should yield `None` and
+            // the dispatch must be a safe no-op rather than panicking or clobbering the
+            // clipboard.
+            assert_eq!(
+                workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .path_from_focused_pane(ctx),
+                None
+            );
+
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("sentinel".to_string()));
+
+            workspace.handle_action(&WorkspaceAction::CopyCurrentPath, ctx);
+
+            assert_eq!(ctx.clipboard().read().plain_text, "sentinel");
+        });
+    });
+}
