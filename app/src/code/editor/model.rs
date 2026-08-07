@@ -1564,13 +1564,11 @@ impl CodeEditorModel {
                 RangeSet::new();
 
             // Add ranges for diffs
+            // `modified_lines` yields 0-based line ranges, matching the
+            // hidden-range convention. It must NOT be shifted again.
             for range in self.diff().as_ref(ctx).modified_lines() {
-                // Convert 1-indexed line ranges to 0-indexed
-                let start_line = range.start.saturating_sub(1);
-                let end_line = range.end.saturating_sub(1);
-
-                let context_start = start_line.saturating_sub(context_line);
-                let context_end = end_line + context_line;
+                let context_start = range.start.saturating_sub(context_line);
+                let context_end = range.end + context_line;
 
                 if context_start < context_end {
                     visible_ranges.insert(context_start.into()..context_end.into());
