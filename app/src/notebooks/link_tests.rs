@@ -6,11 +6,11 @@ use std::{
 
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
-use settings::Setting as _;
+use settings::{Setting as _, SettingsManager};
 use tempfile::tempdir;
 use url::Url;
 use warp_util::path::LineAndColumnArg;
-use warpui::{App, ModelHandle, WindowId};
+use warpui::{App, ModelHandle, SingletonEntity as _, WindowId};
 
 use crate::{
     notebooks::{file::is_markdown_file, link::LinkEvent},
@@ -75,6 +75,11 @@ fn init_link_model(app: &mut App, base_directory: Option<&Path>) -> ModelHandle<
         session.set_session_for_test(window_id, TEST_SESSION.clone(), base_directory, None, ctx);
         session
     });
+    // Link resolution reads EditorSettings (prefer_markdown_viewer, the editor
+    // choice) through production code, so the group has to exist or the read
+    // panics before any assertion runs. SettingsManager backs it.
+    app.add_singleton_model(|_| SettingsManager::default());
+    EditorSettings::register(app);
     app.add_model(|ctx| NotebookLinks::new(source, ctx))
 }
 
