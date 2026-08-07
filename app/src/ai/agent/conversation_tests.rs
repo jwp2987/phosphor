@@ -43,6 +43,7 @@ fn user_query_message(id: &str, request_id: &str, query: &str) -> api::Message {
         task_id: "root-task".to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::UserQuery(api::message::UserQuery {
             query: query.to_string(),
             context: None,
@@ -86,6 +87,7 @@ fn user_query_message_with_shell_context(
         task_id: "root-task".to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::UserQuery(api::message::UserQuery {
             query: query.to_string(),
             context: Some(api::InputContext {
@@ -115,6 +117,7 @@ fn agent_output_message(id: &str, request_id: &str) -> api::Message {
         task_id: "root-task".to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::AgentOutput(
             api::message::AgentOutput {
                 text: "Done".to_string(),
@@ -131,6 +134,7 @@ fn tool_call_message(id: &str, call_id: &str) -> api::Message {
         task_id: "root-task".to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCall(api::message::ToolCall {
             tool_call_id: call_id.to_string(),
             tool: None,
@@ -160,6 +164,7 @@ fn tool_call_message_with_tool(id: &str, call_id: &str, tool: api::message::tool
         task_id: "root-task".to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCall(api::message::ToolCall {
             tool_call_id: call_id.to_string(),
             tool: Some(tool),
@@ -179,6 +184,7 @@ fn tool_call_result_message_with_result(
         task_id: "root-task".to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCallResult(
             api::message::ToolCallResult {
                 tool_call_id: call_id.to_string(),
@@ -494,6 +500,10 @@ fn test_cli_subagent_serialized_block_preserves_block_id_and_metadata() {
                                             command_id: "cli-block-1".to_string(),
                                             output: "hi".to_string(),
                                             exit_code: 0,
+                                            // The fork's shell-command results carry no timestamps, so the fields
+                                            // upstream added stay empty. See #11.
+                                            start_ts: None,
+                                            finish_ts: None,
                                         },
                                     ),
                                 ),
@@ -582,6 +592,10 @@ fn test_cli_subagent_serialized_block_prefers_persisted_snapshot_output() {
                                             command_id: String::from(block_id.clone()),
                                             output: "truncated task output".to_string(),
                                             exit_code: 0,
+                                            // The fork's shell-command results carry no timestamps, so the fields
+                                            // upstream added stay empty. See #11.
+                                            start_ts: None,
+                                            finish_ts: None,
                                         },
                                     ),
                                 ),
@@ -709,6 +723,10 @@ fn test_cli_subagent_serialized_block_ignores_later_attachment_and_context_block
                                             command_id: "cli-block-1".to_string(),
                                             output: "hi".to_string(),
                                             exit_code: 0,
+                                            // The fork's shell-command results carry no timestamps, so the fields
+                                            // upstream added stay empty. See #11.
+                                            start_ts: None,
+                                            finish_ts: None,
                                         },
                                     ),
                                 ),
@@ -816,6 +834,10 @@ fn test_cli_subagent_serialized_block_uses_metadata_command_id_not_latest_comman
                                             command_id: "cli-block-1".to_string(),
                                             output: "first".to_string(),
                                             exit_code: 0,
+                                            // The fork's shell-command results carry no timestamps, so the fields
+                                            // upstream added stay empty. See #11.
+                                            start_ts: None,
+                                            finish_ts: None,
                                         },
                                     ),
                                 ),
@@ -837,6 +859,10 @@ fn test_cli_subagent_serialized_block_uses_metadata_command_id_not_latest_comman
                                             command_id: "other-block".to_string(),
                                             output: "second".to_string(),
                                             exit_code: 0,
+                                            // The fork's shell-command results carry no timestamps, so the fields
+                                            // upstream added stay empty. See #11.
+                                            start_ts: None,
+                                            finish_ts: None,
                                         },
                                     ),
                                 ),

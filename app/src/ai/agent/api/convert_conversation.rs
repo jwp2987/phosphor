@@ -358,7 +358,10 @@ impl ConvertToExchanges for &api::Task {
                         api::message::system_query::Type::ResumeConversation(_)
                         | api::message::system_query::Type::GeneratePassiveSuggestions(_)
                         // TODO: Implement this for real. ZB adding this to bump proto version for unrelated API changes.
-                        | api::message::system_query::Type::SummarizeConversation(_)=> false,
+                        | api::message::system_query::Type::SummarizeConversation(_)
+                        // Per the proto, handoff rehydration is server-injected context that
+                        // must never be rendered as user-visible input.
+                        | api::message::system_query::Type::HandoffRehydration(_) => false,
                     }
                 }
                 api::message::Message::ToolCallResult(tool_call_result) => {
@@ -435,7 +438,9 @@ impl ConvertToExchanges for &api::Task {
                 | api::message::Message::DebugOutput(_)
                 | api::message::Message::ArtifactEvent(_)
                 | api::message::Message::MessagesReceivedFromAgents(_)
-                | api::message::Message::ModelUsed(_) => false,
+                | api::message::Message::ModelUsed(_)
+                // Orchestration is server-side and unsupported here; see #11.
+                | api::message::Message::OrchestrationConfigSnapshot(_) => false,
             };
 
             if !added_message_as_exchange_input {
@@ -1191,6 +1196,16 @@ pub(crate) fn convert_tool_call_result_to_input(
             // Computer Use has been removed; these two result types are simply ignored when encountered in history.
             None
         }
+        Some(ToolCallResultType::SearchCodebase(_))
+        | Some(ToolCallResultType::RunAgentsResult(_))
+        | Some(ToolCallResultType::WaitForEvents(_))
+        | Some(ToolCallResultType::StartRecording(_))
+        | Some(ToolCallResultType::StopRecording(_)) => {
+            // The upstream pin restores these on the wire, but this fork executes none of
+            // them: codebase search stays retired (#11) and orchestration/recording are
+            // server-side. A result for one of them has no client representation.
+            None
+        }
         Some(ToolCallResultType::FetchConversation(_)) => {
             // Cloud tool has been physically removed
             None
@@ -1205,10 +1220,6 @@ pub(crate) fn convert_tool_call_result_to_input(
             create_cancelled_result_for_tool_call(task_id, &tool_call_id, tool_call_map, context)
         }
         Some(ToolCallResultType::Subagent(_)) => None,
-        Some(ToolCallResultType::StartAgent(_)) | Some(ToolCallResultType::StartAgentV2(_)) => {
-            // Cloud tool has been physically removed
-            None
-        }
         Some(ToolCallResultType::AskUserQuestion(result)) => {
             let ask_result = match &result.result {
                 Some(warp_multi_agent_api::ask_user_question_result::Result::Success(success)) => {
@@ -1340,11 +1351,16 @@ fn create_cancelled_result_for_tool_call(
         ToolType::FetchConversation(_) => return None,
         ToolType::Server(_) => return None,
         ToolType::Subagent(_) => return None,
-        ToolType::StartAgent(_) | ToolType::StartAgentV2(_) => return None,
         ToolType::AskUserQuestion(_) => {
             AIAgentActionResultType::AskUserQuestion(AskUserQuestionResult::Cancelled)
         }
         ToolType::SendMessageToAgent(_) => return None,
+        // Not executable by this fork, so a cancellation has nothing to report; see #11.
+        ToolType::SearchCodebase(_)
+        | ToolType::RunAgents(_)
+        | ToolType::WaitForEvents(_)
+        | ToolType::StartRecording(_)
+        | ToolType::StopRecording(_) => return None,
         // These tools are deprecated.
         ToolType::SuggestCreatePlan(_) | ToolType::SuggestPlan(_) => return None,
     };
@@ -1532,7 +1548,10 @@ where
                 | api::message::Message::UpdateTodos(_)
                 | api::message::Message::MessagesReceivedFromAgents(_)
                 | api::message::Message::EventsFromAgents(_)
-                | api::message::Message::PassiveSuggestionResult(_) => None,
+                | api::message::Message::PassiveSuggestionResult(_)
+                // Not agent activity: orchestration config is server-side and unsupported
+                // here, so it never contributes a first-output timestamp. See #11.
+                | api::message::Message::OrchestrationConfigSnapshot(_) => None,
                 // Anything else is considered agent/stream activity we want to measure
                 api::message::Message::AgentOutput(_)
                 | api::message::Message::AgentReasoning(_)

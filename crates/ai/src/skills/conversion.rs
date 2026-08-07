@@ -20,6 +20,9 @@ pub enum SkillConversionError {
     ScopeInvalid,
     #[error("Invalid provider")]
     ProviderInvalid,
+    /// The provider is well-formed on the wire but this fork has no support for it.
+    #[error("Unsupported provider: {0}")]
+    ProviderUnsupported(&'static str),
     #[error("Invalid content")]
     ContentInvalid,
 }
@@ -162,5 +165,11 @@ fn convert_provider(
         api::skill_descriptor::provider::Type::Droid(_) => Ok(SkillProvider::Droid),
         api::skill_descriptor::provider::Type::Github(_) => Ok(SkillProvider::Github),
         api::skill_descriptor::provider::Type::OpenCode(_) => Ok(SkillProvider::OpenCode),
+        // Upstream's proto knows the Kiro skills provider (`.kiro/skills`); this fork does
+        // not discover or render it yet, so a Kiro descriptor is rejected rather than
+        // silently mapped onto another provider. See #11.
+        api::skill_descriptor::provider::Type::Kiro(_) => {
+            Err(SkillConversionError::ProviderUnsupported("kiro"))
+        }
     }
 }

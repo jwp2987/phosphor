@@ -1,4 +1,5 @@
 use super::*;
+use crate::ai::agent::conversation::AIConversationId;
 use crate::terminal::model::ansi::{Handler, Processor};
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::bootstrap::BootstrapStage;
@@ -1187,4 +1188,64 @@ fn test_synchronized_output_sharing_session_split_batch() {
         panic!("Expected PtyBytesRead, got {:?}", events[3]);
     };
     assert_eq!(bytes.as_slice(), b"after");
+}
+
+// Ported from warp/master `app/src/terminal/model/terminal_model_tests.rs`
+// (`report_shell_typeahead`, `take_typeahead_for_input_advances_incremental_typeahead`,
+// `take_typeahead_for_input_ignores_agent_requested_commands`,
+// `take_typeahead_for_input_is_none_when_typeahead_is_empty`).
+// Assertions are unchanged from Warp.
+
+fn report_shell_typeahead(model: &mut TerminalModel, text: &str) {
+    // Shape adaptation: the fork's `InputBufferValue` has no `session_id` field
+    // (Warp's carries a `HookSessionId`). No assertion changed.
+    model.input_buffer(InputBufferValue {
+        buffer: text.to_owned(),
+    });
+}
+
+#[test]
+fn take_typeahead_for_input_advances_incremental_typeahead() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("sleep 5", "");
+    model.finish_block();
+
+    report_shell_typeahead(&mut model, "ec");
+    assert_eq!(
+        model.take_typeahead_for_input(),
+        Some(("ec".to_owned(), string_offset::CharOffset::from(0)))
+    );
+
+    report_shell_typeahead(&mut model, "echo hi");
+    assert_eq!(
+        model.take_typeahead_for_input(),
+        Some(("echo hi".to_owned(), string_offset::CharOffset::from(2)))
+    );
+}
+
+#[test]
+fn take_typeahead_for_input_ignores_agent_requested_commands() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("sleep 5", "");
+    let action_id: crate::ai::agent::AIAgentActionId = "action".to_owned().into();
+    model
+        .block_list_mut()
+        .active_block_mut()
+        .set_agent_interaction_mode(AgentInteractionMetadata::new_hidden(
+            action_id,
+            AIConversationId::new(),
+        ));
+    model.finish_block();
+    report_shell_typeahead(&mut model, "echo hi");
+
+    assert_eq!(model.take_typeahead_for_input(), None);
+}
+
+#[test]
+fn take_typeahead_for_input_is_none_when_typeahead_is_empty() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("sleep 5", "");
+    model.finish_block();
+
+    assert_eq!(model.take_typeahead_for_input(), None);
 }

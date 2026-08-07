@@ -3554,6 +3554,9 @@ impl AIConversation {
                                 command_id,
                                 output: command_output,
                                 exit_code,
+                                // Timestamps upstream added; not used when rebuilding blocks.
+                                start_ts: _,
+                                finish_ts: _,
                             },
                         )) = &cmd_result.result
                         {

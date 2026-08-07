@@ -420,4 +420,76 @@ impl RemoteDiffStateModel {
 
     /// PR info rides along in the daemon-pushed metadata; nothing to refresh.
     pub fn refresh_pr_info(&mut self, _ctx: &mut ModelContext<Self>) {}
+
+    /// Fetches the remote repository's branches via the `GetBranches` RPC. The
+    /// daemon runs the same `git for-each-ref` listing the local backend uses,
+    /// so the branch dropdown is populated identically over SSH instead of
+    /// shelling out to `git` against a remote path that does not exist on the
+    /// client. The result is emitted as
+    /// [`DiffStateModelEvent::BranchesReceived`], matching the local backend.
+    pub fn fetch_branches(&self, ctx: &mut ModelContext<Self>) {
+        let Some(client) = RemoteServerManager::as_ref(ctx)
+            .client_for_host(&self.remote_path.host_id)
+            .cloned()
+        else {
+            // No connected session for the host; the dropdown keeps its
+            // defaults until a reconnect triggers another fetch.
+            return;
+        };
+        let request = self.get_branches_request();
+        ctx.spawn(
+            async move { client.get_branches(request).await },
+            |me, result, ctx| match result {
+                Ok(response) => me.handle_get_branches_response(&response, ctx),
+                Err(e) => {
+                    log::warn!("RemoteDiffStateModel: GetBranches request failed: {e}");
+                    ctx.emit(DiffStateModelEvent::BranchesReceived(vec![]));
+                }
+            },
+        );
+    }
+
+    /// Builds the `GetBranches` request for this model's remote repository.
+    /// The parameters mirror the local backend's call
+    /// (`get_all_branches(repo, None, false)`) so both backends list the same
+    /// set of branches.
+    fn get_branches_request(&self) -> proto::GetBranches {
+        proto::GetBranches {
+            repo_path: self.repo_path_string(),
+            max_branch_count: None,
+            include_remotes: false,
+        }
+    }
+
+    /// Converts a `GetBranchesResponse` into `(branch_name, is_main)` pairs and
+    /// emits them as [`DiffStateModelEvent::BranchesReceived`]. An error
+    /// response emits an empty list so the dropdown falls back to its defaults,
+    /// mirroring the local backend's error path.
+    fn handle_get_branches_response(
+        &self,
+        response: &proto::GetBranchesResponse,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let branches = match &response.result {
+            Some(proto::get_branches_response::Result::Success(success)) => success
+                .branches
+                .iter()
+                .map(|info| (info.name.clone(), info.is_main))
+                .collect(),
+            Some(proto::get_branches_response::Result::Error(err)) => {
+                let message = &err.message;
+                log::warn!("RemoteDiffStateModel: GetBranches failed: {message}");
+                vec![]
+            }
+            None => {
+                log::warn!("RemoteDiffStateModel: empty GetBranches response");
+                vec![]
+            }
+        };
+        ctx.emit(DiffStateModelEvent::BranchesReceived(branches));
+    }
 }
+
+#[cfg(test)]
+#[path = "diff_state_remote_tests.rs"]
+mod tests;

@@ -129,10 +129,13 @@ impl ToolExt for api::message::tool_call::Tool {
             Tool::SuggestPrompt(_) => "suggest_prompt",
             Tool::OpenCodeReview(_) => "open_code_review",
             Tool::InitProject(_) => "init_project",
-            Tool::StartAgent(_) => "start_agent",
-            // Keep the logical tool name stable across the v1/v2 schema split so analytics,
-            // history, and UI handling continue to treat both as the same tool.
-            Tool::StartAgentV2(_) => "start_agent",
+            // Tools the pin restores from upstream but this fork does not execute; the
+            // labels still mirror warp/master so history and analytics stay comparable.
+            Tool::SearchCodebase(_) => "search_codebase",
+            Tool::RunAgents(_) => "orchestrate",
+            Tool::WaitForEvents(_) => "wait_for_events",
+            Tool::StartRecording(_) => "start_recording",
+            Tool::StopRecording(_) => "stop_recording",
             Tool::Server(_) => "server",
             Tool::Subagent(_) => "subagent",
             Tool::AskUserQuestion(_) => "ask_user_question",

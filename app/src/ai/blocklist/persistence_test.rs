@@ -9,6 +9,7 @@ use crate::persistence::ModelEvent;
 
 fn user_query_message(task_id: &str, query: &str) -> warp_multi_agent_api::Message {
     warp_multi_agent_api::Message {
+        fetched_memories: vec![],
         id: "message-id".to_owned(),
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
