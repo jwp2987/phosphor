@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Fail if a test targets a function the fork gutted into a no-op stub.
+#
+# WHY THIS EXISTS
+# ---------------
+# When Phosphor dropped Warp's cloud backend, some functions were kept as
+# signature-compatible stubs so their call sites would still compile:
+#
+#     pub fn refresh_request_usage_async(&mut self, _ctx: &mut ModelContext<Self>) {}
+#
+# A test ported against a stub COMPILES AND PASSES while asserting nothing. That
+# is worse than a missing test: it is fake coverage that looks like progress and
+# can never fail, no matter how broken the real behaviour is.
+#
+# This bit for real. `app/src/ai/request_usage_model.rs` is a no-op stub, and a
+# source-presence heuristic classified its 30 pinned tests as portable "test
+# debt". They are not — SCOPE-AI.md had to reclassify them by reading the
+# source. This check makes that mechanical.
+#
+# WHY IT COMPARES AGAINST THE PIN
+# -------------------------------
+# An earlier version of this script flagged "empty body + underscore params" and
+# produced ~80KB of false positives: every element that opts out of an optional
+# trait hook looks like that.
+#
+#     fn after_layout(&mut self, _ctx: &mut Ctx) {}   // legitimate, not a stub
+#
+# The distinguishing property is not emptiness — it is that a stub is empty HERE
+# and substantial AT THE PIN. A no-op trait impl is a no-op in both. So this
+# compares fork against the pinned oracle (ORACLE.md) and only reports functions
+# that LOST their body.
+#
+# Requires the `warp` remote and the pin commit to be fetched. Skips cleanly if
+# unavailable, so it never blocks a machine that has not fetched upstream.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+PIN="$(grep -oE '\b02b53fcd8[0-9a-f]*' ORACLE.md 2>/dev/null | head -1)"
+PIN="${PIN:-02b53fcd8}"
+
+if ! git cat-file -e "${PIN}^{commit}" 2>/dev/null; then
+    echo "stub coverage: skipped (pin ${PIN} not fetched; run 'git fetch warp')"
+    exit 0
+fi
+
+# A trivially-empty body, per the same grammar on both sides.
+TRIVIAL='\{ *(|\(\)|Ok\(\(\)\)|None|false|true|Vec::new\(\)|Default::default\(\)) *\}'
+FNDEF='^\s*(pub(\([a-z]+\))? )?(async )?fn ([a-z_0-9]+)\('
+
+findings="$(mktemp)"
+
+# Functions that are trivially empty in the fork, excluding test files.
+grep -rnE --include='*.rs' "${FNDEF}[^)]*\)( *-> *[^{]+)? *${TRIVIAL}" app/src crates 2>/dev/null \
+    | grep -vE '/(test_data|examples)/' \
+    | grep -vE '_tests?\.rs:' \
+    | while IFS= read -r line; do
+        file="${line%%:*}"
+        body="${line#*:*:}"
+        fname="$(printf '%s' "$body" | sed -E "s/.*fn ([a-z_0-9]+)\(.*/\1/")"
+        [[ -z "$fname" ]] && continue
+
+        # Is this function non-trivial at the pin, in the same file?
+        pinsrc="$(git show "${PIN}:${file}" 2>/dev/null)" || continue
+        [[ -z "$pinsrc" ]] && continue
+
+        # Grab the pin's definition for the same function name. Exclude trait
+        # DECLARATIONS (`fn foo(..);`) -- they have no body, so comparing one
+        # against the fork's impl reports a bogus "lost its body". This bit:
+        # sum_tree's `add_summary` is a declaration at one line and an empty
+        # impl for `()` at another, identical on both sides, and matching the
+        # declaration made it look gutted.
+        pinline="$(printf '%s' "$pinsrc" \
+            | grep -E "^\s*(pub(\([a-z]+\))? )?(async )?fn ${fname}\(" \
+            | grep -vE '\;\s*$' \
+            | head -1)"
+        [[ -z "$pinline" ]] && continue
+
+        # If the pin's version is ALSO trivially empty, this is a legitimate
+        # no-op (trait opt-out, default impl) -- not a gutted stub.
+        if printf '%s' "$pinline" | grep -qE "${TRIVIAL}"; then
+            continue
+        fi
+
+        # The pin has a real body and the fork does not: a gutted stub.
+        # Match ONLY the co-located test file (foo.rs -> foo_test.rs /
+        # foo_tests.rs). Grep cannot resolve which type's method a test calls,
+        # so a name-wide search produces enormous false positives on common
+        # trait methods (handle_action, build_index, ...). Co-location is the
+        # one association that is reliable without type analysis, and it is
+        # exactly the shape of the case this exists to catch
+        # (request_usage_model.rs -> request_usage_model_tests.rs).
+        base="${file%.rs}"
+        for testfile in "${base}_test.rs" "${base}_tests.rs"; do
+            [[ -f "$testfile" ]] || continue
+            grep -qE "\\b${fname}\\b" "$testfile" 2>/dev/null || continue
+            if grep -qE "fn [a-z_0-9]*_is_a_noop_by_design" "$testfile" 2>/dev/null; then
+                continue
+            fi
+            printf '  %s()  gutted in %s  <- tested by %s\n' \
+                "$fname" "$file" "$testfile" >> "$findings"
+        done
+    done
+
+if [[ -s "$findings" ]]; then
+    echo "error: test(s) target a function the fork gutted into a no-op stub:" >&2
+    sort -u "$findings" >&2
+    cat >&2 <<EOF
+
+These functions have a real implementation at the pinned oracle (${PIN}) and an
+empty one here. A test against an empty body passes unconditionally and can
+never fail — it reads as coverage while proving nothing.
+
+Either:
+  - implement the function for real (check whether Warp's behaviour has a
+    BYOP/local equivalent — most cloud-organised code does), or
+  - drop the test and record the gap as a feature-gap issue (AGENTS.md 5.10
+    requires an issue for any deviation), or
+  - if pinning the no-op IS the intent, name the test
+    \`<something>_is_a_noop_by_design\` so this check skips it.
+
+See SCOPE-AI.md for the request_usage_model case that motivated this.
+EOF
+    rm -f "$findings"
+    exit 1
+fi
+
+echo "stub coverage: ok (no test targets a gutted stub)"
+rm -f "$findings"
+exit 0
