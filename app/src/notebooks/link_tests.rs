@@ -6,7 +6,7 @@ use std::{
 
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
-use settings::{Setting as _, SettingsManager};
+use settings::Setting as _;
 use tempfile::tempdir;
 use url::Url;
 use warp_util::path::LineAndColumnArg;
@@ -76,10 +76,12 @@ fn init_link_model(app: &mut App, base_directory: Option<&Path>) -> ModelHandle<
         session
     });
     // Link resolution reads EditorSettings (prefer_markdown_viewer, the editor
-    // choice) through production code, so the group has to exist or the read
-    // panics before any assertion runs. SettingsManager backs it.
-    app.add_singleton_model(|_| SettingsManager::default());
-    EditorSettings::register(app);
+    // choice) through production code, so the settings stack has to exist or the
+    // read panics before any assertion runs. Registering that one group by hand
+    // is not enough -- it pulls in PrivatePreferences and SettingsManager -- so
+    // use the shared helper, which registers external_editor::EditorSettings
+    // along with everything it depends on.
+    crate::test_util::settings::initialize_settings_for_tests(app);
     app.add_model(|ctx| NotebookLinks::new(source, ctx))
 }
 
