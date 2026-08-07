@@ -682,7 +682,12 @@ impl BlocklistAIController {
             self.cancel_active_conversation_for_follow_up(conversation_id, ctx);
 
         if let Some(slash_command_request) = SlashCommandRequest::from_query(query.as_str()) {
-            slash_command_request.send_request(self, is_queued_prompt, ctx);
+            slash_command_request.send_request(
+                self,
+                is_queued_prompt,
+                /*conversation_id_override*/ None,
+                ctx,
+            );
             return;
         }
 
@@ -1309,7 +1314,9 @@ impl BlocklistAIController {
         if let Some(conversation_id) = slash_command.conversation_id(self, ctx) {
             self.cancel_active_conversation_for_follow_up(conversation_id, ctx);
         }
-        slash_command.send_request(self, /*is_queued_prompt*/ false, ctx);
+        slash_command.send_request(
+            self, /*is_queued_prompt*/ false, /*conversation_id_override*/ None, ctx,
+        );
     }
 
     /// Cancel any in-flight progress on the active conversation in preparation
@@ -1340,12 +1347,17 @@ impl BlocklistAIController {
     /// Same as [`Self::send_slash_command_request`] but marks the emitted `SentRequest`
     /// event as a queued prompt submission so UI subscribers (e.g. the input editor)
     /// don't clear the input buffer on the auto-send.
+    ///
+    /// `conversation_id` is the conversation the queued row was queued on. Pass it so the
+    /// request lands there rather than on whatever conversation the UI happens to have
+    /// selected when the row fires; pass `None` to keep the selection-derived behaviour.
     pub fn send_queued_slash_command_request(
         &mut self,
         slash_command: SlashCommandRequest,
+        conversation_id: Option<AIConversationId>,
         ctx: &mut ModelContext<Self>,
     ) {
-        slash_command.send_request(self, /*is_queued_prompt*/ true, ctx);
+        slash_command.send_request(self, /*is_queued_prompt*/ true, conversation_id, ctx);
     }
 
     /// Mark a conversation to follow up after its actions complete and attempt to send immediately
