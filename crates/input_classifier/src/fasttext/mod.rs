@@ -7,7 +7,8 @@ use rust_embed::RustEmbed;
 use tempfile::NamedTempFile;
 
 use crate::{
-    ClassificationResult, Context, InputClassifier, InputType,
+    ClassificationResult, Context, InputClassificationResult, InputClassifier,
+    InputClassifierDecisionSource, InputType,
     parser::parse_query_into_tokens,
     util::{is_likely_shell_command, is_one_off_natural_language_word},
 };
@@ -54,28 +55,42 @@ impl InputClassifier for FasttextClassifier {
         &self,
         input: warp_completer::ParsedTokensSnapshot,
         context: &Context,
-    ) -> InputType {
+    ) -> InputClassificationResult {
         let word_tokens = parse_query_into_tokens(input.buffer_text.as_str());
 
         let total_word_token_count = word_tokens.len();
 
         if total_word_token_count == 1 {
             if is_one_off_natural_language_word(&word_tokens[0].to_lowercase()) {
-                return InputType::AI;
+                return InputClassificationResult::new(
+                    InputType::AI,
+                    InputClassifierDecisionSource::NaturalLanguageOneOffAllowlist,
+                );
             }
 
-            // Prevent flickering for short input
-            return context.current_input_type;
+            // Prevent flickering for short input: no classification ran, so the
+            // source mirrors the ONNX classifier's "kept the current input type"
+            // fallback rather than inventing a new variant for it.
+            return InputClassificationResult::new(
+                context.current_input_type,
+                InputClassifierDecisionSource::InputClassifierFallbackCurrentInput,
+            );
         }
 
         if is_likely_shell_command(&input, total_word_token_count).await {
-            return InputType::Shell;
+            return InputClassificationResult::new(
+                InputType::Shell,
+                InputClassifierDecisionSource::ShellHeuristic,
+            );
         }
 
         self.classify_input(input, context)
             .await
-            .map(|result| result.to_input_type())
-            .unwrap_or(context.current_input_type)
+            .map(|result| InputClassificationResult::new(result.to_input_type(), result.source))
+            .unwrap_or(InputClassificationResult::new(
+                context.current_input_type,
+                InputClassifierDecisionSource::InputClassifierFallbackHeuristic,
+            ))
     }
 
     async fn classify_input(
@@ -109,6 +124,11 @@ fn classify_input_with_fasttext(
     let mut classification_result = ClassificationResult {
         p_shell: 0.0,
         p_ai: 0.0,
+        // Reuses the same "a model produced this" source as the ONNX
+        // classifier (`InputClassifierDecisionSource::InputClassifier`);
+        // FastText and ONNX are alternative model backends selected at
+        // `InputClassifierModel::new`, never active simultaneously.
+        source: InputClassifierDecisionSource::InputClassifier,
     };
 
     for prediction in predictions {
