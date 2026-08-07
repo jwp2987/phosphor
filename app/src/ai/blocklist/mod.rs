@@ -66,7 +66,7 @@ pub(crate) use queued_query::{
 #[cfg_attr(not(feature = "tui"), allow(unused_imports))]
 pub use queued_query::{QueuedQueryEvent, QueuedQueryModel};
 pub(crate) use input_model::{
-    BlocklistAIInputEvent, BlocklistAIInputModel, InputConfig, InputType,
+    BlocklistAIInputEvent, BlocklistAIInputModel, GuiInputModePolicy, InputConfig, InputType,
 };
 pub(crate) use passive_suggestions::{
     LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel, MaaPassiveSuggestionsEvent,

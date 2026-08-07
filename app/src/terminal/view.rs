@@ -203,7 +203,7 @@ use crate::ai::{
         AIBlock, AIBlockEvent, BlocklistAIActionEvent, BlocklistAIActionModel,
         BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIController,
         BlocklistAIControllerEvent, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-        BlocklistAIInputEvent, BlocklistAIInputModel, InputConfig, InputType,
+        BlocklistAIInputEvent, BlocklistAIInputModel, GuiInputModePolicy, InputConfig, InputType,
         LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel, MaaPassiveSuggestionsEvent,
         MaaPassiveSuggestionsModel, PassiveSuggestionsModels, PendingQueryState,
         PromptSuggestionExecutor, PromptSuggestionExecutorEvent, RequestFileEditsFormatKind,
@@ -3190,6 +3190,10 @@ impl TerminalView {
                 model.clone(),
                 agent_view_controller.clone(),
                 ai_context_model.clone(),
+                Rc::new(GuiInputModePolicy::new(
+                    agent_view_controller.clone(),
+                    terminal_view_id,
+                )),
                 terminal_view_id,
                 ctx,
             );
