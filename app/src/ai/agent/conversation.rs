@@ -515,6 +515,7 @@ impl AIConversation {
                 })
                 .unwrap_or_default();
             let parent_agent_id = data.parent_agent_id;
+            let is_remote_child = data.is_remote_child;
             let agent_name = data.agent_name;
             let parent_conversation_id = data
                 .parent_conversation_id
@@ -619,7 +620,7 @@ impl AIConversation {
             parent_agent_id,
             agent_name,
             parent_conversation_id,
-            is_remote_child: false,
+            is_remote_child,
             last_event_sequence,
             compaction_state,
             byop_repair_state,
@@ -1003,7 +1004,9 @@ impl AIConversation {
 
     /// Returns true if this conversation was spawned by a parent orchestrator agent.
     pub fn is_child_agent_conversation(&self) -> bool {
-        self.parent_conversation_id.is_some()
+        // A child spawned by an agent run carries `parent_agent_id` without a
+        // `parent_conversation_id`; checking only the latter missed those.
+        self.parent_conversation_id.is_some() || self.parent_agent_id.is_some()
     }
 
     /// Returns true if this is a placeholder for a child agent executing on a
