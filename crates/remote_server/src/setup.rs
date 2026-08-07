@@ -248,7 +248,10 @@ pub fn parse_uname_output(output: &str) -> Result<RemotePlatform> {
     };
 
     let arch = match arch_str {
-        "x86_64" => RemoteArch::X86_64,
+        // "amd64" is upstream Warp's alias for x86_64 (some `uname -m` builds and
+        // non-GNU userlands report it); restored per oracle parity, see
+        // crates/remote_server/src/setup_tests.rs::parse_uname_linux_amd64.
+        "x86_64" | "amd64" => RemoteArch::X86_64,
         "aarch64" | "arm64" | "armv8l" => RemoteArch::Aarch64,
         other => return Err(anyhow!("unsupported arch: {other}")),
     };
@@ -275,12 +278,39 @@ pub fn remote_server_dir() -> String {
     format!("~/{warp_dir}/remote-server")
 }
 
-/// Returns a remote-server identity key directory name that's safe to put in a path.
+/// Returns a short, deterministic directory name for a remote-server
+/// identity key, used for the daemon socket and PID file paths.
 ///
-/// The identity key isn't a secret, but it may contain bytes that are unsafe
-/// or ambiguous in a path. ASCII alphanumerics and `-` / `_` are kept as-is;
-/// other UTF-8 bytes are percent-encoded.
+/// Hashes the key to 8 hex chars so the socket path stays within the
+/// `sun_path` limit across all channels.
+///
+/// Regression fix (ported alongside `identity_dir_name_is_short_hash` /
+/// `socket_path_fits_within_sun_path_worst_case` in setup_tests.rs): this
+/// used to percent-encode the raw identity key instead of hashing it. For a
+/// UUID-shaped key (the common case — see `app/src/remote_server/auth_context.rs`)
+/// percent-encoding is a no-op, so the daemon dir embedded the full ~36-char
+/// key with no shortening at all, defeating the `sun_path` safety margin this
+/// function exists for. See crates/remote_server/src/setup_tests.rs.
 pub fn remote_server_identity_dir_name(identity_key: &str) -> String {
+    use std::hash::{Hash, Hasher};
+
+    if identity_key.is_empty() {
+        return "empty".to_string();
+    }
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    identity_key.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())[..8].to_string()
+}
+
+/// Percent-encodes an identity key for use in filesystem paths.
+///
+/// Keeps ASCII alphanumeric characters plus `-` and `_`; percent-encodes all
+/// other bytes. Used by [`remote_server_daemon_data_dir`] for persistent
+/// data that must not collide across identities (unlike
+/// [`remote_server_identity_dir_name`], collision risk here is not
+/// acceptable, so the full key is kept rather than hashed).
+fn percent_encode_identity_key(identity_key: &str) -> String {
     if identity_key.is_empty() {
         return "empty".to_string();
     }
@@ -297,13 +327,70 @@ pub fn remote_server_identity_dir_name(identity_key: &str) -> String {
     encoded
 }
 
-/// Returns the identity-isolated remote directory used for the daemon socket and PID file.
+/// Returns the identity-isolated remote directory used for the daemon socket
+/// and PID file. Uses the hashed identity dir name so the full socket path
+/// fits within `sun_path`.
 pub fn remote_server_daemon_dir(identity_key: &str) -> String {
     format!(
         "{}/{}",
         remote_server_dir(),
         remote_server_identity_dir_name(identity_key)
     )
+}
+
+/// Returns the identity-scoped remote directory used for daemon-owned
+/// per-user data files (e.g. SQLite databases).
+///
+/// Uses the full percent-encoded identity key (not the hash) so persistent
+/// data is never shared between distinct identities due to a hash collision.
+/// The `sun_path` limit does not apply here: this path is only used for
+/// regular file I/O, not Unix sockets.
+pub fn remote_server_daemon_data_dir(identity_key: &str) -> String {
+    format!(
+        "{}/{}/data",
+        remote_server_dir(),
+        percent_encode_identity_key(identity_key)
+    )
+}
+
+/// Returns a short, deterministic 8-hex-char hash of the app version string.
+///
+/// Used to version-discriminate daemon socket and PID files without
+/// embedding the full version string in the filename, which would push the
+/// Unix domain socket path over the `sun_path` limit (107 bytes on Linux,
+/// 103 on macOS) for users with moderately long identity keys or home
+/// directory paths.
+pub fn version_hash() -> Option<String> {
+    use std::hash::{Hash, Hasher};
+
+    let version = ChannelState::app_version()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    version.hash(&mut hasher);
+    Some(format!("{:016x}", hasher.finish())[..8].to_string())
+}
+
+/// Returns the daemon socket filename, versioned with a short hash when a
+/// release tag is baked in.
+///
+/// - With `GIT_RELEASE_TAG`:    `server-{hash8}.sock` (e.g. `server-a1b2c3d4.sock`)
+/// - Without (plain cargo run): `server.sock`
+pub fn daemon_socket_name() -> String {
+    match version_hash() {
+        Some(hash) => format!("server-{hash}.sock"),
+        None => "server.sock".to_string(),
+    }
+}
+
+/// Returns the daemon PID filename, versioned with a short hash when a
+/// release tag is baked in.
+///
+/// - With `GIT_RELEASE_TAG`:    `server-{hash8}.pid`
+/// - Without (plain cargo run): `server.pid`
+pub fn daemon_pid_name() -> String {
+    match version_hash() {
+        Some(hash) => format!("server-{hash}.pid"),
+        None => "server.pid".to_string(),
+    }
 }
 
 /// Returns the remote remote-server binary's file name.

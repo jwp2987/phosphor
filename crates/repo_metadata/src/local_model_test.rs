@@ -3,15 +3,19 @@
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod tests {
-    use crate::entry::{DirectoryEntry, Entry, FileMetadata};
+    use crate::entry::{
+        BudgetExceededBehavior, BuildTreeOptions, DirectoryEntry, Entry, FileMetadata,
+        IgnoredPathStrategy,
+    };
     use crate::file_tree_store::{FileTreeEntry, FileTreeEntryState, FileTreeState};
     use crate::local_model::{
-        GetContentsArgs, IndexedRepoState, LocalRepoMetadataModel, RepoUpdate,
+        FileTreeMutation, GetContentsArgs, IndexedRepoState, LocalRepoMetadataModel, RepoUpdate,
         RepositoryMetadataEvent,
     };
     use crate::repositories::DetectedRepositories;
     use crate::watcher::DirectoryWatcher;
     use crate::standing_queries::StandingQueryResultsDelta;
+    use crate::{RepoMetadataError, StandingQueryContent, StandingQueryDefinitions};
     use futures::channel::oneshot;
     use futures::executor::block_on;
     use ignore::gitignore::Gitignore;
@@ -1502,5 +1506,670 @@ Thumbs.db
             &[],
             &[]
         ));
+    }
+
+    // ---------------------------------------------------------------------
+    // Ported from the oracle (crates/repo_metadata/src/local_model_tests.rs
+    // at the pin). See SCOPE-REST.md for the classification of the tests
+    // NOT ported here — a large majority of the oracle file's missing tests
+    // exercise infrastructure this fork's `LocalRepoMetadataModel` does not
+    // have at all (async `repository_indexed()` waiting, cancellable
+    // `build_tasks` / `watcher_update_tasks` tracking, `RootWatchMode`,
+    // `repo_watches`, external-symlink "lexical repository" `symlink_targets`
+    // aliasing, `load_directory_with_completion` coalescing, and a
+    // `MAX_REPO_CONTENTS_RESULTS` result cap on `get_repo_contents`). Those
+    // are feature gaps, not test debt — see the filed issue.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "force-included paths must be repository-relative")]
+    fn force_included_paths_must_be_relative() {
+        let mut model = LocalRepoMetadataModel::new_for_test();
+        model.register_force_included_paths([std::env::temp_dir().join("absolute/path")]);
+    }
+
+    #[test]
+    fn repository_state_returns_failed_state() {
+        let repo_path = StandardizedPath::try_new("/failed_repo").unwrap();
+        let error = RepoMetadataError::RepoNotFound(repo_path.to_string());
+        let mut model = LocalRepoMetadataModel::new_for_test();
+        model
+            .repositories
+            .insert(repo_path.clone(), IndexedRepoState::Failed(error));
+        let result = model.repository_state(&repo_path);
+        assert!(matches!(
+            result,
+            Some(IndexedRepoState::Failed(RepoMetadataError::RepoNotFound(path)))
+                if path == &repo_path.to_string()
+        ));
+    }
+
+    // The following three tests call `LocalRepoMetadataModel::compute_file_tree_mutations`
+    // directly, as the oracle's do. Adaptation: the oracle's signature at the
+    // pin takes a trailing `lazy_load: bool` (used by
+    // `lazy_root_created_directory_inserted_as_placeholder`, not ported —
+    // see the feature-gap note above) that this fork's version does not
+    // have; this fork's `compute_file_tree_mutations` unconditionally
+    // behaves as the oracle's `lazy_load = false`, so the argument is
+    // dropped rather than invented.
+
+    #[test]
+    fn added_symlinked_skill_directory_refreshes_provider_without_canonical_tree_mutation() {
+        VirtualFS::test("added_symlinked_skill_directory", |dirs, mut vfs| {
+            vfs.mkdir("repo/.agents/skills")
+                .mkdir("linked-skill-target")
+                .with_files(vec![Stub::FileWithContent(
+                    "linked-skill-target/SKILL.md",
+                    "linked skill",
+                )]);
+            let repo = dirs.tests().join("repo");
+            let provider = repo.join(".agents/skills");
+            let linked_skill = provider.join("linked-skill");
+            std::os::unix::fs::symlink(dirs.tests().join("linked-skill-target"), &linked_skill)
+                .unwrap();
+
+            let mut definitions = StandingQueryDefinitions::default();
+            definitions.set_project_skill_provider_paths([PathBuf::from(".agents/skills")]);
+            let update = RepoUpdate {
+                added: vec![linked_skill.clone()],
+                ..Default::default()
+            };
+            let (mutations, discovered, removed_roots) =
+                block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                    &update,
+                    &[],
+                    &[],
+                    &definitions,
+                ));
+
+            assert!(mutations.is_empty());
+            assert!(removed_roots.is_empty());
+            assert!(discovered.project_skills().any(|content| {
+                content
+                    == &StandingQueryContent::directory(
+                        StandardizedPath::try_from_local(&provider).unwrap(),
+                    )
+            }));
+            assert!(discovered.project_skills().any(|content| {
+                content
+                    == &StandingQueryContent::file(
+                        StandardizedPath::try_from_local(&linked_skill.join("SKILL.md")).unwrap(),
+                    )
+            }));
+        });
+    }
+
+    #[test]
+    fn removed_direct_skill_child_refreshes_provider_for_possible_symlink_removal() {
+        VirtualFS::test("removed_direct_skill_child", |dirs, mut vfs| {
+            vfs.mkdir("repo/.agents/skills");
+            let provider = dirs.tests().join("repo/.agents/skills");
+
+            let mut definitions = StandingQueryDefinitions::default();
+            definitions.set_project_skill_provider_paths([PathBuf::from(".agents/skills")]);
+            let update = RepoUpdate {
+                deleted: vec![provider.join("removed-skill")],
+                ..Default::default()
+            };
+            let (_, discovered, _) =
+                block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                    &update,
+                    &[],
+                    &[],
+                    &definitions,
+                ));
+
+            assert!(discovered.project_skills().any(|content| {
+                content
+                    == &StandingQueryContent::directory(
+                        StandardizedPath::try_from_local(&provider).unwrap(),
+                    )
+            }));
+        });
+    }
+
+    #[test]
+    fn unrelated_skill_support_file_does_not_refresh_project_skills() {
+        VirtualFS::test("unrelated_skill_support_file", |dirs, mut vfs| {
+            vfs.mkdir("repo/.agents/skills/review")
+                .with_files(vec![Stub::FileWithContent(
+                    "repo/.agents/skills/review/README.md",
+                    "notes",
+                )]);
+            let repo = dirs.tests().join("repo");
+            let support_file = repo.join(".agents/skills/review/README.md");
+
+            let mut definitions = StandingQueryDefinitions::default();
+            definitions.set_project_skill_provider_paths([PathBuf::from(".agents/skills")]);
+            let update = RepoUpdate {
+                added: vec![support_file],
+                ..Default::default()
+            };
+            let (_, discovered, _) =
+                block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                    &update,
+                    &[],
+                    &[],
+                    &definitions,
+                ));
+
+            assert!(discovered.project_skills().next().is_none());
+        });
+    }
+
+    /// A symlink under a project-skill provider directory that points
+    /// *outside* the repository must still be picked up as a project skill
+    /// through the existing (non-"lexical-repository") standing-query path:
+    /// `handle_watcher_event` -> `compute_file_tree_mutations` treats the
+    /// symlink as a `BuildTreeError::Symlink` and re-records the provider
+    /// directory via `record_direct_project_skill_provider_child_change`.
+    #[test]
+    fn added_external_target_skill_symlink_routes_to_lexical_repository() {
+        VirtualFS::test(
+            "added_external_target_skill_symlink_routing",
+            |dirs, mut vfs| {
+                vfs.mkdir("repo/.agents/skills")
+                    .mkdir("outside/linked-skill")
+                    .with_files(vec![Stub::FileWithContent(
+                        "outside/linked-skill/SKILL.md",
+                        "linked skill",
+                    )]);
+                let repo = dirs.tests().join("repo");
+                let provider = repo.join(".agents/skills");
+                let linked_skill = provider.join("linked-skill");
+                std::os::unix::fs::symlink(
+                    dirs.tests().join("outside/linked-skill"),
+                    &linked_skill,
+                )
+                .unwrap();
+
+                App::test((), |mut app| async move {
+                    let repo_path = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                    let provider_path = StandardizedPath::try_from_local(&provider).unwrap();
+                    let model_handle = app.add_model(|_| {
+                        let mut model = LocalRepoMetadataModel::new_for_test();
+                        model.set_project_skill_provider_paths([PathBuf::from(".agents/skills")]);
+                        model
+                    });
+                    model_handle.update(&mut app, |model, _ctx| {
+                        model.insert_test_state(
+                            repo_path.clone(),
+                            FileTreeState::new(
+                                Entry::Directory(DirectoryEntry {
+                                    path: repo_path.clone(),
+                                    children: Vec::new(),
+                                    ignored: false,
+                                    loaded: true,
+                                }),
+                                Vec::new(),
+                                None,
+                            ),
+                        );
+                    });
+
+                    let (tx, rx) = oneshot::channel();
+                    let received_delta = Rc::new(RefCell::new(Some(tx)));
+                    let received_delta_for_event = received_delta.clone();
+                    let repo_path_for_event = repo_path.clone();
+                    let provider_path_for_event = provider_path.clone();
+                    app.update(|ctx| {
+                        ctx.subscribe_to_model(&model_handle, move |_, event, _ctx| {
+                            if let RepositoryMetadataEvent::StandingQueryResultsUpdated {
+                                path,
+                                delta,
+                            } = event
+                                && path == &repo_path_for_event
+                                && delta.upserted_project_skills.iter().any(|content| {
+                                    content
+                                        == &StandingQueryContent::directory(
+                                            provider_path_for_event.clone(),
+                                        )
+                                })
+                                && let Some(tx) = received_delta_for_event.borrow_mut().take()
+                            {
+                                let _ = tx.send(());
+                            }
+                        });
+                    });
+
+                    model_handle.update(&mut app, |model, ctx| {
+                        model.handle_watcher_event(
+                            &BulkFilesystemWatcherEvent {
+                                added: HashSet::from([linked_skill]),
+                                ..Default::default()
+                            },
+                            ctx,
+                        );
+                    });
+                    rx.with_timeout(Duration::from_secs(5))
+                        .await
+                        .expect("timed out waiting for standing project-skill update")
+                        .expect("standing project-skill update sender dropped");
+
+                    model_handle.read(&app, |model, _ctx| {
+                        assert!(
+                            model
+                                .standing_query_results(&repo_path)
+                                .expect("standing results should be retained for the repository")
+                                .project_skills()
+                                .any(|content| content
+                                    == &StandingQueryContent::directory(provider_path.clone()))
+                        );
+                    });
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn incremental_deep_event_under_unloaded_ignored_dir_is_collapsed() {
+        VirtualFS::test(
+            "incremental_deep_event_under_unloaded_ignored_dir",
+            |dirs, mut vfs| {
+                vfs.mkdir("repo/target/debug/.fingerprint").with_files(vec![
+                    Stub::FileWithContent("repo/.gitignore", "target/\n"),
+                    Stub::FileWithContent("repo/target/debug/.fingerprint/x.json", "{}"),
+                ]);
+
+                let repo_local = dirs.tests().join("repo");
+                let target_local = repo_local.join("target");
+                let deep_dir_local = target_local.join("debug").join(".fingerprint");
+                let deep_file_local = deep_dir_local.join("x.json");
+
+                let repo_std = StandardizedPath::try_from_local(&repo_local).unwrap();
+                let target_std = StandardizedPath::try_from_local(&target_local).unwrap();
+                let debug_std =
+                    StandardizedPath::try_from_local(&target_local.join("debug")).unwrap();
+
+                // Post-initial-index state: `target` is a single UNLOADED ignored placeholder.
+                let root_entry = Entry::Directory(DirectoryEntry {
+                    path: repo_std,
+                    ignored: false,
+                    loaded: true,
+                    children: vec![Entry::Directory(DirectoryEntry {
+                        path: target_std.clone(),
+                        ignored: true,
+                        loaded: false,
+                        children: vec![],
+                    })],
+                });
+                let mut tree = FileTreeEntry::from(root_entry);
+
+                let gitignores = crate::gitignores_for_directory(&repo_local);
+                let definitions = StandingQueryDefinitions::default();
+
+                let update = RepoUpdate {
+                    added: vec![deep_dir_local, deep_file_local],
+                    ..Default::default()
+                };
+                let (mutations, _standing_results, _removed) =
+                    block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                        &update,
+                        &gitignores,
+                        &[], /* force_included_paths */
+                        &definitions,
+                    ));
+                LocalRepoMetadataModel::apply_file_tree_mutations(
+                    &mut tree, mutations, false, false,
+                );
+
+                // `target` stays a single unloaded placeholder; nothing below it is materialized.
+                match tree
+                    .get(&target_std)
+                    .expect("`target` should remain in the tree")
+                {
+                    FileTreeEntryState::Directory(directory) => {
+                        assert!(
+                            !directory.loaded,
+                            "`target` should remain an unloaded placeholder"
+                        );
+                        assert!(directory.ignored, "`target` should stay ignored");
+                    }
+                    FileTreeEntryState::File(_) => panic!("`target` should be a directory"),
+                }
+                assert!(
+                    tree.get(&debug_std).is_none(),
+                    "nothing below the unloaded `target` placeholder should be materialized"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn incremental_event_under_expanded_ignored_dir_keeps_it_loaded() {
+        VirtualFS::test(
+            "incremental_event_under_expanded_ignored_dir",
+            |dirs, mut vfs| {
+                vfs.mkdir("repo/target/debug").with_files(vec![
+                    Stub::FileWithContent("repo/.gitignore", "target/\n"),
+                    Stub::FileWithContent("repo/target/debug/new.rs", "x"),
+                ]);
+
+                let repo_local = dirs.tests().join("repo");
+                let target_local = repo_local.join("target");
+                let new_file_local = target_local.join("debug").join("new.rs");
+
+                let repo_std = StandardizedPath::try_from_local(&repo_local).unwrap();
+                let target_std = StandardizedPath::try_from_local(&target_local).unwrap();
+                let debug_std =
+                    StandardizedPath::try_from_local(&target_local.join("debug")).unwrap();
+                let new_file_std = StandardizedPath::try_from_local(&new_file_local).unwrap();
+
+                // The user has expanded the gitignored `target/`, so it is loaded.
+                let root_entry = Entry::Directory(DirectoryEntry {
+                    path: repo_std,
+                    ignored: false,
+                    loaded: true,
+                    children: vec![Entry::Directory(DirectoryEntry {
+                        path: target_std.clone(),
+                        ignored: true,
+                        loaded: true,
+                        children: vec![Entry::Directory(DirectoryEntry {
+                            path: debug_std,
+                            ignored: true,
+                            loaded: true,
+                            children: vec![],
+                        })],
+                    })],
+                });
+                let mut tree = FileTreeEntry::from(root_entry);
+
+                let gitignores = crate::gitignores_for_directory(&repo_local);
+                let definitions = StandingQueryDefinitions::default();
+
+                let update = RepoUpdate {
+                    added: vec![new_file_local],
+                    ..Default::default()
+                };
+                let (mutations, _standing_results, _removed) =
+                    block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                        &update,
+                        &gitignores,
+                        &[], /* force_included_paths */
+                        &definitions,
+                    ));
+                LocalRepoMetadataModel::apply_file_tree_mutations(
+                    &mut tree, mutations, false, false,
+                );
+
+                match tree
+                    .get(&target_std)
+                    .expect("expanded `target` should remain in the tree")
+                {
+                    FileTreeEntryState::Directory(directory) => {
+                        assert!(
+                            directory.loaded,
+                            "an event under an expanded ignored dir must not collapse it to an \
+                             unloaded placeholder"
+                        );
+                        assert!(directory.ignored, "`target` should still be ignored");
+                    }
+                    FileTreeEntryState::File(_) => panic!("`target` should be a directory"),
+                }
+                assert!(
+                    tree.get(&new_file_std).is_some(),
+                    "the new file under the expanded ignored dir should be delivered"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn incremental_force_included_dir_under_ignored_parent_matches_initial_index() {
+        fn find_entry<'a>(entry: &'a Entry, target: &StandardizedPath) -> Option<&'a Entry> {
+            if entry.path() == target {
+                return Some(entry);
+            }
+            if let Entry::Directory(dir) = entry {
+                for child in &dir.children {
+                    if let Some(found) = find_entry(child, target) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+
+        VirtualFS::test(
+            "incremental_force_included_under_ignored_parent",
+            |dirs, mut vfs| {
+                // `.agents/` is ignored by the repo-root .gitignore; `.agents/skills`
+                // is force-included, so it is ignored only because of its ancestor.
+                vfs.mkdir("repo/.agents/skills").with_files(vec![
+                    Stub::FileWithContent("repo/.gitignore", ".agents/\n"),
+                    Stub::FileWithContent("repo/.agents/skills/SKILL.md", "skill"),
+                ]);
+
+                let repo_local = dirs.tests().join("repo");
+                let skills_local = repo_local.join(".agents").join("skills");
+
+                let force_included = vec![PathBuf::from(".agents/skills")];
+                let gitignores = crate::gitignores_for_directory(&repo_local);
+                let definitions = StandingQueryDefinitions::default();
+
+                // Ground truth: how the initial full index classifies `.agents/skills`.
+                // Mirrors `index_directory`, which builds from the repo root with
+                // `IncludeLazy` + force-included paths so the ignored `.agents`
+                // ancestor propagates down into `.agents/skills`.
+                let expected_ignored = {
+                    let mut files = Vec::new();
+                    let mut gitignores = gitignores.clone();
+                    let mut budget = 100_000usize;
+                    let mut standing_results = crate::StandingQueryResults::default();
+                    let root = block_on(Entry::build_tree_with_standing_queries(
+                        &repo_local,
+                        &mut files,
+                        &mut gitignores,
+                        Some(&mut budget),
+                        BuildTreeOptions {
+                            max_depth: 64,
+                            current_depth: 0,
+                            ignored_path_strategy: &IgnoredPathStrategy::IncludeLazy,
+                            force_included_paths: &force_included,
+                            budget_exceeded_behavior: BudgetExceededBehavior::StopAndLazyLoad,
+                        },
+                        false,
+                        &mut standing_results,
+                        &definitions,
+                    ))
+                    .expect("initial index build should succeed");
+
+                    let skills_canonical =
+                        dunce::canonicalize(&skills_local).expect("skills dir should exist");
+                    let skills_node_path =
+                        StandardizedPath::from_local_absolute_unchecked(&skills_canonical);
+                    find_entry(&root, &skills_node_path)
+                        .expect("`.agents/skills` should be materialized by the initial index")
+                        .ignored()
+                };
+
+                assert!(
+                    expected_ignored,
+                    "fixture sanity: the initial index should mark `.agents/skills` ignored \
+                     via its `.agents` ancestor"
+                );
+
+                // Incremental watcher path: `.agents/skills` is reported as added.
+                let update = RepoUpdate {
+                    added: vec![skills_local.clone()],
+                    ..Default::default()
+                };
+                let (mutations, _standing_results, _removed) =
+                    block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                        &update,
+                        &gitignores,
+                        &force_included,
+                        &definitions,
+                    ));
+
+                let incremental_ignored = mutations
+                    .iter()
+                    .find_map(|mutation| match mutation {
+                        FileTreeMutation::AddDirectorySubtree { dir_path, subtree }
+                            if dir_path == &skills_local =>
+                        {
+                            Some(subtree.ignored())
+                        }
+                        FileTreeMutation::AddDirectorySubtree { .. }
+                        | FileTreeMutation::Remove(_)
+                        | FileTreeMutation::AddFile { .. }
+                        | FileTreeMutation::AddEmptyDirectory { .. } => None,
+                    })
+                    .expect(
+                        "incremental update should materialize the force-included subtree \
+                         as an AddDirectorySubtree mutation",
+                    );
+
+                assert_eq!(
+                    incremental_ignored, expected_ignored,
+                    "force-included `.agents/skills` under ignored `.agents`: incremental watcher \
+                     update recorded ignored={incremental_ignored}, but the initial index records \
+                     ignored={expected_ignored}"
+                );
+            },
+        );
+    }
+
+    /// Adaptation: the oracle awaits a background `build_tasks` entry via
+    /// `await_build_tasks_for_repo` (not ported — see the feature-gap note
+    /// above) after `index_lazy_loaded_path`. This fork's
+    /// `index_lazy_loaded_path` builds the first-level tree synchronously
+    /// (`futures_lite::future::block_on` inside the method itself, see
+    /// `local_model.rs`), so there is nothing to await: the state is already
+    /// populated once the `update` call returns.
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn test_lazy_loaded_path_discovers_force_included_skills_and_emits_watcher_delta() {
+        VirtualFS::test("lazy_loaded_path_force_included_skills", |dirs, mut vfs| {
+            vfs.mkdir("workspace/.agents/skills/review")
+                .mkdir("workspace/src/deep")
+                .with_files(vec![
+                    Stub::FileWithContent(
+                        "workspace/.agents/skills/review/SKILL.md",
+                        "name: review",
+                    ),
+                    Stub::FileWithContent("workspace/src/deep/WARP.md", "project rules"),
+                ]);
+
+            let workspace = dirs.tests().join("workspace");
+            let skill_path = workspace.join(".agents/skills/review/SKILL.md");
+            let src_path = workspace.join("src");
+            let rule_path = workspace.join("src/deep/WARP.md");
+            App::test((), |mut app| async move {
+                let model_handle = app.add_model(|_| {
+                    let mut model = LocalRepoMetadataModel::new_for_test();
+                    model.register_force_included_paths([PathBuf::from(".agents/skills")]);
+                    model.set_project_skill_provider_paths([PathBuf::from(".agents/skills")]);
+                    model
+                });
+                let workspace_path = StandardizedPath::from_local_canonicalized(&workspace).unwrap();
+                let skill_path = StandardizedPath::try_from_local(&skill_path).unwrap();
+                let src_path = StandardizedPath::try_from_local(&src_path).unwrap();
+                let rule_path = StandardizedPath::try_from_local(&rule_path).unwrap();
+
+                model_handle.update(&mut app, |model, ctx| {
+                    model.index_lazy_loaded_path(&workspace_path, ctx).unwrap();
+                });
+
+                model_handle.read(&app, |model, _ctx| {
+                    let Some(IndexedRepoState::Indexed(state)) =
+                        model.repository_state(&workspace_path)
+                    else {
+                        panic!("expected indexed lazy-loaded path");
+                    };
+                    assert!(state.entry.contains(&skill_path));
+                    assert!(matches!(
+                        state.entry.get(&src_path),
+                        Some(FileTreeEntryState::Directory(dir)) if !dir.loaded
+                    ));
+                    assert!(!state.entry.contains(&rule_path));
+
+                    let results = model
+                        .standing_query_results(&workspace_path)
+                        .expect("lazy indexed paths should retain standing results");
+                    assert!(results
+                        .project_skills()
+                        .any(|content| content.path == skill_path && !content.is_directory));
+                    assert!(!results
+                        .project_rules()
+                        .any(|content| content.path == rule_path));
+                });
+
+                let (tx, rx) = oneshot::channel();
+                let received_delta = Rc::new(RefCell::new(Some(tx)));
+                let received_delta_for_event = received_delta.clone();
+                let workspace_path_for_event = workspace_path.clone();
+                let skill_path_for_event = skill_path.clone();
+                app.update(|ctx| {
+                    ctx.subscribe_to_model(&model_handle, move |_, event, _ctx| {
+                        if let RepositoryMetadataEvent::StandingQueryResultsUpdated {
+                            path,
+                            delta,
+                        } = event
+                            && path == &workspace_path_for_event
+                            && delta.upserted_project_skills.iter().any(|content| {
+                                content.path == skill_path_for_event && !content.is_directory
+                            })
+                            && let Some(tx) = received_delta_for_event.borrow_mut().take()
+                        {
+                            let _ = tx.send(());
+                        }
+                    });
+                });
+
+                let skill_path = skill_path.to_local_path().unwrap();
+                std::fs::write(&skill_path, "name: updated review").unwrap();
+                model_handle.update(&mut app, |model, ctx| {
+                    model.handle_watcher_event(
+                        &BulkFilesystemWatcherEvent {
+                            modified: HashSet::from([skill_path]),
+                            ..Default::default()
+                        },
+                        ctx,
+                    );
+                });
+                rx.with_timeout(Duration::from_secs(5))
+                    .await
+                    .expect("timed out waiting for standing project-skill update")
+                    .expect("standing project-skill update sender dropped");
+            });
+        });
+    }
+
+    /// Adaptation: see the doc comment on
+    /// `test_lazy_loaded_path_discovers_force_included_skills_and_emits_watcher_delta`
+    /// above — `index_lazy_loaded_path` is synchronous in this fork, so the
+    /// oracle's `await_build_tasks_for_repo` call is dropped.
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn test_lazy_loaded_path_does_not_build_standing_rule_results_below_shallow_tree() {
+        VirtualFS::test("lazy_loaded_path_standing_rules", |dirs, mut vfs| {
+            vfs.mkdir("workspace/src/deep")
+                .with_files(vec![Stub::FileWithContent(
+                    "workspace/src/deep/WARP.md",
+                    "project rules",
+                )]);
+
+            let workspace = dirs.tests().join("workspace");
+            App::test((), |mut app| async move {
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                let workspace_path = StandardizedPath::from_local_canonicalized(&workspace).unwrap();
+                let rule_path =
+                    StandardizedPath::try_from_local(&workspace.join("src/deep/WARP.md")).unwrap();
+
+                model_handle.update(&mut app, |model, ctx| {
+                    model.index_lazy_loaded_path(&workspace_path, ctx).unwrap();
+                });
+
+                model_handle.read(&app, |model, _ctx| {
+                    let results = model
+                        .standing_query_results(&workspace_path)
+                        .expect("lazy indexed paths should retain standing results");
+                    assert!(!results
+                        .project_rules()
+                        .any(|content| content.path == rule_path));
+                });
+            });
+        });
     }
 }

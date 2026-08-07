@@ -639,6 +639,16 @@ fn snapshot_agent_pane_gets_agent_type() {
     assert_eq!(config.panes[0].is_focused, Some(true));
 }
 
+// Port note (crates repo_metadata/remote_server test-debt sweep, see
+// SCOPE-REST.md): the oracle's counterpart test is
+// `snapshot_cloud_pane_gets_cloud_type`, asserting `pane_type ==
+// TabConfigPaneType::Cloud`. Not ported as a separate test — this fork's
+// `TabConfigPaneType` has no `Cloud` variant at all (dropped along with
+// cloud ambient agents; see `session_config.rs`, where
+// `LeafContents::AmbientAgent(_)` maps to `TabConfigPaneType::Agent`
+// instead of `Cloud`). This test already covers the oracle's assertions
+// with that one intentional adaptation, so the "1 missing" the audit
+// counted by name is already covered under this name, not new test debt.
 #[test]
 fn snapshot_cloud_pane_gets_agent_type() {
     let snapshot = make_cloud_leaf(true);
