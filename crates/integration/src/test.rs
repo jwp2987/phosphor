@@ -4,9 +4,11 @@
 
 mod agent_mode;
 mod ai_assistant;
+mod ai_document;
 mod block_filtering;
 mod bootstrapping;
 mod code_review;
+mod copy_current_path;
 mod ctrl_d;
 mod file_tree;
 mod goto_line;
@@ -19,6 +21,7 @@ mod osc8_hyperlinks;
 mod pane_restoration;
 #[cfg(target_os = "macos")]
 mod preview_config_migration;
+mod remote_server;
 mod rules;
 mod secrets;
 mod session_restoration;
@@ -38,9 +41,11 @@ mod workspace;
 
 pub use agent_mode::*;
 pub use ai_assistant::*;
+pub use ai_document::*;
 pub use block_filtering::*;
 pub use bootstrapping::*;
 pub use code_review::*;
+pub use copy_current_path::*;
 pub use ctrl_d::*;
 pub use file_tree::*;
 use float_cmp::assert_approx_eq;
@@ -54,6 +59,7 @@ pub use osc8_hyperlinks::*;
 pub use pane_restoration::*;
 #[cfg(target_os = "macos")]
 pub use preview_config_migration::*;
+pub use remote_server::*;
 pub use rules::*;
 pub use secrets::*;
 pub use session_restoration::*;
