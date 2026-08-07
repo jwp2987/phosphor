@@ -1706,6 +1706,7 @@ mod tests {
     #[test]
     fn agent_conversation_data_roundtrips_last_event_sequence() {
         let data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1741,6 +1742,7 @@ mod tests {
     #[test]
     fn agent_conversation_data_skips_serializing_none_last_event_sequence() {
         let data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1770,6 +1772,7 @@ mod tests {
     #[test]
     fn agent_conversation_data_roundtrips_byop_repair_sidecar() {
         let data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1798,6 +1801,7 @@ mod tests {
     #[test]
     fn agent_conversation_data_roundtrips_cli_subagent_block_snapshots_sidecar() {
         let data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
