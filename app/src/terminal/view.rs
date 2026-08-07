@@ -22662,7 +22662,13 @@ impl TerminalView {
         // Save a backup of the conversation before truncating, so users can restore it later.
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
             match history_model.conversation(&conversation_id).cloned() { Some(conversation) => {
-                if let Err(e) = history_model.fork_conversation(&conversation, PRE_REWIND_PREFIX, ctx) {
+                if let Err(e) = history_model.fork_conversation(
+                    &conversation,
+                    PRE_REWIND_PREFIX,
+                    false, /* preserve_task_ids */
+                    None,
+                    ctx,
+                ) {
                     log::warn!("Failed to save pre-rewind backup of conversation {conversation_id}: {e}");
                 }
             } _ => {
