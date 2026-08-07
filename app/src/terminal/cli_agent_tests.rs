@@ -475,6 +475,13 @@ fn test_detect_aifx_agent_run_claude_not_on_uber_team() {
 }
 
 #[test]
+fn test_omp_supports_bash_mode() {
+    // The pin calls this variant `CLIAgent::OhMyPi`; the fork calls it
+    // `CLIAgent::Omp`. oh-my-pi supports the `!` bash mode prefix. Refs #273.
+    assert!(CLIAgent::Omp.supports_bash_mode());
+}
+
+#[test]
 fn test_serialized_name_round_trips_known_agents() {
     for agent in enum_iterator::all::<CLIAgent>() {
         let name = agent.to_serialized_name();
@@ -558,4 +565,14 @@ fn test_cli_agent_search_dirs_include_common_package_and_version_manager_bins() 
     assert!(dirs.contains(&home.join(".volta/bin")));
     assert!(dirs.contains(&home.join(".asdf/shims")));
     assert!(dirs.contains(&home.join(".local/share/mise/shims")));
+}
+
+/// Ported from the pinned oracle's `test_oh_my_pi_supports_bash_mode`.
+///
+/// oh-my-pi is spelled `CLIAgent::OhMyPi` upstream and `CLIAgent::Omp` here, but it is the
+/// same agent (`omp` command prefix) and it supports the `!` bash-mode prefix in the rich
+/// input, so the rich input must switch to shell decorations for it.
+#[test]
+fn test_oh_my_pi_supports_bash_mode() {
+    assert!(CLIAgent::Omp.supports_bash_mode());
 }

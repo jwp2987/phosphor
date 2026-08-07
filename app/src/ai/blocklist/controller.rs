@@ -1792,7 +1792,9 @@ impl BlocklistAIController {
                 forked_from_conversation_token: conversation
                     .forked_from_server_conversation_token()
                     .cloned(),
-                ambient_agent_task_id: self.ambient_agent_task_id,
+                // Do not tie passive suggestion requests to the ambient agent task, since they are
+                // separate, read-only requests.
+                ambient_agent_task_id: None,
                 existing_suggestions: None,
             };
             (conversation_id, task_id, conversation_data)
@@ -1808,7 +1810,9 @@ impl BlocklistAIController {
                 tasks: vec![],
                 server_conversation_token: None,
                 forked_from_conversation_token: None,
-                ambient_agent_task_id: self.ambient_agent_task_id,
+                // Do not tie passive suggestion requests to the ambient agent task, since they are
+                // separate, read-only requests.
+                ambient_agent_task_id: None,
                 existing_suggestions: None,
             };
             (conversation_id, task_id, conversation_data)
@@ -1906,6 +1910,12 @@ impl BlocklistAIController {
             /*is_queued_prompt*/ false,
             ctx,
         )
+    }
+
+    /// The ID of the ambient agent task which owns this controller and its backing session,
+    /// if any.
+    pub fn get_ambient_agent_task_id(&self) -> Option<AmbientAgentTaskId> {
+        self.ambient_agent_task_id
     }
 
     /// Set the ID of the ambient agent task which owns this controller and its backing session.
@@ -4203,3 +4213,7 @@ fn byop_get_running_command_for_lrc(terminal_model: &TerminalModel) -> Option<Ru
         is_alt_screen_active,
     })
 }
+
+#[cfg(test)]
+#[path = "controller_tests.rs"]
+mod tests;

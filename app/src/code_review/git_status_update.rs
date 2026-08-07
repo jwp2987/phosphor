@@ -448,3 +448,7 @@ impl RepositorySubscriber for GitStatusRepositorySubscriber {
         })
     }
 }
+
+#[cfg(all(test, feature = "local_fs"))]
+#[path = "git_status_update_tests.rs"]
+mod tests;

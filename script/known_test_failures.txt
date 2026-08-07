@@ -1,0 +1,40 @@
+# Tests that are KNOWN to fail on main, with the issue tracking each one.
+#
+# This list may SHRINK freely. Adding to it means accepting a red test, which
+# needs maintainer sign-off and a tracking issue (AGENTS.md 5.6 -- a red test is
+# fixed, never deferred). The CI job fails if:
+#
+#   - a test fails that is NOT on this list  -> a real regression, and
+#   - a test on this list PASSES             -> delete the line, the debt is gone
+#
+# The second rule is what stops this from becoming a place where failures go to
+# be forgotten. It is the same contract as script/cloud_boundary_allowlist.txt.
+#
+# Measured on 2026-08-07 by the first `cargo nextest (Linux)` run this repo has
+# ever had: 4280 tests, 4269 passed, 11 failed, 33 skipped.
+
+# --- DELIBERATE: these pin defects that are open by design (5) ---------------
+# Ported by PR #259 to hold the behaviour of #251/#253 until a maintainer
+# decides the intended semantics. They assert the ORACLE's behaviour, which the
+# fork does not yet implement. Do not "fix" by weakening them.
+ai::blocklist::history_model::tests::fork_exact_reconciles_fork_point_client_tool_calls
+ai::blocklist::history_model::tests::rewind_orphans_subagent_subtask_invoked_after_rewind_point
+ai::blocklist::history_model::tests::rewind_removes_summarized_away_user_query_from_next_request
+ai::blocklist::history_model::tests::rewind_straddle_subagent_call_kept_result_removed_does_not_resend_subtask
+ai::blocklist::history_model::tests::straddle_rewind_followup_requests_are_clean_and_durable
+
+# --- REAL DEFECTS, fix written but not yet merged (3) -----------------------
+# `CodeEditorView::operation` had no match arm for VimMotion::JumpToMatchingBracket,
+# so d%/c%/y% silently did nothing. Issue #270, fixed in PR #417.
+# Delete these three lines when #417 lands.
+code::editor::view::vim_handler::tests::test_vim_c_percent_changes_to_matching_bracket
+code::editor::view::vim_handler::tests::test_vim_d_percent_deletes_to_matching_bracket
+code::editor::view::vim_handler::tests::test_vim_y_percent_yanks_to_matching_bracket
+
+# --- REAL DEFECTS, diagnosed but unfixed (3) --------------------------------
+# Issue #441. The first two are inverses of each other -- a prompt that should
+# queue does not, and /fork which should bypass the queue is queued -- which
+# points at one inverted queueing predicate rather than two bugs.
+terminal::input::tests::lrc_queued_prompts_wait_while_subagent_is_active
+terminal::input::tests::slash_fork_bypasses_prompt_queue_while_in_progress
+terminal::input::tests::test_classic_tab_completions_close_after_user_backspace

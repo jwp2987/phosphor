@@ -1967,3 +1967,32 @@ fn vim_mode_indicator_shown_only_when_vim_mode_is_enabled() {
         });
     });
 }
+
+/// `/cost` on a freshly-started (empty) conversation reports the same
+/// unavailability hint as the GUI and hides nothing from the transcript.
+#[test]
+fn cost_slash_command_rejects_an_empty_conversation_like_the_gui() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.conversation_selection.update(ctx, |selection, ctx| {
+                selection
+                    .try_start_new_conversation(AgentViewEntryOrigin::Tui, ctx)
+                    .expect("test conversation should start");
+            });
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::COST, None, ctx);
+        });
+        view.read(&app, |view, _| {
+            assert!(view.hidden_response_summary_exchange_ids.is_empty());
+            assert_eq!(
+                view.transient_hint.current().map(|(text, _)| text),
+                Some(COST_EMPTY_CONVERSATION_HINT),
+            );
+        });
+    });
+}

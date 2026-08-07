@@ -435,7 +435,12 @@ impl AIConversation {
             .collect();
 
         let mut tasks_by_id = HashMap::new();
-        let mut root_task = None;
+        // Defer root selection until we've seen every parentless task so we can
+        // deterministically prefer a candidate with non-empty messages. Heals legacy DB
+        // rows that contain an orphan optimistic-UUID stub alongside the real server
+        // root; without this dedupe, `HashMap` iteration order picks between them
+        // non-deterministically.
+        let mut parentless_candidates: Vec<(api::Task, Vec<AIAgentExchange>)> = Vec::new();
         for task_id in task_ids {
             let Some((task, exchanges)) = api_tasks_and_exchanges_by_id.remove(&task_id) else {
                 continue;
@@ -454,14 +459,24 @@ impl AIConversation {
                         task.id
                     );
                 }
-            } else if root_task.is_none() {
-                root_task = Some(Task::new_restored_root(task, exchanges.into_iter()));
+            } else {
+                parentless_candidates.push((task, exchanges));
             }
         }
 
-        let Some(root_task) = root_task else {
+        // Prefer the parentless candidate with non-empty messages (the real server root)
+        // over an empty stub. If multiple have messages or none have messages, fall back
+        // to the first-encountered candidate.
+        let root_task_pick = parentless_candidates
+            .iter()
+            .position(|(task, _)| !task.messages.is_empty())
+            .or_else(|| (!parentless_candidates.is_empty()).then_some(0))
+            .map(|idx| parentless_candidates.swap_remove(idx));
+
+        let Some((root_api_task, root_exchanges)) = root_task_pick else {
             return Err(RestoreConversationError::NoRootTask);
         };
+        let root_task = Task::new_restored_root(root_api_task, root_exchanges.into_iter());
         // Derive todo lists from tasks by replaying UpdateTodos operations
         let todo_lists = derive_todo_lists_from_root_task(&root_task);
         let root_task_id = root_task.id().clone();
@@ -474,6 +489,7 @@ impl AIConversation {
             reverted_action_ids,
             artifacts,
             parent_agent_id,
+            is_remote_child,
             agent_name,
             parent_conversation_id,
             run_id,
@@ -500,6 +516,7 @@ impl AIConversation {
                 })
                 .unwrap_or_default();
             let parent_agent_id = data.parent_agent_id;
+            let is_remote_child = data.is_remote_child;
             let agent_name = data.agent_name;
             let parent_conversation_id = data
                 .parent_conversation_id
@@ -539,6 +556,7 @@ impl AIConversation {
                 reverted_action_ids,
                 artifacts,
                 parent_agent_id,
+                is_remote_child,
                 agent_name,
                 parent_conversation_id,
                 run_id,
@@ -556,6 +574,7 @@ impl AIConversation {
                 Default::default(),
                 Vec::new(),
                 None,
+                false,
                 None,
                 None,
                 None,
@@ -604,7 +623,7 @@ impl AIConversation {
             parent_agent_id,
             agent_name,
             parent_conversation_id,
-            is_remote_child: false,
+            is_remote_child,
             last_event_sequence,
             compaction_state,
             byop_repair_state,
@@ -988,7 +1007,9 @@ impl AIConversation {
 
     /// Returns true if this conversation was spawned by a parent orchestrator agent.
     pub fn is_child_agent_conversation(&self) -> bool {
-        self.parent_conversation_id.is_some()
+        // A child spawned by an agent run carries `parent_agent_id` without a
+        // `parent_conversation_id`; checking only the latter missed those.
+        self.parent_conversation_id.is_some() || self.parent_agent_id.is_some()
     }
 
     /// Returns true if this is a placeholder for a child agent executing on a
@@ -3143,6 +3164,7 @@ impl AIConversation {
                 .filter_map(|task| task.source().cloned())
                 .collect(),
             conversation_data: AgentConversationData {
+                is_remote_child: false,
                 server_conversation_token: self
                     .server_conversation_token
                     .clone()

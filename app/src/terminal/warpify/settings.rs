@@ -10,6 +10,7 @@ use warp_util::path::ShellFamily;
 use warpui::{AppContext, ModelContext};
 use warpui::{Entity, SingletonEntity};
 
+use crate::report_error;
 use crate::terminal::ssh::util::{parse_interactive_ssh_command, SshWarpifyCommand};
 
 // Cannot directly use Vec<Regex> here b/c Regex doesn't impl Eq, Serialize, and Deserialize.
@@ -51,6 +52,33 @@ maybe_define_setting!(EnableSshWarpification, group: WarpifySettings, {
     private: false,
     toml_path: "warpify.ssh.enable_ssh_warpification",
     description: "Whether to enable Zap features in SSH sessions.",
+});
+
+// NOTE: This setting has been unified into `enable_ssh_warpification` and is no
+// longer surfaced in the UI or used to gate any behavior. It is retained only
+// so the one-time migration (see `register`) can read a user's previous value
+// and forward it to `enable_ssh_warpification`. It can be deleted in a future
+// release once the migration has shipped to all users.
+// The storage key and TOML path are intentionally kept identical to the old
+// `SshSettings::enable_ssh_wrapper` field for backward compatibility.
+//
+// It is deliberately NOT cloud-synced (`SyncToCloud::Never`) — this is the fix for
+// https://github.com/warpdotdev/Warp/issues/13228. The migration below reads this
+// value and forwards an opt-out to `enable_ssh_warpification`. When it was synced,
+// a stale cloud value (from a user's pre-extension flow) was restored on every
+// launch, re-arming the "one-time" migration and repeatedly disabling
+// `enable_ssh_warpification` even after the user turned it back on. Keeping it
+// local means the migration's reset to the default (`true`) persists and serves as
+// the one-time, per-device marker so the migration cannot re-fire.
+maybe_define_setting!(EnableSshWrapper, group: WarpifySettings, {
+    type: bool,
+    default: true,
+    supported_platforms: SupportedPlatforms::ALL,
+    sync_to_cloud: SyncToCloud::Never,
+    private: false,
+    storage_key: "EnableSSHWrapper",
+    toml_path: "warpify.ssh.enable_legacy_ssh_wrapper",
+    description: "Deprecated: unified into enable_ssh_warpification. Retained only for one-time migration.",
 });
 
 maybe_define_setting!(UseSshTmuxWrapper, group: WarpifySettings, {
@@ -160,6 +188,11 @@ pub struct WarpifySettings {
     /// This setting controls whether we should ever warpify ssh sessions.
     pub enable_ssh_warpification: EnableSshWarpification,
 
+    /// Deprecated: unified into `enable_ssh_warpification`. Retained only so the one-time
+    /// migration in `register` can read and forward a user's previous opt-out. Not used to
+    /// gate any behavior.
+    pub enable_ssh_wrapper: EnableSshWrapper,
+
     /// This setting controls whether we should prompt the user to warpify an ssh session using the
     /// tmux wrapper instead of the default legacy wrapper.
     pub use_ssh_tmux_wrapper: UseSshTmuxWrapper,
@@ -231,6 +264,7 @@ impl WarpifySettings {
             parsed_ssh_hosts_denylist: Self::parse_ssh_hosts_denylist(&ssh_hosts_denylist),
             ssh_hosts_denylist,
             enable_ssh_warpification: EnableSshWarpification::new_from_storage(ctx),
+            enable_ssh_wrapper: EnableSshWrapper::new_from_storage(ctx),
             use_ssh_tmux_wrapper: UseSshTmuxWrapper::new_from_storage(ctx),
             ssh_extension_install_mode: SshExtensionInstallModeSetting::new_from_storage(ctx),
         }
@@ -254,6 +288,7 @@ impl WarpifySettings {
             parsed_ssh_hosts_denylist: Self::parse_ssh_hosts_denylist(&ssh_hosts_denylist),
             ssh_hosts_denylist,
             enable_ssh_warpification: EnableSshWarpification::new(None),
+            enable_ssh_wrapper: EnableSshWrapper::new(None),
             use_ssh_tmux_wrapper: UseSshTmuxWrapper::new(None),
             ssh_extension_install_mode: SshExtensionInstallModeSetting::new(None),
         }
@@ -279,9 +314,34 @@ impl WarpifySettings {
                         Self::parse_ssh_hosts_denylist(&me.ssh_hosts_denylist)
                 }
                 WarpifySettingsChangedEvent::EnableSshWarpification { .. } => {}
+                WarpifySettingsChangedEvent::EnableSshWrapper { .. } => {}
                 WarpifySettingsChangedEvent::UseSshTmuxWrapper { .. } => {}
                 WarpifySettingsChangedEvent::SshExtensionInstallModeSetting { .. } => {}
             })
+        });
+
+        // One-time migration: if the user had explicitly set the legacy `enable_ssh_wrapper`
+        // setting to `false` (via `warpify.ssh.enable_legacy_ssh_wrapper = false` in their
+        // TOML config or the old `EnableSSHWrapper` storage key), honour that intent by
+        // disabling `enable_ssh_warpification` — the canonical setting that now controls the
+        // same behaviour. Resetting `enable_ssh_wrapper` back to its default (`true`) ensures
+        // the migration does not run again on subsequent launches.
+        //
+        // `enable_ssh_wrapper` is not cloud-synced (see its definition), so this reset
+        // persists locally and cannot be re-armed by a stale synced value — the fix for
+        // https://github.com/warpdotdev/Warp/issues/13228, where syncing the trigger caused
+        // the migration to re-fire every launch and repeatedly disable warpification.
+        handle.clone().update(ctx, |me, ctx| {
+            if me.enable_ssh_wrapper.is_value_explicitly_set() && !*me.enable_ssh_wrapper.value() {
+                if let Err(e) = me.enable_ssh_warpification.set_value(false, ctx) {
+                    report_error!(e.context(
+                        "Failed to migrate enable_ssh_wrapper → enable_ssh_warpification"
+                    ));
+                }
+                if let Err(e) = me.enable_ssh_wrapper.set_value(true, ctx) {
+                    report_error!(e.context("Failed to reset enable_ssh_wrapper after migration"));
+                }
+            }
         });
 
         register_settings_events!(
@@ -304,6 +364,14 @@ impl WarpifySettings {
             WarpifySettings,
             enable_ssh_warpification,
             EnableSshWarpification,
+            handle.clone(),
+            ctx
+        );
+
+        register_settings_events!(
+            WarpifySettings,
+            enable_ssh_wrapper,
+            EnableSshWrapper,
             handle.clone(),
             ctx
         );
@@ -348,6 +416,9 @@ pub enum WarpifySettingsChangedEvent {
         change_event_reason: ChangeEventReason,
     },
     EnableSshWarpification {
+        change_event_reason: ChangeEventReason,
+    },
+    EnableSshWrapper {
         change_event_reason: ChangeEventReason,
     },
     UseSshTmuxWrapper {

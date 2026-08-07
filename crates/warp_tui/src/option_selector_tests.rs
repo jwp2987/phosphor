@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use string_offset::CharOffset;
@@ -1475,5 +1476,44 @@ fn badges_render_next_to_their_rows() {
         assert!(lines.iter().any(|line| line.contains("(default)")));
         assert!(lines.iter().any(|line| line.contains("(connected)")));
         assert!(lines.iter().any(|line| line.contains("(recent)")));
+    });
+}
+
+#[test]
+fn selected_custom_answer_number_is_not_highlighted_after_the_cursor_moves_away() {
+    App::test((), |mut app| async move {
+        let (selector, _) = add_selector(&mut app);
+        let mut with_selected_other = snapshot(&["a", "b"], Some("Canary"));
+        with_selected_other.footer = Some(OptionFooter::CustomText {
+            label: "Other".to_string(),
+        });
+        set_page(&mut app, &selector, with_selected_other);
+        selector.update(&mut app, |selector, ctx| {
+            selector.set_question_state(HashSet::new(), true, ctx);
+            selector.select_item_without_confirm(0, ctx);
+        });
+
+        let buffer = render_buffer(&app, &selector, 60);
+        let builder = app.read(TuiUiBuilder::from_app);
+        let number = &buffer[(0, 5)];
+        let label = &buffer[(8, 5)];
+        assert_eq!(number.symbol(), "(");
+        assert_eq!(label.symbol(), "C");
+        assert_eq!(
+            number.fg,
+            builder
+                .muted_text_style()
+                .fg
+                .expect("muted text has a foreground")
+        );
+        assert_eq!(
+            label.fg,
+            builder
+                .question_option_selected_style()
+                .fg
+                .expect("selected question options have a foreground")
+        );
+        assert!(!number.modifier.contains(Modifier::BOLD));
+        assert!(label.modifier.contains(Modifier::BOLD));
     });
 }

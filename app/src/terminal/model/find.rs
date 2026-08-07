@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ops::RangeInclusive;
 
 use regex::escape;
@@ -66,6 +67,26 @@ impl RegexDFAs {
         enable_unicode_word_boundary: bool,
         case_sensitive: bool,
     ) -> Result<RegexDFAs, Box<BuildError>> {
+        // A lazy DFA can only support Unicode word boundaries heuristically: enabling them makes
+        // every non-ASCII byte a "quit" byte, so a search over a haystack containing an emoji, a
+        // CJK character or an accented letter aborts instead of matching. When the caller does not
+        // ask for Unicode word boundaries we therefore rewrite `\b`/`\B` into their ASCII-only
+        // forms so the DFA has no quit bytes at all and can scan non-ASCII text.
+        let patterns = patterns
+            .iter()
+            .map(|pattern| {
+                if enable_unicode_word_boundary {
+                    Cow::Borrowed(*pattern)
+                } else {
+                    Cow::Owned(replace_unicode_word_boundaries(pattern))
+                }
+            })
+            .collect::<Vec<_>>();
+        let pattern_refs = patterns
+            .iter()
+            .map(|pattern| pattern.as_ref())
+            .collect::<Vec<_>>();
+
         let mut builder = DFA::builder();
         builder.configure(
             DFA::config()
@@ -81,7 +102,7 @@ impl RegexDFAs {
         if !case_sensitive {
             builder.syntax(Config::new().case_insensitive(true));
         }
-        Self::new_internal(patterns, builder)
+        Self::new_internal(&pattern_refs, builder)
     }
 
     // Based on FindConfig, create DFAs for all directions

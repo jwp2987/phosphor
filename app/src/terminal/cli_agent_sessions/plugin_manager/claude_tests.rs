@@ -95,10 +95,10 @@ fn not_installed_when_plugins_key_missing() {
 }
 
 /// Tests `ClaudeCodePluginManager::is_installed` end-to-end by pointing
-/// `CLAUDE_HOME` at a temp directory with a valid installed_plugins.json.
+/// `CLAUDE_CONFIG_DIR` at a temp directory with a valid installed_plugins.json.
 #[test]
 #[serial_test::serial]
-fn is_installed_via_trait_with_claude_home_env() {
+fn is_installed_via_trait_with_claude_config_dir_env() {
     let dir = tempfile::tempdir().unwrap();
     let plugins_dir = dir.path().join("plugins");
     fs::create_dir_all(&plugins_dir).unwrap();
@@ -115,24 +115,24 @@ fn is_installed_via_trait_with_claude_home_env() {
     .unwrap();
 
     // TODO: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("CLAUDE_HOME", dir.path()) };
+    unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", dir.path()) };
     let result = ClaudeCodePluginManager::new(None, None, None).is_installed();
     // TODO: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::remove_var("CLAUDE_HOME") };
+    unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") };
 
     assert!(result);
 }
 
 #[test]
 #[serial_test::serial]
-fn not_installed_via_trait_when_claude_home_empty() {
+fn not_installed_via_trait_when_claude_config_dir_empty() {
     let dir = tempfile::tempdir().unwrap();
 
     // TODO: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::set_var("CLAUDE_HOME", dir.path()) };
+    unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", dir.path()) };
     let result = ClaudeCodePluginManager::new(None, None, None).is_installed();
     // TODO: Audit that the environment access only happens in single-threaded code.
-    unsafe { std::env::remove_var("CLAUDE_HOME") };
+    unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") };
 
     assert!(!result);
 }
