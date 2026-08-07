@@ -26,6 +26,7 @@ use crate::ai::blocklist::drive_object_attachment_for_reference;
 use crate::ai::blocklist::{
     BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel, QueuedQueryOrigin, SlashCommandRequest,
 };
+use crate::ai::usage_cost::{self, UsageCostOutcome};
 use crate::cloud_object::{model::persistence::ObjectStoreModel, ObjectType};
 use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
 use crate::search::slash_command_menu::static_commands::commands::{self, COMMAND_REGISTRY};
@@ -458,6 +459,20 @@ impl Input {
             let window_id = ctx.window_id();
             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                 toast_stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
+            });
+        }
+
+        /// Surfaces a `/usage` or `/cost` result: an error toast when the command could not
+        /// report anything, a plain toast for the report itself.
+        fn show_usage_cost_outcome(outcome: UsageCostOutcome, ctx: &mut ViewContext<Input>) {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                let toast = if outcome.is_unavailable() {
+                    DismissibleToast::error(outcome.message().to_owned())
+                } else {
+                    DismissibleToast::default(outcome.message().to_owned())
+                };
+                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
             });
         }
 
@@ -940,6 +955,30 @@ impl Input {
                 // prefix, and special handling is done downstream as an implementation detail
                 // of handling user queries with specific slash command prefixes.
                 return false;
+            }
+            usage if command.name == commands::USAGE.name => {
+                // Reports the current conversation's context-window occupancy, reusing the
+                // fraction the usage footer already shows. See `commands::USAGE` for why this
+                // is not Warp's hosted billing-and-usage pane.
+                let outcome = {
+                    let history = BlocklistAIHistoryModel::handle(ctx);
+                    let history = history.as_ref(ctx);
+                    let conversation = history.active_conversation(self.terminal_view_id);
+                    usage_cost::context_usage_report(conversation, ctx)
+                };
+                show_usage_cost_outcome(outcome, ctx);
+            }
+            cost if command.name == commands::COST.name => {
+                // Reports token spend at the user's configured provider rates. The
+                // no-conversation / empty / in-progress refusals live in
+                // `usage_cost::conversation_cost_report` so the TUI refuses identically.
+                let outcome = {
+                    let history = BlocklistAIHistoryModel::handle(ctx);
+                    let history = history.as_ref(ctx);
+                    let conversation = history.active_conversation(self.terminal_view_id);
+                    usage_cost::conversation_cost_report(conversation, ctx)
+                };
+                show_usage_cost_outcome(outcome, ctx);
             }
             tui_only if command.name == commands::STATUSLINE.name => {
                 debug_assert!(

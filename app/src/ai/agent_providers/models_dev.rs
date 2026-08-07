@@ -399,6 +399,13 @@ pub fn into_agent_provider_model(model: &Model) -> crate::settings::AgentProvide
         pdf: Some(caps.pdf),
         audio: Some(caps.audio),
         disabled: false,
+        // Deliberately not auto-filled. models.dev's `api.json` *does* carry a per-model
+        // `cost { input, output, cache_read, cache_write }` block (this module drops it at
+        // deserialize, see the field list on `Model`), but `/cost` reports money the user is
+        // actually billed. A third-party table drifts from the user's real contract — volume
+        // discounts, gateway markups, self-hosted endpoints — and a stale rate reported as
+        // fact is worse than no rate. The price stays the user's to state.
+        token_price: None,
     }
 }
 

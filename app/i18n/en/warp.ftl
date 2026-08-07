@@ -1571,10 +1571,14 @@ settings-agent-providers-models-header-name = Display name
 settings-agent-providers-models-header-id = Model ID
 settings-agent-providers-models-header-context = Context (tok)
 settings-agent-providers-models-header-output = Output (tok)
+settings-agent-providers-models-header-input-price = Input ($/1M)
+settings-agent-providers-models-header-output-price = Output ($/1M)
 settings-agent-providers-model-name-placeholder = Display name (e.g. DS-V3 General)
 settings-agent-providers-model-id-placeholder = Model ID (the `model` field sent to the API, e.g. deepseek-chat)
 settings-agent-providers-model-context-placeholder = Context (tokens)
 settings-agent-providers-model-output-placeholder = Output (tokens)
+settings-agent-providers-model-input-price-placeholder = USD per 1M input tokens (e.g. 3.00) — used by /cost
+settings-agent-providers-model-output-price-placeholder = USD per 1M output tokens (e.g. 15.00) — used by /cost
 settings-agent-providers-add-model = + Add model
 settings-agent-providers-fetch-from-api = Fetch from API
 settings-agent-providers-sync-models-dev = Sync from models.dev
@@ -2543,6 +2547,8 @@ slash-cmd-export-to-clipboard-desc = Export current conversation to clipboard in
 slash-cmd-export-to-file-desc = Export current conversation to a markdown file
 slash-cmd-export-to-file-hint = <optional filename>
 slash-cmd-vim-mode-desc = Toggle Vim mode for the composer
+slash-cmd-usage-desc = Show how much of the model's context window this conversation uses
+slash-cmd-cost-desc = Show this conversation's cost at your configured provider rates
 
 # --- ANCHOR-SUB-PROMPT-TIPS ---
 # Prompt editor modal (app/src/prompt/editor_modal.rs)
