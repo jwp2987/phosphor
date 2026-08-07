@@ -24,7 +24,8 @@ use warp::tui_export::{
     CancellationReason, ChangelogModel, tui_conversation_actions_in_order,
     ChangelogRequestType, LoadedConversationData, CommandExecutionSource, ConversationFileExport,
     ConversationSelection, ConversationSelectionHandle,
-    ExecuteCommandEvent, GitRepoModels, GitRepoStatusModel,
+    ExecuteCommandEvent, GitRepoModels, GitRepoStatusModel, LinkedWorkflowData,
+    TuiUpArrowHistoryItemKind,
     GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
     LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, ModelEvent, ParsedSlashCommandInput,
     PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
@@ -98,7 +99,9 @@ use crate::profile_menu::{TuiProfileMenuEvent, TuiProfileMenuModel};
 use crate::prompts_menu::{TuiPromptsMenuEvent, TuiPromptsMenuModel};
 use crate::model_menu::{TuiModelMenuEvent, TuiModelMenuModel};
 use crate::platform::reveal_path_in_file_manager;
-use crate::prompt_history_menu::{TuiPromptHistoryMenuEvent, TuiPromptHistoryMenuModel};
+use crate::prompt_and_command_history_menu::{
+    TuiPromptAndCommandHistoryMenuEvent, TuiPromptAndCommandHistoryMenuModel,
+};
 use crate::resume::TuiExitSummaryHandle;
 use crate::session_registry::TuiSessions;
 use crate::skills_menu::{TuiSkillMenuEvent, TuiSkillMenuModel};
@@ -600,6 +603,11 @@ pub(crate) struct TuiTerminalSessionView {
     /// box while open.
     statusline_config_view: Option<ViewHandle<TuiStatuslineConfigView>>,
     zero_state_view: ViewHandle<TuiZeroStateView>,
+    /// Workflow metadata for a command accepted from the up-arrow
+    /// prompt-and-command history menu (issue #387), consumed the next time
+    /// [`Self::execute_user_command`] runs so `ExecuteCommandEvent` carries it
+    /// through to execution. `None` for an ordinary typed shell submission.
+    pending_history_command_workflow_data: Option<LinkedWorkflowData>,
 }
 
 /// Registers the session surface's keybindings. Called once at TUI startup
@@ -1204,16 +1212,18 @@ impl TuiTerminalSessionView {
             let TuiMcpMenuEvent::Updated = event;
             ctx.notify();
         });
-        let prompt_history_menu = ctx.add_model(|ctx| {
-            TuiPromptHistoryMenuModel::new(
+        let prompt_and_command_history_menu = ctx.add_model(|ctx| {
+            TuiPromptAndCommandHistoryMenuModel::new(
                 input_editor_model.clone(),
+                ai_input_model.clone(),
                 suggestions_mode.clone(),
+                active_session.clone(),
                 terminal_surface_id,
                 ctx,
             )
         });
-        ctx.subscribe_to_model(&prompt_history_menu, |_, _, event, ctx| {
-            let TuiPromptHistoryMenuEvent::Updated = event;
+        ctx.subscribe_to_model(&prompt_and_command_history_menu, |_, _, event, ctx| {
+            let TuiPromptAndCommandHistoryMenuEvent::Updated = event;
             ctx.notify();
         });
         let completions_menu =
@@ -1298,7 +1308,7 @@ impl TuiTerminalSessionView {
             TuiInlineMenu::new(model_menu.clone()),
             TuiInlineMenu::new(skills_menu.clone()),
             TuiInlineMenu::new(mcp_menu.clone()),
-            TuiInlineMenu::new(prompt_history_menu.clone()),
+            TuiInlineMenu::new(prompt_and_command_history_menu.clone()),
             TuiInlineMenu::new(completions_menu.clone()),
             TuiInlineMenu::new(profile_menu.clone()),
             TuiInlineMenu::new(prompts_menu.clone()),
@@ -1392,8 +1402,8 @@ impl TuiTerminalSessionView {
             TuiInputViewEvent::AcceptedMcp(action) => {
                 view.handle_accepted_mcp_action(*action, ctx);
             }
-            TuiInputViewEvent::AcceptedPromptHistory(text) => {
-                view.handle_accepted_prompt_history(text.clone(), ctx);
+            TuiInputViewEvent::AcceptedPromptAndCommandHistory(text, kind) => {
+                view.handle_accepted_prompt_and_command_history(text.clone(), kind.clone(), ctx);
             }
             TuiInputViewEvent::AcceptedCompletion(completion) => {
                 view.handle_accepted_completion(completion.clone(), ctx);
@@ -1620,6 +1630,7 @@ impl TuiTerminalSessionView {
             active_blocker_view_id: None,
             statusline_config_view: None,
             zero_state_view,
+            pending_history_command_workflow_data: None,
         }
     }
 
@@ -2800,12 +2811,21 @@ impl TuiTerminalSessionView {
             }
         }
 
+        // Issue #387: a command accepted from the up-arrow history menu
+        // carries this through from `handle_accepted_prompt_and_command_history`;
+        // an ordinarily typed command leaves it `None`.
+        let (workflow_id, workflow_command) =
+            match self.pending_history_command_workflow_data.take() {
+                Some(LinkedWorkflowData::Id(id)) => (Some(id), None),
+                Some(LinkedWorkflowData::Command(command)) => (None, Some(command)),
+                None => (None, None),
+            };
         ctx.emit(TuiTerminalSessionEvent::ExecuteCommand(Box::new(
             ExecuteCommandEvent {
                 command: command.to_owned(),
                 session_id,
-                workflow_id: None,
-                workflow_command: None,
+                workflow_id,
+                workflow_command,
                 should_add_command_to_history: true,
                 source: CommandExecutionSource::User,
             },
@@ -3294,10 +3314,29 @@ impl TuiTerminalSessionView {
         });
     }
 
-    /// Fills the accepted prompt-history prompt into the input and submits it
-    /// immediately, matching the GUI's accept-a-prompt-from-history behavior.
-    /// The menu has already closed itself.
-    fn handle_accepted_prompt_history(&mut self, text: String, ctx: &mut ViewContext<Self>) {
+    /// Fills the accepted history row into the input and submits it
+    /// immediately, matching the GUI's accept-from-history behavior. The menu
+    /// has already closed itself, and — for a prompt or command row — has
+    /// already set the input's live [`InputType`] to match the row's kind, so
+    /// [`Self::handle_submitted`]'s existing shell-vs-agent routing (driven by
+    /// that same input type) sends it down the right path unmodified.
+    ///
+    /// A command row's linked workflow data is stashed for
+    /// [`Self::execute_user_command`] to attach to the resulting
+    /// `ExecuteCommandEvent`, preserving workflow metadata end-to-end (issue
+    /// #387).
+    fn handle_accepted_prompt_and_command_history(
+        &mut self,
+        text: String,
+        kind: TuiUpArrowHistoryItemKind,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.pending_history_command_workflow_data = match kind {
+            TuiUpArrowHistoryItemKind::Prompt => None,
+            TuiUpArrowHistoryItemKind::Command {
+                linked_workflow_data,
+            } => linked_workflow_data,
+        };
         self.input_view.update(ctx, |input, ctx| {
             input.set_text(&text, ctx);
         });
