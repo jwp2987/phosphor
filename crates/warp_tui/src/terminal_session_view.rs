@@ -29,7 +29,8 @@ use warp::tui_export::{
     LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, ModelEvent, ParsedSlashCommandInput,
     PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
     ServerConversationToken, ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference,
-    SlashCommandKind, SlashCommandSelectionBehavior,
+    SlashCommandKind, SlashCommandSelectionBehavior, UsageCostOutcome,
+    context_usage_report, conversation_cost_report,
     StaticCommand, TerminalModel, TerminalSurface,
     AgentViewState, TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
     TuiSlashCommandDataSourceArgs, TuiZeroStateDataSource, UserTakeOverReason,
@@ -480,6 +481,15 @@ pub(crate) enum TuiTerminalSessionAction {
     /// `CLISubagentAction::RejectBlockedAction { should_user_take_over: false }`.
     RejectBlockedLrcAction,
     /// Toggle the completed-response summary for the selected conversation.
+    ///
+    /// Retained but currently unbound. Upstream Warp's TUI `/cost` dispatches this; here
+    /// `/cost` reports token spend at the user's configured provider rates instead (see the
+    /// `SlashCommandKind::Cost` arm), because the summary's money half is Warp's server-computed
+    /// `block_credits`, which is structurally zero under BYOP. The action, its handler and
+    /// `toggle_response_summary_visibility` are deliberately kept rather than deleted — the
+    /// summary's duration half is still live and still rendered, so a future keybinding or
+    /// command can drive this without re-porting the mechanism (AGENTS §5.10).
+    #[allow(dead_code)]
     ToggleResponseSummaryVisibility,
     /// Click on the footer's active-model label: toggles the inline model
     /// picker (the same menu `/model` surfaces).
@@ -2157,6 +2167,17 @@ impl TuiTerminalSessionView {
             .show_success(text, ctx, |view| &mut view.transient_hint);
     }
 
+    /// Surfaces a `/usage` or `/cost` result. Mirrors the GUI's toast split: a plain transient
+    /// hint when the command could not report anything, success-colored for the report itself.
+    fn show_usage_cost_outcome(&mut self, outcome: UsageCostOutcome, ctx: &mut ViewContext<Self>) {
+        let message = outcome.message().to_owned();
+        if outcome.is_unavailable() {
+            self.show_transient_hint(message, ctx);
+        } else {
+            self.show_success_hint(message, ctx);
+        }
+    }
+
     /// Displays success-colored feedback in the transient footer slot.
     fn show_copy_hint(&mut self, ctx: &mut ViewContext<Self>) {
         self.show_success_hint(COPY_SELECTION_HINT.to_owned(), ctx);
@@ -3344,11 +3365,35 @@ impl TuiTerminalSessionView {
             SlashCommandKind::Statusline => {
                 self.open_statusline_config(command.name, ctx);
             }
-            SlashCommandKind::Cost => {
-                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
-                ctx.dispatch_typed_action_deferred(
-                    TuiTerminalSessionAction::ToggleResponseSummaryVisibility,
+            SlashCommandKind::Usage => {
+                // Same report as the GUI's `/usage`, off the same context-window fraction the
+                // statusline entry already renders (`selected_conversation_context_usage`).
+                let outcome = context_usage_report(
+                    self.conversation_selection
+                        .as_ref(ctx)
+                        .selected_conversation(ctx),
+                    ctx,
                 );
+                self.show_usage_cost_outcome(outcome, ctx);
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            SlashCommandKind::Cost => {
+                // Sanctioned BYOP divergence (AGENTS §5.10): upstream's TUI `/cost` toggles
+                // the per-exchange response summary, whose money half is Warp's server-computed
+                // `block_credits` — structurally absent here. `/cost` now reports token spend
+                // at the user's own configured provider rates instead. The response-summary
+                // toggle itself is kept intact (`toggle_response_summary_visibility`,
+                // `TuiTerminalSessionAction::ToggleResponseSummaryVisibility`) rather than
+                // deleted, so nothing is lost — it is simply no longer what `/cost` means.
+                let outcome = conversation_cost_report(
+                    self.conversation_selection
+                        .as_ref(ctx)
+                        .selected_conversation(ctx),
+                    ctx,
+                );
+                self.show_usage_cost_outcome(outcome, ctx);
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
             SlashCommandKind::Model => {
@@ -3677,7 +3722,6 @@ impl TuiTerminalSessionView {
             | SlashCommandKind::Environment
             | SlashCommandKind::Orchestrate
             | SlashCommandKind::ContinueLocally
-            | SlashCommandKind::Usage
             | SlashCommandKind::RemoteControl
             // BYOP: Zap commands with no upstream kind (e.g. /pr-comments) are not
             // TUI-executable (`supports_tui()` gates them out before this match).

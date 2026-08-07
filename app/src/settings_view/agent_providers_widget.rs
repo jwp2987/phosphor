@@ -48,7 +48,8 @@ use crate::settings::{AISettings, AgentProvider, AgentProviderApiType, AgentProv
 use strum::IntoEnumIterator;
 
 use super::ai_page::{
-    AISettingsPageAction, AISettingsPageView, ModelCapabilityKind, ProviderEditFields,
+    AISettingsPageAction, AISettingsPageView, ModelCapabilityKind, ModelEditFields,
+    ProviderEditFields,
 };
 use super::settings_page::{
     build_sub_header, render_customer_type_badge, SettingsWidget, HEADER_PADDING,
@@ -218,12 +219,18 @@ pub(super) fn clear_model_search_state_for_provider(provider_id: &str) {
     });
 }
 
-/// The editable view handles for a single model entry (name + id + context + output).
+/// The editable view handles for a single model entry (name + id + context + output + the two
+/// `/cost` token rates).
 struct ModelRow {
     name_editor: ViewHandle<EditorView>,
     id_editor: ViewHandle<EditorView>,
     context_editor: ViewHandle<EditorView>,
     output_editor: ViewHandle<EditorView>,
+    /// USD per 1M input tokens, used by `/cost`. Empty = no rate configured, which `/cost`
+    /// reports as such instead of billing at zero.
+    input_price_editor: ViewHandle<EditorView>,
+    /// USD per 1M output tokens, used by `/cost`.
+    output_price_editor: ViewHandle<EditorView>,
     /// The remove button inside the detail panel.
     remove_button_state: MouseStateHandle,
     /// The quick-remove button to the right of the chevron at the end of the row.
@@ -277,8 +284,11 @@ struct ProviderRow {
     disabled_models_toggle_button_state: MouseStateHandle,
 }
 
+/// `(model_index, name, id, context_window, max_output_tokens, input_price, output_price)`.
 type ModelDraftEditorHandles = (
     usize,
+    ViewHandle<EditorView>,
+    ViewHandle<EditorView>,
     ViewHandle<EditorView>,
     ViewHandle<EditorView>,
     ViewHandle<EditorView>,
@@ -322,6 +332,8 @@ impl ProviderDraftEditors {
                         m.id_editor.clone(),
                         m.context_editor.clone(),
                         m.output_editor.clone(),
+                        m.input_price_editor.clone(),
+                        m.output_price_editor.clone(),
                     )
                 })
                 .collect(),
@@ -362,15 +374,27 @@ impl ProviderDraftEditors {
                 )
             })
             .collect();
-        let models: Vec<(usize, String, String, u32, u32)> = self
+        let models: Vec<ModelEditFields> = self
             .model_editors
             .iter()
-            .map(|(idx, name_e, id_e, ctx_e, out_e)| {
+            .map(|(idx, name_e, id_e, ctx_e, out_e, in_price_e, out_price_e)| {
                 let m_name = name_e.as_ref(app).buffer_text(app);
                 let m_id = id_e.as_ref(app).buffer_text(app);
                 let context_window = parse_token_count(&ctx_e.as_ref(app).buffer_text(app));
                 let max_output_tokens = parse_token_count(&out_e.as_ref(app).buffer_text(app));
-                (*idx, m_name, m_id, context_window, max_output_tokens)
+                ModelEditFields {
+                    model_index: *idx,
+                    name: m_name,
+                    id: m_id,
+                    context_window,
+                    max_output_tokens,
+                    input_usd_per_million_tokens: parse_usd_rate(
+                        &in_price_e.as_ref(app).buffer_text(app),
+                    ),
+                    output_usd_per_million_tokens: parse_usd_rate(
+                        &out_price_e.as_ref(app).buffer_text(app),
+                    ),
+                }
             })
             .collect();
 
@@ -544,11 +568,59 @@ impl AgentProvidersWidget {
             collapse_selection_if_blurred(&editor, event, ctx);
         });
 
+        // ---- `/cost` token rates (USD per 1M tokens; empty = no rate configured) ----
+        // Deliberately blank rather than pre-filled with a plausible default: `/cost` must be
+        // able to tell "the user told me this model is free" from "nobody has told me what
+        // this model costs", and only an empty field can mean the latter.
+        let initial_input_price = model
+            .token_price
+            .map(|price| format_usd_rate(price.input_usd_per_million_tokens))
+            .unwrap_or_default();
+        let input_price_editor = ctx.add_typed_action_view(move |ctx| {
+            let appearance = Appearance::handle(ctx).as_ref(ctx);
+            let options = single_line_editor_options(appearance, false);
+            let mut editor = EditorView::single_line(options, ctx);
+            editor.set_placeholder_text(
+                crate::t!("settings-agent-providers-model-input-price-placeholder"),
+                ctx,
+            );
+            if !initial_input_price.is_empty() {
+                editor.set_buffer_text(&initial_input_price, ctx);
+            }
+            editor
+        });
+        ctx.subscribe_to_view(&input_price_editor, move |_, editor, event, ctx| {
+            collapse_selection_if_blurred(&editor, event, ctx);
+        });
+
+        let initial_output_price = model
+            .token_price
+            .map(|price| format_usd_rate(price.output_usd_per_million_tokens))
+            .unwrap_or_default();
+        let output_price_editor = ctx.add_typed_action_view(move |ctx| {
+            let appearance = Appearance::handle(ctx).as_ref(ctx);
+            let options = single_line_editor_options(appearance, false);
+            let mut editor = EditorView::single_line(options, ctx);
+            editor.set_placeholder_text(
+                crate::t!("settings-agent-providers-model-output-price-placeholder"),
+                ctx,
+            );
+            if !initial_output_price.is_empty() {
+                editor.set_buffer_text(&initial_output_price, ctx);
+            }
+            editor
+        });
+        ctx.subscribe_to_view(&output_price_editor, move |_, editor, event, ctx| {
+            collapse_selection_if_blurred(&editor, event, ctx);
+        });
+
         ModelRow {
             name_editor,
             id_editor,
             context_editor,
             output_editor,
+            input_price_editor,
+            output_price_editor,
             remove_button_state: MouseStateHandle::default(),
             quick_remove_button_state: MouseStateHandle::default(),
             disable_toggle_button_state: MouseStateHandle::default(),
@@ -978,6 +1050,8 @@ impl AgentProvidersWidget {
             .with_child(cell(2., &row.id_editor))
             .with_child(cell(1., &row.context_editor))
             .with_child(cell(1., &row.output_editor))
+            .with_child(cell(1., &row.input_price_editor))
+            .with_child(cell(1., &row.output_price_editor))
             .with_child(row_controls)
             .finish();
 
@@ -1448,6 +1522,14 @@ impl AgentProvidersWidget {
                         1.,
                         &crate::t!("settings-agent-providers-models-header-output"),
                     ))
+                    .with_child(header_cell(
+                        1.,
+                        &crate::t!("settings-agent-providers-models-header-input-price"),
+                    ))
+                    .with_child(header_cell(
+                        1.,
+                        &crate::t!("settings-agent-providers-models-header-output-price"),
+                    ))
                     // Placeholder, aligned with the expand/delete buttons below.
                     .with_child(
                         Flex::row()
@@ -1824,6 +1906,37 @@ fn parse_token_count(input: &str) -> u32 {
         .map(|n| (n * multiplier as f64).round() as u64)
         .and_then(|v| u32::try_from(v).ok())
         .unwrap_or(0)
+}
+
+/// Parses a `/cost` token rate in USD per 1M tokens. Tolerates a leading `$`, thousands
+/// separators and whitespace.
+///
+/// `None` means "no rate entered", which is a distinct answer from `Some(0.0)`: the former
+/// makes `/cost` report token counts and say no rate is configured, the latter makes it report
+/// `$0.0000` because the user said this endpoint is free. Unparseable and negative input is
+/// treated as not-entered rather than silently coerced to a number.
+fn parse_usd_rate(input: &str) -> Option<f64> {
+    let cleaned: String = input
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ',' && *c != '_' && *c != '$')
+        .collect();
+    if cleaned.is_empty() {
+        return None;
+    }
+    cleaned
+        .parse::<f64>()
+        .ok()
+        .filter(|rate| rate.is_finite() && *rate >= 0.0)
+}
+
+/// Renders a stored rate back into the editor, trimming the trailing zeros `f64` printing adds
+/// so a saved `3.0` reads as the `3` the user typed.
+fn format_usd_rate(rate: f64) -> String {
+    let mut text = format!("{rate:.4}");
+    while text.contains('.') && (text.ends_with('0') || text.ends_with('.')) {
+        text.pop();
+    }
+    text
 }
 
 /// Collapses the editor's selection to the end on blur.
@@ -2321,6 +2434,42 @@ mod model_filter_tests {
         let mut m = AgentProviderModel::from_id(id.to_owned());
         m.name = name.to_owned();
         m
+    }
+
+    /// Fork-authored: the price fields are a BYOP addition, so there is no Warp test to port.
+    /// The case worth pinning is the blank field — it must stay `None` all the way through,
+    /// because a `Some(0.0)` here is what would make `/cost` claim an unpriced model is free.
+    #[test]
+    fn parse_usd_rate_distinguishes_blank_from_zero() {
+        assert_eq!(parse_usd_rate(""), None);
+        assert_eq!(parse_usd_rate("   "), None);
+        assert_eq!(parse_usd_rate("0"), Some(0.0));
+        assert_eq!(parse_usd_rate("0.00"), Some(0.0));
+    }
+
+    #[test]
+    fn parse_usd_rate_accepts_the_shapes_a_price_list_is_copied_in() {
+        assert_eq!(parse_usd_rate("3"), Some(3.0));
+        assert_eq!(parse_usd_rate("3.00"), Some(3.0));
+        assert_eq!(parse_usd_rate("$15.00"), Some(15.0));
+        assert_eq!(parse_usd_rate(" 0.075 "), Some(0.075));
+        assert_eq!(parse_usd_rate("1,250"), Some(1250.0));
+    }
+
+    #[test]
+    fn parse_usd_rate_rejects_nonsense_rather_than_coercing_it() {
+        assert_eq!(parse_usd_rate("abc"), None);
+        assert_eq!(parse_usd_rate("-3"), None);
+        assert_eq!(parse_usd_rate("3.0.0"), None);
+    }
+
+    #[test]
+    fn format_usd_rate_round_trips_back_into_the_editor() {
+        assert_eq!(format_usd_rate(3.0), "3");
+        assert_eq!(format_usd_rate(0.3), "0.3");
+        assert_eq!(format_usd_rate(0.075), "0.075");
+        assert_eq!(format_usd_rate(15.5), "15.5");
+        assert_eq!(parse_usd_rate(&format_usd_rate(0.075)), Some(0.075));
     }
 
     #[test]

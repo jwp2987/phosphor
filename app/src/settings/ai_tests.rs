@@ -824,6 +824,7 @@ fn extra_headers_skip_when_empty() {
         vertex_project: String::new(),
         vertex_location: String::new(),
         disabled: false,
+        token_price: None,
     };
     let serialized = toml::to_string(&provider).expect("should serialize");
     assert!(
@@ -1017,6 +1018,79 @@ fn model_legacy_plain_string_format_still_deserializes() {
     assert_eq!(parsed.models.len(), 1);
     assert_eq!(parsed.models[0].id, "deepseek-chat");
     assert!(!parsed.models[0].disabled);
+}
+
+// --- `/cost` token prices (fork-authored: Warp has no client-side price table) ---
+
+#[test]
+fn model_token_price_round_trips_through_toml() {
+    let mut model = AgentProviderModel::from_id("claude-sonnet-4-5".to_string());
+    model.token_price = Some(TokenPrice {
+        input_usd_per_million_tokens: 3.0,
+        output_usd_per_million_tokens: 15.0,
+        cache_read_usd_per_million_tokens: Some(0.3),
+        cache_write_usd_per_million_tokens: Some(3.75),
+    });
+    let serialized = toml::to_string(&model).expect("should serialize");
+    let deserialized: AgentProviderModel = toml::from_str(&serialized).expect("should deserialize");
+    assert_eq!(deserialized.token_price, model.token_price);
+}
+
+#[test]
+fn model_without_a_token_price_stays_unpriced_and_writes_nothing() {
+    // Absence must survive the round trip: a `token_price` that materializes as zeros would
+    // make `/cost` report `$0.00` for a model nobody has priced.
+    let model = AgentProviderModel::from_id("gpt-5".to_string());
+    let serialized = toml::to_string(&model).expect("should serialize");
+    assert!(
+        !serialized.contains("token_price"),
+        "an unpriced model should not write a price block: {serialized}"
+    );
+    let deserialized: AgentProviderModel = toml::from_str(&serialized).expect("should deserialize");
+    assert_eq!(deserialized.token_price, None);
+}
+
+#[test]
+fn provider_token_price_round_trips_and_is_omitted_when_unset() {
+    let mut provider = AgentProvider::new_empty();
+    provider.base_url = "https://api.example.com/v1".to_string();
+    let serialized = toml::to_string(&provider).expect("should serialize");
+    assert!(!serialized.contains("token_price"), "{serialized}");
+
+    provider.token_price = Some(TokenPrice {
+        input_usd_per_million_tokens: 1.25,
+        output_usd_per_million_tokens: 10.0,
+        cache_read_usd_per_million_tokens: None,
+        cache_write_usd_per_million_tokens: None,
+    });
+    let serialized = toml::to_string(&provider).expect("should serialize");
+    let deserialized: AgentProvider = toml::from_str(&serialized).expect("should deserialize");
+    assert_eq!(deserialized.token_price, provider.token_price);
+}
+
+#[test]
+fn cache_rates_fall_back_to_the_input_rate_only_when_absent() {
+    let with_cache_rate = TokenPrice {
+        input_usd_per_million_tokens: 3.0,
+        output_usd_per_million_tokens: 15.0,
+        cache_read_usd_per_million_tokens: Some(0.3),
+        cache_write_usd_per_million_tokens: None,
+    };
+    assert_eq!(with_cache_rate.cache_read_rate(), (0.3, true));
+    assert_eq!(with_cache_rate.cache_write_rate(), (3.0, false));
+}
+
+#[test]
+fn from_input_output_treats_two_empty_fields_as_no_price() {
+    assert_eq!(TokenPrice::from_input_output(None, None), None);
+    // One field entered is still a price: the other simply reads as zero, which the user can
+    // see and correct, rather than the whole price silently disappearing.
+    let only_input = TokenPrice::from_input_output(Some(3.0), None).expect("should be a price");
+    assert_eq!(only_input.input_usd_per_million_tokens, 3.0);
+    assert_eq!(only_input.output_usd_per_million_tokens, 0.0);
+    // An explicit zero is a real answer, not an empty field.
+    let free = TokenPrice::from_input_output(Some(0.0), Some(0.0)).expect("should be a price");
+    assert_eq!(free.input_usd_per_million_tokens, 0.0);
 }
 
 #[test]
