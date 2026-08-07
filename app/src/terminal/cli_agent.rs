@@ -299,6 +299,8 @@ impl CLIAgent {
                 | CLIAgent::Codex
                 | CLIAgent::OpenCode
                 | CLIAgent::DeepSeek
+                // oh-my-pi (`omp`) supports `!` bash mode. This variant is spelled
+                // `OhMyPi` upstream; it is `Omp` here but it is the same agent.
                 | CLIAgent::Omp
         )
     }
