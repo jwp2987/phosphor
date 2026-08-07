@@ -408,7 +408,12 @@ fn prepare_claude_config_none_suffix_preserves_existing_responses() {
 }
 
 #[test]
+#[serial_test::serial]
 fn resolve_suffix_from_raw_value_secret() {
+    // Hermeticity: the resolver now prefers a key already present in the
+    // process environment, so clear it before exercising the secrets map.
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(ANTHROPIC_API_KEY_ENV) };
     let key = "sk-ant-api03-abcdefghij1234567890ABCDEFGHIJ1234567890abcdefghij1234567890QLWn-dUnuwQ-hIhDiAAA";
     let secrets = HashMap::from([(
         "ANTHROPIC_API_KEY".to_string(),
@@ -419,7 +424,12 @@ fn resolve_suffix_from_raw_value_secret() {
 }
 
 #[test]
+#[serial_test::serial]
 fn resolve_suffix_from_anthropic_api_key_secret() {
+    // Hermeticity: the resolver now prefers a key already present in the
+    // process environment, so clear it before exercising the secrets map.
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(ANTHROPIC_API_KEY_ENV) };
     let key = "sk-ant-api03-abcdefghij1234567890ABCDEFGHIJ1234567890abcdefghij1234567890QLWn-dUnuwQ-hIhDiAAA";
     let secrets = HashMap::from([(
         "ANTHROPIC_API_KEY".to_string(),
@@ -430,7 +440,12 @@ fn resolve_suffix_from_anthropic_api_key_secret() {
 }
 
 #[test]
+#[serial_test::serial]
 fn resolve_suffix_from_anthropic_api_key_with_different_secret_name() {
+    // Hermeticity: the resolver now prefers a key already present in the
+    // process environment, so clear it before exercising the secrets map.
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(ANTHROPIC_API_KEY_ENV) };
     let key = "sk-ant-api03-abcdefghij1234567890ABCDEFGHIJ1234567890abcdefghij1234567890QLWn-dUnuwQ-hIhDiAAA";
     // Secret name doesn't match the env var, but the AnthropicApiKey variant
     // should still be found by iterating all secrets.
@@ -443,7 +458,12 @@ fn resolve_suffix_from_anthropic_api_key_with_different_secret_name() {
 }
 
 #[test]
+#[serial_test::serial]
 fn resolve_suffix_prefers_anthropic_api_key_variant_over_raw_value() {
+    // Hermeticity: the resolver now prefers a key already present in the
+    // process environment, so clear it before exercising the secrets map.
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(ANTHROPIC_API_KEY_ENV) };
     let anthropic_key = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-anthropic-suffix";
     let raw_key = "sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB-raw-suffix";
     let secrets = HashMap::from([
@@ -462,7 +482,12 @@ fn resolve_suffix_prefers_anthropic_api_key_variant_over_raw_value() {
 }
 
 #[test]
+#[serial_test::serial]
 fn resolve_suffix_returns_none_for_short_key() {
+    // Hermeticity: the resolver now prefers a key already present in the
+    // process environment, so clear it before exercising the secrets map.
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(ANTHROPIC_API_KEY_ENV) };
     let secrets = HashMap::from([(
         "ANTHROPIC_API_KEY".to_string(),
         ManagedSecretValue::raw_value("short"),
@@ -471,7 +496,12 @@ fn resolve_suffix_returns_none_for_short_key() {
 }
 
 #[test]
+#[serial_test::serial]
 fn resolve_suffix_returns_none_for_short_anthropic_api_key() {
+    // Hermeticity: the resolver now prefers a key already present in the
+    // process environment, so clear it before exercising the secrets map.
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(ANTHROPIC_API_KEY_ENV) };
     let secrets = HashMap::from([(
         "ANTHROPIC_API_KEY".to_string(),
         ManagedSecretValue::anthropic_api_key("short"),
@@ -514,4 +544,124 @@ fn prepare_claude_settings_merges_existing_settings() {
         claude_settings["skipDangerousModePermissionPrompt"],
         Value::Bool(true)
     );
+}
+
+// ── Tests ported from the pinned Warp oracle (`02b53fcd8`) ───────────────────
+//
+// Source: `app/src/ai/agent_sdk/driver/harness/claude_code_tests.rs` at the pin.
+// The remaining oracle tests in that file need source this fork does not ship
+// (`claude_transcript`, `serialize_claude_mcp_config`, the parent-bridge event
+// cursor, `MessageBridgeCleanupDisposition`, `--resume`, `prepare_local_wake_command`).
+
+#[test]
+#[serial_test::serial]
+fn prepare_claude_environment_config_without_config_dir_uses_home_global_config() {
+    let home_dir = TempDir::new().unwrap();
+    let old_home = std::env::var_os("HOME");
+    let old_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("HOME", home_dir.path()) };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") };
+
+    let working_dir = home_dir.path().join("workspace/project");
+    // Adaptation: the oracle's `prepare_claude_environment_config` takes the
+    // already-resolved env vars; this fork's takes the managed-secret map.
+    prepare_claude_environment_config(&working_dir, &HashMap::new()).unwrap();
+
+    assert!(home_dir.path().join(CLAUDE_JSON_FILE_NAME).exists());
+    assert!(home_dir
+        .path()
+        .join(".claude")
+        .join(CLAUDE_SETTINGS_FILE_NAME)
+        .exists());
+    assert!(!home_dir
+        .path()
+        .join(".claude")
+        .join(CLAUDE_JSON_FILE_NAME)
+        .exists());
+
+    match old_home {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        Some(home) => unsafe { std::env::set_var("HOME", home) },
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+    match old_config_dir {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        Some(dir) => unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", dir) },
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") },
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn prepare_claude_environment_config_with_config_dir_uses_dir_global_config() {
+    let home_dir = TempDir::new().unwrap();
+    let claude_config_dir = TempDir::new().unwrap();
+    let old_home = std::env::var_os("HOME");
+    let old_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("HOME", home_dir.path()) };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", claude_config_dir.path()) };
+
+    let working_dir = home_dir.path().join("workspace/project");
+    // Adaptation: see the sibling test — secrets map instead of resolved env vars.
+    prepare_claude_environment_config(&working_dir, &HashMap::new()).unwrap();
+
+    assert!(claude_config_dir
+        .path()
+        .join(CLAUDE_JSON_FILE_NAME)
+        .exists());
+    assert!(claude_config_dir
+        .path()
+        .join(CLAUDE_SETTINGS_FILE_NAME)
+        .exists());
+    assert!(!home_dir.path().join(CLAUDE_JSON_FILE_NAME).exists());
+
+    match old_home {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        Some(home) => unsafe { std::env::set_var("HOME", home) },
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+    match old_config_dir {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        Some(dir) => unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", dir) },
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var("CLAUDE_CONFIG_DIR") },
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_suffix_returns_none_when_empty() {
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(ANTHROPIC_API_KEY_ENV) };
+    assert_eq!(resolve_anthropic_api_key_suffix(&HashMap::new()), None);
+}
+
+#[test]
+#[serial_test::serial]
+fn suffix_uses_worker_injected_env_when_present() {
+    let worker_key = "sk-ant-api03-WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW-worker-suffix!";
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(ANTHROPIC_API_KEY_ENV, worker_key) };
+    // Even when the secrets map carries a different value, the worker env wins.
+    // Adaptation: the oracle passes the resolved env-var map here; this fork
+    // resolves from the managed-secret map, so the competing value is supplied
+    // as an `AnthropicApiKey` secret.
+    let secrets = HashMap::from([(
+        "my-auth".to_string(),
+        ManagedSecretValue::anthropic_api_key(
+            "sk-ant-api03-RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR-resolved-val!",
+        ),
+    )]);
+    let suffix = resolve_anthropic_api_key_suffix(&secrets);
+    let expected = &worker_key[worker_key.len() - 20..];
+    assert_eq!(suffix.as_deref(), Some(expected));
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(ANTHROPIC_API_KEY_ENV) };
 }

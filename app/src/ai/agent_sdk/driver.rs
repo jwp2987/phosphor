@@ -168,6 +168,16 @@ impl<T: Send + 'static> IdleTimeoutSender<T> {
             self.generation.fetch_add(1, Ordering::SeqCst);
         }
     }
+
+    /// End the run with `value`, deferring by `idle_on_complete` when the
+    /// `warp agent run --idle-on-complete[=<DURATION>]` flag asked for it.
+    fn complete_with_optional_idle(&self, idle_on_complete: Option<Duration>, value: T) {
+        if let Some(idle_timeout) = idle_on_complete {
+            self.end_run_after(idle_timeout, value);
+        } else {
+            self.end_run_now(value);
+        }
+    }
 }
 
 /// Options for initializing the agent driver.
@@ -358,77 +368,7 @@ impl AgentDriver {
         }
 
         // Build environment variables from secrets for the terminal session.
-        // Do not override env vars that are already set to a non-empty value in the current
-        // process. This ensures that worker-injected credentials (e.g. harness auth secrets)
-        // and user-provided env vars (e.g. on self-hosted workers) take precedence over
-        // generic managed secrets.
-        let mut env_vars = HashMap::with_capacity(secrets.len() + 1);
-        for (name, secret) in &secrets {
-            let (env_name, env_value) = match secret {
-                ManagedSecretValue::RawValue { value } => (name.as_str(), value.as_str()),
-                ManagedSecretValue::AnthropicApiKey { api_key } => {
-                    ("ANTHROPIC_API_KEY", api_key.as_str())
-                }
-                ManagedSecretValue::AnthropicBedrockAccessKey {
-                    aws_access_key_id,
-                    aws_secret_access_key,
-                    aws_session_token,
-                    aws_region,
-                } => {
-                    // Inject env vars needed for Claude Code Bedrock access key authentication.
-                    // AWS_SESSION_TOKEN is only injected when the user provided one (i.e. for
-                    // temporary/STS credentials).
-                    let mut vars = vec![
-                        ("AWS_ACCESS_KEY_ID", aws_access_key_id.as_str()),
-                        ("AWS_SECRET_ACCESS_KEY", aws_secret_access_key.as_str()),
-                        ("CLAUDE_CODE_USE_BEDROCK", "1"),
-                        ("AWS_REGION", aws_region.as_str()),
-                    ];
-                    if let Some(token) = aws_session_token.as_deref() {
-                        vars.push(("AWS_SESSION_TOKEN", token));
-                    }
-                    for (env_name, env_value) in vars {
-                        if std::env::var(env_name).is_ok_and(|v| !v.is_empty()) {
-                            log::warn!(
-                                "Skipping managed secret {env_name}: already set in environment"
-                            );
-                            continue;
-                        }
-                        env_vars.insert(OsString::from(env_name), OsString::from(env_value));
-                    }
-                    continue; // Skip the single-var insert below since we handled all vars inline.
-                }
-                ManagedSecretValue::AnthropicBedrockApiKey {
-                    aws_bearer_token_bedrock,
-                    aws_region,
-                } => {
-                    // Inject all three env vars needed for Claude Code Bedrock authentication.
-                    let vars = [
-                        (
-                            "AWS_BEARER_TOKEN_BEDROCK",
-                            aws_bearer_token_bedrock.as_str(),
-                        ),
-                        ("CLAUDE_CODE_USE_BEDROCK", "1"),
-                        ("AWS_REGION", aws_region.as_str()),
-                    ];
-                    for (env_name, env_value) in vars {
-                        if std::env::var(env_name).is_ok_and(|v| !v.is_empty()) {
-                            log::warn!(
-                                "Skipping managed secret {env_name}: already set in environment"
-                            );
-                            continue;
-                        }
-                        env_vars.insert(OsString::from(env_name), OsString::from(env_value));
-                    }
-                    continue; // Skip the single-var insert below since we handled all vars inline.
-                }
-            };
-            if std::env::var(env_name).is_ok_and(|v| !v.is_empty()) {
-                log::warn!("Skipping managed secret {env_name}: already set in environment");
-                continue;
-            }
-            env_vars.insert(OsString::from(env_name), OsString::from(env_value));
-        }
+        let mut env_vars = build_secret_env_vars(&secrets);
 
         env_vars.extend(task_env_vars(
             task_id.as_ref(),
@@ -1368,11 +1308,10 @@ impl AgentDriver {
                             | SDKConversationOutputStatus::Cancelled { .. } => {
                                 // Whether to keep the process alive after completion is controlled by
                                 // the `warp agent run --idle-on-complete[=<DURATION>]` flag.
-                                if let Some(idle_timeout) = me.idle_on_complete {
-                                    run_exit.end_run_after(idle_timeout, output_status);
-                                } else {
-                                    run_exit.end_run_now(output_status);
-                                }
+                                run_exit.complete_with_optional_idle(
+                                    me.idle_on_complete,
+                                    output_status,
+                                );
                             }
                             // For errors, check if we expect an automatic retry.
                             SDKConversationOutputStatus::Error { ref error } => {
@@ -1505,11 +1444,7 @@ impl AgentDriver {
                     // Drive idle-on-complete timer for the harness exit signal.
                     match status {
                         CLIAgentSessionStatus::Success | CLIAgentSessionStatus::Blocked { .. } => {
-                            if let Some(idle_timeout) = me.idle_on_complete {
-                                harness_exit.end_run_after(idle_timeout, ());
-                            } else {
-                                harness_exit.end_run_now(());
-                            }
+                            harness_exit.complete_with_optional_idle(me.idle_on_complete, ());
                         }
                         CLIAgentSessionStatus::InProgress => {
                             harness_exit.cancel_idle_timeout();
@@ -1581,3 +1516,122 @@ pub(super) fn write_run_started(run_id: &str, output_format: OutputFormat) {
     })
     .context("Failed to write run ID"));
 }
+
+/// Build the environment variables that carry managed secrets into the agent's
+/// terminal session.
+///
+/// Env vars that are already set to a non-empty value in the current process are
+/// never overridden: worker-injected credentials (e.g. harness auth secrets) and
+/// user-provided env vars take precedence over managed secrets, and the child
+/// inherits them from the process environment directly.
+fn build_secret_env_vars(
+    secrets: &HashMap<String, ManagedSecretValue>,
+) -> HashMap<OsString, OsString> {
+    let mut env_vars = HashMap::with_capacity(secrets.len() + 1);
+
+    // Phase 1: Record which env-var names are claimed by typed auth secrets.
+    let typed_env_names = typed_secret_env_names(secrets);
+
+    // Phase 2: Insert typed auth secrets atomically.
+    for (name, secret) in secrets {
+        let entries = typed_secret_entries(secret);
+        if entries.is_empty() {
+            continue;
+        }
+
+        if let Some((conflict, _)) = entries
+            .iter()
+            .find(|(env_name, _)| std::env::var(env_name).is_ok_and(|v| !v.is_empty()))
+        {
+            log::warn!(
+                "Skipping auth secret '{name}' ({:?}): '{conflict}' is already set \
+                 in the process environment",
+                secret.secret_type(),
+            );
+            continue;
+        }
+
+        for (env_name, env_value) in entries {
+            env_vars.insert(OsString::from(env_name), OsString::from(env_value));
+        }
+    }
+
+    // Phase 3: Insert generic RawValue secrets, skipping any that collide
+    // with worker-injected env vars or typed-secret-claimed names.
+    for (name, secret) in secrets {
+        let ManagedSecretValue::RawValue { value } = secret else {
+            continue;
+        };
+        let env_name = name.as_str();
+
+        if std::env::var(env_name).is_ok_and(|v| !v.is_empty()) {
+            log::warn!("Skipping managed secret {env_name}: already set in environment");
+            continue;
+        }
+        if typed_env_names.contains(env_name) {
+            log::warn!("Skipping generic secret '{env_name}': overridden by a typed auth secret");
+            continue;
+        }
+
+        env_vars.insert(OsString::from(env_name), OsString::from(value.as_str()));
+    }
+
+    env_vars
+}
+
+/// The env-var names that any typed auth secret in `secrets` will populate.
+/// Used for phase-3 collision detection.
+fn typed_secret_env_names(secrets: &HashMap<String, ManagedSecretValue>) -> HashSet<&'static str> {
+    let mut names = HashSet::new();
+    for secret in secrets.values() {
+        for (env_name, _) in typed_secret_entries(secret) {
+            names.insert(env_name);
+        }
+    }
+    names
+}
+
+/// The `(env name, env value)` pairs a typed auth secret expands to. Empty for
+/// `RawValue`, which is keyed by the secret's own name instead.
+fn typed_secret_entries(secret: &ManagedSecretValue) -> Vec<(&'static str, &str)> {
+    match secret {
+        ManagedSecretValue::RawValue { .. } => vec![],
+        ManagedSecretValue::AnthropicApiKey { api_key } => {
+            vec![("ANTHROPIC_API_KEY", api_key.as_str())]
+        }
+        ManagedSecretValue::AnthropicBedrockApiKey {
+            aws_bearer_token_bedrock,
+            aws_region,
+        } => vec![
+            (
+                "AWS_BEARER_TOKEN_BEDROCK",
+                aws_bearer_token_bedrock.as_str(),
+            ),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("AWS_REGION", aws_region.as_str()),
+        ],
+        ManagedSecretValue::AnthropicBedrockAccessKey {
+            aws_access_key_id,
+            aws_secret_access_key,
+            aws_session_token,
+            aws_region,
+        } => {
+            // AWS_SESSION_TOKEN is only injected when the user provided one (i.e. for
+            // temporary/STS credentials).
+            let mut entries = vec![
+                ("AWS_ACCESS_KEY_ID", aws_access_key_id.as_str()),
+                ("AWS_SECRET_ACCESS_KEY", aws_secret_access_key.as_str()),
+                ("CLAUDE_CODE_USE_BEDROCK", "1"),
+                ("AWS_REGION", aws_region.as_str()),
+            ];
+            if let Some(token) = aws_session_token.as_deref() {
+                entries.push(("AWS_SESSION_TOKEN", token));
+            }
+            entries
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "driver_tests.rs"]
+mod tests;
