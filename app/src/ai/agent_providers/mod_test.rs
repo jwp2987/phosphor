@@ -31,6 +31,7 @@ fn sample_provider(id: &str) -> AgentProvider {
         vertex_project: String::new(),
         vertex_location: String::new(),
         disabled: false,
+        token_price: None,
     }
 }
 

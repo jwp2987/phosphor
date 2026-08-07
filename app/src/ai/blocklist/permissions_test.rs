@@ -1397,3 +1397,71 @@ fn test_denylist_matches_multiline_commands() {
         });
     })
 }
+
+#[test]
+fn test_can_autoexecute_command_denylist_matches_env_prefixed_commands() {
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            convo_id,
+            permissions,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            let profile_id = *model.active_profile(Some(terminal_view_id), ctx).id();
+            model.set_execute_commands(profile_id, &ActionPermission::AlwaysAllow, ctx);
+            model.add_to_command_denylist(
+                profile_id,
+                &AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap(),
+                ctx,
+            );
+        });
+
+        for command in [
+            "X=1 rm file.txt",
+            "echo ok && X=1 rm file.txt",
+            "echo $(X=1 rm file.txt)",
+        ] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_autoexecute_command(
+                    &convo_id,
+                    command,
+                    EscapeChar::Backslash,
+                    false,
+                    None,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        CommandExecutionPermission::Denied(
+                            CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                        )
+                    ),
+                    "{command:?} should be denied by the rm denylist, got {result:?}"
+                );
+            });
+        }
+
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_autoexecute_command(
+                &convo_id,
+                "X=1 git status",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(matches!(
+                result,
+                CommandExecutionPermission::Allowed(
+                    CommandExecutionPermissionAllowedReason::AlwaysAllowed
+                )
+            ));
+        });
+    })
+}

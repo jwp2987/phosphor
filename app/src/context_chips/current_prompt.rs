@@ -4,6 +4,7 @@ use crate::settings::{InputSettings, WarpPromptSeparator};
 use crate::terminal::event::{BlockType, UserBlockCompleted};
 use crate::terminal::model::session::{ExecuteCommandOptions, Session, SessionsEvent};
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
+use crate::util::git::is_gh_auth_error;
 use crate::{
     debounce::debounce,
     editor::EditorView,
@@ -1563,14 +1564,6 @@ impl CurrentPrompt {
         false
     }
 
-    /// Heuristic check for `gh` CLI authentication errors in stderr output.
-    fn is_gh_auth_error(stderr: &str) -> bool {
-        let lower = stderr.to_lowercase();
-        lower.contains("not logged in")
-            || lower.contains("authentication required")
-            || lower.contains("gh auth login")
-    }
-
     fn github_pr_prompt_chip_command_outcome(
         output: Option<&CommandOutput>,
         timed_out: bool,
@@ -1585,7 +1578,7 @@ impl CurrentPrompt {
             }
             Some(command_output) => {
                 let stderr = String::from_utf8(command_output.stderr.clone()).unwrap_or_default();
-                if Self::is_gh_auth_error(&stderr) {
+                if is_gh_auth_error(&stderr) {
                     GithubPrPromptChipCommandOutcome::DeterministicAuthFailure
                 } else {
                     GithubPrPromptChipCommandOutcome::RetryableFailure

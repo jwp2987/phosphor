@@ -35,7 +35,8 @@ use crate::{
 use std::sync::Arc;
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
-        use notify_debouncer_full::notify::{RecursiveMode, WatchFilter};
+        use notify_debouncer_full::notify::RecursiveMode;
+        use crate::entry::{repo_watch_filter, should_ignore_git_path};
         use crate::repositories::{DetectedRepositories, DetectedRepositoriesEvent};
         use watcher::{BulkFilesystemWatcher, BulkFilesystemWatcherEvent};
         use warpui::SingletonEntity as _;
@@ -322,6 +323,14 @@ impl LocalRepoMetadataModel {
     }
 
     /// Handles events from the BulkFilesystemWatcher.
+    ///
+    /// Each loop below opens with the watch filter's emit predicate
+    /// (`should_ignore_git_path`). Upstream carries it as a second closure on
+    /// `WatchFilter`; the fork's `notify` revision has only the descend
+    /// predicate (see [`repo_watch_filter`]), so the `.git/` allowlist is
+    /// enforced on the delivered events instead: everything inside `.git/` is
+    /// dropped except HEAD, refs/heads/*, index.lock, loose remote-tracking
+    /// refs and tracked-upstream state.
     #[cfg(feature = "local_fs")]
     fn handle_watcher_event(
         &mut self,
@@ -333,6 +342,9 @@ impl LocalRepoMetadataModel {
 
         // Process added or updated files
         for path in event.added_or_updated_iter() {
+            if should_ignore_git_path(path) {
+                continue;
+            }
             if let Some(repo_path) = self.find_repository_for_path(path) {
                 let repo_update = repo_updates.entry(repo_path).or_default();
                 repo_update.added.push(path.to_path_buf());
@@ -341,6 +353,9 @@ impl LocalRepoMetadataModel {
 
         // Process deleted files
         for path in &event.deleted {
+            if should_ignore_git_path(path) {
+                continue;
+            }
             if let Some(repo_path) =
                 self.find_repository_for_path_string(path.to_string_lossy().as_ref())
             {
@@ -353,6 +368,9 @@ impl LocalRepoMetadataModel {
 
         // Process moved files
         for (to_path, from_path) in &event.moved {
+            if should_ignore_git_path(to_path) && should_ignore_git_path(from_path) {
+                continue;
+            }
             if let Some(repo_path) = self.find_repository_for_path(to_path) {
                 let repo_update = repo_updates.entry(repo_path).or_default();
                 repo_update
@@ -453,6 +471,22 @@ impl LocalRepoMetadataModel {
         }
     }
 
+    /// The gitignore set (repo root + global) and force-included path list
+    /// handed to [`repo_watch_filter`] when registering a watch on
+    /// `watch_path`. These are what make the watch descend filter prune
+    /// gitignored subtrees such as `node_modules/` or `target/` while still
+    /// watching registered force-included paths (e.g. skills).
+    #[cfg(feature = "local_fs")]
+    pub(crate) fn repo_watch_filter_inputs(
+        &self,
+        watch_path: &Path,
+    ) -> (Vec<Gitignore>, Vec<PathBuf>) {
+        (
+            gitignores_for_directory(watch_path),
+            self.force_included_paths.clone(),
+        )
+    }
+
     /// Adds or updates a repository's file tree state.
     fn add_repository_internal(
         &mut self,
@@ -483,14 +517,16 @@ impl LocalRepoMetadataModel {
             if let Some(ref watcher) = self.watcher {
                 if !is_unsafe_watch_root(&local_path) {
                     let watch_path = local_path.clone();
+                    // Build the gitignore set (root + global) and force-included
+                    // path list so the descend filter prunes gitignored subtrees
+                    // while still watching registered force-included paths (e.g.
+                    // skills).
+                    let (gitignores, force_included_paths) =
+                        self.repo_watch_filter_inputs(&watch_path);
                     watcher.update(ctx, |watcher, _ctx| {
-                        use crate::entry::should_ignore_git_path;
-                        let watch_filter = WatchFilter::with_filter(Arc::new(move |watch_path| {
-                            !should_ignore_git_path(watch_path)
-                        }));
                         std::mem::drop(watcher.register_path(
                             &watch_path,
-                            watch_filter,
+                            repo_watch_filter(watch_path.clone(), gitignores, force_included_paths),
                             RecursiveMode::Recursive,
                         ));
                     });

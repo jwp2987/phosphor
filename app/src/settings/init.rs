@@ -360,7 +360,16 @@ fn handle_warp_config_change(
 /// settings when the settings file feature flag is disabled.
 fn init_platform_native_preferences() -> user_preferences::Model {
     cfg_if::cfg_if! {
-        if #[cfg(test)] {
+        // `test-util` is part of the guard, not just `test`: `cfg(test)` only holds
+        // while compiling *this* crate's own test target, so downstream test binaries
+        // that link `warp` as a dependency (notably `warp_tui`, whose dev-dependency
+        // enables `warp/test-util`) fell through to the file-backed store and read and
+        // wrote the developer's real `user_preferences.json`. That both mutated real
+        // user settings from a test run and made concurrent tests race on the shared
+        // file, which is what made the TUI footer tests flaky. `integration_tests` is
+        // excluded because that harness deliberately drives the real preferences file
+        // (see `crates/integration/src/builder.rs`).
+        if #[cfg(all(any(test, feature = "test-util"), not(feature = "integration_tests")))] {
             Box::<user_preferences::in_memory::InMemoryPreferences>::default()
         } else if #[cfg(any(target_os = "linux", target_os = "freebsd", feature = "integration_tests"))] {
             match user_preferences::file_backed::FileBackedUserPreferences::new(super::user_preferences_file_path()) {

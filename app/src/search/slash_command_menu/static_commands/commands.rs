@@ -389,6 +389,42 @@ pub static VIM_MODE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     argument: None,
 });
 
+/// Reports how much of the active model's context window the current conversation occupies.
+///
+/// Sanctioned BYOP divergence from Warp (AGENTS §5.10): Warp's `/usage` opens its hosted
+/// billing-and-usage pane, which reports plan credits and quota against Warp's servers. This
+/// fork has no hosted subscription to report on — the user pays their own provider — so
+/// `/usage` reports the budget a BYOP conversation genuinely spends against, the context
+/// window. It is a new presentation of `AIConversation::context_window_usage`, the same
+/// number both footers already show; see `ai::usage_cost` for the full rationale.
+pub static USAGE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/usage",
+    description: t_static!("slash-cmd-usage-desc"),
+    icon_path: "bundled/svg/bar-chart-04.svg",
+    availability: Availability::AI_ENABLED,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
+/// Reports what the current conversation's tokens cost at the user's configured provider
+/// rates.
+///
+/// Sanctioned BYOP divergence from Warp (AGENTS §5.10): Warp's `/cost` toggles a usage footer
+/// whose money figure is computed server-side by Warp against its own price list. A BYOP
+/// provider returns token counts and never a dollar figure, so this fork multiplies those
+/// counts by the rates the user configured for the provider/model
+/// (`AgentProviderModel::token_price`, defaulting to `AgentProvider::token_price`). When no
+/// rate is configured it reports the token counts and says so, rather than inventing one; see
+/// `ai::usage_cost`.
+pub static COST: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/cost",
+    description: t_static!("slash-cmd-cost-desc"),
+    icon_path: "bundled/svg/coins-stacked-02.svg",
+    availability: Availability::AI_ENABLED,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 pub static COMMAND_REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::new);
 
 /// A unique identifier for a static slash command.
@@ -546,6 +582,11 @@ fn all_commands() -> Vec<StaticCommand> {
     }
 
     commands.push(VIM_MODE.clone());
+    // No feature flag (AGENTS §5.4): both are read-only reports over data the app already
+    // holds, with no rollout risk and no half-built state to hide, matching the other
+    // fork-native always-on commands (`/vim-mode`, `/api-keys`).
+    commands.push(USAGE.clone());
+    commands.push(COST.clone());
 
     commands
 }
@@ -578,6 +619,37 @@ mod tests {
         assert!(!command.auto_enter_ai_mode);
         assert!(command.argument.is_none());
         assert!(command.supports_tui());
+    }
+
+    /// Fork-authored (AGENTS §5.10): `/usage` and `/cost` mean something different here than
+    /// in Warp — see their doc comments — so upstream has no test to port for this.
+    #[test]
+    fn usage_and_cost_commands_are_registered_and_tui_capable() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        for (command, expected_kind) in [
+            (&*USAGE, SlashCommandKind::Usage),
+            (&*COST, SlashCommandKind::Cost),
+        ] {
+            let registered = COMMAND_REGISTRY
+                .get_command_with_name(command.name)
+                .unwrap_or_else(|| panic!("expected {} to be registered", command.name));
+            assert_eq!(registered.kind(), expected_kind);
+            // Both are read-only reports over local BYOP data, so AGENTS §5.9 requires them
+            // in the TUI as well as the GUI.
+            assert!(
+                registered.supports_tui(),
+                "{} must be executable in the TUI",
+                command.name
+            );
+            // No argument: selecting from the menu executes immediately rather than inserting
+            // text for the user to complete.
+            assert!(registered.argument.is_none());
+            assert!(!registered.auto_enter_ai_mode);
+            // Availability stops at AI_ENABLED on purpose: both commands answer usefully with
+            // no conversation open, and their handlers say so in words.
+            assert_eq!(registered.availability, Availability::AI_ENABLED);
+        }
     }
 
     #[test]

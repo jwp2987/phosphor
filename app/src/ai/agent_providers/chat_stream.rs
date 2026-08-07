@@ -4339,6 +4339,12 @@ pub async fn generate_byop_output(
         );
     }
 
+    // The LLM id this turn actually went out with (`byop:<provider_id>:<model_id>`). It keys
+    // the per-model token-usage rows emitted on StreamFinished, so `/cost` can resolve the
+    // provider and its configured token price per model even when a conversation switched
+    // models partway through.
+    let billed_llm_id = params.model.as_str().to_owned();
+
     let stream = async_stream::stream! {
         // 1) StreamInit — always sent first, so the UI can immediately show "thinking..."
         yield Ok(api::ResponseEvent {
@@ -5598,7 +5604,43 @@ pub async fn generate_byop_output(
                 total_input_tokens: 0,
             })
         });
-        yield Ok(make_finished_done(usage_metadata));
+
+        // Per-model token usage for this turn. Warp's server fills this in and the client
+        // already accumulates it (`AIConversation::update_cost_and_usage_for_request` →
+        // `total_token_usage_by_model`); BYOP used to hand up an empty vec, so the whole
+        // accumulator sat permanently empty and every token count the provider reported was
+        // dropped on the floor. `/cost` needs those counts, so feed the existing pipe rather
+        // than opening a second accounting path.
+        //
+        // `total_input` must EXCLUDE the two cache buckets: the proto splits them out and
+        // consumers sum all four (see `handle_response_stream_finished`'s
+        // `aggregate_token_count`), so leaving them folded in would double-count. genai
+        // normalizes `prompt_tokens` to the full billed prompt for every adapter — Anthropic
+        // computes it as `input + cache_creation + cache_read`, OpenAI's already includes
+        // `cached_tokens` — so the uncached remainder is prompt minus both buckets.
+        //
+        // `cost_in_cents` stays 0.0: a BYOP provider reports tokens, never money. `/cost`
+        // multiplies these counts by the user's own configured rates instead.
+        let token_usage = {
+            let billed_total = captured_prompt_tokens.max(0) + captured_completion_tokens.max(0);
+            if billed_total == 0 {
+                vec![]
+            } else {
+                let cache_read = captured_cache_read_tokens.max(0);
+                let cache_write = captured_cache_create_tokens.max(0);
+                let uncached_input = (captured_prompt_tokens.max(0) - cache_read - cache_write).max(0);
+                vec![api::response_event::stream_finished::TokenUsage {
+                    model_id: billed_llm_id.clone(),
+                    total_input: uncached_input as u32,
+                    output: captured_completion_tokens.max(0) as u32,
+                    input_cache_read: cache_read as u32,
+                    input_cache_write: cache_write as u32,
+                    cost_in_cents: 0.0,
+                }]
+            }
+        };
+
+        yield Ok(make_finished_done(usage_metadata, token_usage));
     };
 
     Ok(Box::pin(stream))
@@ -6520,6 +6562,7 @@ fn create_subtask_event(subtask_id: &str, parent_task_id: &str) -> api::Response
 
 fn make_finished_done(
     usage_metadata: Option<api::response_event::stream_finished::ConversationUsageMetadata>,
+    token_usage: Vec<api::response_event::stream_finished::TokenUsage>,
 ) -> api::ResponseEvent {
     api::ResponseEvent {
         r#type: Some(api::response_event::Type::Finished(
@@ -6528,7 +6571,7 @@ fn make_finished_done(
                     api::response_event::stream_finished::Done {},
                 )),
                 conversation_usage_metadata: usage_metadata,
-                token_usage: vec![],
+                token_usage,
                 should_refresh_model_config: false,
                 request_cost: None,
             },

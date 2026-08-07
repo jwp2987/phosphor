@@ -18,10 +18,14 @@ use warpui::{
 };
 
 use crate::{
-    code_review::git_dialog::{
-        interactive_path_future, pr::show_pr_created_toast, render_branch_section,
-        render_file_changes_box, show_toast, user_facing_git_error, GitDialog, GitDialogAction,
-        GitDialogEvent, GitDialogMode,
+    ai::agent_providers::oneshot::OneshotConfig,
+    code_review::{
+        commit_message_gen,
+        git_dialog::{
+            interactive_path_future, pr::show_pr_created_toast, render_branch_section,
+            render_file_changes_box, should_send_git_ops_ai_request, show_toast,
+            user_facing_git_error, GitDialog, GitDialogAction, GitDialogEvent, GitDialogMode,
+        },
     },
     editor::{
         EditorOptions, EditorView, Event as EditorEvent, InteractionState,
@@ -102,7 +106,11 @@ pub(super) fn new_state(
     // If AI autogen is on, the dialog opens with "Generating\u{2026}" and a
     // background request fills the editor when it resolves. Otherwise, we
     // land on the manual-type prompt immediately.
-    let initial_placeholder = crate::t!("code-review-type-commit-message-placeholder");
+    let initial_placeholder = if autogen_config(ctx).is_some() {
+        crate::t!("code-review-generating-commit-message-placeholder")
+    } else {
+        crate::t!("code-review-type-commit-message-placeholder")
+    };
     let message_editor = ctx.add_typed_action_view(|ctx| {
         let appearance = Appearance::as_ref(ctx);
         let options = EditorOptions {
@@ -228,6 +236,106 @@ pub(super) fn confirm_tooltip(state: &CommitState, app: &AppContext) -> Option<&
     } else {
         None
     }
+}
+
+/// Resolves the model for the open-time AI commit-message draft, or `None` when
+/// no draft will be generated.
+///
+/// Folds Warp's git-ops AI gate (feature flag + the user's autogen setting +
+/// team policy) together with resolving a BYOP model. The second half is the
+/// cloud→BYOP divergence: Warp only checks its own gates, because once they pass
+/// its cloud backend is always reachable, whereas here the model comes from the
+/// user's provider config and may simply not be configured. Resolving it up
+/// front rather than inside the request keeps Warp's user-visible rule intact —
+/// the editor shows "Generating\u{2026}" exactly when a draft is actually coming,
+/// and the manual-type prompt otherwise.
+fn autogen_config(app: &AppContext) -> Option<OneshotConfig> {
+    should_send_git_ops_ai_request(app)
+        .then(|| commit_message_gen::resolve_config(app))
+        .flatten()
+}
+
+/// Kicks off the open-time AI commit-message draft. The result is applied by
+/// [`apply_generated_commit_message`].
+///
+/// Local repos only: the diff is read from the working tree. The remote/SSH
+/// variant feeds the same generator the diff the client already holds from
+/// diff-state-over-SSH, so it is a direct call to
+/// `commit_message_gen::generate_commit_message_from_diff`; wiring it up is
+/// deferred until the remote git write-ops work (PR #125) lands, because the
+/// remote commit flow it hooks into does not exist on this branch yet.
+pub(super) fn maybe_start_commit_message_autogen(
+    me: &GitDialog,
+    ctx: &mut ViewContext<GitDialog>,
+) {
+    let Some(cfg) = autogen_config(ctx) else {
+        return;
+    };
+    // Generate from the same scope that will be committed (the "include
+    // unstaged" toggle), so the message describes what `run_commit` stages
+    // rather than always assuming the full working set.
+    let GitDialogMode::Commit(state) = me.mode() else {
+        return;
+    };
+    let include_unstaged = state.include_unstaged;
+    let repo_path = me.repo_path().clone();
+    let branch_name = me.branch_name().to_string();
+
+    ctx.spawn(
+        async move {
+            commit_message_gen::generate_for_local_repo(
+                &cfg,
+                &repo_path,
+                include_unstaged,
+                &branch_name,
+            )
+            .await
+            .map_err(|err| err.to_string())
+        },
+        |me, result, ctx| {
+            apply_generated_commit_message(me, result, ctx);
+        },
+    );
+}
+
+/// Populates the commit message editor from an AI-generated message: on success
+/// fill the editor unless the user already typed, on failure swap to the
+/// manual-type placeholder (no toast — the empty editor tells the story and the
+/// failure isn't retryable).
+pub(super) fn apply_generated_commit_message(
+    me: &mut GitDialog,
+    result: Result<String, String>,
+    ctx: &mut ViewContext<GitDialog>,
+) {
+    let GitDialogMode::Commit(state) = me.mode() else {
+        return;
+    };
+    let message_editor = state.message_editor.clone();
+    // Swap "Generating\u{2026}" for the manual-type prompt so it shows if the
+    // user later clears the generated draft.
+    let fallback_placeholder = crate::t!("code-review-type-commit-message-placeholder");
+
+    match result {
+        Ok(generated) => {
+            // User input wins — don't clobber their text.
+            let user_typed = !message_editor.as_ref(ctx).buffer_text(ctx).trim().is_empty();
+            message_editor.update(ctx, |editor, ctx| {
+                editor.set_placeholder_text(fallback_placeholder, ctx);
+                if !user_typed {
+                    editor.system_reset_buffer_text(generated.trim(), ctx);
+                }
+            });
+        }
+        Err(err) => {
+            log::warn!("Failed to autogenerate commit message: {err}");
+            message_editor.update(ctx, |editor, ctx| {
+                editor.set_placeholder_text(fallback_placeholder, ctx);
+            });
+        }
+    }
+
+    me.refresh_confirm_enabled(ctx);
+    ctx.notify();
 }
 
 pub(super) fn handle_sub_action(

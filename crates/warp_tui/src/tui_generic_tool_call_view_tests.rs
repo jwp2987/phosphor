@@ -84,8 +84,18 @@ fn mcp_permission_details_are_structured_and_human_readable() {
         action_model.update(&mut app, |action_model, ctx| {
             queue_tui_permission_action(action_model, action_for_queue, conversation_id, ctx);
         });
-        // Pump the async preprocess so the action blocks and its prompt materializes.
-        crate::test_fixtures::settle().await;
+        // Pump the async preprocess so the action blocks and its prompt
+        // materializes. Wait on the materialized, active prompt rather than a
+        // fixed yield count, which races the cross-thread preprocess hand-off
+        // under parallel load.
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .active_permission_prompt(ctx)
+                    .is_some_and(|prompt| prompt.as_ref(ctx).is_active(ctx))
+            })
+        })
+        .await;
         app.read(|ctx| {
             let prompt = view
                 .as_ref(ctx)
@@ -188,7 +198,19 @@ fn accepting_new_conversation_suggestion_completes_the_executor() {
         });
         // Let the spawned preprocessing land the action in the pending queue before
         // approving it; otherwise `accept` no-ops and no result is ever recorded.
-        crate::test_fixtures::settle().await;
+        // Wait on the action actually being pending rather than a fixed yield
+        // count, which races the cross-thread preprocess hand-off under load.
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| {
+                action_model
+                    .as_ref(ctx)
+                    .get_pending_action_by_id(&AIAgentActionId::from(
+                        "suggest-conversation".to_owned(),
+                    ))
+                    .is_some()
+            })
+        })
+        .await;
 
         view.update(&mut app, |view, ctx| view.accept(ctx));
         // Wait for the executor to reach a terminal result instead of awaiting a

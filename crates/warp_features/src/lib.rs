@@ -702,6 +702,14 @@ pub enum FeatureFlag {
     /// Gates the block-lifecycle transition coordinator's corrective completion
     /// recovery paths (see `app/src/terminal/model/lifecycle`).
     TerminalLifecycleRecovery,
+
+    /// Gates the Grouped Tabs feature.
+    GroupedTabs,
+
+    /// Gates the Pinned Tabs feature, which lets users pin individual tabs
+    /// and whole tab groups so they stay at the front of the tab list and
+    /// are protected from reordering.
+    PinnedTabs,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =

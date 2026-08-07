@@ -25,7 +25,8 @@
 //! - [`EMBEDDED`] -- the minijinja `.j2` templates (the system prompt and its partials).
 //!   Has an mtime cache; if nothing changed, the parsed Environment is reused.
 //! - [`EMBEDDED_RAW`] -- plain text fed directly to the model (13 tool descriptions +
-//!   the conversation-title prompt). Does **not** go through minijinja; see that constant's comment.
+//!   the conversation-title and commit-message prompts). Does **not** go through minijinja;
+//!   see that constant's comment.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -223,6 +224,10 @@ const EMBEDDED_RAW: &[(&str, &str)] = &[
         "tasks/title_system.md",
         include_str!("prompts/tasks/title_system.md"),
     ),
+    (
+        "tasks/commit_message_system.md",
+        include_str!("prompts/tasks/commit_message_system.md"),
+    ),
 ];
 
 /// Look up a plain-text asset: use the override version if present in the override dir, otherwise the built-in.
@@ -266,6 +271,17 @@ pub fn tool_description(tool_name: &str, fallback: &'static str) -> Cow<'static,
 pub fn title_system_prompt() -> Cow<'static, str> {
     raw_asset("tasks/title_system.md")
         .expect("tasks/title_system.md is registered in EMBEDDED_RAW")
+}
+
+/// Get the system prompt used for AI commit-message generation
+/// (`tasks/commit_message_system.md`).
+///
+/// Sits alongside [`title_system_prompt`]: both are plain markdown fed straight
+/// to the model by a one-shot call, and both pick up a hot-reloaded copy from
+/// the prompt template dir when one is configured.
+pub fn commit_message_system_prompt() -> Cow<'static, str> {
+    raw_asset("tasks/commit_message_system.md")
+        .expect("tasks/commit_message_system.md is registered in EMBEDDED_RAW")
 }
 
 /// Read a user-supplied raw prompt file (path relative to the prompt template

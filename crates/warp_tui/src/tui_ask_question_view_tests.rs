@@ -365,8 +365,13 @@ fn submitting_other_restores_question_navigation_focus() {
         );
         queue_question_action(&mut app, &view);
         // Pump the async preprocess so the action blocks and ASK_QUESTION_ACTIVE
-        // (and thus left/right navigation) becomes active.
-        crate::test_fixtures::settle().await;
+        // (and thus left/right navigation) becomes active. Wait on the blocked
+        // state rather than a fixed yield count, which races the cross-thread
+        // preprocess hand-off under parallel load.
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).is_awaiting_answers(ctx))
+        })
+        .await;
         present_active_view(&mut app, &view);
 
         let selector = app.read(|ctx| view.as_ref(ctx).selector.clone());
