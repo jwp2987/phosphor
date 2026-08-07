@@ -660,8 +660,8 @@ pub fn test_session_restoration_separator() {
                 .as_f64()
     );
 
-    // With the active block not started during initialize,
-    // the gap is inserted before the active block in clear_visible_screen.
+    // With the active block still hidden during initialize, the gap is inserted before the active
+    // block in clear_visible_screen.
     // Total items: 2 restored blocks + 1 separator + 1 gap + 1 active block = 5
     assert_eq!(block_list.block_heights.summary().total_count, 5);
     // Gap is at index 3 (before the active block at index 4)

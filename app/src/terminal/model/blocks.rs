@@ -826,6 +826,11 @@ impl BlockList {
             Default::default(),
             None,
         );
+        // Bootstrap blocks are driven by the shell, not by the input editor, so nothing else
+        // would ever start them. Start it here so it is not mistaken for an unstarted block
+        // collecting early output/typeahead.
+        self.start_active_block();
+        self.update_active_block_height();
         self.bootstrap_stage = BootstrapStage::WarpInput;
     }
 
@@ -1032,27 +1037,20 @@ impl BlockList {
             cursor.slice(&BlockIndex(self.blocks.len()), SeekBias::Left)
         };
 
-        // If the active block has started (i.e. is running)--then insert the gap _after_ the block.
-        // If the active block has not started (e.g. the user pressed ctrl-l)--insert the gap
-        // _before_ the active block so the next command the user executes is after the gap.
+        // If the active block is visible, insert the gap _after_ the block.
+        // If the active block is hidden, insert the gap _before_ the active block so the next
+        // visible content is after the gap.
         //
-        // Exception: an in-band command (e.g. a generator dispatched at high
-        // frequency by the remote after an SSH subshell-bootstrap) temporarily
-        // "borrows" the user's active block, setting `is_for_in_band_command` to
-        // true and starting it. This kind of block is hidden in the UI
-        // (`should_hide_block` → `height()=0`). If Ctrl+L hits this in-flight
-        // window, taking the "started" branch would insert the gap after this
-        // block, and a subsequent `command_finished` → `create_new_block` would
-        // bypass `update_live_block_height`'s gap-shrinking, leaving the model with
-        // nothing but height=0 hidden blocks before the gap, `max_scroll_top=0`,
-        // and the input box laid out at the top of the screen with a big blank gap
-        // below it — visually, "the input disappeared."
-        //
-        // Treating an in-band borrowed block as not-started, and inserting the gap
-        // before that block, is exactly equivalent to treating it as "still waiting
-        // for user input," which matches the intended product semantics.
-        let active_block_started =
-            self.active_block().started() && !self.active_block().is_in_band_command_block();
+        // Note that this is deliberately a *visibility* test rather than a "has the block
+        // started" test. Several kinds of block are started but hidden (`height() == 0`):
+        // the bootstrap blocks, and an in-band command (e.g. a generator dispatched at high
+        // frequency by the remote after an SSH subshell-bootstrap) that temporarily "borrows"
+        // the user's active block. If Ctrl+L hits one of those, placing the gap after the block
+        // would let a subsequent `command_finished` -> `create_new_block` bypass
+        // `update_live_block_height`'s gap-shrinking, leaving the model with nothing but
+        // height=0 hidden blocks before the gap, `max_scroll_top=0`, and the input box laid out
+        // at the top of the screen with a big blank gap below it -- visually, "the input
+        // disappeared."
         let gap_height = if let Some(height) = self.next_gap_height() {
             height
         } else {
@@ -1068,7 +1066,7 @@ impl BlockList {
         let agent_view_state = self.agent_view_state.clone();
         let active_block_height = self.active_block_mut().height(&agent_view_state).into();
 
-        if active_block_started {
+        if active_block_height > BlockHeight::zero() {
             self.block_heights
                 .push(BlockHeightItem::Block(active_block_height));
             self.block_heights.push(gap);
@@ -3088,13 +3086,7 @@ impl BlockList {
         active_block.finish(0);
         self.update_active_block_height();
 
-        self.create_new_block(
-            BlockId::new(),
-            BootstrapStage::WarpInput,
-            None, /* precmd_value */
-            None, /* restored_block_is_local */
-        );
-        self.bootstrap_stage = BootstrapStage::WarpInput;
+        self.create_warp_input_block();
     }
 
     /// Starts the active block and resets block-to-block state. For local sessions, this is called
@@ -3390,6 +3382,13 @@ impl BlockList {
             None, /* prompt_metadata */
             None, /* restored_block_was_local */
         );
+        // The script-execution block is created by the bootstrap machinery rather than by the
+        // input editor, so start it here; otherwise it stays unstarted for its whole lifetime
+        // and is treated as an early-output/typeahead block.
+        if next_bootstrap_stage == BootstrapStage::ScriptExecution {
+            self.start_active_block();
+            self.update_active_block_height();
+        }
         if self.bootstrap_stage != next_bootstrap_stage {
             log::info!(
                 "Incrementing stage from {:?} to {:?}",
