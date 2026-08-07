@@ -7,7 +7,7 @@ use crate::{
     ai::{
         agent::{
             AIAgentAction, AIAgentActionResultType, AIAgentActionType, AnyFileContent, FileContext,
-            ReadFilesRequest, ReadFilesResult,
+            ReadFilesFailedFile, ReadFilesRequest, ReadFilesResult,
         },
         blocklist::BlocklistAIPermissions,
         paths::host_native_absolute_path,
@@ -16,24 +16,9 @@ use crate::{
 };
 
 use super::{
-    read_local_file_context, ActionExecution, AnyActionExecution, ExecuteActionInput,
-    PreprocessActionInput, ReadFileContextResult,
+    describe_failed_files, read_local_file_context, ActionExecution, AnyActionExecution,
+    ExecuteActionInput, PreprocessActionInput, ReadFileContextResult,
 };
-
-/// Reason reported for every path in [`ReadFileContextResult::missing_files`].
-///
-/// `read_local_file_context` collapses "not found", "over the byte limit" and
-/// "could not be decoded" into a single list of paths, so the fork cannot name
-/// the individual cause. It must therefore not claim the file does not exist —
-/// the previous wording ("These files do not exist") was simply wrong for an
-/// oversized binary or an unprocessable image. See the tracking note in
-/// [`local_read_files_result`].
-const FAILED_FILE_REASON: &str =
-    "File does not exist or could not be read (missing, too large, or unprocessable)";
-
-/// File name of the synthetic entry that carries the failure list back to the
-/// model. See [`local_read_files_result`] for why the list travels as a file.
-const FAILED_FILES_ENTRY_NAME: &str = "Files Failed";
 
 pub struct ReadFilesExecutor {
     active_session: ModelHandle<ActiveSession>,
@@ -187,20 +172,19 @@ impl ReadFilesExecutor {
                         .await
                         .map_err(|e| anyhow::anyhow!("Remote read failed: {e}"))?;
 
-                    if !response.failed_files.is_empty() && response.file_contexts.is_empty() {
-                        let failed = response
-                            .failed_files
-                            .iter()
-                            .map(|f| {
-                                let reason = f
-                                    .error
-                                    .as_ref()
-                                    .map(|e| e.message.as_str())
-                                    .unwrap_or("unknown error");
-                                format!("{}: {reason}", f.path)
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ");
+                    let failed_files = response
+                        .failed_files
+                        .into_iter()
+                        .map(|f| ReadFilesFailedFile {
+                            path: f.path,
+                            message: f.error.map(|e| e.message).unwrap_or_else(|| {
+                                "File not found or could not be read".to_string()
+                            }),
+                        })
+                        .collect::<Vec<_>>();
+
+                    if !failed_files.is_empty() && response.file_contexts.is_empty() {
+                        let failed = describe_failed_files(&failed_files);
                         return Ok(ReadFilesResult::Error(format!(
                             "Failed to read files: {failed}"
                         )));
@@ -237,6 +221,7 @@ impl ReadFilesExecutor {
 
                     Ok(ReadFilesResult::Success {
                         files: file_contexts,
+                        failed_files,
                     })
                 }),
                 on_complete: Box::new(|res: Result<ReadFilesResult, anyhow::Error>, _ctx| {
@@ -280,32 +265,6 @@ impl Entity for ReadFilesExecutor {
     type Event = ();
 }
 
-/// Renders a batch of read failures as one `path: reason` entry per file, the
-/// shape Warp's `describe_failed_files` produces for its error message.
-fn describe_failed_files(failed_files: &[String]) -> String {
-    failed_files
-        .iter()
-        .map(|path| format!("{path}: {FAILED_FILE_REASON}"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Builds the synthetic [`FileContext`] that carries the failure list, using
-/// the same per-file lines Warp renders under its `**Files Failed:**` section.
-fn failed_files_context(failed_files: &[String]) -> FileContext {
-    let body = failed_files
-        .iter()
-        .map(|path| format!("- **{path}**: {FAILED_FILE_REASON}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    FileContext::new(
-        FAILED_FILES_ENTRY_NAME.to_string(),
-        AnyFileContent::StringContent(body),
-        None,
-        None,
-    )
-}
-
 /// Turns a local [`ReadFileContextResult`] into the action result handed to the
 /// model.
 ///
@@ -314,42 +273,27 @@ fn failed_files_context(failed_files: &[String]) -> FileContext {
 /// failed. Before this split a single bad path threw away every file that had
 /// been read successfully (issue #136).
 ///
-/// ## Sanctioned divergence from Warp (refs #136, #11)
-///
-/// Warp's `ReadFilesResult::Success` carries `failed_files` next to `files` and
-/// renders it as a `**Files Failed:**` section. The fork's variant is
-/// `Success { files }` only, because its pinned `warp-proto-apis` has no
-/// `failed_reads` field on `ReadFilesResult` — and that wire format is exactly
-/// what the BYOP model reads (`ai::agent_providers::tools` serializes the proto
-/// into the `role=tool` JSON). There is therefore no field, on the wire or off
-/// it, to put the failure list in.
-///
-/// So the list travels as a trailing synthetic text entry named
-/// [`FAILED_FILES_ENTRY_NAME`], whose body is Warp's per-file failure lines.
-/// This is acceptable because the property that matters — the model learns both
-/// the content it got *and* which paths it did not get — is preserved on every
-/// model-facing path (proto → BYOP JSON, `MarkdownActionResult`,
-/// `ReadFilesResult`'s own `Display`). The alternative of returning
-/// `Success { files }` and dropping the list would hide the failures entirely,
-/// i.e. trade issue #136's loud data loss for the silent truncation the same
-/// issue files against the remote path. The cost is cosmetic: the GUI lists the
-/// entry among the read files instead of styling it as a separate failure
-/// section.
-///
-/// Revisit when the proto is re-pinned (#11): this collapses onto Warp's
-/// `Success { files, failed_files }` and the synthetic entry goes away.
+/// This previously routed the failure list through a synthetic `Files Failed`
+/// file entry, on the stated grounds that the fork's pinned `warp-proto-apis`
+/// had no `failed_reads` field to put it in. **That premise was wrong** — the
+/// generated proto does carry `read_files_result::FailedRead { path, message }`,
+/// and `convert.rs` was filling it with an empty vec. The workaround, and the
+/// deliberately vague "missing, too large, or unprocessable" wording it forced,
+/// are gone; this now matches the pin exactly (#369).
 fn local_read_files_result(result: ReadFileContextResult) -> ReadFilesResult {
-    if result.missing_files.is_empty() {
+    if result.failed_files.is_empty() {
         ReadFilesResult::Success {
             files: result.file_contexts,
+            failed_files: Vec::new(),
         }
     } else if result.file_contexts.is_empty() {
-        let failed_files = describe_failed_files(&result.missing_files);
+        let failed_files = describe_failed_files(&result.failed_files);
         ReadFilesResult::Error(format!("Failed to read files: {failed_files}"))
     } else {
-        let mut files = result.file_contexts;
-        files.push(failed_files_context(&result.missing_files));
-        ReadFilesResult::Success { files }
+        ReadFilesResult::Success {
+            files: result.file_contexts,
+            failed_files: result.failed_files,
+        }
     }
 }
 

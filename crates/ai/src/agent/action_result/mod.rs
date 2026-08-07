@@ -76,6 +76,25 @@ pub enum AIAgentActionResultType {
     AskUserQuestion(AskUserQuestionResult),
 }
 
+/// A single file that could not be read, with the reason why.
+///
+/// Ported from the pin (`02b53fcd8:crates/ai/src/agent/action_result/mod.rs`).
+/// This exists so a read failure keeps its cause: before it, every failure --
+/// absent, over the size limit, undecodable image -- collapsed into a bare
+/// `missing_files: Vec<String>` and the agent was told "File does not exist"
+/// about a file that plainly did exist (#369).
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct ReadFilesFailedFile {
+    pub path: String,
+    pub message: String,
+}
+
+impl Display for ReadFilesFailedFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.path, self.message)
+    }
+}
+
 impl AIAgentActionResultType {
     /// Returns the effective command string for command-related results, if any.
     ///
@@ -355,7 +374,10 @@ impl From<&FileContext> for FileLocations {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ReadFilesResult {
-    Success { files: Vec<FileContext> },
+    Success {
+        files: Vec<FileContext>,
+        failed_files: Vec<ReadFilesFailedFile>,
+    },
     Error(String),
     Cancelled,
 }
@@ -363,8 +385,15 @@ pub enum ReadFilesResult {
 impl Display for ReadFilesResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ReadFilesResult::Success { files } => {
-                write!(f, "Read files: {}", files.iter().format(", "))
+            ReadFilesResult::Success {
+                files,
+                failed_files,
+            } => {
+                write!(f, "Read files: {}", files.iter().format(", "))?;
+                if !failed_files.is_empty() {
+                    write!(f, " (failed: {})", failed_files.iter().format(", "))?;
+                }
+                Ok(())
             }
             ReadFilesResult::Error(error) => write!(f, "Read files error: {error}"),
             ReadFilesResult::Cancelled => write!(f, "Read files cancelled"),

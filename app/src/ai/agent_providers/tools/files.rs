@@ -90,6 +90,26 @@ fn from_args(args: &str) -> Result<api::message::tool_call::Tool> {
 fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Value> {
     use api::message::tool_call_result::Result as R;
     use api::read_files_result::Result as ReadR;
+
+    /// Builds the `role=tool` JSON for a successful read, carrying any per-file
+    /// failures alongside the content.
+    ///
+    /// This is the only channel by which a BYOP model learns that a requested
+    /// file could not be read. Dropping `failed_reads` here makes a partial read
+    /// indistinguishable from a complete one — the model silently never learns
+    /// that a path it asked for was missing, oversized or undecodable (#369).
+    /// Omitted entirely when nothing failed, so the common case is unchanged.
+    fn read_files_json(files: Vec<Value>, failed_reads: &[api::read_files_result::FailedRead]) -> Value {
+        if failed_reads.is_empty() {
+            return json!({ "status": "ok", "files": files });
+        }
+        let failed: Vec<Value> = failed_reads
+            .iter()
+            .map(|f| json!({ "path": f.path, "message": f.message }))
+            .collect();
+        json!({ "status": "ok", "files": files, "failed_files": failed })
+    }
+
     let r = match result {
         R::ReadFiles(r) => r,
         _ => return None,
@@ -113,7 +133,7 @@ fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Val
                     json!({ "path": path, "content": content })
                 })
                 .collect();
-            json!({ "status": "ok", "files": files })
+            read_files_json(files, &s.failed_reads)
         }
         Some(ReadR::TextFilesSuccess(s)) => {
             let files: Vec<Value> = s
@@ -121,7 +141,7 @@ fn result_to_json(result: &api::message::tool_call_result::Result) -> Option<Val
                 .iter()
                 .map(|f| json!({ "path": f.file_path, "content": f.content }))
                 .collect();
-            json!({ "status": "ok", "files": files })
+            read_files_json(files, &s.failed_reads)
         }
         Some(ReadR::Error(e)) => json!({ "status": "error", "message": e.message }),
         None => json!({ "status": "cancelled" }),

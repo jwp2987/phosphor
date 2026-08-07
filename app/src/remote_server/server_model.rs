@@ -2478,13 +2478,15 @@ fn file_context_result_to_proto(result: ReadFileContextResult) -> ReadFileContex
         })
         .collect();
 
+    // Carry the per-file reason through instead of flattening every failure into
+    // one generic string — that flattening is the defect #369 was filed for.
     let failed_files = result
-        .missing_files
+        .failed_files
         .into_iter()
-        .map(|path| FailedFileRead {
-            path,
+        .map(|failed_file| FailedFileRead {
+            path: failed_file.path,
             error: Some(FileOperationError {
-                message: "File not found or could not be read".to_string(),
+                message: failed_file.message,
             }),
         })
         .collect();
