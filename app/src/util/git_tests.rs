@@ -6,7 +6,8 @@ use tempfile::TempDir;
 
 use super::{
     compute_unpushed_state, detect_current_branch, detect_current_branch_display,
-    git_operation_in_progress, run_commit_chain, CommitChainMode,
+    get_pr_for_branch, git_operation_in_progress, is_gh_missing_error, run_commit_chain,
+    CommitChainMode, PrInfo, RepositoryInfo,
 };
 
 /// Helper: run a git command inside the given repo directory.
@@ -225,4 +226,256 @@ async fn git_operation_in_progress_false_for_nonexistent_repo() {
         !git_operation_in_progress(&missing),
         "a path with no .git directory reports no operation in progress"
     );
+}
+// ─── Ported from Warp: `warp/master:app/src/util/git_tests.rs` ───────────────
+//
+// Warp-mirrored coverage for `get_pr_for_branch` (AGENTS.md §5.10). The tests
+// below are Warp's, verbatim except for the shape adaptations noted in each
+// one; no assertion has been relaxed. Warp inlines the fake-`gh` shim in every
+// test — the only structural change is hoisting it into `fake_gh` below, which
+// is byte-for-byte the same shim, written to a temp dir and prepended to
+// `PATH`, so the tests stay hermetic and never reach a real GitHub.
+
+/// Writes an executable `gh` shim running `script` into a fresh temp dir and
+/// returns `(dir_handle, path_env)`, where `path_env` prepends that dir to the
+/// inherited `PATH`. The handle must be kept alive for the shim to exist.
+#[cfg(unix)]
+fn fake_gh(script: &str) -> (TempDir, String) {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    let fake_bin = tempfile::tempdir().expect("failed to create fake bin dir");
+    let gh_path = fake_bin.path().join("gh");
+    fs::write(&gh_path, script).expect("failed to write fake gh");
+    let mut permissions = fs::metadata(&gh_path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&gh_path, permissions).unwrap();
+
+    let path_env = format!(
+        "{}:{}",
+        fake_bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    (fake_bin, path_env)
+}
+
+#[tokio::test]
+async fn get_pr_for_branch_returns_none_for_detached_head() {
+    let (_dir, repo) = init_repo().await;
+    git(&repo, &["checkout", "--detach", "HEAD"]).await;
+    assert_eq!(get_pr_for_branch(&repo, None).await.unwrap(), None);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn get_pr_for_branch_does_not_require_origin_remote() {
+    let (_dir, repo) = init_repo().await;
+    let (_fake_bin, path_env) = fake_gh(
+        "#!/bin/sh\nprintf '{\"number\":123,\"url\":\"https://github.com/warp/warp/pull/123\",\"state\":\"OPEN\",\"isDraft\":true,\"baseRefName\":\"main\"}\\n'\n",
+    );
+
+    // Shape adaptation: Warp's `PrInfo` also carries `state`, `draft` and
+    // `base_branch`, which the fork's `PrInfo` does not have — the fork never
+    // requests those `gh` fields. Warp's assertions on the two fields the fork
+    // does have are unchanged; the absent payload is a separate parity gap
+    // tracked under issue #2, not a weakening of this test.
+    assert_eq!(
+        get_pr_for_branch(&repo, Some(&path_env)).await.unwrap(),
+        Some(PrInfo {
+            number: 123,
+            url: "https://github.com/warp/warp/pull/123".to_string(),
+        })
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn get_pr_for_branch_returns_none_when_gh_finds_no_pr() {
+    let (_dir, repo) = init_repo().await;
+    let (_fake_bin, path_env) = fake_gh(
+        "#!/bin/sh\nprintf 'no pull requests found for branch \"main\"\\n' >&2\nexit 1\n",
+    );
+
+    assert_eq!(
+        get_pr_for_branch(&repo, Some(&path_env)).await.unwrap(),
+        None
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn get_pr_for_branch_returns_none_when_gh_cannot_resolve_github_repo() {
+    let (_dir, repo) = init_repo().await;
+    let (_fake_bin, path_env) = fake_gh(
+        "#!/bin/sh\nprintf 'none of the git remotes configured for this repository point to a known GitHub host\\n' >&2\nexit 1\n",
+    );
+
+    assert_eq!(
+        get_pr_for_branch(&repo, Some(&path_env)).await.unwrap(),
+        None
+    );
+}
+
+// ─── Ported from Warp: `gh repo view` / error-classification coverage ────────
+//
+// These target helpers that did not exist in the fork until issue #135 was
+// fixed (`RepositoryInfo`, `repository_info_from_gh_output`,
+// `get_repository_info`, `is_gh_missing_error`, `is_no_pr_for_branch_error`,
+// `is_repository_lookup_not_applicable_error`). Warp's assertions are verbatim;
+// the only change is reusing the `fake_gh` shim above instead of re-inlining
+// Warp's identical copy in each test.
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_parses_name_and_owner() {
+    // No url in the output => host is absent.
+    assert_eq!(
+        super::repository_info_from_gh_output(
+            r#"{"name":"warp-internal","owner":{"login":"warpdotdev"}}"#
+        )
+        .unwrap(),
+        RepositoryInfo {
+            name: "warp-internal".to_owned(),
+            owner: Some("warpdotdev".to_owned()),
+            host: None,
+        }
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_parses_host_from_url() {
+    assert_eq!(
+        super::repository_info_from_gh_output(
+            r#"{"name":"warp-internal","owner":{"login":"warpdotdev"},"url":"https://github.com/warpdotdev/warp-internal"}"#
+        )
+        .unwrap(),
+        RepositoryInfo {
+            name: "warp-internal".to_owned(),
+            owner: Some("warpdotdev".to_owned()),
+            host: Some("github.com".to_owned()),
+        }
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_rejects_missing_name() {
+    assert!(super::repository_info_from_gh_output(r#"{"owner":{"login":"warpdotdev"}}"#).is_err());
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_rejects_missing_owner_login() {
+    assert!(
+        super::repository_info_from_gh_output(r#"{"name":"warp-internal","owner":{}}"#).is_err()
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_rejects_empty_fields() {
+    assert!(
+        super::repository_info_from_gh_output(r#"{"name":"","owner":{"login":"warpdotdev"}}"#)
+            .is_err()
+    );
+    assert!(
+        super::repository_info_from_gh_output(r#"{"name":"warp-internal","owner":{"login":""}}"#)
+            .is_err()
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_info_from_gh_output_rejects_malformed_json() {
+    assert!(super::repository_info_from_gh_output("not json").is_err());
+}
+
+#[cfg(all(feature = "local_fs", unix))]
+#[tokio::test]
+async fn get_repository_info_reads_gh_repo_view() {
+    let (_dir, repo) = init_repo().await;
+    let (_fake_bin, path_env) = fake_gh(
+        "#!/bin/sh\nprintf '{\"name\":\"warp-internal\",\"owner\":{\"login\":\"warpdotdev\"}}\\n'\n",
+    );
+
+    assert_eq!(
+        super::get_repository_info(&repo, Some(&path_env))
+            .await
+            .unwrap(),
+        Some(RepositoryInfo {
+            name: "warp-internal".to_owned(),
+            owner: Some("warpdotdev".to_owned()),
+            host: None,
+        })
+    );
+}
+
+#[cfg(all(feature = "local_fs", unix))]
+#[tokio::test]
+async fn get_repository_info_returns_none_when_gh_cannot_resolve_github_repo() {
+    let (_dir, repo) = init_repo().await;
+    let (_fake_bin, path_env) = fake_gh(
+        "#!/bin/sh\nprintf 'none of the git remotes configured for this repository point to a known GitHub host\\n' >&2\nexit 1\n",
+    );
+
+    assert_eq!(
+        super::get_repository_info(&repo, Some(&path_env))
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn detects_missing_gh_errors() {
+    assert!(is_gh_missing_error(
+        "Failed to execute gh command: No such file or directory (os error 2)"
+    ));
+    assert!(is_gh_missing_error(
+        "Failed to execute gh command: program not found"
+    ));
+
+    assert!(!is_gh_missing_error(
+        "gh command failed: GraphQL: authentication required; run gh auth login"
+    ));
+    assert!(!is_gh_missing_error(
+        "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host"
+    ));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn detects_no_pr_for_branch_errors() {
+    assert!(super::is_no_pr_for_branch_error(
+        "gh command failed: no pull requests found for branch \"feature-a\""
+    ));
+    assert!(super::is_no_pr_for_branch_error(
+        "gh command failed: no open pull requests found for branch \"feature-a\""
+    ));
+    assert!(super::is_no_pr_for_branch_error(
+        "GraphQL: NO OPEN PULL REQUESTS FOUND FOR BRANCH feature-a"
+    ));
+    assert!(!super::is_no_pr_for_branch_error("authentication required"));
+    assert!(!super::is_no_pr_for_branch_error("repository not found"));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn detects_repository_lookup_not_applicable_errors() {
+    assert!(super::is_repository_lookup_not_applicable_error(
+        "gh command failed: none of the git remotes configured for this repository point to a known GitHub host"
+    ));
+    assert!(super::is_repository_lookup_not_applicable_error(
+        "gh command failed: no GitHub remotes"
+    ));
+    assert!(super::is_repository_lookup_not_applicable_error(
+        "gh command failed: not a GitHub repository"
+    ));
+    assert!(!super::is_repository_lookup_not_applicable_error(
+        "authentication required"
+    ));
+    assert!(!super::is_repository_lookup_not_applicable_error(
+        "repository not found"
+    ));
 }
