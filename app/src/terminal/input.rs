@@ -4543,7 +4543,7 @@ impl Input {
         let request = SlashCommandRequest::InvokeSkill { skill, user_query };
         self.ai_controller.update(ctx, move |controller, ctx| {
             if is_queued_prompt {
-                controller.send_queued_slash_command_request(request, ctx);
+                controller.send_queued_slash_command_request(request, None, ctx);
             } else {
                 controller.send_slash_command_request(request, ctx);
             }
@@ -12309,7 +12309,7 @@ impl Input {
         let dispatched = if is_command {
             self.execute_queued_command(&text, conversation_id, ctx)
         } else {
-            self.submit_queued_prompt_for_active_pane(text, conversation_id, ctx);
+            self.submit_queued_prompt_for_active_pane(text, conversation_id, query_id, ctx);
             true
         };
         if !dispatched {
@@ -12355,6 +12355,7 @@ impl Input {
         &mut self,
         prompt: String,
         conversation_id: AIConversationId,
+        query_id: QueuedQueryId,
         ctx: &mut ViewContext<Self>,
     ) {
         self.ai_controller.update(ctx, |controller, ctx| {
@@ -12367,6 +12368,20 @@ impl Input {
             );
         });
 
+        // `/compact-and` is handled before slash-command detection: detection is gated on the
+        // command being available in the *current* input state, which a fired queued row is not
+        // subject to. Matching the queued text directly keeps a queued `/compact-and` on the
+        // two-turn summary-then-follow-up path instead of sending it verbatim as a prompt.
+        let compact_and_argument = if prompt == commands::COMPACT_AND.name {
+            Some(None)
+        } else {
+            commands::strip_command_prefix(&prompt, commands::COMPACT_AND.name).map(Some)
+        };
+        if let Some(argument) = compact_and_argument {
+            self.execute_queued_compact_and(conversation_id, query_id, argument, ctx);
+            return;
+        }
+
         let detected = self
             .slash_command_model
             .as_ref(ctx)
@@ -12377,6 +12392,8 @@ impl Input {
                 detected_command.argument.as_ref(),
                 SlashCommandTrigger::input(),
                 /*is_queued_prompt*/ true,
+                Some(conversation_id),
+                Some(query_id),
                 ctx,
             ),
             SlashCommandEntryState::SkillCommand(detected_skill) => self.execute_skill_command(
@@ -12443,6 +12460,10 @@ impl Input {
                     detected_command.argument.as_ref(),
                     SlashCommandTrigger::input(),
                     /*is_queued_prompt*/ true,
+                    // This path submits into the currently-selected conversation and has no
+                    // queued row backing it, so there is no queued row for a command to act on.
+                    /*queued_conversation_id*/ None,
+                    /*queued_query_id*/ None,
                     ctx,
                 )
             }

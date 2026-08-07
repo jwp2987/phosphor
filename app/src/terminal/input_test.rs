@@ -3143,6 +3143,8 @@ fn test_new_conversation_input_trigger_remains_single_step_in_non_empty_agent_vi
                 None,
                 SlashCommandTrigger::input(),
                 /*is_queued_prompt*/ false,
+                /*queued_conversation_id*/ None,
+                /*queued_query_id*/ None,
                 ctx,
             );
             assert!(handled);
@@ -3180,6 +3182,8 @@ fn test_create_docker_sandbox_slash_command_executes_and_clears_buffer() {
                 None,
                 SlashCommandTrigger::input(),
                 /*is_queued_prompt*/ false,
+                /*queued_conversation_id*/ None,
+                /*queued_query_id*/ None,
                 ctx,
             );
             assert!(handled);

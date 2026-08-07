@@ -19,12 +19,14 @@ use warp_util::path::{CleanPathResult, LineAndColumnArg};
 use warpui::clipboard::ClipboardContent;
 use warpui::{AppContext, SingletonEntity, ViewContext};
 
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::agent_view::{
     AgentViewEntryOrigin, DismissalStrategy, EphemeralMessage, ENTER_OR_EXIT_CONFIRMATION_WINDOW,
 };
 use crate::ai::blocklist::drive_object_attachment_for_reference;
 use crate::ai::blocklist::{
-    BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel, QueuedQueryOrigin, SlashCommandRequest,
+    BlocklistAIHistoryModel, QueuedQuery, QueuedQueryId, QueuedQueryModel, QueuedQueryOrigin,
+    SlashCommandRequest,
 };
 use crate::ai::usage_cost::{self, UsageCostOutcome};
 use crate::cloud_object::{model::persistence::ObjectStoreModel, ObjectType};
@@ -243,7 +245,8 @@ impl Input {
     ) {
         if command.argument.as_ref().is_none() {
             self.execute_slash_command(
-                command, None, trigger, /*is_queued_prompt*/ false, ctx,
+                command, None, trigger, /*is_queued_prompt*/ false,
+                /*queued_conversation_id*/ None, /*queued_query_id*/ None, ctx,
             );
         } else if command
             .argument
@@ -263,6 +266,8 @@ impl Input {
                 argument.as_ref(),
                 trigger,
                 /*is_queued_prompt*/ false,
+                /*queued_conversation_id*/ None,
+                /*queued_query_id*/ None,
                 ctx,
             );
         } else {
@@ -444,15 +449,20 @@ impl Input {
     ///
     /// When `is_queued_prompt` is true, this is the first send of a previously queued prompt:
     /// the input buffer is left alone so the user doesn't lose anything they've typed while
-    /// the agent was busy.
+    /// the agent was busy. `queued_conversation_id` and `queued_query_id` then identify the
+    /// queued row being fired, so commands that need to act on that row (rather than on the
+    /// currently-selected conversation) can find it. Both are `None` for a direct send.
     ///
     /// Returns `true` if execution was 'handled' (whether or not it resulted in success or failure).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_slash_command(
         &mut self,
         command: &StaticCommand,
         argument: Option<&String>,
         trigger: SlashCommandTrigger,
         is_queued_prompt: bool,
+        queued_conversation_id: Option<AIConversationId>,
+        queued_query_id: Option<QueuedQueryId>,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         fn show_error_toast(message: String, ctx: &mut ViewContext<Input>) {
@@ -854,27 +864,50 @@ impl Input {
                 });
             }
             compact_and if command.name == commands::COMPACT_AND.name => {
-                if self
-                    .ai_context_model
-                    .as_ref(ctx)
-                    .selected_conversation_id(ctx)
-                    .is_none()
-                {
-                    show_error_toast(
-                        "/compact-and requires an active conversation".to_owned(),
-                        ctx,
-                    );
-                    return true;
+                // A fired queued row carries its own conversation; a direct send uses the
+                // current selection.
+                let conversation_id = if is_queued_prompt {
+                    let Some(conversation_id) = queued_conversation_id else {
+                        log::error!("Queued /compact-and missing conversation id");
+                        return true;
+                    };
+                    conversation_id
+                } else {
+                    let Some(conversation_id) = self
+                        .ai_context_model
+                        .as_ref(ctx)
+                        .selected_conversation_id(ctx)
+                    else {
+                        show_error_toast(
+                            "/compact-and requires an active conversation".to_owned(),
+                            ctx,
+                        );
+                        return true;
+                    };
+                    conversation_id
                 };
 
-                // When invoked from the menu with no argument, `argument` is Some(""); normalize
-                // it to None to avoid triggering an empty user query (and wasting a token) after
-                // summarizing.
-                let initial_prompt = argument.cloned().filter(|p: &String| !p.is_empty());
-                ctx.dispatch_typed_action(&WorkspaceAction::SummarizeAIConversation {
-                    prompt: None,
-                    initial_prompt,
-                });
+                if is_queued_prompt {
+                    let Some(queued_query_id) = queued_query_id else {
+                        log::error!("Queued /compact-and missing queued query id");
+                        return true;
+                    };
+                    self.execute_queued_compact_and(
+                        conversation_id,
+                        queued_query_id,
+                        argument.cloned(),
+                        ctx,
+                    );
+                } else {
+                    // When invoked from the menu with no argument, `argument` is Some("");
+                    // normalize it to None to avoid triggering an empty user query (and wasting
+                    // a token) after summarizing.
+                    let initial_prompt = argument.cloned().filter(|p: &String| !p.is_empty());
+                    ctx.dispatch_typed_action(&WorkspaceAction::SummarizeAIConversation {
+                        prompt: None,
+                        initial_prompt,
+                    });
+                }
             }
             queue if command.name == commands::QUEUE.name => {
                 let Some(conversation_id) = self
@@ -1065,6 +1098,8 @@ impl Input {
                     argument.as_ref(),
                     SlashCommandTrigger::cmd_or_ctrl_enter(),
                     /*is_queued_prompt*/ false,
+                    /*queued_conversation_id*/ None,
+                    /*queued_query_id*/ None,
                     ctx,
                 )
             }
@@ -1115,6 +1150,8 @@ impl Input {
                     argument.as_ref(),
                     SlashCommandTrigger::input(),
                     /*is_queued_prompt*/ false,
+                    /*queued_conversation_id*/ None,
+                    /*queued_query_id*/ None,
                     ctx,
                 )
             }
@@ -1129,6 +1166,52 @@ impl Input {
             | SlashCommandEntryState::Composing { .. }
             | SlashCommandEntryState::DisabledUntilEmptyBuffer => false,
         }
+    }
+
+    /// Sends a queued `/compact-and` summary and stores its follow-up on the original
+    /// conversation.
+    ///
+    /// A queued `/compact-and` is two turns, not one: the summary runs now, and the follow-up
+    /// prompt has to wait for it. Re-queueing the follow-up as a
+    /// [`QueuedQueryOrigin::CompactAndSlashCommand`] row on `conversation_id` is what makes the
+    /// normal drain path fire it once the summary finishes. The row's attachments are carried
+    /// over so the follow-up keeps the context the user attached when they queued it.
+    pub(super) fn execute_queued_compact_and(
+        &mut self,
+        conversation_id: AIConversationId,
+        queued_query_id: QueuedQueryId,
+        initial_prompt: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // Read the attachments before sending: the caller removes the fired row afterwards.
+        let followup_attachments = QueuedQueryModel::as_ref(ctx)
+            .attachments_for(conversation_id, queued_query_id)
+            .to_vec();
+        self.ai_controller.update(ctx, move |controller, ctx| {
+            controller.send_queued_slash_command_request(
+                SlashCommandRequest::Summarize {
+                    prompt: None,
+                    overflow: false,
+                },
+                Some(conversation_id),
+                ctx,
+            );
+        });
+
+        let Some(initial_prompt) = initial_prompt.filter(|prompt| !prompt.trim().is_empty()) else {
+            return;
+        };
+        QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+            model.append(
+                conversation_id,
+                QueuedQuery::new_with_attachments(
+                    initial_prompt,
+                    QueuedQueryOrigin::CompactAndSlashCommand,
+                    followup_attachments,
+                ),
+                ctx,
+            )
+        });
     }
 }
 
