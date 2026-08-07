@@ -88,6 +88,18 @@ impl RequestFileEditsExecutor {
         self.tui_diff_storages.insert(action_id.clone(), storage);
     }
 
+    /// Drops any per-action state for a cancelled or rejected action so
+    /// prepared file contents don't outlive the action.
+    ///
+    /// Warp keeps a single unified `diff_storages` map for both surfaces; the
+    /// fork split it into `diff_views` (GUI) and `tui_diff_storages` (TUI), so
+    /// both are dropped here to match Warp's coverage.
+    pub(super) fn discard_pending(&mut self, action_id: &AIAgentActionId) {
+        self.diff_views.remove(action_id);
+        self.tui_diff_storages.remove(action_id);
+        self.diff_application_failures.remove(action_id);
+    }
+
     pub(super) fn should_autoexecute(
         &self,
         input: ExecuteActionInput,

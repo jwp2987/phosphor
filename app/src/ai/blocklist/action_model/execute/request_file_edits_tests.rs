@@ -218,20 +218,32 @@ fn execute_without_prepared_diffs_is_not_ready() {
     });
 }
 
-// NEEDS-ADAPTATION (not ported): Warp's `discard_pending_drops_state_in_any_state`
-// exercises `RequestFileEditsExecutor::discard_pending`, which the fork does not
-// implement at all (no method of that name, under any name, on this executor —
-// confirmed by grepping this file for `.remove(`, which only appears for
-// `diff_application_failures`, never for `diff_views`/`tui_diff_storages`).
-// This is not a rename-only mismatch: the cleanup behavior itself is absent, so
-// the test cannot be ported without adding a method to product code, which is
-// out of scope for a test port. Left out rather than force-adapted.
-//
-// This gap corroborates issue #9: entries placed in `diff_views` (via
-// `register_requested_edits`) or `tui_diff_storages` (via
-// `register_requested_edits_storage`) are never removed by any code path in
-// this file. A rejected/cancelled edit (see the `CodeDiffViewEvent::Rejected`
-// arm in `execute`, which sends `RequestFileEditsResult::Cancelled` but does
-// not touch `diff_views`) leaves its `diff_views` entry (and, on the TUI path,
-// its `tui_diff_storages` entry) permanently registered — an unbounded-growth
-// state leak that Warp's `discard_pending` exists specifically to prevent.
+#[test]
+fn discard_pending_drops_state_in_any_state() {
+    App::test((), |mut app| async move {
+        let executor = add_executor(&mut app);
+
+        // Registered storage entry (e.g. rejected during review).
+        //
+        // NOTE: Warp keeps one unified `diff_storages` map; the fork splits it
+        // into `diff_views` (GUI) and `tui_diff_storages` (TUI), and
+        // `register_storage` above registers into the latter.
+        let storage_id = AIAgentActionId::from("edit-storage".to_owned());
+        register_storage(&mut app, &executor, &storage_id);
+        executor.update(&mut app, |executor, _| {
+            executor.discard_pending(&storage_id);
+            assert!(!executor.tui_diff_storages.contains_key(&storage_id));
+            assert!(!executor.diff_views.contains_key(&storage_id));
+        });
+
+        // Failed entry (diff application failed during preprocess).
+        let failed_id = AIAgentActionId::from("edit-failed".to_owned());
+        executor.update(&mut app, |executor, _| {
+            executor
+                .diff_application_failures
+                .insert(failed_id.clone(), vec1![DiffApplicationError::EmptyDiff]);
+            executor.discard_pending(&failed_id);
+            assert!(!executor.diff_application_failures.contains_key(&failed_id));
+        });
+    });
+}
