@@ -245,7 +245,10 @@ fn write_task_messages(
             | Message::SystemQuery(_)
             | Message::CodeReview(_)
             | Message::ServerEvent(_)
-            | Message::InvokeSkill(_) => {}
+            | Message::InvokeSkill(_)
+            // Orchestration (agent runs) is a server-side feature this fork does not have;
+            // the snapshot carries no user-visible content. See #11.
+            | Message::OrchestrationConfigSnapshot(_) => {}
         }
     }
     Ok(())
@@ -368,16 +371,6 @@ fn write_tool_call_args(out: &mut String, tool: &Tool) {
                 }
             }
         }
-        Tool::StartAgent(sa) => {
-            out.push_str(&format!("name: \"{}\"\n", escape_yaml_string(&sa.name)));
-            out.push_str("prompt: |\n");
-            write_block_scalar(out, &sa.prompt);
-        }
-        Tool::StartAgentV2(sa) => {
-            out.push_str(&format!("name: \"{}\"\n", escape_yaml_string(&sa.name)));
-            out.push_str("prompt: |\n");
-            write_block_scalar(out, &sa.prompt);
-        }
         #[allow(deprecated)]
         Tool::FileGlob(fg) => {
             out.push_str("patterns:\n");
@@ -498,22 +491,21 @@ fn write_tool_call_args(out: &mut String, tool: &Tool) {
         | Tool::InitProject(_)
         | Tool::Server(_)
         | Tool::Subagent(_)
-        | Tool::TransferShellCommandControlToUser(_) => {}
+        | Tool::TransferShellCommandControlToUser(_)
+        // Restored/added by the upstream pin but never issued by this fork: codebase search
+        // is retired (#11) and orchestration/recording are server-side. They cannot appear
+        // in a conversation this client produced, so there is nothing to serialize.
+        | Tool::SearchCodebase(_)
+        | Tool::RunAgents(_)
+        | Tool::WaitForEvents(_)
+        | Tool::StartRecording(_)
+        | Tool::StopRecording(_) => {}
     }
 }
 
 /// Writes content from structured tool call results.
 fn write_tool_call_result_content(out: &mut String, result: &ToolCallResultType) {
     match result {
-        ToolCallResultType::StartAgentV2(r) => match &r.result {
-            Some(api::start_agent_v2_result::Result::Success(s)) => {
-                out.push_str(&format!("agent_id: {}\n", s.agent_id));
-            }
-            Some(api::start_agent_v2_result::Result::Error(e)) => {
-                out.push_str(&format!("error: {}\n", e.error));
-            }
-            None => {}
-        },
         ToolCallResultType::RunShellCommand(r) => {
             if let Some(res) = &r.result {
                 use api::run_shell_command_result::Result;
@@ -864,19 +856,6 @@ fn write_tool_call_result_content(out: &mut String, result: &ToolCallResultType)
                 }
             }
         }
-        ToolCallResultType::StartAgent(r) => {
-            if let Some(res) = &r.result {
-                use api::start_agent_result::Result;
-                match res {
-                    Result::Success(s) => {
-                        out.push_str(&format!("agent_id: {}\n", s.agent_id));
-                    }
-                    Result::Error(e) => {
-                        out.push_str(&format!("error: {}\n", e.error));
-                    }
-                }
-            }
-        }
         ToolCallResultType::SendMessageToAgent(r) => {
             if let Some(res) = &r.result {
                 use api::send_message_to_agent_result::Result;
@@ -903,6 +882,12 @@ fn write_tool_call_result_content(out: &mut String, result: &ToolCallResultType)
                 }
             }
         }
+        // Results for tools this fork never issues; see the tool-call arm above.
+        ToolCallResultType::SearchCodebase(_)
+        | ToolCallResultType::RunAgentsResult(_)
+        | ToolCallResultType::WaitForEvents(_)
+        | ToolCallResultType::StartRecording(_)
+        | ToolCallResultType::StopRecording(_) => {}
         ToolCallResultType::AskUserQuestion(r) => {
             use api::ask_user_question_result::Result;
             match &r.result {

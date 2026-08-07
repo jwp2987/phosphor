@@ -169,6 +169,12 @@ impl ApiKeyManager {
                 open_router,
                 allow_use_of_warp_credits: false,
                 aws_credentials,
+                // Both fields exist only to authenticate Warp's *server-side* harnesses:
+                // `google_cloud_credentials` carries the Gemini Enterprise Agent Platform
+                // binding and `grok_oauth_access_token` a connected SuperGrok subscription.
+                // This fork has neither flow, so it sends them empty.
+                google_cloud_credentials: None,
+                grok_oauth_access_token: String::new(),
             })
         }
     }

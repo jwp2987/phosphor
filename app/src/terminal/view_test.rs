@@ -80,6 +80,7 @@ fn tool_call_message_with_tool_for_test(
         task_id: "root-task".to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCall(api::message::ToolCall {
             tool_call_id: call_id.to_string(),
             tool: Some(tool),
@@ -99,6 +100,7 @@ fn tool_call_result_message_with_result_for_test(
         task_id: "root-task".to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCallResult(
             api::message::ToolCallResult {
                 tool_call_id: call_id.to_string(),
@@ -156,6 +158,10 @@ fn build_restored_conversation_with_cli_subagent_for_test(
                                 command_id: block_id_string.clone(),
                                 output: "jump output".to_string(),
                                 exit_code: 0,
+                                // The fork's shell-command results carry no timestamps, so the fields
+                                // upstream added stay empty. See #11.
+                                start_ts: None,
+                                finish_ts: None,
                             },
                         )),
                     },
@@ -273,6 +279,10 @@ fn build_restored_conversation_with_cli_subagent_snapshot_for_test(
                                 command_id: block_id_string.clone(),
                                 output: "short task output".to_string(),
                                 exit_code: 0,
+                                // The fork's shell-command results carry no timestamps, so the fields
+                                // upstream added stay empty. See #11.
+                                start_ts: None,
+                                finish_ts: None,
                             },
                         )),
                     },

@@ -87,6 +87,10 @@ pub fn filter_tool_call_result(result: &message::ToolCallResult) -> message::Too
                             command_id: "command_id".to_string(),
                             output: "[OUTPUT OMITTED]".to_string(),
                             exit_code: cmd_result.exit_code,
+                            // The fork's shell-command results carry no timestamps, so the fields
+                            // upstream added stay empty. See #11.
+                            start_ts: None,
+                            finish_ts: None,
                         },
                     ),
                 ),

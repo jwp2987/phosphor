@@ -758,6 +758,11 @@ fn convert_context(context: &[AIAgentContext]) -> api::InputContext {
                 api_context.git = Some(api::input_context::Git {
                     head,
                     branch: branch.unwrap_or_default(),
+                    // Upstream also sends repository (name/owner/host) and pull-request
+                    // metadata; this fork's `AIAgentContext::Git` collects neither, so the
+                    // context it sends is unchanged by the re-pin. See #11.
+                    repository: None,
+                    pull_request: None,
                 });
             }
             AIAgentContext::Skills { skills } => {

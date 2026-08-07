@@ -936,7 +936,9 @@ fn build_serializer_readiness_projection(
             | api::message::Message::MessagesReceivedFromAgents(_)
             | api::message::Message::ModelUsed(_)
             | api::message::Message::EventsFromAgents(_)
-            | api::message::Message::PassiveSuggestionResult(_) => {}
+            | api::message::Message::PassiveSuggestionResult(_)
+            // Orchestration is server-side and unsupported here; see #11.
+            | api::message::Message::OrchestrationConfigSnapshot(_) => {}
         }
     }
 
@@ -1102,7 +1104,9 @@ fn build_controller_readiness_projection(
             | api::message::Message::MessagesReceivedFromAgents(_)
             | api::message::Message::ModelUsed(_)
             | api::message::Message::EventsFromAgents(_)
-            | api::message::Message::PassiveSuggestionResult(_) => {}
+            | api::message::Message::PassiveSuggestionResult(_)
+            // Orchestration is server-side and unsupported here; see #11.
+            | api::message::Message::OrchestrationConfigSnapshot(_) => {}
         }
     }
 
@@ -5584,6 +5588,14 @@ pub async fn generate_byop_output(
                 tool_usage_metadata: None,
                 warp_token_usage: std::collections::HashMap::new(),
                 byok_token_usage: std::collections::HashMap::new(),
+                // Fields upstream added that BYOP has no source for: credits are a Warp
+                // billing concept, custom-endpoint usage is keyed by a server-side config
+                // key, and the context-window segment breakdown is computed server-side.
+                // See #11.
+                platform_credits_spent: 0.0,
+                custom_endpoint_token_usage: std::collections::HashMap::new(),
+                context_window_segments: Vec::new(),
+                total_input_tokens: 0,
             })
         });
         yield Ok(make_finished_done(usage_metadata));
@@ -5828,6 +5840,7 @@ fn make_append_event(task_id: &str, message_id: &str, kind: AppendKind) -> api::
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(msg_inner),
         request_id: String::new(),
         timestamp: None,
@@ -6076,6 +6089,7 @@ fn make_reasoning_message(task_id: &str, request_id: &str, reasoning: String) ->
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::AgentReasoning(
             api::message::AgentReasoning {
                 reasoning,
@@ -6093,6 +6107,7 @@ fn make_agent_output_message(task_id: &str, request_id: &str, text: String) -> a
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::AgentOutput(
             api::message::AgentOutput { text },
         )),
@@ -6140,6 +6155,7 @@ fn make_user_query_message(
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::UserQuery(api::message::UserQuery {
             query,
             context,
@@ -6163,6 +6179,7 @@ fn make_web_search_searching_message(
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::WebSearch(api::message::WebSearch {
             status: Some(api::message::web_search::Status {
                 r#type: Some(api::message::web_search::status::Type::Searching(
@@ -6280,6 +6297,7 @@ fn make_web_search_status_from_result(
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::WebSearch(api::message::WebSearch {
             status: Some(api::message::web_search::Status {
                 r#type: Some(r#type),
@@ -6302,6 +6320,7 @@ fn make_web_fetch_fetching_message(
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::WebFetch(api::message::WebFetch {
             status: Some(api::message::web_fetch::Status {
                 r#type: Some(api::message::web_fetch::status::Type::Fetching(
@@ -6350,6 +6369,7 @@ fn make_web_fetch_status_from_result(
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::WebFetch(api::message::WebFetch {
             status: Some(api::message::web_fetch::Status {
                 r#type: Some(r#type),
@@ -6380,6 +6400,7 @@ fn make_tool_call_result_message(
         task_id: task_id.to_owned(),
         server_message_data: content,
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCallResult(
             api::message::ToolCallResult {
                 tool_call_id,
@@ -6412,6 +6433,7 @@ fn make_tool_call_carrier_message(
         task_id: task_id.to_owned(),
         server_message_data: carrier,
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCall(api::message::ToolCall {
             tool_call_id: tool_call_id.to_owned(),
             tool: None,
@@ -6432,6 +6454,7 @@ fn make_tool_call_message(
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCall(api::message::ToolCall {
             tool_call_id: tool_call_id.to_owned(),
             tool: Some(tool),
@@ -8940,6 +8963,7 @@ mod issue_94_task_linearization_tests {
             task_id: task_id.to_string(),
             server_message_data: String::new(),
             citations: vec![],
+            fetched_memories: vec![],
             message: Some(api::message::Message::UserQuery(api::message::UserQuery {
                 query: query.to_string(),
                 ..Default::default()

@@ -499,7 +499,9 @@ impl ConvertAPIMessageToClientOutputMessage for api::Message {
             | api::message::Message::CodeReview(_)
             | api::message::Message::ServerEvent(_)
             | api::message::Message::InvokeSkill(_)
-            | api::message::Message::PassiveSuggestionResult(_) => {
+            | api::message::Message::PassiveSuggestionResult(_)
+            // Orchestration is server-side and unsupported here; see #11.
+            | api::message::Message::OrchestrationConfigSnapshot(_) => {
                 Ok(MaybeAIAgentOutputMessage::NoClientRepresentation)
             }
         }
@@ -640,10 +642,17 @@ impl ConvertAPIToolCallToAIAgentAction for api::message::ToolCall {
                         } else {
                             Some(cs_meta.query)
                         };
-                        let conversation_id = if cs_meta.conversation_id.is_empty() {
-                            None
-                        } else {
-                            Some(cs_meta.conversation_id)
+                        // Upstream moved the search target into a `oneof`: it is either a
+                        // conversation id or an orchestrated agent-run id. This fork has no
+                        // agent runs, so only the conversation id is understood; an agent-run
+                        // target falls back to "search the current conversation", exactly as
+                        // an absent target does. See #11.
+                        use api::message::tool_call::subagent::conversation_search_metadata::Target;
+                        let conversation_id = match cs_meta.target {
+                            Some(Target::ConversationId(id)) if !id.is_empty() => Some(id),
+                            Some(Target::ConversationId(_))
+                            | Some(Target::AgentRunId(_))
+                            | None => None,
                         };
                         SubagentType::ConversationSearch {
                             query,

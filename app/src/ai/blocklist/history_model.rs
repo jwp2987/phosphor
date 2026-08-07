@@ -2831,6 +2831,8 @@ fn byop_result_message_ids_by_tool_call_key(
                 | Some(warp_multi_agent_api::message::Message::ModelUsed(_))
                 | Some(warp_multi_agent_api::message::Message::EventsFromAgents(_))
                 | Some(warp_multi_agent_api::message::Message::PassiveSuggestionResult(_))
+                // Orchestration is server-side and unsupported here; see #11.
+                | Some(warp_multi_agent_api::message::Message::OrchestrationConfigSnapshot(_))
                 | None => {}
             }
         }
@@ -2894,6 +2896,8 @@ fn byop_tool_call_keys_by_message_id(
                 | Some(warp_multi_agent_api::message::Message::ModelUsed(_))
                 | Some(warp_multi_agent_api::message::Message::EventsFromAgents(_))
                 | Some(warp_multi_agent_api::message::Message::PassiveSuggestionResult(_))
+                // Orchestration is server-side and unsupported here; see #11.
+                | Some(warp_multi_agent_api::message::Message::OrchestrationConfigSnapshot(_))
                 | None => {}
             }
         }

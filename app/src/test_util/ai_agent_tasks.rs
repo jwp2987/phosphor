@@ -6,6 +6,7 @@ pub fn create_message(id: &str, task_id: &str) -> api::Message {
         task_id: task_id.to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::AgentOutput(
             api::message::AgentOutput {
                 text: format!("Message content for {id}"),
@@ -27,6 +28,7 @@ pub fn create_subagent_tool_call_message(
         task_id: task_id.to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCall(api::message::ToolCall {
             tool_call_id: format!("{id}_tool_call"),
             tool: Some(api::message::tool_call::Tool::Subagent(

@@ -2712,6 +2712,7 @@ impl BlocklistAIController {
             task_id: task_id.to_owned(),
             server_message_data,
             citations: vec![],
+            fetched_memories: vec![],
             message: Some(message::Message::ToolCallResult(message::ToolCallResult {
                 tool_call_id: tool_call_id.to_owned(),
                 context: None,
@@ -2781,6 +2782,7 @@ impl BlocklistAIController {
             task_id: result.task_id.to_string(),
             server_message_data,
             citations: vec![],
+            fetched_memories: vec![],
             message: Some(message::Message::ToolCallResult(message::ToolCallResult {
                 tool_call_id: result.id.to_string(),
                 context: None,
@@ -3947,7 +3949,11 @@ impl BlocklistAIController {
                         LlmProvider::Openai => Some("OpenAI"),
                         LlmProvider::Xai => Some("xAI"),
                         LlmProvider::Openrouter => Some("OpenRouter"),
-                        LlmProvider::AwsBedrock | LlmProvider::Unknown => None,
+                        // Gemini Enterprise is a Warp-server-side provider binding this fork
+                        // cannot use; it has no user-facing name here. See #11.
+                        LlmProvider::AwsBedrock
+                        | LlmProvider::GeminiEnterprise
+                        | LlmProvider::Unknown => None,
                     });
                     RenderableAIError::InvalidApiKey {
                         provider: provider.unwrap_or("Unknown").to_string(),

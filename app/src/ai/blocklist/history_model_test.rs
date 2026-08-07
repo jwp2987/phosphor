@@ -172,6 +172,7 @@ fn byop_user_query_message(
         task_id: "root-task".to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::UserQuery(api::message::UserQuery {
             query: query.to_owned(),
             context: current_time.map(|time| api::InputContext {
@@ -193,6 +194,7 @@ fn byop_tool_call_message(task_id: &str, message_id: &str, call_id: &str) -> api
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCall(api::message::ToolCall {
             tool_call_id: call_id.to_owned(),
             tool: None,
@@ -208,6 +210,7 @@ fn byop_tool_result_message(task_id: &str, message_id: &str, call_id: &str) -> a
         task_id: task_id.to_owned(),
         server_message_data: "{}".to_owned(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCallResult(
             api::message::ToolCallResult {
                 tool_call_id: call_id.to_owned(),

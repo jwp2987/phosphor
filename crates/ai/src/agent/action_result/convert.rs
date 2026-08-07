@@ -31,6 +31,10 @@ impl TryFrom<RequestCommandOutputResult> for api::request::input::tool_call_resu
                                 command_id: block_id.to_string(),
                                 output,
                                 exit_code: exit_code.value(),
+                                // The fork's shell-command results carry no timestamps, so the fields
+                                // upstream added stay empty. See #11.
+                                start_ts: None,
+                                finish_ts: None,
                             },
                         )),
                     },
@@ -120,6 +124,10 @@ impl TryFrom<WriteToLongRunningShellCommandResult>
                                 command_id: block_id.to_string(),
                                 output,
                                 exit_code: exit_code.value(),
+                                // The fork's shell-command results carry no timestamps, so the fields
+                                // upstream added stay empty. See #11.
+                                start_ts: None,
+                                finish_ts: None,
                             }
                         ))
                     },
@@ -158,6 +166,11 @@ impl TryFrom<ReadFilesResult> for api::request::input::tool_call_result::Result 
                                 .into_iter()
                                 .flat_map(Into::<Vec<api::AnyFileContent>>::into)
                                 .collect(),
+                            // Upstream can report per-file read failures alongside the
+                            // successful reads. This fork's `ReadFilesResult` has no such
+                            // channel yet, so the list stays empty and behavior is
+                            // unchanged by the re-pin. Wiring it up is #136.
+                            failed_reads: Vec::new(),
                         },
                     )),
                 }),
@@ -591,6 +604,10 @@ impl TryFrom<ReadShellCommandOutputResult> for api::request::input::tool_call_re
                                 command_id: block_id.to_string(),
                                 output,
                                 exit_code: exit_code.value(),
+                                // The fork's shell-command results carry no timestamps, so the fields
+                                // upstream added stay empty. See #11.
+                                start_ts: None,
+                                finish_ts: None,
                             },
                         )),
                     },
@@ -684,6 +701,10 @@ impl TryFrom<TransferShellCommandControlToUserResult>
                                     command_id: block_id.to_string(),
                                     output,
                                     exit_code: exit_code.value(),
+                                    // The fork's shell-command results carry no timestamps, so the fields
+                                    // upstream added stay empty. See #11.
+                                    start_ts: None,
+                                    finish_ts: None,
                                 },
                             ),
                         ),
