@@ -119,7 +119,6 @@ fn byop_test_task(task_id: &str, messages: Vec<api::Message>) -> api::Task {
 }
 
 fn empty_agent_conversation_data_for_test() -> AgentConversationData {
-    is_remote_child: false,
     AgentConversationData {
         is_remote_child: false,
         server_conversation_token: None,
