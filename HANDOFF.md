@@ -174,6 +174,30 @@ fine, the source was never forked. The fork diverged 2026-04-28; the pin is
 2026-07-29 — 1,799 upstream commits, so much of the "gap" is drift, not removed
 work. Treat the ORACLE.md totals as disproven.
 
+### Never let an agent background a cargo command — it will stall forever
+
+**Five agents stalled this way on 2026-08-07.** An agent that runs cargo in the
+background and then waits for a completion notification never gets one, because
+it cannot receive them. It sits there burning nothing and reporting nothing
+until the coordinator notices and pokes it.
+
+This is a **coordinator brief defect**, not an agent failure. A brief that says
+"gate with rustfmt and precheck" without saying how to run a build invites it.
+Put this in every brief that might touch cargo:
+
+    timeout 580 ./script/agent-cargo check -p warp --features gui --lib --tests 2>&1 | tail -25
+
+Three things matter in that line:
+- **Foreground.** Never `&`, never a background task the agent then waits on.
+- **`script/agent-cargo`, not raw cargo.** It applies the slot limit, job caps
+  and per-agent `CARGO_TARGET_DIR`, so a single-package check is safe even with
+  a large fleet running. Raw parallel cargo is what OOMed the box.
+- **Trust the `RESULT agent=… exit=N` line on stderr, not the pipeline's exit
+  code.** Piping through `tail` masks the real status.
+
+If the command times out, do **not** retry it blind — read `gh run view
+--log-failed` and work from the actual compiler output instead.
+
 ### The cost of the no-cargo agent gate — measured 2026-08-07
 
 `docs/FLEET-ROUND.md` has agents gate on `rustfmt --check` + `script/precheck`
