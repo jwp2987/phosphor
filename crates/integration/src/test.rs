@@ -4,9 +4,11 @@
 
 mod agent_mode;
 mod ai_assistant;
+mod ai_document;
 mod block_filtering;
 mod bootstrapping;
 mod code_review;
+mod copy_current_path;
 mod ctrl_d;
 mod file_tree;
 mod goto_line;
@@ -38,9 +40,11 @@ mod workspace;
 
 pub use agent_mode::*;
 pub use ai_assistant::*;
+pub use ai_document::*;
 pub use block_filtering::*;
 pub use bootstrapping::*;
 pub use code_review::*;
+pub use copy_current_path::*;
 pub use ctrl_d::*;
 pub use file_tree::*;
 use float_cmp::assert_approx_eq;
