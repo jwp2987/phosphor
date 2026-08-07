@@ -31,8 +31,9 @@ use warpui_core::presenter::tui::TuiPresenter;
 use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalidation};
 
 use super::{
-    AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME,
-    COST_CONVERSATION_IN_PROGRESS_HINT, COST_EMPTY_CONVERSATION_HINT,
+    AUTO_APPROVE_DISABLED_HINT, AUTO_APPROVE_ENABLED_HINT, AUTO_APPROVE_FEEDBACK_DURATION,
+    AUTO_APPROVE_TOGGLE_BINDING_NAME, COST_CONVERSATION_IN_PROGRESS_HINT,
+    COST_EMPTY_CONVERSATION_HINT,
     COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState, FooterSegment,
     FooterSegments, INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
     SHELL_MODE_HINT, TuiConversationRestoreOrigin, TuiTerminalSessionAction,
@@ -571,7 +572,152 @@ fn response_summary_visibility_is_independent_from_the_footer_usage_entry() {
 }
 
 #[test]
-fn auto_approve_actions_control_transient_color_feedback() {
+fn auto_approve_slash_command_toggles_selected_conversation_off_on_off() {
+    App::test((), |mut app| async move {
+        assert_eq!(
+            AUTO_APPROVE_FEEDBACK_DURATION,
+            std::time::Duration::from_secs(3)
+        );
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        // New TUI conversations default to `RespectUserSettings` (off).
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .pending_query_autoexecute_override(ctx),
+                AIConversationAutoexecuteMode::RespectUserSettings
+            );
+            assert!(view.auto_approve_feedback_conversation_id.is_none());
+        });
+
+        // Invoking `/auto-approve` executes the TUI `AutoApprove` arm and toggles
+        // the selected conversation on.
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::AUTO_APPROVE, None, ctx);
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .pending_query_autoexecute_override(ctx),
+                AIConversationAutoexecuteMode::RunToCompletion
+            );
+            assert_eq!(
+                view.auto_approve_feedback_conversation_id,
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+            );
+            assert_eq!(
+                view.transient_hint.current(),
+                Some((
+                    AUTO_APPROVE_ENABLED_HINT,
+                    crate::transient_hint::TransientHintTone::Success
+                ))
+            );
+        });
+
+        // Invoking `/auto-approve` again toggles it back off.
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::AUTO_APPROVE, None, ctx);
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .pending_query_autoexecute_override(ctx),
+                AIConversationAutoexecuteMode::RespectUserSettings
+            );
+            assert_eq!(
+                view.auto_approve_feedback_conversation_id,
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+            );
+            assert_eq!(
+                view.transient_hint.current(),
+                Some((
+                    AUTO_APPROVE_DISABLED_HINT,
+                    crate::transient_hint::TransientHintTone::Success
+                ))
+            );
+        });
+    });
+}
+
+/// `/natural-language-detection` flips `ai_autodetection_enabled_internal`, clears the
+/// composer, and reports the new state as success feedback.
+///
+/// The oracle's `nld_slash_command_toggles_and_reports_its_effects` also drains
+/// `warpui_core::telemetry::flush_events` for two `AgentMode.ToggleAutoDetectionSetting`
+/// payloads. Neither `flush_events` nor `EventPayload` exists in this fork — the telemetry
+/// *channel* was removed with the cloud backend (see `DECLINED.md`) — so that half has no
+/// API to assert against here. The emitting call
+/// (`record_autodetection_toggle_from_slash_command`) is still made by `set_nld_enabled`.
+#[test]
+fn nld_slash_command_toggles_and_reports_its_effects() {
+    App::test((), |mut app| async move {
+        let _agent_mode = warp_core::features::FeatureFlag::AgentMode.override_enabled(true);
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("/natural-language-detection", ctx);
+            });
+            view.execute_tui_slash_command(&slash_commands::NATURAL_LANGUAGE_DETECTION, None, ctx);
+        });
+
+        assert!(app.read(|ctx| {
+            *AISettings::as_ref(ctx)
+                .ai_autodetection_enabled_internal
+                .value()
+        }));
+        assert_eq!(app.read(|ctx| input_text(&view, ctx)), "");
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                "Natural language detection enabled.".to_owned(),
+                super::TransientHintTone::Success
+            ))
+        );
+
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("/natural-language-detection", ctx);
+            });
+            view.execute_tui_slash_command(&slash_commands::NATURAL_LANGUAGE_DETECTION, None, ctx);
+        });
+        futures_lite::future::yield_now().await;
+
+        assert!(!app.read(|ctx| {
+            *AISettings::as_ref(ctx)
+                .ai_autodetection_enabled_internal
+                .value()
+        }));
+        assert_eq!(app.read(|ctx| input_text(&view, ctx)), "");
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                "Natural language detection disabled.".to_owned(),
+                super::TransientHintTone::Success
+            ))
+        );
+    });
+}
+
+#[test]
+fn auto_approve_actions_control_visible_feedback() {
     App::test((), |mut app| async move {
         let fixture = focus_test_fixture(&mut app);
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
@@ -596,6 +742,13 @@ fn auto_approve_actions_control_transient_color_feedback() {
                 view.conversation_selection
                     .as_ref(ctx)
                     .selected_conversation_id(ctx)
+            );
+            assert_eq!(
+                view.transient_hint.current(),
+                Some((
+                    AUTO_APPROVE_ENABLED_HINT,
+                    crate::transient_hint::TransientHintTone::Success
+                ))
             );
         });
 

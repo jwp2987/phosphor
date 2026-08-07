@@ -112,8 +112,10 @@ pub enum SlashCommandKind {
     AutoApprove,
     Mcp,
     ViewLogs,
-    EnableNaturalLanguageDetection,
-    DisableNaturalLanguageDetection,
+    /// `/natural-language-detection`: one toggle, matching the oracle. Warp's older
+    /// `/enable-…` / `/disable-…` pair was collapsed upstream and neither name was ever
+    /// mapped in [`StaticCommand::kind`] here, so no reachable command is lost.
+    NaturalLanguageDetection,
     Exit,
     Logout,
     CreateEnvironment,
@@ -219,6 +221,8 @@ impl StaticCommand {
             "/rename-tab" => SlashCommandKind::RenameTab,
             "/set-tab-color" => SlashCommandKind::SetTabColor,
             "/statusline" => SlashCommandKind::Statusline,
+            "/auto-approve" => SlashCommandKind::AutoApprove,
+            "/natural-language-detection" => SlashCommandKind::NaturalLanguageDetection,
             "/fork" => SlashCommandKind::Fork,
             "/handoff" => SlashCommandKind::MoveToCloud,
             "/open-code-review" => SlashCommandKind::OpenCodeReview,
@@ -277,6 +281,8 @@ impl StaticCommand {
                 | "/api-keys"
                 | "/statusline"
                 | "/vim-mode"
+                | "/auto-approve"
+                | "/natural-language-detection"
                 // Both report on local BYOP data (context window, provider token counts x
                 // the user's own rates) and open no GUI pane, so AGENTS §5.9 requires them
                 // on the TUI too.
