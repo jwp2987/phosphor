@@ -2416,6 +2416,13 @@ menu-tab-close-below = Close Tabs Below
 menu-tab-close-right = Close Tabs to the Right
 menu-tab-save-as-new-config = Save as new config
 menu-tab-default-no-color = Default (no color)
+# Tab grouping entries. "Move to group" itself is not listed here: the submenu
+# parent's label doubles as the sidecar's anchor element id, so it stays the
+# untranslated `MOVE_TO_GROUP_LABEL` constant in `tab.rs`.
+menu-tab-new-group-with-tab = New group with tab
+menu-tab-remove-from-group = Remove from group
+menu-tab-selection-create-group = Create group from tabs
+menu-tab-group-untitled = Untitled group
 
 # --- pane header overflow menu (terminal/view/pane_impl.rs) ---
 menu-pane-copy-link = Copy link

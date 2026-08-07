@@ -3556,7 +3556,13 @@ fn test_tab_context_menu_offers_pin_entry_matching_tab_state() {
 
             let labels = |workspace: &Workspace, index: usize, ctx: &AppContext| {
                 workspace.tabs[index]
-                    .menu_items(index, tabs_len, ctx)
+                    .menu_items(
+                        index,
+                        tabs_len,
+                        &workspace.tab_groups,
+                        workspace.tab_is_only_member_of_its_group(index),
+                        ctx,
+                    )
                     .into_iter()
                     .filter_map(|item| match item {
                         MenuItem::Item(fields) => Some(fields.label().to_string()),
@@ -3605,7 +3611,13 @@ fn test_tab_context_menu_hides_pin_entry_when_feature_disabled() {
         let workspace = mock_workspace(&mut app);
         workspace.read(&app, |workspace, ctx| {
             let labels: Vec<String> = workspace.tabs[0]
-                .menu_items(0, workspace.tab_count(), ctx)
+                .menu_items(
+                    0,
+                    workspace.tab_count(),
+                    &workspace.tab_groups,
+                    workspace.tab_is_only_member_of_its_group(0),
+                    ctx,
+                )
                 .into_iter()
                 .filter_map(|item| match item {
                     MenuItem::Item(fields) => Some(fields.label().to_string()),
@@ -3662,6 +3674,437 @@ fn test_keymap_context_reflects_active_tab_pin_and_group_state() {
             workspace.handle_action(&WorkspaceAction::PinActiveTabGroup, ctx);
             let context = workspace.keymap_context(ctx);
             assert!(context.set.contains("Workspace_ActiveTabGroupPinned"));
+        });
+    });
+}
+
+/// Labels of the plain (non-separator, non-row) entries of a menu item list.
+fn menu_item_labels(items: &[MenuItem<WorkspaceAction>]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            MenuItem::Item(fields) => Some(fields.label().to_string()),
+            MenuItem::Submenu { fields, .. } => Some(fields.label().to_string()),
+            MenuItem::Separator | MenuItem::ItemsRow { .. } | MenuItem::Header { .. } => None,
+        })
+        .collect()
+}
+
+/// The locator the tab bar hands to the multi-selection actions for `tab_index`.
+fn tab_locator(workspace: &Workspace, tab_index: usize, ctx: &AppContext) -> PaneViewLocator {
+    let pane_group = &workspace.tabs[tab_index].pane_group;
+    PaneViewLocator {
+        pane_group_id: pane_group.id(),
+        pane_id: pane_group.as_ref(ctx).focused_pane_id(ctx),
+    }
+}
+
+#[test]
+fn test_tab_context_menu_offers_group_entries_and_move_to_group_submenu() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 2);
+
+            let labels_for = |workspace: &Workspace, index: usize, ctx: &AppContext| {
+                let is_only_member = workspace.tab_is_only_member_of_its_group(index);
+                menu_item_labels(&workspace.tabs[index].menu_items(
+                    index,
+                    workspace.tabs.len(),
+                    &workspace.tab_groups,
+                    is_only_member,
+                    ctx,
+                ))
+            };
+
+            // No groups exist yet: only "New group with tab" applies.
+            let labels = labels_for(workspace, 0, ctx);
+            assert!(
+                labels.contains(&crate::t!("menu-tab-new-group-with-tab")),
+                "ungrouped tab should offer a new-group entry, got {labels:?}"
+            );
+            assert!(
+                !labels.iter().any(|label| label == MOVE_TO_GROUP_LABEL),
+                "no destination group exists yet, got {labels:?}"
+            );
+            assert!(
+                !labels.contains(&crate::t!("menu-tab-remove-from-group")),
+                "an ungrouped tab cannot leave a group, got {labels:?}"
+            );
+
+            // Group tab 0 on its own. It is now the sole member of its group,
+            // so the new-group entry disappears and "Remove from group" shows.
+            workspace.handle_action(&WorkspaceAction::NewTabGroupFromTab(0), ctx);
+            let grouped_index = workspace
+                .tabs
+                .iter()
+                .position(|tab| tab.group_id.is_some())
+                .expect("a tab should be grouped");
+            let labels = labels_for(workspace, grouped_index, ctx);
+            assert!(
+                !labels.contains(&crate::t!("menu-tab-new-group-with-tab")),
+                "sole group member has nothing to split off, got {labels:?}"
+            );
+            assert!(
+                labels.contains(&crate::t!("menu-tab-remove-from-group")),
+                "grouped tab should offer remove-from-group, got {labels:?}"
+            );
+            assert!(
+                !labels.iter().any(|label| label == MOVE_TO_GROUP_LABEL),
+                "the tab's own group is not a destination, got {labels:?}"
+            );
+
+            // The remaining ungrouped tab now has a destination group, so the
+            // "Move to group" submenu parent appears.
+            let ungrouped_index = workspace
+                .tabs
+                .iter()
+                .position(|tab| tab.group_id.is_none())
+                .expect("one tab should still be ungrouped");
+            let labels = labels_for(workspace, ungrouped_index, ctx);
+            assert!(
+                labels.iter().any(|label| label == MOVE_TO_GROUP_LABEL),
+                "a destination group exists, so the submenu parent should show, got {labels:?}"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_tab_context_menu_hides_group_entries_when_feature_disabled() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(false);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.read(&app, |workspace, ctx| {
+            let labels = menu_item_labels(&workspace.tabs[0].menu_items(
+                0,
+                workspace.tabs.len(),
+                &workspace.tab_groups,
+                false,
+                ctx,
+            ));
+            assert!(
+                !labels.contains(&crate::t!("menu-tab-new-group-with-tab"))
+                    && !labels.contains(&crate::t!("menu-tab-remove-from-group"))
+                    && !labels.iter().any(|label| label == MOVE_TO_GROUP_LABEL),
+                "tab-group entries must stay hidden when GroupedTabs is off, got {labels:?}"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_move_to_group_sidecar_items_dispatch_move_actions() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 3);
+
+            // Two single-tab groups plus one ungrouped tab.
+            workspace.handle_action(&WorkspaceAction::NewTabGroupFromTab(0), ctx);
+            workspace.handle_action(&WorkspaceAction::NewTabGroupFromTab(1), ctx);
+            let group_ids: Vec<_> = workspace
+                .tabs
+                .iter()
+                .filter_map(|tab| tab.group_id)
+                .collect();
+            assert_eq!(group_ids.len(), 2, "expected two single-tab groups");
+            let ungrouped_index = workspace
+                .tabs
+                .iter()
+                .position(|tab| tab.group_id.is_none())
+                .expect("one tab should still be ungrouped");
+
+            // An ungrouped source tab can move into either group, and every
+            // entry carries a `MoveTabToGroup` action for that source tab.
+            let items = workspace.build_move_to_group_sidecar_items(Some(ungrouped_index));
+            assert_eq!(items.len(), 2, "both groups should be offered");
+            for item in &items {
+                let action = item
+                    .item_on_select_action()
+                    .expect("sidecar entries must dispatch an action");
+                assert!(
+                    matches!(
+                        action,
+                        WorkspaceAction::MoveTabToGroup { tab_index, .. }
+                            if *tab_index == ungrouped_index
+                    ),
+                    "expected MoveTabToGroup for tab {ungrouped_index}, got {action:?}"
+                );
+            }
+
+            // A source tab already in a group never lists its own group.
+            let grouped_index = workspace
+                .tabs
+                .iter()
+                .position(|tab| tab.group_id.is_some())
+                .expect("a tab should be grouped");
+            let own_group = workspace.tabs[grouped_index]
+                .group_id
+                .expect("grouped tab has a group");
+            let items = workspace.build_move_to_group_sidecar_items(Some(grouped_index));
+            assert_eq!(items.len(), 1, "the tab's own group must be excluded");
+            let action = items[0]
+                .item_on_select_action()
+                .expect("sidecar entries must dispatch an action");
+            assert!(
+                matches!(
+                    action,
+                    WorkspaceAction::MoveTabToGroup { group_id, .. } if *group_id != own_group
+                ),
+                "expected a move into the other group, got {action:?}"
+            );
+
+            // With no source tab the sidecar targets the multi-selection.
+            let items = workspace.build_move_to_group_sidecar_items(None);
+            assert_eq!(items.len(), 2);
+            for item in &items {
+                let action = item
+                    .item_on_select_action()
+                    .expect("sidecar entries must dispatch an action");
+                assert!(
+                    matches!(action, WorkspaceAction::MoveSelectedTabsToGroup { .. }),
+                    "expected MoveSelectedTabsToGroup, got {action:?}"
+                );
+            }
+
+            // The entry really moves the tab: dispatching it lands the source
+            // tab in the destination group.
+            let items = workspace.build_move_to_group_sidecar_items(Some(ungrouped_index));
+            let action = items[0]
+                .item_on_select_action()
+                .expect("sidecar entries must dispatch an action")
+                .clone();
+            let WorkspaceAction::MoveTabToGroup { group_id, .. } = action else {
+                panic!("expected MoveTabToGroup, got {action:?}");
+            };
+            workspace.handle_action(&action, ctx);
+            assert_eq!(
+                workspace
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.group_id == Some(group_id))
+                    .count(),
+                2,
+                "the moved tab should have joined the destination group"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_tab_selection_right_click_menu_offers_selection_group_actions() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 3);
+
+            // Select tabs 0 and 1 (the active tab is folded into the selection).
+            workspace.activate_tab(0, ctx);
+            workspace.tabs[0].in_multi_selection = true;
+            workspace.tabs[1].in_multi_selection = true;
+            assert!(workspace.is_tab_in_multi_tab_selection(0));
+            assert!(!workspace.is_tab_in_multi_tab_selection(2));
+
+            workspace.toggle_tab_selection_right_click_menu(
+                0,
+                TabContextMenuAnchor::Pointer(Vector2F::zero()),
+                ctx,
+            );
+            assert!(
+                workspace.show_tab_selection_right_click_menu.is_some(),
+                "the multi-tab menu should be open"
+            );
+            assert!(
+                workspace.show_tab_right_click_menu.is_none(),
+                "the single-tab menu must not be open at the same time"
+            );
+
+            // The shared menu view carries the selection's actions.
+            let actions: Vec<WorkspaceAction> =
+                workspace.tab_right_click_menu.read(ctx, |menu, _| {
+                    menu.items()
+                        .iter()
+                        .filter_map(|item| item.item_on_select_action().cloned())
+                        .collect()
+                });
+            assert!(
+                actions
+                    .iter()
+                    .any(|action| matches!(action, WorkspaceAction::NewTabGroupFromSelectedTabs)),
+                "expected a create-group-from-selection entry, got {actions:?}"
+            );
+            // No shared group and no other group exists yet, so neither the
+            // remove entry nor the move-to-group submenu is offered.
+            let labels = workspace
+                .tab_right_click_menu
+                .read(ctx, |menu, _| menu_item_labels(menu.items()));
+            assert!(
+                !labels.contains(&crate::t!("menu-tab-remove-from-group")),
+                "an ungrouped selection has no group to leave, got {labels:?}"
+            );
+            assert!(
+                !labels.iter().any(|label| label == MOVE_TO_GROUP_LABEL),
+                "no destination group exists yet, got {labels:?}"
+            );
+
+            // Group the selection, then give tab 2 a group of its own: the
+            // selection now has both a group to leave and one to move into.
+            workspace.handle_action(&WorkspaceAction::NewTabGroupFromSelectedTabs, ctx);
+            let outsider = workspace
+                .tabs
+                .iter()
+                .position(|tab| tab.group_id.is_none())
+                .expect("one tab should still be ungrouped");
+            workspace.handle_action(&WorkspaceAction::NewTabGroupFromTab(outsider), ctx);
+
+            let grouped: Vec<usize> = workspace
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, tab)| tab.group_id.is_some())
+                .map(|(index, _)| index)
+                .collect();
+            let shared_group_members: Vec<usize> = grouped
+                .iter()
+                .copied()
+                .filter(|index| {
+                    workspace
+                        .tabs
+                        .iter()
+                        .filter(|tab| tab.group_id == workspace.tabs[*index].group_id)
+                        .count()
+                        == 2
+                })
+                .collect();
+            assert_eq!(shared_group_members.len(), 2, "expected a two-tab group");
+            workspace.activate_tab(shared_group_members[0], ctx);
+            for index in &shared_group_members {
+                workspace.tabs[*index].in_multi_selection = true;
+            }
+
+            // Re-open the menu (the first toggle closes it).
+            workspace.toggle_tab_selection_right_click_menu(
+                shared_group_members[0],
+                TabContextMenuAnchor::Pointer(Vector2F::zero()),
+                ctx,
+            );
+            workspace.toggle_tab_selection_right_click_menu(
+                shared_group_members[0],
+                TabContextMenuAnchor::Pointer(Vector2F::zero()),
+                ctx,
+            );
+            let labels = workspace
+                .tab_right_click_menu
+                .read(ctx, |menu, _| menu_item_labels(menu.items()));
+            assert!(
+                labels.contains(&crate::t!("menu-tab-remove-from-group")),
+                "a single-group selection should offer remove-from-group, got {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|label| label == MOVE_TO_GROUP_LABEL),
+                "another group exists, so the submenu parent should show, got {labels:?}"
+            );
+
+            let actions: Vec<WorkspaceAction> =
+                workspace.tab_right_click_menu.read(ctx, |menu, _| {
+                    menu.items()
+                        .iter()
+                        .filter_map(|item| item.item_on_select_action().cloned())
+                        .collect()
+                });
+            assert!(
+                actions
+                    .iter()
+                    .any(|action| matches!(action, WorkspaceAction::RemoveSelectedTabsFromGroup)),
+                "expected a remove-selection-from-group entry, got {actions:?}"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_multi_selection_actions_are_reachable_from_the_dispatcher() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 3);
+
+            workspace.activate_tab(0, ctx);
+
+            // Cmd-click on tab 2 toggles just that tab into the selection.
+            let locator = tab_locator(workspace, 2, ctx);
+            workspace.handle_action(&WorkspaceAction::ToggleTabMultiSelection { locator }, ctx);
+            assert!(workspace.tabs[2].in_multi_selection);
+            assert!(!workspace.tabs[1].in_multi_selection);
+            // The active tab is always folded in, so this is a 2-tab selection.
+            assert_eq!(workspace.selected_tab_indices(), vec![0, 2]);
+
+            // Cmd-clicking it again toggles it back out.
+            let locator = tab_locator(workspace, 2, ctx);
+            workspace.handle_action(&WorkspaceAction::ToggleTabMultiSelection { locator }, ctx);
+            assert!(!workspace.tabs[2].in_multi_selection);
+
+            // Shift-click on tab 2 selects the whole range from the active tab.
+            let locator = tab_locator(workspace, 2, ctx);
+            workspace.handle_action(&WorkspaceAction::ShiftSelectTabRange { locator }, ctx);
+            assert!(workspace.tabs.iter().all(|tab| tab.in_multi_selection));
+            assert_eq!(workspace.selected_tab_indices(), vec![0, 1, 2]);
+
+            workspace.handle_action(&WorkspaceAction::ClearTabMultiSelection, ctx);
+            assert!(workspace.tabs.iter().all(|tab| !tab.in_multi_selection));
+        });
+    });
+}
+
+#[test]
+fn test_multi_selection_actions_are_inert_when_feature_disabled() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(false);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 2);
+
+            let locator = tab_locator(workspace, 1, ctx);
+            workspace.handle_action(&WorkspaceAction::ToggleTabMultiSelection { locator }, ctx);
+            let locator = tab_locator(workspace, 1, ctx);
+            workspace.handle_action(&WorkspaceAction::ShiftSelectTabRange { locator }, ctx);
+
+            assert!(
+                workspace.tabs.iter().all(|tab| !tab.in_multi_selection),
+                "multi-selection must stay empty when GroupedTabs is off"
+            );
+            assert!(!workspace.is_tab_in_multi_tab_selection(1));
         });
     });
 }

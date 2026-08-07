@@ -71,11 +71,12 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
   AgentManagementView}` + a missing Agent-Management view subsystem.
 - [ ] **Pinned-tabs / tab-groups remaining GUI surfaces** — storage (migrations +
   schema), the live model (`Workspace::tab_groups`, `TabData::{group_id, pinned}`),
-  the `PinTab`/`UngroupTabs`/… actions, snapshot round-trip, keybindings and the
-  per-tab Pin/Unpin context-menu entry all landed. Still to port from
-  `warp/master`: the vertical-tabs group-header row, the group and multi-tab
-  right-click menus, the "Move to group" submenu sidecar, the inline group-rename
-  editor, and group-aware drag-and-drop reordering.
+  the `PinTab`/`UngroupTabs`/… actions, snapshot round-trip, keybindings, the
+  per-tab Pin/Unpin + tab-group context-menu entries, the multi-tab right-click
+  menu, shift/cmd-click multi-selection and the "Move to group" submenu sidecar
+  all landed. Still to port from `warp/master`: the vertical-tabs group-header
+  row, the tab-group right-click menu (which hangs off that header), the inline
+  group-rename editor, and group-aware drag-and-drop reordering.
 - [ ] **repo_metadata standing-queries wiring** — `standing_queries.rs` on main;
   the app skill-watcher wiring that drives it is the follow-up.
 - [ ] **Log-rotation deferred wiring** — machinery built (`simple_logger` + `warp_logging`
