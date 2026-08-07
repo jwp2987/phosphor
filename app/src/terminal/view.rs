@@ -4505,7 +4505,7 @@ impl TerminalView {
             .collect();
         for (query_id, text) in rows {
             self.input.update(ctx, |input, ctx| {
-                input.submit_queued_prompt_for_active_pane(text, conversation_id, ctx);
+                input.submit_queued_prompt_for_active_pane(text, conversation_id, query_id, ctx);
             });
             QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                 model.remove_fired_row(conversation_id, query_id, ctx);
@@ -4566,7 +4566,12 @@ impl TerminalView {
                 match action {
                     Some(AutofireAction::Submit { query_id, text }) => {
                         self.input.update(ctx, |input, ctx| {
-                            input.submit_queued_prompt_for_active_pane(text, conversation_id, ctx);
+                            input.submit_queued_prompt_for_active_pane(
+                                text,
+                                conversation_id,
+                                query_id,
+                                ctx,
+                            );
                         });
                         QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                             model.remove_fired_row(conversation_id, query_id, ctx);
