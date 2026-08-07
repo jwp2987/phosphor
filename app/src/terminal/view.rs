@@ -9623,9 +9623,16 @@ impl TerminalView {
     fn redetermine_terminal_focus(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         // Only reset the focus if this terminal is currently focused, don't steal it from
         // another part of the app
+        // An inline edit of a queued prompt is an interactive child the user is
+        // actively typing into; async focus reconciliation must not yank focus
+        // back to the terminal mid-edit.
         let reset_focus = ctx.is_self_or_child_focused()
             && !self.find_bar.is_self_or_child_focused(ctx)
-            && !self.block_filter_editor.is_self_or_child_focused(ctx);
+            && !self.block_filter_editor.is_self_or_child_focused(ctx)
+            && !self
+                .input
+                .as_ref(ctx)
+                .is_queued_prompt_inline_editor_focused(ctx);
         if reset_focus {
             self.redetermine_global_focus(ctx);
         }

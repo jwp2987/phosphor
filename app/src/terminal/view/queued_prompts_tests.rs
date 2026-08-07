@@ -807,6 +807,12 @@ fn commit_edit_saves_current_editor_text_for_lrc_row() {
 fn lrc_finish_commits_edited_lrc_row_before_sending() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // The prompt-submission path (`send_queued_user_query_in_conversation`) reads the global
+        // model-event sender, so the provider must be registered for delivery to run.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
         let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
 
         let terminal = add_window_with_terminal(&mut app, None);
@@ -885,6 +891,12 @@ fn lrc_finish_commits_edited_lrc_row_before_sending() {
 fn lrc_finish_queued_compact_and_sends_followup_after_summary() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // The prompt-submission path (`send_queued_user_query_in_conversation`) reads the global
+        // model-event sender, so the provider must be registered for delivery to run.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
         let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
         let _queued_prompts_v2 = FeatureFlag::QueuedPromptsV2.override_enabled(true);
