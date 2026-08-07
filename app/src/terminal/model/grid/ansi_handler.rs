@@ -41,7 +41,7 @@ use crate::terminal::model::selection::ScrollDelta;
 use crate::terminal::model::ObfuscateSecrets;
 use crate::terminal::{ClipboardType, SizeInfo};
 
-use super::{AbsolutePoint, GridHandler, PerformResetGridChecks, TermMode};
+use super::{AbsolutePoint, FullGridClearBehavior, GridHandler, PerformResetGridChecks, TermMode};
 
 use tab_stops::TabStops;
 
@@ -850,7 +850,11 @@ impl ansi::Handler for GridHandler {
                 if self.ansi_handler_state.is_alt_screen {
                     self.grid.region_mut(..).each(|cell| *cell = bg.into());
                 } else {
-                    self.clear_viewport();
+                    if self.full_grid_clear_behavior == FullGridClearBehavior::Clear {
+                        self.clear_visible_rows_in_place(bg);
+                    } else {
+                        self.clear_viewport();
+                    }
                     self.active_hyperlink_id = None;
                 }
             }
@@ -1676,6 +1680,31 @@ impl GridHandler {
         // Clear grid.
         let bg = self.grid.cursor().template.bg;
         self.grid.region_mut(..).each(|cell| *cell = bg.into());
+    }
+
+    fn clear_visible_rows_in_place(&mut self, bg: Color) {
+        self.grid.region_mut(..).each(|cell| *cell = bg.into());
+        let visible_start_row = self.history_size();
+        let visible_end_row = visible_start_row + self.visible_rows();
+        if visible_start_row < visible_end_row {
+            self.images.evict_image_ids_between_points_with_type(
+                AbsolutePoint::from_point(Point::new(visible_start_row, 0), self),
+                AbsolutePoint::from_point(Point::new(visible_end_row - 1, usize::MAX), self),
+                vec![ImageType::ITerm, ImageType::Kitty],
+            );
+            if self.columns() > 0 {
+                self.clear_secrets_in_range(
+                    Point::new(visible_start_row, 0)
+                        ..=Point::new(visible_end_row - 1, self.columns() - 1),
+                );
+            }
+        }
+        self.clear_displayed_rows_and_filter_matches();
+        if self.track_content_length {
+            self.bottommost_visible_content_row = self.bottommost_visible_content_row_backward();
+        }
+        self.ansi_handler_state.dirty_cells_range =
+            Point::new(visible_start_row, 0)..Point::new(visible_end_row, 0);
     }
 
     fn clear_viewport(&mut self) {

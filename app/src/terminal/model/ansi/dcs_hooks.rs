@@ -23,6 +23,14 @@ pub(super) const UNENCODED_JSON_MARKER: char = 'f';
 /// In OSC< it is used as the first parameter.
 pub(super) const UNENCODED_KV_MARKER: char = 'k';
 
+/// Session IDs decoded from shell hook payloads.
+///
+/// These are optional at the schema layer because several hook structs implement
+/// `Default`; `None` means the hook omitted the field, while `Some(0)` means the
+/// hook explicitly carried the legacy/default session ID. The ANSI processor
+/// rejects missing or unregistered IDs for hooks that require a registered session.
+pub type HookSessionId = Option<u64>;
+
 /// Enum representing all possible JSON payloads for Zap's DCS's.
 #[derive(Serialize, Debug, Deserialize)]
 #[allow(clippy::upper_case_acronyms)]
@@ -106,6 +114,67 @@ impl DProtoHook {
             DProtoHook::SshTmuxInstaller { .. } => "SshTmuxInstaller",
             DProtoHook::TmuxInstallFailed { .. } => "TmuxInstallFailed",
             DProtoHook::ExitShell { .. } => "ExitShell",
+        }
+    }
+
+    /// Extracts the session_id from whichever variant carries one. Returns `None` for hook
+    /// types that don't (yet) include a session_id field -- see #419 for the remaining variants
+    /// (`CommandFinished`, `Preexec`, `Bootstrapped`, `PreInteractiveSSHSession`, `SSH`,
+    /// `InputBuffer`, `Clear`, `InitSubshell`, `FinishUpdate`, and the fork-only SSH bootstrap
+    /// hooks) that still need a `session_id` field threaded through their value structs and every
+    /// call site that constructs them.
+    pub fn session_id(&self) -> Option<SessionId> {
+        match self {
+            DProtoHook::InitShell { value } => Some(value.session_id),
+            DProtoHook::Precmd { value } => value.session_id().map(SessionId::from),
+            DProtoHook::ExitShell { value } => Some(value.session_id),
+            DProtoHook::CommandFinished { .. }
+            | DProtoHook::Preexec { .. }
+            | DProtoHook::Bootstrapped { .. }
+            | DProtoHook::PreInteractiveSSHSession { .. }
+            | DProtoHook::SSH { .. }
+            | DProtoHook::InputBuffer { .. }
+            | DProtoHook::Clear { .. }
+            | DProtoHook::InitSubshell { .. }
+            | DProtoHook::FinishUpdate { .. }
+            | DProtoHook::InitSsh { .. }
+            | DProtoHook::RemoteWarpificationIsUnavailable { .. }
+            | DProtoHook::SshTmuxInstaller { .. }
+            | DProtoHook::TmuxInstallFailed { .. }
+            | DProtoHook::SourcedRcFileForWarp { .. } => None,
+        }
+    }
+
+    /// Returns whether this hook mutates terminal/session state enough to require a recognized
+    /// session_id before dispatch.
+    ///
+    /// `SourcedRcFileForWarp` is the one exception the pin carves out (it only triggers subshell
+    /// bootstrap detection, and is never hex-encoded -- see `handle_unencoded_hook`). The four
+    /// SSH-bootstrap hooks below (`InitSsh`, `RemoteWarpificationIsUnavailable`,
+    /// `SshTmuxInstaller`, `TmuxInstallFailed`) don't exist in the pin at all; they're this fork's
+    /// own SSH-wrapper extensions. They're classified `true` here for the same reason the pin
+    /// classifies every other session-bootstrap/lifecycle hook `true`: they mutate session state
+    /// in response to PTY-supplied data, so they belong on the "must be validated" side once
+    /// `session_id` is threaded through them (#419).
+    pub fn requires_registered_session(&self) -> bool {
+        match self {
+            DProtoHook::CommandFinished { .. }
+            | DProtoHook::Precmd { .. }
+            | DProtoHook::Preexec { .. }
+            | DProtoHook::Bootstrapped { .. }
+            | DProtoHook::PreInteractiveSSHSession { .. }
+            | DProtoHook::SSH { .. }
+            | DProtoHook::InitShell { .. }
+            | DProtoHook::InputBuffer { .. }
+            | DProtoHook::Clear { .. }
+            | DProtoHook::InitSubshell { .. }
+            | DProtoHook::FinishUpdate { .. }
+            | DProtoHook::ExitShell { .. }
+            | DProtoHook::InitSsh { .. }
+            | DProtoHook::RemoteWarpificationIsUnavailable { .. }
+            | DProtoHook::SshTmuxInstaller { .. }
+            | DProtoHook::TmuxInstallFailed { .. } => true,
+            DProtoHook::SourcedRcFileForWarp { .. } => false,
         }
     }
 
@@ -408,6 +477,15 @@ pub(super) enum PrecmdHookValue {
     PromptOnly(PromptMetadata),
 }
 
+impl PrecmdHookValue {
+    fn session_id(&self) -> HookSessionId {
+        match self {
+            Self::WithCompletionMetadata(value) => value.prompt_metadata.session_id,
+            Self::PromptOnly(value) => value.session_id,
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct RawPrecmdValue {
     #[serde(flatten)]
@@ -534,7 +612,7 @@ pub struct PromptMetadata {
     #[serde(deserialize_with = "empty_string_is_none", default)]
     pub kube_config: Option<String>,
 
-    pub session_id: Option<u64>,
+    pub session_id: HookSessionId,
 
     /// Whether this prompt metadata was emitted after the completion of an in-band command.
     #[serde(default)]

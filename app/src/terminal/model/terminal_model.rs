@@ -82,7 +82,7 @@ use instant::Instant;
 use itertools::{Either, Itertools};
 use serde::Serialize;
 use std::cmp::{max, min};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::ParseIntError;
 use std::ops::{Range, RangeInclusive};
 use std::path::PathBuf;
@@ -617,6 +617,13 @@ pub struct TerminalModel {
     /// Next ID to use for images where the ID is not explicitly specified
     /// by the Kitty protocol
     pub next_kitty_image_id: u32,
+
+    /// Client-generated session IDs accepted as valid by `is_registered_session`. See #419: DCS
+    /// hooks that mutate session/block-lifecycle state should carry one of these IDs before
+    /// being dispatched. Currently unpopulated in production -- see the doc comment on
+    /// `should_validate_dcs_hook_session_id` below for why validation stays off until the
+    /// PTY-spawn side registers the ID it bakes into the shell launch.
+    registered_session_ids: HashSet<SessionId>,
 }
 
 #[derive(Clone, Debug)]
@@ -1080,8 +1087,10 @@ impl TerminalModel {
         // implementation of `SessionInfo::determine_session_type()` for more
         // details.)
         let hostname = get_local_hostname().unwrap_or_else(|_| "localhost".to_string());
+        let session_id = 123.into();
+        terminal_model.register_session_id(session_id);
         terminal_model.init_shell(InitShellValue {
-            session_id: 123.into(),
+            session_id,
             shell: "zsh".to_owned(),
             hostname,
             ..Default::default()
@@ -1190,6 +1199,7 @@ impl TerminalModel {
             image_id_to_metadata: HashMap::new(),
             // Start mid-way through the u32 range to avoid collisions
             next_kitty_image_id: 2147483647,
+            registered_session_ids: HashSet::new(),
         }
     }
 
@@ -2524,6 +2534,12 @@ macro_rules! delegate {
 }
 
 impl TerminalModel {
+    /// Registers a client-generated session ID so that DCS hooks carrying
+    /// this ID will be accepted by the integrity check.
+    pub fn register_session_id(&mut self, session_id: SessionId) {
+        self.registered_session_ids.insert(session_id);
+    }
+
     pub fn needs_bracketed_paste(&mut self) -> bool {
         delegate!(self.needs_bracketed_paste())
     }
@@ -2658,6 +2674,23 @@ impl TerminalModel {
 }
 
 impl ansi::Handler for TerminalModel {
+    fn is_registered_session(&self, session_id: SessionId) -> bool {
+        self.registered_session_ids.contains(&session_id)
+    }
+
+    /// Validation stays off in production for now: nothing yet calls
+    /// `register_session_id` at PTY-spawn time (the pin bakes a generated
+    /// session ID into the shell launch and registers it before the shell can
+    /// write anything back -- see `ShellStarter::session_id()` /
+    /// `local_tty/terminal_manager.rs` in the pin). Until that wiring lands,
+    /// flipping this to `true` would reject every real lifecycle hook
+    /// (`Preexec`, `CommandFinished`, ...) because `registered_session_ids`
+    /// would always be empty for a real session -- a regression, not a fix.
+    /// See #419's follow-up for the PTY-spawn wiring.
+    fn should_validate_dcs_hook_session_id(&self) -> bool {
+        false
+    }
+
     fn set_title(&mut self, title: Option<String>) {
         // Don't set the tab title if the title event is for a running in-band command.
         if self.block_list().is_writing_or_executing_in_band_command() {
