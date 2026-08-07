@@ -1035,6 +1035,7 @@ settings-ai-auto-show-rich-input = Auto show/hide Rich Input based on agent stat
 settings-ai-auto-show-rich-input-tooltip = Requires the Warp plugin for your coding agent
 settings-ai-auto-open-rich-input = Auto open Rich Input when a coding agent session starts
 settings-ai-auto-dismiss-rich-input = Auto dismiss Rich Input after prompt submission
+settings-ai-submit-on-ctrl-enter = Submit Rich Input with Ctrl+Enter
 settings-ai-toolbar-commands-label = Commands that enable the toolbar
 settings-ai-toolbar-commands-description = Add regex patterns to show the coding agent toolbar for matching commands.
 settings-ai-per-agent-section = Installed agents
