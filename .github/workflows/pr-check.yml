@@ -145,9 +145,12 @@ jobs:
         shell: bash
         run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
-      - name: cargo nextest run -p warp --lib --features gui
+      # Fails on CHANGE, not on redness -- see script/check_test_failures for
+      # why. `main` has known reds; a job that is red on every PR forever is a
+      # job everyone learns to ignore.
+      - name: cargo nextest (regressions only)
         shell: bash
-        run: cargo nextest run -p warp --lib --features gui --no-fail-fast
+        run: ./script/check_test_failures -p warp --lib --features gui
 
   check-windows:
     name: cargo check (Windows)
