@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use ai::skills::{get_provider_for_path, ParsedSkill, SkillProvider, SkillScope};
 use warp_cli::skill::SkillSpec;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 use super::filter_skills_by_spec;
 
@@ -100,7 +101,8 @@ fn skill_path(repo_path: &Path, provider_dir: &str, skill_name: &str) -> PathBuf
 }
 
 fn parsed_skill(path: PathBuf, name: &str) -> ParsedSkill {
-    let provider = get_provider_for_path(&path).unwrap_or(SkillProvider::Agents);
+    let provider = get_provider_for_path(&LocalOrRemotePath::Local(path.clone()))
+        .unwrap_or(SkillProvider::Agents);
     ParsedSkill {
         path,
         name: name.to_string(),

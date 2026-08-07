@@ -14,6 +14,7 @@ use super::SkillDescriptor;
 use crate::ai::skills::skill_utils::unique_skills;
 use ai::skills::{get_provider_for_path, provider_rank, ParsedSkill, SkillProvider, SkillReference};
 use warp_core::features::FeatureFlag;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,7 +219,7 @@ impl SkillManager {
         // Slow path: check all paths for this skill name.
         self.skill_paths_by_name(&skill.name)
             .iter()
-            .filter_map(|path| get_provider_for_path(path))
+            .filter_map(|path| get_provider_for_path(&LocalOrRemotePath::Local(path.clone())))
             .any(|provider| providers.contains(&provider))
     }
 
@@ -245,7 +246,7 @@ impl SkillManager {
         // Find the supported provider with the best (lowest) rank among all paths.
         self.skill_paths_by_name(&skill.name)
             .iter()
-            .filter_map(|path| get_provider_for_path(path))
+            .filter_map(|path| get_provider_for_path(&LocalOrRemotePath::Local(path.clone())))
             .filter(|provider| supported_providers.contains(provider))
             .min_by_key(|provider| provider_rank(*provider))
             .unwrap_or(skill.provider)
@@ -301,7 +302,7 @@ impl SkillManager {
             .skill_paths_by_name(name)
             .into_iter()
             .min_by_key(|path| {
-                get_provider_for_path(path)
+                get_provider_for_path(&LocalOrRemotePath::Local(path.clone()))
                     .map(provider_rank)
                     .unwrap_or(usize::MAX)
             });
