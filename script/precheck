@@ -39,6 +39,54 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; status=1; }
 ok()   { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 
+# ------------------------------------------------------------------ toolchain
+# This is step 0 deliberately: every gate below reports on whatever compiler
+# happens to be first in PATH, so a toolchain mismatch silently invalidates
+# every result this script prints -- including its greens.
+#
+# This bit for real. `script/install_rust` guards on `command -v cargo`, so a
+# host with a distro cargo at /usr/bin/cargo short-circuits it and rustup is
+# never installed. rust-toolchain.toml's channel pin is then ignored with no
+# diagnostic at all: this host ran 1.93.1 against a 1.92.0 pin for weeks while
+# CI (which has rustup, and so honours the pin) ran 1.92.0. The skew runs the
+# dangerous direction -- anything stabilised in the newer compiler builds clean
+# locally and fails in CI -- which is precisely the "let CI find it" failure
+# this script exists to prevent.
+#
+# Fix on such a host, without disturbing the distro toolchain:
+#   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
+#       -y --no-modify-path --default-toolchain <channel> --profile minimal \
+#       -c rustfmt -c clippy
+# then run cargo through it: RUSTUP_TOOLCHAIN=<channel> PATH="$HOME/.cargo/bin:$PATH"
+step "toolchain matches the pin"
+# Self-correct where possible: if rustup is installed but its shims are not
+# first in PATH, use them rather than failing. A gate that rejects a host which
+# HAS the right compiler, merely not first in PATH, is noise -- and noise in a
+# gate trains people to ignore it. Fail only when the pin is genuinely absent.
+if [[ -x "$HOME/.cargo/bin/rustup" ]]; then
+    case ":$PATH:" in
+        *:"$HOME/.cargo/bin":*) ;;
+        *) export PATH="$HOME/.cargo/bin:$PATH" ;;
+    esac
+fi
+PINNED="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml 2>/dev/null | head -1)"
+ACTUAL="$(rustc --version 2>/dev/null | awk '{print $2}')"
+if [[ -z "$PINNED" ]]; then
+    fail "rust-toolchain.toml has no channel pin -- cannot verify the compiler"
+elif [[ -z "$ACTUAL" ]]; then
+    fail "no rustc on PATH"
+elif [[ ! "$PINNED" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+    # A floating channel (stable/nightly/dated) cannot be checked by equality.
+    ok "channel '$PINNED' is floating -- running rustc $ACTUAL (not asserted)"
+elif [[ "$ACTUAL" == "$PINNED" ]]; then
+    ok "rustc $ACTUAL matches pin"
+else
+    fail "rustc $ACTUAL does NOT match the pin $PINNED ($(command -v rustc))"
+    printf '      Every result below is measured on the wrong compiler.\n' >&2
+    printf '      CI honours the pin via rustup; this host does not. A green here\n' >&2
+    printf '      does not predict CI. See the header of this step for the fix.\n' >&2
+fi
+
 # ------------------------------------------------------------------ staleness
 # An agent working on a base tens of commits old will hit failures that are real,
 # reproducible, and entirely about the wrong tree. This bit for real: an agent
