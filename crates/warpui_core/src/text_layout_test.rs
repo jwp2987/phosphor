@@ -478,6 +478,84 @@ fn test_run_background_painted_before_underline() {
     });
 }
 
+/// The run background must be clamped to the horizontal span of glyphs that are
+/// actually drawn (`visible_left`..`visible_right`), not the full run width. This
+/// is what keeps a partially-truncated backgrounded run (e.g. an inline-code link
+/// cut off by an ellipsis) from painting a background past its visible glyphs.
+///
+/// We exercise `paint_run_background` directly because the platform test `FontDB`
+/// reports a zero advance for the ellipsis glyph, so `ellipsis_width` is always 0
+/// and the end-to-end ellipsis-truncation branch in `paint_internal` cannot be
+/// driven from a unit test. This still pins the clamping arithmetic that fixes the
+/// bug.
+#[test]
+fn test_run_background_clamped_to_visible_glyph_span() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let bg_color = ColorU::from_u32(0x37393CFF);
+            let glyph_width = 12.0;
+            let glyph_count = 10usize;
+
+            let glyphs = (0..glyph_count)
+                .map(|i| Glyph {
+                    id: 0,
+                    position_along_baseline: vec2f(glyph_width * i as f32, 0.),
+                    index: i,
+                    width: glyph_width,
+                })
+                .collect();
+            let run = Run {
+                font_id: FontId(0),
+                glyphs,
+                styles: TextStyle::default().with_background_color(bg_color),
+                width: glyph_width * glyph_count as f32, // 120px
+            };
+            let line = Line {
+                width: run.width,
+                trailing_whitespace_width: 0.,
+                runs: vec![run],
+                font_size: 12.,
+                line_height_ratio: 1.,
+                baseline_ratio: DEFAULT_TOP_BOTTOM_RATIO,
+                clip_config: None,
+                ascent: 10.,
+                descent: 2.,
+                caret_positions: Vec::new(),
+                chars_with_missing_glyphs: Vec::new(),
+            };
+
+            // Only the first three glyphs (0..36px) are "visible".
+            let visible_left = 0.;
+            let visible_right = 36.;
+
+            let mut scene = Scene::new(1., rendering::Config::default());
+            line.paint_run_background(
+                &line.runs[0],
+                Vector2F::zero(),
+                RectF::new(Vector2F::zero(), Vector2F::new(1000., 50.)),
+                visible_left,
+                visible_right,
+                ctx.font_cache(),
+                &mut scene,
+                &default_compute_baseline_position_fn(),
+            );
+
+            let layer = scene.layers().next().expect("at least one layer");
+            let bg_rect = layer
+                .rects
+                .iter()
+                .find(|rect| matches!(rect.background, Fill::Solid(color) if color == bg_color))
+                .expect("background rect should be painted");
+
+            // The background spans exactly the visible glyph span (36px), not the
+            // full 120px run width.
+            assert_approx_eq!(f32, bg_rect.bounds.width(), visible_right - visible_left);
+            assert_approx_eq!(f32, bg_rect.bounds.min_x(), visible_left);
+            assert_approx_eq!(f32, bg_rect.bounds.max_x(), visible_right);
+        });
+    });
+}
+
 /// A backgrounded run that is fully truncated (contributes no visible glyphs) must
 /// not paint a background at all. Here a leading run consumes the entire paint
 /// width, so the trailing backgrounded run is clipped away and the per-run
