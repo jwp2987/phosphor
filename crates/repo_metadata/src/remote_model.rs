@@ -14,6 +14,7 @@ use crate::file_tree_store::{FileTreeEntry, FileTreeState};
 use crate::file_tree_update::RepoMetadataUpdate;
 use crate::local_model::{GetContentsArgs, IndexedRepoState, RepoContent};
 use crate::repository_identifier::RemoteRepositoryIdentifier;
+use crate::standing_queries::{StandingQueryResults, StandingQueryResultsDelta};
 
 use super::local_model::collect_contents_recursive;
 
@@ -30,6 +31,13 @@ pub enum RemoteRepositoryMetadataEvent {
     },
     /// The file tree entry for a remote repository was updated.
     FileTreeEntryUpdated { id: RemoteRepositoryIdentifier },
+    /// The paths retained for standing queries (project skills, project rule
+    /// files) changed for a remote repository, applied from a
+    /// `standing_results_delta` carried on a snapshot or incremental update.
+    StandingQueryResultsUpdated {
+        id: RemoteRepositoryIdentifier,
+        delta: StandingQueryResultsDelta,
+    },
 }
 
 /// Client-side model for remote repository metadata.
@@ -42,12 +50,14 @@ pub enum RemoteRepositoryMetadataEvent {
 /// wrapper rather than using this type directly.
 pub struct RemoteRepoMetadataModel {
     repositories: HashMap<RemoteRepositoryIdentifier, IndexedRepoState>,
+    standing_results: HashMap<RemoteRepositoryIdentifier, StandingQueryResults>,
 }
 
 impl RemoteRepoMetadataModel {
     pub fn new(_ctx: &mut ModelContext<Self>) -> Self {
         Self {
             repositories: HashMap::new(),
+            standing_results: HashMap::new(),
         }
     }
 
@@ -72,6 +82,16 @@ impl RemoteRepoMetadataModel {
     /// Returns the current [`IndexedRepoState`] for a remote repository.
     pub fn repository_state(&self, id: &RemoteRepositoryIdentifier) -> Option<&IndexedRepoState> {
         self.repositories.get(id)
+    }
+
+    /// Returns the current standing-query results (project skills, project
+    /// rule files) for a remote repository, if any snapshot or incremental
+    /// update has carried a `standing_results_delta` for it.
+    pub fn standing_query_results(
+        &self,
+        id: &RemoteRepositoryIdentifier,
+    ) -> Option<&StandingQueryResults> {
+        self.standing_results.get(id)
     }
 
     /// Returns repository contents for the specified remote repository.
@@ -121,6 +141,7 @@ impl RemoteRepoMetadataModel {
         id: &RemoteRepositoryIdentifier,
         ctx: &mut ModelContext<Self>,
     ) {
+        self.standing_results.remove(id);
         if self.repositories.remove(id).is_some() {
             ctx.emit(RemoteRepositoryMetadataEvent::RepositoryRemoved { id: id.clone() });
         }
@@ -155,6 +176,9 @@ impl RemoteRepoMetadataModel {
         entry.apply_repo_metadata_update(update);
         let state = FileTreeState::from_file_tree_entry(entry);
         let id = RemoteRepositoryIdentifier::new(host_id, update.repo_path.clone());
+        let mut standing_results = StandingQueryResults::default();
+        standing_results.apply_delta(&update.standing_results_delta);
+        self.standing_results.insert(id.clone(), standing_results);
         self.insert_repository(id, state, ctx);
     }
 
@@ -198,7 +222,18 @@ impl RemoteRepoMetadataModel {
 
         if let Some(IndexedRepoState::Indexed(state)) = self.repositories.get_mut(&id) {
             state.entry.apply_repo_metadata_update(update);
-            ctx.emit(RemoteRepositoryMetadataEvent::FileTreeEntryUpdated { id });
+            ctx.emit(RemoteRepositoryMetadataEvent::FileTreeEntryUpdated { id: id.clone() });
+        }
+
+        if !update.standing_results_delta.is_empty() {
+            self.standing_results
+                .entry(id.clone())
+                .or_default()
+                .apply_delta(&update.standing_results_delta);
+            ctx.emit(RemoteRepositoryMetadataEvent::StandingQueryResultsUpdated {
+                id,
+                delta: update.standing_results_delta.clone(),
+            });
         }
     }
 }
@@ -215,3 +250,7 @@ impl RemoteRepoMetadataModel {
             .insert(id, IndexedRepoState::Indexed(state));
     }
 }
+
+#[cfg(test)]
+#[path = "remote_model_tests.rs"]
+mod tests;
