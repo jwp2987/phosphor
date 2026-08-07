@@ -1,3 +1,10 @@
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use command::r#async::Command;
+use command::Stdio;
+use tempfile::TempDir;
+
 use super::*;
 
 #[test]
@@ -235,4 +242,159 @@ fn test_parse_git_status_file_without_spaces_still_works() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].0, std::path::PathBuf::from("simple.txt"));
     assert_eq!(result[0].1, GitFileStatus::Modified);
+}
+
+// ── Branch listing ───────────────────────────────────────────────
+// Coverage for the branch dropdown's data source: the local backend's git
+// listing, and the wrapper's dispatch/forwarding that delivers the result to
+// the code-review view for both backends.
+
+/// Runs a git command inside `repo` and returns its trimmed stdout.
+async fn git(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("failed to run git");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// Creates a temp repo on `main` with two extra branches, back on `main`.
+async fn init_repo_with_branches() -> (TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let path = dir.path().to_path_buf();
+
+    git(&path, &["init", "-b", "main"]).await;
+    git(&path, &["config", "user.email", "test@test.com"]).await;
+    git(&path, &["config", "user.name", "Test"]).await;
+    git(&path, &["commit", "--allow-empty", "-m", "initial"]).await;
+    git(&path, &["checkout", "-b", "feature/one"]).await;
+    git(&path, &["checkout", "-b", "feature/two"]).await;
+    git(&path, &["checkout", "main"]).await;
+
+    (dir, path)
+}
+
+#[tokio::test]
+async fn get_all_branches_lists_local_branches_with_main_flagged() {
+    let (_dir, repo) = init_repo_with_branches().await;
+
+    let branches =
+        LocalDiffStateModel::get_all_branches(&repo, None, false /* include_remotes */)
+            .await
+            .expect("get_all_branches should succeed for a valid repo");
+
+    let names: Vec<&str> = branches.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(names.contains(&"main"), "expected main in {names:?}");
+    assert!(
+        names.contains(&"feature/one"),
+        "expected feature/one in {names:?}"
+    );
+    assert!(
+        names.contains(&"feature/two"),
+        "expected feature/two in {names:?}"
+    );
+
+    let main_flags: Vec<bool> = branches
+        .iter()
+        .filter(|(name, _)| name == "main")
+        .map(|(_, is_main)| *is_main)
+        .collect();
+    assert_eq!(main_flags, vec![true]);
+    assert!(branches
+        .iter()
+        .filter(|(name, _)| name.starts_with("feature/"))
+        .all(|(_, is_main)| !*is_main));
+}
+
+#[tokio::test]
+async fn get_all_branches_excludes_remote_tracking_branches_by_default() {
+    let (_dir, repo) = init_repo_with_branches().await;
+    // Fabricate a remote-tracking ref so the `include_remotes` flag is
+    // observable without a real remote.
+    let head = git(&repo, &["rev-parse", "HEAD"]).await;
+    git(&repo, &["update-ref", "refs/remotes/origin/main", &head]).await;
+
+    let local_only = LocalDiffStateModel::get_all_branches(&repo, None, false)
+        .await
+        .expect("get_all_branches should succeed for a valid repo");
+    assert!(local_only
+        .iter()
+        .all(|(name, _)| !name.starts_with("origin/")));
+
+    let with_remotes = LocalDiffStateModel::get_all_branches(&repo, None, true)
+        .await
+        .expect("get_all_branches should succeed for a valid repo");
+    assert!(with_remotes.iter().any(|(name, _)| name == "origin/main"));
+}
+
+/// Collects every `BranchesReceived` payload emitted by `handle`.
+fn subscribe_to_branches(
+    app: &mut warpui::App,
+    handle: &ModelHandle<DiffStateModel>,
+) -> Arc<Mutex<Vec<Vec<(String, bool)>>>> {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let received_for_subscription = received.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_model(handle, move |_, event, _| {
+            if let DiffStateModelEvent::BranchesReceived(branches) = event {
+                received_for_subscription
+                    .lock()
+                    .expect("branches mutex should not be poisoned")
+                    .push(branches.clone());
+            }
+        });
+    });
+    received
+}
+
+#[test]
+fn wrapper_forwards_branches_received_from_the_local_backend() {
+    warpui::App::test((), |mut app| async move {
+        let wrapper = app.add_model(|ctx| DiffStateModel::new(None, ctx));
+        let received = subscribe_to_branches(&mut app, &wrapper);
+
+        let local = wrapper.read(&app, |model, _| match model {
+            DiffStateModel::Local(handle) => handle.clone(),
+            #[cfg(not(target_family = "wasm"))]
+            DiffStateModel::Remote(_) => {
+                panic!("DiffStateModel::new should build a local backend")
+            }
+        });
+        local.update(&mut app, |_, ctx| {
+            ctx.emit(DiffStateModelEvent::BranchesReceived(vec![
+                ("main".to_string(), true),
+                ("feature/one".to_string(), false),
+            ]));
+        });
+
+        let received = received
+            .lock()
+            .expect("branches mutex should not be poisoned");
+        assert_eq!(
+            *received,
+            vec![vec![
+                ("main".to_string(), true),
+                ("feature/one".to_string(), false),
+            ]]
+        );
+    });
+}
+
+#[test]
+fn fetch_branches_on_local_backend_without_a_repository_emits_nothing() {
+    warpui::App::test((), |mut app| async move {
+        let wrapper = app.add_model(|ctx| DiffStateModel::new(None, ctx));
+        let received = subscribe_to_branches(&mut app, &wrapper);
+
+        wrapper.update(&mut app, |model, ctx| model.fetch_branches(ctx));
+
+        let received = received
+            .lock()
+            .expect("branches mutex should not be poisoned");
+        assert!(received.is_empty());
+    });
 }
