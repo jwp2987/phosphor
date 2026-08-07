@@ -63,15 +63,35 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
   push tracked as **#102** (blocks `handle_buffer_conflict_detected` + its 4th test);
   now being built by the fleet. Assessment: `specs/pending-edit-batch/ASSESS.md`.
 
+### Requires macOS / Windows — cannot be built or verified on this host
+Not deferred for lack of intent: this box is Linux and these cannot be compiled or
+exercised here at all. They need a macOS or Windows machine (or CI) to progress.
+**Do not mark any of these done from a Linux build.**
+
+- [ ] **WSLENV passthrough vars** *(Windows)* — `wsl_env_allowlist` absent (0 hits).
+  Compile-only port plus a flag.
+- [ ] **Launch-at-login** *(macOS + Windows)* — `app/src/login_item/` does not exist.
+- [ ] **Edition-2024 release verification** *(macOS)* — the **code work is done and on
+  `main`** (commit `48bc21cb9`, PR #53). Only a macOS release build remains unverified.
+- [ ] **pwsh `-EncodedCommand` at 2 call sites** *(Windows)* — the fix is ported to
+  `local_command_executor.rs:55` and `msys2_command_executor.rs:67`, matching the
+  already-verified `shell.rs` site (commit `5365c62a`). Needs a Windows run to confirm.
+
+### Won't do — decided 2026-08-06
+- [x] **AI global skills** (global arm) — **WON'T DO (maintainer, 2026-08-06).**
+  Unchecked from #11. No `global_skills`/`filter_skills_by_spec` in
+  `app/src/ai/skills/`; the bundled arm is done and the remote arm is cloud (dropped).
+  The single remaining non-cloud function has **no consumer** and would require a
+  `LocalOrRemotePath` type migration to land. Not worth the migration for dead code.
+
 ### Not started — true gaps
-- [ ] **WSLENV passthrough vars** — `wsl_env_allowlist` absent (0 hits). Windows-only;
-  not verifiable on Linux (compile-only port + flag).
-- [ ] **Launch-at-login** — `app/src/login_item/` does not exist. macOS/Windows;
-  not verifiable on Linux.
-- [ ] **AI global skills** (global arm only) — no `global_skills`/`filter_skills_by_spec`
-  in `app/src/ai/skills/`. Bundled arm done; remote arm = cloud (dropped). RECOMMEND
-  KEEP-DROPPED (needs maintainer sign-off): the one non-cloud fn has no consumer and
-  rests on a `LocalOrRemotePath` type migration.
+- [ ] **Skill remote-path** — now **#205**. Promoted out of this ledger after finding a
+  real correctness bug rather than a missing feature: `get_provider_for_path` **and**
+  `get_scope_for_path` both resolve `home_skills_path` against the *client's* home, so
+  a remote skill under a same-named home dir is silently misclassified as local.
+  Latent only because #170 means no remote path reaches them yet — **fix with or
+  before #170.** Note this ledger previously claimed `get_scope_for_path` was migrated
+  by #59; it was not (still `&Path`).
 
 ### Keep-dropped (decided this session)
 - [x] **history_model reconciliation** — non-cloud parts DONE (optimistic rename /
@@ -85,17 +105,14 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
   undecided NLD-flags item). Recorded on #11; tracking issue #107 closed.
 
 ### Core landed — sub-part / wiring still outstanding
-- [ ] **Skill remote-path** — `get_scope_for_path` done (`#59`); but
-  `get_provider_for_path(path: &Path)` (`crates/ai/src/skills/skill_provider.rs:174`)
-  is still `&Path`, not `LocalOrRemotePath`. DEFER: no remote-skill consumer exists.
 - [x] **`remote_server_controller` connection-label helpers** — DONE. This entry was
   **false**: `connection_label_for_session_info` is called in production at
   `remote_server_controller.rs:290` and `:526`, not only from its own tests.
   Re-verified against `main` `8c1841a94` on 2026-08-06.
-- [ ] **`local_control` / `warpctrl` app-side** — crate `crates/local_control` exists;
+- [ ] **`local_control` / `warpctrl` app-side** — now **#200**. crate `crates/local_control` exists;
   `app/src/local_control/` is absent. Blocked on `FeatureFlag::{WarpControlCli,
   AgentManagementView}` + a missing Agent-Management view subsystem.
-- [ ] **Pinned-tabs / tab-groups remaining GUI surfaces** — storage (migrations +
+- [ ] **Pinned-tabs / tab-groups remaining GUI surfaces** — tracked as **#146**. storage (migrations +
   schema), the live model (`Workspace::tab_groups`, `TabData::{group_id, pinned}`),
   the `PinTab`/`UngroupTabs`/… actions, snapshot round-trip, keybindings, the
   per-tab Pin/Unpin + tab-group context-menu entries, the multi-tab right-click
@@ -103,9 +120,9 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
   all landed. Still to port from `warp/master`: the vertical-tabs group-header
   row, the tab-group right-click menu (which hangs off that header), the inline
   group-rename editor, and group-aware drag-and-drop reordering.
-- [ ] **repo_metadata standing-queries wiring** — `standing_queries.rs` on main;
+- [ ] **repo_metadata standing-queries wiring** — now **#201**. `standing_queries.rs` on main;
   the app skill-watcher wiring that drives it is the follow-up.
-- [ ] **Log-rotation deferred wiring** — machinery built (`simple_logger` + `warp_logging`
+- [ ] **Log-rotation deferred wiring** — now **#202**. machinery built (`simple_logger` + `warp_logging`
   rotation). **This entry was partly false and is corrected:** `register_with_rotation`
   **is** called at the MCP logger site (`app/src/ai/mcp/templatable_manager/native.rs:789`,
   with `logs::mcp_log_rotation_config()`), re-verified against `main` `8c1841a94`.
@@ -490,7 +507,7 @@ across agents have been merged.
   **Recommend:** do plan properly with a running-TUI check + a streaming snapshot
   test; shell-only is low value.
 
-- [ ] **[HIGH] Full-document rebuild on every layout pass, not viewport-gated** — NEEDS REFACTOR (deferred)
+- [ ] **[HIGH] Full-document rebuild on every layout pass, not viewport-gated** — now **#203**. — NEEDS REFACTOR (deferred)
   — `crates/warp_tui/src/editor_element.rs:351-401` (`build`) +
   `crates/editor/src/render/model/char_cell_display.rs:257-334` (`display_rows`)
   `layout()` unconditionally rebuilds: `text.chars().collect()` + a full-buffer
@@ -532,7 +549,7 @@ across agents have been merged.
   **Fix:** trim the autoupdate vocabulary from `search_terms` while the UI is
   hidden.
 
-- [ ] **JPEG logo: opaque background + baked-in text, illegible at ~100px**
+- [ ] **JPEG logo: opaque background + baked-in text, illegible at ~100px** — now **#204**.
   — `app/src/settings_view/about_page.rs:187` (now `about_page/mod.rs:167`,
   `bundled/jpg/phosphor-logo.jpeg` — re-confirmed present on `main` 2026-08-06)
   The 1024×1024 badge is downscaled to ~100px (its "PHOSPHOR TERMLNK / CRT
