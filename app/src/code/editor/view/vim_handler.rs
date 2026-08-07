@@ -441,6 +441,13 @@ impl VimHandler for CodeEditorView {
                     }
                 });
             }
+            // The pinned oracle shifts the selection via `model.indent(shift, ctx)`
+            // here. Not ported: doing so without its 10 accompanying
+            // vim_handler_tests.rs cases would ship behavior with no mirrored
+            // coverage (AGENTS.md's mandatory-coverage rule), and verifying
+            // that port needs cargo/nextest, which is out of scope for this
+            // crates/vim/-only pass. Tracked as a follow-up.
+            VimOperator::Indent | VimOperator::Dedent => {}
         }
     }
 
@@ -616,6 +623,9 @@ impl VimHandler for CodeEditorView {
                         model.vim_clear_selections(ctx);
                     }
                 }
+                // Not ported — see the matching comment on the `operation`
+                // arm above for why.
+                VimOperator::Indent | VimOperator::Dedent => {}
             }
         });
 

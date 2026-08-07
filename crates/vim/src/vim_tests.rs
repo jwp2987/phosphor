@@ -479,22 +479,271 @@ fn test_operator_pending_d1gg_deletes_to_line_1() {
     assert_eq!(fsa.mode, VimMode::Normal);
 }
 
+#[test]
+fn test_normal_mode_double_greater_indents_line() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, ">>");
+    assert_eq!(events.len(), 1, ">> should produce exactly one event");
+    assert_operation_line(&events[0], VimOperator::Indent);
+    assert_eq!(events[0].count, 1, ">> should have count 1");
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
 
-// NOTE: The following Warp tests are NOT ported — they exercise the `>`/`<`
-// Indent/Dedent vim operators (VimOperator::Indent, VimOperator::Dedent),
-// which do not exist in this fork's vim.rs (crates/vim/src/vim.rs). This is
-// an absent product feature, not a mechanical rename; porting these tests
-// as-is fails to compile, and adding the Indent/Dedent operator is product
-// work that is out of scope for a test port. See NEEDS-ADAPTATION report.
-//
-// Omitted tests (11): test_normal_mode_double_greater_indents_line,
-// test_normal_mode_double_less_dedents_line,
-// test_normal_mode_greater_with_down_motion_is_linewise,
-// test_normal_mode_greater_with_word_motion_is_charwise,
-// test_normal_mode_greater_to_last_line_is_linewise,
-// test_normal_mode_counted_double_greater_indents_count_lines,
-// test_normal_mode_counted_greater_with_motion_multiplies_count,
-// test_visual_linewise_greater_emits_visual_indent_operator,
-// test_visual_charwise_less_emits_visual_dedent_operator,
-// test_normal_mode_double_greater_is_dot_repeatable,
-// test_normal_mode_double_less_is_dot_repeatable.
+#[test]
+fn test_normal_mode_double_less_dedents_line() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, "<<");
+    assert_eq!(events.len(), 1, "<< should produce exactly one event");
+    assert_operation_line(&events[0], VimOperator::Dedent);
+    assert_eq!(events[0].count, 1, "<< should have count 1");
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_greater_with_down_motion_is_linewise() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, ">j");
+    assert_eq!(events.len(), 1, ">j should produce exactly one event");
+    assert_operation_motion(
+        &events[0],
+        VimOperator::Indent,
+        &VimMotion::Character(CharacterMotion::Down),
+        MotionType::Linewise,
+    );
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_greater_with_word_motion_is_charwise() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, ">w");
+    assert_eq!(events.len(), 1, ">w should produce exactly one event");
+    assert_operation_motion(
+        &events[0],
+        VimOperator::Indent,
+        &VimMotion::Word(WordMotion::new(
+            Direction::Forward,
+            WordBound::Start,
+            WordType::Default,
+        )),
+        MotionType::Charwise,
+    );
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_greater_to_last_line_is_linewise() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, ">G");
+    assert_eq!(events.len(), 1, ">G should produce exactly one event");
+    assert_operation_motion(
+        &events[0],
+        VimOperator::Indent,
+        &VimMotion::JumpToLastLine,
+        MotionType::Linewise,
+    );
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_counted_double_greater_indents_count_lines() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, "2>>");
+    assert_eq!(events.len(), 1, "2>> should produce exactly one event");
+    assert_operation_line(&events[0], VimOperator::Indent);
+    assert_eq!(events[0].count, 2, "2>> should have count 2");
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_counted_greater_with_motion_multiplies_count() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, "3>j");
+    assert_eq!(events.len(), 1, "3>j should produce exactly one event");
+    assert_operation_motion(
+        &events[0],
+        VimOperator::Indent,
+        &VimMotion::Character(CharacterMotion::Down),
+        MotionType::Linewise,
+    );
+    assert_eq!(events[0].count, 3, "3>j should have count 3");
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_visual_linewise_greater_emits_visual_indent_operator() {
+    let mut fsa = enter_visual_mode(MotionType::Linewise);
+    let events = type_chars(&mut fsa, ">");
+    assert_eq!(
+        events.len(),
+        1,
+        "> in visual linewise should produce one event"
+    );
+    assert_visual_operator(&events[0], VimOperator::Indent, MotionType::Linewise);
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_visual_charwise_less_emits_visual_dedent_operator() {
+    let mut fsa = enter_visual_mode(MotionType::Charwise);
+    let events = type_chars(&mut fsa, "<");
+    assert_eq!(
+        events.len(),
+        1,
+        "< in visual charwise should produce one event"
+    );
+    assert_visual_operator(&events[0], VimOperator::Dedent, MotionType::Charwise);
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_double_greater_is_dot_repeatable() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, ">>");
+    assert_eq!(events.len(), 1, ">> should produce exactly one event");
+    assert_operation_line(&events[0], VimOperator::Indent);
+
+    let repeat_events = type_chars(&mut fsa, ".");
+    assert_eq!(
+        repeat_events.len(),
+        1,
+        ". should replay the indent operation"
+    );
+    assert_operation_line(&repeat_events[0], VimOperator::Indent);
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_double_less_is_dot_repeatable() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, "<<");
+    assert_eq!(events.len(), 1, "<< should produce exactly one event");
+    assert_operation_line(&events[0], VimOperator::Dedent);
+
+    let repeat_events = type_chars(&mut fsa, ".");
+    assert_eq!(
+        repeat_events.len(),
+        1,
+        ". should replay the dedent operation"
+    );
+    assert_operation_line(&repeat_events[0], VimOperator::Dedent);
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+// The following cover `zz` (center cursor) and `<C-d>`/`<C-u>` (half-page
+// scroll). Unlike the Indent/Dedent tests above, these have no counterpart at
+// the pin (`02b53fcd8`): the pinned oracle's `crates/vim/src/vim_tests.rs` has
+// no test referencing `CenterCursorVertically`, `ScrollHalfPageDown`, or
+// `ScrollHalfPageUp` even though `vim.rs` itself implements all three. So
+// there is nothing to port here; these are new tests written to the same
+// conventions as the rest of this file, covering the FSA dispatch added
+// alongside the Indent/Dedent operators above.
+
+#[test]
+fn test_normal_mode_zz_centers_cursor() {
+    let mut fsa = enter_normal_mode();
+    let events = type_chars(&mut fsa, "zz");
+    assert_eq!(events.len(), 1, "zz should produce exactly one event");
+    assert!(matches!(
+        events[0].event_type,
+        VimEventType::CenterCursorVertically
+    ));
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_z_then_unrecognized_char_clears_pending_action() {
+    let mut fsa = enter_normal_mode();
+    assert!(
+        fsa.typed_character('z').is_none(),
+        "z alone should not produce an event yet"
+    );
+    assert!(
+        fsa.typed_character('x').is_none(),
+        "an unrecognized z-command should cancel rather than fall through to a fresh command, \
+         matching PendingAction::G's handling of an unrecognized g-command"
+    );
+    assert!(
+        fsa.pending_action.is_none(),
+        "the pending z action should be cleared, not left dangling"
+    );
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_visual_linewise_zz_centers_cursor() {
+    let mut fsa = enter_visual_mode(MotionType::Linewise);
+    let events = type_chars(&mut fsa, "zz");
+    assert_eq!(events.len(), 1, "zz should produce exactly one event");
+    assert!(matches!(
+        events[0].event_type,
+        VimEventType::CenterCursorVertically
+    ));
+    // zz does not exit Visual mode.
+    assert_eq!(fsa.mode, VimMode::Visual(MotionType::Linewise));
+}
+
+#[test]
+fn test_normal_mode_ctrl_d_scrolls_half_page_down() {
+    let mut fsa = enter_normal_mode();
+    let event = fsa
+        .keypress("ctrl-d")
+        .expect("ctrl-d should produce an event");
+    assert!(matches!(event.event_type, VimEventType::ScrollHalfPageDown));
+    assert_eq!(event.count, 1);
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_ctrl_u_scrolls_half_page_up() {
+    let mut fsa = enter_normal_mode();
+    let event = fsa
+        .keypress("ctrl-u")
+        .expect("ctrl-u should produce an event");
+    assert!(matches!(event.event_type, VimEventType::ScrollHalfPageUp));
+    assert_eq!(event.count, 1);
+    assert_eq!(fsa.mode, VimMode::Normal);
+}
+
+#[test]
+fn test_normal_mode_counted_ctrl_d_multiplies_count() {
+    let mut fsa = enter_normal_mode();
+    assert!(fsa.typed_character('3').is_none());
+    let event = fsa
+        .keypress("ctrl-d")
+        .expect("3<C-d> should produce an event");
+    assert!(matches!(event.event_type, VimEventType::ScrollHalfPageDown));
+    assert_eq!(event.count, 3, "3<C-d> should have count 3");
+}
+
+#[test]
+fn test_normal_mode_counted_ctrl_u_multiplies_count() {
+    let mut fsa = enter_normal_mode();
+    assert!(fsa.typed_character('2').is_none());
+    let event = fsa
+        .keypress("ctrl-u")
+        .expect("2<C-u> should produce an event");
+    assert!(matches!(event.event_type, VimEventType::ScrollHalfPageUp));
+    assert_eq!(event.count, 2, "2<C-u> should have count 2");
+}
+
+#[test]
+fn test_visual_mode_ctrl_d_scrolls_half_page_down() {
+    let mut fsa = enter_visual_mode(MotionType::Charwise);
+    let event = fsa
+        .keypress("ctrl-d")
+        .expect("ctrl-d should produce an event in Visual mode");
+    assert!(matches!(event.event_type, VimEventType::ScrollHalfPageDown));
+    // Scrolling does not exit Visual mode.
+    assert_eq!(fsa.mode, VimMode::Visual(MotionType::Charwise));
+}
+
+#[test]
+fn test_insert_mode_ctrl_d_is_not_handled_by_vim_fsa() {
+    let mut fsa = VimFSA::new();
+    fsa.mode = VimMode::Insert;
+    assert!(
+        fsa.keypress("ctrl-d").is_none(),
+        "ctrl-d should not be intercepted by the vim FSA while typing in Insert mode"
+    );
+}
