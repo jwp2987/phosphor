@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Create or refresh an agent worktree against a CURRENT base.
+#
+# WHY THIS EXISTS
+# ---------------
+# `main` moves fast during a fleet round -- 105 commits in a single session is
+# normal. A worktree created from a stale ref, or left sitting while the round
+# lands 25 PRs, produces failures that are real, reproducible, and entirely
+# about the wrong tree.
+#
+# This bit for real: an agent branched 105 commits behind, so its tree lacked
+# the already-merged secret-detection fix. It hit the multibyte redaction
+# failure, reported it as an "unrelated pre-existing" defect, and two people
+# then spent time diagnosing a bug that had been fixed hours earlier.
+#
+# Creating a worktree by hand is one `git fetch` away from that. This is not.
+#
+# USAGE
+#     script/agent-worktree new <slug> <branch> [base]   # default base: origin/main
+#     script/agent-worktree refresh <slug>               # merge current base in
+#     script/agent-worktree status                       # how stale is everything
+#
+# `new` always fetches first, so the base is current by construction.
+# `refresh` is what you run before final verification, and again before pushing.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+WT_ROOT=".worktrees"
+cmd="${1:-status}"
+
+case "$cmd" in
+new)
+    slug="${2:?usage: script/agent-worktree new <slug> <branch> [base]}"
+    branch="${3:?usage: script/agent-worktree new <slug> <branch> [base]}"
+    base="${4:-origin/main}"
+
+    # Fetch FIRST. The whole point is that the base is current at creation.
+    git fetch -q origin || { echo "fetch failed" >&2; exit 1; }
+
+    if [[ -d "$WT_ROOT/$slug" ]]; then
+        echo "error: $WT_ROOT/$slug already exists -- use 'refresh', or remove it first" >&2
+        exit 1
+    fi
+    git worktree add -q "$WT_ROOT/$slug" -b "$branch" "$base" || exit 1
+    echo "created $WT_ROOT/$slug on $branch from $base ($(git rev-parse --short "$base"))"
+    ;;
+
+refresh)
+    slug="${2:?usage: script/agent-worktree refresh <slug>}"
+    d="$WT_ROOT/$slug"
+    [[ -d "$d" ]] || { echo "error: no worktree $d" >&2; exit 1; }
+
+    git fetch -q origin || { echo "fetch failed" >&2; exit 1; }
+
+    # Refuse to touch a dirty tree -- merging under uncommitted work is how
+    # people lose it.
+    if [[ -n "$(git -C "$d" status --porcelain)" ]]; then
+        echo "error: $slug has uncommitted changes -- commit them first" >&2
+        git -C "$d" status --short | sed 's/^/    /' >&2
+        exit 1
+    fi
+
+    before="$(git rev-list --count "$(git -C "$d" rev-parse HEAD)"..origin/main 2>/dev/null || echo 0)"
+    if ((before == 0)); then
+        echo "$slug already up to date with origin/main"
+        exit 0
+    fi
+    if git -C "$d" merge --no-edit origin/main >/dev/null 2>&1; then
+        echo "$slug refreshed: was $before commit(s) behind origin/main, now current"
+    else
+        echo "error: merge conflict in $slug -- resolve in that worktree:" >&2
+        git -C "$d" diff --name-only --diff-filter=U | sed 's/^/    /' >&2
+        exit 1
+    fi
+    ;;
+
+status)
+    printf '%-14s %-36s %8s  %s\n' WORKTREE BRANCH BEHIND STATE
+    for d in "$WT_ROOT"/*/; do
+        [[ -d "$d" ]] || continue
+        slug="$(basename "$d")"
+        head="$(git -C "$d" rev-parse HEAD 2>/dev/null)" || continue
+        br="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+        behind="$(git rev-list --count "$head"..origin/main 2>/dev/null || echo '?')"
+        dirty="$(git -C "$d" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+        state="ok"
+        ((behind > 25)) && state="STALE -- refresh before trusting any test result"
+        ((dirty > 0)) && state="$state, $dirty uncommitted"
+        printf '%-14s %-36s %8s  %s\n' "$slug" "$br" "$behind" "$state"
+    done
+    ;;
+
+*)
+    echo "usage: script/agent-worktree {new <slug> <branch> [base] | refresh <slug> | status}" >&2
+    exit 2
+    ;;
+esac
