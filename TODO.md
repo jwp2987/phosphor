@@ -9,9 +9,9 @@ file is the live tracker: **mark an item `- [x]` the moment it's verified done.*
   BYOP/local (no cloud) — never silently simplify away Warp behavior (AGENTS §5.10).
 - **Tests-first, never defer.** Port Warp's oracle tests with each feature; a red
   test gets fixed now, never parked (AGENTS §5.6). Never weaken an assertion to go green.
-- **flock-serialize all cargo:** `ulimit -n 8192; flock
-  /home/winters/.claude/jobs/d323e5af/tmp/zap-cargo.lock -c '<cargo>'`. Never run
-  cargo concurrently with another agent.
+- **Run all cargo through the governor:** `script/agent-cargo <agent-name> <cargo-args>`.
+  It bounds how many compiles run at once and gives each agent its own target dir.
+  Never invoke cargo bare while another agent is running (AGENTS §5.8).
 - **English only** (code, comments, tests, docs). Exception: `app/i18n/zh-CN|ja/*.ftl`.
 - **Central verification:** the owner re-runs the suite before marking done — don't
   trust an agent's self-report.
