@@ -9,7 +9,7 @@ use crate::appearance::Appearance;
 //
 // NOTE: Warp's `is_code_subpage()` / `is_cloud_platform_subpage()` and the
 // `CodeIndexing` / `CloudEnvironments` / `OzCloudAPIKeys` / `Account` /
-// `Privacy` / `Teams` / `BillingAndUsage` `SettingsSection` variants do not
+// `Teams` / `BillingAndUsage` `SettingsSection` variants do not
 // exist in this fork -- the decentralized branch collapsed the sidebar to a
 // single "Agents" umbrella (see `SettingsView::new`) and dropped the
 // cloud-only Account/Billing/Teams/Cloud-platform pages entirely. Tests that
@@ -43,6 +43,7 @@ fn is_subpage_covers_all_umbrella_types() {
     assert!(!SettingsSection::AI.is_subpage());
     assert!(!SettingsSection::Code.is_subpage());
     assert!(!SettingsSection::Appearance.is_subpage());
+    assert!(!SettingsSection::Privacy.is_subpage());
 }
 
 // ── parent_page_section mapping ─────────────────────────────────────────────
@@ -101,6 +102,10 @@ fn non_subpage_sections_map_to_themselves() {
     assert_eq!(
         SettingsSection::Appearance.parent_page_section(),
         SettingsSection::Appearance
+    );
+    assert_eq!(
+        SettingsSection::Privacy.parent_page_section(),
+        SettingsSection::Privacy
     );
 }
 
@@ -194,6 +199,38 @@ fn subpage_from_str_parses_display_names() {
         SettingsSection::from_str("Editor and Code Review"),
         Ok(SettingsSection::EditorAndCodeReview)
     );
+}
+
+// ── Privacy page registration ───────────────────────────────────────────────
+// Regression guard for issue #2: this fork defined and read `SafeModeEnabled`,
+// `SecretDisplayModeSetting`, `IsCrashReportingEnabled` and `IsTelemetryEnabled`
+// at runtime but had never ported Warp's privacy page, so none of them had a
+// reachable GUI control. The section must exist, must be a top-level page, and
+// must be the section `PrivacyPageView` registers itself under -- otherwise the
+// sidebar entry and the page look-up disagree and the nav item renders nothing.
+
+#[test]
+fn privacy_section_display_name_is_correct() {
+    // `App::test` never initializes i18n globally, so do it explicitly here
+    // rather than relying on another test having run first.
+    crate::i18n::init(Some("en"));
+
+    assert_eq!(SettingsSection::Privacy.to_string(), "Privacy");
+}
+
+#[test]
+fn privacy_section_from_str_parses_display_name() {
+    assert_eq!(
+        SettingsSection::from_str("Privacy"),
+        Ok(SettingsSection::Privacy)
+    );
+}
+
+#[test]
+fn privacy_page_view_is_registered_under_the_privacy_section() {
+    // `SettingsPage::new` keys the page by `V::section()` and `settings_page()`
+    // looks it up by the section the sidebar nav item carries, so these must match.
+    assert_eq!(PrivacyPageView::section(), SettingsSection::Privacy);
 }
 
 // ── Subpage search filter simulation ────────────────────────────────────────

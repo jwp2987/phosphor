@@ -1640,3 +1640,7 @@ impl SingletonEntity for UpdateManager {}
 // 2d-4a's whole-file deletion scope; it was deleted early to avoid
 // accumulating 12 `#[ignore]`s. The rest of its consumers (listener /
 // update_manager itself) were retired together in the 2d-4a sweep.
+
+#[cfg(test)]
+#[path = "update_manager_tests.rs"]
+mod tests;

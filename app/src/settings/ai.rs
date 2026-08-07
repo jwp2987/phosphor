@@ -1072,7 +1072,10 @@ impl AgentProviderApiType {
 /// `api_key` is **not** stored here — it lives in the `AgentProviderSecrets` singleton (secure
 /// storage), associated via `id`. This way the settings file (settings.toml) never leaks
 /// sensitive information.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+// `Eq` is deliberately absent (it used to be derived alongside `PartialEq`): `token_price`
+// carries `f64` USD rates, and a decimal is the only unit a user can enter without converting
+// by hand. Nothing compares providers as `Eq` — the derive was incidental.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentProvider {
     /// The provider's unique ID, generated on first creation and persisted in settings as the
     /// key associating it with its secret.
@@ -1127,7 +1130,95 @@ pub struct AgentProvider {
     /// restores the provider exactly as it was. See [`AgentProvider::is_usable`].
     #[serde(default, skip_serializing_if = "is_false")]
     pub disabled: bool,
+
+    /// The provider-wide default token price used by `/cost`, applied to every model of this
+    /// provider that does not carry its own [`AgentProviderModel::token_price`].
+    ///
+    /// `None` means "no rate configured": `/cost` then reports token counts only and says so,
+    /// rather than substituting a guessed rate or a misleading `$0.00`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_price: Option<TokenPrice>,
 }
+
+/// User-configured token prices, in **US dollars per one million tokens** — the unit every
+/// provider publishes its price list in, so the numbers can be copied across verbatim.
+///
+/// BYOP divergence from Warp, and why it is acceptable: Warp bills through a hosted
+/// subscription and its server returns an authoritative `cost_in_cents` per request, so its
+/// client never needs a price table. This fork has no billing relationship with the user's
+/// provider — it only sees token counts on the wire. Shipping a built-in price table would go
+/// stale silently and produce confidently wrong money figures, so the rate is the user's to
+/// state: they are the one holding the invoice.
+///
+/// Serializes to toml like:
+/// ```toml
+/// [agent_providers.token_price]
+/// input_usd_per_million_tokens = 3.0
+/// output_usd_per_million_tokens = 15.0
+/// cache_read_usd_per_million_tokens = 0.3
+/// cache_write_usd_per_million_tokens = 3.75
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TokenPrice {
+    /// USD per million *uncached* input (prompt) tokens.
+    pub input_usd_per_million_tokens: f64,
+
+    /// USD per million output (completion) tokens.
+    pub output_usd_per_million_tokens: f64,
+
+    /// USD per million input tokens served from the provider's prompt cache. `None` falls back
+    /// to [`Self::input_usd_per_million_tokens`]; `/cost` says when it did, because for
+    /// providers that discount cache reads heavily (Anthropic bills them at 0.1x) that
+    /// fallback over-reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_usd_per_million_tokens: Option<f64>,
+
+    /// USD per million input tokens written into the provider's prompt cache. `None` falls
+    /// back to [`Self::input_usd_per_million_tokens`], with the same caveat as
+    /// [`Self::cache_read_usd_per_million_tokens`] (Anthropic bills cache writes at 1.25x).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_usd_per_million_tokens: Option<f64>,
+}
+
+impl TokenPrice {
+    /// Builds a price from the two rates the settings UI exposes, or `None` when neither was
+    /// entered. A rate of exactly `0.0` is kept — a genuinely free endpoint is a real answer,
+    /// distinct from "unconfigured", and `/cost` labels the two differently.
+    pub fn from_input_output(
+        input_usd_per_million_tokens: Option<f64>,
+        output_usd_per_million_tokens: Option<f64>,
+    ) -> Option<Self> {
+        if input_usd_per_million_tokens.is_none() && output_usd_per_million_tokens.is_none() {
+            return None;
+        }
+        Some(Self {
+            input_usd_per_million_tokens: input_usd_per_million_tokens.unwrap_or(0.0),
+            output_usd_per_million_tokens: output_usd_per_million_tokens.unwrap_or(0.0),
+            cache_read_usd_per_million_tokens: None,
+            cache_write_usd_per_million_tokens: None,
+        })
+    }
+
+    /// The rate charged for cache-read input tokens, and whether it was configured explicitly
+    /// (`false` means it fell back to the plain input rate).
+    pub fn cache_read_rate(&self) -> (f64, bool) {
+        match self.cache_read_usd_per_million_tokens {
+            Some(rate) => (rate, true),
+            None => (self.input_usd_per_million_tokens, false),
+        }
+    }
+
+    /// The rate charged for cache-write input tokens, and whether it was configured explicitly
+    /// (`false` means it fell back to the plain input rate).
+    pub fn cache_write_rate(&self) -> (f64, bool) {
+        match self.cache_write_usd_per_million_tokens {
+            Some(rate) => (rate, true),
+            None => (self.input_usd_per_million_tokens, false),
+        }
+    }
+}
+
+impl settings_value::SettingsValue for TokenPrice {}
 
 impl AgentProvider {
     fn default_id() -> String {
@@ -1149,6 +1240,7 @@ impl AgentProvider {
             vertex_project: String::new(),
             vertex_location: String::new(),
             disabled: false,
+            token_price: None,
         }
     }
 
@@ -1278,7 +1370,9 @@ impl settings_value::SettingsValue for AgentProvider {}
 /// Deserialization is backward compatible with the old format `models = ["deepseek-chat",
 /// "deepseek-coder"]` (each string treated as `{ name = id, id = id }`), so existing users can
 /// upgrade painlessly.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+// `Eq` is deliberately absent here for the same reason as on [`AgentProvider`]: `token_price`
+// carries `f64` USD rates.
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct AgentProviderModel {
     pub name: String,
     pub id: String,
@@ -1330,6 +1424,15 @@ pub struct AgentProviderModel {
     /// they're matched by id and skipped when already present.
     #[serde(default, skip_serializing_if = "is_false")]
     pub disabled: bool,
+
+    /// This model's own token price, overriding [`AgentProvider::token_price`] whole when set.
+    /// The override is all-or-nothing rather than per-field, so a model's price table is read
+    /// exactly as it was entered instead of silently mixing two sources.
+    ///
+    /// `None` means "fall back to the provider default"; if that is `None` too, `/cost` reports
+    /// token counts without a money figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_price: Option<TokenPrice>,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -1358,7 +1461,14 @@ impl AgentProviderModel {
             pdf: None,
             audio: None,
             disabled: false,
+            token_price: None,
         }
+    }
+
+    /// The price to bill this model's tokens at: its own [`Self::token_price`] if set,
+    /// otherwise the provider-wide default. `None` when neither is configured.
+    pub fn resolved_token_price(&self, provider: &AgentProvider) -> Option<TokenPrice> {
+        self.token_price.or(provider.token_price)
     }
 }
 
@@ -1391,6 +1501,8 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                 audio: Option<bool>,
                 #[serde(default)]
                 disabled: bool,
+                #[serde(default)]
+                token_price: Option<TokenPrice>,
             },
         }
         match Either::deserialize(deserializer)? {
@@ -1406,6 +1518,7 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                 pdf,
                 audio,
                 disabled,
+                token_price,
             } => {
                 let name = if name.is_empty() { id.clone() } else { name };
                 Ok(AgentProviderModel {
@@ -1419,6 +1532,7 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                     pdf,
                     audio,
                     disabled,
+                    token_price,
                 })
             }
         }

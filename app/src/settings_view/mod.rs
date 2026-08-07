@@ -34,6 +34,7 @@ use keybindings::KeybindingsView;
 use mcp_servers_page::MCPServersSettingsPageView;
 use nav::{SettingsNavItem, SettingsUmbrella};
 use pathfinder_geometry::vector::Vector2F;
+use privacy_page::{PrivacyPageView, PrivacyPageViewEvent};
 use settings_file_footer::{render_footer, SettingsFooterKind, SettingsFooterMouseStates};
 use settings_page::{
     MatchData, SettingsPage, SettingsPageEvent, SettingsPageMeta, SettingsPageViewHandle,
@@ -80,6 +81,8 @@ pub mod mcp_servers_page;
 mod nav;
 mod network_page;
 pub mod pane_manager;
+mod privacy;
+mod privacy_page;
 // Zap Wave 3-1: `platform` / `platform_page` were removed along with the `OzCloudAPIKeys`
 // settings entry point + the Zap Inc cloud API key management UI.
 // Zap Wave 6-8: `referrals_page` / `show_blocks_view` were removed along with the
@@ -99,6 +102,7 @@ mod warpify_page;
 pub(crate) use ai_page::cli_agent_settings_widget_id;
 pub use code_page::CodeSettingsPageView;
 pub use features_page::FeaturesPageAction;
+pub use privacy_page::PrivacyPageAction;
 pub use settings_page::{
     render_body_item_label, render_info_icon, render_input_list, render_separator, AdditionalInfo,
     InputListItem, LocalOnlyIconState, ToggleState,
@@ -214,6 +218,8 @@ pub enum SettingsSection {
     ThirdPartyCLIAgents,
     /// The global HTTP proxy settings page. Gated by `FeatureFlag::HttpProxySettings`.
     Network,
+    /// Secret redaction, crash reporting and app analytics.
+    Privacy,
     /// Internal backing-page identifier for CodeSettingsPageView. EditorAndCodeReview
     /// is currently the only sub-page label, but we keep `Code` as the backing-page
     /// key so that page lookup still works after the LSP-management subpage was
@@ -253,6 +259,7 @@ impl Display for SettingsSection {
             // The proxy settings page. The i18n key `settings-section-network` is fully present
             // in all three languages: en / zh-CN / ja.
             SettingsSection::Network => crate::t!("settings-section-network"),
+            SettingsSection::Privacy => crate::t!("settings-section-privacy"),
             // Zap Wave 3-1: the `OzCloudAPIKeys` Display arm was removed along with the variant.
             // Zap Wave 7-3: the `CloudEnvironments` Display arm was removed along with the
             // variant.
@@ -334,6 +341,7 @@ impl FromStr for SettingsSection {
             "Third party CLI agents" | "ThirdPartyCLIAgents" => Ok(Self::ThirdPartyCLIAgents),
             "Editor and Code Review" | "EditorAndCodeReview" => Ok(Self::EditorAndCodeReview),
             "Network" | "网络" => Ok(Self::Network),
+            "Privacy" => Ok(Self::Privacy),
             // Zap Wave 3-1: `OzCloudAPIKeys` was removed along with the UI.
             // Zap Wave 7-3: the `CloudEnvironments` FromStr arm was removed along with the
             // variant.
@@ -492,6 +500,7 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
     warpify_page::init_actions_from_parent_view(app, context, builder);
     ai_page::init_actions_from_parent_view(app, context, builder);
     code_page::init_actions_from_parent_view(app, context, builder);
+    privacy_page::init_actions_from_parent_view(app, context, builder);
 
     if ChannelState::enable_debug_features() || cfg!(windows) {
         ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
@@ -798,6 +807,7 @@ pub enum SettingsAction {
     ToggleUmbrella(usize),
     AppearancePageToggle(AppearancePageAction),
     FeaturesPageToggle(FeaturesPageAction),
+    PrivacyPageToggle(PrivacyPageAction),
     AI(AISettingsPageAction),
     Code(CodeSettingsPageAction),
     ZapDrive(warp_drive_page::WarpDriveSettingsPageAction),
@@ -960,6 +970,7 @@ macro_rules! update_page {
             SettingsPageViewHandle::ZapDrive(handle) => $ctx.update_view(handle, $update),
             // Issue #72: the global HTTP proxy settings page.
             SettingsPageViewHandle::Network(handle) => $ctx.update_view(handle, $update),
+            SettingsPageViewHandle::Privacy(handle) => $ctx.update_view(handle, $update),
         }
     };
 }
@@ -1075,6 +1086,12 @@ impl SettingsView {
         // Network (HTTP proxy) settings page. Gated by FeatureFlag::HttpProxySettings.
         let network_page_handle = ctx.add_typed_action_view(network_page::NetworkPageView::new);
 
+        // Privacy page (secret redaction / crash reporting / app analytics).
+        let privacy_page_handle = ctx.add_typed_action_view(PrivacyPageView::new);
+        ctx.subscribe_to_view(&privacy_page_handle, |me, _, event, ctx| {
+            me.handle_privacy_page_event(event, ctx);
+        });
+
         let font_family = Appearance::as_ref(ctx).ui_font_family();
         let search_editor = ctx.add_typed_action_view(|ctx| {
             let options = SingleLineEditorOptions {
@@ -1116,6 +1133,7 @@ impl SettingsView {
 
         settings_pages.extend(vec![
             SettingsPage::new(mcp_servers_page_handle),
+            SettingsPage::new(privacy_page_handle),
             SettingsPage::new(about_page_handle),
         ]);
 
@@ -1136,6 +1154,7 @@ impl SettingsView {
             SettingsNavItem::Page(SettingsSection::Features),
             SettingsNavItem::Page(SettingsSection::Keybindings),
             SettingsNavItem::Page(SettingsSection::Warpify),
+            SettingsNavItem::Page(SettingsSection::Privacy),
             SettingsNavItem::Page(SettingsSection::About),
         ];
 
@@ -1643,6 +1662,23 @@ impl SettingsView {
         }
     }
 
+    fn handle_privacy_page_event(
+        &mut self,
+        event: &PrivacyPageViewEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            PrivacyPageViewEvent::ShowAddRegexModal => {
+                // Modal rendering is handled in get_modal_content_for_page
+                ctx.notify();
+            }
+            PrivacyPageViewEvent::HideAddRegexModal => {
+                // Modal rendering is handled in get_modal_content_for_page
+                ctx.notify();
+            }
+        }
+    }
+
     // Zap Wave 3-1: `handle_platform_page_event` was removed along with
     // `platform_page::PlatformPageViewEvent`.
 
@@ -1839,6 +1875,7 @@ impl SettingsView {
             SettingsPageViewHandle::ZapDrive(v) => v.as_ref(app).should_render(app),
             // Issue #72: the global HTTP proxy settings page.
             SettingsPageViewHandle::Network(v) => v.as_ref(app).should_render(app),
+            SettingsPageViewHandle::Privacy(v) => v.as_ref(app).should_render(app),
         }
     }
 
@@ -2028,6 +2065,9 @@ impl SettingsView {
             // Zap Wave 3-1: the `OzCloudAPIKeys` modal arm was removed along with the UI.
             SettingsPageViewHandle::MCPServers(view) => {
                 view.read(app, |view, _| view.get_modal_content(app))
+            }
+            SettingsPageViewHandle::Privacy(view) => {
+                view.read(app, |view, _| view.get_modal_content())
             }
             _ => None,
         }
@@ -2372,6 +2412,15 @@ impl TypedActionView for SettingsView {
                     if let SettingsPageViewHandle::Features(view) = &features_page.view_handle {
                         view.update(ctx, |view, ctx| {
                             view.handle_action(feature_action, ctx);
+                        })
+                    }
+                }
+            }
+            SettingsAction::PrivacyPageToggle(privacy_action) => {
+                if let Some(privacy_page) = self.settings_page(SettingsSection::Privacy) {
+                    if let SettingsPageViewHandle::Privacy(view) = &privacy_page.view_handle {
+                        view.update(ctx, |view, ctx| {
+                            view.handle_action(privacy_action, ctx);
                         })
                     }
                 }

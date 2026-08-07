@@ -26,6 +26,7 @@ use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionType;
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::themes::theme_chooser::ThemeChooserMode;
 use crate::workflows::{WorkflowSelectionSource, WorkflowSource, WorkflowType};
+use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::PaneViewLocator;
 
 use ui_components::lightbox;
@@ -125,6 +126,13 @@ pub enum WorkspaceAction {
         tab_index: usize,
         anchor: TabContextMenuAnchor,
     },
+    /// Toggles the multi-tab selection right-click menu.
+    /// Dispatched by the UI when the right-clicked tab is part of a multi-tab
+    /// selection (cmd-click or shift-click).
+    ToggleTabSelectionRightClickMenu {
+        tab_index: usize,
+        anchor: TabContextMenuAnchor,
+    },
     ToggleVerticalTabsPaneContextMenu {
         tab_index: usize,
         target: VerticalTabsPaneContextMenuTarget,
@@ -142,6 +150,70 @@ pub enum WorkspaceAction {
     CloseNonActiveTabs,
     CloseTabsRight(usize),
     CloseTabsRightActiveTab,
+    /// Close every tab that belongs to the given tab group.
+    CloseTabGroup(TabGroupId),
+    /// Toggle collapsed state for the given tab group.
+    ToggleTabGroupCollapsed(TabGroupId),
+    /// Creates a new tab group containing the tab at the given index.
+    NewTabGroupFromTab(usize),
+    /// Moves the tab at `tab_index` into `group_id`, appending it to the
+    /// end of the group's contiguous run.
+    MoveTabToGroup {
+        tab_index: usize,
+        group_id: TabGroupId,
+    },
+    /// Removes the tab at the given index from its current group.
+    RemoveTabFromGroup(usize),
+    /// Selects every tab between the active tab and the shift-clicked row (inclusive).
+    ShiftSelectTabRange {
+        locator: PaneViewLocator,
+    },
+    /// Toggles whether the tab at `locator` is part of the active multi-selection.
+    /// Dispatched on cmd-click of a tab.
+    ToggleTabMultiSelection {
+        locator: PaneViewLocator,
+    },
+    /// Creates a new tab group from the current tab multi-selection.
+    NewTabGroupFromSelectedTabs,
+    /// Context-aware "create group" entry point for the keybinding: groups
+    /// the multi-selection when 2+ tabs are selected, otherwise groups the
+    /// active tab.
+    NewTabGroupFromActiveOrSelectedTabs,
+    /// Moves every selected tab into `group_id`.
+    MoveSelectedTabsToGroup {
+        group_id: TabGroupId,
+    },
+    /// Removes every selected tab from its group (requires a single shared group).
+    RemoveSelectedTabsFromGroup,
+    /// Context-aware "remove from group" entry point for the keybinding:
+    /// removes the multi-selection from its shared group when 2+ tabs are
+    /// selected, otherwise removes the active tab.
+    RemoveActiveOrSelectedTabsFromGroup,
+    /// Clears the tab multi-selection.
+    ClearTabMultiSelection,
+    /// Removes the given group, leaving its member tabs top-level.
+    UngroupTabs(TabGroupId),
+    /// Opens a new tab inside the given group.
+    NewTabInGroup(TabGroupId),
+    /// Pins the tab at the given index. If the tab is part of a group, it
+    /// is first extracted from the group and then pinned as ungrouped.
+    PinTab(usize),
+    /// Unpins the tab at the given index.
+    UnpinTab(usize),
+    /// Pins the active tab.
+    PinActiveTab,
+    /// Unpins the active tab.
+    UnpinActiveTab,
+    /// Pins the entire tab group: sets the group as pinned and moves the
+    /// group block to the end of the pinned region.
+    PinTabGroup(TabGroupId),
+    /// Unpins the entire tab group: clears the pinned flag on the group and
+    /// moves the group block to the start of the unpinned region.
+    UnpinTabGroup(TabGroupId),
+    /// Pins the active tab's group.
+    PinActiveTabGroup,
+    /// Unpins the active tab's group.
+    UnpinActiveTabGroup,
     AddDefaultTab,
     AddTerminalTab {
         hide_homepage: bool,
@@ -675,6 +747,26 @@ impl WorkspaceAction {
             | CloseNonActiveTabs
             | CloseTabsRight(_)
             | CloseTabsRightActiveTab
+            | CloseTabGroup(_)
+            | ToggleTabGroupCollapsed(_)
+            | NewTabGroupFromTab(_)
+            | MoveTabToGroup { .. }
+            | RemoveTabFromGroup(_)
+            | NewTabGroupFromSelectedTabs
+            | NewTabGroupFromActiveOrSelectedTabs
+            | MoveSelectedTabsToGroup { .. }
+            | RemoveSelectedTabsFromGroup
+            | RemoveActiveOrSelectedTabsFromGroup
+            | UngroupTabs(_)
+            | NewTabInGroup(_)
+            | PinTab(_)
+            | UnpinTab(_)
+            | PinActiveTab
+            | UnpinActiveTab
+            | PinTabGroup(_)
+            | UnpinTabGroup(_)
+            | PinActiveTabGroup
+            | UnpinActiveTabGroup
             | ToggleTabColor { .. }
             | AddDefaultTab
             | AddTerminalTab { .. }
@@ -732,7 +824,11 @@ impl WorkspaceAction {
             | ToggleErrorUnderlining
             | ToggleSyntaxHighlighting
             | OpenLaunchConfigSaveModal
+            | ClearTabMultiSelection
+            | ShiftSelectTabRange { .. }
+            | ToggleTabMultiSelection { .. }
             | ToggleTabRightClickMenu { .. }
+            | ToggleTabSelectionRightClickMenu { .. }
             | ToggleVerticalTabsPaneContextMenu { .. }
             | OpenNewSessionMenu { .. }
             | ToggleTabConfigsMenu

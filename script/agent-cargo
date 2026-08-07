@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# agent-cargo — build-concurrency governor for parallel agents on this host.
+#
+# Why this exists: the workspace is large enough that unbounded concurrent
+# compiles exhaust RAM and take the whole session down. This hands out a small,
+# fixed number of slots so concurrency stays inside what the host can take.
+#
+# Usage:
+#   script/agent-cargo <agent-name> <cargo-args...>
+#
+# Example:
+#   script/agent-cargo pinned-tabs check -p warp --features gui
+#
+# Behavior:
+#   - Blocks until one of PHOSPHOR_BUILD_SLOTS slots is free AND the host has
+#     PHOSPHOR_MIN_FREE_MB available, then runs cargo.
+#   - Pins the invocation to its own CARGO_TARGET_DIR keyed by <agent-name>,
+#     so concurrent agents on different branches cannot contaminate each
+#     other's build artifacts (the shared-target contamination that produced
+#     phantom "missing symbol" errors on a previous host).
+#   - Records the low-water mark of available memory per run to
+#     $LOG_DIR/mem-<agent>.log, so slot sizing can be driven by measurement
+#     rather than guesswork.
+#
+# SIZING — read before changing:
+#   Slot count must be sized against the HEAVIEST cargo invocation agents
+#   actually run, which is `nextest run` / `--all-targets`, NOT `cargo check`.
+#   A check peaks around 1-2 GB over baseline; building and LINKING the test
+#   binaries is several GB *per parallel job*, and mold deliberately trades
+#   memory for link speed. Sizing slots from a `check` measurement is how this
+#   host got OOM-reaped once already. When in doubt, lower the numbers: a
+#   queued build costs minutes, an OOM costs every running agent at once.
+set -euo pipefail
+
+SLOTS="${PHOSPHOR_BUILD_SLOTS:-3}"
+JOBS="${PHOSPHOR_BUILD_JOBS:-5}"
+MIN_FREE_MB="${PHOSPHOR_MIN_FREE_MB:-8000}"
+LOCK_DIR="${PHOSPHOR_LOCK_DIR:-/cache/git/.phosphor-build/locks}"
+TARGET_ROOT="${PHOSPHOR_TARGET_ROOT:-/cache/git/.phosphor-build/targets}"
+LOG_DIR="${PHOSPHOR_LOG_DIR:-/cache/git/.phosphor-build/logs}"
+
+if [[ $# -lt 2 ]]; then
+  echo "usage: $0 <agent-name> <cargo-args...>" >&2
+  exit 2
+fi
+
+agent="$1"
+shift
+
+mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent" "$LOG_DIR"
+
+export CARGO_TARGET_DIR="$TARGET_ROOT/$agent"
+export CARGO_BUILD_JOBS="$JOBS"
+# CARGO_BUILD_JOBS bounds COMPILATION only. nextest defaults its test-execution
+# parallelism to the CPU count, so a test run spawns up to `nproc` concurrent
+# test processes regardless of the jobs cap — and in this workspace each one
+# stands up an App. Measured: a single `nextest -p warp_tui -p warp_editor` drove
+# host available memory down to 4.4 GB and load above 49 on 24 cores. Bound test
+# threads to the same budget as compile jobs.
+export NEXTEST_TEST_THREADS="$JOBS"
+export RUST_TEST_THREADS="$JOBS"
+ulimit -n 8192
+
+available_mb() { awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo; }
+
+# Samples available memory while the build runs and reports the low-water mark.
+# A run that dips near zero means the slot count is too high for this host,
+# even if it happened to survive.
+watch_memory() {
+  local low
+  low="$(available_mb)"
+  while :; do
+    local now
+    now="$(available_mb)"
+    ((now < low)) && low="$now"
+    echo "$low" >"$1"
+    sleep 5
+  done
+}
+
+# Re-read the slot count on every poll pass rather than trusting the value bash
+# captured at start-up. A queued invocation can wait a long time, and raising
+# the cap mid-flight would otherwise never reach it: bash has already read the
+# script, so an edit cannot change a running process's loop bound, and the new
+# slot sits idle until every waiting invocation happens to exit. Reading the
+# override file each pass makes tuning take effect on the queue that is
+# actually waiting.
+slot_count() {
+  local n
+  n="$(cat "$LOCK_DIR/../slots" 2>/dev/null)"
+  [[ "$n" =~ ^[0-9]+$ ]] && ((n > 0)) && { echo "$n"; return; }
+  echo "$SLOTS"
+}
+
+while :; do
+  live_slots="$(slot_count)"
+  for ((i = 1; i <= live_slots; i++)); do
+    exec {fd}>"$LOCK_DIR/slot$i"
+    if flock -n "$fd"; then
+      # Hold the slot but wait for headroom: a free slot does not imply a safe
+      # moment to start, since the other slots' builds may be at peak.
+      while (($(available_mb) < MIN_FREE_MB)); do
+        echo "[agent-cargo] agent=$agent waiting for memory ($(available_mb)MB < ${MIN_FREE_MB}MB)" >&2
+        sleep 15
+      done
+
+      echo "[agent-cargo] agent=$agent slot=$i jobs=$JOBS avail=$(available_mb)MB target=$CARGO_TARGET_DIR" >&2
+
+      low_file="$(mktemp)"
+      watch_memory "$low_file" &
+      watcher=$!
+      set +e
+      cargo "$@"
+      status=$?
+      set -e
+      kill "$watcher" 2>/dev/null || true
+      echo "$(date -Is) agent=$agent low_avail_mb=$(cat "$low_file" 2>/dev/null) exit=$status args=$*" \
+        >>"$LOG_DIR/mem-$agent.log"
+      rm -f "$low_file"
+      # Emit the outcome on stderr as well as exiting with it. Piping this
+      # script through `| head` / `| tail` / `| grep` replaces the pipeline's
+      # exit status with the filter's, silently turning a failed build into an
+      # apparent success — a mistake made twice on this repo in one day, once
+      # via `| head` and once via `|| true`. stderr is not consumed by those
+      # filters, so this line survives them and is the value to trust.
+      if [[ $status -eq 0 ]]; then
+        echo "[agent-cargo] RESULT agent=$agent exit=0 OK" >&2
+      else
+        echo "[agent-cargo] RESULT agent=$agent exit=$status FAILED" >&2
+      fi
+      exit $status
+    fi
+    exec {fd}>&-
+  done
+  sleep 5
+done
