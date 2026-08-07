@@ -1207,9 +1207,13 @@ impl LocalDiffStateModel {
             moved,
             commit_updated,
             index_lock_detected,
+            remote_ref_updated,
         } = update;
 
-        let invalidation_behavior = if commit_updated {
+        let invalidation_behavior = if commit_updated || remote_ref_updated {
+            // A changed tracked-remote ref (#294) is metadata, not file
+            // content — e.g. it moves the ahead/behind counts shown in the
+            // diff-state pane — so it's treated the same as commit_updated.
             InvalidationBehavior::All(InvalidationSource::MetadataChange)
         } else if index_lock_detected {
             InvalidationBehavior::All(InvalidationSource::IndexLockChange)

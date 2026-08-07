@@ -39,6 +39,13 @@ strum.workspace = true
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 notify-debouncer-full.workspace = true
 watcher.workspace = true
+# Used by `Repository::resolve_tracked_remote_ref` to shell out to `git
+# rev-parse` for the current branch's upstream ref (#294). The pin calls a
+# `warp_util::git::run_git_command` helper this fork doesn't have (its
+# equivalent lives in `app/src/util/git.rs`, which `repo_metadata` cannot
+# depend on); `command` is the same low-level process wrapper that helper is
+# itself built on.
+command.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true
