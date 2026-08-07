@@ -18,12 +18,12 @@ use super::{
     pane_search_text_fragments, preferred_agent_tab_titles, search_fragments_contain_query,
     select_summary_pane_kind_icons, should_keep_detail_sidecar_visible_for_mouse_position,
     should_show_tab_group_header, summary_overflow_count, summary_search_text_fragments,
-    terminal_kind_badge_label,
-    terminal_primary_line_data, terminal_pull_request_badge_label, terminal_search_text_fragments,
-    terminal_title_fallback_font, uses_outer_group_container, visible_pane_ids_for_detail_target,
-    vtab_diff_stats_text, AgentTabTextPreference, SummaryPaneKind, SummaryPaneKindIcons,
-    TerminalAgentText, TerminalPrimaryLineData, TerminalPrimaryLineFont, VerticalTabsDetailTarget,
-    VerticalTabsDetailTargetKind, VerticalTabsSummaryBranchEntry, VerticalTabsSummaryData,
+    terminal_kind_badge_label, terminal_primary_line_data, terminal_pull_request_badge_label,
+    terminal_search_text_fragments, terminal_title_fallback_font, uses_outer_group_container,
+    visible_pane_ids_for_detail_target, vtab_diff_stats_text, AgentTabTextPreference,
+    SummaryPaneKind, SummaryPaneKindIcons, TerminalAgentText, TerminalPrimaryLineData,
+    TerminalPrimaryLineFont, VerticalTabsDetailTarget, VerticalTabsDetailTargetKind,
+    VerticalTabsSummaryBranchEntry, VerticalTabsSummaryData,
 };
 
 fn pane_id() -> PaneId {
@@ -1049,4 +1049,11 @@ fn summary_search_fragments_include_hidden_overflow_values() {
     assert!(search_fragments_contain_query(&fragments, "#789"));
     assert!(search_fragments_contain_query(&fragments, "+2"));
     assert!(search_fragments_contain_query(&fragments, "-3"));
+}
+
+#[test]
+fn summary_overflow_count_caps_visible_region() {
+    assert_eq!(summary_overflow_count(5, 3), 2);
+    assert_eq!(summary_overflow_count(3, 3), 0);
+    assert_eq!(summary_overflow_count(2, 3), 0);
 }

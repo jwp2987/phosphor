@@ -163,6 +163,38 @@ impl Harness {
             Self::Unknown => "Unknown",
         }
     }
+
+    /// Parses a harness config-name string (the lowercase name written into
+    /// persisted harness config, e.g. `"claude"`, `"gemini"`, `"oz"`) into a
+    /// [`Harness`] variant. Inverse of [`Harness::config_name`]. Returns `None`
+    /// for unrecognized names so callers can distinguish a future-server
+    /// harness from a round-tripped [`Harness::Unknown`]; callers that want to
+    /// fall back to `Unknown` should `.unwrap_or(Harness::Unknown)`.
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        match name {
+            "oz" => Some(Harness::Oz),
+            "claude" => Some(Harness::Claude),
+            "opencode" => Some(Harness::OpenCode),
+            "gemini" => Some(Harness::Gemini),
+            "unknown" => Some(Harness::Unknown),
+            _ => None,
+        }
+    }
+
+    /// Canonical config name for this harness (the lowercase string written
+    /// into persisted harness config). Inverse of [`Harness::from_config_name`].
+    /// The exhaustive match here forces every new [`Harness`] variant to
+    /// declare a canonical name, which prevents `from_config_name` from
+    /// silently falling back to `Unknown` when a new variant is added.
+    pub fn config_name(self) -> &'static str {
+        match self {
+            Harness::Oz => "oz",
+            Harness::Claude => "claude",
+            Harness::OpenCode => "opencode",
+            Harness::Gemini => "gemini",
+            Harness::Unknown => "unknown",
+        }
+    }
 }
 
 impl fmt::Display for Harness {
@@ -328,3 +360,7 @@ pub struct ListAgentConfigsArgs {
     #[arg(long = "repo", short = 'r', value_name = "REPO")]
     pub repo: Option<String>,
 }
+
+#[cfg(test)]
+#[path = "agent_tests.rs"]
+mod tests;
