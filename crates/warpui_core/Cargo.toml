@@ -120,3 +120,10 @@ woothee = "0.13.0"
 
 [build-dependencies]
 cfg_aliases.workspace = true
+
+# Headless TUI-backend integration tests; only meaningful with the `tui`
+# feature (they exercise `elements::tui`/`presenter::tui`, which are gated
+# behind it).
+[[test]]
+name = "tui_integration"
+required-features = ["tui"]

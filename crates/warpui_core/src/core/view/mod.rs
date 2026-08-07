@@ -138,6 +138,22 @@ pub trait View: Entity {
     fn accessibility_data(&self, _ctx: &mut ViewContext<Self>) -> Option<AccessibilityData> {
         None
     }
+
+    /// Returns any views this view owns that are not necessarily reachable
+    /// through the render-time or structural parent/child graphs — e.g. a
+    /// view held through a model (a pane's navigation stack) or a child
+    /// handle that is not currently rendered.
+    ///
+    /// [`AppContext::transfer_view_tree_to_window`] consults this so a
+    /// cross-window transfer of this view also moves its owned-but-unrendered
+    /// children, instead of orphaning them in the source window.
+    ///
+    /// Returned ids only need to be the view's *direct* children — the
+    /// transfer walk recurses, so each child's own `child_view_ids` (and its
+    /// structural/rendered descendants) are collected automatically.
+    fn child_view_ids(&self, _app: &AppContext) -> Vec<EntityId> {
+        Vec::new()
+    }
 }
 
 /// The accessibility data of a current view.
