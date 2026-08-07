@@ -1,6 +1,49 @@
 use super::*;
 use std::path::PathBuf;
 
+// Measured against the pinned oracle (`02b53fcd8`, release `2026.07.29.09.05`
+// stable — see `ORACLE.md`), whose same-path `model_tests.rs` has 29 `#[test]`s.
+// 11 of those are already present above (the `test_find_applicable_rules_*`
+// group); the remaining 18 break down as:
+//
+//   1 portable — `test_no_rules_returns_none`, ported at the bottom of this
+//     file. Issue #150 lists all 18 as blocked; that one is not, because it only
+//     needs `ProjectContextModel::default()` and `find_applicable_rules`, both
+//     of which this fork already has.
+//
+//   6 blocked on `RulesDelta::merge` — the `test_merge_*` group. The method is
+//     absent here. It is also *dead code at the pin*: `merge` is private to
+//     `model.rs`, and `model.rs` never calls it (verified with
+//     `git grep '\.merge(' 02b53fcd8 -- crates/ai/src/project_context/`, which
+//     matches only `model_tests.rs`). Adding it would import dead code purely to
+//     host a test — the same call made for `ApiKeys::provider_key_count` in
+//     `crates/ai/src/api_keys_tests.rs`, and the defect class #207 tracks.
+//     Refs #150 item 2.
+//
+//   5 blocked on global rules — `test_global_rule_alone_no_project_rules`,
+//     `test_global_rule_layered_with_project_warp`,
+//     `test_global_rule_root_path_falls_back_to_parent`,
+//     `test_in_dir_warp_shadows_agents_with_global`,
+//     `test_multiple_global_rules_all_contribute`. The pin layers `~/.agents/`
+//     and `~/.warp/` rules ahead of project rules via `ProjectContextModel::
+//     global_rules`, fed by a `project_context/global_rules.rs` watcher module.
+//     This fork has neither the field nor the module, so there is nothing to
+//     layer. Local, non-cloud; refs #150 item 2.
+//
+//   2 blocked on `ProjectContextModel::reconcile_project_rules` —
+//     `test_missing_rule_content_preserves_cached_content_while_path_is_standing`
+//     and `test_rule_missing_from_standing_results_is_removed_from_cached_content`.
+//     Absent here, along with `ProjectRules::rule_paths`. Refs #150 item 2, #201.
+//
+//   4 blocked on remote (`LocalOrRemotePath`) project rules —
+//     `test_remote_project_rules_require_matching_host`,
+//     `test_remote_global_rules_only_layer_for_matching_remote_host`,
+//     `test_remote_standing_results_preserve_host_qualified_rule_paths`,
+//     `test_reconcile_project_rules_hydrates_local_and_remote_paths`. This
+//     fork's `ProjectRule::path`, `ProjectRulePath` and `path_to_rules` are all
+//     keyed by `PathBuf`; `find_applicable_project_rules` explicitly returns
+//     `None` for every remote path. Refs #150 item 2, #170.
+
 /// Scans, then drops directory stamps for ancestors outside `root`.
 ///
 /// `scan_fast_path` walks up to `MAX_WALK_DEPTH` ancestors and records each
@@ -466,4 +509,11 @@ fn upsert_rule_case_insensitive_filename() {
         .active_rules;
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].path, PathBuf::from("/a/claude.md"));
+}
+
+#[test]
+fn test_no_rules_returns_none() {
+    let model = ProjectContextModel::default();
+    let result = model.find_applicable_rules(&PathBuf::from("/some/path/file.rs"));
+    assert!(result.is_none());
 }
