@@ -27,6 +27,7 @@ use super::diff_state::{
 use crate::code::buffer_location::RemotePath;
 use crate::remote_server::diff_state_proto::{
     decode_file_delta, decode_metadata_update, decode_snapshot, encode_diff_mode,
+    file_status_info_to_proto,
 };
 use crate::remote_server::proto;
 use crate::util::git::{Commit, PrInfo};
@@ -426,17 +427,47 @@ impl RemoteDiffStateModel {
         self.spawn_get_diff_state(ctx);
     }
 
-    /// Discarding files over SSH is not yet supported (the DiscardFiles RPC is
-    /// a later increment); this is a no-op rather than silently mutating the
-    /// wrong (local) tree.
+    /// Discards changes for one or more files on the remote host (git
+    /// restore/stash/rm), mirroring the local code-review "discard changes"
+    /// action over SSH (#437 — the "later increment" this used to be a
+    /// no-op stub for). Fire-and-forget from the caller's perspective: on
+    /// success the daemon pushes a fresh diff-state snapshot to every
+    /// connection subscribed to this repo (see
+    /// `ServerModel::handle_discard_files`), which arrives here through the
+    /// normal `handle_manager_event` push path — there is nothing to apply
+    /// directly from the RPC response. On failure this only logs; the UI
+    /// keeps showing the pre-discard state, matching the local backend's
+    /// error handling (`LocalDiffStateModel::discard_files`).
     pub fn discard_files(
         &mut self,
-        _file_infos: Vec<super::diff_state::FileStatusInfo>,
-        _should_stash: bool,
-        _branch_name: Option<String>,
-        _ctx: &mut ModelContext<Self>,
+        file_infos: Vec<super::diff_state::FileStatusInfo>,
+        should_stash: bool,
+        branch_name: Option<String>,
+        ctx: &mut ModelContext<Self>,
     ) {
-        log::warn!("discard_files is not yet supported for remote diff state");
+        let Some(client) = RemoteServerManager::as_ref(ctx)
+            .client_for_host(&self.remote_path.host_id)
+            .cloned()
+        else {
+            // No connected session for the host; nothing to discard against.
+            log::warn!("RemoteDiffStateModel: discard_files has no connected session for host");
+            return;
+        };
+        let request = proto::DiscardFilesRequest {
+            repo_path: self.repo_path_string(),
+            files: file_infos.iter().map(file_status_info_to_proto).collect(),
+            should_stash,
+            branch_name,
+            mode: Some(encode_diff_mode(&self.mode)),
+        };
+        ctx.spawn(
+            async move { client.discard_files(request).await },
+            |_me, result, _ctx| {
+                if let Err(e) = result {
+                    log::error!("RemoteDiffStateModel: discard_files failed: {e}");
+                }
+            },
+        );
     }
 
     /// The daemon owns metadata refresh cadence, so this is a no-op.

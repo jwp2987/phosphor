@@ -13,9 +13,11 @@
 //! These live in `app` rather than the `remote_server` crate because the
 //! domain types are defined here and `remote_server` cannot depend on `app`.
 
-// The non-test consumers (client methods, daemon handler, DiffStateModel remote
-// backend) land in the following diff-state increments; until then these
-// converters are exercised only by the unit tests below.
+// `file_status_info_to_proto` / `proto_to_file_status_info` are now live
+// (client method + daemon handler, #437). The remaining non-test consumers
+// for the other converters here (e.g. `build_diff_state_file_delta`'s
+// debounced per-file push) land in later diff-state increments; until then
+// those stay exercised only by the unit tests below.
 #![allow(dead_code)]
 
 use std::path::PathBuf;
@@ -316,7 +318,10 @@ pub(super) fn proto_to_diff_state(state: &proto::DiffState, diffs: Option<GitDif
 
 // ── FileStatusInfo ───────────────────────────────────────────────
 
-pub(super) fn file_status_info_to_proto(info: &FileStatusInfo) -> proto::FileStatusInfo {
+/// `pub(crate)` rather than `pub(super)`: `RemoteDiffStateModel::discard_files`
+/// (`code_review::diff_state_remote`, #437) encodes the outgoing
+/// `DiscardFilesRequest.files` list with this from outside `remote_server`.
+pub(crate) fn file_status_info_to_proto(info: &FileStatusInfo) -> proto::FileStatusInfo {
     proto::FileStatusInfo {
         path: info.path.to_string_lossy().into_owned(),
         status: Some(git_file_status_to_proto(&info.status)),
