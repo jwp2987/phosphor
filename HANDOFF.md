@@ -41,6 +41,27 @@ flagged exactly these when builds were frozen mid-round, so the locations are
 known: the last two fixes in `app/src/terminal/input.rs`, and the `c%`/`d%`/`y%`
 matching-bracket ports in `vim_handler_tests.rs`.
 
+### Round 3 — STOPPED mid-flight (2026-08-07)
+
+Four agents were dispatched and then **stopped by the maintainer before any
+reported**: terminal/view, ai/conversation, ai/config+skills,
+themes/code-review/search.
+
+**Their worktrees may hold unpushed work** at `.worktrees/r3-termview`,
+`.worktrees/r3-aiconv`, `.worktrees/r3-aiconf`, `.worktrees/r3-misc`, on branches
+`test/port-*-r3`. **Check these before deleting anything:**
+
+```
+for w in r3-termview r3-aiconv r3-aiconf r3-misc; do
+  git -C .worktrees/$w status --short
+  git -C .worktrees/$w log --oneline origin/main..HEAD
+done
+```
+
+Commit and push anything found — a previous stalled agent had six modified files
+sitting uncommitted, and they would have been lost. If the worktrees are empty,
+delete them and re-dispatch from the verdict-A list.
+
 ### Round 2 result (the batch model working)
 
 Six agents, six PRs, merged into one integration branch with **zero conflicts**,
