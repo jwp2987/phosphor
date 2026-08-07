@@ -1,6 +1,92 @@
 use rmcp::transport::auth::OAuthTokenResponse;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::TcpStream;
 
 use super::*;
+
+/// Sends a bare-bones HTTP GET to a loopback redirect URI, as a browser would when following
+/// the OAuth provider's redirect, and returns the raw HTTP response text.
+async fn send_loopback_callback(redirect_uri: &str, query: &str) -> String {
+    let url = Url::parse(redirect_uri).expect("redirect URI should parse");
+    let address = format!(
+        "{}:{}",
+        url.host_str().expect("redirect should have a host"),
+        url.port().expect("redirect should have a port")
+    );
+    let mut stream = TcpStream::connect(address)
+        .await
+        .expect("loopback callback should connect");
+    let target = format!("{}?{query}", url.path());
+    stream
+        .write_all(
+            format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .expect("callback request should write");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .await
+        .expect("callback response should read");
+    response
+}
+
+/// The loopback listener must bind to `127.0.0.1` only (never `0.0.0.0`), and must accept a
+/// callback whose `state` matches what the caller is expecting.
+#[tokio::test]
+async fn loopback_callback_accepts_matching_state() {
+    let receiver = LoopbackOAuthReceiver::bind()
+        .await
+        .expect("loopback receiver should bind");
+    let redirect_uri = receiver.redirect_uri().to_string();
+    assert!(
+        redirect_uri.starts_with("http://127.0.0.1:"),
+        "loopback redirect URI must be loopback-only, got {redirect_uri}"
+    );
+    let callback = tokio::spawn(async move {
+        send_loopback_callback(&redirect_uri, "code=test-code&state=test-state").await
+    });
+
+    let result = receiver
+        .receive("test-state")
+        .await
+        .expect("matching callback should succeed");
+    match result {
+        CallbackResult::Success { code, csrf_token } => {
+            assert_eq!(code, "test-code");
+            assert_eq!(csrf_token, "test-state");
+        }
+        CallbackResult::Error { error } => panic!("unexpected callback error: {error:?}"),
+    }
+    assert!(callback
+        .await
+        .expect("callback task should join")
+        .contains("200 OK"));
+}
+
+/// CSRF protection: a callback whose `state` does not match the one generated for this
+/// authorization attempt must be rejected, not treated as a successful login.
+#[tokio::test]
+async fn loopback_callback_rejects_mismatched_state() {
+    let receiver = LoopbackOAuthReceiver::bind()
+        .await
+        .expect("loopback receiver should bind");
+    let redirect_uri = receiver.redirect_uri().to_string();
+    let callback = tokio::spawn(async move {
+        send_loopback_callback(&redirect_uri, "code=test-code&state=wrong-state").await
+    });
+
+    let error = receiver
+        .receive("expected-state")
+        .await
+        .expect_err("mismatched callback should fail");
+    assert!(error.to_string().contains("state did not match"));
+    assert!(callback
+        .await
+        .expect("callback task should join")
+        .contains("400 Bad Request"));
+}
 
 /// Builds a minimal `OAuthTokenResponse` for tests, optionally with a refresh token.
 fn make_test_token_response(refresh_token: Option<&str>) -> OAuthTokenResponse {
