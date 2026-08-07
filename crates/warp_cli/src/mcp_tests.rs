@@ -73,3 +73,11 @@ fn test_invalid_uuid_treated_as_json() {
     let result = parse_mcp_spec(invalid_uuid).unwrap();
     assert!(matches!(result, MCPSpec::Json(_)));
 }
+
+#[test]
+fn test_non_identifier_non_json_treated_as_json() {
+    // Anything that isn't a UUID and isn't an existing file falls through to
+    // the inline-JSON path (and fails JSON parsing later).
+    let result = parse_mcp_spec("missing-config.json").unwrap();
+    assert!(matches!(result, MCPSpec::Json(_)));
+}
