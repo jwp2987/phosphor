@@ -1,7 +1,8 @@
 use super::*;
 use crate::proto::{
-    delete_file_response, save_buffer_response, server_message, write_file_response,
-    DeleteFileResponse, DeleteFileSuccess, FileOperationError, SaveBufferResponse,
+    delete_file_response, discard_files_response, save_buffer_response, server_message,
+    write_file_response, DeleteFileResponse, DeleteFileSuccess, DiscardFilesError,
+    DiscardFilesResponse, DiscardFilesSuccess, FileOperationError, SaveBufferResponse,
     SaveBufferSuccess, ServerMessage, WriteFileResponse, WriteFileSuccess,
 };
 
@@ -101,4 +102,36 @@ fn delete_file_error_propagates_message() {
         },
     ));
     assert_eq!(delete_file_result(&err).unwrap_err(), "no such file");
+}
+
+#[test]
+fn discard_files_success_is_ok() {
+    let success = msg(server_message::Message::DiscardFilesResponse(
+        DiscardFilesResponse {
+            result: Some(discard_files_response::Result::Success(
+                DiscardFilesSuccess {},
+            )),
+        },
+    ));
+    assert!(discard_files_result(&success).is_ok());
+}
+
+#[test]
+fn discard_files_error_propagates_message() {
+    let err = msg(server_message::Message::DiscardFilesResponse(
+        DiscardFilesResponse {
+            result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                message: "merge conflict".to_string(),
+            })),
+        },
+    ));
+    assert_eq!(discard_files_result(&err).unwrap_err(), "merge conflict");
+}
+
+#[test]
+fn discard_files_empty_result_is_err() {
+    let empty = msg(server_message::Message::DiscardFilesResponse(
+        DiscardFilesResponse { result: None },
+    ));
+    assert!(discard_files_result(&empty).is_err());
 }
