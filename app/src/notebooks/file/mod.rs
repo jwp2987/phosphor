@@ -895,6 +895,8 @@ impl TypedActionView for FileNotebookView {
             FileNotebookAction::ContextMenu(action) => {
                 if matches!(action, ContextMenuAction::Open(_)) {
                     self.send_telemetry_action(NotebookTelemetryAction::OpenContextMenu, ctx);
+                    let copy_file_path = self.local_path().map(|path| path.display().to_string());
+                    self.context_menu.set_copy_file_path(copy_file_path);
                 }
                 self.context_menu.handle_action(action, ctx);
             }
