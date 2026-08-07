@@ -14,6 +14,7 @@ use super::{
     keybindings::KeybindingsView,
     mcp_servers_page::MCPServersSettingsPageView,
     network_page::NetworkPageView,
+    privacy_page::PrivacyPageView,
     warp_drive_page::WarpDriveSettingsPageView,
     warpify_page::WarpifyPageView,
     SettingsSection,
@@ -112,6 +113,8 @@ pub enum SettingsPageViewHandle {
     ZapDrive(ViewHandle<WarpDriveSettingsPageView>),
     /// The global HTTP proxy settings page.
     Network(ViewHandle<NetworkPageView>),
+    /// Secret redaction / crash reporting / app analytics.
+    Privacy(ViewHandle<PrivacyPageView>),
 }
 
 impl SettingsPageViewHandle {
@@ -133,6 +136,7 @@ impl SettingsPageViewHandle {
             MCPServers(view_handle) => ChildView::new(view_handle).finish(),
             ZapDrive(view_handle) => ChildView::new(view_handle).finish(),
             Network(view_handle) => ChildView::new(view_handle).finish(),
+            Privacy(view_handle) => ChildView::new(view_handle).finish(),
         }
     }
 }
