@@ -2469,6 +2469,9 @@ impl VimHandler for EditorView {
             VimOperator::ToggleComment => {
                 // Commenting is not enabled for the EditorView.
             }
+            // Indent/Dedent are not implemented for the EditorView (matches the
+            // pinned oracle, which also leaves this arm empty here).
+            VimOperator::Indent | VimOperator::Dedent => {}
         }
     }
 
@@ -2805,6 +2808,9 @@ impl VimHandler for EditorView {
             VimOperator::ToggleComment => {
                 // Commenting is not enabled for the EditorView.
             }
+            // Indent/Dedent are not implemented for the EditorView (matches the
+            // pinned oracle, which also leaves this arm empty here).
+            VimOperator::Indent | VimOperator::Dedent => {}
         }
     }
 

@@ -12,6 +12,8 @@
 //! - `search`, `cycle_search`, `search_word_at_cursor` — no-op.
 //! - `visual_paste` — inserts from the local yank buffer (no register system).
 //! - `join_line`, `toggle_case`, `keyword_prg`, `ex_command` — no-op.
+//! - `VimOperator::Indent`/`Dedent` (`>`/`<`) — no-op (single-line prompt has
+//!   no indentation structure to shift).
 
 use vim::vim::{
     BracketChar, CharacterMotion, Direction, FindCharMotion, FirstNonWhitespaceMotion,
@@ -229,7 +231,9 @@ impl VimHandler for TuiInputView {
                 | VimOperator::ToggleCase
                 | VimOperator::Uppercase
                 | VimOperator::Lowercase
-                | VimOperator::ToggleComment => {}
+                | VimOperator::ToggleComment
+                | VimOperator::Indent
+                | VimOperator::Dedent => {}
             }
             if selected_text.is_empty() && motion_type == MotionType::Linewise {
                 "\n".to_owned()
@@ -315,7 +319,9 @@ impl VimHandler for TuiInputView {
                 VimOperator::ToggleCase
                 | VimOperator::Uppercase
                 | VimOperator::Lowercase
-                | VimOperator::ToggleComment => model.vim_clear_selections(ctx),
+                | VimOperator::ToggleComment
+                | VimOperator::Indent
+                | VimOperator::Dedent => model.vim_clear_selections(ctx),
             }
             selected_text
         });
