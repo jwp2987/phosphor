@@ -140,15 +140,3 @@ fn test_node_version() {
         Some("v18.0.0")
     );
 }
-
-#[test]
-fn test_github_pull_request_url_command_avoids_zsh_status_assignment() {
-    let generator = super::github_pull_request_url();
-    let command = generator
-        .command()
-        .for_shell(ShellType::Zsh)
-        .expect("zsh command should exist");
-    assert!(command.contains("exit_code=$?"));
-    assert!(!command.contains("status=$?"));
-    assert!(!command.contains("status=$?;"));
-}

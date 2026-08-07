@@ -30,6 +30,20 @@ use crate::terminal::event_listener::ChannelEventListener;
 use crate::terminal::model::test_utils::block_size;
 use crate::terminal::model::{BlockId, TerminalModel};
 use crate::terminal::view::ambient_agent::AmbientAgentViewModel;
+#[cfg(feature = "local_fs")]
+use crate::ai::agent::AIAgentContext;
+#[cfg(feature = "local_fs")]
+use crate::code_review::git_status_update::GitRepoStatusModel;
+#[cfg(feature = "local_fs")]
+use crate::code_review::github_repo_model::GitHubRepoModel;
+#[cfg(feature = "local_fs")]
+use crate::util::git::{PrInfo, RepositoryInfo};
+#[cfg(feature = "local_fs")]
+use repo_metadata::DirectoryWatcher;
+#[cfg(feature = "local_fs")]
+use warp_util::standardized_path::StandardizedPath;
+#[cfg(feature = "local_fs")]
+use warpui::SingletonEntity as _;
 
 impl BlocklistAIContextModel {
     pub(crate) fn append_pending_attachments_for_test(
@@ -363,4 +377,178 @@ fn tui_context_tracks_selected_conversation() {
             assert_eq!(model.selected_conversation_id(ctx), None);
         });
     });
+}
+
+// ─── Ported from the pinned oracle ───────────────────────────────────────────
+// `02b53fcd8:app/src/ai/blocklist/context_model_tests.rs`. The pin's
+// `GitRepoStatusModel::new_local_for_test(repo, metadata, ctx)` is this fork's
+// `GitRepoStatusModel::new_for_test(repo, metadata)`.
+
+/// Builds an inert `GitHubRepoModel` over a throwaway sibling git-status model.
+#[cfg(feature = "local_fs")]
+fn new_github_repo_model_for_test(
+    app: &mut App,
+) -> (tempfile::TempDir, ModelHandle<GitHubRepoModel>) {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let watcher_handle = app.add_singleton_model(DirectoryWatcher::new_for_testing);
+    let repository = watcher_handle.update(app, |watcher, ctx| {
+        watcher
+            .add_directory(
+                StandardizedPath::from_local_canonicalized(temp_dir.path()).unwrap(),
+                ctx,
+            )
+            .unwrap()
+    });
+    let git_status = app.add_model(move |_| GitRepoStatusModel::new_for_test(repository, None));
+    let model = app.add_model(move |ctx| GitHubRepoModel::new_local_for_test(git_status, ctx));
+    (temp_dir, model)
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_context_reads_github_repo_model() {
+    App::test((), |mut app| async move {
+        let context_model = build_test_context_model(&mut app);
+        let (_temp_dir, github_repo_model) = new_github_repo_model_for_test(&mut app);
+
+        github_repo_model.update(&mut app, |model, ctx| {
+            model.set_repository_info_for_test(
+                Some(RepositoryInfo {
+                    name: "warp-internal".to_owned(),
+                    owner: Some("warpdotdev".to_owned()),
+                    host: Some("github.com".to_owned()),
+                }),
+                ctx,
+            );
+        });
+
+        context_model.update(&mut app, |model, _| {
+            model.set_github_repo_model(Some(github_repo_model.downgrade()));
+        });
+
+        context_model.read(&app, |model, ctx| {
+            assert_eq!(
+                model.repository_context(ctx),
+                Some(AIAgentContext::Repository {
+                    name: "warp-internal".to_owned(),
+                    owner: Some("warpdotdev".to_owned()),
+                    host: Some("github.com".to_owned()),
+                })
+            );
+        });
+
+        context_model.update(&mut app, |model, _| {
+            model.set_github_repo_model(None);
+        });
+
+        context_model.read(&app, |model, ctx| {
+            assert_eq!(model.repository_context(ctx), None);
+        });
+    });
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn pull_request_context_reads_github_repo_model() {
+    App::test((), |mut app| async move {
+        let context_model = build_test_context_model(&mut app);
+        let (_temp_dir, github_repo_model) = new_github_repo_model_for_test(&mut app);
+
+        github_repo_model.update(&mut app, |model, ctx| {
+            model.set_pr_info_for_test(
+                Some(PrInfo {
+                    number: 123,
+                    url: "https://github.com/warpdotdev/warp/pull/123".to_owned(),
+                    state: "OPEN".to_owned(),
+                    draft: false,
+                    base_branch: "main".to_owned(),
+                }),
+                ctx,
+            );
+        });
+
+        context_model.update(&mut app, |model, _| {
+            model.set_github_repo_model(Some(github_repo_model.downgrade()));
+        });
+
+        context_model.read(&app, |model, ctx| {
+            assert_eq!(
+                model.pull_request_context(ctx),
+                Some(AIAgentContext::PullRequest {
+                    number: 123,
+                    state: "OPEN".to_owned(),
+                    draft: false,
+                    base_branch: "main".to_owned(),
+                    url: "https://github.com/warpdotdev/warp/pull/123".to_owned(),
+                })
+            );
+        });
+
+        context_model.update(&mut app, |model, _| {
+            model.set_github_repo_model(None);
+        });
+
+        context_model.read(&app, |model, ctx| {
+            assert_eq!(model.pull_request_context(ctx), None);
+        });
+    });
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn repository_context_from_repository_info_converts_to_agent_context() {
+    let repository_info = RepositoryInfo {
+        name: "warp-internal".to_owned(),
+        owner: Some("warpdotdev".to_owned()),
+        host: Some("github.com".to_owned()),
+    };
+
+    assert_eq!(
+        BlocklistAIContextModel::repository_context_from_repository_info(&repository_info),
+        AIAgentContext::Repository {
+            name: "warp-internal".to_owned(),
+            owner: Some("warpdotdev".to_owned()),
+            host: Some("github.com".to_owned()),
+        }
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn pull_request_context_from_pr_info_includes_url() {
+    let pr_info = PrInfo {
+        number: 123,
+        url: "https://github.com/warpdotdev/warp/pull/123".to_owned(),
+        state: "OPEN".to_owned(),
+        draft: true,
+        base_branch: "main".to_owned(),
+    };
+
+    assert_eq!(
+        BlocklistAIContextModel::pull_request_context_from_pr_info(&pr_info),
+        Some(AIAgentContext::PullRequest {
+            number: 123,
+            state: "OPEN".to_owned(),
+            draft: true,
+            base_branch: "main".to_owned(),
+            url: "https://github.com/warpdotdev/warp/pull/123".to_owned(),
+        })
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn pull_request_context_from_pr_info_rejects_numbers_that_do_not_fit_agent_context() {
+    let pr_info = PrInfo {
+        number: i32::MAX as u64 + 1,
+        url: "https://github.com/warpdotdev/warp/pull/2147483648".to_owned(),
+        state: "OPEN".to_owned(),
+        draft: false,
+        base_branch: "main".to_owned(),
+    };
+
+    assert_eq!(
+        BlocklistAIContextModel::pull_request_context_from_pr_info(&pr_info),
+        None
+    );
 }

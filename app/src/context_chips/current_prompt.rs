@@ -1,10 +1,8 @@
 use crate::features::FeatureFlag;
-use crate::report_if_error;
 use crate::settings::{InputSettings, WarpPromptSeparator};
 use crate::terminal::event::{BlockType, UserBlockCompleted};
 use crate::terminal::model::session::{ExecuteCommandOptions, Session, SessionsEvent};
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
-use crate::util::git::is_gh_auth_error;
 use crate::{
     debounce::debounce,
     editor::EditorView,
@@ -14,26 +12,22 @@ use crate::{
             block::{Block, BlockMetadata},
             session::Sessions,
         },
-        session_settings::{
-            GithubPrPromptChipDefaultValidation, SessionSettings, SessionSettingsChangedEvent,
-            ToolbarChipSelection,
-        },
+        session_settings::{SessionSettings, SessionSettingsChangedEvent, ToolbarChipSelection},
         view::{ContextMenuAction, PromptPart, PromptPosition, TerminalAction},
     },
 };
 use futures::{pin_mut, FutureExt as _};
 use itertools::Itertools;
-use settings::Setting as _;
-use warp_completer::completer::{CommandExitStatus, CommandOutput};
+use warp_completer::completer::CommandExitStatus;
 use warp_core::user_preferences::GetUserPreferences;
 
 use super::ChipResult;
 use super::{
     chips_to_string,
     context_chip::{
-        ChipAvailability, ChipDisabledReason, ChipFingerprintInput, ChipRuntimeCapabilities,
-        ContextChip, Environment, ExternalCommandsAvailability, GeneratorContext, PromptGenerator,
-        RefreshConfig, ShellCommandGenerator,
+        ChipAvailability, ChipFingerprintInput, ChipRuntimeCapabilities, ContextChip, Environment,
+        ExternalCommandsAvailability, GeneratorContext, PromptGenerator, RefreshConfig,
+        ShellCommandGenerator,
     },
     logging::{ChipCommandLogEntry, PromptChipExecutionPhase, PromptChipLogger},
     prompt::Prompt,
@@ -41,6 +35,8 @@ use super::{
 };
 #[cfg(feature = "local_fs")]
 use crate::code_review::git_status_update::{GitRepoStatusEvent, GitRepoStatusModel};
+#[cfg(feature = "local_fs")]
+use crate::code_review::github_repo_model::{GitHubRepoEvent, GitHubRepoModel};
 #[cfg(feature = "local_fs")]
 use crate::context_chips::display_chip::GitLineChanges;
 use std::collections::{HashMap, HashSet};
@@ -74,13 +70,6 @@ enum ChipUpdateStatus {
     Disabled,
     TimedOut,
     Error,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GithubPrPromptChipCommandOutcome {
-    Validated,
-    DeterministicAuthFailure,
-    RetryableFailure,
 }
 
 /// ChipState stores the state and point-in-time information related to a specific chip.
@@ -184,6 +173,11 @@ pub struct CurrentPrompt {
     /// `GitRepoStatusModel` instead of the 30s periodic timer.
     #[cfg(feature = "local_fs")]
     git_repo_status: Option<WeakModelHandle<GitRepoStatusModel>>,
+
+    /// When set, the `GithubPullRequest` chip value is populated from
+    /// `GitHubRepoModel` for the current repository.
+    #[cfg(feature = "local_fs")]
+    github_repo_model: Option<WeakModelHandle<GitHubRepoModel>>,
 }
 
 /// Context about the current terminal session, needed to update the prompt.
@@ -255,6 +249,8 @@ impl CurrentPrompt {
             separator: prompt.as_ref(ctx).separator(),
             #[cfg(feature = "local_fs")]
             git_repo_status: None,
+            #[cfg(feature = "local_fs")]
+            github_repo_model: None,
         }
     }
 
@@ -687,19 +683,6 @@ impl CurrentPrompt {
                     handle.abort();
                 }
             }
-            // If the GithubPullRequest chip is disabled because `gh` is missing,
-            // transition validation state to Suppressed so future default
-            // resolution excludes it.
-            if matches!(chip_kind, ContextChipKind::GithubPullRequest) {
-                if let ChipAvailability::Disabled(ChipDisabledReason::RequiresExecutable {
-                    ref command,
-                }) = availability
-                {
-                    if command == "gh" {
-                        Self::maybe_suppress_github_pr_default(ctx);
-                    }
-                }
-            }
             self.update_chip_value(chip_kind, None);
             self.update_on_click_value(chip_kind, None);
             self.set_chip_update_status(chip_kind, ChipUpdateStatus::Disabled);
@@ -765,7 +748,7 @@ impl CurrentPrompt {
                         .await;
                         (value, timed_out, chip_kind, exec_ctx, chip_title)
                     },
-                    move |me, (value, timed_out, chip_kind, exec_ctx, chip_title), ctx| {
+                    move |me, (value, timed_out, chip_kind, exec_ctx, chip_title), _ctx| {
                         logger.log_shell_command(&ChipCommandLogEntry {
                             chip_kind: &chip_kind,
                             chip_title: &chip_title,
@@ -788,13 +771,7 @@ impl CurrentPrompt {
                         }
 
                         if timed_out {
-                            if suppress_on_failure
-                                && Self::should_cache_failure_fingerprint(
-                                    &chip_kind,
-                                    value.as_ref(),
-                                    timed_out,
-                                )
-                            {
+                            if suppress_on_failure {
                                 if let Some(state) = me.states.get_mut(&chip_kind) {
                                     state.last_failure_fingerprint = current_fingerprint;
                                 }
@@ -827,29 +804,7 @@ impl CurrentPrompt {
                             _ => (None, ChipUpdateStatus::Error, true),
                         };
 
-                        if matches!(chip_kind, ContextChipKind::GithubPullRequest) {
-                            match Self::github_pr_prompt_chip_command_outcome(
-                                value.as_ref(),
-                                timed_out,
-                            ) {
-                                GithubPrPromptChipCommandOutcome::Validated => {
-                                    Self::maybe_validate_github_pr_default(ctx);
-                                }
-                                GithubPrPromptChipCommandOutcome::DeterministicAuthFailure => {
-                                    Self::maybe_suppress_github_pr_default(ctx);
-                                }
-                                GithubPrPromptChipCommandOutcome::RetryableFailure => {}
-                            }
-                        }
-
-                        if suppress_on_failure
-                            && failed
-                            && Self::should_cache_failure_fingerprint(
-                                &chip_kind,
-                                value.as_ref(),
-                                timed_out,
-                            )
-                        {
+                        if suppress_on_failure && failed {
                             if let Some(state) = me.states.get_mut(&chip_kind) {
                                 state.last_failure_fingerprint = current_fingerprint;
                             }
@@ -1035,6 +990,45 @@ impl CurrentPrompt {
                 self.states.insert(chip_kind.clone(), state);
             }
 
+            if self.is_updated_externally(chip_kind) {
+                // For chips updated externally (e.g. by the per-repo git status
+                // filesystem watcher), avoid running the shell-based fallback
+                // generator. Doing so can briefly overwrite the structured
+                // watcher value with one that uses different semantics (for
+                // example, the `GitDiffStats` shell fallback runs `git diff
+                // --shortstat HEAD`, which excludes untracked files, whereas
+                // the watcher counts untracked files as changes), causing the
+                // chip to flicker between the tracked-only count and the
+                // all-files count when untracked files are present.
+                //
+                // If a chip provides an `initial_value_generator` that sources
+                // from the prompt context (rather than running a shell
+                // command), use it for a fast initial value until the watcher
+                // emits a metadata-changed event.
+                if let Some(initial_gen) = chip_kind.initial_value_generator() {
+                    self.fetch_chip_value_once(
+                        chip_kind,
+                        &initial_gen,
+                        chip.on_click_generator().cloned(),
+                        true,
+                        ctx,
+                    );
+                } else {
+                    // Externally-updated chips without an `initial_value_generator`
+                    // are left blank after a state rebuild (`states.clear()` in
+                    // `handle_prompt_changed`, or `clear_cache()` on a session
+                    // change) until their backing model emits a change event.
+                    // `GithubPullRequest` only emits when cached PR info actually
+                    // changes, so after a rebuild there may be no event to restore
+                    // the already-cached value until the next periodic refresh.
+                    #[cfg(feature = "local_fs")]
+                    if matches!(chip_kind, ContextChipKind::GithubPullRequest) {
+                        self.sync_pr_chip_from_model(ctx);
+                    }
+                }
+                return;
+            }
+
             match chip.refresh_config() {
                 RefreshConfig::OnDemandOnly => {
                     self.fetch_chip_value_once(
@@ -1046,41 +1040,13 @@ impl CurrentPrompt {
                     );
                 }
                 RefreshConfig::Periodically { .. } => {
-                    if self.is_updated_externally(chip_kind) {
-                        // For chips updated externally (e.g. by the per-repo
-                        // git status filesystem watcher), avoid running the
-                        // periodic shell-based generator. Doing so can briefly
-                        // overwrite the structured watcher value with one that
-                        // uses different semantics (for example, the
-                        // `GitDiffStats` shell fallback runs `git diff
-                        // --shortstat HEAD`, which excludes untracked files,
-                        // whereas the watcher counts untracked files as
-                        // changes), causing the chip to flicker between the
-                        // tracked-only count and the all-files count when
-                        // untracked files are present.
-                        //
-                        // If a chip provides an `initial_value_generator` that
-                        // sources from the prompt context (rather than running
-                        // a shell command), use it for a fast initial value
-                        // until the watcher emits a metadata-changed event.
-                        if let Some(initial_gen) = chip_kind.initial_value_generator() {
-                            self.fetch_chip_value_once(
-                                chip_kind,
-                                &initial_gen,
-                                chip.on_click_generator().cloned(),
-                                true,
-                                ctx,
-                            );
-                        }
-                    } else {
-                        self.fetch_chip_value_at_interval(
-                            chip_kind,
-                            chip_kind.initial_value_generator(),
-                            chip.on_click_generator().cloned(),
-                            true,
-                            ctx,
-                        );
-                    }
+                    self.fetch_chip_value_at_interval(
+                        chip_kind,
+                        chip_kind.initial_value_generator(),
+                        chip.on_click_generator().cloned(),
+                        true,
+                        ctx,
+                    );
                 }
                 RefreshConfig::OnFileChanges { filepath } => {
                     log::debug!("Unimplemented: would've watched changes to filepath: {filepath}");
@@ -1155,8 +1121,6 @@ impl CurrentPrompt {
     /// existing states map with new information.
     /// This is called when the context gets updated (ie. a new block metadata is received).
     fn update_states_with_new_context_and_session(&mut self, ctx: &mut ModelContext<Self>) {
-        self.maybe_unsuppress_github_pr_default(ctx);
-
         // 1. Terminating existing spawned operations.
         self.clear_chips_and_cache();
 
@@ -1475,6 +1439,74 @@ impl CurrentPrompt {
         }
     }
 
+    /// Set the per-repo GitHub-info model handle. When `Some`, subscribes to
+    /// its events so the `GithubPullRequest` chip value is updated.
+    ///
+    /// Ported from `02b53fcd8:app/src/context_chips/current_prompt.rs`. This
+    /// replaces the fork's inline `gh pr view` chip generator: the chip value
+    /// now comes from the model instead of a per-refresh shell command.
+    #[cfg(feature = "local_fs")]
+    pub fn set_github_repo_model(
+        &mut self,
+        handle: Option<WeakModelHandle<GitHubRepoModel>>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // Unsubscribe from the previous model, if any.
+        if let Some(old_weak) = self.github_repo_model.take() {
+            if let Some(old_strong) = old_weak.upgrade(ctx) {
+                ctx.unsubscribe_from_model(&old_strong);
+            }
+        }
+
+        if handle.is_none() {
+            // GitHub-info handle detached: clear any stale PR chip state.
+            if let Some(state) = self.states.get_mut(&ContextChipKind::GithubPullRequest) {
+                state.clear_abort_handlers();
+                state.clear_cache();
+            }
+            let _ = self.update_tx.try_send(());
+            return;
+        }
+
+        if let Some(weak) = handle {
+            if let Some(strong) = weak.upgrade(ctx) {
+                self.github_repo_model = Some(weak);
+                // Only PR info drives the chip value; repository name/owner
+                // changes don't affect it.
+                ctx.subscribe_to_model(&strong, |me, event, ctx| match event {
+                    GitHubRepoEvent::PrInfoChanged => {
+                        me.sync_pr_chip_from_model(ctx);
+                    }
+                    GitHubRepoEvent::RepositoryInfoChanged => {}
+                });
+
+                // Eagerly populate the PR chip if PR info has already landed.
+                self.sync_pr_chip_from_model(ctx);
+            }
+        }
+    }
+
+    /// Reads PR info from the per-repo `GitHubRepoModel` and updates the
+    /// `GithubPullRequest` chip value if it differs from the current one.
+    #[cfg(feature = "local_fs")]
+    fn sync_pr_chip_from_model(&mut self, ctx: &AppContext) {
+        let new_pr_value = self
+            .github_repo_model
+            .as_ref()
+            .and_then(|w| w.upgrade(ctx))
+            .and_then(|h| {
+                h.as_ref(ctx)
+                    .pr_info(ctx)
+                    .map(|info| ChipValue::Text(info.url.clone()))
+            });
+        let current_pr = self
+            .latest_chip_value(&ContextChipKind::GithubPullRequest)
+            .cloned();
+        if current_pr != new_pr_value {
+            self.update_chip_value(&ContextChipKind::GithubPullRequest, new_pr_value);
+        }
+    }
+
     /// Re-run the branch-list generator for a git-branch-backed chip so its
     /// on-click dropdown stays in sync after the current branch changes.
     #[cfg(feature = "local_fs")]
@@ -1551,106 +1583,16 @@ impl CurrentPrompt {
     fn is_updated_externally(&self, chip_kind: &ContextChipKind) -> bool {
         #[cfg(feature = "local_fs")]
         {
-            if matches!(
-                chip_kind,
+            match chip_kind {
                 ContextChipKind::ShellGitBranch
-                    | ContextChipKind::GitBranchStatus
-                    | ContextChipKind::GitDiffStats
-            ) {
-                return self.git_repo_status.is_some();
+                | ContextChipKind::GitBranchStatus
+                | ContextChipKind::GitDiffStats => return self.git_repo_status.is_some(),
+                ContextChipKind::GithubPullRequest => return self.github_repo_model.is_some(),
+                _ => {}
             }
         }
         let _ = chip_kind;
         false
-    }
-
-    fn github_pr_prompt_chip_command_outcome(
-        output: Option<&CommandOutput>,
-        timed_out: bool,
-    ) -> GithubPrPromptChipCommandOutcome {
-        if timed_out {
-            return GithubPrPromptChipCommandOutcome::RetryableFailure;
-        }
-
-        match output {
-            Some(command_output) if command_output.status == CommandExitStatus::Success => {
-                GithubPrPromptChipCommandOutcome::Validated
-            }
-            Some(command_output) => {
-                let stderr = String::from_utf8(command_output.stderr.clone()).unwrap_or_default();
-                if is_gh_auth_error(&stderr) {
-                    GithubPrPromptChipCommandOutcome::DeterministicAuthFailure
-                } else {
-                    GithubPrPromptChipCommandOutcome::RetryableFailure
-                }
-            }
-            None => GithubPrPromptChipCommandOutcome::RetryableFailure,
-        }
-    }
-
-    fn should_cache_failure_fingerprint(
-        chip_kind: &ContextChipKind,
-        output: Option<&CommandOutput>,
-        timed_out: bool,
-    ) -> bool {
-        if !matches!(chip_kind, ContextChipKind::GithubPullRequest) {
-            return true;
-        }
-
-        matches!(
-            Self::github_pr_prompt_chip_command_outcome(output, timed_out),
-            GithubPrPromptChipCommandOutcome::DeterministicAuthFailure
-        )
-    }
-
-    fn maybe_suppress_github_pr_default(ctx: &mut ModelContext<Self>) {
-        let current = *SessionSettings::as_ref(ctx).github_pr_chip_default_validation;
-        if current != GithubPrPromptChipDefaultValidation::Suppressed {
-            SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
-                report_if_error!(settings
-                    .github_pr_chip_default_validation
-                    .set_value(GithubPrPromptChipDefaultValidation::Suppressed, ctx));
-            });
-        }
-    }
-
-    /// On session changes (including app startup), re-check whether a previously
-    /// suppressed PR chip should get another chance. Suppression is sticky across
-    /// restarts, but if the user has since installed `gh`, resetting to Unvalidated
-    /// lets the normal chip execution path re-validate or re-suppress.
-    fn maybe_unsuppress_github_pr_default(&self, ctx: &mut ModelContext<Self>) {
-        if !SessionSettings::as_ref(ctx)
-            .github_pr_chip_default_validation
-            .is_suppressed()
-        {
-            return;
-        }
-        let gh_on_path = self
-            .with_current_generator_context(ctx, |generator_context| {
-                generator_context.active_session.is_some_and(|session| {
-                    session.has_loaded_external_commands()
-                        && session.executable_names().any(|name| name == "gh")
-                })
-            })
-            .unwrap_or(false);
-        if gh_on_path {
-            SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
-                report_if_error!(settings
-                    .github_pr_chip_default_validation
-                    .set_value(GithubPrPromptChipDefaultValidation::Unvalidated, ctx));
-            });
-        }
-    }
-
-    fn maybe_validate_github_pr_default(ctx: &mut ModelContext<Self>) {
-        let current = *SessionSettings::as_ref(ctx).github_pr_chip_default_validation;
-        if current == GithubPrPromptChipDefaultValidation::Unvalidated {
-            SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
-                report_if_error!(settings
-                    .github_pr_chip_default_validation
-                    .set_value(GithubPrPromptChipDefaultValidation::Validated, ctx));
-            });
-        }
     }
 
     /// Whether or not context chips are active. If this is false, we can skip running them.

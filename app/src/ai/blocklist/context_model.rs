@@ -18,6 +18,13 @@ use ai::project_context::model::ProjectContextModel;
 use parking_lot::FairMutex;
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
+#[cfg(feature = "local_fs")]
+use warpui::WeakModelHandle;
+
+#[cfg(feature = "local_fs")]
+use crate::code_review::github_repo_model::GitHubRepoModel;
+#[cfg(feature = "local_fs")]
+use crate::util::git::{PrInfo, RepositoryInfo};
 
 use crate::ai::agent::conversation::{AIConversationAutoexecuteMode, ConversationStatus};
 use crate::{
@@ -408,6 +415,12 @@ pub struct BlocklistAIContextModel {
     /// When `AgentViewBlockContext` is enabled, completed user commands are tracked here
     /// and automatically included as context with the next user query.
     auto_attached_agent_view_user_block_ids: Vec<BlockId>,
+
+    /// Per-repo GitHub-info model for the terminal's current repository, set by
+    /// `TerminalView`. Weak so the model is torn down with the terminal's
+    /// subscription; supplies `AIAgentContext::{Repository, PullRequest}`.
+    #[cfg(feature = "local_fs")]
+    github_repo_model: Option<WeakModelHandle<GitHubRepoModel>>,
 }
 
 pub fn block_context_from_terminal_model(
@@ -581,6 +594,8 @@ impl BlocklistAIContextModel {
             pending_inline_at_context_attachments: Default::default(),
             pending_document_id: None,
             auto_attached_agent_view_user_block_ids: Vec::new(),
+            #[cfg(feature = "local_fs")]
+            github_repo_model: None,
         }
     }
 
@@ -609,6 +624,8 @@ impl BlocklistAIContextModel {
             pending_inline_at_context_attachments: Default::default(),
             pending_document_id: None,
             auto_attached_agent_view_user_block_ids: Vec::new(),
+            #[cfg(feature = "local_fs")]
+            github_repo_model: None,
         }
     }
 
@@ -634,6 +651,8 @@ impl BlocklistAIContextModel {
             pending_inline_at_context_attachments: Default::default(),
             pending_document_id: None,
             auto_attached_agent_view_user_block_ids: Vec::new(),
+            #[cfg(feature = "local_fs")]
+            github_repo_model: None,
         }
     }
 
@@ -771,6 +790,18 @@ impl BlocklistAIContextModel {
                 head: head.unwrap_or_default(),
                 branch,
             });
+        }
+
+        // Include repository identity and the current branch's pull request when
+        // the per-repo GitHub model has them cached.
+        #[cfg(feature = "local_fs")]
+        {
+            if let Some(repo_context) = self.repository_context(app) {
+                context.push(repo_context);
+            }
+            if let Some(pull_request_context) = self.pull_request_context(app) {
+                context.push(pull_request_context);
+            }
         }
 
         // Always include project rules if available
@@ -1433,6 +1464,54 @@ impl BlocklistAIContextModel {
                 requires_text_resync: false,
             });
         }
+    }
+
+    /// Sets the per-repo GitHub-info model whose cached `gh` results feed
+    /// `AIAgentContext::{Repository, PullRequest}`. `None` detaches it.
+    ///
+    /// Ported from `02b53fcd8:app/src/ai/blocklist/context_model.rs`.
+    #[cfg(feature = "local_fs")]
+    pub fn set_github_repo_model(&mut self, handle: Option<WeakModelHandle<GitHubRepoModel>>) {
+        self.github_repo_model = handle;
+    }
+
+    /// Builds an `AIAgentContext::Repository` from cached git remote metadata, if available.
+    #[cfg(feature = "local_fs")]
+    fn repository_context(&self, app: &AppContext) -> Option<AIAgentContext> {
+        let handle = self.github_repo_model.as_ref()?.upgrade(app)?;
+        let repository_info = handle.as_ref(app).repository_info(app)?;
+        Some(Self::repository_context_from_repository_info(
+            repository_info,
+        ))
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn repository_context_from_repository_info(repository_info: &RepositoryInfo) -> AIAgentContext {
+        AIAgentContext::Repository {
+            name: repository_info.name.clone(),
+            owner: repository_info.owner.clone(),
+            host: repository_info.host.clone(),
+        }
+    }
+
+    /// Builds an `AIAgentContext::PullRequest` from the cached PR for the
+    /// current branch, if available.
+    #[cfg(feature = "local_fs")]
+    fn pull_request_context(&self, app: &AppContext) -> Option<AIAgentContext> {
+        let handle = self.github_repo_model.as_ref()?.upgrade(app)?;
+        let pr_info = handle.as_ref(app).pr_info(app)?;
+        Self::pull_request_context_from_pr_info(pr_info)
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn pull_request_context_from_pr_info(pr_info: &PrInfo) -> Option<AIAgentContext> {
+        Some(AIAgentContext::PullRequest {
+            number: i32::try_from(pr_info.number).ok()?,
+            state: pr_info.state.clone(),
+            draft: pr_info.draft,
+            base_branch: pr_info.base_branch.clone(),
+            url: pr_info.url.clone(),
+        })
     }
 
     /// Clears all pending attachments.
