@@ -18,7 +18,7 @@ use futures::TryStreamExt;
 use warp_core::channel::ChannelState;
 use warp_core::ui::icons::Icon;
 use warp_core::{report_error, safe_warn};
-use warpui::AppContext;
+use warpui::{AppContext, SingletonEntity};
 
 use super::SkillDescriptor;
 use crate::ai::mcp::{McpIntegration, TemplatableMCPServerManager};
