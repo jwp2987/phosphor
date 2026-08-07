@@ -2408,6 +2408,7 @@ menu-block-copy-output = Copy output
 menu-block-copy-filtered-output = Copy filtered output
 menu-block-toggle-block-filter = Toggle block filter
 menu-block-toggle-bookmark = Toggle bookmark
+menu-block-clear-blocks = Clear Blocks
 menu-block-copy-prompt = Copy prompt
 menu-block-copy-right-prompt = Copy right prompt
 menu-block-copy-working-directory = Copy working directory

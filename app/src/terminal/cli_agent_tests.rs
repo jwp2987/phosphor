@@ -559,3 +559,13 @@ fn test_cli_agent_search_dirs_include_common_package_and_version_manager_bins() 
     assert!(dirs.contains(&home.join(".asdf/shims")));
     assert!(dirs.contains(&home.join(".local/share/mise/shims")));
 }
+
+/// Ported from the pinned oracle's `test_oh_my_pi_supports_bash_mode`.
+///
+/// oh-my-pi is spelled `CLIAgent::OhMyPi` upstream and `CLIAgent::Omp` here, but it is the
+/// same agent (`omp` command prefix) and it supports the `!` bash-mode prefix in the rich
+/// input, so the rich input must switch to shell decorations for it.
+#[test]
+fn test_oh_my_pi_supports_bash_mode() {
+    assert!(CLIAgent::Omp.supports_bash_mode());
+}

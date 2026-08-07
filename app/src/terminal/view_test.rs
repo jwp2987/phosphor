@@ -5932,3 +5932,264 @@ fn copy_does_not_forward_on_normal_screen() {
         );
     })
 }
+
+// ── Context menu "Clear Blocks" entry, ported from the pinned oracle ────────────────
+
+#[test]
+fn test_context_menu_includes_clear_when_block_list_non_empty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_block("ls", "foo");
+                assert!(!model.is_block_list_empty());
+            }
+
+            let menu_source = BlockListMenuSource::OutsideBlockRightClick {
+                position_in_terminal_view: Vector2F::zero(),
+            };
+            let items = view.context_menu_items(&menu_source, ctx);
+            let labels: Vec<&str> = items
+                .iter()
+                .filter_map(|item| item.fields().map(|fields| fields.label()))
+                .collect();
+            assert!(
+                labels.contains(&"Clear Blocks"),
+                "Expected `Clear Blocks` menu item, got {labels:?}"
+            );
+        });
+    })
+}
+
+#[test]
+fn test_context_menu_omits_clear_when_block_list_empty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let model = view.model.lock();
+                assert!(model.is_block_list_empty());
+            }
+
+            let menu_source = BlockListMenuSource::OutsideBlockRightClick {
+                position_in_terminal_view: Vector2F::zero(),
+            };
+            let items = view.context_menu_items(&menu_source, ctx);
+            let labels: Vec<&str> = items
+                .iter()
+                .filter_map(|item| item.fields().map(|fields| fields.label()))
+                .collect();
+            assert!(
+                !labels.contains(&"Clear Blocks"),
+                "Did not expect `Clear Blocks` menu item when block list is empty, got {labels:?}"
+            );
+        });
+    })
+}
+
+#[test]
+fn test_context_menu_omits_clear_for_text_right_click() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_block("ls", "foo");
+                assert!(!model.is_block_list_empty());
+            }
+
+            let menu_source = BlockListMenuSource::RegularTextRightClick {
+                position_in_terminal_view: Vector2F::zero(),
+            };
+            let items = view.context_menu_items(&menu_source, ctx);
+            let labels: Vec<&str> = items
+                .iter()
+                .filter_map(|item| item.fields().map(|fields| fields.label()))
+                .collect();
+            assert!(
+                !labels.contains(&"Clear Blocks"),
+                "Did not expect `Clear Blocks` in text-selection right-click menu, got {labels:?}"
+            );
+        });
+    })
+}
+
+// ── ControlMaster banner dismissal, ported from the pinned oracle ──────────────────
+
+#[test]
+fn test_control_master_banner_permanent_dismissal_persists() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal =
+            MockTerminalManager::create_new_terminal_view_window_for_test(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            // Temporary dismissal (the "x" button) clears the banner for this session
+            // but must not persist a "don't show again" preference.
+            view.control_master_error_banner_state.is_open = true;
+            view.handle_controlmaster_error_banner_event(
+                &BannerEvent::Dismiss(DismissalType::Temporary),
+                ctx,
+            );
+            assert!(!view.control_master_error_banner_state.is_open);
+            assert!(!view.control_master_error_banner_suppressed);
+            assert_eq!(
+                ctx.private_user_preferences()
+                    .read_value(CONTROL_MASTER_BANNER_SUPPRESSED_KEY)
+                    .unwrap(),
+                None,
+                "temporary dismissal should not persist a preference"
+            );
+
+            // Permanent dismissal ("Don't show me again") clears the banner and persists
+            // the choice so it never reopens.
+            view.control_master_error_banner_state.is_open = true;
+            view.handle_controlmaster_error_banner_event(
+                &BannerEvent::Dismiss(DismissalType::Permanent),
+                ctx,
+            );
+            assert!(!view.control_master_error_banner_state.is_open);
+            assert!(view.control_master_error_banner_suppressed);
+            assert_eq!(
+                ctx.private_user_preferences()
+                    .read_value(CONTROL_MASTER_BANNER_SUPPRESSED_KEY)
+                    .unwrap(),
+                Some("true".to_owned()),
+                "permanent dismissal should persist a preference"
+            );
+        });
+    })
+}
+
+#[test]
+fn test_control_master_banner_suppressed_does_not_reopen() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal =
+            MockTerminalManager::create_new_terminal_view_window_for_test(&mut app, None);
+
+        terminal.update(&mut app, |view, _ctx| {
+            // With no remote server and no prior dismissal, the banner may open.
+            view.control_master_error_banner_suppressed = false;
+            assert!(view.should_open_control_master_banner(/* has_remote_server */ false));
+            // A remote server makes the CTA irrelevant, so it stays closed.
+            assert!(!view.should_open_control_master_banner(/* has_remote_server */ true));
+
+            // Once permanently dismissed it must never reopen, even without a remote server.
+            view.control_master_error_banner_suppressed = true;
+            assert!(!view.should_open_control_master_banner(false));
+        });
+    })
+}
+
+// ── Find bar close path, ported from the pinned oracle ─────────────────────────────
+
+/// Regression test for the async-find branch of warpdotdev/warp#11212.
+///
+/// Closing the find bar must clear stale AI block highlights without dropping
+/// the saved query options on the async-find path. `open_find_bar` reads
+/// `active_find_options` to restore the previous query; if `close_find_bar`
+/// routes through `clear_matches → AsyncFindController::clear_results`, that
+/// helper resets `current_find_options` and reopening the find bar starts
+/// from a blank query instead of the previous one.
+#[test]
+fn close_find_bar_preserves_options_on_async_find_path() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _async_find = FeatureFlag::AsyncFind.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let needle_options = || FindOptions {
+            query: Some("needle".to_owned().into()),
+            ..Default::default()
+        };
+
+        terminal.update(&mut app, |view, ctx| {
+            view.show_find_bar(ctx);
+            view.run_find(needle_options(), ctx);
+        });
+
+        // The async controller should have saved the active query.
+        assert_eq!(
+            terminal.read(&app, |view, ctx| view
+                .find_model
+                .as_ref(ctx)
+                .active_find_options()
+                .map(|o| o.query.clone())),
+            Some(needle_options().query),
+            "running find on the async path must save the active query"
+        );
+
+        // Closing the find bar must NOT drop the saved query — otherwise
+        // the next `open_find_bar` would start blank instead of restoring
+        // the previous search.
+        terminal.update(&mut app, |view, ctx| {
+            view.close_find_bar(ctx);
+        });
+
+        assert_eq!(
+            terminal.read(&app, |view, ctx| view
+                .find_model
+                .as_ref(ctx)
+                .active_find_options()
+                .map(|o| o.query.clone())),
+            Some(needle_options().query),
+            "closing the find bar must preserve the saved query on the async path"
+        );
+    })
+}
+
+// ── Agent view lifecycle, ported from the pinned oracle ────────────────────────────
+
+#[test]
+fn agent_view_lifecycle_updates_input_mode() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell
+            );
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        None,
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("agent view entry should succeed");
+            });
+        });
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.ai_input_model().as_ref(ctx).input_type(),
+                InputType::AI
+            );
+        });
+        terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller.exit_agent_view_without_confirmation(ctx)
+            });
+        });
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.ai_input_model().as_ref(ctx).input_type(),
+                InputType::Shell
+            );
+        });
+    });
+}
