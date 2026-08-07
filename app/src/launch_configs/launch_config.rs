@@ -183,8 +183,54 @@ pub struct TabTemplate {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub title: Option<String>,
     pub layout: PaneTemplateType,
+    /// Legacy tab-level commands from launch configs written before commands moved to the
+    /// pane level. Never written back out; only read for backward compatibility.
+    #[serde(skip_serializing, default)]
+    pub commands: Vec<CommandTemplate>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub color: Option<AnsiColorIdentifier>,
+}
+
+impl TabTemplate {
+    /// Returns this tab's layout with any legacy tab-level `commands` merged into its startup
+    /// pane (the focused pane, or the first pane if none is focused), so both old and new
+    /// launch-config formats produce the same startup behavior.
+    pub fn layout_with_tab_commands(&self) -> PaneTemplateType {
+        let mut layout = self.layout.clone();
+        if !self.commands.is_empty() {
+            layout.add_commands_to_startup_pane(self.commands.clone());
+        }
+        layout
+    }
+}
+
+impl PaneTemplateType {
+    fn add_commands_to_startup_pane(&mut self, tab_commands: Vec<CommandTemplate>) -> bool {
+        match self {
+            PaneTemplateType::PaneTemplate { commands, .. } => {
+                commands.extend(tab_commands);
+                true
+            }
+            PaneTemplateType::PaneBranchTemplate { panes, .. } => {
+                if let Some(focused_pane) = panes.iter_mut().find(|pane| pane.is_focused_pane()) {
+                    focused_pane.add_commands_to_startup_pane(tab_commands)
+                } else if let Some(first_pane) = panes.first_mut() {
+                    first_pane.add_commands_to_startup_pane(tab_commands)
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn is_focused_pane(&self) -> bool {
+        match self {
+            PaneTemplateType::PaneTemplate { is_focused, .. } => is_focused.unwrap_or_default(),
+            PaneTemplateType::PaneBranchTemplate { panes, .. } => {
+                panes.iter().any(Self::is_focused_pane)
+            }
+        }
+    }
 }
 
 impl TryFrom<TabSnapshot> for TabTemplate {
@@ -195,6 +241,7 @@ impl TryFrom<TabSnapshot> for TabTemplate {
         Ok(Self {
             title: snapshot.custom_title,
             layout: snapshot.root.try_into()?,
+            commands: Vec::new(),
             color,
         })
     }
