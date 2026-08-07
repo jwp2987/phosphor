@@ -323,6 +323,18 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 ### 5.8 Subagents / multi-agent
 - Split large tasks into subtasks with **non-overlapping write domains** and dispatch them in parallel; information-gathering tasks can be parallelized.
 - Do simple tasks directly; don't over-split them.
+- **In a fleet round, agents do NOT run the full suite.** See `docs/FLEET-ROUND.md`.
+  An agent's gate is `rustfmt --check --edition 2024 <changed files>` (about a
+  second, and a real parser, so it catches the truncated-function damage that
+  brace-counting misses), plus at most a `cargo check` on its own small crate.
+  Full-suite verification is **batched by the coordinator**: merge every finished
+  branch into one integration branch and run the suite once for all agents.
+  Rationale: a cold `nextest run -p warp --lib --features gui` is 10-50 minutes
+  and there are only 3 slots, so per-agent verification made the queue the
+  bottleneck — agents waited over an hour to land while the same ~1,000 crates
+  were recompiled per agent. Per-agent runs never tested agent *interaction*
+  anyway; each built its own branch in isolation. Batching defers exactly the
+  thing a single integration run is designed to catch.
 - **`cargo build`/`check`/`test` MUST go through `script/agent-cargo`, on every agent, no exceptions.** This workspace is large enough that *unbounded* concurrent heavy compiles exhaust memory and can crash the whole session — this has happened more than once. The governor exists so that concurrency is bounded to what the host can actually take, and it is the only sanctioned way to invoke cargo when more than one agent is running.
 
   ```

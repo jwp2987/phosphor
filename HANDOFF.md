@@ -25,42 +25,79 @@ host.
 
 ## Where main is
 
-`6aecd280f` — two merges landed this session, the first movement on main all day:
+`78dab7899` — **31 PRs merged on 2026-08-06/07.** Both CI jobs green (Linux and
+Windows), full suite **4195/4195** on `warp --lib --features gui` and **349/349**
+on `warpui`+`warpui_core`.
 
-| commit | contents |
-|---|---|
-| `7df4ca4bb` | PRs #134 + #155 — `util::git` coverage 8→19 tests, plus two real `get_pr_for_branch` regressions fixed |
-| `6aecd280f` | PR #169 — mermaid negative-height production race |
+Two remotely-triggerable security defects closed this session (#171, PR #224):
+an **OSC 1337 parser panic on untrusted PTY output** (any process writing to the
+terminal could kill it) and an **unquoted `cat {history_file}`** shell injection.
+Both were verbatim ports of Warp's guards; both helpers already existed in the
+fork and were simply never called.
 
----
+## The oracle is PINNED — read `ORACLE.md` before any parity work
 
-## Open PRs — 15, none merged
+`warp/master` is unreleased trunk moving **50-80 tests/day**; measuring against it
+produces a gap that never shrinks no matter how much lands. That is why sustained
+porting felt like no progress.
 
-Stacked pairs merge as a unit, child first.
+The oracle is now pinned to **Warp `2026.07.29.09.05` stable = `02b53fcd8`**, and
+the policy is to track the **latest stable**, never `master`/`dev`/`preview`. Use
+that commit in place of `warp/master` in every diff, grep and measurement.
 
-| PR | branch → base | what |
-|---|---|---|
-| #125 | `parity-remote-git-writeops` → main | Remote git write-ops over SSH. **Carries my 4 audit fixes + 15 tests**; agent was verifying |
-| #127 | `chore/build-concurrency-new-host` → main | The build governor. 5 commits of evolution — read its history, it encodes the OOM lessons |
-| #128 | `chore/consolidate-todo` → main | `todo.md` → `TODO.md`; 59 local + 58 remote merged branches already deleted |
-| #130 | `feat/byop-commit-message-gen` → main | BYOP commit-message generation, **local path only** (remote deferred to #125 landing) |
-| #132 | `parity-pinned-tabs-ui` → main | Pinned-tabs GUI layer. 4025/0/33 |
-| #172 | `feat/pinned-tabs-deferred-ui` → **#132** | Move-to-group submenu + multi-tab menus. 4031/0/33 |
-| #139 | `fix/warp-tui-suite-green` → main | **warp_tui 579/18-failing → 1043/0**, plus stops tests writing to the real `~/.config/zap/user_preferences.json` |
-| #166 | `feat/editor-parity-followups` → **#139** | Char-cell reference oracle + TUI clipboard/selection. 1087/0 |
-| #133 | `test/port-warp-ai-crates` → main | `crates/ai` test port |
-| #140 | `test/port-warp-terminal-coverage` → main | **Lands a RED suite deliberately** — 9 genuine regressions (#171). §5.6 conflict; needs a sequencing decision |
-| #153 | `chore/host-test-deps` → main | rustfmt on distro-cargo hosts + verify test tooling |
-| #158 | `test/port-warp-cloud-triage` → main | Non-cloud coverage hiding behind cloud-named files |
-| #159 | `fix/issue-136-read-files-partial` → main | `read_files` stops discarding successes |
-| #160 | `feat/issue-privacy-page` → main | The missing Privacy settings page |
-| #168 | `fix/issue-138-watch-filter` → main | Watcher now prunes gitignored trees |
+## The scope is measured, not estimated — `SCOPE-*.md`
 
-**Merge #139 + #166 first** — highest value, and until #139 lands every full-suite
-run mutates the real user preferences file.
+All 854 test-bearing files at the pin were classified per file by reading source
+imports (not paths). Do not re-derive this badly:
 
----
+```
+Warp tests genuinely ABSENT     3,902
+  A  test debt (the workload)   1,605   <- ~1,185 still unclaimed
+  D  feature gap                  792
+  C  out of scope (cloud)       1,505
+fork-original offset            1,663
+```
 
+**The workload is 1,605, not 2,239 and not 3,902.** The old "2,239 net gap" was
+wrong in both directions, and the "468 missing test files" figure is discredited
+entirely (it counted `*_tests.rs` -> `*_test.rs` renames as absent).
+
+**Known bias: verdict A is OVERSTATED.** The scope docs classify per *file* and
+collapse MIXED files into their majority bucket, so a file that is mostly test
+debt hides feature-gap and cloud tests inside an "A" row. The first agent to port
+against these verdicts found its 52 "missing" tests were actually **11 A / 31 D /
+10 C** — the A verdict was wrong for 79% of them (PR #246; issues #238-#243).
+
+So treat an A verdict as *a file worth opening*, not as a promise that its tests
+are portable. **Trace each test's actual API dependencies against the fork source
+before porting it**, and file a feature-gap issue rather than inventing the
+feature. 1,605 is an upper bound on the workload, not a target.
+
+## Fleet rounds — `docs/FLEET-ROUND.md`
+
+Agents do **not** run the full suite. Their gate is `rustfmt --check` (a real
+parser, ~1s) plus at most a `cargo check` on their own small crate; the
+coordinator batches one integration run for the whole round. Per-agent full-suite
+runs made the 3-slot build queue the bottleneck — agents waited over an hour to
+land while the same ~1,000 crates were recompiled per agent.
+
+## Guards — the compiler cannot catch these, so CI does
+
+`pr-check.yml` runs a fast `guards` job (grep/git only, no build):
+
+- **`script/check_cloud_boundary`** — the cloud *crates* were deleted so the
+  compiler blocks those, but `app/src/server` and `app/src/cloud_object` survive
+  as stubs and nothing stopped a port reaching in and re-growing the cloud
+  surface one `use` at a time. Pins 266 import sites; the allowlist may shrink
+  freely, growing it needs sign-off.
+- **`script/check_stub_coverage`** — a test ported against a gutted no-op stub
+  compiles and passes while asserting nothing. Compares against the pin and fails
+  only when a co-located test targets a function with a real body upstream and an
+  empty one here.
+
+Both were verified by planting a violation. Read their header comments before
+"improving" them — three earlier versions of the stub check were wrong in
+instructive ways.
 ## Decisions only the maintainer can make
 
 - **#149 / proto re-pin** — the fork pins `zerx-lab/warp-proto-apis@14ab9a71`, **40
