@@ -814,6 +814,10 @@ impl GridHandler {
                 passed_point = true;
             }
 
+            if is_at_boundary(item.cell()) {
+                break;
+            }
+
             let last_state = mem::replace(&mut state, locator.advance(item.cell().c));
             let link_changed = match (state, last_state) {
                 (UrlLocation::Url(_length, _num_illegal_end_chars), UrlLocation::Scheme) => {
