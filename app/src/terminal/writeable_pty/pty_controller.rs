@@ -888,3 +888,6 @@ mod command_bytes_tests;
 #[cfg(test)]
 #[path = "pty_controller_lifecycle_tests.rs"]
 mod lifecycle_tests;
+#[cfg(test)]
+#[path = "pty_controller_tests.rs"]
+mod tests;
