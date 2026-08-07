@@ -10,6 +10,7 @@ fn create_message(id: &str, task_id: &str) -> api::Message {
         task_id: task_id.to_string(),
         server_message_data: "server_data".to_string(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::AgentOutput(
             api::message::AgentOutput {
                 text: format!("Message content for {id}"),
@@ -26,6 +27,7 @@ fn create_subagent_tool_call_message(id: &str, task_id: &str, subtask_id: &str) 
         task_id: task_id.to_string(),
         server_message_data: "server_data".to_string(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCall(api::message::ToolCall {
             tool_call_id: format!("{id}_tool_call"),
             tool: Some(api::message::tool_call::Tool::Subagent(
@@ -48,6 +50,7 @@ fn create_tool_call_result_message(id: &str, task_id: &str, tool_call_id: &str) 
         task_id: task_id.to_string(),
         server_message_data: "server_data".to_string(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::ToolCallResult(
             api::message::ToolCallResult {
                 tool_call_id: tool_call_id.to_string(),

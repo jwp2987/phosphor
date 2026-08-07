@@ -351,7 +351,7 @@ version-compare = "0.1"
 vte = { git = "https://github.com/warpdotdev/vte.git", rev = "4b399c87b63ba88f45709edaa6383fc519f6c900", default-features = false }
 walkdir = "2"
 warp-workflows = { git = "https://github.com/warpdotdev/workflows", rev = "793a98ddda6ef19682aed66364faebd2829f0e01" }
-warp_multi_agent_api = { git = "https://github.com/zerx-lab/warp-proto-apis.git", rev = "14ab9a71ea3e9521b2ffab2f97a64e7c21050669" }
+warp_multi_agent_api = { git = "https://github.com/warpdotdev/warp-proto-apis.git", rev = "b0886a9523e2e05d102f61bd0a212dc15ade4835" }
 wasm-bindgen = "0.2.89"
 wasm-bindgen-futures = "0.4.42"
 web-sys = { version = "0.3.69", features = [
@@ -574,8 +574,8 @@ tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", re
 # merged, this patch can be reverted.
 genai = { path = "lib/rust-genai" }
 
-[patch."https://github.com/warpdotdev/warp-proto-apis.git"]
-# Zap has already switched to the zerx-lab fork (see the dependency change
-# above); this patch is kept so that if any other transitive deps accidentally
-# reference the upstream URL, they also go through the fork.
-warp_multi_agent_api = { git = "https://github.com/zerx-lab/warp-proto-apis.git", rev = "14ab9a71ea3e9521b2ffab2f97a64e7c21050669" }
+# The multi-agent proto API is pinned directly to upstream `warpdotdev` (see the
+# dependency above), so there is no longer a fork to redirect to and the former
+# `[patch."https://github.com/warpdotdev/warp-proto-apis.git"]` entry is gone.
+# Re-adding a patch that points the upstream URL at the same upstream URL is
+# rejected by Cargo ("patches must point to different sources").

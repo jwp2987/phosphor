@@ -211,6 +211,7 @@ fn make_update_todos_message(
         task_id: task_id.to_owned(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::UpdateTodos(
             api::message::UpdateTodos {
                 operation: Some(operation),

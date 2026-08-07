@@ -573,6 +573,7 @@ fn user_query(id: &str, task_id: &str, request_id: &str, seconds: i64) -> api::M
         task_id: task_id.to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::UserQuery(api::message::UserQuery {
             query: format!("query-{id}"),
             context: None,
@@ -591,6 +592,7 @@ fn agent_output(id: &str, task_id: &str, request_id: &str, seconds: i64) -> api:
         task_id: task_id.to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::AgentOutput(
             api::message::AgentOutput {
                 text: format!("output-{id}"),
