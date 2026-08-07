@@ -1486,7 +1486,12 @@ impl BlocklistAIHistoryModel {
             ));
         }
 
-        let updated_tasks_with_new_ids = update_forked_task_properties(truncated_tasks, prefix);
+        let updated_tasks_with_new_ids = update_forked_task_properties(
+            truncated_tasks,
+            prefix,
+            true, /* preserve_task_ids */
+            None,
+        );
         let byop_repair_state_json = byop_fork_repair_state_json(
             &source_tasks,
             &updated_tasks_with_new_ids,
