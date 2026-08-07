@@ -1,5 +1,6 @@
 pub mod code_review_view;
 pub mod comment_list_view;
+pub mod commit_message_gen;
 pub mod context;
 pub mod diff_size_limits;
 #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]

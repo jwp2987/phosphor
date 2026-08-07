@@ -154,7 +154,10 @@ fn leading_editor_participates_in_selector_focus_cycle() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, AIConversationId::new(), ctx);
         });
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
         render_lines(&mut app, &prompt);
 
         assert!(dispatch_focused_key(&mut app, &prompt, "up"));
@@ -204,7 +207,10 @@ fn editable_prompt_renders_other_and_e_focuses_the_body_editor() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, AIConversationId::new(), ctx);
         });
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
         let selector = app.read(|ctx| prompt.as_ref(ctx).selector.clone());
         assert!(dispatch_focused_key(&mut app, &prompt, "e"));
         assert!(app.read(|ctx| {
@@ -290,7 +296,10 @@ fn no_requests_rejection_without_resolving_in_the_selector() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
         let rejected = Rc::new(RefCell::new(false));
         let rejected_for_event = rejected.clone();
         app.update(|ctx| {
@@ -337,7 +346,10 @@ fn other_emits_guidance_without_requesting_rejection() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
         let submitted = Rc::new(RefCell::new(Vec::new()));
         let submitted_for_event = submitted.clone();
         let rejected = Rc::new(RefCell::new(false));
@@ -406,7 +418,10 @@ fn footer_hint_reflects_what_esc_does_in_the_current_focus_state() {
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, AIConversationId::new(), ctx);
         });
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
         // Before editing, Esc cancels the whole prompt, and the footer
         // advertises the shortcut to enter edit mode.
         assert!(

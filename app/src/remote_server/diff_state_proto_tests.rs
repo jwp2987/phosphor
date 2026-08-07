@@ -225,15 +225,18 @@ fn commit_round_trips_forks_fields_and_encodes_empty_files() {
 }
 
 #[test]
-fn pr_info_round_trips_forks_fields_and_defaults_extras() {
+fn pr_info_round_trips() {
     let original = PrInfo {
         number: 42,
         url: "https://example.com/pr/42".to_string(),
+        state: "MERGED".to_string(),
+        draft: true,
+        base_branch: "main".to_string(),
     };
     let encoded = pr_info_to_proto(&original);
-    assert_eq!(encoded.state, "");
-    assert!(!encoded.draft);
-    assert_eq!(encoded.base_branch, "");
+    assert_eq!(encoded.state, "MERGED");
+    assert!(encoded.draft);
+    assert_eq!(encoded.base_branch, "main");
     let back = proto_to_pr_info(&encoded);
     assert_eq!(original, back);
 }
@@ -288,6 +291,9 @@ fn diff_metadata_round_trips() {
         pr_info: Some(PrInfo {
             number: 7,
             url: "https://example.com/pr/7".to_string(),
+            state: "OPEN".to_string(),
+            draft: false,
+            base_branch: "main".to_string(),
         }),
     };
     let back = proto_to_diff_metadata(&diff_metadata_to_proto(&original));

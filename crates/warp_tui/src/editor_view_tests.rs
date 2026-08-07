@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use string_offset::CharOffset;
 use warp::tui_export::Appearance;
-use warp_editor::model::CoreEditorModel;
+use warp_editor::model::{CoreEditorModel, PlainTextEditorModel};
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, EntityIdMap};
 use warpui_core::elements::tui::{
@@ -14,7 +14,10 @@ use warpui_core::{App, TuiView as _, TypedActionView as _};
 
 use super::{TuiEditorView, TuiEditorViewAction};
 use crate::editor_element::TuiEditorAction;
-use crate::editor_interaction::TuiEditorCommand;
+use crate::editor_interaction::{
+    TuiEditorBehavior, TuiEditorClipboardAction, TuiEditorCommand, TuiEditorInteractionOutcome,
+    apply_editor_action, apply_editor_clipboard_action_for_test, apply_editor_paste_for_test,
+};
 use crate::test_fixtures::TestHostView;
 
 /// Renders an editor view to trimmed lines.
@@ -387,5 +390,339 @@ fn actions_edit_the_single_line_buffer() {
             );
         });
         assert_eq!(editor.read(&app, |editor, ctx| editor.text(ctx)), "Xge");
+    });
+}
+
+
+#[test]
+fn clipboard_actions_copy_and_cut_only_the_selection() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, editor) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                TuiEditorView::single_line,
+            )
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.set_text("hello world", ctx);
+            for _ in 0..5 {
+                editor.handle_action(
+                    &TuiEditorViewAction::Command(TuiEditorCommand::SelectLeft),
+                    ctx,
+                );
+            }
+
+            let mut copied = None;
+            assert!(
+                apply_editor_clipboard_action_for_test(
+                    &editor.model,
+                    TuiEditorClipboardAction::Copy,
+                    |text| {
+                        copied = Some(text.to_owned());
+                        Ok(())
+                    },
+                    ctx,
+                )
+                .expect("copy succeeds")
+            );
+            assert_eq!(copied.as_deref(), Some("world"));
+            assert_eq!(editor.text(ctx), "hello world");
+
+            let mut cut = None;
+            assert!(
+                apply_editor_clipboard_action_for_test(
+                    &editor.model,
+                    TuiEditorClipboardAction::Cut,
+                    |text| {
+                        cut = Some(text.to_owned());
+                        Ok(())
+                    },
+                    ctx,
+                )
+                .expect("cut succeeds")
+            );
+            assert_eq!(cut.as_deref(), Some("world"));
+            assert_eq!(editor.text(ctx), "hello ");
+        });
+    });
+}
+
+#[test]
+fn paste_inserts_normalized_clipboard_text_at_the_cursor() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, editor) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                TuiEditorView::single_line,
+            )
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.set_text("ab", ctx);
+            // Single-line editor: only the first pasted line is inserted.
+            let inserted = apply_editor_paste_for_test(
+                &editor.model,
+                || Ok("XY\nZ".to_string()),
+                TuiEditorBehavior::single_line(),
+                ctx,
+            )
+            .expect("paste succeeds");
+            assert!(inserted, "non-empty clipboard text must be inserted");
+            assert_eq!(editor.text(ctx), "abXY");
+        });
+    });
+}
+
+#[test]
+fn paste_of_empty_clipboard_is_a_noop() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, editor) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                TuiEditorView::single_line,
+            )
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.set_text("ab", ctx);
+            let inserted = apply_editor_paste_for_test(
+                &editor.model,
+                || Ok(String::new()),
+                TuiEditorBehavior::single_line(),
+                ctx,
+            )
+            .expect("empty paste succeeds");
+            assert!(!inserted, "an empty clipboard must not modify the buffer");
+            assert_eq!(editor.text(ctx), "ab");
+        });
+    });
+}
+
+#[test]
+fn paste_command_dispatch_yields_a_paste_outcome() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, editor) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                TuiEditorView::single_line,
+            )
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            let outcome = editor.editor_state.apply_command(
+                &editor.model,
+                TuiEditorCommand::Paste,
+                TuiEditorBehavior::single_line(),
+                ctx,
+            );
+            assert_eq!(outcome, TuiEditorInteractionOutcome::Paste);
+        });
+    });
+}
+
+#[test]
+fn select_to_line_commands_extend_the_selection() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, editor) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                TuiEditorView::single_line,
+            )
+        });
+        render_lines(&app, &editor);
+
+        // From end-of-line, SelectToLineStart selects the whole line.
+        editor.update(&mut app, |editor, ctx| {
+            editor.set_text("hello", ctx);
+            editor.handle_action(
+                &TuiEditorViewAction::Command(TuiEditorCommand::SelectToLineStart),
+                ctx,
+            );
+        });
+        assert_eq!(
+            editor.read(&app, |editor, ctx| editor
+                .model
+                .as_ref(ctx)
+                .read_selected_text_as_clipboard_content(ctx)
+                .plain_text),
+            "hello"
+        );
+
+        // From start-of-line, SelectToLineEnd selects the whole line.
+        editor.update(&mut app, |editor, ctx| {
+            editor.handle_action(
+                &TuiEditorViewAction::Command(TuiEditorCommand::MoveToLineStart),
+                ctx,
+            );
+            editor.handle_action(
+                &TuiEditorViewAction::Command(TuiEditorCommand::SelectToLineEnd),
+                ctx,
+            );
+        });
+        assert_eq!(
+            editor.read(&app, |editor, ctx| editor
+                .model
+                .as_ref(ctx)
+                .read_selected_text_as_clipboard_content(ctx)
+                .plain_text),
+            "hello"
+        );
+    });
+}
+
+#[test]
+fn cut_without_a_selection_is_a_noop() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, editor) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                TuiEditorView::single_line,
+            )
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.set_text("hello", ctx);
+            assert!(
+                !apply_editor_clipboard_action_for_test(
+                    &editor.model,
+                    TuiEditorClipboardAction::Cut,
+                    |_| panic!("clipboard should not be written without a selection"),
+                    ctx,
+                )
+                .expect("no-selection cut succeeds")
+            );
+            assert_eq!(editor.text(ctx), "hello");
+        });
+    });
+}
+
+#[test]
+fn failed_cut_preserves_the_selection_and_text() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, editor) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                TuiEditorView::single_line,
+            )
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.set_text("hello", ctx);
+            editor.handle_action(
+                &TuiEditorViewAction::Command(TuiEditorCommand::SelectLeft),
+                ctx,
+            );
+            let result = apply_editor_clipboard_action_for_test(
+                &editor.model,
+                TuiEditorClipboardAction::Cut,
+                |_| anyhow::bail!("clipboard unavailable"),
+                ctx,
+            );
+            assert!(result.is_err());
+            assert_eq!(editor.text(ctx), "hello");
+            assert_eq!(
+                editor
+                    .model
+                    .as_ref(ctx)
+                    .read_selected_text_as_clipboard_content(ctx)
+                    .plain_text,
+                "o"
+            );
+        });
+    });
+}
+
+#[test]
+fn copy_on_mouse_highlight_returns_clipboard_copy_on_selection_end() {
+    // Regression test: when `with_copy_on_mouse_highlight` is enabled, completing a
+    // selection via SelectionEnd should return a Clipboard(Copy) outcome and
+    // the selected text must be readable for the subsequent clipboard write.
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, editor) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                TuiEditorView::single_line,
+            )
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.set_text("hello world", ctx);
+            // Select "world" via keyboard commands (head != tail establishes a range).
+            for _ in 0..5 {
+                editor.handle_action(
+                    &TuiEditorViewAction::Command(TuiEditorCommand::SelectLeft),
+                    ctx,
+                );
+            }
+
+            // With copy_on_mouse_highlight enabled, SelectionEnd should trigger a copy.
+            let outcome = apply_editor_action(
+                &editor.model,
+                &TuiEditorAction::SelectionEnd,
+                TuiEditorBehavior::single_line().with_copy_on_mouse_highlight(),
+                ctx,
+            );
+            assert_eq!(
+                outcome,
+                TuiEditorInteractionOutcome::Clipboard(TuiEditorClipboardAction::Copy),
+                "copy_on_mouse_highlight must produce a Clipboard(Copy) outcome"
+            );
+
+            // Confirm the selected text is still available for the clipboard write.
+            let mut copied = None;
+            assert!(
+                apply_editor_clipboard_action_for_test(
+                    &editor.model,
+                    TuiEditorClipboardAction::Copy,
+                    |text| {
+                        copied = Some(text.to_owned());
+                        Ok(())
+                    },
+                    ctx,
+                )
+                .expect("copy succeeds"),
+                "there must be a non-empty selection to copy"
+            );
+            assert_eq!(
+                copied.as_deref(),
+                Some("world"),
+                "the correct selected text must be copied"
+            );
+            // Text is unmodified (Copy never deletes).
+            assert_eq!(editor.text(ctx), "hello world");
+        });
     });
 }

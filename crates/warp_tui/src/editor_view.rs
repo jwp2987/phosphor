@@ -18,7 +18,7 @@ use warpui_core::{
 use crate::editor_element::{TuiEditorAction, TuiEditorElement};
 use crate::editor_interaction::{
     TuiEditorBehavior, TuiEditorCommand, TuiEditorInteractionOutcome, TuiEditorState,
-    apply_editor_action, follow_editor_cursor,
+    apply_editor_action, apply_editor_clipboard_action, apply_editor_paste, follow_editor_cursor,
 };
 
 #[derive(Clone, Copy)]
@@ -184,6 +184,20 @@ impl TuiEditorView {
             TuiEditorVerticalDirection::Down => cursor.row + 1 < lattice.rows().len(),
         }
     }
+
+    /// The number of visual rows in the editor's *persisted* char-cell layout —
+    /// the soft-wrap lattice the vertical-navigation handoff above reads. Tests
+    /// await this to know the asynchronously-produced layout has settled before
+    /// driving row-aware movement; returns `None` until the layout stream has
+    /// populated the char-cell state.
+    #[cfg(test)]
+    pub(crate) fn persisted_display_rows(&self, ctx: &AppContext) -> Option<usize> {
+        let model = self.model.as_ref(ctx);
+        let render = model.render_state().as_ref(ctx);
+        let char_cell = render.char_cell()?;
+        let hidden = char_cell.hidden_line_ranges(ctx);
+        Some(char_cell.display_lattice(&hidden).rows().len())
+    }
 }
 
 impl Entity for TuiEditorView {
@@ -230,6 +244,21 @@ impl TypedActionView for TuiEditorView {
             }
             TuiEditorViewAction::Editor(action) => self.handle_editor_action(action, ctx),
             TuiEditorViewAction::Command(command) => self.handle_command(*command, ctx),
+        };
+        let outcome = match outcome {
+            TuiEditorInteractionOutcome::Clipboard(action) => {
+                if let Err(error) = apply_editor_clipboard_action(&self.model, action, ctx) {
+                    log::error!("Failed to copy TUI editor selection: {error}");
+                }
+                TuiEditorInteractionOutcome::FollowCursor
+            }
+            TuiEditorInteractionOutcome::Paste => {
+                if let Err(error) = apply_editor_paste(&self.model, self.editor_behavior, ctx) {
+                    log::error!("Failed to paste into TUI editor: {error}");
+                }
+                TuiEditorInteractionOutcome::FollowCursor
+            }
+            outcome => outcome,
         };
         if outcome == TuiEditorInteractionOutcome::FollowCursor {
             follow_editor_cursor(&self.model, self.editor_behavior, ctx);

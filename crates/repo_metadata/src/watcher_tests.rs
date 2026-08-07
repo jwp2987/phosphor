@@ -511,3 +511,108 @@ fn test_commit_related_files_excluded_from_update_lists() {
         });
     });
 }
+
+/// `Repository::start_watching` registers its recursive watch through
+/// `DirectoryWatcher::start_watching_directory`, which builds it with
+/// `repo_watch_filter(root, gitignores, force_included_paths)`. The gitignores
+/// come from the repository's cached set and the force-included paths from the
+/// watcher's own registry, so this asserts on both of those production values:
+/// fed through the filter's descend predicate they must prune gitignored
+/// subtrees while keeping a registered force-included path.
+///
+/// The final assertion pins the state this fixes — with the empty rule set the
+/// watcher had while `repo_watch_filter` was unwired, `node_modules/` is
+/// watched.
+#[cfg(feature = "local_fs")]
+#[test]
+fn start_watching_registers_gitignore_pruning_watch_filter() {
+    use std::path::PathBuf;
+
+    use crate::entry::should_watch_repo_directory;
+
+    VirtualFS::test("watch_filter_prunes_gitignored", |dirs, mut vfs| {
+        stub_git_repository(&mut vfs, "repo");
+        vfs.mkdir("repo/src")
+            .mkdir("repo/node_modules/pkg")
+            .mkdir("repo/.agents/skills/my-skill")
+            .mkdir("repo/.agents/other")
+            .with_files(vec![Stub::FileWithContent(
+                "repo/.gitignore",
+                "node_modules/\n.agents/\n",
+            )]);
+
+        let repo_root = dunce::canonicalize(dirs.tests().join("repo")).unwrap();
+
+        App::test((), |mut app| async move {
+            let watcher_handle = app.add_singleton_model(DirectoryWatcher::new_for_testing);
+            watcher_handle.update(&mut app, |watcher, _ctx| {
+                watcher.register_force_included_paths([PathBuf::from(".agents/skills")]);
+            });
+
+            let repo_handle = watcher_handle
+                .update(&mut app, |watcher, ctx| {
+                    watcher.add_directory(
+                        StandardizedPath::from_local_canonicalized(&repo_root).unwrap(),
+                        ctx,
+                    )
+                })
+                .unwrap();
+
+            let (tx, _rx) = mpsc::unbounded::<()>();
+            let (update_tx, _update_rx) = mpsc::unbounded::<RepositoryUpdate>();
+            let subscriber = TestSubscriber::new(tx, update_tx, Arc::new(AtomicUsize::new(0)));
+            std::mem::drop(repo_handle.update(&mut app, |repo, ctx| {
+                repo.start_watching(Box::new(subscriber), ctx)
+            }));
+
+            let gitignores = repo_handle.read(&app, |repo, _ctx| repo.watch_filter_gitignores());
+            let force_included_paths =
+                watcher_handle.read(&app, |watcher, _ctx| watcher.force_included_paths().to_vec());
+
+            assert!(should_watch_repo_directory(
+                &repo_root.join("src"),
+                &repo_root,
+                &gitignores,
+                &force_included_paths
+            ));
+            assert!(!should_watch_repo_directory(
+                &repo_root.join("node_modules"),
+                &repo_root,
+                &gitignores,
+                &force_included_paths
+            ));
+            assert!(!should_watch_repo_directory(
+                &repo_root.join("node_modules/pkg"),
+                &repo_root,
+                &gitignores,
+                &force_included_paths
+            ));
+            // Force-included skill directories survive the gitignore pruning,
+            // while their gitignored siblings stay pruned.
+            assert!(should_watch_repo_directory(
+                &repo_root.join(".agents/skills/my-skill"),
+                &repo_root,
+                &gitignores,
+                &force_included_paths
+            ));
+            assert!(!should_watch_repo_directory(
+                &repo_root.join(".agents/other"),
+                &repo_root,
+                &gitignores,
+                &force_included_paths
+            ));
+
+            assert!(!gitignores.is_empty());
+            assert_eq!(force_included_paths, vec![PathBuf::from(".agents/skills")]);
+            assert!(should_watch_repo_directory(
+                &repo_root.join("node_modules"),
+                &repo_root,
+                &[],
+                &[]
+            ));
+
+            let queue = watcher_handle.read(&app, |watcher, _| watcher.processing_queue.clone());
+            wait_for_queue_complete(queue, &mut app).await;
+        });
+    });
+}
