@@ -1439,3 +1439,7 @@ fn decode_uuid_hex(hex: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 #[path = "uri_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "uri_validation_test.rs"]
+mod validation_tests;
