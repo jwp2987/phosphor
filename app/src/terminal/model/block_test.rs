@@ -1423,3 +1423,40 @@ fn test_calculate_optimal_row_counts_very_narrow_terminal() {
     assert_eq!(top, 500);
     assert_eq!(bottom, 1000);
 }
+
+// Ported from warp/master `app/src/terminal/model/block_tests.rs`
+// (`empty_pre_bootstrap_block_is_not_long_running`,
+// `non_empty_pre_bootstrap_block_can_be_long_running`). Assertions unchanged.
+
+#[test]
+pub fn empty_pre_bootstrap_block_is_not_long_running() {
+    warpui::r#async::block_on(async {
+        let mut block = TestBlockBuilder::new()
+            .with_bootstrap_stage(BootstrapStage::ScriptExecution)
+            .build();
+
+        block.start();
+
+        let duration = LONG_RUNNING_COMMAND_DURATION_MS + 1;
+        warpui::r#async::Timer::after(Duration::from_millis(duration)).await;
+
+        assert!(!block.is_active_and_long_running());
+    });
+}
+
+#[test]
+pub fn non_empty_pre_bootstrap_block_can_be_long_running() {
+    warpui::r#async::block_on(async {
+        let mut block = TestBlockBuilder::new()
+            .with_bootstrap_stage(BootstrapStage::ScriptExecution)
+            .build();
+
+        block.start();
+        block.input('x');
+
+        let duration = LONG_RUNNING_COMMAND_DURATION_MS + 1;
+        warpui::r#async::Timer::after(Duration::from_millis(duration)).await;
+
+        assert!(block.is_active_and_long_running());
+    });
+}
