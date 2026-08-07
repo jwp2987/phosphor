@@ -73,9 +73,35 @@ pub(crate) fn plan_toggle_hint(ctx: &AppContext) -> Option<String> {
     binding_hint(PLAN_TOGGLE_BINDING_NAME, &context, ctx)
 }
 
+/// Cross-platform binding validator for the TUI: exempts TUI-owned bindings
+/// (see [`is_tui_owned`]) from the GUI's `cmd-` restriction, and otherwise
+/// defers to [`warp::util::bindings::is_binding_cross_platform`].
+///
+/// The GUI's validator assumes `cmd-` only means anything on macOS, because
+/// there it is the native Command modifier. That assumption does not hold for
+/// the headless TUI: a `cmd-` (Super) chord reaches the TUI as raw terminal
+/// input via enhanced keyboard reporting (e.g. the Kitty keyboard protocol),
+/// which terminal emulators can deliver on every supported OS, not just
+/// macOS. So a TUI-owned `cmd-` binding is legitimately cross-platform even
+/// though the same chord would not be on the GUI.
+fn is_tui_binding_cross_platform(binding: BindingLens) -> IsBindingValid {
+    if is_tui_owned(binding.name, binding.group) {
+        IsBindingValid::Yes
+    } else {
+        warp::util::bindings::is_binding_cross_platform(binding)
+    }
+}
+
 /// Registers all TUI view keybindings and the cross-surface binding
 /// validators. Called once at TUI startup, before the driver starts.
 pub(crate) fn init(app: &mut AppContext) {
+    // Must run before any TUI binding is registered: it replaces the GUI's
+    // strict cross-platform default validator (set earlier in
+    // `initialize_app`) with the TUI-aware one, so TUI-owned `cmd-` chords
+    // are exempt instead of being silently dropped off macOS. See
+    // `is_tui_binding_cross_platform` for why the exemption is safe.
+    app.set_default_binding_validator(is_tui_binding_cross_platform);
+
     crate::root_view::init(app);
     crate::terminal_session_view::init(app);
     crate::attachment_bar::init(app);
@@ -133,12 +159,11 @@ fn context_for_editor_binding(
     key: &str,
     default_context: &ContextPredicate,
 ) -> Option<ContextPredicate> {
-    // `cmd-` keys are macOS-only; on other platforms `cmd` has no portable meaning and the
-    // cross-platform binding validator (is_binding_cross_platform) rejects it. Every such key
-    // has a ctrl-based alias in the same spec, so drop the cmd variant off macOS.
-    if key.starts_with("cmd-") && !warpui::platform::OperatingSystem::get().is_mac() {
-        return None;
-    }
+    // `cmd-` keys are registered on every platform here: unlike the GUI, the TUI
+    // receives them as terminal input regardless of OS, and `init` installs
+    // `is_tui_binding_cross_platform` (which exempts TUI-owned bindings) as the
+    // default validator before any of these are registered — see that
+    // function's doc comment.
     match (target, command, key) {
         // The input editor reserves ctrl-d for session-level EOF and exit handling.
         (TuiEditorBindingTarget::Input, TuiEditorCommand::DeleteForward, "ctrl-d") => None,
