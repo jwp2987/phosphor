@@ -1332,3 +1332,37 @@ fn orchestration_is_enabled_when_ai_is_enabled() {
         });
     });
 }
+
+// Ported from Warp's `app/src/ai/blocklist/block_tests.rs` at the pinned
+// oracle (`02b53fcd8`, Warp `2026.07.29.09.05` stable — see `ORACLE.md`),
+// which exercises the setting from outside `app/src/settings/`. Placed here
+// instead since the field itself lives in this file's scope; the sibling
+// speedbump settings this one is modeled on
+// (`should_show_agent_mode_autoread_files_speedbump` et al.) have no
+// coverage in this file either, but this one is otherwise untested since
+// `app/src/ai/blocklist` is out of scope for this change.
+#[test]
+fn should_show_agent_mode_ask_user_question_speedbump_defaults_to_true() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        AISettings::handle(&app).read(&app, |settings, _ctx| {
+            assert!(*settings.should_show_agent_mode_ask_user_question_speedbump);
+        });
+    });
+}
+
+#[test]
+fn should_show_agent_mode_ask_user_question_speedbump_round_trips_to_false() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .should_show_agent_mode_ask_user_question_speedbump
+                .set_value(false, ctx)
+                .unwrap();
+        });
+        AISettings::handle(&app).read(&app, |settings, _ctx| {
+            assert!(!*settings.should_show_agent_mode_ask_user_question_speedbump);
+        });
+    });
+}

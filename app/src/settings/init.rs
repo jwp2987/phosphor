@@ -39,8 +39,9 @@ use super::{
     AliasExpansionSettings,
     AppEditorSettings, AutoupdateSettings, BlockVisibilitySettings, CodeSettings, DebugSettings,
     EmacsBindingsSettings, FontSettings, FontSettingsChangedEvent, GPUSettings, InputBoxType,
-    InputModeSettings, InputSettings, PaneSettings, SameLinePromptBlockSettings, ScrollSettings,
-    SelectionSettings, SshSettings, ThemeSettings, TuiAutoupdateSettings, VimBannerSettings,
+    InputModeSettings, InputSettings, LocalControlSettings, PaneSettings,
+    SameLinePromptBlockSettings, ScrollSettings, SelectionSettings, SshSettings, ThemeSettings,
+    TuiAutoupdateSettings, TuiThemeSettings, TuiZeroStateSettings, VimBannerSettings,
     WarpDrivePrivacySettings,
 };
 
@@ -85,6 +86,9 @@ pub fn register_all_settings(ctx: &mut AppContext) {
     NetworkSettings::register(ctx);
     AutoupdateSettings::register(ctx);
     TuiAutoupdateSettings::register(ctx);
+    TuiThemeSettings::register(ctx);
+    TuiZeroStateSettings::register(ctx);
+    LocalControlSettings::register(ctx);
     PreferencesSettings::register(ctx);
     WarpDrivePrivacySettings::register(ctx);
     UserAppInstallDetectionSettings::register(ctx);

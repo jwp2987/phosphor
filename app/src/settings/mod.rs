@@ -20,6 +20,7 @@ mod input_mode;
 pub mod language;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod linux;
+mod local_control;
 pub mod macros;
 pub mod manager;
 pub mod native_preference;
@@ -34,6 +35,8 @@ mod select;
 mod ssh;
 mod theme;
 mod tui_autoupdate;
+mod tui_theme;
+mod tui_zero_state;
 mod vim_banner;
 
 #[cfg(test)]
@@ -58,6 +61,7 @@ pub use input_mode::*;
 pub use language::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub use linux::*;
+pub use local_control::*;
 pub use native_preference::*;
 pub use onboarding::*;
 pub use pane::*;
@@ -68,6 +72,8 @@ pub use select::*;
 pub use ssh::*;
 pub use theme::*;
 pub use tui_autoupdate::*;
+pub use tui_theme::*;
+pub use tui_zero_state::*;
 pub use vim_banner::*;
 use warp_core::user_preferences::GetUserPreferences as _;
 
