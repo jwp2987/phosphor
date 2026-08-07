@@ -137,6 +137,22 @@ const OMP_COLOR: ColorU = ColorU {
     a: 255,
 };
 
+/// Hermes brand color (Nous Research purple #7C3AED)
+const HERMES_PURPLE: ColorU = ColorU {
+    r: 0x7C,
+    g: 0x3A,
+    b: 0xED,
+    a: 255,
+};
+
+/// Mistral brand orange (#FA520F), used for the Mistral Vibe CLI agent.
+const MISTRAL_ORANGE: ColorU = ColorU {
+    r: 0xFA,
+    g: 0x52,
+    b: 0x0F,
+    a: 255,
+};
+
 /// Represents a CLI agent (e.g., Claude Code, Gemini CLI, Codex, Amp, Droid, OpenCode, Copilot, Pi, Auggie, Cursor, Goose)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Sequence, Serialize, Deserialize)]
 pub enum CLIAgent {
@@ -154,41 +170,86 @@ pub enum CLIAgent {
     DeepSeek,
     Antigravity,
     Omp,
+    /// An external CLI coding agent from Nous Research, command prefix `hermes`.
+    Hermes,
+    /// The mistral-vibe package. Ships both a `vibe` TUI binary and a
+    /// `vibe-acp` ACP-mode binary; both resolve to this variant.
+    Vibe,
+    /// This fork's own headless TUI (`crates/warp_tui`, shipped as the
+    /// `zap-tui-oss` binary). Named `PhosphorTui` rather than the pinned
+    /// oracle's `WarpTui` per the naming call in #394: the app is Phosphor,
+    /// and `display_name()` must not surface "Warp" branding to users (see
+    /// `docs/DESIGN-PHOSPHOR-FORK.md` §6). Used to suppress the CLI-agent
+    /// footer when the TUI is running inside a Phosphor pane, since a
+    /// footer offering to hand a long-running command off to itself would
+    /// be nonsensical.
+    PhosphorTui,
     /// Represents an unknown/custom CLI agent matched by user-configured regex patterns.
     Unknown,
 }
 
 impl CLIAgent {
-    /// The command prefix used to invoke this CLI agent.
+    /// Command prefixes that identify this CLI agent. Most agents have a single
+    /// canonical prefix; some ship multiple binaries that must resolve to the same
+    /// agent (e.g. `vibe`/`vibe-acp`, or the several launcher names for this fork's
+    /// own TUI).
+    pub(crate) fn command_prefixes(&self) -> &'static [&'static str] {
+        match self {
+            CLIAgent::Claude => &["claude"],
+            CLIAgent::Gemini => &["gemini"],
+            CLIAgent::Codex => &["codex"],
+            CLIAgent::Amp => &["amp"],
+            CLIAgent::Droid => &["droid"],
+            CLIAgent::OpenCode => &["opencode"],
+            CLIAgent::Copilot => &["copilot"],
+            CLIAgent::Pi => &["pi"],
+            CLIAgent::Auggie => &["auggie"],
+            CLIAgent::CursorCli => &["agent"],
+            CLIAgent::Goose => &["goose"],
+            CLIAgent::DeepSeek => &["deepseek", "deepseek-tui"],
+            CLIAgent::Antigravity => &["agy"],
+            CLIAgent::Omp => &["omp"],
+            CLIAgent::Hermes => &["hermes"],
+            CLIAgent::Vibe => &["vibe", "vibe-acp"],
+            CLIAgent::PhosphorTui => &[
+                // Inherited from the pinned oracle's `WarpTui` prefix list: this
+                // fork's "local channel" GUI build can itself be named `warp`
+                // (see `script/run`'s `WARP_BIN_NAME`), and the `warp-preview`/
+                // `warp-dev`/`warp-tui`/`warp-tui-oss` names are kept for the same
+                // self-recognition purpose even though this fork doesn't build
+                // those specific channel binaries.
+                "warp",
+                "warp-preview",
+                "warp-dev",
+                "warp-tui",
+                "warp-tui-oss",
+                "run-tui",
+                // This fork's actual shipped OSS TUI binary
+                // (`crates/warp_tui`, `default-run = "zap-tui-oss"`). This is
+                // the concrete fix for #394.
+                "zap-tui-oss",
+            ],
+            CLIAgent::Unknown => &[],
+        }
+    }
+
+    /// The canonical command prefix used to identify this CLI agent in places
+    /// that require one stable value.
     pub fn command_prefix(&self) -> &'static str {
-        match self {
-            CLIAgent::Claude => "claude",
-            CLIAgent::Gemini => "gemini",
-            CLIAgent::Codex => "codex",
-            CLIAgent::Amp => "amp",
-            CLIAgent::Droid => "droid",
-            CLIAgent::OpenCode => "opencode",
-            CLIAgent::Copilot => "copilot",
-            CLIAgent::Pi => "pi",
-            CLIAgent::Auggie => "auggie",
-            CLIAgent::CursorCli => "agent",
-            CLIAgent::Goose => "goose",
-            CLIAgent::DeepSeek => "deepseek",
-            CLIAgent::Antigravity => "agy",
-            CLIAgent::Omp => "omp",
-            CLIAgent::Unknown => "",
-        }
+        self.command_prefixes().first().copied().unwrap_or_default()
     }
 
-    fn command_prefix_aliases(&self) -> &'static [&'static str] {
-        match self {
-            CLIAgent::DeepSeek => &["deepseek-tui"],
-            _ => &[],
-        }
-    }
-
-    fn matches_command_prefix(&self, command: &str) -> bool {
-        command == self.command_prefix() || self.command_prefix_aliases().contains(&command)
+    /// Returns whether the command's executable name identifies this CLI agent.
+    /// Basenames the first token so absolute/relative paths (e.g.
+    /// `./target/debug/warp-tui`) match while lookalikes (`mywarp-tui`,
+    /// `warp-preview-wrapper`) do not.
+    pub(super) fn matches_command(&self, command: &str, escape_char: Option<EscapeChar>) -> bool {
+        let Some(first_word) = Self::extract_first_command(command.trim_start(), escape_char)
+        else {
+            return false;
+        };
+        let basename = first_word.rsplit(['/', '\\']).next().unwrap_or(&first_word);
+        self.command_prefixes().contains(&basename)
     }
 
     /// Serialized version of the CLIAgent name (e.g. "Claude", "Gemini"). Used for the
@@ -221,6 +282,11 @@ impl CLIAgent {
             CLIAgent::DeepSeek => "DeepSeek",
             CLIAgent::Antigravity => "Antigravity",
             CLIAgent::Omp => "Omp",
+            CLIAgent::Hermes => "Hermes",
+            CLIAgent::Vibe => "Mistral Vibe",
+            // Not "Warp TUI" (the pinned oracle's text) -- this fork must not
+            // surface Warp's own branding to users. See docs/DESIGN-PHOSPHOR-FORK.md §6.
+            CLIAgent::PhosphorTui => "Phosphor TUI",
             CLIAgent::Unknown => "CLI Agent",
         }
     }
@@ -242,6 +308,12 @@ impl CLIAgent {
             CLIAgent::DeepSeek => Some(Icon::DeepSeekLogo),
             CLIAgent::Antigravity => Some(Icon::AntigravityLogo),
             CLIAgent::Omp => Some(Icon::OmpLogo),
+            CLIAgent::Hermes => None,
+            // Vibe is recognized but ships without a brand asset. The brand color
+            // still drives the toolbar tile; an `Icon::MistralLogo` can be wired
+            // up in a follow-up once an officially licensed SVG is available.
+            CLIAgent::Vibe => None,
+            CLIAgent::PhosphorTui => None,
             CLIAgent::Unknown => None,
         }
     }
@@ -273,6 +345,9 @@ impl CLIAgent {
             CLIAgent::DeepSeek => &[SkillProvider::Agents],
             CLIAgent::Antigravity => &[SkillProvider::Agents],
             CLIAgent::Omp => &[SkillProvider::Agents],
+            CLIAgent::Hermes => &[SkillProvider::Agents],
+            CLIAgent::Vibe => &[SkillProvider::Agents],
+            CLIAgent::PhosphorTui => &[],
             CLIAgent::Unknown => &[],
         }
     }
@@ -305,6 +380,13 @@ impl CLIAgent {
         )
     }
 
+    /// Whether Phosphor should show its CLI-agent footer for this agent. `false`
+    /// for this fork's own TUI: a footer offering to hand a long-running command
+    /// off to itself would be nonsensical.
+    pub(super) fn supports_cli_agent_footer(&self) -> bool {
+        !matches!(self, CLIAgent::PhosphorTui)
+    }
+
     /// Returns the brand color for this CLI agent, or `None` for unknown/custom agents.
     pub fn brand_color(&self) -> Option<ColorU> {
         match self {
@@ -322,6 +404,9 @@ impl CLIAgent {
             CLIAgent::DeepSeek => Some(DEEPSEEK_COLOR),
             CLIAgent::Antigravity => Some(ANTIGRAVITY_PURPLE),
             CLIAgent::Omp => Some(OMP_COLOR),
+            CLIAgent::Hermes => Some(HERMES_PURPLE),
+            CLIAgent::Vibe => Some(MISTRAL_ORANGE),
+            CLIAgent::PhosphorTui => None,
             CLIAgent::Unknown => None,
         }
     }
@@ -380,14 +465,12 @@ impl CLIAgent {
             })
             .unwrap_or(Cow::Borrowed(trimmed));
 
-        let resolved_first_word = Self::extract_first_command(&resolved_command, escape_char)?;
-
         // Check if resolved command matches any known CLI agent.
         // Also matches `aifx agent run claude` as Claude for Uber employees.
         enum_iterator::all::<CLIAgent>()
             .filter(|agent| !matches!(agent, CLIAgent::Unknown))
             .find(|agent| {
-                agent.matches_command_prefix(&resolved_first_word)
+                agent.matches_command(&resolved_command, escape_char)
                     || (matches!(agent, CLIAgent::Claude)
                         && Self::is_aifx_agent_run_claude(&resolved_command, ctx))
             })
@@ -586,6 +669,9 @@ impl From<CLIAgent> for CLIAgentType {
             CLIAgent::DeepSeek => CLIAgentType::DeepSeek,
             CLIAgent::Antigravity => CLIAgentType::Antigravity,
             CLIAgent::Omp => CLIAgentType::Omp,
+            CLIAgent::Hermes => CLIAgentType::Hermes,
+            CLIAgent::Vibe => CLIAgentType::Vibe,
+            CLIAgent::PhosphorTui => CLIAgentType::PhosphorTui,
             CLIAgent::Unknown => CLIAgentType::Unknown,
         }
     }
@@ -687,12 +773,16 @@ fn scan_cli_agent_installations() -> HashMap<CLIAgent, bool> {
 fn cli_agent_is_on_path_with_dirs(agent: CLIAgent, search_dirs: &[PathBuf]) -> bool {
     match agent {
         CLIAgent::Unknown => false,
+        // cursor-agent's real binary name doesn't match its `agent` command prefix
+        // (which exists to keep the CLI invocation short).
         CLIAgent::CursorCli => is_on_path_in_dirs("cursor-agent", search_dirs),
-        CLIAgent::DeepSeek => {
-            is_on_path_in_dirs("deepseek", search_dirs)
-                || is_on_path_in_dirs("deepseek-tui", search_dirs)
-        }
-        other => is_on_path_in_dirs(other.command_prefix(), search_dirs),
+        // Every other agent: check all of its command prefixes, not just the
+        // canonical first one, so multi-binary agents (DeepSeek, Vibe, ...) are
+        // detected regardless of which binary is actually installed.
+        other => other
+            .command_prefixes()
+            .iter()
+            .any(|prefix| is_on_path_in_dirs(prefix, search_dirs)),
     }
 }
 
@@ -774,8 +864,10 @@ fn cli_agent_is_on_path(agent: CLIAgent) -> bool {
     match agent {
         CLIAgent::Unknown => false,
         CLIAgent::CursorCli => is_on_path("cursor-agent"),
-        CLIAgent::DeepSeek => is_on_path("deepseek") || is_on_path("deepseek-tui"),
-        other => is_on_path(other.command_prefix()),
+        other => other
+            .command_prefixes()
+            .iter()
+            .any(|prefix| is_on_path(prefix)),
     }
 }
 

@@ -50,6 +50,16 @@ fn omp_uses_bracketed_paste_submission() {
     );
 }
 
+/// Hermes interprets embedded newlines as submit actions when text is written
+/// directly. Bracketed paste preserves them as part of one input payload.
+#[test]
+fn test_rich_input_submit_strategy_for_hermes_uses_bracketed_paste() {
+    assert_eq!(
+        rich_input_submit_strategy(CLIAgent::Hermes),
+        RichInputSubmitStrategy::BracketedPaste
+    );
+}
+
 struct PendingAIBlockModel {
     conversation_id: AIConversationId,
     input: Vec<AIAgentInput>,
@@ -405,6 +415,52 @@ fn cli_agent_footer_renders_for_viewer_of_shared_ambient_agent_session() {
                 .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
                 .map(|(_, item)| item.view_id);
             assert_eq!(rendered_footer_view_id, Some(view.use_agent_footer.id()));
+        });
+    })
+}
+
+/// Ported from the pinned oracle's `cli_agent_footer_does_not_render_for_warp_tui_session`.
+/// The fork's variant is named `PhosphorTui`, not `WarpTui`; see #394. The footer
+/// offering to hand a long-running command off to itself would be nonsensical when
+/// the "long-running command" is this fork's own TUI.
+#[test]
+fn cli_agent_footer_does_not_render_for_phosphor_tui_session() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            simulate_user_started_long_running_command(view);
+
+            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.set_session(
+                    view.id(),
+                    CLIAgentSession {
+                        agent: CLIAgent::PhosphorTui,
+                        status: CLIAgentSessionStatus::InProgress,
+                        session_context: CLIAgentSessionContext::default(),
+                        input_state: CLIAgentInputState::Closed,
+                        listener: None,
+                        plugin_version: None,
+                        remote_host: None,
+                        draft_text: None,
+                        custom_command_prefix: None,
+                        should_auto_toggle_input: false,
+                    },
+                    ctx,
+                );
+            });
+
+            view.maybe_show_use_agent_footer_in_blocklist(ctx);
+
+            let model = view.model.lock();
+            assert!(!view.should_render_use_agent_footer(&model, ctx));
+            let active_block_index = model.block_list().active_block_index();
+            assert!(model
+                .block_list()
+                .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
+                .is_none());
         });
     })
 }

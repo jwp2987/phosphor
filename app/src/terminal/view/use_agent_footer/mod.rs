@@ -121,7 +121,10 @@ enum RichInputSubmitStrategy {
 /// Returns the strategy for submitting rich input text to a CLI agent's PTY.
 fn rich_input_submit_strategy(agent: CLIAgent) -> RichInputSubmitStrategy {
     match agent {
-        CLIAgent::Codex | CLIAgent::DeepSeek | CLIAgent::Omp => {
+        // Hermes interprets embedded newlines as submit actions when text is
+        // written directly. Bracketed paste preserves them as part of one
+        // input payload.
+        CLIAgent::Codex | CLIAgent::DeepSeek | CLIAgent::Omp | CLIAgent::Hermes => {
             RichInputSubmitStrategy::BracketedPaste
         }
         CLIAgent::Copilot => RichInputSubmitStrategy::BracketedPasteDelayedEnter,
@@ -131,9 +134,13 @@ fn rich_input_submit_strategy(agent: CLIAgent) -> RichInputSubmitStrategy {
         | CLIAgent::Auggie
         | CLIAgent::CursorCli
         | CLIAgent::Antigravity => RichInputSubmitStrategy::DelayedEnter,
-        CLIAgent::Amp | CLIAgent::Droid | CLIAgent::Pi | CLIAgent::Goose | CLIAgent::Unknown => {
-            RichInputSubmitStrategy::Inline
-        }
+        CLIAgent::Amp
+        | CLIAgent::Droid
+        | CLIAgent::Pi
+        | CLIAgent::Goose
+        | CLIAgent::Vibe
+        | CLIAgent::PhosphorTui
+        | CLIAgent::Unknown => RichInputSubmitStrategy::Inline,
     }
 }
 
@@ -299,6 +306,10 @@ impl TerminalView {
 
         // Check the appropriate setting based on whether this is a CLI agent command
         if let Some(agent) = cli_agent {
+            if !agent.supports_cli_agent_footer() {
+                return false;
+            }
+
             // For CLI agent commands, only check the CLI agent footer setting.
             // This is independent of the global AI toggle so that users who
             // disable Zap AI still get the footer for third-party coding agents.
@@ -1217,7 +1228,11 @@ impl View for UseAgentToolbar {
         // If a CLI agent is detected, delegate rendering to the CLI agent footer view.
         // Wrap with horizontal padding matching the terminal view padding so the footer
         // aligns consistently with the input context (which inherits terminal padding).
-        if self.cli_agent(app).is_some() {
+        if let Some(cli_agent) = self.cli_agent(app) {
+            if !cli_agent.supports_cli_agent_footer() {
+                return Empty::new().finish();
+            }
+
             let mut container = Container::new(ChildView::new(&self.agent_input_footer).finish())
                 .with_horizontal_padding(*super::PADDING_LEFT);
 
