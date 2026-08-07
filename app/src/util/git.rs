@@ -984,6 +984,14 @@ fn is_repository_lookup_not_applicable_error(error_msg: &str) -> bool {
         || lower.contains("could not determine base repo")
 }
 
+/// Heuristic check for `gh` CLI authentication errors in an error message.
+pub fn is_gh_auth_error(error_msg: &str) -> bool {
+    let lower = error_msg.to_lowercase();
+    lower.contains("not logged in")
+        || lower.contains("authentication required")
+        || lower.contains("gh auth login")
+}
+
 /// Heuristic check for errors caused by `gh` not being executable from `PATH`.
 pub fn is_gh_missing_error(error_msg: &str) -> bool {
     let lower = error_msg.to_lowercase();

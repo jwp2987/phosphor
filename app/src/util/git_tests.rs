@@ -5,8 +5,8 @@ use command::Stdio;
 use tempfile::TempDir;
 
 use super::{
-    detect_current_branch, detect_current_branch_display, get_pr_for_branch, is_gh_missing_error,
-    PrInfo, RepositoryInfo,
+    detect_current_branch, detect_current_branch_display, get_pr_for_branch, is_gh_auth_error,
+    is_gh_missing_error, PrInfo, RepositoryInfo,
 };
 
 /// Helper: run a git command inside the given repo directory.
@@ -285,6 +285,24 @@ async fn get_repository_info_returns_none_when_gh_cannot_resolve_github_repo() {
             .unwrap(),
         None
     );
+}
+
+#[test]
+fn detects_gh_auth_errors() {
+    assert!(is_gh_auth_error(
+        "You are not logged in to any GitHub hosts"
+    ));
+    assert!(is_gh_auth_error(
+        "GraphQL: authentication required; run gh auth login"
+    ));
+    assert!(is_gh_auth_error(
+        "To get started with GitHub CLI, run: gh auth login"
+    ));
+
+    assert!(!is_gh_auth_error(
+        "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host"
+    ));
+    assert!(!is_gh_auth_error("no pull requests found for branch"));
 }
 
 #[test]
