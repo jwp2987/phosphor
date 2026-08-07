@@ -50,7 +50,10 @@ pub fn mermaid_diagram_layout(
     app: &AppContext,
 ) -> (AssetSource, ImageBlockConfig) {
     let asset_source = mermaid_asset_source(source);
-    let max_width = layout.max_width() - spacing.x_axis_offset();
+    // The available width can be non-positive when the editor's viewport has not
+    // been measured yet, or when the block's horizontal insets are wider than the
+    // viewport. Clamp it so the block never claims a negative width.
+    let max_width = (layout.max_width() - spacing.x_axis_offset()).max(Pixels::zero());
     let (width, height) = mermaid_diagram_size(&asset_source, max_width, app).unwrap_or_else(|| {
         // A diagram that failed to render collapses to a short placeholder
         // height instead of reserving the full loading-state height.
@@ -87,6 +90,14 @@ fn mermaid_diagram_size(
     max_width: Pixels,
     app: &AppContext,
 ) -> Option<(Pixels, Pixels)> {
+    // Scaling the diagram's intrinsic size into a zero-width slot produces a block
+    // of zero height, which is indistinguishable from "no block" to every
+    // height-keyed lookup in the layout sum tree (hit testing, autoscroll,
+    // `block_at_height`). Until the viewport reports a usable width, keep the
+    // reserved placeholder height instead.
+    if max_width <= Pixels::zero() {
+        return None;
+    }
     let asset_cache = AssetCache::as_ref(app);
     let AssetState::Loaded { data } = asset_cache.load_asset::<ImageType>(asset_source.clone())
     else {
