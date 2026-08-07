@@ -509,10 +509,12 @@ impl EditDelta {
                 if content_length == CharOffset::zero() {
                     None
                 } else {
+                    let block_start = current_offset;
                     let task = LayoutTask::from_styled_block(
                         block,
                         layout,
-                        layout_options,
+                        &layout_options,
+                        block_start,
                         app,
                         document_path,
                     );
@@ -672,7 +674,8 @@ impl LayoutTask {
     fn from_styled_block(
         content: StyledBufferBlock,
         layout: &TextLayout,
-        layout_options: RenderLayoutOptions,
+        layout_options: &RenderLayoutOptions,
+        block_start: CharOffset,
         app: &AppContext,
         document_path: Option<&Path>,
     ) -> Self {
@@ -724,14 +727,14 @@ impl LayoutTask {
                 }
             },
             StyledBufferBlock::Text(text_block) => {
-                if layout_options.render_mermaid_diagrams
-                    && matches!(
-                        text_block.style,
-                        BufferBlockStyle::CodeBlock {
-                            code_block_type: CodeBlockType::Mermaid,
-                        }
-                    )
-                {
+                let is_mermaid = matches!(
+                    text_block.style,
+                    BufferBlockStyle::CodeBlock {
+                        code_block_type: CodeBlockType::Mermaid,
+                    }
+                );
+                let is_user_rendered = layout_options.mermaid_render_offsets.contains(&block_start);
+                if is_mermaid && (layout_options.render_mermaid_diagrams || is_user_rendered) {
                     let source = text_block
                         .block
                         .iter()
