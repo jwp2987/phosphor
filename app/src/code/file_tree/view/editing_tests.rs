@@ -54,6 +54,38 @@ fn sort_entries_for_file_tree_is_antisymmetric_for_missing_entries() {
 }
 
 #[test]
+fn sort_entries_for_file_tree_uses_natural_order_for_numbered_files() {
+    let root = std_path("/repo");
+    let mut entry = FileTreeEntry::new_for_directory(Arc::new(root.clone()));
+    for name in ["L1", "L2", "L3", "L10", "L11", "L12"] {
+        entry.insert_child_state(&root, file_state(&format!("/repo/{name}.tsx")));
+    }
+
+    let mut paths = [
+        std_path("/repo/L10.tsx"),
+        std_path("/repo/L2.tsx"),
+        std_path("/repo/L1.tsx"),
+        std_path("/repo/L12.tsx"),
+        std_path("/repo/L3.tsx"),
+        std_path("/repo/L11.tsx"),
+    ];
+    paths.sort_by(|a, b| sort_entries_for_file_tree(a, b, &entry));
+
+    let sorted: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
+    assert_eq!(
+        sorted,
+        [
+            "/repo/L1.tsx",
+            "/repo/L2.tsx",
+            "/repo/L3.tsx",
+            "/repo/L10.tsx",
+            "/repo/L11.tsx",
+            "/repo/L12.tsx",
+        ]
+    );
+}
+
+#[test]
 fn sort_entries_for_file_tree_sorts_without_panicking_on_missing_children() {
     let root = std_path("/repo");
     let mut entry = FileTreeEntry::new_for_directory(Arc::new(root.clone()));

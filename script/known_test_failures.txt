@@ -23,14 +23,6 @@ ai::blocklist::history_model::tests::rewind_removes_summarized_away_user_query_f
 ai::blocklist::history_model::tests::rewind_straddle_subagent_call_kept_result_removed_does_not_resend_subtask
 ai::blocklist::history_model::tests::straddle_rewind_followup_requests_are_clean_and_durable
 
-# --- REAL DEFECTS, fix written but not yet merged (3) -----------------------
-# `CodeEditorView::operation` had no match arm for VimMotion::JumpToMatchingBracket,
-# so d%/c%/y% silently did nothing. Issue #270, fixed in PR #417.
-# Delete these three lines when #417 lands.
-code::editor::view::vim_handler::tests::test_vim_c_percent_changes_to_matching_bracket
-code::editor::view::vim_handler::tests::test_vim_d_percent_deletes_to_matching_bracket
-code::editor::view::vim_handler::tests::test_vim_y_percent_yanks_to_matching_bracket
-
 # --- REAL DEFECTS, diagnosed but unfixed (3) --------------------------------
 # Issue #441. The first two are inverses of each other -- a prompt that should
 # queue does not, and /fork which should bypass the queue is queued -- which
