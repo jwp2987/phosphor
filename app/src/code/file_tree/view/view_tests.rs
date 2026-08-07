@@ -7,7 +7,7 @@ use repo_metadata::RepoMetadataModel;
 use settings::Setting;
 use virtual_fs::{Stub, VirtualFS};
 use warp_core::ui::appearance::Appearance;
-use warpui::{platform::WindowStyle, App, ModelHandle};
+use warpui::{platform::WindowStyle, App, ModelHandle, SingletonEntity};
 
 use crate::auth::AuthStateProvider;
 use crate::settings::CodeSettings;
