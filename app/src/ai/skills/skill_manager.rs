@@ -8,6 +8,7 @@ use std::{
 };
 
 use super::bundled::BundledSkill;
+pub use super::bundled::BundledSkillActivation;
 #[cfg(test)]
 use super::bundled::{build_bundled_skill_context, read_bundled_skills};
 use super::SkillDescriptor;
@@ -322,6 +323,36 @@ impl SkillManager {
         self.bundled.active_skill(id, ctx)
     }
 
+    /// Get the definition of a skill only if it is currently available for invocation.
+    ///
+    /// Path-based user skills are always controlled by normal path scoping. Bundled
+    /// skills additionally respect their runtime activation state, so a stale
+    /// `BundledSkillId` reference (e.g. copied from an earlier response, or for a
+    /// skill whose activation condition has since flipped off) cannot invoke a
+    /// disabled bundled skill.
+    ///
+    /// Ported from the pin's `SkillManager::active_skill_by_reference` (`02b53fcd8`).
+    /// The pin also has `active_skill_by_reference_with_origin`, which additionally
+    /// dispatches to a *remote* host's bundled-skill catalog for a `WarpifiedRemote`
+    /// session (keyed by `SkillPathOrigin`/`HostId`, over `LocalOrRemotePath`). That
+    /// half is deliberately not ported here: `SkillReference::Path` and
+    /// `ParsedSkill::path` in this fork are still plain `PathBuf` (issue #299 tracks
+    /// migrating them to `LocalOrRemotePath`), and there is no per-host bundled-skill
+    /// catalog to dispatch to (issue #487/#493 explicitly scoped that out too, for
+    /// the same missing-prerequisite reason). This method only ever resolves against
+    /// the local catalog — equivalent to always passing the pin's
+    /// `SkillPathOrigin::Local`. See issue #370.
+    pub fn active_skill_by_reference(
+        &self,
+        reference: &SkillReference,
+        ctx: &AppContext,
+    ) -> Option<&ParsedSkill> {
+        match reference {
+            SkillReference::Path(path) => self.skills_by_path.get(path),
+            SkillReference::BundledSkillId(id) => self.active_bundled_skill(id, ctx),
+        }
+    }
+
     pub fn list_skill_inventory(&self, ctx: &AppContext) -> Vec<SkillInventoryItem> {
         let _ = ctx;
         let mut by_name: HashMap<String, Vec<SkillInventoryDuplicate>> = HashMap::new();
@@ -460,6 +491,24 @@ impl SkillManager {
         let name = skill.name.clone();
         self.skills_by_path.insert(path.clone(), skill);
         self.skills_by_name.entry(name).or_default().insert(path);
+    }
+
+    /// Adds a bundled skill to the skill manager for testing purposes.
+    ///
+    /// Ported from the pin's `SkillManager::add_bundled_skill_for_testing`
+    /// (`02b53fcd8`), local-catalog-only (see [`Self::active_skill_by_reference`]).
+    /// The pin's remote-host counterpart, `add_remote_bundled_skill_for_testing`,
+    /// is not ported for the same reason. Forwards to
+    /// [`BundledSkill::insert_for_testing`], which now owns the catalog storage
+    /// (extracted from this struct by #493).
+    #[cfg(test)]
+    pub fn add_bundled_skill_for_testing(
+        &mut self,
+        id: impl Into<String>,
+        skill: ParsedSkill,
+        activation: BundledSkillActivation,
+    ) {
+        self.bundled.insert_for_testing(id, skill, activation);
     }
 }
 
