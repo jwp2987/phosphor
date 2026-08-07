@@ -319,7 +319,9 @@ pub(super) fn file_change_entry_to_proto(entry: &FileChangeEntry) -> proto::File
     }
 }
 
-pub(super) fn proto_to_file_change_entry(entry: &proto::FileChangeEntry) -> FileChangeEntry {
+/// `pub(crate)` rather than `pub(super)`: the code-review Create-PR dialog
+/// decodes `GetCommittedBranchFiles` responses with this too.
+pub(crate) fn proto_to_file_change_entry(entry: &proto::FileChangeEntry) -> FileChangeEntry {
     FileChangeEntry {
         path: entry.path.clone(),
         additions: entry.additions as usize,
@@ -342,7 +344,9 @@ pub(super) fn commit_to_proto(commit: &Commit) -> proto::Commit {
     }
 }
 
-pub(super) fn proto_to_commit(commit: &proto::Commit) -> Commit {
+/// `pub(crate)` rather than `pub(super)`: the code-review git dialog decodes
+/// `GitOpDelta` commits with this when folding a write-op result into the model.
+pub(crate) fn proto_to_commit(commit: &proto::Commit) -> Commit {
     Commit {
         hash: commit.hash.clone(),
         subject: commit.subject.clone(),

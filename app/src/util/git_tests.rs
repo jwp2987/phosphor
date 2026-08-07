@@ -6,7 +6,7 @@ use tempfile::TempDir;
 
 use super::{
     compute_unpushed_state, detect_current_branch, detect_current_branch_display,
-    run_commit_chain, CommitChainMode,
+    git_operation_in_progress, run_commit_chain, CommitChainMode,
 };
 
 /// Helper: run a git command inside the given repo directory.
@@ -159,4 +159,70 @@ async fn compute_unpushed_state_tracks_upstream_and_unpushed_commits() {
     assert_eq!(upstream_ref.as_deref(), Some("origin/main"));
     assert_eq!(commits.len(), 1, "expected one unpushed commit");
     assert_eq!(commits[0].subject, "local change");
+}
+
+/// Each sentinel git writes under `.git/` while an operation is in flight, and
+/// the name of the state it represents. A commit/push issued in any of these
+/// states would behave surprisingly (e.g. a commit would silently complete an
+/// in-progress merge) or fail outright, so all of them must block.
+const IN_PROGRESS_SENTINELS: &[(&str, &str)] = &[
+    ("MERGE_HEAD", "merge"),
+    ("CHERRY_PICK_HEAD", "cherry-pick"),
+    ("REVERT_HEAD", "revert"),
+    ("rebase-merge", "interactive/merge rebase"),
+    ("rebase-apply", "am-style rebase"),
+    ("index.lock", "held index lock"),
+];
+
+#[tokio::test]
+async fn git_operation_in_progress_false_on_clean_repo() {
+    let (_dir, repo) = init_repo().await;
+    assert!(
+        !git_operation_in_progress(&repo),
+        "a freshly initialized repo has no operation in progress"
+    );
+}
+
+#[tokio::test]
+async fn git_operation_in_progress_detects_every_sentinel() {
+    for (sentinel, description) in IN_PROGRESS_SENTINELS {
+        let (_dir, repo) = init_repo().await;
+        let path = repo.join(".git").join(sentinel);
+
+        // `rebase-merge` / `rebase-apply` are directories, the rest are files.
+        // Both are detected by existence, so create whichever kind matches.
+        if sentinel.starts_with("rebase-") {
+            tokio::fs::create_dir(&path)
+                .await
+                .expect("create rebase state dir");
+        } else {
+            tokio::fs::write(&path, "").await.expect("write sentinel");
+        }
+
+        assert!(
+            git_operation_in_progress(&repo),
+            "expected {description} ({sentinel}) to block git operations"
+        );
+
+        // Clearing the sentinel unblocks again, so the check is not sticky.
+        if sentinel.starts_with("rebase-") {
+            tokio::fs::remove_dir(&path).await.expect("remove state dir");
+        } else {
+            tokio::fs::remove_file(&path).await.expect("remove sentinel");
+        }
+        assert!(
+            !git_operation_in_progress(&repo),
+            "expected clearing {sentinel} to unblock git operations"
+        );
+    }
+}
+
+#[tokio::test]
+async fn git_operation_in_progress_false_for_nonexistent_repo() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let missing = dir.path().join("not-a-repo");
+    assert!(
+        !git_operation_in_progress(&missing),
+        "a path with no .git directory reports no operation in progress"
+    );
 }

@@ -1141,6 +1141,7 @@ impl ServerModel {
         let handle = self.spawn_request_handler(
             request_id.clone(),
             async move {
+                guard_git_operation_in_progress(&repo_path)?;
                 crate::util::git::run_commit_chain(
                     &repo_path,
                     mode,
@@ -1219,6 +1220,7 @@ impl ServerModel {
         let handle = self.spawn_request_handler(
             request_id.clone(),
             async move {
+                guard_git_operation_in_progress(&repo_path)?;
                 crate::util::git::run_push(&repo_path, &branch, None).await?;
                 anyhow::Ok(crate::util::git::compute_unpushed_state(&repo_path).await)
             },
@@ -1285,7 +1287,10 @@ impl ServerModel {
         let request_id_for_response = request_id.clone();
         let handle = self.spawn_request_handler(
             request_id.clone(),
-            async move { crate::util::git::create_pr(&repo_path, None, None, None).await },
+            async move {
+                guard_git_operation_in_progress(&repo_path)?;
+                crate::util::git::create_pr(&repo_path, None, None, None).await
+            },
             move |me, result, _ctx| {
                 let message = match result {
                     Ok(pr) => server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
@@ -2381,6 +2386,26 @@ impl ServerModel {
         );
         self.buffers.close_buffer(&msg.path, conn_id, ctx);
     }
+}
+
+/// Daemon-side execution-time guard for the git write-op handlers, mirroring
+/// Warp (`warp/master:app/src/remote_server/server_model.rs`). The local dialog
+/// guards pre-emptively via its blocked-state check before opening; the remote
+/// dialog cannot, because that check probes the *client's* filesystem and the
+/// repository lives on the daemon's. This is therefore the only guard on the
+/// remote path, and `RemoteDiffStateModel::is_git_operation_blocked` returns
+/// `false` on the promise that the daemon owns it.
+///
+/// The shared `util::git` orchestration itself stays guard-free, so each
+/// mutating handler applies this at the head of its spawned future.
+#[cfg(feature = "local_fs")]
+fn guard_git_operation_in_progress(repo_path: &Path) -> anyhow::Result<()> {
+    if crate::util::git::git_operation_in_progress(repo_path) {
+        anyhow::bail!(
+            "another git operation is in progress (merge, rebase, cherry-pick, or a lock file is present)"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "local_fs")]

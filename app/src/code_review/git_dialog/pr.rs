@@ -25,7 +25,6 @@ use crate::{
     workspace::ToastStack,
 };
 
-#[cfg(not(target_family = "wasm"))]
 use crate::code::buffer_location::RemotePath;
 
 /// PR-mode sub-actions, dispatched wrapped in `GitDialogAction::Pr`.
@@ -63,41 +62,17 @@ pub(super) fn is_ready_to_confirm(_state: &PrState) -> bool {
 pub(super) fn new_state(
     repo_path: &Path,
     base_branch_name: Option<String>,
-    is_remote: bool,
-    // For remote repos, the Changes list is sourced from the synced diff state
-    // (the working tree isn't readable locally). Empty for local repos, which
-    // load it from git below.
-    initial_file_changes: Vec<FileChangeEntry>,
+    remote: Option<&RemotePath>,
     ctx: &mut ViewContext<GitDialog>,
 ) -> PrState {
-    // Remote repos can't read the branch diff client-side; their Changes list
-    // comes from the synced diff state (`initial_file_changes`).
-    if !is_remote {
-        let diff_repo_path = repo_path.to_path_buf();
-        ctx.spawn(
-            async move { get_branch_diff_entries(&diff_repo_path).await },
-            |me, result, ctx| {
-                if let GitDialogMode::CreatePr(state) = &mut me.mode {
-                    match result {
-                        Ok(entries) => {
-                            state.file_changes = entries;
-                            ctx.notify();
-                        }
-                        Err(err) => {
-                            log::error!("Failed to load branch diff entries: {err}");
-                        }
-                    }
-                }
-            },
-        );
-    }
+    spawn_load_file_changes(repo_path, remote, ctx);
 
     PrState {
         base_branch_name: base_branch_name.map(|name| {
             let name = name.trim();
             name.strip_prefix("origin/").unwrap_or(name).to_string()
         }),
-        file_changes: initial_file_changes,
+        file_changes: Vec::new(),
         changes_expanded: false,
         summary_mouse_state: MouseStateHandle::default(),
         changes_scroll_state: ClippedScrollStateHandle::default(),
@@ -199,6 +174,89 @@ fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContex
                 }
             }
             ctx.emit(GitDialogEvent::Completed);
+        },
+    );
+}
+
+/// Loads the Changes box: the branch's committed-only file list
+/// (`main...HEAD`). Local reads it from git directly; remote asks the daemon's
+/// `GetCommittedBranchFiles` for the same set, so both surfaces show the same
+/// files. (Deriving it from the loaded diff state instead would show whichever
+/// file set the *current diff mode* holds, which is a different set whenever
+/// the mode isn't branch-vs-main.)
+#[cfg_attr(target_family = "wasm", allow(unused_variables))]
+fn spawn_load_file_changes(
+    repo_path: &Path,
+    remote: Option<&RemotePath>,
+    ctx: &mut ViewContext<GitDialog>,
+) {
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(remote) = remote {
+        spawn_load_remote_file_changes(remote.clone(), ctx);
+        return;
+    }
+
+    let diff_repo_path = repo_path.to_path_buf();
+    ctx.spawn(
+        async move { get_branch_diff_entries(&diff_repo_path).await },
+        |me, result, ctx| {
+            if let GitDialogMode::CreatePr(state) = &mut me.mode {
+                match result {
+                    Ok(entries) => {
+                        state.file_changes = entries;
+                        ctx.notify();
+                    }
+                    Err(err) => {
+                        log::error!("Failed to load branch diff entries: {err}");
+                    }
+                }
+            }
+        },
+    );
+}
+
+/// Remote arm of [`spawn_load_file_changes`]: the working tree lives on the
+/// daemon, so the committed branch file list comes over RPC.
+#[cfg(not(target_family = "wasm"))]
+fn spawn_load_remote_file_changes(remote: RemotePath, ctx: &mut ViewContext<GitDialog>) {
+    use crate::code_review::git_dialog::remote_client_for;
+    use crate::remote_server::diff_state_proto::proto_to_file_change_entry;
+    use crate::remote_server::proto;
+
+    let Some(client) = remote_client_for(&remote, ctx) else {
+        log::error!("Create PR dialog: no connected session for the code-review host");
+        return;
+    };
+    let request = proto::GetCommittedBranchFilesRequest {
+        repo_path: remote.path.to_string(),
+    };
+    ctx.spawn(
+        async move { client.get_committed_branch_files(request).await },
+        |me, result, ctx| {
+            let GitDialogMode::CreatePr(state) = &mut me.mode else {
+                return;
+            };
+            match result {
+                Ok(response) => match response.result {
+                    Some(proto::get_committed_branch_files_response::Result::Success(success)) => {
+                        state.file_changes = success
+                            .files
+                            .iter()
+                            .map(proto_to_file_change_entry)
+                            .collect();
+                        ctx.notify();
+                    }
+                    Some(proto::get_committed_branch_files_response::Result::Error(e)) => {
+                        log::error!("Failed to load remote branch file changes: {}", e.message);
+                    }
+                    None => {
+                        log::error!("Empty GetCommittedBranchFiles response");
+                    }
+                },
+                Err(e) => {
+                    log::error!("GetCommittedBranchFiles RPC failed: {e}");
+                }
+            }
         },
     );
 }

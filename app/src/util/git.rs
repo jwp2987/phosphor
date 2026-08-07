@@ -821,6 +821,25 @@ pub async fn compute_unpushed_state(_repo_path: &Path) -> (Vec<Commit>, Option<S
     (Vec::new(), None)
 }
 
+/// Returns `true` if the repository is mid-operation (merge / cherry-pick /
+/// revert / rebase) or another process holds the index lock, detected by
+/// probing the sentinel files git writes under `.git/`. Code-review git
+/// mutations are blocked in these states because they would behave
+/// surprisingly (e.g. a commit would complete an in-progress merge) or fail.
+/// Shared by the local pre-emptive guard (`is_git_operation_blocked`) and the
+/// daemon-side execution-time check.
+/// Ported verbatim from Warp (`warp/master:app/src/util/git.rs`).
+#[cfg(feature = "local_fs")]
+pub fn git_operation_in_progress(repo_path: &Path) -> bool {
+    let git_dir = repo_path.join(".git");
+    git_dir.join("MERGE_HEAD").exists()
+        || git_dir.join("CHERRY_PICK_HEAD").exists()
+        || git_dir.join("REVERT_HEAD").exists()
+        || git_dir.join("rebase-merge").exists()
+        || git_dir.join("rebase-apply").exists()
+        || git_dir.join("index.lock").exists()
+}
+
 // ── gh CLI helpers ───────────────────────────────────────────────────────────
 
 /// PR information returned by `gh pr view`.

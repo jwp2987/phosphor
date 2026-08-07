@@ -208,10 +208,14 @@ fn start_confirm_remote(
     };
     ctx.spawn(
         async move { client.git_push(request).await },
-        move |_me, result, ctx| {
+        move |me, result, ctx| {
             match result {
                 Ok(response) => match response.result {
-                    Some(proto::git_push_response::Result::Success(_delta)) => {
+                    Some(proto::git_push_response::Result::Success(delta)) => {
+                        // Fold the daemon's post-push delta in before completing,
+                        // so the unpushed-commit count and upstream ref update
+                        // immediately rather than staying stale.
+                        me.apply_git_op_delta(Some(delta), ctx);
                         let toast_msg = if publish {
                             "Branch successfully published."
                         } else {

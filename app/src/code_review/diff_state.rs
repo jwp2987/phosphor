@@ -589,14 +589,7 @@ impl LocalDiffStateModel {
             return false;
         };
         let repo_path = repo.as_ref(app).root_dir().to_local_path_lossy();
-        let git_dir = repo_path.join(".git");
-
-        git_dir.join("MERGE_HEAD").exists()
-            || git_dir.join("CHERRY_PICK_HEAD").exists()
-            || git_dir.join("REVERT_HEAD").exists()
-            || git_dir.join("rebase-merge").exists()
-            || git_dir.join("rebase-apply").exists()
-            || git_dir.join("index.lock").exists()
+        crate::util::git::git_operation_in_progress(&repo_path)
     }
 
     #[cfg(not(feature = "local_fs"))]
@@ -3244,6 +3237,27 @@ impl DiffStateModel {
     }
 
     // ── Mutation API (dispatched to the backend) ─────────────────────
+
+    /// Applies a remote git write-op's post-operation delta (refreshed unpushed
+    /// commits + upstream ref) returned by the daemon.
+    ///
+    /// Remote-only: the local backend recomputes this state from the working
+    /// tree after the operation, so it has no delta to fold in.
+    #[cfg_attr(target_family = "wasm", allow(unused_variables))]
+    pub fn apply_git_op_delta(
+        &mut self,
+        unpushed_commits: Vec<Commit>,
+        upstream_ref: Option<String>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match self {
+            Self::Local(_) => {}
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.update(ctx, |remote, ctx| {
+                remote.apply_git_op_delta(unpushed_commits, upstream_ref, ctx)
+            }),
+        }
+    }
 
     pub fn set_diff_mode(
         &mut self,

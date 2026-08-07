@@ -6467,6 +6467,9 @@ impl CodeReviewView {
             .diff_state_model
             .read(ctx, |model, cx| model.get_current_branch_name(cx))
             .unwrap_or_default();
+        // Handed to the dialog so a remote write-op can fold the daemon's
+        // returned delta back into the model before completing (#116).
+        let diff_state_model = self.diff_state_model.clone();
 
         let dialog = match kind {
             GitDialogKind::Commit => {
@@ -6490,6 +6493,7 @@ impl CodeReviewView {
                     GitDialog::new_for_commit(
                         repo_path,
                         remote,
+                        diff_state_model,
                         branch_name,
                         allow_create_pr,
                         has_upstream,
@@ -6503,25 +6507,28 @@ impl CodeReviewView {
                     .diff_state_model
                     .read(ctx, |model, cx| model.unpushed_commits(cx).to_vec());
                 ctx.add_typed_action_view(|ctx| {
-                    GitDialog::new_for_push(repo_path, remote, branch_name, publish, commits, ctx)
+                    GitDialog::new_for_push(
+                        repo_path,
+                        remote,
+                        diff_state_model,
+                        branch_name,
+                        publish,
+                        commits,
+                        ctx,
+                    )
                 })
             }
             GitDialogKind::CreatePr => {
                 let base_branch_name = self
                     .diff_state_model
                     .read(ctx, |model, cx| model.get_main_branch_name(cx));
-                let initial_file_changes = if remote.is_some() {
-                    self.diff_state_model.as_ref(ctx).loaded_file_entries(ctx)
-                } else {
-                    Vec::new()
-                };
                 ctx.add_typed_action_view(|ctx| {
                     GitDialog::new_for_pr(
                         repo_path,
                         remote,
+                        diff_state_model,
                         branch_name,
                         base_branch_name,
-                        initial_file_changes,
                         ctx,
                     )
                 })

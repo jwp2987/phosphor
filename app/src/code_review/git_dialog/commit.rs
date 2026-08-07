@@ -225,27 +225,33 @@ pub(super) fn on_focus(state: &CommitState, ctx: &mut ViewContext<GitDialog>) {
     ctx.focus(&state.message_editor);
 }
 
-pub(super) fn is_ready_to_confirm(state: &CommitState, is_remote: bool, app: &AppContext) -> bool {
-    // Confirm requires at least one file change and a non-empty commit
-    // message. While open-time autogen is in flight the editor is still
-    // empty, so this keeps the button disabled until the draft lands (or the
-    // user types something).
-    //
-    // Remote repos source the Changes list from synced metadata, which can be
-    // transiently empty; the daemon-side commit rejects an empty staged set, so
-    // gate only on a non-empty message there (mirrors Warp).
-    let has_changes = is_remote || !state.file_changes.is_empty();
-    has_changes && commit_message(state, app).is_some()
+pub(super) fn is_ready_to_confirm(state: &CommitState, app: &AppContext) -> bool {
+    // Confirm requires committable changes and a non-empty commit message.
+    // While open-time autogen is in flight the editor is still empty, so this
+    // keeps the button disabled until the draft lands (or the user types
+    // something).
+    has_committable_changes(state) && commit_message(state, app).is_some()
+}
+
+/// Whether there's at least one change to commit — the guard that keeps
+/// Confirm disabled when there's nothing to commit.
+///
+/// Gates on `file_changes`, which already reflects the active "include
+/// unstaged" scope: local re-reads the working tree on toggle, while remote
+/// shows the full synced set (it can't re-scope client-side). The daemon-side
+/// `run_commit` is the authoritative backstop that rejects an empty commit —
+/// e.g. "exclude unstaged" with nothing staged — surfacing it as an error
+/// toast rather than a phantom success. The backstop does not replace this
+/// guard: remote must gate here too, or Confirm goes live with an empty
+/// Changes list and fires a commit the daemon then rejects.
+fn has_committable_changes(state: &CommitState) -> bool {
+    !state.file_changes.is_empty()
 }
 
 /// Returns a tooltip to show on the disabled Confirm button when the
 /// user needs to take action, or `None` when no tooltip is needed.
-pub(super) fn confirm_tooltip(
-    state: &CommitState,
-    is_remote: bool,
-    app: &AppContext,
-) -> Option<&'static str> {
-    if (is_remote || !state.file_changes.is_empty()) && commit_message(state, app).is_none() {
+pub(super) fn confirm_tooltip(state: &CommitState, app: &AppContext) -> Option<&'static str> {
+    if has_committable_changes(state) && commit_message(state, app).is_none() {
         Some("Enter a commit message")
     } else {
         None
@@ -399,10 +405,14 @@ fn start_confirm_remote(
     };
     ctx.spawn(
         async move { client.git_commit_chain(request).await },
-        move |_me, result, ctx| {
+        move |me, result, ctx| {
             match result {
                 Ok(response) => match response.result {
                     Some(proto::git_commit_chain_response::Result::Success(success)) => {
+                        // Fold the daemon's post-chain delta in before
+                        // completing, so the unpushed-commit count and upstream
+                        // ref update immediately rather than staying stale.
+                        me.apply_git_op_delta(success.delta, ctx);
                         match success.pr_info {
                             Some(pr) => {
                                 let pr = PrInfo {
@@ -657,3 +667,7 @@ fn render_intent_buttons(state: &CommitState) -> Box<dyn Element> {
     }
     column.finish()
 }
+
+#[cfg(test)]
+#[path = "commit_tests.rs"]
+mod tests;
