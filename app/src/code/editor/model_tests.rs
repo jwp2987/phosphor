@@ -1119,7 +1119,7 @@ fn test_hidden_lines_window_is_symmetric_around_changes() {
             editor.hide_lines_outside_of_active_diff(3, ctx);
             let new = editor.content.as_ref(ctx).text();
             editor.diff().update(ctx, |diff, ctx| {
-                diff.compute_diff(new, BufferVersion::new(), ctx);
+                diff.compute_diff(new, true, BufferVersion::new(), ctx);
             });
         });
         diff_rx.next().await.expect("DiffUpdated should be emitted");
