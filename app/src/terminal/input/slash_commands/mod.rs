@@ -1141,7 +1141,7 @@ mod tests {
     /// prompt) — it must not be classified as a prompt-submitting command.
     #[test]
     fn model_command_is_supported_in_tui_without_becoming_a_prompt_command() {
-        assert_eq!(commands::MODEL.kind, SlashCommandKind::Model);
+        assert_eq!(commands::MODEL.kind(), SlashCommandKind::Model);
         assert!(!slash_command_is_submitted_as_prompt(&commands::MODEL));
         assert!(commands::MODEL.argument.is_none());
     }
