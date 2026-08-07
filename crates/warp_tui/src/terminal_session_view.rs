@@ -4259,6 +4259,26 @@ impl TuiTerminalSessionView {
         }
         ctx.notify();
     }
+
+    fn forward_user_pty_bytes(&self, bytes: &[u8], ctx: &mut ViewContext<Self>) {
+        // Raw passthrough: the bytes are already the app's escape sequence.
+        // Recheck control at the final write boundary in case the element
+        // tree predates an agent takeover, so stale bytes typed before the
+        // agent tagged in or took control over the running command are
+        // dropped instead of leaking into the PTY after control changed hands.
+        let composer_owns_input = self
+            .terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_agent_in_control_or_tagged_in();
+        if composer_owns_input {
+            return;
+        }
+        ctx.emit(TuiTerminalSessionEvent::WriteUserInput(Cow::Owned(
+            bytes.to_vec(),
+        )));
+    }
 }
 
 impl TypedActionView for TuiTerminalSessionView {
@@ -4288,11 +4308,7 @@ impl TypedActionView for TuiTerminalSessionView {
                 self.toggle_auto_approve(*show_feedback, ctx)
             }
             TuiTerminalSessionAction::ForwardUserPtyBytes(bytes) => {
-                // Raw passthrough: the bytes are already the app's escape
-                // sequence, so write them to the PTY unmodified.
-                ctx.emit(TuiTerminalSessionEvent::WriteUserInput(Cow::Owned(
-                    bytes.clone(),
-                )));
+                self.forward_user_pty_bytes(bytes, ctx);
             }
             TuiTerminalSessionAction::TogglePlan => {
                 self.transcript
