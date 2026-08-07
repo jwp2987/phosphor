@@ -408,6 +408,7 @@ fn present_permission_card_lines(
                     prompt,
                     "Permission",
                     Some(TuiText::new("details").finish()),
+                    None,
                     ctx,
                 ),
                 TuiRect::new(0, 0, 80, 12),
