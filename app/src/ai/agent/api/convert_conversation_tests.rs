@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use warp_multi_agent_api as api;
 
-use crate::ai::agent::{AIAgentInput, UserQueryMode};
 use crate::ai::agent::api::convert_conversation::*;
+use crate::ai::agent::{AIAgentInput, UserQueryMode};
 
 fn test_skill() -> api::Skill {
     api::Skill {
@@ -654,18 +654,19 @@ fn test_into_exchanges_with_tool_calls_and_cancellation() {
     let mut found_successful = 0;
 
     for input in &second_exchange.input {
-        if let crate::ai::agent::AIAgentInput::ActionResult { result, .. } = input
-            && let crate::ai::agent::AIAgentActionResultType::RequestCommandOutput(command_result) =
+        if let crate::ai::agent::AIAgentInput::ActionResult { result, .. } = input {
+            if let crate::ai::agent::AIAgentActionResultType::RequestCommandOutput(command_result) =
                 &result.result
-        {
-            match command_result {
-                crate::ai::agent::RequestCommandOutputResult::CancelledBeforeExecution => {
-                    found_cancelled = true;
+            {
+                match command_result {
+                    crate::ai::agent::RequestCommandOutputResult::CancelledBeforeExecution => {
+                        found_cancelled = true;
+                    }
+                    crate::ai::agent::RequestCommandOutputResult::Completed { .. } => {
+                        found_successful += 1;
+                    }
+                    _ => {}
                 }
-                crate::ai::agent::RequestCommandOutputResult::Completed { .. } => {
-                    found_successful += 1;
-                }
-                _ => {}
             }
         }
     }
