@@ -302,6 +302,7 @@ impl TuiGenericToolCallView {
                     .with_style(builder.primary_text_style())
                     .finish(),
             ),
+            None,
             app,
         )
     }
