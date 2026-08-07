@@ -75,6 +75,63 @@ fn test_add_repository_non_existent() {
     });
 }
 
+#[test]
+fn test_existing_directory_registration_is_enriched_with_external_git_directory() {
+    VirtualFS::test(
+        "enrich_existing_directory_with_external_git_directory",
+        |dirs, mut vfs| {
+            vfs.mkdir("repo/.git/worktrees/worktree").mkdir("worktree");
+
+            let worktree_path = dirs.tests().join("worktree");
+            let external_git_dir = dirs.tests().join("repo/.git/worktrees/worktree");
+            let common_git_dir = dirs.tests().join("repo/.git");
+
+            App::test((), |mut app| async move {
+                let watcher_handle = app.add_model(DirectoryWatcher::new_for_testing);
+                let worktree_path =
+                    StandardizedPath::from_local_canonicalized(&worktree_path).unwrap();
+                let external_git_dir =
+                    StandardizedPath::from_local_canonicalized(&external_git_dir).unwrap();
+
+                let raw_directory_handle = watcher_handle
+                    .update(&mut app, |watcher, ctx| {
+                        watcher.add_directory(worktree_path.clone(), ctx)
+                    })
+                    .unwrap();
+                raw_directory_handle.read(&app, |repository, _ctx| {
+                    assert!(repository.external_git_directory().is_none());
+                });
+
+                let enriched_directory_handle = watcher_handle
+                    .update(&mut app, |watcher, ctx| {
+                        watcher.add_directory_with_git_dir(
+                            worktree_path.clone(),
+                            Some(external_git_dir.clone()),
+                            ctx,
+                        )
+                    })
+                    .unwrap();
+
+                assert_eq!(raw_directory_handle, enriched_directory_handle);
+                enriched_directory_handle.read(&app, |repository, _ctx| {
+                    assert_eq!(repository.external_git_directory(), Some(&external_git_dir));
+                    assert_eq!(repository.common_git_dir(), common_git_dir);
+                });
+
+                let reused_directory_handle = watcher_handle
+                    .update(&mut app, |watcher, ctx| {
+                        watcher.add_directory(worktree_path, ctx)
+                    })
+                    .unwrap();
+                assert_eq!(enriched_directory_handle, reused_directory_handle);
+                reused_directory_handle.read(&app, |repository, _ctx| {
+                    assert_eq!(repository.external_git_directory(), Some(&external_git_dir));
+                });
+            });
+        },
+    );
+}
+
 /// A test subscriber that uses async channels to signal scan completion.
 struct TestSubscriber {
     scan_completed_tx: mpsc::UnboundedSender<()>,
@@ -394,6 +451,56 @@ fn test_is_git_internal_path() {
     // Non-git files should not be detected
     assert!(!is_git_internal_path(Path::new("/repo/src/main.rs")));
     assert!(!is_git_internal_path(Path::new("/repo/README.md")));
+}
+
+#[test]
+fn test_common_config_routes_to_repos_sharing_common_git_dir() {
+    VirtualFS::test("common_config_routes", |dirs, mut vfs| {
+        stub_git_repository(&mut vfs, "repo");
+        vfs.mkdir("repo/.git/worktrees");
+        vfs.mkdir("repo/.git/worktrees/wt");
+        vfs.mkdir("wt");
+        vfs.with_files(vec![Stub::FileWithContent(
+            "repo/.git/worktrees/wt/HEAD",
+            "ref: refs/heads/feature",
+        )]);
+
+        let repo_path = dirs.tests().join("repo");
+        let worktree_path = dirs.tests().join("wt");
+        let external_git_dir = dirs.tests().join("repo/.git/worktrees/wt");
+        let common_config_path = dirs.tests().join("repo/.git/config");
+
+        App::test((), |mut app| async move {
+            let watcher_handle = app.add_singleton_model(DirectoryWatcher::new_for_testing);
+
+            let main_repo_handle = watcher_handle
+                .update(&mut app, |watcher, ctx| {
+                    watcher.add_directory(
+                        StandardizedPath::from_local_canonicalized(&repo_path).unwrap(),
+                        ctx,
+                    )
+                })
+                .unwrap();
+            let worktree_repo_handle = watcher_handle
+                .update(&mut app, |watcher, ctx| {
+                    watcher.add_directory_with_git_dir(
+                        StandardizedPath::from_local_canonicalized(&worktree_path).unwrap(),
+                        Some(
+                            StandardizedPath::from_local_canonicalized(&external_git_dir).unwrap(),
+                        ),
+                        ctx,
+                    )
+                })
+                .unwrap();
+
+            let affected = watcher_handle.update(&mut app, |watcher, ctx| {
+                watcher.find_repos_for_git_event(&common_config_path, ctx)
+            });
+            assert_eq!(affected.len(), 2);
+            assert!(affected.contains(&main_repo_handle));
+            assert!(affected.contains(&worktree_repo_handle));
+        });
+    });
 }
 
 #[test]
