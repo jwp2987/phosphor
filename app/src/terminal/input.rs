@@ -85,6 +85,7 @@ use crate::terminal::input::suggestions_mode_model::{
 use crate::terminal::input::terminal_message_bar::TerminalInputMessageBar;
 use crate::terminal::input::user_query::{UserQueryMenuEvent, UserQueryMenuView};
 use crate::terminal::model::session::active_session::ActiveSession;
+use crate::terminal::model::session::command_executor::shell_quote_arg;
 use crate::terminal::package_installers::command_at_cursor_has_common_package_installer_prefix;
 use crate::terminal::prompt_render_helper::should_render_ps1_prompt;
 use crate::terminal::universal_developer_input::AtContextMenuDisabledReason;
@@ -140,7 +141,7 @@ use crate::{
     completer::SessionContext,
     context_chips::{
         display::{PromptDisplay, PromptDisplayEvent},
-        display_chip::DisplayChipConfig,
+        display_chip::{DisplayChipConfig, PromptChipShellCommand},
         prompt_type::PromptType,
     },
     debounce::debounce,
@@ -456,6 +457,9 @@ fn translate_input_key(key: &'static str) -> String {
 const AGENT_MODE_AI_ENABLED_STEER_HINT_KEY_UDI: &str = "terminal-input-steer-agent-hint";
 const AGENT_MODE_AI_ENABLED_STEER_HINT_KEY_CLASSIC: &str =
     "terminal-input-steer-agent-backspace-hint";
+const AGENT_MODE_AI_ENABLED_QUEUE_HINT_KEY_UDI: &str = "terminal-input-queue-follow-up-hint";
+const AGENT_MODE_AI_ENABLED_QUEUE_HINT_KEY_CLASSIC: &str =
+    "terminal-input-queue-follow-up-backspace-hint";
 const AGENT_MODE_AI_ENABLED_FOLLOW_UP_HINT_KEY_UDI: &str = "terminal-input-follow-up-hint";
 const AGENT_MODE_AI_ENABLED_FOLLOW_UP_HINT_KEY_CLASSIC: &str =
     "terminal-input-follow-up-backspace-hint";
@@ -886,6 +890,9 @@ pub enum CommandExecutionSource {
 
     /// A normal command execution request.
     User,
+    /// A command dispatched by the queued-prompts panel. It should execute like a user command but
+    /// must not treat the current editor contents as the submitted command.
+    QueuedCommand,
 
     EnvVarCollection {
         metadata: BlocklistEnvVarMetadata,
@@ -905,6 +912,49 @@ impl CommandExecutionSource {
                     ..
                 }
         )
+    }
+
+    /// Whether this execution should leave the user's in-progress editor draft alone.
+    ///
+    /// Adaptation from the pinned oracle: upstream also returns `true` for
+    /// `SharedSession { preserve_input: true, .. }`. Phosphor's `SharedSession` variant has no
+    /// `preserve_input` field yet, because adding it requires changing the construction site in
+    /// `terminal/view.rs`, which is owned by another in-flight change. The queued-command arm —
+    /// the one every ported test exercises — is identical to upstream.
+    pub fn should_preserve_input(&self) -> bool {
+        matches!(self, CommandExecutionSource::QueuedCommand)
+    }
+}
+
+/// Renders a prompt-chip shell command for `shell_type`.
+///
+/// Every interpolated field is passed through `shell_quote_arg` so values Phosphor does not
+/// control (branch names, directory names, `nvm` version strings) are handed to the shell as a
+/// single argument rather than as shell syntax.
+fn render_prompt_chip_shell_command(
+    command: &PromptChipShellCommand,
+    shell_type: ShellType,
+) -> String {
+    match command {
+        PromptChipShellCommand::GitCheckout { branch_name } => {
+            format!("git checkout {}", shell_quote_arg(branch_name, shell_type))
+        }
+        PromptChipShellCommand::GitCreateAndCheckoutBranch { branch_name } => {
+            format!(
+                "git checkout -b {} --",
+                shell_quote_arg(branch_name, shell_type)
+            )
+        }
+        PromptChipShellCommand::ChangeDirectory { dir_name } => {
+            format!("cd {}", shell_quote_arg(dir_name, shell_type))
+        }
+        PromptChipShellCommand::NvmUse { version } => {
+            format!("nvm use {}", shell_quote_arg(version, shell_type))
+        }
+        PromptChipShellCommand::NvmInstallLatestNode => "nvm install node".to_string(),
+        PromptChipShellCommand::Echo { message } => {
+            format!("echo {}", shell_quote_arg(message, shell_type))
+        }
     }
 }
 
@@ -4896,9 +4946,17 @@ impl Input {
                 });
             }
             PromptDisplayEvent::TryExecuteCommand(command) => {
+                let Some(shell_type) = self
+                    .active_session(ctx)
+                    .map(|session| session.shell().shell_type())
+                else {
+                    log::warn!("Tried to execute prompt chip command without an active session");
+                    return;
+                };
+                let command = render_prompt_chip_shell_command(command, shell_type);
                 // Snapshot the current input so we can restore it after the command completes.
                 let current_input = self.buffer_text(ctx);
-                if self.try_execute_command_from_source(command, CommandExecutionSource::User, ctx)
+                if self.try_execute_command_from_source(&command, CommandExecutionSource::User, ctx)
                 {
                     self.cancel_active_conversation(ctx, CancellationReason::UserCommandExecuted);
                     if !current_input.is_empty() {
@@ -5080,6 +5138,19 @@ impl Input {
     fn agent_mode_hint_text(&mut self, app: &AppContext) -> String {
         let input_model = self.ai_input_model.as_ref(app);
         let is_udi_enabled = InputSettings::as_ref(app).is_universal_developer_input_enabled(app);
+        let selected_conversation_id = self
+            .ai_context_model
+            .as_ref(app)
+            .selected_conversation_id(app);
+        let is_queue_next_prompt_enabled = FeatureFlag::QueueSlashCommand.is_enabled()
+            && selected_conversation_id.is_some_and(|conversation_id| {
+                let terminal_model = self.model.lock();
+                QueuedQueryModel::as_ref(app).is_queue_next_prompt_enabled(
+                    conversation_id,
+                    terminal_model.block_list().active_block(),
+                    app,
+                )
+            });
 
         let key = match (
             input_model.input_type(),
@@ -5101,7 +5172,13 @@ impl Input {
                     .selected_conversation_status_for_hint(app)
                 {
                     Some(status) if status.is_in_progress() => {
-                        if is_udi_enabled {
+                        if is_queue_next_prompt_enabled {
+                            if is_udi_enabled {
+                                AGENT_MODE_AI_ENABLED_QUEUE_HINT_KEY_UDI
+                            } else {
+                                AGENT_MODE_AI_ENABLED_QUEUE_HINT_KEY_CLASSIC
+                            }
+                        } else if is_udi_enabled {
                             AGENT_MODE_AI_ENABLED_STEER_HINT_KEY_UDI
                         } else {
                             AGENT_MODE_AI_ENABLED_STEER_HINT_KEY_CLASSIC
@@ -5825,6 +5902,15 @@ impl Input {
     }
 
     pub fn try_execute_command(&mut self, command: &str, ctx: &mut ViewContext<Self>) -> bool {
+        self.try_execute_command_with_options(command, false, ctx)
+    }
+
+    fn try_execute_command_with_options(
+        &mut self,
+        command: &str,
+        preserve_input: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         let shared_session_status = self.model.lock().shared_session_status().clone();
         if shared_session_status.is_sharer_or_viewer() {
             // If this is a viewer who isn't also an executor, they should not
@@ -5835,7 +5921,7 @@ impl Input {
                 // caller of this API is the `enter` handler.
                 log::warn!("Viewer tried to execute a command as a reader");
                 return false;
-            } else if shared_session_status.is_executor() {
+            } else if shared_session_status.is_executor() && !preserve_input {
                 let original_buffer = self.freeze_input_in_loading_state(ctx);
 
                 if let Some(shared_session_input_state) = self.shared_session_input_state.as_mut() {
@@ -5855,6 +5941,12 @@ impl Input {
             self.try_execute_command_on_behalf_of_shared_session_participant(
                 command,
                 participant_id,
+                ctx,
+            )
+        } else if preserve_input {
+            self.try_execute_command_from_source(
+                command,
+                CommandExecutionSource::QueuedCommand,
                 ctx,
             )
         } else {
@@ -11721,6 +11813,29 @@ impl Input {
                 view.accept_selected_item(false, ctx);
             });
             return;
+        } else if self
+            .queued_prompts_panel
+            .as_ref()
+            .is_some_and(|panel| panel.as_ref(ctx).enter_sends_queued_prompt(ctx))
+        {
+            // An empty-buffer Enter sends the top queued row, mirroring its send-now button.
+            // Locked head rows are not sendable, so Enter does nothing while one sits at the
+            // head of the queue.
+            let conversation_id =
+                BlocklistAIHistoryModel::as_ref(ctx).active_conversation_id(self.terminal_view_id);
+            let top_row = conversation_id.and_then(|conversation_id| {
+                QueuedQueryModel::as_ref(ctx)
+                    .queue(conversation_id)
+                    .first()
+                    .filter(|row| !row.is_locked())
+                    .map(|row| (row.id(), row.text().to_owned(), row.is_command()))
+            });
+            if let (Some(conversation_id), Some((query_id, text, is_command))) =
+                (conversation_id, top_row)
+            {
+                self.send_queued_row_immediately(conversation_id, query_id, text, is_command, ctx);
+            }
+            return;
         } else if self.maybe_queue_input_for_in_progress_conversation(ctx)
             || self.maybe_handle_enter_for_slash_command(ctx)
         {
@@ -12214,13 +12329,22 @@ impl Input {
         conversation_id: AIConversationId,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
-        let started = self.try_execute_command(command, ctx);
+        let started = self.try_execute_command_with_options(command, true, ctx);
         if started {
             QueuedQueryModel::handle(ctx).update(ctx, |model, _| {
                 model.arm_command_in_flight(conversation_id);
             });
         }
         started
+    }
+
+    fn has_queued_command_in_flight(&self, ctx: &AppContext) -> bool {
+        QueuedQueryModel::as_ref(ctx)
+            .command_in_flight_for_terminal_view(
+                self.terminal_view_id,
+                BlocklistAIHistoryModel::as_ref(ctx),
+            )
+            .is_some()
     }
 
     /// Routes a fired queued prompt to its conversation. Zap has no cloud-follow-up or
@@ -12961,7 +13085,10 @@ impl Input {
         // size of the cleared input box.
         if let BlockType::User(user_block) = &block_completed_event.block_type {
             // Only clear the input buffer for user-executed commands, not agent-executed ones.
-            let should_clear_buffer = !user_block.was_part_of_agent_interaction;
+            // A queued command in flight was dispatched by the queued-prompts panel rather than
+            // from the editor, so its completion must not wipe the draft the user is composing.
+            let should_clear_buffer = !user_block.was_part_of_agent_interaction
+                && !self.has_queued_command_in_flight(ctx);
             let latest_block_id = self.model.lock().block_list().active_block_id().clone();
             let input_contents_before_prompt_chip_command =
                 self.input_contents_before_prompt_chip_command.take();
