@@ -1465,3 +1465,131 @@ fn test_can_autoexecute_command_denylist_matches_env_prefixed_commands() {
         });
     })
 }
+
+#[test]
+fn test_merged_denylist_deduplication() {
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            permissions,
+            user_workspaces,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        let rm_predicate = AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap();
+
+        profile_model.update(&mut app, |model, ctx| {
+            model.add_to_command_denylist(
+                *model.active_profile(Some(terminal_view_id), ctx).id(),
+                &rm_predicate,
+                ctx,
+            );
+        });
+
+        user_workspaces.update(&mut app, |model, ctx| {
+            model.setup_test_workspace(ctx);
+            model.update_ai_autonomy_settings(
+                |settings| {
+                    settings.execute_commands_denylist = Some(vec![
+                        AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap(),
+                        AgentModeCommandExecutionPredicate::new_regex("git .*").unwrap(),
+                    ]);
+                },
+                ctx,
+            );
+        });
+
+        permissions.read(&app, |model, ctx| {
+            let denylist = model.get_execute_commands_denylist(ctx, Some(terminal_view_id));
+            let rm_count = denylist.iter().filter(|p| p.to_string() == "rm .*").count();
+            assert_eq!(rm_count, 1, "duplicate entries should be deduplicated");
+            assert!(
+                denylist.iter().any(|p| p.to_string() == "git .*"),
+                "org entry 'git .*' should be in merged list"
+            );
+        });
+    })
+}
+
+#[test]
+fn test_get_org_execute_commands_denylist() {
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            permissions,
+            user_workspaces,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        permissions.read(&app, |_, ctx| {
+            let org_list = BlocklistAIPermissions::get_org_execute_commands_denylist(ctx);
+            assert!(org_list.is_empty());
+        });
+
+        user_workspaces.update(&mut app, |model, ctx| {
+            model.setup_test_workspace(ctx);
+            model.update_ai_autonomy_settings(
+                |settings| {
+                    let git_predicate =
+                        AgentModeCommandExecutionPredicate::new_regex("git .*").unwrap();
+                    settings.execute_commands_denylist = Some(vec![git_predicate]);
+                },
+                ctx,
+            );
+        });
+
+        permissions.read(&app, |_, ctx| {
+            let org_list = BlocklistAIPermissions::get_org_execute_commands_denylist(ctx);
+            assert_eq!(org_list.len(), 1);
+            assert_eq!(org_list[0].to_string(), "git .*");
+        });
+    })
+}
+
+#[test]
+fn test_empty_org_denylist_allows_user_entries() {
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            convo_id,
+            permissions,
+            user_workspaces,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            model.add_to_command_denylist(
+                *model.active_profile(Some(terminal_view_id), ctx).id(),
+                &AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap(),
+                ctx,
+            );
+        });
+
+        user_workspaces.update(&mut app, |model, ctx| {
+            model.setup_test_workspace(ctx);
+            model.update_ai_autonomy_settings(
+                |settings| {
+                    settings.execute_commands_denylist = Some(vec![]);
+                },
+                ctx,
+            );
+        });
+
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_autoexecute_command(
+                &convo_id,
+                "rm file.txt",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(
+                !result.is_allowed(),
+                "user denylist entry should be active even when org denylist is empty"
+            );
+        });
+    })
+}
