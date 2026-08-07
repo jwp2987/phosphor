@@ -276,10 +276,30 @@ impl NotebookLinks {
             }
             LinkTarget::LocalFile {
                 path,
+                line_and_column,
                 session,
                 is_markdown: true,
-                ..
             } => {
+                // Honour the viewer preference. With it disabled the file opens
+                // like any other file rather than in the built-in viewer; the
+                // fork emitted OpenFileNotebook unconditionally, so the setting
+                // had no effect on links at all.
+                //
+                // EditorSettings only exists with a local filesystem, so without
+                // that feature the built-in viewer stays the only option.
+                #[cfg(not(feature = "local_fs"))]
+                let _ = line_and_column;
+
+                #[cfg(feature = "local_fs")]
+                {
+                    if *EditorSettings::as_ref(ctx).prefer_markdown_viewer {
+                        ctx.emit(LinkEvent::OpenFileNotebook { path, session });
+                    } else {
+                        open_file(path, line_and_column, ctx);
+                    }
+                }
+
+                #[cfg(not(feature = "local_fs"))]
                 ctx.emit(LinkEvent::OpenFileNotebook { path, session });
             }
             LinkTarget::LocalFile {
