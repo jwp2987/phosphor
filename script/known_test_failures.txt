@@ -31,10 +31,12 @@ code::editor::view::vim_handler::tests::test_vim_c_percent_changes_to_matching_b
 code::editor::view::vim_handler::tests::test_vim_d_percent_deletes_to_matching_bracket
 code::editor::view::vim_handler::tests::test_vim_y_percent_yanks_to_matching_bracket
 
-# --- REAL DEFECTS, diagnosed but unfixed (3) --------------------------------
-# Issue #441. The first two are inverses of each other -- a prompt that should
-# queue does not, and /fork which should bypass the queue is queued -- which
-# points at one inverted queueing predicate rather than two bugs.
-terminal::input::tests::lrc_queued_prompts_wait_while_subagent_is_active
+# --- REAL DEFECTS, diagnosed but unfixed (2) --------------------------------
+# Issue #441. `lrc_queued_prompts_wait_while_subagent_is_active` was on this
+# list and now passes: it was not a queueing-predicate bug at all, it was the
+# missing `/compact-and` re-queue (#458), fixed by porting
+# `execute_queued_compact_and`. Measured at 5be073d4f: fails without that port,
+# passes with it. `slash_fork_bypasses_prompt_queue_while_in_progress` is
+# therefore a separate defect, not its inverse.
 terminal::input::tests::slash_fork_bypasses_prompt_queue_while_in_progress
 terminal::input::tests::test_classic_tab_completions_close_after_user_backspace
