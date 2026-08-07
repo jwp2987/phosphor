@@ -450,6 +450,11 @@ pub enum CLIAgentType {
     DeepSeek,
     Antigravity,
     Omp,
+    Hermes,
+    Vibe,
+    /// This fork's own headless TUI, targeted by the code review panel as a
+    /// CLI-agent-equivalent destination. See `CLIAgent::PhosphorTui`.
+    PhosphorTui,
     Unknown,
 }
 

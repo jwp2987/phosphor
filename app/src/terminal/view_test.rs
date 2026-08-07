@@ -6194,3 +6194,167 @@ fn agent_view_lifecycle_updates_input_mode() {
         });
     });
 }
+
+// ---------------------------------------------------------------------------
+// `active_cli_agent` / Phosphor TUI-as-review-destination tests.
+//
+// Ported from the pinned oracle's `active_cli_agent_recognizes_detected_warp_tui_session`,
+// `active_cli_agent_ignores_warp_tui_when_hoa_code_review_disabled`,
+// `active_cli_agent_ignores_non_tui_long_running_command`, and
+// `send_review_comments_to_warp_tui_writes_prompt_to_pty`. The fork's variant is
+// named `CLIAgent::PhosphorTui`, not `WarpTui`; see #394.
+// ---------------------------------------------------------------------------
+
+fn single_general_review_comment(content: &str) -> crate::ai::agent::AgentReviewCommentBatch {
+    crate::ai::agent::AgentReviewCommentBatch {
+        comments: vec![crate::code_review::comments::AttachedReviewComment {
+            id: Default::default(),
+            content: content.to_string(),
+            target: crate::code_review::comments::AttachedReviewCommentTarget::General,
+            last_update_time: chrono::Local::now(),
+            base: None,
+            head: None,
+            outdated: false,
+            origin: crate::code_review::comments::CommentOrigin::Native,
+        }],
+        diff_set: std::collections::HashMap::new(),
+    }
+}
+
+fn set_phosphor_tui_session(view: &mut TerminalView, ctx: &mut ViewContext<TerminalView>) {
+    view.model.lock().simulate_long_running_block("warp", "");
+    assert_eq!(
+        CLIAgent::detect("warp", None, None, ctx),
+        Some(CLIAgent::PhosphorTui)
+    );
+
+    CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+        sessions.set_session(
+            view.view_id,
+            CLIAgentSession {
+                agent: CLIAgent::PhosphorTui,
+                status: CLIAgentSessionStatus::InProgress,
+                session_context: CLIAgentSessionContext::default(),
+                input_state: CLIAgentInputState::Closed,
+                should_auto_toggle_input: false,
+                listener: None,
+                remote_host: None,
+                plugin_version: None,
+                draft_text: None,
+                custom_command_prefix: None,
+            },
+            ctx,
+        );
+    });
+}
+
+#[test]
+fn active_cli_agent_recognizes_detected_phosphor_tui_session() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _hoa_code_review = FeatureFlag::HoaCodeReview.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            set_phosphor_tui_session(view, ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.active_cli_agent(ctx),
+                Some(CLIAgent::PhosphorTui),
+                "the Phosphor TUI should be recognized as a code-review destination while running"
+            );
+        });
+    });
+}
+
+/// `active_cli_agent` must return `None` for the Phosphor TUI when `HoaCodeReview`
+/// is disabled, preserving the pre-feature behavior (no review destination).
+#[test]
+fn active_cli_agent_ignores_phosphor_tui_when_hoa_code_review_disabled() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _hoa_code_review = FeatureFlag::HoaCodeReview.override_enabled(false);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            set_phosphor_tui_session(view, ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.active_cli_agent(ctx),
+                None,
+                "Phosphor TUI should not be a review destination when HoaCodeReview is disabled"
+            );
+        });
+    });
+}
+
+#[test]
+fn active_cli_agent_ignores_non_tui_long_running_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _hoa_code_review = FeatureFlag::HoaCodeReview.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, _| {
+            view.model.lock().simulate_long_running_block("vim", "");
+        });
+
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(CLIAgent::detect("vim", None, None, ctx), None);
+            assert_eq!(
+                view.active_cli_agent(ctx),
+                None,
+                "a non-TUI long-running command must not be a review destination"
+            );
+        });
+    });
+}
+
+/// Sending review comments while the Phosphor TUI is running writes the built
+/// prompt directly to the TUI's PTY rather than the outer rich input.
+#[test]
+fn send_review_comments_to_phosphor_tui_writes_prompt_to_pty() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _hoa_code_review = FeatureFlag::HoaCodeReview.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            set_phosphor_tui_session(view, ctx);
+            assert_eq!(view.active_cli_agent(ctx), Some(CLIAgent::PhosphorTui));
+            assert!(!view.is_cli_agent_rich_input_open(ctx));
+
+            let review = single_general_review_comment("please fix the off-by-one");
+            view.send_review_to_cli_agent_or_rich_input(&review, ctx)
+                .expect("send should succeed");
+        });
+
+        // The review prompt is written to the PTY in a single write because
+        // Phosphor TUI sessions do not open the outer rich input.
+        let writes = pty_writes.borrow();
+        assert_eq!(
+            writes.len(),
+            1,
+            "expected a single PTY write, got {writes:?}"
+        );
+        let prompt = std::str::from_utf8(&writes[0]).expect("prompt is valid UTF-8");
+        assert!(
+            prompt.contains("please fix the off-by-one"),
+            "PTY write should contain the review prompt, got: {prompt}"
+        );
+    });
+}

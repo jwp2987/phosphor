@@ -94,10 +94,15 @@ fn create_handler(agent: &CLIAgent) -> Option<Box<dyn CLIAgentSessionHandler>> {
         | CLIAgent::Antigravity => Some(Box::new(DefaultSessionListener)),
         CLIAgent::Codex => Some(Box::new(CodexSessionHandler)),
         CLIAgent::DeepSeek => Some(Box::new(DeepSeekSessionHandler)),
+        // Hermes, Vibe and this fork's own TUI don't emit the structured OSC 777
+        // events this listener parses, and have no known plugin/hook integration.
         CLIAgent::Amp
         | CLIAgent::Copilot
         | CLIAgent::CursorCli
         | CLIAgent::Goose
+        | CLIAgent::Hermes
+        | CLIAgent::Vibe
+        | CLIAgent::PhosphorTui
         | CLIAgent::Unknown => None,
     }
 }

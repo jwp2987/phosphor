@@ -262,6 +262,11 @@ fn test_detect_known_agents() {
                 ("agent", CLIAgent::CursorCli),
                 ("goose", CLIAgent::Goose),
                 ("omp", CLIAgent::Omp),
+                ("hermes", CLIAgent::Hermes),
+                ("vibe", CLIAgent::Vibe),
+                ("warp", CLIAgent::PhosphorTui),
+                ("warp-dev", CLIAgent::PhosphorTui),
+                ("zap-tui-oss", CLIAgent::PhosphorTui),
             ] {
                 assert_eq!(
                     CLIAgent::detect(command, None, None, ctx),
@@ -269,6 +274,26 @@ fn test_detect_known_agents() {
                     "failed to detect {command}",
                 );
             }
+        });
+    });
+}
+
+#[test]
+fn test_detect_vibe_acp_binary() {
+    // The mistral-vibe package ships a `vibe-acp` ACP-mode binary alongside
+    // the user-facing `vibe` TUI. Both must be detected as the same agent.
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            assert_eq!(
+                CLIAgent::detect("vibe-acp", None, None, ctx),
+                Some(CLIAgent::Vibe),
+            );
+            assert_eq!(
+                CLIAgent::detect("vibe-acp --some-flag", None, None, ctx),
+                Some(CLIAgent::Vibe),
+            );
+            // Distinct binary names should not bleed into Vibe.
+            assert_eq!(CLIAgent::detect("vibe-other", None, None, ctx), None);
         });
     });
 }
@@ -575,4 +600,88 @@ fn test_cli_agent_search_dirs_include_common_package_and_version_manager_bins() 
 #[test]
 fn test_oh_my_pi_supports_bash_mode() {
     assert!(CLIAgent::Omp.supports_bash_mode());
+}
+
+/// Ported from the pinned oracle's `test_warp_tui_matches_binaries_and_launchers`.
+/// The fork's variant is named `PhosphorTui`, not `WarpTui`; see #394.
+#[test]
+fn test_phosphor_tui_matches_binaries_and_launchers() {
+    // Binary names inherited from the oracle's Warp-lineage prefix list.
+    assert!(CLIAgent::PhosphorTui.matches_command("warp", None));
+    assert!(CLIAgent::PhosphorTui.matches_command("warp-preview", None));
+    assert!(CLIAgent::PhosphorTui.matches_command("warp-dev", None));
+    assert!(CLIAgent::PhosphorTui.matches_command("warp-tui", None));
+    assert!(CLIAgent::PhosphorTui.matches_command("warp-tui-oss", None));
+    assert!(CLIAgent::PhosphorTui.matches_command("run-tui", None));
+    // This fork's actual shipped OSS TUI binary.
+    assert!(CLIAgent::PhosphorTui.matches_command("zap-tui-oss", None));
+    // The dev launcher script.
+    assert!(CLIAgent::PhosphorTui.matches_command("./script/run-tui", None));
+    assert!(CLIAgent::PhosphorTui.matches_command("script/run-tui", None));
+    // Absolute / relative paths to the binary.
+    assert!(CLIAgent::PhosphorTui.matches_command("/workspace/warp/target/debug/warp-tui", None,));
+    assert!(CLIAgent::PhosphorTui.matches_command("./target/debug/zap-tui-oss", None));
+    assert!(CLIAgent::PhosphorTui.matches_command(
+        "/Applications/WarpPreview.app/Contents/MacOS/warp-preview --resume abc",
+        None,
+    ));
+    // With arguments and leading whitespace.
+    assert!(CLIAgent::PhosphorTui.matches_command("  warp --resume abc", None));
+}
+
+#[test]
+fn test_phosphor_tui_matches_with_env_var_prefix() {
+    // Env-var assignments before the command are skipped when an escape char is
+    // provided (mirrors `CLIAgent::detect`).
+    assert!(CLIAgent::PhosphorTui
+        .matches_command("WARP_API_KEY=secret warp", Some(EscapeChar::Backslash),));
+}
+
+#[test]
+fn test_phosphor_tui_does_not_match_other_commands() {
+    assert!(!CLIAgent::PhosphorTui.matches_command("vim", None));
+    assert!(!CLIAgent::PhosphorTui.matches_command("htop", None));
+    assert!(!CLIAgent::PhosphorTui.matches_command("claude", None));
+    // Lookalikes / substrings should not match.
+    assert!(!CLIAgent::PhosphorTui.matches_command("warp-preview-wrapper", None));
+    assert!(!CLIAgent::PhosphorTui.matches_command("mywarp-dev", None));
+    assert!(!CLIAgent::PhosphorTui.matches_command("warp-tui-wrapper", None));
+    assert!(!CLIAgent::PhosphorTui.matches_command("mywarp-tui", None));
+    assert!(!CLIAgent::PhosphorTui.matches_command("", None));
+    // `cargo run` is a known non-match (the first token is `cargo`).
+    assert!(!CLIAgent::PhosphorTui.matches_command("cargo run -p warp_tui", None));
+}
+
+#[test]
+fn test_phosphor_tui_variant_properties() {
+    assert!(CLIAgent::Claude.supports_cli_agent_footer());
+    assert_eq!(CLIAgent::PhosphorTui.command_prefix(), "warp");
+    assert_eq!(
+        CLIAgent::PhosphorTui.command_prefixes(),
+        &[
+            "warp",
+            "warp-preview",
+            "warp-dev",
+            "warp-tui",
+            "warp-tui-oss",
+            "run-tui",
+            "zap-tui-oss",
+        ]
+    );
+    assert_eq!(CLIAgent::PhosphorTui.display_name(), "Phosphor TUI");
+    assert_eq!(CLIAgent::PhosphorTui.brand_color(), None);
+    assert_eq!(CLIAgent::PhosphorTui.icon(), None);
+    assert!(CLIAgent::PhosphorTui.supported_skill_providers().is_empty());
+    assert!(!CLIAgent::PhosphorTui.supports_bash_mode());
+    assert!(!CLIAgent::PhosphorTui.supports_cli_agent_footer());
+    assert!(matches!(
+        crate::server::telemetry::CLIAgentType::from(CLIAgent::PhosphorTui),
+        crate::server::telemetry::CLIAgentType::PhosphorTui
+    ));
+    // Serialized name round-trips (also covered by
+    // `test_serialized_name_round_trips_known_agents`, asserted explicitly here).
+    assert_eq!(
+        CLIAgent::from_serialized_name(&CLIAgent::PhosphorTui.to_serialized_name()),
+        CLIAgent::PhosphorTui
+    );
 }
