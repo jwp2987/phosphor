@@ -1685,3 +1685,7 @@ impl From<String> for crate::ai::agent::MessageId {
         crate::ai::agent::MessageId(s)
     }
 }
+
+#[cfg(test)]
+#[path = "convert_conversation_tests.rs"]
+mod tests;

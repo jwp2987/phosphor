@@ -589,3 +589,7 @@ impl Default for GlobalSearch {
         Self::new()
     }
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

@@ -82,6 +82,26 @@ grep -rnE --include='*.rs' "${FNDEF}[^)]*\)( *-> *[^{]+)? *${TRIVIAL}" app/src c
             continue
         fi
 
+        # Does the FORK also define this name with a real body? Then it is not
+        # gutted -- it is cfg-gated, and the trivial arm is the inert one.
+        #
+        # `app/src/pane_group/working_directories.rs` has two
+        # `impl WorkingDirectoriesModel` blocks, `#[cfg(feature = "local_fs")]`
+        # and `#[cfg(not(...))]`. `remove_pane_group` is real in the first and
+        # a genuine `{}` no-op in the second. The co-located test file is itself
+        # `#![cfg(feature = "local_fs")]`, so it only ever links the real impl --
+        # but a name-based grep sees the no-op, finds a real body at the pin, and
+        # reports fake coverage against a test that is exercising real code.
+        #
+        # Correlating cfg attributes properly needs a parser. "Some definition in
+        # this file has a real body" is the cheap approximation, and it is the
+        # right one: a genuinely gutted stub has NO real definition left.
+        if grep -E "^\s*(pub(\([a-z]+\))? )?(async )?fn ${fname}\(" "$file" 2>/dev/null \
+            | grep -vE '\;\s*$' \
+            | grep -qvE "${TRIVIAL}"; then
+            continue
+        fi
+
         # The pin has a real body and the fork does not: a gutted stub.
         # Match ONLY the co-located test file (foo.rs -> foo_test.rs /
         # foo_tests.rs). Grep cannot resolve which type's method a test calls,

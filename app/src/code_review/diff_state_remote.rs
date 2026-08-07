@@ -315,12 +315,14 @@ impl RemoteDiffStateModel {
         self.metadata
             .as_ref()
             .map(|metadata| metadata.main_branch_name.clone())
+            .filter(|name| !name.is_empty())
     }
 
     pub fn get_current_branch_name(&self) -> Option<String> {
         self.metadata
             .as_ref()
             .map(|metadata| metadata.current_branch_name.clone())
+            .filter(|name| !name.is_empty())
     }
 
     pub fn is_on_main_branch(&self) -> bool {
