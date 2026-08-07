@@ -423,6 +423,8 @@ pub struct Block {
     ///
     /// This is used for debugging UI shown in the block header on dogfood builds.
     nld_overridden: bool,
+
+    visible_bootstrap_block_event_sent: bool,
 }
 
 #[cfg(debug_assertions)]
@@ -1020,6 +1022,7 @@ impl Block {
             },
             nld_overridden: false,
             is_oz_environment_startup_command: false,
+            visible_bootstrap_block_event_sent: false,
         }
     }
 
@@ -1182,13 +1185,6 @@ impl Block {
     pub fn start(&mut self) {
         if self.start_ts.is_none() {
             self.start_ts = Some(Local::now());
-        }
-
-        // If we are in script execution stage and the shell starts a new block,
-        // this means we have a visible bootstrap block.
-        if self.bootstrap_stage() == BootstrapStage::ScriptExecution {
-            self.event_proxy
-                .send_terminal_event(Event::VisibleBootstrapBlock);
         }
 
         self.header_grid.start_command_grid();
@@ -1931,6 +1927,18 @@ impl Block {
         self.bootstrap_stage
     }
 
+    /// A bootstrap block only counts as "visible" once it actually renders something, so the
+    /// event is emitted by the block list when the block's height first becomes non-zero — not
+    /// when the shell merely starts the block.
+    pub(super) fn should_emit_visible_bootstrap_block_event(&self) -> bool {
+        self.bootstrap_stage == BootstrapStage::ScriptExecution
+            && !self.visible_bootstrap_block_event_sent
+    }
+
+    pub(super) fn mark_visible_bootstrap_block_event_sent(&mut self) {
+        self.visible_bootstrap_block_event_sent = true;
+    }
+
     /// Returns the ENTIRE HEIGHT of the prompt and command (no padding top or middle included).
     /// In the case of combined grid: for Zap prompt, this includes the height of both the Zap prompt
     /// AND combined grid; for PS1, this is just the combined grid (PS1 is included there).
@@ -2196,6 +2204,14 @@ impl Block {
     pub fn output_to_string_force_full_grid_contents(&self) -> String {
         self.output_grid()
             .contents_to_string_force_full_grid_contents(false, None)
+    }
+
+    pub fn command_and_output_to_string(&self) -> String {
+        if self.honor_ps1() {
+            self.bounds_to_string(self.start_point(), self.end_point())
+        } else {
+            format!("{}\n{}", self.command_to_string(), self.output_to_string())
+        }
     }
 
     pub fn output_with_secrets_unobfuscated(&self) -> String {
@@ -2652,6 +2668,41 @@ impl Block {
 
     pub fn start_ts(&self) -> Option<&DateTime<Local>> {
         self.start_ts.as_ref()
+    }
+
+    /// Returns the elapsed duration since the command started executing, rounded down
+    /// to the nearest second.
+    ///
+    /// Returns `Some` only when the block is actively executing (has `start_ts`,
+    /// no `completed_ts`, and `is_executing()`). Rounding to whole seconds keeps the
+    /// formatted duration string stable between one-second repaint ticks so that
+    /// unrelated `ctx.notify` calls (e.g. when the user interacts with the block)
+    /// don't cause the counter to flicker sub-second values.
+    pub fn elapsed_duration_whole_secs(&self) -> Option<Duration> {
+        self.elapsed_duration_whole_secs_at(Local::now())
+    }
+
+    /// Testable helper behind [`Self::elapsed_duration_whole_secs`] that takes an explicit `now`.
+    fn elapsed_duration_whole_secs_at(&self, now: DateTime<Local>) -> Option<Duration> {
+        if self.completed_ts.is_some() || !self.is_executing() {
+            return None;
+        }
+        self.start_ts.and_then(|start| {
+            let elapsed = now.signed_duration_since(start);
+            let whole_secs = elapsed.num_seconds();
+            (whole_secs > 0).then(|| Duration::seconds(whole_secs))
+        })
+    }
+
+    /// Returns true if this block's duration should be rendered as a live elapsed counter
+    /// (i.e. derived from [`Self::elapsed_duration_whole_secs`] rather than the final
+    /// `duration()`).
+    ///
+    /// This is kept in lock-step with [`Self::elapsed_duration_whole_secs`] so the view layer can
+    /// decide whether to wrap the duration in a periodically-repainting element. The view-side
+    /// wiring is not in place yet — see issue #426.
+    pub fn is_duration_live(&self) -> bool {
+        self.elapsed_duration_whole_secs().is_some()
     }
 
     pub fn duration(&self) -> Option<Duration> {

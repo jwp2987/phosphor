@@ -40,6 +40,16 @@ fn deepseek_uses_bracketed_paste_submission() {
     );
 }
 
+/// Ported from warp/master's `test_rich_input_submit_strategy_for_oh_my_pi`. Zap's `CLIAgent`
+/// names this variant `Omp` (its command prefix), not `OhMyPi`.
+#[test]
+fn omp_uses_bracketed_paste_submission() {
+    assert_eq!(
+        rich_input_submit_strategy(CLIAgent::Omp),
+        RichInputSubmitStrategy::BracketedPaste
+    );
+}
+
 struct PendingAIBlockModel {
     conversation_id: AIConversationId,
     input: Vec<AIAgentInput>,

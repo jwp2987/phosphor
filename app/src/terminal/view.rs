@@ -4522,7 +4522,7 @@ impl TerminalView {
             .collect();
         for (query_id, text) in rows {
             self.input.update(ctx, |input, ctx| {
-                input.submit_queued_prompt_for_active_pane(text, conversation_id, ctx);
+                input.submit_queued_prompt_for_active_pane(text, conversation_id, query_id, ctx);
             });
             QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                 model.remove_fired_row(conversation_id, query_id, ctx);
@@ -4583,7 +4583,12 @@ impl TerminalView {
                 match action {
                     Some(AutofireAction::Submit { query_id, text }) => {
                         self.input.update(ctx, |input, ctx| {
-                            input.submit_queued_prompt_for_active_pane(text, conversation_id, ctx);
+                            input.submit_queued_prompt_for_active_pane(
+                                text,
+                                conversation_id,
+                                query_id,
+                                ctx,
+                            );
                         });
                         QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                             model.remove_fired_row(conversation_id, query_id, ctx);
@@ -9680,9 +9685,16 @@ impl TerminalView {
     fn redetermine_terminal_focus(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         // Only reset the focus if this terminal is currently focused, don't steal it from
         // another part of the app
+        // An inline edit of a queued prompt is an interactive child the user is
+        // actively typing into; async focus reconciliation must not yank focus
+        // back to the terminal mid-edit.
         let reset_focus = ctx.is_self_or_child_focused()
             && !self.find_bar.is_self_or_child_focused(ctx)
-            && !self.block_filter_editor.is_self_or_child_focused(ctx);
+            && !self.block_filter_editor.is_self_or_child_focused(ctx)
+            && !self
+                .input
+                .as_ref(ctx)
+                .is_queued_prompt_inline_editor_focused(ctx);
         if reset_focus {
             self.redetermine_global_focus(ctx);
         }

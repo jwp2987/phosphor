@@ -1,3 +1,7 @@
+use std::fs;
+
+use base64::engine::general_purpose::STANDARD as BASE64;
+
 use super::*;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::terminal::model::ansi::{Handler, Processor};
@@ -1248,4 +1252,575 @@ fn take_typeahead_for_input_is_none_when_typeahead_is_empty() {
     model.finish_block();
 
     assert_eq!(model.take_typeahead_for_input(), None);
+}
+
+// Ported from the pinned oracle (`app/src/terminal/model/terminal_model_tests.rs` at
+// Warp 2026.07.29.09.05 = 02b53fcd8). Assertions are unchanged; the only adaptation is
+// dropping the `session_id` field from `PreexecValue` / `CommandFinishedValue`, which
+// Phosphor's DCS hook payloads do not carry (see the DCS session-registration gap issue).
+
+fn normal_command_finished_and_precmd(
+    terminal: &mut TerminalModel,
+    prompt_metadata: PromptMetadata,
+) {
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::Accepted
+    );
+    terminal.preexec(PreexecValue {
+        command: "completed".to_owned(),
+    });
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(0),
+        next_block_id: BlockId::new(),
+    };
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata,
+    });
+}
+
+#[test]
+fn repeated_and_executing_command_starts_are_safely_gated() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let active_block_id = terminal.active_block_id().clone();
+
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::Accepted
+    );
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::Coalesced
+    );
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+
+    terminal.preexec(PreexecValue {
+        command: "running".to_owned(),
+    });
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::RejectedExecuting
+    );
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(
+        terminal.block_list().active_block().state(),
+        BlockState::Executing
+    );
+}
+
+#[test]
+fn terminal_exit_absorbs_later_lifecycle_inputs() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.exit(ExitReason::PtyDisconnected);
+    let active_block_id = terminal.active_block_id().clone();
+    let block_count = terminal.block_list().blocks().len();
+    let pending_session_id = terminal.pending_session_id();
+
+    assert_eq!(
+        terminal.start_command_execution(),
+        StartCommandOutcome::IgnoredTerminated
+    );
+    terminal.preexec(PreexecValue {
+        command: "ignored".to_owned(),
+    });
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(1),
+            next_block_id: BlockId::new(),
+        },
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(1),
+            next_block_id: active_block_id.clone(),
+        },
+        prompt_metadata: PromptMetadata::default(),
+    });
+    terminal.prompt_only_precmd(PromptMetadata::default());
+    terminal.init_shell(InitShellValue {
+        shell: "bash".to_owned(),
+        user: "ignored".to_owned(),
+        hostname: "ignored".to_owned(),
+        session_id: 42.into(),
+        ..Default::default()
+    });
+
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(terminal.block_list().blocks().len(), block_count);
+    assert_eq!(terminal.pending_session_id(), pending_session_id);
+}
+
+#[test]
+fn accepted_precmd_and_preexec_target_the_block_list_while_the_alt_screen_is_active() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.start_command_execution();
+    terminal.enter_alt_screen(true);
+    terminal.preexec(PreexecValue {
+        command: "accepted".to_owned(),
+    });
+    assert_eq!(
+        terminal.block_list().active_block().state(),
+        BlockState::Executing
+    );
+    assert!(terminal.alt_screen_active);
+
+    let next_block_id = BlockId::new();
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: next_block_id.clone(),
+        },
+    });
+    terminal.enter_alt_screen(true);
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id,
+        },
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/accepted".to_owned()),
+            ..Default::default()
+        },
+    });
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/accepted")
+    );
+    assert!(terminal.alt_screen_active);
+}
+
+#[test]
+fn duplicate_and_colliding_completion_evidence_is_ignored() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "first".to_owned(),
+    });
+    let first_block_id = terminal.active_block_id().clone();
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(9),
+            next_block_id: first_block_id.clone(),
+        },
+    });
+    assert_eq!(terminal.active_block_id(), &first_block_id);
+    assert_eq!(
+        terminal.block_list().active_block().state(),
+        BlockState::Executing
+    );
+
+    let second_block_id = BlockId::new();
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: second_block_id.clone(),
+        },
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: second_block_id.clone(),
+        },
+        prompt_metadata: PromptMetadata::default(),
+    });
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "second".to_owned(),
+    });
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(7),
+            next_block_id: first_block_id,
+        },
+    });
+    assert_eq!(terminal.active_block_id(), &second_block_id);
+    assert_eq!(
+        terminal.block_list().active_block().state(),
+        BlockState::Executing
+    );
+}
+
+#[test]
+fn empty_and_syntax_error_commands_without_preexec_complete_as_execution() {
+    for (command, exit_code) in [("", ExitCode::from(0)), ("if then", ExitCode::from(2))] {
+        let mut terminal = TerminalModel::mock(None, None);
+        terminal.start_command_execution();
+        for c in command.chars() {
+            terminal.block_list_mut().active_block_for_test().input(c);
+        }
+        let completed_block_id = terminal.active_block_id().clone();
+        let next_block_id = BlockId::new();
+        let completion_metadata = CompletionMetadata {
+            exit_code,
+            next_block_id: next_block_id.clone(),
+        };
+
+        terminal.command_finished(CommandFinishedValue {
+            completion_metadata: completion_metadata.clone(),
+        });
+        terminal.precmd_with_completion_metadata(PrecmdValue {
+            completion_metadata,
+            prompt_metadata: PromptMetadata::default(),
+        });
+
+        let completed_block = terminal
+            .block_list()
+            .block_with_id(&completed_block_id)
+            .expect("The completed block should remain in the block list.");
+        assert_eq!(completed_block.state(), BlockState::DoneWithExecution);
+        assert_eq!(completed_block.exit_code(), exit_code);
+        assert_eq!(completed_block.command_to_string(), command);
+        assert_eq!(completed_block.has_failed(), exit_code != ExitCode::from(0));
+        assert_eq!(terminal.active_block_id(), &next_block_id);
+    }
+}
+
+#[test]
+fn command_finished_recovers_unknown_started_block_with_real_exit_code() {
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.lifecycle_coordinator.reset_unknown();
+    terminal.block_list_mut().active_block_for_test().start();
+    for c in "unknown-command".chars() {
+        terminal.block_list_mut().active_block_for_test().input(c);
+    }
+    let completed_block_id = terminal.active_block_id().clone();
+    let next_block_id = BlockId::new();
+
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(29),
+            next_block_id: next_block_id.clone(),
+        },
+    });
+
+    let completed_block = terminal
+        .block_list()
+        .block_with_id(&completed_block_id)
+        .expect("The recovered unknown-state block should remain in the block list.");
+    assert_eq!(completed_block.state(), BlockState::DoneWithExecution);
+    assert_eq!(completed_block.exit_code(), ExitCode::from(29));
+    assert_eq!(completed_block.command_to_string(), "unknown-command");
+    assert_eq!(terminal.active_block_id(), &next_block_id);
+}
+
+#[test]
+fn repeated_precmd_with_completion_metadata_and_prompt_only_precmd_are_ignored_when_recovery_is_disabled(
+) {
+    let _recovery_disabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(false);
+    let mut terminal = TerminalModel::mock(None, None);
+    normal_command_finished_and_precmd(
+        &mut terminal,
+        PromptMetadata {
+            pwd: Some("/initial".to_owned()),
+            ..Default::default()
+        },
+    );
+    let active_block_id = terminal.active_block_id().clone();
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(7),
+            next_block_id: active_block_id.clone(),
+        },
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/with-completion-metadata".to_owned()),
+            ..Default::default()
+        },
+    });
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/initial")
+    );
+
+    terminal.prompt_only_precmd(PromptMetadata {
+        pwd: Some("/new".to_owned()),
+        ..Default::default()
+    });
+
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/initial")
+    );
+}
+
+#[test]
+fn normal_lifecycle_pipeline_emits_completion_and_prompt_side_effects_once() {
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+    while event_rx.try_recv().is_ok() {}
+
+    let (ordered_tx, ordered_rx) = async_channel::unbounded();
+    terminal.set_ordered_terminal_events_for_shared_session_tx(ordered_tx);
+
+    let completed_block_id = terminal.active_block_id().clone();
+    let next_block_id = BlockId::new();
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(7),
+        next_block_id: next_block_id.clone(),
+    };
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "false".to_owned(),
+    });
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/normal-lifecycle".to_owned()),
+            ..Default::default()
+        },
+    });
+
+    let completed_block = terminal
+        .block_list()
+        .block_with_id(&completed_block_id)
+        .expect("The completed block should remain in the block list.");
+    assert_eq!(completed_block.state(), BlockState::DoneWithExecution);
+    assert_eq!(completed_block.exit_code(), ExitCode::from(7));
+    assert_eq!(terminal.active_block_id(), &next_block_id);
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/normal-lifecycle")
+    );
+
+    let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::BlockCompleted(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::AfterBlockCompleted(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::BlockMetadataReceived(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Handler(HandlerEvent::Preexec)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    Event::Handler(HandlerEvent::CommandFinished {
+                        command_type: CommandType::User
+                    })
+                )
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Handler(HandlerEvent::Precmd { .. })))
+            .count(),
+        1
+    );
+
+    assert!(matches!(
+        ordered_rx.try_recv(),
+        Ok(OrderedTerminalEventType::CommandExecutionFinished { .. })
+    ));
+    assert!(ordered_rx.try_recv().is_err());
+}
+
+#[test]
+fn recovery_advances_finished_active_block_without_republishing_completion() {
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+    let (ordered_tx, ordered_rx) = async_channel::unbounded();
+    terminal.set_ordered_terminal_events_for_shared_session_tx(ordered_tx);
+    let completed_block_id = terminal.active_block_id().clone();
+    terminal
+        .block_list_mut()
+        .active_block_for_test()
+        .finish(ExitCode::from(31));
+    while event_rx.try_recv().is_ok() {}
+    terminal.lifecycle_coordinator.reset_unknown();
+
+    let next_block_id = BlockId::new();
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(99),
+        next_block_id: next_block_id.clone(),
+    };
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/advanced".to_owned()),
+            ..Default::default()
+        },
+    });
+
+    let completed_block = terminal
+        .block_list()
+        .block_with_id(&completed_block_id)
+        .expect("The already-finished block should remain in the block list.");
+    assert_eq!(completed_block.exit_code(), ExitCode::from(31));
+    assert_eq!(terminal.active_block_id(), &next_block_id);
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/advanced")
+    );
+    let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event,
+            Event::BlockCompleted(_)
+                | Event::AfterBlockCompleted(_)
+                | Event::Handler(HandlerEvent::CommandFinished { .. })
+        )
+    }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::BlockMetadataReceived(_)))
+            .count(),
+        1
+    );
+    assert!(ordered_rx.try_recv().is_err());
+}
+
+fn iterm_file_osc(name: &str, inline: bool, payload: &[u8]) -> String {
+    let inline = if inline { "1" } else { "0" };
+    format!(
+        "\x1b]1337;File=name={};inline={}:{}\x07",
+        base64::Engine::encode(&BASE64, name),
+        inline,
+        base64::Engine::encode(&BASE64, payload)
+    )
+}
+
+fn multipart_iterm_file_osc(name: &str, inline: bool, payload: &[u8]) -> Vec<String> {
+    let inline = if inline { "1" } else { "0" };
+    let encoded_payload = base64::Engine::encode(&BASE64, payload);
+    let midpoint = encoded_payload.len() / 2;
+    vec![
+        format!(
+            "\x1b]1337;MultipartFile=name={};inline={}\x07",
+            base64::Engine::encode(&BASE64, name),
+            inline,
+        ),
+        format!("\x1b]1337;FilePart={}\x07", &encoded_payload[..midpoint]),
+        format!("\x1b]1337;FilePart={}\x07", &encoded_payload[midpoint..]),
+        "\x1b]1337;FileEnd\x07".to_owned(),
+    ]
+}
+
+#[test]
+fn handles_inline_iterm_image_payload() {
+    let mut terminal = TerminalModel::mock(None, None);
+    let svg_bytes =
+        br#"<svg width="1" height="1" viewBox="0 0 1 1" xmlns="http://www.w3.org/2000/svg"></svg>"#;
+
+    let osc = iterm_file_osc("pixel.svg", true, svg_bytes);
+    terminal.process_bytes(osc.as_str());
+
+    assert_eq!(terminal.image_id_to_metadata.len(), 1);
+    let StoredImageMetadata::ITerm(metadata) =
+        terminal.image_id_to_metadata.values().next().unwrap()
+    else {
+        panic!("Expected iTerm image metadata");
+    };
+    assert_eq!(metadata.name, "pixel.svg");
+    assert!(metadata.inline);
+    assert_eq!(metadata.image_size.x(), 1.0);
+    assert_eq!(metadata.image_size.y(), 1.0);
+}
+
+#[test]
+fn ignores_non_inline_iterm_file_payload_without_overwriting_cwd_file() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let target_path = temp_dir.path().join(".zshenv");
+    let original_bytes = b"ORIGINAL=1\n";
+    let attacker_bytes = b"touch /tmp/warp-pwned\n";
+    fs::write(&target_path, original_bytes).unwrap();
+
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.prompt_only_precmd(PromptMetadata {
+        pwd: Some(temp_dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    let osc = iterm_file_osc(".zshenv", false, attacker_bytes);
+    terminal.process_bytes(osc.as_str());
+
+    assert_eq!(fs::read(&target_path).unwrap(), original_bytes);
+    assert!(terminal.image_id_to_metadata.is_empty());
+}
+
+#[test]
+fn ignores_multipart_non_inline_iterm_file_payload_without_overwriting_cwd_file() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let target_path = temp_dir.path().join(".zshenv");
+    let original_bytes = b"ORIGINAL=1\n";
+    let attacker_bytes = b"touch /tmp/warp-pwned\n";
+    fs::write(&target_path, original_bytes).unwrap();
+
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.prompt_only_precmd(PromptMetadata {
+        pwd: Some(temp_dir.path().to_string_lossy().to_string()),
+        ..Default::default()
+    });
+
+    for osc in multipart_iterm_file_osc(".zshenv", false, attacker_bytes) {
+        terminal.process_bytes(osc.as_str());
+    }
+
+    assert_eq!(fs::read(&target_path).unwrap(), original_bytes);
+    assert!(terminal.image_id_to_metadata.is_empty());
 }

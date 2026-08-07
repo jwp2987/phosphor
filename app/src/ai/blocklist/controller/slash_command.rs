@@ -82,9 +82,15 @@ impl SlashCommandRequest {
         self,
         controller: &mut BlocklistAIController,
         is_queued_prompt: bool,
+        conversation_id_override: Option<AIConversationId>,
         ctx: &mut ModelContext<BlocklistAIController>,
     ) {
-        let conversation_id = self.conversation_id(controller, ctx);
+        // A fired queued prompt carries the conversation it was queued on; use it directly
+        // instead of re-deriving from the current UI selection (which may point at a different
+        // conversation, or at none at all, when the row fires). Falls back to the selection for
+        // direct sends.
+        let conversation_id =
+            conversation_id_override.or_else(|| self.conversation_id(controller, ctx));
         // For skill invocations, include user-attached context (images, blocks, and selected
         // text) so the skill's agent sees the same attachments a non-slash-command user query
         // would. Other slash commands continue to pass `false` to preserve existing behavior.

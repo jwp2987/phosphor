@@ -7,18 +7,33 @@
 //!
 //! Zap-adapted port of warp/master's `queued_prompts_tests.rs`: the cloud-mode integration tests
 //! (dispatched cloud prompt/follow-up, cloud-setup enter/cleanup, promptless-setup, the
-//! `InitialCloudMode` locked-row and its copy affordance) are dropped, since Cloud Mode is a Warp
-//! cloud feature Zap does not have. The `send_lrc_queued_prompts` tests are left for the follow-up
-//! that ports that method (LRC rows currently fire at turn-finish via the main drain).
-use warpui::{App, SingletonEntity};
+//! `InitialCloudMode` locked-row and its copy affordance, the `QueuedPromptsV2` cloud-terminal
+//! follow-up tests) are dropped, since Cloud Mode is a Warp cloud feature Zap does not have. Two
+//! tests that exercise per-conversation finish-reason scoping in orchestration panes
+//! (`finish_reason_is_scoped_to_the_finished_conversation`,
+//! `finished_receiving_output_drains_queue_when_sibling_block_masks_turn_end`) are also not
+//! ported: they need a `TerminalView::finish_reason_for_conversation` helper and an
+//! `insert_dummy_streaming_ai_block` test double that do not exist on this fork's `view.rs`,
+//! which is outside this change's scope (see the filed issue).
+use std::cell::RefCell;
+use std::rc::Rc;
 
+use warpui::{App, SingletonEntity, TypedActionView, ViewContext, ViewHandle};
+
+use super::queued_prompts_panel::{
+    QueuedPromptsPanelAction, QueuedPromptsPanelEvent, QueuedPromptsPanelView,
+};
 use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::agent::ImageContext;
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::blocklist::block::FinishReason;
 use crate::ai::blocklist::{
-    AutofireAction, BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel, QueuedQueryOrigin,
+    AutofireAction, BlocklistAIHistoryModel, PendingAttachment, QueuedQuery, QueuedQueryId,
+    QueuedQueryModel, QueuedQueryOrigin,
 };
 use crate::features::FeatureFlag;
+use crate::search::slash_command_menu::static_commands::commands;
+use crate::terminal::input::{Event as InputEvent, Input};
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
 
@@ -454,6 +469,496 @@ fn send_lrc_queued_prompts_delivers_lrc_rows_when_no_active_subagent() {
             view.send_lrc_queued_prompts(conversation_id, ctx);
         });
 
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(model.queue(conversation_id).is_empty());
+        });
+    });
+}
+
+fn image_attachment(file_name: &str) -> PendingAttachment {
+    PendingAttachment::Image(ImageContext {
+        data: String::new(),
+        mime_type: "image/png".to_owned(),
+        file_name: file_name.to_owned(),
+        is_figma: false,
+    })
+}
+
+fn query_with_attachments(text: &str, attachments: Vec<PendingAttachment>) -> QueuedQuery {
+    QueuedQuery::new_with_attachments(
+        text.to_owned(),
+        QueuedQueryOrigin::QueueSlashCommand,
+        attachments,
+    )
+}
+
+/// Builds (or reuses) the queued-prompts panel for a fresh terminal view with an active
+/// conversation, mirroring the panel construction `Input::new` performs when
+/// [`FeatureFlag::QueueSlashCommand`] is enabled. Callers that need the flag enabled must
+/// override it before calling this (see [`FeatureFlag::override_enabled`]).
+fn build_panel_with_active_conversation(
+    app: &mut App,
+) -> (
+    ViewHandle<QueuedPromptsPanelView>,
+    AIConversationId,
+    ViewHandle<Input>,
+) {
+    let terminal = add_window_with_terminal(app, None);
+    let terminal_view_id = terminal.read(app, |view, _| view.view_id);
+    let conversation_id = BlocklistAIHistoryModel::handle(app).update(app, |history, ctx| {
+        let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+        history.set_active_conversation_id(id, terminal_view_id, ctx);
+        id
+    });
+    let input = terminal.read(app, |view, _| view.input().clone());
+    if let Some(panel) = input.read(app, |input, _| input.queued_prompts_panel().cloned()) {
+        return (panel, conversation_id, input);
+    }
+    let (suggestions_mode_model, host_editor) = input.read(app, |input, _| {
+        (
+            input.suggestions_mode_model().clone(),
+            input.editor().clone(),
+        )
+    });
+    let cli_subagent_controller =
+        terminal.read(app, |view, _| view.cli_subagent_controller.clone());
+    let panel = terminal.update(app, |_, ctx| {
+        ctx.add_view(move |ctx| {
+            QueuedPromptsPanelView::new(
+                terminal_view_id,
+                suggestions_mode_model,
+                cli_subagent_controller,
+                host_editor,
+                ctx,
+            )
+        })
+    });
+    (panel, conversation_id, input)
+}
+
+#[test]
+fn can_send_prompt_gates_buttons_and_hint_while_nonempty_input_gates_only_the_hint() {
+    // When the host reports prompts cannot be sent (read-only shared-session viewer), every
+    // row's send-now button is disabled and the enter hint hides. A non-empty input hides the
+    // hint but leaves the buttons alone.
+    App::test((), |mut app| async move {
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+        initialize_app_for_terminal_view(&mut app);
+
+        let (panel, conversation_id, input) = build_panel_with_active_conversation(&mut app);
+        let row_id = QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(conversation_id, user_query("send me"), ctx)
+        });
+
+        // Default: sendable, hint shown.
+        panel.read(&app, |panel, ctx| {
+            assert_eq!(
+                panel.send_now_button_disabled_for_test(row_id, ctx),
+                Some(false)
+            );
+            assert!(panel.enter_hint_shown_for_test(ctx));
+        });
+
+        // Sending unavailable: button disabled and hint hidden.
+        panel.update(&mut app, |panel, ctx| {
+            panel.set_can_send_prompt(false, ctx);
+        });
+        panel.read(&app, |panel, ctx| {
+            assert_eq!(
+                panel.send_now_button_disabled_for_test(row_id, ctx),
+                Some(true)
+            );
+            assert!(!panel.enter_hint_shown_for_test(ctx));
+        });
+
+        // Sending available again: button re-enabled and hint restored.
+        panel.update(&mut app, |panel, ctx| {
+            panel.set_can_send_prompt(true, ctx);
+        });
+        panel.read(&app, |panel, ctx| {
+            assert_eq!(
+                panel.send_now_button_disabled_for_test(row_id, ctx),
+                Some(false)
+            );
+            assert!(panel.enter_hint_shown_for_test(ctx));
+        });
+
+        // Non-empty input: hint hidden, button stays enabled. The panel reads the host
+        // editor's emptiness live, so writing into the input buffer is enough.
+        input.update(&mut app, |input, ctx| {
+            input.replace_buffer_content("draft", ctx);
+        });
+        panel.read(&app, |panel, ctx| {
+            assert_eq!(
+                panel.send_now_button_disabled_for_test(row_id, ctx),
+                Some(false)
+            );
+            assert!(!panel.enter_hint_shown_for_test(ctx));
+        });
+    });
+}
+
+#[test]
+fn send_now_action_emits_row_kind_and_leaves_rows_for_host_to_fire() {
+    // Clicking "send now" emits a SendNow event identifying the row and whether it is a command,
+    // but leaves the row in the queue so the host can dispatch it and remove it afterward.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        // The panel keys its queue lookups on the history model's active conversation for its
+        // terminal view, so seed one and build the panel as a child of that terminal view.
+        let (panel, conversation_id, _) = build_panel_with_active_conversation(&mut app);
+
+        let (prompt_id, command_id) =
+            QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+                let prompt_id = model.append(conversation_id, user_query("send me now"), ctx);
+                let command_id = model.append(conversation_id, command_query("echo 1"), ctx);
+                (prompt_id, command_id)
+            });
+
+        let send_now_events = Rc::new(RefCell::new(Vec::<(
+            AIConversationId,
+            QueuedQueryId,
+            String,
+            bool,
+        )>::new()));
+        let send_now_events_for_subscription = send_now_events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&panel, move |_, event: &QueuedPromptsPanelEvent, _| {
+                if let QueuedPromptsPanelEvent::SendNow {
+                    conversation_id,
+                    query_id,
+                    text,
+                    is_command,
+                } = event
+                {
+                    send_now_events_for_subscription.borrow_mut().push((
+                        *conversation_id,
+                        *query_id,
+                        text.clone(),
+                        *is_command,
+                    ));
+                }
+            });
+        });
+
+        panel.update(&mut app, |panel, ctx| {
+            panel.handle_action(&QueuedPromptsPanelAction::SendNow(prompt_id), ctx);
+            panel.handle_action(&QueuedPromptsPanelAction::SendNow(command_id), ctx);
+        });
+
+        assert_eq!(
+            send_now_events.borrow().as_slice(),
+            [
+                (conversation_id, prompt_id, "send me now".to_owned(), false),
+                (conversation_id, command_id, "echo 1".to_owned(), true)
+            ]
+        );
+        // The panel leaves each row in place; the host removes it after firing.
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert_eq!(model.queue(conversation_id).len(), 2);
+        });
+    });
+}
+
+#[test]
+fn multi_cycle_queue_keeps_each_rows_attachments_independent() {
+    // attach -> queue -> attach -> queue: each row owns its own attachments, and draining one
+    // never disturbs the other's.
+    with_singleton(|mut app, model, conv| {
+        let first_id = model.update(&mut app, |m, ctx| {
+            m.append(
+                conv,
+                query_with_attachments("first", vec![image_attachment("first.png")]),
+                ctx,
+            )
+        });
+        let second_id = model.update(&mut app, |m, ctx| {
+            m.append(
+                conv,
+                query_with_attachments("second", vec![image_attachment("second.png")]),
+                ctx,
+            )
+        });
+
+        model.read(&app, |m, _| {
+            assert_eq!(
+                m.attachments_for(conv, first_id)[0].file_name(),
+                "first.png"
+            );
+            assert_eq!(
+                m.attachments_for(conv, second_id)[0].file_name(),
+                "second.png"
+            );
+        });
+
+        // Drain the first row; the second row's attachments are untouched.
+        let action = drain_one(&model, &mut app, conv);
+        match action {
+            Some(AutofireAction::Submit { text, .. }) => assert_eq!(text, "first"),
+            other => panic!("expected Submit, got {other:?}"),
+        }
+        model.read(&app, |m, _| {
+            assert!(m.attachments_for(conv, first_id).is_empty());
+            assert_eq!(m.attachments_for(conv, second_id).len(), 1);
+            assert_eq!(
+                m.attachments_for(conv, second_id)[0].file_name(),
+                "second.png"
+            );
+        });
+    });
+}
+
+#[test]
+fn redetermine_terminal_focus_preserves_focused_queued_prompt_editor() {
+    App::test((), |mut app| async move {
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                history.set_active_conversation_id(id, terminal_view_id, ctx);
+                id
+            });
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        let panel = input
+            .read(&app, |input, _| input.queued_prompts_panel().cloned())
+            .expect("queue flag should create a queued prompts panel");
+        let row_id = QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(conversation_id, user_query("edit me"), ctx)
+        });
+
+        panel.update(&mut app, |panel, ctx| {
+            panel.handle_action(&QueuedPromptsPanelAction::StartEditingRow(row_id), ctx);
+        });
+        panel.read(&app, |panel, ctx| {
+            assert!(panel.is_inline_edit_editor_focused(ctx));
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            assert!(
+                !view.redetermine_terminal_focus(ctx),
+                "focused queued-prompt edits should hold focus during async focus reconciliation"
+            );
+        });
+
+        panel.read(&app, |panel, ctx| {
+            assert!(panel.is_inline_edit_editor_focused(ctx));
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert_eq!(model.editing_row(conversation_id), Some(row_id));
+        });
+    });
+}
+
+#[test]
+fn commit_edit_saves_current_editor_text_for_lrc_row() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                history.set_active_conversation_id(id, terminal_view_id, ctx);
+                id
+            });
+        let query_id = QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                QueuedQuery::new(
+                    "stale committed".to_owned(),
+                    QueuedQueryOrigin::LrcAutoQueue,
+                ),
+                ctx,
+            )
+        });
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.enter_edit_mode(conversation_id, query_id, ctx);
+        });
+
+        let queued_prompts_panel = terminal.read(&app, |view, ctx| {
+            view.input()
+                .as_ref(ctx)
+                .queued_prompts_panel()
+                .cloned()
+                .expect("queue panel should exist")
+        });
+        queued_prompts_panel.update(&mut app, |panel, ctx| {
+            panel.set_edit_buffer_text_for_test("edited before finish", ctx);
+            panel.commit_edit(ctx);
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].id(), query_id);
+            assert_eq!(queue[0].text(), "edited before finish");
+            assert_eq!(model.editing_row(conversation_id), None);
+        });
+    });
+}
+
+#[test]
+fn lrc_finish_commits_edited_lrc_row_before_sending() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // The prompt-submission path (`send_queued_user_query_in_conversation`) reads the global
+        // model-event sender, so the provider must be registered for delivery to run.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                history.set_active_conversation_id(id, terminal_view_id, ctx);
+                id
+            });
+        let query_id = QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                QueuedQuery::new(
+                    "stale committed".to_owned(),
+                    QueuedQueryOrigin::LrcAutoQueue,
+                ),
+                ctx,
+            )
+        });
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.enter_edit_mode(conversation_id, query_id, ctx);
+        });
+
+        let queued_prompts_panel = terminal.read(&app, |view, ctx| {
+            view.input()
+                .as_ref(ctx)
+                .queued_prompts_panel()
+                .cloned()
+                .expect("queue panel should exist")
+        });
+        queued_prompts_panel.update(&mut app, |panel, ctx| {
+            panel.set_edit_buffer_text_for_test("edited before finish", ctx);
+        });
+
+        let edit_commit_count = Rc::new(RefCell::new(0));
+        let edit_commit_count_for_subscription = edit_commit_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(
+                &QueuedQueryModel::handle(ctx),
+                move |_, event: &crate::ai::blocklist::QueuedQueryEvent, _| {
+                    if matches!(
+                        event,
+                        crate::ai::blocklist::QueuedQueryEvent::EditCommitted { .. }
+                    ) {
+                        *edit_commit_count_for_subscription.borrow_mut() += 1;
+                    }
+                },
+            );
+        });
+
+        let ai_query_count = Rc::new(RefCell::new(0));
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        let ai_query_count_for_subscription = ai_query_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &InputEvent, _| {
+                if matches!(event, InputEvent::ExecuteAIQuery) {
+                    *ai_query_count_for_subscription.borrow_mut() += 1;
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.send_lrc_queued_prompts(conversation_id, ctx);
+        });
+
+        assert_eq!(*edit_commit_count.borrow(), 1);
+        assert_eq!(*ai_query_count.borrow(), 1);
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(model.queue(conversation_id).is_empty());
+        });
+    });
+}
+
+#[test]
+fn lrc_finish_queued_compact_and_sends_followup_after_summary() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // The prompt-submission path (`send_queued_user_query_in_conversation`) reads the global
+        // model-event sender, so the provider must be registered for delivery to run.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+        let _queued_prompts_v2 = FeatureFlag::QueuedPromptsV2.override_enabled(true);
+        let _summarization = FeatureFlag::SummarizationConversationCommand.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                history.set_active_conversation_id(id, terminal_view_id, ctx);
+                id
+            });
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.ai_context_model()
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx),
+                None
+            );
+        });
+
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                QueuedQuery::new_with_attachments(
+                    format!("{} follow up", commands::COMPACT_AND.name),
+                    QueuedQueryOrigin::LrcAutoQueue,
+                    vec![image_attachment("queued-context.png")],
+                ),
+                ctx,
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.send_lrc_queued_prompts(conversation_id, ctx);
+        });
+
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].text(), "follow up");
+            assert_eq!(queue[0].origin(), QueuedQueryOrigin::CompactAndSlashCommand);
+            assert_eq!(queue[0].attachments().len(), 1);
+        });
+
+        let ai_query_count = Rc::new(RefCell::new(0));
+        let input = terminal.read(&app, |view, _| view.input().clone());
+        let ai_query_count_for_subscription = ai_query_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &InputEvent, _| {
+                if matches!(event, InputEvent::ExecuteAIQuery) {
+                    *ai_query_count_for_subscription.borrow_mut() += 1;
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.drain_queued_prompts(conversation_id, FinishReason::Complete, ctx);
+        });
+
+        assert_eq!(*ai_query_count.borrow(), 1);
         QueuedQueryModel::handle(&app).read(&app, |model, _| {
             assert!(model.queue(conversation_id).is_empty());
         });

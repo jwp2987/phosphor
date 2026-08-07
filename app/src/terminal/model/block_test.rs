@@ -12,6 +12,7 @@ use crate::{
     },
     test_util::mock_blockgrid,
 };
+use chrono::TimeZone;
 use float_cmp::assert_approx_eq;
 use futures_lite::stream::StreamExt;
 
@@ -568,6 +569,88 @@ pub fn test_set_current_working_directory_updates_pwd_and_emits_cwd_event() {
     );
 }
 
+#[test]
+pub fn test_elapsed_duration_rounds_down_to_whole_seconds() {
+    let mut block = TestBlockBuilder::new().build();
+    // Move the block into the Executing state so `elapsed_duration` returns a value.
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.preexec(Default::default());
+
+    let start = chrono::Local.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    block.override_start_ts(start);
+
+    // Sub-second elapsed time is treated as "not yet elapsed", so nothing is rendered.
+    let now_sub_second = start + chrono::Duration::milliseconds(500);
+    assert_eq!(block.elapsed_duration_whole_secs_at(now_sub_second), None);
+
+    // Whole-second elapsed time rounds cleanly.
+    let now_1s = start + chrono::Duration::milliseconds(1_200);
+    assert_eq!(
+        block.elapsed_duration_whole_secs_at(now_1s),
+        Some(chrono::Duration::seconds(1))
+    );
+
+    // Fractional milliseconds inside a second are dropped, keeping the formatted string stable
+    // between one-second repaint ticks.
+    let now_7s = start + chrono::Duration::milliseconds(7_950);
+    assert_eq!(
+        block.elapsed_duration_whole_secs_at(now_7s),
+        Some(chrono::Duration::seconds(7))
+    );
+
+    // Multi-minute elapsed times also round down to whole seconds.
+    let now_long = start + chrono::Duration::milliseconds(125_999);
+    assert_eq!(
+        block.elapsed_duration_whole_secs_at(now_long),
+        Some(chrono::Duration::seconds(125))
+    );
+}
+
+#[test]
+pub fn test_elapsed_duration_requires_executing_state() {
+    let mut block = TestBlockBuilder::new().build();
+    let start = chrono::Local.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let now = start + chrono::Duration::seconds(5);
+
+    // With no start_ts and no execution, there's nothing to show live.
+    assert_eq!(block.elapsed_duration_whole_secs_at(now), None);
+    assert!(!block.is_duration_live());
+
+    // `precmd` alone leaves the block in `BeforeExecution`; the duration is not yet live.
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.override_start_ts(start);
+    assert_eq!(block.elapsed_duration_whole_secs_at(now), None);
+    assert!(!block.is_duration_live());
+
+    // `preexec` transitions the block to `Executing`; the duration should now be live.
+    block.preexec(Default::default());
+    assert_eq!(
+        block.elapsed_duration_whole_secs_at(now),
+        Some(chrono::Duration::seconds(5))
+    );
+    assert!(block.is_duration_live());
+
+    // Once the block finishes, completed_ts is set and the duration is no longer live.
+    block.finish(0);
+    assert_eq!(block.elapsed_duration_whole_secs_at(now), None);
+    assert!(!block.is_duration_live());
+}
+
+#[test]
+pub fn test_elapsed_duration_for_background_block_is_not_live() {
+    let mut block = TestBlockBuilder::new().build();
+    let start = chrono::Local.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+    let now = start + chrono::Duration::seconds(10);
+
+    block.start_background(None);
+    block.override_start_ts(start);
+
+    // Background blocks are not in `Executing` state, so we don't render a live counter for them.
+    assert_eq!(block.state(), BlockState::Background);
+    assert_eq!(block.elapsed_duration_whole_secs_at(now), None);
+    assert!(!block.is_duration_live());
+}
+
 /// Tests the multiline lprompt and multiline command case for selecting text across grids.
 #[test]
 fn test_selection_bounds_all_grids_multiline_lprompt_command() {
@@ -723,6 +806,59 @@ fn test_selection_bounds_all_grids_single_line_lprompt_command() {
         BlockGridPoint::Output(Point::new(2, 0)),
     );
     assert_eq!(all_grids, "lprompt%cmd1\nrprompt\noutput1\noutput2");
+}
+
+#[test]
+fn test_command_and_output_to_string_includes_ps1_prompt_command_rprompt_and_output() {
+    let block_index = BlockIndex::zero();
+    let mut prompt_and_command_grid = mock_blockgrid("lprompt%cmd1");
+    prompt_and_command_grid.finish();
+    let mut rprompt_grid = mock_blockgrid("rprompt");
+    rprompt_grid.finish();
+    let mut output_grid = mock_blockgrid("output1\r\noutput2\r\n");
+    output_grid.finish();
+
+    let mut block = create_test_block_with_grids(
+        block_index,
+        prompt_and_command_grid,
+        rprompt_grid,
+        output_grid,
+        true, /* honor_ps1 */
+    );
+    block.set_raw_prompt_end_point(Some(PromptEndPoint::PromptEnd {
+        point: Point::new(0, 7),
+        has_extra_trailing_newline: false,
+    }));
+
+    assert_eq!(
+        block.command_and_output_to_string(),
+        "lprompt%cmd1\nrprompt\noutput1\noutput2"
+    );
+}
+
+#[test]
+fn test_command_and_output_to_string_excludes_warp_prompt() {
+    let block_index = BlockIndex::zero();
+    let mut prompt_and_command_grid = mock_blockgrid("cmd1");
+    prompt_and_command_grid.finish();
+    let mut rprompt_grid = mock_blockgrid("rprompt");
+    rprompt_grid.finish();
+    let mut output_grid = mock_blockgrid("output1\r\noutput2\r\n");
+    output_grid.finish();
+
+    let mut block = create_test_block_with_grids(
+        block_index,
+        prompt_and_command_grid,
+        rprompt_grid,
+        output_grid,
+        false, /* honor_ps1 */
+    );
+    block.set_honor_ps1(false);
+
+    assert_eq!(
+        block.command_and_output_to_string(),
+        "cmd1\noutput1\noutput2"
+    );
 }
 
 /// Tests the single line lprompt, with trailing newline, and command case for text selection across grids.
