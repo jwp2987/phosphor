@@ -552,6 +552,8 @@ fn prepare_claude_settings_merges_existing_settings() {
 // The remaining oracle tests in that file need source this fork does not ship
 // (`claude_transcript`, `serialize_claude_mcp_config`, the parent-bridge event
 // cursor, `MessageBridgeCleanupDisposition`, `--resume`, `prepare_local_wake_command`).
+// All 13 are enumerated in issue #252, and the missing `claude_transcript` module
+// itself in issue #289. Re-verified against the pin in round 4: still unportable.
 
 #[test]
 #[serial_test::serial]
