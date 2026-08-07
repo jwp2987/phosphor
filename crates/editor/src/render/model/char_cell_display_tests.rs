@@ -410,3 +410,103 @@ mod geometry {
         );
     }
 }
+
+/// Char-cell soft-wrap point conversion — the coordinate space that TUI
+/// row-aware navigation (`MoveUp` / `MoveDown` / `MoveToLineStart` /
+/// `MoveToLineEnd`) resolves through `RenderState::offset_to_softwrap_point`
+/// and `RenderState::softwrap_point_to_offset`. Mirrors Warp's `mod char_cell`
+/// soft-wrap coverage in `render/model/mod_tests.rs`.
+mod softwrap {
+    use string_offset::CharOffset;
+
+    use crate::render::model::{ColumnUnit, SoftWrapPoint};
+
+    use super::state;
+
+    #[test]
+    fn softwrap_roundtrip_single_line() {
+        let text = "hello world";
+        let state = state(text, 80);
+        for i in 0..=text.chars().count() {
+            let offset = CharOffset::from(i);
+            let pt = state.offset_to_softwrap_point(offset);
+            assert!(
+                matches!(pt.column(), ColumnUnit::Chars(_)),
+                "index {i}: expected Chars variant"
+            );
+            assert_eq!(
+                state.softwrap_point_to_offset(pt),
+                offset,
+                "round-trip failed at index {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn softwrap_roundtrip_wrapping() {
+        // 10 chars, no spaces → hard wrap at width 4.
+        let state = state("abcdefghij", 4);
+        for i in 0..10 {
+            let offset = CharOffset::from(i);
+            let pt = state.offset_to_softwrap_point(offset);
+            assert_eq!(
+                state.softwrap_point_to_offset(pt),
+                offset,
+                "round-trip failed at index {i} with width=4"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_width_eof_phantom_row_round_trips() {
+        let text = "abcd";
+        let eof = CharOffset::from(text.len());
+        let state = state(text, 4);
+        let point = state.offset_to_softwrap_point(eof);
+        assert_eq!(point, SoftWrapPoint::new(1, ColumnUnit::Chars(0)));
+        assert_eq!(state.softwrap_point_to_offset(point), eof);
+        assert_eq!(
+            state.softwrap_point_to_offset(SoftWrapPoint::new(100, ColumnUnit::Chars(3))),
+            eof
+        );
+    }
+
+    #[test]
+    fn softwrap_point_to_offset_clamps_to_shorter_final_line() {
+        // "abcd\nx": logical line 0 = "abcd" (4 chars), final line = "x" (1 char).
+        // Moving down from column 3 of the first line targets (row 1, col 3),
+        // but the final line only has 1 char — the result must clamp to the end
+        // of the buffer (offset 6 = total chars), never past it.
+        let text = "abcd\nx";
+        let total_chars = text.chars().count();
+        let state = state(text, 80);
+        let pt = SoftWrapPoint::new(1, ColumnUnit::Chars(3));
+        let offset = state.softwrap_point_to_offset(pt);
+        // Final line starts at char index 5 ("x"); clamped end is 5 + 1 = 6.
+        assert_eq!(offset, CharOffset::from(6));
+        assert!(
+            offset <= CharOffset::from(total_chars),
+            "offset {offset:?} must not exceed total chars {total_chars}"
+        );
+    }
+
+    #[test]
+    fn softwrap_returns_chars_variant_not_pixels() {
+        let state = state("abc", 80);
+        let pt = state.offset_to_softwrap_point(CharOffset::from(0));
+        assert!(
+            matches!(pt.column(), ColumnUnit::Chars(_)),
+            "CharCell path must return ColumnUnit::Chars, got {:?}",
+            pt.column()
+        );
+    }
+
+    #[test]
+    fn softwrap_point_zero_offset_is_row0_col0() {
+        let state = state("abc", 80);
+        // Index 0 = first char → (0, 0).
+        let pt = state.offset_to_softwrap_point(CharOffset::from(0));
+        assert_eq!(pt.row(), 0);
+        assert_eq!(pt.column(), ColumnUnit::Chars(0));
+    }
+}

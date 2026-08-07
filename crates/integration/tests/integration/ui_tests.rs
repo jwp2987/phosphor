@@ -325,11 +325,18 @@ integration_tests! {
     test_file_tree_non_openable_files,
     test_file_tree_nested_file_opening,
 
+    // Copy current path command-palette action
+    test_copy_current_path_copies_terminal_pwd,
+    test_copy_current_path_copies_code_editor_file_path,
+
     // Go to Line tests
     test_goto_line_dialog_open_close,
     test_goto_line_jumps_to_line,
     test_goto_line_with_column,
     test_goto_line_clamps_out_of_range,
+
+    // AI document tests
+    test_copy_ai_document_as_markdown_from_overflow_menu,
 
     // Keyboard protocol tests
     test_keyboard_protocol_disabled_shift_enter,

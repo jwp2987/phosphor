@@ -39,7 +39,7 @@ use crate::{
         dialog::{dialog_styles, Dialog},
         icons::Icon,
     },
-    util::git::{Commit, FileChangeEntry},
+    util::git::{is_gh_auth_error, Commit, FileChangeEntry},
     view_components::{
         action_button::{ActionButton, ButtonSize, NakedTheme, SecondaryTheme},
         DismissibleToast,
@@ -195,12 +195,7 @@ fn user_facing_git_error(raw: &str) -> &'static str {
         // `run_gh_command` wraps spawn failures with this prefix, which is
         // the reliable "gh binary missing" signal.
         "GitHub CLI (gh) not installed. See https://cli.github.com/."
-    } else if lower.contains("not logged in")
-        || lower.contains("authentication required")
-        || lower.contains("gh auth login")
-    {
-        // Phrases mirror `context_chips::current_prompt::is_gh_auth_error`,
-        // which has been vetted against real `gh` failure output.
+    } else if is_gh_auth_error(raw) {
         "GitHub CLI not authenticated. Run `gh auth login`."
     } else {
         "Git operation failed."
@@ -552,6 +547,7 @@ impl GitDialog {
             close_button,
         };
         this.refresh_confirm_enabled(ctx);
+        commit::maybe_start_commit_message_autogen(&this, ctx);
         this
     }
 

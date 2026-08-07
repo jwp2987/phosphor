@@ -1074,8 +1074,9 @@ pub(crate) fn is_within_symlink(path: &Path, repo_root: &Path) -> bool {
 /// The fork's `notify` [`WatchFilter`] carries a single predicate rather than
 /// upstream's separate descend/emit closures, so this exposes the descend
 /// predicate ([`should_watch_repo_directory`]); the emit-side `.git/`
-/// allowlist filtering ([`should_ignore_git_path`]) is applied separately by
-/// the watcher registration in `local_model`.
+/// allowlist filtering ([`should_ignore_git_path`]) is applied on the
+/// delivered events instead, by `DirectoryWatcher::handle_watcher_event` and
+/// `LocalRepoMetadataModel::handle_watcher_event`.
 #[cfg(feature = "local_fs")]
 pub fn repo_watch_filter(
     repo_root: PathBuf,

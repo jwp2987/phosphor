@@ -208,8 +208,10 @@ impl Repository {
                     }
                 }
 
+                let gitignores = self.watch_filter_gitignores();
+
                 Box::pin(DirectoryWatcher::handle(ctx).update(ctx, |watcher, ctx| {
-                    watcher.start_watching_directories(directories_to_watch, ctx)
+                    watcher.start_watching_directories(directories_to_watch, gitignores, ctx)
                 }))
             } else {
                 Box::pin(ready(Ok(())))
@@ -309,6 +311,17 @@ impl Repository {
     #[cfg(feature = "local_fs")]
     pub(crate) fn get_subscriber_ids(&self) -> Vec<SubscriberId> {
         self.subscribers.keys().cloned().collect()
+    }
+
+    /// The gitignore set threaded into the watch filter registered for this
+    /// repository (see [`crate::watcher::DirectoryWatcher::start_watching_directory`]).
+    ///
+    /// Reuses the gitignores built at construction so the descend filter
+    /// prunes gitignored subtrees without re-reading `.gitignore` from disk,
+    /// and stays consistent with [`Self::check_gitignore_status`].
+    #[cfg(feature = "local_fs")]
+    pub(crate) fn watch_filter_gitignores(&self) -> Vec<Gitignore> {
+        self.gitignores.clone()
     }
 
     /// Checks if a path is gitignored within this repository.

@@ -3355,7 +3355,9 @@ impl AIConversation {
         self.total_request_cost
     }
 
-    #[allow(dead_code)]
+    /// Per-model token totals accumulated across this conversation's requests, the input
+    /// `/cost` bills against (see `ai::usage_cost`). In-memory for the session, matching
+    /// Warp: only `conversation_usage_metadata` is persisted.
     pub fn total_token_usage(&self) -> Vec<TokenUsage> {
         self.total_token_usage_by_model.values().cloned().collect()
     }

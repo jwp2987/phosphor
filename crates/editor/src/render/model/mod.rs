@@ -707,39 +707,107 @@ impl RenderLineLocation {
     }
 }
 
+/// The unit used for the horizontal column component of a [`SoftWrapPoint`].
+///
+/// - [`ColumnUnit::Pixels`] is used by the GUI (font-aware, proportional) rendering path.
+///   Pixels — rather than an integer count — are what make GUI visual navigation work: moving
+///   up or down should land on the point *visually* above or below the starting point, which
+///   shares its pixel x-offset but, with variable padding and glyph widths, not its character
+///   offset.
+/// - [`ColumnUnit::Chars`] is used by the TUI (monospace, char-cell) rendering path, where the
+///   visually-aligned column *is* a display-cell count and there is no font layout to consult.
+///
+/// The two variants must never be mixed in a single comparison or arithmetic expression.
+/// Call sites that work in only one coordinate space should pattern-match and unwrap the
+/// expected variant; cross-variant operations panic.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ColumnUnit {
+    /// Horizontal offset in pixels, used by the GPU-rendered GUI path.
+    Pixels(Pixels),
+    /// Horizontal offset in terminal character columns, used by the TUI path.
+    Chars(u16),
+}
+
+impl ColumnUnit {
+    /// Zero column in pixel units (GUI path).
+    pub fn pixels_zero() -> Self {
+        ColumnUnit::Pixels(Pixels::zero())
+    }
+
+    /// Zero column in char units (TUI path).
+    pub fn chars_zero() -> Self {
+        ColumnUnit::Chars(0)
+    }
+
+    /// Returns the element-wise max of two same-variant values.
+    /// Variants must match; mixing Pixels and Chars is always a bug.
+    pub fn col_max(self, other: ColumnUnit) -> ColumnUnit {
+        match (self, other) {
+            (ColumnUnit::Pixels(a), ColumnUnit::Pixels(b)) => ColumnUnit::Pixels(a.max(b)),
+            (ColumnUnit::Chars(a), ColumnUnit::Chars(b)) => ColumnUnit::Chars(a.max(b)),
+            (ColumnUnit::Pixels(_), ColumnUnit::Chars(_))
+            | (ColumnUnit::Chars(_), ColumnUnit::Pixels(_)) => {
+                debug_assert!(
+                    false,
+                    "ColumnUnit::col_max: mixed Pixels and Chars variants — this is a bug"
+                );
+                self // graceful fallback: keep self unchanged
+            }
+        }
+    }
+
+    /// Unwraps the pixel value.
+    /// Calling this on a `Chars` variant is always a bug; in debug builds it asserts,
+    /// in release builds it returns [`Pixels::zero()`] as a safe fallback.
+    pub fn as_pixels(self) -> Pixels {
+        match self {
+            ColumnUnit::Pixels(p) => p,
+            ColumnUnit::Chars(_) => {
+                debug_assert!(
+                    false,
+                    "ColumnUnit::as_pixels called on a Chars variant — this is a bug"
+                );
+                Pixels::zero()
+            }
+        }
+    }
+
+    /// Unwraps the char-column value.
+    /// Calling this on a `Pixels` variant is always a bug; in debug builds it asserts,
+    /// in release builds it returns `0` as a safe fallback.
+    pub fn as_chars(self) -> u16 {
+        match self {
+            ColumnUnit::Chars(c) => c,
+            ColumnUnit::Pixels(_) => {
+                debug_assert!(
+                    false,
+                    "ColumnUnit::as_chars called on a Pixels variant — this is a bug"
+                );
+                0
+            }
+        }
+    }
+}
+
 /// A point within the editor. Unlike character and hard-wrap offsets/points, this accounts for
 /// soft-wrapping, the layout of different block types, and proportional fonts.
 ///
 /// Because soft-wrapping depends on the fonts and viewport size, `SoftWrapPoint` is not stable
 /// across resizes or style changes.
+///
+/// The `column` field uses [`ColumnUnit`] to distinguish GUI (pixel) and TUI (char-cell)
+/// coordinate spaces. Callers must use the same variant consistently within a rendering path.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct SoftWrapPoint {
     /// A soft-wrapped line index within the laid-out document.
     row: u32,
-    /// The point's x-offset in pixels. We use pixels here, rather than an integer count, to
-    /// support visual navigation. When navigating up or down, we want to move to the point
-    /// visually above or below the starting point. That point has the same pixel x-offset,
-    /// but, due to variable padding and character widths, not necessarily the same character
-    /// offset.
-    ///
-    /// For example, imagine the given text laid out with a non-monospace font, where the
-    /// middle line is a list item:
-    ///
-    /// ```text
-    /// aaaaaaa
-    /// * mmmmmm
-    /// iiiiiii
-    /// ```
-    ///
-    /// If the cursor is at the start of the middle line, the characters above and below it are
-    /// in the **middle** of their respective lines. Furthermore, the `a` and `i` glyphs are
-    /// different widths, so the character offsets on all 3 lines are different. However, they
-    /// have the same pixel x-offset.
-    column: Pixels,
+    /// The point's horizontal position, in either pixels (GUI) or character columns (TUI).
+    /// See [`ColumnUnit`] for details.
+    column: ColumnUnit,
 }
 
 impl SoftWrapPoint {
-    pub fn new(row: u32, column: Pixels) -> Self {
+    pub fn new(row: u32, column: ColumnUnit) -> Self {
         Self { row, column }
     }
 
@@ -764,7 +832,7 @@ impl SoftWrapPoint {
         self.row
     }
 
-    pub fn column(&self) -> Pixels {
+    pub fn column(&self) -> ColumnUnit {
         self.column
     }
 }
@@ -3127,17 +3195,29 @@ impl RenderState {
     }
 
     pub fn offset_to_softwrap_point(&self, offset: CharOffset) -> SoftWrapPoint {
+        // CharCell path: compute visual row/col from char-cell display-width arithmetic.
+        if let LayoutMode::CharCell(ref cc) = self.layout_mode {
+            return cc.offset_to_softwrap_point(offset);
+        }
+
+        // Pixels path: use the font-laid-out SumTree<BlockItem>.
         let content = self.content.borrow();
         let mut cursor = content.cursor::<CharOffset, LayoutSummary>();
 
         cursor.seek(&offset, SeekBias::Right);
         match cursor.positioned_item() {
             Some(item) => item.offset_to_softwrap_point(offset),
-            None => SoftWrapPoint::new(self.max_line().as_u32(), Pixels::zero()),
+            None => SoftWrapPoint::new(self.max_line().as_u32(), ColumnUnit::pixels_zero()),
         }
     }
 
     pub fn softwrap_point_to_offset(&self, point: SoftWrapPoint) -> CharOffset {
+        // CharCell path.
+        if let LayoutMode::CharCell(ref cc) = self.layout_mode {
+            return cc.softwrap_point_to_offset(point);
+        }
+
+        // Pixels path.
         let content = self.content.borrow();
         let mut cursor = content.cursor::<LineCount, LayoutSummary>();
 
@@ -3157,9 +3237,9 @@ impl RenderState {
         let line_row = line_number.as_u32().saturating_sub(1);
 
         let start_offset =
-            self.softwrap_point_to_offset(SoftWrapPoint::new(line_row, Pixels::zero()));
-        let end_offset =
-            self.softwrap_point_to_offset(SoftWrapPoint::new(line_row + 1, Pixels::zero()));
+            self.softwrap_point_to_offset(SoftWrapPoint::new(line_row, ColumnUnit::pixels_zero()));
+        let end_offset = self
+            .softwrap_point_to_offset(SoftWrapPoint::new(line_row + 1, ColumnUnit::pixels_zero()));
 
         (start_offset, end_offset)
     }
@@ -3808,7 +3888,7 @@ impl Positioned<'_, BlockItem> {
                 paragraphs
                     .find(|paragraph| paragraph.end_char_offset() > offset)
                     .map_or(
-                        SoftWrapPoint::new(self.end_line().as_u32(), Pixels::zero()),
+                        SoftWrapPoint::new(self.end_line().as_u32(), ColumnUnit::pixels_zero()),
                         |paragraph| paragraph.offset_to_softwrap_point(offset),
                     )
             }
@@ -3833,12 +3913,12 @@ impl Positioned<'_, BlockItem> {
                 paragraphs
                     .find(|paragraph| paragraph.end_char_offset() > offset)
                     .map_or(
-                        SoftWrapPoint::new(self.end_line().as_u32(), Pixels::zero()),
+                        SoftWrapPoint::new(self.end_line().as_u32(), ColumnUnit::pixels_zero()),
                         |paragraph| paragraph.offset_to_softwrap_point(offset),
                     )
             }
             BlockItem::MermaidDiagram { .. } => {
-                SoftWrapPoint::new(self.start_line.as_u32(), Pixels::zero())
+                SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero())
             }
             BlockItem::TrailingNewLine(_)
             | BlockItem::Embedded(_)
@@ -3846,7 +3926,7 @@ impl Positioned<'_, BlockItem> {
             | BlockItem::Image { .. }
             | BlockItem::TemporaryBlock { .. }
             | BlockItem::Hidden { .. } => {
-                SoftWrapPoint::new(self.start_line.as_u32(), Pixels::zero())
+                SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero())
             }
             BlockItem::Table(laid_out_table) => {
                 let relative_offset = offset.saturating_sub(&self.start_char_offset);
@@ -3855,7 +3935,7 @@ impl Positioned<'_, BlockItem> {
                     .cell_at_offset(relative_offset)
                     .map(|c| c.row)
                     .unwrap_or(0);
-                SoftWrapPoint::new(self.start_line.as_u32() + row as u32, Pixels::zero())
+                SoftWrapPoint::new(self.start_line.as_u32() + row as u32, ColumnUnit::pixels_zero())
             }
         }
     }
@@ -4058,9 +4138,9 @@ impl<'a> Positioned<'a, Paragraph> {
         match self.lines().last() {
             Some(line) => SoftWrapPoint::new(
                 line.start_line.as_u32(),
-                line.item.width.into_pixels() + self.style.left_offset(),
+                ColumnUnit::Pixels(line.item.width.into_pixels() + self.style.left_offset()),
             ),
-            None => SoftWrapPoint::new(self.start_line.as_u32(), Pixels::zero()),
+            None => SoftWrapPoint::new(self.start_line.as_u32(), ColumnUnit::pixels_zero()),
         }
     }
 
@@ -4454,10 +4534,12 @@ impl<'a> Positioned<'a, Paragraph> {
 
         SoftWrapPoint::new(
             line.start_line.as_u32(),
-            line.item
-                .caret_position_for_index(self.frame_index(offset).as_usize())
-                .into_pixels()
-                + self.style.left_offset(),
+            ColumnUnit::Pixels(
+                line.item
+                    .caret_position_for_index(self.frame_index(offset).as_usize())
+                    .into_pixels()
+                    + self.style.left_offset(),
+            ),
         )
     }
 
@@ -4473,7 +4555,7 @@ impl<'a> Positioned<'a, Paragraph> {
         let line_end = self.buffer_index(line.end_index().into());
         let paragraph_last_char = self.end_char_offset().saturating_sub(&1.into());
 
-        let adjusted_x = point.column() - self.style.left_offset();
+        let adjusted_x = point.column().as_pixels() - self.style.left_offset();
         let frame_index = match line.caret_index_for_x(adjusted_x.as_f32()) {
             Some(caret) => FrameOffset::from(caret),
             None => {
@@ -5259,6 +5341,60 @@ impl CharCellState {
         LineCount(text_index.visual_row_char_starts.len())
     }
 
+    pub fn offset_to_softwrap_point(&self, offset: CharOffset) -> SoftWrapPoint {
+        let text_index = self.text_index.borrow();
+        let line_index = text_index.logical_line_for_offset(offset);
+        let line_range = text_index.logical_line_char_range(line_index);
+        let char_index = offset.as_usize().min(line_range.end);
+        let visual_row = text_index.visual_row_for_offset(line_index, offset);
+        let visual_range = text_index.visual_row_char_range(line_index, visual_row);
+        let col = text_index.char_widths[visual_range.start..char_index]
+            .iter()
+            .map(|&width| width as usize)
+            .sum::<usize>();
+        if char_index == line_range.end
+            && self.terminal_width.get() > 0
+            && col == self.terminal_width.get() as usize
+        {
+            SoftWrapPoint::new((visual_row + 1) as u32, ColumnUnit::Chars(0))
+        } else {
+            SoftWrapPoint::new(visual_row as u32, ColumnUnit::Chars(col as u16))
+        }
+    }
+
+    pub fn softwrap_point_to_offset(&self, point: SoftWrapPoint) -> CharOffset {
+        let text_index = self.text_index.borrow();
+        if point.row() as usize >= text_index.visual_row_char_starts.len() {
+            return CharOffset::from(text_index.char_widths.len());
+        }
+        let visual_row =
+            (point.row() as usize).min(text_index.visual_row_char_starts.len().saturating_sub(1));
+        let line_index = text_index
+            .line_visual_row_starts
+            .partition_point(|&start| start <= visual_row)
+            .saturating_sub(1)
+            .min(text_index.line_starts.len() - 1);
+        let row_range = text_index.visual_row_char_range(line_index, visual_row);
+        // Accept either variant: `Chars` is the normal CharCell column; `Pixels` is produced
+        // by shared navigation helpers (e.g. `navigate_line_boundary`) that hard-code
+        // `ColumnUnit::pixels_zero()` to mean "start of row". Treat any `Pixels` value as 0.
+        let target_col = match point.column() {
+            ColumnUnit::Chars(col) => col as usize,
+            ColumnUnit::Pixels(_) => 0,
+        };
+        let mut col = 0usize;
+        let mut char_index = row_range.start;
+        while char_index < row_range.end {
+            let width = text_index.char_widths[char_index] as usize;
+            if col + width > target_col {
+                break;
+            }
+            col += width;
+            char_index += 1;
+        }
+        CharOffset::from(char_index)
+    }
+
     pub fn set_test_temporary_blocks(&self, blocks: Vec<(String, usize)>) {
         let blocks = {
             let text_index = self.text_index.borrow();
@@ -5605,6 +5741,46 @@ fn char_cell_line_row_starts_into(
         col += cw;
     }
 }
+
+/// The `(row_within_line, display_col)` of the gap before char `char_in_line`
+/// (or the end of the line when `char_in_line == char_widths.len()`), using the
+/// same Unicode-aware wrapping as [`char_cell_line_row_starts`]. A cursor
+/// at the end of a row that exactly fills the width wraps to the start of the
+/// next row.
+#[cfg(test)]
+pub fn char_cell_line_gap_position(
+    line_breaks: &[bool],
+    char_widths: &[u8],
+    terminal_width: u16,
+    char_in_line: usize,
+) -> (u32, u16) {
+    let w = terminal_width as usize;
+    let n = char_in_line.min(char_widths.len());
+    // Derive row boundaries from the shared wrapping algorithm so that cursor
+    // positions always agree with the rendered row layout.
+    let row_starts = char_cell_line_row_starts(line_breaks, char_widths, terminal_width);
+    // The gap before char `n` sits on the last row whose start is <= n.
+    let row_within_line = row_starts.partition_point(|&s| s <= n).saturating_sub(1);
+    let row_start = row_starts[row_within_line];
+    let col: usize = char_widths[row_start..n]
+        .iter()
+        .map(|&cw| cw as usize)
+        .sum();
+    // Special case: cursor at the end of content on a row that exactly fills
+    // the terminal width wraps to the phantom start of the next row, matching
+    // plain monospace terminal behavior.
+    if char_in_line >= char_widths.len() && w > 0 && col == w {
+        return ((row_within_line + 1) as u32, 0);
+    }
+    (row_within_line as u32, col as u16)
+}
+
+/// The number of visual rows occupied by a single logical line (always >= 1).
+#[cfg(test)]
+fn char_cell_line_rows(line_breaks: &[bool], char_widths: &[u8], terminal_width: u16) -> u32 {
+    char_cell_line_row_starts(line_breaks, char_widths, terminal_width).len() as u32
+}
+
 /// The `\n`-free slice of per-char display widths for logical line `i`, given
 /// the line-start indices and the full per-char width buffer.
 pub(crate) fn char_cell_logical_line<'a>(
@@ -5639,4 +5815,143 @@ pub(crate) fn char_cell_logical_line_breaks<'a>(
         .min(char_len)
         .max(start);
     &line_breaks[start..=end]
+}
+
+/// Returns the total number of visual rows across all logical lines.
+/// Used by [`RenderState::max_line`] in `CharCell` mode.
+#[cfg(test)]
+pub(crate) fn char_cell_max_line(
+    line_starts: &[CharOffset],
+    line_breaks: &[bool],
+    char_widths: &[u8],
+    terminal_width: u16,
+) -> LineCount {
+    if line_starts.is_empty() {
+        return LineCount(1);
+    }
+    let mut total: usize = 0;
+    for i in 0..line_starts.len() {
+        let line = char_cell_logical_line(line_starts, char_widths, i);
+        let line_breaks = char_cell_logical_line_breaks(line_starts, line_breaks, i);
+        total += char_cell_line_rows(line_breaks, line, terminal_width) as usize;
+    }
+    LineCount(total)
+}
+
+/// Converts a 0-based character index to a [`SoftWrapPoint`] in char-cell coordinates.
+///
+/// This softwrap API is 0-based — index 0 is the first character — matching the
+/// convention the navigation callers already use for both layout modes: they pass
+/// `cursor_offset - 1` here and re-add 1 to [`char_cell_softwrap_point_to_offset`]
+/// results to convert back to the buffer's 1-based [`CharOffset`]. Keeping both modes
+/// on the same contract is what lets `navigate_line` stay layout-mode-agnostic.
+#[cfg(test)]
+pub(crate) fn char_cell_offset_to_softwrap_point(
+    offset: CharOffset,
+    line_starts: &[CharOffset],
+    line_breaks: &[bool],
+    char_widths: &[u8],
+    terminal_width: u16,
+) -> SoftWrapPoint {
+    // Find the logical line by binary-searching line_starts.
+    let logical_line = line_starts
+        .partition_point(|&start| start <= offset)
+        .saturating_sub(1);
+    let line_start = line_starts
+        .get(logical_line)
+        .copied()
+        .unwrap_or_else(CharOffset::zero);
+    let char_in_line = offset.as_usize().saturating_sub(line_start.as_usize());
+
+    // Count visual rows from all preceding logical lines.
+    let mut preceding_rows: u32 = 0;
+    for i in 0..logical_line {
+        let line = char_cell_logical_line(line_starts, char_widths, i);
+        let line_breaks = char_cell_logical_line_breaks(line_starts, line_breaks, i);
+        preceding_rows += char_cell_line_rows(line_breaks, line, terminal_width);
+    }
+
+    let line = char_cell_logical_line(line_starts, char_widths, logical_line);
+    let line_breaks = char_cell_logical_line_breaks(line_starts, line_breaks, logical_line);
+    let (row_within_line, col) =
+        char_cell_line_gap_position(line_breaks, line, terminal_width, char_in_line);
+    SoftWrapPoint::new(preceding_rows + row_within_line, ColumnUnit::Chars(col))
+}
+
+/// Converts a [`SoftWrapPoint`] in char-cell coordinates back to a 0-based character
+/// index — the inverse of [`char_cell_offset_to_softwrap_point`]. Callers re-add 1 to
+/// recover the buffer's 1-based [`CharOffset`].
+///
+/// The result is always clamped to the end of the logical line it lands in (the
+/// final line is bounded by the buffer length), so it never returns an offset
+/// past the end of the buffer even when the target column is beyond a shorter
+/// final line.
+#[cfg(test)]
+pub(crate) fn char_cell_softwrap_point_to_offset(
+    point: SoftWrapPoint,
+    line_starts: &[CharOffset],
+    line_breaks: &[bool],
+    char_widths: &[u8],
+    terminal_width: u16,
+) -> CharOffset {
+    let target_row = point.row();
+    // Accept either variant: Chars is the normal CharCell column; Pixels is produced
+    // by GUI-path navigation helpers (e.g. navigate_line_boundary) that hard-code
+    // ColumnUnit::pixels_zero() to mean "start of row". Treat any Pixels value as 0.
+    let target_col = match point.column() {
+        ColumnUnit::Chars(c) => c as usize,
+        ColumnUnit::Pixels(_) => 0,
+    };
+
+    if line_starts.is_empty() {
+        return CharOffset::from(0);
+    }
+    if target_row
+        >= char_cell_max_line(line_starts, line_breaks, char_widths, terminal_width).as_u32()
+    {
+        return CharOffset::from(char_widths.len());
+    }
+
+    let mut acc_rows: u32 = 0;
+    for i in 0..line_starts.len() {
+        let line_start = line_starts[i];
+        let line = char_cell_logical_line(line_starts, char_widths, i);
+        let line_breaks = char_cell_logical_line_breaks(line_starts, line_breaks, i);
+        let row_starts = char_cell_line_row_starts(line_breaks, line, terminal_width);
+        let line_rows = row_starts.len() as u32;
+        let is_last = i + 1 == line_starts.len();
+
+        // The target row falls in this line, or this is the last line (which
+        // absorbs any overshoot so the result never exceeds the buffer).
+        if acc_rows + line_rows > target_row || is_last {
+            let row_within =
+                (target_row.saturating_sub(acc_rows) as usize).min(row_starts.len() - 1);
+            let row_start_char = row_starts[row_within];
+            let row_end_char = row_starts
+                .get(row_within + 1)
+                .copied()
+                .unwrap_or(line.len());
+
+            // Walk the row's per-char widths to find the gap at or just before
+            // `target_col`, clamped to the row's end (which never spills past
+            // the logical line, and for the final line, past the buffer).
+            let mut col = 0usize;
+            let mut idx = row_start_char;
+            while idx < row_end_char {
+                let cw = line[idx] as usize;
+                if col + cw > target_col {
+                    break;
+                }
+                col += cw;
+                idx += 1;
+            }
+            return line_start + idx;
+        }
+
+        acc_rows += line_rows;
+    }
+
+    // Unreachable given the `is_last` branch always returns; fall back to the
+    // start of the last logical line.
+    line_starts.last().copied().unwrap_or_else(CharOffset::zero)
 }
