@@ -325,30 +325,15 @@ impl ContextChipKind {
                 .with_allow_empty_value(),
             ),
             Self::GithubPullRequest if !FeatureFlag::GithubPrPromptChip.is_enabled() => None,
-            Self::GithubPullRequest => {
-                let generator = builtins::github_pull_request_url();
-                let policy = ChipRuntimePolicy::new(
-                    generator.dependencies().to_vec(),
-                    true,
-                    Some(Duration::from_secs(5)),
-                    [
-                        ChipFingerprintInput::SessionId,
-                        ChipFingerprintInput::WorkingDirectory,
-                        ChipFingerprintInput::GitBranch,
-                        ChipFingerprintInput::RequiredExecutablesPresence,
-                        ChipFingerprintInput::InvalidatingCommandCount,
-                    ],
-                )
-                .with_suppress_on_failure()
-                .with_invalidate_on_commands(["git", "gh", "gt"]);
-                Some(ContextChip::shell_builtin_with_runtime_policy(
-                    "GitHub Pull Request",
-                    generator,
-                    None,
-                    GIT_REFRESH_CONFIG,
-                    policy,
-                ))
-            }
+            // The chip value is pushed in by `CurrentPrompt::set_github_repo_model`
+            // from the per-repo `GitHubRepoModel`, so the chip itself has no
+            // generator, no required executables and no failure suppression.
+            // Matches `02b53fcd8:app/src/context_chips/mod.rs`.
+            Self::GithubPullRequest => Some(ContextChip::builtin(
+                "GitHub Pull Request",
+                |_| None,
+                RefreshConfig::OnDemandOnly,
+            )),
             Self::KubernetesContext => Some(ContextChip::shell_builtin(
                 "Kubernetes Context",
                 builtins::kubernetes_current_context(),

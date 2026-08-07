@@ -825,6 +825,12 @@ fn collect_prompt_context(model_id: &str, ctx: &[AIAgentContext]) -> PromptConte
             | AIAgentContext::Image(_)
             | AIAgentContext::SelectedText(_)
             | AIAgentContext::Block(_) => {}
+            // Repository identity and pull-request metadata reach the Warp API
+            // through `input_context::Git.{repository,pull_request}`; the BYOP
+            // system prompt has no corresponding section yet, so they are not
+            // rendered here. Tracked as a follow-up (see the PR that added
+            // `AIAgentContext::{Repository,PullRequest}`).
+            AIAgentContext::Repository { .. } | AIAgentContext::PullRequest { .. } => {}
         }
     }
 

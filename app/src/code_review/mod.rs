@@ -14,6 +14,12 @@ pub mod editor_state;
 pub(crate) mod find_model;
 pub(crate) mod git_dialog;
 pub mod git_status_update;
+// Per-repo GitHub metadata (`gh pr view` / `gh repo view`). Only the local
+// backend is ported from the pin, and it drives the local `gh` CLI, so the whole
+// module is gated on `local_fs` (the pin gates only its `Local` variant, since it
+// also carries a remote push-receiver variant this fork does not have yet).
+#[cfg(feature = "local_fs")]
+pub mod github_repo_model;
 mod hidden_lines;
 pub mod telemetry_event;
 #[cfg_attr(not(feature = "local_fs"), allow(unused_imports))]

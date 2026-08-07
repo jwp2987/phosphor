@@ -119,6 +119,8 @@ use crate::code_review::diff_state::{DiffMode, GitDeltaPreference};
 use crate::code_review::git_status_update::{
     GitRepoStatusModel, GitStatusMetadata, GitStatusUpdateModel,
 };
+#[cfg(feature = "local_fs")]
+use crate::code_review::github_repo_model::GitHubRepoModel;
 use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
 use crate::projects::ProjectManagementModel;
 use crate::remote_server::manager::{
@@ -2591,6 +2593,12 @@ pub struct TerminalView {
     #[cfg(feature = "local_fs")]
     git_repo_status: Option<ModelHandle<GitRepoStatusModel>>,
 
+    /// Per-repo GitHub-info model (`gh pr view` / `gh repo view`) for the
+    /// current repository, if any. Feeds the `GithubPullRequest` prompt chip and
+    /// the agent's repository / pull-request context.
+    #[cfg(feature = "local_fs")]
+    github_repo_model: Option<ModelHandle<GitHubRepoModel>>,
+
     /// Deferred code review open request, stashed when [`GitDeltaPreference::OnlyDirty`] is
     /// requested but git status metadata has not loaded yet. Consumed in
     /// [`Self::handle_git_repo_status_event`].
@@ -3939,6 +3947,8 @@ impl TerminalView {
             #[cfg(feature = "local_fs")]
             git_repo_status: None,
             #[cfg(feature = "local_fs")]
+            github_repo_model: None,
+            #[cfg(feature = "local_fs")]
             deferred_code_review_open: None,
             block_completed_callbacks: Default::default(),
             conversation_completed_callbacks: Default::default(),
@@ -4327,11 +4337,111 @@ impl TerminalView {
         });
     }
 
+    /// Drop the per-repo GitHub-info subscription and detach it from both
+    /// consumers (the prompt chip and the agent context model).
+    #[cfg(feature = "local_fs")]
+    fn clear_github_repo_model(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.github_repo_model.take().is_none() {
+            return;
+        }
+
+        self.current_prompt.update(ctx, |prompt_type, ctx| {
+            if let PromptType::Dynamic { prompt } = prompt_type {
+                prompt.update(ctx, |current_prompt, ctx| {
+                    current_prompt.set_github_repo_model(None, ctx);
+                });
+            }
+        });
+        self.ai_context_model.update(ctx, |context_model, _| {
+            context_model.set_github_repo_model(None);
+        });
+    }
+
+    /// Whether the terminal's prompt / footer chips need PR info.
+    #[cfg(feature = "local_fs")]
+    fn needs_pr_info_for_chip_ui(&self, ctx: &AppContext) -> bool {
+        if self.agent_view_controller.as_ref(ctx).is_active() {
+            return SessionSettings::as_ref(ctx)
+                .agent_footer_chip_selection
+                .all_chips()
+                .contains(&ContextChipKind::GithubPullRequest);
+        }
+        if self.has_active_cli_agent_session(ctx)
+            && SessionSettings::as_ref(ctx)
+                .cli_agent_footer_chip_selection
+                .all_chips()
+                .contains(&ContextChipKind::GithubPullRequest)
+        {
+            return true;
+        }
+
+        let is_using_warp_prompt = !*SessionSettings::as_ref(ctx).honor_ps1
+            || InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
+        is_using_warp_prompt
+            && Prompt::as_ref(ctx)
+                .chip_kinds()
+                .contains(&ContextChipKind::GithubPullRequest)
+    }
+
+    /// The agent's input context carries repository / pull-request metadata, so
+    /// an AI-enabled terminal in a repo needs the model even with no PR chip.
+    #[cfg(feature = "local_fs")]
+    fn needs_pr_info_for_agent_context(&self, ctx: &AppContext) -> bool {
+        self.current_repo_path.is_some() && self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn needs_pr_info(&self, ctx: &AppContext) -> bool {
+        self.needs_pr_info_for_chip_ui(ctx) || self.needs_pr_info_for_agent_context(ctx)
+    }
+
+    /// Re-evaluate whether the terminal needs a PR-info subscription, and
+    /// acquire or drop the handle accordingly.
+    ///
+    /// Ported from `02b53fcd8:app/src/terminal/view.rs::sync_pr_info_subscription`.
+    #[cfg(feature = "local_fs")]
+    fn sync_pr_info_subscription(&mut self, ctx: &mut ViewContext<Self>) {
+        let needs_pr_info = self.needs_pr_info(ctx);
+        if !needs_pr_info {
+            self.clear_github_repo_model(ctx);
+            return;
+        }
+        if self.github_repo_model.is_some() {
+            return;
+        }
+        let Some(repo_path) = self.current_repo_path.clone() else {
+            return;
+        };
+        let result = GitStatusUpdateModel::handle(ctx)
+            .update(ctx, |model, ctx| model.subscribe_github_repo(&repo_path, ctx));
+        match result {
+            Ok(handle) => {
+                let weak_for_prompt = handle.downgrade();
+                let weak_for_context = handle.downgrade();
+                self.github_repo_model = Some(handle);
+                self.current_prompt.update(ctx, |prompt_type, ctx| {
+                    if let PromptType::Dynamic { prompt } = prompt_type {
+                        prompt.update(ctx, |current_prompt, ctx| {
+                            current_prompt.set_github_repo_model(Some(weak_for_prompt), ctx);
+                        });
+                    }
+                });
+                self.ai_context_model.update(ctx, |context_model, _| {
+                    context_model.set_github_repo_model(Some(weak_for_context));
+                });
+            }
+            Err(err) => {
+                log::warn!("TerminalView subscribe_github_repo failed: {err}");
+            }
+        }
+    }
+
     /// Fully clear the per-repo git status handle, including the input's repo
     /// path. Use this when navigating out of a git repository.
     #[cfg(feature = "local_fs")]
     fn clear_git_repo_status(&mut self, ctx: &mut ViewContext<Self>) {
         self.clear_git_repo_status_subscription(ctx);
+        self.clear_github_repo_model(ctx);
         self.input.update(ctx, |input, ctx| {
             input.update_repo_path(None, ctx);
         });
@@ -4412,6 +4522,10 @@ impl TerminalView {
         } else if self.git_repo_status.is_some() {
             self.clear_git_repo_status_subscription(ctx);
         }
+
+        // PR info has its own predicate (a terminal can need it for the agent
+        // context with no git chips configured), so it is evaluated separately.
+        self.sync_pr_info_subscription(ctx);
     }
 
     /// Queues a follow-up prompt (from `/compact-and` or `/fork-and-compact`) to fire after the
@@ -9695,6 +9809,14 @@ impl TerminalView {
                 model.refresh_metadata(ctx);
             });
         }
+        // `gh`/`gt` commands don't touch `.git/`, so the filesystem watcher
+        // won't catch them; refresh PR info explicitly.
+        #[cfg(feature = "local_fs")]
+        if let Some(handle) = self.github_repo_model.clone() {
+            handle.update(ctx, |model, ctx| {
+                model.refresh_pr_info(ctx);
+            });
+        }
 
         self.input.update(ctx, |input, ctx| {
             input.update_prompt_display_chips(ctx);
@@ -10942,8 +11064,9 @@ impl TerminalView {
                                         // Subscribe to GitRepoStatusModel if the repo changed
                                         // and git status updates are needed.
                                         if old_repo_path.as_ref() != Some(repo_path) {
-                                            // Drop old handle (unsubscribes automatically).
+                                            // Drop old handles (unsubscribes automatically).
                                             me.git_repo_status = None;
+                                            me.clear_github_repo_model(ctx);
                                             me.update_git_status_subscription(ctx);
                                         }
 
