@@ -372,7 +372,7 @@ fn pending_repository_root_does_not_register_lazy_loaded_path() {
                 );
                 assert!(matches!(
                     model.repository_state(&id, ctx),
-                    Some(IndexedRepoState::Pending)
+                    Some(IndexedRepoState::Pending(_))
                 ));
             });
 
@@ -399,7 +399,7 @@ fn pending_repository_root_does_not_register_lazy_loaded_path() {
                 );
                 assert!(matches!(
                     model.repository_state(&id, ctx),
-                    Some(IndexedRepoState::Pending)
+                    Some(IndexedRepoState::Pending(_))
                 ));
             });
         });

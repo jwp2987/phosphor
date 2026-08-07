@@ -57,7 +57,7 @@ impl RemoteRepoMetadataModel {
     pub fn get_repository(&self, id: &RemoteRepositoryIdentifier) -> Option<&FileTreeState> {
         match self.repositories.get(id)? {
             IndexedRepoState::Indexed(state) => Some(state),
-            IndexedRepoState::Pending | IndexedRepoState::Failed(_) => None,
+            IndexedRepoState::Pending(_) | IndexedRepoState::Failed(_) => None,
         }
     }
 
@@ -82,7 +82,7 @@ impl RemoteRepoMetadataModel {
     ) -> Option<Vec<RepoContent<'_>>> {
         let state = match self.repositories.get(id)? {
             IndexedRepoState::Indexed(state) => state,
-            IndexedRepoState::Pending | IndexedRepoState::Failed(_) => return None,
+            IndexedRepoState::Pending(_) | IndexedRepoState::Failed(_) => return None,
         };
         let mut contents = Vec::new();
         collect_contents_recursive(
