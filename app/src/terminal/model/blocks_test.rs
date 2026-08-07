@@ -2084,3 +2084,55 @@ fn classifies_next_block_ids_relative_to_the_active_block() {
         NextBlockIdDisposition::ActiveDuplicate
     );
 }
+
+fn drain_terminal_events(events_rx: &async_channel::Receiver<Event>) -> Vec<Event> {
+    let mut events = Vec::new();
+    while let Ok(event) = events_rx.try_recv() {
+        events.push(event);
+    }
+    events
+}
+
+#[test]
+pub fn visible_bootstrap_block_event_fires_when_script_execution_becomes_visible() {
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let channel_event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(events_tx)
+        .build();
+
+    let mut block_list = TestBlockListBuilder::new()
+        .with_channel_event_proxy(channel_event_proxy)
+        .build();
+    advance_to_script_execution(&mut block_list);
+
+    assert!(block_list.active_block().started());
+    assert!(block_list
+        .active_block()
+        .is_empty(&AgentViewState::Inactive));
+
+    let events = drain_terminal_events(&events_rx);
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::VisibleBootstrapBlock)));
+
+    block_list.input('c');
+    let events = drain_terminal_events(&events_rx);
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::VisibleBootstrapBlock)));
+
+    block_list.update_active_block_height();
+    let visible_events = drain_terminal_events(&events_rx)
+        .into_iter()
+        .filter(|event| matches!(event, Event::VisibleBootstrapBlock))
+        .count();
+    assert_eq!(visible_events, 1);
+
+    block_list.input('d');
+    block_list.update_active_block_height();
+    let visible_events = drain_terminal_events(&events_rx)
+        .into_iter()
+        .filter(|event| matches!(event, Event::VisibleBootstrapBlock))
+        .count();
+    assert_eq!(visible_events, 0);
+}

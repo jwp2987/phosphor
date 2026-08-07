@@ -2002,6 +2002,7 @@ impl BlockList {
             }
             None => Lines::zero(),
         };
+        let mut previous_block_height = BlockHeight::zero();
         let block_height = if let Some(block) = self.block_at(block_index) {
             block.height(&self.agent_view_state).into()
         } else {
@@ -2015,6 +2016,9 @@ impl BlockList {
             let mut cursor = self.block_heights.cursor::<BlockIndex, ()>();
             let next_index = block_index + BlockIndex(1);
             let mut tree_before_last_block = cursor.slice(&next_index, SeekBias::Left);
+            if let Some(BlockHeightItem::Block(height)) = cursor.item() {
+                previous_block_height = *height;
+            }
             tree_before_last_block.push(BlockHeightItem::Block(block_height));
 
             // Advance the cursor past the current block and take the suffix to get all the items
@@ -2072,6 +2076,20 @@ impl BlockList {
 
         if let Some(removed_index) = removed_gap_index {
             self.update_block_height_indices(BlockHeightUpdate::Removal(removed_index), false);
+        }
+
+        let should_emit_visible_bootstrap_block_event = previous_block_height
+            == BlockHeight::zero()
+            && block_height > BlockHeight::zero()
+            && self
+                .block_at(block_index)
+                .is_some_and(Block::should_emit_visible_bootstrap_block_event);
+        if should_emit_visible_bootstrap_block_event {
+            if let Some(block) = self.blocks.get_mut(block_index.0) {
+                block.mark_visible_bootstrap_block_event_sent();
+            }
+            self.event_proxy
+                .send_terminal_event(TerminalEvent::VisibleBootstrapBlock);
         }
     }
 
