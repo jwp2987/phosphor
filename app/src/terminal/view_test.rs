@@ -9,12 +9,14 @@ use warpui::{notification::UserNotification, Presenter, WindowInvalidation};
 
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
 use crate::ai::agent::task::TaskId;
-use crate::ai::agent::AIAgentActionId;
+use crate::ai::agent::{AIAgentActionId, AIAgentExchange};
 #[cfg(windows)]
 use crate::ai::blocklist::block::cli::CLISubagentViewEvent;
 use crate::ai::blocklist::block::cli_controller::{
     CLISubagentEvent, LongRunningCommandControlState, UserTakeOverReason,
 };
+use crate::ai::blocklist::controller::response_stream::ResponseStream;
+use crate::ai::blocklist::ResponseStreamId;
 use crate::ai::blocklist::SerializedBlockListItem;
 use warpui::App;
 
@@ -4499,7 +4501,14 @@ fn submit_rich_input_and_collect_pty_writes(
 }
 
 fn open_cli_agent_rich_input_for_agent(app: &mut App, agent: CLIAgent) -> ViewHandle<TerminalView> {
-    let terminal = add_window_with_terminal(app, None);
+    open_cli_agent_rich_input_for_agent_with_window_id(app, agent).1
+}
+
+fn open_cli_agent_rich_input_for_agent_with_window_id(
+    app: &mut App,
+    agent: CLIAgent,
+) -> (WindowId, ViewHandle<TerminalView>) {
+    let (window_id, terminal) = add_window_with_id_and_terminal(app, None);
     terminal.update(app, |view, ctx| {
         CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
             sessions.set_session(
@@ -4523,7 +4532,7 @@ fn open_cli_agent_rich_input_for_agent(app: &mut App, agent: CLIAgent) -> ViewHa
         view.open_cli_agent_rich_input(CLIAgentInputEntrypoint::FooterButton, ctx);
         assert!(view.has_active_cli_agent_input_session(ctx));
     });
-    terminal
+    (window_id, terminal)
 }
 
 #[test]
@@ -4599,6 +4608,158 @@ fn ctrl_g_action_closes_open_cli_agent_rich_input() {
             assert!(
                 !view.is_cli_agent_rich_input_open(ctx),
                 "OpenCLIAgentRichInput should close rich input when already open"
+            );
+        });
+    })
+}
+
+/// Verifies that Ctrl-G closes CLI agent rich input when dispatched from the
+/// focused editor context. Regression coverage for the case where the
+/// keybinding only matched the terminal context, not the embedded editor.
+#[test]
+fn ctrl_g_closes_cli_agent_rich_input_when_editor_is_focused() {
+    use crate::settings::import::model::ImportedConfigModel;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(ImportedConfigModel::new);
+        // Register keybindings so keystroke dispatch can match the Ctrl-G binding.
+        app.update(|ctx| {
+            crate::terminal::init(ctx);
+            crate::editor::init(ctx);
+        });
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let _cli_rich = FeatureFlag::CLIAgentRichInput.override_enabled(true);
+
+        let (window_id, terminal) =
+            open_cli_agent_rich_input_for_agent_with_window_id(&mut app, CLIAgent::OpenCode);
+
+        // Dispatch Ctrl-G through the focused editor's responder chain.
+        let (input_id, editor_id) = terminal.read(&app, |view, ctx| {
+            let input = view.input.clone();
+            let editor = input.as_ref(ctx).editor().clone();
+            (input.id(), editor.id())
+        });
+        let handled = app
+            .dispatch_keystroke(
+                window_id,
+                &[terminal.id(), input_id, editor_id],
+                &Keystroke::parse("ctrl-g").expect("valid keystroke"),
+                false,
+            )
+            .expect("dispatch should succeed");
+
+        assert!(handled, "ctrl-g should be handled from the focused editor");
+        terminal.read(&app, |view, ctx| {
+            assert!(
+                !view.has_active_cli_agent_input_session(ctx),
+                "rich input should be closed after Ctrl-G"
+            );
+        });
+    })
+}
+
+/// Verifies that Ctrl-G closes CLI agent rich input when dispatched from the
+/// terminal context alone (no editor in the responder chain) — for example,
+/// when focus is outside the embedded editor and the active block has
+/// transitioned out of `LongRunningCommand`, such as a CLI agent paused
+/// waiting for user input.
+#[test]
+fn ctrl_g_closes_cli_agent_rich_input_from_terminal_context() {
+    use crate::settings::import::model::ImportedConfigModel;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(ImportedConfigModel::new);
+        // Register keybindings so keystroke dispatch can match the Ctrl-G binding.
+        app.update(|ctx| {
+            crate::terminal::init(ctx);
+            crate::editor::init(ctx);
+        });
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let _cli_rich = FeatureFlag::CLIAgentRichInput.override_enabled(true);
+
+        let (window_id, terminal) =
+            open_cli_agent_rich_input_for_agent_with_window_id(&mut app, CLIAgent::OpenCode);
+
+        // Dispatch Ctrl-G with only the terminal view in the responder chain.
+        // This simulates the case where focus is not on the embedded editor
+        // (e.g., on the block list) and the editor-context arm of the
+        // predicate would not match.
+        let handled = app
+            .dispatch_keystroke(
+                window_id,
+                &[terminal.id()],
+                &Keystroke::parse("ctrl-g").expect("valid keystroke"),
+                false,
+            )
+            .expect("dispatch should succeed");
+
+        assert!(
+            handled,
+            "ctrl-g should be handled from the terminal context when rich input is open"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert!(
+                !view.has_active_cli_agent_input_session(ctx),
+                "rich input should be closed after Ctrl-G from terminal context"
+            );
+        });
+    })
+}
+
+/// Verifies that Ctrl-G is a true toggle: opens then closes rich input from
+/// the terminal context.
+#[test]
+fn ctrl_g_toggles_cli_agent_rich_input_from_terminal_context() {
+    use crate::settings::import::model::ImportedConfigModel;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(ImportedConfigModel::new);
+        app.update(|ctx| {
+            crate::terminal::init(ctx);
+            crate::editor::init(ctx);
+        });
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let _cli_rich = FeatureFlag::CLIAgentRichInput.override_enabled(true);
+
+        // Start with rich input open, then close via Ctrl-G, then re-open via
+        // direct call (Ctrl-G's open path requires LongRunningCommand, which is
+        // tricky to simulate in a unit test), then close via Ctrl-G again.
+        let (window_id, terminal) =
+            open_cli_agent_rich_input_for_agent_with_window_id(&mut app, CLIAgent::OpenCode);
+
+        let keystroke = Keystroke::parse("ctrl-g").expect("valid keystroke");
+
+        // First close: rich input is open -> Ctrl-G should close.
+        let handled = app
+            .dispatch_keystroke(window_id, &[terminal.id()], &keystroke, false)
+            .expect("dispatch should succeed");
+        assert!(handled, "first ctrl-g should be handled (close)");
+        terminal.read(&app, |view, ctx| {
+            assert!(
+                !view.has_active_cli_agent_input_session(ctx),
+                "rich input should be closed after first Ctrl-G"
+            );
+        });
+
+        // Re-open programmatically (mirrors the user re-triggering open via
+        // Ctrl-G in a long-running context).
+        terminal.update(&mut app, |view, ctx| {
+            view.open_cli_agent_rich_input(CLIAgentInputEntrypoint::CtrlG, ctx);
+            assert!(view.has_active_cli_agent_input_session(ctx));
+        });
+
+        // Second close: rich input is open again -> Ctrl-G should close again.
+        let handled = app
+            .dispatch_keystroke(window_id, &[terminal.id()], &keystroke, false)
+            .expect("dispatch should succeed");
+        assert!(handled, "second ctrl-g should be handled (close again)");
+        terminal.read(&app, |view, ctx| {
+            assert!(
+                !view.has_active_cli_agent_input_session(ctx),
+                "rich input should be closed after second Ctrl-G"
             );
         });
     })
@@ -6357,4 +6518,427 @@ fn send_review_comments_to_phosphor_tui_writes_prompt_to_pty() {
             "PTY write should contain the review prompt, got: {prompt}"
         );
     });
+}
+
+fn bootstrap_with_long_running_block(view: &mut TerminalView) {
+    let mut model = view.model.lock();
+    model.init_shell(InitShellValue {
+        session_id: 0.into(),
+        shell: "zsh".to_owned(),
+        ..Default::default()
+    });
+    model.bootstrapped(BootstrappedValue {
+        shell: "zsh".to_owned(),
+        ..Default::default()
+    });
+    model.simulate_block("ls", "file.txt");
+    model.simulate_long_running_block("long-command", "output");
+}
+
+/// Places the active block in agent-driving-but-not-monitoring state:
+/// `requested_command_action_id` is set but `long_running_control_state` is `None`.
+/// This simulates the window between when the agent writes the command to the
+/// PTY and when the subtask that starts monitoring it is created.
+fn set_active_block_agent_driving(view: &mut TerminalView, conversation_id: AIConversationId) {
+    let action_id = AIAgentActionId::from("test-action".to_owned());
+    view.model
+        .lock()
+        .block_list_mut()
+        .active_block_mut()
+        .set_agent_interaction_mode_for_requested_command(action_id, None, conversation_id);
+}
+
+fn exchange_with_inputs(inputs: Vec<AIAgentInput>) -> AIAgentExchange {
+    AIAgentExchange {
+        id: AIAgentExchangeId::new(),
+        input: inputs,
+        output_status: AIAgentOutputStatus::Streaming { output: None },
+        added_message_ids: std::collections::HashSet::new(),
+        start_time: chrono::Local::now(),
+        finish_time: None,
+        time_to_first_token_ms: None,
+        working_directory: None,
+        model_id: LLMId::from("test-model"),
+        request_cost: None,
+        coding_model_id: LLMId::from("test-coding-model"),
+        cli_agent_model_id: LLMId::from("test-cli-agent-model"),
+        computer_use_model_id: LLMId::from("test-computer-use-model"),
+        response_initiator: None,
+    }
+}
+
+/// cmd-k must not wipe blocks while the agent is driving a command (before the
+/// agent-monitoring subtask has been created). Regression coverage for the fork
+/// only checking `is_agent_monitoring()`, missing the driving-but-not-monitoring
+/// window that `is_agent_driving_command()` also covers.
+#[test]
+fn cmd_k_does_not_clear_buffer_when_agent_is_driving_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            bootstrap_with_long_running_block(view);
+
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            set_active_block_agent_driving(view, conversation_id);
+
+            assert!(view
+                .model
+                .lock()
+                .block_list()
+                .active_block()
+                .is_agent_driving_command());
+            assert!(!view
+                .model
+                .lock()
+                .block_list()
+                .active_block()
+                .is_agent_monitoring());
+
+            let block_count_before = view.model.lock().block_list().blocks().len();
+
+            view.clear_buffer_for_testing(ctx);
+
+            assert_eq!(
+                view.model.lock().block_list().blocks().len(),
+                block_count_before,
+                "cmd-k must not wipe blocks while the agent is driving a command"
+            );
+        });
+    })
+}
+
+#[test]
+fn cmd_k_in_agent_view_clears_active_block_not_full_buffer_when_agent_driving_command() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            let conversation_id = view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        None,
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("should enter agent view")
+            });
+
+            bootstrap_with_long_running_block(view);
+            set_active_block_agent_driving(view, conversation_id);
+
+            assert!(view
+                .agent_view_controller()
+                .as_ref(ctx)
+                .agent_view_state()
+                .is_fullscreen());
+            assert!(view
+                .model
+                .lock()
+                .block_list()
+                .active_block()
+                .is_agent_driving_command());
+
+            conversation_id
+        });
+
+        let block_count_before = terminal.read(&app, |view, _| {
+            view.model.lock().block_list().blocks().len()
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.clear_buffer_for_testing(ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            // Same conversation still active: no new conversation was started.
+            assert_eq!(
+                view.agent_view_controller()
+                    .as_ref(ctx)
+                    .agent_view_state()
+                    .active_conversation_id(),
+                Some(conversation_id),
+                "cmd-k must not start a new conversation while agent is driving a command"
+            );
+            // Block count unchanged: only the active block output was cleared.
+            assert_eq!(
+                view.model.lock().block_list().blocks().len(),
+                block_count_before,
+                "cmd-k must not remove blocks while agent is driving a command"
+            );
+        });
+    })
+}
+
+#[test]
+fn cmd_k_in_agent_view_cancels_in_progress_conversation_and_starts_new_one() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let old_conversation_id = terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        None,
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("should enter agent view")
+            })
+        });
+
+        // New conversations always start InProgress.
+        terminal.read(&app, |_, ctx| {
+            assert_eq!(
+                BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&old_conversation_id)
+                    .map(|c| c.status().clone()),
+                Some(ConversationStatus::InProgress)
+            );
+        });
+
+        // Attach a mock in-flight response stream so cancel_conversation_progress
+        // can actually cancel it and flip the status to Cancelled.
+        let stream_id = ResponseStreamId::new_for_test();
+        terminal.update(&mut app, |view, ctx| {
+            // Associate the stream_id with the conversation in the history model so
+            // the controller can look up which conversation owns it when cancelling.
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                let exchange = exchange_with_inputs(vec![]);
+                history
+                    .conversation_mut(&old_conversation_id)
+                    .expect("conversation should exist")
+                    .append_reassigned_exchange(&stream_id, exchange, view.view_id, ctx)
+                    .expect("exchange should append");
+            });
+            let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+            view.ai_controller.update(ctx, |controller, ctx| {
+                controller.register_mock_stream_for_test(
+                    stream_id.clone(),
+                    old_conversation_id,
+                    stream,
+                    ctx,
+                );
+            });
+        });
+
+        // Cmd+K with no long-running command: cancels the old in-progress conversation
+        // (stream is cancelled -> AfterStreamFinished -> Cancelled status) and starts a new one.
+        terminal.update(&mut app, |view, ctx| {
+            view.clear_buffer_for_testing(ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            // A new conversation must now be active.
+            let new_conversation_id = view
+                .agent_view_controller()
+                .as_ref(ctx)
+                .agent_view_state()
+                .active_conversation_id()
+                .expect("agent view should still be active after cmd-k");
+            assert_ne!(
+                new_conversation_id, old_conversation_id,
+                "cmd-k must start a new conversation when an in-progress one is active"
+            );
+
+            // The old conversation must be Cancelled -- the stream was actually cancelled.
+            assert_eq!(
+                BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&old_conversation_id)
+                    .map(|c| c.status().clone()),
+                Some(ConversationStatus::Cancelled),
+                "the old in-progress conversation must be Cancelled after cmd-k"
+            );
+        });
+    })
+}
+
+#[test]
+fn updated_conversation_metadata_refreshes_selected_conversation_pane_title() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(false);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let conversation_id = AIConversationId::new();
+
+        terminal.update(&mut app, |view, ctx| {
+            let conversation = AIConversation::new_restored(
+                conversation_id,
+                vec![api::Task {
+                    id: "root-task".to_string(),
+                    messages: vec![],
+                    dependencies: None,
+                    description: "Original title".to_string(),
+                    summary: String::new(),
+                    server_data: String::new(),
+                }],
+                None,
+            )
+            .expect("conversation should restore");
+
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                history.restore_conversations(view.view_id, vec![conversation], ctx);
+            });
+            view.ai_context_model.update(ctx, |context_model, ctx| {
+                context_model.set_pending_query_state_for_existing_conversation(
+                    conversation_id,
+                    AgentViewEntryOrigin::AgentViewBlock,
+                    ctx,
+                );
+            });
+            view.update_pane_configuration(ctx);
+            assert_eq!(
+                view.pane_configuration.as_ref(ctx).title(),
+                "Original title"
+            );
+
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                history.apply_conversation_title(conversation_id, "Renamed title".to_string(), ctx)
+            });
+            view.handle_ai_history_model_event(
+                BlocklistAIHistoryModel::handle(ctx),
+                &BlocklistAIHistoryEvent::UpdatedConversationTitle {
+                    terminal_view_id: Some(view.view_id),
+                    conversation_id,
+                    title: "Renamed title".to_string(),
+                },
+                ctx,
+            );
+
+            assert_eq!(view.pane_configuration.as_ref(ctx).title(), "Renamed title");
+        });
+    })
+}
+
+#[test]
+fn attach_path_as_context_routes_to_open_cli_agent_rich_input() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let _cli_rich = FeatureFlag::CLIAgentRichInput.override_enabled(true);
+
+        let terminal = open_cli_agent_rich_input_for_agent(&mut app, CLIAgent::Claude);
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.attach_path_as_context(std::path::Path::new("src/main.rs"), ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(view.input.as_ref(ctx).buffer_text(ctx), "src/main.rs");
+        });
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "context should be inserted into rich input instead of written to PTY"
+        );
+    })
+}
+
+#[test]
+fn paste_raw_image_clipboard_in_cli_agent_sends_correct_bytes() {
+    fn run_for_agent(agent: CLIAgent) {
+        App::test((), move |mut app| async move {
+            initialize_app_for_terminal_view(&mut app);
+            let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+            let terminal = add_window_with_terminal(&mut app, None);
+
+            let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+            let writes = pty_writes.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                    if let Event::WriteBytesToPty { bytes } = event {
+                        writes.borrow_mut().push(bytes.to_vec());
+                    }
+                });
+            });
+
+            terminal.update(&mut app, |view, ctx| {
+                CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                    sessions.set_session(
+                        view.view_id,
+                        CLIAgentSession {
+                            agent,
+                            status: CLIAgentSessionStatus::InProgress,
+                            session_context: CLIAgentSessionContext::default(),
+                            input_state: CLIAgentInputState::Closed,
+                            should_auto_toggle_input: false,
+                            listener: None,
+                            remote_host: None,
+                            plugin_version: None,
+                            draft_text: None,
+                            custom_command_prefix: None,
+                        },
+                        ctx,
+                    );
+                });
+
+                {
+                    let mut model = view.model.lock();
+                    model.simulate_long_running_block(agent.command_prefix(), "");
+                    model.set_mode(ansi::Mode::BracketedPaste);
+                }
+
+                // Write image-only data to the clipboard (no text, no paths).
+                ctx.clipboard().write(warpui::clipboard::ClipboardContent {
+                    images: Some(vec![warpui::clipboard::ImageData {
+                        data: vec![0x89, 0x50, 0x4E, 0x47], // PNG magic bytes
+                        mime_type: "image/png".to_string(),
+                        filename: None,
+                    }]),
+                    ..Default::default()
+                });
+
+                view.handle_action(&TerminalAction::Paste, ctx);
+            });
+
+            let writes = pty_writes.borrow();
+            assert_eq!(
+                writes.len(),
+                1,
+                "expected 1 PTY write, got {}",
+                writes.len()
+            );
+
+            if cfg!(windows) {
+                if agent == CLIAgent::Claude {
+                    assert_eq!(writes[0], vec![escape_sequences::C0::ESC, b'v']);
+                } else {
+                    let mut expected = Vec::new();
+                    expected.extend_from_slice(BRACKETED_PASTE_START);
+                    expected.extend_from_slice(BRACKETED_PASTE_END);
+                    assert_eq!(writes[0], expected);
+                }
+            } else {
+                assert_eq!(writes[0], vec![escape_sequences::C0::SYN]);
+            }
+        })
+    }
+
+    run_for_agent(CLIAgent::Claude);
+    run_for_agent(CLIAgent::OpenCode);
+    run_for_agent(CLIAgent::Codex);
 }

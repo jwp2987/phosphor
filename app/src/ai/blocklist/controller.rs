@@ -3287,6 +3287,30 @@ impl BlocklistAIController {
             .has_active_stream_for_conversation(conversation_id, app)
     }
 
+    /// Registers a mock in-flight response stream for a conversation, wiring it up the same
+    /// way a real request does so that cancellation paths (`cancel_conversation_progress`,
+    /// `is_processing_response_stream`) exercise realistic behavior in tests.
+    #[cfg(test)]
+    pub fn register_mock_stream_for_test(
+        &mut self,
+        stream_id: ResponseStreamId,
+        conversation_id: AIConversationId,
+        stream: ModelHandle<ResponseStream>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let stream_clone = stream.clone();
+        ctx.subscribe_to_model(&stream, move |me, _, event, ctx| {
+            me.handle_response_stream_event(false, event, &stream_clone, ctx);
+        });
+        self.in_flight_response_streams.register_new_stream(
+            stream_id,
+            conversation_id,
+            stream,
+            CancellationReason::ManuallyCancelled,
+            ctx,
+        );
+    }
+
     /// Clears finished action results for a conversation. Used when reverting.
     pub fn clear_finished_action_results(
         &mut self,

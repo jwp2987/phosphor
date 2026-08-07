@@ -4989,17 +4989,19 @@ impl TerminalView {
     }
 
     pub fn attach_path_as_context(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
-        // If a CLI agent is running, write the path directly to the PTY.
-        if self.active_cli_agent(ctx).is_some() {
-            let content = path.to_string_lossy().to_string();
-            self.write_to_pty(content.into_bytes(), ctx);
-            self.focus_terminal(ctx);
+        let content = path.to_string_lossy().to_string();
+
+        // If a CLI agent is running, route the context to rich input when it is
+        // open, otherwise fall back to writing directly to the PTY.
+        if self
+            .try_send_text_to_cli_agent_or_rich_input(content.clone(), ctx)
+            .is_some()
+        {
             return;
         }
 
         self.input.update(ctx, |input, ctx| {
-            let content = path.to_string_lossy();
-            input.append_to_buffer(content.as_ref(), ctx);
+            input.append_to_buffer(content.as_str(), ctx);
             ctx.notify();
         });
     }
@@ -14591,14 +14593,24 @@ impl TerminalView {
             let clipboard_content = ctx.clipboard().read();
 
             if is_cli_agent_paste && clipboard_content.has_image_data() {
-                // Windows Claude Code paste is `Alt+V` (ESC + 'v'); macOS/Linux is `Ctrl+V` (SYN).
-                let paste_bytes: Vec<u8> = if cfg!(windows) {
-                    vec![0x1b, b'v']
-                } else {
-                    vec![0x16]
-                };
-                self.write_user_bytes_to_pty(paste_bytes, ctx);
-                return;
+                if !cfg!(windows) {
+                    self.write_user_bytes_to_pty(vec![escape_sequences::C0::SYN], ctx);
+                    return;
+                }
+
+                // On Windows, Claude Code uses Alt+V for native image paste.
+                let is_claude = CLIAgentSessionsModel::as_ref(ctx)
+                    .session(self.view_id)
+                    .is_some_and(|s| s.agent == CLIAgent::Claude);
+                if is_claude {
+                    self.write_user_bytes_to_pty(vec![escape_sequences::C0::ESC, b'v'], ctx);
+                    return;
+                }
+
+                // For all other agents on Windows, fall through to the normal paste path. When
+                // bracketed paste is enabled (true for TUI-based CLI agents), the empty-text paste
+                // sends \x1b[200~\x1b[201~ to the PTY. The agent interprets this as a "paste
+                // happened" signal and reads the Windows clipboard directly for image data.
             }
 
             clipboard_content_with_escaped_paths(clipboard_content, shell_family, false)
@@ -17239,31 +17251,73 @@ impl TerminalView {
             true
         } else {
             // Otherwise, there are some visible blocks and we need to clear stuff.
-            let active_block_is_long_running = self
-                .model
-                .lock()
-                .block_list()
-                .active_block()
-                .is_active_and_long_running();
-            let is_agent_monitoring = self
-                .model
-                .lock()
-                .block_list()
-                .active_block()
-                .is_agent_monitoring();
+            let (is_long_running, is_agent_monitoring, is_agent_driving_command) = {
+                let model = self.model.lock();
+                let active_block = model.block_list().active_block();
+                (
+                    active_block.is_active_and_long_running(),
+                    active_block.is_agent_monitoring(),
+                    active_block.is_agent_driving_command(),
+                )
+            };
 
             // If there isn't an active long running block, then "clear buffer" just starts a new convo.
-            if !active_block_is_long_running {
+            if !is_long_running {
+                // Cancel any in-progress work in the conversation being left.
+                if let Some(conversation_id) = self
+                    .agent_view_controller
+                    .as_ref(ctx)
+                    .agent_view_state()
+                    .active_conversation_id()
+                {
+                    let is_in_progress = BlocklistAIHistoryModel::as_ref(ctx)
+                        .conversation(&conversation_id)
+                        .is_some_and(|conversation| conversation.status().is_in_progress());
+                    if is_in_progress {
+                        self.ai_controller.update(ctx, |controller, ctx| {
+                            controller.cancel_conversation_progress(
+                                conversation_id,
+                                CancellationReason::ManuallyCancelled,
+                                ctx,
+                            );
+                        });
+                    }
+                }
                 self.enter_agent_view_for_new_conversation(
                     None,
                     AgentViewEntryOrigin::ClearBuffer,
                     ctx,
                 );
                 true
-            } else if is_agent_monitoring {
-                // Otherwise, if the agent is monitoring this long-running block,
-                // then clear just that block and leave the rest of the blocklist in tact.
+            } else if is_agent_monitoring || is_agent_driving_command {
+                // Otherwise, if the agent is monitoring (or currently driving) this
+                // long-running block, then clear just that block and leave the rest
+                // of the blocklist intact.
                 self.model.lock().clear_screen(ClearMode::ActiveBlock);
+                // In the agent-driving-but-not-monitoring state the terminal block is hidden. Make
+                // it visible and expand the header immediately so the user sees the cleared state
+                // right away, rather than waiting for the auto-expand timer.
+                if is_agent_driving_command && !is_agent_monitoring {
+                    let requested_command_action_id = self
+                        .model
+                        .lock()
+                        .block_list()
+                        .active_block()
+                        .requested_command_action_id()
+                        .cloned();
+                    if let Some(action_id) = &requested_command_action_id {
+                        self.model
+                            .lock()
+                            .block_list_mut()
+                            .set_visibility_of_block_for_ai_action(action_id, true);
+                        if let Some(ai_block_handle) = self.active_ai_block(ctx).cloned() {
+                            ai_block_handle.update(ctx, |ai_block, ctx| {
+                                ai_block.expand_requested_command_view(action_id, ctx);
+                            });
+                        }
+                        self.redetermine_terminal_focus(ctx);
+                    }
+                }
                 self.find_model.update(ctx, |find_model, ctx| {
                     find_model.clear_matches(ctx);
                 });
@@ -17290,15 +17344,22 @@ impl TerminalView {
             return;
         }
 
-        // Don't clear the buffer if the agent is monitoring a long running command
+        // Don't clear the buffer if the agent is monitoring, or currently driving,
+        // a long running command.
         let is_agent_monitoring = self
             .model
             .lock()
             .block_list()
             .active_block()
             .is_agent_monitoring();
+        let is_agent_driving_command = self
+            .model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_agent_driving_command();
 
-        if is_agent_monitoring {
+        if is_agent_monitoring || is_agent_driving_command {
             return;
         }
 
