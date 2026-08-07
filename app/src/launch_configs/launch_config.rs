@@ -293,6 +293,7 @@ pub fn make_mock_single_window_launch_config() -> LaunchConfig {
                         pane_mode: PaneMode::Terminal,
                         shell: None,
                     },
+                    commands: vec![],
                     color: None,
                 },
                 TabTemplate {
@@ -304,6 +305,7 @@ pub fn make_mock_single_window_launch_config() -> LaunchConfig {
                         pane_mode: PaneMode::Terminal,
                         shell: None,
                     },
+                    commands: vec![],
                     color: None,
                 },
             ],
