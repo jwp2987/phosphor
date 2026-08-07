@@ -141,6 +141,20 @@ Current shape, and **why** each part exists:
 - **Per-agent `CARGO_TARGET_DIR`.** Prevents cross-agent artifact contamination,
   which on the previous host produced phantom "missing symbol" errors and a bogus
   issue.
+- **…but they are never reclaimed, and that filled a 916 GB disk.** Each dir runs
+  **14–31 GB**; 43 of them reached **542 GB** and hit `No space left on device`,
+  which failed four verification builds at once with errors that look nothing like
+  a disk problem (`couldn't create a temp dir`, `could not compile <random crate>`).
+  **Check `df -h` before diagnosing a build failure you cannot explain.** Isolation
+  is only worth its disk while agents run *concurrently* — once the fleet is done,
+  collapse to a single shared dir by passing one agent name (`agent-cargo verify …`)
+  and delete the rest:
+  ```
+  du -sh /cache/git/.phosphor-build/targets/* | sort -rh   # look first
+  rm -rf /cache/git/.phosphor-build/targets/<name>          # never the parent:
+  ```
+  `targets/`'s siblings `agent-cargo`, `locks`, `logs` and `slots` are the governor
+  itself. Delete stale dirs at the end of every fleet run, not when the disk fills.
 - **Memory precheck + per-run low-water logging** to `logs/mem-<agent>.log`. Size
   slots from these numbers, not intuition. Worst dip since the fix: 6.6 GB (a cold
   full `warp` build); pre-fix it was 4.4 GB.
