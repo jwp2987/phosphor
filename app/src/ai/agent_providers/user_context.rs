@@ -101,6 +101,8 @@ pub fn collect_user_attachments(ctx: &[AIAgentContext]) -> UserAttachments {
             | AIAgentContext::Codebase { .. }
             | AIAgentContext::ProjectRules { .. }
             | AIAgentContext::Git { .. }
+            | AIAgentContext::Repository { .. }
+            | AIAgentContext::PullRequest { .. }
             | AIAgentContext::Skills { .. } => {}
         }
     }

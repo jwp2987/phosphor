@@ -15,7 +15,7 @@ use warp_core::ui::appearance::Appearance;
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
-use crate::ai::blocklist::BlocklistAIHistoryModel;
+use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use crate::ai::skills::{SkillDescriptor, SkillManager};
 use crate::search::data_source::{Query, QueryResult};
 use crate::search::mixer::DataSourceRunErrorWrapper;
@@ -145,6 +145,31 @@ impl SlashCommandDataSource {
             if matches!(
                 event,
                 InputSettingsChangedEvent::EnableSlashCommandsInTerminal { .. }
+            ) {
+                me.recompute_active_commands(ctx);
+            }
+        });
+        // `Availability::ACTIVE_CONVERSATION` is derived from
+        // `BlocklistAIHistoryModel::active_conversation` (see
+        // `recompute_active_commands`), so the active-command set goes stale the
+        // moment a conversation is selected or cleared unless we recompute here.
+        //
+        // The fork had every other recompute trigger but dropped this one, so
+        // ACTIVE_CONVERSATION stayed latched at whatever it was when the data
+        // source was constructed -- normally "no conversation". Every command
+        // gated on that bit (`/fork`, `/fork-and-compact`) was therefore absent
+        // from `active_commands_by_id`, so `parse_slash_command` never matched
+        // it, `detect_command` returned `None`, and the input fell through to
+        // the generic prompt path -- where it was queued instead of executing.
+        //
+        // That is why the failure looked like an inverted queueing predicate:
+        // the queueing code is correct and never even saw a slash command.
+        // Ported from the pin, `data_source/core.rs`. Issue #441.
+        ctx.subscribe_to_model(&BlocklistAIHistoryModel::handle(ctx), |me, event, ctx| {
+            if matches!(
+                event,
+                BlocklistAIHistoryEvent::SetActiveConversation { .. }
+                    | BlocklistAIHistoryEvent::ClearedActiveConversation { .. }
             ) {
                 me.recompute_active_commands(ctx);
             }

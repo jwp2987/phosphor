@@ -389,6 +389,32 @@ pub static VIM_MODE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     argument: None,
 });
 
+/// TUI-only: toggles auto-approve for the selected conversation. Not executable in the GUI
+/// (see `execute_slash_command`'s explicit guard), which drives the same state from the
+/// agent panel's own control.
+pub static AUTO_APPROVE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/auto-approve",
+    description: t_static!("slash-cmd-auto-approve-desc"),
+    icon_path: "bundled/svg/check-circle-broken.svg",
+    availability: Availability::AGENT_VIEW
+        | Availability::ACTIVE_CONVERSATION
+        | Availability::AI_ENABLED,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
+/// TUI-only: toggles `ai.ai_autodetection_enabled_internal`, which decides whether a typed
+/// line is auto-classified as a prompt or a shell command. Not executable in the GUI (see
+/// `execute_slash_command`'s explicit guard), where the same setting lives in Settings > AI.
+pub static NATURAL_LANGUAGE_DETECTION: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/natural-language-detection",
+    description: t_static!("slash-cmd-natural-language-detection-desc"),
+    icon_path: "bundled/svg/sparkle.svg",
+    availability: Availability::AI_ENABLED,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 /// Reports how much of the active model's context window the current conversation occupies.
 ///
 /// Sanctioned BYOP divergence from Warp (AGENTS §5.10): Warp's `/usage` opens its hosted
@@ -582,6 +608,11 @@ fn all_commands() -> Vec<StaticCommand> {
     }
 
     commands.push(VIM_MODE.clone());
+    // TUI-only toggles with no feature flag (AGENTS §5.4): both flip a setting the app
+    // already owns and already renders, and both have live TUI dispatch handlers — they
+    // were simply never registered, so the rows were unreachable (see #147/#338).
+    commands.push(AUTO_APPROVE.clone());
+    commands.push(NATURAL_LANGUAGE_DETECTION.clone());
     // No feature flag (AGENTS §5.4): both are read-only reports over data the app already
     // holds, with no rollout risk and no half-built state to hide, matching the other
     // fork-native always-on commands (`/vim-mode`, `/api-keys`).

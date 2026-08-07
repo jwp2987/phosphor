@@ -672,6 +672,10 @@ impl TryFrom<AIAgentActionResult> for api::request::input::user_inputs::user_inp
 
 fn convert_context(context: &[AIAgentContext]) -> api::InputContext {
     let mut api_context = api::InputContext::default();
+    // `Git`, `Repository` and `PullRequest` all land in one `input_context::Git`
+    // sub-message, and they arrive as independent context entries in any order,
+    // so accumulate here and assign once at the end.
+    let mut git_context = None;
     for context in context.iter().cloned() {
         match context {
             AIAgentContext::Block(block) => {
@@ -755,15 +759,42 @@ fn convert_context(context: &[AIAgentContext]) -> api::InputContext {
                 }
             }
             AIAgentContext::Git { head, branch } => {
-                api_context.git = Some(api::input_context::Git {
-                    head,
-                    branch: branch.unwrap_or_default(),
-                    // Upstream also sends repository (name/owner/host) and pull-request
-                    // metadata; this fork's `AIAgentContext::Git` collects neither, so the
-                    // context it sends is unchanged by the re-pin. See #11.
-                    repository: None,
-                    pull_request: None,
+                let api_git_context =
+                    git_context.get_or_insert_with(api::input_context::Git::default);
+                api_git_context.head = head;
+                api_git_context.branch = branch.unwrap_or_default();
+            }
+            AIAgentContext::Repository { name, owner, host } => {
+                let api_git_context =
+                    git_context.get_or_insert_with(api::input_context::Git::default);
+                api_git_context.repository = Some(api::input_context::git::Repository {
+                    name,
+                    owner: owner.unwrap_or_default(),
+                    host: host.unwrap_or_default(),
                 });
+            }
+            AIAgentContext::PullRequest {
+                number,
+                state,
+                draft,
+                base_branch,
+                url,
+            } => {
+                if number <= 0 {
+                    continue;
+                }
+                let Some(state) = api_pull_request_state(&state, draft) else {
+                    continue;
+                };
+                let pull_request = api::input_context::git::PullRequest {
+                    number,
+                    state: state as i32,
+                    base_branch,
+                    url,
+                };
+                let api_git_context =
+                    git_context.get_or_insert_with(api::input_context::Git::default);
+                api_git_context.pull_request = Some(pull_request);
             }
             AIAgentContext::Skills { skills } => {
                 api_context.updated_skills_context = Some(api::input_context::SkillsContext {
@@ -781,7 +812,32 @@ fn convert_context(context: &[AIAgentContext]) -> api::InputContext {
             }
         }
     }
+    api_context.git = git_context;
     api_context
+}
+
+/// Maps a GitHub PR state plus draft flag to the proto `State` enum.
+///
+/// Returns `None` for unknown states so the caller can skip emitting a
+/// `pull_request` sub-message rather than sending `STATE_UNSPECIFIED` to the
+/// server.
+fn api_pull_request_state(
+    state: &str,
+    draft: bool,
+) -> Option<api::input_context::git::pull_request::State> {
+    use api::input_context::git::pull_request::State;
+    match state.to_ascii_uppercase().as_str() {
+        "OPEN" => {
+            if draft {
+                Some(State::OpenDraft)
+            } else {
+                Some(State::Open)
+            }
+        }
+        "CLOSED" => Some(State::Closed),
+        "MERGED" => Some(State::Merged),
+        _ => None,
+    }
 }
 
 impl From<Suggestions> for api::Suggestions {

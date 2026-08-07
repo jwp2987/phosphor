@@ -22,6 +22,8 @@ use {
 #[cfg(feature = "local_fs")]
 use super::diff_state::DiffStats;
 #[cfg(feature = "local_fs")]
+use super::github_repo_model::{GitHubRepoModel, LocalGitHubRepoModel};
+#[cfg(feature = "local_fs")]
 use crate::context_chips::display_chip::GitBranchTrackingStatus;
 
 /// Public metadata exposed to consumers — the subset of diff metadata
@@ -50,6 +52,10 @@ pub type GitRepoModels = GitStatusUpdateModel;
 pub struct GitStatusUpdateModel {
     #[cfg(feature = "local_fs")]
     repos: HashMap<PathBuf, WeakModelHandle<GitRepoStatusModel>>,
+    /// Per-repo GitHub-info models (`gh pr view` / `gh repo view`), cached the
+    /// same way as `repos` so every consumer in one repo shares a single model.
+    #[cfg(feature = "local_fs")]
+    github_repos: HashMap<PathBuf, WeakModelHandle<GitHubRepoModel>>,
 }
 
 // ── Non-local_fs stub ───────────────────────────────────────────────────────
@@ -69,6 +75,7 @@ impl GitStatusUpdateModel {
     pub fn new() -> Self {
         Self {
             repos: HashMap::new(),
+            github_repos: HashMap::new(),
         }
     }
 
@@ -108,6 +115,51 @@ impl GitStatusUpdateModel {
             .add_model(|ctx| GitRepoStatusModel::new(repo_path_buf.clone(), repository_model, ctx));
 
         self.repos.insert(repo_path_buf, handle.downgrade());
+        Ok(handle)
+    }
+
+    /// Get or create the per-repo GitHub-info model for `repo_path`.
+    ///
+    /// The backend subscribes to the sibling git status model to track the
+    /// current branch and fetches PR / repository info on creation, on branch
+    /// change, and on a periodic timer. Multiple callers in the same repo share
+    /// one model; it is torn down when the last strong handle is dropped.
+    ///
+    /// Callers hold the returned `ModelHandle` for as long as they need updates.
+    ///
+    /// Ported from the pin's `GitRepoModels::subscribe_github_repo`
+    /// (`02b53fcd8:app/src/code_review/git_repo_models.rs`), keyed by `PathBuf`
+    /// rather than `LocalOrRemotePath` because only the local backend exists here.
+    pub fn subscribe_github_repo(
+        &mut self,
+        repo_path: &Path,
+        ctx: &mut ModelContext<Self>,
+    ) -> anyhow::Result<ModelHandle<GitHubRepoModel>> {
+        let repo_path_buf = repo_path.to_path_buf();
+
+        if let Some(handle) = self
+            .github_repos
+            .get(&repo_path_buf)
+            .and_then(|weak| weak.upgrade(ctx))
+        {
+            return Ok(handle);
+        }
+
+        // `LocalGitHubRepoModel` needs a sibling `GitRepoStatusModel` for branch info.
+        let git_status = self.subscribe(repo_path, ctx)?;
+        let inner = {
+            let repo_path_buf = repo_path_buf.clone();
+            ctx.add_model(|ctx| LocalGitHubRepoModel::new(repo_path_buf, git_status, ctx))
+        };
+        let handle = ctx.add_model(|ctx| {
+            ctx.subscribe_to_model(&inner, |me, event, ctx| {
+                GitHubRepoModel::forward_event(me, event, ctx)
+            });
+            GitHubRepoModel::Local(inner)
+        });
+
+        self.github_repos
+            .insert(repo_path_buf, handle.downgrade());
         Ok(handle)
     }
 }

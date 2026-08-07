@@ -212,6 +212,8 @@ const STATUSLINE_PERSISTENCE_FAILED_HINT: &str = "Could not save the statusline 
 const COPY_SELECTION_HINT: &str = "copied to clipboard";
 const COPY_FAILED_HINT: &str = "failed to copy to clipboard";
 const LOG_BUNDLE_FAILED_HINT: &str = "Failed to create log bundle (check logs)";
+const AUTO_APPROVE_ENABLED_HINT: &str = "Auto approve on";
+const AUTO_APPROVE_DISABLED_HINT: &str = "Auto approve off";
 const NLD_ENABLED_HINT: &str = "Natural language detection enabled.";
 const NLD_DISABLED_HINT: &str = "Natural language detection disabled.";
 const NLD_PERSISTENCE_FAILED_HINT: &str = "Could not save the natural language detection setting.";
@@ -2123,6 +2125,20 @@ impl TuiTerminalSessionView {
         });
         if show_feedback {
             self.show_auto_approve_feedback(ctx);
+            let enabled = self
+                .conversation_selection
+                .as_ref(ctx)
+                .pending_query_autoexecute_override(ctx)
+                .is_autoexecute_any_action();
+            self.show_success_hint(
+                if enabled {
+                    AUTO_APPROVE_ENABLED_HINT
+                } else {
+                    AUTO_APPROVE_DISABLED_HINT
+                }
+                .to_owned(),
+                ctx,
+            );
         } else {
             self.clear_auto_approve_feedback(ctx);
         }
@@ -3691,11 +3707,9 @@ impl TuiTerminalSessionView {
                 }
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
-            SlashCommandKind::EnableNaturalLanguageDetection => {
-                self.set_nld_enabled(true, command.name, ctx);
-            }
-            SlashCommandKind::DisableNaturalLanguageDetection => {
-                self.set_nld_enabled(false, command.name, ctx);
+            SlashCommandKind::NaturalLanguageDetection => {
+                let enabled = !AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
+                self.set_nld_enabled(enabled, command.name, ctx);
             }
             SlashCommandKind::VimMode => {
                 self.toggle_vim_mode(command.name, ctx);
