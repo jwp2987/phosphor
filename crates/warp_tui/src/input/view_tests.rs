@@ -881,6 +881,8 @@ fn multiline_paste_emits_once_and_fallback_inserts_without_submitting() {
                 | TuiInputViewEvent::AcceptedExchange(..)
                 | TuiInputViewEvent::BackspaceAtEmptyInput
                 | TuiInputViewEvent::MoveFocusUp
+                | TuiInputViewEvent::ClipboardCopySucceeded
+                | TuiInputViewEvent::ClipboardCopyFailed
                 | TuiInputViewEvent::VimModeChanged => {}
             });
             (view, pasted, submitted)
@@ -1078,6 +1080,45 @@ fn cursor_and_height(
         .terminal_cursor()
         .and_then(|point| Some((u16::try_from(point.x).ok()?, u16::try_from(point.y).ok()?)));
     (cursor, size.height)
+}
+
+/// The primary caret's `(col, row)` in the view's *persisted* char-cell
+/// layout — the soft-wrap lattice that cursor navigation (MoveUp /
+/// MoveToLineEnd) actually reads. Unlike [`cursor_and_height`], which lays out
+/// a throwaway element on the fly, this reflects the asynchronously-produced
+/// render state, so it is the correct thing to await before driving row-aware
+/// movement. Returns `None` until the layout stream has populated the char-cell
+/// state to cover the current caret offset. Awaiting the caret's *final* display
+/// point (not merely the row count) is deliberate: an intermediate layout can
+/// carry the right number of rows while a still-pending edit leaves the caret's
+/// row unpopulated, which is exactly the race that made these tests flaky.
+/// Mirrors `single_cursor_on_first_row`'s offset handling (1-based caret → the
+/// lattice's 0-based char offset).
+/// The number of visual rows in the view's *persisted* char-cell layout. Paired
+/// with [`persisted_cursor_point`] to disambiguate the caret's deferred-wrap
+/// position: `offset_to_display_point` reports a caret sitting one row past the
+/// last row as `row == rows.len()`, so a transiently *collapsed* layout (e.g. an
+/// empty interior line not yet laid out) can spoof the final caret row. Awaiting
+/// the true row count as well pins the fully-laid-out lattice.
+fn persisted_display_rows(view: &ViewHandle<TuiInputView>, ctx: &AppContext) -> Option<usize> {
+    let model = view.as_ref(ctx).model.as_ref(ctx);
+    let render = model.render_state().as_ref(ctx);
+    let char_cell = render.char_cell()?;
+    let hidden = char_cell.hidden_line_ranges(ctx);
+    Some(char_cell.display_lattice(&hidden).rows().len())
+}
+
+fn persisted_cursor_point(view: &ViewHandle<TuiInputView>, ctx: &AppContext) -> Option<(u16, u16)> {
+    let v = view.as_ref(ctx);
+    let model = v.model.as_ref(ctx);
+    let render = model.render_state().as_ref(ctx);
+    let char_cell = render.char_cell()?;
+    let cursor_offset = CharOffset::from(v.cursor_offset(ctx).as_usize().saturating_sub(1));
+    let hidden = char_cell.hidden_line_ranges(ctx);
+    let point = char_cell
+        .display_lattice(&hidden)
+        .offset_to_display_point(cursor_offset)?;
+    Some((point.col, u16::try_from(point.row).ok()?))
 }
 
 fn text(view: &ViewHandle<TuiInputView>, ctx: &AppContext) -> String {
@@ -1330,10 +1371,18 @@ fn move_up_through_empty_line_positions_cursor() {
             type_str(&view, ctx, "b");
             view
         });
-        // Vertical navigation reads the editor's soft-wrap layout, produced by an
-        // async layout stream on the foreground executor. Pump it so the empty
-        // middle row is laid out before MoveUp drives row-aware movement.
-        crate::test_fixtures::settle().await;
+        // Vertical navigation reads the editor's *persisted* soft-wrap layout,
+        // produced by an async layout stream on the foreground executor. Pump it
+        // until that layout places the caret at the end of "b" on the third
+        // visual row before MoveUp drives row-aware movement; a fixed yield count
+        // races the layout under load.
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| {
+                persisted_display_rows(&view, ctx) == Some(3)
+                    && persisted_cursor_point(&view, ctx) == Some((1, 2))
+            })
+        })
+        .await;
         app.update(|ctx| {
             // Cursor on row 2 ("b"); move up to the empty row 1.
             dispatch(
@@ -1545,9 +1594,17 @@ fn move_to_line_start_and_end_multiline() {
             type_str(&view, ctx, "def");
             view
         });
-        // Line-boundary navigation reads the editor's async soft-wrap layout;
-        // pump it so the multi-line buffer is laid out before Home/End movement.
-        crate::test_fixtures::settle().await;
+        // Line-boundary navigation reads the editor's *persisted* async soft-wrap
+        // layout; pump it until that layout places the caret at the end of "def"
+        // on the second visual row before Home/End movement; a fixed yield count
+        // races the layout stream under parallel load.
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| {
+                persisted_display_rows(&view, ctx) == Some(2)
+                    && persisted_cursor_point(&view, ctx) == Some((3, 1))
+            })
+        })
+        .await;
         app.update(|ctx| {
             // Cursor is at end of "def" (row 1, col 3).
             dispatch(
@@ -2685,5 +2742,87 @@ fn submit_accepts_highlighted_prompt_history_entry() {
         app.read(|_| {
             assert_eq!(accepted.borrow().as_slice(), &["deploy the app".to_owned()]);
         });
+    });
+}
+
+/// Regression: `TuiInputView` opts in to `copy_on_mouse_highlight`. Completing a
+/// mouse drag-selection (left-up → `SelectionEnd`) must emit
+/// `ClipboardCopySucceeded` — pinning the one-liner at `input/view.rs` that
+/// enables the feature. If that line is reverted the event is never emitted.
+#[test]
+fn copy_on_mouse_highlight_emits_clipboard_copy_succeeded_for_input_view() {
+    App::test((), |mut app| async move {
+        let (view, copy_succeeded_count) = app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "hello world");
+            let count = Rc::new(Cell::new(0u32));
+            let count_for_sub = count.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if matches!(event, TuiInputViewEvent::ClipboardCopySucceeded) {
+                    count_for_sub.set(count_for_sub.get() + 1);
+                }
+            });
+            (view, count)
+        });
+
+        // Simulate drag: left-down, drag across "hello", left-up.
+        app.update(|ctx| {
+            mouse(&view, ctx, &left_down(0, 0, 1, false));
+            mouse(&view, ctx, &left_drag(5, 0));
+        });
+        assert_eq!(
+            copy_succeeded_count.get(),
+            0,
+            "no copy should be emitted while dragging"
+        );
+
+        app.update(|ctx| {
+            // left_up maps to SelectionEnd; with copy_on_mouse_highlight enabled on
+            // TuiInputView's behavior, this must emit ClipboardCopySucceeded.
+            mouse(&view, ctx, &left_up(5, 0));
+        });
+        assert_eq!(
+            copy_succeeded_count.get(),
+            1,
+            "copy_on_mouse_highlight must emit ClipboardCopySucceeded on mouse-up"
+        );
+    });
+}
+
+/// Regression: a plain click (no drag) in the input produces a collapsed
+/// selection. Even though `SelectionEnd` fires with `copy_on_mouse_highlight` enabled,
+/// the empty-selection guard in `apply_editor_clipboard_action` must prevent a
+/// clipboard write and suppress `ClipboardCopySucceeded`/`ClipboardCopyFailed`.
+#[test]
+fn copy_on_mouse_highlight_does_not_copy_empty_selection() {
+    App::test((), |mut app| async move {
+        let (view, clipboard_event_count) = app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "hello world");
+            let count = Rc::new(Cell::new(0u32));
+            let count_for_sub = count.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if matches!(
+                    event,
+                    TuiInputViewEvent::ClipboardCopySucceeded
+                        | TuiInputViewEvent::ClipboardCopyFailed
+                ) {
+                    count_for_sub.set(count_for_sub.get() + 1);
+                }
+            });
+            (view, count)
+        });
+
+        // A plain left-down + left-up at the same position emits SelectionStartAt
+        // then SelectionEnd with no intervening drag, so the selection is empty.
+        app.update(|ctx| {
+            mouse(&view, ctx, &left_down(3, 0, 1, false));
+            mouse(&view, ctx, &left_up(3, 0));
+        });
+        assert_eq!(
+            clipboard_event_count.get(),
+            0,
+            "collapsed selection must not write the clipboard or emit clipboard events"
+        );
     });
 }
