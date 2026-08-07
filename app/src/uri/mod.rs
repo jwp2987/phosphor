@@ -962,8 +962,19 @@ enum OpenFileAction {
 
 /// Pure routing decision for `open_file`. Extracted so it can be unit-tested without
 /// standing up a full `AppContext`.
-fn classify_open_file_action(path: &Path) -> OpenFileAction {
-    if is_markdown_file(path) {
+///
+/// The Markdown Viewer preference is passed in because macOS can hand Markdown
+/// file URLs to Zap via the file type registration in `Info.plist`. Since Zap
+/// cannot easily update that registration when the user toggles the viewer
+/// preference, the URI handler must check the preference before routing a
+/// Markdown file to the in-app notebook viewer.
+///
+/// Ported from the pin (app/src/uri/mod.rs); the pin also folds in Jupyter
+/// notebook routing here (behind `FeatureFlag::JupyterNotebookRendering`), which
+/// this fork does not have (see #240 for the ipynb-routing feature gap)
+/// and is deliberately NOT ported.
+fn classify_open_file_action(path: &Path, prefer_markdown_viewer: bool) -> OpenFileAction {
+    if is_markdown_file(path) && prefer_markdown_viewer {
         return OpenFileAction::Notebook;
     }
     if path.is_file() {
@@ -992,7 +1003,15 @@ fn open_file(window_id: Option<WindowId>, path: PathBuf, ctx: &mut AppContext) {
             .map(|view_id| (window_id, view_id))
     });
 
-    let action = classify_open_file_action(&path);
+    #[cfg(feature = "local_fs")]
+    let prefer_markdown_viewer = {
+        use crate::util::file::external_editor::EditorSettings;
+        *EditorSettings::as_ref(ctx).prefer_markdown_viewer
+    };
+    #[cfg(not(feature = "local_fs"))]
+    let prefer_markdown_viewer = true;
+
+    let action = classify_open_file_action(&path, prefer_markdown_viewer);
     if action == OpenFileAction::Notebook {
         if let Some((primary_window_id, root_view_id)) = primary_window_and_view {
             ctx.dispatch_action(
