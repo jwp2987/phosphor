@@ -980,7 +980,11 @@ impl Input {
                 };
                 show_usage_cost_outcome(outcome, ctx);
             }
-            tui_only if command.name == commands::STATUSLINE.name => {
+            tui_only
+                if command.name == commands::STATUSLINE.name
+                    || command.name == commands::AUTO_APPROVE.name
+                    || command.name == commands::NATURAL_LANGUAGE_DETECTION.name =>
+            {
                 debug_assert!(
                     false,
                     "Attempted to execute TUI-only slash command in the GUI: {}",

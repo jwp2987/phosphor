@@ -10,11 +10,11 @@ use string_offset::CharOffset;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::search::data_source::QueryResult;
 use warp::search::mixer::SearchMixerEvent;
-use warp::settings::AppEditorSettings;
+use warp::settings::{AISettings, AppEditorSettings};
 use warp::tui_export::{
     AcceptSlashCommandOrSavedPrompt, ConversationSelectionHandle, ParsedSlashCommandInput,
     SlashCommandMixer, TuiSlashCommandDataSource, UpdatedActiveCommands,
-    should_close_slash_command_menu_for_exact_match, slash_command_query,
+    should_close_slash_command_menu_for_exact_match, slash_command_query, slash_commands,
 };
 use warp_editor::model::CoreEditorModel;
 use warp_search_core::inline_menu::{InlineMenuResultsUpdate, InputDrivenInlineMenuLifecycle};
@@ -290,23 +290,7 @@ impl TuiSlashCommandModel {
                 .map(|row| TuiInlineMenuRow {
                     title: row.title.clone(),
                     description: row.description.clone(),
-                    // BYOP: Zap does not register an /auto-approve command constant, so match
-                    // on the literal name; the row only appears if the command is present.
-                    state_suffix: match row.title.as_str() {
-                        "/auto-approve" => Some(format!(
-                            "(currently {})",
-                            if self.auto_approve_enabled(ctx) {
-                                "on"
-                            } else {
-                                "off"
-                            }
-                        )),
-                        "/vim-mode" => Some(format!(
-                            "(currently {})",
-                            if self.vim_mode_enabled(ctx) { "on" } else { "off" }
-                        )),
-                        _ => None,
-                    },
+                    state_suffix: self.state_suffix(&row.title, ctx),
                     is_selectable: true,
                     style: TuiInlineMenuRowStyle::InlineMenuItem,
                 })
@@ -317,6 +301,25 @@ impl TuiSlashCommandModel {
             max_visible_rows: MAX_VISIBLE_ROWS,
             status,
         })
+    }
+
+    /// The `(currently on/off)` trailer a toggle command's row carries, so the menu shows
+    /// the state the command is about to flip. `/vim-mode` is fork-native; the other two
+    /// mirror the oracle's `state_suffix`.
+    fn state_suffix(&self, title: &str, ctx: &AppContext) -> Option<String> {
+        let enabled = if title == slash_commands::AUTO_APPROVE.name {
+            self.auto_approve_enabled(ctx)
+        } else if title == slash_commands::NATURAL_LANGUAGE_DETECTION.name {
+            AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx)
+        } else if title == slash_commands::VIM_MODE.name {
+            self.vim_mode_enabled(ctx)
+        } else {
+            return None;
+        };
+        Some(format!(
+            "(currently {})",
+            if enabled { "on" } else { "off" }
+        ))
     }
 
     fn auto_approve_enabled(&self, ctx: &AppContext) -> bool {

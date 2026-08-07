@@ -2553,6 +2553,8 @@ slash-cmd-export-to-clipboard-desc = Export current conversation to clipboard in
 slash-cmd-export-to-file-desc = Export current conversation to a markdown file
 slash-cmd-export-to-file-hint = <optional filename>
 slash-cmd-vim-mode-desc = Toggle Vim mode for the composer
+slash-cmd-auto-approve-desc = Toggle auto approve
+slash-cmd-natural-language-detection-desc = Toggle natural language detection
 slash-cmd-usage-desc = Show how much of the model's context window this conversation uses
 slash-cmd-cost-desc = Show this conversation's cost at your configured provider rates
 
