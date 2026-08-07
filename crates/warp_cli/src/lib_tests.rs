@@ -96,11 +96,6 @@ use crate::agent::{AgentCommand, Harness};
 //   Warp's cloud GraphQL/session-sharing backends; those accessors and env constants don't
 //   exist here since the fork has no cloud backend to point at.
 //
-// `harness_parse_local_child_harness_accepts_codex` / `harness_parse_orchestration_harness_accepts_codex`
-// are FEATURE GAP, not cloud debt: Warp's `Harness::Codex` variant and
-// `config_name`/`from_config_name` were never ported to `warp_cli::agent` (issue #183).
-// Reported there, not invented here.
-//
 // `api_key_before_subcommand_parses` / `debug_before_subcommand_parses` /
 // `multiple_global_flags_before_subcommand_parse` are ported below, adapted to target
 // `whoami` instead of the removed `login` -- see the comment at their definition.
@@ -527,12 +522,21 @@ fn harness_parse_local_child_harness_rejects_oz() {
     );
 }
 
-// FEATURE GAP (issue #183), not test debt: the pin also has
-// `harness_parse_orchestration_harness_accepts_codex` and
-// `harness_parse_local_child_harness_accepts_codex`, asserting
-// `Harness::parse_orchestration_harness("codex") == Some(Harness::Codex)` and the local
-// equivalent. `Harness::Codex` doesn't exist in `crate::agent::Harness` here, so these
-// can't be ported without inventing the feature. Reported at #183, not implemented here.
+#[test]
+fn harness_parse_orchestration_harness_accepts_codex() {
+    assert_eq!(
+        Harness::parse_orchestration_harness("codex"),
+        Some(Harness::Codex)
+    );
+}
+
+#[test]
+fn harness_parse_local_child_harness_accepts_codex() {
+    assert_eq!(
+        Harness::parse_local_child_harness("codex"),
+        Some(Harness::Codex)
+    );
+}
 
 // Ported from the pin's `api_key_before_subcommand_parses` / `debug_before_subcommand_parses`
 // / `multiple_global_flags_before_subcommand_parse`. These pin the CLI's

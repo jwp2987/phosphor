@@ -19,6 +19,7 @@ pub fn display_name(harness: Harness) -> &'static str {
         Harness::Claude => "Claude Code",
         Harness::OpenCode => "OpenCode",
         Harness::Gemini => "Gemini CLI",
+        Harness::Codex => "Codex",
         Harness::Unknown => "Unknown",
     }
 }
@@ -30,6 +31,7 @@ pub fn icon_for(harness: Harness) -> Icon {
         Harness::Claude => Icon::ClaudeLogo,
         Harness::OpenCode => Icon::OpenCodeLogo,
         Harness::Gemini => Icon::GeminiLogo,
+        Harness::Codex => Icon::OpenAILogo,
         Harness::Unknown => Icon::HelpCircle,
     }
 }
@@ -42,6 +44,13 @@ pub fn brand_color(harness: Harness) -> Option<ColorU> {
         Harness::Claude => Some(CLAUDE_ORANGE),
         Harness::OpenCode => None,
         Harness::Gemini => Some(GEMINI_BLUE),
+        // Consistent with `OpenCode` above: this shared display module only
+        // wires a brand tint for harnesses whose color const is already
+        // `pub`/`pub(crate)`-exposed here (`CLAUDE_ORANGE`, `GEMINI_BLUE`).
+        // `OPENAI_COLOR` (used by `CLIAgent::Codex`'s icon tile in
+        // `cli_agent.rs`) is module-private there; widening its visibility
+        // just for this is out of scope for #411.
+        Harness::Codex => None,
         Harness::Unknown => None,
     }
 }

@@ -58,7 +58,9 @@ pub(super) fn build_local_opencode_child_command(prompt: &str) -> String {
 
 fn local_child_task_config(harness: Harness) -> Option<AgentConfigSnapshot> {
     match harness {
-        Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Unknown => None,
+        Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Unknown => {
+            None
+        }
         Harness::Claude => Some(AgentConfigSnapshot {
             harness: Some(HarnessConfig::from_harness_type(harness)),
             ..Default::default()
@@ -115,6 +117,16 @@ pub(super) async fn prepare_local_harness_child_launch(
             validate_cli_installed("opencode", Some("https://opencode.ai/docs"))
                 .map_err(|error: AgentDriverError| error.to_string())?;
             build_local_opencode_child_command(&prompt)
+        }
+        // `Harness::parse_local_child_harness` now recognizes "codex" (issue
+        // #411's pinned-parity requirement), so this arm is reachable, unlike
+        // the `unreachable!()` arms above for harnesses the parser filters
+        // out. There is no local-child spawn implementation yet -- no
+        // `build_local_codex_child_command`, no disabled-product-message
+        // gating -- that's issue #323's scope, not #411's. Fail clearly
+        // instead of pretending to launch a child that was never started.
+        Harness::Codex => {
+            return Err("Local Codex child harness support is not yet implemented.".to_string());
         }
         Harness::Gemini => unreachable!("normalize_local_child_harness filters out Gemini"),
     };
