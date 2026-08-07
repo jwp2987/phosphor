@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Run every gate CI runs, locally, before you push.
+#
+# WHY THIS EXISTS
+# ---------------
+# CI is the FINAL check, not the check that finds a problem for the first time.
+# Every failure CI reports first is a slow round trip that a local run would
+# have caught in seconds -- and it trains people to push speculatively and let
+# the runner think for them.
+#
+# This bit for real: PR #417 was correct, but it fixed three tests whose entries
+# were still in script/known_test_failures.txt. Nothing local checked that, so
+# CI reported it ~15 minutes later as a red job that read like a broken PR.
+#
+# WHAT IT COSTS
+# -------------
+# The expensive part -- the full suite -- is NOT run here. Instead this runs
+# only the tests currently listed in known_test_failures.txt (8 of them), which
+# is what catches the stale-entry case. That is seconds once the crate is built,
+# against ~15 minutes of CI round trip.
+#
+# Full-suite regressions are still CI's job. That is the correct division: cheap
+# and certain locally, expensive and comprehensive in CI.
+#
+# USAGE
+#     script/precheck                 # gates only (fast, no build)
+#     script/precheck --with-tests    # also run the known-failure subset
+#
+# Exit non-zero if any gate fails, so it can be wired to a pre-push hook.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+WITH_TESTS=0
+[[ "${1:-}" == "--with-tests" ]] && WITH_TESTS=1
+
+status=0
+step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
+fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; status=1; }
+ok()   { printf '  \033[32mok\033[0m   %s\n' "$1"; }
+
+# ---------------------------------------------------------------- formatting
+# The repo pins edition 2018 in .rustfmt.toml while the crates are edition 2024
+# (issue #191), so ALWAYS use --config-path and never --edition. Only changed
+# files are checked: a repo-wide run reports pre-existing drift you did not
+# cause, which is noise that gets ignored.
+step "rustfmt (changed .rs files only)"
+mapfile -t changed < <(git diff --name-only --diff-filter=ACM origin/main...HEAD -- '*.rs' 2>/dev/null)
+if ((${#changed[@]} == 0)); then
+    ok "no changed .rs files"
+else
+    fmt_bad=0
+    for f in "${changed[@]}"; do
+        [[ -f "$f" ]] || continue
+        # Only parse errors matter here. Formatting diffs are frequently
+        # pre-existing; a parse error never is.
+        if rustfmt --check --config-path .rustfmt.toml "$f" 2>&1 | grep -qE '^error: (expected|unexpected)'; then
+            fail "$f does not parse"
+            fmt_bad=1
+        fi
+    done
+    ((fmt_bad == 0)) && ok "${#changed[@]} file(s) parse cleanly"
+fi
+
+# ------------------------------------------------------------------- guards
+step "fork boundary guards"
+if ./script/check_cloud_boundary >/dev/null 2>&1; then ok "cloud boundary"; else
+    fail "cloud boundary -- run ./script/check_cloud_boundary for detail"; fi
+if ./script/check_stub_coverage >/dev/null 2>&1; then ok "stub coverage"; else
+    fail "stub coverage -- run ./script/check_stub_coverage for detail"; fi
+
+# ------------------------------------------------- known-failure bookkeeping
+# The cheap half of the CI test gate: run ONLY the listed failures. If one now
+# passes, its line must be deleted in this same PR -- which is exactly the case
+# that surprised #417.
+step "known-failure bookkeeping"
+KNOWN=script/known_test_failures.txt
+mapfile -t listed < <(grep -vE '^\s*(#|$)' "$KNOWN" | tr -d ' \r')
+if ((${#listed[@]} == 0)); then
+    ok "list is empty"
+elif ((WITH_TESTS == 0)); then
+    printf '  \033[33mskipped\033[0m %s listed test(s) -- re-run with --with-tests\n' "${#listed[@]}"
+else
+    filter=""
+    for t in "${listed[@]}"; do
+        [[ -n "$filter" ]] && filter+=" or "
+        filter+="test(=${t})"
+    done
+    out="$(mktemp)"
+    cargo nextest run -p warp --lib --features gui --no-fail-fast -E "$filter" >"$out" 2>&1
+    passed="$(sed -E 's/\x1b\[[0-9;]*m//g' "$out" | grep -cE '^\s+PASS ')"
+    if ((passed > 0)); then
+        fail "$passed listed test(s) now PASS -- delete their lines from $KNOWN in this PR:"
+        sed -E 's/\x1b\[[0-9;]*m//g' "$out" | grep -E '^\s+PASS ' | awk '{print "         - "$NF}'
+    else
+        ok "all ${#listed[@]} listed test(s) still fail (list is accurate)"
+    fi
+    rm -f "$out"
+fi
+
+printf '\n'
+if ((status == 0)); then
+    printf '\033[32mprecheck: ok\033[0m -- safe to push\n'
+else
+    printf '\033[31mprecheck: FAILED\033[0m -- fix before pushing; CI will report the same thing 15 minutes later\n'
+fi
+exit $status

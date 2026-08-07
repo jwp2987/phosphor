@@ -14,6 +14,11 @@ wrongly. Each exists because a wrong answer cost real time.
 | **`TODO.md`** | The parity ledger. **Verify any entry before acting on it** — four entries have stated the opposite of the code (#148). |
 | **`AGENTS.md` §5.6/§5.10/§5.11** | Never weaken a test to go green; fix the code. Every defect gets an issue first. |
 
+**Run `script/precheck` before you push.** It runs every gate CI runs except the
+full suite, in seconds. CI is the final check, not the one that discovers the
+problem — anything CI reports first is a 15-minute round trip you could have had
+locally.
+
 Two CI guards enforce what the compiler cannot: `script/check_cloud_boundary`
 (no new imports of dropped-cloud modules) and `script/check_stub_coverage` (no
 tests against gutted no-op stubs). Read their header comments before changing

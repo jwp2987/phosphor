@@ -18,9 +18,21 @@ without meaningfully touching the queue.
 
 **Agents: write, and self-check cheaply. Never run the full suite.**
 
+**Run `script/precheck` before every push.** It runs every gate CI runs, except
+the full suite: rustfmt on your changed files, both fork-boundary guards, and --
+with `--with-tests` -- only the tests currently listed in
+`known_test_failures.txt`. That last one is the cheap half of the CI test gate
+and catches the case where your fix retires a known failure but leaves its entry
+on the books.
+
+CI is the FINAL check, not the check that finds a problem for the first time.
+Anything CI reports first is a 15-minute round trip that a local run would have
+caught in seconds.
+
 | gate | cost | catches |
 |---|---|---|
-| `rustfmt --check --edition 2024 <changed files>` | ~1s | syntax damage, unclosed delimiters, bad merges |
+| `script/precheck` | ~seconds | everything below, in one command |
+| `rustfmt --check --config-path .rustfmt.toml <changed files>` | ~1s | syntax damage, unclosed delimiters, bad merges |
 | `cargo check -p <own crate>` | seconds–minutes | type errors, missing imports |
 | **full suite** | **~10-50 min cold** | **coordinator only, batched** |
 
