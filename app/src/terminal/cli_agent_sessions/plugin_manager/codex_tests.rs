@@ -19,6 +19,13 @@ fn can_auto_install_is_false_without_codex_plugin() {
 
 #[test]
 fn install_instructions_are_native_without_codex_plugin() {
+    // `title` is filled via `t_static!`, which resolves through the i18n loader once
+    // (LazyLock) and permanently caches the raw fluent key if evaluated before
+    // `init()`. Under nextest, each test runs in its own process with no loader
+    // initialized by default, so the loader must be initialized here to get the
+    // real English copy instead of the untranslated key.
+    crate::i18n::init(Some("en"));
+
     let _guard = FeatureFlag::CodexPlugin.override_enabled(false);
     let instructions = CodexPluginManager::new(None, None, None).install_instructions();
     assert_eq!(
