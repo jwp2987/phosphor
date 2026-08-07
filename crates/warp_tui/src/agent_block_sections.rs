@@ -138,10 +138,13 @@ pub(crate) fn render_thinking_section(
 
 /// Renders a streamed conversation summary with the same persistent
 /// collapse/hover behavior as a reasoning section.
+///
+/// Defaults to **collapsed** whether or not streaming has finished, so an
+/// in-progress summary does not auto-expand — the prior expand-while-streaming
+/// default made the transcript jitter closed once streaming completed.
 pub(crate) fn render_summarization_section(
     states: &CollapsibleSectionStates,
     message_id: &MessageId,
-    finished: bool,
     body: Box<dyn TuiElement>,
     app: &AppContext,
 ) -> Box<dyn TuiElement> {
@@ -149,7 +152,9 @@ pub(crate) fn render_summarization_section(
         states,
         message_id,
         "Conversation summarized".to_owned(),
-        finished,
+        // Always collapsed by default; a manual override in
+        // `CollapsibleSectionStates` still wins so users can expand it.
+        true,
         body,
         app,
     )

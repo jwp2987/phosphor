@@ -313,6 +313,44 @@ fn shell_mode_placeholder_hint_teaches_exit() {
     });
 }
 
+#[test]
+fn agent_mode_render_has_prompt_gutter() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let view = build_view(ctx);
+            // Adapted from the pin's single `render_view` helper (buffer +
+            // cursor + height): the fork splits that into
+            // `render_input_buffer` and `cursor_and_height`.
+            let buffer = render_input_buffer(&view, ctx);
+            let (cursor, height) = cursor_and_height(&view, ctx);
+            assert!(buffer.to_lines()[0].starts_with("> "));
+            assert_eq!(cursor, Some((2, 0)));
+            assert_eq!(height, 1);
+
+            let prefix_style = TuiUiBuilder::from_app(ctx).accent_text_style();
+            let prefix = &buffer[(0, 0)];
+            assert_eq!(
+                prefix.fg,
+                prefix_style.fg.expect("accent style has a foreground")
+            );
+            assert_eq!(prefix.bg, warpui_core::elements::tui::Color::Reset);
+            assert_eq!(prefix.modifier, prefix_style.add_modifier);
+            assert!(
+                !prefix
+                    .modifier
+                    .contains(warpui_core::elements::tui::Modifier::BOLD)
+            );
+
+            type_str(&view, ctx, &"x".repeat(usize::from(W) - 1));
+            assert_eq!(
+                cursor_and_height(&view, ctx).1,
+                2,
+                "agent input should wrap at the gutter-narrowed width"
+            );
+        });
+    });
+}
+
 fn render_input_buffer(view: &ViewHandle<TuiInputView>, ctx: &AppContext) -> TuiBuffer {
     let mut element = view.as_ref(ctx).render_element(ctx);
     let mut rendered_views = EntityIdMap::default();

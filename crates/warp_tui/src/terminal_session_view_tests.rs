@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -6,10 +7,11 @@ use warp::appearance::Appearance;
 use warp::settings::{AISettings, TuiStatuslineConfig, TuiStatuslineItem};
 use warp::terminal::model::ansi::{Handler, InputBufferValue};
 use warp::tui_export::{
-    AIAgentExchangeId, AIConversationAutoexecuteMode, AgentViewEntryOrigin, AgentViewState,
-    BlockPadding, BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMPreferences,
-    PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, export_conversation_markdown,
-    register_tui_session_view_test_singletons, slash_commands,
+    AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
+    AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryModel,
+    ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo,
+    SizeUpdate, TaskId, export_conversation_markdown, register_tui_session_view_test_singletons,
+    slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -715,6 +717,64 @@ fn footer_model_label_is_a_bounded_click_target() {
             scene.clone(),
             &left_mouse_up(outside.0, outside.1)
         ));
+    });
+}
+
+#[test]
+fn stale_user_pty_bytes_are_dropped_after_agent_takes_control_or_is_tagged_in() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let writes_for_events = writes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if let TuiTerminalSessionEvent::WriteUserInput(bytes) = event {
+                    writes_for_events.borrow_mut().push(bytes.to_vec());
+                }
+            });
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(
+                &TuiTerminalSessionAction::ForwardUserPtyBytes(b"user".to_vec()),
+                ctx,
+            );
+            let mut terminal_model = view.terminal_model.lock();
+            terminal_model.simulate_long_running_block("vim", "");
+            terminal_model
+                .block_list_mut()
+                .active_block_mut()
+                .set_is_agent_tagged_in(true);
+            drop(terminal_model);
+            view.handle_action(
+                &TuiTerminalSessionAction::ForwardUserPtyBytes(b"tagged".to_vec()),
+                ctx,
+            );
+            let mut terminal_model = view.terminal_model.lock();
+            let conversation_id = AIConversationId::new();
+            let task_id = TaskId::new("stale-pty-write".to_owned());
+            terminal_model
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("stale-pty-command".to_owned()),
+                    Some(task_id.clone()),
+                    conversation_id,
+                );
+            terminal_model
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                .expect("command should become agent monitored");
+            drop(terminal_model);
+            view.handle_action(
+                &TuiTerminalSessionAction::ForwardUserPtyBytes(b"agent".to_vec()),
+                ctx,
+            );
+        });
+
+        assert_eq!(*writes.borrow(), vec![b"user".to_vec()]);
     });
 }
 
