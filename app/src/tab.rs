@@ -1832,3 +1832,7 @@ impl UiComponent for TabComponent<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tab_tests.rs"]
+mod tests;
