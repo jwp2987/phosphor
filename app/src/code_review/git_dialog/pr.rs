@@ -25,6 +25,8 @@ use crate::{
     workspace::ToastStack,
 };
 
+use crate::code::buffer_location::RemotePath;
+
 /// PR-mode sub-actions, dispatched wrapped in `GitDialogAction::Pr`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PrSubAction {
@@ -60,25 +62,10 @@ pub(super) fn is_ready_to_confirm(_state: &PrState) -> bool {
 pub(super) fn new_state(
     repo_path: &Path,
     base_branch_name: Option<String>,
+    remote: Option<&RemotePath>,
     ctx: &mut ViewContext<GitDialog>,
 ) -> PrState {
-    let diff_repo_path = repo_path.to_path_buf();
-    ctx.spawn(
-        async move { get_branch_diff_entries(&diff_repo_path).await },
-        |me, result, ctx| {
-            if let GitDialogMode::CreatePr(state) = &mut me.mode {
-                match result {
-                    Ok(entries) => {
-                        state.file_changes = entries;
-                        ctx.notify();
-                    }
-                    Err(err) => {
-                        log::error!("Failed to load branch diff entries: {err}");
-                    }
-                }
-            }
-        },
-    );
+    spawn_load_file_changes(repo_path, remote, ctx);
 
     PrState {
         base_branch_name: base_branch_name.map(|name| {
@@ -115,6 +102,14 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 
     me.set_loading(loading_label_for(), ctx);
 
+    // Remote repos create the PR on the daemon over RPC (#116).
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(remote) = me.remote().cloned() {
+        let branch = me.branch_name().to_string();
+        start_confirm_remote(remote, branch, ctx);
+        return;
+    }
+
     let path_future = interactive_path_future(ctx);
 
     ctx.spawn(
@@ -133,6 +128,132 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                 }
             }
             ctx.emit(GitDialogEvent::Completed);
+        },
+    );
+}
+
+/// Sends the create-PR request to the remote host's daemon and surfaces the
+/// same toast as the local path. The daemon runs `gh pr create --fill` (BYOP:
+/// no daemon-side autogen, #116).
+#[cfg(not(target_family = "wasm"))]
+fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContext<GitDialog>) {
+    use crate::code_review::git_dialog::remote_client_for;
+    use crate::remote_server::proto;
+
+    let Some(client) = remote_client_for(&remote, ctx) else {
+        show_toast(user_facing_git_error("could not resolve host"), ctx);
+        ctx.emit(GitDialogEvent::Completed);
+        return;
+    };
+    let request = proto::GitCreatePrRequest {
+        repo_path: remote.path.to_string(),
+        branch,
+        autogenerate_content: false,
+    };
+    ctx.spawn(
+        async move { client.git_create_pr(request).await },
+        move |_me, result, ctx| {
+            match result {
+                Ok(response) => match response.result {
+                    Some(proto::git_create_pr_response::Result::Success(pr)) => {
+                        let pr = crate::remote_server::diff_state_proto::proto_to_pr_info(&pr);
+                        show_pr_created_toast(&pr, ctx);
+                    }
+                    Some(proto::git_create_pr_response::Result::Error(e)) => {
+                        log::error!("Remote create PR failed: {}", e.message);
+                        show_toast(user_facing_git_error(&e.message), ctx);
+                    }
+                    None => show_toast(user_facing_git_error(""), ctx),
+                },
+                Err(e) => {
+                    log::error!("Remote create PR RPC failed: {e}");
+                    show_toast(user_facing_git_error(&format!("{e}")), ctx);
+                }
+            }
+            ctx.emit(GitDialogEvent::Completed);
+        },
+    );
+}
+
+/// Loads the Changes box: the branch's committed-only file list
+/// (`main...HEAD`). Local reads it from git directly; remote asks the daemon's
+/// `GetCommittedBranchFiles` for the same set, so both surfaces show the same
+/// files. (Deriving it from the loaded diff state instead would show whichever
+/// file set the *current diff mode* holds, which is a different set whenever
+/// the mode isn't branch-vs-main.)
+#[cfg_attr(target_family = "wasm", allow(unused_variables))]
+fn spawn_load_file_changes(
+    repo_path: &Path,
+    remote: Option<&RemotePath>,
+    ctx: &mut ViewContext<GitDialog>,
+) {
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(remote) = remote {
+        spawn_load_remote_file_changes(remote.clone(), ctx);
+        return;
+    }
+
+    let diff_repo_path = repo_path.to_path_buf();
+    ctx.spawn(
+        async move { get_branch_diff_entries(&diff_repo_path).await },
+        |me, result, ctx| {
+            if let GitDialogMode::CreatePr(state) = &mut me.mode {
+                match result {
+                    Ok(entries) => {
+                        state.file_changes = entries;
+                        ctx.notify();
+                    }
+                    Err(err) => {
+                        log::error!("Failed to load branch diff entries: {err}");
+                    }
+                }
+            }
+        },
+    );
+}
+
+/// Remote arm of [`spawn_load_file_changes`]: the working tree lives on the
+/// daemon, so the committed branch file list comes over RPC.
+#[cfg(not(target_family = "wasm"))]
+fn spawn_load_remote_file_changes(remote: RemotePath, ctx: &mut ViewContext<GitDialog>) {
+    use crate::code_review::git_dialog::remote_client_for;
+    use crate::remote_server::diff_state_proto::proto_to_file_change_entry;
+    use crate::remote_server::proto;
+
+    let Some(client) = remote_client_for(&remote, ctx) else {
+        log::error!("Create PR dialog: no connected session for the code-review host");
+        return;
+    };
+    let request = proto::GetCommittedBranchFilesRequest {
+        repo_path: remote.path.to_string(),
+    };
+    ctx.spawn(
+        async move { client.get_committed_branch_files(request).await },
+        |me, result, ctx| {
+            let GitDialogMode::CreatePr(state) = &mut me.mode else {
+                return;
+            };
+            match result {
+                Ok(response) => match response.result {
+                    Some(proto::get_committed_branch_files_response::Result::Success(success)) => {
+                        state.file_changes = success
+                            .files
+                            .iter()
+                            .map(proto_to_file_change_entry)
+                            .collect();
+                        ctx.notify();
+                    }
+                    Some(proto::get_committed_branch_files_response::Result::Error(e)) => {
+                        log::error!("Failed to load remote branch file changes: {}", e.message);
+                    }
+                    None => {
+                        log::error!("Empty GetCommittedBranchFiles response");
+                    }
+                },
+                Err(e) => {
+                    log::error!("GetCommittedBranchFiles RPC failed: {e}");
+                }
+            }
         },
     );
 }

@@ -80,6 +80,13 @@ impl RemoteDiffStateModel {
         self.remote_path.path.to_string()
     }
 
+    /// The remote host + repo path this model is bound to. Used by the
+    /// code-review git dialog to address git write-op RPCs (#116) at the same
+    /// host/path the diff state is subscribed to.
+    pub fn remote_path(&self) -> &RemotePath {
+        &self.remote_path
+    }
+
     /// Issues a `GetDiffState` subscription RPC for the current `(repo, mode)`
     /// over the host's connected session. The initial snapshot arrives as the
     /// RPC response; later changes arrive as manager push events.
@@ -227,6 +234,37 @@ impl RemoteDiffStateModel {
         ));
     }
 
+    /// Folds a git write-op's post-operation delta (refreshed unpushed commits
+    /// + upstream ref, computed once by the daemon after the chain settles)
+    /// into the stored metadata, so the code-review UI reflects a completed
+    /// commit/push immediately.
+    ///
+    /// Mirrors Warp's `apply_git_op_delta`
+    /// (`warp/master:app/src/code_review/diff_state/remote.rs`), which applies
+    /// the delta *before* the operation's completion event is emitted. Nothing
+    /// else refreshes this state on the remote path: the model's
+    /// `refresh_diff_metadata_for_current_repo` and `refresh_pr_info` are
+    /// deliberate no-ops, so dropping the delta would leave the pre-operation
+    /// unpushed count on screen until an unrelated daemon push arrived.
+    pub fn apply_git_op_delta(
+        &mut self,
+        unpushed_commits: Vec<Commit>,
+        upstream_ref: Option<String>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // `get_or_insert_with` rather than an early return when no snapshot has
+        // landed yet: Warp seeds default metadata so the delta is never
+        // dropped. The fork's event carries no payload (it has
+        // `DiffMetadataChanged` where Warp has `MetadataRefreshed(metadata)`),
+        // so the emit differs; the state folding does not.
+        let metadata = self.metadata.get_or_insert_with(DiffMetadata::default);
+        metadata.unpushed_commits = unpushed_commits;
+        metadata.upstream_ref = upstream_ref;
+        ctx.emit(DiffStateModelEvent::DiffMetadataChanged(
+            InvalidationBehavior::All(InvalidationSource::MetadataChange),
+        ));
+    }
+
     fn apply_file_delta(&mut self, delta: &proto::DiffStateFileDelta, ctx: &mut ModelContext<Self>) {
         let decoded = decode_file_delta(delta);
         if let Some(metadata) = decoded.metadata {
@@ -322,7 +360,10 @@ impl RemoteDiffStateModel {
     }
 
     /// Git-operation blocking is a local working-tree concern; the remote
-    /// daemon owns it, so the client never blocks.
+    /// daemon owns it, so the client never blocks. Concretely, the daemon's
+    /// mutating git handlers all call `guard_git_operation_in_progress`
+    /// (`remote_server::server_model`) before touching the repository, which is
+    /// what makes returning `false` here safe.
     pub fn is_git_operation_blocked(&self, _app: &AppContext) -> bool {
         false
     }

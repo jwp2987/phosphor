@@ -23,7 +23,9 @@ use super::proto::{
     DeleteFileResponse,
     DeleteFileSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
     FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
-    GitCommitChainResponse, GitCreatePrResponse, GitOpError, GitPushResponse, Initialize,
+    GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
+    GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPushRequest,
+    GitPushResponse, Initialize,
     InitializeResponse,
     NavigatedToDirectory,
     NavigatedToDirectoryResponse, ReadFileContextResponse, RipgrepSearchRequest, RunCommandError,
@@ -664,35 +666,19 @@ impl ServerModel {
             Some(client_message::Message::GetDiffState(req)) => {
                 self.handle_get_diff_state(req, &request_id, conn_id, ctx)
             }
-            // Git write-ops over SSH: the RPC surface (proto + client) is in
-            // place, but the daemon-side handlers (running git / gh subprocesses
-            // on the remote host, with BYOP autogen) are not yet implemented.
-            // Tracked in #116. Reply with a GitOpError so the client surfaces a
-            // clear error instead of hanging on an unhandled request.
-            Some(client_message::Message::GitCommitChain(_)) => HandlerOutcome::Sync(
-                server_message::Message::GitCommitChainResponse(GitCommitChainResponse {
-                    result: Some(git_commit_chain_response::Result::Error(GitOpError {
-                        message: "Remote git commit is not yet implemented on the daemon (#116)"
-                            .to_string(),
-                    })),
-                }),
-            ),
-            Some(client_message::Message::GitPush(_)) => HandlerOutcome::Sync(
-                server_message::Message::GitPushResponse(GitPushResponse {
-                    result: Some(git_push_response::Result::Error(GitOpError {
-                        message: "Remote git push is not yet implemented on the daemon (#116)"
-                            .to_string(),
-                    })),
-                }),
-            ),
-            Some(client_message::Message::GitCreatePr(_)) => HandlerOutcome::Sync(
-                server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
-                    result: Some(git_create_pr_response::Result::Error(GitOpError {
-                        message: "Remote git create-PR is not yet implemented on the daemon (#116)"
-                            .to_string(),
-                    })),
-                }),
-            ),
+            // Git write-ops over SSH (#116): the daemon runs the git / gh
+            // subprocesses host-local against the daemon's filesystem, mirroring
+            // the local code-review dialog so local and remote behave
+            // identically.
+            Some(client_message::Message::GitCommitChain(req)) => {
+                self.handle_git_commit_chain(req, &request_id, conn_id, ctx)
+            }
+            Some(client_message::Message::GitPush(req)) => {
+                self.handle_git_push(req, &request_id, conn_id, ctx)
+            }
+            Some(client_message::Message::GitCreatePr(req)) => {
+                self.handle_create_pr(req, &request_id, conn_id, ctx)
+            }
             Some(client_message::Message::UnsubscribeDiffState(msg)) => {
                 self.handle_unsubscribe_diff_state(msg, conn_id, ctx);
                 return; // fire-and-forget notification
@@ -1088,6 +1074,239 @@ impl ServerModel {
                     Some(&request_id_for_response),
                     server_message::Message::GetCommittedBranchFilesResponse(response),
                 );
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    /// Maps the wire commit-chain mode to the `util::git` orchestration mode.
+    fn commit_chain_mode_from_proto(
+        mode: GitCommitChainMode,
+    ) -> crate::util::git::CommitChainMode {
+        use crate::util::git::CommitChainMode;
+        match mode {
+            GitCommitChainMode::CommitOnly => CommitChainMode::CommitOnly,
+            GitCommitChainMode::CommitAndPush => CommitChainMode::CommitAndPush,
+            GitCommitChainMode::CommitAndCreatePr => CommitChainMode::CommitAndCreatePr,
+        }
+    }
+
+    /// Handles `GitCommitChainRequest` — runs the commit chain (commit, then
+    /// optionally push, then optionally create-PR) on the daemon's filesystem
+    /// in a single round trip, returning the post-chain delta (refreshed
+    /// unpushed commits + upstream) and any created PR.
+    ///
+    /// `path_env` is `None`: the remote host's daemon runs from a login/sshd
+    /// context with a normal `PATH`, so — unlike Warp's macOS GUI, which must
+    /// capture an interactive-shell `PATH` for launchd-spawned processes — it
+    /// finds `git` / `gh` directly.
+    ///
+    /// BYOP divergence (#116): `autogenerate_pr_content` is accepted for
+    /// protocol parity but ignored — the fork drops Warp's cloud AIClient and
+    /// the daemon has no BYOP provider reachable, so create-PR falls back to
+    /// `gh pr create --fill` (see `util::git::run_commit_chain`).
+    fn handle_git_commit_chain(
+        &mut self,
+        msg: GitCommitChainRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        let repo_path =
+            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+                Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+                Err(e) => {
+                    return HandlerOutcome::Sync(
+                        server_message::Message::GitCommitChainResponse(GitCommitChainResponse {
+                            result: Some(git_commit_chain_response::Result::Error(GitOpError {
+                                message: format!("Invalid repo_path: {e}"),
+                            })),
+                        }),
+                    );
+                }
+            };
+        let mode = Self::commit_chain_mode_from_proto(msg.mode());
+        let message = msg.message;
+        let include_unstaged = msg.include_unstaged;
+        let branch = msg.branch;
+        let _ = msg.autogenerate_pr_content; // BYOP: ignored, see doc comment.
+
+        log::info!(
+            "Handling GitCommitChain repo={} mode={mode:?} (request_id={request_id})",
+            msg.repo_path,
+        );
+
+        let request_id_for_response = request_id.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                guard_git_operation_in_progress(&repo_path)?;
+                crate::util::git::run_commit_chain(
+                    &repo_path,
+                    mode,
+                    &message,
+                    include_unstaged,
+                    &branch,
+                    None,
+                )
+                .await
+            },
+            move |me, result, _ctx| {
+                let message = match result {
+                    Ok((commits, upstream_ref, pr_info)) => {
+                        server_message::Message::GitCommitChainResponse(GitCommitChainResponse {
+                            result: Some(git_commit_chain_response::Result::Success(
+                                GitCommitChainSuccess {
+                                    delta: Some(GitOpDelta {
+                                        unpushed_commits: commits
+                                            .iter()
+                                            .map(super::diff_state_proto::commit_to_proto)
+                                            .collect(),
+                                        upstream_ref,
+                                    }),
+                                    pr_info: pr_info
+                                        .as_ref()
+                                        .map(super::diff_state_proto::pr_info_to_proto),
+                                },
+                            )),
+                        })
+                    }
+                    Err(e) => {
+                        server_message::Message::GitCommitChainResponse(GitCommitChainResponse {
+                            result: Some(git_commit_chain_response::Result::Error(GitOpError {
+                                message: format!("{e:#}"),
+                            })),
+                        })
+                    }
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    /// Handles `GitPushRequest` — runs `git push --set-upstream` on the
+    /// daemon's filesystem, then returns the refreshed unpushed/upstream delta.
+    fn handle_git_push(
+        &mut self,
+        msg: GitPushRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        let repo_path =
+            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+                Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+                Err(e) => {
+                    return HandlerOutcome::Sync(server_message::Message::GitPushResponse(
+                        GitPushResponse {
+                            result: Some(git_push_response::Result::Error(GitOpError {
+                                message: format!("Invalid repo_path: {e}"),
+                            })),
+                        },
+                    ));
+                }
+            };
+        let branch = msg.branch;
+
+        log::info!(
+            "Handling GitPush repo={} branch={branch} (request_id={request_id})",
+            msg.repo_path,
+        );
+
+        let request_id_for_response = request_id.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                guard_git_operation_in_progress(&repo_path)?;
+                crate::util::git::run_push(&repo_path, &branch, None).await?;
+                anyhow::Ok(crate::util::git::compute_unpushed_state(&repo_path).await)
+            },
+            move |me, result, _ctx| {
+                let message = match result {
+                    Ok((commits, upstream_ref)) => {
+                        server_message::Message::GitPushResponse(GitPushResponse {
+                            result: Some(git_push_response::Result::Success(GitOpDelta {
+                                unpushed_commits: commits
+                                    .iter()
+                                    .map(super::diff_state_proto::commit_to_proto)
+                                    .collect(),
+                                upstream_ref,
+                            })),
+                        })
+                    }
+                    Err(e) => server_message::Message::GitPushResponse(GitPushResponse {
+                        result: Some(git_push_response::Result::Error(GitOpError {
+                            message: format!("{e:#}"),
+                        })),
+                    }),
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    /// Handles `GitCreatePrRequest` — runs `gh pr create` on the daemon's
+    /// filesystem and returns the created PR info.
+    ///
+    /// BYOP divergence (#116): `autogenerate_content` is accepted for protocol
+    /// parity but ignored — no BYOP provider is reachable on the daemon, so the
+    /// PR is created with `gh pr create --fill` (see `util::git::create_pr`).
+    fn handle_create_pr(
+        &mut self,
+        msg: GitCreatePrRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        let repo_path =
+            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+                Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+                Err(e) => {
+                    return HandlerOutcome::Sync(server_message::Message::GitCreatePrResponse(
+                        GitCreatePrResponse {
+                            result: Some(git_create_pr_response::Result::Error(GitOpError {
+                                message: format!("Invalid repo_path: {e}"),
+                            })),
+                        },
+                    ));
+                }
+            };
+        let _ = msg.branch; // Used by Warp's AI generation; unused in the --fill path.
+        let _ = msg.autogenerate_content; // BYOP: ignored, see doc comment.
+
+        log::info!(
+            "Handling GitCreatePr repo={} (request_id={request_id})",
+            msg.repo_path,
+        );
+
+        let request_id_for_response = request_id.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                guard_git_operation_in_progress(&repo_path)?;
+                crate::util::git::create_pr(&repo_path, None, None, None).await
+            },
+            move |me, result, _ctx| {
+                let message = match result {
+                    Ok(pr) => server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
+                        result: Some(git_create_pr_response::Result::Success(
+                            super::diff_state_proto::pr_info_to_proto(&pr),
+                        )),
+                    }),
+                    Err(e) => {
+                        server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
+                            result: Some(git_create_pr_response::Result::Error(GitOpError {
+                                message: format!("{e:#}"),
+                            })),
+                        })
+                    }
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
             },
             ctx,
         );
@@ -2167,6 +2386,26 @@ impl ServerModel {
         );
         self.buffers.close_buffer(&msg.path, conn_id, ctx);
     }
+}
+
+/// Daemon-side execution-time guard for the git write-op handlers, mirroring
+/// Warp (`warp/master:app/src/remote_server/server_model.rs`). The local dialog
+/// guards pre-emptively via its blocked-state check before opening; the remote
+/// dialog cannot, because that check probes the *client's* filesystem and the
+/// repository lives on the daemon's. This is therefore the only guard on the
+/// remote path, and `RemoteDiffStateModel::is_git_operation_blocked` returns
+/// `false` on the promise that the daemon owns it.
+///
+/// The shared `util::git` orchestration itself stays guard-free, so each
+/// mutating handler applies this at the head of its spawned future.
+#[cfg(feature = "local_fs")]
+fn guard_git_operation_in_progress(repo_path: &Path) -> anyhow::Result<()> {
+    if crate::util::git::git_operation_in_progress(repo_path) {
+        anyhow::bail!(
+            "another git operation is in progress (merge, rebase, cherry-pick, or a lock file is present)"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "local_fs")]

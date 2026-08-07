@@ -6424,13 +6424,24 @@ impl CodeReviewView {
         {
             return;
         }
-        let Some(repo_path) = self.repo_path().cloned() else {
-            return;
+        // When the code-review repo lives on an SSH host, address git write-ops
+        // to the daemon (#116). `repo_path` is then the remote path string (used
+        // for plumbing, not local FS access — the dialog gates that on remote).
+        let remote = self.diff_state_model.as_ref(ctx).remote_target(ctx);
+        let repo_path = match &remote {
+            Some(rp) => std::path::PathBuf::from(rp.path.to_string()),
+            None => match self.repo_path().cloned() {
+                Some(p) => p,
+                None => return,
+            },
         };
         let branch_name = self
             .diff_state_model
             .read(ctx, |model, cx| model.get_current_branch_name(cx))
             .unwrap_or_default();
+        // Handed to the dialog so a remote write-op can fold the daemon's
+        // returned delta back into the model before completing (#116).
+        let diff_state_model = self.diff_state_model.clone();
 
         let dialog = match kind {
             GitDialogKind::Commit => {
@@ -6443,12 +6454,22 @@ impl CodeReviewView {
                 let allow_create_pr =
                     diff_state.pr_info(ctx).is_none() && !diff_state.is_on_main_branch(ctx);
                 let has_upstream = diff_state.upstream_ref(ctx).is_some();
+                // Remote repos prefill the Changes list from the synced diff
+                // state; local repos load it from the working tree in new_state.
+                let initial_file_changes = if remote.is_some() {
+                    diff_state.loaded_file_entries(ctx)
+                } else {
+                    Vec::new()
+                };
                 ctx.add_typed_action_view(|ctx| {
                     GitDialog::new_for_commit(
                         repo_path,
+                        remote,
+                        diff_state_model,
                         branch_name,
                         allow_create_pr,
                         has_upstream,
+                        initial_file_changes,
                         ctx,
                     )
                 })
@@ -6458,7 +6479,15 @@ impl CodeReviewView {
                     .diff_state_model
                     .read(ctx, |model, cx| model.unpushed_commits(cx).to_vec());
                 ctx.add_typed_action_view(|ctx| {
-                    GitDialog::new_for_push(repo_path, branch_name, publish, commits, ctx)
+                    GitDialog::new_for_push(
+                        repo_path,
+                        remote,
+                        diff_state_model,
+                        branch_name,
+                        publish,
+                        commits,
+                        ctx,
+                    )
                 })
             }
             GitDialogKind::CreatePr => {
@@ -6466,7 +6495,14 @@ impl CodeReviewView {
                     .diff_state_model
                     .read(ctx, |model, cx| model.get_main_branch_name(cx));
                 ctx.add_typed_action_view(|ctx| {
-                    GitDialog::new_for_pr(repo_path, branch_name, base_branch_name, ctx)
+                    GitDialog::new_for_pr(
+                        repo_path,
+                        remote,
+                        diff_state_model,
+                        branch_name,
+                        base_branch_name,
+                        ctx,
+                    )
                 })
             }
         };

@@ -29,6 +29,9 @@ use crate::{
     util::git::{Commit, FileChangeEntry},
 };
 
+#[cfg(not(target_family = "wasm"))]
+use crate::code::buffer_location::RemotePath;
+
 /// Push-specific sub-actions, dispatched wrapped in `GitDialogAction::Push`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PushSubAction {
@@ -90,6 +93,7 @@ pub(super) fn handle_sub_action(
 ) {
     match action {
         PushSubAction::ToggleCommit(hash) => {
+            let is_remote = me.is_remote();
             let (should_fetch, repo_path) = {
                 let repo_path = me.repo_path().clone();
                 let GitDialogMode::Push(state) = me.mode_mut() else {
@@ -98,7 +102,12 @@ pub(super) fn handle_sub_action(
                 let is_expanded = state.expanded.entry(hash.clone()).or_insert(false);
                 *is_expanded = !*is_expanded;
                 let should_fetch = *is_expanded && !state.commit_files.contains_key(hash);
-                (should_fetch, repo_path)
+                // Remote repos can't read commit files client-side; mark the row
+                // as loaded-empty so it doesn't spin on "Loading…".
+                if should_fetch && is_remote {
+                    state.commit_files.insert(hash.clone(), Vec::new());
+                }
+                (should_fetch && !is_remote, repo_path)
             };
 
             if should_fetch {
@@ -141,6 +150,13 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
 
     me.set_loading(loading_label(publish), ctx);
 
+    // Remote repos push on the daemon over RPC (#116).
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(remote) = me.remote().cloned() {
+        start_confirm_remote(remote, branch, publish, ctx);
+        return;
+    }
+
     let path_future = interactive_path_future(ctx);
 
     ctx.spawn(
@@ -164,6 +180,60 @@ pub(super) fn start_confirm(me: &mut GitDialog, ctx: &mut ViewContext<GitDialog>
                 }
             }
             let _ = me;
+            ctx.emit(GitDialogEvent::Completed);
+        },
+    );
+}
+
+/// Sends the push to the remote host's daemon and surfaces the same toasts as
+/// the local path.
+#[cfg(not(target_family = "wasm"))]
+fn start_confirm_remote(
+    remote: RemotePath,
+    branch: String,
+    publish: bool,
+    ctx: &mut ViewContext<GitDialog>,
+) {
+    use crate::code_review::git_dialog::remote_client_for;
+    use crate::remote_server::proto;
+
+    let Some(client) = remote_client_for(&remote, ctx) else {
+        show_toast(user_facing_git_error("could not resolve host"), ctx);
+        ctx.emit(GitDialogEvent::Completed);
+        return;
+    };
+    let request = proto::GitPushRequest {
+        repo_path: remote.path.to_string(),
+        branch,
+    };
+    ctx.spawn(
+        async move { client.git_push(request).await },
+        move |me, result, ctx| {
+            match result {
+                Ok(response) => match response.result {
+                    Some(proto::git_push_response::Result::Success(delta)) => {
+                        // Fold the daemon's post-push delta in before completing,
+                        // so the unpushed-commit count and upstream ref update
+                        // immediately rather than staying stale.
+                        me.apply_git_op_delta(Some(delta), ctx);
+                        let toast_msg = if publish {
+                            "Branch successfully published."
+                        } else {
+                            "Changes successfully pushed."
+                        };
+                        show_toast(toast_msg, ctx);
+                    }
+                    Some(proto::git_push_response::Result::Error(e)) => {
+                        log::error!("Remote push failed: {}", e.message);
+                        show_toast(user_facing_git_error(&e.message), ctx);
+                    }
+                    None => show_toast(user_facing_git_error(""), ctx),
+                },
+                Err(e) => {
+                    log::error!("Remote push RPC failed: {e}");
+                    show_toast(user_facing_git_error(&format!("{e}")), ctx);
+                }
+            }
             ctx.emit(GitDialogEvent::Completed);
         },
     );

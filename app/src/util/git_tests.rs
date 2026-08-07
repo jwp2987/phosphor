@@ -5,8 +5,9 @@ use command::Stdio;
 use tempfile::TempDir;
 
 use super::{
-    detect_current_branch, detect_current_branch_display, get_pr_for_branch, is_gh_auth_error,
-    is_gh_missing_error, PrInfo, RepositoryInfo,
+    compute_unpushed_state, detect_current_branch, detect_current_branch_display,
+    get_pr_for_branch, git_operation_in_progress, is_gh_auth_error, is_gh_missing_error,
+    run_commit_chain, CommitChainMode, PrInfo, RepositoryInfo,
 };
 
 /// Helper: run a git command inside the given repo directory.
@@ -89,6 +90,143 @@ async fn detached_tag_display_returns_short_sha() {
     );
 }
 
+/// Creates a bare repo to act as `origin` and wires `repo` up to push to it,
+/// setting upstream tracking on the current branch. Returns the bare-repo dir
+/// handle (kept alive by the caller). Fully offline (local file remote).
+async fn add_bare_origin(repo: &Path) -> TempDir {
+    let bare = tempfile::tempdir().expect("failed to create bare temp dir");
+    git(&bare.path().to_path_buf(), &["init", "--bare"]).await;
+    let bare_url = bare.path().to_string_lossy().to_string();
+    git(repo, &["remote", "add", "origin", &bare_url]).await;
+    // `-u` sets the upstream tracking ref (origin/<branch>).
+    git(repo, &["push", "-u", "origin", "main"]).await;
+    bare
+}
+
+#[tokio::test]
+async fn commit_chain_commit_only_creates_a_commit_and_reports_delta() {
+    let (_dir, repo) = init_repo().await;
+    tokio::fs::write(repo.join("file.txt"), "hello\n")
+        .await
+        .expect("write file");
+
+    let (commits, upstream_ref, pr_info) = run_commit_chain(
+        &repo,
+        CommitChainMode::CommitOnly,
+        "add file.txt",
+        true, // include_unstaged: stages the new file via `git add -A`
+        "main",
+        None,
+    )
+    .await
+    .expect("commit chain should succeed");
+
+    // The commit landed: HEAD's subject is the message we passed.
+    let subject = git(&repo, &["log", "-1", "--format=%s"]).await;
+    assert_eq!(subject, "add file.txt");
+    // Commit-only never opens a PR.
+    assert!(pr_info.is_none());
+    // No upstream configured, so the delta reports no tracking ref. With no
+    // upstream, the unpushed set falls back to the branch's own commits, so the
+    // just-created commit is reported.
+    assert!(upstream_ref.is_none());
+    assert!(
+        commits.iter().any(|c| c.subject == "add file.txt"),
+        "expected the new commit in the unpushed delta, got {commits:?}"
+    );
+}
+
+#[tokio::test]
+async fn compute_unpushed_state_tracks_upstream_and_unpushed_commits() {
+    let (_dir, repo) = init_repo().await;
+    let _bare = add_bare_origin(&repo).await;
+
+    // Freshly pushed: upstream is origin/main and nothing is unpushed.
+    let (commits, upstream_ref) = compute_unpushed_state(&repo).await;
+    assert_eq!(upstream_ref.as_deref(), Some("origin/main"));
+    assert!(
+        commits.is_empty(),
+        "expected nothing unpushed, got {commits:?}"
+    );
+
+    // A new local commit is now ahead of the upstream.
+    tokio::fs::write(repo.join("new.txt"), "content\n")
+        .await
+        .expect("write file");
+    git(&repo, &["add", "-A"]).await;
+    git(&repo, &["commit", "-m", "local change"]).await;
+
+    let (commits, upstream_ref) = compute_unpushed_state(&repo).await;
+    assert_eq!(upstream_ref.as_deref(), Some("origin/main"));
+    assert_eq!(commits.len(), 1, "expected one unpushed commit");
+    assert_eq!(commits[0].subject, "local change");
+}
+
+/// Each sentinel git writes under `.git/` while an operation is in flight, and
+/// the name of the state it represents. A commit/push issued in any of these
+/// states would behave surprisingly (e.g. a commit would silently complete an
+/// in-progress merge) or fail outright, so all of them must block.
+const IN_PROGRESS_SENTINELS: &[(&str, &str)] = &[
+    ("MERGE_HEAD", "merge"),
+    ("CHERRY_PICK_HEAD", "cherry-pick"),
+    ("REVERT_HEAD", "revert"),
+    ("rebase-merge", "interactive/merge rebase"),
+    ("rebase-apply", "am-style rebase"),
+    ("index.lock", "held index lock"),
+];
+
+#[tokio::test]
+async fn git_operation_in_progress_false_on_clean_repo() {
+    let (_dir, repo) = init_repo().await;
+    assert!(
+        !git_operation_in_progress(&repo),
+        "a freshly initialized repo has no operation in progress"
+    );
+}
+
+#[tokio::test]
+async fn git_operation_in_progress_detects_every_sentinel() {
+    for (sentinel, description) in IN_PROGRESS_SENTINELS {
+        let (_dir, repo) = init_repo().await;
+        let path = repo.join(".git").join(sentinel);
+
+        // `rebase-merge` / `rebase-apply` are directories, the rest are files.
+        // Both are detected by existence, so create whichever kind matches.
+        if sentinel.starts_with("rebase-") {
+            tokio::fs::create_dir(&path)
+                .await
+                .expect("create rebase state dir");
+        } else {
+            tokio::fs::write(&path, "").await.expect("write sentinel");
+        }
+
+        assert!(
+            git_operation_in_progress(&repo),
+            "expected {description} ({sentinel}) to block git operations"
+        );
+
+        // Clearing the sentinel unblocks again, so the check is not sticky.
+        if sentinel.starts_with("rebase-") {
+            tokio::fs::remove_dir(&path).await.expect("remove state dir");
+        } else {
+            tokio::fs::remove_file(&path).await.expect("remove sentinel");
+        }
+        assert!(
+            !git_operation_in_progress(&repo),
+            "expected clearing {sentinel} to unblock git operations"
+        );
+    }
+}
+
+#[tokio::test]
+async fn git_operation_in_progress_false_for_nonexistent_repo() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let missing = dir.path().join("not-a-repo");
+    assert!(
+        !git_operation_in_progress(&missing),
+        "a path with no .git directory reports no operation in progress"
+    );
+}
 // ─── Ported from Warp: `warp/master:app/src/util/git_tests.rs` ───────────────
 //
 // Warp-mirrored coverage for `get_pr_for_branch` (AGENTS.md §5.10). The tests

@@ -24,14 +24,16 @@ use warpui::{
     keymap::{self, FixedBinding},
     platform::Cursor,
     ui_components::components::{Coords, UiComponent, UiComponentStyles},
-    AppContext, Entity, FocusContext, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle,
+    AppContext, Entity, FocusContext, ModelHandle, SingletonEntity, TypedActionView, View,
+    ViewContext, ViewHandle,
 };
 
 #[cfg(feature = "local_tty")]
 use crate::terminal::local_shell::LocalShellState;
 use crate::{
+    code::buffer_location::RemotePath,
     code::editor::{add_color, remove_color},
+    code_review::diff_state::DiffStateModel,
     settings::AISettings,
     ui_components::{
         dialog::{dialog_styles, Dialog},
@@ -89,6 +91,19 @@ pub(super) fn interactive_path_future(
 ) -> futures::future::BoxFuture<'static, Option<String>> {
     use futures::FutureExt;
     futures::future::ready(None).boxed()
+}
+
+/// Looks up the connected remote-server client for `remote`'s host, or `None`
+/// when no session is connected. Used by the git-dialog modes to address git
+/// write-op RPCs to the daemon when the code-review repo is remote (#116).
+#[cfg(not(target_family = "wasm"))]
+pub(super) fn remote_client_for(
+    remote: &RemotePath,
+    ctx: &AppContext,
+) -> Option<std::sync::Arc<remote_server::client::RemoteServerClient>> {
+    remote_server::manager::RemoteServerManager::as_ref(ctx)
+        .client_for_host(&remote.host_id)
+        .cloned()
 }
 
 /// Top-level action dispatched to `GitDialog`.
@@ -476,6 +491,14 @@ pub enum GitDialogMode {
 
 pub struct GitDialog {
     repo_path: PathBuf,
+    /// When set, the code-review repo lives on this SSH host: git write-ops run
+    /// on the daemon via RPC instead of against `repo_path` on the local FS
+    /// (#116). `None` for a local repo.
+    remote: Option<RemotePath>,
+    /// The code-review diff-state model this dialog acts on. Remote git
+    /// write-ops fold the daemon's returned delta back into it so the UI
+    /// reflects the completed operation immediately (#116).
+    diff_state_model: ModelHandle<DiffStateModel>,
     branch_name: String,
     mode: GitDialogMode,
     loading: bool,
@@ -485,11 +508,17 @@ pub struct GitDialog {
 }
 
 impl GitDialog {
+    #[allow(clippy::too_many_arguments)]
     pub fn new_for_commit(
         repo_path: PathBuf,
+        remote: Option<RemotePath>,
+        diff_state_model: ModelHandle<DiffStateModel>,
         branch_name: String,
         allow_create_pr: bool,
         has_upstream: bool,
+        // Prepopulated Changes list, used only for remote repos (which can't
+        // read the working tree); empty for local, which loads it itself.
+        initial_file_changes: Vec<FileChangeEntry>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         // Commit's confirm button is a static "Confirm" with no icon; the
@@ -498,9 +527,18 @@ impl GitDialog {
         // will actually run on click.
         let (confirm_button, cancel_button, close_button) =
             Self::build_dialog_buttons(crate::t!("common-confirm"), None, ctx);
-        let state = commit::new_state(&repo_path, allow_create_pr, has_upstream, ctx);
+        let state = commit::new_state(
+            &repo_path,
+            allow_create_pr,
+            has_upstream,
+            remote.is_some(),
+            initial_file_changes,
+            ctx,
+        );
         let this = Self {
             repo_path,
+            remote,
+            diff_state_model,
             branch_name,
             mode: GitDialogMode::Commit(state),
             loading: false,
@@ -515,6 +553,8 @@ impl GitDialog {
 
     pub fn new_for_push(
         repo_path: PathBuf,
+        remote: Option<RemotePath>,
+        diff_state_model: ModelHandle<DiffStateModel>,
         branch_name: String,
         publish: bool,
         commits: Vec<Commit>,
@@ -528,6 +568,8 @@ impl GitDialog {
         let state = push::new_state(publish, commits);
         Self {
             repo_path,
+            remote,
+            diff_state_model,
             branch_name,
             mode: GitDialogMode::Push(state),
             loading: false,
@@ -539,15 +581,19 @@ impl GitDialog {
 
     pub fn new_for_pr(
         repo_path: PathBuf,
+        remote: Option<RemotePath>,
+        diff_state_model: ModelHandle<DiffStateModel>,
         branch_name: String,
         base_branch_name: Option<String>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let (confirm_button, cancel_button, close_button) =
             Self::build_dialog_buttons(pr::confirm_label_for(), Some(pr::confirm_icon_for()), ctx);
-        let state = pr::new_state(&repo_path, base_branch_name, ctx);
+        let state = pr::new_state(&repo_path, base_branch_name, remote.as_ref(), ctx);
         Self {
             repo_path,
+            remote,
+            diff_state_model,
             branch_name,
             mode: GitDialogMode::CreatePr(state),
             loading: false,
@@ -593,6 +639,41 @@ impl GitDialog {
 
     fn repo_path(&self) -> &PathBuf {
         &self.repo_path
+    }
+
+    /// The remote host + path when the code-review repo lives on an SSH host;
+    /// `None` for a local repo. Git write-ops target the daemon over this
+    /// instead of running against `repo_path` on the local FS (#116).
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn remote(&self) -> Option<&RemotePath> {
+        self.remote.as_ref()
+    }
+
+    fn is_remote(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    /// Folds a remote git write-op's returned delta into the diff-state model.
+    /// Called on the success path *before* `GitDialogEvent::Completed`, so the
+    /// parent view's post-completion refresh cannot race it (mirrors Warp,
+    /// which applies the delta before emitting completion).
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub(super) fn apply_git_op_delta(
+        &self,
+        delta: Option<crate::remote_server::proto::GitOpDelta>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(delta) = delta else {
+            return;
+        };
+        let commits = delta
+            .unpushed_commits
+            .iter()
+            .map(crate::remote_server::diff_state_proto::proto_to_commit)
+            .collect();
+        self.diff_state_model.clone().update(ctx, |model, ctx| {
+            model.apply_git_op_delta(commits, delta.upstream_ref, ctx)
+        });
     }
 
     fn branch_name(&self) -> &str {

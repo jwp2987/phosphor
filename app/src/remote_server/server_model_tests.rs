@@ -234,3 +234,68 @@ fn create_directory_creates_nested_directories() {
     ));
     assert!(nested.is_dir());
 }
+
+#[test]
+fn commit_chain_mode_from_proto_maps_each_variant() {
+    use super::super::proto::GitCommitChainMode;
+    use crate::util::git::CommitChainMode;
+
+    assert_eq!(
+        ServerModel::commit_chain_mode_from_proto(GitCommitChainMode::CommitOnly),
+        CommitChainMode::CommitOnly
+    );
+    assert_eq!(
+        ServerModel::commit_chain_mode_from_proto(GitCommitChainMode::CommitAndPush),
+        CommitChainMode::CommitAndPush
+    );
+    assert_eq!(
+        ServerModel::commit_chain_mode_from_proto(GitCommitChainMode::CommitAndCreatePr),
+        CommitChainMode::CommitAndCreatePr
+    );
+}
+
+/// The daemon-side guard is the ONLY thing standing between a remote git
+/// write-op and a repository that is mid-merge/rebase: the client-side
+/// pre-emptive check (`is_git_operation_blocked`) probes the *client's*
+/// filesystem, and `RemoteDiffStateModel` returns `false` unconditionally on
+/// the stated promise that the daemon owns this. Mirrors Warp, which bails out
+/// of all three mutating handlers on the same condition.
+#[test]
+fn guard_git_operation_in_progress_blocks_only_mid_operation() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo = dir.path();
+    std::fs::create_dir(repo.join(".git")).expect("create .git");
+
+    // A quiescent repository is not blocked.
+    assert!(super::guard_git_operation_in_progress(repo).is_ok());
+
+    // An in-progress merge is, and the message names the states so the user can
+    // act on it rather than seeing a raw git failure.
+    std::fs::write(repo.join(".git").join("MERGE_HEAD"), "").expect("write MERGE_HEAD");
+    let err = super::guard_git_operation_in_progress(repo)
+        .expect_err("a mid-merge repository must block git write-ops");
+    let message = format!("{err}");
+    assert!(
+        message.contains("another git operation is in progress"),
+        "unexpected guard message: {message}"
+    );
+
+    // Completing the merge unblocks it; the guard is not sticky.
+    std::fs::remove_file(repo.join(".git").join("MERGE_HEAD")).expect("remove MERGE_HEAD");
+    assert!(super::guard_git_operation_in_progress(repo).is_ok());
+}
+
+/// A held `index.lock` means another git process is mutating the index right
+/// now; committing into that races it.
+#[test]
+fn guard_git_operation_in_progress_blocks_on_held_index_lock() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let repo = dir.path();
+    std::fs::create_dir(repo.join(".git")).expect("create .git");
+    std::fs::write(repo.join(".git").join("index.lock"), "").expect("write index.lock");
+
+    assert!(
+        super::guard_git_operation_in_progress(repo).is_err(),
+        "a held index.lock must block git write-ops"
+    );
+}

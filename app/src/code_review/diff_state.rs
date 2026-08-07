@@ -589,14 +589,7 @@ impl LocalDiffStateModel {
             return false;
         };
         let repo_path = repo.as_ref(app).root_dir().to_local_path_lossy();
-        let git_dir = repo_path.join(".git");
-
-        git_dir.join("MERGE_HEAD").exists()
-            || git_dir.join("CHERRY_PICK_HEAD").exists()
-            || git_dir.join("REVERT_HEAD").exists()
-            || git_dir.join("rebase-merge").exists()
-            || git_dir.join("rebase-apply").exists()
-            || git_dir.join("index.lock").exists()
+        crate::util::git::git_operation_in_progress(&repo_path)
     }
 
     #[cfg(not(feature = "local_fs"))]
@@ -3240,7 +3233,74 @@ impl DiffStateModel {
         }
     }
 
+    /// The remote host + path this model is bound to, or `None` for a local
+    /// repository. The code-review git dialog uses this to address git write-op
+    /// RPCs (#116) when the repo lives on an SSH host, rather than running git
+    /// against a (nonexistent) local path.
+    pub fn remote_target(
+        &self,
+        #[cfg_attr(target_family = "wasm", allow(unused_variables))] ctx: &AppContext,
+    ) -> Option<crate::code::buffer_location::RemotePath> {
+        match self {
+            Self::Local(_) => None,
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => Some(m.as_ref(ctx).remote_path().clone()),
+        }
+    }
+
+    /// File-change entries for the currently loaded diff, with per-file counts
+    /// derived from the loaded hunks. Used to populate the git dialog's Changes
+    /// box for remote repos, which can't read the working tree directly and so
+    /// source the list from the synced diff state instead of `get_file_change_entries`.
+    pub fn loaded_file_entries(&self, ctx: &AppContext) -> Vec<crate::util::git::FileChangeEntry> {
+        let DiffState::Loaded(data) = self.get(ctx) else {
+            return Vec::new();
+        };
+        data.files
+            .iter()
+            .map(|file| {
+                let mut additions = 0usize;
+                let mut deletions = 0usize;
+                for hunk in file.hunks.iter() {
+                    for line in &hunk.lines {
+                        match line.line_type {
+                            DiffLineType::Add => additions += 1,
+                            DiffLineType::Delete => deletions += 1,
+                            DiffLineType::Context | DiffLineType::HunkHeader => {}
+                        }
+                    }
+                }
+                crate::util::git::FileChangeEntry {
+                    path: file.file_path.to_string_lossy().into_owned(),
+                    additions,
+                    deletions,
+                }
+            })
+            .collect()
+    }
+
     // ── Mutation API (dispatched to the backend) ─────────────────────
+
+    /// Applies a remote git write-op's post-operation delta (refreshed unpushed
+    /// commits + upstream ref) returned by the daemon.
+    ///
+    /// Remote-only: the local backend recomputes this state from the working
+    /// tree after the operation, so it has no delta to fold in.
+    #[cfg_attr(target_family = "wasm", allow(unused_variables))]
+    pub fn apply_git_op_delta(
+        &mut self,
+        unpushed_commits: Vec<Commit>,
+        upstream_ref: Option<String>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match self {
+            Self::Local(_) => {}
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.update(ctx, |remote, ctx| {
+                remote.apply_git_op_delta(unpushed_commits, upstream_ref, ctx)
+            }),
+        }
+    }
 
     pub fn set_diff_mode(
         &mut self,
