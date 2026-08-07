@@ -16,10 +16,11 @@ use crate::{repository::SubscriberId, RepoMetadataError, Repository};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
+        use ignore::gitignore::Gitignore;
         use watcher::{BulkFilesystemWatcher, BulkFilesystemWatcherEvent};
         use crate::entry::{
             extract_worktree_git_dir, is_commit_related_git_file, is_git_internal_path,
-            is_index_lock_file, is_shared_git_ref,
+            is_index_lock_file, is_shared_git_ref, should_ignore_git_path,
         };
         /// Duration between filesystem watch events in milliseconds
         const FILESYSTEM_WATCHER_DEBOUNCE_MILLI_SECS: u64 = 500;
@@ -41,6 +42,12 @@ pub struct DirectoryWatcher {
 
     /// Handle to the internal processing queue model that orders scan & update tasks.
     processing_queue: ModelHandle<TaskQueue>,
+
+    /// Paths that must be watched (and indexed) even when they are gitignored
+    /// or beyond the tree's size limit — e.g. skill provider directories that
+    /// consumers (LSP, MCP) need live updates for.
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    force_included_paths: Vec<PathBuf>,
 }
 
 impl DirectoryWatcher {
@@ -68,6 +75,7 @@ impl DirectoryWatcher {
             #[cfg(feature = "local_fs")]
             watcher: Some(fs_watcher),
             processing_queue,
+            force_included_paths: Vec::new(),
         }
     }
 
@@ -92,7 +100,28 @@ impl DirectoryWatcher {
             #[cfg(feature = "local_fs")]
             watcher: Some(fs_watcher),
             processing_queue,
+            force_included_paths: Vec::new(),
         }
+    }
+
+    /// Registers paths that must be watched even when gitignored. Mirrors
+    /// `LocalRepoMetadataModel::register_force_included_paths` but applies to
+    /// the watcher backing `Repository` subscribers (LSP, MCP). Must be called
+    /// before repositories begin watching to take effect on already-registered
+    /// watches.
+    pub fn register_force_included_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        for path in paths {
+            if !self.force_included_paths.contains(&path) {
+                self.force_included_paths.push(path);
+            }
+        }
+    }
+
+    /// The force-included paths handed to [`crate::entry::repo_watch_filter`]
+    /// when registering a watch.
+    #[cfg(feature = "local_fs")]
+    pub fn force_included_paths(&self) -> &[PathBuf] {
+        &self.force_included_paths
     }
 
     /// Given a path, return the watched directory that contains it.
@@ -265,11 +294,12 @@ impl DirectoryWatcher {
     pub(crate) fn start_watching_directories(
         &mut self,
         directory_paths: Vec<StandardizedPath>,
+        gitignores: Vec<Gitignore>,
         ctx: &mut ModelContext<Self>,
     ) -> impl Future<Output = Result<(), RepoMetadataError>> + use<> {
         let futures: Vec<_> = directory_paths
             .into_iter()
-            .map(|path| self.start_watching_directory(&path, ctx))
+            .map(|path| self.start_watching_directory(&path, gitignores.clone(), ctx))
             .collect();
 
         async move {
@@ -287,23 +317,27 @@ impl DirectoryWatcher {
     pub(crate) fn start_watching_directory(
         &mut self,
         directory_path: &StandardizedPath,
+        gitignores: Vec<Gitignore>,
         ctx: &mut ModelContext<Self>,
     ) -> impl Future<Output = Result<(), RepoMetadataError>> + use<> {
         let local_path = directory_path.to_local_path();
         let registration_future = if let Some(ref watcher) = self.watcher {
             if let Some(local_path) = local_path.clone() {
+                // `gitignores` are the repo's cached root + global gitignores,
+                // threaded in from `Repository::start_watching` so we neither
+                // re-read `.gitignore` from disk nor re-enter the (already
+                // borrowed) `Repository` model here.
+                let force_included_paths = self.force_included_paths.clone();
                 watcher.update(ctx, |watcher, _ctx| {
-                    use crate::entry::{is_within_symlink, should_ignore_git_path};
-                    use notify_debouncer_full::notify::{RecursiveMode, WatchFilter};
-                    use std::sync::Arc;
+                    use notify_debouncer_full::notify::RecursiveMode;
 
-                    let repo_root = local_path.clone();
-                    let watch_filter = WatchFilter::with_filter(Arc::new(move |watch_path| {
-                        !should_ignore_git_path(watch_path)
-                            && !is_within_symlink(watch_path, &repo_root)
-                    }));
+                    use crate::entry::repo_watch_filter;
 
-                    Some(watcher.register_path(&local_path, watch_filter, RecursiveMode::Recursive))
+                    Some(watcher.register_path(
+                        &local_path,
+                        repo_watch_filter(local_path.clone(), gitignores, force_included_paths),
+                        RecursiveMode::Recursive,
+                    ))
                 })
             } else {
                 log::warn!("Cannot watch non-local path: {directory_path}");
@@ -391,6 +425,12 @@ impl DirectoryWatcher {
     }
 
     /// Handles filesystem watcher events.
+    ///
+    /// Each loop below opens with the watch filter's emit predicate
+    /// (`should_ignore_git_path`). Upstream carries it as a second closure on
+    /// `WatchFilter`; the fork's `notify` revision has only the descend
+    /// predicate (see [`crate::entry::repo_watch_filter`]), so the `.git/`
+    /// allowlist is enforced on the delivered events instead.
     #[cfg(feature = "local_fs")]
     fn handle_watcher_event(
         &mut self,
@@ -406,6 +446,9 @@ impl DirectoryWatcher {
             TargetFile,
         )| {
             for path in paths {
+                if should_ignore_git_path(path) {
+                    continue;
+                }
                 // Check if this is a .git/ internal event (e.g. HEAD, index, refs update).
                 if is_git_internal_path(path) {
                     let affected = self.find_repos_for_git_event(path, ctx);
@@ -458,6 +501,9 @@ impl DirectoryWatcher {
 
         // Process deleted files
         for path in &event.deleted {
+            if should_ignore_git_path(path) {
+                continue;
+            }
             // Check if this is a .git/ internal event.
             if is_git_internal_path(path) {
                 let affected = self.find_repos_for_git_event(path, ctx);
@@ -492,6 +538,9 @@ impl DirectoryWatcher {
 
         // Process moved files
         for (to_path, from_path) in &event.moved {
+            if should_ignore_git_path(to_path) && should_ignore_git_path(from_path) {
+                continue;
+            }
             // Check if this is a .git/ internal event.
             if is_git_internal_path(to_path) || is_git_internal_path(from_path) {
                 // Merge affected repos from both paths

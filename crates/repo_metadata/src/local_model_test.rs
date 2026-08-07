@@ -1412,4 +1412,95 @@ Thumbs.db
             });
         });
     }
+
+    /// `add_repository_internal` registers its recursive watch with
+    /// `repo_watch_filter(watch_path, gitignores, force_included_paths)`, and
+    /// takes both arguments from `repo_watch_filter_inputs`. Feeding those
+    /// inputs through the filter's descend predicate proves the registered
+    /// watch really carries the repository's gitignore rules: gitignored
+    /// subtrees are pruned, while a registered force-included path survives.
+    ///
+    /// The final assertion pins the state this fixes — with the empty rule set
+    /// the watcher had while `repo_watch_filter` was unwired, `node_modules/`
+    /// is watched.
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn repo_watch_filter_inputs_carry_gitignores_and_force_included_paths() {
+        use crate::entry::should_watch_repo_directory;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(temp_dir.path()).unwrap();
+        std::fs::write(root.join(".gitignore"), "node_modules/\ntarget/\n.agents/\n").unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::create_dir(root.join("target")).unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".agents/skills/my-skill")).unwrap();
+        std::fs::create_dir(root.join(".agents/other")).unwrap();
+
+        let mut model = LocalRepoMetadataModel::new_for_test();
+        model.register_force_included_paths([PathBuf::from(".agents/skills")]);
+        let (gitignores, force_included_paths) = model.repo_watch_filter_inputs(&root);
+
+        // Tracked directories stay watched.
+        assert!(should_watch_repo_directory(
+            &root.join("src"),
+            &root,
+            &gitignores,
+            &force_included_paths
+        ));
+
+        // Gitignored build/dependency directories are pruned, including their
+        // descendants, so the watcher never registers inotify watches there.
+        assert!(!should_watch_repo_directory(
+            &root.join("node_modules"),
+            &root,
+            &gitignores,
+            &force_included_paths
+        ));
+        assert!(!should_watch_repo_directory(
+            &root.join("node_modules/pkg"),
+            &root,
+            &gitignores,
+            &force_included_paths
+        ));
+        assert!(!should_watch_repo_directory(
+            &root.join("target"),
+            &root,
+            &gitignores,
+            &force_included_paths
+        ));
+
+        // A registered force-included path survives the gitignore pruning, so
+        // skill directories keep receiving live updates.
+        assert!(should_watch_repo_directory(
+            &root.join(".agents/skills"),
+            &root,
+            &gitignores,
+            &force_included_paths
+        ));
+        assert!(should_watch_repo_directory(
+            &root.join(".agents/skills/my-skill"),
+            &root,
+            &gitignores,
+            &force_included_paths
+        ));
+        // Its gitignored sibling is not force-included, so it is still pruned.
+        assert!(!should_watch_repo_directory(
+            &root.join(".agents/other"),
+            &root,
+            &gitignores,
+            &force_included_paths
+        ));
+
+        // The inputs must be non-empty: an empty rule set watches everything,
+        // which is exactly the unwired behavior this guards against.
+        assert!(!gitignores.is_empty());
+        assert_eq!(force_included_paths, vec![PathBuf::from(".agents/skills")]);
+        assert!(should_watch_repo_directory(
+            &root.join("node_modules"),
+            &root,
+            &[],
+            &[]
+        ));
+    }
 }

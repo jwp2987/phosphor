@@ -22,6 +22,14 @@ if [[ "$(source /etc/os-release; echo $ID $ID_LIKE)" = *"debian"* ]]; then
     zsh fish
     # We run vim in some integration tests to test the altscreen.
     vim
+    # rustfmt normally arrives as a rustup component via rust-toolchain.toml
+    # (`components = ["rustfmt", "clippy"]`). On a host whose cargo comes from
+    # the distro rather than rustup, `script/install_rust` short-circuits (its
+    # guard is `command -v cargo`) so rustup — and therefore rustfmt — is never
+    # installed, and `cargo fmt` fails with "no such command". The distro
+    # package is version-matched to the distro rustc, so it links against the
+    # `librustc_driver` actually present; the upstream tarball does not.
+    rustfmt
   )
   sudo apt-get install -y "${PACKAGES[@]}"
 
@@ -39,3 +47,19 @@ fi
 
 # Install various testing dependencies through cargo.
 "$PWD"/script/install_cargo_test_deps
+
+# Verify the two tools the test workflow actually depends on are reachable.
+# Both have silently failed to install on a real host: nextest because this
+# script had never been run, rustfmt because of the rustup gap described above.
+# A missing tool otherwise surfaces mid-task as a confusing "no such command",
+# and AGENTS.md 5.6 makes `cargo nextest` *the* test command — so a host
+# without it cannot run the suite at all.
+missing=()
+cargo nextest --version >/dev/null 2>&1 || missing+=("cargo-nextest")
+cargo fmt --version >/dev/null 2>&1 || missing+=("rustfmt")
+if [[ ${#missing[@]} -gt 0 ]]; then
+  echo -e "⚠️  ${red}Not reachable after install: ${missing[*]}${reset}"
+  echo "   Check that ~/.cargo/bin is on PATH, then re-run this script."
+  exit 1
+fi
+echo "✅ Test dependencies verified (cargo-nextest, rustfmt)."

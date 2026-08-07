@@ -29,7 +29,7 @@ use crate::settings::{
     NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled, RuleSuggestionsEnabled,
     ShouldRenderCLIAgentToolbar, ShouldRenderUseAgentToolbarForUserCommands, ShowAgentTips,
     ShowAgentZeroStateHints, ShowConversationHistory, ShowHintText, ThinkingDisplayMode,
-    VoiceInputEnabled,
+    TokenPrice, VoiceInputEnabled,
 };
 use crate::terminal::session_settings::{SessionSettings, SessionSettingsChangedEvent};
 use crate::terminal::cli_agent::{CLIAgentInstallEvent, CLIAgentInstallModel};
@@ -2256,12 +2256,28 @@ impl AISettingsPageView {
                 p.extra_headers = fields.headers.clone();
                 // Updates by model_index, skipping out-of-range indices (the form and settings
                 // may briefly disagree mid-rebuild).
-                for (idx, m_name, m_id, ctx_window, max_out) in &fields.models {
-                    if let Some(m) = p.models.get_mut(*idx) {
-                        m.name = m_name.clone();
-                        m.id = m_id.clone();
-                        m.context_window = *ctx_window;
-                        m.max_output_tokens = *max_out;
+                for model_fields in &fields.models {
+                    if let Some(m) = p.models.get_mut(model_fields.model_index) {
+                        m.name = model_fields.name.clone();
+                        m.id = model_fields.id.clone();
+                        m.context_window = model_fields.context_window;
+                        m.max_output_tokens = model_fields.max_output_tokens;
+                        // The form only surfaces the input/output rates; the optional
+                        // cache-read/cache-write rates are settings-file-only, so carry the
+                        // stored ones through instead of letting a UI save silently drop them.
+                        m.token_price = TokenPrice::from_input_output(
+                            model_fields.input_usd_per_million_tokens,
+                            model_fields.output_usd_per_million_tokens,
+                        )
+                        .map(|price| TokenPrice {
+                            cache_read_usd_per_million_tokens: m
+                                .token_price
+                                .and_then(|stored| stored.cache_read_usd_per_million_tokens),
+                            cache_write_usd_per_million_tokens: m
+                                .token_price
+                                .and_then(|stored| stored.cache_write_usd_per_million_tokens),
+                            ..price
+                        });
                     }
                 }
                 // Still persists the edit even when invalid (so the user doesn't lose other
@@ -2338,10 +2354,26 @@ pub struct ProviderEditFields {
     pub vertex_project: String,
     pub vertex_location: String,
     pub headers: Vec<(String, String)>,
-    /// Only carries the editable part: `(model_index, name, id, context_window,
-    /// max_output_tokens)`. reasoning / tool_call / image / pdf / audio are maintained by
-    /// separate chip actions and don't go through here.
-    pub models: Vec<(usize, String, String, u32, u32)>,
+    /// Only carries the editable part; reasoning / tool_call / image / pdf / audio are
+    /// maintained by separate chip actions and don't go through here.
+    pub models: Vec<ModelEditFields>,
+}
+
+/// One model row's editable text fields, as read out of the form when "Save" is pressed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelEditFields {
+    /// Position in the provider's `models` list. Out-of-range indices are skipped: the form
+    /// and settings can briefly disagree mid-rebuild.
+    pub model_index: usize,
+    pub name: String,
+    pub id: String,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    /// `/cost` rate in USD per 1M input tokens. `None` = the field was left empty, meaning no
+    /// rate is configured — not a rate of zero.
+    pub input_usd_per_million_tokens: Option<f64>,
+    /// `/cost` rate in USD per 1M output tokens. `None` as above.
+    pub output_usd_per_million_tokens: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

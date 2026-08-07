@@ -580,6 +580,7 @@ settings-section-shared-blocks = Shared blocks
 settings-section-warp-drive = Phosphor Drive
 settings-section-warpify = Warpify
 settings-section-network = Network
+settings-section-privacy = Privacy
 settings-section-ai = AI
 settings-section-warp-agent = Phosphor Agent
 settings-section-agent-profiles = Profiles
@@ -865,6 +866,44 @@ settings-network-test-success-tcp = ✅ Proxy reachable ({$latency} ms)
 settings-network-test-success-http = ✅ Internet reachable ({$latency} ms)
 settings-network-test-failed-tcp = ❌ Cannot reach proxy: {$error}
 settings-network-test-failed-http = ❌ Connection failed: {$error}
+
+# --- ANCHOR-SUB-PRIVACY (agent-settings-privacy) ---
+# Privacy settings page (settings_view/privacy_page.rs + privacy/add_regex_modal.rs).
+settings-privacy-page-title = Privacy
+
+# Secret redaction
+settings-privacy-secret-redaction-title = Secret redaction
+settings-privacy-secret-redaction-description = When this setting is enabled, Phosphor will scan blocks, the contents of Phosphor Drive objects, and agent prompts for potential sensitive information and prevent saving or sending this data to any servers. You can customize this list via regexes.
+settings-privacy-secret-redaction-enabled-by-org = Enabled by your organization.
+settings-privacy-secret-display-mode-label = Secret visual redaction mode
+settings-privacy-secret-display-mode-description = Choose how secrets are visually presented in the block list while keeping them searchable. This setting only affects what you see in the block list.
+settings-privacy-custom-regex-title = Custom secret redaction
+settings-privacy-custom-regex-description = Use regex to define additional secrets or data you'd like to redact. This will take effect when the next command runs. You can use the inline (?i) flag as a prefix to your regex to make it case-insensitive.
+settings-privacy-recommended = Recommended
+settings-privacy-add-all = Add all
+settings-privacy-tab-personal = Personal
+settings-privacy-tab-enterprise = Enterprise
+settings-privacy-enterprise-immutable = Enterprise secret redaction cannot be modified.
+settings-privacy-enterprise-empty = No enterprise regexes have been configured by your organization.
+
+# Add regex modal
+settings-privacy-add-regex = Add regex
+settings-privacy-add-regex-modal-title = Add regex pattern
+settings-privacy-regex-name-label = Name (optional)
+settings-privacy-regex-name-placeholder = e.g. "Google API Key"
+settings-privacy-regex-pattern-label = Regex pattern
+settings-privacy-regex-invalid = Invalid regex
+
+# App analytics / crash reports / privacy policy
+settings-privacy-telemetry-title = Help improve Phosphor
+settings-privacy-telemetry-description = App analytics help us make the product better for you. We may collect certain console interactions to improve Phosphor's AI capabilities.
+settings-privacy-telemetry-description-enterprise = App analytics help us make the product better for you. We only collect app usage metadata, never console input or output.
+settings-privacy-managed-by-org = This setting is managed by your organization.
+settings-privacy-zdr-tooltip = Your administrator has enabled zero data retention for your team. User generated content will never be collected.
+settings-privacy-crash-reports-title = Send crash reports
+settings-privacy-crash-reports-description = Crash reports assist with debugging and stability improvements. In Phosphor they stay on your machine: panics are written to the local log and nothing is uploaded.
+settings-privacy-policy-title = Privacy policy
+settings-privacy-policy-link = Read Phosphor's privacy policy
 
 # Cloud Sync settings page
 
@@ -1532,10 +1571,14 @@ settings-agent-providers-models-header-name = Display name
 settings-agent-providers-models-header-id = Model ID
 settings-agent-providers-models-header-context = Context (tok)
 settings-agent-providers-models-header-output = Output (tok)
+settings-agent-providers-models-header-input-price = Input ($/1M)
+settings-agent-providers-models-header-output-price = Output ($/1M)
 settings-agent-providers-model-name-placeholder = Display name (e.g. DS-V3 General)
 settings-agent-providers-model-id-placeholder = Model ID (the `model` field sent to the API, e.g. deepseek-chat)
 settings-agent-providers-model-context-placeholder = Context (tokens)
 settings-agent-providers-model-output-placeholder = Output (tokens)
+settings-agent-providers-model-input-price-placeholder = USD per 1M input tokens (e.g. 3.00) — used by /cost
+settings-agent-providers-model-output-price-placeholder = USD per 1M output tokens (e.g. 15.00) — used by /cost
 settings-agent-providers-add-model = + Add model
 settings-agent-providers-fetch-from-api = Fetch from API
 settings-agent-providers-sync-models-dev = Sync from models.dev
@@ -1785,6 +1828,16 @@ keybinding-desc-workspace-toggle-block-snackbar = Toggle sticky command header
 
 # Window / tab close
 keybinding-desc-workspace-rename-active-tab = Rename the current tab
+
+# Tab grouping / pinning
+keybinding-desc-workspace-new-tab-group = Create new tab group
+keybinding-desc-workspace-new-tab-group-from-active-or-selected-tabs = Create tab group from active or selected tab(s)
+keybinding-desc-workspace-remove-active-or-selected-tabs-from-group = Remove active or selected tab(s) from group
+keybinding-desc-workspace-pin-active-tab = Pin current tab
+keybinding-desc-workspace-unpin-active-tab = Unpin current tab
+keybinding-desc-workspace-pin-active-tab-group = Pin current tab group
+keybinding-desc-workspace-unpin-active-tab-group = Unpin current tab group
+
 keybinding-desc-workspace-terminate-app = Quit Phosphor
 keybinding-desc-workspace-close-window = Close Window
 keybinding-desc-workspace-close-active-tab = Close the current tab
@@ -2406,6 +2459,13 @@ menu-tab-close-below = Close Tabs Below
 menu-tab-close-right = Close Tabs to the Right
 menu-tab-save-as-new-config = Save as new config
 menu-tab-default-no-color = Default (no color)
+# Tab grouping entries. "Move to group" itself is not listed here: the submenu
+# parent's label doubles as the sidecar's anchor element id, so it stays the
+# untranslated `MOVE_TO_GROUP_LABEL` constant in `tab.rs`.
+menu-tab-new-group-with-tab = New group with tab
+menu-tab-remove-from-group = Remove from group
+menu-tab-selection-create-group = Create group from tabs
+menu-tab-group-untitled = Untitled group
 
 # --- pane header overflow menu (terminal/view/pane_impl.rs) ---
 menu-pane-copy-link = Copy link
@@ -2487,6 +2547,8 @@ slash-cmd-export-to-clipboard-desc = Export current conversation to clipboard in
 slash-cmd-export-to-file-desc = Export current conversation to a markdown file
 slash-cmd-export-to-file-hint = <optional filename>
 slash-cmd-vim-mode-desc = Toggle Vim mode for the composer
+slash-cmd-usage-desc = Show how much of the model's context window this conversation uses
+slash-cmd-cost-desc = Show this conversation's cost at your configured provider rates
 
 # --- ANCHOR-SUB-PROMPT-TIPS ---
 # Prompt editor modal (app/src/prompt/editor_modal.rs)
