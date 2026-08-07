@@ -1132,64 +1132,79 @@ impl Input {
     }
 }
 
-#[cfg(all(test, feature = "local_fs", windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use crate::search::slash_command_menu::static_commands::commands;
 
-    use crate::terminal::model::session::command_executor::testing::TestCommandExecutor;
-    use crate::terminal::model::session::SessionInfo;
-    use crate::terminal::shell::ShellType;
-    use crate::terminal::ShellLaunchData;
-
-    fn wsl_session() -> Session {
-        Session::new(
-            SessionInfo::new_for_test().with_shell_type(ShellType::Bash),
-            Arc::new(TestCommandExecutor::default()),
-        )
-        .with_shell_launch_data(ShellLaunchData::WSL {
-            distro: "Ubuntu".to_owned(),
-        })
+    /// `/model` is supported in the TUI and executes immediately (no queued
+    /// prompt) — it must not be classified as a prompt-submitting command.
+    #[test]
+    fn model_command_is_supported_in_tui_without_becoming_a_prompt_command() {
+        assert_eq!(commands::MODEL.kind, SlashCommandKind::Model);
+        assert!(!slash_command_is_submitted_as_prompt(&commands::MODEL));
+        assert!(commands::MODEL.argument.is_none());
     }
 
-    #[test]
-    fn open_file_command_converts_wsl_paths_to_host_paths() {
-        let session = wsl_session();
-        let cases = [
-            (
-                "/home/ubuntu",
-                "subdir/test.txt",
-                r"\\WSL$\Ubuntu\home\ubuntu\subdir\test.txt",
-                None,
-            ),
-            (
-                "/home/ubuntu/project",
-                "../test.txt",
-                r"\\WSL$\Ubuntu\home\ubuntu\test.txt",
-                None,
-            ),
-            (
-                "/home/ubuntu",
-                "subdir/file\\ name.txt",
-                r"\\WSL$\Ubuntu\home\ubuntu\subdir\file name.txt",
-                None,
-            ),
-            (
-                "/home/ubuntu",
-                "subdir/test.txt:4:2",
-                r"\\WSL$\Ubuntu\home\ubuntu\subdir\test.txt",
-                Some(LineAndColumnArg {
-                    line_num: 4,
-                    column_num: Some(2),
-                }),
-            ),
-        ];
+    #[cfg(all(feature = "local_fs", windows))]
+    mod windows {
+        use std::sync::Arc;
 
-        for (current_dir, raw_arg, expected_path, expected_line_col) in cases {
-            let (path, line_col) = open_file_command_path(&session, current_dir, raw_arg);
+        use super::*;
+        use crate::terminal::model::session::command_executor::testing::TestCommandExecutor;
+        use crate::terminal::model::session::SessionInfo;
+        use crate::terminal::shell::ShellType;
+        use crate::terminal::ShellLaunchData;
 
-            assert_eq!(path, PathBuf::from(expected_path));
-            assert_eq!(line_col, expected_line_col);
+        fn wsl_session() -> Session {
+            Session::new(
+                SessionInfo::new_for_test().with_shell_type(ShellType::Bash),
+                Arc::new(TestCommandExecutor::default()),
+            )
+            .with_shell_launch_data(ShellLaunchData::WSL {
+                distro: "Ubuntu".to_owned(),
+            })
+        }
+
+        #[test]
+        fn open_file_command_converts_wsl_paths_to_host_paths() {
+            let session = wsl_session();
+            let cases = [
+                (
+                    "/home/ubuntu",
+                    "subdir/test.txt",
+                    r"\\WSL$\Ubuntu\home\ubuntu\subdir\test.txt",
+                    None,
+                ),
+                (
+                    "/home/ubuntu/project",
+                    "../test.txt",
+                    r"\\WSL$\Ubuntu\home\ubuntu\test.txt",
+                    None,
+                ),
+                (
+                    "/home/ubuntu",
+                    "subdir/file\\ name.txt",
+                    r"\\WSL$\Ubuntu\home\ubuntu\subdir\file name.txt",
+                    None,
+                ),
+                (
+                    "/home/ubuntu",
+                    "subdir/test.txt:4:2",
+                    r"\\WSL$\Ubuntu\home\ubuntu\subdir\test.txt",
+                    Some(LineAndColumnArg {
+                        line_num: 4,
+                        column_num: Some(2),
+                    }),
+                ),
+            ];
+
+            for (current_dir, raw_arg, expected_path, expected_line_col) in cases {
+                let (path, line_col) = open_file_command_path(&session, current_dir, raw_arg);
+
+                assert_eq!(path, PathBuf::from(expected_path));
+                assert_eq!(line_col, expected_line_col);
+            }
         }
     }
 }
