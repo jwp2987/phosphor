@@ -217,6 +217,24 @@ pub struct ServerModel {
     /// Calling `.abort()` on the handle cancels the background future and
     /// triggers its `on_abort` callback.
     in_progress: HashMap<RequestId, SpawnedFutureHandle>,
+    /// In-flight requests that must reach *some* live connection to this
+    /// host, not necessarily the exact proxy connection that issued them.
+    /// Maps a tracked `RequestId` to the `ConnectionId` it was originally
+    /// dispatched to. `send_server_message` consults this map when the
+    /// original connection is gone or its channel is closed: if the
+    /// request is tracked here, the response is failed over to another
+    /// live connection instead of being silently dropped.
+    ///
+    /// The pin (`02b53fcd8`) populates this from a `HostScoped` request
+    /// envelope (`client_message::Message::HostScoped`) that classifies
+    /// every request kind as host- or session-scoped at dispatch time. The
+    /// fork's wire protocol has no such envelope yet (tracked separately —
+    /// see the parity issue on the host-scoped/session-scoped protocol
+    /// envelope), so this map is not yet populated from `handle_message`.
+    /// The delivery mechanism itself (this field plus the failover branch
+    /// in `send_server_message`) is ported now so it is ready to use once
+    /// that envelope lands.
+    host_scoped_requests: HashMap<RequestId, ConnectionId>,
     /// Stable host identifier generated once at process startup.
     /// Returned in every `InitializeResponse` so clients can deduplicate
     /// host-scoped models.
@@ -259,6 +277,7 @@ impl ServerModel {
             diff_state_subscriptions: HashMap::new(),
             grace_timer_cancel: None,
             in_progress: HashMap::new(),
+            host_scoped_requests: HashMap::new(),
             host_id,
             executors: HashMap::new(),
             pending_file_ops: PendingFileOps::new(),
@@ -779,21 +798,50 @@ impl ServerModel {
     ///   the request (used for all request/response pairs).
     /// - `conn_id = None` — broadcasts to every connected proxy (used for
     ///   server-initiated push notifications such as repo metadata updates).
+    ///
+    /// For host-scoped requests (tracked in `host_scoped_requests`): if the
+    /// target connection is gone, or its channel rejects the send, the
+    /// response is delivered through any other open connection instead of
+    /// being dropped. This covers a session disconnecting (e.g. closing a
+    /// tab) while a host-scoped request it issued is still in flight —
+    /// another tab connected to the same host still gets the response.
+    /// Non-host-scoped responses are never failed over; their target
+    /// connection owns state (e.g. a subscription) that a sibling
+    /// connection does not have.
     fn send_server_message(
-        &self,
+        &mut self,
         conn_id: Option<ConnectionId>,
         request_id: Option<&RequestId>,
         message: server_message::Message,
     ) {
+        // Sending a response is the terminal step of a host-scoped request,
+        // so its failover-tracking entry is dropped here regardless of
+        // which path below actually delivers it. Whether the request was
+        // tracked is snapshotted *before* removal, since that's what decides
+        // failover eligibility below. Push notifications (no request_id)
+        // are never tracked, so this is a no-op for them.
+        let is_host_scoped_response = request_id
+            .is_some_and(|rid| !rid.is_empty() && self.host_scoped_requests.contains_key(rid));
+        if let Some(rid) = request_id {
+            self.host_scoped_requests.remove(rid);
+        }
+
         let msg = ServerMessage {
             request_id: request_id.map(|id| id.clone().into()).unwrap_or_default(),
             message: Some(message),
         };
         if let Some(target) = conn_id {
             if let Some(conn_tx) = self.connection_senders.get(&target) {
-                if let Err(e) = conn_tx.try_send(msg) {
+                if let Err(e) = conn_tx.try_send(msg.clone()) {
                     log::warn!("Daemon: failed to send to conn {target}: {e}");
+                    if is_host_scoped_response {
+                        self.send_host_scoped_response_via_alternate_connection(target, msg);
+                    }
                 }
+            } else if is_host_scoped_response {
+                // Target connection is gone. Deliver the host-scoped
+                // response through any other open connection.
+                self.send_host_scoped_response_via_alternate_connection(target, msg);
             } else {
                 log::debug!("Daemon: no sender for conn {target} (already disconnected)");
             }
@@ -805,6 +853,36 @@ impl ServerModel {
                 }
             }
         }
+    }
+
+    /// Delivers a host-scoped response through a connected proxy other than
+    /// `target`. Used when the original connection has disappeared or its
+    /// outbound channel rejected the response.
+    fn send_host_scoped_response_via_alternate_connection(
+        &self,
+        target: ConnectionId,
+        msg: ServerMessage,
+    ) {
+        for (&alt_id, alt_tx) in &self.connection_senders {
+            if alt_id == target {
+                continue;
+            }
+            log::info!(
+                "Daemon: failover delivery for request_id={} from conn {target} to conn {alt_id}",
+                msg.request_id
+            );
+            match alt_tx.try_send(msg.clone()) {
+                Ok(()) => return,
+                Err(e) => {
+                    log::warn!("Daemon: failover delivery failed to conn {alt_id}: {e}");
+                }
+            }
+        }
+        log::warn!(
+            "Daemon: cannot deliver host-scoped response for request_id={}, \
+             no alternate connections available",
+            msg.request_id
+        );
     }
 
     /// Spawns an abortable future tied to `request_id` and wires up automatic
