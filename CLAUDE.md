@@ -13,6 +13,7 @@ wrongly. Each exists because a wrong answer cost real time.
 | **`HANDOFF.md`** | Current state of `main`, open decisions, and the operational lessons — the cwd trap, exit-status masking, disk exhaustion, "capture before you stop". |
 | **`TODO.md`** | The parity ledger. **Verify any entry before acting on it** — four entries have stated the opposite of the code (#148). |
 | **`AGENTS.md` §5.6/§5.10/§5.11** | Never weaken a test to go green; fix the code. Every defect gets an issue first. |
+| **`DECLINED.md`** | **Deliberate non-parity decisions.** `SCOPE-*.md` says what is absent; this says what is absent *on purpose*. Check it before filing a parity issue or porting a subsystem — several entries exist because a gap was filed as debt when it was already a decision. It also lists the common false positives (`computer_use`, `remote_server`, Grok OAuth) that keep getting mislabelled as cloud. |
 
 Two CI guards enforce what the compiler cannot: `script/check_cloud_boundary`
 (no new imports of dropped-cloud modules) and `script/check_stub_coverage` (no
