@@ -36,6 +36,9 @@ pub use crate::ai::agent::api::ServerConversationToken;
 pub use crate::ai::agent::conversation::{
     AIConversation, AIConversationAutoexecuteMode, AIConversationId, ConversationStatus, TodoStatus,
 };
+pub use crate::ai::usage_cost::{
+    context_usage_report, conversation_cost_report, UsageCostOutcome,
+};
 pub use crate::ai::agent::task::TaskId;
 pub use crate::ai::agent::todos::AIAgentTodoList;
 pub use crate::ai::agent::{

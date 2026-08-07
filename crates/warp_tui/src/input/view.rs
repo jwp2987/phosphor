@@ -44,7 +44,7 @@ use warpui_core::{
 use crate::editor_element::{TuiEditorAction, TuiEditorElement, TuiEditorStyles};
 use crate::editor_interaction::{
     TuiEditorBehavior, TuiEditorCommand, TuiEditorInteractionOutcome, TuiEditorState,
-    apply_editor_action, follow_editor_cursor,
+    apply_editor_action, apply_editor_clipboard_action, apply_editor_paste, follow_editor_cursor,
 };
 use crate::completions_menu::TuiAcceptedCompletion;
 use crate::exchange_menu::TuiExchangeMenuAction;
@@ -141,6 +141,10 @@ pub enum TuiInputViewEvent {
     AcceptedExchange(AIAgentExchangeId, TuiExchangeMenuAction),
     /// The vim mode changed (Insert<->Normal<->Visual<->Replace). Emitted so the
     /// parent session view can re-render its footer vim-mode indicator.
+    /// Selected prompt text was copied to the host clipboard.
+    ClipboardCopySucceeded,
+    /// Selected prompt text could not be copied to the host clipboard.
+    ClipboardCopyFailed,
     VimModeChanged,
 }
 
@@ -300,7 +304,7 @@ impl TuiInputView {
             suggestions_mode,
             inline_menus,
             editor_state: TuiEditorState::default(),
-            editor_behavior: TuiEditorBehavior::multiline(6),
+            editor_behavior: TuiEditorBehavior::multiline(6).with_copy_on_mouse_highlight(),
             prefix_mouse_state: MouseStateHandle::default(),
             focused: false,
             transcript,
@@ -688,7 +692,12 @@ impl TypedActionView for TuiInputView {
                     | TuiEditorCommand::SelectDown
                     | TuiEditorCommand::SelectWordLeft
                     | TuiEditorCommand::SelectWordRight
+                    | TuiEditorCommand::SelectToLineStart
+                    | TuiEditorCommand::SelectToLineEnd
                     | TuiEditorCommand::SelectAll
+                    | TuiEditorCommand::Copy
+                    | TuiEditorCommand::Cut
+                    | TuiEditorCommand::Paste
                     | TuiEditorCommand::KillToLineEnd
                     | TuiEditorCommand::KillToLineStart
                     | TuiEditorCommand::Yank
@@ -763,6 +772,26 @@ impl TypedActionView for TuiInputView {
                 });
                 TuiEditorInteractionOutcome::FollowCursor
             }
+        };
+        let outcome = match outcome {
+            TuiEditorInteractionOutcome::Clipboard(action) => {
+                match apply_editor_clipboard_action(&self.model, action, ctx) {
+                    Ok(true) => ctx.emit(TuiInputViewEvent::ClipboardCopySucceeded),
+                    Ok(false) => {}
+                    Err(error) => {
+                        log::error!("Failed to copy TUI input selection: {error}");
+                        ctx.emit(TuiInputViewEvent::ClipboardCopyFailed);
+                    }
+                }
+                TuiEditorInteractionOutcome::FollowCursor
+            }
+            TuiEditorInteractionOutcome::Paste => {
+                if let Err(error) = apply_editor_paste(&self.model, self.editor_behavior, ctx) {
+                    log::error!("Failed to paste into TUI input: {error}");
+                }
+                TuiEditorInteractionOutcome::FollowCursor
+            }
+            outcome => outcome,
         };
         if outcome == TuiEditorInteractionOutcome::FollowCursor {
             self.follow_cursor(ctx);

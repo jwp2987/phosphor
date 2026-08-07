@@ -46,7 +46,7 @@ use crate::{
 use repo_metadata::DirectoryWatcher;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
-use super::{ChipUpdateStatus, CurrentPrompt, PromptContext};
+use super::{ChipUpdateStatus, CurrentPrompt, GithubPrPromptChipCommandOutcome, PromptContext};
 
 #[test]
 fn test_context_menu_items() {
@@ -1437,4 +1437,43 @@ impl CommandExecutor for RecordingCommandExecutor {
     fn supports_parallel_command_execution(&self) -> bool {
         false
     }
+}
+
+// ─── Ported from Warp: `warp/master:app/src/util/git_tests.rs` ───────────────
+//
+// Warp's `detects_gh_auth_errors` targets `util::git::is_gh_auth_error`; it now
+// lands verbatim at that location in `util::git_tests.rs`. This test keeps
+// Warp's five inputs on the `CurrentPrompt` consumer that classifies a GitHub
+// PR chip's command failure, so the wiring from stderr to
+// `DeterministicAuthFailure` stays covered here.
+#[test]
+fn detects_gh_auth_errors() {
+    fn outcome(stderr: &str) -> GithubPrPromptChipCommandOutcome {
+        let output = RecordingCommandExecutor::failure_output(stderr, ExitCode::from(1));
+        CurrentPrompt::github_pr_prompt_chip_command_outcome(Some(&output), false)
+    }
+
+    assert_eq!(
+        outcome("You are not logged in to any GitHub hosts"),
+        GithubPrPromptChipCommandOutcome::DeterministicAuthFailure
+    );
+    assert_eq!(
+        outcome("GraphQL: authentication required; run gh auth login"),
+        GithubPrPromptChipCommandOutcome::DeterministicAuthFailure
+    );
+    assert_eq!(
+        outcome("To get started with GitHub CLI, run: gh auth login"),
+        GithubPrPromptChipCommandOutcome::DeterministicAuthFailure
+    );
+
+    assert_eq!(
+        outcome(
+            "Post \"https://api.github.com/graphql\": dial tcp: lookup api.github.com: no such host"
+        ),
+        GithubPrPromptChipCommandOutcome::RetryableFailure
+    );
+    assert_eq!(
+        outcome("no pull requests found for branch"),
+        GithubPrPromptChipCommandOutcome::RetryableFailure
+    );
 }

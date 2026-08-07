@@ -245,6 +245,8 @@ impl StaticCommand {
             "/export-to-file" => SlashCommandKind::ExportToFile,
             "/api-keys" => SlashCommandKind::ApiKeys,
             "/vim-mode" => SlashCommandKind::VimMode,
+            "/usage" => SlashCommandKind::Usage,
+            "/cost" => SlashCommandKind::Cost,
             _ => SlashCommandKind::Other,
         }
     }
@@ -275,6 +277,11 @@ impl StaticCommand {
                 | "/api-keys"
                 | "/statusline"
                 | "/vim-mode"
+                // Both report on local BYOP data (context window, provider token counts x
+                // the user's own rates) and open no GUI pane, so AGENTS §5.9 requires them
+                // on the TUI too.
+                | "/usage"
+                | "/cost"
         )
     }
 }

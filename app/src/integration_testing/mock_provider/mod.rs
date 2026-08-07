@@ -168,6 +168,7 @@ pub fn wire_mock_provider_config(ctx: &mut AppContext, base_url: &str) -> ai::LL
         vertex_project: String::new(),
         vertex_location: String::new(),
         disabled: false,
+        token_price: None,
     };
 
     AISettings::handle(ctx).update(ctx, |settings, ctx| {

@@ -236,3 +236,73 @@ fn test_parse_git_status_file_without_spaces_still_works() {
     assert_eq!(result[0].0, std::path::PathBuf::from("simple.txt"));
     assert_eq!(result[0].1, GitFileStatus::Modified);
 }
+
+// ─── Ported from Warp: `warp/master:app/src/util/git_tests.rs` ───────────────
+//
+// Warp keeps `committed_branch_files_excludes_uncommitted_and_untracked` next
+// to `util::git::get_committed_branch_file_entries`. The fork carries the same
+// implementation as `LocalDiffStateModel::get_committed_branch_file_entries`,
+// returning `(path, additions, deletions)` tuples instead of Warp's
+// `FileChangeEntry` structs, so the test lives here and reads the tuple fields
+// positionally. Only that shape changed — the assertions are Warp's.
+
+/// Runs a git command inside `repo`, panicking on failure.
+#[cfg(feature = "local_fs")]
+async fn run_git(repo: &std::path::Path, args: &[&str]) -> String {
+    run_git_command(repo, args)
+        .await
+        .unwrap_or_else(|e| panic!("git {args:?} failed: {e}"))
+}
+
+/// Creates a temp git repo with one commit and returns `(dir_handle, repo_path)`.
+#[cfg(feature = "local_fs")]
+async fn init_test_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let path = dir.path().to_path_buf();
+
+    run_git(&path, &["init", "-b", "main"]).await;
+    run_git(&path, &["config", "user.email", "test@test.com"]).await;
+    run_git(&path, &["config", "user.name", "Test"]).await;
+    run_git(&path, &["commit", "--allow-empty", "-m", "initial"]).await;
+
+    (dir, path)
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn committed_branch_files_excludes_uncommitted_and_untracked() {
+    let (_dir, repo) = init_test_repo().await;
+    // Branch off main; the merge base is main's initial commit.
+    run_git(&repo, &["checkout", "-b", "feature"]).await;
+
+    // Commit a new file on the feature branch — this SHOULD appear in the
+    // committed branch diff.
+    std::fs::write(repo.join("committed.txt"), "line1\nline2\n").expect("write committed.txt");
+    run_git(&repo, &["add", "committed.txt"]).await;
+    run_git(&repo, &["commit", "-m", "add committed.txt"]).await;
+
+    // Further-modify the committed file in the working tree (uncommitted) and
+    // add an untracked file. Neither is part of the PR's committed history, so
+    // neither should appear, and the committed file's counts must reflect only
+    // the committed change (2 added lines, not 3).
+    std::fs::write(repo.join("committed.txt"), "line1\nline2\nline3\n")
+        .expect("modify committed.txt");
+    std::fs::write(repo.join("untracked.txt"), "new\n").expect("write untracked.txt");
+
+    let entries = LocalDiffStateModel::get_committed_branch_file_entries(&repo)
+        .await
+        .expect("committed branch files");
+
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected only the committed file: {entries:?}"
+    );
+    assert_eq!(entries[0].0, "committed.txt");
+    assert_eq!(entries[0].1, 2);
+    assert_eq!(entries[0].2, 0);
+    assert!(
+        !entries.iter().any(|e| e.0 == "untracked.txt"),
+        "untracked files must be excluded: {entries:?}"
+    );
+}

@@ -67,7 +67,10 @@ fn blocked_command_card_matches_permission_layout() {
         });
         // Pump the async preprocess so the queued action reaches the pending
         // queue and the permission card renders in its blocked state.
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
 
         let mut presenter = TuiPresenter::new();
         let frame = app.update(|ctx| {
@@ -144,7 +147,10 @@ fn finishing_command_editing_selects_yes_without_executing() {
         // (`queue_actions` -> `ctx.spawn`); pump it so the action reaches the
         // pending queue and the permission prompt becomes active, exactly as it
         // would before a user could interact in the running app.
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
 
         prompt.update(&mut app, |prompt, ctx| {
             prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
@@ -203,7 +209,10 @@ fn saving_an_edit_allows_a_later_streamed_update_to_resync() {
             queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
         });
         // Pump the async preprocess so the action blocks and the prompt is active.
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
 
         prompt.update(&mut app, |prompt, ctx| {
             prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
@@ -265,7 +274,10 @@ fn escape_while_editing_exits_edit_mode_without_rejecting_or_discarding() {
         // (`queue_actions` -> `ctx.spawn`); pump it so the action reaches the
         // pending queue and the permission prompt becomes active, exactly as it
         // would before a user could interact in the running app.
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
 
         prompt.update(&mut app, |prompt, ctx| {
             prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
@@ -329,7 +341,10 @@ fn escape_when_not_editing_still_rejects_the_command() {
             queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
         });
         // Pump the async preprocess so the action blocks and the prompt is active.
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
         present_shell_view(&mut app, &view);
 
         assert!(dispatch_focused_key(&mut app, &view, "escape"));
@@ -373,7 +388,10 @@ fn command_editor_arrows_move_within_multiline_text_then_cycle_at_boundaries() {
         });
         // Pump the async preprocess so the action blocks and the prompt is active
         // before entering edit mode.
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
         prompt.update(&mut app, |prompt, ctx| {
             prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
         });
@@ -391,7 +409,10 @@ fn command_editor_arrows_move_within_multiline_text_then_cycle_at_boundaries() {
         // which is produced by an asynchronous layout stream on the foreground
         // executor. Pump it so the multiline command text is laid out before the
         // arrow keys drive row-aware movement.
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
         app.read(|ctx| {
             let window_id = view.window_id(ctx);
             let focused = ctx
@@ -560,7 +581,10 @@ fn ctrl_t_toggles_the_output_section_like_the_mouse_click_handler() {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
         // Pump the async preprocess so the action blocks and the prompt is active.
-        crate::test_fixtures::settle().await;
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
         present_shell_view(&mut app, &view);
 
         assert!(app.read(|ctx| !view.as_ref(ctx).is_expanded()));

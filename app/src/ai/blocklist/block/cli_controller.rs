@@ -935,3 +935,7 @@ fn snapshot_block_id_for_action_result(result: &AIAgentActionResultType) -> Opti
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "cli_controller_tests.rs"]
+mod tests;
