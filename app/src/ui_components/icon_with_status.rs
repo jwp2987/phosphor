@@ -2,7 +2,7 @@ use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::icons::Icon as WarpIcon;
 use warp_core::ui::theme::color::internal_colors;
-use warp_core::ui::theme::{Fill as WarpThemeFill, WarpTheme};
+use warp_core::ui::theme::{ColorScheme, Fill as WarpThemeFill, WarpTheme};
 use warpui::{
     assets::asset_cache::AssetSource,
     elements::{
@@ -15,6 +15,15 @@ use warpui::{
 use crate::ai::agent::conversation::ConversationStatus;
 use crate::terminal::CLIAgent;
 use crate::themes::theme::Fill as ThemeFill;
+
+/// Background color used for the Oz agent's circle when it is running in an ambient (cloud)
+/// run. Matches the Oz brand purple used in the cloud-mode design spec.
+const OZ_AMBIENT_BACKGROUND_COLOR: ColorU = ColorU {
+    r: 203,
+    g: 176,
+    b: 247,
+    a: 255,
+};
 
 /// Sizing configuration for the icon circle and its status badge.
 pub(crate) struct IconWithStatusSizing {
@@ -81,6 +90,12 @@ pub(crate) enum IconWithStatusVariant {
     CLIAgent {
         agent: CLIAgent,
         status: Option<ConversationStatus>,
+        /// Whether this run is executing in an ambient (cloud) context rather than locally.
+        /// Not currently used for CLI-agent color treatment (only `OzAgent` gets the
+        /// ambient-purple background, see `warp_agent_circle_colors`) but is carried on the
+        /// variant so cross-surface callers (`ui_components::agent_icon`) have a single
+        /// consistent shape to construct regardless of which branch of the icon they render.
+        is_ambient: bool,
     },
 }
 
@@ -126,16 +141,14 @@ pub(crate) fn render_icon_with_status(
             } else {
                 WarpIcon::Oz
             };
-            let inner = ConstrainedBox::new(
-                icon.to_warpui_icon(theme.main_text_color(theme.background()))
-                    .finish(),
-            )
-            .with_width(sizing.icon_size)
-            .with_height(sizing.icon_size)
-            .finish();
+            let (circle_background, glyph_color) = warp_agent_circle_colors(theme, is_ambient);
+            let inner = ConstrainedBox::new(icon.to_warpui_icon(glyph_color).finish())
+                .with_width(sizing.icon_size)
+                .with_height(sizing.icon_size)
+                .finish();
             let circle = Container::new(inner)
                 .with_uniform_padding(sizing.padding)
-                .with_background(theme.background())
+                .with_background(circle_background)
                 .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
                     (sizing.icon_size + sizing.padding * 2.) / 2.,
                 )))
@@ -148,7 +161,7 @@ pub(crate) fn render_icon_with_status(
                 badge_ring_background,
             )
         }
-        IconWithStatusVariant::CLIAgent { agent, status } => {
+        IconWithStatusVariant::CLIAgent { agent, status, .. } => {
             let brand_color = agent
                 .brand_color()
                 .unwrap_or(ColorU::new(100, 100, 100, 255));
@@ -180,6 +193,23 @@ pub(crate) fn render_icon_with_status(
                 badge_ring_background,
             )
         }
+    }
+}
+
+/// Derives the Oz agent circle's background and glyph colors for the given theme and
+/// ambient-ness. Local (non-ambient) runs flip black-on-white vs white-on-black to match the
+/// theme's light/dark scheme; ambient (cloud) runs always keep the Oz brand purple background
+/// with a black glyph, regardless of theme.
+fn warp_agent_circle_colors(theme: &WarpTheme, is_ambient: bool) -> (WarpThemeFill, WarpThemeFill) {
+    if is_ambient {
+        return (
+            WarpThemeFill::Solid(OZ_AMBIENT_BACKGROUND_COLOR),
+            WarpThemeFill::Solid(ColorU::black()),
+        );
+    }
+    match theme.inferred_color_scheme() {
+        ColorScheme::LightOnDark => (WarpThemeFill::black(), WarpThemeFill::white()),
+        ColorScheme::DarkOnLight => (WarpThemeFill::white(), WarpThemeFill::black()),
     }
 }
 
@@ -232,3 +262,7 @@ fn render_with_optional_status_badge(
         .with_height(overall_size)
         .finish()
 }
+
+#[cfg(test)]
+#[path = "icon_with_status_tests.rs"]
+mod tests;
