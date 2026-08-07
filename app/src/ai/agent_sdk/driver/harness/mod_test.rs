@@ -8,6 +8,8 @@
 //! porting the defaults alone would produce tests that pass while asserting
 //! nothing about the feature. They are tracked in issue #289 and should land
 //! with the per-harness overrides and `harness_output_monitor`, not before.
+//! Re-verified against the pin again in round 5 (2026-08-07): still a feature
+//! gap, still deliberately not stubbed.
 
 use super::validate_cli_installed;
 use crate::ai::agent_sdk::driver::AgentDriverError;

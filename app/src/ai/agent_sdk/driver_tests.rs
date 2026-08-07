@@ -1,11 +1,24 @@
 //! Tests ported from the pinned Warp oracle (`02b53fcd8`,
 //! `app/src/ai/agent_sdk/driver_tests.rs`).
 //!
-//! Adaptations are called out inline. The tests that are *not* here need source
-//! this fork does not ship (managed-MCP resolution, cloud skill loading, the
-//! OpenAI typed secret, the artifact-upload tool result). All 18 are enumerated
-//! in issue #252; re-verified test-by-test against the pin in round 4, no
-//! further porting opportunity in this file.
+//! Adaptations are called out inline. The 18 tests that are *not* here are
+//! enumerated in issue #252; re-verified test-by-test against the pin again in
+//! round 5 (2026-08-07) by tracing imports, not just names, with a refinement
+//! over round 4's framing:
+//!
+//! - 17 are **cloud**, not merely "source this fork does not ship" in the
+//!   abstract: 14 managed-MCP-resolution tests need
+//!   `crate::server::server_api::managed_mcp::ManagedMcpClient` (dropped cloud
+//!   module), 2 skill-loading tests need `crate::ai::cloud_environments`
+//!   (Warp Environments, DECLINED.md), and the artifact-upload test needs
+//!   `AIAgentActionResultType::UploadArtifact` (cloud artifact upload).
+//! - 1 is a genuine **feature gap**, non-cloud, BYOP-relevant:
+//!   `openai_api_key_exports_only_api_key_not_base_url` only needs a 5th
+//!   `ManagedSecretValue` variant (`OpenaiApiKey`) alongside the 4 this fork
+//!   already has; `build_secret_env_vars` (the function it calls) is already
+//!   ported (#247).
+//!
+//! No further porting opportunity in this file.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
