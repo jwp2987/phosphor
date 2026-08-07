@@ -1406,6 +1406,11 @@ impl From<&ToolUsageMetadata> for stream_finished::ToolUsageMetadata {
                 (&metadata.read_shell_command_output_stats).into(),
             ),
             use_computer_stats: Some((&metadata.use_computer_stats).into()),
+            // The proto surface carries `search_codebase_stats` because the pin is upstream
+            // Warp's, but this fork retired codebase indexing (d84dd8e4d / 411482a06) and
+            // never issues a `SearchCodebase` tool call, so there is nothing to report and
+            // the field stays absent. See #11.
+            search_codebase_stats: None,
         }
     }
 }

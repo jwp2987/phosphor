@@ -2959,6 +2959,42 @@ impl LocalDiffStateModel {
 
     #[cfg(not(feature = "local_fs"))]
     pub fn refresh_pr_info(&mut self, _ctx: &mut ModelContext<Self>) {}
+
+    /// Fetches the branches of the active repository off-thread and emits
+    /// [`DiffStateModelEvent::BranchesReceived`] with the result. On failure an
+    /// empty list is emitted so the branch dropdown falls back to its defaults
+    /// (uncommitted changes + main branch) rather than keeping stale entries.
+    #[cfg(feature = "local_fs")]
+    pub fn fetch_branches(&self, ctx: &mut ModelContext<Self>) {
+        let Some(repo_path) = self.active_repository_path(ctx) else {
+            return;
+        };
+        let fetched_repo_path = repo_path.clone();
+        ctx.spawn(
+            async move {
+                Self::get_all_branches(&repo_path, None, false /* include_remotes */).await
+            },
+            move |me, branches_result, ctx| {
+                // If the active repo changed while branches were being fetched,
+                // discard the stale result.
+                if me.active_repository_path(ctx) != Some(fetched_repo_path) {
+                    return;
+                }
+                let branches = match branches_result {
+                    Ok(branches) => branches,
+                    Err(err) => {
+                        log::warn!("LocalDiffStateModel: failed to fetch branches: {err}");
+                        vec![]
+                    }
+                };
+                ctx.emit(DiffStateModelEvent::BranchesReceived(branches));
+            },
+        );
+    }
+
+    /// No local filesystem to run `git` against on WASM builds.
+    #[cfg(not(feature = "local_fs"))]
+    pub fn fetch_branches(&self, _ctx: &mut ModelContext<Self>) {}
 }
 
 #[derive(Debug, Clone)]
@@ -3000,6 +3036,10 @@ pub enum DiffStateModelEvent {
     /// The boolean indicates whether the next diff load should attempt to
     /// fetch the base branch from origin if it is not available locally.
     DiffModeChanged { should_fetch_base: bool },
+    /// Branch list received from the backend (local git or the remote server's
+    /// `GetBranches` RPC). The payload is `(branch_name, is_main_branch)` pairs,
+    /// as returned by [`LocalDiffStateModel::get_all_branches`].
+    BranchesReceived(Vec<(String, bool)>),
 }
 
 impl warpui::Entity for LocalDiffStateModel {
@@ -3072,6 +3112,9 @@ impl DiffStateModel {
                 ctx.emit(DiffStateModelEvent::DiffModeChanged {
                     should_fetch_base: *should_fetch_base,
                 });
+            }
+            DiffStateModelEvent::BranchesReceived(branches) => {
+                ctx.emit(DiffStateModelEvent::BranchesReceived(branches.clone()));
             }
         }
     }
@@ -3367,6 +3410,18 @@ impl DiffStateModel {
             Self::Local(m) => m.update(ctx, |local, ctx| local.refresh_pr_info(ctx)),
             #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.update(ctx, |local, ctx| local.refresh_pr_info(ctx)),
+        }
+    }
+
+    /// Fetches the active repository's branch list from the backend. The local
+    /// backend shells out to `git`; the remote backend issues the `GetBranches`
+    /// RPC so the listing runs on the host that actually holds the repo. Either
+    /// way the result arrives as [`DiffStateModelEvent::BranchesReceived`].
+    pub fn fetch_branches(&mut self, ctx: &mut ModelContext<Self>) {
+        match self {
+            Self::Local(m) => m.update(ctx, |local, ctx| local.fetch_branches(ctx)),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.update(ctx, |remote, ctx| remote.fetch_branches(ctx)),
         }
     }
 }

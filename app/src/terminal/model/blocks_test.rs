@@ -2051,3 +2051,36 @@ fn test_device_status_uses_active_block_if_no_typeahead() {
 
     assert_eq!(writer, "\x1b[1;21R".as_bytes());
 }
+
+/// Ported from warp/master `app/src/terminal/model/blocks_tests.rs`
+/// (`classifies_next_block_ids_relative_to_the_active_block`). Assertions unchanged.
+#[test]
+fn classifies_next_block_ids_relative_to_the_active_block() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    let previous_active_id = block_list.active_block_id().clone();
+    let next_block_id = BlockId::new();
+
+    assert_eq!(
+        block_list.classify_next_block_id(&previous_active_id),
+        NextBlockIdDisposition::ActiveDuplicate
+    );
+    assert_eq!(
+        block_list.classify_next_block_id(&next_block_id),
+        NextBlockIdDisposition::Novel
+    );
+
+    block_list.complete_active_block_and_advance(ansi::CompletionMetadata {
+        exit_code: 0.into(),
+        next_block_id: next_block_id.clone(),
+    });
+
+    assert_eq!(
+        block_list.classify_next_block_id(&previous_active_id),
+        NextBlockIdDisposition::ExistingCollision
+    );
+    assert_eq!(
+        block_list.classify_next_block_id(&next_block_id),
+        NextBlockIdDisposition::ActiveDuplicate
+    );
+}

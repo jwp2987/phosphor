@@ -1358,58 +1358,14 @@ impl CodeReviewView {
         }
     }
 
+    /// Asks the diff-state model to list the active repository's branches. The
+    /// model dispatches per backend (local `git` vs. the remote `GetBranches`
+    /// RPC) and delivers the result as
+    /// `DiffStateModelEvent::BranchesReceived`, which populates the dropdown.
     fn fetch_branches_and_setup_dropdown(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(repo_path) = self.repo_path().cloned() else {
-            return;
-        };
-        let fetched_repo_path = repo_path.clone();
-        ctx.spawn(
-            async move {
-                LocalDiffStateModel::get_all_branches(&repo_path, None, false /* include_remotes */)
-                    .await
-            },
-            move |me, branches_result, ctx| {
-                // If the active repo changed while branches were being fetched,
-                // discard the stale result.
-                if me.repo_path() != Some(&fetched_repo_path) {
-                    return;
-                }
-                match branches_result {
-                    Ok(branches) => {
-                        if let Some(repo) = me.active_repo.as_mut() {
-                            let branch_count = branches.len();
-                            let repo_path = &repo.repo_path;
-                            safe_info!(
-                                safe: ("Code Review: Set available_branches with {} branches", branch_count),
-                                full: (
-                                    "Code Review: Set available_branches for repo {:?} with {} branches",
-                                    repo_path,
-                                    branch_count
-                                )
-                            );
-                            repo.available_branches = branches;
-                        }
-                        me.update_diff_selector_selection(ctx);
-                    }
-                    Err(err) => {
-                        log::warn!("Failed to fetch branches: {err}");
-                        // Fallback to default dropdown with just uncommitted changes and main branch
-                        if let Some(repo) = me.active_repo.as_mut() {
-                            let repo_path = &repo.repo_path;
-                            safe_info!(
-                                safe: ("Code Review: Set available_branches to empty (fallback after error)"),
-                                full: (
-                                    "Code Review: Set available_branches to empty for repo {:?} (fallback after error)",
-                                    repo_path
-                                )
-                            );
-                            repo.available_branches = vec![];
-                        }
-                        me.update_diff_selector_selection(ctx);
-                    }
-                }
-            },
-        );
+        self.diff_state_model.update(ctx, |model, ctx| {
+            model.fetch_branches(ctx);
+        });
     }
 
     pub(crate) fn build_diff_targets(&self, ctx: &ViewContext<Self>) -> Vec<DiffTarget> {
@@ -2315,6 +2271,22 @@ impl CodeReviewView {
                 if FeatureFlag::GitOperationsInCodeReview.is_enabled() {
                     self.update_git_operations_ui(ctx);
                 }
+            }
+            DiffStateModelEvent::BranchesReceived(branches) => {
+                if let Some(repo) = self.active_repo.as_mut() {
+                    let branch_count = branches.len();
+                    let repo_path = &repo.repo_path;
+                    safe_info!(
+                        safe: ("Code Review: Set available_branches with {} branches", branch_count),
+                        full: (
+                            "Code Review: Set available_branches for repo {:?} with {} branches",
+                            repo_path,
+                            branch_count
+                        )
+                    );
+                    repo.available_branches = branches.clone();
+                }
+                self.update_diff_selector_selection(ctx);
             }
         }
     }
