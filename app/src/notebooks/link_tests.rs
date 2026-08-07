@@ -6,6 +6,7 @@ use std::{
 
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
+use settings::Setting as _;
 use tempfile::tempdir;
 use url::Url;
 use warp_util::path::LineAndColumnArg;
@@ -14,7 +15,7 @@ use warpui::{App, ModelHandle, WindowId};
 use crate::{
     notebooks::{file::is_markdown_file, link::LinkEvent},
     terminal::{model::session::Session, shell::ShellType},
-    util::openable_file_type::FileTarget,
+    util::{file::external_editor::EditorSettings, openable_file_type::FileTarget},
     workspace::ActiveSession,
 };
 
@@ -359,7 +360,44 @@ fn test_resolve_file_with_line() {
 }
 
 #[test]
-fn test_open_markdown_file() {
+fn test_open_extensionless_non_text_file_does_not_emit_open_event() {
+    // Regression test: an extensionless file (e.g. a disguised executable) is classified as
+    // binary by `is_file_openable_in_warp`, which previously routed it to `SystemGeneric` and
+    // ultimately `NSWorkspace.openURL` — allowing arbitrary code execution. After the fix,
+    // such files are revealed in Finder / Explorer instead of opened, so no `OpenFileWithTarget`
+    // event should be emitted.
+    App::test((), |mut app| async move {
+        let base = tempdir().unwrap();
+        let base_path = base.path();
+        let malicious_path = base_path.join("abc");
+        touch(&malicious_path).await;
+        let links = init_link_model(&mut app, Some(base_path));
+
+        let events = Arc::new(Mutex::new(vec![]));
+        {
+            let events = events.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_model(&links, move |_, event, _| {
+                    events.lock().push(event.clone());
+                })
+            });
+        }
+
+        links.update(&mut app, |links, ctx| {
+            links.open(local_file(&malicious_path), ctx);
+        });
+
+        let events = events.lock();
+        assert!(
+            events.is_empty(),
+            "Expected no LinkEvent to be emitted for an extensionless non-text file, \
+             but got: {events:?}"
+        );
+    });
+}
+
+#[test]
+fn test_open_markdown_file_uses_viewer_when_preferred() {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     if !root.join("README.md").exists() {
         root = root.parent().unwrap().to_path_buf();
@@ -396,5 +434,53 @@ fn test_open_markdown_file() {
             }
             other => panic!("Expected OpenFileNotebook event, got {other:?}"),
         }
+    });
+}
+
+#[test]
+fn test_open_markdown_file_respects_disabled_viewer_preference() {
+    // With `prefer_markdown_viewer = false`, the markdown file would otherwise
+    // resolve to `FileTarget::SystemDefault`. The security fix routes both
+    // `SystemDefault` and `SystemGeneric` through `open_file_path_in_explorer`,
+    // so no `OpenFileWithTarget` event is emitted — the file is revealed in
+    // Finder / Explorer instead.
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if !root.join("README.md").exists() {
+        root = root.parent().unwrap().to_path_buf();
+    }
+
+    App::test((), |mut app| async move {
+        let links = init_link_model(&mut app, Some(&root));
+
+        EditorSettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .prefer_markdown_viewer
+                .set_value(false, ctx)
+                .unwrap();
+        });
+
+        let events = Arc::new(Mutex::new(vec![]));
+        {
+            let events = events.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_model(&links, move |_, event, _| {
+                    events.lock().push(event.clone());
+                })
+            });
+        }
+
+        links
+            .update(&mut app, |links, ctx| {
+                let future = links.resolve_and_open("./README.md", ctx);
+                ctx.await_spawned_future(future.future_id())
+            })
+            .await;
+
+        let events = events.lock();
+        assert!(
+            events.is_empty(),
+            "Expected no LinkEvent for a markdown file with the viewer preference disabled, \
+             but got: {events:?}"
+        );
     });
 }
