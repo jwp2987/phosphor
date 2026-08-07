@@ -287,7 +287,13 @@ define_action_catalog! {
         SurfaceRightPanelToggle => { name: "surface.right_panel.toggle", status: Implemented, target: Surface, params: None, result: Acknowledgement },
         SurfaceVerticalTabsOpen => { name: "surface.vertical_tabs.open", status: Implemented, target: Surface, params: None, result: Acknowledgement },
         SurfaceVerticalTabsToggle => { name: "surface.vertical_tabs.toggle", status: Implemented, target: Surface, params: None, result: Acknowledgement },
-        SurfaceAgentManagementOpen => { name: "surface.agent_management.open", status: Implemented, target: Surface, params: None, result: Acknowledgement },
+        // Stub, not Implemented: the app-side Agent Management view this action would
+        // open was removed along with cloud-runner orchestration (see DECLINED.md,
+        // `notifications/model.rs`'s note on commit 002ce467) and was never rebuilt.
+        // `ActionImplementationStatus::Stub` keeps the route defined (protocol
+        // compatibility, discovery metadata) while `ActionKind::is_implemented()`
+        // keeps it out of `implemented_metadata()` and rejected before dispatch.
+        SurfaceAgentManagementOpen => { name: "surface.agent_management.open", status: Stub, target: Surface, params: None, result: Acknowledgement },
     }
 
     file {

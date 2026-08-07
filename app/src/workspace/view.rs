@@ -13,7 +13,10 @@ mod startup_directory;
 mod tab_grouping;
 #[cfg(test)]
 #[path = "view_test.rs"]
-mod tests;
+// `pub(crate)` (matching the pinned oracle, 02b53fcd8): needed so
+// `crate::local_control::handlers::layout::tests` can reuse the same
+// `initialize_app` / `mock_workspace` test harness the workspace view tests use.
+pub(crate) mod tests;
 mod vertical_tabs;
 #[cfg(target_family = "wasm")]
 mod wasm_view;
@@ -389,8 +392,13 @@ use super::action::{
     InitContent, RestoreConversationLayout, TabContextMenuAnchor,
     VerticalTabsPaneContextMenuTarget, WorkspaceAction,
 };
+// Re-exported `pub(crate)` (matching the pinned oracle, 02b53fcd8) so
+// `crate::local_control::handlers::close` can name the same close-confirmation
+// source enum this method already uses internally, without a second import
+// path pointing at the same private submodule.
+pub(crate) use super::close_session_confirmation_dialog::OpenDialogSource;
 use super::close_session_confirmation_dialog::{
-    CloseSessionConfirmationDialog, CloseSessionConfirmationEvent, OpenDialogSource,
+    CloseSessionConfirmationDialog, CloseSessionConfirmationEvent,
 };
 use super::delete_conversation_confirmation_dialog::{
     DeleteConversationConfirmationDialog, DeleteConversationConfirmationEvent,
@@ -10231,7 +10239,10 @@ impl Workspace {
     /// Checks if the provided tab indices need to be confirmed before closing, unless skip_confirmation is true.
     /// If none of them need confirmation (or the confirm setting is turned off), we close all the provided tabs.
     /// Returns true iff all of the tabs were closed.
-    fn close_tabs(
+    // `pub(crate)` (matching the pinned oracle, 02b53fcd8): needed so
+    // `crate::local_control::handlers::close::tab_close` can close tabs
+    // through the same confirmation-aware path the UI itself uses.
+    pub(crate) fn close_tabs(
         &mut self,
         tab_indices: impl Iterator<Item = usize>,
         dialog_source: OpenDialogSource,

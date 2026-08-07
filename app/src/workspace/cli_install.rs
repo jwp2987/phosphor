@@ -7,9 +7,58 @@ use command::blocking::Command;
 use warp_core::channel::ChannelState;
 use warp_util::path::ShellFamily;
 
-/// Compute the target path where the symlink should be installed, based on channel
+/// Compute the target path where the CLI symlink should be installed, based on channel
+///
+/// Named `cli_install_target_path` (not `oz_install_target_path`, per the pinned
+/// oracle's rename) because `install_cli`/`uninstall_cli` predate the oracle's
+/// `oz` rename in this fork and are kept under their existing names -- see the
+/// PR description for why they were not renamed as part of this change.
 fn cli_install_target_path() -> PathBuf {
     PathBuf::from("/usr/local/bin").join(ChannelState::channel().cli_command_name())
+}
+
+/// Compute the target path where the Warp Control symlink should be installed, based on channel
+fn warpctrl_install_target_path() -> PathBuf {
+    PathBuf::from("/usr/local/bin").join(ChannelState::channel().warpctrl_command_name())
+}
+
+/// Compute the source path of the warpctrl wrapper inside the current app bundle.
+///
+/// Oz commands are part of the shared executable's normal argument parser, so
+/// the CLI symlink can point directly at the current executable. Warp Control
+/// has a separate parser selected by the hidden `--warpctrl` flag, so its
+/// installed symlink must target the bundled wrapper that injects that flag.
+/// Without it, Warp Control subcommands such as `tab` would reach the normal
+/// parser and be rejected as unknown.
+fn warpctrl_bundle_source_path() -> Result<PathBuf> {
+    let current_binary =
+        std::env::current_exe().context("Failed to get current executable path")?;
+    let bundle_root = current_binary
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .ok_or_else(|| anyhow!("Current executable is not inside a bundled app"))?;
+    Ok(bundle_root
+        .join("Contents/Resources/bin")
+        .join(ChannelState::channel().warpctrl_command_name()))
+}
+
+fn path_resolves_to(path: &Path, expected_path: &Path) -> bool {
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    let Ok(expected_path) = expected_path.canonicalize() else {
+        return false;
+    };
+    path == expected_path
+}
+
+/// Whether the installed Warp Control command resolves to this app bundle's wrapper.
+pub fn is_warpctrl_installed() -> bool {
+    let Ok(source) = warpctrl_bundle_source_path() else {
+        return false;
+    };
+    path_resolves_to(&warpctrl_install_target_path(), &source)
 }
 
 /// Create a symlink with elevated privileges using osascript
@@ -89,10 +138,74 @@ fn remove_file_with_admin(target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Install a channel-specific CLI symlink.
+///
+/// The target must either be absent or already be a symlink. Installation first
+/// attempts to create the symlink without elevated privileges, then falls back
+/// to prompting for administrator privileges.
+fn install_symlink(source: &Path, target: &Path, command_name: &str) -> Result<()> {
+    if target.exists() && !target.is_symlink() {
+        return Err(anyhow!(
+            "Cannot install {command_name}: {:?} exists but is not a symlink. Please remove it manually first.",
+            target
+        ));
+    }
+
+    match symlink(source, target) {
+        Ok(_) => {
+            log::debug!(
+                "{command_name} installed successfully without admin privileges: {:?} -> {}",
+                target,
+                source.display()
+            );
+        }
+        Err(_) => {
+            log::debug!("{command_name} symlink creation failed, trying with admin privileges");
+            create_symlink_with_admin(source, target)
+                .context("Failed to create symlink even with admin privileges")?;
+            log::debug!("{command_name} installed successfully with admin privileges");
+        }
+    }
+
+    Ok(())
+}
+
+/// Uninstall a channel-specific CLI symlink.
+///
+/// The target must be a symlink so uninstalling cannot remove an unrelated
+/// file. Removal first runs without elevated privileges, then falls back to
+/// prompting for administrator privileges.
+fn uninstall_symlink(target: &Path, command_name: &str) -> Result<()> {
+    if !target.exists() {
+        return Err(anyhow!("{command_name} is not currently installed."));
+    }
+
+    if !target.is_symlink() {
+        return Err(anyhow!(
+            "Cannot uninstall {command_name}: {:?} exists but is not a symlink. Please remove it manually.",
+            target
+        ));
+    }
+
+    match fs::remove_file(target) {
+        Ok(_) => {
+            log::debug!("{command_name} uninstalled successfully without admin privileges");
+        }
+        Err(_) => {
+            log::debug!("{command_name} file removal failed, trying with admin privileges");
+            remove_file_with_admin(target)
+                .context("Failed to remove symlink even with admin privileges")?;
+            log::debug!("{command_name} uninstalled successfully with admin privileges");
+        }
+    }
+
+    Ok(())
+}
+
 /// Install the CLI by creating a symlink (channel-specific target)
 ///
 /// This function:
-/// 1. Detects the current Zap channel and finds the appropriate binary
+/// 1. Detects the current channel and finds the appropriate binary
 /// 2. Attempts to create a symlink without admin privileges first
 /// 3. Falls back to prompting for admin privileges if needed
 /// 4. Handles existing installations and edge cases
@@ -100,37 +213,7 @@ pub fn install_cli() -> Result<()> {
     let cli_path = cli_install_target_path();
     let current_binary =
         std::env::current_exe().context("Failed to get current executable path")?;
-
-    // Check if target file exists and handle conflicts
-    if cli_path.exists() && !cli_path.is_symlink() {
-        return Err(anyhow!(
-            "Cannot install: {:?} exists but is not a symlink. Please remove it manually first.",
-            cli_path
-        ));
-    }
-
-    // Try to create symlink without admin privileges first
-    let symlink_result = symlink(&current_binary, &cli_path);
-
-    match symlink_result {
-        Ok(_) => {
-            log::debug!(
-                "CLI installed successfully without admin privileges: {:?} -> {}",
-                cli_path,
-                current_binary.display()
-            );
-        }
-        Err(_) => {
-            log::debug!("Symlink creation failed, trying with admin privileges");
-
-            create_symlink_with_admin(&current_binary, &cli_path)
-                .context("Failed to create symlink even with admin privileges")?;
-
-            log::debug!("CLI installed successfully with admin privileges");
-        }
-    }
-
-    Ok(())
+    install_symlink(&current_binary, &cli_path, "Oz CLI")
 }
 
 /// Uninstall the CLI by removing the symlink (channel-specific target)
@@ -140,36 +223,34 @@ pub fn install_cli() -> Result<()> {
 /// 2. Attempts to remove without admin privileges first
 /// 3. Falls back to prompting for admin privileges if needed
 pub fn uninstall_cli() -> Result<()> {
-    let cli_path = cli_install_target_path();
+    uninstall_symlink(&cli_install_target_path(), "Oz command")
+}
 
-    if !cli_path.exists() {
-        return Err(anyhow!("Oz command is not currently installed."));
-    }
+/// Install Warp Control by symlinking its bundled wrapper into /usr/local/bin.
+///
+/// The wrapper contains no control implementation. It resolves this installed
+/// symlink back into the app bundle, launches the shared app executable, and
+/// injects `--warpctrl` so startup selects the separate Warp Control parser
+/// before normal parsing or GUI startup.
+pub fn install_warpctrl() -> Result<()> {
+    let warpctrl_path = warpctrl_install_target_path();
+    let warpctrl_source = warpctrl_bundle_source_path()?;
 
-    // Safety check: verify it's actually a symlink before removing
-    if !cli_path.is_symlink() {
+    if !warpctrl_source.exists() {
         return Err(anyhow!(
-            "Cannot uninstall: {:?} exists but is not a symlink. Please remove it manually.",
-            cli_path
+            "Cannot install Warp Control CLI: bundled wrapper not found at {}",
+            warpctrl_source.display()
         ));
     }
 
-    // Try to remove without admin privileges first
-    let remove_result = fs::remove_file(&cli_path);
-
-    match remove_result {
-        Ok(_) => {
-            log::debug!("CLI uninstalled successfully without admin privileges");
-        }
-        Err(_) => {
-            log::debug!("File removal failed, trying with admin privileges");
-
-            remove_file_with_admin(&cli_path)
-                .context("Failed to remove symlink even with admin privileges")?;
-
-            log::debug!("CLI uninstalled successfully with admin privileges");
-        }
-    }
-
-    Ok(())
+    install_symlink(&warpctrl_source, &warpctrl_path, "Warp Control CLI")
 }
+
+/// Uninstall the Warp Control CLI by removing the symlink from /usr/local/bin
+pub fn uninstall_warpctrl() -> Result<()> {
+    uninstall_symlink(&warpctrl_install_target_path(), "Warp Control command")
+}
+
+#[cfg(test)]
+#[path = "cli_install_tests.rs"]
+mod tests;

@@ -21,6 +21,7 @@ pub mod completions;
 pub mod config_file;
 // Zap Wave 7-2: the `environment` CLI was physically removed along with the cloud ambient agent subsystem.
 pub mod json_filter;
+pub mod local_control;
 pub mod mcp;
 pub mod model;
 pub mod provider;

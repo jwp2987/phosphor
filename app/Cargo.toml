@@ -221,6 +221,7 @@ voice_input = { workspace = true, optional = true }
 warpui_extras = { workspace = true, features = ["default", "user_preferences-toml"] }
 syntax_tree.workspace = true
 languages.workspace = true
+local_control.workspace = true
 warp_terminal.workspace = true
 websocket.workspace = true
 wgpu = { workspace = true, optional = true }
