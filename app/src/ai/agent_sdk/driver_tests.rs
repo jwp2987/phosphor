@@ -3,7 +3,9 @@
 //!
 //! Adaptations are called out inline. The tests that are *not* here need source
 //! this fork does not ship (managed-MCP resolution, cloud skill loading, the
-//! OpenAI typed secret, the artifact-upload tool result); see the PR description.
+//! OpenAI typed secret, the artifact-upload tool result). All 18 are enumerated
+//! in issue #252; re-verified test-by-test against the pin in round 4, no
+//! further porting opportunity in this file.
 
 use std::collections::HashMap;
 use std::ffi::OsString;

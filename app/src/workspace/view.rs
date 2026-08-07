@@ -3251,6 +3251,11 @@ impl Workspace {
                 self.sync_window_button_visibility(ctx);
                 ctx.notify();
             }
+            // Purely affects what the vertical-tabs panel draws in its title
+            // bar, so a redraw is all this needs.
+            TabSettingsChangedEvent::HideTitleBarSearchBarInVerticalTabs { .. } => {
+                ctx.notify();
+            }
             TabSettingsChangedEvent::UseVerticalTabs { .. } => {
                 let vertical_tabs_enabled = *TabSettings::as_ref(ctx).use_vertical_tabs;
                 // During HOA onboarding, keep the vertical tabs panel open

@@ -282,6 +282,7 @@ pub trait AnyView {
         window_id: WindowId,
         view_id: EntityId,
     ) -> Option<AccessibilityData>;
+    fn child_view_ids(&self, app: &AppContext) -> Vec<EntityId>;
 }
 
 impl<T> AnyView for T
@@ -382,6 +383,10 @@ where
     ) -> Option<AccessibilityData> {
         let mut ctx = ViewContext::new(app, window_id, view_id);
         View::accessibility_data(self, &mut ctx)
+    }
+
+    fn child_view_ids(&self, app: &AppContext) -> Vec<EntityId> {
+        View::child_view_ids(self, app)
     }
 }
 

@@ -299,3 +299,58 @@ fn guard_git_operation_in_progress_blocks_on_held_index_lock() {
         "a held index.lock must block git write-ops"
     );
 }
+
+// ── Ported from the pinned oracle (02b53fcd8) ───────────────────────
+// The pin tracks diff-state subscriptions in a separate `RemoteDiffStateManager`
+// entity (`diff_state_tracker.rs`), which the fork has not ported (see the
+// feature-gap issue on `diff_state_tracker_tests.rs`). The fork tracks the
+// same per-connection subscription lifecycle inline on `ServerModel` via
+// `diff_state_subscriptions`; these two tests are adapted to that field
+// instead of the missing manager, preserving the pin's actual assertions:
+// the map starts empty, and disconnecting a client cleans up its entry.
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn diff_state_subscriptions_start_empty() {
+    let model = test_model();
+    assert!(model.diff_state_subscriptions.is_empty());
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn deregister_connection_cleans_up_diff_state_subscriptions() {
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(|_ctx| test_model());
+        let conn = uuid::Uuid::new_v4();
+        let (tx, _rx) = async_channel::unbounded();
+
+        handle.update(&mut app, |model, _ctx| {
+            model.connection_senders.insert(conn, tx);
+            model.diff_state_subscriptions.insert(
+                conn,
+                vec![super::DiffStateSubscription {
+                    canonical_path: warp_util::standardized_path::StandardizedPath::try_new(
+                        "/repo",
+                    )
+                    .unwrap(),
+                    wire_repo_path: "/repo".to_string(),
+                    mode: crate::code_review::diff_state::DiffMode::Head,
+                }],
+            );
+        });
+
+        let has_sub_before = handle.read(&app, |model, _ctx| {
+            model.diff_state_subscriptions.contains_key(&conn)
+        });
+        assert!(has_sub_before);
+
+        handle.update(&mut app, |model, ctx| {
+            model.deregister_connection(conn, ctx)
+        });
+
+        let has_sub_after = handle.read(&app, |model, _ctx| {
+            model.diff_state_subscriptions.contains_key(&conn)
+        });
+        assert!(!has_sub_after);
+    });
+}

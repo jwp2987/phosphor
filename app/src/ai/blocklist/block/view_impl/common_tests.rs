@@ -10,11 +10,12 @@ use warpui::App;
 use super::{blocklist_image_asset_source, ResolvedBlocklistImageSources};
 use super::{
     collect_visual_markdown_lightbox_collection, compute_visual_section_width,
-    display_query_without_context_references, inline_image_source_label,
-    is_supported_blocklist_image_source, lightbox_trigger_for_section, query_context_references,
-    query_prefix_highlight_len, render_scrollable_collapsible_content,
-    should_render_query_and_header, text_sections_with_indices, CollapsibleElementState,
-    CollapsibleExpansionState, QueryContextReference, VisualMarkdownLightboxCollection,
+    display_query_without_context_references, image_tooltip_handles_for_group,
+    inline_image_source_label, is_supported_blocklist_image_source, lightbox_trigger_for_section,
+    query_context_references, query_prefix_highlight_len, render_scrollable_collapsible_content,
+    should_render_query_and_header, text_sections_with_indices, warping_footer_height,
+    CollapsibleElementState, CollapsibleExpansionState, QueryContextReference,
+    VisualMarkdownLightboxCollection,
 };
 use crate::{
     ai::agent::{
@@ -26,7 +27,10 @@ use crate::{
     ui_components::icons::Icon,
 };
 use ui_components::lightbox::{LightboxImage, LightboxImageSource};
-use warpui::{elements::Empty, Element};
+use warpui::{
+    elements::{Empty, MouseStateHandle},
+    Element,
+};
 
 #[test]
 fn query_prefix_highlight_len_highlights_invoke_skill_inputs() {
@@ -146,6 +150,37 @@ fn display_query_without_context_references_removes_chip_text() {
         ),
         "/agent compare with now"
     );
+}
+
+#[test]
+fn image_tooltip_handles_for_group_uses_available_handles_only() {
+    let handles = [MouseStateHandle::default(), MouseStateHandle::default()];
+
+    assert_eq!(image_tooltip_handles_for_group(&handles, 0, 1).len(), 1);
+    assert_eq!(image_tooltip_handles_for_group(&handles, 1, 4).len(), 1);
+    assert_eq!(image_tooltip_handles_for_group(&handles, 2, 1).len(), 0);
+    assert_eq!(image_tooltip_handles_for_group(&handles, 3, 1).len(), 0);
+    assert_eq!(image_tooltip_handles_for_group(&[], 1, 1).len(), 0);
+}
+
+#[test]
+fn warping_footer_height_reserves_a_line_for_the_secondary_element() {
+    // Regression: the warping indicator's footer is a fixed-height, clipped
+    // container. When an agent tip (or fallback-model explanation) is present it
+    // renders on a second line, so the footer must be taller than the
+    // single-line case — otherwise the clip (added to keep action chips from
+    // overflowing narrow panes) hides the tip entirely.
+    let font_size = 13.;
+    let without_tip = warping_footer_height(font_size, false);
+    let with_tip = warping_footer_height(font_size, true);
+
+    assert!(
+        with_tip > without_tip,
+        "footer with a secondary element ({with_tip}) should be taller than without ({without_tip})",
+    );
+    // The extra room must cover the secondary line: its font size
+    // (monospace_font_size - 3) plus the 1px top margin on the tip container.
+    assert_eq!(with_tip - without_tip, (font_size - 3.) + 1.);
 }
 
 #[test]

@@ -81,3 +81,50 @@ fn llm_info_round_trip_serializes_and_deserializes() {
 
     assert_eq!(info, round_tripped);
 }
+
+fn server_llm(id: &str, disable_reason: Option<DisableReason>) -> LLMInfo {
+    LLMInfo {
+        display_name: id.to_string(),
+        base_model_name: id.to_string(),
+        id: id.into(),
+        reasoning_level: None,
+        usage_metadata: LLMUsageMetadata {
+            request_multiplier: 1,
+            credit_multiplier: None,
+        },
+        description: None,
+        disable_reason,
+        vision_supported: false,
+        spec: None,
+        provider: LLMProvider::Unknown,
+        host_configs: HashMap::new(),
+        discount_percentage: None,
+        context_window: LLMContextWindow::default(),
+    }
+}
+
+fn available(default_id: &str, choices: Vec<LLMInfo>) -> AvailableLLMs {
+    AvailableLLMs {
+        default_id: default_id.into(),
+        choices,
+        preferred_codex_model_id: None,
+    }
+}
+
+#[test]
+fn deserialized_available_llms_with_missing_default_does_not_panic() {
+    // `AvailableLLMs::new()` guarantees `default_id` is one of `choices`, but
+    // deserialization (e.g. a stale persisted cache or a server payload)
+    // bypasses `new()`. Build such a struct, round-trip it through serde, and
+    // confirm `default_llm_info()` falls back to the first choice instead of
+    // panicking ("Default LLM ID must be present in choices").
+    let original = available(
+        "missing-default",
+        vec![server_llm("gpt-x", None), server_llm("gpt-y", None)],
+    );
+    let json = serde_json::to_string(&original).expect("should serialize");
+    let deserialized: AvailableLLMs = serde_json::from_str(&json).expect("should deserialize");
+
+    assert_eq!(deserialized.default_id.as_str(), "missing-default");
+    assert_eq!(deserialized.default_llm_info().id.as_str(), "gpt-x");
+}

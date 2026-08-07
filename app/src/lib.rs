@@ -565,6 +565,20 @@ impl LaunchMode {
     }
 }
 
+/// Extracts the raw `--api-key` / `WARP_API_KEY` value carried by a launch mode, if any.
+/// Whether that value is actually *honored* (e.g. the dogfood-channel gate applied at the
+/// `initialize_app` call site) is a separate concern; this is pure field extraction so it
+/// can be unit-tested without standing up a full `AppContext`.
+fn api_key_from_launch_mode(launch_mode: &LaunchMode) -> Option<String> {
+    match launch_mode {
+        LaunchMode::CommandLine { global_options, .. } => global_options.api_key.clone(),
+        LaunchMode::App { api_key, .. } | LaunchMode::Tui { api_key, .. } => api_key.clone(),
+        LaunchMode::Test { .. }
+        | LaunchMode::RemoteServerProxy
+        | LaunchMode::RemoteServerDaemon => None,
+    }
+}
+
 impl AssetProvider for Assets {
     fn get(&self, path: &str) -> Result<Cow<'_, [u8]>> {
         <Assets as RustEmbed>::get(path)
@@ -1234,11 +1248,13 @@ fn initialize_app(
         ctx.set_zoom_factor(WindowSettings::as_ref(ctx).zoom_level.as_zoom_factor());
     }
 
-    // Extract API key from command line options, if applicable.
+    // Extract API key from command line options, if applicable. `App`/`Tui` are gated to
+    // dogfood channels; `CommandLine` is not.
     let api_key = match launch_mode {
-        LaunchMode::CommandLine { global_options, .. } => global_options.api_key.clone(),
-        LaunchMode::App { api_key, .. } if ChannelState::channel().is_dogfood() => api_key.clone(),
-        LaunchMode::Tui { api_key, .. } if ChannelState::channel().is_dogfood() => api_key.clone(),
+        LaunchMode::CommandLine { .. } => api_key_from_launch_mode(launch_mode),
+        LaunchMode::App { .. } | LaunchMode::Tui { .. } if ChannelState::channel().is_dogfood() => {
+            api_key_from_launch_mode(launch_mode)
+        }
         _ => None,
     };
     let api_key = if FeatureFlag::APIKeyAuthentication.is_enabled() {
@@ -2946,3 +2962,7 @@ const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
         FeatureFlag::WindowsHighPerformanceGpuDefault,
     ),
 ];
+
+#[cfg(test)]
+#[path = "lib_tests.rs"]
+mod tests;

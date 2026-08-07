@@ -1465,3 +1465,53 @@ fn test_can_autoexecute_command_denylist_matches_env_prefixed_commands() {
         });
     })
 }
+
+
+
+#[test]
+fn test_empty_org_denylist_allows_user_entries() {
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            convo_id,
+            permissions,
+            user_workspaces,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            model.add_to_command_denylist(
+                *model.active_profile(Some(terminal_view_id), ctx).id(),
+                &AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap(),
+                ctx,
+            );
+        });
+
+        user_workspaces.update(&mut app, |model, ctx| {
+            model.setup_test_workspace(ctx);
+            model.update_ai_autonomy_settings(
+                |settings| {
+                    settings.execute_commands_denylist = Some(vec![]);
+                },
+                ctx,
+            );
+        });
+
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_autoexecute_command(
+                &convo_id,
+                "rm file.txt",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(
+                !result.is_allowed(),
+                "user denylist entry should be active even when org denylist is empty"
+            );
+        });
+    })
+}

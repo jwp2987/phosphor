@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::*;
-use crate::code_review::diff_size_limits::DiffSize;
+use crate::code_review::diff_size_limits::{DiffSize, MAX_DIFF_SIZE};
 use crate::code_review::diff_state::{
     DiffHunk, DiffLine, DiffLineType, DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState,
     DiffStats, FileDiff, FileStatusInfo, GitDiffData, GitFileStatus,
@@ -482,4 +482,117 @@ fn decode_file_delta_decodes_path_diff_and_metadata() {
         decoded.metadata.expect("delta carried metadata").main_branch_name,
         "main"
     );
+}
+
+// ── Ported from the pinned oracle (02b53fcd8) ───────────────────────
+// The pin's `file_diff_to_proto` gates base content on a size budget and
+// drops it entirely for binary files; the fork's version originally shipped
+// without that gating (dead code, pre-consumer). Ported alongside a matching
+// fix in `file_diff_to_proto`. See diff_state_proto.rs for the gating logic.
+
+#[test]
+fn file_diff_to_proto_preserves_repo_relative_path() {
+    let file_diff = sample_file_diff();
+
+    let proto_diff = file_diff_to_proto(&file_diff, None);
+
+    assert_eq!(proto_diff.file_path, "src/main.rs");
+}
+
+#[test]
+fn build_diff_state_snapshot_preserves_repo_relative_file_paths() {
+    // The pin's `build_diff_state_snapshot` takes `diffs` separately from
+    // `state`; the fork's `build_snapshot` folds the diff payload into
+    // `DiffState::Loaded` instead (see `diff_state_to_proto`'s doc comment).
+    // Adapted to the fork's real signature; same assertion — the snapshot's
+    // file paths stay repo-relative, not rewritten to an absolute path.
+    let diffs = GitDiffData {
+        files: vec![sample_file_diff()],
+        total_additions: 0,
+        total_deletions: 0,
+        files_changed: 1,
+    };
+
+    let snapshot = build_snapshot(
+        "/repo".to_string(),
+        &DiffMode::Head,
+        &DiffState::Loaded(diffs),
+        &DiffMetadata::default(),
+    );
+
+    assert_eq!(
+        snapshot
+            .diffs
+            .expect("snapshot should include diffs")
+            .files
+            .first()
+            .expect("snapshot should include a file")
+            .file_path,
+        "src/main.rs"
+    );
+}
+
+#[test]
+fn build_diff_state_file_delta_preserves_repo_relative_file_path() {
+    let delta = build_diff_state_file_delta("/repo", &DiffMode::Head, "src/main.rs", None, None);
+
+    assert_eq!(delta.file_path, "src/main.rs");
+}
+
+#[test]
+fn file_diff_to_proto_drops_binary_content() {
+    let mut file_diff = sample_file_diff();
+    file_diff.is_binary = true;
+
+    let proto_diff = file_diff_to_proto(&file_diff, Some("binary blob content".to_string()));
+
+    assert!(proto_diff.is_binary);
+    assert_eq!(proto_diff.content_at_base, None);
+    // Size is untouched for binary files; the client renders the binary
+    // placeholder via `is_binary`, not via size.
+    assert_eq!(proto_diff.size, proto::DiffSize::Normal as i32);
+}
+
+#[test]
+fn file_diff_to_proto_withholds_oversized_content() {
+    let file_diff = sample_file_diff();
+    let oversized = "a".repeat(MAX_DIFF_SIZE + 1);
+
+    let proto_diff = file_diff_to_proto(&file_diff, Some(oversized));
+
+    assert_eq!(proto_diff.content_at_base, None);
+    assert_eq!(
+        proto_diff.size,
+        proto::DiffSize::UnrenderableFileTooLarge as i32
+    );
+}
+
+#[test]
+fn file_diff_to_proto_preserves_content_within_budget() {
+    let file_diff = sample_file_diff();
+
+    let proto_diff = file_diff_to_proto(&file_diff, Some("small base content".to_string()));
+
+    assert_eq!(
+        proto_diff.content_at_base.as_deref(),
+        Some("small base content")
+    );
+    assert_eq!(proto_diff.size, proto::DiffSize::Normal as i32);
+}
+
+#[test]
+fn file_diff_to_proto_preserves_content_at_budget_boundary() {
+    let file_diff = sample_file_diff();
+    // The gate uses a strict `>` comparison, so base content of exactly
+    // MAX_DIFF_SIZE is the largest blob still sent: content is preserved and
+    // the size stays Normal rather than flipping to UnrenderableFileTooLarge.
+    let at_budget = "a".repeat(MAX_DIFF_SIZE);
+
+    let proto_diff = file_diff_to_proto(&file_diff, Some(at_budget.clone()));
+
+    assert_eq!(
+        proto_diff.content_at_base.as_deref(),
+        Some(at_budget.as_str())
+    );
+    assert_eq!(proto_diff.size, proto::DiffSize::Normal as i32);
 }

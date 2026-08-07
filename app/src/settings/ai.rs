@@ -1748,7 +1748,9 @@ define_settings_group!(AISettings, settings: [
     // `is_ai_autodetection_enabled()` getter.
     ai_autodetection_enabled_internal: AIAutoDetectionEnabled {
         type: bool,
-        default: true,
+        // Opt-in, matching the pinned oracle. A fresh user who has never touched
+        // this has natural-language detection OFF; the fork had drifted to `true`.
+        default: false,
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
@@ -2638,6 +2640,10 @@ impl AISettings {
         // Zap no longer allows disabling the Zap Agent via settings. A persisted
         // `agents.warp_agent.is_any_ai_enabled = false` in an old config file is ignored.
         true
+    }
+
+    pub fn is_orchestration_enabled(&self, app: &AppContext) -> bool {
+        self.is_any_ai_enabled(app)
     }
 
     pub fn default_session_mode(&self, app: &AppContext) -> DefaultSessionMode {

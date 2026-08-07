@@ -1,5 +1,5 @@
 use super::{
-    count_chars_up_to_byte,
+    byte_offset_for_char_offset, count_chars_up_to_byte,
     point::Point,
     word_boundaries::WordBoundariesPolicy,
     {char_slice, BufferIndex, SelectionDirection, TextBuffer},
@@ -62,6 +62,24 @@ fn test_char_counts_up_to_byte() {
     assert_eq!(
         count_chars_up_to_byte(text, text.len().into()),
         Some(text.chars().count().into())
+    );
+}
+
+#[test]
+fn test_byte_offset_for_char_offset() {
+    let text = "abc🔥abc☄️abc😬";
+    assert_eq!(byte_offset_for_char_offset(text, 0.into()), Some(0.into()));
+    assert_eq!(
+        byte_offset_for_char_offset(text, 4.into()),
+        Some("abc🔥".len().into())
+    );
+    assert_eq!(
+        byte_offset_for_char_offset(text, text.chars().count().into()),
+        Some(text.len().into())
+    );
+    assert_eq!(
+        byte_offset_for_char_offset(text, (text.chars().count() + 1).into()),
+        None
     );
 }
 

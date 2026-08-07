@@ -218,6 +218,16 @@ fn renders_fixed_prompt_chip_command_without_interpolation() {
 pub fn initialize_app(app: &mut App) {
     initialize_settings_for_tests(app);
 
+    // These tests exercise natural-language detection behaviour, not its default.
+    // The default is opt-in (matching the pinned oracle), so enable it explicitly
+    // rather than depending on whatever the default happens to be. See #449.
+    crate::settings::AISettings::handle(app).update(app, |settings, ctx| {
+        settings
+            .ai_autodetection_enabled_internal
+            .set_value(true, ctx)
+            .expect("enabling NLD autodetection for tests should succeed");
+    });
+
     // Make sure we set up all necessary custom action bindings.
     app.update(init);
 
@@ -8179,3 +8189,89 @@ fn test_classic_tab_completions_keep_menu_open_while_cycling() {
     })
 }
 
+// ── CLI agent rich input / Ctrl+Enter keymap, ported from the pinned oracle ──────────
+
+/// Puts the terminal into a state where the CLI agent rich input composer is open,
+/// mirroring the oracle's `open_rich_input_for_terminal` helper.
+///
+/// The fork's `CLIAgentSession` has no `received_rich_notification` field, so it is
+/// omitted; every other field matches the oracle.
+fn open_rich_input_for_terminal(terminal: &ViewHandle<TerminalView>, app: &mut App) {
+    use crate::ai::blocklist::{InputConfig, InputType};
+    use crate::terminal::cli_agent_sessions::{
+        CLIAgentInputEntrypoint, CLIAgentInputState, CLIAgentSession, CLIAgentSessionContext,
+        CLIAgentSessionStatus,
+    };
+
+    terminal.update(app, |view, ctx| {
+        let view_id = view.view_id();
+        CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+            sessions.set_session(
+                view_id,
+                CLIAgentSession {
+                    agent: crate::terminal::CLIAgent::Claude,
+                    status: CLIAgentSessionStatus::InProgress,
+                    session_context: CLIAgentSessionContext::default(),
+                    input_state: CLIAgentInputState::Closed,
+                    should_auto_toggle_input: false,
+                    listener: None,
+                    remote_host: None,
+                    plugin_version: None,
+                    draft_text: None,
+                    custom_command_prefix: None,
+                },
+                ctx,
+            );
+        });
+        CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+            sessions.open_input(
+                view_id,
+                CLIAgentInputEntrypoint::CtrlG,
+                InputConfig {
+                    input_type: InputType::AI,
+                    is_locked: true,
+                },
+                false,
+                false,
+                ctx,
+            );
+        });
+    });
+}
+
+/// Ctrl+Enter belongs to the CLI agent rich input composer while it is open, so the
+/// terminal input's keymap context must not also advertise
+/// `CTRL_ENTER_ENTERS_AGENT_VIEW` — otherwise the two bindings fight over the same
+/// keystroke on non-macOS platforms.
+#[test]
+fn editor_keymap_context_excludes_ctrl_enter_enters_agent_view_when_rich_input_is_open() {
+    App::test((), |mut app| async move {
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        let _cli_agent_flag = FeatureFlag::CLIAgentRichInput.override_enabled(true);
+
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        open_rich_input_for_terminal(&terminal, &mut app);
+
+        input.read(&app, |input, ctx| {
+            let km_ctx = input
+                .editor
+                .read(ctx, |editor, ctx| editor.keymap_context(ctx));
+            assert!(
+                !km_ctx.set.contains(flags::CTRL_ENTER_ENTERS_AGENT_VIEW),
+                "CTRL_ENTER_ENTERS_AGENT_VIEW must NOT be set when the CLI agent rich input \
+                 is open; got flags: {:?}",
+                km_ctx.set
+            );
+            assert!(
+                km_ctx.set.contains(flags::CLI_AGENT_RICH_INPUT_OPEN),
+                "CLI_AGENT_RICH_INPUT_OPEN must be set when the rich input is open; \
+                 got flags: {:?}",
+                km_ctx.set
+            );
+        });
+    });
+}

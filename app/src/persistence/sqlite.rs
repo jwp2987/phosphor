@@ -32,6 +32,7 @@ use pathfinder_geometry::{rect::RectF, vector::Vector2F};
 use persistence::model::AMBIENT_AGENT_PANE_KIND;
 use uuid::Uuid;
 use warpui::platform::FullscreenState;
+use warpui::windowing::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 use warpui::{AppContext, SingletonEntity};
 
 use super::agent::{delete_agent_conversations, upsert_agent_conversation};
@@ -84,7 +85,9 @@ use crate::env_vars::{EnvVarCollectionObject, EnvVarCollectionObjectModel};
 use crate::features::FeatureFlag;
 use crate::notebooks::{NotebookId, NotebookObject};
 use crate::persistence::agent::read_agent_conversations;
-use crate::persistence::block_list::{get_all_restored_blocks, read_ai_queries};
+use crate::persistence::block_list::{
+    get_all_restored_blocks, process_ai_queries_for_uparrow_prompt, read_recent_ai_queries,
+};
 use crate::persistence::model::{
     NewGenericStringObject, NewObjectStoreRefresh, NewPersistedObjectAction, NewTeamSettings,
     ProjectRules, UserProfile, CODE_REVIEW_PANE_KIND, GET_STARTED_PANE_KIND,
@@ -1076,14 +1079,21 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
 
             // In the database each individual field is nullable but in practice these
             // fields are either all null or all non-null as they together represent
-            // the stored window bound.
+            // the stored window bound. Bounds smaller than the platform minimum
+            // window size are treated as missing so that we fall back to default
+            // geometry on restore instead of replaying a corrupt size (see GH#10083).
             let (window_width, window_height, origin_x, origin_y) = match window.bounds {
-                Some(rect) => (
-                    Some(rect.size().x()),
-                    Some(rect.size().y()),
-                    Some(rect.origin().x()),
-                    Some(rect.origin().y()),
-                ),
+                Some(rect)
+                    if rect.size().x() >= MIN_WINDOW_WIDTH
+                        && rect.size().y() >= MIN_WINDOW_HEIGHT =>
+                {
+                    (
+                        Some(rect.size().x()),
+                        Some(rect.size().y()),
+                        Some(rect.origin().x()),
+                        Some(rect.origin().y()),
+                    )
+                }
                 _ => (None, None, None, None),
             };
 
@@ -2859,13 +2869,18 @@ fn read_sqlite_data(
                 FullscreenState::from_i32(window.fullscreen_state).unwrap_or_default();
 
             // The origin and size of the bound should be all null or all non-null.
+            // Reject bounds smaller than the platform minimum window size so users
+            // with an already-corrupted warp.sqlite (see GH#10083) restore to
+            // default geometry instead of a sliver.
             let bounds = match (
                 window.window_width,
                 window.window_height,
                 window.origin_x,
                 window.origin_y,
             ) {
-                (Some(mut width), Some(mut height), Some(x), Some(y)) => {
+                (Some(mut width), Some(mut height), Some(x), Some(y))
+                    if width >= MIN_WINDOW_WIDTH && height >= MIN_WINDOW_HEIGHT =>
+                {
                     // When fullscreen or maximized, the `inner_size` we snapshotted will be the
                     // size of the full screen. This will cause problems with winit. When you set
                     // maximized/fullscreen, setting the inner_size will by the size the window
@@ -3325,7 +3340,9 @@ fn read_sqlite_data(
             .map(|refresh| refresh.time_of_next_refresh.and_utc())
             .min();
 
-    let ai_queries = read_ai_queries(conn)?;
+    // Seed up-arrow prompt history from a single SQLite read of the most recent queries.
+    let recent_ai_queries = read_recent_ai_queries(conn)?;
+    let ai_queries = process_ai_queries_for_uparrow_prompt(recent_ai_queries);
 
     let multi_agent_conversations = read_agent_conversations(conn)?;
     let projects = get_all_projects(conn)?;
