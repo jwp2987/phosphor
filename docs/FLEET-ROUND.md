@@ -125,6 +125,32 @@ So:
   no Monitor waiting. They hang forever.
 - The scratchpad is shared, not per-agent. Prefix scratch filenames.
 
+## Keep agent worktrees on a current base
+
+`main` moves fast during a round — 105 commits in one session is normal. A
+worktree created from a stale ref, or left sitting while the round lands 25 PRs,
+produces failures that are **real, reproducible, and entirely about the wrong
+tree**.
+
+This bit for real: an agent branched 105 commits behind, so its tree lacked the
+already-merged secret-detection fix. It hit the multibyte redaction failure,
+reported it as an "unrelated pre-existing" defect, and two people then spent time
+diagnosing a bug that had been fixed hours earlier.
+
+Use the helper rather than `git worktree add` by hand — it fetches first, so the
+base is current by construction:
+
+```bash
+script/agent-worktree new <slug> <branch>     # always from fresh origin/main
+script/agent-worktree refresh <slug>          # before final verification, and again before pushing
+script/agent-worktree status                  # how stale is everything
+```
+
+`script/precheck` also fails when the branch is more than 25 commits behind
+`origin/main`, so this cannot silently reach a PR.
+
+Being a few commits behind is normal and fine. Being tens behind is not.
+
 ## Never call a failure "pre-existing" without measuring it
 
 This has now been wrong four times in one round — three times by the
@@ -149,6 +175,11 @@ double-check costs one build.
 
 `script/known_test_failures.txt` is the authoritative list of what genuinely
 fails on `main`. If a failure is not in that file, it is not pre-existing.
+
+**Check your base first.** The last time this was got wrong, the failure was
+neither pre-existing nor caused by the change — the worktree was 105 commits
+behind and simply lacked the fix. Run `script/agent-worktree status` before
+concluding anything about a failure.
 
 ## Filtered test runs can break `#[serial]` tests
 

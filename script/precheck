@@ -39,6 +39,28 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; status=1; }
 ok()   { printf '  \033[32mok\033[0m   %s\n' "$1"; }
 
+# ------------------------------------------------------------------ staleness
+# An agent working on a base tens of commits old will hit failures that are real,
+# reproducible, and entirely about the wrong tree. This bit for real: an agent
+# branched 105 commits behind, missed the merged secret-detection fix, and
+# reported the resulting failure as an "unrelated pre-existing" defect.
+#
+# main moves constantly, so being a few commits behind is normal and fine. Being
+# far behind is not.
+step "base freshness"
+git fetch -q origin main 2>/dev/null || true
+BEHIND="$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
+STALE_FAIL="${PHOSPHOR_STALE_FAIL:-25}"
+if ((BEHIND == 0)); then
+    ok "up to date with origin/main"
+elif ((BEHIND < STALE_FAIL)); then
+    printf '  \033[33mwarn\033[0m %s commit(s) behind origin/main -- fine, but merge before final verification\n' "$BEHIND"
+else
+    fail "$BEHIND commits behind origin/main -- REBASE BEFORE TRUSTING ANY TEST RESULT"
+    printf '      A stale base produces failures that are real and about the wrong tree.\n' >&2
+    printf '      Fix:  git fetch origin && git merge origin/main\n' >&2
+fi
+
 # ---------------------------------------------------------------- formatting
 # The repo pins edition 2018 in .rustfmt.toml while the crates are edition 2024
 # (issue #191), so ALWAYS use --config-path and never --edition. Only changed
