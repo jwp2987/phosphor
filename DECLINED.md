@@ -33,6 +33,8 @@ Phosphor drops Warp's cloud backend. These are not gaps.
 | **RunAgents / cloud-runner orchestration** | #290 | `host_picker`, `run_agents_card_view`, `orchestration_controls`. Needs `warp_graphql::queries::get_runners` (crate deleted), `crate::server::experiments`, `crate::server::server_api`; tests assert on `FeatureFlag::CloudAgentRunners`. **Caveat:** a few `run_agents_card_view` cases exercise a *Local* execution-mode variant that may be a legitimate non-cloud feature — tracked under #11, not declined. |
 | **Cloud teams / org policy** | #445 | `UserWorkspaces::current_team()` returns `None` unconditionally — a deliberate BYOP decision, already documented in an `#[ignore]` at `app/src/cloud_object/model/model_test.rs`. Consequence: the org/workspace command denylist is inert. Whether a **local** workspace policy layer is wanted is still open on #445. |
 | **Account-first onboarding, billing, paid tiers** | #11 | `account_class`, `is_paid`, `has_team`, upgrade flows. No BYOP equivalent. |
+| **`/logout` slash command** | #338 | `crate::tui::log_out_tui` (its dispatch target) is a documented no-op: "BYOP has no account to log out of." Registering `/logout` would add a row to the `/` menu that does nothing when selected — the dispatch code existing does not make this a wiring gap, unlike `/exit`/`/mcp`/`/view-logs`/`/auto-approve`/`/natural-language-detection`/`/clear` in the same issue. |
+| **`/voice` slash command** | #11 | `VoiceInputLifecycle` — KEEP-DROPPED, maintainer 2026-08-02: the voice transcription backend (Wispr) is cloud and dropped. |
 
 ## Provider credentials — API keys only
 

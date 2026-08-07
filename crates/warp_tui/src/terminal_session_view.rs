@@ -3344,7 +3344,9 @@ impl TuiTerminalSessionView {
         }
 
         match command.kind() {
-            SlashCommandKind::Agent | SlashCommandKind::New => {
+            // `/clear` is a TUI-only alias for `/agent`/`/new` (see `SlashCommandKind::Clear`'s
+            // doc comment): clearing the transcript and starting a new conversation.
+            SlashCommandKind::Agent | SlashCommandKind::New | SlashCommandKind::Clear => {
                 if !self
                     .ai_context_model
                     .as_ref(ctx)
