@@ -22,6 +22,7 @@ struct MockHandler {
     d_proto_hooks: Vec<DProtoHook>,
     pluggable_notifications: Vec<(Option<String>, String)>,
     hyperlink_events: Vec<Option<Hyperlink>>,
+    cwd_updates: Vec<String>,
 }
 
 impl Handler for MockHandler {
@@ -236,6 +237,10 @@ impl Handler for MockHandler {
         self.hyperlink_events.push(hyperlink);
     }
 
+    fn set_current_working_directory(&mut self, path: String) {
+        self.cwd_updates.push(path);
+    }
+
     fn set_keyboard_enhancement_flags(
         &mut self,
         _mode: KeyboardModes,
@@ -260,6 +265,7 @@ impl Default for MockHandler {
             d_proto_hooks: Vec::new(),
             pluggable_notifications: Vec::new(),
             hyperlink_events: Vec::new(),
+            cwd_updates: Vec::new(),
         }
     }
 }
@@ -1120,6 +1126,204 @@ fn parse_osc777_missing_parts_ignored() {
     let (_, handler) = parse_bytes(bytes);
 
     assert_eq!(handler.pluggable_notifications.len(), 0);
+}
+
+#[test]
+fn parse_osc7_local_hostname() {
+    // Happy path: payload host matches the running machine's hostname.
+    let local = crate::terminal::model::session::get_local_hostname()
+        .expect("test requires a real local hostname");
+    let payload = format!("\x1b]7;file://{local}/Users/foo/bar\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+
+    assert_eq!(handler.cwd_updates, vec!["/Users/foo/bar".to_string()]);
+}
+
+#[test]
+fn parse_osc7_with_st_terminator() {
+    let local = crate::terminal::model::session::get_local_hostname()
+        .expect("test requires a real local hostname");
+    let payload = format!("\x1b]7;file://{local}/Users/foo/bar\x1b\\");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+
+    assert_eq!(handler.cwd_updates, vec!["/Users/foo/bar".to_string()]);
+}
+
+#[test]
+fn parse_osc7_percent_encoded() {
+    let local = crate::terminal::model::session::get_local_hostname()
+        .expect("test requires a real local hostname");
+    let payload = format!("\x1b]7;file://{local}/Users/foo%20bar/baz%2Fqux\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+
+    assert_eq!(
+        handler.cwd_updates,
+        vec!["/Users/foo bar/baz/qux".to_string()]
+    );
+}
+
+#[test]
+fn parse_osc7_path_with_unescaped_semicolons_preserved() {
+    // OSC parameters split on `;`, so a URI path with a literal semicolon
+    // arrives as multiple params. Rejoining preserves the full path instead
+    // of truncating at the first semicolon.
+    let local = crate::terminal::model::session::get_local_hostname()
+        .expect("test requires a real local hostname");
+    let payload = format!("\x1b]7;file://{local}/Users/foo;bar/baz\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+
+    assert_eq!(handler.cwd_updates, vec!["/Users/foo;bar/baz".to_string()]);
+}
+
+#[test]
+fn parse_osc7_empty_host_ignored() {
+    // Hostless payload (`file:///path`) is terminal-controlled and a remote
+    // shell over a wrapper SSH session can emit it just as easily as a local one; reject.
+    let bytes: &[u8] = b"\x1b]7;file:///Users/foo/bar\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[test]
+fn parse_osc7_localhost_host_ignored() {
+    // `localhost` is also untrustworthy from a remote shell — reject.
+    let bytes: &[u8] = b"\x1b]7;file://localhost/Users/foo\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[test]
+fn parse_osc7_uppercase_localhost_host_ignored() {
+    let bytes: &[u8] = b"\x1b]7;file://LOCALHOST/Users/foo\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[test]
+fn parse_osc7_non_local_host_ignored() {
+    // `.invalid` is reserved (RFC 2606) and is guaranteed never to match the
+    // local hostname, so this exercises the SSH-spoofing guard.
+    let bytes: &[u8] = b"\x1b]7;file://not-this-machine.invalid/Users/foo\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[test]
+fn parse_osc7_non_file_scheme_ignored() {
+    let bytes: &[u8] = b"\x1b]7;http://example.com/foo\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[test]
+fn parse_osc7_missing_path_ignored() {
+    // Host is present but no path segment — should be rejected, not panic.
+    let bytes: &[u8] = b"\x1b]7;file://localhost\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[test]
+fn parse_osc7_malformed_percent_escape_ignored() {
+    let bytes: &[u8] = b"\x1b]7;file:///Users/foo%2/bar\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[test]
+fn parse_osc7_truncated_percent_at_end_ignored() {
+    // A trailing `%` with no following digits must be rejected, not accepted
+    // as a literal byte.
+    let bytes: &[u8] = b"\x1b]7;file:///Users/foo%\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[test]
+fn parse_osc7_truncated_percent_with_one_hex_digit_ignored() {
+    // A `%` with only one following hex digit must be rejected.
+    let bytes: &[u8] = b"\x1b]7;file:///Users/foo%2\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[test]
+fn parse_osc7_empty_payload_ignored() {
+    let bytes: &[u8] = b"\x1b]7;\x07";
+    let (_, handler) = parse_bytes(bytes);
+
+    assert!(handler.cwd_updates.is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+fn parse_osc7_windows_drive_letter_normalized() {
+    let local = crate::terminal::model::session::get_local_hostname()
+        .expect("test requires a real local hostname");
+    let payload = format!("\x1b]7;file://{local}/E:/CLAUDE-BASE\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+
+    assert_eq!(handler.cwd_updates, vec![r"E:\CLAUDE-BASE".to_string()]);
+}
+
+#[cfg(windows)]
+#[test]
+fn parse_osc7_windows_drive_letter_root() {
+    let local = crate::terminal::model::session::get_local_hostname()
+        .expect("test requires a real local hostname");
+    let payload = format!("\x1b]7;file://{local}/E:/\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+
+    assert_eq!(handler.cwd_updates, vec![r"E:\".to_string()]);
+}
+
+#[cfg(windows)]
+#[test]
+fn parse_osc7_windows_drive_letter_percent_encoded() {
+    let local = crate::terminal::model::session::get_local_hostname()
+        .expect("test requires a real local hostname");
+    let payload = format!("\x1b]7;file://{local}/E:/My%20Code\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+
+    assert_eq!(handler.cwd_updates, vec![r"E:\My Code".to_string()]);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn parse_osc7_posix_path_not_mangled_non_windows() {
+    let local = crate::terminal::model::session::get_local_hostname()
+        .expect("test requires a real local hostname");
+
+    let payload = format!("\x1b]7;file://{local}/Users/foo/bar\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+    assert_eq!(handler.cwd_updates, vec!["/Users/foo/bar".to_string()]);
+
+    let payload = format!("\x1b]7;file://{local}/E:/CLAUDE-BASE\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+    assert_eq!(handler.cwd_updates, vec!["/E:/CLAUDE-BASE".to_string()]);
+}
+
+#[test]
+fn parse_osc7_non_drive_slash_letter_untouched() {
+    let local = crate::terminal::model::session::get_local_hostname()
+        .expect("test requires a real local hostname");
+
+    let payload = format!("\x1b]7;file://{local}/E/notdrive\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+    assert_eq!(handler.cwd_updates, vec!["/E/notdrive".to_string()]);
+
+    let payload = format!("\x1b]7;file://{local}/E:extra\x07");
+    let (_, handler) = parse_bytes(payload.as_bytes());
+    assert_eq!(handler.cwd_updates, vec!["/E:extra".to_string()]);
 }
 
 #[test]

@@ -40,7 +40,10 @@ use crate::{
     },
     terminal::{
         event::{BlockCompletedEvent, BlockType},
-        model::{block::BlockId, session::Sessions},
+        model::{
+            block::{BlockId, BlockMetadata},
+            session::Sessions,
+        },
         model_events::{ModelEvent, ModelEventDispatcher},
         TerminalModel,
     },
@@ -493,22 +496,18 @@ impl BlocklistAIContextModel {
                 }
             }
             ModelEvent::BlockMetadataReceived(block_metadata_received) => {
-                let pwd = block_metadata_received
-                    .block_metadata
-                    .current_working_directory()
-                    .map(|s| PathBuf::from(s.to_owned()));
-                let session_id = block_metadata_received.block_metadata.session_id();
-
-                if let Some(session_id) = session_id {
-                    let active_session = sessions.as_ref(ctx).get(session_id);
-                    if let Some(active_session) = active_session {
-                        me.update_directory_context(
-                            pwd.map(|p| p.to_string_lossy().to_string()),
-                            active_session.home_dir().map(|sq| sq.to_owned()),
-                            ctx,
-                        );
-                    }
-                }
+                me.apply_block_metadata_directory_context(
+                    &block_metadata_received.block_metadata,
+                    &sessions,
+                    ctx,
+                );
+            }
+            ModelEvent::BlockWorkingDirectoryUpdated(block_working_directory_updated) => {
+                me.apply_block_metadata_directory_context(
+                    &block_working_directory_updated.block_metadata,
+                    &sessions,
+                    ctx,
+                );
             }
             _ => {}
         });
@@ -886,6 +885,29 @@ impl BlocklistAIContextModel {
 
     pub fn home_directory(&self) -> Option<String> {
         self.directory_context.home_dir.clone()
+    }
+
+    /// Apply the directory context carried by a block-metadata payload, from
+    /// either the precmd path ([`ModelEvent::BlockMetadataReceived`]) or an
+    /// OSC 7 sequence ([`ModelEvent::BlockWorkingDirectoryUpdated`]).
+    fn apply_block_metadata_directory_context(
+        &mut self,
+        block_metadata: &BlockMetadata,
+        sessions: &ModelHandle<Sessions>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let pwd = block_metadata
+            .current_working_directory()
+            .map(|s| PathBuf::from(s.to_owned()));
+        if let Some(session_id) = block_metadata.session_id()
+            && let Some(active_session) = sessions.as_ref(ctx).get(session_id)
+        {
+            self.update_directory_context(
+                pwd.map(|p| p.to_string_lossy().to_string()),
+                active_session.home_dir().map(|sq| sq.to_owned()),
+                ctx,
+            );
+        }
     }
 
     /// Updates the context model's stored directory context.

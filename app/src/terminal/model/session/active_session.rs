@@ -40,14 +40,21 @@ impl ActiveSession {
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         ctx.subscribe_to_model(&model_event_dispatcher, move |me, event, ctx| {
-            if let ModelEvent::BlockMetadataReceived(block_metadata_received_event) = event {
+            // Both the precmd path (`BlockMetadataReceived`) and the OSC 7 path
+            // (`BlockWorkingDirectoryUpdated`) carry a fresh cwd for the active
+            // block, so both must refresh the session's known directory.
+            let block_metadata = match event {
+                ModelEvent::BlockMetadataReceived(e) => Some(&e.block_metadata),
+                ModelEvent::BlockWorkingDirectoryUpdated(e) => Some(&e.block_metadata),
+                _ => None,
+            };
+            if let Some(block_metadata) = block_metadata {
                 // Sticky update: block metadata without a cwd should not clear the
                 // known directory. See the comment on
                 // `BlocklistAIContextModel::update_directory_context` — if this got
                 // cleared here, `list_skills` would silently degrade (see the
                 // cwd-based skill-discovery call in `controller/input_context.rs`).
-                let new_pwd = block_metadata_received_event
-                    .block_metadata
+                let new_pwd = block_metadata
                     .current_working_directory()
                     .map(|cwd| cwd.to_owned());
                 if new_pwd.is_some() && me.current_working_directory != new_pwd {
