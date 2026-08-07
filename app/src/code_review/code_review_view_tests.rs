@@ -6,8 +6,8 @@ use crate::code::editor::view::{CodeEditorRenderOptions, CodeEditorView};
 use crate::code::local_code_editor::LocalCodeEditorView;
 use crate::code_review::comments::{
     attach_pending_imported_comments, AttachedReviewComment, AttachedReviewCommentTarget,
-    CommentId, CommentOrigin, LineDiffContent, PendingImportedReviewComment,
-    PendingImportedReviewCommentTarget,
+    CommentId, CommentOrigin, ImportedCommentDetails, LineDiffContent,
+    PendingImportedReviewComment, PendingImportedReviewCommentTarget,
 };
 use crate::code_review::diff_size_limits::DiffSize;
 use crate::code_review::diff_state::{DiffStateModel, FileDiff, GitFileStatus};
@@ -158,6 +158,44 @@ fn create_line_comment(
         head: None,
         outdated: false,
         origin: CommentOrigin::Native,
+    }
+}
+
+/// Creates an imported (from GitHub) line comment whose stored `content` is the
+/// raw provider diff line (unified-diff marker included), matching how
+/// `attach_pending_imported_comments` populates it for imported comments.
+fn create_imported_line_comment(
+    file_path: impl Into<PathBuf>,
+    line_number: usize,
+    raw_diff_content: &str,
+    comment_content: &str,
+) -> AttachedReviewComment {
+    let line_count = LineCount::from(line_number);
+    AttachedReviewComment {
+        id: CommentId::new(),
+        content: comment_content.to_string(),
+        target: AttachedReviewCommentTarget::Line {
+            absolute_file_path: file_path.into(),
+            line: EditorLineLocation::Current {
+                line_number: line_count,
+                line_range: line_count..LineCount::from(line_number + 1),
+            },
+            content: LineDiffContent {
+                content: raw_diff_content.to_string(),
+                lines_added: LineCount::from(0),
+                lines_removed: LineCount::from(0),
+            },
+        },
+        last_update_time: Local::now(),
+        base: None,
+        head: None,
+        outdated: false,
+        origin: CommentOrigin::ImportedFromGitHub(ImportedCommentDetails {
+            author: "reviewer".to_string(),
+            github_comment_id: "1".to_string(),
+            github_parent_id: None,
+            html_url: None,
+        }),
     }
 }
 
@@ -953,6 +991,152 @@ fn test_active_comments_not_marked_outdated() {
             assert_eq!(
                 fallbacks, 0,
                 "Should have no fallbacks when content matches"
+            );
+        });
+    });
+}
+
+// ── Ported from the pinned oracle
+// (warp/master:app/src/code_review/code_review_view_tests.rs @ 02b53fcd8) ──
+//
+// These exercise the `comment.origin`-aware match-text selection in
+// `relocate_comments` (imported comments strip a diff-context leading space
+// via `imported_original_text`; native comments keep `original_text`, since a
+// leading space there is significant indentation) — ported alongside the
+// `LineDiffContent::imported_original_text` fix in comments/comment.rs.
+
+#[test]
+fn test_imported_context_line_comment_relocates_and_not_outdated() {
+    App::test((), |mut app| async move {
+        let file_path = PathBuf::from("test.txt");
+        let ctx = TestContext::new(&mut app, file_path.clone(), "line 1\nline 2\nline 3");
+
+        // Imported comment on line 2 as a CONTEXT line (leading-space marker).
+        let comment = create_imported_line_comment(
+            "/repo/test.txt",
+            1,
+            " line 2",
+            "Comment on an unchanged (context) line",
+        );
+
+        ctx.code_review_view.update(&mut app, |_view, view_ctx| {
+            let RelocateCommentsResult {
+                comments: relocated,
+                fallback_count: fallbacks,
+            } = CodeReviewView::relocate_comments(
+                vec![comment],
+                &ctx.state,
+                &ctx.repo_path,
+                view_ctx,
+            );
+
+            assert_eq!(relocated.len(), 1, "Comment should be relocated");
+            assert!(
+                !relocated[0].outdated,
+                "Imported context-line comment should NOT be outdated when the line still exists"
+            );
+            assert_eq!(
+                fallbacks, 0,
+                "Should have no fallbacks when content matches"
+            );
+        });
+    });
+}
+
+/// An imported context-line comment whose line genuinely no longer exists must
+/// still fall back to `outdated` — the fix must not defeat real outdated detection.
+#[test]
+fn test_imported_context_line_comment_removed_marked_outdated() {
+    App::test((), |mut app| async move {
+        let _flag_override = FeatureFlag::PRCommentsSlashCommand.override_enabled(true);
+
+        let file_path = PathBuf::from("test.txt");
+        let ctx = TestContext::new(&mut app, file_path.clone(), "line 1\nline 3");
+
+        // Imported context comment on a line (" old line 2") that no longer exists.
+        let comment = create_imported_line_comment(
+            "/repo/test.txt",
+            1,
+            " old line 2",
+            "Comment on a since-removed context line",
+        );
+
+        ctx.code_review_view.update(&mut app, |_view, view_ctx| {
+            let RelocateCommentsResult {
+                comments: relocated,
+                fallback_count: fallbacks,
+            } = CodeReviewView::relocate_comments(
+                vec![comment],
+                &ctx.state,
+                &ctx.repo_path,
+                view_ctx,
+            );
+
+            assert_eq!(relocated.len(), 1, "Comment should be kept");
+            assert!(
+                relocated[0].outdated,
+                "Imported comment should be outdated when its line no longer exists"
+            );
+            assert_eq!(
+                fallbacks, 1,
+                "Should count as a fallback when content is gone"
+            );
+        });
+    });
+}
+
+/// Guards against a regression from the fix: a NATIVE comment whose content is a
+/// genuinely indented source line (leading whitespace is significant, not a diff
+/// marker) must keep using `original_text()` and still match / not be outdated.
+#[test]
+fn test_native_indented_context_comment_not_outdated() {
+    App::test((), |mut app| async move {
+        let file_path = PathBuf::from("test.txt");
+        let ctx = TestContext::new(&mut app, file_path.clone(), "fn f() {\n    let x = 1;\n}");
+
+        // Native comment on the indented line; content is the raw line (no marker).
+        let line_count = LineCount::from(1);
+        let comment = AttachedReviewComment {
+            id: CommentId::new(),
+            content: "Comment on an indented native line".to_string(),
+            target: AttachedReviewCommentTarget::Line {
+                absolute_file_path: PathBuf::from("/repo/test.txt"),
+                line: EditorLineLocation::Current {
+                    line_number: line_count,
+                    line_range: line_count..LineCount::from(2),
+                },
+                content: LineDiffContent {
+                    content: "    let x = 1;".to_string(),
+                    lines_added: LineCount::from(0),
+                    lines_removed: LineCount::from(0),
+                },
+            },
+            last_update_time: Local::now(),
+            base: None,
+            head: None,
+            outdated: false,
+            origin: CommentOrigin::Native,
+        };
+
+        ctx.code_review_view.update(&mut app, |_view, view_ctx| {
+            let RelocateCommentsResult {
+                comments: relocated,
+                fallback_count: fallbacks,
+            } = CodeReviewView::relocate_comments(
+                vec![comment],
+                &ctx.state,
+                &ctx.repo_path,
+                view_ctx,
+            );
+
+            assert_eq!(relocated.len(), 1, "Comment should be relocated");
+            assert!(
+                !relocated[0].outdated,
+                "Native comment on a genuinely indented line should NOT be outdated"
+            );
+            assert_eq!(
+                fallbacks, 0,
+                "Should have no fallbacks when the indented content matches"
             );
         });
     });

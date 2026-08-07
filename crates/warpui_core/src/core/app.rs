@@ -3211,8 +3211,14 @@ impl AppContext {
     /// Transfers a view and all its descendant views from one window to another.
     ///
     /// This is useful when transferring a component like a tab that contains
-    /// multiple nested views. The view tree is determined by the presenter's
-    /// parent-child relationships.
+    /// multiple nested views. The view subtree is determined by
+    /// [`Self::collect_transferable_subtree`], which unions the render-time
+    /// GUI parent graph (the source window's [`Presenter`]), the TUI
+    /// `view_parents` graph, the structural (typed-action) parent/child
+    /// graph, and each view's explicitly-declared [`View::child_view_ids`].
+    /// The last of these is what keeps views that are owned through a model
+    /// or are not currently rendered (e.g. an inactive pane in a navigation
+    /// stack) from being orphaned in the source window.
     ///
     /// Returns the list of view IDs that were transferred.
     pub fn transfer_view_tree_to_window(
@@ -3225,26 +3231,150 @@ impl AppContext {
             return vec![root_view_id];
         }
 
-        let descendants = self
-            .presenter(source_window_id)
-            .map(|presenter| presenter.borrow().descendants(root_view_id))
-            .unwrap_or_default();
+        // Collect the complete subtree up-front, while every view still lives
+        // in the source window, so the ownership walk doesn't have to chase
+        // views as they move.
+        let subtree = self.collect_transferable_subtree(root_view_id, source_window_id);
 
-        let mut transferred = Vec::with_capacity(descendants.len() + 1);
-
-        if self.transfer_view_to_window(root_view_id, source_window_id, target_window_id) {
-            transferred.push(root_view_id);
-        }
-
-        for view_id in descendants {
+        let mut transferred = Vec::with_capacity(subtree.len());
+        for view_id in subtree {
             if self.transfer_view_to_window(view_id, source_window_id, target_window_id) {
                 transferred.push(view_id);
             }
         }
 
+        // Safety net: re-walk the structural graph in case any structural
+        // child became reachable only after the parent moved. This is a no-op
+        // for anything already transferred above.
         self.transfer_structural_children(source_window_id, target_window_id, &mut transferred);
 
+        // Reconcile any descendants that only become reachable from the
+        // target window. The forward pass seeds its walk from the *source*
+        // window's graphs, so a descendant that was never linked there (e.g.
+        // a TUI child whose `view_parents` embedding was only ever recorded
+        // against the target window from an earlier presentation pass) is
+        // missing from the source-side subtree and gets left behind. Re-walk
+        // from the target and pull those stragglers over. Each iteration
+        // transfers at least one view (shrinking the stranded set), so this
+        // loop always terminates; the `break` handles the should-be-impossible
+        // case of a view mapped to the source window but absent from its
+        // `views`/`tui_views` maps, logging instead of spinning forever.
+        let mut stranded: Vec<EntityId> = self
+            .collect_transferable_subtree(root_view_id, target_window_id)
+            .into_iter()
+            .filter(|id| self.view_to_window.get(id).copied() == Some(source_window_id))
+            .collect();
+        while !stranded.is_empty() {
+            let mut progressed = false;
+            for view_id in stranded {
+                if self.transfer_view_to_window(view_id, source_window_id, target_window_id) {
+                    transferred.push(view_id);
+                    progressed = true;
+                }
+            }
+
+            if !progressed {
+                log::warn!(
+                    "transfer_view_tree_to_window: descendant of {root_view_id:?} stranded in \
+                     source window {source_window_id:?}; could not transfer to \
+                     {target_window_id:?}"
+                );
+                break;
+            }
+
+            stranded = self
+                .collect_transferable_subtree(root_view_id, target_window_id)
+                .into_iter()
+                .filter(|id| self.view_to_window.get(id).copied() == Some(source_window_id))
+                .collect();
+        }
+
         transferred
+    }
+
+    /// Collects the complete set of view ids that make up the subtree rooted
+    /// at `root_view_id`, treating ownership as authoritative.
+    ///
+    /// The frontier is seeded with the root plus its render-time descendants
+    /// — from the GUI [`Presenter`]'s parent map and, additively, the TUI
+    /// `view_parents` map — and expanded through both the structural
+    /// parent/child graph and each GUI view's [`View::child_view_ids`].
+    /// Walking `child_view_ids` is what captures views the render-time graphs
+    /// miss: model-held views and child handles that aren't laid out in the
+    /// current frame.
+    ///
+    /// `window_id` is the window the subtree is expected to live in; views
+    /// are read from whichever window currently holds them (via
+    /// `view_to_window`), so this works both before a transfer (source
+    /// window) and as a post-transfer reconciliation (target window).
+    fn collect_transferable_subtree(
+        &self,
+        root_view_id: EntityId,
+        window_id: WindowId,
+    ) -> Vec<EntityId> {
+        let mut seen: HashSet<EntityId> = HashSet::default();
+        let mut order: Vec<EntityId> = Vec::new();
+        let mut stack: Vec<EntityId> = vec![root_view_id];
+
+        stack.extend(
+            self.presenter(window_id)
+                .map(|presenter| presenter.borrow().descendants(root_view_id))
+                .unwrap_or_default(),
+        );
+        stack.extend(self.view_parents_descendants(window_id, root_view_id));
+
+        while let Some(view_id) = stack.pop() {
+            if !seen.insert(view_id) {
+                continue;
+            }
+            order.push(view_id);
+
+            if let Some(children) = self.structural_parent_to_children.get(&view_id) {
+                stack.extend(children.iter().copied());
+            }
+
+            if let Some(current_window_id) = self.view_to_window.get(&view_id).copied()
+                && let Some(view) = self
+                    .windows
+                    .get(&current_window_id)
+                    .and_then(|window| window.views.get(&view_id))
+            {
+                stack.extend(view.child_view_ids(self));
+            }
+        }
+
+        order
+    }
+
+    /// Descendants of `root_view_id` in `window_id` according to the
+    /// `view_parents` map. That map is only ever written by the TUI render
+    /// path (`record_view_parent` / `report_view_embeddings`, both
+    /// `#[cfg(feature = "tui")]`), so this is a no-op for pure-GUI builds —
+    /// safe to call unconditionally.
+    fn view_parents_descendants(&self, window_id: WindowId, root_view_id: EntityId) -> Vec<EntityId> {
+        let Some(parents) = self.view_parents.get(&window_id) else {
+            return Vec::new();
+        };
+        parents
+            .keys()
+            .filter(|&&view_id| {
+                let mut current = view_id;
+                let mut steps = 0;
+                while let Some(&parent_id) = parents.get(&current) {
+                    if parent_id == root_view_id {
+                        return true;
+                    }
+                    current = parent_id;
+                    // Defend against a (should-be-impossible) cycle.
+                    steps += 1;
+                    if steps > parents.len() {
+                        break;
+                    }
+                }
+                false
+            })
+            .copied()
+            .collect()
     }
 
     /// Transfers structural children of already-transferred views.

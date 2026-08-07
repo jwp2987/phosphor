@@ -191,6 +191,7 @@ fn build_restored_conversation_with_cli_subagent_for_test(
 
 fn empty_agent_conversation_data_for_test() -> AgentConversationData {
     AgentConversationData {
+        is_remote_child: false,
         server_conversation_token: None,
         conversation_usage_metadata: None,
         reverted_action_ids: None,

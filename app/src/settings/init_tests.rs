@@ -549,3 +549,29 @@ fn test_migration_preserves_custom_long_running_threshold() {
         });
     });
 }
+
+#[test]
+fn test_migration_not_needed_when_settings_file_exists() {
+    warpui::App::test((), |mut app| async move {
+        let _guard = FeatureFlag::SettingsFile.override_enabled(true);
+
+        // Point the settings-TOML path at a fresh temp dir (see the hermetic-path
+        // comment on `test_migration_does_not_rerun_when_marker_present`), then
+        // create the file at that path so `needs_settings_file_migration`'s
+        // `.exists()` check sees it.
+        let tmp = tempfile::tempdir().expect("should create temp dir");
+        let settings_file_path = tmp.path().join("settings.toml");
+        let _toml_path_guard =
+            crate::settings::TomlPathOverrideGuard::new(settings_file_path.clone());
+        std::fs::write(&settings_file_path, "").unwrap();
+
+        app.update(init_test_app);
+
+        app.read(|ctx| {
+            assert!(
+                !needs_settings_file_migration(ctx),
+                "migration should not be needed when settings.toml exists"
+            );
+        });
+    });
+}

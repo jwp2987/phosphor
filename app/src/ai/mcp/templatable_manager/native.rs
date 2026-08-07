@@ -1934,28 +1934,10 @@ async fn spawn_server(
     let server_info = service.peer_info();
     logger.log(format!("[info] MCP: Connected to server: {server_info:#?}"));
 
-    let resources = if server_info.is_some_and(|info| info.capabilities.resources.is_some()) {
-        match service.list_all_resources().await {
-            Ok(result) => result,
-            Err(err) => {
-                log::warn!("Failed to list resources for MCP server '{server_name}': {err}");
-                vec![]
-            }
-        }
-    } else {
-        vec![]
-    };
-    let tools = match service.list_all_tools().await {
-        Ok(result) => result,
-        Err(rmcp::ServiceError::McpError(rmcp::model::ErrorData { code, .. }))
-            if code == rmcp::model::ErrorCode::METHOD_NOT_FOUND =>
-        {
-            vec![]
-        }
-        Err(err) => {
-            return Err(err.into());
-        }
-    };
+    let capabilities = server_info.map(|info| &info.capabilities);
+    let resources =
+        query_resources_for(capabilities, &server_name, || service.list_all_resources()).await;
+    let tools = query_tools_for(capabilities, &server_name, || service.list_all_tools()).await;
 
     Ok(TemplatableMCPServerInfo {
         name: server_name,
@@ -2080,6 +2062,77 @@ async fn send_initialize_request(
     Ok(response.status())
 }
 
+/// Whether to query `resources/list` for a server with the given capabilities.
+///
+/// Per the MCP spec, the client should only invoke a list method when the server
+/// has advertised the corresponding capability during initialization.
+fn should_query_resources(capabilities: Option<&rmcp::model::ServerCapabilities>) -> bool {
+    capabilities.is_some_and(|c| c.resources.is_some())
+}
+
+/// Whether to query `tools/list` for a server with the given capabilities.
+///
+/// Per the MCP spec, the client should only invoke a list method when the server
+/// has advertised the corresponding capability during initialization.
+fn should_query_tools(capabilities: Option<&rmcp::model::ServerCapabilities>) -> bool {
+    capabilities.is_some_and(|c| c.tools.is_some())
+}
+
+/// Query `resources/list` for a connected MCP server.
+///
+/// Skips the call entirely when `resources` was not advertised. Treats any
+/// listing error as "no resources" (fail-soft) so a flaky `resources/list`
+/// does not abort the entire server startup. Mirrors the behavior of
+/// [`query_tools_for`] so the two capabilities are handled symmetrically.
+async fn query_resources_for<F, Fut>(
+    capabilities: Option<&rmcp::model::ServerCapabilities>,
+    server_name: &str,
+    list_resources: F,
+) -> Vec<rmcp::model::Resource>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Vec<rmcp::model::Resource>, rmcp::ServiceError>>,
+{
+    if !should_query_resources(capabilities) {
+        return Vec::new();
+    }
+    match list_resources().await {
+        Ok(result) => result,
+        Err(err) => {
+            log::warn!("Failed to list resources for MCP server '{server_name}': {err}");
+            Vec::new()
+        }
+    }
+}
+
+/// Query `tools/list` for a connected MCP server.
+///
+/// Skips the call entirely when `tools` was not advertised. Treats any listing
+/// error as "no tools" (fail-soft) so a transient `tools/list` failure does
+/// not abort the entire server startup — the user-visible regression #6798
+/// was rooted in the prior asymmetric handling, where a tools-list error on
+/// a server with healthy resources would propagate and fail startup.
+async fn query_tools_for<F, Fut>(
+    capabilities: Option<&rmcp::model::ServerCapabilities>,
+    server_name: &str,
+    list_tools: F,
+) -> Vec<rmcp::model::Tool>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Vec<rmcp::model::Tool>, rmcp::ServiceError>>,
+{
+    if !should_query_tools(capabilities) {
+        return Vec::new();
+    }
+    match list_tools().await {
+        Ok(result) => result,
+        Err(err) => {
+            log::warn!("Failed to list tools for MCP server '{server_name}': {err}");
+            Vec::new()
+        }
+    }
+}
+
 /// Creates a [`ClientInfo`] for the MCP client.
 ///
 /// This tells the MCP server who we are and what capabilities we have.
@@ -2147,3 +2200,7 @@ impl<T: rmcp::transport::Transport<R>, R: rmcp::service::ServiceRole> rmcp::tran
         self.transport.close()
     }
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod tests;

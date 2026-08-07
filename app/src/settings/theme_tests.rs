@@ -1,17 +1,8 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::themes::theme::CustomTheme;
+use crate::themes::theme::{CustomTheme, SelectedSystemThemes};
 use crate::user_config;
-
-// NOTE: Warp's upstream `theme_tests.rs` also covers `SystemThemes::current_value_is_syncable`
-// (`selected_system_themes_sync_when_custom_paths_are_under_theme_root`,
-// `selected_system_themes_do_not_sync_when_any_custom_path_is_outside_theme_root`) and a combined
-// `built_in_theme_settings_remain_syncable` test that touches both `Theme` and `SystemThemes`.
-// Those are omitted here: the fork's `SystemThemes` has no `current_value_is_syncable` method at
-// all (this settings group never gained the theme-root-aware sync check that `Theme` has), so
-// those tests do not compile against the current product code. This is a product gap, not
-// something fixed here.
 
 fn custom(path: PathBuf) -> ThemeKind {
     ThemeKind::Custom(CustomTheme::new("Custom".to_string(), path))
@@ -40,6 +31,38 @@ fn theme_kind_syncs_custom_base16_theme_under_theme_root() {
     let setting = Theme::new(Some(custom_base16(
         user_config::themes_dir().join("base16/custom.yml"),
     )));
+
+    assert!(setting.current_value_is_syncable());
+}
+
+#[test]
+fn built_in_theme_settings_remain_syncable() {
+    let theme = Theme::new(Some(ThemeKind::Dark));
+    let system_themes = SystemThemes::new(Some(SelectedSystemThemes {
+        light: ThemeKind::Light,
+        dark: ThemeKind::Dark,
+    }));
+
+    assert!(theme.current_value_is_syncable());
+    assert!(system_themes.current_value_is_syncable());
+}
+
+#[test]
+fn selected_system_themes_do_not_sync_when_any_custom_path_is_outside_theme_root() {
+    let setting = SystemThemes::new(Some(SelectedSystemThemes {
+        light: custom(user_config::themes_dir().join("light.yml")),
+        dark: custom(std::env::temp_dir().join("dark.yml")),
+    }));
+
+    assert!(!setting.current_value_is_syncable());
+}
+
+#[test]
+fn selected_system_themes_sync_when_custom_paths_are_under_theme_root() {
+    let setting = SystemThemes::new(Some(SelectedSystemThemes {
+        light: custom(user_config::themes_dir().join("light.yml")),
+        dark: custom_base16(user_config::themes_dir().join("dark.yml")),
+    }));
 
     assert!(setting.current_value_is_syncable());
 }

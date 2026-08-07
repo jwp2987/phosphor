@@ -11,6 +11,8 @@ use instant::Instant;
 use once_cell::sync::OnceCell;
 use smol_str::SmolStr;
 use std::collections::{HashMap, HashSet};
+#[cfg(windows)]
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Deref;
@@ -51,10 +53,6 @@ use crate::terminal::event::RemoteServerSetupState;
 #[derive(thiserror::Error, Debug)]
 pub enum ReadHistoryContentsError {
     #[cfg(windows)]
-    #[error("Couldn't get path to history file")]
-    HistoryFilePathError,
-
-    #[cfg(windows)]
     #[error("Error running PowerShell commands to read history file: {0}")]
     PowerShellError(anyhow::Error),
 
@@ -67,6 +65,32 @@ pub enum ReadHistoryContentsError {
 
     #[error("Error reading history file from filesystem: {0}")]
     AsyncFsError(std::io::Error),
+}
+
+/// Builds the PowerShell `ReadAllText` invocation for `path`, escaping the path so it cannot
+/// terminate the single-quoted PowerShell string literal it is embedded in.
+#[cfg(windows)]
+fn powershell_read_all_text_command(path: &OsStr) -> OsString {
+    let mut command = OsString::from("[System.IO.File]::ReadAllText('");
+    command.push(escape_powershell_single_quotes(path));
+    command.push("')");
+    command
+}
+
+/// Doubles every single quote in `path` so it is safe to embed inside a
+/// PowerShell single-quoted string literal.
+#[cfg(windows)]
+fn escape_powershell_single_quotes(path: &OsStr) -> OsString {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    const SINGLE_QUOTE: u16 = b'\'' as u16;
+    let mut escaped = Vec::new();
+    for unit in path.encode_wide() {
+        escaped.push(unit);
+        if unit == SINGLE_QUOTE {
+            escaped.push(SINGLE_QUOTE);
+        }
+    }
+    OsString::from_wide(&escaped)
 }
 
 // SessionId is defined in warp_core and re-exported here for backward compatibility.
@@ -1282,15 +1306,12 @@ impl Session {
         history_file: &Path,
         is_kaspersky_running: bool,
     ) -> Result<Vec<u8>, ReadHistoryContentsError> {
-        let Some(history_file_path) = history_file.as_os_str().to_str() else {
-            return Err(ReadHistoryContentsError::HistoryFilePathError);
-        };
-
         // Try reading the history file using PowerShell commands first.
-        let powershell_error = match Self::read_history_via_powershell(history_file_path).await {
-            Ok(result) => return Ok(result),
-            Err(e) => e,
-        };
+        let powershell_error =
+            match Self::read_history_via_powershell(history_file.as_os_str()).await {
+                Ok(result) => return Ok(result),
+                Err(e) => e,
+            };
 
         // If Kaspersky is running, early return since we can't use [`async_fs`] to read the history
         // file.
@@ -1320,7 +1341,7 @@ impl Session {
     }
 
     #[cfg(windows)]
-    async fn read_history_via_powershell(history_file_path: &str) -> Result<Vec<u8>> {
+    async fn read_history_via_powershell(history_file_path: &OsStr) -> Result<Vec<u8>> {
         let Some(powershell_command) = crate::util::windows::any_powershell_path() else {
             return Err(anyhow::anyhow!(
                 "Failed to find powershell executable to read history"
@@ -1331,9 +1352,7 @@ impl Session {
             .arg("-NoProfile")
             .arg("-NoLogo")
             .arg("-Command")
-            .arg(format!(
-                "[System.IO.File]::ReadAllText('{history_file_path}')"
-            ))
+            .arg(powershell_read_all_text_command(history_file_path))
             .output()
             .await;
         match read_result {
@@ -1523,6 +1542,14 @@ impl Session {
             // Cases: powershell sessions
             ShellFamily::PowerShell => TypedPathBuf::from_windows(pwd),
         }
+    }
+
+    /// Returns whether `cwd` (a working directory reported for this session)
+    /// can be resolved to a usable native path.
+    pub fn can_resolve_cwd_to_native_path(&self, cwd: &str) -> bool {
+        let typed_path = self.convert_directory_to_typed_path_buf(cwd.to_string());
+        self.maybe_convert_to_native_path(&typed_path.to_path())
+            .is_ok()
     }
 }
 

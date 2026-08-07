@@ -475,6 +475,13 @@ fn test_detect_aifx_agent_run_claude_not_on_uber_team() {
 }
 
 #[test]
+fn test_omp_supports_bash_mode() {
+    // The pin calls this variant `CLIAgent::OhMyPi`; the fork calls it
+    // `CLIAgent::Omp`. oh-my-pi supports the `!` bash mode prefix. Refs #273.
+    assert!(CLIAgent::Omp.supports_bash_mode());
+}
+
+#[test]
 fn test_serialized_name_round_trips_known_agents() {
     for agent in enum_iterator::all::<CLIAgent>() {
         let name = agent.to_serialized_name();

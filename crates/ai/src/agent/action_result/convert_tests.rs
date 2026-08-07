@@ -1,5 +1,14 @@
 use super::*;
 
+// The pinned oracle (`02b53fcd8`) has 2 tests here. The second,
+// `read_files_partial_success_converts_failed_files`, is blocked: it builds a
+// `ReadFilesResult::Success { files, failed_files }`, and this fork's variant is
+// `Success { files }` only. The `failed_reads` field *does* exist on the wire
+// (`convert.rs` sets it to an empty vec), so the gap is the client-side result
+// type, not the proto. Tracked as #136; the sanctioned divergence is documented
+// on `describe_failed_files` in
+// `app/src/ai/blocklist/action_model/execute/read_files.rs`.
+
 #[test]
 fn ask_user_question_skipped_by_auto_approve_converts_to_skipped_answers() {
     let result = api::request::input::tool_call_result::Result::from(
