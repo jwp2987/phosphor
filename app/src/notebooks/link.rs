@@ -276,10 +276,30 @@ impl NotebookLinks {
             }
             LinkTarget::LocalFile {
                 path,
+                line_and_column,
                 session,
                 is_markdown: true,
-                ..
             } => {
+                // Honour the viewer preference. With it disabled the file opens
+                // like any other file rather than in the built-in viewer; the
+                // fork emitted OpenFileNotebook unconditionally, so the setting
+                // had no effect on links at all.
+                //
+                // EditorSettings only exists with a local filesystem, so without
+                // that feature the built-in viewer stays the only option.
+                #[cfg(not(feature = "local_fs"))]
+                let _ = line_and_column;
+
+                #[cfg(feature = "local_fs")]
+                {
+                    if *EditorSettings::as_ref(ctx).prefer_markdown_viewer {
+                        ctx.emit(LinkEvent::OpenFileNotebook { path, session });
+                    } else {
+                        open_file(path, line_and_column, ctx);
+                    }
+                }
+
+                #[cfg(not(feature = "local_fs"))]
                 ctx.emit(LinkEvent::OpenFileNotebook { path, session });
             }
             LinkTarget::LocalFile {
@@ -344,6 +364,11 @@ impl NotebookLinks {
 }
 
 /// Open a file respecting user's editor settings.
+///
+/// For targets that would be handed to the OS default handler (`SystemGeneric` /
+/// `SystemDefault`), we reveal the file in Finder / Explorer instead of opening it.
+/// This prevents a malicious markdown link from triggering arbitrary code execution
+/// via an executable disguised as a local file (e.g. an extensionless shell script).
 // The `line_and_column` argument is unused when there is no local filesystem.
 #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
 fn open_file(
@@ -353,17 +378,43 @@ fn open_file(
 ) {
     #[cfg(feature = "local_fs")]
     {
-        let target = if is_supported_image_file(&path) {
-            FileTarget::SystemGeneric
-        } else {
-            let settings = EditorSettings::as_ref(ctx);
-            resolve_file_target(&path, settings, None)
-        };
-        ctx.emit(LinkEvent::OpenFileWithTarget {
-            path,
-            target,
-            line_col: line_and_column,
-        });
+        // Images are safe to open with the system default viewer.
+        if is_supported_image_file(&path) {
+            ctx.emit(LinkEvent::OpenFileWithTarget {
+                path,
+                target: FileTarget::SystemGeneric,
+                line_col: line_and_column,
+            });
+            return;
+        }
+
+        let settings = EditorSettings::as_ref(ctx);
+        let target = resolve_file_target(&path, settings, None);
+        match target {
+            // Safe targets: open in a viewer/editor that won't execute the file.
+            FileTarget::MarkdownViewer(_)
+            | FileTarget::CodeEditor(_)
+            | FileTarget::ExternalEditor(_)
+            | FileTarget::EnvEditor => {
+                ctx.emit(LinkEvent::OpenFileWithTarget {
+                    path,
+                    target,
+                    line_col: line_and_column,
+                });
+            }
+            // Dangerous targets: the OS default handler could execute the file.
+            // Reveal in Finder / Explorer instead.
+            FileTarget::SystemGeneric | FileTarget::SystemDefault => {
+                ctx.open_file_path_in_explorer(&path);
+            }
+            FileTarget::ImageViewer(_) => {
+                ctx.emit(LinkEvent::OpenFileWithTarget {
+                    path,
+                    target,
+                    line_col: line_and_column,
+                });
+            }
+        }
     }
     #[cfg(not(feature = "local_fs"))]
     ctx.open_file_path(&path);

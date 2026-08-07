@@ -23,14 +23,6 @@ ai::blocklist::history_model::tests::rewind_removes_summarized_away_user_query_f
 ai::blocklist::history_model::tests::rewind_straddle_subagent_call_kept_result_removed_does_not_resend_subtask
 ai::blocklist::history_model::tests::straddle_rewind_followup_requests_are_clean_and_durable
 
-# --- REAL DEFECTS, fix written but not yet merged (3) -----------------------
-# `CodeEditorView::operation` had no match arm for VimMotion::JumpToMatchingBracket,
-# so d%/c%/y% silently did nothing. Issue #270, fixed in PR #417.
-# Delete these three lines when #417 lands.
-code::editor::view::vim_handler::tests::test_vim_c_percent_changes_to_matching_bracket
-code::editor::view::vim_handler::tests::test_vim_d_percent_deletes_to_matching_bracket
-code::editor::view::vim_handler::tests::test_vim_y_percent_yanks_to_matching_bracket
-
 # --- REAL DEFECTS, diagnosed but unfixed (2) --------------------------------
 # Issue #441. `lrc_queued_prompts_wait_while_subagent_is_active` was on this
 # list and now passes: it was not a queueing-predicate bug at all, it was the
@@ -38,5 +30,11 @@ code::editor::view::vim_handler::tests::test_vim_y_percent_yanks_to_matching_bra
 # `execute_queued_compact_and`. Measured at 5be073d4f: fails without that port,
 # passes with it. `slash_fork_bypasses_prompt_queue_while_in_progress` is
 # therefore a separate defect, not its inverse.
+#
+# The three vim d%/c%/y% entries that used to sit above this block are gone:
+# #417 fixed them on main (missing VimMotion::JumpToMatchingBracket match arm,
+# issue #270). This merge takes main's deletion and this branch's correction --
+# they touched adjacent lines of the same file, which is the merge-order
+# dependency HANDOFF warns this list creates.
 terminal::input::tests::slash_fork_bypasses_prompt_queue_while_in_progress
 terminal::input::tests::test_classic_tab_completions_close_after_user_backspace
