@@ -141,6 +141,30 @@ pub(super) fn proto_to_git_file_status(status: &proto::GitFileStatus) -> GitFile
     }
 }
 
+/// Fallible companion to [`proto_to_git_file_status`]: same mapping, but a
+/// missing status oneof is an error rather than a silent `Modified` default.
+/// Used by `FileStatusInfo`'s `TryFrom` (issue #326), where a malformed
+/// discard-op message from a mismatched client build must be rejected, not
+/// reinterpreted. The other decode paths in this file (`FileDiff`,
+/// `GitDiffData`, ...) are out of scope for #326 and keep the lossy default.
+fn try_proto_to_git_file_status(status: &proto::GitFileStatus) -> Result<GitFileStatus, String> {
+    use proto::git_file_status::Status;
+    match &status.status {
+        Some(Status::NewFile(_)) => Ok(GitFileStatus::New),
+        Some(Status::Modified(_)) => Ok(GitFileStatus::Modified),
+        Some(Status::Deleted(_)) => Ok(GitFileStatus::Deleted),
+        Some(Status::Renamed(r)) => Ok(GitFileStatus::Renamed {
+            old_path: r.old_path.clone(),
+        }),
+        Some(Status::Copied(c)) => Ok(GitFileStatus::Copied {
+            old_path: c.old_path.clone(),
+        }),
+        Some(Status::Untracked(_)) => Ok(GitFileStatus::Untracked),
+        Some(Status::Conflicted(_)) => Ok(GitFileStatus::Conflicted),
+        None => Err("missing status variant in GitFileStatus".to_string()),
+    }
+}
+
 // ── DiffSize ─────────────────────────────────────────────────────
 
 pub(super) fn diff_size_to_proto(size: &DiffSize) -> proto::DiffSize {
@@ -323,14 +347,47 @@ pub(super) fn file_status_info_to_proto(info: &FileStatusInfo) -> proto::FileSta
     }
 }
 
-pub(super) fn proto_to_file_status_info(info: &proto::FileStatusInfo) -> FileStatusInfo {
-    FileStatusInfo {
-        path: PathBuf::from(&info.path),
-        status: info
+/// Validates a decoded `FileStatusInfo` (issue #326): the path and any
+/// Renamed/Copied `old_path` must be absolute, and the status oneof must be
+/// present, rather than silently defaulting on malformed wire data.
+///
+/// Deviation from the pinned oracle (02b53fcd8, §5.10): the pin parses
+/// `path`/`old_path` as `warp_util::standardized_path::StandardizedPath` and
+/// stores that type on the domain `FileStatusInfo`. The fork's
+/// `FileStatusInfo::path` is still a plain `PathBuf` (see
+/// `code_review::diff_state`), actively used by the local discard-files flow
+/// in `code_review_view.rs`. Migrating that field to `StandardizedPath` would
+/// ripple into that unrelated, already-working call site, so this checks
+/// `Path::is_absolute()` directly instead — same rejection behavior, no
+/// domain-type change.
+impl TryFrom<&proto::FileStatusInfo> for FileStatusInfo {
+    type Error = String;
+
+    fn try_from(info: &proto::FileStatusInfo) -> Result<Self, Self::Error> {
+        let path = PathBuf::from(&info.path);
+        if !path.is_absolute() {
+            return Err(format!(
+                "FileStatusInfo path is not absolute: {}",
+                info.path
+            ));
+        }
+
+        let status = info
             .status
             .as_ref()
-            .map(proto_to_git_file_status)
-            .unwrap_or(GitFileStatus::Modified),
+            .ok_or_else(|| "missing status in FileStatusInfo".to_string())
+            .and_then(try_proto_to_git_file_status)?;
+
+        // Renamed/Copied old_path also flows into git restore/checkout
+        // commands during discard, so it must be absolute too.
+        if let GitFileStatus::Renamed { old_path } | GitFileStatus::Copied { old_path } = &status
+        {
+            if !PathBuf::from(old_path).is_absolute() {
+                return Err(format!("old_path is not absolute: {old_path}"));
+            }
+        }
+
+        Ok(FileStatusInfo { path, status })
     }
 }
 
@@ -434,15 +491,22 @@ pub(super) fn diff_metadata_against_base_to_proto(
     }
 }
 
-pub(super) fn proto_to_diff_metadata_against_base(
-    base: &proto::DiffMetadataAgainstBase,
-) -> DiffMetadataAgainstBase {
-    DiffMetadataAgainstBase {
-        aggregate_stats: base
-            .aggregate_stats
-            .as_ref()
-            .map(proto_to_diff_stats)
-            .unwrap_or_default(),
+/// Requires `aggregate_stats` (issue #326): a `DiffMetadataAgainstBase` with
+/// no stats is malformed wire data, not a legitimate "no changes" state (that
+/// is expressed by stats that are all-zero, not absent).
+impl TryFrom<&proto::DiffMetadataAgainstBase> for DiffMetadataAgainstBase {
+    type Error = String;
+
+    fn try_from(base: &proto::DiffMetadataAgainstBase) -> Result<Self, Self::Error> {
+        Ok(DiffMetadataAgainstBase {
+            aggregate_stats: base
+                .aggregate_stats
+                .as_ref()
+                .map(proto_to_diff_stats)
+                .ok_or_else(|| {
+                    "missing aggregate_stats in DiffMetadataAgainstBase".to_string()
+                })?,
+        })
     }
 }
 
@@ -464,23 +528,35 @@ pub(super) fn diff_metadata_to_proto(metadata: &DiffMetadata) -> proto::DiffMeta
     }
 }
 
-pub(super) fn proto_to_diff_metadata(metadata: &proto::DiffMetadata) -> DiffMetadata {
-    DiffMetadata {
-        main_branch_name: metadata.main_branch_name.clone(),
-        current_branch_name: metadata.current_branch_name.clone(),
-        against_head: metadata
-            .against_head
-            .as_ref()
-            .map(proto_to_diff_metadata_against_base)
-            .unwrap_or_default(),
-        against_base_branch: metadata
-            .against_base_branch
-            .as_ref()
-            .map(proto_to_diff_metadata_against_base),
-        has_head_commit: metadata.has_head_commit,
-        unpushed_commits: metadata.unpushed_commits.iter().map(proto_to_commit).collect(),
-        upstream_ref: metadata.upstream_ref.clone(),
-        pr_info: metadata.pr_info.as_ref().map(proto_to_pr_info),
+/// Requires `against_head` (issue #326): every real `DiffMetadata` the daemon
+/// sends has a head comparison, so an absent one means the message was
+/// truncated or built from a mismatched schema version, not a valid state.
+impl TryFrom<&proto::DiffMetadata> for DiffMetadata {
+    type Error = String;
+
+    fn try_from(metadata: &proto::DiffMetadata) -> Result<Self, Self::Error> {
+        Ok(DiffMetadata {
+            main_branch_name: metadata.main_branch_name.clone(),
+            current_branch_name: metadata.current_branch_name.clone(),
+            against_head: metadata
+                .against_head
+                .as_ref()
+                .ok_or_else(|| "missing against_head in DiffMetadata".to_string())
+                .and_then(DiffMetadataAgainstBase::try_from)?,
+            against_base_branch: metadata
+                .against_base_branch
+                .as_ref()
+                .map(DiffMetadataAgainstBase::try_from)
+                .transpose()?,
+            has_head_commit: metadata.has_head_commit,
+            unpushed_commits: metadata
+                .unpushed_commits
+                .iter()
+                .map(proto_to_commit)
+                .collect(),
+            upstream_ref: metadata.upstream_ref.clone(),
+            pr_info: metadata.pr_info.as_ref().map(proto_to_pr_info),
+        })
     }
 }
 
@@ -612,7 +688,14 @@ pub(crate) struct DecodedSnapshot {
     pub diffs: Option<GitDiffWithBaseContent>,
 }
 
-pub(crate) fn decode_snapshot(snapshot: &proto::DiffStateSnapshot) -> DecodedSnapshot {
+/// Decodes a `DiffStateSnapshot` push. Returns `Err` when the wire message
+/// carries a `metadata` field that fails `DiffMetadata`'s validation (issue
+/// #326) — an absent `metadata` field entirely still defaults, matching prior
+/// behavior; only a present-but-malformed one is now rejected instead of
+/// silently degrading to `DiffMetadata::default()`.
+pub(crate) fn decode_snapshot(
+    snapshot: &proto::DiffStateSnapshot,
+) -> Result<DecodedSnapshot, String> {
     let diffs = snapshot
         .diffs
         .as_ref()
@@ -626,18 +709,23 @@ pub(crate) fn decode_snapshot(snapshot: &proto::DiffStateSnapshot) -> DecodedSna
     let metadata = snapshot
         .metadata
         .as_ref()
-        .map(proto_to_diff_metadata)
+        .map(DiffMetadata::try_from)
+        .transpose()?
         .unwrap_or_default();
-    DecodedSnapshot {
+    Ok(DecodedSnapshot {
         state,
         metadata,
         diffs,
-    }
+    })
 }
 
-/// Decodes the metadata-only push.
-pub(crate) fn decode_metadata_update(update: &proto::DiffStateMetadataUpdate) -> Option<DiffMetadata> {
-    update.metadata.as_ref().map(proto_to_diff_metadata)
+/// Decodes the metadata-only push. `Ok(None)` when the wire omitted
+/// `metadata` entirely; `Err` when it was present but failed validation
+/// (issue #326).
+pub(crate) fn decode_metadata_update(
+    update: &proto::DiffStateMetadataUpdate,
+) -> Result<Option<DiffMetadata>, String> {
+    update.metadata.as_ref().map(DiffMetadata::try_from).transpose()
 }
 
 /// A single-file diff-state delta decoded into domain types.
@@ -649,7 +737,9 @@ pub(crate) struct DecodedFileDelta {
     pub metadata: Option<DiffMetadata>,
 }
 
-pub(crate) fn decode_file_delta(delta: &proto::DiffStateFileDelta) -> DecodedFileDelta {
+pub(crate) fn decode_file_delta(
+    delta: &proto::DiffStateFileDelta,
+) -> Result<DecodedFileDelta, String> {
     let diff = delta.diff.as_ref().map(|f| {
         let (file_diff, content_at_head) = proto_to_file_diff(f);
         FileDiffAndContent {
@@ -657,11 +747,12 @@ pub(crate) fn decode_file_delta(delta: &proto::DiffStateFileDelta) -> DecodedFil
             content_at_head,
         }
     });
-    DecodedFileDelta {
+    let metadata = delta.metadata.as_ref().map(DiffMetadata::try_from).transpose()?;
+    Ok(DecodedFileDelta {
         file_path: delta.file_path.clone(),
         diff,
-        metadata: delta.metadata.as_ref().map(proto_to_diff_metadata),
-    }
+        metadata,
+    })
 }
 
 /// Encodes a domain `DiffMode` to proto (used by the client when subscribing).
