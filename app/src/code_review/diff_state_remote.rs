@@ -163,8 +163,14 @@ impl RemoteDiffStateModel {
             }
             RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { host_id, update } => {
                 if self.matches(host_id, &update.repo_path, update.mode.as_ref()) {
-                    if let Some(metadata) = decode_metadata_update(update) {
-                        self.apply_metadata(metadata, ctx);
+                    // A present-but-malformed `metadata` field (issue #326)
+                    // surfaces as an error rather than being silently dropped.
+                    match decode_metadata_update(update) {
+                        Ok(Some(metadata)) => self.apply_metadata(metadata, ctx),
+                        Ok(None) => {}
+                        Err(e) => {
+                            self.set_error(format!("invalid diff-state metadata update: {e}"), ctx)
+                        }
                     }
                 }
             }
@@ -201,7 +207,15 @@ impl RemoteDiffStateModel {
     }
 
     fn apply_snapshot(&mut self, snapshot: &proto::DiffStateSnapshot, ctx: &mut ModelContext<Self>) {
-        let decoded = decode_snapshot(snapshot);
+        // A malformed `metadata` payload (issue #326) is surfaced as an error
+        // state rather than silently degrading to defaulted metadata.
+        let decoded = match decode_snapshot(snapshot) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                self.set_error(format!("invalid diff-state snapshot: {e}"), ctx);
+                return;
+            }
+        };
         let previous_branch = self.get_current_branch_name();
 
         self.state = match decoded.state {
@@ -266,7 +280,15 @@ impl RemoteDiffStateModel {
     }
 
     fn apply_file_delta(&mut self, delta: &proto::DiffStateFileDelta, ctx: &mut ModelContext<Self>) {
-        let decoded = decode_file_delta(delta);
+        // A malformed per-delta `metadata` payload (issue #326) is surfaced
+        // as an error state rather than silently dropped.
+        let decoded = match decode_file_delta(delta) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                self.set_error(format!("invalid diff-state file delta: {e}"), ctx);
+                return;
+            }
+        };
         if let Some(metadata) = decoded.metadata {
             self.metadata = Some(metadata);
         }
