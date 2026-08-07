@@ -2640,6 +2640,10 @@ impl AISettings {
         true
     }
 
+    pub fn is_orchestration_enabled(&self, app: &AppContext) -> bool {
+        self.is_any_ai_enabled(app)
+    }
+
     pub fn default_session_mode(&self, app: &AppContext) -> DefaultSessionMode {
         let mode = *self.default_session_mode_internal.value();
         match mode {
