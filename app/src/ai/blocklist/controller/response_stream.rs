@@ -22,6 +22,44 @@ use crate::{
 };
 use warpui::SingletonEntity;
 
+/// What to do about a failed or truncated MAA response attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryAction {
+    /// Re-send the same request immediately.
+    RetryNow,
+    /// Re-send the same request once connectivity returns.
+    RetryWhenOnline,
+    /// Resume the conversation with a fresh request after the stream completes.
+    Resume,
+    /// Surface the error; the conversation ends in error.
+    Fail,
+}
+
+/// Decides how to recover from a failed response-stream attempt.
+///
+/// Before any client actions have been received, the request can be re-sent
+/// verbatim (immediately, or once connectivity returns). After actions have
+/// streamed, re-sending is unsafe, so recovery uses a fresh resume request.
+fn recovery_action(
+    has_received_client_actions: bool,
+    is_recoverable: bool,
+    has_retry_budget: bool,
+    can_attempt_resume_on_error: bool,
+    is_online: bool,
+) -> RecoveryAction {
+    if !has_received_client_actions && is_recoverable && has_retry_budget {
+        if is_online {
+            RecoveryAction::RetryNow
+        } else {
+            RecoveryAction::RetryWhenOnline
+        }
+    } else if has_received_client_actions && is_recoverable && can_attempt_resume_on_error {
+        RecoveryAction::Resume
+    } else {
+        RecoveryAction::Fail
+    }
+}
+
 /// Request-routing parameters for the BYOP path. Extracted from LLMId, settings, and
 /// conversation, then handed to the spawn closure in one shot (ctx can't cross an
 /// await boundary).
@@ -406,6 +444,22 @@ impl ResponseStream {
         );
     }
 
+    /// Waits for connectivity to return, then re-sends the request. Used for a
+    /// pre-action failure encountered while offline: retrying immediately would
+    /// just fail again, so the retry is parked until `NetworkStatus` reports
+    /// back online.
+    fn defer_retry_until_online(&mut self, ctx: &mut ModelContext<Self>) {
+        let wait = NetworkStatus::as_ref(ctx).wait_until_online();
+        let _ = ctx.spawn(
+            async move {
+                wait.await;
+            },
+            move |me, _, ctx| {
+                me.retry(ctx);
+            },
+        );
+    }
+
     fn retry(&mut self, ctx: &mut ModelContext<Self>) {
         self.retry_count += 1;
         self.has_received_client_actions = false; // Reset for the new attempt
@@ -565,51 +619,59 @@ impl ResponseStream {
                     self.original_error = Some(format!("{e:?}"));
                 }
 
-                // Only retry if:
-                // 1. We haven't received any client actions yet (this is the first event or only init events)
-                // 2. The error is retryable
-                // 3. We haven't exceeded max retries
-                // 4. We're online
+                // Decide what to do about the failure: retry now, retry once
+                // connectivity returns, resume the conversation (if actions have
+                // already executed, a verbatim retry would be unsafe), or fail.
                 const MAX_RETRIES: usize = 3;
                 let network_status = NetworkStatus::as_ref(ctx);
                 let is_online = network_status.is_online();
                 let is_retryable = e.is_retryable();
 
-                let should_retry = !self.has_received_client_actions
-                    && is_retryable
-                    && self.retry_count < MAX_RETRIES
-                    && is_online;
-
-                if should_retry {
-                    log::warn!(
-                        "MultiAgent request failed, retrying (attempt {}/{}) - Error: {e:?}",
-                        self.retry_count + 1,
-                        MAX_RETRIES
-                    );
-                    // Only emit error telemetry here if we're retrying.
-                    // Final errors that aren't being retried are emitted elsewhere.
-                    self.emit_retryable_agent_mode_error_telemetry(format!("{e:?}"), ctx);
-                    self.retry(ctx);
-                    // Don't emit the error event, we're retrying
-                    // TODO: emit a separate event if controller needs to know about failures that are being retried
-                    return;
-                }
-
-                // If we can't retry (because client actions were received) but the error is
-                // retryable and we're allowed to attempt a resume, signal that the controller
-                // should resume the conversation after the stream completes.
-                let should_attempt_resume = self.has_received_client_actions
-                    && is_retryable
-                    && self.can_attempt_resume_on_error;
-                if should_attempt_resume {
-                    self.should_resume_conversation_after_stream_finished = true;
+                match recovery_action(
+                    self.has_received_client_actions,
+                    is_retryable,
+                    self.retry_count < MAX_RETRIES,
+                    self.can_attempt_resume_on_error,
+                    is_online,
+                ) {
+                    RecoveryAction::RetryNow => {
+                        log::warn!(
+                            "MultiAgent request failed, retrying (attempt {}/{}) - Error: {e:?}",
+                            self.retry_count + 1,
+                            MAX_RETRIES
+                        );
+                        // Only emit error telemetry here if we're retrying.
+                        // Final errors that aren't being retried are emitted elsewhere.
+                        self.emit_retryable_agent_mode_error_telemetry(format!("{e:?}"), ctx);
+                        self.retry(ctx);
+                        // Don't emit the error event, we're retrying
+                        // TODO: emit a separate event if controller needs to know about failures that are being retried
+                        return;
+                    }
+                    RecoveryAction::RetryWhenOnline => {
+                        log::warn!(
+                            "MultiAgent request failed while offline; retrying (attempt {}/{}) once connectivity returns - Error: {e:?}",
+                            self.retry_count + 1,
+                            MAX_RETRIES
+                        );
+                        self.emit_retryable_agent_mode_error_telemetry(format!("{e:?}"), ctx);
+                        self.defer_retry_until_online(ctx);
+                        return;
+                    }
+                    RecoveryAction::Resume => {
+                        // Recoverable failure after client actions: resume the
+                        // conversation once the stream finishes rather than
+                        // surface the error.
+                        self.should_resume_conversation_after_stream_finished = true;
+                    }
+                    RecoveryAction::Fail => {}
                 }
 
                 log::warn!(
                     "MultiAgent request failed after {} retries: has_received_client_actions={}, is_retryable={}, is_online={is_online}",
                     self.retry_count,
                     self.has_received_client_actions,
-                    e.is_retryable()
+                    is_retryable
                 );
                 report_error!(anyhow!(e.clone()).context(format!(
                     "MultiAgent request failed after {} retries",
@@ -704,3 +766,7 @@ async fn byop_required_response_stream(
     .take_until(cancellation_rx);
     Ok(Box::pin(error_stream))
 }
+
+#[cfg(test)]
+#[path = "response_stream_tests.rs"]
+mod tests;
