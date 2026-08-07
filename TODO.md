@@ -1,8 +1,15 @@
 # TODO — Phosphor: Warp parity ledger (#11) + code-review debt
 
 Reconciled 2026-08-04; **#11 section re-verified against code on `main` 2026-08-06.**
+**Last updated 2026-08-06 late — `main` = `8c1841a94`, 25 PRs merged, 0 open.**
 `[x]` items in issue #11 = "keep/restore" (maintainer wants them in the fork). This
 file is the live tracker: **mark an item `- [x]` the moment it's verified done.**
+
+> **`main` is currently RED by maintainer decision.** PRs #140 and #181 were merged
+> knowingly carrying failing tests (#171 and the `warpui` suite) so all work would be
+> consolidated on one branch, with the fixes to follow. Do not treat a red suite on
+> `main` as a new regression without first checking it against #171. See
+> [Red on main](#red-on-main--2026-08-06) below.
 
 ## Rules (apply to every item — same as the whole project)
 - **`warp/master` is the behavioral oracle.** Port faithfully; adapt only for
@@ -56,15 +63,35 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
   push tracked as **#102** (blocks `handle_buffer_conflict_detected` + its 4th test);
   now being built by the fleet. Assessment: `specs/pending-edit-batch/ASSESS.md`.
 
+### Requires macOS / Windows — cannot be built or verified on this host
+Not deferred for lack of intent: this box is Linux and these cannot be compiled or
+exercised here at all. They need a macOS or Windows machine (or CI) to progress.
+**Do not mark any of these done from a Linux build.**
+
+- [ ] **WSLENV passthrough vars** *(Windows)* — `wsl_env_allowlist` absent (0 hits).
+  Compile-only port plus a flag.
+- [ ] **Launch-at-login** *(macOS + Windows)* — `app/src/login_item/` does not exist.
+- [ ] **Edition-2024 release verification** *(macOS)* — the **code work is done and on
+  `main`** (commit `48bc21cb9`, PR #53). Only a macOS release build remains unverified.
+- [ ] **pwsh `-EncodedCommand` at 2 call sites** *(Windows)* — the fix is ported to
+  `local_command_executor.rs:55` and `msys2_command_executor.rs:67`, matching the
+  already-verified `shell.rs` site (commit `5365c62a`). Needs a Windows run to confirm.
+
+### Won't do — decided 2026-08-06
+- [x] **AI global skills** (global arm) — **WON'T DO (maintainer, 2026-08-06).**
+  Unchecked from #11. No `global_skills`/`filter_skills_by_spec` in
+  `app/src/ai/skills/`; the bundled arm is done and the remote arm is cloud (dropped).
+  The single remaining non-cloud function has **no consumer** and would require a
+  `LocalOrRemotePath` type migration to land. Not worth the migration for dead code.
+
 ### Not started — true gaps
-- [ ] **WSLENV passthrough vars** — `wsl_env_allowlist` absent (0 hits). Windows-only;
-  not verifiable on Linux (compile-only port + flag).
-- [ ] **Launch-at-login** — `app/src/login_item/` does not exist. macOS/Windows;
-  not verifiable on Linux.
-- [ ] **AI global skills** (global arm only) — no `global_skills`/`filter_skills_by_spec`
-  in `app/src/ai/skills/`. Bundled arm done; remote arm = cloud (dropped). RECOMMEND
-  KEEP-DROPPED (needs maintainer sign-off): the one non-cloud fn has no consumer and
-  rests on a `LocalOrRemotePath` type migration.
+- [ ] **Skill remote-path** — now **#205**. Promoted out of this ledger after finding a
+  real correctness bug rather than a missing feature: `get_provider_for_path` **and**
+  `get_scope_for_path` both resolve `home_skills_path` against the *client's* home, so
+  a remote skill under a same-named home dir is silently misclassified as local.
+  Latent only because #170 means no remote path reaches them yet — **fix with or
+  before #170.** Note this ledger previously claimed `get_scope_for_path` was migrated
+  by #59; it was not (still `&Path`).
 
 ### Keep-dropped (decided this session)
 - [x] **history_model reconciliation** — non-cloud parts DONE (optimistic rename /
@@ -78,16 +105,14 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
   undecided NLD-flags item). Recorded on #11; tracking issue #107 closed.
 
 ### Core landed — sub-part / wiring still outstanding
-- [ ] **Skill remote-path** — `get_scope_for_path` done (`#59`); but
-  `get_provider_for_path(path: &Path)` (`crates/ai/src/skills/skill_provider.rs:174`)
-  is still `&Path`, not `LocalOrRemotePath`. DEFER: no remote-skill consumer exists.
-- [ ] **`remote_server_controller` connection-label helpers** — defined
-  (`remote_server_controller.rs:564`) + tested, but referenced ONLY in its own tests;
-  not wired into the `connect_session` display flow.
-- [ ] **`local_control` / `warpctrl` app-side** — crate `crates/local_control` exists;
+- [x] **`remote_server_controller` connection-label helpers** — DONE. This entry was
+  **false**: `connection_label_for_session_info` is called in production at
+  `remote_server_controller.rs:290` and `:526`, not only from its own tests.
+  Re-verified against `main` `8c1841a94` on 2026-08-06.
+- [ ] **`local_control` / `warpctrl` app-side** — now **#200**. crate `crates/local_control` exists;
   `app/src/local_control/` is absent. Blocked on `FeatureFlag::{WarpControlCli,
   AgentManagementView}` + a missing Agent-Management view subsystem.
-- [ ] **Pinned-tabs / tab-groups remaining GUI surfaces** — storage (migrations +
+- [ ] **Pinned-tabs / tab-groups remaining GUI surfaces** — tracked as **#146**. storage (migrations +
   schema), the live model (`Workspace::tab_groups`, `TabData::{group_id, pinned}`),
   the `PinTab`/`UngroupTabs`/… actions, snapshot round-trip, keybindings, the
   per-tab Pin/Unpin + tab-group context-menu entries, the multi-tab right-click
@@ -95,15 +120,20 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
   all landed. Still to port from `warp/master`: the vertical-tabs group-header
   row, the tab-group right-click menu (which hangs off that header), the inline
   group-rename editor, and group-aware drag-and-drop reordering.
-- [ ] **repo_metadata standing-queries wiring** — `standing_queries.rs` on main;
+- [ ] **repo_metadata standing-queries wiring** — now **#201**. `standing_queries.rs` on main;
   the app skill-watcher wiring that drives it is the follow-up.
-- [ ] **Log-rotation deferred wiring** — machinery built (`simple_logger` + `warp_logging`
-  rotation); `register_with_rotation` is NOT called at the MCP logger site
-  (`app/src/ai/mcp/templatable_manager/native.rs`), and `frontend`/`max_file_size_bytes`
-  aren't threaded into `LogConfig`.
-- [ ] **code_review over SSH — git write-ops** — diff-state read/view landed (PRs #59–71);
-  but NO `CommitFiles`/`PushBranch`/`GenerateCommitMessage`/`CreatePr` in
-  `crates/remote_server/proto/remote_server.proto` → remote git actions not done.
+- [ ] **Log-rotation deferred wiring** — now **#202**. machinery built (`simple_logger` + `warp_logging`
+  rotation). **This entry was partly false and is corrected:** `register_with_rotation`
+  **is** called at the MCP logger site (`app/src/ai/mcp/templatable_manager/native.rs:789`,
+  with `logs::mcp_log_rotation_config()`), re-verified against `main` `8c1841a94`.
+  Remaining real work: `frontend` / `max_file_size_bytes` are still not threaded
+  into `LogConfig`.
+- [x] **code_review over SSH — git write-ops** — DONE, merged 2026-08-06 (PR #125,
+  issue #116). Commit / push / create-PR RPCs over SSH, plus a
+  `git_operation_in_progress` guard on all three mutating handlers. Verified
+  109/109 on `code_review` before merge. **Remaining sub-part:** AI commit-message
+  autogen is still local-only and calls `generate_for_local_repo` with no
+  `is_remote()` check — see #126.
 
 ### Done — 44 of 56 (present on `main`)
 Verified by spot-check (all present): `is_jupyter_notebook_file`, `sorted_cd_directories`,
@@ -168,7 +198,11 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   verified 2026-08-06 with `git merge-base --is-ancestor 3150a17b9 main`; issue #98 is closed.
   All 3 green in isolation, no assertions changed. NOTE: the same class likely
   still affects #4's `slash_commands` tests; a test-binary-global i18n init would close those too.
-- [ ] get_relevant_files: live end-to-end smoke against a real BYOP provider (unit + lib green).
+- [ ] **get_relevant_files live smoke** — now **#206**. Unit + lib green (4 tests in
+  `get_relevant_files_tests.rs`, 4 in `get_relevant_files_runtime_tests.rs`), but never
+  run against a real BYOP provider. Matters because the tool is intercepted by name and
+  bypasses the protobuf executor, so no other integration coverage touches its path.
+  Manual verification item — needs provider credentials.
 - [x] **Vertex provider bugs** — DONE, on `main`. Empty-project silent-drop (`#99`) +
   8-field payload struct (`#100`), fixed on `fix/vertex-provider-bugs` (commit `a08b52777`)
   and **merged via PR #104** — verified 2026-08-06 with
@@ -181,6 +215,60 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
 - **#4** — NOT done (deadlock reproduces; see above).
 - **#98/#99/#100** — MERGED to `main` (PRs #103 and #104) and all three issues are closed. **#101** pending-edit-batch core also merged (PR #105) and closed; **#102** filed (deferred BufferConflictDetected push) and still OPEN.
 - **#2/#5/#11** — tracking issues; stay open. #11 items tracked here.
+
+### Closed 2026-08-06 late
+#129 (mermaid flake) · #131 (MCP redaction gate) · #135 (PR lookup) · #137 (empty
+branch dropdown over SSH) · #138 (watch filter) · #143 (Privacy page) · #145 (editor
+parity) · #152 (`/usage` + `/cost`) · #156 (`PrInfo` fields) · #157 (gh-auth) ·
+#185 (WSL paths) · #196 (WCAG chip labels).
+
+### Deliberately left open — partially resolved, remainder is real
+- **#126** — BYOP commit-message gen: local path shipped (PR #130); the remote path
+  was deferred pending #125. #125 has now landed and the wiring still is not done —
+  `maybe_start_commit_message_autogen` calls `generate_for_local_repo` with **no
+  `is_remote()` check**, so on an SSH repo it runs `git` against a path that does not
+  exist locally and silently produces no draft.
+- **#136** — `read_files`: local half fixed (PR #159); remote half open. The stated
+  blocker is **gone** — PR #192's proto re-pin supplies the `failed_reads` field that
+  `AnyFilesSuccess` previously lacked, so it is now implementable.
+- **#142** — `api_keys`: all portable tests ported (PR #189). Real remainder is a
+  serde round-trip test for `AgentProviderSecrets`, which lives in `app/`. Note the
+  issue's own premise was wrong — Warp has 71 tests not 82, and
+  `custom_model_providers_*` is superseded by `AgentProviderSecrets`, not missing.
+- **#146** — pinned tabs: core + deferred UI merged (PRs #132, #172); see the
+  remaining GUI surfaces item above.
+
+### New issues filed 2026-08-06 late
+#183, #184 (`warp_cli` gaps) · #188 (3 more local-model-on-remote-path sites) ·
+#191 (`.rustfmt.toml` pins edition 2018 while all 64 crates are 2024) · #194 (BYOP
+token accounting was dead, which disabled auto-compaction) · #196 (closed).
+
+---
+
+## Red on main — 2026-08-06
+
+`main` carries knowingly-failing tests. This was a maintainer decision to consolidate
+all work onto one branch and fix afterwards, taken in full knowledge of AGENTS §5.6.
+**It is a debt to pay down, not a new policy.**
+
+- [ ] **#171 — 9 ported Warp terminal tests fail** (came in with PR #140). Two are
+  security-relevant and should be fixed first:
+  - **OSC 1337 parser panic on untrusted PTY output** — `ansi/mod.rs:1073` indexes
+    `params[1]` unguarded; `warp/master` guards it. Any process writing to the
+    terminal can crash it.
+  - **Unquoted `cat {history_file}`** — `session.rs:1384`.
+  - Remainder: LRC misclassification, focus reporting, copy/ETX, wrapped-path
+    truncation, scrollback assert, Droid.
+- [ ] **`warpui` / `warpui_core` suite** (came in with PR #181). Also contains ~82
+  lines of `#[cfg(macos)]` code that **cannot be compiled on Linux** and needs macOS
+  CI to verify at all.
+- [ ] **Establish the real baseline.** Before this, `main` was 4005/0/33 at
+  `44bf4daa6`. Re-measure and record the number here so the next session can tell an
+  accepted failure from a new regression.
+
+**Method note:** the "4025" figure that circulated was PR #132's *branch* number, not
+`main`'s, and it made a clean proto re-pin look like it had lost 22 tests. Always
+state which commit a test count belongs to.
 
 ---
 
@@ -423,7 +511,7 @@ across agents have been merged.
   **Recommend:** do plan properly with a running-TUI check + a streaming snapshot
   test; shell-only is low value.
 
-- [ ] **[HIGH] Full-document rebuild on every layout pass, not viewport-gated** — NEEDS REFACTOR (deferred)
+- [ ] **[HIGH] Full-document rebuild on every layout pass, not viewport-gated** — now **#203**. — NEEDS REFACTOR (deferred)
   — `crates/warp_tui/src/editor_element.rs:351-401` (`build`) +
   `crates/editor/src/render/model/char_cell_display.rs:257-334` (`display_rows`)
   `layout()` unconditionally rebuilds: `text.chars().collect()` + a full-buffer
@@ -465,7 +553,7 @@ across agents have been merged.
   **Fix:** trim the autoupdate vocabulary from `search_terms` while the UI is
   hidden.
 
-- [ ] **JPEG logo: opaque background + baked-in text, illegible at ~100px**
+- [ ] **JPEG logo: opaque background + baked-in text, illegible at ~100px** — now **#204**.
   — `app/src/settings_view/about_page.rs:187` (now `about_page/mod.rs:167`,
   `bundled/jpg/phosphor-logo.jpeg` — re-confirmed present on `main` 2026-08-06)
   The 1024×1024 badge is downscaled to ~100px (its "PHOSPHOR TERMLNK / CRT
