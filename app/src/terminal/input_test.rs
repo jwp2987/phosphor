@@ -218,6 +218,16 @@ fn renders_fixed_prompt_chip_command_without_interpolation() {
 pub fn initialize_app(app: &mut App) {
     initialize_settings_for_tests(app);
 
+    // These tests exercise natural-language detection behaviour, not its default.
+    // The default is opt-in (matching the pinned oracle), so enable it explicitly
+    // rather than depending on whatever the default happens to be. See #449.
+    crate::settings::AISettings::handle(app).update(app, |settings, ctx| {
+        settings
+            .ai_autodetection_enabled_internal
+            .set_value(true, ctx)
+            .expect("enabling NLD autodetection for tests should succeed");
+    });
+
     // Make sure we set up all necessary custom action bindings.
     app.update(init);
 
