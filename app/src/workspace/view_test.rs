@@ -2718,7 +2718,10 @@ fn test_copy_current_path_and_rename_active_pane_bindings_are_registered() {
                 .find(|binding| binding.name == "workspace:copy_current_path")
                 .expect("workspace:copy_current_path should be a registered editable binding");
             assert!(matches!(
-                copy_current_path.action.as_any().downcast_ref::<WorkspaceAction>(),
+                copy_current_path
+                    .action
+                    .as_any()
+                    .downcast_ref::<WorkspaceAction>(),
                 Some(WorkspaceAction::CopyCurrentPath)
             ));
 
@@ -2727,7 +2730,10 @@ fn test_copy_current_path_and_rename_active_pane_bindings_are_registered() {
                 .find(|binding| binding.name == "workspace:rename_active_pane")
                 .expect("workspace:rename_active_pane should be a registered editable binding");
             assert!(matches!(
-                rename_active_pane.action.as_any().downcast_ref::<WorkspaceAction>(),
+                rename_active_pane
+                    .action
+                    .as_any()
+                    .downcast_ref::<WorkspaceAction>(),
                 Some(WorkspaceAction::RenameActivePane)
             ));
         });
@@ -2742,7 +2748,11 @@ fn test_rename_active_pane_dispatches_to_rename_pane() {
         let workspace = mock_workspace(&mut app);
 
         workspace.update(&mut app, |workspace, ctx| {
-            assert!(!workspace.current_workspace_state.is_any_pane_being_renamed());
+            assert!(
+                !workspace
+                    .current_workspace_state
+                    .is_any_pane_being_renamed()
+            );
 
             let pane_group = workspace.active_tab_pane_group().clone();
             let expected_locator = PaneViewLocator {
@@ -2755,7 +2765,11 @@ fn test_rename_active_pane_dispatches_to_rename_pane() {
             // mutation via the keyboard-bindable / Command Palette route.
             workspace.handle_action(&WorkspaceAction::RenameActivePane, ctx);
 
-            assert!(workspace.current_workspace_state.is_any_pane_being_renamed());
+            assert!(
+                workspace
+                    .current_workspace_state
+                    .is_any_pane_being_renamed()
+            );
             assert_eq!(
                 workspace.current_workspace_state.pane_being_renamed(),
                 Some(expected_locator)

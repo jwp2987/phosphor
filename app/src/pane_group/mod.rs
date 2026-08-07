@@ -18,8 +18,8 @@ use crate::ai::restored_conversations::RestoredAgentConversations;
 #[cfg(target_family = "wasm")]
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::cloud_object::Space;
-#[cfg(feature = "local_fs")]
 use crate::code::buffer_location::BufferLocation;
+#[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
 use crate::code::view::CodeViewAction;
 use crate::code_review::comments::{AttachedReviewComment, PendingImportedReviewComment};
@@ -5650,10 +5650,15 @@ impl PaneGroup {
         if let Some(code_pane) = self.downcast_pane_by_id::<CodePane>(focused_pane_id) {
             let code_view = code_pane.file_view(ctx);
             let code_view = code_view.as_ref(ctx);
-            return code_view.location().and_then(|location| match location {
-                BufferLocation::Local(path) => Some(path.display().to_string()),
-                BufferLocation::Remote(remote_path) => Some(remote_path.path.as_str().to_string()),
-            });
+            return code_view
+                .tab_at(code_view.active_tab_index())
+                .and_then(|tab| tab.location())
+                .and_then(|location| match location {
+                    BufferLocation::Local(path) => Some(path.display().to_string()),
+                    BufferLocation::Remote(remote_path) => {
+                        Some(remote_path.path.as_str().to_string())
+                    }
+                });
         }
 
         let terminal_view = self.focused_session_view(ctx)?;
