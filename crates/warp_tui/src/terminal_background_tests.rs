@@ -1,3 +1,4 @@
+use warp::settings::TuiTheme;
 use warp::tui_export::{dark_theme, light_theme};
 use warpui_core::runtime::ProbedRgb;
 
@@ -85,7 +86,8 @@ fn probe_stops_after_cutoff_and_success_resets_misses() {
         ProbeResultAction::default()
     );
     assert_eq!(state.probe_budget, TerminalBackgroundProbeBudget::Exhausted);
-    assert!(!state.probe_enabled());
+    assert!(!state.probe_enabled(TuiTheme::Auto));
+    assert!(!state.probe_enabled(TuiTheme::Dark));
 
     let mut state = TerminalBackgroundState::new(dark);
     for _ in 0..cutoff - 1 {
@@ -98,21 +100,44 @@ fn probe_stops_after_cutoff_and_success_resets_misses() {
             consecutive_misses: 0,
         }
     );
-    assert!(state.probe_enabled());
+    assert!(state.probe_enabled(TuiTheme::Auto));
+}
+
+/// An explicit Light/Dark choice disables probing (nothing to auto-detect),
+/// but does not reset the session's miss budget: switching back to Auto later
+/// resumes probing from wherever the miss count was left.
+#[test]
+fn explicit_theme_preserves_the_session_miss_count() {
+    let dark = Some(rgb(20, 20, 20));
+    let dark_theme = dark_theme();
+    let mut state = TerminalBackgroundState::new(dark);
+
+    state.record_probe_result(None, &dark_theme, CONSECUTIVE_MISS_CUTOFF);
+    assert!(!state.probe_enabled(TuiTheme::Dark));
+    assert_eq!(
+        state.probe_budget,
+        TerminalBackgroundProbeBudget::Available {
+            consecutive_misses: 1,
+        }
+    );
+    assert!(state.probe_enabled(TuiTheme::Auto));
 }
 
 #[test]
-fn host_updates_reader_probe_gate_from_budget() {
+fn host_updates_reader_probe_gate_from_theme_and_budget() {
     let probe_enabled = Arc::new(AtomicBool::new(false));
     let mut host = TuiHostTerminalBackground {
         state: TerminalBackgroundState::new(Some(rgb(20, 20, 20))),
         probe_enabled: probe_enabled.clone(),
     };
 
-    host.update_probe_enabled();
+    host.update_probe_enabled(TuiTheme::Auto);
     assert!(probe_enabled.load(Ordering::Relaxed));
 
+    host.update_probe_enabled(TuiTheme::Dark);
+    assert!(!probe_enabled.load(Ordering::Relaxed));
+
     host.state.probe_budget = TerminalBackgroundProbeBudget::Exhausted;
-    host.update_probe_enabled();
+    host.update_probe_enabled(TuiTheme::Auto);
     assert!(!probe_enabled.load(Ordering::Relaxed));
 }

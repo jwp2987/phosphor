@@ -15280,6 +15280,7 @@ dependencies = [
  "warp_util",
  "warp_web_event_bus",
  "warpui",
+ "warpui_core",
  "warpui_extras",
  "wasm-bindgen",
  "watcher",

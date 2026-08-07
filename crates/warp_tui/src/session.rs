@@ -4,12 +4,13 @@
 //! initialization is done, the mount built here starts the TUI driver and
 //! defers creating the first terminal session until login.
 
+use crate::report_error::report_error;
 use anyhow::{Context, Result};
 use clap::Parser;
 use clap::error::ErrorKind;
+use warp::settings::TuiThemeSettings;
 use warp::tui_export::{Appearance, ServerConversationToken};
 use warp::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase};
-use crate::report_error::report_error;
 use warpui::SingletonEntity as _;
 use warpui_core::platform::{TerminationMode, WindowStyle};
 use warpui_core::runtime::spawn_tui_driver;
@@ -108,7 +109,8 @@ fn init(
     // to the TUI process by overriding the already-initialized Appearance
     // theme at mount time, without changing normal GUI theme selection or
     // font settings.
-    let (theme, probe) = TuiHostTerminalBackground::register(ctx);
+    let selected_theme = TuiThemeSettings::as_ref(ctx).selected_theme();
+    let (theme, probe) = TuiHostTerminalBackground::register(selected_theme, ctx);
     Appearance::handle(ctx).update(ctx, |appearance, ctx| {
         appearance.set_theme(theme, ctx);
     });
