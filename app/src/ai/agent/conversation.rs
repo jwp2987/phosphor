@@ -3048,6 +3048,11 @@ impl AIConversation {
         &self.todo_lists
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_todo_lists_for_test(&mut self, todo_lists: Vec<AIAgentTodoList>) {
+        self.todo_lists = todo_lists;
+    }
+
     pub fn active_todo_list(&self) -> Option<&AIAgentTodoList> {
         self.todo_lists.last()
     }

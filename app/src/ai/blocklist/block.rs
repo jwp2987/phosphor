@@ -651,6 +651,14 @@ impl Default for CollapsibleElementState {
 }
 
 impl CollapsibleElementState {
+    /// A state that starts collapsed instead of expanded.
+    fn collapsed() -> Self {
+        Self {
+            expansion_state: CollapsibleExpansionState::Collapsed,
+            ..Default::default()
+        }
+    }
+
     fn expand(&mut self) {
         self.expansion_state = CollapsibleExpansionState::Expanded {
             is_finished: self.last_known_is_finished,
@@ -1920,10 +1928,7 @@ impl AIBlock {
             ) {
                 self.collapsible_block_states
                     .entry(message.id.clone())
-                    .or_insert_with(|| CollapsibleElementState {
-                        expansion_state: CollapsibleExpansionState::Collapsed,
-                        ..Default::default()
-                    });
+                    .or_insert_with(CollapsibleElementState::collapsed);
             }
 
             if matches!(
@@ -5222,6 +5227,29 @@ pub enum AIBlockEvent {
     },
 }
 
+/// Routes an "open code" request to the right destination: a plain file link
+/// goes through the detected-file-path path (which honours the configured
+/// external editor), everything else opens in an in-app code pane.
+#[cfg(feature = "local_fs")]
+fn open_code_action_event(
+    source: &CodeSource,
+    layout: crate::util::file::external_editor::settings::EditorLayout,
+) -> AIBlockEvent {
+    match source {
+        CodeSource::Link {
+            path, range_start, ..
+        } => AIBlockEvent::OpenDetectedFilePath {
+            absolute_path: path.clone(),
+            line_and_column_num: *range_start,
+            target_override: None,
+        },
+        _ => AIBlockEvent::OpenCodeInWarp {
+            source: source.clone(),
+            layout,
+        },
+    }
+}
+
 impl Entity for AIBlock {
     type Event = AIBlockEvent;
 }
@@ -5794,12 +5822,10 @@ impl TypedActionView for AIBlock {
 
                 #[cfg(feature = "local_fs")]
                 {
-                    ctx.emit(AIBlockEvent::OpenCodeInWarp {
-                        source: source.clone(),
-                        layout: *crate::util::file::external_editor::EditorSettings::as_ref(ctx)
-                            .open_file_layout
-                            .value(),
-                    })
+                    let layout = *crate::util::file::external_editor::EditorSettings::as_ref(ctx)
+                        .open_file_layout
+                        .value();
+                    ctx.emit(open_code_action_event(source, layout));
                 }
             }
             AIBlockAction::ToggleTodoListExpanded(id) => {
