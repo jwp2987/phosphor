@@ -125,8 +125,19 @@ pub fn insert_block_with_prompt(
 /// block list, the bootstrapped state). Tests that check for messages sent to the
 /// view need to also call `precmd`.
 pub fn command_finished_and_precmd(block_list: &mut BlockList) {
-    block_list.command_finished(Default::default());
-    block_list.prompt_only_precmd(Default::default());
+    // Mirrors the pin: the precmd carries the same completion metadata as the
+    // command_finished that precedes it. Going through prompt_only_precmd
+    // instead left the next block un-started, so `active_block().started()` was
+    // false where upstream has it true.
+    let completion_metadata = ansi::CompletionMetadata::default();
+    block_list.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+        ..Default::default()
+    });
+    block_list.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata::default(),
+    });
 }
 
 /// Advances the block list to the ScriptExecution stage.
@@ -649,8 +660,8 @@ pub fn test_session_restoration_separator() {
                 .as_f64()
     );
 
-    // With the active block not started during initialize,
-    // the gap is inserted before the active block in clear_visible_screen.
+    // With the active block still hidden during initialize, the gap is inserted before the active
+    // block in clear_visible_screen.
     // Total items: 2 restored blocks + 1 separator + 1 gap + 1 active block = 5
     assert_eq!(block_list.block_heights.summary().total_count, 5);
     // Gap is at index 3 (before the active block at index 4)
@@ -2083,4 +2094,56 @@ fn classifies_next_block_ids_relative_to_the_active_block() {
         block_list.classify_next_block_id(&next_block_id),
         NextBlockIdDisposition::ActiveDuplicate
     );
+}
+
+fn drain_terminal_events(events_rx: &async_channel::Receiver<Event>) -> Vec<Event> {
+    let mut events = Vec::new();
+    while let Ok(event) = events_rx.try_recv() {
+        events.push(event);
+    }
+    events
+}
+
+#[test]
+pub fn visible_bootstrap_block_event_fires_when_script_execution_becomes_visible() {
+    let (events_tx, events_rx) = async_channel::unbounded();
+    let channel_event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(events_tx)
+        .build();
+
+    let mut block_list = TestBlockListBuilder::new()
+        .with_channel_event_proxy(channel_event_proxy)
+        .build();
+    advance_to_script_execution(&mut block_list);
+
+    assert!(block_list.active_block().started());
+    assert!(block_list
+        .active_block()
+        .is_empty(&AgentViewState::Inactive));
+
+    let events = drain_terminal_events(&events_rx);
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::VisibleBootstrapBlock)));
+
+    block_list.input('c');
+    let events = drain_terminal_events(&events_rx);
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, Event::VisibleBootstrapBlock)));
+
+    block_list.update_active_block_height();
+    let visible_events = drain_terminal_events(&events_rx)
+        .into_iter()
+        .filter(|event| matches!(event, Event::VisibleBootstrapBlock))
+        .count();
+    assert_eq!(visible_events, 1);
+
+    block_list.input('d');
+    block_list.update_active_block_height();
+    let visible_events = drain_terminal_events(&events_rx)
+        .into_iter()
+        .filter(|event| matches!(event, Event::VisibleBootstrapBlock))
+        .count();
+    assert_eq!(visible_events, 0);
 }
