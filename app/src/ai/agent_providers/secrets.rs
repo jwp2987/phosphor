@@ -90,3 +90,7 @@ impl Entity for AgentProviderSecrets {
 }
 
 impl SingletonEntity for AgentProviderSecrets {}
+
+#[cfg(test)]
+#[path = "secrets_tests.rs"]
+mod tests;
