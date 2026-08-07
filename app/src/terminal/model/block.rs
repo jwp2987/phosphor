@@ -1696,9 +1696,18 @@ impl Block {
         self.state == BlockState::Executing
     }
 
+    fn is_empty_pre_bootstrap_block(&self) -> bool {
+        !self.bootstrap_stage.is_done()
+            && self.command_should_show_as_empty_when_finished()
+            && self.output_grid.should_show_as_empty_when_finished()
+    }
+
     /// Whether a command is long running.
     /// We use this to determine whether to hide the input box.
     pub fn is_active_and_long_running(&self) -> bool {
+        if self.is_empty_pre_bootstrap_block() {
+            return false;
+        }
         // Use the command grid start time by default (which should be earlier)
         // than the output grid start time.  If for some reason there isn't a
         // command grid start time, then fall back to the start time of the output

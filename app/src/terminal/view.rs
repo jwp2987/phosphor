@@ -6835,9 +6835,7 @@ impl TerminalView {
         let focus_reporting_enabled = *AltScreenReporting::as_ref(ctx)
             .focus_reporting_enabled
             .value();
-        focus_reporting_enabled
-            && model.is_alt_screen_active()
-            && model.alt_screen().is_mode_set(TermMode::FOCUS_IN_OUT)
+        focus_reporting_enabled && model.is_term_mode_set(TermMode::FOCUS_IN_OUT)
     }
 
     fn maybe_report_focus_in(&mut self, ctx: &mut ViewContext<Self>) {
@@ -14425,6 +14423,15 @@ impl TerminalView {
         }
         if !self.selected_blocks.is_empty() {
             self.copy_blocks(BlockEntity::CommandAndOutput, ctx);
+        }
+
+        // If nothing was copied and a fullscreen TUI (alt screen) is managing its own selection,
+        // forward the copy intent to the foreground TUI so it can copy its own selection.
+        if cfg!(target_os = "linux")
+            && self.selected_blocks.is_empty()
+            && self.model.lock().is_alt_screen_active()
+        {
+            self.user_write_ctrl_c_to_pty(ctx);
         }
     }
 
