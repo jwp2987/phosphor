@@ -1,8 +1,15 @@
 # TODO — Phosphor: Warp parity ledger (#11) + code-review debt
 
 Reconciled 2026-08-04; **#11 section re-verified against code on `main` 2026-08-06.**
+**Last updated 2026-08-06 late — `main` = `8c1841a94`, 25 PRs merged, 0 open.**
 `[x]` items in issue #11 = "keep/restore" (maintainer wants them in the fork). This
 file is the live tracker: **mark an item `- [x]` the moment it's verified done.**
+
+> **`main` is currently RED by maintainer decision.** PRs #140 and #181 were merged
+> knowingly carrying failing tests (#171 and the `warpui` suite) so all work would be
+> consolidated on one branch, with the fixes to follow. Do not treat a red suite on
+> `main` as a new regression without first checking it against #171. See
+> [Red on main](#red-on-main--2026-08-06) below.
 
 ## Rules (apply to every item — same as the whole project)
 - **`warp/master` is the behavioral oracle.** Port faithfully; adapt only for
@@ -101,9 +108,12 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
   rotation); `register_with_rotation` is NOT called at the MCP logger site
   (`app/src/ai/mcp/templatable_manager/native.rs`), and `frontend`/`max_file_size_bytes`
   aren't threaded into `LogConfig`.
-- [ ] **code_review over SSH — git write-ops** — diff-state read/view landed (PRs #59–71);
-  but NO `CommitFiles`/`PushBranch`/`GenerateCommitMessage`/`CreatePr` in
-  `crates/remote_server/proto/remote_server.proto` → remote git actions not done.
+- [x] **code_review over SSH — git write-ops** — DONE, merged 2026-08-06 (PR #125,
+  issue #116). Commit / push / create-PR RPCs over SSH, plus a
+  `git_operation_in_progress` guard on all three mutating handlers. Verified
+  109/109 on `code_review` before merge. **Remaining sub-part:** AI commit-message
+  autogen is still local-only and calls `generate_for_local_repo` with no
+  `is_remote()` check — see #126.
 
 ### Done — 44 of 56 (present on `main`)
 Verified by spot-check (all present): `is_jupyter_notebook_file`, `sorted_cd_directories`,
@@ -181,6 +191,60 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
 - **#4** — NOT done (deadlock reproduces; see above).
 - **#98/#99/#100** — MERGED to `main` (PRs #103 and #104) and all three issues are closed. **#101** pending-edit-batch core also merged (PR #105) and closed; **#102** filed (deferred BufferConflictDetected push) and still OPEN.
 - **#2/#5/#11** — tracking issues; stay open. #11 items tracked here.
+
+### Closed 2026-08-06 late
+#129 (mermaid flake) · #131 (MCP redaction gate) · #135 (PR lookup) · #137 (empty
+branch dropdown over SSH) · #138 (watch filter) · #143 (Privacy page) · #145 (editor
+parity) · #152 (`/usage` + `/cost`) · #156 (`PrInfo` fields) · #157 (gh-auth) ·
+#185 (WSL paths) · #196 (WCAG chip labels).
+
+### Deliberately left open — partially resolved, remainder is real
+- **#126** — BYOP commit-message gen: local path shipped (PR #130); the remote path
+  was deferred pending #125. #125 has now landed and the wiring still is not done —
+  `maybe_start_commit_message_autogen` calls `generate_for_local_repo` with **no
+  `is_remote()` check**, so on an SSH repo it runs `git` against a path that does not
+  exist locally and silently produces no draft.
+- **#136** — `read_files`: local half fixed (PR #159); remote half open. The stated
+  blocker is **gone** — PR #192's proto re-pin supplies the `failed_reads` field that
+  `AnyFilesSuccess` previously lacked, so it is now implementable.
+- **#142** — `api_keys`: all portable tests ported (PR #189). Real remainder is a
+  serde round-trip test for `AgentProviderSecrets`, which lives in `app/`. Note the
+  issue's own premise was wrong — Warp has 71 tests not 82, and
+  `custom_model_providers_*` is superseded by `AgentProviderSecrets`, not missing.
+- **#146** — pinned tabs: core + deferred UI merged (PRs #132, #172); see the
+  remaining GUI surfaces item above.
+
+### New issues filed 2026-08-06 late
+#183, #184 (`warp_cli` gaps) · #188 (3 more local-model-on-remote-path sites) ·
+#191 (`.rustfmt.toml` pins edition 2018 while all 64 crates are 2024) · #194 (BYOP
+token accounting was dead, which disabled auto-compaction) · #196 (closed).
+
+---
+
+## Red on main — 2026-08-06
+
+`main` carries knowingly-failing tests. This was a maintainer decision to consolidate
+all work onto one branch and fix afterwards, taken in full knowledge of AGENTS §5.6.
+**It is a debt to pay down, not a new policy.**
+
+- [ ] **#171 — 9 ported Warp terminal tests fail** (came in with PR #140). Two are
+  security-relevant and should be fixed first:
+  - **OSC 1337 parser panic on untrusted PTY output** — `ansi/mod.rs:1073` indexes
+    `params[1]` unguarded; `warp/master` guards it. Any process writing to the
+    terminal can crash it.
+  - **Unquoted `cat {history_file}`** — `session.rs:1384`.
+  - Remainder: LRC misclassification, focus reporting, copy/ETX, wrapped-path
+    truncation, scrollback assert, Droid.
+- [ ] **`warpui` / `warpui_core` suite** (came in with PR #181). Also contains ~82
+  lines of `#[cfg(macos)]` code that **cannot be compiled on Linux** and needs macOS
+  CI to verify at all.
+- [ ] **Establish the real baseline.** Before this, `main` was 4005/0/33 at
+  `44bf4daa6`. Re-measure and record the number here so the next session can tell an
+  accepted failure from a new regression.
+
+**Method note:** the "4025" figure that circulated was PR #132's *branch* number, not
+`main`'s, and it made a clean proto re-pin look like it had lost 22 tests. Always
+state which commit a test count belongs to.
 
 ---
 
