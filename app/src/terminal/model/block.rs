@@ -2700,7 +2700,7 @@ impl Block {
     ///
     /// This is kept in lock-step with [`Self::elapsed_duration_whole_secs`] so the view layer can
     /// decide whether to wrap the duration in a periodically-repainting element. The view-side
-    /// wiring is not in place yet — see the tracking issue referenced in `TODO.md`.
+    /// wiring is not in place yet — see issue #426.
     pub fn is_duration_live(&self) -> bool {
         self.elapsed_duration_whole_secs().is_some()
     }
