@@ -88,9 +88,10 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
 - [ ] **Skill remote-path** — `get_scope_for_path` done (`#59`); but
   `get_provider_for_path(path: &Path)` (`crates/ai/src/skills/skill_provider.rs:174`)
   is still `&Path`, not `LocalOrRemotePath`. DEFER: no remote-skill consumer exists.
-- [ ] **`remote_server_controller` connection-label helpers** — defined
-  (`remote_server_controller.rs:564`) + tested, but referenced ONLY in its own tests;
-  not wired into the `connect_session` display flow.
+- [x] **`remote_server_controller` connection-label helpers** — DONE. This entry was
+  **false**: `connection_label_for_session_info` is called in production at
+  `remote_server_controller.rs:290` and `:526`, not only from its own tests.
+  Re-verified against `main` `8c1841a94` on 2026-08-06.
 - [ ] **`local_control` / `warpctrl` app-side** — crate `crates/local_control` exists;
   `app/src/local_control/` is absent. Blocked on `FeatureFlag::{WarpControlCli,
   AgentManagementView}` + a missing Agent-Management view subsystem.
@@ -105,9 +106,11 @@ telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
 - [ ] **repo_metadata standing-queries wiring** — `standing_queries.rs` on main;
   the app skill-watcher wiring that drives it is the follow-up.
 - [ ] **Log-rotation deferred wiring** — machinery built (`simple_logger` + `warp_logging`
-  rotation); `register_with_rotation` is NOT called at the MCP logger site
-  (`app/src/ai/mcp/templatable_manager/native.rs`), and `frontend`/`max_file_size_bytes`
-  aren't threaded into `LogConfig`.
+  rotation). **This entry was partly false and is corrected:** `register_with_rotation`
+  **is** called at the MCP logger site (`app/src/ai/mcp/templatable_manager/native.rs:789`,
+  with `logs::mcp_log_rotation_config()`), re-verified against `main` `8c1841a94`.
+  Remaining real work: `frontend` / `max_file_size_bytes` are still not threaded
+  into `LogConfig`.
 - [x] **code_review over SSH — git write-ops** — DONE, merged 2026-08-06 (PR #125,
   issue #116). Commit / push / create-PR RPCs over SSH, plus a
   `git_operation_in_progress` guard on all three mutating handlers. Verified
