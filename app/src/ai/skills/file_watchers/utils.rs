@@ -45,6 +45,7 @@ pub fn find_skill_directories_in_tree(
     repo_metadata
         .get_repo_contents(&id, args, ctx)
         .unwrap_or_default()
+        .contents
         .into_iter()
         // Only directories should reach this iterator due to the GetContentsArgs::filter.
         // Keep the File arm for exhaustive matching in case RepoContent grows new variants.

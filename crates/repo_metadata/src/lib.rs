@@ -28,6 +28,12 @@ pub enum RepoMetadataError {
     BuildTree(BuildTreeError),
     #[error("Failed to start watcher: {0}")]
     WatcherError(#[from] anyhow::Error),
+    #[error("Repository is not indexed")]
+    RepositoryNotIndexed,
+    #[error("Repository indexing is still pending")]
+    RepositoryIndexingPending,
+    #[error("Repository indexing failed")]
+    RepositoryIndexingFailed,
 }
 // Re-export the modules
 pub mod entry;
@@ -69,7 +75,7 @@ pub fn is_in_repo(_path: &str, _app: &warpui::AppContext) -> bool {
 }
 pub use file_tree_store::FileTreeEntry;
 
-pub use local_model::{LocalRepoMetadataModel, RepoContent};
+pub use local_model::{LocalRepoMetadataModel, RepoContent, RepoContents};
 
 // New types.
 pub use file_tree_update::RepoMetadataUpdate;

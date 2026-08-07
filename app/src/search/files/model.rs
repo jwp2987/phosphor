@@ -215,6 +215,7 @@ impl FileSearchModel {
         };
         if let Some(contents) = repo_metadata.get_repo_contents(&id, args, app) {
             contents
+                .contents
                 .iter()
                 .filter_map(|content| {
                     match content {

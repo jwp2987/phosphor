@@ -15,7 +15,7 @@ use warpui::{AppContext, ModelContext, ModelHandle, SingletonEntity};
 use crate::file_tree_store::FileTreeState;
 use crate::file_tree_update::RepoMetadataUpdate;
 use crate::local_model::{
-    GetContentsArgs, IndexedRepoState, LocalRepoMetadataModel, RepoContent, RepositoryMetadataEvent,
+    GetContentsArgs, IndexedRepoState, LocalRepoMetadataModel, RepoContents, RepositoryMetadataEvent,
 };
 use crate::remote_model::{RemoteRepoMetadataModel, RemoteRepositoryMetadataEvent};
 use crate::repository_identifier::{RemoteRepositoryIdentifier, RepositoryIdentifier};
@@ -218,19 +218,28 @@ impl RepoMetadataModel {
     }
 
     /// Returns repository contents for the specified repository.
+    ///
+    /// The local sub-model caps the number of returned entries and reports
+    /// truncation via [`RepoContents::truncated`]; the remote sub-model does
+    /// not yet cap results, so `truncated` is always `false` there.
     pub fn get_repo_contents<'a>(
         &self,
         id: &RepositoryIdentifier,
         args: GetContentsArgs,
         ctx: &'a AppContext,
-    ) -> Option<Vec<RepoContent<'a>>> {
+    ) -> Option<RepoContents<'a>> {
         match id {
             RepositoryIdentifier::Local(path) => {
-                self.local.as_ref(ctx).get_repo_contents(path, args)
+                self.local.as_ref(ctx).get_repo_contents(path, args).ok()
             }
-            RepositoryIdentifier::Remote(remote_id) => {
-                self.remote.as_ref(ctx).get_repo_contents(remote_id, args)
-            }
+            RepositoryIdentifier::Remote(remote_id) => self
+                .remote
+                .as_ref(ctx)
+                .get_repo_contents(remote_id, args)
+                .map(|contents| RepoContents {
+                    contents,
+                    truncated: false,
+                }),
         }
     }
 
