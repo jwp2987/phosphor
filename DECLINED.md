@@ -65,7 +65,6 @@ not hidden by a cloud-availability check.
 | what | issue | note |
 |---|---|---|
 | **`has_locking_attachment`** | #318 | **DECIDED 2026-08-07: keep the fork's behaviour.** The oracle narrows locking to image/file attachments; the fork also locks on pending block ids and inline `@` context refs. Attaching a block is an explicit "use this as agent context" gesture, and the pin's narrower rule lets the classifier flip the input back to shell mode afterwards — the bug the fork's own comment at `input.rs:12924` describes. The pin's `has_locking_attachment_is_false_with_only_pending_block_id` is **permanently not ported**; the fork's `has_locking_attachment_is_true_with_pending_block_id` is the authority. |
-| **`ask_user_question` auto-approve** | #373 | **DECIDED 2026-08-07: mirror Warp** — revert the fork's "always surface to the user" divergence to the pin's conversation-level auto-approve check, and port the two pin tests. This is accepted engineering work, not a declined divergence; the row stays only until that lands. |
 | **TUI/GUI shared app id** | — | The fork deliberately shares one app id (and therefore one keychain namespace and config) between GUI and TUI; the pin separates them. Two pin tests assert the separation and are intentionally not ported. |
 | **Privacy toggle defaults** | — | Warp defaults telemetry/crash-reporting **on** (opt-out, commercial product). This fork defaults them **off** — leaving them on would show "ON" while nothing goes out. |
 

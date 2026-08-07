@@ -118,10 +118,8 @@ fn should_autoexecute_returns_false_when_questions_are_allowed() {
     });
 }
 
-// openWarp: auto-approve (ctrl+shift+i) only auto-passes shell/edit tools;
-// ask_user_question must always be surfaced to the user, even in autoapprove mode.
 #[test]
-fn should_autoexecute_returns_false_when_autoapprove_is_enabled_with_default_profile() {
+fn should_autoexecute_returns_true_when_autoapprove_is_enabled_and_profile_allows_override() {
     App::test((), |mut app| async move {
         let terminal_view_id = EntityId::new();
         let (history, _) = initialize_ask_user_question_test(&mut app, terminal_view_id);
@@ -138,12 +136,12 @@ fn should_autoexecute_returns_false_when_autoapprove_is_enabled_with_default_pro
             executor.should_autoexecute(input, ctx)
         });
 
-        assert!(!result);
+        assert!(result);
     });
 }
 
 #[test]
-fn execute_returns_async_when_autoapprove_is_enabled_with_default_profile() {
+fn execute_returns_sync_skipped_question_ids_when_autoapprove_is_enabled() {
     App::test((), |mut app| async move {
         let terminal_view_id = EntityId::new();
         let (history, _) = initialize_ask_user_question_test(&mut app, terminal_view_id);
@@ -162,7 +160,12 @@ fn execute_returns_async_when_autoapprove_is_enabled_with_default_profile() {
             result
         });
 
-        assert!(matches!(execution, AnyActionExecution::Async { .. }));
+        assert!(matches!(
+            execution,
+            AnyActionExecution::Sync(AIAgentActionResultType::AskUserQuestion(
+                AskUserQuestionResult::SkippedByAutoApprove { question_ids }
+            )) if question_ids == vec!["q1".to_string()]
+        ));
     });
 }
 

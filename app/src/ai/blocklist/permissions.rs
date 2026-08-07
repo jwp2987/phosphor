@@ -1205,16 +1205,13 @@ impl BlocklistAIPermissions {
         terminal_view_id: Option<EntityId>,
         ctx: &AppContext,
     ) -> bool {
-        // openWarp change: auto-approve (ctrl+shift+i) only auto-passes execution
-        // tools like shell/edit; ask_user_question always requires surfacing to the
-        // user, so the model asking a question doesn't get silently swallowed.
-        // Only skipped when explicitly set to `Never`.
-        let _ = conversation_id;
         match self.get_ask_user_question_setting(ctx, terminal_view_id) {
             AskUserQuestionPermission::Never => false,
             AskUserQuestionPermission::AskExceptInAutoApprove
-            | AskUserQuestionPermission::Unknown
-            | AskUserQuestionPermission::AlwaysAsk => true,
+            | AskUserQuestionPermission::Unknown => !BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(conversation_id)
+                .is_some_and(|convo| convo.autoexecute_any_action()),
+            AskUserQuestionPermission::AlwaysAsk => true,
         }
     }
 }
