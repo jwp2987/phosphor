@@ -16,6 +16,8 @@ use crate::terminal::model::session::LocalCommandExecutor;
 use crate::terminal::shell::ShellType;
 
 const PLUGIN_KEY: &str = "warp@claude-code-warp";
+/// The env var the Claude CLI honors when locating its config/state directory.
+const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const MARKETPLACE_REPO: &str = "warpdotdev/claude-code-warp";
 const MARKETPLACE_NAME: &str = "claude-code-warp";
 
@@ -227,10 +229,16 @@ fn installed_version(claude_dir: &Path) -> Option<String> {
         .map(|s| s.to_owned())
 }
 
-/// Checks `CLAUDE_HOME` env var first, falls back to `~/.claude`.
+/// Resolves the dir the Claude CLI reads/writes its state from.
+///
+/// Honors `CLAUDE_CONFIG_DIR` (the variable the Claude CLI itself respects, and
+/// the one this app's Claude harness already writes to), falling back to
+/// `~/.claude`. Must match where `claude plugin install` writes, else
+/// install/verify checks read the wrong dir.
 fn claude_home_dir() -> io::Result<PathBuf> {
-    if let Ok(claude_home) = env::var("CLAUDE_HOME") {
-        return Ok(PathBuf::from(claude_home));
+    let configured = env::var(CLAUDE_CONFIG_DIR_ENV).unwrap_or_default();
+    if !configured.is_empty() {
+        return Ok(PathBuf::from(configured));
     }
     dirs::home_dir()
         .map(|home| home.join(".claude"))

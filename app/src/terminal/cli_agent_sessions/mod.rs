@@ -148,6 +148,18 @@ impl CLIAgentSession {
         self.remote_host.is_some()
     }
 
+    /// Clears state populated by `PermissionRequest`. Called whenever the
+    /// session leaves the permission flow (the user replied, a blocking tool
+    /// completed, a new prompt is submitted, or the session ends successfully)
+    /// so the permission summary doesn't leak into later UI surfaces — most
+    /// visibly the tab title, which can fall back to `summary` when `query`
+    /// is unset.
+    fn clear_permission_scoped_state(&mut self) {
+        self.session_context.summary = None;
+        self.session_context.tool_name = None;
+        self.session_context.tool_input_preview = None;
+    }
+
     /// Applies an event to this session, updating context and status.
     /// Returns the new status if it changed, or `None` if the event was irrelevant.
     fn apply_event(&mut self, event: &CLIAgentEvent) -> Option<CLIAgentSessionStatus> {
@@ -165,12 +177,14 @@ impl CLIAgentSession {
             CLIAgentEventType::PromptSubmit => {
                 self.session_context.query = event.payload.query.clone();
                 self.session_context.response = None;
+                self.clear_permission_scoped_state();
                 CLIAgentSessionStatus::InProgress
             }
             CLIAgentEventType::ToolComplete => {
                 if !matches!(self.status, CLIAgentSessionStatus::Blocked { .. }) {
                     return None;
                 }
+                self.clear_permission_scoped_state();
                 CLIAgentSessionStatus::InProgress
             }
             CLIAgentEventType::Stop => {
@@ -180,6 +194,7 @@ impl CLIAgentSession {
                 if event.payload.response.is_some() {
                     self.session_context.response = event.payload.response.clone();
                 }
+                self.clear_permission_scoped_state();
                 CLIAgentSessionStatus::Success
             }
             CLIAgentEventType::PermissionRequest => {
@@ -201,6 +216,7 @@ impl CLIAgentSession {
                 if !matches!(self.status, CLIAgentSessionStatus::Blocked { .. }) {
                     return None;
                 }
+                self.clear_permission_scoped_state();
                 CLIAgentSessionStatus::InProgress
             }
             // IdlePrompt means the agent is sitting at its prompt waiting for input.

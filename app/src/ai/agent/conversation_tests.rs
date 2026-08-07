@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::{
     artifact_from_fork_proto, AIConversation, AIConversationAutoexecuteMode, AIConversationId,
-    TaskId,
+    ConversationStatus, RestoreConversationError, TaskId,
 };
 use crate::ai::artifacts::Artifact;
 use crate::ai::blocklist::{
@@ -33,6 +33,22 @@ fn restored_conversation(conversation_data: Option<AgentConversationData>) -> AI
             server_data: String::new(),
         }],
         conversation_data,
+    )
+    .unwrap()
+}
+
+fn restored_conversation_with_root_description(description: &str) -> AIConversation {
+    AIConversation::new_restored(
+        AIConversationId::new(),
+        vec![api::Task {
+            id: "root-task".to_string(),
+            messages: vec![],
+            dependencies: None,
+            description: description.to_string(),
+            summary: String::new(),
+            server_data: String::new(),
+        }],
+        None,
     )
     .unwrap()
 }
@@ -211,6 +227,7 @@ fn cli_subagent_tool(subtask_id: &str, command_id: &str) -> api::message::tool_c
 
 fn empty_agent_conversation_data_for_test() -> AgentConversationData {
     AgentConversationData {
+        is_remote_child: false,
         server_conversation_token: None,
         conversation_usage_metadata: None,
         reverted_action_ids: None,
@@ -958,4 +975,185 @@ fn fork_artifacts_adds_file_artifacts_to_conversation() {
             size_bytes: Some(42),
         })
     );
+}
+
+#[test]
+fn title_uses_root_task_description() {
+    let conversation = restored_conversation_with_root_description("Root task title");
+
+    assert_eq!(conversation.title().as_deref(), Some("Root task title"));
+}
+
+#[test]
+fn title_falls_back_to_initial_query_when_root_description_is_empty() {
+    let conversation = restored_conversation_with_queries(&["Initial query"]);
+
+    assert_eq!(conversation.title().as_deref(), Some("Initial query"));
+}
+
+#[test]
+fn is_done_only_includes_success_error_cancelled() {
+    assert!(ConversationStatus::Success.is_done());
+    assert!(ConversationStatus::Error.is_done());
+    assert!(ConversationStatus::Cancelled.is_done());
+
+    assert!(!ConversationStatus::InProgress.is_done());
+    assert!(!ConversationStatus::Blocked {
+        blocked_action: "approve".to_string()
+    }
+    .is_done());
+    assert!(!ConversationStatus::WaitingForEvents.is_done());
+}
+
+/// `is_waiting_for_events` is true only for the new variant.
+#[test]
+fn is_waiting_for_events_returns_true_only_for_waiting_for_events_variant() {
+    assert!(ConversationStatus::WaitingForEvents.is_waiting_for_events());
+
+    assert!(!ConversationStatus::InProgress.is_waiting_for_events());
+    assert!(!ConversationStatus::Success.is_waiting_for_events());
+    assert!(!ConversationStatus::Error.is_waiting_for_events());
+    assert!(!ConversationStatus::Cancelled.is_waiting_for_events());
+    assert!(!ConversationStatus::Blocked {
+        blocked_action: "approve".to_string()
+    }
+    .is_waiting_for_events());
+}
+
+#[test]
+fn waiting_for_events_display_label_is_waiting() {
+    assert_eq!(
+        format!("{}", ConversationStatus::WaitingForEvents),
+        "Waiting"
+    );
+}
+
+/// A conversation that was yielded via `wait_for_events` at shutdown
+/// restores as whatever `derive_status_from_root_task` returns (Success
+/// for a cleanly-streamed last exchange). The unresolved tool call stays
+/// in the transcript as an orphan; the next outbound request triggers
+/// the server's existing supersede mechanism to synthesize the matching
+/// `Cancel`. The waiting state itself is not durable across restart.
+#[test]
+fn restored_conversation_does_not_re_enter_waiting_for_events() {
+    let conversation_data: AgentConversationData =
+        serde_json::from_str(r#"{"server_conversation_token":null}"#).unwrap();
+
+    let conversation = restored_conversation(Some(conversation_data));
+
+    assert_eq!(conversation.status(), &ConversationStatus::Success);
+}
+
+#[test]
+fn restored_conversation_uses_persisted_last_event_sequence() {
+    let conversation_data: AgentConversationData =
+        serde_json::from_str(r#"{"server_conversation_token":null,"last_event_sequence":42}"#)
+            .unwrap();
+
+    let conversation = restored_conversation(Some(conversation_data));
+
+    assert_eq!(conversation.last_event_sequence(), Some(42));
+}
+
+#[test]
+fn restored_conversation_uses_persisted_remote_child_marker() {
+    let conversation_data: AgentConversationData =
+        serde_json::from_str(r#"{"server_conversation_token":null,"is_remote_child":true}"#)
+            .unwrap();
+
+    let conversation = restored_conversation(Some(conversation_data));
+
+    assert!(conversation.is_remote_child());
+}
+
+#[test]
+fn child_conversation_detection_uses_parent_agent_id() {
+    let conversation_data: AgentConversationData = serde_json::from_str(
+        r#"{"server_conversation_token":null,"parent_agent_id":"parent-run-id"}"#,
+    )
+    .unwrap();
+
+    let conversation = restored_conversation(Some(conversation_data));
+
+    assert!(conversation.is_child_agent_conversation());
+    assert_eq!(conversation.parent_conversation_id(), None);
+}
+
+#[test]
+fn new_restored_with_empty_task_list_returns_no_root_task_error() {
+    let result = AIConversation::new_restored(AIConversationId::new(), vec![], None);
+    assert!(
+        matches!(result, Err(RestoreConversationError::NoRootTask)),
+        "empty task list via strict new_restored must return NoRootTask",
+    );
+}
+
+#[test]
+fn test_new_restored_prefers_parentless_task_with_messages_over_empty_stub() {
+    let stub = api::Task {
+        id: "optimistic-stub-uuid".to_string(),
+        messages: vec![],
+        dependencies: None,
+        description: String::new(),
+        summary: String::new(),
+        server_data: String::new(),
+    };
+    let real = api::Task {
+        id: "server-root-id".to_string(),
+        messages: vec![user_query_message("user-msg", "request-1", "real query")],
+        dependencies: None,
+        description: String::new(),
+        summary: String::new(),
+        server_data: String::new(),
+    };
+
+    // Stub appears first in the vec.
+    for _ in 0..50 {
+        let conversation = AIConversation::new_restored(
+            AIConversationId::new(),
+            vec![stub.clone(), real.clone()],
+            None,
+        )
+        .expect("restore with stub + real parentless tasks must succeed");
+        let root_task = conversation
+            .get_root_task()
+            .expect("restored conversation must have a root task");
+        assert_eq!(
+            root_task.id().to_string(),
+            "server-root-id",
+            "expected the real (non-empty) parentless task to win when stub is first",
+        );
+        let source = root_task
+            .source()
+            .expect("chosen root must have api::Task source");
+        assert!(
+            !source.messages.is_empty(),
+            "chosen root must have non-empty messages",
+        );
+    }
+
+    // Real appears first in the vec.
+    for _ in 0..50 {
+        let conversation = AIConversation::new_restored(
+            AIConversationId::new(),
+            vec![real.clone(), stub.clone()],
+            None,
+        )
+        .expect("restore with real + stub parentless tasks must succeed");
+        let root_task = conversation
+            .get_root_task()
+            .expect("restored conversation must have a root task");
+        assert_eq!(
+            root_task.id().to_string(),
+            "server-root-id",
+            "expected the real (non-empty) parentless task to win when real is first",
+        );
+        let source = root_task
+            .source()
+            .expect("chosen root must have api::Task source");
+        assert!(
+            !source.messages.is_empty(),
+            "chosen root must have non-empty messages",
+        );
+    }
 }

@@ -352,8 +352,27 @@ impl AvailableLLMs {
     }
 
     fn default_llm_info(&self) -> &LLMInfo {
-        self.info_for_id(&self.default_id)
-            .expect("Default LLM ID must be present in choices")
+        use warp_core::errors::report_error;
+
+        if let Some(info) = self.info_for_id(&self.default_id) {
+            return info;
+        }
+
+        // `new()` enforces that `default_id` is one of `choices`, but
+        // deserialization bypasses `new()`, so a stale persisted cache or a
+        // server payload can produce an `AvailableLLMs` whose `default_id` is
+        // absent from `choices`. Rather than panic, mirror `new()` and fall
+        // back to the first choice.
+        let fallback = self
+            .choices
+            .first()
+            .expect("AvailableLLMs must have at least one choice");
+        report_error!(anyhow::anyhow!(
+            "Default LLM ID {} not present in choices, falling back to first choice {}",
+            self.default_id,
+            fallback.display_name
+        ));
+        fallback
     }
 
     #[cfg(feature = "integration_tests")]

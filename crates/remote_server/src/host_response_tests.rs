@@ -1,0 +1,104 @@
+use super::*;
+use crate::proto::{
+    delete_file_response, save_buffer_response, server_message, write_file_response,
+    DeleteFileResponse, DeleteFileSuccess, FileOperationError, SaveBufferResponse,
+    SaveBufferSuccess, ServerMessage, WriteFileResponse, WriteFileSuccess,
+};
+
+fn msg(inner: server_message::Message) -> ServerMessage {
+    ServerMessage {
+        request_id: "req-1".to_string(),
+        message: Some(inner),
+    }
+}
+
+#[test]
+fn write_file_success_is_ok_empty_is_err() {
+    let success = msg(server_message::Message::WriteFileResponse(
+        WriteFileResponse {
+            result: Some(write_file_response::Result::Success(WriteFileSuccess {})),
+        },
+    ));
+    assert!(write_file_result(&success).is_ok());
+
+    let empty = msg(server_message::Message::WriteFileResponse(
+        WriteFileResponse { result: None },
+    ));
+    assert!(write_file_result(&empty).is_err());
+}
+
+#[test]
+fn write_file_error_propagates_message() {
+    let err = msg(server_message::Message::WriteFileResponse(
+        WriteFileResponse {
+            result: Some(write_file_response::Result::Error(FileOperationError {
+                message: "disk full".to_string(),
+            })),
+        },
+    ));
+    assert_eq!(write_file_result(&err).unwrap_err(), "disk full");
+}
+
+#[test]
+fn write_file_wrong_variant_is_err() {
+    let wrong = msg(server_message::Message::SaveBufferResponse(
+        SaveBufferResponse {
+            result: Some(save_buffer_response::Result::Success(SaveBufferSuccess {})),
+        },
+    ));
+    assert!(write_file_result(&wrong).is_err());
+}
+
+#[test]
+fn save_buffer_success_is_ok_empty_is_err() {
+    let success = msg(server_message::Message::SaveBufferResponse(
+        SaveBufferResponse {
+            result: Some(save_buffer_response::Result::Success(SaveBufferSuccess {})),
+        },
+    ));
+    assert!(save_buffer_result(&success).is_ok());
+
+    let empty = msg(server_message::Message::SaveBufferResponse(
+        SaveBufferResponse { result: None },
+    ));
+    assert!(save_buffer_result(&empty).is_err());
+}
+
+#[test]
+fn save_buffer_error_propagates_message() {
+    let err = msg(server_message::Message::SaveBufferResponse(
+        SaveBufferResponse {
+            result: Some(save_buffer_response::Result::Error(FileOperationError {
+                message: "permission denied".to_string(),
+            })),
+        },
+    ));
+    assert_eq!(save_buffer_result(&err).unwrap_err(), "permission denied");
+}
+
+#[test]
+fn delete_file_success_is_ok_empty_is_err() {
+    let success = msg(server_message::Message::DeleteFileResponse(
+        DeleteFileResponse {
+            result: Some(delete_file_response::Result::Success(DeleteFileSuccess {})),
+        },
+    ));
+    assert!(delete_file_result(&success).is_ok());
+
+    let empty = msg(server_message::Message::DeleteFileResponse(
+        DeleteFileResponse { result: None },
+    ));
+    assert!(delete_file_result(&empty).is_err());
+}
+
+#[test]
+fn delete_file_error_propagates_message() {
+    let err = msg(server_message::Message::DeleteFileResponse(
+        DeleteFileResponse {
+            result: Some(delete_file_response::Result::Error(FileOperationError {
+                message: "no such file".to_string(),
+            })),
+        },
+    ));
+    assert_eq!(delete_file_result(&err).unwrap_err(), "no such file");
+}

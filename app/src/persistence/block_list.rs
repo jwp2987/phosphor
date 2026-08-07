@@ -85,18 +85,22 @@ impl TryFrom<&PersistedAIInput> for NewAIQuery {
     }
 }
 
-pub(super) fn read_ai_queries(
+/// Fixed cap on how many recent AI query rows we read from SQLite at startup for performance.
+const MAX_AI_QUERIES_READ_LIMIT: i64 = 2000;
+
+/// Maximum number of recent AI queries kept for up-arrow prompt history.
+/// TODO(alokedesai): Consider loading all AI queries by paginating the SQL query.
+const MAX_AI_QUERIES_FOR_UPARROW: usize = 100;
+
+/// Reads the most recent [`MAX_AI_QUERIES_READ_LIMIT`] AI queries from the `ai_queries` table,
+/// oldest-first (ascending by submission).
+pub(super) fn read_recent_ai_queries(
     conn: &mut SqliteConnection,
 ) -> Result<Vec<PersistedAIInput>, diesel::result::Error> {
-    // Only load at most 100 AI queries; there's a very low chance that the user
-    // will ever try rerunning AI queries older than this duration and loading
-    // all AI queries in perpetuity has performance implications on app startup.
-    // TOOD(alokedesai): Consider loading all AI queries by paginating the SQL query.
-    const MAX_AI_QUERIES_TO_READ: i64 = 100;
     Ok(schema::ai_queries::table
         .select(AIQuery::as_select())
         .order_by(schema::ai_queries::columns::start_ts.desc())
-        .limit(MAX_AI_QUERIES_TO_READ)
+        .limit(MAX_AI_QUERIES_READ_LIMIT)
         .load::<AIQuery>(conn)?
         .into_iter()
         .filter_map(|ai_query| PersistedAIInput::try_from(ai_query).ok())
@@ -104,15 +108,65 @@ pub(super) fn read_ai_queries(
         .collect_vec())
 }
 
+/// Selects the up-arrow prompt-history queries from `recent_ai_queries` (ordered oldest-first):
+/// the newest [`MAX_AI_QUERIES_FOR_UPARROW`] entries, kept oldest-first.
+pub(super) fn process_ai_queries_for_uparrow_prompt(
+    mut recent_ai_queries: Vec<PersistedAIInput>,
+) -> Vec<PersistedAIInput> {
+    let start = recent_ai_queries
+        .len()
+        .saturating_sub(MAX_AI_QUERIES_FOR_UPARROW);
+    recent_ai_queries.split_off(start)
+}
+
+/// Cap on the `ai_queries` table enforced on every write; see `upsert_ai_query_with_limit`.
+const AI_QUERIES_COUNT_LIMIT: i64 = 10_000;
+
 pub(super) fn upsert_ai_query(
     conn: &mut SqliteConnection,
     query: Arc<PersistedAIInput>,
+) -> anyhow::Result<()> {
+    upsert_ai_query_with_limit(conn, query, AI_QUERIES_COUNT_LIMIT)
+}
+
+/// Upserts an AI query while keeping the `ai_queries` table capped at `limit` rows by evicting
+/// the oldest queries (FIFO by `id`). Split out from [`upsert_ai_query`] so tests can exercise the
+/// eviction path with a small limit instead of inserting `AI_QUERIES_COUNT_LIMIT` rows.
+fn upsert_ai_query_with_limit(
+    conn: &mut SqliteConnection,
+    query: Arc<PersistedAIInput>,
+    limit: i64,
 ) -> anyhow::Result<()> {
     use schema::ai_queries::dsl::*;
 
     let new_ai_query = NewAIQuery::try_from(query.as_ref())?;
 
     Ok(conn.transaction::<_, Error, _>(|conn| {
+        // Only a genuinely new exchange grows the table.
+        let is_new_exchange = ai_queries
+            .filter(exchange_id.eq(&new_ai_query.exchange_id))
+            .count()
+            .first::<i64>(conn)?
+            == 0;
+        if is_new_exchange {
+            let query_count: i64 = ai_queries.count().first(conn)?;
+            // add 1 because we are about to insert a new row.
+            let diff = query_count - limit + 1;
+            if diff > 0 {
+                // Find the oldest row to keep and evict everything older (FIFO).
+                let last_kept_id: Option<i32> = ai_queries
+                    .select(id)
+                    .order(id.asc())
+                    .offset(diff)
+                    .limit(1)
+                    .first(conn)
+                    .optional()?;
+                if let Some(last_kept_id) = last_kept_id {
+                    diesel::delete(ai_queries.filter(id.lt(last_kept_id))).execute(conn)?;
+                }
+            }
+        }
+
         diesel::insert_into(ai_queries)
             .values(&new_ai_query)
             .on_conflict(exchange_id)
@@ -290,3 +344,7 @@ pub(super) fn delete_ai_conversation(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "block_list_tests.rs"]
+mod tests;

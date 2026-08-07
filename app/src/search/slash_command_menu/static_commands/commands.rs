@@ -606,6 +606,12 @@ mod tests {
         }
     }
 
+    /// Ported from Warp OSS `commands_tests.rs::version_command_is_not_registered`.
+    #[test]
+    fn version_command_is_not_registered() {
+        assert!(COMMAND_REGISTRY.get_command_with_name("/version").is_none());
+    }
+
     #[test]
     fn statusline_command_is_registered_and_tui_only() {
         let command = COMMAND_REGISTRY
