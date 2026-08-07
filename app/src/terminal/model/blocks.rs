@@ -4147,6 +4147,10 @@ impl ansi::Handler for BlockList {
         self.complete_active_block_and_advance(data.completion_metadata);
     }
 
+    fn set_current_working_directory(&mut self, path: String) {
+        delegate_to_block!(self.set_current_working_directory(path));
+    }
+
     fn precmd_with_completion_metadata(&mut self, data: PrecmdValue) {
         self.apply_precmd_to_active(data.prompt_metadata);
     }
