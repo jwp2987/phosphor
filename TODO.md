@@ -198,7 +198,11 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   verified 2026-08-06 with `git merge-base --is-ancestor 3150a17b9 main`; issue #98 is closed.
   All 3 green in isolation, no assertions changed. NOTE: the same class likely
   still affects #4's `slash_commands` tests; a test-binary-global i18n init would close those too.
-- [ ] get_relevant_files: live end-to-end smoke against a real BYOP provider (unit + lib green).
+- [ ] **get_relevant_files live smoke** — now **#206**. Unit + lib green (4 tests in
+  `get_relevant_files_tests.rs`, 4 in `get_relevant_files_runtime_tests.rs`), but never
+  run against a real BYOP provider. Matters because the tool is intercepted by name and
+  bypasses the protobuf executor, so no other integration coverage touches its path.
+  Manual verification item — needs provider credentials.
 - [x] **Vertex provider bugs** — DONE, on `main`. Empty-project silent-drop (`#99`) +
   8-field payload struct (`#100`), fixed on `fix/vertex-provider-bugs` (commit `a08b52777`)
   and **merged via PR #104** — verified 2026-08-06 with
