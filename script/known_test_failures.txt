@@ -23,18 +23,28 @@ ai::blocklist::history_model::tests::rewind_removes_summarized_away_user_query_f
 ai::blocklist::history_model::tests::rewind_straddle_subagent_call_kept_result_removed_does_not_resend_subtask
 ai::blocklist::history_model::tests::straddle_rewind_followup_requests_are_clean_and_durable
 
-# --- REAL DEFECTS, diagnosed but unfixed (2) --------------------------------
-# Issue #441. `lrc_queued_prompts_wait_while_subagent_is_active` was on this
-# list and now passes: it was not a queueing-predicate bug at all, it was the
-# missing `/compact-and` re-queue (#458), fixed by porting
-# `execute_queued_compact_and`. Measured at 5be073d4f: fails without that port,
-# passes with it. `slash_fork_bypasses_prompt_queue_while_in_progress` is
-# therefore a separate defect, not its inverse.
+# Issue #441 is fully closed -- all three of its tests now pass, and each turned
+# out to be a distinct port omission rather than the single inverted queueing
+# predicate the issue hypothesised:
+#
+#   lrc_queued_prompts_wait_while_subagent_is_active
+#       the missing `/compact-and` re-queue (#458). Fixed by porting
+#       `execute_queued_compact_and`, measured at 5be073d4f.
+#
+#   slash_fork_bypasses_prompt_queue_while_in_progress
+#       the slash-command data source never subscribed to
+#       BlocklistAIHistoryModel, so Availability::ACTIVE_CONVERSATION latched at
+#       construction and `/fork` never entered the active command set. It was
+#       therefore never detected as a slash command and fell through to the
+#       generic prompt path, which queued it. The queueing code was correct all
+#       along and never saw a slash command.
+#
+#   test_classic_tab_completions_close_after_user_backspace
+#       `update_tab_completion_menu` lost the pin's `is_user_edit` parameter, so
+#       classic completions were exempted from query-invalidation for ALL edits
+#       rather than only system-applied ones (cycling). A TODO in the fork
+#       described the resulting stale-menu bug.
 #
 # The three vim d%/c%/y% entries that used to sit above this block are gone:
 # #417 fixed them on main (missing VimMotion::JumpToMatchingBracket match arm,
-# issue #270). This merge takes main's deletion and this branch's correction --
-# they touched adjacent lines of the same file, which is the merge-order
-# dependency HANDOFF warns this list creates.
-terminal::input::tests::slash_fork_bypasses_prompt_queue_while_in_progress
-terminal::input::tests::test_classic_tab_completions_close_after_user_backspace
+# issue #270).
