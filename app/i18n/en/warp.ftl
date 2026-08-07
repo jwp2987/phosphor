@@ -1828,6 +1828,7 @@ keybinding-desc-workspace-toggle-block-snackbar = Toggle sticky command header
 
 # Window / tab close
 keybinding-desc-workspace-rename-active-tab = Rename the current tab
+keybinding-desc-workspace-rename-active-pane = Rename the current pane
 
 # Tab grouping / pinning
 keybinding-desc-workspace-new-tab-group = Create new tab group
@@ -2184,6 +2185,8 @@ keybinding-desc-workspace-toggle-sync-inputs-all-tabs = Toggle Synchronizing All
 keybinding-desc-workspace-a11y-concise = [a11y] Set concise accessibility announcements
 keybinding-desc-workspace-a11y-verbose = [a11y] Set verbose accessibility announcements
 keybinding-desc-workspace-copy-access-token = Copy access token to clipboard
+keybinding-desc-workspace-copy-current-path = Copy current path
+keybinding-desc-workspace-copy-current-path-menu = Copy Current Path
 
 # Env var collection binding desc
 keybinding-desc-env-var-collection-close = Close

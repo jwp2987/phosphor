@@ -18,6 +18,7 @@ use crate::ai::restored_conversations::RestoredAgentConversations;
 #[cfg(target_family = "wasm")]
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::cloud_object::Space;
+use crate::code::buffer_location::BufferLocation;
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
 use crate::code::view::CodeViewAction;
@@ -5628,6 +5629,43 @@ impl PaneGroup {
     /// as the active_session_view if the focused pane is a terminal pane.
     pub fn focused_session_view(&self, ctx: &AppContext) -> Option<ViewHandle<TerminalView>> {
         self.terminal_view_from_pane_id(self.focused_pane_id(ctx), ctx)
+    }
+
+    /// Returns the path to copy for the currently focused pane: the open file's display path
+    /// if the focused pane is the rendered file viewer (`FilePane`) or code editor (`CodePane`),
+    /// otherwise the focused terminal session's working directory (raw pwd, falling back to the
+    /// user-friendly display form). `None` if the focused pane is none of those, or yields no
+    /// path.
+    pub fn path_from_focused_pane(&self, ctx: &AppContext) -> Option<String> {
+        let focused_pane_id = self.focused_pane_id(ctx);
+
+        if let Some(file_pane) = self.downcast_pane_by_id::<FilePane>(focused_pane_id) {
+            return file_pane
+                .file_view(ctx)
+                .as_ref(ctx)
+                .local_path()
+                .map(|path| path.display().to_string());
+        }
+
+        if let Some(code_pane) = self.downcast_pane_by_id::<CodePane>(focused_pane_id) {
+            let code_view = code_pane.file_view(ctx);
+            let code_view = code_view.as_ref(ctx);
+            return code_view
+                .tab_at(code_view.active_tab_index())
+                .and_then(|tab| tab.location())
+                .and_then(|location| match location {
+                    BufferLocation::Local(path) => Some(path.display().to_string()),
+                    BufferLocation::Remote(remote_path) => {
+                        Some(remote_path.path.as_str().to_string())
+                    }
+                });
+        }
+
+        let terminal_view = self.focused_session_view(ctx)?;
+        let terminal_view = terminal_view.as_ref(ctx);
+        terminal_view
+            .pwd()
+            .or_else(|| terminal_view.display_working_directory(ctx))
     }
 
     /// Given a pane ID, retrieve its backing terminal pane contents, if the pane is a terminal pane.

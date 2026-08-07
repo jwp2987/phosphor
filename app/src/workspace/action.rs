@@ -110,6 +110,11 @@ pub enum WorkspaceAction {
     RenamePane(PaneViewLocator),
     ResetPaneName(PaneViewLocator),
     RenameActiveTab,
+    /// Renames the focused pane in the active tab. Mirrors `RenameActiveTab`
+    /// so the action is reachable from the binding registry / Command
+    /// Palette (see Warp #9351). The context-menu path keeps using
+    /// `RenamePane(locator)`.
+    RenameActivePane,
     SetActiveTabName(String),
     /// Sets the manual color override for the active tab.
     ///
@@ -348,6 +353,11 @@ pub enum WorkspaceAction {
     /// Closes the focused panel. This happens as an explicit action from the user.
     ClosePanel,
     CopyTextToClipboard(String),
+    /// Copies a path to the clipboard based on the focused pane: the open file's display path
+    /// if the focused pane is the rendered file viewer (`FilePane`) or code editor (`CodePane`),
+    /// otherwise the focused terminal session's working directory. No-op if neither yields a
+    /// path.
+    CopyCurrentPath,
     /// An action only registered in dev and local builds, which writes the user's current access
     /// token to the system clipboard to aid debugging and development.
     CopyAccessTokenToClipboard,
@@ -728,6 +738,7 @@ impl WorkspaceAction {
             | RenamePane(_)
             | ResetPaneName(_)
             | RenameActiveTab
+            | RenameActivePane
             | SetActiveTabName(_)
             | SetActiveTabColor(_)
             | CloseTab(_)
@@ -864,6 +875,7 @@ impl WorkspaceAction {
             | ToggleVerticalTabsShowDetailsOnHover
             | ToggleWelcomeTips
             | CopyTextToClipboard(_)
+            | CopyCurrentPath
             | CopyAccessTokenToClipboard
             | OpenTabConfigRepoPicker { .. }
             | OpenNewWorktreeModal
