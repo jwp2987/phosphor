@@ -122,6 +122,7 @@ use crate::usage::render_context_usage_entry;
 use crate::warping_indicator::{render_response_summary, render_warping_indicator_row};
 use crate::zero_state::TuiZeroStateView;
 mod input_detection;
+pub(crate) mod state;
 
 use self::input_detection::InputDetectionState;
 
