@@ -245,6 +245,18 @@ app/src/tui_export.rs use crate::cloud_object::model::persistence::ObjectStoreMo
 app/src/uri/mod.rs use crate::server::ids::ServerId;
 app/src/uri/mod.rs use crate::server::telemetry::{LaunchConfigUiLocation, TelemetryEvent};
 app/src/uri/parse_url_paths.rs use crate::cloud_object::extract_server_id_and_object_type_from_warp_drive_link;
+#
+# The two entries below are TEST-ONLY, and cover the same types the module under
+# test already depends on above (ServerId via uri/mod.rs, cloud_object via
+# uri/parse_url_paths.rs). They do not widen the boundary: they assert the
+# behaviour of `get_item_data_from_warp_link`, which is real fork code with a
+# real body, not a gutted stub.
+#
+# OPEN QUESTION (issue #267): should Phosphor resolve warp.dev Drive links at
+# all? Warp Drive is the cloud product. If the maintainer decides that path is
+# dead code, delete it AND these two lines AND the two tests together.
+app/src/uri/uri_test.rs use crate::cloud_object::ObjectType;
+app/src/uri/uri_test.rs use crate::server::ids::ServerId;
 app/src/view_components/find.rs use crate::server::telemetry::{FindOption, TelemetryEvent};
 app/src/workflows/command_parser.rs use crate::server::ids::SyncId;
 app/src/workflows/mod.rs use crate::cloud_object::SerializedModel;
