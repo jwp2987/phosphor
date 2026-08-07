@@ -12439,7 +12439,13 @@ impl Input {
         }
 
         self.ai_controller.update(ctx, move |controller, ctx| {
-            controller.send_queued_user_query_in_conversation(prompt, conversation_id, None, ctx);
+            controller.send_queued_user_query_in_conversation(
+                prompt,
+                conversation_id,
+                None,
+                Some(query_id),
+                ctx,
+            );
         });
         ctx.emit(Event::ExecuteAIQuery);
     }
@@ -12521,6 +12527,9 @@ impl Input {
                 controller.send_queued_user_query_in_conversation(
                     prompt,
                     conversation_id,
+                    None,
+                    // This legacy single-pending-query fallback has no backing queued row to
+                    // resolve attachments from; the send path falls back to live staging.
                     None,
                     ctx,
                 );
