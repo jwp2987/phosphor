@@ -726,3 +726,44 @@ fn copy_on_mouse_highlight_returns_clipboard_copy_on_selection_end() {
         });
     });
 }
+
+#[test]
+fn selection_end_without_copy_on_mouse_highlight_is_not_copied() {
+    // Regression test: without the `with_copy_on_mouse_highlight` opt-in, SelectionEnd
+    // must not trigger an auto-copy (backward-compatibility guarantee).
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let (_, editor) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                TuiEditorView::single_line,
+            )
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.set_text("hello world", ctx);
+            for _ in 0..5 {
+                editor.handle_action(
+                    &TuiEditorViewAction::Command(TuiEditorCommand::SelectLeft),
+                    ctx,
+                );
+            }
+
+            // Without copy_on_mouse_highlight, SelectionEnd must return FollowCursor.
+            let outcome = apply_editor_action(
+                &editor.model,
+                &TuiEditorAction::SelectionEnd,
+                TuiEditorBehavior::single_line(), // default: copy_on_mouse_highlight disabled
+                ctx,
+            );
+            assert_eq!(
+                outcome,
+                TuiEditorInteractionOutcome::FollowCursor,
+                "default behavior must not auto-copy on selection end"
+            );
+        });
+    });
+}
