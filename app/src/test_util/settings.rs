@@ -21,7 +21,7 @@ pub fn initialize_settings_for_tests_with_mode(
             manager::SettingsManager, AISettings, AccessibilitySettings, AliasExpansionSettings,
             AppEditorSettings, BlockVisibilitySettings, CodeSettings, DebugSettings,
             EmacsBindingsSettings, FontSettings, GPUSettings, InputModeSettings, InputSettings,
-            NativePreferenceSettings, PaneSettings, PreferencesSettings,
+            LocalControlSettings, NativePreferenceSettings, PaneSettings, PreferencesSettings,
             SameLinePromptBlockSettings, ScrollSettings, SelectionSettings, SshSettings,
             ThemeSettings, VimBannerSettings,
         },
@@ -78,6 +78,7 @@ pub fn initialize_settings_for_tests_with_mode(
     InputSettings::register(app);
     KeysSettings::register(app);
     LigatureSettings::register(app);
+    LocalControlSettings::register(app);
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
