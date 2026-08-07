@@ -367,7 +367,7 @@ pub(super) fn pr_info_to_proto(pr: &PrInfo) -> proto::PrInfo {
     }
 }
 
-pub(super) fn proto_to_pr_info(pr: &proto::PrInfo) -> PrInfo {
+pub(crate) fn proto_to_pr_info(pr: &proto::PrInfo) -> PrInfo {
     PrInfo {
         number: pr.number,
         url: pr.url.clone(),

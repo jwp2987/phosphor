@@ -523,10 +523,8 @@ fn start_confirm_remote(
                         me.apply_git_op_delta(success.delta, ctx);
                         match success.pr_info {
                             Some(pr) => {
-                                let pr = PrInfo {
-                                    number: pr.number,
-                                    url: pr.url,
-                                };
+                                let pr =
+                                    crate::remote_server::diff_state_proto::proto_to_pr_info(&pr);
                                 show_pr_created_toast(&pr, ctx);
                             }
                             None => {

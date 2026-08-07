@@ -156,10 +156,7 @@ fn start_confirm_remote(remote: RemotePath, branch: String, ctx: &mut ViewContex
             match result {
                 Ok(response) => match response.result {
                     Some(proto::git_create_pr_response::Result::Success(pr)) => {
-                        let pr = PrInfo {
-                            number: pr.number,
-                            url: pr.url,
-                        };
+                        let pr = crate::remote_server::diff_state_proto::proto_to_pr_info(&pr);
                         show_pr_created_toast(&pr, ctx);
                     }
                     Some(proto::git_create_pr_response::Result::Error(e)) => {
