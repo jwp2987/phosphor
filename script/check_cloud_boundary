@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Fail if code outside the cloud modules imports from them.
+#
+# WHY THIS EXISTS
+# ---------------
+# Phosphor drops Warp's cloud backend and replaces it with BYOP. The cloud
+# *crates* (graphql, warp_server_client, warp_server_auth, cloud_object_models,
+# cloud_object_persistence) were deleted outright, so the compiler already
+# prevents those from coming back — an import simply will not resolve.
+#
+# But cloud code that lives INSIDE the `warp` crate has no such protection:
+#
+#     app/src/server/        pin 57 files -> fork 10
+#     app/src/cloud_object/  pin 12       -> fork 15
+#     app/src/drive/         pin 47       -> fork 42
+#
+# Those survive as stubs and partial ports for the call sites that still need
+# them. Nothing stops a future port from reaching into them and quietly
+# re-growing the cloud surface, one `use` at a time. That is what this checks.
+#
+# HOW IT WORKS
+# ------------
+# Every `use crate::{server,cloud_object}::...` from outside those modules must
+# appear in the allowlist below. The allowlist may SHRINK freely; adding to it
+# requires maintainer sign-off, because each entry is a place the fork still
+# depends on retained cloud scaffolding (AGENTS.md 5.10).
+#
+# This is a boundary check, not a purity check. It does not claim the listed
+# call sites are wrong — only that the set of them should not grow silently.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+ALLOWLIST_FILE="script/cloud_boundary_allowlist.txt"
+
+if [[ ! -f "$ALLOWLIST_FILE" ]]; then
+    echo "error: $ALLOWLIST_FILE is missing" >&2
+    exit 2
+fi
+
+# Collect `use crate::server::` / `use crate::cloud_object::` from outside those
+# trees. `app/src/drive` is excluded as a source but not as a target: drive is
+# the sync layer and legitimately talks to both.
+current="$(mktemp)"
+grep -rn --include='*.rs' -E '^\s*use crate::(server|cloud_object)::' app/src \
+    | grep -vE '^app/src/(server|cloud_object)/' \
+    | sed -E 's/^([^:]+):[0-9]+:\s*/\1 /' \
+    | sed -E 's/\s+$//' \
+    | sort -u > "$current" || true
+
+expected="$(mktemp)"
+grep -vE '^\s*(#|$)' "$ALLOWLIST_FILE" | sort -u > "$expected"
+
+added="$(comm -23 "$current" "$expected")"
+removed="$(comm -13 "$current" "$expected")"
+
+status=0
+
+if [[ -n "$added" ]]; then
+    status=1
+    echo "error: new import(s) of cloud modules from outside them:" >&2
+    echo "$added" | sed 's/^/  + /' >&2
+    cat >&2 <<'EOF'
+
+Phosphor drops Warp's cloud backend (AGENTS.md 5.10). Reaching into
+app/src/server or app/src/cloud_object from new code re-grows that surface.
+
+Before adding to the allowlist, check whether the thing you need has a
+BYOP/local equivalent — most of Warp's cloud-organised code does. If it
+genuinely does not, add the line to script/cloud_boundary_allowlist.txt WITH a
+comment saying why, and get maintainer sign-off (AGENTS.md 5.10 requires an
+issue for any deviation).
+EOF
+fi
+
+if [[ -n "$removed" ]]; then
+    # Shrinking is the goal, so this is informational, never a failure.
+    echo "note: allowlist entries no longer present (please delete them):"
+    echo "$removed" | sed 's/^/  - /'
+fi
+
+if [[ $status -eq 0 && -z "$removed" ]]; then
+    echo "cloud boundary: ok ($(wc -l < "$expected" | tr -d ' ') allowlisted import sites)"
+fi
+
+rm -f "$current" "$expected"
+exit $status

@@ -25,6 +25,47 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Fork-boundary guards. Pure grep/git -- no build -- so this job finishes in
+  # under a minute and gives fast feedback ahead of the cargo jobs.
+  #
+  # These exist because two classes of regression are invisible to the compiler:
+  #   1. Cloud creep. The cloud *crates* were deleted, so the compiler blocks
+  #      those. But app/src/server and app/src/cloud_object survive as stubs for
+  #      retained call sites, and nothing stopped a port from reaching into them
+  #      and re-growing the cloud surface one `use` at a time.
+  #   2. Fake coverage. Some functions were gutted to no-op stubs when the cloud
+  #      backend was dropped. A test ported against a stub compiles and passes
+  #      while asserting nothing -- worse than a missing test, because it reads
+  #      as progress and can never fail.
+  guards:
+    name: fork boundary guards
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # The stub check compares against the pinned Warp stable release
+      # (see ORACLE.md). Fetch just that one commit rather than the whole
+      # upstream repo -- a full fetch of warpdotdev/warp is large and this
+      # job only ever reads blobs at the pin.
+      - name: Fetch the pinned oracle commit
+        shell: bash
+        run: |
+          PIN=$(grep -oE '\*\*Commit\*\* \| `[0-9a-f]+`' ORACLE.md | grep -oE '[0-9a-f]{7,}' | head -1)
+          PIN=${PIN:-02b53fcd8}
+          echo "pin=$PIN"
+          git fetch --depth=1 --no-tags https://github.com/warpdotdev/warp.git "$PIN" || {
+            echo "::warning::could not fetch pin $PIN; stub check will skip"
+          }
+
+      - name: Cloud boundary (no new imports of dropped-cloud modules)
+        shell: bash
+        run: ./script/check_cloud_boundary
+
+      - name: Stub coverage (no tests against gutted no-op stubs)
+        shell: bash
+        run: ./script/check_stub_coverage
+
   check-linux:
     name: cargo check (Linux)
     # ubuntu-22.04 (glibc 2.35) matches the release Linux job.
