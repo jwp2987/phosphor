@@ -105,6 +105,50 @@ jobs:
         shell: bash
         run: cargo check -p warp_tui
 
+  # The suite has never run in CI. Compile checks and the boundary guards catch
+  # a lot, but neither one can tell you a test went red -- which is the failure
+  # this project actually cares about, and the reason "don't merge red" has so
+  # far depended on a human remembering to look.
+  #
+  # NOT a required status check yet, deliberately. `main` currently carries 11
+  # red tests (6 unintentional, from hunks two porting agents flagged as
+  # uncompiled; 5 deliberate, pinning issues #251/#253). Promoting this to
+  # required before those are resolved would block every open PR on a failure
+  # none of them caused -- exactly the cascade that made the boundary guard
+  # worthless when PR #246 was merged past it.
+  #
+  # Promote it in the branch-protection contexts once the suite is green.
+  test-linux:
+    name: cargo nextest (Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Free up disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
+          df -h /
+
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: linux
+          is_self_hosted: false
+
+      # nextest, not `cargo test`: this suite was stabilised under nextest's
+      # process-per-test isolation. Several tests depend on it (the ssh-onekey
+      # singleton, the secrets-regex serial group), and would fail differently
+      # in a shared test process.
+      - name: Install cargo-nextest
+        shell: bash
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+      - name: cargo nextest run -p warp --lib --features gui
+        shell: bash
+        run: cargo nextest run -p warp --lib --features gui --no-fail-fast
+
   check-windows:
     name: cargo check (Windows)
     runs-on: windows-latest
