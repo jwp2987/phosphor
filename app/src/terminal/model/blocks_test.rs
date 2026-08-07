@@ -125,8 +125,19 @@ pub fn insert_block_with_prompt(
 /// block list, the bootstrapped state). Tests that check for messages sent to the
 /// view need to also call `precmd`.
 pub fn command_finished_and_precmd(block_list: &mut BlockList) {
-    block_list.command_finished(Default::default());
-    block_list.prompt_only_precmd(Default::default());
+    // Mirrors the pin: the precmd carries the same completion metadata as the
+    // command_finished that precedes it. Going through prompt_only_precmd
+    // instead left the next block un-started, so `active_block().started()` was
+    // false where upstream has it true.
+    let completion_metadata = ansi::CompletionMetadata::default();
+    block_list.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+        ..Default::default()
+    });
+    block_list.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata::default(),
+    });
 }
 
 /// Advances the block list to the ScriptExecution stage.
