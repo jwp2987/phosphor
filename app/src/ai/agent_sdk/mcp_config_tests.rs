@@ -27,6 +27,19 @@ fn uuid_spec_is_coerced_to_warp_id() {
 }
 
 #[test]
+fn non_uuid_warp_id_fails_validation_when_flag_disabled() {
+    // Upstream accepts a non-UUID `warp_id` (e.g. "linear") only behind the
+    // `WellKnownMcpIds` feature flag, since the set of recognised ids lives in
+    // the dropped cloud backend. This fork has neither the flag nor the
+    // resolver, so validation always requires a UUID -- the same assertion the
+    // upstream flag-disabled case makes.
+    let spec = json!({ "mcpServers": { "linear": { "warp_id": "linear" } } }).to_string();
+    let err = build_mcp_servers_from_specs(&[MCPSpec::Json(spec)]).unwrap_err();
+
+    assert!(err.to_string().contains("field 'warp_id' must be a UUID"));
+}
+
+#[test]
 fn wrapper_mcp_servers_is_unpacked() {
     let spec = json!({
         "mcpServers": {

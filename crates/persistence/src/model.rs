@@ -1174,6 +1174,10 @@ pub struct AgentConversationData {
     /// The local conversation ID of the parent conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_conversation_id: Option<String>,
+    /// True when this conversation is a parent-side placeholder for a child
+    /// agent executing on a remote worker.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_remote_child: bool,
     /// The run identifier for v2 orchestration. For local agents this arrives
     /// via StreamInit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1702,6 +1706,7 @@ mod tests {
     #[test]
     fn agent_conversation_data_roundtrips_last_event_sequence() {
         let data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1737,6 +1742,7 @@ mod tests {
     #[test]
     fn agent_conversation_data_skips_serializing_none_last_event_sequence() {
         let data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1766,6 +1772,7 @@ mod tests {
     #[test]
     fn agent_conversation_data_roundtrips_byop_repair_sidecar() {
         let data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1794,6 +1801,7 @@ mod tests {
     #[test]
     fn agent_conversation_data_roundtrips_cli_subagent_block_snapshots_sidecar() {
         let data = AgentConversationData {
+            is_remote_child: false,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,

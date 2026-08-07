@@ -152,6 +152,19 @@ fn mcp_servers_map_converts_to_runtime_specs() {
 }
 
 #[test]
+fn non_uuid_warp_id_is_rejected_when_flag_disabled() {
+    // Upstream guards non-UUID `warp_id`s behind a `WellKnownMcpIds` feature
+    // flag, because those ids are resolved by the dropped cloud backend. This
+    // fork has no such flag and no server-side resolver, so rejection of a
+    // non-UUID `warp_id` is unconditional -- which is exactly the behaviour the
+    // upstream flag-disabled case asserts.
+    let map = serde_json::Map::from_iter([("linear".to_string(), json!({ "warp_id": "linear" }))]);
+
+    let err = super::mcp_specs_from_mcp_servers(&map).unwrap_err();
+    assert!(format!("{err:#}").contains("must be a UUID"));
+}
+
+#[test]
 fn loads_computer_use_enabled_from_json() {
     let contents = json!({
         "computer_use_enabled": true

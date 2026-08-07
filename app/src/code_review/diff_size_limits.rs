@@ -6,7 +6,11 @@ use super::diff_state::{DiffHunk, DiffLineType};
  * Maximum diff size that we will attempt to render. Diffs larger than this
  * should not be rendered to avoid performance issues.
  */
-const MAX_DIFF_SIZE: usize = 4_375_000; // 4.375MB in decimal
+// `pub(crate)`, not private: the remote-server diff-state proto encoder
+// (app/src/remote_server/diff_state_proto.rs) uses this to gate base content
+// sent to a remote-daemon subscriber, mirroring the pinned oracle's
+// content-budget check.
+pub(crate) const MAX_DIFF_SIZE: usize = 4_375_000; // 4.375MB in decimal
 
 /**
  * Reasonable limit for diff size. Diffs bigger than this _could_ be displayed

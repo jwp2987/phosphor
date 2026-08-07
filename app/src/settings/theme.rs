@@ -54,12 +54,26 @@ impl Theme {
         // mirrors Warp's `ThemeKind::is_custom_theme_reference_syncable` scoping, simplified to
         // this fork's `CustomTheme`, which stores an absolute path rather than Warp's portable
         // relative-storage-string representation.
-        match self.value() {
-            ThemeKind::Custom(custom_theme) | ThemeKind::CustomBase16(custom_theme) => {
-                custom_theme.path().starts_with(crate::user_config::themes_dir())
-            }
-            _ => true,
-        }
+        theme_kind_is_syncable(self.value())
+    }
+}
+
+impl SystemThemes {
+    fn current_value_is_syncable(&self) -> bool {
+        // Same scoping as `Theme::current_value_is_syncable`, but for both the
+        // light and dark slots: a custom theme in either slot must live under
+        // the themes directory for the whole setting to be syncable.
+        let selected = self.value();
+        theme_kind_is_syncable(&selected.light) && theme_kind_is_syncable(&selected.dark)
+    }
+}
+
+fn theme_kind_is_syncable(kind: &ThemeKind) -> bool {
+    match kind {
+        ThemeKind::Custom(custom_theme) | ThemeKind::CustomBase16(custom_theme) => custom_theme
+            .path()
+            .starts_with(crate::user_config::themes_dir()),
+        _ => true,
     }
 }
 

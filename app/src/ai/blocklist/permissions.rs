@@ -403,18 +403,40 @@ impl BlocklistAIPermissions {
         profile_id: ClientProfileId,
     ) -> Vec<AgentModeCommandExecutionPredicate> {
         let autonomy_settings = Self::workspace_autonomy_settings(ctx);
+        let profiles_model = AIExecutionProfilesModel::as_ref(ctx);
+        let user_denylist = profiles_model
+            .get_profile_by_id(profile_id, ctx)
+            .unwrap_or_else(|| profiles_model.default_profile(ctx))
+            .data()
+            .command_denylist
+            .clone();
 
-        autonomy_settings
+        // A workspace-level denylist *adds to* the profile's own denylist rather than
+        // replacing it: an org policy must never be able to silently drop entries the
+        // user configured locally. Duplicates are collapsed so a predicate that appears
+        // in both lists is reported once.
+        match autonomy_settings.execute_commands_denylist {
+            Some(org_denylist) => {
+                let mut merged = org_denylist;
+                for item in user_denylist {
+                    if !merged.contains(&item) {
+                        merged.push(item);
+                    }
+                }
+                merged
+            }
+            None => user_denylist,
+        }
+    }
+
+    /// Returns only the workspace-level (org policy) command denylist, without the
+    /// active profile's own entries merged in.
+    pub fn get_org_execute_commands_denylist(
+        ctx: &AppContext,
+    ) -> Vec<AgentModeCommandExecutionPredicate> {
+        Self::workspace_autonomy_settings(ctx)
             .execute_commands_denylist
-            .unwrap_or_else(|| {
-                let profiles_model = AIExecutionProfilesModel::as_ref(ctx);
-                profiles_model
-                    .get_profile_by_id(profile_id, ctx)
-                    .unwrap_or_else(|| profiles_model.default_profile(ctx))
-                    .data()
-                    .command_denylist
-                    .clone()
-            })
+            .unwrap_or_default()
     }
 
     /// Returns a denylist of command regexes that AM should not auto-execute.

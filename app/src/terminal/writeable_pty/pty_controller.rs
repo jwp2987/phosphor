@@ -9,6 +9,7 @@ use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 use crate::ai::agent::AIAgentPtyWriteMode;
 use crate::terminal::input::CommandExecutionSource;
 use crate::terminal::model::completions::ShellCompletion;
+use crate::terminal::model::lifecycle::StartCommandOutcome;
 use crate::terminal::model::session::{
     ExecutorCommandEvent, InBandCommandCancelledEvent, Sessions,
 };
@@ -47,7 +48,9 @@ enum PtyWrite {
         /// command.
         in_band_command_id: Option<String>,
         /// If 'some', the given callback is called right before the bytes are written to the PTY.
-        before_write_fn: Option<Box<dyn Fn() + Send + 'static>>,
+        /// Its [`StartCommandOutcome`] gates whether the bytes are actually written: only
+        /// [`StartCommandOutcome::Accepted`] proceeds to the PTY.
+        before_write_fn: Option<Box<dyn FnOnce() -> StartCommandOutcome + Send + 'static>>,
     },
     Bytes {
         /// The bytes to be written.
@@ -346,15 +349,24 @@ impl<T: EventLoopSender> PtyController<T> {
         }
 
         let terminal_model = self.terminal_model.clone();
+        let callback_command_id = command_id.clone();
         self.pending_writes.push_back(PtyWrite::Command {
             command: command.to_owned(),
             shell_type,
             in_band_command_id: Some(command_id),
             before_write_fn: Some(Box::new(move || {
                 let mut terminal_model = terminal_model.lock();
-                terminal_model
-                    .block_list_mut()
-                    .start_active_block_for_in_band_command();
+                let outcome = terminal_model.start_in_band_command_execution();
+                if !outcome.is_accepted() {
+                    if let Err(err) = block_on(cancel_tx.send(InBandCommandCancelledEvent {
+                        command_id: callback_command_id.clone(),
+                    })) {
+                        log::warn!(
+                            "Pty Controller failed to cancel rejected in band command: {err:?}"
+                        );
+                    }
+                }
+                outcome
             })),
         });
 
@@ -452,22 +464,25 @@ impl<T: EventLoopSender> PtyController<T> {
             // reduces the amount of reformatting that Fish tries to do and so improves
             // bootstrap speed. We need to add an explicit leading space, since Fish
             // automatically trims the input when performing a bracketed paste.
-            match create_bootstrap_file(&bootstrap, shell_type, wsl_distribution) { Some(file) => {
-                if let Some(path) = file.path_as_bytes() {
-                    self.source_bootstrap_script(path, shell_type, ctx);
-                } else {
-                    self.write_terminating_bootstrap_bytes(ctx);
-                    log::error!("Could not convert bootstrap script file path to str");
-                }
+            match create_bootstrap_file(&bootstrap, shell_type, wsl_distribution) {
+                Some(file) => {
+                    if let Some(path) = file.path_as_bytes() {
+                        self.source_bootstrap_script(path, shell_type, ctx);
+                    } else {
+                        self.write_terminating_bootstrap_bytes(ctx);
+                        log::error!("Could not convert bootstrap script file path to str");
+                    }
 
-                self.bootstrap_file = Some(file);
-            } _ => {
-                self.write_bytes(&b" "[..], ctx);
-                self.write_bytes(escape_sequences::BRACKETED_PASTE_START, ctx);
-                self.write_bytes(bootstrap, ctx);
-                self.write_bytes(escape_sequences::BRACKETED_PASTE_END, ctx);
-                self.write_terminating_bootstrap_bytes(ctx);
-            }}
+                    self.bootstrap_file = Some(file);
+                }
+                _ => {
+                    self.write_bytes(&b" "[..], ctx);
+                    self.write_bytes(escape_sequences::BRACKETED_PASTE_START, ctx);
+                    self.write_bytes(bootstrap, ctx);
+                    self.write_bytes(escape_sequences::BRACKETED_PASTE_END, ctx);
+                    self.write_terminating_bootstrap_bytes(ctx);
+                }
+            }
         } else {
             self.write_bytes(bootstrap, ctx);
         }
@@ -542,13 +557,12 @@ impl<T: EventLoopSender> PtyController<T> {
         shell_type: ShellType,
         source: CommandExecutionSource,
         ctx: &mut ModelContext<Self>,
-    ) {
+    ) -> StartCommandOutcome {
         {
             let mut model = self.terminal_model.lock();
 
-            // Explicitly start the block now that the command is executed. The lifecycle
-            // coordinator's start outcome is not consumed on this path.
-            let _ = match source {
+            // Explicitly start the block now that the command is executed.
+            let outcome = match source {
                 CommandExecutionSource::AI { metadata } => {
                     model.start_command_execution_with_ai_metadata(metadata)
                 }
@@ -564,6 +578,9 @@ impl<T: EventLoopSender> PtyController<T> {
                     model.start_command_execution_from_env_var_collection(metadata)
                 }
             };
+            if !outcome.is_accepted() {
+                return outcome;
+            }
 
             // Ensure that the `TerminalModel` doesn't interpret any of the PTY output from the
             // following commands as in-band command output. If the in-band command output is not
@@ -588,6 +605,7 @@ impl<T: EventLoopSender> PtyController<T> {
         } else {
             self.pending_writes.push_back(write);
         }
+        StartCommandOutcome::Accepted
     }
 
     /// Synchronously writes the EOT (End-of-Transmission) char to the PTY.
@@ -658,7 +676,7 @@ impl<T: EventLoopSender> PtyController<T> {
     ///
     /// If the write corresponds to a command, this also calls
     /// [`LineEditorStatus::did_execute_command()`].
-    fn send_write_to_event_loop(&mut self, write: PtyWrite, ctx: &mut ModelContext<Self>) {
+    fn send_write_to_event_loop(&mut self, write: PtyWrite, ctx: &mut ModelContext<Self>) -> bool {
         let (bytes_to_write, is_for_command, on_write_fn, raw_tmux_command) = match write {
             PtyWrite::Command {
                 command,
@@ -706,7 +724,7 @@ impl<T: EventLoopSender> PtyController<T> {
 
         // The terminal hangs if we send 0 bytes through.
         if bytes_to_write.is_empty() {
-            return;
+            return false;
         }
 
         let bytes_to_write = match &mut self.tmux_control_mode {
@@ -714,7 +732,7 @@ impl<T: EventLoopSender> PtyController<T> {
             Some(_) if raw_tmux_command => bytes_to_write,
             Some(TmuxControlMode::Pending { buffer }) => {
                 buffer.extend_from_slice(&bytes_to_write);
-                return;
+                return false;
             }
             Some(TmuxControlMode::Active { primary_pane }) => {
                 crate::terminal::model::tmux::format_input(*primary_pane, &bytes_to_write)
@@ -724,6 +742,12 @@ impl<T: EventLoopSender> PtyController<T> {
             }
         };
 
+        if let Some(on_write_fn) = on_write_fn {
+            if !on_write_fn().is_accepted() {
+                return false;
+            }
+        }
+
         if is_for_command {
             self.line_editor_status
                 .update(ctx, |line_editor_status, ctx| {
@@ -731,11 +755,8 @@ impl<T: EventLoopSender> PtyController<T> {
                 });
         }
 
-        if let Some(on_write_fn) = on_write_fn {
-            on_write_fn();
-        }
-
         self.send_message_to_event_loop(Message::Input(bytes_to_write), ctx);
+        true
     }
 
     /// Sends a message to the event loop. If the send fails with `SendError::Disconnected`, emits
@@ -864,3 +885,6 @@ pub trait EventLoopSender: 'static {
 #[cfg(test)]
 #[path = "pty_controller_command_bytes_tests.rs"]
 mod command_bytes_tests;
+#[cfg(test)]
+#[path = "pty_controller_lifecycle_tests.rs"]
+mod lifecycle_tests;
