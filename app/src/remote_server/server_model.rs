@@ -1601,7 +1601,7 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        use crate::code_review::diff_state::LocalDiffStateModel;
+        use crate::code_review::diff_state::{FileStatusInfo, LocalDiffStateModel};
 
         let canonical_path =
             match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
@@ -1629,11 +1629,23 @@ impl ServerModel {
             ));
         }
 
-        let file_infos: Vec<_> = msg
+        let file_infos: Vec<_> = match msg
             .files
             .iter()
-            .map(super::diff_state_proto::proto_to_file_status_info)
-            .collect();
+            .map(FileStatusInfo::try_from)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(infos) => infos,
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                    DiscardFilesResponse {
+                        result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                            message: format!("Invalid file in DiscardFilesRequest: {e}"),
+                        })),
+                    },
+                ));
+            }
+        };
         let should_stash = msg.should_stash;
         let branch = msg.branch_name.unwrap_or_else(|| "HEAD".to_string());
         let repo_path = PathBuf::from(canonical_path.to_local_path_lossy());
