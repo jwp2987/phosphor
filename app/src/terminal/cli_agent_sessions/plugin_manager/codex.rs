@@ -371,7 +371,7 @@ fn check_plugin_enabled(codex_dir: &Path, plugin_key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Reads the latest cached Zap plugin version, if present.
+/// Reads the latest cached Phosphor plugin version, if present.
 fn installed_version(codex_dir: &Path) -> Option<String> {
     installed_plugin_version(codex_dir, PLUGIN_NAME)
 }
