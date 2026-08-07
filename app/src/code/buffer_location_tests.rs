@@ -1,5 +1,7 @@
 use remote_server::proto::TextEdit;
+use warp_core::HostId;
 use warp_util::content_version::ContentVersion;
+use warp_util::standardized_path::StandardizedPath;
 use warpui::{App, ModelHandle, SingletonEntity};
 
 use repo_metadata::repositories::DetectedRepositories;
@@ -7,7 +9,7 @@ use repo_metadata::watcher::DirectoryWatcher;
 use repo_metadata::RepoMetadataModel;
 use warp_files::FileModel;
 
-use crate::code::global_buffer_model::GlobalBufferModel;
+use crate::code::global_buffer_model::{CharOffsetEdit, GlobalBufferModel, GlobalBufferModelEvent};
 use crate::test_util::settings::initialize_settings_for_tests;
 
 // ── Test setup ────────────────────────────────────────────────────
@@ -57,6 +59,24 @@ fn text_edit(start: u64, end: u64, text: &str) -> TextEdit {
         end_offset: end,
         text: text.to_string(),
     }
+}
+
+/// Helper: creates a `CharOffsetEdit` for use with `handle_buffer_updated_push`.
+/// `start` and `end` are 1-indexed character offsets (matching `CharOffset`).
+fn char_edit(start: usize, end: usize, text: &str) -> CharOffsetEdit {
+    CharOffsetEdit {
+        start: string_offset::CharOffset::from(start),
+        end: string_offset::CharOffset::from(end),
+        text: text.to_string(),
+    }
+}
+
+fn test_host_id() -> HostId {
+    HostId::new("test-host".to_string())
+}
+
+fn test_path() -> StandardizedPath {
+    StandardizedPath::try_new("/test/file.txt").unwrap()
 }
 
 // ── Flow 1: Open server-local buffer ──────────────────────────────
@@ -546,5 +566,287 @@ fn apply_client_edit_insertion_then_edit_at_shifted_offset() {
 
         assert!(accepted);
         assert_eq!(content(&app, file_id), "aaaxxZZb");
+    })
+}
+
+// ── Server push (remote/SSH buffers) ───────────────────────────────
+//
+// Ported from the pin (app/src/code/editor/../buffer_location_tests.rs).
+// These exercise `handle_buffer_updated_push`, the reverse direction of the
+// flows above: the remote-server daemon pushes edits down to a buffer opened
+// over the remote-server (SSH) protocol, rather than a local edit being
+// pushed up. `handle_buffer_updated_push` and its `BufferSource::Remote`
+// plumbing exist in the fork under the `local_tty` feature (SSH remote
+// sessions) — this is non-cloud functionality, not a stub.
+
+#[test]
+fn handle_buffer_updated_push_accepted_when_version_matches() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let host_id = test_host_id();
+        let path = test_path();
+
+        // Seed a remote buffer (client_version starts at 0).
+        let _buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.seed_remote_buffer_for_test(
+                host_id.clone(),
+                path.clone(),
+                "hello\nworld",
+                42, // server_version
+                ctx,
+            )
+        });
+        let file_id = _buffer_state.file_id;
+
+        // Push an edit with expected_client_version = 0 (matches initial).
+        // 1-indexed: offset 6 = after "hello".
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.handle_buffer_updated_push(
+                &host_id,
+                path.as_str(),
+                43, // new_server_version
+                0,  // expected_client_version (matches the seeded 0)
+                &[char_edit(6, 6, " there")],
+                ctx,
+            );
+        });
+
+        assert_eq!(content(&app, file_id), "hello there\nworld");
+    })
+}
+
+#[test]
+fn handle_buffer_updated_push_conflict_when_client_version_stale() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let host_id = test_host_id();
+        let path = test_path();
+
+        let _buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            // Seed with client_version = 0.
+            gbm.seed_remote_buffer_for_test(host_id.clone(), path.clone(), "original", 42, ctx)
+        });
+        let file_id = _buffer_state.file_id;
+
+        // Collect events.
+        let (event_tx, event_rx) = async_channel::unbounded::<bool>();
+        let gbm_handle = gbm(&app);
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&gbm_handle, move |_, event, _| {
+                if matches!(event, GlobalBufferModelEvent::RemoteBufferConflict { .. }) {
+                    let _ = event_tx.try_send(true);
+                }
+            });
+        });
+
+        // Push with expected_client_version = 999 (does not match 0).
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.handle_buffer_updated_push(
+                &host_id,
+                path.as_str(),
+                43,
+                999, // stale expected_client_version
+                &[char_edit(1, 9, "replaced")],
+                ctx,
+            );
+        });
+
+        // Content should be unchanged.
+        assert_eq!(content(&app, file_id), "original");
+
+        // Should have emitted a RemoteBufferConflict event.
+        assert!(event_rx.try_recv().is_ok());
+    })
+}
+
+#[test]
+fn server_push_does_not_echo_back_as_client_edit() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let host_id = test_host_id();
+        let path = test_path();
+
+        // Track whether any user-originated ContentChanged fires on the buffer.
+        let (user_edit_tx, user_edit_rx) = async_channel::unbounded::<bool>();
+
+        let _buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            let state =
+                gbm.seed_remote_buffer_for_test(host_id.clone(), path.clone(), "hello", 42, ctx);
+
+            // Subscribe to buffer events, mirroring what open_remote_buffer does.
+            // If a user-originated ContentChanged fires, it means the echo loop
+            // guard (origin.from_user()) failed.
+            let tx = user_edit_tx.clone();
+            ctx.subscribe_to_model(&state.buffer, move |_me, event, _ctx| {
+                use warp_editor::content::buffer::BufferEvent;
+                if let BufferEvent::ContentChanged { origin, .. } = event {
+                    if origin.from_user() {
+                        let _ = tx.try_send(true);
+                    }
+                }
+            });
+            state
+        });
+        let file_id = _buffer_state.file_id;
+
+        // Apply a server push. insert_at_char_offset_ranges emits
+        // ContentChanged with SystemEdit origin, so the subscription
+        // above should NOT fire (origin.from_user() == false).
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.handle_buffer_updated_push(
+                &host_id,
+                path.as_str(),
+                43,
+                0,
+                &[char_edit(6, 6, " world")],
+                ctx,
+            );
+        });
+
+        // Content should be updated.
+        assert_eq!(content(&app, file_id), "hello world");
+
+        // No user-originated ContentChanged should have fired.
+        assert!(
+            user_edit_rx.try_recv().is_err(),
+            "Server push should not trigger a user-originated ContentChanged"
+        );
+
+        // client_version should remain at 0.
+        let handle = gbm(&app);
+        app.read(|ctx| {
+            let clock = handle
+                .as_ref(ctx)
+                .sync_clock_for_remote_test(file_id)
+                .unwrap();
+            assert_eq!(clock.client_version, ContentVersion::from_raw(0));
+            assert_eq!(clock.server_version, ContentVersion::from_raw(43));
+        });
+    })
+}
+
+#[test]
+fn server_push_updates_sync_clock() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let host_id = test_host_id();
+        let path = test_path();
+
+        let _buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.seed_remote_buffer_for_test(host_id.clone(), path.clone(), "hello", 42, ctx)
+        });
+        let file_id = _buffer_state.file_id;
+
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.handle_buffer_updated_push(
+                &host_id,
+                path.as_str(),
+                43,
+                0,
+                &[char_edit(6, 6, " world")],
+                ctx,
+            );
+        });
+
+        // server_version should be updated; client_version unchanged.
+        let handle = gbm(&app);
+        app.read(|ctx| {
+            let clock = handle
+                .as_ref(ctx)
+                .sync_clock_for_remote_test(file_id)
+                .unwrap();
+            assert_eq!(clock.server_version, ContentVersion::from_raw(43));
+            assert_eq!(clock.client_version, ContentVersion::from_raw(0));
+        });
+    })
+}
+
+#[test]
+fn sequential_server_pushes_accepted() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let host_id = test_host_id();
+        let path = test_path();
+
+        let _buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.seed_remote_buffer_for_test(host_id.clone(), path.clone(), "ab", 10, ctx)
+        });
+        let file_id = _buffer_state.file_id;
+
+        // First push: append "c" (1-indexed offset 3 = after "ab").
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.handle_buffer_updated_push(
+                &host_id,
+                path.as_str(),
+                11,
+                0,
+                &[char_edit(3, 3, "c")],
+                ctx,
+            );
+        });
+        assert_eq!(content(&app, file_id), "abc");
+
+        // Second push: append "d" (1-indexed offset 4 = after "abc").
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.handle_buffer_updated_push(
+                &host_id,
+                path.as_str(),
+                12,
+                0,
+                &[char_edit(4, 4, "d")],
+                ctx,
+            );
+        });
+        assert_eq!(content(&app, file_id), "abcd");
+
+        // Final clock state.
+        let handle = gbm(&app);
+        app.read(|ctx| {
+            let clock = handle
+                .as_ref(ctx)
+                .sync_clock_for_remote_test(file_id)
+                .unwrap();
+            assert_eq!(clock.server_version, ContentVersion::from_raw(12));
+            assert_eq!(clock.client_version, ContentVersion::from_raw(0));
+        });
+    })
+}
+
+#[test]
+fn handle_buffer_updated_push_multiple_edits_in_batch() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let host_id = test_host_id();
+        let path = test_path();
+
+        let _buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.seed_remote_buffer_for_test(host_id.clone(), path.clone(), "aaa bbb ccc", 1, ctx)
+        });
+        let file_id = _buffer_state.file_id;
+
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.handle_buffer_updated_push(
+                &host_id,
+                path.as_str(),
+                2,
+                0,
+                &[char_edit(1, 4, "xxx"), char_edit(9, 12, "zzz")],
+                ctx,
+            );
+        });
+
+        assert_eq!(content(&app, file_id), "xxx bbb zzz");
     })
 }

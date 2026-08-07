@@ -808,11 +808,17 @@ fn test_vim_delete_lines_d_dollar() {
     });
 }
 
-// Ported from the pin (app/src/code/editor/view/vim_handler_tests.rs): `%` (jump to
-// matching bracket) is already wired generically to operator composition in
+// Ported from the pin (app/src/code/editor/view/vim_handler_tests.rs). `%` (jump to
+// matching bracket) was already wired generically to operator composition in
 // crates/vim/src/vim.rs (`handle_normal_pending_operation`'s `'%'` arm creates an
 // operation over `VimMotion::JumpToMatchingBracket` for whatever operator is pending),
-// so `d%`/`c%`/`y%` already work — only the tests were missing.
+// but `CodeEditorView::operation`'s operand-selection match
+// (app/src/code/editor/view/vim_handler.rs) had no arm for
+// `VimMotion::JumpToMatchingBracket` and fell through to the catch-all
+// no-op, so `d%`/`c%`/`y%` selected nothing and these three tests were red.
+// Fixed by adding `CodeEditorModel::vim_select_to_matching_bracket`, which
+// (unlike the bare navigation `vim_jump_to_matching_bracket`) selects
+// inclusive of both brackets so the operator acts on the whole pair.
 #[test]
 fn test_vim_d_percent_deletes_to_matching_bracket() {
     let _feature_flag_guard = FeatureFlag::VimCodeEditor.override_enabled(true);

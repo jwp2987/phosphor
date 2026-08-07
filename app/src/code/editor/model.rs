@@ -322,6 +322,8 @@ pub struct CodeEditorModel {
     hovered_symbol_range: Option<HoverableLink>,
     /// Automatically hide lines outside of the active diff with X context lines.
     hide_lines_outside_of_active_diff: Option<usize>,
+    /// Recalculate hidden lines after a diff for this buffer version or later completes.
+    recalculate_hidden_lines_after_diff: Option<BufferVersion>,
     /// Whether this editor was configured to use lazy layout.
     lazy_layout_enabled: bool,
     /// Whether the editor has completed at least one layout cycle.
@@ -411,6 +413,7 @@ impl CodeEditorModel {
             vim_visual_tails: vec![],
             hovered_symbol_range: None,
             hide_lines_outside_of_active_diff: None,
+            recalculate_hidden_lines_after_diff: None,
             lazy_layout_enabled: lazy_layout,
             lazy_layout_initialized: false,
             pending_syntax_tree_bootstrap: false,
@@ -490,6 +493,7 @@ impl CodeEditorModel {
             vim_visual_tails: vec![],
             hovered_symbol_range: None,
             hide_lines_outside_of_active_diff: None,
+            recalculate_hidden_lines_after_diff: None,
             lazy_layout_enabled: false,
             lazy_layout_initialized: true,
             pending_syntax_tree_bootstrap: false,
@@ -723,8 +727,7 @@ impl CodeEditorModel {
         }
     }
 
-    /// Set hide_lines_outside_of_active_diff. This will automatically set a delay rendering trigger to wait
-    /// for the next diff to be computed.
+    /// Hides lines outside the active diff after the current content's diff computes.
     pub fn hide_lines_outside_of_active_diff(
         &mut self,
         context_lines: usize,
@@ -733,23 +736,37 @@ impl CodeEditorModel {
         let buffer_version = self.buffer_version(ctx);
 
         self.hide_lines_outside_of_active_diff = Some(context_lines);
+        self.request_hidden_lines_recalculation_after_diff(buffer_version);
         self.delay_rendering = Some(DelayRendering::new(DelayRenderingTrigger::DiffUpdate(
             buffer_version,
         )));
     }
 
+    /// Requests hidden-line recalculation after a diff reaches `buffer_version`.
+    fn request_hidden_lines_recalculation_after_diff(&mut self, buffer_version: BufferVersion) {
+        self.recalculate_hidden_lines_after_diff = Some(
+            self.recalculate_hidden_lines_after_diff
+                .map_or(buffer_version, |pending_version| {
+                    pending_version.max(buffer_version)
+                }),
+        );
+    }
+
     /// We need to set the diff model base to the normalized version of the text. This is because the internal text
     /// representation of the content used for syntax tree highlighting and text rendering uses standard LF.
-    pub fn set_base(&self, base: &str, recompute_diff: bool, ctx: &mut ModelContext<Self>) {
+    pub fn set_base(&mut self, base: &str, recompute_diff: bool, ctx: &mut ModelContext<Self>) {
         let normalized_text = MultilineString::<LF>::apply(base);
         self.diff
             .update(ctx, |diff, _ctx| diff.set_base(normalized_text));
 
         if recompute_diff {
             let buffer_version = self.buffer_version(ctx);
+            if self.hide_lines_outside_of_active_diff.is_some() {
+                self.request_hidden_lines_recalculation_after_diff(buffer_version);
+            }
             let content = self.content().as_ref(ctx).text();
             self.diff.update(ctx, move |diff, ctx| {
-                diff.compute_diff(content, true, buffer_version, ctx)
+                diff.compute_diff(content, buffer_version, ctx)
             });
         }
     }
@@ -1564,13 +1581,11 @@ impl CodeEditorModel {
                 RangeSet::new();
 
             // Add ranges for diffs
+            // `modified_lines` yields 0-based line ranges, matching the
+            // hidden-range convention. It must NOT be shifted again.
             for range in self.diff().as_ref(ctx).modified_lines() {
-                // Convert 1-indexed line ranges to 0-indexed
-                let start_line = range.start.saturating_sub(1);
-                let end_line = range.end.saturating_sub(1);
-
-                let context_start = start_line.saturating_sub(context_line);
-                let context_end = end_line + context_line;
+                let context_start = range.start.saturating_sub(context_line);
+                let context_end = range.end + context_line;
 
                 if context_start < context_end {
                     visible_ranges.insert(context_start.into()..context_end.into());
@@ -1593,16 +1608,17 @@ impl CodeEditorModel {
 
     fn handle_diff_model_event(&mut self, event: &DiffModelEvent, ctx: &mut ModelContext<Self>) {
         match event {
-            DiffModelEvent::DiffUpdated {
-                version,
-                should_recalculate_hidden_lines,
-            } => {
+            DiffModelEvent::DiffUpdated { version } => {
                 // If we are hiding lines based on active diffs, there are 3 steps here once the diff is computed:
                 // 1) If we should, recalculate hidden lines based on the updated diff state.
                 // 2) Flush any delayed rendering based on diff update trigger.
                 // 3) If hidden lines are recalculated, rebuild the current layout.
-                if *should_recalculate_hidden_lines {
+                let should_recalculate_hidden_lines = self
+                    .recalculate_hidden_lines_after_diff
+                    .is_some_and(|pending_version| *version >= pending_version);
+                if should_recalculate_hidden_lines {
                     self.calculate_hidden_lines(ctx);
+                    self.recalculate_hidden_lines_after_diff = None;
                 }
 
                 // Do not refresh diff state if there is an active delayed rendering. We should wait until the delayed rendering
@@ -1611,7 +1627,7 @@ impl CodeEditorModel {
                     self.refresh_diff_state(ctx);
                 }
 
-                let will_rebuild_layout = *should_recalculate_hidden_lines
+                let will_rebuild_layout = should_recalculate_hidden_lines
                     && self.hide_lines_outside_of_active_diff.is_some();
 
                 if self
@@ -1721,6 +1737,7 @@ impl CodeEditorModel {
                 }
 
                 if should_recalculate_hidden_lines {
+                    self.request_hidden_lines_recalculation_after_diff(*buffer_version);
                     if let Some(delay_rendering) = &mut self.delay_rendering {
                         delay_rendering.block_until =
                             DelayRenderingTrigger::DiffUpdate(*buffer_version);
@@ -1732,12 +1749,7 @@ impl CodeEditorModel {
                 }
 
                 self.diff.update(ctx, move |diff, ctx| {
-                    diff.compute_diff(
-                        content,
-                        should_recalculate_hidden_lines,
-                        *buffer_version,
-                        ctx,
-                    )
+                    diff.compute_diff(content, *buffer_version, ctx)
                 });
 
                 // If we are delaying rendering, push these updates to the delay rendering state. Otherwise, flush them to diff and rendering model.
@@ -1767,9 +1779,10 @@ impl CodeEditorModel {
                 // On content replacement with active hidden ranges, we should always recalculate hidden lines and delay rendering
                 // since all anchors will all be invalidated.
                 if self.hide_lines_outside_of_active_diff.is_some() {
+                    self.request_hidden_lines_recalculation_after_diff(*buffer_version);
                     let content = self.content().as_ref(ctx).text();
                     self.diff.update(ctx, move |diff, ctx| {
-                        diff.compute_diff(content, true, *buffer_version, ctx)
+                        diff.compute_diff(content, *buffer_version, ctx)
                     });
 
                     if self.delay_rendering.is_none() {
@@ -3673,6 +3686,65 @@ impl CodeEditorModel {
                 }
             } else {
                 selection
+            }
+        });
+
+        self.vim_set_selections(new_selections, AutoScrollBehavior::Selection, ctx);
+    }
+
+    /// Selects from the cursor through Vim's matching bracket (`%` used as an
+    /// operator motion, e.g. `d%`/`c%`/`y%`). `%` is an inclusive motion: the
+    /// operator must act on both brackets, not just move the cursor to the
+    /// second one. This differs from [`Self::vim_jump_to_matching_bracket`],
+    /// whose `keep_selection` selection stops one character short of the
+    /// matched bracket, which is correct for the bare navigation command but
+    /// wrong as an operator range (it would drop the closing bracket, or the
+    /// opening bracket when matching backward).
+    pub fn vim_select_to_matching_bracket(&mut self, ctx: &mut ModelContext<Self>) {
+        let buffer = self.content().as_ref(ctx);
+        let selection_model = self.selection_model.as_ref(ctx);
+        let current_selections = selection_model.selection_offsets();
+
+        let new_selections = current_selections.mapped(|selection| {
+            let cursor = selection.head;
+
+            // Create char iterator from current position to the end of the line
+            let line_end = buffer.containing_line_end(selection.head);
+            let line_text = buffer.text_in_range(cursor..line_end).into_string();
+            let mut iter = line_text.chars();
+
+            let Some(c) = iter.next() else {
+                return selection;
+            };
+
+            let (bracket, start_offset) = match BracketChar::try_from(c) {
+                Ok(bracket) => (bracket, cursor),
+
+                Err(_) => match iter
+                    .enumerate()
+                    .find_map(|(i, c)| Some((i, BracketChar::try_from(c).ok()?)))
+                {
+                    None => return selection,
+                    Some((i, bracket)) => (bracket, cursor + i + 1),
+                },
+            };
+
+            let Some(bracket_position) = vim_find_matching_bracket(buffer, &bracket, start_offset)
+            else {
+                return selection;
+            };
+
+            // Cover both brackets regardless of which direction the match lies
+            // in: the higher of the two offsets is included (+1, since
+            // selection ranges are half-open), and the lower is the anchor.
+            let (low, high) = if bracket_position >= cursor {
+                (cursor, bracket_position)
+            } else {
+                (bracket_position, cursor)
+            };
+            SelectionOffsets {
+                head: high + 1,
+                tail: low,
             }
         });
 
