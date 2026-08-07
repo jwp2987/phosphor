@@ -84,7 +84,7 @@ So the portable target for this slice is **614**, not 1662.
 
 `crates/local_control` is worth singling out: the fork **ships the crate** (14 files) but
 `git grep local_control origin/main -- app/src crates/warp_cli` returns nothing. It is ported
-and unwired - see the defect note at the end.
+and unwired - see #216.
 
 ### Corrections to prior assumptions
 
@@ -689,7 +689,7 @@ count reported as missing.
 The consumers - `app/src/local_control/**` and `crates/warp_cli/src/local_control/**` - were
 never ported, so the crate is dead code and the local control surface (`oz` driving a running
 app instance: open files, create tabs, query app state, open settings surfaces) does not exist.
-Filed as a separate issue.
+Filed as #216.
 
 ## Reproducing
 
