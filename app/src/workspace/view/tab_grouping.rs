@@ -1,21 +1,25 @@
 //! Tab grouping and pinning model operations, split out of `workspace/view.rs`.
 //! Ported from `warp/master`'s `app/src/workspace/view/tab_grouping.rs`.
 //!
-//! The inline rename editor, the group / multi-tab right-click menus, the
-//! "Move to group" submenu sidecar, and drag-and-drop reordering are not yet
-//! ported here (#108 follow-up); this module carries the core, test-covered
-//! model layer plus the multi-selection helpers. Reachable entry points today
-//! are the keybindings registered in `workspace/mod.rs` and the per-tab
-//! Pin/Unpin entry in `TabData::menu_items`.
+//! The inline rename editor, the tab-group right-click menu (which hangs off
+//! the vertical-tabs group header) and group-aware drag-and-drop reordering are
+//! not yet ported here (#108 follow-up); this module carries the core,
+//! test-covered model layer, the multi-selection helpers, the multi-tab
+//! right-click menu and the "Move to group" submenu item builder. Reachable
+//! entry points today are the keybindings registered in `workspace/mod.rs`, the
+//! per-tab Pin/Unpin plus tab-group entries in `TabData::menu_items`, the
+//! multi-tab selection menu, and shift/cmd-click on a tab.
 
 use std::collections::HashSet;
 
 use itertools::{Either, Itertools};
-use warpui::{EntityId, ViewContext};
+use warpui::{EntityId, UpdateView, ViewContext};
 
 use super::{Workspace, group_member_indices};
 use crate::features::FeatureFlag;
-use crate::tab::TabData;
+use crate::menu::{MenuItem, MenuItemFields};
+use crate::tab::{TabData, MOVE_TO_GROUP_LABEL};
+use crate::workspace::action::{TabContextMenuAnchor, WorkspaceAction};
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
 use crate::workspace::util::PaneViewLocator;
 
@@ -126,6 +130,17 @@ impl Workspace {
             .filter(|(index, tab)| tab.in_multi_selection || *index == active_tab_index)
             .map(|(index, _)| index)
             .collect()
+    }
+
+    /// Drives right-click menu dispatch: when a selected tab is right-clicked
+    /// and the selection covers multiple tabs, show the multi-tab menu;
+    /// otherwise fall through to the normal single-pane menu.
+    pub(super) fn is_tab_in_multi_tab_selection(&self, tab_index: usize) -> bool {
+        if !FeatureFlag::GroupedTabs.is_enabled() {
+            return false;
+        }
+        let indices = self.selected_tab_indices();
+        indices.len() > 1 && indices.contains(&tab_index)
     }
 
     /// Gates the "Remove from group" menu item. All selected tabs
@@ -455,6 +470,65 @@ impl Workspace {
         ctx.notify();
     }
 
+    /// Items shown in the multi-tab right-click menu. Composition depends on
+    /// the selection: "Create group from tabs" is always there; "Remove from
+    /// group" only when the selection has an unambiguous group; "Move to
+    /// group" only when there's a destination group worth offering.
+    fn tab_selection_menu_items(&self) -> Vec<MenuItem<WorkspaceAction>> {
+        let shared_group = self.selection_shared_group();
+        let mut menu_items = vec![MenuItemFields::new(crate::t!(
+            "menu-tab-selection-create-group"
+        ))
+        .with_on_select_action(WorkspaceAction::NewTabGroupFromSelectedTabs)
+        .into_item()];
+
+        // Only single-group selections have an unambiguous group to leave.
+        if shared_group.is_some() {
+            menu_items.push(
+                MenuItemFields::new(crate::t!("menu-tab-remove-from-group"))
+                    .with_on_select_action(WorkspaceAction::RemoveSelectedTabsFromGroup)
+                    .into_item(),
+            );
+        }
+
+        // Offer "Move to group" only when another group is available.
+        let has_destination_group = self
+            .tab_groups
+            .keys()
+            .any(|group_id| Some(*group_id) != shared_group);
+        if has_destination_group {
+            menu_items.push(MenuItemFields::new_submenu(MOVE_TO_GROUP_LABEL).into_item());
+        }
+        menu_items
+    }
+
+    /// Opens (or closes) the multi-tab right-click menu. Reuses the shared
+    /// `tab_right_click_menu` view — the menu rendering pipeline doesn't need
+    /// to know which item set is loaded, only which `show_*` flag is set.
+    pub fn toggle_tab_selection_right_click_menu(
+        &mut self,
+        tab_index: usize,
+        anchor: TabContextMenuAnchor,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.show_tab_selection_right_click_menu.is_some() {
+            self.show_tab_selection_right_click_menu = None;
+            self.hide_move_to_group_sidecar(ctx);
+            ctx.notify();
+            return;
+        }
+
+        let menu_items = self.tab_selection_menu_items();
+        ctx.update_view(&self.tab_right_click_menu, |context_menu, view_ctx| {
+            context_menu.set_items(menu_items, view_ctx);
+        });
+        self.show_tab_right_click_menu = None;
+        self.hide_move_to_group_sidecar(ctx);
+        self.show_tab_selection_right_click_menu = Some((tab_index, anchor));
+        ctx.focus(&self.tab_right_click_menu);
+        ctx.notify();
+    }
+
     /// True when `tab` is positioned in the pinned region of the tab list —
     /// either because its own `pinned` flag is set (ungrouped pinned tab) or
     /// because it belongs to a pinned group.
@@ -600,5 +674,57 @@ impl Workspace {
 
         ctx.dispatch_global_action("workspace:save_app", ());
         ctx.notify();
+    }
+
+    /// Builds the "Move to group" submenu. One builder serves both parent
+    /// menus: `Some(tab_index)` for the single-tab pane menu, `None` for the
+    /// multi-tab selection menu. Destination groups exclude the source's own
+    /// group (no useful move) and follow panel order so the submenu visually
+    /// matches what the user sees in the tabs sidebar.
+    pub(super) fn build_move_to_group_sidecar_items(
+        &self,
+        tab_index: Option<usize>,
+    ) -> Vec<MenuItem<WorkspaceAction>> {
+        // Exclude the source's current group (if any) — there's nowhere to
+        // move it to. For a mixed selection (no shared group) every
+        // destination stays available.
+        let excluded_group = match tab_index {
+            Some(idx) => self.tabs.get(idx).and_then(|tab| tab.group_id),
+            None => self.selection_shared_group(),
+        };
+
+        let mut groups_with_first_index: Vec<(TabGroupId, usize)> = self
+            .tab_groups
+            .keys()
+            .copied()
+            .filter(|gid| Some(*gid) != excluded_group)
+            .filter_map(|gid| {
+                group_member_indices(&self.tabs, gid)
+                    .next()
+                    .map(|idx| (gid, idx))
+            })
+            .collect();
+        groups_with_first_index.sort_by_key(|(_, idx)| *idx);
+
+        groups_with_first_index
+            .into_iter()
+            .map(|(group_id, _)| {
+                let label = self
+                    .tab_groups
+                    .get(&group_id)
+                    .and_then(|g| g.name.clone())
+                    .unwrap_or_else(|| crate::t!("menu-tab-group-untitled"));
+                let action = match tab_index {
+                    Some(tab_index) => WorkspaceAction::MoveTabToGroup {
+                        tab_index,
+                        group_id,
+                    },
+                    None => WorkspaceAction::MoveSelectedTabsToGroup { group_id },
+                };
+                MenuItemFields::new(label)
+                    .with_on_select_action(action)
+                    .into_item()
+            })
+            .collect()
     }
 }
