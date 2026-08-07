@@ -91,7 +91,19 @@ Use the CLI to:
 * Manage local runs
 * Configure local providers and MCP servers"#
 )]
-#[clap(args_conflicts_with_subcommands = true)]
+// Regression fix while porting warp_cli's lib_tests.rs from the pinned oracle
+// (02b53fcd8, issue #210): this used to read
+// `#[clap(args_conflicts_with_subcommands = true)]`, which does NOT cover the case a
+// value-taking global flag (e.g. `--api-key KEY`) is immediately followed by a
+// subcommand -- clap kept trying to swallow the subcommand name into the trailing
+// catch-all `[URLS]` positional (`warp --api-key KEY whoami` failed to parse with
+// "invalid value 'whoami' for '[URLS]...': relative URL without a base"). The pin uses
+// `subcommand_precedence_over_arg` instead, which does handle it (it tells clap to stop
+// filling a multi-value positional/arg as soon as a token matches a subcommand name).
+// Swapped to match; see api_key_before_subcommand_parses / debug_before_subcommand_parses
+// / multiple_global_flags_before_subcommand_parse in lib_tests.rs, all of which failed
+// before this change and pass after it.
+#[clap(subcommand_precedence_over_arg = true)]
 pub struct Args {
     #[clap(flatten)]
     global_options: GlobalOptions,
