@@ -366,14 +366,26 @@ fn prepare_claude_environment_config(
     working_dir: &Path,
     secrets: &HashMap<String, ManagedSecretValue>,
 ) -> Result<()> {
-    let home_dir =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not determine home directory"))?;
-    let claude_json_path = home_dir.join(CLAUDE_JSON_FILE_NAME);
+    let claude_json_path = claude_global_config_path()?;
     let claude_settings_path = claude_config_dir()?.join(CLAUDE_SETTINGS_FILE_NAME);
     let api_key_suffix = resolve_anthropic_api_key_suffix(secrets);
     prepare_claude_config(&claude_json_path, working_dir, api_key_suffix.as_deref())?;
     prepare_claude_settings(&claude_settings_path)?;
     Ok(())
+}
+
+/// Where `.claude.json` lands. Claude Code reads it from `$CLAUDE_CONFIG_DIR`
+/// when that variable is set, and from the home directory otherwise.
+fn claude_global_config_path() -> Result<PathBuf> {
+    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR")
+        && !dir.is_empty()
+    {
+        return Ok(PathBuf::from(dir).join(CLAUDE_JSON_FILE_NAME));
+    }
+
+    dirs::home_dir()
+        .map(|home| home.join(CLAUDE_JSON_FILE_NAME))
+        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
 }
 
 fn claude_config_dir() -> Result<PathBuf> {
@@ -472,13 +484,24 @@ struct ClaudeSettings {
     extra: Map<String, Value>,
 }
 
-/// Try to get the last 20 chars of the ANTHROPIC_API_KEY from the secrets map,
-/// where 20 chars is the suffix length that Claude Code truncates keys to.
-/// Falls back to the environment variable.
+/// Try to get the last 20 chars of the ANTHROPIC_API_KEY that the harness will
+/// actually run with, where 20 chars is the suffix length that Claude Code
+/// truncates keys to. A key already present in the process environment wins;
+/// otherwise the secrets map is consulted.
 fn resolve_anthropic_api_key_suffix(
     secrets: &HashMap<String, ManagedSecretValue>,
 ) -> Option<String> {
-    // First, check for an AnthropicApiKey variant anywhere in the secrets map,
+    // Worker-injected process env wins. `build_secret_env_vars` refuses to
+    // override an ANTHROPIC_API_KEY that is already set in this process, so the
+    // key the child actually sees is the process one — approving the managed
+    // secret's suffix instead would leave Claude Code prompting for the key it
+    // was really given.
+    if let Ok(key) = std::env::var(ANTHROPIC_API_KEY_ENV)
+        && !key.is_empty()
+    {
+        return suffix_of(&key).map(str::to_owned);
+    }
+    // Otherwise, check for an AnthropicApiKey variant anywhere in the secrets map,
     // since the secret name doesn't necessarily match the env var.
     for secret in secrets.values() {
         if let ManagedSecretValue::AnthropicApiKey { api_key } = secret {
@@ -489,10 +512,7 @@ fn resolve_anthropic_api_key_suffix(
     if let Some(ManagedSecretValue::RawValue { value }) = secrets.get(ANTHROPIC_API_KEY_ENV) {
         return suffix_of(value).map(str::to_owned);
     }
-    // Fall back to the environment variable, which a user may have set separately in the env.
-    std::env::var(ANTHROPIC_API_KEY_ENV)
-        .ok()
-        .and_then(|k| suffix_of(&k).map(str::to_owned))
+    None
 }
 
 fn suffix_of(key: &str) -> Option<&str> {
