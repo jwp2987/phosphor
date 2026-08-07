@@ -148,9 +148,23 @@ jobs:
       # Fails on CHANGE, not on redness -- see script/check_test_failures for
       # why. `main` has known reds; a job that is red on every PR forever is a
       # job everyone learns to ignore.
+      #
+      # BOTH crates run in ONE invocation, deliberately:
+      #
+      #   - `warp_tui` was not gated at all until #465. Its 620 tests ran
+      #     nowhere, and two user-visible regressions sat on `main` unnoticed
+      #     as a result (no agent-mode prompt gutter; no selection markers on
+      #     custom answers). Anything not in CI is not actually tested.
+      #   - It must be one invocation, not two steps. check_test_failures
+      #     treats a listed failure that did NOT run as "fixed" and exits 1, so
+      #     a second invocation covering only one crate would fail the gate on
+      #     the other crate's known failures.
+      #   - The feature is package-qualified (`warp/gui`) because `warp_tui`
+      #     has no `gui` feature of its own; a bare `--features gui` errors out
+      #     once more than one package is selected.
       - name: cargo nextest (regressions only)
         shell: bash
-        run: ./script/check_test_failures -p warp --lib --features gui
+        run: ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui
 
   check-windows:
     name: cargo check (Windows)

@@ -1153,30 +1153,61 @@ impl TuiOptionSelector {
     }
 
     /// A generic single-span selectable virtual row (Retry / custom text).
+    /// `selection_marker` is `Some(is_selected)` when the row belongs to a
+    /// multi-select question and should carry a `[✓]`/`[ ]` glyph, `None` when
+    /// it should not. The fork previously omitted the marker entirely on
+    /// virtual rows, so a selected custom answer rendered four columns narrower
+    /// than the pin and gave no visual indication it was selected (#465).
     fn render_virtual_row(
         &self,
         text: String,
         digit: Option<usize>,
         is_highlighted: bool,
+        selection_marker: Option<bool>,
         style: TuiStyle,
         builder: &TuiUiBuilder,
     ) -> Box<dyn TuiElement> {
-        let style = if is_highlighted {
-            if self.question_style {
-                builder.question_option_selected_style()
-            } else {
-                builder.option_selector_selected_style()
-            }
+        let is_selected = selection_marker == Some(true);
+
+        let selected_style = if self.question_style {
+            builder.question_option_selected_style()
+        } else {
+            builder.option_selector_selected_style()
+        };
+
+        let label_style = if is_highlighted || is_selected {
+            selected_style
         } else {
             style
         };
+
+        // A marked row keeps its digit muted even when highlighted elsewhere,
+        // so the marker rather than the number carries the selection.
+        let detail_style = if is_highlighted {
+            selected_style
+        } else if selection_marker.is_some() {
+            builder.muted_text_style()
+        } else {
+            style
+        };
+
         let digit_prefix = match digit {
             Some(digit) => format!("({digit}) "),
             None => "    ".to_string(),
         };
-        TuiText::from_spans([(format!("{digit_prefix}{text}"), style)])
-            .truncate()
-            .finish()
+        let mut spans = vec![(digit_prefix, detail_style)];
+        if let Some(is_selected) = selection_marker {
+            spans.push((
+                if is_selected { "[✓] " } else { "[ ] " }.to_string(),
+                if is_selected {
+                    builder.success_glyph_style()
+                } else {
+                    builder.primary_text_style()
+                },
+            ));
+        }
+        spans.push((text, label_style));
+        TuiText::from_spans(spans).truncate().finish()
     }
 
     /// Renders selector-owned label/error chrome around a generic editor view.
@@ -1186,12 +1217,22 @@ impl TuiOptionSelector {
         label: &str,
         editor: &ViewHandle<TuiEditorView>,
         error: Option<&str>,
+        selection_marker: Option<bool>,
         builder: &TuiUiBuilder,
     ) -> Box<dyn TuiElement> {
-        let label = TuiText::new(format!("{prefix}{label}: "))
-            .with_style(builder.muted_text_style())
-            .truncate()
-            .finish();
+        let mut spans = vec![(prefix, builder.muted_text_style())];
+        if let Some(is_selected) = selection_marker {
+            spans.push((
+                if is_selected { "[✓] " } else { "[ ] " }.to_string(),
+                if is_selected {
+                    builder.success_glyph_style()
+                } else {
+                    builder.primary_text_style()
+                },
+            ));
+        }
+        spans.push((format!("{label}: "), builder.muted_text_style()));
+        let label = TuiText::from_spans(spans).truncate().finish();
         let row = TuiFlex::row()
             .child(label)
             .flex_child(TuiChildView::new(editor).finish())
@@ -1259,6 +1300,7 @@ impl TuiOptionSelector {
                         "↻ Retry".to_string(),
                         digit,
                         is_selected,
+                        None,
                         builder.error_text_style(),
                         builder,
                     ),
@@ -1275,19 +1317,25 @@ impl TuiOptionSelector {
                                     self.custom_text
                                         .error_is_visible()
                                         .then_some(CUSTOM_TEXT_EMPTY_ERROR),
+                                    self.show_selection_markers
+                                        .then_some(self.custom_text.committed_value.is_some()),
                                     builder,
                                 ),
-                            (Some(OptionFooter::CustomText { label }), false) => self
-                                .render_virtual_row(
+                            (Some(OptionFooter::CustomText { label }), false) => {
+                                let custom_text_selected =
+                                    self.custom_text.committed_value.is_some();
+                                self.render_virtual_row(
                                     self.custom_text
                                         .committed_value
                                         .clone()
                                         .unwrap_or_else(|| label.clone()),
                                     digit,
                                     is_selected,
+                                    self.show_selection_markers.then_some(custom_text_selected),
                                     builder.primary_text_style(),
                                     builder,
-                                ),
+                                )
+                            }
                             (Some(OptionFooter::CreateNewAuthSecret) | None, _) => continue,
                         }
                     }
@@ -1393,6 +1441,7 @@ impl TuiView for TuiOptionSelector {
                 String::new(),
                 "Search",
                 search_field,
+                None,
                 None,
                 &builder,
             ));
