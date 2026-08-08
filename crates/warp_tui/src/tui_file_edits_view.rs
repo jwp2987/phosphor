@@ -37,7 +37,7 @@ use warpui_core::elements::tui::{
     tui_collapsible,
 };
 use warpui_core::keymap::macros::*;
-use warpui_core::keymap::FixedBinding;
+use warpui_core::keymap::{EditableBinding, FixedBinding};
 use warpui_core::{
     AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TuiView, TypedActionView,
     ViewContext, ViewHandle,
@@ -52,6 +52,11 @@ use crate::tui_permission_prompt::{
     TuiPermissionPrompt, TuiPermissionPromptEvent, render_permission_card,
 };
 
+/// Keymap context set on `TuiFileEditsView` while a file-edits permission card
+/// is active and the option list (yes/no/Other) owns focus, gating the `e`
+/// expand/collapse-all binding.
+const FILE_EDITS_PERMISSION_ACTIVE: &str = "TuiFileEditsPermissionActive";
+
 /// Registers keybindings for the file-edits view.
 pub(crate) fn init(app: &mut AppContext) {
     // Keyboard equivalent of clicking a section header to expand/collapse it
@@ -65,6 +70,18 @@ pub(crate) fn init(app: &mut AppContext) {
         id!(TuiFileEditsView::ui_name()),
     )
     .with_group(TUI_BINDING_GROUP)]);
+    // While a blocked file-edits permission card owns focus (the yes/no/Other
+    // list, not the diff sections themselves), `e` expands or collapses every
+    // diff section together.
+    let predicate = id!(TuiFileEditsView::ui_name()) & id!(FILE_EDITS_PERMISSION_ACTIVE);
+    app.register_editable_bindings([EditableBinding::new(
+        "tui:file-edits-permission:toggle-expand-all",
+        "Expand or collapse all diffs",
+        TuiFileEditsViewAction::ToggleExpandAll,
+    )
+    .with_context_predicate(predicate)
+    .with_group(TUI_BINDING_GROUP)
+    .with_key_binding("e")]);
     app.register_tui_binding_validator::<TuiFileEditsView>(is_tui_owned_binding);
 }
 
@@ -105,6 +122,8 @@ pub(super) enum TuiFileEditsViewAction {
     /// header: the sole file section for a single-file edit, or the summary
     /// header for a multi-file edit.
     ToggleExpanded,
+    /// Toggles all diff sections between expanded and collapsed together.
+    ToggleExpandAll,
 }
 
 /// One edited file's diff: header facts plus the char-cell editor whose
@@ -187,6 +206,49 @@ impl SectionStates {
         state.collapsed = !state.collapsed;
     }
 
+    /// Expands every keyed section (resets any independent per-section
+    /// hover/collapse state, matching a fresh disclosure).
+    fn expand_all(&self, keys: &[SectionKey]) {
+        let mut states = self.states.borrow_mut();
+        states.clear();
+        for key in keys {
+            states.insert(
+                *key,
+                SectionUiState {
+                    collapsed: false,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    /// Collapses every keyed section.
+    fn collapse_all(&self, keys: &[SectionKey]) {
+        let mut states = self.states.borrow_mut();
+        states.clear();
+        for key in keys {
+            states.insert(
+                *key,
+                SectionUiState {
+                    collapsed: true,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    /// Toggles all sections between fully expanded and fully collapsed: if
+    /// any section is currently expanded, collapses all; otherwise expands
+    /// all.
+    fn toggle_expand_all(&self, keys: &[SectionKey]) {
+        let any_expanded = keys.iter().any(|key| !self.is_collapsed(*key));
+        let target_collapsed = any_expanded;
+        let mut states = self.states.borrow_mut();
+        for key in keys {
+            states.entry(*key).or_default().collapsed = target_collapsed;
+        }
+    }
+
     /// The persistent hover state handle for the keyed section.
     fn hover_state(&self, key: SectionKey) -> MouseStateHandle {
         self.states
@@ -216,11 +278,25 @@ impl TuiFileEditsView {
 
         // Failed and cancelled actions never seed the storage; re-render on
         // the terminal result so the row doesn't stay pending. Successful
-        // actions also update their header glyph from this event.
+        // actions also update their header glyph from this event. A card
+        // that just became blocked expands every section by default; one
+        // that starts executing or finishes collapses back down.
         ctx.subscribe_to_model(action_model, |me, _, event, ctx| {
-            if let BlocklistAIActionEvent::FinishedAction { action_id, .. } = event
-                && *action_id == me.action_id
-            {
+            if event.action_id() != &me.action_id {
+                return;
+            }
+            if matches!(
+                event,
+                BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(_)
+            ) {
+                me.expand_all_sections();
+                ctx.notify();
+            } else if matches!(
+                event,
+                BlocklistAIActionEvent::ExecutingAction(_)
+                    | BlocklistAIActionEvent::FinishedAction { .. }
+            ) {
+                me.collapse_all_sections();
                 ctx.notify();
             }
         });
@@ -335,8 +411,44 @@ impl TuiFileEditsView {
                 diff_ready: false,
             });
         }
+        // Newly-resolved sections have no collapse state yet; seed them
+        // expanded while the card is still blocked (AC 1), collapsed
+        // otherwise (e.g. a restored, already-resolved transcript entry).
+        let is_blocked = self
+            .action_model
+            .as_ref(ctx)
+            .get_action_status(&self.action_id)
+            .is_some_and(|status| status.is_blocked());
+        if is_blocked {
+            self.expand_all_sections();
+        } else {
+            self.collapse_all_sections();
+        }
         ctx.emit(TuiFileEditsViewEvent::LayoutChanged);
         ctx.notify();
+    }
+
+    /// The keys for every currently-rendered section: the multi-file summary
+    /// header (only when there's more than one file) followed by each file.
+    fn section_keys(&self) -> Vec<SectionKey> {
+        let mut keys = Vec::with_capacity(self.sections.len() + 1);
+        if self.sections.len() > 1 {
+            keys.push(SectionKey::Summary);
+        }
+        keys.extend((0..self.sections.len()).map(SectionKey::File));
+        keys
+    }
+
+    /// Expands every current section (summary + files) together.
+    fn expand_all_sections(&self) {
+        let keys = self.section_keys();
+        self.section_states.expand_all(&keys);
+    }
+
+    /// Collapses every current section (summary + files) together.
+    fn collapse_all_sections(&self) {
+        let keys = self.section_keys();
+        self.section_states.collapse_all(&keys);
     }
 
     /// The action's display state, driving the header glyph and styling.
@@ -652,6 +764,22 @@ impl TuiView for TuiFileEditsView {
         vec![self.permission_prompt.id()]
     }
 
+    fn keymap_context(&self, app: &AppContext) -> warpui_core::keymap::Context {
+        let mut context = Self::default_keymap_context();
+        // Activate the `e` expand/collapse-all binding only when the
+        // permission card is active and the option list (yes/no/Other) owns
+        // focus -- not while the user is editing elsewhere in the card.
+        let is_blocked = self
+            .action_model
+            .as_ref(app)
+            .get_action_status(&self.action_id)
+            .is_some_and(|status| status.is_blocked());
+        if is_blocked && self.permission_prompt.as_ref(app).list_is_focused(app) {
+            context.set.insert(FILE_EDITS_PERMISSION_ACTIVE);
+        }
+        context
+    }
+
     fn render(&self, app: &AppContext) -> Box<dyn TuiElement> {
         let content = self.render_diff_content(app);
         let status = self
@@ -662,10 +790,19 @@ impl TuiView for TuiFileEditsView {
             return content;
         }
 
+        let builder = TuiUiBuilder::from_app(app);
+        let expand_collapse_hint = TuiText::from_spans([
+            ("e".to_owned(), builder.primary_text_style()),
+            (" to expand/collapse".to_owned(), builder.muted_text_style()),
+        ])
+        .truncate()
+        .finish();
+
         render_permission_card(
             &self.permission_prompt,
             "Is it OK if I make these file edits?",
             Some(content),
+            Some(expand_collapse_hint),
             app,
         )
     }
@@ -723,6 +860,12 @@ impl TypedActionView for TuiFileEditsView {
                     return;
                 };
                 self.section_states.toggle_collapsed(key);
+                ctx.emit(TuiFileEditsViewEvent::LayoutChanged);
+                ctx.notify();
+            }
+            TuiFileEditsViewAction::ToggleExpandAll => {
+                let keys = self.section_keys();
+                self.section_states.toggle_expand_all(&keys);
                 ctx.emit(TuiFileEditsViewEvent::LayoutChanged);
                 ctx.notify();
             }
