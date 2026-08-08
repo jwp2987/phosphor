@@ -18,22 +18,18 @@ use warp_util::file::FileId;
 
 use super::proto::{
     client_message, delete_file_response, discard_files_response, git_commit_chain_response,
-    git_create_pr_response,
-    git_push_response, run_command_response, server_message,
-    write_file_response, Abort, Authenticate, ClientMessage, UnsubscribeDiffState, DeleteFile,
-    DeleteFileResponse,
-    DeleteFileSuccess, DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse,
-    DiscardFilesSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
-    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
-    GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
-    GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPushRequest,
-    GitPushResponse, Initialize,
-    InitializeResponse,
-    NavigatedToDirectory,
-    NavigatedToDirectoryResponse, ReadFileContextResponse, RipgrepSearchRequest, RunCommandError,
-    RunCommandErrorCode,
+    git_create_pr_response, git_push_response, host_scoped_request, notification,
+    run_command_response, server_message, session_scoped_request, write_file_response, Abort,
+    Authenticate, ClientMessage, DeleteFile, DeleteFileResponse, DeleteFileSuccess,
+    DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse, DiscardFilesSuccess, ErrorCode,
+    ErrorResponse, FailedFileRead, FileContextProto, FileOperationError, GetBranches,
+    GetCommittedBranchFilesRequest, GetDiffState, GitCommitChainMode, GitCommitChainRequest,
+    GitCommitChainResponse, GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse,
+    GitOpDelta, GitOpError, GitPushRequest, GitPushResponse, HostScopedRequest, Initialize,
+    InitializeResponse, NavigatedToDirectory, NavigatedToDirectoryResponse, Notification,
+    ReadFileContextResponse, RipgrepSearchRequest, RunCommandError, RunCommandErrorCode,
     RunCommandRequest, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionBootstrapped,
-    WriteFile, WriteFileResponse, WriteFileSuccess,
+    SessionScopedRequest, UnsubscribeDiffState, WriteFile, WriteFileResponse, WriteFileSuccess,
 };
 
 // Buffer-sync related: depends on GlobalBufferModel, whose server-local
@@ -705,125 +701,204 @@ impl ServerModel {
     ) {
         let request_id = RequestId::from(msg.request_id);
 
+        // Dispatches through the host-scoped / session-scoped / notification
+        // envelope (#438). Deviation from the pin: the daemon still answers a
+        // host-scoped request only on its originating connection — this port
+        // carries the wire shape but not the pin's cross-connection failover
+        // (see the envelope's proto doc comment for why that's out of scope
+        // here).
         let outcome = match msg.message {
-            Some(client_message::Message::Initialize(msg)) => {
-                self.handle_initialize(msg, &request_id)
+            Some(client_message::Message::HostScoped(HostScopedRequest { message })) => {
+                match message {
+                    Some(host_scoped_request::Message::WriteFile(msg)) => {
+                        self.handle_write_file(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::DeleteFile(msg)) => {
+                        self.handle_delete_file(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::ReadFileContext(msg)) => {
+                        self.handle_read_file_context(msg, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::SaveBuffer(msg)) => {
+                        self.handle_save_buffer(msg, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::ResolveConflict(msg)) => {
+                        self.handle_resolve_conflict(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::GetBranches(req)) => {
+                        self.handle_get_branches(req, &request_id, conn_id, ctx)
+                    }
+                    // Git write-ops over SSH (#116): the daemon runs the git / gh
+                    // subprocesses host-local against the daemon's filesystem,
+                    // mirroring the local code-review dialog so local and remote
+                    // behave identically.
+                    Some(host_scoped_request::Message::GitCommitChain(req)) => {
+                        self.handle_git_commit_chain(req, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::GitPush(req)) => {
+                        self.handle_git_push(req, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::GitCreatePr(req)) => {
+                        self.handle_create_pr(req, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::GetCommittedBranchFiles(req)) => {
+                        self.handle_get_committed_branch_files(req, &request_id, conn_id, ctx)
+                    }
+                    // Discard changes over SSH (#437): the SSH-remote equivalent of
+                    // the local code-review "discard changes" action. Runs
+                    // git restore/stash/rm on the daemon's filesystem.
+                    Some(host_scoped_request::Message::DiscardFiles(req)) => {
+                        self.handle_discard_files(req, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::RipgrepSearch(req)) => {
+                        self.handle_ripgrep_search(req, &request_id, conn_id, ctx)
+                    }
+                    // Zap: directory listing for remote terminal file links (used
+                    // to validate path shape).
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::ListDirectory(msg)) => {
+                        self.handle_list_directory(msg)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::ResolvePath(msg)) => {
+                        self.handle_resolve_path(msg)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::CreateDirectory(msg)) => {
+                        self.handle_create_directory(msg)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::ReadFileChunk(msg)) => {
+                        self.handle_read_file_chunk(msg)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::WriteFileChunk(msg)) => {
+                        self.handle_write_file_chunk(msg)
+                    }
+                    #[cfg(not(feature = "local_fs"))]
+                    Some(
+                        host_scoped_request::Message::SaveBuffer(_)
+                        | host_scoped_request::Message::ResolveConflict(_)
+                        | host_scoped_request::Message::ListDirectory(_)
+                        | host_scoped_request::Message::ResolvePath(_)
+                        | host_scoped_request::Message::CreateDirectory(_)
+                        | host_scoped_request::Message::ReadFileChunk(_)
+                        | host_scoped_request::Message::WriteFileChunk(_),
+                    ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                        code: ErrorCode::InvalidRequest.into(),
+                        message: "Buffer syncing requires the local_fs feature".to_string(),
+                    })),
+                    None => {
+                        log::warn!(
+                            "Received HostScopedRequest with no message variant \
+                             (request_id={request_id})"
+                        );
+                        HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                            code: ErrorCode::InvalidRequest.into(),
+                            message: "HostScopedRequest had no message variant set".to_string(),
+                        }))
+                    }
+                }
             }
-            Some(client_message::Message::Authenticate(msg)) => {
-                self.handle_authenticate(msg);
-                return;
+            Some(client_message::Message::SessionScoped(SessionScopedRequest { message })) => {
+                match message {
+                    Some(session_scoped_request::Message::Initialize(msg)) => {
+                        self.handle_initialize(msg, &request_id)
+                    }
+                    Some(session_scoped_request::Message::NavigatedToDirectory(msg)) => {
+                        self.handle_navigated_to_directory(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(session_scoped_request::Message::LoadRepoMetadataDirectory(msg)) => {
+                        self.handle_load_repo_metadata_directory(msg, &request_id, ctx)
+                    }
+                    Some(session_scoped_request::Message::RunCommand(req)) => {
+                        self.handle_run_command(req, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(session_scoped_request::Message::OpenBuffer(msg)) => {
+                        self.handle_open_buffer(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(session_scoped_request::Message::GetDiffState(req)) => {
+                        self.handle_get_diff_state(req, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(not(feature = "local_fs"))]
+                    Some(session_scoped_request::Message::OpenBuffer(_)) => {
+                        HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                            code: ErrorCode::InvalidRequest.into(),
+                            message: "Buffer syncing requires the local_fs feature".to_string(),
+                        }))
+                    }
+                    None => {
+                        log::warn!(
+                            "Received SessionScopedRequest with no message variant \
+                             (request_id={request_id})"
+                        );
+                        HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                            code: ErrorCode::InvalidRequest.into(),
+                            message: "SessionScopedRequest had no message variant set".to_string(),
+                        }))
+                    }
+                }
             }
-            Some(client_message::Message::SessionBootstrapped(msg)) => {
-                self.handle_session_bootstrapped(msg);
-                return;
+            Some(client_message::Message::Notification(Notification { message })) => {
+                match message {
+                    Some(notification::Message::Abort(abort)) => {
+                        self.handle_abort(abort, &request_id);
+                        return;
+                    }
+                    Some(notification::Message::Authenticate(msg)) => {
+                        self.handle_authenticate(msg);
+                        return;
+                    }
+                    Some(notification::Message::SessionBootstrapped(msg)) => {
+                        self.handle_session_bootstrapped(msg);
+                        return;
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(notification::Message::BufferEdit(msg)) => {
+                        self.handle_buffer_edit(msg, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(notification::Message::CloseBuffer(msg)) => {
+                        self.handle_close_buffer(msg, conn_id, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    Some(notification::Message::UnsubscribeDiffState(msg)) => {
+                        self.handle_unsubscribe_diff_state(msg, conn_id, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    // Notifications carry no response contract, but buffer
+                    // syncing is unavailable without `local_fs` — mirror the
+                    // host/session-scoped fallback and answer with an explicit
+                    // error rather than silently dropping the message, so the
+                    // client doesn't wait on state that will never change.
+                    #[cfg(not(feature = "local_fs"))]
+                    Some(
+                        notification::Message::BufferEdit(_)
+                        | notification::Message::CloseBuffer(_),
+                    ) => {
+                        self.send_server_message(
+                            Some(conn_id),
+                            Some(&request_id),
+                            server_message::Message::Error(ErrorResponse {
+                                code: ErrorCode::InvalidRequest.into(),
+                                message: "Buffer syncing requires the local_fs feature".to_string(),
+                            }),
+                        );
+                        return;
+                    }
+                    None => {
+                        log::warn!(
+                            "Received Notification with no message variant \
+                             (request_id={request_id})"
+                        );
+                        return;
+                    }
+                }
             }
-            Some(client_message::Message::Abort(abort)) => {
-                self.handle_abort(abort, &request_id);
-                return;
-            }
-            Some(client_message::Message::RunCommand(req)) => {
-                self.handle_run_command(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::RipgrepSearch(req)) => {
-                self.handle_ripgrep_search(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GetBranches(req)) => {
-                self.handle_get_branches(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GetCommittedBranchFiles(req)) => {
-                self.handle_get_committed_branch_files(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GetDiffState(req)) => {
-                self.handle_get_diff_state(req, &request_id, conn_id, ctx)
-            }
-            // Discard changes over SSH (#437): the SSH-remote equivalent of
-            // the local code-review "discard changes" action. Runs
-            // git restore/stash/rm on the daemon's filesystem.
-            Some(client_message::Message::DiscardFiles(req)) => {
-                self.handle_discard_files(req, &request_id, conn_id, ctx)
-            }
-            // Git write-ops over SSH (#116): the daemon runs the git / gh
-            // subprocesses host-local against the daemon's filesystem, mirroring
-            // the local code-review dialog so local and remote behave
-            // identically.
-            Some(client_message::Message::GitCommitChain(req)) => {
-                self.handle_git_commit_chain(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GitPush(req)) => {
-                self.handle_git_push(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GitCreatePr(req)) => {
-                self.handle_create_pr(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::UnsubscribeDiffState(msg)) => {
-                self.handle_unsubscribe_diff_state(msg, conn_id, ctx);
-                return; // fire-and-forget notification
-            }
-            Some(client_message::Message::NavigatedToDirectory(msg)) => {
-                self.handle_navigated_to_directory(msg, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::LoadRepoMetadataDirectory(msg)) => {
-                self.handle_load_repo_metadata_directory(msg, &request_id, ctx)
-            }
-            Some(client_message::Message::WriteFile(msg)) => {
-                self.handle_write_file(msg, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::DeleteFile(msg)) => {
-                self.handle_delete_file(msg, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::ReadFileContext(msg)) => {
-                self.handle_read_file_context(msg, &request_id, conn_id, ctx)
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::OpenBuffer(msg)) => {
-                self.handle_open_buffer(msg, &request_id, conn_id, ctx)
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::BufferEdit(msg)) => {
-                self.handle_buffer_edit(msg, ctx);
-                return; // fire-and-forget notification
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::CloseBuffer(msg)) => {
-                self.handle_close_buffer(msg, conn_id, ctx);
-                return; // fire-and-forget notification
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::SaveBuffer(msg)) => {
-                self.handle_save_buffer(msg, &request_id, conn_id, ctx)
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::ResolveConflict(msg)) => {
-                self.handle_resolve_conflict(msg, &request_id, conn_id, ctx)
-            }
-            // Zap: directory listing for remote terminal file links (used to
-            // validate path shape).
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::ListDirectory(msg)) => self.handle_list_directory(msg),
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::ResolvePath(msg)) => self.handle_resolve_path(msg),
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::CreateDirectory(msg)) => self.handle_create_directory(msg),
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::ReadFileChunk(msg)) => self.handle_read_file_chunk(msg),
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::WriteFileChunk(msg)) => self.handle_write_file_chunk(msg),
-            #[cfg(not(feature = "local_fs"))]
-            Some(
-                client_message::Message::OpenBuffer(_)
-                | client_message::Message::BufferEdit(_)
-                | client_message::Message::CloseBuffer(_)
-                | client_message::Message::SaveBuffer(_)
-                | client_message::Message::ResolveConflict(_)
-                | client_message::Message::ListDirectory(_)
-                | client_message::Message::ResolvePath(_)
-                | client_message::Message::CreateDirectory(_)
-                | client_message::Message::ReadFileChunk(_)
-                | client_message::Message::WriteFileChunk(_),
-            ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
-                code: ErrorCode::InvalidRequest.into(),
-                message: "Buffer syncing requires the local_fs feature".to_string(),
-            })),
             None => {
                 log::warn!(
                     "Received ClientMessage with no message variant (request_id={request_id})"
@@ -1118,15 +1193,15 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => p.to_local_path_lossy(),
-                Err(e) => {
-                    return HandlerOutcome::Sync(server_message::Message::GetBranchesResponse(
-                        super::get_branches::error_response(format!("Invalid repo_path: {e}")),
-                    ));
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => p.to_local_path_lossy(),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GetBranchesResponse(
+                    super::get_branches::error_response(format!("Invalid repo_path: {e}")),
+                ));
+            }
+        };
 
         let max_branch_count = msg
             .max_branch_count
@@ -1173,19 +1248,19 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => p.to_local_path_lossy(),
-                Err(e) => {
-                    return HandlerOutcome::Sync(
-                        server_message::Message::GetCommittedBranchFilesResponse(
-                            super::get_committed_branch_files::error_response(format!(
-                                "Invalid repo_path: {e}"
-                            )),
-                        ),
-                    );
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => p.to_local_path_lossy(),
+            Err(e) => {
+                return HandlerOutcome::Sync(
+                    server_message::Message::GetCommittedBranchFilesResponse(
+                        super::get_committed_branch_files::error_response(format!(
+                            "Invalid repo_path: {e}"
+                        )),
+                    ),
+                );
+            }
+        };
 
         log::info!(
             "Handling GetCommittedBranchFiles repo={} (request_id={request_id})",
@@ -1216,9 +1291,7 @@ impl ServerModel {
     }
 
     /// Maps the wire commit-chain mode to the `util::git` orchestration mode.
-    fn commit_chain_mode_from_proto(
-        mode: GitCommitChainMode,
-    ) -> crate::util::git::CommitChainMode {
+    fn commit_chain_mode_from_proto(mode: GitCommitChainMode) -> crate::util::git::CommitChainMode {
         use crate::util::git::CommitChainMode;
         match mode {
             GitCommitChainMode::CommitOnly => CommitChainMode::CommitOnly,
@@ -1248,19 +1321,19 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => PathBuf::from(p.to_local_path_lossy()),
-                Err(e) => {
-                    return HandlerOutcome::Sync(
-                        server_message::Message::GitCommitChainResponse(GitCommitChainResponse {
-                            result: Some(git_commit_chain_response::Result::Error(GitOpError {
-                                message: format!("Invalid repo_path: {e}"),
-                            })),
-                        }),
-                    );
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GitCommitChainResponse(
+                    GitCommitChainResponse {
+                        result: Some(git_commit_chain_response::Result::Error(GitOpError {
+                            message: format!("Invalid repo_path: {e}"),
+                        })),
+                    },
+                ));
+            }
+        };
         let mode = Self::commit_chain_mode_from_proto(msg.mode());
         let message = msg.message;
         let include_unstaged = msg.include_unstaged;
@@ -1331,19 +1404,19 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => PathBuf::from(p.to_local_path_lossy()),
-                Err(e) => {
-                    return HandlerOutcome::Sync(server_message::Message::GitPushResponse(
-                        GitPushResponse {
-                            result: Some(git_push_response::Result::Error(GitOpError {
-                                message: format!("Invalid repo_path: {e}"),
-                            })),
-                        },
-                    ));
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GitPushResponse(
+                    GitPushResponse {
+                        result: Some(git_push_response::Result::Error(GitOpError {
+                            message: format!("Invalid repo_path: {e}"),
+                        })),
+                    },
+                ));
+            }
+        };
         let branch = msg.branch;
 
         log::info!(
@@ -1398,19 +1471,19 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => PathBuf::from(p.to_local_path_lossy()),
-                Err(e) => {
-                    return HandlerOutcome::Sync(server_message::Message::GitCreatePrResponse(
-                        GitCreatePrResponse {
-                            result: Some(git_create_pr_response::Result::Error(GitOpError {
-                                message: format!("Invalid repo_path: {e}"),
-                            })),
-                        },
-                    ));
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GitCreatePrResponse(
+                    GitCreatePrResponse {
+                        result: Some(git_create_pr_response::Result::Error(GitOpError {
+                            message: format!("Invalid repo_path: {e}"),
+                        })),
+                    },
+                ));
+            }
+        };
         let _ = msg.branch; // Used by Warp's AI generation; unused in the --fill path.
         let _ = msg.autogenerate_content; // BYOP: ignored, see doc comment.
 
@@ -1433,13 +1506,11 @@ impl ServerModel {
                             super::diff_state_proto::pr_info_to_proto(&pr),
                         )),
                     }),
-                    Err(e) => {
-                        server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
-                            result: Some(git_create_pr_response::Result::Error(GitOpError {
-                                message: format!("{e:#}"),
-                            })),
-                        })
-                    }
+                    Err(e) => server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
+                        result: Some(git_create_pr_response::Result::Error(GitOpError {
+                            message: format!("{e:#}"),
+                        })),
+                    }),
                 };
                 me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
             },
@@ -1498,11 +1569,14 @@ impl ServerModel {
         let handle = self.spawn_request_handler(
             request_id.clone(),
             async move {
-                let metadata =
-                    LocalDiffStateModel::load_metadata_for_repo(repo_pathbuf.clone(), include_base_branch)
-                        .await;
+                let metadata = LocalDiffStateModel::load_metadata_for_repo(
+                    repo_pathbuf.clone(),
+                    include_base_branch,
+                )
+                .await;
                 let diff_data =
-                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf).await;
+                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf)
+                        .await;
                 (metadata, diff_data)
             },
             move |me, (metadata_result, diff_data), _ctx| {
@@ -1592,11 +1666,14 @@ impl ServerModel {
         let wire_repo_path = sub.wire_repo_path;
         ctx.spawn_abortable(
             async move {
-                let metadata =
-                    LocalDiffStateModel::load_metadata_for_repo(repo_pathbuf.clone(), include_base_branch)
-                        .await;
+                let metadata = LocalDiffStateModel::load_metadata_for_repo(
+                    repo_pathbuf.clone(),
+                    include_base_branch,
+                )
+                .await;
                 let diff_data =
-                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf).await;
+                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf)
+                        .await;
                 (metadata, diff_data)
             },
             move |me, (metadata_result, diff_data), _ctx| {
@@ -2523,8 +2600,7 @@ impl ServerModel {
                     let metadata = entry.metadata().ok();
                     let kind = entry_kind(file_type.as_ref(), metadata.as_ref());
                     let is_dir = kind == FileSystemEntryKind::Directory as i32;
-                    let size_bytes =
-                        metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len());
+                    let size_bytes = metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len());
                     let modified_epoch_millis = metadata
                         .as_ref()
                         .and_then(|m| m.modified().ok())
@@ -2750,10 +2826,7 @@ fn expand_user_path(path: &str) -> PathBuf {
 }
 
 #[cfg(feature = "local_fs")]
-fn entry_kind(
-    file_type: Option<&std::fs::FileType>,
-    metadata: Option<&std::fs::Metadata>,
-) -> i32 {
+fn entry_kind(file_type: Option<&std::fs::FileType>, metadata: Option<&std::fs::Metadata>) -> i32 {
     if file_type.is_some_and(|ft| ft.is_symlink()) {
         return FileSystemEntryKind::Symlink as i32;
     }
