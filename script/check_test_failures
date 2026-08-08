@@ -31,13 +31,41 @@ KNOWN="script/known_test_failures.txt"
 out="$(mktemp)"; expected="$(mktemp)"; actual="$(mktemp)"
 trap 'rm -f "$out" "$expected" "$actual"' EXIT
 
-echo "running: cargo nextest run ${*}" >&2
-cargo nextest run "$@" --no-fail-fast 2>&1 | tee "$out"
+# Route through the build governor when it exists. Bare `cargo` here builds into
+# the default ./target, and a git worktree under /tmp puts that on a tmpfs --
+# which is RAM. On 2026-08-08 that filled the 23G tmpfs mid-run and every crate
+# died with "Disk quota exceeded"; the real disk was 47% free the whole time.
+# agent-cargo pins CARGO_TARGET_DIR onto real storage and caps slots and jobs.
+if [[ -x ./script/agent-cargo ]]; then
+    CARGO_RUN=(./script/agent-cargo "${PHOSPHOR_CARGO_LABEL:-check-test-failures}")
+else
+    CARGO_RUN=(cargo)
+fi
+# rustc scribbles temporaries into TMPDIR too, so keep those off the tmpfs.
+if [[ -z "${TMPDIR:-}" || "$TMPDIR" == /tmp* ]]; then
+    _tmp_root="${PHOSPHOR_TARGET_ROOT:-/cache/git/.phosphor-build}/tmp"
+    mkdir -p "$_tmp_root" 2>/dev/null && export TMPDIR="$_tmp_root"
+fi
+
+echo "running: ${CARGO_RUN[*]} nextest run ${*}" >&2
+"${CARGO_RUN[@]}" nextest run "$@" --no-fail-fast 2>&1 | tee "$out"
 
 # nextest prints a summary line per failure:  "        FAIL [   0.1s] (n/m) warp  path::to::test"
-# Take the last whitespace-delimited field, stripped of ANSI colour.
+# ...and for a test it RETRIED, it prints:     "  TRY 3 FAIL [   0.1s] (n/m) warp  path::to::test"
+#
+# This bit for real, and badly. The pattern here used to be `^\s+FAIL `, which
+# matches the first form and NOT the second -- so every failure nextest retried
+# was invisible to this gate. A local full-suite run on 2026-08-08 reported 4
+# regressions while 24 further `warp_tui` failures went unreported, none of them
+# in known_test_failures.txt. CI runs this same script, so every green nextest
+# job in this repo has been blind to retried failures.
+#
+# Retries are configured precisely for tests suspected of flaking, which is to
+# say: the gate was blind exactly where it most needed to see.
+#
+# Match both forms. Take the last whitespace-delimited field, ANSI stripped.
 sed -E 's/\x1b\[[0-9;]*m//g' "$out" \
-    | grep -E '^\s+FAIL ' \
+    | grep -E '^\s+(TRY [0-9]+ )?FAIL ' \
     | awk '{print $NF}' \
     | sort -u > "$actual"
 

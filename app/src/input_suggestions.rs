@@ -1153,6 +1153,16 @@ impl HistoryInputSuggestion<'_> {
         }
     }
 
+    /// The suggestion's text with surrounding whitespace removed.
+    ///
+    /// This is what history de-duplication and emptiness checks must key on:
+    /// a shell records `  ls ` and `ls` as distinct entries, but they are the
+    /// same suggestion to a user scrolling up-arrow history, and an entry that
+    /// is *only* whitespace should not occupy a row at all.
+    pub fn normalized_text(&self) -> &str {
+        self.text().trim()
+    }
+
     /// Which type of detail panel to show for this suggestion, if any.
     fn details(&self) -> Option<DetailContent> {
         match self {

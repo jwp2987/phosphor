@@ -13,8 +13,12 @@
 //! this fork's `BlocklistAIInputModel::set_input_type` has no
 //! `InputTypeAutoDetectionSource` parameter (the fork does not track *why*
 //! auto-detection changed, only the current [`InputType`]), and
-//! `ActiveSession` has no `session_id(ctx)` accessor, so the session id is
-//! read through `session(ctx).map(|s| s.id())` instead.
+//! `ActiveSession::session_id(ctx)` now exists and is used directly. The
+//! original port read the id through `session(ctx).map(|s| s.id())` because
+//! the accessor was absent; that was not equivalent — `session()` also returns
+//! `None` when the id is present but does not resolve, so command history
+//! (keyed by session id) silently emptied during focus switches and session
+//! rebuilds.
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
     ActiveSession, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel,
@@ -374,10 +378,13 @@ impl TuiPromptAndCommandHistoryMenuModel {
     /// exposes `session(ctx) -> Option<Arc<Session>>` rather than the pin's
     /// `session_id(ctx)` accessor, so this reads the id off the session.
     fn session_id(&self, ctx: &AppContext) -> Option<SessionId> {
-        self.active_session
-            .as_ref(ctx)
-            .session(ctx)
-            .map(|session| session.id())
+        // Must read the id directly, not via `session(ctx).map(|s| s.id())`:
+        // `session()` also returns `None` when the id is present but does not
+        // resolve to a live `Session` — briefly, during focus switches and
+        // session rebuilds. Command history is keyed by session id (prompts are
+        // not), so a `None` here silently drops every command from the merged
+        // menu and leaves prompts only.
+        self.active_session.as_ref(ctx).session_id(ctx)
     }
 
     /// Rebuilds rows from the current query while preserving stable selection,

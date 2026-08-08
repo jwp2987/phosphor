@@ -3402,15 +3402,27 @@ impl TuiTerminalSessionView {
         kind: TuiUpArrowHistoryItemKind,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.pending_history_command_workflow_data = match kind {
-            TuiUpArrowHistoryItemKind::Prompt => None,
-            TuiUpArrowHistoryItemKind::Command {
-                linked_workflow_data,
-            } => linked_workflow_data,
-        };
-        self.input_view.update(ctx, |input, ctx| {
-            input.set_text(&text, ctx);
-        });
+        // The accepted row's kind — not whatever mode the composer happened to
+        // be in — decides how the text is submitted. `handle_submitted` routes
+        // on `is_shell_mode`, so recalling a command while the composer sits in
+        // agent mode would otherwise send that command to the model as a prompt
+        // instead of executing it (and vice versa for a recalled prompt).
+        self.pending_history_command_workflow_data =
+            self.input_view.update(ctx, |input, ctx| {
+                input.set_text(&text, ctx);
+                match kind {
+                    TuiUpArrowHistoryItemKind::Prompt => {
+                        input.exit_shell_mode(ctx);
+                        None
+                    }
+                    TuiUpArrowHistoryItemKind::Command {
+                        linked_workflow_data,
+                    } => {
+                        input.enter_shell_mode(ctx);
+                        linked_workflow_data
+                    }
+                }
+            });
         self.handle_submitted(text, ctx);
     }
 

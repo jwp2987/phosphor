@@ -8,8 +8,7 @@
 //! `app/src/tui_export/history.rs` for issue #387. Adapted to this fork's
 //! naming, which diverged from the pin some time before the pin: the shared
 //! method here is `up_arrow_suggestions_for_terminal_view` (the pin's is
-//! `_for_terminal_surface`), and [`HistoryInputSuggestion::text`] has no
-//! separate `normalized_text` accessor in this fork.
+//! `_for_terminal_surface`).
 
 use warpui::{AppContext, EntityId, SingletonEntity};
 
@@ -47,7 +46,7 @@ pub fn tui_up_arrow_history(
         .up_arrow_suggestions_for_terminal_view(terminal_view_id, session_id, config, app)
         .into_iter()
         .map(|suggestion| {
-            let text = suggestion.text().to_owned();
+            let text = suggestion.normalized_text().to_owned();
             match suggestion {
                 HistoryInputSuggestion::Command { entry } => TuiUpArrowHistoryItem {
                     text,

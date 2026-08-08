@@ -915,7 +915,7 @@ impl TuiInputView {
     // ── Shell mode ────────────────────────────────────────────────────────────
 
     /// Locks the shared input mode to shell with the `!` shell-prefix source.
-    fn enter_shell_mode(&mut self, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn enter_shell_mode(&mut self, ctx: &mut ViewContext<Self>) {
         let is_input_buffer_empty = self.plain_text(ctx).is_empty();
         self.input_mode.clone().update(ctx, |input_mode, ctx| {
             // BYOP: Zap's set_input_config takes no decision-source arg (inert telemetry upstream).

@@ -130,6 +130,27 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
     app.add_singleton_model(|_| AIDocumentModel::new_for_test());
 
     app.add_singleton_model(|_| BlocklistAIHistoryModel::default());
+    // Shell-command history. The TUI session view reads this since the up-arrow
+    // menu was merged to cover prompts AND commands; before that it only ever
+    // touched BlocklistAIHistoryModel, so the fixture did not provision it.
+    //
+    // Guarded, like Appearance above: `provision_session` below also registers
+    // History on demand, and a second unconditional registration panics with
+    // "add_singleton_model() was called twice" -- the failure mode that took
+    // out 355 tests when the settings-registry work started registering groups
+    // the test helpers were already registering by hand.
+    if !app.read(|ctx| ctx.has_singleton_model::<History>()) {
+        app.add_singleton_model(|_| History::default());
+    }
+    // Accepting a command from the history menu writes the resulting block
+    // through the persistence writer, so the session view reads this singleton.
+    // `PersistenceWriter::new(None)` is the no-op form -- no writer thread and
+    // no channel -- which is what production also constructs when persistence
+    // is unavailable, so tests exercise the real code path without touching a
+    // database.
+    if !app.read(|ctx| ctx.has_singleton_model::<crate::persistence::PersistenceWriter>()) {
+        app.add_singleton_model(|_| crate::persistence::PersistenceWriter::new(None));
+    }
     app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
     app.add_singleton_model(|_| CLIAgentSessionsModel::new());
     app.add_singleton_model(AgentConversationsModel::new);

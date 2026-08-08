@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::sync::Arc;
+use warp_core::SessionId;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle};
 
 use crate::{
@@ -80,6 +81,23 @@ impl ActiveSession {
             current_working_directory: None,
             last_execution_environment: RefCell::new(None),
         }
+    }
+
+    /// The active session's id, independent of whether that id currently
+    /// resolves to a live [`Session`].
+    ///
+    /// Prefer this over `session(app).map(|s| s.id())` for anything keyed by
+    /// session id. As the struct comment above notes, `session()` also returns
+    /// `None` when the id is present but does not resolve — briefly, during
+    /// focus switches and session rebuilds. Callers that only need the id would
+    /// silently get `None` in those windows.
+    ///
+    /// That is not hypothetical: the TUI up-arrow history menu was ported using
+    /// `session(ctx).map(|s| s.id())` because this accessor did not exist, and
+    /// its command history (which is keyed by session id, unlike prompts, which
+    /// are not) came back empty whenever the lookup missed.
+    pub fn session_id(&self, app: &AppContext) -> Option<SessionId> {
+        self.model_event_dispatcher.as_ref(app).active_session_id()
     }
 
     pub fn session(&self, app: &AppContext) -> Option<Arc<Session>> {

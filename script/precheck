@@ -1,68 +1,80 @@
 #!/usr/bin/env bash
-# Run every gate CI runs, locally, before you push.
+# Run the real gates locally, before you push. "ok" means verified, not hopeful.
 #
 # WHY THIS EXISTS
 # ---------------
-# CI is the FINAL check, not the check that finds a problem for the first time.
-# Every failure CI reports first is a slow round trip that a local run would
-# have caught in seconds -- and it trains people to push speculatively and let
-# the runner think for them.
+# CI is the FINAL check, not the one that discovers a problem. Anything CI
+# reports first is a 15-40 minute round trip you could have had in minutes --
+# and it trains people to push speculatively and let the runner think for them.
 #
-# This bit for real: PR #417 was correct, but it fixed three tests whose entries
-# were still in script/known_test_failures.txt. Nothing local checked that, so
-# CI reported it ~15 minutes later as a red job that read like a broken PR.
+# THIS SCRIPT USED TO BE PART OF THE PROBLEM
+# ------------------------------------------
+# Its previous version ran only the cheap gates -- toolchain, rustfmt, boundary
+# guards, and a filtered run of the known-failure list -- and its own header
+# argued that "full-suite regressions are still CI's job."
 #
-# WHAT IT COSTS
-# -------------
-# The expensive part -- the full suite -- is NOT run here. Instead this runs
-# only the tests currently listed in known_test_failures.txt (8 of them), which
-# is what catches the stale-entry case. That is seconds once the crate is built,
-# against ~15 minutes of CI round trip.
+# That was wrong, and it cost a day. It never compiled anything and never ran
+# the suite, so `precheck: ok -- safe to push` was printed by ~30 agents across
+# 158 merges while asserting essentially nothing. Two regression clusters and
+# three separate compile breaks reached main underneath that green.
 #
-# Full-suite regressions are still CI's job. That is the correct division: cheap
-# and certain locally, expensive and comprehensive in CI.
+# Compounding it: branch protection has `strict: false`, so GitHub CI validates
+# each PR against its own stale base and NEVER the merge result. Deferring the
+# real checks to CI meant deferring them to something that structurally could
+# not catch an integration break.
+#
+# So: the compile and the suite run HERE now, by default. Locally is the only
+# place the integrated state actually gets tested.
+#
+# WHAT STAYS IN CI
+# ----------------
+# Only what cannot run on this host: the macOS and Windows jobs. Everything
+# Linux is verified here first.
 #
 # USAGE
-#     script/precheck                 # gates only (fast, no build)
-#     script/precheck --with-tests    # also run the known-failure subset
+#     script/precheck            # everything: gates + compile + full suite
+#     script/precheck --fast     # gates only -- does NOT authorise a push
 #
 # Exit non-zero if any gate fails, so it can be wired to a pre-push hook.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-WITH_TESTS=0
-[[ "${1:-}" == "--with-tests" ]] && WITH_TESTS=1
+FAST=0
+[[ "${1:-}" == "--fast" ]] && FAST=1
+# --with-tests used to be how you opted IN to testing. Tests are now the
+# default; accept the old flag silently so existing muscle memory and any
+# scripted callers do not break.
+[[ "${1:-}" == "--with-tests" ]] && FAST=0
 
 status=0
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; status=1; }
 ok()   { printf '  \033[32mok\033[0m   %s\n' "$1"; }
+warn() { printf '  \033[33mwarn\033[0m %s\n' "$1"; }
+
+# Route cargo through the build governor when it exists: slot limits, job caps
+# and a per-agent CARGO_TARGET_DIR. Raw parallel cargo is what OOMed this host.
+CARGO_RUN=(cargo)
+if [[ -x ./script/agent-cargo ]]; then
+    # A STABLE label on purpose. This used to be "precheck-$$", so every run got
+    # a brand-new CARGO_TARGET_DIR and rebuilt the world from cold -- ~6.7G and
+    # a full build each time, which is also how the 2026-08-08 tmpfs exhaustion
+    # got its volume. One label means one warm cache that later runs reuse.
+    export PHOSPHOR_CARGO_LABEL=precheck
+    CARGO_RUN=(./script/agent-cargo "$PHOSPHOR_CARGO_LABEL")
+fi
+# Keep rustc temporaries off /tmp: a worktree under /tmp is on a RAM-backed
+# tmpfs, and filling it takes the whole host down, not just the build.
+if [[ -z "${TMPDIR:-}" || "$TMPDIR" == /tmp* ]]; then
+    _tmp_root="${PHOSPHOR_TARGET_ROOT:-/cache/git/.phosphor-build}/tmp"
+    mkdir -p "$_tmp_root" 2>/dev/null && export TMPDIR="$_tmp_root"
+fi
 
 # ------------------------------------------------------------------ toolchain
-# This is step 0 deliberately: every gate below reports on whatever compiler
-# happens to be first in PATH, so a toolchain mismatch silently invalidates
-# every result this script prints -- including its greens.
-#
-# This bit for real. `script/install_rust` guards on `command -v cargo`, so a
-# host with a distro cargo at /usr/bin/cargo short-circuits it and rustup is
-# never installed. rust-toolchain.toml's channel pin is then ignored with no
-# diagnostic at all: this host ran 1.93.1 against a 1.92.0 pin for weeks while
-# CI (which has rustup, and so honours the pin) ran 1.92.0. The skew runs the
-# dangerous direction -- anything stabilised in the newer compiler builds clean
-# locally and fails in CI -- which is precisely the "let CI find it" failure
-# this script exists to prevent.
-#
-# Fix on such a host, without disturbing the distro toolchain:
-#   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
-#       -y --no-modify-path --default-toolchain <channel> --profile minimal \
-#       -c rustfmt -c clippy
-# then run cargo through it: RUSTUP_TOOLCHAIN=<channel> PATH="$HOME/.cargo/bin:$PATH"
+# Step 0 deliberately: every gate below reports on whatever compiler is first in
+# PATH, so a mismatch silently invalidates every result -- including the greens.
 step "toolchain matches the pin"
-# Self-correct where possible: if rustup is installed but its shims are not
-# first in PATH, use them rather than failing. A gate that rejects a host which
-# HAS the right compiler, merely not first in PATH, is noise -- and noise in a
-# gate trains people to ignore it. Fail only when the pin is genuinely absent.
 if [[ -x "$HOME/.cargo/bin/rustup" ]]; then
     case ":$PATH:" in
         *:"$HOME/.cargo/bin":*) ;;
@@ -76,25 +88,15 @@ if [[ -z "$PINNED" ]]; then
 elif [[ -z "$ACTUAL" ]]; then
     fail "no rustc on PATH"
 elif [[ ! "$PINNED" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
-    # A floating channel (stable/nightly/dated) cannot be checked by equality.
     ok "channel '$PINNED' is floating -- running rustc $ACTUAL (not asserted)"
 elif [[ "$ACTUAL" == "$PINNED" ]]; then
     ok "rustc $ACTUAL matches pin"
 else
     fail "rustc $ACTUAL does NOT match the pin $PINNED ($(command -v rustc))"
     printf '      Every result below is measured on the wrong compiler.\n' >&2
-    printf '      CI honours the pin via rustup; this host does not. A green here\n' >&2
-    printf '      does not predict CI. See the header of this step for the fix.\n' >&2
 fi
 
 # ------------------------------------------------------------------ staleness
-# An agent working on a base tens of commits old will hit failures that are real,
-# reproducible, and entirely about the wrong tree. This bit for real: an agent
-# branched 105 commits behind, missed the merged secret-detection fix, and
-# reported the resulting failure as an "unrelated pre-existing" defect.
-#
-# main moves constantly, so being a few commits behind is normal and fine. Being
-# far behind is not.
 step "base freshness"
 git fetch -q origin main 2>/dev/null || true
 BEHIND="$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
@@ -102,31 +104,42 @@ STALE_FAIL="${PHOSPHOR_STALE_FAIL:-25}"
 if ((BEHIND == 0)); then
     ok "up to date with origin/main"
 elif ((BEHIND < STALE_FAIL)); then
-    printf '  \033[33mwarn\033[0m %s commit(s) behind origin/main -- fine, but merge before final verification\n' "$BEHIND"
+    warn "$BEHIND commit(s) behind origin/main -- merge before final verification"
 else
-    fail "$BEHIND commits behind origin/main -- REBASE BEFORE TRUSTING ANY TEST RESULT"
-    printf '      A stale base produces failures that are real and about the wrong tree.\n' >&2
+    fail "$BEHIND commits behind origin/main -- MERGE BEFORE TRUSTING ANY TEST RESULT"
     printf '      Fix:  git fetch origin && git merge origin/main\n' >&2
 fi
 
 # ---------------------------------------------------------------- formatting
-# The repo pins edition 2018 in .rustfmt.toml while the crates are edition 2024
-# (issue #191), so ALWAYS use --config-path and never --edition. Only changed
-# files are checked: a repo-wide run reports pre-existing drift you did not
-# cause, which is noise that gets ignored.
+# .rustfmt.toml now pins edition 2024, matching every crate in the workspace
+# (#191 -- it used to say 2018, so rustfmt could not parse edition-2024 syntax
+# and this check reported bogus parse errors). ALWAYS use --config-path, never
+# --edition, so the pin stays the single source of truth.
+#
+# This is a PARSE check, not a formatting check, and only over changed files.
+# The repo has never been rustfmt-clean (~1.6k files drift at either edition),
+# so a repo-wide format gate would report drift you did not cause -- and noise
+# in a gate gets ignored.
 step "rustfmt (changed .rs files only)"
-mapfile -t changed < <(git diff --name-only --diff-filter=ACM origin/main...HEAD -- '*.rs' 2>/dev/null)
+# Committed changes AND the working tree. This used to ask only for
+# origin/main...HEAD, so running precheck BEFORE committing -- which is the
+# entire point of the script -- reported "no changed .rs files" and asserted
+# nothing at all. Staged, unstaged and untracked files all count.
+mapfile -t changed < <(
+    {
+        git diff --name-only --diff-filter=ACM origin/main...HEAD -- '*.rs' 2>/dev/null
+        git diff --name-only --diff-filter=ACM HEAD -- '*.rs' 2>/dev/null
+        git ls-files --others --exclude-standard -- '*.rs' 2>/dev/null
+    } | sort -u
+)
 if ((${#changed[@]} == 0)); then
     ok "no changed .rs files"
 else
     fmt_bad=0
     for f in "${changed[@]}"; do
         [[ -f "$f" ]] || continue
-        # Only parse errors matter here. Formatting diffs are frequently
-        # pre-existing; a parse error never is.
         if rustfmt --check --config-path .rustfmt.toml "$f" 2>&1 | grep -qE '^error: (expected|unexpected)'; then
-            fail "$f does not parse"
-            fmt_bad=1
+            fail "$f does not parse"; fmt_bad=1
         fi
     done
     ((fmt_bad == 0)) && ok "${#changed[@]} file(s) parse cleanly"
@@ -134,46 +147,70 @@ fi
 
 # ------------------------------------------------------------------- guards
 step "fork boundary guards"
-if ./script/check_cloud_boundary >/dev/null 2>&1; then ok "cloud boundary"; else
-    fail "cloud boundary -- run ./script/check_cloud_boundary for detail"; fi
-if ./script/check_stub_coverage >/dev/null 2>&1; then ok "stub coverage"; else
-    fail "stub coverage -- run ./script/check_stub_coverage for detail"; fi
-if ./script/check_settings_registry >/dev/null 2>&1; then ok "settings registry"; else
-    fail "settings registry -- run ./script/check_settings_registry for detail"; fi
-
-# ------------------------------------------------- known-failure bookkeeping
-# The cheap half of the CI test gate: run ONLY the listed failures. If one now
-# passes, its line must be deleted in this same PR -- which is exactly the case
-# that surprised #417.
-step "known-failure bookkeeping"
-KNOWN=script/known_test_failures.txt
-mapfile -t listed < <(grep -vE '^\s*(#|$)' "$KNOWN" | tr -d ' \r')
-if ((${#listed[@]} == 0)); then
-    ok "list is empty"
-elif ((WITH_TESTS == 0)); then
-    printf '  \033[33mskipped\033[0m %s listed test(s) -- re-run with --with-tests\n' "${#listed[@]}"
-else
-    filter=""
-    for t in "${listed[@]}"; do
-        [[ -n "$filter" ]] && filter+=" or "
-        filter+="test(=${t})"
-    done
-    out="$(mktemp)"
-    cargo nextest run -p warp --lib --features gui --no-fail-fast -E "$filter" >"$out" 2>&1
-    passed="$(sed -E 's/\x1b\[[0-9;]*m//g' "$out" | grep -cE '^\s+PASS ')"
-    if ((passed > 0)); then
-        fail "$passed listed test(s) now PASS -- delete their lines from $KNOWN in this PR:"
-        sed -E 's/\x1b\[[0-9;]*m//g' "$out" | grep -E '^\s+PASS ' | awk '{print "         - "$NF}'
-    else
-        ok "all ${#listed[@]} listed test(s) still fail (list is accurate)"
-    fi
-    rm -f "$out"
+./script/check_cloud_boundary >/dev/null 2>&1 && ok "cloud boundary" \
+    || fail "cloud boundary -- run ./script/check_cloud_boundary for detail"
+./script/check_stub_coverage  >/dev/null 2>&1 && ok "stub coverage" \
+    || fail "stub coverage -- run ./script/check_stub_coverage for detail"
+if [[ -x ./script/check_settings_registry ]]; then
+    ./script/check_settings_registry >/dev/null 2>&1 && ok "settings registry" \
+        || fail "settings registry -- run ./script/check_settings_registry for detail"
 fi
+
+if ((FAST == 1)); then
+    printf '\n\033[33mprecheck --fast: gates only.\033[0m Nothing was compiled and no test ran.\n'
+    printf 'This does NOT authorise a push. Run script/precheck with no flags first.\n'
+    exit $status
+fi
+
+# ------------------------------------------------------------------- compile
+# The required CI check. Note --lib --tests: test code must compile too, and a
+# missing trait import in a test file is invisible without it.
+step "cargo check -p warp --features gui --lib --tests"
+if "${CARGO_RUN[@]}" check -p warp --features gui --lib --tests >/tmp/precheck-check.$$ 2>&1; then
+    ok "compiles"
+else
+    fail "does NOT compile"
+    grep -E '^error' /tmp/precheck-check.$$ | head -10 >&2
+fi
+
+# ------------------------------------------- compile, feature-unified
+# `warp` alone does NOT enable `integration_tests`; that only activates through
+# Cargo feature unification when `warp` and `crates/integration` are checked in
+# the SAME invocation. Three separate compile breaks reached main in one day
+# through this blind spot -- the required single-package check cannot see them.
+step "cargo check (feature-unified, multi-package)"
+if "${CARGO_RUN[@]}" check -p warp -p warp_completer -p integration \
+        -p app-installation-detection -p warp_ripgrep --features gui \
+        >/tmp/precheck-unified.$$ 2>&1; then
+    ok "compiles under feature unification"
+else
+    fail "does NOT compile under feature unification"
+    grep -E '^error' /tmp/precheck-unified.$$ | head -10 >&2
+fi
+
+# ---------------------------------------------------------------- full suite
+# The expensive gate, and the only one that catches a regression. Delegated to
+# check_test_failures, which fails on CHANGE against known_test_failures.txt
+# rather than on redness -- so a listed failure that now PASSES is also an error
+# (its line must be deleted in the same change).
+#
+# BOTH crates in ONE invocation: check_test_failures treats a listed failure
+# that did not run as "fixed" and exits 1, so splitting them fails the gate on
+# the other crate's known failures.
+step "full test suite (warp + warp_tui)"
+if ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui; then
+    ok "no change against known_test_failures.txt"
+else
+    fail "test suite changed against known_test_failures.txt (see above)"
+fi
+
+rm -f /tmp/precheck-check.$$ /tmp/precheck-unified.$$
 
 printf '\n'
 if ((status == 0)); then
-    printf '\033[32mprecheck: ok\033[0m -- safe to push\n'
+    printf '\033[32mprecheck: ok\033[0m -- compiled and tested locally; safe to push\n'
+    printf 'Remaining CI coverage: macOS and Windows only.\n'
 else
-    printf '\033[31mprecheck: FAILED\033[0m -- fix before pushing; CI will report the same thing 15 minutes later\n'
+    printf '\033[31mprecheck: FAILED\033[0m -- fix before pushing\n'
 fi
 exit $status

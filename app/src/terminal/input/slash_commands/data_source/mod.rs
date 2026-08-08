@@ -279,6 +279,13 @@ impl SlashCommandDataSource {
                 })
                 // On the TUI, only surface commands that actually execute there.
                 .filter(|(_, command)| !is_tui_surface || command.supports_tui())
+                // ...and the reciprocal, which was missing: on the GUI, drop the
+                // TUI-only commands. Without it they stayed selectable in the GUI
+                // menu, where executing one hits the TUI-only `debug_assert!` in
+                // `SlashCommandExecutor` (a panic in debug, a silent no-op in
+                // release). The oracle filters both surfaces off one field; this
+                // fork derives them from the command name.
+                .filter(|(_, command)| is_tui_surface || command.supports_gui())
                 .map(|(id, command)| (id, command.clone())),
         );
 

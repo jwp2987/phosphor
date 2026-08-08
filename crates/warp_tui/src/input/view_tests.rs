@@ -487,9 +487,19 @@ fn build_view_with_orchestration_tabs(
     if !ctx.has_singleton_model::<Appearance>() {
         ctx.add_singleton_model(|_| Appearance::mock());
     }
-    add_test_semantic_selection(ctx);
     let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
-    let input_mode = BlocklistAIInputModel::mock(Rc::new(TestInputModePolicy), ctx);
+    // `add_test_input_mode`, not a bare `BlocklistAIInputModel::mock`: it also
+    // runs `register_tui_input_mode_test_settings`, provisioning the settings
+    // the shared up-arrow history combiner reads (`AISettings`, and the
+    // feature-flag-gated agent mode). Views built here can reach the history
+    // menu -- pressing Up on an empty buffer opens it -- and without those
+    // settings that panics with "Cannot get singleton model AISettings".
+    let input_mode = add_test_input_mode(ctx);
+    // Must follow `add_test_input_mode`: it reaches `register_all_settings`,
+    // which registers `SemanticSelection` **unguarded**, while the call below is
+    // guarded. Running the guarded one first registers the mock and makes the
+    // later unguarded registration panic with "called twice".
+    add_test_semantic_selection(ctx);
     let suggestions_mode = add_suggestions_mode(ctx, TuiInputSuggestionsMode::Closed);
     let prompt_history_menu = add_prompt_and_command_history_menu(ctx, &input_model, &input_mode, &suggestions_mode);
     let orchestration_tabs_available_for_view = orchestration_tabs_available.clone();
@@ -2537,7 +2547,6 @@ fn build_view_with_history_items(
     if !ctx.has_singleton_model::<Appearance>() {
         ctx.add_singleton_model(|_| Appearance::mock());
     }
-    add_test_semantic_selection(ctx);
     ctx.add_singleton_model(|_| {
         blocklist_ai_history_model_with_queries(
             prompts.iter().map(|prompt| (*prompt).to_owned()).collect(),
@@ -2552,6 +2561,14 @@ fn build_view_with_history_items(
     );
     let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
     let input_mode = add_test_input_mode(ctx);
+    // MUST come after `add_test_input_mode`, which routes through
+    // `register_tui_input_mode_test_settings` -> `register_all_settings` ->
+    // `SemanticSelection::register` **unguarded**. `add_test_semantic_selection`
+    // is guarded, so running it first registers the mock and then the unguarded
+    // real registration panics with "add_singleton_model() was called twice".
+    // Nothing between here and the top reads semantic selection -- it is read
+    // during render, not construction -- so the later call is safe.
+    add_test_semantic_selection(ctx);
     let suggestions_mode = add_suggestions_mode(ctx, TuiInputSuggestionsMode::Closed);
     let prompt_and_command_history_menu = ctx.add_model(|ctx| {
         TuiPromptAndCommandHistoryMenuModel::new(

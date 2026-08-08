@@ -277,6 +277,45 @@ impl StaticCommand {
         }
     }
 
+    /// Whether this command executes on the GUI surface.
+    ///
+    /// The oracle carries a `supported_surfaces` field per command and filters both
+    /// front-ends through it (`SlashCommandSurfaces::supports_gui`). This fork derives
+    /// surfaces from the command name instead (see [`Self::supports_tui`]) and, until
+    /// now, only ever derived the TUI half -- so every TUI-only command stayed in the
+    /// GUI's active set, and `SlashCommandExecutor` could do nothing about it but
+    /// `debug_assert!(false, "Attempted to execute TUI-only slash command in the GUI")`.
+    /// That assertion fires for real: `test_submit_queued_prompt_detects_slash_command`
+    /// walks `active_commands()` (a `HashMap`, so iteration order varies run to run) and
+    /// panicked whenever it happened to land on `/clear` first.
+    pub fn supports_gui(&self) -> bool {
+        !self.is_tui_only()
+    }
+
+    /// Commands that exist only on the ratatui TUI surface.
+    ///
+    /// Deliberately the exact set `SlashCommandExecutor`'s TUI-only guard enumerates:
+    /// those are the commands this fork declares must never reach GUI execution, so
+    /// filtering precisely them out of the GUI's set makes that guard unreachable
+    /// rather than merely unlikely.
+    ///
+    /// This is NOT the oracle's full `TuiOnly` list, and copying that list would be a
+    /// regression here: the oracle also classifies `/theme` and `/status` as TUI-only,
+    /// while this fork ships `/theme` as a GUI command. Surfaces are a per-fork fact,
+    /// not something to inherit wholesale.
+    pub fn is_tui_only(&self) -> bool {
+        matches!(
+            self.name,
+            "/statusline"
+                | "/auto-approve"
+                | "/natural-language-detection"
+                | "/exit"
+                | "/mcp"
+                | "/view-logs"
+                | "/clear"
+        )
+    }
+
     /// Whether this command is implemented on the ratatui TUI surface. Mirrors the
     /// `GuiAndTui`/`TuiOnly` surface classification from Warp OSS for the commands Zap ships.
     pub fn supports_tui(&self) -> bool {

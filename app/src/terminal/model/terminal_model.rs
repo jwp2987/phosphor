@@ -1099,9 +1099,18 @@ impl TerminalModel {
         terminal_model.command_finished(CommandFinishedValue {
             completion_metadata: completion_metadata.clone(),
         });
+        // A real precmd hook always reports the session the shell was
+        // initialised with, and `Block::precmd` copies it onto the newly
+        // started block. Defaulting it here left every post-bootstrap block
+        // with `session_id: None` -- a state no live terminal can reach -- so
+        // any code path that resolves the active block's session (shell command
+        // execution, for one) silently no-opped under test.
         terminal_model.precmd_with_completion_metadata(PrecmdValue {
             completion_metadata,
-            prompt_metadata: PromptMetadata::default(),
+            prompt_metadata: PromptMetadata {
+                session_id: Some(123),
+                ..Default::default()
+            },
         });
         terminal_model
     }

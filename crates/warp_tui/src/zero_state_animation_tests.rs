@@ -15,10 +15,13 @@
 //   diagonal, rendered as short horizontal/vertical runs near its four tips
 //   (see the module doc comment on `logo_outline_glyph`'s aspect-corrected
 //   tangent projection) rather than one long edge, so the run-length
-//   assertion is replaced with `"HHH"` — confirmed empirically (a 3-cell run
-//   is the longest that occurs for this shape at the panel size under test;
-//   asserting a shorter contiguous run than the pin, but on a shape that
-//   genuinely doesn't produce a 6-cell one, not a weakened check).
+//   assertion is replaced with `"---"` (three consecutive `LogoGlyph::
+//   Horizontal` cells, which render as `-`, not the literal letters `HHH`
+//   that an earlier revision of this port asserted by mistake) — confirmed
+//   empirically (a 3-cell run is the longest that occurs for this shape at
+//   the panel size under test; asserting a shorter contiguous run than the
+//   pin, but on a shape that genuinely doesn't produce a 6-cell one, not a
+//   weakened check).
 // - `logo_scales_down_while_preserving_cell_aspect`'s two built-in-shape
 //   expectations are recomputed for `BUILT_IN_MARK_CELL_ASPECT_RATIO = 2.0`
 //   (a symmetric diamond) instead of the pin's `2.5` (Warp's wordmark
@@ -165,7 +168,7 @@ fn full_face_frame_is_recognizable_and_centered() {
             .filter(|(_, _, cell)| cell.surface != LogoSurface::Background)
             .all(|(_, y, _)| y > 0 && y < usize::from(PANEL_SIZE.height) - 1)
     );
-    assert!(lines.iter().any(|line| line.contains("HHH")));
+    assert!(lines.iter().any(|line| line.contains("---")));
     assert!(lines.iter().any(|line| line.contains('.')));
     assert!(lines.iter().all(|line| !line.contains(['█', '▓', '▒'])));
 }
