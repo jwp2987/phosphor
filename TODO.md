@@ -31,9 +31,17 @@ Of 11 issues examined closely on 2026-08-08, four stated the opposite of the cod
 from titles here is unreliable.
 
 ### Tier 1 — trivial (< 1h each)
-- [ ] #334 pane divider double-click: data layer DONE (PR #515) + tests pass, but
-      NOTHING CALLS IT -- reopened 2026-08-08; the divider gesture is being wired
-- [ ] #401 workspace/cli_install: install/uninstall_warpctrl symlink installer missing
+- [x] #334 pane divider double-click -- DONE 2026-08-08 (`315cfbb57`). Data layer was
+      already in (PR #515); the gesture was never wired. Ported the pin's
+      `divider_mouse_down_action` into both divider variants + `PaneGroupAction::ResetPaneSizes`.
+- [x] #401 warpctrl symlink installer -- DONE 2026-08-08 (`693046e02`). Also had to add
+      `Channel::warpctrl_command_name()`, which the issue did not mention.
+      NOT wired to palette actions ON PURPOSE: that needs `FeatureFlag::WarpControlCli`,
+      which does not exist here and would collide with PR #480 (documented at
+      `app/src/ai/skills/bundled.rs:304` and `read_skill_tests.rs:503`).
+      NOTE the distinction for the 'wire what you port' rule: #334 was unwired with NO
+      blocker (fix it); #401 is unwired with a DOCUMENTED blocker owned elsewhere (accept
+      and record it). The rule must not force collisions.
 - [ ] #410 util/bindings: two editable-binding regressions vs the pin
 - [ ] #436 warpui_core TuiViewportedList: no trimmed-selection-line-ends option
 - [ ] #498 file tree: `show_hidden_files` has no Settings toggle / palette action
