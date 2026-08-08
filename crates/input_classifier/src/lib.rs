@@ -9,6 +9,7 @@ pub mod test_utils;
 pub mod util;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "fasttext")]
 pub use fasttext::FasttextClassifier;
@@ -16,6 +17,42 @@ pub use heuristic_classifier::HeuristicClassifier;
 pub use input_type::InputType;
 #[cfg(feature = "onnx")]
 pub use onnx::{Model as OnnxModel, OnnxClassifier};
+
+/// Sources produced by the input classifier pipeline.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputClassifierDecisionSource {
+    // Classification result coming from Onnx classifier
+    InputClassifier,
+    // Classification result coming from fall back heuristic classifier when onnx classifier panicked
+    InputClassifierFallbackHeuristic,
+    // Classification result coming from current input type when onnx classifier failed
+    InputClassifierFallbackCurrentInput,
+    // Input match with ONE_OFF_NATURAL_LANGUAGE_WORDS
+    NaturalLanguageOneOffAllowlist,
+    // Input match with ONE_OFF_SHELL_COMMAND_KEYWORDS
+    ShellCommandAllowList,
+    // Classification result coming from is_likely_shell_command
+    ShellHeuristic,
+    /// Fork-original, not in the pin: input contained CJK / kana / Hangul
+    /// characters and was short-circuited straight to AI, since the
+    /// dictionary and ML models are all English-only (see `util::contains_cjk`).
+    CjkHeuristic,
+}
+
+/// The detected input type along with the decision source that produced it.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputClassificationResult {
+    /// The detected input type.
+    pub input_type: InputType,
+    /// The classifier source that produced this classification.
+    pub source: InputClassifierDecisionSource,
+}
+
+impl InputClassificationResult {
+    pub fn new(input_type: InputType, source: InputClassifierDecisionSource) -> Self {
+        Self { input_type, source }
+    }
+}
 
 /// An input classifier, which can take some parsed user input and determine
 /// what type of input it is.
@@ -26,7 +63,7 @@ pub trait InputClassifier: 'static + Send + Sync {
         &self,
         input: warp_completer::ParsedTokensSnapshot,
         context: &Context,
-    ) -> InputType;
+    ) -> InputClassificationResult;
 
     async fn classify_input(
         &self,
@@ -41,20 +78,24 @@ pub struct ClassificationResult {
     p_shell: f32,
     /// The probability that the input is a natural language query to AI.
     p_ai: f32,
+    /// The classifier source that produced this classification.
+    pub source: InputClassifierDecisionSource,
 }
 
 impl ClassificationResult {
-    fn pure_ai() -> Self {
+    fn pure_ai(source: InputClassifierDecisionSource) -> Self {
         Self {
             p_shell: 0.0,
             p_ai: 1.0,
+            source,
         }
     }
 
-    fn pure_shell() -> Self {
+    fn pure_shell(source: InputClassifierDecisionSource) -> Self {
         Self {
             p_shell: 1.0,
             p_ai: 0.0,
+            source,
         }
     }
 
