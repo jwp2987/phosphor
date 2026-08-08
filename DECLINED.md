@@ -35,6 +35,7 @@ Phosphor drops Warp's cloud backend. These are not gaps.
 | **Account-first onboarding, billing, paid tiers** | #11 | `account_class`, `is_paid`, `has_team`, upgrade flows. No BYOP equivalent. |
 | **`/logout` slash command** | #338 | `crate::tui::log_out_tui` (its dispatch target) is a documented no-op: "BYOP has no account to log out of." Registering `/logout` would add a row to the `/` menu that does nothing when selected — the dispatch code existing does not make this a wiring gap, unlike `/exit`/`/mcp`/`/view-logs`/`/auto-approve`/`/natural-language-detection`/`/clear` in the same issue. |
 | **`/voice` slash command** | #11 | `VoiceInputLifecycle` — KEEP-DROPPED, maintainer 2026-08-02: the voice transcription backend (Wispr) is cloud and dropped. |
+| **`ActiveAgentViewsModel`** | #418 | Deleted with the cloud management view it was the state source for — see the module doc at `app/src/notifications/model.rs`. The fork substituted a working equivalent: `is_conversation_open` became a `BlocklistAIHistoryModel::conversation()` check for "is the conversation still in memory" (`model.rs:275`). **This is invisible to the import test**, because the symbol is simply absent rather than importing anything cloudy, so it keeps resurfacing as apparent debt. Three of #418's pinned "conversation transfer" tests need it, plus `RestoreConversationEntryBehavior`; all are permanently out of scope. Porting them would mean resurrecting a deleted cloud subsystem to satisfy a test. |
 
 ## Provider credentials — API keys only
 
@@ -67,6 +68,7 @@ not hidden by a cloud-availability check.
 | what | issue | note |
 |---|---|---|
 | **Voice-input UI (TUI composer, statusline item, `/voice`)** | #389 | Not a gap — the transcription backend the UI would drive is cloud, and this fork has already turned it off. |
+| **Voice input language preference** | #352 | **DECIDED 2026-08-08.** `VOICE_INPUT_LANGUAGES` and `voice_input_language` configure the transcription language for a backend that cannot run here — `VoiceTranscriber::disabled()` since `9d92598c4`, because the BYOP genai protocol cannot carry audio. A setting with no reachable effect. Note `crates/voice_input` **does** exist and does real `cpal` audio capture, which is why this keeps looking live: the capture works, the transcriber it feeds does not. |
 
 `crates/voice_input` (audio capture: `cpal` input stream, resampling, WAV
 encoding) is real and already used by the GUI editor
@@ -118,6 +120,10 @@ unrelated to voice and is not declined — see the issue for its state.
 | **Orchestration persistence fields** | #376 | **DECIDED 2026-08-07: declined, cloud.** `AgentConversationData` lacks `pinned`, `is_remote_child`, `orchestration_harness_type`, `root_task_is_optimistic`. They serve the multi-agent "pill bar" UI whose ~15-20 consuming files are entirely absent here. Same cloud family as the RunAgents row above. **Also covers #410's second regression:** the pin's `terminal:cycle_next_orchestration_child_agent` / `terminal:cycle_previous_orchestration_child_agent` editable bindings (`app/src/terminal/view/init.rs`) and their pin test `test_orchestration_cycle_bindings_are_editable` exist only to navigate the same "pill bar" child-agent list (`AgentViewController::adjacent_orchestration_conversation_id`, `Event::RevealChildAgent`) — this decision answers #410's open "needs a scope call" question, so that half stays unported rather than being re-filed as fresh debt. |
 | **"Oz updates" zero-state section** | #321 | **DECIDED 2026-08-07: declined.** `ChangelogModel.oz_updates` / `AISettings::should_show_oz_updates_in_zero_state` drive a Warp-branded content feed in the zero state. Not a capability gap — branded content this fork does not carry. |
 | **remote_server bundled skills/resources** | #440 | **DECIDED 2026-08-07: declined.** `BUNDLED_RESOURCES_DIR_NAME`, `remote_server_bundled_resources_dir` and `remote_server_removal_command` are all absent from `crates/remote_server/src/setup.rs`. Phosphor's remote-server artifact does not ship a `resources/` tree and is not gaining remote-installed bundled skills. |
+| **Multi-agent orchestration, entirely** | #304, #309, #310, #325, #329 | **DECIDED 2026-08-08: Phosphor is not doing multi-agent orchestration.** Decided on the *product* question, deliberately not on cloud coupling — that axis produced contradictory answers three times. The cloud rows above (#290 RunAgents, #376 persistence fields) cover only the cloud-runner half; the pin's `orchestration_topology.rs` imports **nothing** cloud-bound (`HashSet`, `ai::agent::conversation`, `BlocklistAIHistoryModel`) and `SCOPE-AI.md` correctly rates it verdict **D, non-cloud**. An agent rightly overruled an earlier claim that it was moot under #290. It is declined anyway, because the feature is not wanted. Corroborating: `crates/persistence/migrations/2026-03-23-180000_remove_orchestration_persistence` removed orchestration storage deliberately. Out of scope: `orchestration_topology.rs` (26 tests), `orchestration_events.rs` (10), `orchestration_event_streamer.rs`, `local_agent_task_sync_model.rs`, the orchestrator/child-agent view, credit rollup and `/orchestrate`, run-agents child prompt composition, collapsible defaults. Those 26 topology tests are good local logic — status precedence, pre-order flattening, adjacent-child navigation — and are worth revisiting *only* if orchestration is ever wanted. |
+| **SSH tmux wrapper — kept, deprecation not ported** | #322 | **DECIDED 2026-08-08: keep the tmux wrapper permanently.** The pin deprecates it in favour of the remote-server SSH extension; Phosphor does not, because it should warpify whatever host it is SSH'ing into. `crates/remote_server/src/setup.rs` enumerates exactly two conditions under which the extension declines to install — `UnsupportedReason::GlibcTooOld` and `NonGlibc` (musl/Alpine) — and everything else, including permissions and restricted shells, returns `PreinstallStatus::Unknown`, which `is_supported()` treats as supported. So the fallback population is precisely Alpine/musl and old-glibc hosts, which this project intends to keep serving. `WarpifySettings::use_ssh_tmux_wrapper` and its 6 call sites stay (`settings_view/warpify_page.rs` ×4, `terminal/local_tty/terminal_manager.rs`, `terminal/ssh/ssh_detection.rs`), as does the gate on `is_compatible_subshell_command`. Any pinned tests asserting the deprecation are permanently unported. |
+| **computer_use session recording** | #350 | **DECIDED 2026-08-08: declined — this fork is not doing recording.** Distinct from #367 (terminal screen capture) but the same call. The whole subsystem is video capture of computer-use sessions: `mac/recording.rs`, `linux/recording.rs`, `recording_metadata.rs`, and `overlay::build_overlay_ass` which burns click/drag annotations into the video. `PointerSession`/`PointerSink` sound independent but exist solely to stitch pointer events across the discrete `UseComputer` calls that make up one recording, so a drag split across several calls renders as one trail — not separable. Out of scope: `pointer_session_tests.rs` (6), `overlay_tests.rs`, `recording_metadata_tests.rs`, `recording_tests.rs`, `mac/recording_tests.rs`, `linux/recording_tests.rs`. **#349 is NOT covered** — computer_use per-window *activation* (`mac/activation.rs`, `window.rs`, `post.rs`, `linux/x11/seat.rs`) is unrelated to recording and remains a real gap. |
+| **Dead code for declined subsystems** | #550, #551 | **DECIDED 2026-08-08.** Surfaced by the #207 dead-code audit, which reports candidates without judging them; each still needs a call on wire-it-up versus always-dead. These two are always-dead. `warpui_core::integration::capture_recorder` is an orphaned duplicate of `video_recorder` with no callers, for the declined recording feature. `WarpDriveSpace::new` is never constructed and has no factory call site — Warp Drive is dropped cloud (see the #267 row, which keeps link resolution as deliberate dead code). Neither is a wiring gap. |
 
 ---
 
@@ -132,3 +138,23 @@ Filed as cloud or as decisions, but actually in scope. Do not add these here.
   Phosphor wants it.
 - **Grok OAuth** — declined for product reasons (above), *not* because it is cloud.
   It never touches Warp's servers.
+
+## The import test is necessary, not sufficient
+
+`SCOPE-*.md` classifies a pin file by reading its import list: anything reaching
+`crate::server::`, `cloud_object` or `warp_graphql` is cloud, everything else is
+in scope. That is the right first filter and it is cheap. It is also blind to
+two cases that came up repeatedly on 2026-08-07/08:
+
+- **A feature the fork deliberately deleted and replaced.** `ActiveAgentViewsModel`
+  imports nothing cloudy; it is simply gone, with a working substitute. To the
+  import test that is indistinguishable from an unported symbol.
+- **A feature that is genuinely local and simply not wanted.** The orchestration
+  topology modules import only `HashSet` and two in-tree types. Verdict D,
+  non-cloud, correctly — and declined anyway on the product question.
+
+So before filing a gap: a pinned test is debt **only if the feature exists and
+the test is missing**. If the feature is missing, it is a feature issue, and it
+should be sized as one. If the feature was deliberately removed, it belongs in
+this file. Three separate issues were mislabelled as portable test debt for
+want of that distinction.
