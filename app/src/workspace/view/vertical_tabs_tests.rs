@@ -1,3 +1,4 @@
+use crate::ai::agent::conversation::ConversationStatus;
 use crate::context_chips::display_chip::GitLineChanges;
 use crate::pane_group::pane::IPaneType;
 use crate::pane_group::{PaneId, TerminalPaneId};
@@ -15,16 +16,25 @@ use super::{
     compact_branch_subtitle_display, detail_sidecar_width_and_bounds,
     detail_target_for_hovered_row, format_summary_primary_labels,
     non_terminal_search_text_fragments, pane_ids_for_display_granularity,
-    pane_search_text_fragments, preferred_agent_tab_titles, search_fragments_contain_query,
-    select_summary_pane_kind_icons, should_keep_detail_sidecar_visible_for_mouse_position,
-    should_show_tab_group_header, summary_overflow_count, summary_search_text_fragments,
-    terminal_kind_badge_label, terminal_primary_line_data, terminal_pull_request_badge_label,
-    terminal_search_text_fragments, terminal_title_fallback_font, uses_outer_group_container,
-    visible_pane_ids_for_detail_target, vtab_diff_stats_text, AgentTabTextPreference,
-    SummaryPaneKind, SummaryPaneKindIcons, TerminalAgentText, TerminalPrimaryLineData,
-    TerminalPrimaryLineFont, VerticalTabsDetailTarget, VerticalTabsDetailTargetKind,
-    VerticalTabsSummaryBranchEntry, VerticalTabsSummaryData,
+    pane_search_text_fragments, preferred_agent_tab_titles, push_normalized_unique_summary_label,
+    search_fragments_contain_query, select_summary_pane_kind_icons,
+    should_keep_detail_sidecar_visible_for_mouse_position, should_show_tab_group_header,
+    sort_summary_primary_labels_status_first, summary_overflow_count,
+    summary_search_text_fragments, terminal_kind_badge_label, terminal_primary_line_data,
+    terminal_pull_request_badge_label, terminal_search_text_fragments,
+    terminal_title_fallback_font, uses_outer_group_container, visible_pane_ids_for_detail_target,
+    vtab_diff_stats_text, AgentTabTextPreference, SummaryPaneKind, SummaryPaneKindIcons,
+    TerminalAgentText, TerminalPrimaryLineData, TerminalPrimaryLineFont, VerticalTabsDetailTarget,
+    VerticalTabsDetailTargetKind, VerticalTabsSummaryBranchEntry, VerticalTabsSummaryData,
+    VerticalTabsSummaryPrimaryLabel,
 };
+
+fn label(text: &str) -> VerticalTabsSummaryPrimaryLabel {
+    VerticalTabsSummaryPrimaryLabel {
+        text: text.to_string(),
+        status: None,
+    }
+}
 
 fn pane_id() -> PaneId {
     TerminalPaneId::dummy_terminal_pane_id().into()
@@ -984,11 +994,11 @@ fn coalesce_summary_branch_entries_groups_by_repo_and_branch() {
 #[test]
 fn format_summary_primary_labels_appends_overflow_count() {
     let labels = vec![
-        "Claude".to_string(),
-        "Oz".to_string(),
-        "cargo".to_string(),
-        "code review".to_string(),
-        "tests".to_string(),
+        label("Claude"),
+        label("Oz"),
+        label("cargo"),
+        label("code review"),
+        label("tests"),
     ];
 
     assert_eq!(
@@ -1002,11 +1012,11 @@ fn format_summary_primary_labels_appends_overflow_count() {
 fn summary_search_fragments_include_hidden_overflow_values() {
     let summary = VerticalTabsSummaryData {
         primary_labels: vec![
-            "Claude".to_string(),
-            "Oz".to_string(),
-            "cargo".to_string(),
-            "code review".to_string(),
-            "hidden work".to_string(),
+            label("Claude"),
+            label("Oz"),
+            label("cargo"),
+            label("code review"),
+            label("hidden work"),
         ],
         working_directories: vec!["~/warp-internal".to_string(), "~/warp-server".to_string()],
         branch_entries: vec![
@@ -1056,4 +1066,116 @@ fn summary_overflow_count_caps_visible_region() {
     assert_eq!(summary_overflow_count(5, 3), 2);
     assert_eq!(summary_overflow_count(3, 3), 0);
     assert_eq!(summary_overflow_count(2, 3), 0);
+}
+
+#[test]
+fn primary_labels_dedupe_preserves_first_seen_status() {
+    let mut values = Vec::new();
+    let mut seen = std::collections::HashMap::new();
+    push_normalized_unique_summary_label(&mut values, &mut seen, "  cargo   test  ", None);
+    push_normalized_unique_summary_label(
+        &mut values,
+        &mut seen,
+        "cargo test",
+        Some(ConversationStatus::InProgress),
+    );
+
+    assert_eq!(
+        values,
+        vec![VerticalTabsSummaryPrimaryLabel {
+            text: "cargo test".to_string(),
+            status: None,
+        }]
+    );
+}
+
+#[test]
+fn primary_labels_preserve_status_through_aggregation() {
+    let mut values = Vec::new();
+    let mut seen = std::collections::HashMap::new();
+    push_normalized_unique_summary_label(
+        &mut values,
+        &mut seen,
+        "Plan a refactor",
+        Some(ConversationStatus::InProgress),
+    );
+    push_normalized_unique_summary_label(
+        &mut values,
+        &mut seen,
+        "Investigate failure",
+        Some(ConversationStatus::Success),
+    );
+    push_normalized_unique_summary_label(&mut values, &mut seen, "cargo build", None);
+
+    assert_eq!(
+        values,
+        vec![
+            VerticalTabsSummaryPrimaryLabel {
+                text: "Plan a refactor".to_string(),
+                status: Some(ConversationStatus::InProgress),
+            },
+            VerticalTabsSummaryPrimaryLabel {
+                text: "Investigate failure".to_string(),
+                status: Some(ConversationStatus::Success),
+            },
+            VerticalTabsSummaryPrimaryLabel {
+                text: "cargo build".to_string(),
+                status: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn sort_summary_primary_labels_moves_status_first_and_preserves_order() {
+    let mut values = vec![
+        VerticalTabsSummaryPrimaryLabel {
+            text: "plain terminal".to_string(),
+            status: None,
+        },
+        VerticalTabsSummaryPrimaryLabel {
+            text: "first conversation".to_string(),
+            status: Some(ConversationStatus::InProgress),
+        },
+        VerticalTabsSummaryPrimaryLabel {
+            text: "code pane".to_string(),
+            status: None,
+        },
+        VerticalTabsSummaryPrimaryLabel {
+            text: "second conversation".to_string(),
+            status: Some(ConversationStatus::Success),
+        },
+        VerticalTabsSummaryPrimaryLabel {
+            text: "last terminal".to_string(),
+            status: None,
+        },
+    ];
+
+    sort_summary_primary_labels_status_first(&mut values);
+
+    assert_eq!(
+        values,
+        vec![
+            VerticalTabsSummaryPrimaryLabel {
+                text: "first conversation".to_string(),
+                status: Some(ConversationStatus::InProgress),
+            },
+            VerticalTabsSummaryPrimaryLabel {
+                text: "second conversation".to_string(),
+                status: Some(ConversationStatus::Success),
+            },
+            VerticalTabsSummaryPrimaryLabel {
+                text: "plain terminal".to_string(),
+                status: None,
+            },
+            VerticalTabsSummaryPrimaryLabel {
+                text: "code pane".to_string(),
+                status: None,
+            },
+            VerticalTabsSummaryPrimaryLabel {
+                text: "last terminal".to_string(),
+                status: None,
+            },
+        ]
+    );
 }
