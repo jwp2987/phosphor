@@ -10,22 +10,20 @@ use futures::io::{AsyncRead, AsyncWrite};
 use warpui::r#async::{executor, FutureExt as _};
 
 use crate::proto::{
-    client_message, discard_files_response, server_message, Abort, Authenticate, BufferEdit,
-    ClientMessage, CloseBuffer, CreateDirectory, CreateDirectoryResponse, DeleteFile,
-    DiffStateFileDelta,
+    discard_files_response, host_scoped_request, notification, read_file_chunk_response,
+    server_message, session_scoped_request, Abort, Authenticate, BufferEdit, ClientMessage,
+    CloseBuffer, CreateDirectory, CreateDirectoryResponse, DeleteFile, DiffStateFileDelta,
     DiffStateMetadataUpdate, DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches,
     GetBranchesResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
-    GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest, GitCreatePrResponse,
-    GitPushRequest, GitPushResponse,
-    GetDiffState, GetDiffStateResponse, Initialize,
+    GetDiffState, GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse,
+    GitCreatePrRequest, GitCreatePrResponse, GitPushRequest, GitPushResponse, Initialize,
     InitializeResponse, ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
-    read_file_chunk_response, ReadFileChunkResponse, ReadFileContextRequest,
-    ReadFileContextResponse, ResolveConflict,
+    ReadFileChunkResponse, ReadFileContextRequest, ReadFileContextResponse, ResolveConflict,
     ResolveConflictResponse, ResolvePath, ResolvePathResponse, RipgrepSearchRequest,
-    RipgrepSearchResponse, RunCommandRequest,
-    RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
-    TextEdit, UnsubscribeDiffState, WriteFile, WriteFileChunk, WriteFileChunkResponse,
+    RipgrepSearchResponse, RunCommandRequest, RunCommandResponse, SaveBuffer, SaveBufferResponse,
+    ServerMessage, SessionBootstrapped, TextEdit, UnsubscribeDiffState, WriteFile, WriteFileChunk,
+    WriteFileChunkResponse,
 };
 
 use crate::protocol::{self, ProtocolError, RequestId};
@@ -218,12 +216,12 @@ impl RemoteServerClient {
         auth_token: Option<&str>,
     ) -> Result<InitializeResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::Initialize(Initialize {
+        let msg = ClientMessage::session_scoped(
+            request_id.to_string(),
+            session_scoped_request::Message::Initialize(Initialize {
                 auth_token: auth_token.unwrap_or_default().to_owned(),
-            })),
-        };
+            }),
+        );
 
         let response = self.send_request(request_id, msg).await?;
 
@@ -239,12 +237,9 @@ impl RemoteServerClient {
     /// Sends an `Authenticate` notification to rotate the daemon-wide
     /// credential after initialization.
     pub fn authenticate(&self, auth_token: &str) {
-        let msg = ClientMessage {
-            request_id: String::new(),
-            message: Some(client_message::Message::Authenticate(Authenticate {
-                auth_token: auth_token.to_owned(),
-            })),
-        };
+        let msg = ClientMessage::notification(notification::Message::Authenticate(Authenticate {
+            auth_token: auth_token.to_owned(),
+        }));
         self.send_notification(msg);
     }
 
@@ -256,16 +251,13 @@ impl RemoteServerClient {
         shell_type: &str,
         shell_path: Option<&str>,
     ) {
-        let msg = ClientMessage {
-            request_id: String::new(),
-            message: Some(client_message::Message::SessionBootstrapped(
-                SessionBootstrapped {
-                    session_id: session_id.as_u64(),
-                    shell_type: shell_type.to_owned(),
-                    shell_path: shell_path.map(ToOwned::to_owned),
-                },
-            )),
-        };
+        let msg = ClientMessage::notification(notification::Message::SessionBootstrapped(
+            SessionBootstrapped {
+                session_id: session_id.as_u64(),
+                shell_type: shell_type.to_owned(),
+                shell_path: shell_path.map(ToOwned::to_owned),
+            },
+        ));
         self.send_notification(msg);
     }
 
@@ -275,12 +267,12 @@ impl RemoteServerClient {
         path: String,
     ) -> Result<NavigatedToDirectoryResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::NavigatedToDirectory(
+        let msg = ClientMessage::session_scoped(
+            request_id.to_string(),
+            session_scoped_request::Message::NavigatedToDirectory(
                 crate::proto::NavigatedToDirectory { path },
-            )),
-        };
+            ),
+        );
 
         let response = self.send_request(request_id, msg).await?;
 
@@ -300,15 +292,15 @@ impl RemoteServerClient {
         dir_path: String,
     ) -> Result<LoadRepoMetadataDirectoryResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::LoadRepoMetadataDirectory(
+        let msg = ClientMessage::session_scoped(
+            request_id.to_string(),
+            session_scoped_request::Message::LoadRepoMetadataDirectory(
                 crate::proto::LoadRepoMetadataDirectory {
                     repo_path,
                     dir_path,
                 },
-            )),
-        };
+            ),
+        );
 
         let response = self.send_request(request_id, msg).await?;
 
@@ -325,13 +317,10 @@ impl RemoteServerClient {
     /// Creates parent directories if they don't exist.
     pub async fn write_file(&self, path: String, content: String) -> Result<(), ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::WriteFile(WriteFile {
-                path,
-                content,
-            })),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::WriteFile(WriteFile { path, content }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::WriteFileResponse(resp)) => match resp.result {
@@ -358,10 +347,10 @@ impl RemoteServerClient {
         request: ReadFileContextRequest,
     ) -> Result<ReadFileContextResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::ReadFileContext(request)),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ReadFileContext(request),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::ReadFileContextResponse(resp)) => Ok(resp),
@@ -379,10 +368,10 @@ impl RemoteServerClient {
         request: RipgrepSearchRequest,
     ) -> Result<RipgrepSearchResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::RipgrepSearch(request)),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::RipgrepSearch(request),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::RipgrepSearchResponse(resp)) => Ok(resp),
@@ -400,10 +389,10 @@ impl RemoteServerClient {
         request: GetBranches,
     ) -> Result<GetBranchesResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::GetBranches(request)),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::GetBranches(request),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::GetBranchesResponse(resp)) => Ok(resp),
@@ -421,10 +410,10 @@ impl RemoteServerClient {
         request: GetCommittedBranchFilesRequest,
     ) -> Result<GetCommittedBranchFilesResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::GetCommittedBranchFiles(request)),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::GetCommittedBranchFiles(request),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::GetCommittedBranchFilesResponse(resp)) => Ok(resp),
@@ -443,10 +432,10 @@ impl RemoteServerClient {
         request: GitCommitChainRequest,
     ) -> Result<GitCommitChainResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::GitCommitChain(request)),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::GitCommitChain(request),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::GitCommitChainResponse(resp)) => Ok(resp),
@@ -459,15 +448,12 @@ impl RemoteServerClient {
 
     /// Pushes `branch` to origin on the remote host, setting upstream tracking.
     /// Backs the code-review push action over SSH.
-    pub async fn git_push(
-        &self,
-        request: GitPushRequest,
-    ) -> Result<GitPushResponse, ClientError> {
+    pub async fn git_push(&self, request: GitPushRequest) -> Result<GitPushResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::GitPush(request)),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::GitPush(request),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::GitPushResponse(resp)) => Ok(resp),
@@ -485,10 +471,10 @@ impl RemoteServerClient {
         request: GitCreatePrRequest,
     ) -> Result<GitCreatePrResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::GitCreatePr(request)),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::GitCreatePr(request),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::GitCreatePrResponse(resp)) => Ok(resp),
@@ -509,10 +495,10 @@ impl RemoteServerClient {
         request: GetDiffState,
     ) -> Result<GetDiffStateResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::GetDiffState(request)),
-        };
+        let msg = ClientMessage::session_scoped(
+            request_id.to_string(),
+            session_scoped_request::Message::GetDiffState(request),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::GetDiffStateResponse(resp)) => Ok(resp),
@@ -526,20 +512,17 @@ impl RemoteServerClient {
     /// Unsubscribes from diff-state updates for a (repo, mode) pair.
     /// Fire-and-forget: the server sends no response.
     pub fn unsubscribe_diff_state(&self, request: UnsubscribeDiffState) {
-        let msg = ClientMessage {
-            request_id: String::new(),
-            message: Some(client_message::Message::UnsubscribeDiffState(request)),
-        };
+        let msg = ClientMessage::notification(notification::Message::UnsubscribeDiffState(request));
         self.send_notification(msg);
     }
 
     /// Deletes a file on the remote host.
     pub async fn delete_file(&self, path: String) -> Result<(), ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::DeleteFile(DeleteFile { path })),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::DeleteFile(DeleteFile { path }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::DeleteFileResponse(resp)) => match resp.result {
@@ -560,10 +543,10 @@ impl RemoteServerClient {
     /// action. Backs `RemoteDiffStateModel::discard_files` over SSH (#437).
     pub async fn discard_files(&self, request: DiscardFilesRequest) -> Result<(), ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::DiscardFiles(request)),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::DiscardFiles(request),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::DiscardFilesResponse(resp)) => match resp.result {
@@ -586,12 +569,10 @@ impl RemoteServerClient {
     /// files aren't on the local disk).
     pub async fn list_directory(&self, path: String) -> Result<ListDirectoryResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::ListDirectory(ListDirectory {
-                path,
-            })),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ListDirectory(ListDirectory { path }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::ListDirectoryResponse(resp)) => Ok(resp),
@@ -605,10 +586,10 @@ impl RemoteServerClient {
     /// Resolves a path on the remote host for the server file browser.
     pub async fn resolve_path(&self, path: String) -> Result<ResolvePathResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::ResolvePath(ResolvePath { path })),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ResolvePath(ResolvePath { path }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::ResolvePathResponse(resp)) => Ok(resp),
@@ -625,12 +606,10 @@ impl RemoteServerClient {
         path: String,
     ) -> Result<CreateDirectoryResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::CreateDirectory(CreateDirectory {
-                path,
-            })),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::CreateDirectory(CreateDirectory { path }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::CreateDirectoryResponse(resp)) => Ok(resp),
@@ -649,14 +628,14 @@ impl RemoteServerClient {
         max_bytes: u64,
     ) -> Result<ReadFileChunkResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::ReadFileChunk(ReadFileChunk {
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ReadFileChunk(ReadFileChunk {
                 path,
                 offset,
                 max_bytes,
-            })),
-        };
+            }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::ReadFileChunkResponse(resp)) => Ok(resp),
@@ -681,7 +660,9 @@ impl RemoteServerClient {
         let mut bytes = Vec::new();
         let mut offset = 0u64;
         loop {
-            let response = self.read_file_chunk(path.clone(), offset, CHUNK_SIZE).await?;
+            let response = self
+                .read_file_chunk(path.clone(), offset, CHUNK_SIZE)
+                .await?;
             let success = match response.result {
                 Some(read_file_chunk_response::Result::Success(success)) => success,
                 Some(read_file_chunk_response::Result::Error(err)) => {
@@ -708,16 +689,16 @@ impl RemoteServerClient {
         executable: Option<bool>,
     ) -> Result<WriteFileChunkResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::WriteFileChunk(WriteFileChunk {
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::WriteFileChunk(WriteFileChunk {
                 path,
                 offset,
                 bytes,
                 truncate,
                 executable,
-            })),
-        };
+            }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::WriteFileChunkResponse(resp)) => Ok(resp),
@@ -731,10 +712,10 @@ impl RemoteServerClient {
     /// Opens a buffer on the remote host for bidirectional syncing.
     pub async fn open_buffer(&self, path: String) -> Result<OpenBufferResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::OpenBuffer(OpenBuffer { path })),
-        };
+        let msg = ClientMessage::session_scoped(
+            request_id.to_string(),
+            session_scoped_request::Message::OpenBuffer(OpenBuffer { path }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::OpenBufferResponse(resp)) => Ok(resp),
@@ -759,15 +740,12 @@ impl RemoteServerClient {
         new_client_version: u64,
         edits: Vec<TextEdit>,
     ) -> Result<(), ClientError> {
-        let msg = ClientMessage {
-            request_id: String::new(), // notification — no response expected
-            message: Some(client_message::Message::BufferEdit(BufferEdit {
-                path,
-                expected_server_version,
-                new_client_version,
-                edits,
-            })),
-        };
+        let msg = ClientMessage::notification(notification::Message::BufferEdit(BufferEdit {
+            path,
+            expected_server_version,
+            new_client_version,
+            edits,
+        }));
         self.outbound_tx.try_send(msg).map_err(|e| {
             log::error!("Failed to enqueue buffer edit: {e}");
             ClientError::Disconnected
@@ -776,20 +754,18 @@ impl RemoteServerClient {
 
     /// Tells the remote host to close a buffer (stop watching).
     pub fn close_buffer(&self, path: String) {
-        let msg = ClientMessage {
-            request_id: String::new(),
-            message: Some(client_message::Message::CloseBuffer(CloseBuffer { path })),
-        };
+        let msg =
+            ClientMessage::notification(notification::Message::CloseBuffer(CloseBuffer { path }));
         self.send_notification(msg);
     }
 
     /// Persists the current in-memory buffer to disk on the remote host.
     pub async fn save_buffer(&self, path: String) -> Result<SaveBufferResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::SaveBuffer(SaveBuffer { path })),
-        };
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::SaveBuffer(SaveBuffer { path }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::SaveBufferResponse(resp)) => Ok(resp),
@@ -809,15 +785,15 @@ impl RemoteServerClient {
         current_client_version: u64,
     ) -> Result<ResolveConflictResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::ResolveConflict(ResolveConflict {
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ResolveConflict(ResolveConflict {
                 path,
                 acknowledged_server_version,
                 client_content,
                 current_client_version,
-            })),
-        };
+            }),
+        );
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::ResolveConflictResponse(resp)) => Ok(resp),
@@ -873,15 +849,15 @@ impl RemoteServerClient {
         environment_variables: HashMap<String, String>,
     ) -> Result<RunCommandResponse, ClientError> {
         let request_id = RequestId::new();
-        let msg = ClientMessage {
-            request_id: request_id.to_string(),
-            message: Some(client_message::Message::RunCommand(RunCommandRequest {
+        let msg = ClientMessage::session_scoped(
+            request_id.to_string(),
+            session_scoped_request::Message::RunCommand(RunCommandRequest {
                 command,
                 working_directory,
                 environment_variables,
                 session_id: session_id.as_u64(),
-            })),
-        };
+            }),
+        );
 
         let response = self.send_request(request_id, msg).await?;
 
@@ -949,12 +925,9 @@ impl RemoteServerClient {
 
     /// Sends an `Abort` notification for the given request ID.
     fn send_abort(&self, request_id_to_abort: &RequestId) {
-        let msg = ClientMessage {
-            request_id: RequestId::new().to_string(),
-            message: Some(client_message::Message::Abort(Abort {
-                request_id_to_abort: request_id_to_abort.to_string(),
-            })),
-        };
+        let msg = ClientMessage::notification(notification::Message::Abort(Abort {
+            request_id_to_abort: request_id_to_abort.to_string(),
+        }));
         self.send_notification(msg);
     }
 
@@ -1016,29 +989,39 @@ impl RemoteServerClient {
                                 log::warn!("Event channel closed, dropping push message");
                             }
                         }
-                    } else { match pending_requests.remove(&request_id) { Some((_, tx)) => {
-                        // Ignore send failure — the caller may have dropped the receiver.
-                        let _ = tx.send(Ok(msg));
-                    } _ => {
-                        log::warn!("Received unexpected response with request_id={request_id}");
-                    }}}
+                    } else {
+                        match pending_requests.remove(&request_id) {
+                            Some((_, tx)) => {
+                                // Ignore send failure — the caller may have dropped the receiver.
+                                let _ = tx.send(Ok(msg));
+                            }
+                            _ => {
+                                log::warn!(
+                                    "Received unexpected response with request_id={request_id}"
+                                );
+                            }
+                        }
+                    }
                 }
                 Err(ProtocolError::Decode(ref err, Some(ref request_id))) => {
-                    match pending_requests.remove(request_id) { Some((_, tx)) => {
-                        log::warn!(
-                            "Reader task: malformed response \
+                    match pending_requests.remove(request_id) {
+                        Some((_, tx)) => {
+                            log::warn!(
+                                "Reader task: malformed response \
                              (request_id={request_id}): {err}"
-                        );
-                        let _ = tx.send(Err(ClientError::Protocol(ProtocolError::Decode(
-                            err.clone(),
-                            Some(request_id.clone()),
-                        ))));
-                    } _ => {
-                        log::warn!(
-                            "Reader task: malformed response for \
+                            );
+                            let _ = tx.send(Err(ClientError::Protocol(ProtocolError::Decode(
+                                err.clone(),
+                                Some(request_id.clone()),
+                            ))));
+                        }
+                        _ => {
+                            log::warn!(
+                                "Reader task: malformed response for \
                              unknown request (request_id={request_id}): {err}"
-                        );
-                    }}
+                            );
+                        }
+                    }
                 }
                 Err(ProtocolError::Decode(ref err, None)) => {
                     log::warn!(

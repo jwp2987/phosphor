@@ -1,19 +1,20 @@
 use prost::Message;
 
 use crate::proto::{
-    client_message, server_message, ClientMessage, Initialize, InitializeResponse, ServerMessage,
+    client_message, host_scoped_request, notification, server_message, session_scoped_request,
+    ClientMessage, Initialize, InitializeResponse, ServerMessage,
 };
 
 use super::*;
 
 #[tokio::test]
 async fn round_trip_client_message() {
-    let msg = ClientMessage {
-        request_id: "test-123".to_string(),
-        message: Some(client_message::Message::Initialize(Initialize {
+    let msg = ClientMessage::session_scoped(
+        "test-123".to_string(),
+        session_scoped_request::Message::Initialize(Initialize {
             auth_token: String::new(),
-        })),
-    };
+        }),
+    );
 
     let mut buf = Vec::new();
     write_client_message(&mut buf, &msg).await.unwrap();
@@ -23,7 +24,61 @@ async fn round_trip_client_message() {
 
     assert_eq!(decoded.request_id, "test-123");
     match decoded.message {
-        Some(client_message::Message::Initialize(_)) => {}
+        Some(client_message::Message::SessionScoped(_)) => {}
+        other => panic!("unexpected message variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn round_trip_client_message_host_scoped() {
+    // Direct envelope coverage for #438: a HostScopedRequest round-trips
+    // through the same generic read/write path as any other ClientMessage,
+    // and decodes back into the HostScoped variant (not SessionScoped or
+    // Notification).
+    let msg = ClientMessage::host_scoped(
+        "host-123".to_string(),
+        host_scoped_request::Message::DeleteFile(crate::proto::DeleteFile {
+            path: "/tmp/f".to_string(),
+        }),
+    );
+
+    let mut buf = Vec::new();
+    write_client_message(&mut buf, &msg).await.unwrap();
+
+    let mut cursor = &buf[..];
+    let decoded: ClientMessage = read_client_message(&mut cursor).await.unwrap();
+
+    assert_eq!(decoded.request_id, "host-123");
+    match decoded.message {
+        Some(client_message::Message::HostScoped(req)) => {
+            assert!(matches!(
+                req.message,
+                Some(host_scoped_request::Message::DeleteFile(_))
+            ));
+        }
+        other => panic!("unexpected message variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn round_trip_client_message_notification() {
+    // Notifications always carry an empty request_id (fire-and-forget, no
+    // response expected) — verify that shape survives the wire round-trip.
+    let msg = ClientMessage::notification(notification::Message::Abort(crate::proto::Abort {
+        request_id_to_abort: "abc".to_string(),
+    }));
+
+    let mut buf = Vec::new();
+    write_client_message(&mut buf, &msg).await.unwrap();
+
+    let mut cursor = &buf[..];
+    let decoded: ClientMessage = read_client_message(&mut cursor).await.unwrap();
+
+    assert_eq!(decoded.request_id, "");
+    match decoded.message {
+        Some(client_message::Message::Notification(n)) => {
+            assert!(matches!(n.message, Some(notification::Message::Abort(_))));
+        }
         other => panic!("unexpected message variant: {other:?}"),
     }
 }
@@ -119,12 +174,12 @@ async fn write_message_too_large() {
 
 #[test]
 fn try_extract_request_id_from_valid_message() {
-    let msg = ClientMessage {
-        request_id: "abc-123".to_string(),
-        message: Some(client_message::Message::Initialize(Initialize {
+    let msg = ClientMessage::session_scoped(
+        "abc-123".to_string(),
+        session_scoped_request::Message::Initialize(Initialize {
             auth_token: String::new(),
-        })),
-    };
+        }),
+    );
     let buf = msg.encode_to_vec();
     assert_eq!(try_extract_request_id(&buf), Some("abc-123".to_string()));
 }
