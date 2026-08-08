@@ -199,6 +199,15 @@ pub(crate) fn add_test_terminal_session(
     ModelHandle<Box<dyn TerminalManagerTrait>>,
 ) {
     app.update(|ctx| {
+        // `TuiTerminalSessionView::new` (via `TuiZeroStateView::new`) reads
+        // the zero-state animation config singleton unconditionally, exactly
+        // as the real app does after `session::init` registers it — see
+        // `zero_state_animation_config.rs` and #384. Guarded so tests that
+        // already provisioned it (e.g. via their own
+        // `ZeroStateAnimationConfig::register` call) don't double-register.
+        if !ctx.has_singleton_model::<crate::zero_state_animation::ZeroStateAnimationConfig>() {
+            crate::zero_state_animation::ZeroStateAnimationConfig::register(ctx);
+        }
         let surface_init = TerminalSurfaceInit::new_for_test(ctx);
         let terminal_model = surface_init.model.clone();
         let view = ctx.add_typed_action_tui_view(window_id, |ctx| {
