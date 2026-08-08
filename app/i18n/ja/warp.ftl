@@ -925,6 +925,7 @@ settings-ai-auto-show-rich-input = エージェントの状態に応じて Rich 
 settings-ai-auto-show-rich-input-tooltip = コーディングエージェント用の Warp プラグインが必要です
 settings-ai-auto-open-rich-input = コーディングエージェントのセッション開始時に Rich Input を自動で開く
 settings-ai-auto-dismiss-rich-input = プロンプト送信後に Rich Input を自動で閉じる
+settings-ai-submit-on-ctrl-enter = Ctrl+Enter で Rich Input を送信
 settings-ai-toolbar-commands-label = ツールバーを有効化するコマンド
 settings-ai-toolbar-commands-description = マッチするコマンドでコーディングエージェントツールバーを表示する正規表現を追加します。
 settings-ai-per-agent-section = インストール済みエージェント

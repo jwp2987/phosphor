@@ -1,15 +1,25 @@
 //! The pre-first-interaction "zero state" filling the transcript area: the
-//! Warp Agent title and version, a "What's new" changelog section, and the
-//! session's project context (rules and skills discovered).
+//! Phosphor Agent title and version, a "What's new" changelog section, and
+//! the session's project context (rules and skills discovered), layered over
+//! the rotating zero-state object animation.
 //!
 //! The session view owns visibility: the zero state fills the transcript
 //! slot while the transcript has no visible content, so it dismisses once
 //! the first accepted submission produces a block and returns whenever the
 //! transcript empties out again.
+//!
+//! Layout: ported from Warp's `crates/warp_tui/src/zero_state.rs` at the
+//! pinned oracle (`02b53fcd8` — see `ORACLE.md`) as part of #384, which
+//! replaced this fork's side-by-side `TuiFlex::row(text_column,
+//! flex_child(animation))` layout with a `TuiStack` — the animation fills the
+//! whole view as a background layer, with the text column overlaid on top.
+//! This matches the pin's actual rewrite (a full-bleed rotating object, not a
+//! panel next to text) rather than just swapping the animation element in
+//! place. See `zero_state_animation.rs` for the animation itself and why its
+//! built-in mark isn't Warp's logo.
 
-use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ai::project_context::model::{
@@ -23,13 +33,16 @@ use warp_core::channel::ChannelState;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::SingletonEntity;
 use warpui_core::elements::animation::AnimationClock;
-use warpui_core::elements::tui::{Modifier, TuiConstrainedBox, TuiElement, TuiFlex, TuiText};
+use warpui_core::elements::tui::{Modifier, TuiConstrainedBox, TuiElement, TuiFlex, TuiStack, TuiText};
 use warpui_core::{AppContext, Entity, ModelHandle, TuiView, ViewContext};
 
 use crate::autoupdate::{TuiAutoupdateStatus, TuiAutoupdater, TuiAutoupdaterEvent};
 use crate::tui_builder::TuiUiBuilder;
 use crate::ui::abbreviate_home_prefix;
-use crate::zero_state_animation::{StarfieldState, ZeroStateAnimationElement};
+use crate::zero_state_animation::{
+    ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationElement,
+    ZeroStateMarkStyles,
+};
 
 /// Cap on "What's new" bullets, mirroring the compact zero-state mock.
 const MAX_CHANGELOG_BULLETS: usize = 3;
@@ -43,15 +56,10 @@ const MAX_CHANGELOG_BULLETS: usize = 3;
 /// it can use the column's full natural width instead of being capped by
 /// this constant — trading a perfectly stable animation width for never
 /// clipping the path: when the resolved header exceeds this constant and
-/// still fits on one row, the text column (and therefore the row's
-/// flex-child animation, which only gets whatever width is left over) can
-/// end up narrower than it would be with the header capped here. See
-/// [`build_zero_state_text_column`] for the full tradeoff.
+/// still fits on one row, the text column can end up wider than
+/// `LEFT_COLUMN_COLS`. See [`build_zero_state_text_column`] for the full
+/// tradeoff.
 const LEFT_COLUMN_COLS: u16 = 48;
-
-/// Maximum width of the starfield animation panel.  On wide terminals the
-/// animation stays at this width and excess space becomes blank background.
-const MAX_ANIMATION_COLS: u16 = 100;
 
 // ---------------------------------------------------------------------------
 // TuiZeroStateView
@@ -59,13 +67,14 @@ const MAX_ANIMATION_COLS: u16 = 100;
 
 /// The zero-state view: displayed when the transcript is empty.
 ///
-/// Owns the starfield animation state so it persists across view re-renders
-/// (e.g. when MCP connects or a changelog loads).  The animation element
-/// receives an `Rc<RefCell<StarfieldState>>` clone on each render, keeping
-/// the star positions continuous through paint-only animation repaints.
+/// Owns the animation clock so the object's rotation remains continuous
+/// across view re-renders (e.g. when MCP connects or a changelog loads), and
+/// a snapshot of the animation's config (object shape, rotation period,
+/// extrusion depth) refreshed whenever the backing settings/ASCII-art file
+/// change (see `zero_state_animation::ZeroStateAnimationConfig`).
 pub(crate) struct TuiZeroStateView {
-    starfield: Rc<RefCell<StarfieldState>>,
     clock: AnimationClock,
+    animation_config: Arc<ZeroStateAnimationConfig>,
     active_session: ModelHandle<ActiveSession>,
 }
 
@@ -111,10 +120,27 @@ impl TuiZeroStateView {
             };
             ctx.notify();
         });
+        let animation_config = ZeroStateAnimationConfig::handle(ctx);
+        let animation_config_snapshot = Arc::new(animation_config.as_ref(ctx).clone());
+        ctx.subscribe_to_model(
+            &animation_config,
+            |view, animation_config, event, ctx| match event {
+                ZeroStateAnimationConfigEvent::Updated => {
+                    view.animation_config = Arc::new(animation_config.as_ref(ctx).clone());
+                    ctx.notify();
+                }
+                // The load-failure footer hint is shown by
+                // `TuiTerminalSessionView`, which subscribes to the same
+                // model directly (see terminal_session_view.rs); nothing
+                // extra is needed here beyond the config snapshot itself
+                // already reflecting the fallback shape.
+                ZeroStateAnimationConfigEvent::LoadFailed(_) => {}
+            },
+        );
 
         Self {
-            starfield: Rc::new(RefCell::new(StarfieldState::new())),
             clock: AnimationClock::starting_at(Duration::ZERO),
+            animation_config: animation_config_snapshot,
             active_session,
         }
     }
@@ -137,44 +163,28 @@ impl TuiView for TuiZeroStateView {
                 .ok()
                 .map(|cwd| cwd.to_string_lossy().into_owned())
         });
-        let text_column = build_zero_state_text_column(cwd.as_deref(), &builder, ctx);
-        let animation = TuiConstrainedBox::new(
-            ZeroStateAnimationElement::new(
-                Rc::clone(&self.starfield),
-                self.clock,
-                builder.accent_color(),
-            )
-            .finish(),
+        let animation = ZeroStateAnimationElement::new(
+            self.clock,
+            self.animation_config.clone(),
+            ZeroStateMarkStyles {
+                front: builder.accent_text_style(),
+                back: builder.primary_text_style(),
+                side: builder.dim_text_style(),
+                background: builder.muted_text_style(),
+            },
         )
-        .with_max_cols(MAX_ANIMATION_COLS)
         .finish();
-        TuiFlex::row()
-            .child(text_column)
-            .flex_child(animation)
-            .finish()
+        let text_column = build_zero_state_text_column(cwd.as_deref(), &builder, ctx);
+        TuiStack::new().child(animation).child(text_column).finish()
     }
 }
 
-/// Assembles the left text column: title/version/changelog and the project
-/// context body + MCP section constrained to [`LEFT_COLUMN_COLS`], with the
-/// project path header rendered between them at its natural (unconstrained)
-/// width so a long path is never clipped: it wraps onto extra rows when the
-/// column is narrow, or renders past 48 columns on a single row when there
-/// is enough width, instead of losing content.
-///
-/// That single-row growth is not free. [`TuiZeroStateView::render`] composes
-/// this column and the starfield animation as `TuiFlex::row().child(text_column)
-/// .flex_child(animation)`; per `TuiFlex`'s layout policy, `.child()` is
-/// measured first, loosely, against the full offered row width, and only the
-/// leftover goes to `.flex_child()`. Because `path_header` is unconstrained,
-/// a resolved path wide enough to fit on one line can make this column
-/// measure wider than [`LEFT_COLUMN_COLS`], which narrows the animation's
-/// share of the row in exchange for showing the full path. This is an
-/// intentional tradeoff (full path content over a guaranteed-stable
-/// animation width), not a bug — see
-/// `zero_state_path_header_not_truncated_at_wide_terminal` in the test
-/// module, which locks in the "full path over stable animation width"
-/// choice.
+/// Assembles the text column overlaid on top of the animation layer: the
+/// top/bottom sections constrained to [`LEFT_COLUMN_COLS`], and the project
+/// path header rendered between them at its natural (unconstrained) width so
+/// a long path is never clipped: it wraps onto extra rows when the column is
+/// narrow, or renders past 48 columns on a single row when there is enough
+/// width, instead of losing content.
 ///
 /// Both [`TuiZeroStateView::render`] and the regression tests call this
 /// function so a change to how `render` composes the column is caught by the
@@ -219,12 +229,7 @@ fn build_zero_state_text_column(
     // The project path header lives outside the LEFT_COLUMN_COLS-constrained
     // boxes so it can use the column's full natural width: it wraps onto
     // later rows when the column is narrow, or grows past 48 columns on one
-    // row when there is enough width, rather than ever being clipped. That
-    // growth can narrow the sibling starfield animation in
-    // TuiZeroStateView::render (a `.child()` in that row's TuiFlex is
-    // measured loosely against the full row width before the `.flex_child()`
-    // animation gets whatever is left over) — an intentional tradeoff of a
-    // perfectly stable animation width for never losing path content. See
+    // row when there is enough width, rather than ever being clipped. See
     // the doc comment on this function for the full explanation.
     if let Some(path_header_text) = path_header_text {
         let header_style = builder.primary_text_style().add_modifier(Modifier::BOLD);

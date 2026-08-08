@@ -700,6 +700,31 @@ fn test_settings_widget_deeplink_target() {
     assert!(settings_widget_deeplink_target("").is_none());
 }
 
+// Fork-authored coverage for #414: the pinned oracle's
+// `test_settings_section_for_simple_subpage` (`02b53fcd8`,
+// `app/src/uri/uri_tests.rs`) also asserts `billing_and_usage` ->
+// `SettingsSection::BillingAndUsage` and `platform` -> `SettingsSection::OzCloudAPIKeys`.
+// Neither variant exists in this fork's `SettingsSection` (both were dropped as
+// cloud), so those two assertions can't be ported without weakening them; this
+// covers only the sub-pages the fork actually ships.
+#[test]
+fn test_settings_section_for_simple_subpage() {
+    assert_eq!(
+        settings_section_for_simple_subpage("appearance"),
+        Some(SettingsSection::Appearance),
+    );
+    assert_eq!(
+        settings_section_for_simple_subpage("warp_agent"),
+        Some(SettingsSection::WarpAgent),
+    );
+    // `platform` is handled by its own explicit no-op match arm in
+    // `handle_incoming_uri` (the cloud API-key page it used to point to was
+    // removed), so it deliberately does not resolve here.
+    assert!(settings_section_for_simple_subpage("platform").is_none());
+    assert!(settings_section_for_simple_subpage("not_a_subpage").is_none());
+    assert!(settings_section_for_simple_subpage("").is_none());
+}
+
 // -- zap://session deeplink parsing ------------------------------------------
 
 #[test]
