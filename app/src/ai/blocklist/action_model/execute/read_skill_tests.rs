@@ -5,26 +5,44 @@ use crate::ai::agent::ReadSkillRequest;
 use crate::ai::agent::ReadSkillResult;
 use crate::ai::agent::{AIAgentAction, AIAgentActionId, AIAgentActionType};
 use crate::ai::blocklist::action_model::AIConversationId;
-use crate::ai::skills::SkillManager;
+use crate::ai::skills::{BundledSkillActivation, SkillManager};
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use ai::agent::action_result::AnyFileContent;
-use ai::skills::{parse_skill, SkillReference};
+use ai::skills::{parse_skill, ParsedSkill, SkillProvider, SkillReference, SkillScope};
 use repo_metadata::{
     repositories::DetectedRepositories, watcher::DirectoryWatcher, RepoMetadataModel,
 };
 use std::fs;
 use std::io::Write;
 use tempfile::TempDir;
+use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
+use warp_core::features::FeatureFlag;
 use warpui::App;
 use watcher::HomeDirectoryWatcher;
 
 fn initialize_app(app: &mut App) {
+    app.add_singleton_model(|ctx| AppExecutionMode::new(ExecutionMode::App, false, ctx));
     app.add_singleton_model(DirectoryWatcher::new);
     app.add_singleton_model(|_| DetectedRepositories::default());
     app.add_singleton_model(RepoMetadataModel::new);
     app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
     app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
     app.add_singleton_model(SkillManager::new);
+}
+
+/// A synthetic bundled skill for activation tests, matching the pin's
+/// `read_skill_tests.rs::bundled_skill` helper (`02b53fcd8`) minus the
+/// `LocalOrRemotePath` typing (issue #299 — not yet migrated in this fork).
+fn bundled_skill(name: &str) -> ParsedSkill {
+    ParsedSkill {
+        name: name.to_string(),
+        description: format!("{name} bundled skill"),
+        path: std::path::PathBuf::from(format!("/bundled/skills/{name}/SKILL.md")),
+        content: format!("# {name}"),
+        line_range: None,
+        provider: SkillProvider::Zap,
+        scope: SkillScope::Bundled,
+    }
 }
 
 fn create_test_skill_file(dir: &TempDir, name: &str, description: &str) -> std::path::PathBuf {
@@ -384,6 +402,148 @@ fn test_read_skill_executor_rejects_non_skill_path_on_cache_miss() {
                     "Non-skill path on cache miss should return Sync Error, not Async fallback"
                 ),
             }
+        });
+    });
+}
+
+/// Ported from the pin's `test_read_skill_executor_reads_enabled_bundled_skill`
+/// (`02b53fcd8`): a bundled skill whose activation condition is met is readable
+/// by `BundledSkillId` reference. See issue #370.
+#[test]
+fn test_read_skill_executor_reads_enabled_bundled_skill() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let _bundled_skills = FeatureFlag::BundledSkills.override_enabled(true);
+        SkillManager::handle(&app).update(&mut app, |manager, _ctx| {
+            manager.add_bundled_skill_for_testing(
+                "pr-comments",
+                bundled_skill("pr-comments"),
+                BundledSkillActivation::Always,
+            );
+        });
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+
+        let action = AIAgentAction {
+            id: AIAgentActionId::from("test-action-id".to_string()),
+            action: AIAgentActionType::ReadSkill(ReadSkillRequest {
+                skill: SkillReference::BundledSkillId("pr-comments".to_string()),
+            }),
+            task_id: TaskId::new("test-task-id".to_string()),
+            requires_result: false,
+        };
+
+        let input = ExecuteActionInput {
+            action: &action,
+            conversation_id: AIConversationId::new(),
+        };
+
+        executor_handle.update(&mut app, |executor, ctx| {
+            let result: AnyActionExecution = executor.execute(input, ctx).into();
+
+            match result {
+                AnyActionExecution::Sync(AIAgentActionResultType::ReadSkill(
+                    ReadSkillResult::Success { content },
+                )) => {
+                    assert_eq!(content.file_name, "/bundled/skills/pr-comments/SKILL.md");
+                }
+                _ => panic!("Enabled bundled skill should return ReadSkillResult::Success"),
+            }
+        });
+    });
+}
+
+/// Ported from the pin's `test_read_skill_executor_rejects_tui_only_skill_in_gui`
+/// (`02b53fcd8`): a `TuiOnly` bundled skill is not readable when the app is not
+/// running as the TUI. See issue #370.
+#[test]
+fn test_read_skill_executor_rejects_tui_only_skill_in_gui() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let _bundled_skills = FeatureFlag::BundledSkills.override_enabled(true);
+        let skill_id = "tui-migrate-setup";
+        SkillManager::handle(&app).update(&mut app, |manager, _ctx| {
+            manager.add_bundled_skill_for_testing(
+                skill_id,
+                bundled_skill(skill_id),
+                BundledSkillActivation::TuiOnly,
+            );
+        });
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let action = AIAgentAction {
+            id: AIAgentActionId::from(format!("test-action-id-{skill_id}")),
+            action: AIAgentActionType::ReadSkill(ReadSkillRequest {
+                skill: SkillReference::BundledSkillId(skill_id.to_string()),
+            }),
+            task_id: TaskId::new(format!("test-task-id-{skill_id}")),
+            requires_result: false,
+        };
+        let input = ExecuteActionInput {
+            action: &action,
+            conversation_id: AIConversationId::new(),
+        };
+
+        executor_handle.update(&mut app, |executor, ctx| {
+            let result: AnyActionExecution = executor.execute(input, ctx).into();
+            assert!(matches!(
+                result,
+                AnyActionExecution::Sync(AIAgentActionResultType::ReadSkill(
+                    ReadSkillResult::Error(_)
+                ))
+            ));
+        });
+    });
+}
+
+/// Ported from the pin's
+/// `test_read_skill_executor_rejects_warp_control_bundled_skills_when_disabled`
+/// (`02b53fcd8`): a `RequiresFeature`-gated bundled skill is not readable while
+/// its feature is disabled.
+///
+/// Pin deviation: the pin gates its `warpctrl` bundled skill on
+/// `FeatureFlag::WarpControlCli`, which does not exist in this fork yet (local
+/// Warp Control CLI support is separate, in-flight work — issues #200/#401/
+/// #184/#216, PR #480). This test exercises the same `RequiresFeature`
+/// mechanism with an existing, unrelated flag instead of inventing a
+/// `WarpControlCli` variant here that #480 would then collide with. Swap in
+/// `FeatureFlag::WarpControlCli` at this call site once #480 lands. See issue
+/// #370.
+#[test]
+fn test_read_skill_executor_rejects_gated_bundled_skill_when_feature_disabled() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let _bundled_skills = FeatureFlag::BundledSkills.override_enabled(true);
+        let _gate = FeatureFlag::DebugMode.override_enabled(false);
+        let skill_id = "feature-gated-skill";
+        SkillManager::handle(&app).update(&mut app, |manager, _ctx| {
+            manager.add_bundled_skill_for_testing(
+                skill_id,
+                bundled_skill(skill_id),
+                BundledSkillActivation::RequiresFeature(FeatureFlag::DebugMode),
+            );
+        });
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let action = AIAgentAction {
+            id: AIAgentActionId::from(format!("test-action-id-{skill_id}")),
+            action: AIAgentActionType::ReadSkill(ReadSkillRequest {
+                skill: SkillReference::BundledSkillId(skill_id.to_string()),
+            }),
+            task_id: TaskId::new(format!("test-task-id-{skill_id}")),
+            requires_result: false,
+        };
+
+        let input = ExecuteActionInput {
+            action: &action,
+            conversation_id: AIConversationId::new(),
+        };
+
+        executor_handle.update(&mut app, |executor, ctx| {
+            let result: AnyActionExecution = executor.execute(input, ctx).into();
+            assert!(matches!(
+                result,
+                AnyActionExecution::Sync(AIAgentActionResultType::ReadSkill(
+                    ReadSkillResult::Error(_)
+                ))
+            ));
         });
     });
 }
