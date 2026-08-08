@@ -62,6 +62,39 @@ Warp gates the crash-reporting widget on
 `FeatureFlag::CrashReporting` instead, precisely so a locally-useful control is
 not hidden by a cloud-availability check.
 
+## Voice input — recording exists, transcription is cloud and disabled
+
+| what | issue | note |
+|---|---|---|
+| **Voice-input UI (TUI composer, statusline item, `/voice`)** | #389 | Not a gap — the transcription backend the UI would drive is cloud, and this fork has already turned it off. |
+
+`crates/voice_input` (audio capture: `cpal` input stream, resampling, WAV
+encoding) is real and already used by the GUI editor
+(`app/src/editor/view/voice.rs`). What consumes its output is not: Warp's
+`Transcriber` trait (`app/src/voice/transcriber.rs`) is implemented by
+`ServerVoiceTranscriber`, which calls `server_api.transcribe` to send audio to
+Warp's cloud Wispr speech-to-text — there is no local/BYOP transcription
+engine. This fork already made that call: `app/src/lib.rs` constructs
+`VoiceTranscriber::disabled()` instead of injecting `ServerVoiceTranscriber`
+(commit `9d92598c4`, "Phase 4-1 默认 VoiceTranscriber 改 disabled 跳过云端 Wispr
+STT" — default `VoiceTranscriber` changed to disabled, skipping cloud Wispr
+STT), and `TranscribeError::Disabled` documents why: "the BYOP genai protocol
+can't carry audio." So today, pressing the GUI's mic button *records* audio
+successfully and then always fails to transcribe it.
+
+Porting the TUI's voice composer state machine, border animation, and
+statusline item (the `crates/warp_tui/src/voice_input.rs` half of #389) would
+add a control with the same property in the surface that has none of it
+today: it would toggle, animate, and show a hint, and every real use would end
+in the same transcription failure the GUI already has. That is worse than no
+control — see AGENTS.md's guidance on shipping UI for a backend the fork
+doesn't have. Declined until a local/BYOP transcription path exists (e.g. a
+local Whisper-class model), at which point both the GUI button and the TUI
+composer should be wired to it together.
+
+The read-only menu surface #389 also asks for (`?` shortcuts, `/status`) is
+unrelated to voice and is not declined — see the issue for its state.
+
 ## Divergences where the fork deliberately differs
 
 | what | issue | note |

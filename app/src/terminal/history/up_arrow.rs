@@ -14,8 +14,14 @@ use crate::terminal::model::session::SessionId;
 use super::History;
 
 /// Controls which item types are included in up-arrow history results.
+///
+/// `pub` (not `pub(crate)`): the `warp_tui` crate constructs this directly
+/// through the `app/src/tui_export/history.rs` adapter for issue #387's
+/// combined prompt-and-command up-arrow menu, mirroring the pinned oracle
+/// (`02b53fcd8`), where `UpArrowHistoryConfig` is also `pub` for the same
+/// reason.
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct UpArrowHistoryConfig {
+pub struct UpArrowHistoryConfig {
     pub include_commands: bool,
     pub include_prompts: bool,
 }

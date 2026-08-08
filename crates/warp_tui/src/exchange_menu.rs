@@ -205,6 +205,7 @@ impl TuiExchangeMenuModel {
                 .iter()
                 .map(|row| TuiInlineMenuRow {
                     title: row.title.clone(),
+                    prefix: None,
                     description: None,
                     state_suffix: None,
                     is_selectable: true,
