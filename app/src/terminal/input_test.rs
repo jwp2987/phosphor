@@ -44,7 +44,6 @@ use crate::settings_view::keybindings::KeybindingChangedNotifier;
 #[cfg(windows)]
 use crate::system::SystemInfo;
 use crate::system::SystemStats;
-use crate::terminal::alt_screen_reporting::AltScreenReporting;
 use crate::terminal::event::BootstrappedEvent;
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::local_shell::LocalShellState;
@@ -305,7 +304,6 @@ pub fn initialize_app(app: &mut App) {
     }
 
     app.update(experiments::init);
-    AltScreenReporting::register(app);
     app.add_singleton_model(|_| RestoredAgentConversations::default());
     app.add_singleton_model(OneTimeModalModel::new);
     app.add_singleton_model(|_| WorkspaceRegistry::new());
