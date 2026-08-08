@@ -81,7 +81,7 @@ pub struct AIConversationMetadata {
     pub server_conversation_token: Option<ServerConversationToken>,
 
     /// Whether the full conversation data exists in the local database.
-    pub is_restorable_locally: bool,
+    pub has_local_data: bool,
 
     /// Artifacts (plans, PRs) created during this conversation.
     pub artifacts: Vec<Artifact>,
@@ -119,7 +119,7 @@ impl From<&AIConversation> for AIConversationMetadata {
             initial_working_directory: conversation.initial_working_directory(),
             credits_spent: Some(conversation.credits_spent()),
             server_conversation_token: conversation.server_conversation_token().cloned(),
-            is_restorable_locally: true,
+            has_local_data: true,
             artifacts: conversation.artifacts().to_vec(),
             ambient_agent_task_id: conversation.task_id(),
             parent_conversation_id: conversation.parent_conversation_id(),
@@ -1292,11 +1292,23 @@ impl BlocklistAIHistoryModel {
     /// and copying the existing conversation's tasks into the new conversation.
     ///
     /// The `prefix` parameter specifies the prefix added to the root task description
-    /// (e.g., `FORK_PREFIX` for forks, `PRE_REWIND_PREFIX` for pre-rewind backups).
+    /// (e.g., `FORK_PREFIX` for forks, `PRE_REWIND_PREFIX` for pre-rewind backups),
+    /// unless `title_override` is set, in which case it replaces the prefixed
+    /// description entirely.
+    ///
+    /// `preserve_task_ids` keeps the root and subtask ids (and the subtask's
+    /// `parent_task_id` back-reference) stable across the fork instead of
+    /// regenerating every id. The ordinary user-facing fork passes `true` so
+    /// the forked conversation's tasks keep referring to the same ids the
+    /// user has already seen; the pre-rewind backup passes `false` because
+    /// that backup coexists with the live conversation under the same task
+    /// ids otherwise being reused for new writes.
     pub fn fork_conversation(
         &mut self,
         source_conversation: &AIConversation,
         prefix: &str,
+        preserve_task_ids: bool,
+        title_override: Option<&str>,
         app: &AppContext,
     ) -> Result<AIConversation, anyhow::Error> {
         Self::validate_fork_source(source_conversation)?;
@@ -1305,7 +1317,8 @@ impl BlocklistAIHistoryModel {
             .filter_map(|t| t.source().cloned())
             .collect();
 
-        let updated_tasks_with_new_ids = update_forked_task_properties(tasks.clone(), prefix);
+        let updated_tasks_with_new_ids =
+            update_forked_task_properties(tasks.clone(), prefix, preserve_task_ids, title_override);
         let byop_repair_state_json = byop_fork_repair_state_json(
             &tasks,
             &updated_tasks_with_new_ids,
@@ -1473,7 +1486,12 @@ impl BlocklistAIHistoryModel {
             ));
         }
 
-        let updated_tasks_with_new_ids = update_forked_task_properties(truncated_tasks, prefix);
+        let updated_tasks_with_new_ids = update_forked_task_properties(
+            truncated_tasks,
+            prefix,
+            true, /* preserve_task_ids */
+            None,
+        );
         let byop_repair_state_json = byop_fork_repair_state_json(
             &source_tasks,
             &updated_tasks_with_new_ids,
@@ -2618,7 +2636,31 @@ impl From<&AIAgentOutputStatus> for AIQueryHistoryOutputStatus {
 fn update_forked_task_properties(
     tasks: Vec<warp_multi_agent_api::Task>,
     prefix: &str,
+    preserve_task_ids: bool,
+    title_override: Option<&str>,
 ) -> Vec<warp_multi_agent_api::Task> {
+    let root_description = |current: &str| match title_override {
+        Some(title) => title.to_owned(),
+        None => format!("{prefix}{current}"),
+    };
+
+    if preserve_task_ids {
+        return tasks
+            .into_iter()
+            .map(|mut t| {
+                let is_root = t
+                    .dependencies
+                    .as_ref()
+                    .map(|deps| deps.parent_task_id.is_empty())
+                    .unwrap_or(true);
+                if is_root {
+                    t.description = root_description(&t.description);
+                }
+                t
+            })
+            .collect();
+    }
+
     let mut old_to_new_task_ids = HashMap::new();
     fn get_new_task_id(new_ids: &mut HashMap<String, String>, old_task_id: &str) -> String {
         new_ids
@@ -2649,7 +2691,7 @@ fn update_forked_task_properties(
                 deps.parent_task_id =
                     get_new_task_id(&mut old_to_new_task_ids, &deps.parent_task_id).clone();
             } else {
-                t.description = format!("{}{}", prefix, t.description);
+                t.description = root_description(&t.description);
             }
             t
         })

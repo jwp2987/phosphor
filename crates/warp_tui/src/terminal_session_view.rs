@@ -3110,7 +3110,13 @@ impl TuiTerminalSessionView {
                 Some(exchange_id) => {
                     history.fork_conversation_at_exchange(&source, exchange_id, false, FORK_PREFIX, ctx)
                 }
-                None => history.fork_conversation(&source, FORK_PREFIX, ctx),
+                None => history.fork_conversation(
+                    &source,
+                    FORK_PREFIX,
+                    true, /* preserve_task_ids */
+                    None,
+                    ctx,
+                ),
             }
         });
         let forked = match fork_result {
@@ -3251,7 +3257,13 @@ impl TuiTerminalSessionView {
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
             if let Some(conversation) = history.conversation(&conversation_id).cloned() {
                 if let Err(error) =
-                    history.fork_conversation(&conversation, PRE_REWIND_PREFIX, ctx)
+                    history.fork_conversation(
+                        &conversation,
+                        PRE_REWIND_PREFIX,
+                        false, /* preserve_task_ids */
+                        None,
+                        ctx,
+                    )
                 {
                     log::warn!("Failed to save pre-rewind backup of {conversation_id}: {error}");
                 }
