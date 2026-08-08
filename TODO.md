@@ -1,5 +1,79 @@
 # TODO — Phosphor: Warp parity ledger (#11) + code-review debt
 
+## ACTIVE WORK QUEUE (2026-08-08) — read this first
+
+**Process, agreed with the maintainer:**
+- ONE sonnet agent at a time, ONE issue at a time.
+- All work happens on branch `working`. The agent touches nothing else.
+- After each issue: run the build check, and if green, merge `working` into
+  local `main` and move to the next.
+- Work the tiers in order: trivial -> small -> medium -> large.
+- Update this section as each issue lands, so it survives context compaction.
+
+**Verification rule learned the hard way (2026-08-08):** when a signature in
+`app/src` changes, verify the DEPENDENTS too, not just the crate edited.
+`warp_tui` consumes `Block::{is_visible,height}` via `warp::tui_export` and was
+broken by #423 because the verification run covered only the edited crates.
+Build check that catches this: `-p warp -p warp_tui -p remote_server -p repo_metadata`.
+
+**Second rule:** VERIFY EVERY ISSUE'S PREMISE BEFORE ESTIMATING OR IMPLEMENTING.
+Of 11 issues examined closely on 2026-08-08, four stated the opposite of the code
+(#437, #418, #532, #548-partly) and three more were already partly done. Estimating
+from titles here is unreliable.
+
+### Tier 1 — trivial (< 1h each)
+- [ ] #334 pane divider double-click-to-reset-size (`reset_pane_sizes`) missing from tree.rs
+- [ ] #401 workspace/cli_install: install/uninstall_warpctrl symlink installer missing
+- [ ] #410 util/bindings: two editable-binding regressions vs the pin
+- [ ] #436 warpui_core TuiViewportedList: no trimmed-selection-line-ends option
+- [ ] #498 file tree: `show_hidden_files` has no Settings toggle / palette action
+- [ ] #549 duplicate dead test-fixture helpers
+- [ ] #547 view_components: ActionButton.callout / AlertConfig::success / Dropdown::Naked unwired
+- [ ] #555 prompt/editor_modal: same-line-prompt toggle UI missing
+- [ ] #532 CLOSE-ON-INSPECTION: its premise is false. It claims #419 landed the DCS
+      session_id scaffolding; `requires_registered_session`, `is_registered_session`
+      and `should_validate_dcs_hook_session_id` are ABSENT from main. Fold into #419.
+
+### Tier 2 — small (~half a day each)
+- [ ] #523 cmd-k: `try_clear_buffer_in_agent_view` still checks only `is_agent_monitoring`
+      (`clear_buffer` was fixed; this one guard remains)
+- [ ] #545 CLI-agent image paste: keystroke is still agent-agnostic. Pin sends `ESC v`
+      ONLY for `CLIAgent::Claude` on Windows; fork sends it for every agent, in BOTH
+      `cli_agent_paste_keystroke_bytes` and `TerminalView::paste`.
+- [ ] #205 skill path classification uses client home dir, misclassifies remote skills
+- [ ] #299 SkillReference lacks remote/SSH path support
+- [ ] #300 Mermaid code block does not defer to code-block rendering while loading/failed
+- [ ] #313 BlocklistAIInputModel does not take an injected InputModePolicy
+- [ ] #342 cannot port repository_gated_command_* without simulate_directory_for_completion
+- [ ] #396 forking a conversation starts the new pane in the wrong working directory
+- [ ] #403 notebooks/editor: mermaid asset-load relayout tracking missing
+- [ ] #411 warp_cli: Harness has no Codex variant
+- [ ] #422 terminal/grid: FullGridClearBehavior missing
+- [ ] #552 search/ai_context_menu: render_search_bar never called
+- [ ] #554 code/editor_management: CodeManagerEvent::EditCompleted has no subscriber
+
+### Tier 3 — medium (1-3 days each)
+- [ ] #284 received_rich_notification: latch landed 2026-08-08, but
+      `CLIAgentSession::supports_rich_status()` and the listener `plugin_already_active`
+      OSC 9 dedup are still ABSENT; static per-agent derivation is still the source of truth
+- [ ] #147 · #216 · #217 · #254 · #256 · #316 · #323 · #338 · #341 · #343
+- [ ] #353 remote agent context snapshot (producer for #438's plumbing; #438 closed
+      with `remote_agent_context_snapshot()` returning None in production until this lands)
+- [ ] #388 · #389 · #390 · #395 · #397 · #431 · #536 · #548 · #553 · #419
+
+### Tier 4 — large (a week+)
+- [ ] #210 · #252 · #289 · #381 · #382 · #236 · #349 · #324 · #142
+
+### Needs a maintainer decision, not code
+- [ ] #149 · #150 · #203 (design decision) · #206 · #207 · #279 · #312
+
+### Landed 2026-08-08
+#191, #251, #253, #570, #437, #438, #439, #399, #418, #423, #208, #537 — plus
+`main` going from 65 failing tests to 0, and three CI gates repaired
+(`check_test_failures` was blind to `TRY n FAIL`; `precheck` compiled nothing and
+ignored uncommitted work).
+
+
 Reconciled 2026-08-04; **#11 section re-verified against code on `main` 2026-08-06.**
 **Reconciled again 2026-08-07 (#148) — `main` = `2e7d6eb2f` (194 commits past the
 `af79b705d` HANDOFF.md snapshot).** Every checkbox and issue reference below was
