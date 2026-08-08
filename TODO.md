@@ -16,13 +16,23 @@
 broken by #423 because the verification run covered only the edited crates.
 Build check that catches this: `-p warp -p warp_tui -p remote_server -p repo_metadata`.
 
+**Third rule — WIRE WHAT YOU PORT.** If a symbol is implemented but has no
+production call site, that is a defect, not a done item. Fix it in the same
+change, or say so loudly with file:line evidence. Never silently accept "ported
+but never wired". #207 tracks this class (12 known instances). #334 is the
+worked example: `reset_pane_sizes` landed in PR #515 with passing tests and
+nothing ever called it, so the issue read as done while the feature did not
+exist for a user. It was closed on that basis and had to be reopened.
+Every agent brief must carry this rule.
+
 **Second rule:** VERIFY EVERY ISSUE'S PREMISE BEFORE ESTIMATING OR IMPLEMENTING.
 Of 11 issues examined closely on 2026-08-08, four stated the opposite of the code
 (#437, #418, #532, #548-partly) and three more were already partly done. Estimating
 from titles here is unreliable.
 
 ### Tier 1 — trivial (< 1h each)
-- [ ] #334 pane divider double-click-to-reset-size (`reset_pane_sizes`) missing from tree.rs
+- [ ] #334 pane divider double-click: data layer DONE (PR #515) + tests pass, but
+      NOTHING CALLS IT -- reopened 2026-08-08; the divider gesture is being wired
 - [ ] #401 workspace/cli_install: install/uninstall_warpctrl symlink installer missing
 - [ ] #410 util/bindings: two editable-binding regressions vs the pin
 - [ ] #436 warpui_core TuiViewportedList: no trimmed-selection-line-ends option
