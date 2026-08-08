@@ -7,10 +7,15 @@
 //! singletons the TUI session view subtree constructs are kept, using Zap's
 //! constructors. See specs/warp-oss-sync/SCOPE.md.
 
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::sync::Arc;
+
 use ai::api_keys::ApiKeyManager;
 use chrono::{Duration, Local};
+use warp_core::SessionId;
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
-use warpui::ModelContext;
+use warpui::{AppContext, ModelContext, ModelHandle, SingletonEntity as _};
 
 use crate::LaunchMode;
 use crate::ai::agent::conversation::AIConversationId;
@@ -31,6 +36,14 @@ use crate::network::NetworkStatus;
 use crate::settings::manager::SettingsManager;
 use crate::settings::{AISettings, PrivacySettings, init_and_register_user_preferences};
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
+use crate::terminal::model::session::active_session::ActiveSession;
+use crate::terminal::model::session::command_executor::NoOpCommandExecutor;
+use crate::terminal::model::session::{
+    BootstrapSessionType, HostInfo, IsLegacySSHSession, Session, SessionInfo, Sessions,
+};
+use crate::terminal::model_events::ModelEventDispatcher;
+use crate::terminal::shell::{Shell, ShellType};
+use crate::terminal::{History, HistoryEntry, HistoryEvent};
 use crate::user_config::WarpConfig;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
@@ -141,4 +154,114 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
     app.add_singleton_model(crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing);
     app.add_singleton_model(crate::workflows::local_workflows::LocalWorkflows::new);
     app.add_singleton_model(SkillManager::new);
+}
+
+/// Registers seeded command history and an active session for focused TUI
+/// history tests (issue #387).
+///
+/// Ported from the pinned Warp oracle (`02b53fcd8`) `app/src/tui_test_support.rs`.
+/// Adapted: the pin drives "active" through a replayed `Precmd` model event;
+/// this fork's `ModelEventDispatcher` exposes `set_active_session_id` directly
+/// ("for use in unit tests where there's no `Precmd` event"), so this skips the
+/// event-replay plumbing.
+pub fn add_tui_history_test_models(
+    commands: Vec<String>,
+    ctx: &mut AppContext,
+) -> (
+    ModelHandle<ActiveSession>,
+    SessionId,
+    impl Future<Output = ()> + use<>,
+) {
+    let session_id = SessionId::from(1);
+    let session_info = SessionInfo {
+        session_id,
+        shell: Shell::new(ShellType::Zsh, None, None, HashSet::new(), None),
+        launch_data: None,
+        histfile: None,
+        user: "test-user".to_owned(),
+        hostname: "test-host".to_owned(),
+        subshell_info: None,
+        path: None,
+        environment_variable_names: HashSet::new(),
+        aliases: HashMap::new(),
+        abbreviations: HashMap::new(),
+        function_names: HashSet::new(),
+        builtins: HashSet::new(),
+        keywords: Vec::new(),
+        is_legacy_ssh_session: IsLegacySSHSession::No,
+        home_dir: None,
+        editor: None,
+        session_type: BootstrapSessionType::Local,
+        host_info: HostInfo::default(),
+        tmux_control_mode: false,
+        wsl_name: None,
+        spawning_session_id: None,
+    };
+    let session = Arc::new(Session::new(
+        session_info,
+        Arc::new(NoOpCommandExecutor::default()),
+    ));
+
+    let history = if ctx.has_singleton_model::<History>() {
+        History::handle(ctx)
+    } else {
+        ctx.add_singleton_model(|_| History::default())
+    };
+    let (history_initialized_tx, history_initialized_rx) = async_channel::bounded(1);
+    ctx.subscribe_to_model(&history, move |_, event, _| match event {
+        HistoryEvent::Initialized(id) if *id == session_id => {
+            let _ = history_initialized_tx.try_send(());
+        }
+        HistoryEvent::Initialized(_) => {}
+    });
+    history.update(ctx, |history, ctx| {
+        history.init_session_with(session, async move { commands }, ctx);
+    });
+
+    let sessions = ctx.add_model(|_| Sessions::new_for_test());
+    let (_events_tx, events_rx) = async_channel::unbounded();
+    let model_events =
+        ctx.add_model(|ctx| ModelEventDispatcher::new(events_rx, sessions.clone(), ctx));
+    model_events.update(ctx, |dispatcher, _| {
+        dispatcher.set_active_session_id(session_id);
+    });
+    let active_session = ctx.add_model(|ctx| ActiveSession::new(sessions, model_events, ctx));
+
+    let initialized = async move {
+        history_initialized_rx
+            .recv()
+            .await
+            .expect("history initialization should complete");
+    };
+    (active_session, session_id, initialized)
+}
+
+/// Appends a command to the history used by TUI tests.
+pub fn append_tui_history_test_command(
+    session_id: SessionId,
+    command: String,
+    ctx: &mut AppContext,
+) {
+    History::handle(ctx).update(ctx, |history, _| {
+        let mut entry = HistoryEntry::command_only(command);
+        entry.session_id = Some(session_id);
+        history.append_commands(session_id, vec![entry]);
+    });
+}
+
+/// Registers the minimal settings dependencies [`crate::terminal::history::up_arrow`]'s
+/// shared combiner reads (`AISettings`, feature-flag-gated agent mode) for
+/// focused TUI history-menu tests that don't need the full
+/// [`register_tui_session_view_test_singletons`] fixture.
+pub fn register_tui_input_mode_test_settings(ctx: &mut AppContext) {
+    if ctx.has_singleton_model::<AISettings>() {
+        return;
+    }
+    init_and_register_user_preferences(ctx);
+    ctx.add_singleton_model(|_| SettingsManager::default());
+    ctx.add_singleton_model(WarpConfig::mock);
+    warpui_extras::secure_storage::register_noop("test", ctx);
+    ctx.add_singleton_model(|_| AuthStateProvider::new_for_test());
+    // Registers every `define_settings_group!` group, including `AISettings`.
+    crate::settings::register_all_settings(ctx);
 }

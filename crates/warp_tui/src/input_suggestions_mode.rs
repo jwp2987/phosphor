@@ -15,7 +15,9 @@ pub(crate) enum TuiInputSuggestionsMode {
     ModelSelector,
     SkillMenu,
     Mcp,
-    PromptHistory,
+    /// Up-arrow prompt-and-command history menu (issue #387): agent mode shows
+    /// prompts and commands, shell mode shows commands only.
+    PromptAndCommandHistory,
     /// Shell command/path completion popup (Tab-completion). Unlike the other
     /// modes it does not treat the input buffer as a search query; it completes
     /// the token under the cursor and replaces a span in the existing buffer.
@@ -85,7 +87,7 @@ impl TuiInputSuggestionsModeModel {
             | TuiInputSuggestionsMode::ModelSelector
             | TuiInputSuggestionsMode::SkillMenu
             | TuiInputSuggestionsMode::Mcp
-            | TuiInputSuggestionsMode::PromptHistory
+            | TuiInputSuggestionsMode::PromptAndCommandHistory
             | TuiInputSuggestionsMode::Completions
             | TuiInputSuggestionsMode::ProfileSelector
             | TuiInputSuggestionsMode::PromptsMenu

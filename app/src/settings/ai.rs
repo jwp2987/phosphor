@@ -2417,6 +2417,21 @@ define_settings_group!(AISettings, settings: [
         description: "When true, completed tool action cards (read files, grep, search codebase, requested commands, etc.) are hidden after they finish. In-progress and errored cards are always shown. Useful for long sessions to keep focus on the latest activity.",
     }
 
+    // Not a user-visible setting - it tracks which one-time feature-intro popovers
+    // (see `FEATURE_INTROS`) the user has already seen, keyed by the feature-intro's
+    // stable id key.
+    //
+    // Modeled as a globally-synced setting (not respecting the user's sync setting) so
+    // each feature is announced at most once per user, regardless of how many devices
+    // they use. A feature is considered seen when its id is present and mapped to `true`.
+    seen_feature_intro_ids: SeenFeatureIntroIds {
+        type: HashMap<String, bool>,
+        default: HashMap::default(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::No),
+        private: true,
+    }
+
     // Per-agent, per-host tracking of whether the user dismissed the plugin install chip.
     // Keys are "<agent_prefix>" for local sessions or "<agent_prefix>@<host>" for remote.
     // Local-only so dismissal doesn't sync across devices.
@@ -3040,6 +3055,25 @@ impl AISettings {
         report_if_error!(self
             .cli_agent_footer_enabled_commands
             .set_value(ToolbarCommandMap::new(map), ctx));
+    }
+
+    /// Whether the feature-intro popover with the given id key has been seen.
+    pub fn is_feature_intro_seen(&self, key: &str) -> bool {
+        self.seen_feature_intro_ids
+            .get(key)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Records that the feature-intro popover with the given id key has been seen,
+    /// so it is never shown again. No-op if already recorded.
+    pub fn mark_feature_intro_seen(&mut self, key: &str, ctx: &mut ModelContext<Self>) {
+        if self.is_feature_intro_seen(key) {
+            return;
+        }
+        let mut map = self.seen_feature_intro_ids.clone();
+        map.insert(key.to_owned(), true);
+        report_if_error!(self.seen_feature_intro_ids.set_value(map, ctx));
     }
 
     /// Whether the plugin install chip was dismissed for the given agent/host.
