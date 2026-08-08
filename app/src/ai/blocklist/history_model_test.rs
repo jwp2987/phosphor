@@ -27,7 +27,7 @@ use crate::{
     persistence::{
         model::{
             AgentConversation, AgentConversationData, AgentConversationRecord,
-            PersistedAutoexecuteMode,
+            AgentConversationSummary, PersistedAutoexecuteMode,
         },
         ModelEvent,
     },
@@ -715,7 +715,7 @@ fn test_ambient_agent_conversations_excluded_from_list_but_accessible_by_id() {
                 server_conversation_token: Some(ServerConversationToken::new(
                     "token-regular".to_string(),
                 )),
-                is_restorable_locally: false,
+                has_local_data: false,
                 artifacts: Vec::new(),
                 ambient_agent_task_id: None,
                 parent_conversation_id: None,
@@ -735,7 +735,7 @@ fn test_ambient_agent_conversations_excluded_from_list_but_accessible_by_id() {
                 server_conversation_token: Some(ServerConversationToken::new(
                     "token-ambient".to_string(),
                 )),
-                is_restorable_locally: false,
+                has_local_data: false,
                 artifacts: Vec::new(),
                 ambient_agent_task_id: Some(ambient_task_id),
                 parent_conversation_id: None,
@@ -793,7 +793,7 @@ fn test_child_agent_conversations_excluded_from_list_but_accessible_by_id() {
                 server_conversation_token: Some(ServerConversationToken::new(
                     "token-regular-child-test".to_string(),
                 )),
-                is_restorable_locally: false,
+                has_local_data: false,
                 artifacts: Vec::new(),
                 ambient_agent_task_id: None,
                 parent_conversation_id: None,
@@ -1515,7 +1515,7 @@ fn test_fork_conversation_rejects_an_empty_source() {
 
         let error = history_model.update(&mut app, |model, ctx| {
             model
-                .fork_conversation(&source, "[Fork] ", ctx)
+                .fork_conversation(&source, "[Fork] ", true, None, ctx)
                 .expect_err("forking an empty conversation should fail")
         });
 
@@ -1523,6 +1523,97 @@ fn test_fork_conversation_rejects_an_empty_source() {
             error.downcast_ref::<ForkConversationError>(),
             Some(&ForkConversationError::EmptyConversation),
         );
+    });
+}
+
+/// `preserve_task_ids = true` keeps the root and subtask ids (and the
+/// subtask's `parent_task_id` back-reference) stable across a fork, and the
+/// fork prefix applies only to the root task's description — never to
+/// subtasks. This is what the ordinary user-facing "/fork-from" path
+/// requests (issue #336); the pre-rewind backup still requests
+/// `preserve_task_ids = false` so it gets fresh ids.
+#[test]
+fn test_fork_conversation_preserves_task_ids_when_requested() {
+    use crate::ai::agent::conversation::AIConversation;
+    use crate::test_util::ai_agent_tasks::{create_api_subtask, create_api_task, create_message};
+
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(2);
+        let mut global_resource_handles = GlobalResourceHandles::mock(&mut app);
+        global_resource_handles.model_event_sender = Some(sender);
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let terminal_view_id = EntityId::new();
+
+        let source_id = AIConversationId::new();
+        let mut root_task = create_api_task(
+            "root-task-id",
+            vec![create_message("root-msg", "root-task-id")],
+        );
+        root_task.description = "Original root".to_string();
+        let mut subtask = create_api_subtask(
+            "subtask-id",
+            "root-task-id",
+            vec![create_message("sub-msg", "subtask-id")],
+        );
+        subtask.description = "Original subtask".to_string();
+        let source = AIConversation::new_restored(
+            source_id,
+            vec![root_task, subtask],
+            // Adaptation: this fork's `AgentConversationData` has a
+            // different (cloud-free) field set, so the shared
+            // `empty_agent_conversation_data_for_test()` helper stands in
+            // for the oracle's struct literal; only the server token is
+            // overridden, as in the oracle.
+            Some(AgentConversationData {
+                server_conversation_token: Some("src-token".to_string()),
+                ..empty_agent_conversation_data_for_test()
+            }),
+        )
+        .expect("restored source conversation should build");
+        history_model.update(&mut app, |model, ctx| {
+            model.restore_conversations(terminal_view_id, vec![source], ctx);
+        });
+
+        history_model.update(&mut app, |model, ctx| {
+            let source = model
+                .conversation(&source_id)
+                .expect("source conversation must be in memory after restore")
+                .clone();
+            let forked = model
+                .fork_conversation(&source, "[Fork] ", true, None, ctx)
+                .expect("fork must succeed when sqlite sender is wired up");
+
+            let forked_tasks: Vec<&warp_multi_agent_api::Task> =
+                forked.all_tasks().filter_map(|t| t.source()).collect();
+            let forked_root = forked_tasks
+                .iter()
+                .find(|t| t.id == "root-task-id")
+                .expect("root task id must be preserved across fork");
+            let forked_subtask = forked_tasks
+                .iter()
+                .find(|t| t.id == "subtask-id")
+                .expect("subtask id must be preserved across fork");
+            assert_eq!(
+                forked_subtask
+                    .dependencies
+                    .as_ref()
+                    .map(|d| d.parent_task_id.as_str()),
+                Some("root-task-id"),
+                "subtask must still reference the original root task id",
+            );
+            assert_eq!(
+                forked_root.description, "[Fork] Original root",
+                "root task description must be prefixed",
+            );
+            assert_eq!(
+                forked_subtask.description, "Original subtask",
+                "subtask description must not be prefixed",
+            );
+        });
     });
 }
 
@@ -3075,6 +3166,114 @@ fn test_initialize_historical_conversations_uses_root_task_description_title() {
                 .expect("conversation metadata should be initialized");
             assert_eq!(metadata.title, "Renamed root title");
             assert_eq!(metadata.initial_query, "Initial query");
+        });
+    });
+}
+
+/// Startup rows carry only `agent_conversations` records: task lists are
+/// empty and the metadata comes from the write-time `summary` column
+/// (issue #337).
+#[test]
+fn test_initialize_historical_conversations_uses_summary_column_without_tasks() {
+    App::test((), |app| async move {
+        let conversation_id = AIConversationId::new();
+        let now = Utc::now().naive_utc();
+        let summary = AgentConversationSummary {
+            initial_query: "Initial query".to_string(),
+            title: "Summary title".to_string(),
+            initial_working_directory: Some("/tmp/repo".to_string()),
+            is_restorable: true,
+            is_unlisted_auto_code_diff: false,
+        };
+        let conversations = vec![AgentConversation {
+            conversation: AgentConversationRecord {
+                id: 0,
+                conversation_id: conversation_id.to_string(),
+                // Adaptation: this fork's `AgentConversationData` has a
+                // different (cloud-free) field set than the oracle's, but the
+                // reader only looks at `server_conversation_token` here, so
+                // an inline JSON literal (as in the oracle) still round-trips.
+                conversation_data: r#"{"server_conversation_token":null}"#.to_string(),
+                last_modified_at: now,
+                summary: Some(serde_json::to_string(&summary).expect("summary should serialize")),
+            },
+            tasks: vec![],
+        }];
+
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &conversations));
+
+        history_model.read(&app, |model, _| {
+            let metadata = model
+                .get_conversation_metadata(&conversation_id)
+                .expect("conversation metadata should be initialized from the summary column");
+            assert_eq!(metadata.title, "Summary title");
+            assert_eq!(metadata.initial_query, "Initial query");
+            assert_eq!(
+                metadata.initial_working_directory.as_deref(),
+                Some("/tmp/repo")
+            );
+            assert!(metadata.has_local_data);
+            // The conversation itself stays on the lazy path.
+            assert!(model.conversation(&conversation_id).is_none());
+        });
+    });
+}
+
+/// A summary marked not restorable, or marked as an unlisted passive
+/// AutoCodeDiff, must be skipped without ever looking at (absent) tasks
+/// (issue #337).
+#[test]
+fn test_initialize_historical_conversations_skips_unrestorable_and_unlisted_summaries() {
+    App::test((), |app| async move {
+        let unrestorable_id = AIConversationId::new();
+        let unlisted_id = AIConversationId::new();
+        let now = Utc::now().naive_utc();
+        let record = |id: &AIConversationId, summary: &AgentConversationSummary, row: i32| {
+            AgentConversation {
+                conversation: AgentConversationRecord {
+                    id: row,
+                    conversation_id: id.to_string(),
+                    conversation_data: r#"{"server_conversation_token":null}"#.to_string(),
+                    last_modified_at: now,
+                    summary: Some(
+                        serde_json::to_string(summary).expect("summary should serialize"),
+                    ),
+                },
+                tasks: vec![],
+            }
+        };
+        let conversations = vec![
+            record(
+                &unrestorable_id,
+                &AgentConversationSummary {
+                    initial_query: "Initial query".to_string(),
+                    title: "Unrestorable".to_string(),
+                    initial_working_directory: None,
+                    is_restorable: false,
+                    is_unlisted_auto_code_diff: false,
+                },
+                0,
+            ),
+            record(
+                &unlisted_id,
+                &AgentConversationSummary {
+                    initial_query: "diff".to_string(),
+                    title: "Passive diff".to_string(),
+                    initial_working_directory: None,
+                    is_restorable: true,
+                    is_unlisted_auto_code_diff: true,
+                },
+                1,
+            ),
+        ];
+
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &conversations));
+
+        history_model.read(&app, |model, _| {
+            assert!(model.get_conversation_metadata(&unrestorable_id).is_none());
+            assert!(model.get_conversation_metadata(&unlisted_id).is_none());
         });
     });
 }

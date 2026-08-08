@@ -8,7 +8,9 @@ mod pending_response_streams;
 pub mod response_stream;
 pub(super) mod shared_session;
 mod slash_command;
-use input_context::{input_context_for_request, parse_context_attachments};
+use input_context::{
+    add_pending_file_attachments, input_context_for_request, parse_context_attachments,
+};
 pub use slash_command::*;
 
 use self::response_stream::{PendingTitleGeneration, ResponseStream, ResponseStreamEvent};
@@ -17,9 +19,12 @@ use super::ResponseStreamId;
 use super::{
     action_model::{BlocklistAIActionEvent, BlocklistAIActionModel},
     agent_view::{AgentViewController, AgentViewControllerEvent},
-    context_model::BlocklistAIContextModel,
+    context_model::{
+        context_and_files_for_attachments, BlocklistAIContextModel, PendingAttachment,
+    },
     history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel},
     input_model::InputConfig,
+    queued_query::{QueuedQueryId, QueuedQueryModel},
     BlocklistAIInputModel, InputType,
 };
 use crate::ai::agent::api::{self, ServerConversationToken};
@@ -437,6 +442,11 @@ struct InputQuery {
     /// Additional referenced attachments to include in the query
     /// (e.g. file path references from shared session file uploads).
     additional_attachments: HashMap<String, AIAgentAttachment>,
+    /// When `Some`, this submission is a fired queued-prompt row; the send path resolves the
+    /// row's captured attachments by this id instead of the live input staging. `None` for a
+    /// direct submission (including the legacy single-pending-query fallback, which has no
+    /// backing row to resolve).
+    queued_query_id: Option<QueuedQueryId>,
 }
 
 impl InputQuery {
@@ -757,23 +767,41 @@ impl BlocklistAIController {
         }
 
         let additional_attachments = input_query.additional_attachments;
+        let queued_query_id = input_query.queued_query_id;
         let ai_input = match input_query.input_query {
             InputQueryType::UserSubmittedQueryFromInput {
                 static_query_type,
                 running_command,
                 ..
-            } => input_for_query(
-                query,
-                &task_id,
-                conversation_id,
-                static_query_type,
-                user_query_mode,
-                running_command,
-                additional_attachments,
-                self.context_model.as_ref(ctx),
-                self.active_session.as_ref(ctx),
-                ctx,
-            ),
+            } => {
+                // Resolve the attachment set for this submission. A fired queued row reads the
+                // attachments captured when it was queued (it may no longer match whatever is
+                // live-staged now, e.g. if the user has since attached something new for their
+                // next message); a direct submission consumes the live staging as before.
+                let prompt_attachments = match queued_query_id {
+                    Some(query_id) => QueuedQueryModel::as_ref(ctx)
+                        .attachments_for(conversation_id, query_id)
+                        .to_vec(),
+                    None => self
+                        .context_model
+                        .as_ref(ctx)
+                        .pending_attachments()
+                        .to_vec(),
+                };
+                input_for_query(
+                    query,
+                    &task_id,
+                    conversation_id,
+                    static_query_type,
+                    user_query_mode,
+                    running_command,
+                    additional_attachments,
+                    prompt_attachments,
+                    self.context_model.as_ref(ctx),
+                    self.active_session.as_ref(ctx),
+                    ctx,
+                )
+            }
             InputQueryType::AIInputType { ai_input } => ai_input,
         };
         inputs.push(ai_input);
@@ -963,6 +991,10 @@ impl BlocklistAIController {
                         running_command: Some(running_command),
                     },
                     additional_attachments: HashMap::new(),
+                    // This "new conversation" send has no queued row to resolve attachments
+                    // from (queued rows always target an existing conversation's queue); the
+                    // send path falls back to live staging.
+                    queued_query_id: None,
                 },
                 entrypoint_type,
                 participant_id,
@@ -979,6 +1011,8 @@ impl BlocklistAIController {
                         running_command: None,
                     },
                     additional_attachments: HashMap::new(),
+                    // See the comment on the other branch above.
+                    queued_query_id: None,
                 },
                 entrypoint_type,
                 participant_id,
@@ -1004,6 +1038,7 @@ impl BlocklistAIController {
             HashMap::new(),
             EntrypointType::AgentInitiated,
             /*is_queued_prompt*/ false,
+            /*queued_query_id*/ None,
             ctx,
         );
     }
@@ -1024,6 +1059,7 @@ impl BlocklistAIController {
             HashMap::new(),
             EntrypointType::UserInitiated,
             /*is_queued_prompt*/ false,
+            /*queued_query_id*/ None,
             ctx,
         );
     }
@@ -1032,11 +1068,16 @@ impl BlocklistAIController {
     /// Same as [`Self::send_user_query_in_conversation`] but marks the emitted `SentRequest`
     /// event so UI subscribers (e.g. the input editor) know not to treat this as a direct
     /// user submission and therefore not clear the input buffer.
+    ///
+    /// `queued_query_id` identifies the fired row so the send path can attach the images/files
+    /// captured when it was queued rather than whatever is live-staged now. `None` for the
+    /// legacy single-pending-query fallback, which has no backing row.
     pub fn send_queued_user_query_in_conversation(
         &mut self,
         query: String,
         conversation_id: AIConversationId,
         participant_id: Option<ParticipantId>,
+        queued_query_id: Option<QueuedQueryId>,
         ctx: &mut ModelContext<Self>,
     ) {
         self.send_user_query_in_conversation_internal(
@@ -1047,6 +1088,7 @@ impl BlocklistAIController {
             HashMap::new(),
             EntrypointType::UserInitiated,
             /*is_queued_prompt*/ true,
+            queued_query_id,
             ctx,
         );
     }
@@ -1068,6 +1110,7 @@ impl BlocklistAIController {
             additional_attachments,
             EntrypointType::UserInitiated,
             /*is_queued_prompt*/ false,
+            /*queued_query_id*/ None,
             ctx,
         );
     }
@@ -1091,6 +1134,7 @@ impl BlocklistAIController {
             HashMap::new(),
             EntrypointType::UserInitiated,
             /*is_queued_prompt*/ false,
+            /*queued_query_id*/ None,
             ctx,
         );
     }
@@ -1105,6 +1149,7 @@ impl BlocklistAIController {
         additional_attachments: HashMap<String, AIAgentAttachment>,
         entrypoint_type: EntrypointType,
         is_queued_prompt: bool,
+        queued_query_id: Option<QueuedQueryId>,
         ctx: &mut ModelContext<Self>,
     ) {
         let is_viewer = self
@@ -1212,6 +1257,7 @@ impl BlocklistAIController {
                     running_command,
                 },
                 additional_attachments,
+                queued_query_id,
             },
             entrypoint_type,
             participant_id,
@@ -1236,6 +1282,7 @@ impl BlocklistAIController {
                     running_command: None,
                 },
                 additional_attachments: HashMap::new(),
+                queued_query_id: None,
             },
             EntrypointType::ZeroStateAgentModePromptSuggestion,
             participant_id,
@@ -1272,6 +1319,7 @@ impl BlocklistAIController {
                 which_task,
                 input_query: InputQueryType::AIInputType { ai_input },
                 additional_attachments: HashMap::new(),
+                queued_query_id: None,
             },
             EntrypointType::UserInitiated,
             participant_id,
@@ -1467,6 +1515,7 @@ impl BlocklistAIController {
                     },
                 },
                 additional_attachments: HashMap::new(),
+                queued_query_id: None,
             },
             EntrypointType::TriggerPassiveSuggestion {
                 trigger: trigger_type,
@@ -4082,16 +4131,23 @@ fn input_for_query(
     user_query_mode: UserQueryMode,
     running_command: Option<RunningCommand>,
     additional_attachments: HashMap<String, AIAgentAttachment>,
+    prompt_attachments: Vec<PendingAttachment>,
     context_model: &BlocklistAIContextModel,
     active_session: &ActiveSession,
     app: &AppContext,
 ) -> AIAgentInput {
+    // Build the image / file-content context and the file-reference list from the
+    // explicitly-resolved `prompt_attachments` set (the queued row's captured attachments, or
+    // live staging captured at send time — decided by the caller) rather than from whatever
+    // happens to be staged in `context_model` when this request is actually built.
+    let (attachment_context, file_attachments) =
+        context_and_files_for_attachments(prompt_attachments);
     let context = input_context_for_request(
         true,
         context_model,
         active_session,
         Some(conversation_id),
-        vec![],
+        attachment_context,
         app,
     );
     let intended_agent = BlocklistAIHistoryModel::as_ref(app)
@@ -4108,6 +4164,7 @@ fn input_for_query(
         });
     let mut referenced_attachments = parse_context_attachments(&query, context_model, app);
     referenced_attachments.extend(additional_attachments);
+    add_pending_file_attachments(&mut referenced_attachments, file_attachments);
     AIAgentInput::UserQuery {
         query,
         context,
