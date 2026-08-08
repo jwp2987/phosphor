@@ -70,6 +70,7 @@ fn usage_tui_zero_state_render() {
             app.add_model(|ctx| ActiveSession::new(sessions.clone(), dispatcher.clone(), ctx));
 
         let (window_id, view) = app.update(|ctx| {
+            crate::zero_state_animation::ZeroStateAnimationConfig::register(ctx);
             let (window_id, _) = ctx.add_tui_window(
                 AddWindowOptions {
                     window_style: WindowStyle::NotStealFocus,

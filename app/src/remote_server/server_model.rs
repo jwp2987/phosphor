@@ -1678,7 +1678,7 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        use crate::code_review::diff_state::LocalDiffStateModel;
+        use crate::code_review::diff_state::{FileStatusInfo, LocalDiffStateModel};
 
         let canonical_path =
             match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
@@ -1706,11 +1706,28 @@ impl ServerModel {
             ));
         }
 
-        let file_infos: Vec<_> = msg
+        // Decoding is fallible: #326 replaced the infallible
+        // `proto_to_file_status_info` with a validating `TryFrom` that rejects
+        // non-absolute paths and missing status variants. Surface a malformed
+        // entry as a DiscardFilesError rather than acting on a half-decoded
+        // request -- discarding files against a bad path is destructive.
+        let file_infos: Vec<FileStatusInfo> = match msg
             .files
             .iter()
-            .map(super::diff_state_proto::proto_to_file_status_info)
-            .collect();
+            .map(FileStatusInfo::try_from)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(infos) => infos,
+            Err(err) => {
+                return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                    DiscardFilesResponse {
+                        result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                            message: format!("Invalid file entry in DiscardFilesRequest: {err}"),
+                        })),
+                    },
+                ));
+            }
+        };
         let should_stash = msg.should_stash;
         let branch = msg.branch_name.unwrap_or_else(|| "HEAD".to_string());
         let repo_path = PathBuf::from(canonical_path.to_local_path_lossy());
