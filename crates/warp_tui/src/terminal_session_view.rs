@@ -1092,6 +1092,7 @@ impl TuiTerminalSessionView {
             BlocklistAIInputModel::new_tui(
                 model.clone(),
                 context_model.clone(),
+                Rc::new(TuiInputModePolicy),
                 terminal_surface_id,
                 ctx,
             )
