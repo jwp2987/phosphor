@@ -4,10 +4,15 @@
 //! initialization is done, the mount built here starts the TUI driver and
 //! defers creating the first terminal session until login.
 
+use std::io::{self, IsTerminal as _, Read as _};
+
+use ai::LLMProvider;
+use ai::api_keys::ApiKeyManager;
 use crate::report_error::report_error;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use clap::error::ErrorKind;
+use inquire::{InquireError, Password, PasswordDisplayMode};
 use warp::settings::TuiThemeSettings;
 use warp::tui_export::{Appearance, ServerConversationToken};
 use warp::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase};
@@ -23,8 +28,16 @@ use crate::telemetry::TuiStartupTelemetryEvent;
 use crate::terminal_background::TuiHostTerminalBackground;
 use crate::terminal_session_view::{TuiConversationRestoreOrigin, TuiConversationRestoreTarget};
 
-#[derive(Parser)]
-#[command(name = "warp")]
+/// Version string printed by `--version`. Release builds get `GIT_RELEASE_TAG`
+/// (the same env var `ChannelState::app_version` reads at runtime); local
+/// cargo builds fall back to a numeric placeholder.
+const CLI_VERSION: &str = match option_env!("GIT_RELEASE_TAG") {
+    Some(version) => version,
+    None => "v0.0.0.0.0.0",
+};
+
+#[derive(Debug, Parser)]
+#[command(name = "warp", version = CLI_VERSION)]
 struct TuiArgs {
     /// Resume an Oz/Warp conversation by server token.
     #[arg(long)]
@@ -33,6 +46,57 @@ struct TuiArgs {
     /// API key for non-interactive authentication.
     #[arg(long, env = "WARP_API_KEY")]
     api_key: Option<String>,
+
+    /// Securely store a model-provider API key for Warp Agent CLI.
+    #[arg(
+        long,
+        value_name = LLMProvider::API_KEY_PROVIDER_VALUE_NAME,
+        value_parser = LLMProvider::from_api_key_slug,
+        conflicts_with_all = ["resume", "clear_provider_api_key"]
+    )]
+    set_provider_api_key: Option<LLMProvider>,
+
+    /// Remove a securely stored model-provider API key from Warp Agent CLI.
+    #[arg(
+        long,
+        value_name = LLMProvider::API_KEY_PROVIDER_VALUE_NAME,
+        value_parser = LLMProvider::from_api_key_slug,
+        conflicts_with_all = ["resume", "set_provider_api_key"]
+    )]
+    clear_provider_api_key: Option<LLMProvider>,
+}
+
+enum ProviderApiKeyCommand {
+    Set {
+        provider: LLMProvider,
+        api_key: String,
+    },
+    Clear {
+        provider: LLMProvider,
+    },
+}
+
+/// Reads a provider API key from a masked TTY prompt or, when stdin is piped,
+/// from stdin. Empty input and interactive cancellation return `Ok(None)`.
+/// Never echoes or logs the returned value; callers must not print it either.
+fn read_provider_api_key() -> Result<Option<String>> {
+    if io::stdin().is_terminal() {
+        return match Password::new("Provider API key:")
+            .with_display_mode(PasswordDisplayMode::Masked)
+            .without_confirmation()
+            .prompt()
+        {
+            Ok(value) if value.trim().is_empty() => Ok(None),
+            Ok(value) => Ok(Some(value)),
+            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
+            Err(error) => Err(error.into()),
+        };
+    }
+
+    let mut value = String::new();
+    io::stdin().read_to_string(&mut value)?;
+    let value = value.trim().to_owned();
+    Ok((!value.is_empty()).then_some(value))
 }
 
 /// Validates and wraps a server conversation token from the command line.
@@ -55,17 +119,80 @@ pub fn run() -> Result<()> {
     }
     let args = match TuiArgs::try_parse() {
         Ok(args) => args,
-        Err(error)
-            if matches!(
-                error.kind(),
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
-            ) =>
-        {
+        // Match the zero-state version line: bare tag/version, no binary name prefix.
+        Err(error) if error.kind() == ErrorKind::DisplayVersion => {
+            println!("{CLI_VERSION}");
+            return Ok(());
+        }
+        Err(error) if error.kind() == ErrorKind::DisplayHelp => {
             error.print()?;
             return Ok(());
         }
         Err(error) => return Err(anyhow::Error::new(error)),
     };
+    // `--set-provider-api-key` / `--clear-provider-api-key`: a one-shot,
+    // non-interactive credential command, not a TUI launch (clap's
+    // `conflicts_with_all` above already rejects combining either with
+    // `--resume`). `Xai` is parsed like the other three providers but has no
+    // pasted-key path in this fork -- see `DECLINED.md`'s xAI / Grok
+    // subscription OAuth entry (#319) -- so it is rejected here with
+    // guidance toward the store that *does* serve it (the arbitrary-provider
+    // "Agent providers" BYOP surface, reachable from Settings or the TUI's
+    // own `/api-keys` menu).
+    let provider_api_key_command = if let Some(provider) = args.set_provider_api_key {
+        if !provider.supports_pasted_api_key() {
+            return Err(anyhow!(
+                "{} credentials aren't supported by --set-provider-api-key in this build; \
+                 add an xAI key as a custom agent provider instead (Settings > AI > Agent \
+                 providers, or the TUI's /api-keys menu)",
+                provider.display_name()
+            ));
+        }
+        let Some(api_key) = read_provider_api_key()? else {
+            return Err(anyhow!("No provider API key was supplied"));
+        };
+        Some(ProviderApiKeyCommand::Set { provider, api_key })
+    } else {
+        match args.clear_provider_api_key {
+            Some(LLMProvider::Xai) => {
+                return Err(anyhow!(
+                    "xAI credentials aren't managed by --clear-provider-api-key in this \
+                     build; remove them via Settings > AI > Agent providers or the TUI's \
+                     /api-keys menu instead"
+                ));
+            }
+            Some(provider) => Some(ProviderApiKeyCommand::Clear { provider }),
+            None => None,
+        }
+    };
+    if let Some(command) = provider_api_key_command {
+        // Reuses the same shared bootstrap as a normal launch (`init` below)
+        // instead of a separate one-shot entry point: `mount` already runs
+        // after `ApiKeyManager` is registered, and returning without adding a
+        // window (mirroring the `spawn_tui_driver` error path in `init`) is
+        // enough to persist the key and exit without ever drawing a TUI.
+        return warp::run_tui(
+            None,
+            Box::new(move |ctx| {
+                let (provider, key, success_verb) = match command {
+                    ProviderApiKeyCommand::Set { provider, api_key } => {
+                        (provider, Some(api_key), "saved")
+                    }
+                    ProviderApiKeyCommand::Clear { provider } => (provider, None, "cleared"),
+                };
+                ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| match provider {
+                    LLMProvider::OpenAI => manager.set_openai_key(key, ctx),
+                    LLMProvider::Anthropic => manager.set_anthropic_key(key, ctx),
+                    LLMProvider::Google => manager.set_google_key(key, ctx),
+                    // Unreachable: `Xai` is rejected above and
+                    // `from_api_key_slug` never produces `Unknown`.
+                    LLMProvider::Xai | LLMProvider::Unknown => {}
+                });
+                println!("{} API key {success_verb}", provider.display_name());
+                ctx.terminate_app(TerminationMode::ForceTerminate, None);
+            }),
+        );
+    }
     let resume_token = args.resume.map(parse_resume_token).transpose()?;
     let exit_summary = TuiExitSummaryHandle::default();
     let exit_summary_for_app = exit_summary.clone();
@@ -102,6 +229,12 @@ fn init(
     // Register the session-scoped file-edit revert registry so `/rewind` can
     // restore files edited during this session (see tui_revert_registry).
     crate::tui_revert_registry::TuiFileEditRevertRegistry::register(ctx);
+
+    // Load the zero-state rotating-object animation's config (built-in mark
+    // vs. a user-supplied `TuiZeroStateObject::AsciiFile`, rotation period,
+    // extrusion depth) from settings, and keep it live-reloading on setting
+    // changes. See zero_state_animation_config.rs and #384.
+    crate::zero_state_animation::ZeroStateAnimationConfig::register(ctx);
 
     // Theme the transcript to match the host terminal, and register the live
     // focus-triggered re-probe so a later appearance change (e.g. switching

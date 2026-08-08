@@ -1232,9 +1232,13 @@ pub struct ModelTokenUsage {
     #[serde(default)]
     pub byok_tokens: u32,
     #[serde(default)]
+    pub custom_endpoint_tokens: u32,
+    #[serde(default)]
     pub warp_token_usage_by_category: HashMap<TokenUsageCategory, u32>,
     #[serde(default)]
     pub byok_token_usage_by_category: HashMap<TokenUsageCategory, u32>,
+    #[serde(default)]
+    pub custom_endpoint_token_usage_by_category: HashMap<TokenUsageCategory, u32>,
 }
 
 impl ModelTokenUsage {
@@ -1268,15 +1272,25 @@ impl ModelTokenUsage {
         self.to_proto_usage(self.byok_tokens, &self.byok_token_usage_by_category)
     }
 
+    pub fn to_proto_custom_endpoint_usage(
+        &self,
+    ) -> Option<(String, stream_finished::ModelTokenUsage)> {
+        self.to_proto_usage(
+            self.custom_endpoint_tokens,
+            &self.custom_endpoint_token_usage_by_category,
+        )
+    }
+
     #[allow(deprecated)]
     pub fn to_proto_combined(&self) -> stream_finished::ModelTokenUsage {
         stream_finished::ModelTokenUsage {
             model_id: self.model_id.clone(),
-            total_tokens: self.warp_tokens + self.byok_tokens,
+            total_tokens: self.warp_tokens + self.byok_tokens + self.custom_endpoint_tokens,
             token_usage_by_category: self
                 .warp_token_usage_by_category
                 .iter()
                 .chain(self.byok_token_usage_by_category.iter())
+                .chain(self.custom_endpoint_token_usage_by_category.iter())
                 .fold(HashMap::new(), |mut acc, (cat, tokens)| {
                     *acc.entry(cat.clone()).or_insert(0) += tokens;
                     acc
@@ -1493,7 +1507,11 @@ pub struct NewMCPServerInstallation {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentConversation, AgentConversationData, AgentConversationSummary, api};
+    use std::collections::HashMap;
+
+    use super::{
+        api, AgentConversation, AgentConversationData, AgentConversationSummary, ModelTokenUsage,
+    };
 
     fn parentless_task(id: &str, message_count: usize) -> api::Task {
         api::Task {
@@ -1827,6 +1845,40 @@ mod tests {
             roundtripped.cli_subagent_block_snapshots_json,
             data.cli_subagent_block_snapshots_json
         );
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn model_token_usage_replays_custom_endpoint_usage_by_model_id() {
+        let usage = ModelTokenUsage {
+            model_id: "Friendly alias".to_string(),
+            custom_endpoint_tokens: 6,
+            custom_endpoint_token_usage_by_category: HashMap::from([(
+                "primary_agent".to_string(),
+                6,
+            )]),
+            ..Default::default()
+        };
+
+        let (key, proto) = usage
+            .to_proto_custom_endpoint_usage()
+            .expect("custom endpoint usage should serialize for replay");
+
+        assert_eq!(key, "Friendly alias");
+        assert_eq!(proto.model_id, "Friendly alias");
+        assert_eq!(proto.total_tokens, 6);
+        assert_eq!(proto.token_usage_by_category.get("primary_agent"), Some(&6));
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn model_token_usage_replay_skips_non_custom_endpoint_entries() {
+        let warp_only = ModelTokenUsage {
+            model_id: "warp-model".to_string(),
+            warp_tokens: 4,
+            ..Default::default()
+        };
+        assert!(warp_only.to_proto_custom_endpoint_usage().is_none());
     }
 }
 
