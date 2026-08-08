@@ -45,6 +45,8 @@ pub mod i18n;
 mod input_classifier;
 mod interval_timer;
 mod linear;
+#[cfg(feature = "local_fs")]
+mod local_control;
 mod local_managed_secrets;
 mod login_item;
 mod menu;
@@ -652,6 +654,16 @@ pub fn run() -> Result<()> {
 
     // Ensure feature flags are initialized before parsing command-line arguments.
     init_feature_flags();
+
+    // The bundled Warp Control wrapper injects the hidden `--warpctrl` flag, which
+    // selects a separate argument parser and never falls through to the normal
+    // Oz/GUI parser below. Oz subcommands are part of that normal parser and
+    // therefore do not require a separate mode flag.
+    if let Some(control_args) = warp_cli::local_control::ControlArgs::from_control_mode_env() {
+        #[cfg(windows)]
+        warp_util::windows::attach_to_parent_console();
+        warp_cli::local_control::run_and_exit(control_args);
+    }
 
     // Parse command-line arguments.
     let args = warp_cli::Args::from_env();
@@ -1992,6 +2004,16 @@ fn initialize_app(
         ];
         http_server::HttpServer::new(routers, ctx)
     });
+
+    #[cfg(feature = "local_fs")]
+    if matches!(
+        launch_mode,
+        LaunchMode::App { .. } | LaunchMode::Test { .. }
+    ) && FeatureFlag::WarpControlCli.is_enabled()
+    {
+        ctx.add_singleton_model(local_control::LocalControlBridge::new);
+        ctx.add_singleton_model(local_control::LocalControlServer::new);
+    }
 
     app_state
 }

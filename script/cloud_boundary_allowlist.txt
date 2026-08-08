@@ -102,6 +102,11 @@ app/src/lib.rs use crate::cloud_object::model::view::ObjectStoreViewModel;
 app/src/lib.rs use crate::cloud_object::update_manager::UpdateManager;
 app/src/lib.rs use crate::server::experiments::ServerExperiments;
 app/src/lib.rs use crate::server::telemetry::{AppStartupInfo, CloseTarget, PaletteSource};
+# local_control's surface.command_palette.open handler reuses the same non-cloud
+# PaletteSource enum every other OpenPalette call site already imports from here
+# (see the agent_tips.rs / terminal/input.rs / pane_group/mod.rs entries above and
+# below); not a new cloud dependency, just another call site of an existing one.
+app/src/local_control/handlers/app_state.rs use crate::server::telemetry::PaletteSource;
 app/src/notebooks/editor/model_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
 app/src/notebooks/editor/model_tests.rs use crate::cloud_object::{Revision, StoredObjectMetadata, StoredObjectPermissions};
 app/src/notebooks/editor/model_tests.rs use crate::server::ids::{ServerId, SyncId};

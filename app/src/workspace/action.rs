@@ -555,6 +555,12 @@ pub enum WorkspaceAction {
     /// Uninstall the Zap CLI command from /usr/local/bin
     #[cfg(target_os = "macos")]
     UninstallCLI,
+    /// Install the Warp Control (`warpctrl`) CLI command to /usr/local/bin
+    #[cfg(target_os = "macos")]
+    InstallWarpctrl,
+    /// Uninstall the Warp Control (`warpctrl`) CLI command from /usr/local/bin
+    #[cfg(target_os = "macos")]
+    UninstallWarpctrl,
     UndoRevertInCodeReviewPane {
         window_id: WindowId,
         view_id: EntityId,
@@ -972,7 +978,7 @@ impl WorkspaceAction {
             #[cfg(target_os = "macos")]
             SampleProcess => false,
             #[cfg(target_os = "macos")]
-            InstallCLI | UninstallCLI => false,
+            InstallCLI | UninstallCLI | InstallWarpctrl | UninstallWarpctrl => false,
             #[cfg(feature = "local_fs")]
             FileRenamed { .. } => false, // File rename doesn't change workspace state
             #[cfg(feature = "local_fs")]

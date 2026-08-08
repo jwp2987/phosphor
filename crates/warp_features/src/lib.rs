@@ -718,6 +718,11 @@ pub enum FeatureFlag {
     /// and whole tab groups so they stay at the front of the tab list and
     /// are protected from reordering.
     PinnedTabs,
+
+    /// Enables local control (the standalone `warpctrl` CLI plus the
+    /// in-process localhost control surface it talks to). See
+    /// `crates/local_control` and `app/src/local_control`.
+    WarpControlCli,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
@@ -785,6 +790,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::DragTabsToWindows,
     FeatureFlag::ServerFileBrowser,
     FeatureFlag::TerminalLifecycleRecovery,
+    FeatureFlag::WarpControlCli,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Zap).

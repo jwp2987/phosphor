@@ -14,7 +14,10 @@ mod startup_directory;
 mod tab_grouping;
 #[cfg(test)]
 #[path = "view_test.rs"]
-mod tests;
+// `pub(crate)` (matching the pinned oracle, 02b53fcd8): needed so
+// `crate::local_control::handlers::layout::tests` can reuse the same
+// `initialize_app` / `mock_workspace` test harness the workspace view tests use.
+pub(crate) mod tests;
 mod vertical_tabs;
 #[cfg(target_family = "wasm")]
 mod wasm_view;
@@ -392,8 +395,13 @@ use super::action::{
     InitContent, RestoreConversationLayout, TabContextMenuAnchor,
     VerticalTabsPaneContextMenuTarget, WorkspaceAction,
 };
+// Re-exported `pub(crate)` (matching the pinned oracle, 02b53fcd8) so
+// `crate::local_control::handlers::close` can name the same close-confirmation
+// source enum this method already uses internally, without a second import
+// path pointing at the same private submodule.
+pub(crate) use super::close_session_confirmation_dialog::OpenDialogSource;
 use super::close_session_confirmation_dialog::{
-    CloseSessionConfirmationDialog, CloseSessionConfirmationEvent, OpenDialogSource,
+    CloseSessionConfirmationDialog, CloseSessionConfirmationEvent,
 };
 use super::delete_conversation_confirmation_dialog::{
     DeleteConversationConfirmationDialog, DeleteConversationConfirmationEvent,
@@ -7590,6 +7598,58 @@ impl Workspace {
         );
     }
 
+    /// Install the Warp Control CLI by creating a symlink in /usr/local/bin
+    #[cfg(target_os = "macos")]
+    fn install_warpctrl(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            async { cli_install::install_warpctrl() },
+            |view, result, ctx| match result {
+                Ok(_) => {
+                    let command_name = ChannelState::channel().warpctrl_command_name();
+                    let message = format!("Installed the Warp Control CLI globally. You can now run '{command_name}' from any terminal outside of Phosphor.");
+                    view.toast_stack.update(ctx, |toast_stack, ctx| {
+                        let toast = DismissibleToast::success(message);
+                        toast_stack.add_ephemeral_toast(toast, ctx);
+                    });
+                }
+                Err(error) => {
+                    let error_message = format!("Failed to install Warp Control command: {error}");
+                    log::error!("{error_message}");
+                    view.toast_stack.update(ctx, |toast_stack, ctx| {
+                        let toast = DismissibleToast::error(error_message);
+                        toast_stack.add_persistent_toast(toast, ctx);
+                    });
+                }
+            },
+        );
+    }
+
+    /// Uninstall the Warp Control CLI by removing the symlink from /usr/local/bin
+    #[cfg(target_os = "macos")]
+    fn uninstall_warpctrl(&mut self, ctx: &mut ViewContext<Self>) {
+        ctx.spawn(
+            async { cli_install::uninstall_warpctrl() },
+            |view, result, ctx| match result {
+                Ok(_) => {
+                    let message =
+                        "Removed the global Warp Control CLI installation — it still works inside Phosphor.";
+                    view.toast_stack.update(ctx, |toast_stack, ctx| {
+                        let toast = DismissibleToast::success(message.to_string());
+                        toast_stack.add_ephemeral_toast(toast, ctx);
+                    });
+                }
+                Err(error) => {
+                    let error_message = format!("Failed to uninstall Warp Control command: {error}");
+                    log::error!("{error_message}");
+                    view.toast_stack.update(ctx, |toast_stack, ctx| {
+                        let toast = DismissibleToast::error(error_message);
+                        toast_stack.add_persistent_toast(toast, ctx);
+                    });
+                }
+            },
+        );
+    }
+
     fn undo_revert_in_code_review_pane(
         &mut self,
         window_id: WindowId,
@@ -10237,7 +10297,10 @@ impl Workspace {
     /// Checks if the provided tab indices need to be confirmed before closing, unless skip_confirmation is true.
     /// If none of them need confirmation (or the confirm setting is turned off), we close all the provided tabs.
     /// Returns true iff all of the tabs were closed.
-    fn close_tabs(
+    // `pub(crate)` (matching the pinned oracle, 02b53fcd8): needed so
+    // `crate::local_control::handlers::close::tab_close` can close tabs
+    // through the same confirmation-aware path the UI itself uses.
+    pub(crate) fn close_tabs(
         &mut self,
         tab_indices: impl Iterator<Item = usize>,
         dialog_source: OpenDialogSource,
@@ -19994,6 +20057,10 @@ impl TypedActionView for Workspace {
             InstallCLI => self.install_cli(ctx),
             #[cfg(target_os = "macos")]
             UninstallCLI => self.uninstall_cli(ctx),
+            #[cfg(target_os = "macos")]
+            InstallWarpctrl => self.install_warpctrl(ctx),
+            #[cfg(target_os = "macos")]
+            UninstallWarpctrl => self.uninstall_warpctrl(ctx),
             UndoRevertInCodeReviewPane { window_id, view_id } => {
                 self.undo_revert_in_code_review_pane(*window_id, *view_id, ctx)
             }

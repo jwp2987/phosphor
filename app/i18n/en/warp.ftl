@@ -1863,6 +1863,8 @@ keybinding-desc-workspace-toggle-resource-center = Toggle resource center
 keybinding-desc-workspace-export-all-warp-drive-objects = Export all Phosphor Drive objects
 keybinding-desc-workspace-install-cli = Install Oz CLI command
 keybinding-desc-workspace-uninstall-cli = Uninstall Oz CLI command
+keybinding-desc-workspace-install-warpctrl = Install Warp Control CLI globally for use outside of Phosphor
+keybinding-desc-workspace-uninstall-warpctrl = Undo global Warp Control CLI installation (warpctrl will still work within Phosphor)
 
 # AI assistant / agents
 keybinding-desc-workspace-toggle-ai-assistant = Toggle Phosphor AI

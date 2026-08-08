@@ -1209,6 +1209,27 @@ pub fn init(app: &mut AppContext) {
             .with_group(bindings::BindingGroup::Settings.as_str())
             .with_context_predicate(id!("Workspace")),
         ]);
+
+        // Warp Control (`warpctrl`) CLI install/uninstall actions, gated behind its
+        // feature flag like the pinned oracle (02b53fcd8:app/src/workspace/mod.rs).
+        if FeatureFlag::WarpControlCli.is_enabled() {
+            app.register_editable_bindings([
+                EditableBinding::new(
+                    "workspace:install_warpctrl",
+                    crate::t!("keybinding-desc-workspace-install-warpctrl"),
+                    WorkspaceAction::InstallWarpctrl,
+                )
+                .with_group(bindings::BindingGroup::Settings.as_str())
+                .with_context_predicate(id!("Workspace")),
+                EditableBinding::new(
+                    "workspace:uninstall_warpctrl",
+                    crate::t!("keybinding-desc-workspace-uninstall-warpctrl"),
+                    WorkspaceAction::UninstallWarpctrl,
+                )
+                .with_group(bindings::BindingGroup::Settings.as_str())
+                .with_context_predicate(id!("Workspace")),
+            ]);
+        }
     }
 
     if FeatureFlag::Changelog.is_enabled() {
