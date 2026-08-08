@@ -91,25 +91,42 @@ impl History {
         config: UpArrowHistoryConfig,
         app: &'a AppContext,
     ) -> Vec<HistoryInputSuggestion<'a>> {
-        let ignored_suggestions = IgnoredSuggestionsModel::handle(app).as_ref(app);
+        // Guarded, as the oracle guards them. These singletons are absent in
+        // surfaces that build history without the full app graph, and the fork's
+        // unguarded `handle()` turned that into a panic rather than the oracle's
+        // fallback. `up_arrow_tests.rs` -- which had never been compiled -- fails
+        // on exactly this.
+        let ignored_suggestions = app
+            .has_singleton_model::<IgnoredSuggestionsModel>()
+            .then(|| IgnoredSuggestionsModel::handle(app).as_ref(app));
 
-        let include_agent_commands = *AISettings::handle(app)
-            .as_ref(app)
-            .include_agent_commands_in_history;
+        let include_agent_commands = if app.has_singleton_model::<AISettings>() {
+            *AISettings::handle(app)
+                .as_ref(app)
+                .include_agent_commands_in_history
+        } else {
+            true
+        };
 
         let commands = session_id
             .and_then(|session_id| self.commands(session_id))
             .unwrap_or_default()
             .into_iter()
             .filter(|entry| {
-                !ignored_suggestions.is_ignored(&entry.command, SuggestionType::ShellCommand)
+                ignored_suggestions.is_none_or(|ignored_suggestions| {
+                    !ignored_suggestions.is_ignored(&entry.command, SuggestionType::ShellCommand)
+                })
             })
             .filter(move |entry| include_agent_commands || !entry.is_agent_executed)
             .map(|entry| HistoryInputSuggestion::Command { entry });
 
         let should_include_prompts = config.include_prompts
-            && FeatureFlag::AgentMode.is_enabled()
-            && AISettings::handle(app).as_ref(app).is_any_ai_enabled(app);
+            && if app.has_singleton_model::<AISettings>() {
+                FeatureFlag::AgentMode.is_enabled()
+                    && AISettings::handle(app).as_ref(app).is_any_ai_enabled(app)
+            } else {
+                true
+            };
         let all_live_session_ids = self.all_live_session_ids();
         if !should_include_prompts {
             if !config.include_commands {
@@ -126,7 +143,9 @@ impl History {
             .as_ref(app)
             .all_ai_queries(Some(terminal_view_id))
             .filter(|query| {
-                !ignored_suggestions.is_ignored(&query.query_text, SuggestionType::AIQuery)
+                ignored_suggestions.is_none_or(|ignored_suggestions| {
+                    !ignored_suggestions.is_ignored(&query.query_text, SuggestionType::AIQuery)
+                })
             })
             .map(|entry| HistoryInputSuggestion::AIQuery { entry });
 
@@ -149,13 +168,18 @@ pub fn prompt_history_for_terminal_view(
     terminal_view_id: EntityId,
     app: &AppContext,
 ) -> Vec<AIQueryHistory> {
-    let ignored_suggestions = IgnoredSuggestionsModel::handle(app);
-    let ignored_suggestions = ignored_suggestions.as_ref(app);
+    let ignored_suggestions = app
+        .has_singleton_model::<IgnoredSuggestionsModel>()
+        .then(|| IgnoredSuggestionsModel::handle(app).as_ref(app));
     let suggestions = BlocklistAIHistoryModel::handle(app)
         .as_ref(app)
         .all_ai_queries(Some(terminal_view_id))
         .filter(|entry| !entry.query_text.trim().is_empty())
-        .filter(|entry| !ignored_suggestions.is_ignored(&entry.query_text, SuggestionType::AIQuery))
+        .filter(|entry| {
+            ignored_suggestions.is_none_or(|ignored_suggestions| {
+                !ignored_suggestions.is_ignored(&entry.query_text, SuggestionType::AIQuery)
+            })
+        })
         .map(|entry| HistoryInputSuggestion::AIQuery { entry })
         .collect();
     let sorted = sort_and_dedupe_suggestions(suggestions, None, &HashSet::new());
@@ -168,3 +192,7 @@ pub fn prompt_history_for_terminal_view(
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "up_arrow_tests.rs"]
+mod tests;

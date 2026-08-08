@@ -17,7 +17,8 @@ use crate::settings::AISettings;
 use crate::suggestions::ignored_suggestions_model::{IgnoredSuggestionsModel, SuggestionType};
 use crate::terminal::model::session::command_executor::NoOpCommandExecutor;
 use crate::terminal::model::session::{Session, SessionInfo};
-use crate::terminal::{History, HistoryEntry, LinkedWorkflowData};
+use crate::terminal::history::LinkedWorkflowData;
+use crate::terminal::{History, HistoryEntry};
 use crate::test_util::settings::initialize_settings_for_tests;
 
 #[derive(Debug, PartialEq, Eq)]
