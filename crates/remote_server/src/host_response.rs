@@ -1,5 +1,5 @@
 //! Helpers for interpreting raw `ServerMessage` responses to file-operation
-//! requests (`WriteFile`, `SaveBuffer`, `DeleteFile`).
+//! requests (`WriteFile`, `SaveBuffer`, `DeleteFile`, `DiscardFiles`).
 //!
 //! [`crate::client::RemoteServerClient`] already inlines this parsing at each
 //! call site; these helpers exist so the response-interpretation logic for
@@ -59,6 +59,16 @@ pub fn delete_file_result(msg: &ServerMessage) -> Result<(), String> {
         server_message::Message::DeleteFileResponse,
         crate::proto::delete_file_response::Result,
         "DeleteFile"
+    )
+}
+
+/// Interprets a [`ServerMessage`] as the result of a `DiscardFiles` request.
+pub fn discard_files_result(msg: &ServerMessage) -> Result<(), String> {
+    file_op_result!(
+        msg,
+        server_message::Message::DiscardFilesResponse,
+        crate::proto::discard_files_response::Result,
+        "DiscardFiles"
     )
 }
 

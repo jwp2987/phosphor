@@ -117,6 +117,12 @@ pub enum SlashCommandKind {
     /// mapped in [`StaticCommand::kind`] here, so no reachable command is lost.
     NaturalLanguageDetection,
     Exit,
+    /// `/logout`: kept for source parity with the oracle's `SlashCommandKind`, but
+    /// deliberately never produced by [`StaticCommand::kind`] and never registered in
+    /// [`commands::all_commands`]. BYOP has no Warp account to log out of --
+    /// `crate::tui::log_out_tui` (its dispatch target) is a documented no-op for the same
+    /// reason (see `app/src/tui/mod.rs`), so registering this command would surface a row
+    /// in the `/` menu that does nothing when selected. See #338, DECLINED.md.
     Logout,
     CreateEnvironment,
     CreateDockerSandbox,
@@ -127,6 +133,15 @@ pub enum SlashCommandKind {
     AddRule,
     Edit,
     RenameTab,
+    /// `/rename-conversation`: kept for source parity with the oracle, but deliberately never
+    /// produced by [`StaticCommand::kind`] and never registered. The oracle's rename backend
+    /// (`ai::conversation_rename::rename_conversation`) requires a synced
+    /// `server_conversation_token` and reports "hasn't synced to the cloud yet" on failure --
+    /// it is cloud-coupled, not a local rename. The fork's `BlocklistAIHistoryModel` carries
+    /// matching `begin_conversation_rename`/`complete_conversation_rename`/
+    /// `fail_conversation_rename` methods, but nothing in the fork calls them; wiring
+    /// `/rename-conversation` requires designing a local/BYOP rename path first, which is a
+    /// feature decision, not registry wiring. See #147.
     RenameConversation,
     SetTabColor,
     Statusline,
@@ -143,6 +158,10 @@ pub enum SlashCommandKind {
     OpenRepo,
     OpenRules,
     New,
+    /// `/clear`: TUI-only alias for `/agent`/`/new` (clears the transcript and starts a new
+    /// conversation). Shares `Agent`/`New`'s dispatch arm in
+    /// `TuiTerminalSessionView::execute_tui_slash_command`.
+    Clear,
     Model,
     Host,
     Harness,
@@ -223,6 +242,8 @@ impl StaticCommand {
             "/statusline" => SlashCommandKind::Statusline,
             "/auto-approve" => SlashCommandKind::AutoApprove,
             "/natural-language-detection" => SlashCommandKind::NaturalLanguageDetection,
+            "/exit" => SlashCommandKind::Exit,
+            "/view-logs" => SlashCommandKind::ViewLogs,
             "/fork" => SlashCommandKind::Fork,
             "/handoff" => SlashCommandKind::MoveToCloud,
             "/open-code-review" => SlashCommandKind::OpenCodeReview,
@@ -235,6 +256,7 @@ impl StaticCommand {
             "/open-repo" => SlashCommandKind::OpenRepo,
             "/open-rules" => SlashCommandKind::OpenRules,
             "/new" => SlashCommandKind::New,
+            "/clear" => SlashCommandKind::Clear,
             "/model" => SlashCommandKind::Model,
             "/profile" => SlashCommandKind::Profile,
             "/compact" => SlashCommandKind::Compact,
@@ -264,6 +286,7 @@ impl StaticCommand {
                 | "/create-new-project"
                 | "/skills"
                 | "/new"
+                | "/clear"
                 | "/init"
                 | "/model"
                 | "/profile"
@@ -283,6 +306,9 @@ impl StaticCommand {
                 | "/vim-mode"
                 | "/auto-approve"
                 | "/natural-language-detection"
+                | "/exit"
+                | "/mcp"
+                | "/view-logs"
                 // Both report on local BYOP data (context window, provider token counts x
                 // the user's own rates) and open no GUI pane, so AGENTS §5.9 requires them
                 // on the TUI too.

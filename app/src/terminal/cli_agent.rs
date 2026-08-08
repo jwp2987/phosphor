@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
+use warp_cli::agent::Harness;
 use warp_editor::content::{buffer::Buffer, markdown::MarkdownStyle};
 
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
@@ -264,6 +265,28 @@ impl CLIAgent {
     /// Inverse of `to_serialized_name`. Falls back to `Unknown`.
     pub fn from_serialized_name(name: &str) -> CLIAgent {
         serde_json::from_value(name.into()).unwrap_or(CLIAgent::Unknown)
+    }
+
+    /// Maps an agent-run [`Harness`] to the [`CLIAgent`] that should render its brand icon.
+    /// Returns `None` for [`Harness::Oz`] (Zap's own MAA infrastructure, which renders as the
+    /// `OzAgent` icon variant instead) and for [`Harness::Unknown`] (a future harness this
+    /// client doesn't recognize -- also falls back to the Oz variant so callers never render
+    /// an unbranded gray circle).
+    ///
+    /// Deviation from the pinned oracle (`02b53fcd8`): the pin's `Harness` enum also has a
+    /// `Codex` variant, mapped here to `CLIAgent::Codex`. This fork's `warp_cli::agent::Harness`
+    /// (crates/warp_cli/src/agent.rs) does not have a `Codex` variant -- the fork's local-child
+    /// harness dispatch only supports Oz/Claude/OpenCode/Gemini today. That is a separate,
+    /// pre-existing feature gap in the harness-dispatch surface, not part of this port; adding
+    /// `Harness::Codex` would require wiring actual Codex CLI dispatch through `warp_cli` and
+    /// the local orchestrator, which is out of scope for `ui_components::agent_icon`.
+    pub fn from_harness(harness: Harness) -> Option<CLIAgent> {
+        match harness {
+            Harness::Oz | Harness::Unknown => None,
+            Harness::Claude => Some(CLIAgent::Claude),
+            Harness::Gemini => Some(CLIAgent::Gemini),
+            Harness::OpenCode => Some(CLIAgent::OpenCode),
+        }
     }
 
     pub fn display_name(&self) -> &'static str {

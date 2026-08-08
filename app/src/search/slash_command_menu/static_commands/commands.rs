@@ -415,6 +415,73 @@ pub static NATURAL_LANGUAGE_DETECTION: LazyLock<StaticCommand> = LazyLock::new(|
     argument: None,
 });
 
+/// TUI-only: opens the MCP server manager. Not executable in the GUI (see
+/// `execute_slash_command`'s explicit guard), which has its own `/add-mcp` and
+/// `/open-mcp-servers` entry points instead.
+pub static MCP: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/mcp",
+    description: t_static!("slash-cmd-mcp-desc"),
+    icon_path: "bundled/svg/dataflow.svg",
+    availability: Availability::AI_ENABLED,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
+/// TUI-only: quits the TUI process. Not executable in the GUI (see `execute_slash_command`'s
+/// explicit guard), which has its own window-close affordances.
+pub static EXIT: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/exit",
+    description: t_static!("slash-cmd-exit-desc"),
+    icon_path: "bundled/svg/log-out-01.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
+/// TUI-only: bundles the app's logs into a zip archive and reveals it in the file manager.
+/// Not executable in the GUI (see `execute_slash_command`'s explicit guard).
+pub static VIEW_LOGS: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/view-logs",
+    description: t_static!("slash-cmd-view-logs-desc"),
+    icon_path: "bundled/svg/download-01.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
+/// TUI-only: alias for `/agent`/`/new` (see `SlashCommandKind::Clear`'s doc comment). Not
+/// executable in the GUI (see `execute_slash_command`'s explicit guard); the GUI has no
+/// equivalent alias command upstream either.
+pub static CLEAR: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/clear",
+    description: t_static!("slash-cmd-clear-desc"),
+    icon_path: "bundled/svg/refresh-ccw-01.svg",
+    availability: Availability::NO_LRC_CONTROL | Availability::AI_ENABLED,
+    auto_enter_ai_mode: false,
+    argument: Some(Argument::optional().with_execute_on_selection()),
+});
+
+static SET_TAB_COLOR_HINT: LazyLock<String> = LazyLock::new(|| {
+    let mut hint = String::from("<");
+    for color in crate::ui_components::color_dot::TAB_COLOR_OPTIONS {
+        hint.push_str(&color.to_string().to_ascii_lowercase());
+        hint.push('|');
+    }
+    hint.push_str("none>");
+    hint
+});
+
+/// GUI-only: sets the current tab's color. Not executable in the TUI (there is no concept of
+/// a tab there); see `TuiTerminalSessionView::execute_tui_slash_command`'s GUI-only catch-all.
+pub static SET_TAB_COLOR: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/set-tab-color",
+    description: t_static!("slash-cmd-set-tab-color-desc"),
+    icon_path: "bundled/svg/ellipse.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: Some(Argument::required().with_hint_text(SET_TAB_COLOR_HINT.as_str())),
+});
+
 /// Reports how much of the active model's context window the current conversation occupies.
 ///
 /// Sanctioned BYOP divergence from Warp (AGENTS §5.10): Warp's `/usage` opens its hosted
@@ -618,6 +685,17 @@ fn all_commands() -> Vec<StaticCommand> {
     // fork-native always-on commands (`/vim-mode`, `/api-keys`).
     commands.push(USAGE.clone());
     commands.push(COST.clone());
+    // TUI-only, no feature flag (AGENTS §5.4): each already has a live TUI dispatch handler
+    // in `TuiTerminalSessionView::execute_tui_slash_command` -- only the registry entry was
+    // missing, so the rows were unreachable (see #147/#338).
+    commands.push(EXIT.clone());
+    commands.push(MCP.clone());
+    commands.push(VIEW_LOGS.clone());
+    commands.push(CLEAR.clone());
+    // GUI-only, no feature flag: reuses the already-shipped, already-tested
+    // `WorkspaceAction::SetActiveTabColor` (see `app/src/workspace/view_test.rs`); only the
+    // slash-command registration and dispatch arm were missing (see #147).
+    commands.push(SET_TAB_COLOR.clone());
 
     commands
 }
@@ -687,6 +765,127 @@ mod tests {
             // no conversation open, and their handlers say so in words.
             assert_eq!(registered.availability, Availability::AI_ENABLED);
         }
+    }
+
+    /// Ported from the pinned oracle's `commands_tests.rs::view_logs_command_is_registered_only_for_tui_mode`
+    /// (`02b53fcd8`) and its `exit_command`/`mcp_command` counterparts (folded into one test:
+    /// unlike the oracle, the fork has one registry rather than a GUI/TUI-filtered one, so
+    /// "registered only for TUI mode" is expressed via `supports_tui()` here — see #338).
+    #[test]
+    fn exit_mcp_and_view_logs_commands_are_registered_and_tui_only() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        for (command, expected_kind) in [
+            (&*EXIT, SlashCommandKind::Exit),
+            (&*MCP, SlashCommandKind::Mcp),
+            (&*VIEW_LOGS, SlashCommandKind::ViewLogs),
+        ] {
+            let registered = COMMAND_REGISTRY
+                .get_command_with_name(command.name)
+                .unwrap_or_else(|| panic!("expected {} to be registered", command.name));
+            assert_eq!(registered.kind(), expected_kind);
+            assert!(
+                registered.supports_tui(),
+                "{} must be executable in the TUI",
+                command.name
+            );
+            assert!(registered.argument.is_none());
+            assert!(!registered.auto_enter_ai_mode);
+        }
+    }
+
+    /// Ported from the pinned oracle's `commands_tests.rs::auto_approve_command_is_local_agent_action_without_arguments`.
+    /// The oracle also asserts `NOT_CLOUD_AGENT`/`CLOUD_AGENT` bits the fork's `Availability`
+    /// does not carry (the fork has no cloud-agent mode at all, so every command is implicitly
+    /// non-cloud) -- omitted here for the same reason the fork's other ported commands omit it.
+    #[test]
+    fn auto_approve_command_is_local_agent_action_without_arguments() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(AUTO_APPROVE.name)
+            .expect("expected /auto-approve to be registered");
+        assert_eq!(command.kind(), SlashCommandKind::AutoApprove);
+        assert!(command.supports_tui());
+        assert!(!command.auto_enter_ai_mode);
+        assert_eq!(
+            command.availability,
+            Availability::AGENT_VIEW | Availability::ACTIVE_CONVERSATION | Availability::AI_ENABLED
+        );
+        assert!(command.argument.is_none());
+    }
+
+    /// Ported from the pinned oracle's
+    /// `commands_tests.rs::natural_language_detection_command_is_ai_enabled_and_executes_immediately`.
+    #[test]
+    fn natural_language_detection_command_is_ai_enabled_and_executes_immediately() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(NATURAL_LANGUAGE_DETECTION.name)
+            .expect("expected /natural-language-detection to be registered");
+        assert_eq!(command.kind(), SlashCommandKind::NaturalLanguageDetection);
+        assert!(command.supports_tui());
+        assert_eq!(command.availability, Availability::AI_ENABLED);
+        assert!(!command.auto_enter_ai_mode);
+        assert!(command.argument.is_none());
+    }
+
+    /// Ported from the pinned oracle's `commands_tests.rs::clear_command_has_correct_registry_metadata`
+    /// and `clear_command_is_active_only_outside_cloud_mode` (the latter's `NOT_CLOUD_AGENT` bit
+    /// omitted for the same reason as `auto_approve_command_is_local_agent_action_without_arguments`).
+    #[test]
+    fn clear_command_has_correct_registry_metadata() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(CLEAR.name)
+            .expect("expected /clear to be registered");
+        assert_eq!(command.kind(), SlashCommandKind::Clear);
+        assert!(command.supports_tui());
+        assert!(!command.auto_enter_ai_mode);
+        assert_eq!(
+            command.availability,
+            Availability::NO_LRC_CONTROL | Availability::AI_ENABLED
+        );
+        let argument = command
+            .argument
+            .as_ref()
+            .expect("expected /clear to declare an argument");
+        assert!(argument.is_optional);
+        assert!(argument.should_execute_on_selection);
+        assert!(argument.hint_text.is_none());
+
+        let local_context = Availability::NO_LRC_CONTROL | Availability::AI_ENABLED;
+        assert!(command.is_active(local_context));
+    }
+
+    /// Ported from the pinned oracle's `commands_tests.rs::set_tab_color_command_requires_argument`.
+    #[test]
+    fn set_tab_color_command_requires_argument() {
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(SET_TAB_COLOR.name)
+            .expect("expected /set-tab-color to be registered");
+        assert!(
+            !command.supports_tui(),
+            "/set-tab-color has no TUI concept of a tab and must stay GUI-only"
+        );
+        let argument = command
+            .argument
+            .as_ref()
+            .expect("expected /set-tab-color to require an argument");
+
+        assert!(!argument.is_optional);
+        assert!(!argument.should_execute_on_selection);
+
+        let hint = argument
+            .hint_text
+            .expect("/set-tab-color hint text is set dynamically");
+        for color in crate::ui_components::color_dot::TAB_COLOR_OPTIONS {
+            let lower = color.to_string().to_ascii_lowercase();
+            assert!(hint.contains(&lower), "hint should mention `{lower}`");
+        }
+        assert!(hint.contains("none"), "hint should mention `none`");
     }
 
     #[test]

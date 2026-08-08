@@ -8,6 +8,7 @@ use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::watcher::DirectoryWatcher;
 use warpui::{App, EntityId};
 
+use super::PaneGroupRepositoryRoots;
 use crate::pane_group::WorkingDirectoriesModel;
 
 #[test]
@@ -393,4 +394,260 @@ fn remove_pane_group_does_not_drop_diff_state_model_shared_with_other_pane_group
             "removing pane group A must not drop a model that pane group B still references"
         );
     });
+}
+
+fn local_str(path: &str) -> warp_util::local_or_remote_path::LocalOrRemotePath {
+    local(&PathBuf::from(path))
+}
+
+// Ported from the pin (Warp 2026.07.29.09.05, commit 02b53fcd8)
+// `app/src/pane_group/working_directories_tests.rs`, tracked as issue #328.
+// Regression test for GH-10598: the code review panel's manually selected
+// repository must be remembered per pane group so it survives leaving and
+// returning to an Agent session.
+#[test]
+fn selected_review_repo_is_remembered_per_pane_group() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| DetectedRepositories::default());
+
+        let pane_group_a = EntityId::new();
+        let pane_group_b = EntityId::new();
+        let repo_x = PathBuf::from("/repos/x");
+        let repo_y = PathBuf::from("/repos/y");
+        let repo_p = PathBuf::from("/repos/p");
+
+        let working_directories_handle = app.add_model(|_| WorkingDirectoriesModel::new());
+
+        // Initially nothing is saved for either pane group.
+        working_directories_handle.update(&mut app, |model, _ctx| {
+            assert!(model.get_selected_review_repo(pane_group_a).is_none());
+            assert!(model.get_selected_review_repo(pane_group_b).is_none());
+        });
+
+        // User selects repo Y in pane group A.
+        working_directories_handle.update(&mut app, |model, _ctx| {
+            model.set_selected_review_repo(pane_group_a, local(&repo_y));
+        });
+
+        // The selection for A is remembered and is independent from B's.
+        working_directories_handle.update(&mut app, |model, _ctx| {
+            assert_eq!(
+                model.get_selected_review_repo(pane_group_a).cloned(),
+                Some(local(&repo_y)),
+                "pane group A should remember its manual selection"
+            );
+            assert!(
+                model.get_selected_review_repo(pane_group_b).is_none(),
+                "pane group B should be untouched by selections in A"
+            );
+        });
+
+        // User selects repo P in pane group B; A's selection must not change.
+        working_directories_handle.update(&mut app, |model, _ctx| {
+            model.set_selected_review_repo(pane_group_b, local(&repo_p));
+            assert_eq!(
+                model.get_selected_review_repo(pane_group_a).cloned(),
+                Some(local(&repo_y)),
+                "selecting in B must not clobber A's saved selection"
+            );
+            assert_eq!(
+                model.get_selected_review_repo(pane_group_b).cloned(),
+                Some(local(&repo_p)),
+            );
+        });
+
+        // Updating A's selection overwrites the previous saved value for A.
+        working_directories_handle.update(&mut app, |model, _ctx| {
+            model.set_selected_review_repo(pane_group_a, local(&repo_x));
+            assert_eq!(
+                model.get_selected_review_repo(pane_group_a).cloned(),
+                Some(local(&repo_x)),
+            );
+        });
+    });
+}
+
+// Regression test for GH-10598: closing a tab (i.e. destroying a pane group)
+// must clean up the saved code-review-panel selection so it cannot leak into
+// or be confused with a future pane group that happens to reuse an EntityId.
+#[test]
+fn selected_review_repo_is_cleared_when_pane_group_is_removed() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| DetectedRepositories::default());
+
+        let pane_group_id = EntityId::new();
+        let repo = PathBuf::from("/repos/x");
+
+        let working_directories_handle = app.add_model(|_| WorkingDirectoriesModel::new());
+
+        working_directories_handle.update(&mut app, |model, ctx| {
+            model.set_selected_review_repo(pane_group_id, local(&repo));
+            assert_eq!(
+                model.get_selected_review_repo(pane_group_id).cloned(),
+                Some(local(&repo)),
+            );
+
+            model.remove_pane_group(pane_group_id, ctx);
+            assert!(
+                model.get_selected_review_repo(pane_group_id).is_none(),
+                "removing a pane group must clear its saved review-panel selection"
+            );
+        });
+    });
+}
+
+#[test]
+fn clear_selected_review_repo_removes_only_the_targeted_pane_group_entry() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| DetectedRepositories::default());
+
+        let pane_group_a = EntityId::new();
+        let pane_group_b = EntityId::new();
+        let repo_a = PathBuf::from("/repos/a");
+        let repo_b = PathBuf::from("/repos/b");
+
+        let working_directories_handle = app.add_model(|_| WorkingDirectoriesModel::new());
+
+        working_directories_handle.update(&mut app, |model, _ctx| {
+            model.set_selected_review_repo(pane_group_a, local(&repo_a));
+            model.set_selected_review_repo(pane_group_b, local(&repo_b));
+
+            model.clear_selected_review_repo(pane_group_a);
+
+            assert!(model.get_selected_review_repo(pane_group_a).is_none());
+            assert_eq!(
+                model.get_selected_review_repo(pane_group_b).cloned(),
+                Some(local(&repo_b)),
+            );
+        });
+    });
+}
+
+// ── PaneGroupRepositoryRoots unit tests ──────────────────────────
+
+#[test]
+fn pane_group_repository_roots_insert_updates_both_maps() {
+    let mut roots = PaneGroupRepositoryRoots::default();
+    let pane_a = EntityId::new();
+    let path = local_str("/repos/x");
+
+    assert!(roots.insert(pane_a, path.clone()));
+    // Re-inserting the same (pane_group, path) is a no-op.
+    assert!(!roots.insert(pane_a, path.clone()));
+
+    let forward = roots.get(pane_a).expect("pane group registered");
+    assert!(forward.contains(&path), "forward map must contain the path");
+    assert_eq!(
+        roots.path_to_pane_groups.get(&path).cloned(),
+        Some(HashSet::from_iter([pane_a])),
+        "reverse map must reflect the inserted pane group"
+    );
+}
+
+#[test]
+fn pane_group_repository_roots_set_paths_returns_only_truly_orphaned_paths() {
+    let mut roots = PaneGroupRepositoryRoots::default();
+    let pane_a = EntityId::new();
+    let pane_b = EntityId::new();
+    let shared = local_str("/repos/shared");
+    let only_a = local_str("/repos/only-a");
+
+    // Both pane groups reference `shared`; only A references `only_a`.
+    let orphans_a = roots.set_paths(pane_a, vec![shared.clone(), only_a.clone()]);
+    assert!(orphans_a.is_empty(), "first insert never produces orphans");
+    let orphans_b = roots.set_paths(pane_b, vec![shared.clone()]);
+    assert!(orphans_b.is_empty());
+
+    // A drops both of its paths.
+    let orphans = roots.set_paths(
+        pane_a,
+        Vec::<warp_util::local_or_remote_path::LocalOrRemotePath>::new(),
+    );
+
+    // `shared` is still referenced by B, so it must not be reported as orphaned.
+    // `only_a` was only referenced by A, so it must be.
+    assert_eq!(
+        orphans,
+        vec![only_a.clone()],
+        "shared paths must not appear in the orphan list"
+    );
+
+    // Reverse map: `shared` only references B; `only_a` is gone entirely.
+    assert_eq!(
+        roots.path_to_pane_groups.get(&shared).cloned(),
+        Some(HashSet::from_iter([pane_b])),
+    );
+    assert!(
+        !roots.path_to_pane_groups.contains_key(&only_a),
+        "orphaned path must be evicted from the reverse map"
+    );
+
+    // Forward map: A is now empty (entry retained), B still owns `shared`.
+    let a_forward = roots.get(pane_a).expect("pane group A entry retained");
+    assert!(a_forward.is_empty(), "A's forward set should be empty");
+    let b_forward = roots.get(pane_b).expect("pane group B entry retained");
+    assert!(b_forward.contains(&shared));
+}
+
+#[test]
+fn pane_group_repository_roots_set_paths_preserves_insertion_order() {
+    let mut roots = PaneGroupRepositoryRoots::default();
+    let pane = EntityId::new();
+    let x = local_str("/repos/x");
+    let y = local_str("/repos/y");
+    let z = local_str("/repos/z");
+
+    // Initial set in order x, y.
+    let _ = roots.set_paths(pane, vec![x.clone(), y.clone()]);
+
+    // Replace with y, z. y should keep its position; z is appended; x is removed.
+    let _ = roots.set_paths(pane, vec![y.clone(), z.clone()]);
+
+    let forward: Vec<warp_util::local_or_remote_path::LocalOrRemotePath> = roots
+        .get(pane)
+        .expect("pane group present")
+        .iter()
+        .cloned()
+        .collect();
+    assert_eq!(
+        forward,
+        vec![y, z],
+        "existing items must keep their order; new items appended after"
+    );
+}
+
+#[test]
+fn pane_group_repository_roots_remove_pane_group_returns_orphans() {
+    let mut roots = PaneGroupRepositoryRoots::default();
+    let pane_a = EntityId::new();
+    let pane_b = EntityId::new();
+    let shared = local_str("/repos/shared");
+    let only_a = local_str("/repos/only-a");
+
+    let _ = roots.set_paths(pane_a, vec![shared.clone(), only_a.clone()]);
+    let _ = roots.set_paths(pane_b, vec![shared.clone()]);
+
+    // Removing A while B still references `shared` only orphans `only_a`.
+    let orphans: HashSet<warp_util::local_or_remote_path::LocalOrRemotePath> = roots
+        .remove_pane_group(pane_a)
+        .expect("pane group A was present")
+        .into_iter()
+        .collect();
+    assert_eq!(orphans, HashSet::from_iter([only_a.clone()]));
+    assert!(roots.get(pane_a).is_none(), "pane group A entry is gone");
+
+    // Removing B now orphans `shared`.
+    let orphans = roots
+        .remove_pane_group(pane_b)
+        .expect("pane group B was present");
+    assert_eq!(orphans, vec![shared.clone()]);
+    assert!(roots.path_to_pane_groups.is_empty());
+    assert!(roots.pane_group_to_paths.is_empty());
+}
+
+#[test]
+fn pane_group_repository_roots_remove_unknown_pane_group_is_noop() {
+    let mut roots = PaneGroupRepositoryRoots::default();
+    let missing = EntityId::new();
+    assert!(roots.remove_pane_group(missing).is_none());
 }

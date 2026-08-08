@@ -17,11 +17,13 @@ use warp_util::content_version::ContentVersion;
 use warp_util::file::FileId;
 
 use super::proto::{
-    client_message, delete_file_response, git_commit_chain_response, git_create_pr_response,
+    client_message, delete_file_response, discard_files_response, git_commit_chain_response,
+    git_create_pr_response,
     git_push_response, run_command_response, server_message,
     write_file_response, Abort, Authenticate, ClientMessage, UnsubscribeDiffState, DeleteFile,
     DeleteFileResponse,
-    DeleteFileSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
+    DeleteFileSuccess, DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse,
+    DiscardFilesSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
     FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
     GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
     GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPushRequest,
@@ -217,6 +219,24 @@ pub struct ServerModel {
     /// Calling `.abort()` on the handle cancels the background future and
     /// triggers its `on_abort` callback.
     in_progress: HashMap<RequestId, SpawnedFutureHandle>,
+    /// In-flight requests that must reach *some* live connection to this
+    /// host, not necessarily the exact proxy connection that issued them.
+    /// Maps a tracked `RequestId` to the `ConnectionId` it was originally
+    /// dispatched to. `send_server_message` consults this map when the
+    /// original connection is gone or its channel is closed: if the
+    /// request is tracked here, the response is failed over to another
+    /// live connection instead of being silently dropped.
+    ///
+    /// The pin (`02b53fcd8`) populates this from a `HostScoped` request
+    /// envelope (`client_message::Message::HostScoped`) that classifies
+    /// every request kind as host- or session-scoped at dispatch time. The
+    /// fork's wire protocol has no such envelope yet (tracked separately —
+    /// see the parity issue on the host-scoped/session-scoped protocol
+    /// envelope), so this map is not yet populated from `handle_message`.
+    /// The delivery mechanism itself (this field plus the failover branch
+    /// in `send_server_message`) is ported now so it is ready to use once
+    /// that envelope lands.
+    host_scoped_requests: HashMap<RequestId, ConnectionId>,
     /// Stable host identifier generated once at process startup.
     /// Returned in every `InitializeResponse` so clients can deduplicate
     /// host-scoped models.
@@ -259,6 +279,7 @@ impl ServerModel {
             diff_state_subscriptions: HashMap::new(),
             grace_timer_cancel: None,
             in_progress: HashMap::new(),
+            host_scoped_requests: HashMap::new(),
             host_id,
             executors: HashMap::new(),
             pending_file_ops: PendingFileOps::new(),
@@ -666,6 +687,12 @@ impl ServerModel {
             Some(client_message::Message::GetDiffState(req)) => {
                 self.handle_get_diff_state(req, &request_id, conn_id, ctx)
             }
+            // Discard changes over SSH (#437): the SSH-remote equivalent of
+            // the local code-review "discard changes" action. Runs
+            // git restore/stash/rm on the daemon's filesystem.
+            Some(client_message::Message::DiscardFiles(req)) => {
+                self.handle_discard_files(req, &request_id, conn_id, ctx)
+            }
             // Git write-ops over SSH (#116): the daemon runs the git / gh
             // subprocesses host-local against the daemon's filesystem, mirroring
             // the local code-review dialog so local and remote behave
@@ -779,21 +806,50 @@ impl ServerModel {
     ///   the request (used for all request/response pairs).
     /// - `conn_id = None` — broadcasts to every connected proxy (used for
     ///   server-initiated push notifications such as repo metadata updates).
+    ///
+    /// For host-scoped requests (tracked in `host_scoped_requests`): if the
+    /// target connection is gone, or its channel rejects the send, the
+    /// response is delivered through any other open connection instead of
+    /// being dropped. This covers a session disconnecting (e.g. closing a
+    /// tab) while a host-scoped request it issued is still in flight —
+    /// another tab connected to the same host still gets the response.
+    /// Non-host-scoped responses are never failed over; their target
+    /// connection owns state (e.g. a subscription) that a sibling
+    /// connection does not have.
     fn send_server_message(
-        &self,
+        &mut self,
         conn_id: Option<ConnectionId>,
         request_id: Option<&RequestId>,
         message: server_message::Message,
     ) {
+        // Sending a response is the terminal step of a host-scoped request,
+        // so its failover-tracking entry is dropped here regardless of
+        // which path below actually delivers it. Whether the request was
+        // tracked is snapshotted *before* removal, since that's what decides
+        // failover eligibility below. Push notifications (no request_id)
+        // are never tracked, so this is a no-op for them.
+        let is_host_scoped_response = request_id
+            .is_some_and(|rid| !rid.is_empty() && self.host_scoped_requests.contains_key(rid));
+        if let Some(rid) = request_id {
+            self.host_scoped_requests.remove(rid);
+        }
+
         let msg = ServerMessage {
             request_id: request_id.map(|id| id.clone().into()).unwrap_or_default(),
             message: Some(message),
         };
         if let Some(target) = conn_id {
             if let Some(conn_tx) = self.connection_senders.get(&target) {
-                if let Err(e) = conn_tx.try_send(msg) {
+                if let Err(e) = conn_tx.try_send(msg.clone()) {
                     log::warn!("Daemon: failed to send to conn {target}: {e}");
+                    if is_host_scoped_response {
+                        self.send_host_scoped_response_via_alternate_connection(target, msg);
+                    }
                 }
+            } else if is_host_scoped_response {
+                // Target connection is gone. Deliver the host-scoped
+                // response through any other open connection.
+                self.send_host_scoped_response_via_alternate_connection(target, msg);
             } else {
                 log::debug!("Daemon: no sender for conn {target} (already disconnected)");
             }
@@ -805,6 +861,36 @@ impl ServerModel {
                 }
             }
         }
+    }
+
+    /// Delivers a host-scoped response through a connected proxy other than
+    /// `target`. Used when the original connection has disappeared or its
+    /// outbound channel rejected the response.
+    fn send_host_scoped_response_via_alternate_connection(
+        &self,
+        target: ConnectionId,
+        msg: ServerMessage,
+    ) {
+        for (&alt_id, alt_tx) in &self.connection_senders {
+            if alt_id == target {
+                continue;
+            }
+            log::info!(
+                "Daemon: failover delivery for request_id={} from conn {target} to conn {alt_id}",
+                msg.request_id
+            );
+            match alt_tx.try_send(msg.clone()) {
+                Ok(()) => return,
+                Err(e) => {
+                    log::warn!("Daemon: failover delivery failed to conn {alt_id}: {e}");
+                }
+            }
+        }
+        log::warn!(
+            "Daemon: cannot deliver host-scoped response for request_id={}, \
+             no alternate connections available",
+            msg.request_id
+        );
     }
 
     /// Spawns an abortable future tied to `request_id` and wires up automatic
@@ -1493,6 +1579,134 @@ impl ServerModel {
             super::diff_state_proto::error_response(
                 "Diff state requires the local_fs feature".to_string(),
             ),
+        ))
+    }
+
+    /// Handles `DiscardFilesRequest` — runs `git restore`/`git stash`/
+    /// `git rm` on the daemon's filesystem for the specified files, reusing
+    /// the same `LocalDiffStateModel::discard_files_impl` logic the local
+    /// code-review dialog uses (#437). On success, pushes a fresh diff-state
+    /// snapshot to every connection subscribed to this repo so the
+    /// code-review UI updates without waiting for the next file-watcher
+    /// event.
+    ///
+    /// `msg.mode` is accepted but not used to select a cached model — see
+    /// the field's doc comment in the proto for why (a discard invalidates
+    /// every mode's diff for this repo, not just the requesting one).
+    #[cfg(feature = "local_fs")]
+    fn handle_discard_files(
+        &mut self,
+        msg: DiscardFilesRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        use crate::code_review::diff_state::{FileStatusInfo, LocalDiffStateModel};
+
+        let canonical_path =
+            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+                Ok(p) => p,
+                Err(e) => {
+                    return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                        DiscardFilesResponse {
+                            result: Some(discard_files_response::Result::Error(
+                                DiscardFilesError {
+                                    message: format!("Invalid repo_path: {e}"),
+                                },
+                            )),
+                        },
+                    ));
+                }
+            };
+
+        if msg.files.is_empty() {
+            return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                DiscardFilesResponse {
+                    result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                        message: "No files specified in DiscardFilesRequest".to_string(),
+                    })),
+                },
+            ));
+        }
+
+        // Decoding is fallible: #326 replaced the infallible
+        // `proto_to_file_status_info` with a validating `TryFrom` that rejects
+        // non-absolute paths and missing status variants. Surface a malformed
+        // entry as a DiscardFilesError rather than acting on a half-decoded
+        // request -- discarding files against a bad path is destructive.
+        let file_infos: Vec<FileStatusInfo> = match msg
+            .files
+            .iter()
+            .map(FileStatusInfo::try_from)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(infos) => infos,
+            Err(err) => {
+                return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                    DiscardFilesResponse {
+                        result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                            message: format!("Invalid file entry in DiscardFilesRequest: {err}"),
+                        })),
+                    },
+                ));
+            }
+        };
+        let should_stash = msg.should_stash;
+        let branch = msg.branch_name.unwrap_or_else(|| "HEAD".to_string());
+        let repo_path = PathBuf::from(canonical_path.to_local_path_lossy());
+
+        log::info!(
+            "Handling DiscardFiles repo={} files={} (request_id={request_id})",
+            msg.repo_path,
+            file_infos.len(),
+        );
+
+        let request_id_for_response = request_id.clone();
+        let repo_path_for_push = canonical_path.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                guard_git_operation_in_progress(&repo_path)?;
+                LocalDiffStateModel::discard_files_impl(&repo_path, file_infos, should_stash, &branch)
+                    .await
+            },
+            move |me, result, ctx| {
+                let message = match result {
+                    Ok(_) => {
+                        me.push_diff_state_for_repo(&repo_path_for_push, ctx);
+                        server_message::Message::DiscardFilesResponse(DiscardFilesResponse {
+                            result: Some(discard_files_response::Result::Success(
+                                DiscardFilesSuccess {},
+                            )),
+                        })
+                    }
+                    Err(e) => server_message::Message::DiscardFilesResponse(DiscardFilesResponse {
+                        result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                            message: format!("{e:#}"),
+                        })),
+                    }),
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    #[cfg(not(feature = "local_fs"))]
+    fn handle_discard_files(
+        &mut self,
+        _msg: DiscardFilesRequest,
+        _request_id: &RequestId,
+        _conn_id: ConnectionId,
+        _ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+            DiscardFilesResponse {
+                result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                    message: "Discard files requires the local_fs feature".to_string(),
+                })),
+            },
         ))
     }
 
