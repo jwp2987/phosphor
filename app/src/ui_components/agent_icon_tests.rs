@@ -238,10 +238,10 @@ impl CanonicalRunState {
     /// cloud/ambient runs; local states return `None`.
     ///
     /// Deviation from the pinned oracle: the pin also covers a
-    /// `ViewingCloudCodexTranscript` state here via `Harness::Codex`. This fork's
-    /// `warp_cli::agent::Harness` has no `Codex` variant (see the deviation note on
-    /// `CLIAgent::from_harness`), so that state is dropped from this table entirely rather
-    /// than asserting against a harness that doesn't exist.
+    /// `ViewingCloudCodexTranscript` state here via `Harness::Codex`. This fork has no cloud
+    /// transcript viewing (cloud is dropped per the parity principle), so that state is
+    /// dropped from this table entirely rather than asserting against a surface that
+    /// doesn't exist in this fork.
     fn run_inputs(&self) -> Option<(Harness, ConversationStatus, bool)> {
         use CanonicalRunState::*;
         match self {
@@ -321,6 +321,10 @@ fn cli_agent_from_harness_maps_known_harnesses() {
     assert_eq!(
         CLIAgent::from_harness(Harness::OpenCode),
         Some(CLIAgent::OpenCode)
+    );
+    assert_eq!(
+        CLIAgent::from_harness(Harness::Codex),
+        Some(CLIAgent::Codex)
     );
 }
 

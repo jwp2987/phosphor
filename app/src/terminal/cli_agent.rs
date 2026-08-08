@@ -272,20 +272,13 @@ impl CLIAgent {
     /// `OzAgent` icon variant instead) and for [`Harness::Unknown`] (a future harness this
     /// client doesn't recognize -- also falls back to the Oz variant so callers never render
     /// an unbranded gray circle).
-    ///
-    /// Deviation from the pinned oracle (`02b53fcd8`): the pin's `Harness` enum also has a
-    /// `Codex` variant, mapped here to `CLIAgent::Codex`. This fork's `warp_cli::agent::Harness`
-    /// (crates/warp_cli/src/agent.rs) does not have a `Codex` variant -- the fork's local-child
-    /// harness dispatch only supports Oz/Claude/OpenCode/Gemini today. That is a separate,
-    /// pre-existing feature gap in the harness-dispatch surface, not part of this port; adding
-    /// `Harness::Codex` would require wiring actual Codex CLI dispatch through `warp_cli` and
-    /// the local orchestrator, which is out of scope for `ui_components::agent_icon`.
     pub fn from_harness(harness: Harness) -> Option<CLIAgent> {
         match harness {
             Harness::Oz | Harness::Unknown => None,
             Harness::Claude => Some(CLIAgent::Claude),
             Harness::Gemini => Some(CLIAgent::Gemini),
             Harness::OpenCode => Some(CLIAgent::OpenCode),
+            Harness::Codex => Some(CLIAgent::Codex),
         }
     }
 
