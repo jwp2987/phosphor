@@ -1,8 +1,8 @@
 use prost::Message;
 
 use crate::proto::{
-    client_message, host_scoped_request, notification, server_message, session_scoped_request,
-    ClientMessage, Initialize, InitializeResponse, ServerMessage,
+    ClientMessage, Initialize, InitializeResponse, ServerMessage, client_message,
+    host_scoped_request, notification, server_message, session_scoped_request,
 };
 
 use super::*;
@@ -78,6 +78,56 @@ async fn round_trip_client_message_notification() {
     match decoded.message {
         Some(client_message::Message::Notification(n)) => {
             assert!(matches!(n.message, Some(notification::Message::Abort(_))));
+        }
+        other => panic!("unexpected message variant: {other:?}"),
+    }
+}
+
+/// Direct envelope + wire coverage for #438 dependent feature 1: a full
+/// `RemoteAgentContextSnapshot` (with a skill and a global rule file)
+/// survives the length-delimited protobuf round trip.
+#[tokio::test]
+async fn round_trip_remote_agent_context_snapshot() {
+    let mut buf = Vec::new();
+    write_server_message(
+        &mut buf,
+        &ServerMessage {
+            request_id: String::new(),
+            message: Some(server_message::Message::RemoteAgentContextSnapshot(
+                crate::proto::RemoteAgentContextSnapshot {
+                    revision: 7,
+                    home_dir: "/home/user".to_string(),
+                    skills: vec![crate::proto::RemoteSkillProto {
+                        path: "/home/user/.agents/skills/test/SKILL.md".to_string(),
+                        content: "home skill content".to_string(),
+                        source: Some(crate::proto::remote_skill_proto::Source::Home(
+                            crate::proto::HomeSkillMetadata {},
+                        )),
+                    }],
+                    global_rules: vec![crate::proto::RemoteContextFileProto {
+                        path: "/home/user/.agents/AGENTS.md".to_string(),
+                        content: "rule content".to_string(),
+                    }],
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+
+    let decoded = read_server_message(&mut &buf[..]).await.unwrap();
+    match decoded.message {
+        Some(server_message::Message::RemoteAgentContextSnapshot(snapshot)) => {
+            assert_eq!(snapshot.revision, 7);
+            assert_eq!(snapshot.home_dir, "/home/user");
+            assert_eq!(snapshot.skills.len(), 1);
+            assert_eq!(snapshot.skills[0].content, "home skill content");
+            assert!(matches!(
+                snapshot.skills[0].source,
+                Some(crate::proto::remote_skill_proto::Source::Home(_))
+            ));
+            assert_eq!(snapshot.global_rules.len(), 1);
+            assert_eq!(snapshot.global_rules[0].content, "rule content");
         }
         other => panic!("unexpected message variant: {other:?}"),
     }

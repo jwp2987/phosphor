@@ -5,6 +5,7 @@ use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
 
+use crate::HostId;
 use crate::auth::RemoteServerAuthContext;
 #[cfg(not(target_family = "wasm"))]
 use crate::client::ClientEvent;
@@ -18,12 +19,12 @@ use crate::setup::UnsupportedReason;
 #[cfg(not(target_family = "wasm"))]
 use crate::transport::Connection;
 use crate::transport::RemoteTransport;
-use crate::HostId;
+use futures::channel::oneshot;
 use repo_metadata::RepoMetadataUpdate;
 use serde::Serialize;
+use warp_core::SessionId;
 #[cfg(not(target_family = "wasm"))]
 use warp_core::channel::{Channel, ChannelState};
-use warp_core::SessionId;
 #[cfg(not(target_family = "wasm"))]
 use warpui::r#async::FutureExt as _;
 use warpui::{Entity, ModelContext, ModelSpawner, SingletonEntity};
@@ -349,6 +350,14 @@ pub enum RemoteServerManagerEvent {
         host_id: HostId,
         delta: crate::proto::DiffStateFileDelta,
     },
+    // Note: `RemoteAgentContextSnapshot` (#438 dependent feature 1) is
+    // deliberately *not* a `RemoteServerManagerEvent` variant. Every existing
+    // consumer of this enum (`app/src/terminal/**`) matches it exhaustively
+    // without a wildcard, so a new variant would require editing those match
+    // arms — out of scope here (another agent owns `app/src/terminal/**`).
+    // Instead, an accepted snapshot is stored per-host and exposed via the
+    // `remote_agent_context_snapshot()` query method below; see
+    // `accept_remote_agent_context_snapshot_revision`.
 
     // --- Setup events ---
     /// Intermediate state change during the binary check/install flow.
@@ -433,6 +442,125 @@ impl RemoteServerManagerEvent {
     }
 }
 
+/// Errors from [`RemoteServerManager::send_host_request`] and its typed
+/// wrappers (e.g. [`RemoteServerManager::start_ripgrep_search`]).
+///
+/// #438 dependent features 4/5. Deviation from the pin: no `Timeout` variant
+/// — this port doesn't arm a per-request timeout (the pin's
+/// `schedule_host_request_timeout`/`timeout_host_request`), since nothing in
+/// this fork's scope requires it yet; a request either dispatches
+/// successfully and eventually resolves via a matched response, or fails
+/// immediately because no session for the host is connected.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum HostRequestError {
+    /// All sessions for the host disconnected before the request completed
+    /// (including: none were ever connected).
+    #[error("all sessions disconnected")]
+    AllSessionsDisconnected,
+    /// The server returned an error response.
+    #[error("server error ({code:?}): {message}")]
+    ServerError {
+        code: crate::proto::ErrorCode,
+        message: String,
+    },
+    /// The server replied with a variant that didn't match the request, or
+    /// an empty result where one was required.
+    #[error("unexpected response")]
+    UnexpectedResponse,
+    /// The request was delivered and answered, but the server reported a
+    /// domain-level failure (e.g. the search itself errored). Carries the
+    /// server-provided message verbatim so callers can surface it directly.
+    #[error("{0}")]
+    OperationFailed(String),
+    /// The request was cancelled client-side via
+    /// [`RemoteServerManager::abort_host_request`].
+    #[error("host request aborted")]
+    Aborted,
+}
+
+/// A host-scoped request registered with
+/// [`RemoteServerManager::send_host_request`], awaiting a response matched
+/// by `request_id` on the host-response channel drained from every
+/// session's [`Connection`]. #438 dependent features 4/5.
+pub struct PendingHostRequest {
+    host_id: HostId,
+    /// The session this request was dispatched on. Logging-only in this
+    /// port: unlike the pin, a writer failure on this session doesn't retry
+    /// through a sibling session (that cross-connection failover is out of
+    /// #438's own scope — see the envelope's proto doc comment).
+    #[allow(dead_code)]
+    dispatched_session_id: SessionId,
+    /// Oneshot sender to resolve the caller's future with the raw
+    /// `ServerMessage` (or a `HostRequestError`). The caller parses the
+    /// response variant it expects.
+    result_tx: oneshot::Sender<Result<crate::proto::ServerMessage, HostRequestError>>,
+}
+
+/// Parameters for [`RemoteServerManager::start_ripgrep_search`].
+pub struct RipgrepSearchParams {
+    /// Effective ripgrep pattern after applying the caller's regex settings.
+    pub pattern: String,
+    /// Absolute roots to search on the remote host.
+    pub roots: Vec<warp_util::standardized_path::StandardizedPath>,
+    /// Whether matching should ignore case.
+    pub ignore_case: bool,
+    /// Whether matching should span multiple lines.
+    pub multiline: bool,
+    /// Maximum number of matches requested from the remote host.
+    pub max_matches: u32,
+}
+
+/// A host-scoped remote ripgrep search registered synchronously with
+/// [`RemoteServerManager`], whose typed result can be awaited off-thread.
+/// #438 dependent feature 5.
+///
+/// Synchronous registration (the request is dispatched and, on success,
+/// inserted into `pending_host_requests` before `start_ripgrep_search`
+/// returns) means [`RemoteServerManager::abort_host_request`] can always
+/// find the request by the time a caller has this value in hand, instead of
+/// racing an asynchronously queued registration.
+#[must_use = "pending remote searches must be awaited or aborted by request id"]
+pub struct PendingRipgrepSearch {
+    request_id: crate::protocol::RequestId,
+    response: oneshot::Receiver<Result<crate::proto::ServerMessage, HostRequestError>>,
+}
+
+impl PendingRipgrepSearch {
+    pub fn request_id(&self) -> &crate::protocol::RequestId {
+        &self.request_id
+    }
+
+    pub async fn result(self) -> Result<crate::proto::RipgrepSearchSuccess, HostRequestError> {
+        let msg = self
+            .response
+            .await
+            .map_err(|_| HostRequestError::AllSessionsDisconnected)??;
+        ripgrep_search_result(msg)
+    }
+}
+
+fn ripgrep_search_result(
+    msg: crate::proto::ServerMessage,
+) -> Result<crate::proto::RipgrepSearchSuccess, HostRequestError> {
+    match msg.message {
+        Some(crate::proto::server_message::Message::RipgrepSearchResponse(resp)) => {
+            match resp.result {
+                Some(crate::proto::ripgrep_search_response::Result::Success(success)) => {
+                    Ok(success)
+                }
+                Some(crate::proto::ripgrep_search_response::Result::Error(error)) => {
+                    Err(HostRequestError::OperationFailed(error.message))
+                }
+                None => Err(HostRequestError::UnexpectedResponse),
+            }
+        }
+        other => {
+            log::error!("Unexpected response variant for RipgrepSearch: {other:?}");
+            Err(HostRequestError::UnexpectedResponse)
+        }
+    }
+}
+
 /// Shell info recorded by [`RemoteServerManager::notify_session_bootstrapped`].
 ///
 /// Persists for the lifetime of the session (removed only in
@@ -480,6 +608,15 @@ pub struct RemoteServerManager {
     /// `host_label` for callers that want to display a friendlier name than
     /// the raw `HostId`.
     session_labels: HashMap<SessionId, String>,
+    /// In-flight host-scoped requests dispatched via `send_host_request`,
+    /// keyed by request id, awaiting a response drained off
+    /// `host_response_rx`. #438 dependent features 4/5.
+    pending_host_requests: HashMap<crate::protocol::RequestId, PendingHostRequest>,
+    /// Last accepted `RemoteAgentContextSnapshot` per host, used by
+    /// `accept_remote_agent_context_snapshot_revision` to drop stale/
+    /// duplicate pushes and queried via `remote_agent_context_snapshot()`.
+    /// #438 dependent feature 1.
+    remote_agent_context_snapshots: HashMap<HostId, crate::proto::RemoteAgentContextSnapshot>,
 }
 
 impl Entity for RemoteServerManager {
@@ -499,6 +636,8 @@ impl RemoteServerManager {
             auth_context: None,
             session_platforms: HashMap::new(),
             session_labels: HashMap::new(),
+            pending_host_requests: HashMap::new(),
+            remote_agent_context_snapshots: HashMap::new(),
         }
     }
 
@@ -841,6 +980,7 @@ impl RemoteServerManager {
         let Connection {
             client,
             event_rx,
+            host_response_rx,
             child,
             control_path,
         } = transport
@@ -876,6 +1016,17 @@ impl RemoteServerManager {
                     move |me, ctx| {
                         me.mark_session_disconnected(session_id, ctx);
                     },
+                );
+
+                // Drain responses to host-scoped requests dispatched via
+                // `send_host_scoped` (matched against `pending_host_requests`
+                // by request_id). #438 dependent features 4/5.
+                ctx.spawn_stream_local(
+                    host_response_rx,
+                    move |me, msg, _ctx| {
+                        me.resolve_host_response(msg);
+                    },
+                    move |_me, _ctx| {},
                 );
                 true
             })
@@ -1008,7 +1159,7 @@ impl RemoteServerManager {
                 exit_status: None,
             });
             if !self.host_to_sessions.contains_key(&host_id) {
-                ctx.emit(RemoteServerManagerEvent::HostDisconnected { host_id });
+                self.handle_host_disconnected(host_id, ctx);
             }
         }
         ctx.emit(RemoteServerManagerEvent::SessionDeregistered { session_id });
@@ -1276,7 +1427,7 @@ impl RemoteServerManager {
     /// yet available).
     #[cfg(not(target_family = "wasm"))]
     fn forward_client_event(
-        &self,
+        &mut self,
         session_id: SessionId,
         event: ClientEvent,
         ctx: &mut ModelContext<Self>,
@@ -1322,6 +1473,19 @@ impl RemoteServerManager {
             }
             ClientEvent::DiffStateFileDeltaReceived { delta } => {
                 ctx.emit(RemoteServerManagerEvent::DiffStateFileDeltaReceived { host_id, delta });
+            }
+            ClientEvent::RemoteAgentContextSnapshotReceived { snapshot } => {
+                // #438 dependent feature 1: dedup by revision per host and
+                // store for querying via `remote_agent_context_snapshot()`.
+                // Not surfaced as a `RemoteServerManagerEvent` — see that
+                // field's doc comment for why.
+                self.accept_remote_agent_context_snapshot(&host_id, snapshot);
+            }
+            ClientEvent::HostScopedDecodeFailed { request_id } => {
+                // #438 dependent feature 3/4: the response for a host-scoped
+                // request the manager is tracking couldn't be decoded — fail
+                // it now instead of leaving it pending indefinitely.
+                self.fail_host_request_decode_error(&request_id);
             }
             ClientEvent::MessageDecodingError => {
                 ctx.emit(RemoteServerManagerEvent::ServerMessageDecodingError { session_id });
@@ -1497,7 +1661,7 @@ impl RemoteServerManager {
                     exit_status,
                 });
                 if !self.host_to_sessions.contains_key(&host_id) {
-                    ctx.emit(RemoteServerManagerEvent::HostDisconnected { host_id });
+                    self.handle_host_disconnected(host_id, ctx);
                 }
                 return;
             };
@@ -1510,9 +1674,7 @@ impl RemoteServerManager {
             // models don't hold onto data from the dead server process.
             self.remove_from_host_index(&host_id, session_id);
             if !self.host_to_sessions.contains_key(&host_id) {
-                ctx.emit(RemoteServerManagerEvent::HostDisconnected {
-                    host_id: host_id.clone(),
-                });
+                self.handle_host_disconnected(host_id.clone(), ctx);
             }
 
             // Clear last navigated path so navigate_to_directory
@@ -1713,6 +1875,260 @@ impl RemoteServerManager {
                 self.host_to_sessions.remove(host_id);
             }
         }
+    }
+
+    // --- Host-scoped request tracking (#438 dependent features 3/4/5) ------
+    //
+    // Deviation from the pin: this only carries request dispatch + response
+    // matching, not the pin's cross-connection failover (retry on writer
+    // failure through a sibling session, `HostRequestHandle`, per-request
+    // timeout). #438's own issue body lists that failover machinery as
+    // downstream of the envelope, not required for `abort_host_request` or
+    // `start_ripgrep_search` themselves.
+
+    /// Tries each connected session for `host_id` in turn, dispatching `msg`
+    /// via `client.send_host_scoped`. Returns the session id that accepted
+    /// it, or `None` if the host has no connected sessions, or every
+    /// session's outbound channel was already closed (writer task exited
+    /// after a dead connection).
+    fn dispatch_host_scoped_request(
+        &self,
+        host_id: &HostId,
+        msg: &crate::proto::ClientMessage,
+    ) -> Option<SessionId> {
+        let sessions = self.host_to_sessions.get(host_id)?;
+        for &session_id in sessions {
+            let Some(client) = self.client_for_session(session_id) else {
+                continue;
+            };
+            match client.send_host_scoped(msg.clone()) {
+                Ok(()) => return Some(session_id),
+                Err(err) => {
+                    log::warn!(
+                        "Host-scoped request dispatch failed on session {session_id:?}: \
+                         host={host_id} request_id={} error={err}",
+                        msg.request_id
+                    );
+                }
+            }
+        }
+        None
+    }
+
+    /// Sends a host-scoped request to any connected session for the given
+    /// host.
+    ///
+    /// The caller constructs the `ClientMessage` (already wrapped in
+    /// `HostScopedRequest`). The manager dispatches it via
+    /// `client.send_host_scoped()` and, on success, registers the request in
+    /// `pending_host_requests`. The response arrives asynchronously on the
+    /// host-response channel drained in `run_connect_and_handshake` and is
+    /// matched by `request_id` in `resolve_host_response`.
+    ///
+    /// Returns a `oneshot::Receiver` that resolves with the raw
+    /// `ServerMessage` on success, or `HostRequestError` on failure (no
+    /// connected session for the host, or a server-reported error).
+    pub fn send_host_request(
+        &mut self,
+        host_id: &HostId,
+        msg: crate::proto::ClientMessage,
+    ) -> oneshot::Receiver<Result<crate::proto::ServerMessage, HostRequestError>> {
+        let (result_tx, result_rx) = oneshot::channel();
+        let request_id = crate::protocol::RequestId::from(msg.request_id.clone());
+
+        // Dispatch before registering the pending entry. If every session's
+        // outbound channel is already closed, fail the caller now instead of
+        // registering a request that can never be matched, which would
+        // otherwise leak in `pending_host_requests` forever.
+        let Some(dispatched_session_id) = self.dispatch_host_scoped_request(host_id, &msg) else {
+            log::warn!(
+                "Host-scoped request dispatch failed (no connected session for host): \
+                 host={host_id} request_id={request_id}"
+            );
+            let _ = result_tx.send(Err(HostRequestError::AllSessionsDisconnected));
+            return result_rx;
+        };
+
+        self.pending_host_requests.insert(
+            request_id,
+            PendingHostRequest {
+                host_id: host_id.clone(),
+                dispatched_session_id,
+                result_tx,
+            },
+        );
+
+        result_rx
+    }
+
+    /// Registers a remote ripgrep request synchronously and returns its
+    /// typed pending result. #438 dependent feature 5 — the client already
+    /// exposes a session-scoped-style `ripgrep_search` (used directly by
+    /// global search over an already-known session); this is the
+    /// manager-layer, host-scoped dispatch the issue identified as missing,
+    /// used when only a `HostId` (not a specific session) is known, or when
+    /// the caller needs `abort_host_request` cancellation.
+    pub fn start_ripgrep_search(
+        &mut self,
+        host_id: &HostId,
+        params: RipgrepSearchParams,
+    ) -> PendingRipgrepSearch {
+        let request_id = crate::protocol::RequestId::new();
+        let msg = crate::proto::ClientMessage::host_scoped(
+            request_id.to_string(),
+            crate::proto::host_scoped_request::Message::RipgrepSearch(
+                crate::proto::RipgrepSearchRequest {
+                    pattern: params.pattern,
+                    roots: params
+                        .roots
+                        .into_iter()
+                        .map(|path| path.to_string())
+                        .collect(),
+                    ignore_case: params.ignore_case,
+                    multiline: params.multiline,
+                    max_matches: params.max_matches,
+                },
+            ),
+        );
+        let response = self.send_host_request(host_id, msg);
+        PendingRipgrepSearch {
+            request_id,
+            response,
+        }
+    }
+
+    /// Aborts a pending host-scoped request: resolves the caller with
+    /// [`HostRequestError::Aborted`] and sends a best-effort `Abort`
+    /// notification so the daemon stops work. No-op if the request already
+    /// resolved (response arrived, or all sessions disconnected). #438
+    /// dependent feature 4.
+    pub fn abort_host_request(&mut self, request_id: &crate::protocol::RequestId) {
+        let Some(pending) = self.pending_host_requests.remove(request_id) else {
+            return;
+        };
+        log::info!(
+            "Aborting host-scoped request: host={} request_id={request_id}",
+            pending.host_id
+        );
+        // Best-effort daemon-side cancellation. The connection may already
+        // be gone, in which case this is a no-op.
+        if let Some(client) = self.client_for_host(&pending.host_id) {
+            client.abort_request(request_id);
+        }
+        let _ = pending.result_tx.send(Err(HostRequestError::Aborted));
+    }
+
+    /// Matches a response drained off a session's host-response channel
+    /// against `pending_host_requests` by `request_id`, resolving the
+    /// caller. A server-reported `ErrorResponse` is converted to
+    /// `HostRequestError::ServerError` so callers only need to match on
+    /// success variants, mirroring `RemoteServerClient::send_request`'s
+    /// error conversion for session-scoped requests. No-ops (logs at debug)
+    /// if the request isn't pending — already resolved, already aborted, or
+    /// a stray/duplicate response.
+    #[cfg(not(target_family = "wasm"))]
+    fn resolve_host_response(&mut self, msg: crate::proto::ServerMessage) {
+        let request_id = crate::protocol::RequestId::from(msg.request_id.clone());
+        let Some(pending) = self.pending_host_requests.remove(&request_id) else {
+            log::debug!(
+                "Received host response for unknown/already-resolved request_id={request_id}"
+            );
+            return;
+        };
+        let result = match &msg.message {
+            Some(crate::proto::server_message::Message::Error(e)) => {
+                Err(HostRequestError::ServerError {
+                    code: e.code(),
+                    message: e.message.clone(),
+                })
+            }
+            _ => Ok(msg),
+        };
+        let _ = pending.result_tx.send(result);
+    }
+
+    /// Fails a pending host-scoped request whose response arrived but could
+    /// not be decoded (`ClientEvent::HostScopedDecodeFailed`). The daemon
+    /// already produced a reply, so this is terminal — unlike a dispatch
+    /// failure, retrying wouldn't help. No-op if the request isn't pending.
+    #[cfg(not(target_family = "wasm"))]
+    fn fail_host_request_decode_error(&mut self, request_id: &crate::protocol::RequestId) {
+        if let Some(pending) = self.pending_host_requests.remove(request_id) {
+            log::warn!(
+                "Failing host request {request_id} — server response could not be \
+                 decoded (host={})",
+                pending.host_id
+            );
+            let _ = pending
+                .result_tx
+                .send(Err(HostRequestError::UnexpectedResponse));
+        }
+    }
+
+    /// Accepts a `RemoteAgentContextSnapshot` push if its `revision` is
+    /// newer than the last one stored for `host_id`, storing it and
+    /// returning `true`. Returns `false` (leaving the stored snapshot
+    /// unchanged) for a stale or duplicate revision. #438 dependent feature
+    /// 1.
+    fn accept_remote_agent_context_snapshot(
+        &mut self,
+        host_id: &HostId,
+        snapshot: crate::proto::RemoteAgentContextSnapshot,
+    ) -> bool {
+        let is_newer = !matches!(
+            self.remote_agent_context_snapshots.get(host_id),
+            Some(existing) if existing.revision >= snapshot.revision
+        );
+        if is_newer {
+            self.remote_agent_context_snapshots
+                .insert(host_id.clone(), snapshot);
+        }
+        is_newer
+    }
+
+    /// Returns the most recently accepted `RemoteAgentContextSnapshot` for
+    /// `host_id`, if the daemon has pushed one since the host last
+    /// connected (`handle_host_disconnected` clears it on disconnect). #438
+    /// dependent feature 1 — no daemon in this fork populates this yet
+    /// (issue #353 tracks the producer side), so this is currently always
+    /// `None` in production.
+    pub fn remote_agent_context_snapshot(
+        &self,
+        host_id: &HostId,
+    ) -> Option<&crate::proto::RemoteAgentContextSnapshot> {
+        self.remote_agent_context_snapshots.get(host_id)
+    }
+
+    /// Fails every pending host-scoped request for `host_id` with
+    /// `HostRequestError::AllSessionsDisconnected`. Called from
+    /// `handle_host_disconnected`, so it only needs to filter by host —
+    /// the caller already established that no session for this host remains.
+    fn fail_pending_host_requests_for_disconnected_host(&mut self, host_id: &HostId) {
+        let orphaned: Vec<crate::protocol::RequestId> = self
+            .pending_host_requests
+            .iter()
+            .filter(|(_, pending)| &pending.host_id == host_id)
+            .map(|(rid, _)| rid.clone())
+            .collect();
+        for rid in orphaned {
+            if let Some(pending) = self.pending_host_requests.remove(&rid) {
+                log::info!("Failing pending host request {rid} — host {host_id} disconnected");
+                let _ = pending
+                    .result_tx
+                    .send(Err(HostRequestError::AllSessionsDisconnected));
+            }
+        }
+    }
+
+    /// Single call site for the "last session for this host disconnected"
+    /// transition: clears per-host dedup/pending-request state and emits
+    /// `HostDisconnected`. Replaces the three call sites that used to emit
+    /// `HostDisconnected` directly, so no caller can update `host_to_sessions`
+    /// and forget to fail pending host requests for the departed host.
+    fn handle_host_disconnected(&mut self, host_id: HostId, ctx: &mut ModelContext<Self>) {
+        self.remote_agent_context_snapshots.remove(&host_id);
+        self.fail_pending_host_requests_for_disconnected_host(&host_id);
+        ctx.emit(RemoteServerManagerEvent::HostDisconnected { host_id });
     }
 }
 
