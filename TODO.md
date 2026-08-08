@@ -16,6 +16,21 @@
 broken by #423 because the verification run covered only the edited crates.
 Build check that catches this: `-p warp -p warp_tui -p remote_server -p repo_metadata`.
 
+**This rule bit a SECOND time the same day, in a place that check does not
+reach.** `crates/integration` also consumed the old `Block::is_empty` signature
+and did not compile. Nothing caught it for hours because `warp` alone does not
+enable the `integration_tests` feature — `crates/integration` only compiles when
+`warp` and `integration` are checked in the SAME cargo invocation, so
+`cargo check -p warp` is structurally blind to it and the suite was 5614/5614
+green throughout. **Only `script/precheck` runs the feature-unified check. Run
+`script/precheck`, not a hand-rolled `cargo check`, before calling anything
+done.** Fixed in `0aee67c11`.
+
+**Corollary — never `| tail -N` a gate script.** The first precheck run of this
+work was piped to `tail -30`, which discarded every step above the test summary.
+It printed `precheck: FAILED` with the failing step scrolled off, and the visible
+tail was all green. Redirect the whole log to a file and grep it.
+
 **Third rule — WIRE WHAT YOU PORT.** If a symbol is implemented but has no
 production call site, that is a defect, not a done item. Fix it in the same
 change, or say so loudly with file:line evidence. Never silently accept "ported
@@ -72,18 +87,41 @@ only reality and never looking at the branches:**
       `divider_mouse_down_action` into both divider variants + `PaneGroupAction::ResetPaneSizes`.
 - [x] #401 warpctrl symlink installer -- DONE 2026-08-08 (`693046e02`). Also had to add
       `Channel::warpctrl_command_name()`, which the issue did not mention.
-      NOT wired to palette actions ON PURPOSE: that needs `FeatureFlag::WarpControlCli`,
-      which does not exist here and would collide with PR #480 (documented at
-      `app/src/ai/skills/bundled.rs:304` and `read_skill_tests.rs:503`).
       NOTE the distinction for the 'wire what you port' rule: #334 was unwired with NO
-      blocker (fix it); #401 is unwired with a DOCUMENTED blocker owned elsewhere (accept
+      blocker (fix it); #401 was unwired with a DOCUMENTED blocker owned elsewhere (accept
       and record it). The rule must not force collisions.
-- [ ] #410 util/bindings: two editable-binding regressions vs the pin
-- [ ] #436 warpui_core TuiViewportedList: no trimmed-selection-line-ends option
-- [ ] #498 file tree: `show_hidden_files` has no Settings toggle / palette action
-- [ ] #549 duplicate dead test-fixture helpers
-- [ ] #547 view_components: ActionButton.callout / AlertConfig::success / Dropdown::Naked unwired
-- [ ] #555 prompt/editor_modal: same-line-prompt toggle UI missing
+      **The #401 blocker is now GONE** and its note above was stale in two ways: PR #480
+      was closed, not in flight, and `FeatureFlag::WarpControlCli` has since arrived on
+      main by another route. Both stale comments corrected in `d16d7261b`, which also
+      swapped the `read_skill_tests` stand-in flag back to the real one, matching the pin
+      exactly. If #401 still wants palette wiring, nothing blocks it now.
+
+**Premises for all of tier 1 were verified against the pin on 2026-08-08 (all 8 real).**
+- [ ] #342 port `repository_gated_command_{drops_when_leaving,stays_within}_repository`.
+      Blocker removed: `simulate_directory_for_completion` exists at `app/src/terminal/input_test.rs:515`.
+      Pin source: `app/src/terminal/input/slash_command_model_tests.rs:556,627`.
+      NB the issue title garbles the first test name.
+- [ ] #410 util/bindings: two editable-binding regressions vs the pin.
+      Verified: fork declares AND registers `TOGGLE_MAXIMIZE_PANE_BINDING_NAME`
+      (`pane_group/mod.rs:184,434`) but never uses it at the pin's second site,
+      `terminal/view/pane_impl.rs:692`.
+- [ ] #436 warpui_core TuiViewportedList: no trimmed-selection-line-ends option.
+      Verified absent; pin has `trim_selection_line_ends` + `trimmed_selection_row_end`
+      in `crates/warpui_core/src/elements/tui/viewported_list.rs:21,168,438`.
+- [ ] #498 file tree: `show_hidden_files` has no Settings toggle / palette action.
+      Verified: setting IS read (`code/file_tree/view.rs:357,418,726,1704`), no UI entry.
+- [ ] #549 duplicate dead test-fixture helpers. Verified: `app/src/test_util/virtual_fs.rs`
+      and `crates/virtual_fs/src/lib.rs` both define `git_repository_fixture`/`executable`/
+      `fixtures`; the ONLY callers are each file's own `git_repository_fixture` calling its
+      own `fixtures()`. Trap: delete inner-first or you break the self-reference.
+- [ ] #547 view_components: ActionButton.callout / AlertConfig::success / Dropdown::Naked unwired.
+      `AlertConfig::success` verified at zero uses; confirm the other two individually.
+- [ ] #552 search/ai_context_menu: `render_search_bar` never called. Verified: defined at
+      `app/src/search/ai_context_menu/view.rs:1656`, no call site. (The same-named methods in
+      command_palette/welcome_palette/theme_chooser ARE called — do not confuse them.)
+- [ ] #555 prompt/editor_modal: same-line-prompt toggle UI missing. Verified:
+      `render_same_line_prompt_section` defined once at `app/src/prompt/editor_modal.rs:592`,
+      never called.
 - [x] #532 CLOSED 2026-08-08: #419 has now landed (recovered from PR #538) and
       `requires_registered_session`, `is_registered_session`, and
       `should_validate_dcs_hook_session_id` are present in
