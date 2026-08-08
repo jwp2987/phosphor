@@ -12,8 +12,7 @@ use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::{
     AIConversation, AIConversationId, ServerAIConversationMetadata,
 };
-use crate::ai::agent::task::Task;
-use crate::persistence::model::{AgentConversation, AgentConversationData};
+use crate::persistence::model::{AgentConversation, AgentConversationData, AgentConversationSummary};
 use crate::terminal::model::block::SerializedBlock;
 
 #[cfg(feature = "local_fs")]
@@ -113,7 +112,7 @@ impl BlocklistAIHistoryModel {
     ///
     /// This method automatically determines whether to load from memory or local storage:
     /// - If the conversation is already in memory, returns it immediately
-    /// - If is_restorable_locally is true, loads from the local database synchronously
+    /// - If has_local_data is true, loads from the local database synchronously
     ///
     /// Note: This does NOT insert the conversation into memory. Callers are responsible
     /// for inserting the loaded conversation if needed.
@@ -138,7 +137,7 @@ impl BlocklistAIHistoryModel {
             return box_future(futures::future::ready(None));
         };
 
-        if metadata.is_restorable_locally {
+        if metadata.has_local_data {
             // Load from local database synchronously
             let result = self
                 .load_conversation_from_db(&conversation_id)
@@ -212,6 +211,13 @@ impl BlocklistAIHistoryModel {
     }
 
     /// Initializes historical conversations from restored agent conversations.
+    ///
+    /// At startup the conversations carry only `agent_conversations` records
+    /// (empty task lists) whose summaries were computed at write time; tests
+    /// may pass fully-hydrated conversations, whose summaries are derived
+    /// from their tasks here. Preferring the persisted `summary` column
+    /// means startup does not need to decode `agent_tasks` (or the tasks may
+    /// not even be present) just to build the history list.
     pub(super) fn initialize_historical_conversations(
         &mut self,
         conversations: &[AgentConversation],
@@ -235,7 +241,19 @@ impl BlocklistAIHistoryModel {
                     }
                 };
 
-                if !agent_conv.is_restorable() {
+                // Prefer the write-time summary from the `summary` column;
+                // fall back to deriving from tasks for fully-hydrated inputs
+                // (and for rows written before the column existed).
+                let summary = agent_conv
+                    .conversation
+                    .summary
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str::<AgentConversationSummary>(json).ok())
+                    .unwrap_or_else(|| {
+                        AgentConversationSummary::from_tasks(agent_conv.tasks.iter())
+                    });
+
+                if !summary.is_restorable {
                     return None;
                 }
 
@@ -261,57 +279,19 @@ impl BlocklistAIHistoryModel {
                     return None;
                 }
 
-                // Skip conversations that contain AutoCodeDiff system queries but do not contain any UserQuery messages.
-                // These are passive, auto-initiated diffs that were never interacted with (past accepting or rejecting the diff),
-                // so we don't want to list them as historical conversations.
-                let mut has_user_query = false;
-                let mut has_autocodediff = false;
-                for task in &agent_conv.tasks {
-                    for message in &task.messages {
-                        match &message.message {
-                            Some(warp_multi_agent_api::message::Message::UserQuery(_)) => {
-                                has_user_query = true;
-                            }
-                            Some(warp_multi_agent_api::message::Message::SystemQuery(sys)) => {
-                                if let Some(warp_multi_agent_api::message::system_query::Type::AutoCodeDiff(_)) = &sys.r#type {
-                                    has_autocodediff = true;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                if has_autocodediff && !has_user_query {
+                // Skip conversations that only contain passive AutoCodeDiff
+                // system queries the user never interacted with (past
+                // accepting or rejecting the diff).
+                if summary.is_unlisted_auto_code_diff {
                     return None;
                 }
 
-                let root_task = agent_conv.tasks.iter().find(|task| {
-                    task.dependencies.is_none()
-                });
-
-                let initial_query = root_task.map(|task| {
-                    // find the first task with a user query
-                    // (or in the case of a passive code diff, the summary of the diff)
-                    task.messages.iter().find_map(|msg| {
-                        match &msg.message {
-                            Some(warp_multi_agent_api::message::Message::UserQuery(user_query)) => {
-                                Some(user_query.query.clone())
-                            }
-                            Some(warp_multi_agent_api::message::Message::ToolCall(tool_call))  => {
-                                let Some(tool) = &tool_call.tool else {
-                                    return None;
-                                };
-
-                                if let warp_multi_agent_api::message::tool_call::Tool::ApplyFileDiffs(diff_suggestion) = tool {
-                                    Some(diff_suggestion.summary.clone())
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        }
-                    }).unwrap_or_default()
-                }).unwrap_or_default();
+                let AgentConversationSummary {
+                    initial_query,
+                    title,
+                    initial_working_directory,
+                    ..
+                } = summary;
 
                 if initial_query.is_empty() {
                     log::debug!(
@@ -320,16 +300,6 @@ impl BlocklistAIHistoryModel {
                     return None;
                 }
 
-                // We derive the title from the description of the root task,
-                // falling back to initial_query if the description is empty
-                let title = root_task
-                    .map(|task| task.description.clone())
-                    .filter(|desc| !desc.is_empty())
-                    .unwrap_or_else(|| initial_query.clone());
-
-                // Extract working directory from the first UserQuery message in the tasks
-                // TODO: search tasks in correct order once we've implemented task ordering.
-                let initial_working_directory = agent_conv.tasks.iter().find_map(Task::api_task_initial_working_directory);
                 let credits_spent = conversation_data
                     .as_ref()
                     .and_then(|data| data.conversation_usage_metadata.as_ref())
@@ -358,7 +328,7 @@ impl BlocklistAIHistoryModel {
                     initial_working_directory,
                     credits_spent,
                     server_conversation_token,
-                    is_restorable_locally: true,
+                    has_local_data: true,
                     artifacts,
                     ambient_agent_task_id: None,
                     parent_conversation_id,

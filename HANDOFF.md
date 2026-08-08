@@ -14,9 +14,11 @@ host.
   `SkillProvider::Zap`) stay. See `docs/DESIGN-PHOSPHOR-FORK.md`.
 - **English only** in code/comments/tests/docs (`CLAUDE.local.md`). Exception:
   `app/i18n/zh-CN|ja/*.ftl` are intentional translations — never edit them.
-- `warp/master` is a fetched git remote and is the **behavioral oracle**. Never
-  weaken a test to go green — fix the code (AGENTS §5.10). Every defect → issue
-  → branch → PR (§5.11).
+- The behavioral oracle is the **PINNED** Warp stable `02b53fcd8`, never
+  `warp/master` — read `ORACLE.md`. `warp/master` is a fetched remote and is
+  useful only for archaeology (finding *why* a pin behaviour exists); measuring
+  against it produces a gap that never shrinks. Never weaken a test to go green
+  — fix the code (AGENTS §5.10). Every defect → issue → branch → PR (§5.11).
 - **The repo is PUBLIC.** Issue comments and PR bodies are indexed. The
   maintainer has accepted this for engineering detail including security
   findings (decision made 2026-08-06); do not re-litigate it, but be aware.
@@ -25,69 +27,333 @@ host.
 
 ## Where main is
 
-`af79b705d` — **39 PRs merged on 2026-08-06/07.** Both CI jobs green.
+`2e7d6eb2f` or later — **16+ PRs merged on 2026-08-07**, across two phases: the
+OOM recovery in the morning, then a large parallel round (up to 28 concurrent
+Sonnet agents) in the evening. The board went **208 → ~137 open**.
 
-**`main` currently has 11 FAILING tests** (batch run: 4946 tests, 4935 passed).
-All attributed, none unexplained:
+### The single most important finding of 2026-08-07
 
-| count | tests | why |
+**The issue tracker had drifted from the codebase in both directions**, and that
+drift was the dominant cost of the day — larger than any individual port.
+
+Of roughly 150 open issues examined, **21 were wrong as filed**:
+
+| category | count | examples |
 |---|---|---|
-| 5 | `ai::blocklist::history_model::*` rewind/fork | **Deliberate** — PR #259 pinned real divergences #251/#253 rather than ship unverified fixes to the conversation-rewind path |
-| 3 | `code::editor::view::vim_handler::test_vim_{c,d,y}_percent_*` | PR #246's uncompiled hunks |
-| 3 | `terminal::input::{lrc_queued_prompts_wait…, slash_fork_bypasses…, test_classic_tab_completions_close…}` | PR #258's uncompiled hunks |
+| Already merged, never closed | 8 | #356/#358/#361/#331 (all PR #472), #281 (PR #471), #202 (PR #121), the `crates/vim` halves of #427/#276 (PR #475) |
+| Duplicates | 9 | #241/#242/#243/#274 (vim), #238/#239/#240 (notebooks), #264, #183, #225 |
+| Dependent on a decision already made | 3 | #402, #429, #235 |
+| Premise understated or misclassified | 3 | #324, #203, #295 |
 
-The 6 uncompiled-hunk failures are **not** deliberate — fix them. Both agents
-flagged exactly these when builds were frozen mid-round, so the locations are
-known: the last two fixes in `app/src/terminal/input.rs`, and the `c%`/`d%`/`y%`
-matching-bracket ports in `vim_handler_tests.rs`.
+**The structural cause of the "already merged" bucket:** this project uses
+`Refs #N` in PR bodies instead of closing keywords, deliberately — closing
+keywords have auto-closed issues wrongly before (see the #396 incident below).
+That tradeoff is correct, but **nothing compensates for it**, so completed work
+silently accumulates as open debt. Run a reconciliation pass periodically
+instead of rediscovering it one agent at a time.
 
-### Round 3 — STOPPED mid-flight (2026-08-07)
+**The cause of the duplicate bucket:** a batch of six issues filed 2026-08-07
+04:37–04:38 had bodies consisting only of a broken `@/tmp/.../scratchpad/...`
+reference that never resolved. All six were re-filed properly ~45 minutes later.
+If you see an issue whose body starts with `@/`, it is from that batch.
 
-Four agents were dispatched and then **stopped by the maintainer before any
-reported**: terminal/view, ai/conversation, ai/config+skills,
-themes/code-review/search.
+### Reclassified: portable debt → maintainer decision
 
-**Their worktrees may hold unpushed work** at `.worktrees/r3-termview`,
-`.worktrees/r3-aiconv`, `.worktrees/r3-aiconf`, `.worktrees/r3-misc`, on branches
-`test/port-*-r3`. **Check these before deleting anything:**
+Three issues were found to be mis-framed as "port this from the pin" when the
+pin offers no answer. Expect more of these:
 
+- **#203** (TUI editor is O(document) per layout pass) — premise TRUE, but
+  `display_rows`, `display_lattice` and `build()` are **byte-identical to the
+  pin**. Warp's own stable has this architecture. Needs a design decision and a
+  running-TUI harness, not a port.
+- **#324** (remote diff-state manager) — the fork's inline `diff_state_subscriptions`
+  is a *subset* of the pin's `RemoteDiffStateManager`, missing model sharing,
+  pending-response queueing and abort. Blocked on #330 and #438.
+- **#295** (portable custom-theme paths) — `SCOPE-REST.md` rates the file
+  verdict **A**; it is a feature gap, not test debt.
+
+That last one is the `CLAUDE.md` "verdict A is overstated" caveat showing up
+concretely. **Do not size a port from `SCOPE-*.md` alone.**
+
+### Merging at scale
+
+Branch protection has **auto-merge disabled**, so PRs must be merged explicitly.
+A polling auto-merger was used
+(`scratchpad/automerge.sh`) that gates on **all four checks including
+`cargo nextest`** — deliberately stricter than branch protection, which does not
+require nextest. Do not merge on `mergeStateStatus` alone; `UNSTABLE` can mean a
+red test suite.
+
+**The bottleneck at this scale is GitHub Actions, not agents.** ~20 concurrent
+PRs × 4 jobs saturates the runners; agent throughput stops mattering.
+
+### Known merge-order conflicts as of 2026-08-07 evening
+
+- **#509 (#438 protocol envelope) vs #508 (#437 DiscardFiles)** — both edit
+  `remote_server.proto` and `server_model.rs`. #509 restructures the flat
+  `ClientMessage` oneof into `HostScopedRequest`/`SessionScopedRequest`/
+  `Notification`; whichever lands second must move `DiscardFiles` to
+  `HostScopedRequest` field 8.
+- **#502 (#335 failover) vs #503 (#330 git-status)** — both add fields to the
+  `ServerModel` struct and its `test_model()`.
+- **#491 (skill path typing) vs #493 (bundled/global skills)** — #491 retyped
+  `get_provider_for_path` to `&LocalOrRemotePath`, breaking four call sites in
+  `skill_manager.rs`, which #493 owns.
+
+**Note #509 ported the envelope only, NOT the failover machinery** upstream
+bundled into the same commit (`pending_host_requests`, `HostRequestHandle`,
+`host_response.rs` dispatch — 28 files upstream). So after #509 lands you have
+the *shape* without cross-connection behaviour. #502 supplies part of it and is
+inert until something populates the map.
+
+Merged that day: #457 (`DECLINED.md`), #459 (`precheck` + `agent-worktree`), #420
+and #432 (round-4 ports, carrying #460 and #461), #463 (`GitHubRepoModel`), #466
+(`warp_tui` resync). #462 (OSC 7), #464 (#441 fixes) and #467 (toolchain
+enforcement) were in flight at write time.
+
+**`script/known_test_failures.txt` went 8 → 7 → 5.** #460 retired
+`lrc_queued_prompts` (via #420); #464 retires the last two `terminal::input`
+entries. **The five that remain are all deliberate `history_model` pins** for
+#251/#253 — they assert the oracle's rewind/fork semantics, which the fork does
+not implement. They need a maintainer *decision*, not engineering, and they are
+the only thing standing between you and promoting `cargo nextest (Linux)` to a
+required check.
+
+Branch protection: `fork boundary guards`, `cargo check (Linux)`, `cargo check
+(Windows)` required, **admins not exempt**. `cargo nextest (Linux)` runs but is
+**not required**, so a red nextest does not block a merge — which is why PRs look
+red and merge anyway. That is deliberate, not breakage.
+
+**`strict: false`** — a PR is *not* required to be up to date with `main` before
+merging, so **CI tests the PR head, never the merge result.** A branch can go green
+against a stale base and merge anyway. This is the one stale-base case `precheck`
+cannot catch for you.
+
+### Recovered agent work — what the OOM actually cost
+
+Three feature-port agents (`ghrepo`, `osc7`, `warptui`) were killed with their work
+**uncommitted on disk**. The code survived and all three landed or are landing. What
+did *not* survive was their reasoning.
+
+That distinction decided the recovery, and it is worth internalising:
+
+- **Feature-port agents have issue-defined acceptance criteria**, so their
+  deliverable is re-derivable from the diff plus the issues. Nothing was lost that
+  measurement could not recover.
+- **Test-porting agents' deliverable is the classification** (portable /
+  feature-gap / cloud / stub). That is *not* re-derivable from the diff. Lose the
+  agent, lose the round's actual output.
+
+Do not confuse the two, as this session initially did — it produced several
+confident statements about lost classification counts that were about the wrong
+cohort entirely.
+
+**#396 does NOT close with OSC 7.** This file previously said "likely #396". It was
+measured: nothing in the OSC 7 diff touches the fork / new-pane / working-directory
+path. #416 may also close only partially — it names 27 pinned tests, the branch
+ported 21, and the delta was never traced test-by-test.
+
+### The board is smaller than it looks
+
+206 open, but **~60 collapse into 8 root causes** — see **#456**, the
+root-cause map. Four more clusters are *decisions*, not engineering. OSC 7 alone
+closes 4 issues and unblocks ~30 tests; deciding #11 closes ~14 with no code.
+
+Read **`DECLINED.md`** before filing a parity issue — it records what is absent
+*on purpose*, plus the recurring false positives (`computer_use`,
+`remote_server`, Grok OAuth) that keep getting mislabelled as cloud.
+
+Open maintainer decisions: **#11**, **#267**, **#318**, **#373**, **#445**.
+
+### The scope number, corrected
+
+`SCOPE-*.md` called the remaining work ~1,605 tests of "test debt". Measured
+across 30 agents the portable rate is **6–7%**, and that is biased *low* —
+earlier rounds skimmed the easy areas. The bulk is **feature gap**: the test is
+fine, the source was never forked. The fork diverged 2026-04-28; the pin is
+2026-07-29 — 1,799 upstream commits, so much of the "gap" is drift, not removed
+work. Treat the ORACLE.md totals as disproven.
+
+### Never let an agent background a cargo command — it will stall forever
+
+**Five agents stalled this way on 2026-08-07.** An agent that runs cargo in the
+background and then waits for a completion notification never gets one, because
+it cannot receive them. It sits there burning nothing and reporting nothing
+until the coordinator notices and pokes it.
+
+This is a **coordinator brief defect**, not an agent failure. A brief that says
+"gate with rustfmt and precheck" without saying how to run a build invites it.
+Put this in every brief that might touch cargo:
+
+    timeout 580 ./script/agent-cargo check -p warp --features gui --lib --tests 2>&1 | tail -25
+
+Three things matter in that line:
+- **Foreground.** Never `&`, never a background task the agent then waits on.
+- **`script/agent-cargo`, not raw cargo.** It applies the slot limit, job caps
+  and per-agent `CARGO_TARGET_DIR`, so a single-package check is safe even with
+  a large fleet running. Raw parallel cargo is what OOMed the box.
+- **Trust the `RESULT agent=… exit=N` line on stderr, not the pipeline's exit
+  code.** Piping through `tail` masks the real status.
+
+If the command times out, do **not** retry it blind — read `gh run view
+--log-failed` and work from the actual compiler output instead.
+
+### The cost of the no-cargo agent gate — measured 2026-08-07
+
+`docs/FLEET-ROUND.md` has agents gate on `rustfmt --check` + `script/precheck`
+and never run cargo, because per-agent builds made the 3-slot build queue the
+bottleneck and then OOMed the box. That tradeoff is still right at 20+ agents.
+**But know exactly what it lets through**, because it is predictable:
+
+**Every red PR in the evening round failed for one of three reasons, and none
+of them is a logic error:**
+
+1. **A missing trait import in a *test* file.** PR #500: `CodeSettings::handle(app)`
+   needs `warpui::SingletonEntity` in scope; the file imported `App` and
+   `ModelHandle` but not the trait. Invisible to rustfmt, invisible to plain
+   `cargo check` — CI catches it only because both check jobs run
+   `--lib --tests`.
+2. **A non-exhaustive match after adding an enum variant.** Adding a
+   `CLIAgent`/`FeatureFlag`/protocol-op variant breaks every exhaustive match.
+   Agents must grep for all of them by hand.
+3. **A test asserting a translated string without calling `i18n::init`.** PR
+   #473: `t_static!` inside a `LazyLock` permanently caches the raw fluent key
+   if it resolves before init, and nextest gives each test its own process. Six
+   existing test files already call `crate::i18n::init(Some("en"))` first.
+
+**So: before finishing, an agent should hand-check imports for any trait method
+it called, grep every match site for any enum variant it added, and call
+`i18n::init` in any test asserting user-visible text.** Those three checks cost
+seconds and account for essentially all avoidable CI round trips.
+
+Note also that **`cargo check` in this repo runs with `--lib --tests`**, so a
+"check passes" claim from an agent that only ran `cargo check` without `--tests`
+is not evidence of anything.
+
+### Operational lessons added 2026-08-07
+
+- **Run `script/precheck` before every push.** CI is the *final* check, not the
+  one that discovers the problem. Runs rustfmt on changed files, both guards,
+  base freshness, and (with `--with-tests`) only the tests in
+  `known_test_failures.txt` — 8, not 4,500.
+- **Keep worktrees current** with `script/agent-worktree new|refresh|status`.
+  An agent branched 105 commits behind, lacked the merged secret fix, hit the
+  resulting failure and called it "unrelated pre-existing"; two people then
+  diagnosed a bug fixed hours earlier. `precheck` now fails above 25 behind.
+- **Never call a failure "pre-existing" without measuring it.** Wrong four times
+  in one round, three of them the coordinator's. Stash, re-run, restore. Not in
+  `known_test_failures.txt` → not pre-existing. **Check your base first.**
+- **Filtered runs break `#[serial]` tests.** Secrets tests mutate global regex
+  state; a narrow `-E` filter can schedule them against tests touching the same
+  global. Re-run alone before concluding.
+- **Verify before asserting a diagnosis.** Four wrong diagnoses today — the
+  `command_finished_and_precmd` helper, a `.start()` grep truncated by `head -8`,
+  the #441 inverted-predicate theory, and the secrets-serial hypothesis. Agents
+  caught three. Cheap checks settled each in seconds *after* the wrong claim.
+- **`pgrep -f <pattern>` matches your own command line.** Three false "still
+  running" readings. Poll the governor's `RESULT` line instead.
+- **Shared mutable files create merge-order dependencies** —
+  `known_test_failures.txt` and `cloud_boundary_allowlist.txt` both do. This bit
+  again on 2026-08-07: #420 and `main` deleted *adjacent lines* of that file and
+  conflicted. Stack onto the PR that owns the file rather than branching from
+  `main` in parallel with it.
+
+### The meta-lesson, added 2026-08-07 evening
+
+**This repo encodes its rules in prose and enforces almost none of them.** Every
+incident of that day was a documented rule that nothing checked:
+
+| rule, written down | what actually happened |
+|---|---|
+| `agent-cargo`'s slot-sizing header | override file set to `6`; fleet OOM-reaped, three agents' uncommitted work nearly lost |
+| `rust-toolchain.toml` pins 1.92.0 | host ran 1.93.1 for **weeks**; every local green measured on the wrong compiler |
+| `.rustfmt.toml` | says 2018 while all 64 crates say 2024 (#191) |
+| "never call a failure pre-existing without measuring it" | wrong four times in one round |
+
+Prose does not execute. When you learn something here, put it in a script that
+fails, not in a paragraph. #467 does this for the toolchain; `MAX_SLOTS` does it
+for the governor.
+
+### Three "rules" in this repo that are FALSE — verified 2026-08-07
+
+Stop routing around these:
+
+- **`gh pr edit` and `gh pr merge` do NOT fail on this repo.** The round-4 brief
+  says to use `gh api` REST instead. The token has `repo` scope, GraphQL works,
+  and both commands were used repeatedly that day, including a base retarget.
+- **`.rustfmt.toml`'s `edition = "2018"` is not authoritative.** The pin
+  (`02b53fcd8`) and `warp/master` both carry `edition = "2024"`; upstream changed
+  it in the *same commit* as their edition migration (`abea51cd1`, #13990). The
+  fork's own migration missed that one file. `precheck`'s "always `--config-path`,
+  never `--edition`" is a **workaround for the churn**, not a statement that 2018
+  is correct.
+- **`known_test_failures.txt` is NOT authoritative repo-wide.** CI runs
+  `check_test_failures -p warp --lib`, so **`warp_tui` is not gated at all** — 620
+  tests, two of them red on `main`, invisible. An agent following the documented
+  "not on the list → not pre-existing" rule will hunt a regression that does not
+  exist. See **#465**.
+
+### The OOM, and why "narrow tests" did not prevent it
+
+Agents were correctly briefed to run only filtered `-E` slices. **It did not
+matter.** A filtered `nextest -E … -p warp --lib --features gui` still *compiles
+and links the entire warp test binary*; `-E` narrows execution only. The link is
+the multi-GB cost and it is identical whether you then run 1 test or 4,500.
+
+Two mechanisms, both now fixed in `agent-cargo`:
+
+- The `slots` override was `6`. Raising 3→**4** had already reaped this box once.
+  There is now a `MAX_SLOTS` clamp in code; tuning *down* still works.
+- **`MIN_FREE_MB` is a start-time admission check only.** N invocations each
+  observe plenty of free memory in the same poll pass, all get admitted, then hit
+  peak link together with nothing re-checking. A start stagger now de-synchronises
+  them. This, not the raw slot count, is the mechanism.
+
+**Swap is not a fix for this.** 39 GB was added that day. Link memory is *hot*
+anonymous memory, so swapping it thrashes rather than relieving; the failure mode
+becomes an unresponsive box instead of a fast kill, which is harder to diagnose —
+and HANDOFF already records an agent being stopped because it merely *looked* hung.
+
+### Recovering a killed agent — do this first, before anything else
+
+Agent work sits **uncommitted in `.worktrees/<slug>/`**. A worktree removal or a
+second OOM loses it permanently.
+
+```bash
+for w in .worktrees/*/; do git -C "$w" status --short; done
 ```
-for w in r3-termview r3-aiconv r3-aiconf r3-misc; do
-  git -C .worktrees/$w status --short
-  git -C .worktrees/$w log --oneline origin/main..HEAD
-done
-```
 
-Commit and push anything found — a previous stalled agent had six modified files
-sitting uncommitted, and they would have been lost. If the worktrees are empty,
-delete them and re-dispatch from the verdict-A list.
+Commit anything found as `WIP checkpoint (<agent>) — UNVERIFIED` immediately, then
+verify. Do not read, diagnose, or tidy first. The claim in this file that "every
+branch is pushed, nothing lives only on disk" was **false** on 2026-08-07: three
+branches existed only on disk.
 
-### Round 2 result (the batch model working)
+### #441 — what three failed attempts missed
 
-Six agents, six PRs, merged into one integration branch with **zero conflicts**,
-verified by **one** build (~26s of test time) instead of six cold builds.
-**110 tests ported, 12 real defects found** — including **#248**, a shell
-injection in prompt-chip commands reachable from git branch names. That is the
-third security defect test-porting surfaced, after the OSC 1337 panic and the
-`cat {history_file}` injection.
+All three of its failures were **port omissions**, not logic errors, and none was
+findable by reading the code the tests obviously touch:
 
-### Remaining work
+- `/fork` was queued because the slash-command data source **never subscribed to
+  `BlocklistAIHistoryModel`**, so `Availability::ACTIVE_CONVERSATION` latched at
+  construction and `/fork` never entered `active_commands_by_id`. **The queueing
+  code was correct throughout and never saw a slash command.**
+- The classic completion menu stayed open because `update_tab_completion_menu`
+  **lost the pin's `is_user_edit` parameter**, making the classic exemption
+  unconditional instead of system-edits-only. A `TODO` in the fork described the
+  resulting bug.
 
-~1,185 verdict-A tests across 191 files, but **A is overstated** (see below), so
-the genuinely portable remainder is likely half that. At ~3-4 files per agent,
-that is **4-6 more rounds of 6-8 agents**. Run more agents per round, not more
-rounds: the batch model means extra agents cost nothing in build time, and the
-only real constraint is carving disjoint file sets.
+Generalise: **a missing subscription or a dropped parameter is invisible to a diff
+of the feature that fails.** When source-diffing "does not converge", stop diffing
+and go compare the *wiring* against the pin — subscriptions, call-site counts,
+function signatures.
 
-Feature gaps are now enumerated **with blocking counts** — #252 (68 tests),
-#254 (33), #236 (31), #256 (4) — so they can be scheduled as feature work rather
-than miscounted as test debt.
+That fix also revealed `slash_compact_still_queues_while_in_progress` had been
+passing **for the wrong reason**: with nothing detected, everything queues, which
+is exactly what it asserted. A green sibling test is not evidence the mechanism
+works.
 
-Two remotely-triggerable security defects closed this session (#171, PR #224):
-an **OSC 1337 parser panic on untrusted PTY output** (any process writing to the
-terminal could kill it) and an **unquoted `cat {history_file}`** shell injection.
-Both were verbatim ports of Warp's guards; both helpers already existed in the
-fork and were simply never called.
+Still missing and unfiled: the fork also lacks the pin's `PrivacySettings` and
+`UserWorkspaces` recompute subscriptions — same latching class, no test covers it.
 
 ## The oracle is PINNED — read `ORACLE.md` before any parity work
 
@@ -254,13 +520,32 @@ Installed by hand this session because the bootstrap had never run here: **mold*
 with a misleading `cannot find 'ld'`), **protoc 25.1**, **gh 2.83**,
 **cargo-nextest**, and **rustfmt** (via apt — see below).
 
-**Known host divergence:** `script/install_rust` guards on `command -v cargo`, so
-a distro cargo at `/usr/bin/cargo` short-circuits it and rustup is never
-installed. Consequence: `rust-toolchain.toml`'s `channel = "1.92.0"` pin is
-**silently ignored** (host runs 1.93.1) and its `components = ["rustfmt",
-"clippy"]` never arrive. PR #153 adds rustfmt via apt and verifies both tools.
-Installing rustup would fix the pin but invalidates every target dir — do not do
-it mid-fleet.
+**Toolchain divergence — FIXED 2026-08-07 (#467). Read this anyway.**
+
+`script/install_rust` guarded on `command -v cargo`, i.e. "any cargo will do", so
+the distro cargo at `/usr/bin/cargo` short-circuited it, rustup was never
+installed, and `rust-toolchain.toml`'s `channel = "1.92.0"` pin was **silently
+ignored**. This host ran **rustc 1.93.1 against a 1.92.0 pin for weeks.**
+
+That is not a tidiness issue. CI runners have rustup and therefore honour the pin,
+so **every local green measured in that window was measured on the wrong
+compiler** — and the skew runs the dangerous direction: anything stabilised in the
+newer local compiler builds clean here and fails in CI. Any "verified" claim on
+this repo dated before 2026-08-07 should be read with that in mind.
+
+Now enforced in three places, each verified by planting the failure:
+
+- `install_rust` compares rustc against the pin instead of accepting any cargo
+- `precheck` **step 0** asserts toolchain identity, and self-corrects when rustup
+  is installed but not first in PATH
+- `agent-cargo` prepends the rustup shims and **refuses to build** on a mismatch
+
+Shell config cannot cover this: `~/.bashrc` returns early for non-interactive
+shells, which is exactly how agents, hooks and CI helpers invoke cargo. The line
+sourcing `~/.cargo/env` on this box is deliberately placed **above** that guard.
+
+Installing rustup invalidates every target dir, so do it between fleets, not
+mid-round. rustfmt also comes from apt here (PR #153).
 
 ---
 
@@ -324,6 +609,33 @@ it mid-fleet.
 5. Rewrite `TODO.md` per **#148** — it is stale in both directions and one entry
    states the opposite of the truth, actively misdirecting readers.
 
-**Every branch is pushed.** Nothing lives only on disk. In-progress agent work is
-committed as `WIP checkpoint (<agent>)` commits — those are unverified and may not
-compile; re-verify before building on them.
+**Do NOT assume every branch is pushed.** This file used to claim that, and on
+2026-08-07 it was **false**: three agent branches existed only on disk, with their
+work uncommitted, when the host OOM killed the fleet. Check before you trust it:
+
+```bash
+for w in .worktrees/*/; do
+  b=$(git -C "$w" branch --show-current)
+  echo "$b  uncommitted=$(git -C "$w" status --porcelain | wc -l)  onremote=$(git ls-remote --heads origin "$b" | wc -l)"
+done
+```
+
+In-progress agent work should be committed as `WIP checkpoint (<agent>)` — those
+are unverified and may not compile; re-verify before building on them.
+
+## What a fresh session should verify before trusting this file
+
+Everything above is a snapshot, and several of its predecessors' claims turned out
+to be wrong in ways that cost real time. Cheap checks, in order:
+
+1. `./script/precheck` — if step 0 fails, **stop**; every measurement you take
+   will be on the wrong compiler.
+2. `git log --oneline -5 origin/main` — the "Where main is" section goes stale
+   within hours during a round.
+3. `grep -vcE '^\s*(#|$)' script/known_test_failures.txt` — the count in this file
+   has been wrong in both directions.
+4. `for w in .worktrees/*/; do …` — the loop above, before deleting any worktree.
+
+And the standing rule that outranks this whole document: **verify before asserting
+a diagnosis.** Five wrong diagnoses were recorded on 2026-08-07 alone, one of them
+from misreading this file's own guidance about `.rustfmt.toml`.
