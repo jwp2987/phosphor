@@ -11,7 +11,8 @@ use rust_embed::RustEmbed;
 use warp_completer::ParsedTokensSnapshot;
 
 use crate::{
-    ClassificationResult, Context, InputClassifier, InputType,
+    ClassificationResult, Context, InputClassificationResult, InputClassifier,
+    InputClassifierDecisionSource, InputType,
     parser::parse_query_into_tokens,
     util::{
         is_likely_shell_command, is_one_off_natural_language_word, is_one_off_shell_command_keyword,
@@ -85,7 +86,11 @@ impl OnnxClassifier {
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl InputClassifier for OnnxClassifier {
-    async fn detect_input_type(&self, input: ParsedTokensSnapshot, context: &Context) -> InputType {
+    async fn detect_input_type(
+        &self,
+        input: ParsedTokensSnapshot,
+        context: &Context,
+    ) -> InputClassificationResult {
         let word_tokens = parse_query_into_tokens(input.buffer_text.as_str());
 
         let total_word_token_count = word_tokens.len();
@@ -96,25 +101,42 @@ impl InputClassifier for OnnxClassifier {
 
             // If the input is a single word and the word is one of a specific set of words, classify it as AI
             if word_tokens.len() == 1 && is_one_off_natural_language_word(&first_word) {
-                return InputType::AI;
+                return InputClassificationResult::new(
+                    InputType::AI,
+                    InputClassifierDecisionSource::NaturalLanguageOneOffAllowlist,
+                );
             }
 
             // If the first token is one of a specific set of shell command keywords (e.g.: echo or sudo),
             // we should classify it as shell.
             if is_one_off_shell_command_keyword(&first_word) {
-                return InputType::Shell;
+                return InputClassificationResult::new(
+                    InputType::Shell,
+                    InputClassifierDecisionSource::ShellHeuristic,
+                );
             }
         }
 
         if is_likely_shell_command(&input, total_word_token_count).await {
-            return InputType::Shell;
+            return InputClassificationResult::new(
+                InputType::Shell,
+                InputClassifierDecisionSource::ShellHeuristic,
+            );
         }
 
         // Otherwise, defer all decision-making to the model.
         self.classify_input(input, context)
             .await
-            .map(|result| result.to_input_type())
-            .unwrap_or(context.current_input_type)
+            .map(|classification| {
+                InputClassificationResult::new(
+                    classification.to_input_type(),
+                    classification.source,
+                )
+            })
+            .unwrap_or(InputClassificationResult::new(
+                context.current_input_type,
+                InputClassifierDecisionSource::InputClassifierFallbackCurrentInput,
+            ))
     }
 
     async fn classify_input(
@@ -196,3 +218,7 @@ impl HasPanicked {
         self.inner.is_completed()
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

@@ -1,9 +1,9 @@
 use super::default_themes::*;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::iter::FromIterator;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use warp_core::ui::color::pick_foreground_color;
 use warpui::assets::asset_cache::AssetSource;
 use warpui::{
@@ -166,27 +166,226 @@ impl ThemeKind {
         let theme_name = format!("{self}").to_lowercase();
         theme_name.contains(&query.to_lowercase())
     }
+
+    /// Whether this theme kind can round-trip through `settings.toml` on a
+    /// different machine/OS/username. Built-in themes always can; a custom
+    /// theme can only if its file path is stored as a path relative to the
+    /// themes directory (see `custom_theme_path_is_portable`).
+    pub(crate) fn is_custom_theme_reference_syncable(&self) -> bool {
+        match self {
+            ThemeKind::Custom(custom_theme) | ThemeKind::CustomBase16(custom_theme) => {
+                custom_theme_path_is_portable(&custom_theme.path, &crate::user_config::themes_dir())
+            }
+            _ => true,
+        }
+    }
 }
 
 #[derive(
-    Debug,
-    Clone,
-    Hash,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    PartialOrd,
-    Ord,
-    schemars::JsonSchema,
-    settings_value::SettingsValue,
+    Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord, schemars::JsonSchema,
 )]
 #[schemars(description = "A user-provided custom theme.")]
 pub struct CustomTheme {
     #[schemars(description = "The display name of the custom theme.")]
     name: String,
+    #[serde(
+        deserialize_with = "deserialize_custom_theme_path",
+        serialize_with = "serialize_custom_theme_path"
+    )]
     #[schemars(description = "The file path to the custom theme definition.")]
     path: PathBuf,
+}
+
+// Custom themes store their file path in `settings.toml` as a path relative to the themes
+// directory when the file lives under it ("portable"), instead of an absolute,
+// machine-specific path. This lets a `custom: { path: "catppuccin/mocha.yml" }` entry resolve
+// correctly on a different machine/OS/username. Paths that don't live under the themes
+// directory (or that use a foreign OS's absolute-path syntax) are preserved as-is: they can't
+// be made portable, so they're kept literally rather than silently rewritten.
+impl settings_value::SettingsValue for CustomTheme {
+    fn to_file_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "name": &self.name,
+            "path": custom_theme_path_storage_value(&self.path, &crate::user_config::themes_dir()),
+        })
+    }
+
+    fn from_file_value(value: &serde_json::Value) -> Option<Self> {
+        #[derive(Deserialize)]
+        struct FileValue {
+            name: String,
+            path: String,
+        }
+
+        let value = serde_json::from_value::<FileValue>(value.clone()).ok()?;
+        Some(Self {
+            name: value.name,
+            path: portable_custom_theme_path_from_stored_raw(
+                &value.path,
+                &crate::user_config::themes_dir(),
+            ),
+        })
+    }
+}
+
+fn serialize_custom_theme_path<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if let Some(path) =
+        portable_custom_theme_storage_string(path, &crate::user_config::themes_dir())
+    {
+        path.serialize(serializer)
+    } else {
+        path.serialize(serializer)
+    }
+}
+
+fn deserialize_custom_theme_path<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let path = String::deserialize(deserializer)?;
+    Ok(portable_custom_theme_path_from_stored_raw(
+        &path,
+        &crate::user_config::themes_dir(),
+    ))
+}
+
+fn custom_theme_path_storage_value(path: &Path, theme_root: &Path) -> serde_json::Value {
+    if let Some(path) = portable_custom_theme_storage_string(path, theme_root) {
+        serde_json::Value::String(path)
+    } else {
+        serde_json::json!(path)
+    }
+}
+
+/// Whether `path` can round-trip through portable storage relative to `theme_root`: either it
+/// is already a portable relative raw string, or it is an absolute (native or foreign-OS)
+/// path that resolves under `theme_root`.
+pub(crate) fn custom_theme_path_is_portable(path: &Path, theme_root: &Path) -> bool {
+    if path_is_absolute_or_foreign_absolute(path) {
+        return portable_custom_theme_storage_string(path, theme_root).is_some();
+    }
+
+    path.to_str()
+        .is_some_and(|path| portable_stored_raw_components(path).is_some())
+}
+
+/// Resolves a raw stored path string (as read from `settings.toml`) into an absolute path.
+/// A portable relative raw string resolves under `theme_root`; anything else (legacy absolute
+/// paths, foreign-OS paths, unportable relative forms) is preserved verbatim.
+pub(crate) fn portable_custom_theme_path_from_stored_raw(raw: &str, theme_root: &Path) -> PathBuf {
+    portable_stored_raw_components(raw)
+        .map(|components| {
+            components
+                .iter()
+                .fold(theme_root.to_path_buf(), |path, component| {
+                    path.join(component)
+                })
+        })
+        .unwrap_or_else(|| PathBuf::from(raw))
+}
+
+/// Converts an absolute `path` into a portable storage string relative to `theme_root`, using
+/// `/` as the separator regardless of host OS (so the stored form is OS-independent), or
+/// `None` if `path` doesn't resolve under `theme_root` (or contains components that can't
+/// round-trip, like `..` or a literal backslash).
+pub(crate) fn portable_custom_theme_storage_string(
+    path: &Path,
+    theme_root: &Path,
+) -> Option<String> {
+    if path_starts_with_windows_drive_prefix_using_forward_slash(path) {
+        return None;
+    }
+
+    let relative = path.strip_prefix(theme_root).ok()?;
+    let mut components = Vec::new();
+
+    for component in relative.components() {
+        let Component::Normal(value) = component else {
+            return None;
+        };
+        let value = value.to_str()?;
+        if value.contains('\\') {
+            return None;
+        }
+        components.push(value);
+    }
+
+    if components.is_empty() {
+        return None;
+    }
+
+    let path = components.join("/");
+    if portable_stored_raw_components(&path).is_some() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// Splits a raw stored path string into portable components (`/`-separated, no leading `/`,
+/// no `.`/`..`, no backslash, no Windows drive prefix), or `None` if the raw string isn't a
+/// portable relative form.
+fn portable_stored_raw_components(raw: &str) -> Option<Vec<&str>> {
+    if raw.is_empty()
+        || raw.contains('\\')
+        || raw.starts_with('/')
+        || raw_starts_with_windows_drive_prefix(raw)
+    {
+        return None;
+    }
+
+    let components = raw.split('/').collect::<Vec<_>>();
+    if components
+        .iter()
+        .all(|component| !component.is_empty() && *component != "." && *component != "..")
+    {
+        Some(components)
+    } else {
+        None
+    }
+}
+
+fn raw_starts_with_windows_drive_prefix(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+fn path_starts_with_windows_drive_prefix_using_forward_slash(path: &Path) -> bool {
+    let Some(path) = path.as_os_str().to_str() else {
+        return false;
+    };
+
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
+}
+
+/// Whether `path` is absolute on this host OS, or *looks* like an absolute path from a
+/// different OS (e.g. a Windows drive-letter or UNC path parsed on Unix, where it doesn't
+/// have a root by Unix's own rules). Such paths are never portable, but they must still be
+/// recognized so their raw form is preserved instead of being misread as relative.
+fn path_is_absolute_or_foreign_absolute(path: &Path) -> bool {
+    path.has_root() || path_looks_like_foreign_windows_absolute(path)
+}
+
+fn path_looks_like_foreign_windows_absolute(path: &Path) -> bool {
+    if path.has_root() {
+        return false;
+    }
+
+    let Some(path) = path.as_os_str().to_str() else {
+        return false;
+    };
+
+    let bytes = path.as_bytes();
+    let starts_with_drive_root = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+
+    starts_with_drive_root || path.starts_with(r"\\")
 }
 
 impl CustomTheme {

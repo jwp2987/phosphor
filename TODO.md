@@ -1,15 +1,24 @@
 # TODO — Phosphor: Warp parity ledger (#11) + code-review debt
 
 Reconciled 2026-08-04; **#11 section re-verified against code on `main` 2026-08-06.**
-**Last updated 2026-08-06 late — `main` = `8c1841a94`, 25 PRs merged, 0 open.**
+**Reconciled again 2026-08-07 (#148) — `main` = `2e7d6eb2f` (194 commits past the
+`af79b705d` HANDOFF.md snapshot).** Every checkbox and issue reference below was
+re-verified against `origin/main`, `gh issue view`, and `DECLINED.md` on that date;
+see the commit that made this edit for the full classification.
 `[x]` items in issue #11 = "keep/restore" (maintainer wants them in the fork). This
 file is the live tracker: **mark an item `- [x]` the moment it's verified done.**
 
-> **`main` is currently RED by maintainer decision.** PRs #140 and #181 were merged
-> knowingly carrying failing tests (#171 and the `warpui` suite) so all work would be
-> consolidated on one branch, with the fixes to follow. Do not treat a red suite on
-> `main` as a new regression without first checking it against #171. See
-> [Red on main](#red-on-main--2026-08-06) below.
+> **Issue #11 itself is now CLOSED (2026-08-07, `COMPLETED`).** It was fully
+> reconciled: 44 of its 56 ticked items were already implemented on `main` (verified
+> symbol-by-symbol), and the 10 genuinely absent are each now tracked by a specific
+> issue. See the "#11 status" section below for the current table — the old
+> "10 remain / 7 buildable" framing is superseded.
+>
+> **The old "`main` is red" story (PRs #140/#181, issue #171) is also resolved** —
+> #171 is closed; PR #224 repaired the underlying regressions. `main`'s current
+> red-test state is a different, smaller, fully-attributed set; see
+> [Red on main](#red-on-main--2026-08-06) below, which now points at `HANDOFF.md`
+> for the live count instead of embedding a number that will go stale again.
 
 ## Rules (apply to every item — same as the whole project)
 - **`warp/master` is the behavioral oracle.** Port faithfully; adapt only for
@@ -45,44 +54,77 @@ are marked `- [x]` with the evidence inline rather than deleted.
 
 # Part 1 — Warp parity restore ledger (#11)
 
-## #11 status — verified against code on `main` 2026-08-06
+## #11 status — CLOSED 2026-08-07 (full reconciliation)
 
-Of issue #11's **56 checked `[x]` items: 44 built + 2 resolved 2026-08-06 eve
-(pending-edit-batch core merged via #105; history_model remainder keep-dropped
-per #107) = 46. 10 remain**, of which 3 are decisions/holds (global-skills,
-skill-remote-path, local_control app-side) and **7 are buildable — now in-flight
-on the overnight agent fleet**. (The 13 unchecked `[ ]` items are all
-keep-dropped/cloud — OTEL, VoiceInputLifecycle, semantic-search, RunAgents
-orchestration, computer-use recording, cloud-mode-v2, product-analytics
-telemetry, `IsCloudConversationStorageEnabled`, etc. — not work, by decision.)
+Issue #11 was reconciled at *definition level* (symbol-by-symbol against
+`origin/main`, excluding comments/binaries — a first pass with loose greps
+produced false positives and was discarded) and closed. **44 of its 56 ticked
+items were already implemented on `main`**; nothing was unticked (the ticks stand
+as the historical record of intent, per maintainer instruction). The **10
+genuinely absent items are now each tracked by a specific issue**, superseding
+the old "3 decisions/holds + 7 buildable" framing:
+
+| item | tracked by |
+|---|---|
+| Size-based / `warp_logging` rotation | DONE — see "Log-rotation" below |
+| `SettingSurfaces` / `SettingsMode` | declined, `DECLINED.md` |
+| CJK link-boundary mechanism | #223 (open) |
+| `local_control` / `warpctrl` | #216 (open, comprehensive); #401 (installer sliver, open); #184/#200/#183 closed as subsets |
+| Banner-immune PATH capture | #481 (closed — done) |
+| TUI live background re-probe | #482 (open) |
+| CDPATH-aware `cd` completion | #483 (closed — done) |
+| Launch-at-login | #484 (closed — done, see "Requires macOS/Windows" below) |
+| NLD heuristic feature flags | #485 (closed — done) |
+| AI bundled + global skills | #487 (open — this ledger's old "AI global skills" entry below was **wrong**; see correction) |
+
+(The 13 unchecked `[ ]` items are all keep-dropped/cloud — OTEL, VoiceInputLifecycle,
+semantic-search, RunAgents orchestration, computer-use recording, cloud-mode-v2,
+product-analytics telemetry, `IsCloudConversationStorageEnabled`, etc. — not work,
+by decision. One open question remains outside the 10/13 split: theme syncability
+*portable-path* machinery, since "syncable" there means syncable to Warp's cloud —
+computes a correct answer to a question nothing currently asks unless local theme
+portability is wanted.)
 
 ### Merged this session
-- [x] **Pending-edit-batch conflict-discard** — CORE MERGED (PR #105, `Fixes #101`):
+- [x] **Pending-edit-batch conflict-discard** — CORE MERGED (targeted issue #101):
   `PendingEditBatch` 200 ms debounce + push-conflict-discard + save-flush; 3 oracle
   tests green in isolation. Deferred sub-part `BufferConflictDetected` server→client
-  push tracked as **#102** (blocks `handle_buffer_conflict_detected` + its 4th test);
-  now being built by the fleet. Assessment: `specs/pending-edit-batch/ASSESS.md`.
+  push (**#102**, blocked `handle_buffer_conflict_detected` + its 4th test) is now
+  **DONE too** — fixed by commit `78b66b6b2` ("feat(remote_server): BufferConflictDetected
+  push + git write-op RPC surface"), issue closed 2026-08-07. Assessment:
+  `specs/pending-edit-batch/ASSESS.md`.
 
 ### Requires macOS / Windows — cannot be built or verified on this host
 Not deferred for lack of intent: this box is Linux and these cannot be compiled or
 exercised here at all. They need a macOS or Windows machine (or CI) to progress.
 **Do not mark any of these done from a Linux build.**
 
-- [ ] **WSLENV passthrough vars** *(Windows)* — `wsl_env_allowlist` absent (0 hits).
-  Compile-only port plus a flag.
-- [ ] **Launch-at-login** *(macOS + Windows)* — `app/src/login_item/` does not exist.
+- [ ] **WSLENV passthrough vars** *(Windows)* — **STALE: this claimed absent, but it
+  is DONE.** `wsl_env_allowlist` exists at
+  `app/src/terminal/local_tty/windows/environment.rs:202` (commit `17ee390a2`, PR #119,
+  targeted issue #117). Compile-only port, per the commit's own note — still not
+  runtime-verified on an actual WSL/Windows host, which is the real remaining item.
+- [ ] **Launch-at-login** *(macOS + Windows)* — **STALE: this claimed absent, but it
+  is DONE.** `app/src/login_item/` exists (`mod.rs`, `macos.rs`, `windows.rs`,
+  `windows_tests.rs`; commit `17ee390a2`, PR #119, targeted issue #118). Same caveat:
+  compile-only on this Linux host, not runtime-verified on macOS/Windows.
 - [ ] **Edition-2024 release verification** *(macOS)* — the **code work is done and on
   `main`** (commit `48bc21cb9`, PR #53). Only a macOS release build remains unverified.
 - [ ] **pwsh `-EncodedCommand` at 2 call sites** *(Windows)* — the fix is ported to
   `local_command_executor.rs:55` and `msys2_command_executor.rs:67`, matching the
   already-verified `shell.rs` site (commit `5365c62a`). Needs a Windows run to confirm.
 
-### Won't do — decided 2026-08-06
-- [x] **AI global skills** (global arm) — **WON'T DO (maintainer, 2026-08-06).**
-  Unchecked from #11. No `global_skills`/`filter_skills_by_spec` in
-  `app/src/ai/skills/`; the bundled arm is done and the remote arm is cloud (dropped).
-  The single remaining non-cloud function has **no consumer** and would require a
-  `LocalOrRemotePath` type migration to land. Not worth the migration for dead code.
+### STALE-WRONG — corrected 2026-08-07
+- [ ] **AI global skills** — **this entry previously said "WON'T DO (maintainer,
+  2026-08-06)" and stated the opposite of the actual decision.** #11's 2026-08-07
+  closing comment quotes the ledger's own "Maintainer BYOP decisions — 2026-08-02"
+  section, settled before the WON'T-DO note was ever written: *"AI skills: build
+  `bundled` + `global` (local); DROP the `remote` daemon-sync / cloud-repo arm."*
+  Verified against `origin/main` today: `app/src/ai/skills/` is missing exactly
+  `bundled.rs`, `bundled_tests.rs`, `global_skills.rs`, `global_skills_tests.rs`
+  (plus `remote.rs`/`remote_tests.rs`, which stay dropped per the decision above).
+  This is real open work, tracked at **#487** (open) — do not treat it as done or
+  declined.
 
 ### Not started — true gaps
 - [ ] **Skill remote-path** — now **#205**. Promoted out of this ledger after finding a
@@ -91,7 +133,9 @@ exercised here at all. They need a macOS or Windows machine (or CI) to progress.
   a remote skill under a same-named home dir is silently misclassified as local.
   Latent only because #170 means no remote path reaches them yet — **fix with or
   before #170.** Note this ledger previously claimed `get_scope_for_path` was migrated
-  by #59; it was not (still `&Path`).
+  by #59; it was not (still `&Path`). Related but distinct from **#487** (AI global
+  skills, above): #205 is the path-*typing* half of remote skills, #487 is the
+  missing-*modules* half.
 
 ### Keep-dropped (decided this session)
 - [x] **history_model reconciliation** — non-cloud parts DONE (optimistic rename /
@@ -109,25 +153,34 @@ exercised here at all. They need a macOS or Windows machine (or CI) to progress.
   **false**: `connection_label_for_session_info` is called in production at
   `remote_server_controller.rs:290` and `:526`, not only from its own tests.
   Re-verified against `main` `8c1841a94` on 2026-08-06.
-- [ ] **`local_control` / `warpctrl` app-side** — now **#200**. crate `crates/local_control` exists;
-  `app/src/local_control/` is absent. Blocked on `FeatureFlag::{WarpControlCli,
-  AgentManagementView}` + a missing Agent-Management view subsystem.
-- [ ] **Pinned-tabs / tab-groups remaining GUI surfaces** — tracked as **#146**. storage (migrations +
-  schema), the live model (`Workspace::tab_groups`, `TabData::{group_id, pinned}`),
-  the `PinTab`/`UngroupTabs`/… actions, snapshot round-trip, keybindings, the
-  per-tab Pin/Unpin + tab-group context-menu entries, the multi-tab right-click
-  menu, shift/cmd-click multi-selection and the "Move to group" submenu sidecar
-  all landed. Still to port from `warp/master`: the vertical-tabs group-header
-  row, the tab-group right-click menu (which hangs off that header), the inline
-  group-rename editor, and group-aware drag-and-drop reordering.
-- [ ] **repo_metadata standing-queries wiring** — now **#201**. `standing_queries.rs` on main;
-  the app skill-watcher wiring that drives it is the follow-up.
-- [ ] **Log-rotation deferred wiring** — now **#202**. machinery built (`simple_logger` + `warp_logging`
-  rotation). **This entry was partly false and is corrected:** `register_with_rotation`
-  **is** called at the MCP logger site (`app/src/ai/mcp/templatable_manager/native.rs:789`,
-  with `logs::mcp_log_rotation_config()`), re-verified against `main` `8c1841a94`.
-  Remaining real work: `frontend` / `max_file_size_bytes` are still not threaded
-  into `LogConfig`.
+- [ ] **`local_control` / `warpctrl` app-side** — **#200 is now CLOSED**, as a subset
+  of **#216** (open), the comprehensive tracking issue: app-side module (23+2+2+1
+  tests) + CLI-side module (19 tests) + settings group (6 tests, already landed via
+  PR #472) = 53 tests. `crates/local_control` exists (14 source files);
+  `app/src/local_control/` and `crates/warp_cli/src/local_control/` are still absent
+  — PR #480 is open, wiring the app-side surface. The `install_warpctrl`/
+  `uninstall_warpctrl` installer sliver in `app/src/workspace/cli_install.rs` is
+  NOT covered by #216 and stays tracked separately at **#401** (open).
+- [x] **Pinned-tabs / tab-groups remaining GUI surfaces** — **DONE, #146 closed
+  2026-08-07.** Fixing commit `ababc7f07` ("feat(tabs): move-to-group submenu,
+  multi-tab menu and modifier selection") ported the vertical-tabs group-header
+  row, tab-group right-click menu, inline group-rename editor, and group-aware
+  drag-and-drop reordering — the four items this entry previously listed as
+  outstanding. Verified: `git merge-base --is-ancestor ababc7f07 origin/main`.
+- [x] **repo_metadata standing-queries wiring** — **DONE, #201 closed 2026-08-07.**
+  Wired by commit `0d345486f` (PR #121): `app/src/ai/skills/file_watchers/skill_watcher.rs`
+  subscribes to `RepoMetadataEvent::StandingQueryResultsUpdated`, and `app/src/lib.rs`
+  calls `set_project_skill_provider_paths`/`register_force_included_paths` at
+  startup. (The old repro — `grep -rn standing_queries app/src` — returns zero hits
+  because the driving symbols were renamed; search for the concept, not the name.)
+  The **remote** half is genuinely missing, now tracked at **#296** (PR #526 open).
+- [x] **Log-rotation deferred wiring** — **DONE, #202 closed 2026-08-07 — premise was
+  already false when filed.** `crates/warp_logging`'s `LogConfig` already carries
+  both `frontend` and `max_file_size_bytes`, and `app/src/lib.rs::init_common`
+  already threads `launch_mode.log_frontend()` through — landed in the same commit
+  `0d345486f` (PR #121) as the standing-queries wiring above. `max_file_size_bytes`
+  staying `None` at call sites is not a fork gap either: the pin does the identical
+  `..Default::default()` at every one of its own call sites.
 - [x] **code_review over SSH — git write-ops** — DONE, merged 2026-08-06 (PR #125,
   issue #116). Commit / push / create-PR RPCs over SSH, plus a
   `git_operation_in_progress` guard on all three mutating handlers. Verified
@@ -168,28 +221,27 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   been deleted. **All that remains is a local macOS `script/run --release` run**, which
   cannot be done on this Linux host — it needs a Mac (no CI-discovery builds). That run may
   still surface further latent mac-only errors.
-- [ ] **#4 warp_tui suite** — plain `cargo test -p warp_tui --lib` STILL DEADLOCKS at
-  `tui_generic_tool_call_view::accepting_new_conversation_suggestion_completes_the_executor`
-  (reconfirmed 2026-08-04). The #4 fix may only hold under nextest. Re-investigate;
-  do NOT force-green. Also its listed real bugs (diff ghost-blocks, transcript-clear).
-  UPDATE 2026-08-05: `cargo nextest run -p warp_tui --no-fail-fast` = **579 pass / 18 fail**
-  (589 → 597 total). PRE-EXISTING (confirmed: `git log dc885a802..HEAD -- crates/warp_tui`
-  is EMPTY — this session's diff-state PRs #61-65 never touched warp_tui). Failures span
-  input::view, root_view, session_registry, terminal_session_view, transcript_view,
-  tui_diff_storage (×4), tui_file_edits_view, tui_permission_prompt (×2),
-  tui_shell_command_view (×4). Spot-check: `input::view::move_up_through_empty_line_positions_cursor`
-  PASSES in isolation (nextest parallel-ordering artifact — shared global-state pollution,
-  same class as the i18n-isolation item below); `session_registry::focus_drives_events`
-  FAILS in isolation (real). So the 18 are a MIX of real bugs + isolation-order artifacts.
-  Dedicated #4 effort — not a diff-state regression. (usage-suite's warp_tui-nextest subset
-  is green, which is why smoke passed.)
+- [ ] **#4 warp_tui suite** — **STALE, corrected 2026-08-07.** The deadlock this
+  entry describes (`tui_generic_tool_call_view::…_completes_the_executor`) is FIXED
+  — see Part 2 below, PR #124, commit `87d06d179` — do not re-investigate it. #4
+  itself stays open, but its scope moved: CI now gates the `warp_tui` crate at all
+  (it previously didn't — issue #465 covered that gap; PR #469 addressed it), and the remaining gap
+  is understood as `warp_tui` trailing the pin by a generation, tracked with a full
+  root-cause map at **#456**, with #384/#387/#389/#390/#392/#395 as siblings tracing
+  to the same cause. Treat the old 18-failure nextest breakdown above as historical
+  context for how this was first noticed, not as the current state.
 - [ ] **#2 sweep** — the 2 missing GUI auto-resume oracle tests
   (`completed_user_controlled_lrc_{resumes_when_not_suppressed,skips_resume_when_suppressed}`)
   are now PORTED to `terminal/view_test.rs` (2/0; the resumes case needed a
   `GlobalResourceHandlesProvider` mock for the subagent-sidecar persist path; the fork's
   teardown method is `set_user_control_with_stop_reason`, Warp's is `set_user_control_for_teardown`).
   Broader 379-module sweep still ongoing. (Anchor Stop/auto-resume regression already code-fixed.)
-- [ ] **#5 deferred low-sev** — 5 latent items, all still present; low priority.
+- [x] **#5 deferred low-sev** — **STALE-WRONG, corrected: #5 is CLOSED (2026-08-05),
+  not "all still present."** All 5 findings were dispositioned: mouse-wheel scroll
+  reuse was FIXED (#78); the other 4 (multi-cursor selection span, footer statusline
+  recompute, `first_rendered_line_width` paint-to-measure, `vim_visual_selection_ranges`
+  duplication) were explicitly won't-fixed as either feature-gated, negligible, or
+  folded into `specs/tui-render-perf/SCOPE.md`. Nothing actionable remains here.
 - [x] **warp-suite i18n test-isolation** (found 2026-08-04) — the 3 deterministically-red
   tests (`drive::export::test_export_untitled_notebook`, `search::…::test_directory_search_support`,
   `workspace::…::terminal_primary_line_falls_back_to_new_session`) were the localized-`t!()`
@@ -211,10 +263,27 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   or merge.
 
 ## Issue reconciliation status
-- **#37** SSH ControlMaster guard — DONE (verify → close). Refinement `external_control_master` still open (above).
-- **#4** — NOT done (deadlock reproduces; see above).
-- **#98/#99/#100** — MERGED to `main` (PRs #103 and #104) and all three issues are closed. **#101** pending-edit-batch core also merged (PR #105) and closed; **#102** filed (deferred BufferConflictDetected push) and still OPEN.
-- **#2/#5/#11** — tracking issues; stay open. #11 items tracked here.
+- **#37** SSH ControlMaster guard — DONE and CLOSED. **Correction:** the previous
+  line here said the `external_control_master` refinement was "still open" — it is
+  not; it is plumbed DCS hook → session → controller and covered by tests
+  (`owns_control_master_accessor_reflects_constructor`,
+  `parse_dcs_ssh_with_external_control_master`). Both halves closed together.
+- **#4** — still OPEN, but **PR #124 already repaired the deadlock** this entry
+  describes (see Part 2 below) — do not read "#4 open" as "deadlock reproduces". The remaining
+  scope is now understood as one symptom of a broader gap: `warp_tui` trails the
+  pin by a generation, with #384/#387/#389/#390/#392/#395 tracing to the same root
+  cause. Full map: **#456**.
+- **#98/#99/#100/#101/#102** — all MERGED and CLOSED. (#102, the deferred
+  `BufferConflictDetected` push, is now also done — see "Merged this session" above.)
+- **#2** — tracking issue for the broader Warp-test-parity sweep; stays OPEN (this is
+  now the umbrella for the much larger `SCOPE-*.md`-driven fleet effort — see
+  `HANDOFF.md`, not this file, for its live numbers).
+- **#5** — **CLOSED 2026-08-05, not open.** All 5 deferred low-severity findings were
+  triaged: 1 fixed (mouse-wheel scroll reuse, in #78), 4 explicitly won't-fixed
+  (deferred to `specs/tui-render-perf/SCOPE.md` or judged not worth doing standalone).
+  The "Other outstanding" entry below previously said "5 latent items, all still
+  present" — that was stale; see the correction there.
+- **#11** — **CLOSED 2026-08-07.** Fully reconciled; see "#11 status" above.
 
 ### Closed 2026-08-06 late
 #129 (mermaid flake) · #131 (MCP redaction gate) · #135 (PR lookup) · #137 (empty
@@ -223,52 +292,70 @@ parity) · #152 (`/usage` + `/cost`) · #156 (`PrInfo` fields) · #157 (gh-auth)
 #185 (WSL paths) · #196 (WCAG chip labels).
 
 ### Deliberately left open — partially resolved, remainder is real
-- **#126** — BYOP commit-message gen: local path shipped (PR #130); the remote path
-  was deferred pending #125. #125 has now landed and the wiring still is not done —
-  `maybe_start_commit_message_autogen` calls `generate_for_local_repo` with **no
-  `is_remote()` check**, so on an SSH repo it runs `git` against a path that does not
-  exist locally and silently produces no draft.
-- **#136** — `read_files`: local half fixed (PR #159); remote half open. The stated
-  blocker is **gone** — PR #192's proto re-pin supplies the `failed_reads` field that
-  `AnyFilesSuccess` previously lacked, so it is now implementable.
-- **#142** — `api_keys`: all portable tests ported (PR #189). Real remainder is a
-  serde round-trip test for `AgentProviderSecrets`, which lives in `app/`. Note the
-  issue's own premise was wrong — Warp has 71 tests not 82, and
-  `custom_model_providers_*` is superseded by `AgentProviderSecrets`, not missing.
-- **#146** — pinned tabs: core + deferred UI merged (PRs #132, #172); see the
-  remaining GUI surfaces item above.
+- **#126** — still OPEN, still real. BYOP commit-message gen: local path shipped
+  (PR #130); #125 landed and the wiring still is not done —
+  `maybe_start_commit_message_autogen` (`app/src/code_review/git_dialog/commit.rs:295`)
+  calls `generate_for_local_repo` with **no `is_remote()` check**, so on an SSH repo
+  it runs `git` against a path that does not exist locally and silently produces no
+  draft (no toast — the empty editor is the only symptom). This is the same defect
+  class as #188 (local diff-state model used on a path that may be remote); #126 is
+  reportedly instance twelve of that class.
+- **#136** — **DONE, closed 2026-08-07.** Fixed by PR #468, commit `5b83a8ee8`. Both
+  halves verified: the local path's `local_read_files_result` now returns
+  `Success { files, failed_files }` instead of discarding successful reads on any
+  failure; the remote path threads `failed_files` through instead of flattening
+  every failure into one hardcoded string. (The proto-field premise in the old
+  entry was also wrong the other way — `AnyFilesSuccess.failed_reads` was already on
+  the wire; `convert.rs` was just populating it with an empty vec.)
+- **#142** — still OPEN (left to a maintainer to close/retitle), but nothing further
+  to port: PR #189 and PR #227 are merged, `api_keys.rs`/`api_keys_tests.rs` carry
+  the full ported/blocked/superseded/cloud breakdown, and `git grep CustomEndpoint`
+  across the tree is empty. The "superseded by `AgentProviderSecrets`" decision is
+  now recorded in `DECLINED.md` (PR #486) — see that file's "Divergences where the
+  fork deliberately differs" section (`CustomEndpoint` row) rather than treating
+  this as open parity work.
+- **#146** — **DONE, closed 2026-08-07** (commit `ababc7f07`); see the remaining GUI
+  surfaces item above, now also marked done.
 
 ### New issues filed 2026-08-06 late
-#183, #184 (`warp_cli` gaps) · #188 (3 more local-model-on-remote-path sites) ·
-#191 (`.rustfmt.toml` pins edition 2018 while all 64 crates are 2024) · #194 (BYOP
-token accounting was dead, which disabled auto-compaction) · #196 (closed).
+#183, #184 (`warp_cli` gaps) — **both now closed as subsets**: #183 into #411
+(`Harness::Codex` variant; the `config_name`/`from_config_name` half of #183 was
+separately done, PR-added additively), #184 into #216 (see `local_control` above)
+· #188 (3 more local-model-on-remote-path sites — still OPEN) ·
+#191 (`.rustfmt.toml` pins edition 2018 while all 64 crates are 2024 — still OPEN) ·
+#194 (BYOP token accounting was dead, which disabled auto-compaction — **now
+CLOSED/fixed**) · #196 (closed).
 
 ---
 
-## Red on main — 2026-08-06
+## Red on main — 2026-08-06 (superseded, see correction)
 
-`main` carries knowingly-failing tests. This was a maintainer decision to consolidate
-all work onto one branch and fix afterwards, taken in full knowledge of AGENTS §5.6.
-**It is a debt to pay down, not a new policy.**
+`main` carried knowingly-failing tests as of 2026-08-06, per a maintainer decision to
+consolidate all work onto one branch and fix afterwards. **That specific episode is
+now resolved:**
 
-- [ ] **#171 — 9 ported Warp terminal tests fail** (came in with PR #140). Two are
-  security-relevant and should be fixed first:
-  - **OSC 1337 parser panic on untrusted PTY output** — `ansi/mod.rs:1073` indexes
-    `params[1]` unguarded; `warp/master` guards it. Any process writing to the
-    terminal can crash it.
-  - **Unquoted `cat {history_file}`** — `session.rs:1384`.
-  - Remainder: LRC misclassification, focus reporting, copy/ETX, wrapped-path
-    truncation, scrollback assert, Droid.
-- [ ] **`warpui` / `warpui_core` suite** (came in with PR #181). Also contains ~82
-  lines of `#[cfg(macos)]` code that **cannot be compiled on Linux** and needs macOS
-  CI to verify at all.
-- [ ] **Establish the real baseline.** Before this, `main` was 4005/0/33 at
-  `44bf4daa6`. Re-measure and record the number here so the next session can tell an
-  accepted failure from a new regression.
+- [x] **#171 — 9 ported Warp terminal tests fail** — **CLOSED; PR #224 repaired it**
+  ("fix(terminal): repair the 9 ported Warp terminal regressions"), including
+  both security-relevant fixes (the OSC 1337 parser panic and the unquoted
+  `cat {history_file}`).
+- [x] **`warpui` / `warpui_core` suite** — no longer a distinct red item. PR #181,
+  which introduced it, was itself a test-porting pass that found and ported real
+  gaps (word/punctuation selection expansion, hyperlink click-handling, one
+  macOS-only font-identity file); nothing in the current comprehensive test count
+  (see below) attributes failures to `warpui`/`warpui_core`.
+- [x] **Baseline established** — but do not trust a number written here; it goes
+  stale within a day at the current merge rate (194 commits landed between
+  `HANDOFF.md`'s last snapshot and this reconciliation). **`HANDOFF.md` is the live
+  source for `main`'s current red-test count** — as of its last rewrite: 4946 tests
+  batch-run, 4935 passed, 11 failed, all attributed (5 deliberate — PR #259 pinning
+  real `history_model` rewind/fork divergences #251/#253 rather than shipping
+  unverified fixes; 6 from two PRs' uncompiled hunks in `vim_handler_tests.rs` and
+  `app/src/terminal/input.rs`, not deliberate, need fixing). Re-read `HANDOFF.md`
+  rather than updating a count here.
 
-**Method note:** the "4025" figure that circulated was PR #132's *branch* number, not
-`main`'s, and it made a clean proto re-pin look like it had lost 22 tests. Always
-state which commit a test count belongs to.
+**Method note (still valid):** always state which commit a test count belongs to —
+a branch number was once mistaken for `main`'s and made a clean proto re-pin look
+like a 22-test loss.
 
 ---
 

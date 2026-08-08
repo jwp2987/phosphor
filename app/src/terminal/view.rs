@@ -203,7 +203,7 @@ use crate::ai::{
         AIBlock, AIBlockEvent, BlocklistAIActionEvent, BlocklistAIActionModel,
         BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIController,
         BlocklistAIControllerEvent, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-        BlocklistAIInputEvent, BlocklistAIInputModel, InputConfig, InputType,
+        BlocklistAIInputEvent, BlocklistAIInputModel, GuiInputModePolicy, InputConfig, InputType,
         LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel, MaaPassiveSuggestionsEvent,
         MaaPassiveSuggestionsModel, PassiveSuggestionsModels, PendingQueryState,
         PromptSuggestionExecutor, PromptSuggestionExecutorEvent, RequestFileEditsFormatKind,
@@ -3190,6 +3190,10 @@ impl TerminalView {
                 model.clone(),
                 agent_view_controller.clone(),
                 ai_context_model.clone(),
+                Rc::new(GuiInputModePolicy::new(
+                    agent_view_controller.clone(),
+                    terminal_view_id,
+                )),
                 terminal_view_id,
                 ctx,
             );
@@ -22677,7 +22681,13 @@ impl TerminalView {
         // Save a backup of the conversation before truncating, so users can restore it later.
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
             match history_model.conversation(&conversation_id).cloned() { Some(conversation) => {
-                if let Err(e) = history_model.fork_conversation(&conversation, PRE_REWIND_PREFIX, ctx) {
+                if let Err(e) = history_model.fork_conversation(
+                    &conversation,
+                    PRE_REWIND_PREFIX,
+                    false, /* preserve_task_ids */
+                    None,
+                    ctx,
+                ) {
                     log::warn!("Failed to save pre-rewind backup of conversation {conversation_id}: {e}");
                 }
             } _ => {
