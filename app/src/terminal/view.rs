@@ -44,6 +44,7 @@ use warpui::clipboard_utils::get_image_filepaths_from_paths;
 use std::ops::Deref as _;
 
 use crate::ai::blocklist::agent_view::fork_from_last_known_good_state_exchange_id;
+use crate::ai::blocklist::agent_view::ENTER_AGENT_VIEW_NEW_CONVERSATION_KEYSTROKE;
 use crate::ai::blocklist::agent_view::{
     agent_view_bg_fill, AgentViewController, AgentViewControllerEvent, AgentViewDisplayMode,
     AgentViewEntryBlockParams, AgentViewEntryOrigin, AgentViewHeaderDisabledTheme,
@@ -129,7 +130,7 @@ use crate::remote_server::manager::{
 use crate::settings::ai::FocusedTerminalInfo;
 use crate::settings_view::mcp_servers_page::MCPServersSettingsPage;
 use crate::terminal::cli_agent_sessions::event::{
-    parse_event, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventType,
+    parse_event, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType,
     CLI_AGENT_NOTIFICATION_SENTINEL,
 };
 use crate::terminal::cli_agent_sessions::listener::{is_agent_supported, CLIAgentSessionListener};
@@ -2343,6 +2344,12 @@ pub struct TerminalView {
     /// but also the input.
     resize_tx: Sender<Vector2F>,
 
+    /// Exchange that `jump_to_latest_agent_message` wants to scroll to once the
+    /// agent view's blocks have mounted. Set when entering the agent view from the
+    /// terminal (where the target block doesn't exist yet on the current frame) and
+    /// consumed in `after_terminal_view_layout`, after layout has mounted it.
+    pending_agent_scroll_target: Option<AIAgentExchangeId>,
+
     find_link_tx: Sender<FindLinkArg>,
 
     /// Highlighted link (could be url or file path) on the screen.
@@ -3882,6 +3889,7 @@ impl TerminalView {
             auth_state: AuthStateProvider::as_ref(ctx).get().clone(),
             find_bar,
             resize_tx,
+            pending_agent_scroll_target: None,
             find_link_tx,
             highlighted_link: HighlightedLinkOption::default(),
             last_hover_fragment_boundary: None,
@@ -5024,17 +5032,19 @@ impl TerminalView {
     }
 
     pub fn attach_path_as_context(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
-        // If a CLI agent is running, write the path directly to the PTY.
-        if self.active_cli_agent(ctx).is_some() {
-            let content = path.to_string_lossy().to_string();
-            self.write_to_pty(content.into_bytes(), ctx);
-            self.focus_terminal(ctx);
+        let content = path.to_string_lossy().to_string();
+
+        // If a CLI agent is running, route the context to rich input when it is
+        // open, otherwise fall back to writing directly to the PTY.
+        if self
+            .try_send_text_to_cli_agent_or_rich_input(content.clone(), ctx)
+            .is_some()
+        {
             return;
         }
 
         self.input.update(ctx, |input, ctx| {
-            let content = path.to_string_lossy();
-            input.append_to_buffer(content.as_ref(), ctx);
+            input.append_to_buffer(content.as_str(), ctx);
             ctx.notify();
         });
     }
@@ -5232,16 +5242,47 @@ impl TerminalView {
         }
     }
 
+    /// Resolves which terminal surface should render the given AI history event,
+    /// for events whose conversation may have been transferred to a different
+    /// surface since the event's own (possibly stale) `terminal_view_id` field was
+    /// set. Returns `None` for event kinds that don't carry a transferable
+    /// conversation (callers should fall back to the event's own field in that
+    /// case).
+    fn render_owner_for_ai_history_event(
+        &self,
+        history_model: &BlocklistAIHistoryModel,
+        event: &BlocklistAIHistoryEvent,
+    ) -> Option<EntityId> {
+        match event {
+            BlocklistAIHistoryEvent::AppendedExchange {
+                conversation_id, ..
+            }
+            | BlocklistAIHistoryEvent::UpdatedConversationTitle {
+                conversation_id, ..
+            } => history_model.terminal_view_id_for_conversation(conversation_id),
+            _ => None,
+        }
+    }
+
     fn handle_ai_history_model_event(
         &mut self,
         history_model: ModelHandle<BlocklistAIHistoryModel>,
         event: &BlocklistAIHistoryEvent,
         ctx: &mut ViewContext<Self>,
     ) {
-        if event
-            .terminal_view_id()
-            .is_some_and(|id| id != self.view_id)
+        // Route by the conversation's current owning surface when the event kind
+        // supports it (a conversation may have been transferred to a different
+        // terminal surface since this event was constructed); otherwise fall back
+        // to the event's own `terminal_view_id` field (#418).
+        let should_handle = match self
+            .render_owner_for_ai_history_event(history_model.as_ref(ctx), event)
         {
+            Some(owner_terminal_view_id) => owner_terminal_view_id == self.view_id,
+            None => !event
+                .terminal_view_id()
+                .is_some_and(|id| id != self.view_id),
+        };
+        if !should_handle {
             return;
         }
         match event {
@@ -5480,6 +5521,47 @@ impl TerminalView {
                     }
                     ctx.notify();
                 }
+            }
+            BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalViews {
+                conversation_id,
+                previous_terminal_view_id,
+                ..
+            } => {
+                // The conversation moved to another terminal view. We are the
+                // previous owner (the per-view filter at the top of this function
+                // uses `terminal_view_id()`, which this event kind deliberately
+                // returns `None` for, so it reaches every view unfiltered) — drop
+                // any rendered AI blocks tagged to this conversation. Leave the
+                // agent-view entry block in place so the user can still click it
+                // to navigate to the new owner pane (#418).
+                if *previous_terminal_view_id != self.view_id {
+                    return;
+                }
+                let view_ids_to_remove: Vec<EntityId> = self
+                    .rich_content_views
+                    .iter()
+                    .filter_map(|rich_content| {
+                        let is_ai_block_for_conversation = matches!(
+                            rich_content.metadata(),
+                            Some(RichContentMetadata::AIBlock(metadata))
+                                if metadata.conversation_id == *conversation_id
+                        );
+                        is_ai_block_for_conversation.then_some(rich_content.view_id())
+                    })
+                    .collect();
+                for view_id_to_remove in view_ids_to_remove {
+                    self.model
+                        .lock()
+                        .block_list_mut()
+                        .remove_rich_content(view_id_to_remove);
+                    self.rich_content_views
+                        .retain(|rich_content| rich_content.view_id() != view_id_to_remove);
+                }
+                self.model
+                    .lock()
+                    .block_list_mut()
+                    .remove_command_blocks_for_conversation(*conversation_id);
+                ctx.notify();
             }
             BlocklistAIHistoryEvent::SplitConversation { .. } => {
                 // When the conversation state changes or a new conversation
@@ -10602,6 +10684,7 @@ impl TerminalView {
                                                         remote_host,
                                                         draft_text: None,
                                                         custom_command_prefix: custom_command_prefix.clone(),
+                                                        received_rich_notification: false,
                                                     },
                                                     ctx,
                                                 );
@@ -11928,10 +12011,51 @@ impl TerminalView {
                 plugin_version,
                 ..Default::default()
             },
+            // Synthesized for a mid-session plugin install: it stands in for the
+            // SessionStart the rich plugin would have sent, so it belongs to the
+            // rich-plugin path rather than the bare OSC 9 fallback.
+            source: CLIAgentEventSource::RichPlugin,
         };
         if self.register_cli_agent_listener_from_event(&notification, ctx) {
             self.maybe_auto_open_cli_agent_rich_input(ctx);
         }
+    }
+
+    /// The conversation a CLI agent's status change should be written to.
+    ///
+    /// Prefers the active conversation when it is a child agent conversation.
+    /// Falls back to the sole live child conversation when there is exactly one —
+    /// without that fallback, a CLI agent running in a terminal whose agent view
+    /// is not open never propagates its status, so the conversation stays
+    /// `InProgress` forever even after the agent reports `Stop`.
+    ///
+    /// Deliberately gives up when several child conversations are live: there is
+    /// no way to tell which one the status belongs to, and guessing would write a
+    /// completion onto an unrelated conversation.
+    fn child_conversation_id_for_cli_status_updates(
+        &self,
+        ctx: &AppContext,
+    ) -> Option<AIConversationId> {
+        if let Some(conversation_id) = BlocklistAIHistoryModel::as_ref(ctx)
+            .active_conversation(self.view_id)
+            .and_then(|conversation| {
+                conversation
+                    .is_child_agent_conversation()
+                    .then_some(conversation.id())
+            })
+        {
+            return Some(conversation_id);
+        }
+
+        let mut child_conversation_ids = BlocklistAIHistoryModel::as_ref(ctx)
+            .all_live_conversations_for_terminal_view(self.view_id)
+            .filter(|conversation| conversation.is_child_agent_conversation())
+            .map(|conversation| conversation.id());
+        let child_conversation_id = child_conversation_ids.next()?;
+        child_conversation_ids
+            .next()
+            .is_none()
+            .then_some(child_conversation_id)
     }
 
     /// If the startup auto-open setting is enabled, auto-opens rich input for a
@@ -12017,14 +12141,7 @@ impl TerminalView {
             return;
         }
 
-        let active_child_conversation_id = BlocklistAIHistoryModel::as_ref(ctx)
-            .active_conversation(self.view_id)
-            .and_then(|conversation| {
-                conversation
-                    .is_child_agent_conversation()
-                    .then_some(conversation.id())
-            });
-        if let Some(conversation_id) = active_child_conversation_id {
+        if let Some(conversation_id) = self.child_conversation_id_for_cli_status_updates(ctx) {
             BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
                 history_model.update_conversation_status(
                     self.view_id,
@@ -14425,6 +14542,15 @@ impl TerminalView {
     /// size of the entire terminal (block_list + input OR alt-grid OR shared session viewer loading) as its
     /// argument.
     fn after_terminal_view_layout(&mut self, size: Vector2F, ctx: &mut ViewContext<Self>) {
+        // A pending `jump_to_latest_agent_message` enters the agent view, which
+        // mounts the target block over this layout. Now that layout is done the
+        // block exists, so scroll to it -- once. Doing it here (after layout, after
+        // the agent view's own entry scroll) means a single shot lands without any
+        // retry loop. Each agent turn is one block, so this lands on its top.
+        if let Some(exchange_id) = self.pending_agent_scroll_target.take() {
+            self.scroll_to_exchange(exchange_id, ctx);
+        }
+
         let size_update = SizeUpdateBuilder::after_layout(*self.size_info, size).build(self, ctx);
         self.resize_internal(size_update, ctx);
 
@@ -17301,6 +17427,12 @@ impl TerminalView {
                 .block_list()
                 .active_block()
                 .is_agent_monitoring();
+            let is_agent_driving_command = self
+                .model
+                .lock()
+                .block_list()
+                .active_block()
+                .is_agent_driving_command();
 
             // If there isn't an active long running block, then "clear buffer" just starts a new convo.
             if !active_block_is_long_running {
@@ -17310,9 +17442,10 @@ impl TerminalView {
                     ctx,
                 );
                 true
-            } else if is_agent_monitoring {
-                // Otherwise, if the agent is monitoring this long-running block,
-                // then clear just that block and leave the rest of the blocklist in tact.
+            } else if is_agent_monitoring || is_agent_driving_command {
+                // Otherwise, if the agent is monitoring this long-running block (or is
+                // driving it but hasn't started monitoring yet), then clear just that
+                // block and leave the rest of the blocklist intact.
                 self.model.lock().clear_screen(ClearMode::ActiveBlock);
                 self.find_model.update(ctx, |find_model, ctx| {
                     find_model.clear_matches(ctx);
@@ -17340,15 +17473,23 @@ impl TerminalView {
             return;
         }
 
-        // Don't clear the buffer if the agent is monitoring a long running command
+        // Don't clear the buffer if the agent is monitoring a long running command,
+        // or is driving one but hasn't started monitoring it yet (the window between
+        // the agent writing the command to the PTY and `CreatedSubtask` firing).
         let is_agent_monitoring = self
             .model
             .lock()
             .block_list()
             .active_block()
             .is_agent_monitoring();
+        let is_agent_driving_command = self
+            .model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_agent_driving_command();
 
-        if is_agent_monitoring {
+        if is_agent_monitoring || is_agent_driving_command {
             return;
         }
 
@@ -18774,6 +18915,10 @@ impl TerminalView {
             }
             AIBlockEvent::ChildViewTextSelected => {
                 self.clear_selected_text_except(Some(block.id()), ctx);
+                self.sync_ai_block_model_selection(&block, ctx);
+            }
+            AIBlockEvent::SelectionChanged => {
+                self.sync_ai_block_model_selection(&block, ctx);
             }
             AIBlockEvent::CopiedEmptyText => {
                 self.copy(ctx);
@@ -18859,6 +19004,34 @@ impl TerminalView {
             }
         }
         ctx.notify();
+    }
+
+    /// Mirrors an AI block's own text selection into the terminal model.
+    ///
+    /// Rich content blocks render and own their text selections independently of
+    /// the point-based model selection used for regular command blocks, so the
+    /// model can't derive this on its own. Mirroring it here is what allows the
+    /// copy/insert paths (which go through `BlockList::selection_to_string`) to
+    /// find text selected inside an AI block.
+    fn sync_ai_block_model_selection(
+        &mut self,
+        block: &ViewHandle<AIBlock>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // While a point-based block/text selection drag is in progress (which may
+        // span command and AI blocks), that selection owns the model state; don't
+        // clobber it with the AI block's own selection.
+        if self.is_selecting {
+            return;
+        }
+        let view_id = block.id();
+        let has_selection = block.as_ref(ctx).selected_text(ctx).is_some();
+        let mut model = self.model.lock();
+        if has_selection {
+            model.block_list_mut().set_rich_content_selection(view_id);
+        } else {
+            model.block_list_mut().clear_rich_content_selection(view_id);
+        }
     }
 
     fn imported_comments_panel_arg(&self) -> CodeReviewPanelArg {
@@ -19251,7 +19424,7 @@ impl TerminalView {
 
     fn num_non_hidden_selected_blocks(&self) -> usize {
         let model = self.model.lock();
-        let agent_view_state = model.block_list().agent_view_state();
+        let transcript_scope = model.block_list().transcript_scope();
         self.selected_blocks
             .ranges()
             .iter()
@@ -19260,7 +19433,7 @@ impl TerminalView {
                 model
                     .block_list()
                     .block_at(*block_index)
-                    .is_some_and(|block| !block.is_empty(agent_view_state))
+                    .is_some_and(|block| !block.is_empty(transcript_scope))
             })
             .count()
     }
@@ -19272,14 +19445,14 @@ impl TerminalView {
         let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
         let sort_direction = input_mode.block_sort_direction();
         let model = self.model.lock();
-        let agent_view_state = model.block_list().agent_view_state();
+        let transcript_scope = model.block_list().transcript_scope();
         let sorted_ranges = self.selected_blocks.sorted_ranges(sort_direction);
         for selection_range in sorted_ranges {
             for block_index in selection_range.range(Some(sort_direction)) {
                 if let Some(block) = model
                     .block_list()
                     .block_at(block_index)
-                    .filter(|block| !block.is_empty(agent_view_state))
+                    .filter(|block| !block.is_empty(transcript_scope))
                 {
                     action(block);
                 }
@@ -20451,6 +20624,85 @@ impl TerminalView {
             self.jump_to_previous_command(index, ctx);
             send_telemetry_from_ctx!(TelemetryEvent::JumpToBookmark, ctx);
             ctx.notify();
+        }
+    }
+
+    /// Enters the agent view for the most recent agent activity and scrolls to
+    /// its latest message.
+    ///
+    /// Agent messages only render inside the agent view; in the terminal they
+    /// collapse to a hidden, zero-height block. So "jump to latest agent message"
+    /// makes sure we are in the agent view for the right conversation and then
+    /// scrolls to its latest exchange.
+    ///
+    /// NOTE(adapted): the oracle sends `TelemetryEvent::JumpToLatestAgentMessage`
+    /// here. This fork has no such variant and its telemetry is inert, so the send
+    /// is omitted rather than inventing an event -- behaviour is otherwise identical.
+    fn jump_to_latest_agent_message(&mut self, ctx: &mut ViewContext<Self>) {
+        if !FeatureFlag::AgentView.is_enabled() {
+            return;
+        }
+        // Follow actual agent activity. Prefer the active conversation -- the one
+        // currently or most recently streaming, which tracks where the latest agent
+        // message landed even after the user switches back to an older conversation
+        // -- and target its latest visible exchange. When there is no active
+        // conversation, fall back to the single most-recently-streamed exchange
+        // across all conversations (rather than the most-recently-*created*
+        // conversation) and enter the conversation that owns it.
+        let history = BlocklistAIHistoryModel::as_ref(ctx);
+        let (conversation_id, exchange_id) =
+            if let Some(active_conversation_id) = history.active_conversation_id(self.view_id) {
+                // Resolve the target exchange from the conversation model rather than
+                // from the currently-mounted blocks: when entering from the terminal
+                // the blocks mount over later frames, so the latest block may not
+                // exist yet this tick. Use the latest *visible* exchange so we land on
+                // a block that actually renders (skipping passive/hidden exchanges).
+                let Some(exchange_id) = history
+                    .conversation(&active_conversation_id)
+                    .and_then(|conversation| conversation.latest_visible_exchange())
+                    .map(|exchange| exchange.id)
+                else {
+                    return;
+                };
+                (active_conversation_id, exchange_id)
+            } else {
+                let Some(exchange_id) = history
+                    .latest_exchange_across_all_conversations(self.view_id)
+                    .map(|exchange| exchange.id)
+                else {
+                    return;
+                };
+                let Some(conversation_id) =
+                    history.conversation_id_for_exchange(exchange_id, self.view_id)
+                else {
+                    return;
+                };
+                (conversation_id, exchange_id)
+            };
+        // Only re-enter the agent view when we are not already in this
+        // conversation's view; re-entering when already there is needless churn.
+        let already_in_view = self
+            .agent_view_controller
+            .as_ref(ctx)
+            .agent_view_state()
+            .active_conversation_id()
+            == Some(conversation_id);
+        if already_in_view {
+            // Blocks are already mounted, so the exchange resolves immediately.
+            self.scroll_to_exchange(exchange_id, ctx);
+        } else {
+            self.enter_agent_view_for_conversation(
+                None,
+                AgentViewEntryOrigin::JumpToLatestAgentMessage,
+                conversation_id,
+                ctx,
+            );
+            // The target block does not exist on this frame -- entering the agent
+            // view mounts it over the following layout. Record it and let
+            // `after_terminal_view_layout` scroll once the block is mounted, which
+            // also runs after the agent view's own entry scroll so it is not
+            // overridden.
+            self.pending_agent_scroll_target = Some(exchange_id);
         }
     }
 
@@ -22101,12 +22353,12 @@ impl TerminalView {
 
         // Since blocks in a blocklist can have different sizes, we want
         // to make sure we're rendering with enough columns to support them all.
-        let agent_view_state = model.block_list().agent_view_state();
+        let transcript_scope = model.block_list().transcript_scope();
         let columns_needed = model
             .block_list()
             .blocks()
             .iter()
-            .filter(|b| b.is_visible(agent_view_state))
+            .filter(|b| b.is_visible(transcript_scope))
             .map(|b| b.size().columns)
             .max()
             .unwrap_or(self.size_info.columns);
@@ -22127,7 +22379,7 @@ impl TerminalView {
                 .block_list()
                 .blocks()
                 .iter()
-                .filter(|b| b.is_visible(agent_view_state))
+                .filter(|b| b.is_visible(transcript_scope))
                 .count()
                 > 0
             && required_terminal_width > pane_width;
@@ -23483,6 +23735,24 @@ impl TerminalView {
 
         let image_filepaths = get_image_filepaths_from_paths(paths);
 
+        // Images dropped onto a running CLI agent go through the clipboard as a
+        // paste keystroke, not as text. Without this branch the fallback below
+        // writes a shell-escaped *path string* into the agent's prompt, which is
+        // never what the user meant by dropping a picture on it.
+        //
+        // Only when the drop is images-only, the agent owns the foreground, and
+        // rich input is closed -- with rich input open the composer handles the
+        // attachment itself.
+        if !image_filepaths.is_empty()
+            && image_filepaths.len() == paths.len()
+            && is_in_long_running_command
+            && self.has_active_cli_agent_session(ctx)
+            && !CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.view_id)
+        {
+            self.paste_dropped_images_to_cli_agent(image_filepaths, ctx);
+            return;
+        }
+
         if !is_in_long_running_command {
             // Check for image file paths to be auto-attached
             let num_images = image_filepaths.len();
@@ -23963,6 +24233,7 @@ impl TypedActionView for TerminalView {
             | SelectNextBlock
             | SelectBookmarkUp
             | SelectBookmarkDown
+            | JumpToLatestAgentMessage
             | Up
             | Down
             | JumpToBookmark(_)
@@ -24454,6 +24725,7 @@ impl TypedActionView for TerminalView {
                 InputMode::PinnedToBottom | InputMode::Waterfall => self.bookmark_down(ctx),
                 InputMode::PinnedToTop => self.bookmark_up(ctx),
             },
+            JumpToLatestAgentMessage => self.jump_to_latest_agent_message(ctx),
             BookmarkSelectedBlock => self.bookmark_selected_block(ctx),
             UserInputSequence(bytes) => self.user_input_sequence(bytes, ctx),
             ControlSequence(bytes) => self.control_sequence_on_terminal(bytes, ctx),
@@ -25155,9 +25427,35 @@ impl TypedActionView for TerminalView {
                 }
             }
             StartNewAgentConversation => {
-                self.input.update(ctx, |input, ctx| {
-                    input.handle_action(&InputAction::StartNewAgentConversation, ctx);
+                // Pressing the new-conversation keybinding while a non-empty agent
+                // view is open discards visible history, so the first press only
+                // arms a confirmation. Gate here rather than inside the Input
+                // handler: this action also arrives from the terminal context,
+                // where the fixed cmd-enter binding has no registry name for
+                // `should_start_new_conversation_for_keybinding` to resolve.
+                let should_start = self.agent_view_controller.update(ctx, |controller, ctx| {
+                    controller.should_start_new_conversation_for_keystroke(
+                        ENTER_AGENT_VIEW_NEW_CONVERSATION_KEYSTROKE.clone(),
+                        ctx,
+                    )
                 });
+                if !should_start {
+                    return;
+                }
+                // Go through the view's own entry path rather than delegating to
+                // `InputAction::StartNewAgentConversation`. The Input handler calls
+                // `AgentViewController::try_enter_agent_view` directly, which skips
+                // the pending-context attachment that `TerminalView::try_enter_agent_view`
+                // performs -- so a block selected in the terminal would be dropped
+                // (and then hidden) instead of carried into the new conversation.
+                if let Err(e) = self.try_enter_agent_view(
+                    None,
+                    AgentViewEntryOrigin::Keybinding,
+                    None,
+                    ctx,
+                ) {
+                    log::warn!("Failed to start new agent conversation from keybinding: {e:?}");
+                }
             }
             OpenInlineHistoryMenu => {
                 self.input.update(ctx, |input, ctx| {
@@ -25884,12 +26182,12 @@ impl View for TerminalView {
         } else {
             let last_five_blocks_content = {
                 let model = self.model.lock();
-                let agent_view_state = model.block_list().agent_view_state();
+                let transcript_scope = model.block_list().transcript_scope();
                 let blocks = model
                     .block_list()
                     .blocks()
                     .iter()
-                    .filter(|block| block.is_visible(agent_view_state))
+                    .filter(|block| block.is_visible(transcript_scope))
                     .rev()
                     .take(5)
                     .collect_vec();

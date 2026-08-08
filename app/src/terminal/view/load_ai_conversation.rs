@@ -203,6 +203,17 @@ impl RestoredAIConversation {
     }
 }
 
+/// Controls whether restoring a conversation also enters Agent View for it (#418).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestoreConversationEntryBehavior {
+    /// Update the restored conversation as the pending/selected conversation.
+    /// This enters Agent View for the restored conversation.
+    EnterRestoredConversation,
+    /// Restore blocks and history without changing Agent View state. Use this when the caller
+    /// will explicitly enter Agent View after restoration.
+    PreserveAgentViewState,
+}
+
 impl TerminalView {
     /// Determine the directory state for restoring the conversation: whether it's missing, we're
     /// already in the right directory, or we need to cd.
@@ -255,6 +266,7 @@ impl TerminalView {
                         me.restore_conversation_after_view_creation(
                             RestoredAIConversation::new(*conversation),
                             use_live_appearance,
+                            RestoreConversationEntryBehavior::EnterRestoredConversation,
                             ctx,
                         );
                     }
@@ -468,6 +480,7 @@ impl TerminalView {
         &mut self,
         ai_block_params: Vec<AIBlockCreationParams>,
         restored_conversations: Vec<RestoredAIConversation>,
+        entry_behavior: RestoreConversationEntryBehavior,
         ctx: &mut ViewContext<Self>,
     ) -> usize {
         let conversations: Vec<AIConversation> = restored_conversations
@@ -507,7 +520,9 @@ impl TerminalView {
         // loading a conversation due to selection from the command palette), then we don't eagerly
         // set the pending query state (which is equivalent to _entering_ the agent view when the
         // FeatureFlag is enabled).
-        if !FeatureFlag::AgentView.is_enabled() || !is_restoring_on_startup {
+        if entry_behavior == RestoreConversationEntryBehavior::EnterRestoredConversation
+            && (!FeatureFlag::AgentView.is_enabled() || !is_restoring_on_startup)
+        {
             // Set agent pending state for follow-up if we have an active conversation
             if let Some(conversation_id) = active_conversation_id {
                 let origin = AgentViewEntryOrigin::RestoreExistingConversation;
@@ -618,6 +633,7 @@ impl TerminalView {
         &mut self,
         restored: RestoredAIConversation,
         use_live_appearance: bool,
+        entry_behavior: RestoreConversationEntryBehavior,
         ctx: &mut ViewContext<Self>,
     ) {
         let conversation_id = restored.ai_conversation.id();
@@ -670,8 +686,12 @@ impl TerminalView {
         }
 
         // Restore action results from all exchanges
-        let blocks_created =
-            self.restore_conversations_from_block_params(all_ai_block_params, vec![restored], ctx);
+        let blocks_created = self.restore_conversations_from_block_params(
+            all_ai_block_params,
+            vec![restored],
+            entry_behavior,
+            ctx,
+        );
         self.restore_cli_subagent_views_for_conversation(
             &conversation_for_cli_subagent_restore,
             ctx,
@@ -815,6 +835,7 @@ impl TerminalView {
         let blocks_created = self.restore_conversations_from_block_params(
             all_ai_block_params,
             restored_conversations,
+            RestoreConversationEntryBehavior::EnterRestoredConversation,
             ctx,
         );
         for conversation in &conversations_for_cli_subagent_restore {
@@ -1087,6 +1108,7 @@ impl TerminalView {
                 self.restore_conversation_after_view_creation(
                     RestoredAIConversation::new(conversation),
                     true,
+                    RestoreConversationEntryBehavior::EnterRestoredConversation,
                     ctx,
                 );
             }

@@ -25,6 +25,20 @@ pub enum CLIAgentEventType {
     Unknown(String),
 }
 
+/// How a CLI agent event reached Phosphor.
+///
+/// Ported from the pinned oracle (`02b53fcd8`) for #399. The distinction matters
+/// because a rich-plugin notification carries structured payload fields, while
+/// the Codex OSC 9 fallback is a bare text notification -- surfaces that render
+/// one must not assume the other's fields are populated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CLIAgentEventSource {
+    /// Structured OSC 777 notification from a rich plugin.
+    RichPlugin,
+    /// Native Codex OSC 9 fallback notification.
+    CodexOsc9Fallback,
+}
+
 /// Event-specific fields that vary by event type.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
@@ -49,6 +63,7 @@ pub struct CLIAgentEvent {
     pub cwd: Option<String>,
     pub project: Option<String>,
     pub payload: CLIAgentEventPayload,
+    pub source: CLIAgentEventSource,
 }
 
 /// Version-specific parsers, indexed by (version - 1).

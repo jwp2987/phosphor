@@ -1027,6 +1027,7 @@ pub enum TelemetryAgentViewEntryOrigin {
     AgentViewBlock,
     AIDocument,
     AutoFollowUp,
+    JumpToLatestAgentMessage,
     RestoreExistingConversation,
     SharedSessionSelection,
     AgentRequestedNewConversation,
@@ -1073,6 +1074,7 @@ impl From<AgentViewEntryOrigin> for TelemetryAgentViewEntryOrigin {
             AgentViewEntryOrigin::AgentViewBlock => Self::AgentViewBlock,
             AgentViewEntryOrigin::AIDocument => Self::AIDocument,
             AgentViewEntryOrigin::AutoFollowUp => Self::AutoFollowUp,
+            AgentViewEntryOrigin::JumpToLatestAgentMessage => Self::JumpToLatestAgentMessage,
             AgentViewEntryOrigin::RestoreExistingConversation => Self::RestoreExistingConversation,
             AgentViewEntryOrigin::SharedSessionSelection => Self::SharedSessionSelection,
             AgentViewEntryOrigin::AgentRequestedNewConversation => {

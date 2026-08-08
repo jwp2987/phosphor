@@ -926,6 +926,7 @@ impl BlocklistAIHistoryModel {
             return;
         }
 
+        let mut previous_terminal_views = Vec::new();
         for (other_terminal_view, other_terminal_view_live_conversation_ids) in self
             .live_conversation_ids_for_terminal_view
             .iter_mut()
@@ -936,6 +937,7 @@ impl BlocklistAIHistoryModel {
                 .position(|id| *id == conversation_id)
             {
                 other_terminal_view_live_conversation_ids.remove(pos);
+                previous_terminal_views.push(*other_terminal_view);
             }
 
             if self
@@ -950,6 +952,15 @@ impl BlocklistAIHistoryModel {
                     terminal_view_id: *other_terminal_view,
                 });
             }
+        }
+        for previous_terminal_view_id in previous_terminal_views {
+            ctx.emit(
+                BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalViews {
+                    conversation_id,
+                    previous_terminal_view_id,
+                    new_terminal_view_id: terminal_view_id,
+                },
+            );
         }
 
         self.active_conversation_for_terminal_view
@@ -2375,6 +2386,16 @@ pub enum BlocklistAIHistoryEvent {
         terminal_view_id: EntityId,
     },
 
+    /// A conversation was removed from `previous_terminal_view_id`'s live-conversation
+    /// list because it was claimed by `new_terminal_view_id` (#418). The previous owner
+    /// should drop any rendered blocks it holds for the conversation; the new owner
+    /// handles rendering itself via the ordinary `AppendedExchange`/restore paths.
+    ConversationTransferredBetweenTerminalViews {
+        conversation_id: AIConversationId,
+        previous_terminal_view_id: EntityId,
+        new_terminal_view_id: EntityId,
+    },
+
     ClearedConversationsInTerminalView {
         terminal_view_id: EntityId,
         active_conversation_id: Option<AIConversationId>,
@@ -2510,6 +2531,9 @@ impl BlocklistAIHistoryEvent {
             BlocklistAIHistoryEvent::UpdatedConversationTitle {
                 terminal_view_id, ..
             } => *terminal_view_id,
+            // No single "the" terminal view: this event names both a previous and
+            // a new owner. Handlers inspect `previous_terminal_view_id` directly.
+            BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalViews { .. } => None,
         }
     }
 }

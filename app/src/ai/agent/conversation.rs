@@ -1306,6 +1306,17 @@ impl AIConversation {
             .nth(0)
     }
 
+    /// Returns the latest root task exchange that has a visible AI block.
+    ///
+    /// Passive exchanges do not render conversation-level controls, and hidden
+    /// exchanges have been removed from the blocklist — so neither is a valid
+    /// scroll target. Used by `jump_to_latest_agent_message`, which must land on
+    /// a block that actually renders.
+    pub fn latest_visible_exchange(&self) -> Option<&AIAgentExchange> {
+        self.exchanges_reversed()
+            .find(|e| !e.has_passive_request() && !self.is_exchange_hidden(e.id))
+    }
+
     pub fn first_exchange(&self) -> Option<&AIAgentExchange> {
         self.task_store.first_exchange()
     }

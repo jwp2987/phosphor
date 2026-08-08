@@ -1095,6 +1095,7 @@ fn handle_ai_history_event(
         | BlocklistAIHistoryEvent::UpdatedConversationMetadata { .. }
         | BlocklistAIHistoryEvent::UpdatedConversationTitle { .. }
         | BlocklistAIHistoryEvent::UpdatedConversationArtifacts { .. }
-        | BlocklistAIHistoryEvent::ConversationAgentIdAssigned { .. } => (),
+        | BlocklistAIHistoryEvent::ConversationAgentIdAssigned { .. }
+        | BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalViews { .. } => (),
     }
 }

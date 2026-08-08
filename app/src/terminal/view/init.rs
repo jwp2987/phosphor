@@ -455,6 +455,19 @@ pub fn init(app: &mut AppContext) {
         .with_key_binding("alt-down")
         .with_context_predicate(id!("Terminal") & !id!("IMEOpen")),
         EditableBinding::new(
+            "terminal:jump_to_latest_agent_message",
+            "Jump to latest agent message",
+            TerminalAction::JumpToLatestAgentMessage,
+        )
+        // Available from the terminal (enters the latest conversation's agent view)
+        // and from within the agent view it opens, where the rich input -- not the
+        // terminal -- holds focus, so its context lacks `Terminal` but carries
+        // `Input` plus the active-agent-view flag. Without the `Input` clause the
+        // command is unreachable from the command palette while in the agent view.
+        .with_context_predicate(
+            (id!("Terminal") | (id!("Input") & id!(flags::ACTIVE_AGENT_VIEW))) & !id!("IMEOpen"),
+        ),
+        EditableBinding::new(
             "terminal:open_block_list_context_menu_via_keybinding",
             crate::t!("keybinding-desc-terminal-open-block-context-menu"),
             TerminalAction::OpenBlockListContextMenu,
@@ -1063,6 +1076,9 @@ fn register_input_mode_bindings(app: &mut AppContext) {
         & !id!("SubshellBanner")
         & !id!(CLI_AGENT_SESSION_ACTIVE_KEY);
 
+    // A context predicate that is active when there is a long running command.
+    let command_predicate = id!("LongRunningCommand") | id!("AltScreen");
+
     // A context predicate that is active when the user can switch input to agent mode.
     let agent_mode_predicate = base_context.clone()
         & ContextPredicate::Or(
@@ -1072,9 +1088,27 @@ fn register_input_mode_bindings(app: &mut AppContext) {
                     !id!(flags::TERMINAL_MODE_INPUT)
                         & id!(LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY),
                 ),
-                Box::new(id!("LongRunningCommand") | id!("AltScreen")),
+                Box::new(command_predicate.clone()),
             )),
         );
+
+    // A context predicate that is active when a user can start a new agent conversation.
+    //
+    // Deliberately does NOT require `TERMINAL_MODE_INPUT`: that flag is set by the
+    // Input view's keymap context, so a cmd-enter dispatched from the terminal
+    // (where Input is not in the responder chain) can never satisfy it. Requiring
+    // it is why cmd-enter from the terminal did nothing at all.
+    //
+    // NOTE(adapted): the oracle also excludes `ROOT_CLOUD_MODE_PANE_KEY`, which
+    // this fork dropped with the cloud panes. The ambient-agent and SSH-error
+    // exclusions below are this fork's equivalents, carried over from the
+    // existing binding.
+    let agent_conversation_predicate = base_context.clone()
+        & id!("Terminal")
+        & !id!("Input")
+        & !id!(ROOT_AMBIENT_AGENT_PANE_KEY)
+        & !id!(flags::HAS_PENDING_PROMPT_SUGGESTION)
+        & !id!(SSH_ERROR_BLOCK_VISIBLE_KEY);
 
     // A context predicate that is active when the user could switch input to shell mode.
     // This matches when in AI mode AND either:
@@ -1088,19 +1122,28 @@ fn register_input_mode_bindings(app: &mut AppContext) {
             | id!(flags::ACTIVE_INLINE_AGENT_VIEW)
             | !id!(flags::LOCKED_INPUT));
 
-    app.register_fixed_bindings([FixedBinding::new_per_platform(
-        PerPlatformKeystroke {
-            mac: "cmd-enter",
-            linux_and_windows: "ctrl-shift-enter",
-        },
-        TerminalAction::SetInputModeAgent,
-        agent_mode_predicate.clone()
-            & !id!("Input")
-            & !id!(ROOT_AMBIENT_AGENT_PANE_KEY)
-            & !id!(flags::HAS_PENDING_PROMPT_SUGGESTION)
-            & !id!(SSH_ERROR_BLOCK_VISIBLE_KEY),
-    )
-    .with_enabled(|| FeatureFlag::AgentView.is_enabled())]);
+    app.register_fixed_bindings([
+        // No long-running command: cmd-enter starts a new agent conversation.
+        FixedBinding::new_per_platform(
+            PerPlatformKeystroke {
+                mac: "cmd-enter",
+                linux_and_windows: "ctrl-shift-enter",
+            },
+            TerminalAction::StartNewAgentConversation,
+            agent_conversation_predicate.clone() & !command_predicate.clone(),
+        )
+        .with_enabled(|| FeatureFlag::AgentView.is_enabled()),
+        // A command is running: cmd-enter instead tags the agent into it.
+        FixedBinding::new_per_platform(
+            PerPlatformKeystroke {
+                mac: "cmd-enter",
+                linux_and_windows: "ctrl-shift-enter",
+            },
+            TerminalAction::SetInputModeAgent,
+            agent_conversation_predicate & agent_mode_predicate.clone() & command_predicate,
+        )
+        .with_enabled(|| FeatureFlag::AgentView.is_enabled()),
+    ]);
 
     app.register_editable_bindings([
         EditableBinding::new(

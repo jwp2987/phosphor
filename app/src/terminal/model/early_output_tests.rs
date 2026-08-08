@@ -1,3 +1,4 @@
+use crate::terminal::model::block::TranscriptScope;
 use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::terminal::{
     event_listener::ChannelEventListener,
@@ -204,5 +205,5 @@ fn test_queued_typeahead_shell_reported() {
     assert!(block_list
         .background_block_mut()
         .expect("Block should exist")
-        .is_empty(&AgentViewState::Inactive));
+        .is_empty(&TranscriptScope::Terminal));
 }

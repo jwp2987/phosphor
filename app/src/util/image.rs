@@ -13,6 +13,13 @@ use mime_guess::from_path;
 /// the largest size a user can attach is actually ~3.75MB.
 pub const MAX_IMAGE_SIZE_BYTES: usize = 3750 * 1000;
 
+/// Upper bound on a single image handed to a foreground CLI agent via the
+/// clipboard. Far larger than [`MAX_IMAGE_SIZE_BYTES`] because CLI agents do
+/// their own compression — this cap exists only to bound memory use, so a
+/// multi-gigabyte drop is rejected after a `stat` rather than after being read
+/// into memory.
+pub const MAX_IMAGE_SIZE_BYTES_FOR_CLI_AGENT: usize = 500 * 1_000_000;
+
 /// How many leading bytes of a file are enough for `infer_mime_type` to
 /// match a magic-number signature. Callers that already have the full bytes
 /// in memory should pass only the first `MIME_SNIFF_BYTES` to avoid handing

@@ -1349,7 +1349,8 @@ impl AgentDriver {
                 | BlocklistAIHistoryEvent::UpdatedConversationTitle { .. }
                 | BlocklistAIHistoryEvent::ClearedActiveConversation { .. }
                 | BlocklistAIHistoryEvent::UpdatedConversationArtifacts { .. }
-                | BlocklistAIHistoryEvent::ConversationAgentIdAssigned { .. } => (),
+                | BlocklistAIHistoryEvent::ConversationAgentIdAssigned { .. }
+                | BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalViews { .. } => (),
             }
         });
 

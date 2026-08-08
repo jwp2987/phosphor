@@ -1,3 +1,4 @@
+use crate::terminal::model::block::TranscriptScope;
 use float_cmp::{approx_eq, assert_approx_eq};
 use warp_core::features::FeatureFlag;
 use warpui::units::IntoLines;
@@ -350,7 +351,7 @@ pub fn test_script_execution_block() {
     // Ensure that script execution block has a height of 0 if nothing was added to it.
     assert!(block_list
         .active_block()
-        .is_empty(&AgentViewState::Inactive));
+        .is_empty(&TranscriptScope::Terminal));
 
     advance_to_bootstrapped(&mut block_list, Default::default());
 
@@ -365,7 +366,7 @@ pub fn test_script_execution_block() {
     assert_eq!(block_list.blocks.len(), 2);
     assert!(block_list
         .active_block()
-        .is_empty(&AgentViewState::Inactive));
+        .is_empty(&TranscriptScope::Terminal));
 
     // Add characters to script execution block.
     block_list.input('c');
@@ -373,7 +374,7 @@ pub fn test_script_execution_block() {
     assert_eq!(block_list.blocks.len(), 2);
     assert!(!block_list
         .active_block()
-        .is_empty(&AgentViewState::Inactive));
+        .is_empty(&TranscriptScope::Terminal));
 
     advance_to_bootstrapped(&mut block_list, Default::default());
 
@@ -426,11 +427,11 @@ pub fn test_restore_completed_blocks() {
     assert_eq!(block_list.blocks.len(), 3);
     let restored_block_height = 5.5;
     assert_lines_approx_eq!(
-        block_list.blocks[0].height(&AgentViewState::Inactive),
+        block_list.blocks[0].height(&TranscriptScope::Terminal),
         restored_block_height
     );
     assert_lines_approx_eq!(
-        block_list.blocks[1].height(&AgentViewState::Inactive),
+        block_list.blocks[1].height(&TranscriptScope::Terminal),
         restored_block_height
     );
     assert_lines_approx_eq!(
@@ -530,7 +531,7 @@ pub fn test_restore_block_that_wasnt_started() {
         BootstrapStage::WarpInput
     );
     assert_eq!(
-        block_list.blocks[0].height(&AgentViewState::Inactive),
+        block_list.blocks[0].height(&TranscriptScope::Terminal),
         Lines::zero()
     );
 
@@ -564,7 +565,7 @@ pub fn test_restore_block_that_wasnt_completed() {
         block_list.blocks[0].bootstrap_stage(),
         BootstrapStage::WarpInput
     );
-    assert_lines_approx_eq!(block_list.blocks[0].height(&AgentViewState::Inactive), 0.0);
+    assert_lines_approx_eq!(block_list.blocks[0].height(&TranscriptScope::Terminal), 0.0);
 
     let mut block_completed_events = Vec::new();
     while let Ok(event) = events_rx.try_recv() {
@@ -604,9 +605,9 @@ pub fn test_basic_bootstrapping() {
 
     // We have four blocks from calling `create_warp_input_block` once and `block_finished` twice.
     assert_eq!(block_list.blocks.len(), 3);
-    assert_lines_approx_eq!(block_list.blocks[0].height(&AgentViewState::Inactive), 0.0);
-    assert_lines_approx_eq!(block_list.blocks[1].height(&AgentViewState::Inactive), 0.0);
-    assert_lines_approx_eq!(block_list.blocks[2].height(&AgentViewState::Inactive), 0.0);
+    assert_lines_approx_eq!(block_list.blocks[0].height(&TranscriptScope::Terminal), 0.0);
+    assert_lines_approx_eq!(block_list.blocks[1].height(&TranscriptScope::Terminal), 0.0);
+    assert_lines_approx_eq!(block_list.blocks[2].height(&TranscriptScope::Terminal), 0.0);
     assert_lines_approx_eq!(block_list.block_heights.summary().height, 0.0);
 
     let mut block_completed_events = Vec::new();
@@ -638,9 +639,9 @@ pub fn test_session_restoration_separator() {
 
     block_list.set_next_gap_height_in_lines((11. + RESTORED_BLOCK_SEPARATOR_HEIGHT).into_lines());
     assert_eq!(block_list.blocks.len(), 3);
-    assert_lines_approx_eq!(block_list.blocks[0].height(&AgentViewState::Inactive), 5.5);
-    assert_lines_approx_eq!(block_list.blocks[1].height(&AgentViewState::Inactive), 5.5);
-    assert_lines_approx_eq!(block_list.blocks[2].height(&AgentViewState::Inactive), 0.0);
+    assert_lines_approx_eq!(block_list.blocks[0].height(&TranscriptScope::Terminal), 5.5);
+    assert_lines_approx_eq!(block_list.blocks[1].height(&TranscriptScope::Terminal), 5.5);
+    assert_lines_approx_eq!(block_list.blocks[2].height(&TranscriptScope::Terminal), 0.0);
 
     // We have two blocks at height 5.5 and a separator with height 1.5.
     assert_lines_approx_eq!(
@@ -714,17 +715,17 @@ pub fn test_insert_non_block_item() {
 
     // The blocks should remain unchanged.
     assert_eq!(block_list.blocks.len(), 5);
-    assert_lines_approx_eq!(block_list.blocks[0].height(&AgentViewState::Inactive), 0.);
-    assert_lines_approx_eq!(block_list.blocks[1].height(&AgentViewState::Inactive), 0.);
+    assert_lines_approx_eq!(block_list.blocks[0].height(&TranscriptScope::Terminal), 0.);
+    assert_lines_approx_eq!(block_list.blocks[1].height(&TranscriptScope::Terminal), 0.);
     assert_lines_approx_eq!(
-        block_list.blocks[2].height(&AgentViewState::Inactive),
+        block_list.blocks[2].height(&TranscriptScope::Terminal),
         block_height
     );
     assert_lines_approx_eq!(
-        block_list.blocks[3].height(&AgentViewState::Inactive),
+        block_list.blocks[3].height(&TranscriptScope::Terminal),
         block_height
     );
-    assert_lines_approx_eq!(block_list.blocks[4].height(&AgentViewState::Inactive), 0.);
+    assert_lines_approx_eq!(block_list.blocks[4].height(&TranscriptScope::Terminal), 0.);
 
     fn assert_block_height_summary_eq(a: BlockHeightSummary, b: BlockHeightSummary) {
         assert_eq!(a.block_count, b.block_count);
@@ -937,7 +938,7 @@ fn test_banner_insertion_and_removal() {
     );
 
     let expected_total_height = (block_list.blocks[2]
-        .height(&AgentViewState::Inactive)
+        .height(&TranscriptScope::Terminal)
         .as_f64()
         * 3.
         + 3. * INLINE_BANNER_HEIGHT)
@@ -1001,7 +1002,7 @@ fn test_gap_after_banner() {
     block_list.clear_visible_screen();
 
     insert_block(&mut block_list, "cmd2", "output2");
-    let baseline_block_height = block_list.blocks[2].height(&AgentViewState::Inactive);
+    let baseline_block_height = block_list.blocks[2].height(&TranscriptScope::Terminal);
 
     {
         let summary = block_list.block_heights.summary();
@@ -1048,7 +1049,7 @@ fn test_gap_after_banner() {
 
     {
         let active_gap = block_list.active_gap.as_ref().unwrap().clone();
-        let new_block_height = block_list.blocks[2].height(&AgentViewState::Inactive);
+        let new_block_height = block_list.blocks[2].height(&TranscriptScope::Terminal);
         assert_lines_approx_eq!(active_gap.current_height, 5.);
         assert_eq!(active_gap.index, 3);
 
@@ -1158,7 +1159,7 @@ pub fn test_block_heights_combined_prompt_command_grid_warp_prompt() {
     // we have the built-in Zap prompt, so there's padding between that prompt and the combined grid.
     // The combined grid _just_ has the command in this case! The PS1 is unset!
     // Hence, we expect heights of 8.5.
-    assert_lines_approx_eq!(first_block.height(&AgentViewState::Inactive), 8.5);
+    assert_lines_approx_eq!(first_block.height(&TranscriptScope::Terminal), 8.5);
 }
 
 #[test]
@@ -1199,7 +1200,7 @@ pub fn test_block_heights_combined_prompt_command_grid_ps1() {
 
     // We have a 2-line prompt, adding 1 extra line to the combined grid (vs 0.6 default for Zap prompt).
     // Hence, we expect a height of 8.7 rather than 8.3.
-    assert_lines_approx_eq!(first_block.height(&AgentViewState::Inactive), 8.7);
+    assert_lines_approx_eq!(first_block.height(&TranscriptScope::Terminal), 8.7);
 }
 
 #[test]
@@ -1547,7 +1548,7 @@ fn test_agent_origin_block_can_be_attached_to_other_conversation() {
     block_list.set_agent_view_state(active_state(other_conversation_id));
     let user_block_index = block_list.block_index_for_id(&user_block_id).unwrap();
     let user_block = block_list.block_at(user_block_index).unwrap();
-    assert!(!user_block.is_empty(block_list.agent_view_state()));
+    assert!(!user_block.is_empty(block_list.transcript_scope()));
 
     let promoted = block_list.promote_blocks_to_attached_from_conversation(other_conversation_id);
     assert_eq!(promoted.len(), 1);
@@ -1573,7 +1574,7 @@ fn test_agent_origin_block_can_be_attached_to_other_conversation() {
     block_list.set_agent_view_state(AgentViewState::Inactive);
     let user_block_index = block_list.block_index_for_id(&user_block_id).unwrap();
     let user_block = block_list.block_at(user_block_index).unwrap();
-    assert!(user_block.is_empty(block_list.agent_view_state()));
+    assert!(user_block.is_empty(block_list.transcript_scope()));
 }
 
 #[test]
@@ -2119,7 +2120,7 @@ pub fn visible_bootstrap_block_event_fires_when_script_execution_becomes_visible
     assert!(block_list.active_block().started());
     assert!(block_list
         .active_block()
-        .is_empty(&AgentViewState::Inactive));
+        .is_empty(&TranscriptScope::Terminal));
 
     let events = drain_terminal_events(&events_rx);
     assert!(!events
@@ -2174,7 +2175,7 @@ fn test_iterm_image_renders_in_script_execution_block() {
     assert!(!block_list.active_block().output_grid().is_empty());
     assert!(block_list
         .active_block()
-        .is_visible(&AgentViewState::Inactive));
+        .is_visible(&TranscriptScope::Terminal));
 }
 
 #[test]
@@ -2220,7 +2221,7 @@ fn test_kitty_image_renders_in_script_execution_block() {
     assert!(!block_list.active_block().output_grid().is_empty());
     assert!(block_list
         .active_block()
-        .is_visible(&AgentViewState::Inactive));
+        .is_visible(&TranscriptScope::Terminal));
 }
 
 #[test]
@@ -2326,4 +2327,96 @@ fn test_zero_sized_kitty_early_output_does_not_create_background_block() {
 
     assert_eq!(block_list.blocks.len(), blocks_before);
     assert!(!block_list.active_block().started());
+}
+
+// --- #423: TranscriptScope adoption ---
+
+#[test]
+fn unfiltered_transcript_scope_shows_restored_conversation_command_blocks() {
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    let conversation_id = AIConversationId::new();
+    let mut serialized_block =
+        SerializedBlock::new_for_test(b"echo restored".to_vec(), b"restored\r\n".to_vec());
+    serialized_block.agent_view_visibility =
+        Some(AgentViewVisibility::new_from_conversation(conversation_id).into());
+    let block_id = serialized_block.id.clone();
+    block_list.set_transcript_scope(TranscriptScope::Unfiltered);
+
+    block_list.insert_restored_block(&serialized_block);
+    let restored_block = block_list
+        .block_with_id(&block_id)
+        .expect("restored command block should exist");
+    assert!(matches!(
+        restored_block.agent_view_visibility(),
+        AgentViewVisibility::Agent { .. }
+    ));
+    assert!(restored_block.is_visible(block_list.transcript_scope()));
+}
+
+#[test]
+fn test_finish_startup_commands_at_block_attaches_and_unhides_command_blocks_since_target_block() {
+    let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+    block_list.set_is_executing_oz_environment_startup_commands(true);
+
+    let setup_block_index = insert_block(&mut block_list, "setup", "output");
+    let harness_block_index = insert_block(&mut block_list, "claude", "output");
+    let followup_block_index = insert_block(&mut block_list, "pwd", "output");
+    let setup_block_id = block_list.block_at(setup_block_index).unwrap().id().clone();
+    let harness_block_id = block_list
+        .block_at(harness_block_index)
+        .unwrap()
+        .id()
+        .clone();
+    let followup_block_id = block_list
+        .block_at(followup_block_index)
+        .unwrap()
+        .id()
+        .clone();
+    let conversation_id = AIConversationId::new();
+
+    // NOTE(adapted): the oracle's signature is
+    // `enter_conversation_context(id, is_inline, is_cloud)`. This fork drops
+    // `is_cloud` -- there is no cloud conversation context here (#423).
+    block_list.enter_conversation_context(conversation_id, false);
+
+    block_list
+        .finish_oz_environment_startup_commands_at_block(&harness_block_id, Some(conversation_id));
+
+    assert!(!block_list.is_executing_oz_environment_startup_commands());
+
+    for block_id in [&harness_block_id, &followup_block_id] {
+        let block = block_list
+            .block_with_id(block_id)
+            .expect("block should still exist");
+        assert!(!block.is_hidden());
+        assert!(!block.is_oz_environment_startup_command());
+        assert!(!block.should_hide_block(block_list.transcript_scope()));
+        match block.agent_view_visibility() {
+            AgentViewVisibility::Terminal {
+                pending_conversation_ids,
+                conversation_ids,
+            } => {
+                assert!(pending_conversation_ids.is_empty());
+                assert!(conversation_ids.contains(&conversation_id));
+            }
+            AgentViewVisibility::Agent {
+                origin_conversation_id,
+                pending_other_conversation_ids,
+                other_conversation_ids,
+            } => panic!(
+                "expected terminal visibility, got agent visibility: {origin_conversation_id:?}, {pending_other_conversation_ids:?}, {other_conversation_ids:?}"
+            ),
+        }
+    }
+
+    let setup_block = block_list
+        .block_with_id(&setup_block_id)
+        .expect("setup block should still exist");
+    assert!(setup_block.is_hidden());
+    assert!(setup_block.is_oz_environment_startup_command());
+    assert!(setup_block.should_hide_block(block_list.transcript_scope()));
 }

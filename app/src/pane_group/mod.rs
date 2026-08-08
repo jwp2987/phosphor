@@ -40,7 +40,9 @@ use crate::terminal::cli_agent_sessions::plugin_manager::PluginModalKind;
 use crate::terminal::view::inline_banner::{
     ZeroStatePromptSuggestionTriggeredFrom, ZeroStatePromptSuggestionType,
 };
-use crate::terminal::view::load_ai_conversation::RestoredAIConversation;
+use crate::terminal::view::load_ai_conversation::{
+    RestoreConversationEntryBehavior, RestoredAIConversation,
+};
 use crate::undo_close::UndoCloseStack;
 use crate::undo_close::UndoCloseStackEvent;
 #[cfg(target_family = "wasm")]
@@ -2604,6 +2606,7 @@ impl PaneGroup {
                 terminal_view.restore_conversation_after_view_creation(
                     RestoredAIConversation::new(child_conversation),
                     true,
+                    RestoreConversationEntryBehavior::PreserveAgentViewState,
                     ctx,
                 );
                 terminal_view.enter_agent_view(
@@ -3195,6 +3198,7 @@ impl PaneGroup {
                     view.restore_conversation_after_view_creation(
                         RestoredAIConversation::new(*conversation),
                         true,
+                        RestoreConversationEntryBehavior::EnterRestoredConversation,
                         ctx,
                     );
                 });

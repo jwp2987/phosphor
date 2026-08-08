@@ -2,7 +2,9 @@ use warpui::{EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use super::{CLIAgentEvent, CLIAgentSession, CLIAgentSessionsModel};
 use crate::terminal::cli_agent_sessions::event::parse_event;
-use crate::terminal::cli_agent_sessions::event::{CLIAgentEventPayload, CLIAgentEventType};
+use crate::terminal::cli_agent_sessions::event::{
+    CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType,
+};
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 use crate::terminal::CLIAgent;
 
@@ -152,6 +154,7 @@ impl CodexSessionHandler {
                 query: Some(body.to_owned()),
                 ..Default::default()
             },
+            source: CLIAgentEventSource::CodexOsc9Fallback,
         })
     }
 }
@@ -240,6 +243,10 @@ impl CLIAgentSessionHandler for DeepSeekSessionHandler {
                 response: Some(body.to_owned()),
                 ..Default::default()
             },
+            // Fork-original DeepSeek OSC 9 path. The oracle only has the Codex one,
+            // but this is the same category -- a bare text notification with no
+            // structured payload -- so it must not be labelled `RichPlugin`.
+            source: CLIAgentEventSource::CodexOsc9Fallback,
         })
     }
 

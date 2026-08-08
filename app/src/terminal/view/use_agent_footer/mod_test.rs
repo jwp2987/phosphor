@@ -397,6 +397,7 @@ fn cli_agent_footer_renders_for_viewer_of_shared_ambient_agent_session() {
                         draft_text: None,
                         custom_command_prefix: None,
                         should_auto_toggle_input: false,
+                        received_rich_notification: false,
                     },
                     ctx,
                 );
@@ -447,6 +448,7 @@ fn cli_agent_footer_does_not_render_for_phosphor_tui_session() {
                         draft_text: None,
                         custom_command_prefix: None,
                         should_auto_toggle_input: false,
+                        received_rich_notification: false,
                     },
                     ctx,
                 );

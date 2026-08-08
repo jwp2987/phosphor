@@ -1,6 +1,6 @@
 use super::*;
 use crate::terminal::cli_agent_sessions::event::{
-    CLIAgentEventType, CLI_AGENT_NOTIFICATION_SENTINEL,
+    CLIAgentEventSource, CLIAgentEventType, CLI_AGENT_NOTIFICATION_SENTINEL,
 };
 
 #[test]
@@ -90,6 +90,7 @@ fn auggie_default_handler_skips_session_start() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
     assert!(handler.handle_event(event).is_none());
 }
@@ -105,6 +106,7 @@ fn auggie_default_handler_forwards_stop() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
     assert!(handler.handle_event(event).is_some());
 }
@@ -131,6 +133,7 @@ fn droid_default_handler_skips_session_start() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
     assert!(handler.handle_event(event).is_none());
 }
@@ -146,6 +149,7 @@ fn droid_default_handler_forwards_stop() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
     assert!(handler.handle_event(event).is_some());
 }
@@ -161,6 +165,7 @@ fn droid_default_handler_forwards_permission_request() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
     assert!(handler.handle_event(event).is_some());
 }
@@ -186,6 +191,7 @@ fn pi_default_handler_skips_session_start() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
     assert!(handler.handle_event(event).is_none());
 }
@@ -201,6 +207,7 @@ fn pi_default_handler_forwards_stop() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
     assert!(handler.handle_event(event).is_some());
 }
@@ -261,6 +268,7 @@ fn antigravity_default_handler_skips_session_start() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
     assert!(handler.handle_event(event).is_none());
 }
@@ -276,6 +284,7 @@ fn antigravity_default_handler_forwards_stop() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
     assert!(handler.handle_event(event).is_some());
 }
@@ -343,6 +352,7 @@ fn deepseek_legacy_osc9_session_is_not_rich_status() {
         plugin_version: None,
         draft_text: None,
         custom_command_prefix: None,
+        received_rich_notification: false,
     };
 
     assert!(!session_supports_rich_status(&session));
@@ -364,6 +374,7 @@ fn deepseek_structured_session_is_rich_status() {
         plugin_version: None,
         draft_text: None,
         custom_command_prefix: None,
+        received_rich_notification: false,
     };
 
     assert!(session_supports_rich_status(&session));

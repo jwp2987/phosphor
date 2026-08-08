@@ -11,7 +11,7 @@ use crate::ai::blocklist::InputConfig;
 
 use self::listener::CLIAgentSessionListener;
 use super::CLIAgent;
-use event::{CLIAgentEvent, CLIAgentEventType};
+use event::{CLIAgentEvent, CLIAgentEventSource, CLIAgentEventType};
 
 /// Status of a tracked CLI agent session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +141,10 @@ pub struct CLIAgentSession {
     /// the first word of the command (the binary/alias the user typed).
     /// Used to customize plugin instructions and force manual install mode.
     pub custom_command_prefix: Option<String>,
+    /// Set once the session has received any structured OSC 777 (rich)
+    /// notification. Codex's OSC 9 fallback never sets it, so this is the
+    /// single source of truth for whether the session is plugin-backed.
+    pub received_rich_notification: bool,
 }
 
 impl CLIAgentSession {
@@ -384,6 +388,9 @@ impl CLIAgentSessionsModel {
                 remote_host,
                 draft_text: None,
                 custom_command_prefix: None,
+                // Registration alone does not qualify: only an actual rich OSC 777
+                // notification flips this. See `supports_rich_status`.
+                received_rich_notification: false,
             },
             ctx,
         );
@@ -408,6 +415,13 @@ impl CLIAgentSessionsModel {
         let Some(session) = self.sessions.get_mut(&terminal_view_id) else {
             return;
         };
+
+        // Only a structured OSC 777 notification proves the session is plugin-backed.
+        // Codex's OSC 9 fallback emits opaque `Stop` notifications and must not flip
+        // this, or the UI would promise fine-grained status it cannot deliver.
+        if event.source == CLIAgentEventSource::RichPlugin {
+            session.received_rich_notification = true;
+        }
 
         let event_type = &event.event;
         if let Some(new_status) = session.apply_event(event) {

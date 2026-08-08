@@ -113,7 +113,7 @@ impl ScrollLines {
                 if is_long_running
                     && scroll_top
                         < active_block
-                            .height(block_list.agent_view_state())
+                            .height(block_list.transcript_scope())
                             .into_lines()
                 {
                     ScrollLines::ScrollTop(scroll_top)
@@ -700,7 +700,7 @@ impl<'a> ViewportState<'a> {
                     None => index.and_then(|last_index| {
                         self.block_list.block_at(last_index).map(|block| {
                             block
-                                .height(self.block_list.agent_view_state())
+                                .height(self.block_list.transcript_scope())
                                 .into_lines()
                         })
                     }),
@@ -1556,7 +1556,7 @@ impl<'a> ViewportState<'a> {
             .block_list
             .block_at(block_index)
             .map_or(Lines::zero(), |b| {
-                b.height(self.block_list.agent_view_state())
+                b.height(self.block_list.transcript_scope())
             });
         top_of_block + block_height
     }

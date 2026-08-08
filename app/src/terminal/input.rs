@@ -487,6 +487,12 @@ const HISTORY_DETAILS_VIEW_WIDTH_REQUIREMENT: f32 = 1100.;
 const MIN_BUFFER_LEN_TO_SHOW_COMPLETIONS_WHILE_TYPING: usize = 2;
 
 const AI_COMMAND_SEARCH_TRIGGER: &str = "#";
+/// Keymap context asserted while a queued prompt is being edited inline.
+/// Bindings that would otherwise steal a printable character from that editor
+/// must exclude it -- see the `shift-?` shortcuts binding, which is gated on the
+/// *main* input buffer being empty, which is also true while the inline editor
+/// has focus.
+const QUEUED_PROMPT_INLINE_EDITOR_OPEN_CONTEXT: &str = "QueuedPromptInlineEditorOpen";
 
 /// If the editor buffer matches this prefix, AI input is enabled.
 const AI_INPUT_PREFIX: &str = "* ";
@@ -2013,6 +2019,7 @@ pub fn init(app: &mut AppContext) {
                 & id!(flags::EMPTY_INPUT_BUFFER)
                 & id!(flags::ACTIVE_AGENT_VIEW)
                 & !id!("LongRunningCommand")
+                & !id!(QUEUED_PROMPT_INLINE_EDITOR_OPEN_CONTEXT)
                 & !(id!(flags::TERMINAL_MODE_INPUT) & id!(flags::LOCKED_INPUT)),
         )]);
     }
@@ -2022,6 +2029,12 @@ pub fn init(app: &mut AppContext) {
 pub enum CompletionsTrigger {
     Keybinding,
     AsYouType,
+    /// Completions opened automatically by a slash command.
+    ///
+    /// Treated like [`Self::Keybinding`] for the file-path fallback, but
+    /// deliberately NOT for single-candidate autofill: `/open-file ` must not
+    /// silently complete to the only matching file behind the user's back.
+    SlashCommandAutoOpen,
 }
 
 /// Represents whether the input editor should render the subshell flag.
@@ -2043,6 +2056,21 @@ enum Executing {
 }
 
 impl Input {
+    /// Whether a queued prompt is currently being edited inline.
+    ///
+    /// Ported from the oracle for #399 item 6. Drives the
+    /// `QueuedPromptInlineEditorOpen` keymap context so printable characters
+    /// reach that editor instead of triggering global bindings.
+    fn is_editing_queued_prompt(&self, ctx: &AppContext) -> bool {
+        let Some(conversation_id) =
+            BlocklistAIHistoryModel::as_ref(ctx).active_conversation_id(self.terminal_view_id)
+        else {
+            return false;
+        };
+        QueuedQueryModel::as_ref(ctx)
+            .editing_row(conversation_id)
+            .is_some()
+    }
     pub fn send_input_buffer_to_terminal_editor(
         &mut self,
         buffer_contents: Arc<String>,
@@ -10661,7 +10689,9 @@ impl Input {
             && !buffer_text.contains('\n');
 
         let fallback_strategy = match completions_trigger {
-            CompletionsTrigger::Keybinding if !use_native_shell_completions => {
+            CompletionsTrigger::Keybinding | CompletionsTrigger::SlashCommandAutoOpen
+                if !use_native_shell_completions =>
+            {
                 CompletionsFallbackStrategy::FilePaths
             }
             _ => CompletionsFallbackStrategy::None,
@@ -14214,6 +14244,7 @@ impl View for Input {
         }
     }
 
+
     fn keymap_context(&self, app: &AppContext) -> warpui::keymap::Context {
         let mut ctx = Self::default_keymap_context();
         let ai_settings = AISettings::as_ref(app);
@@ -14312,6 +14343,10 @@ impl View for Input {
             .any(|conversation| conversation.initial_user_query().is_some())
         {
             ctx.set.insert("ActiveAIConversationHasHistory");
+        }
+
+        if self.is_editing_queued_prompt(app) {
+            ctx.set.insert(QUEUED_PROMPT_INLINE_EDITOR_OPEN_CONTEXT);
         }
 
         if AppEditorSettings::as_ref(app).vim_mode_enabled() {

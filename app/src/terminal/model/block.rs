@@ -86,6 +86,40 @@ pub const LONG_RUNNING_BOTTOM_PADDING_LINES: f32 = 0.2;
 /// only for the last point of execution.
 /// Note: we should keep this in sync with the command-corrections list:
 /// https://github.com/warpdotdev/command-corrections/blob/main/src/lib.rs#L109
+/// Selects which conversation-associated blocks contribute to a transcript layout.
+///
+/// Replaces the fork's use of `AgentViewState` as a visibility parameter (#423).
+/// `AgentViewState` describes *what the agent view is doing*; this describes
+/// *which blocks a transcript should include*, which is a different question --
+/// and one `AgentViewState` could not express, because it had no way to say
+/// "every block regardless of conversation". That gap is why the fork could not
+/// render an unfiltered transcript at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TranscriptScope {
+    /// Includes every block regardless of its conversation associations.
+    Unfiltered,
+    /// Includes top-level terminal blocks.
+    #[default]
+    Terminal,
+    /// Includes blocks visible in one conversation.
+    Conversation(AIConversationId),
+}
+
+impl TranscriptScope {
+    /// Returns the scoped conversation, if any.
+    pub fn conversation_id(self) -> Option<AIConversationId> {
+        match self {
+            Self::Conversation(conversation_id) => Some(conversation_id),
+            Self::Unfiltered | Self::Terminal => None,
+        }
+    }
+
+    /// Returns whether the scope displays a conversation transcript.
+    pub fn is_conversation(self) -> bool {
+        matches!(self, Self::Conversation(_))
+    }
+}
+
 pub(super) fn has_block_failed(exit_code: ExitCode, block_state: BlockState) -> bool {
     block_state == BlockState::DoneWithExecution && !exit_code.was_successful()
 }
@@ -530,7 +564,7 @@ impl From<&Block> for BlockType {
             BootstrapStage::RestoreBlocks => BlockType::Restored,
             BootstrapStage::WarpInput | BootstrapStage::Bootstrapped => BlockType::BootstrapHidden,
             BootstrapStage::ScriptExecution => {
-                if block.is_empty(&AgentViewState::Inactive) {
+                if block.is_empty(&TranscriptScope::Terminal) {
                     BlockType::BootstrapHidden
                 } else {
                     let serialized_block = block.into();
@@ -1358,9 +1392,9 @@ impl Block {
         self.header_grid.clone_command_from_blockgrid(command);
     }
 
-    pub fn is_empty(&self, agent_view_state: &AgentViewState) -> bool {
+    pub fn is_empty(&self, transcript_scope: &TranscriptScope) -> bool {
         // TODO(vorporeal): this should use a larger epsilon
-        self.height(agent_view_state).as_f64() < f64::EPSILON
+        self.height(transcript_scope).as_f64() < f64::EPSILON
     }
 
     pub fn is_restored(&self) -> bool {
@@ -1381,17 +1415,13 @@ impl Block {
     }
 
     /// If true, this block is hidden and has a height of 0.
-    pub fn should_hide_block(&self, agent_view_state: &AgentViewState) -> bool {
+    pub fn should_hide_block(&self, transcript_scope: &TranscriptScope) -> bool {
         if self.hidden {
             return true;
         }
         if FeatureFlag::AgentView.is_enabled() {
-            match agent_view_state {
-                AgentViewState::Active {
-                    display_mode: AgentViewDisplayMode::FullScreen,
-                    conversation_id: active_id,
-                    ..
-                } => {
+            match transcript_scope {
+                TranscriptScope::Conversation(active_id) => {
                     // Agent view is active - show only blocks that belong to this conversation
                     let visible_in_conversation = match &self.agent_view_visibility {
                         AgentViewVisibility::Terminal {
@@ -1415,11 +1445,7 @@ impl Block {
                         return true;
                     }
                 }
-                AgentViewState::Active {
-                    display_mode: AgentViewDisplayMode::Inline,
-                    ..
-                }
-                | AgentViewState::Inactive => {
+                TranscriptScope::Terminal => {
                     // Terminal view - hide blocks that were created in agent mode
                     if matches!(
                         self.agent_view_visibility,
@@ -1428,6 +1454,9 @@ impl Block {
                         return true;
                     }
                 }
+                // An unfiltered transcript shows conversation-owned blocks inline
+                // in the terminal, so no conversation filtering applies here.
+                TranscriptScope::Unfiltered => {}
             }
         }
 
@@ -1497,9 +1526,9 @@ impl Block {
     /// in a shared session context. Note the active block is included in scrollback to get the active prompt.
     pub fn is_scrollback_block_for_shared_session(
         &self,
-        agent_view_state: &AgentViewState,
+        transcript_scope: &TranscriptScope,
     ) -> bool {
-        !self.should_hide_block(agent_view_state) && !self.is_restored()
+        !self.should_hide_block(transcript_scope) && !self.is_restored()
     }
 
     pub fn index(&self) -> BlockIndex {
@@ -1507,15 +1536,15 @@ impl Block {
     }
 
     /// `true` if the block is rendered in the blocklist.
-    pub fn is_visible(&self, agent_view_state: &AgentViewState) -> bool {
-        self.height(agent_view_state) > Lines::zero()
+    pub fn is_visible(&self, transcript_scope: &TranscriptScope) -> bool {
+        self.height(transcript_scope) > Lines::zero()
     }
 
     /// Height is the source-of-truth determinant for whether or not a block is hidden (i.e. if it
-    /// has a height of 0). Thus it depends on agent_view_state, which affects whether or not a
+    /// has a height of 0). Thus it depends on transcript_scope, which affects whether or not a
     /// given block should be hidden.
-    pub fn height(&self, agent_view_state: &AgentViewState) -> Lines {
-        if self.should_hide_block(agent_view_state) {
+    pub fn height(&self, transcript_scope: &TranscriptScope) -> Lines {
+        if self.should_hide_block(transcript_scope) {
             Lines::zero()
         } else {
             self.block_banner_height()
@@ -2583,7 +2612,7 @@ impl Block {
             x if x < (self.output_grid_offset() + self.output_grid_displayed_height()) => {
                 BlockSection::OutputGrid((row - self.output_grid_offset()).max(Lines::zero()))
             }
-            x if x < self.height(&AgentViewState::Inactive) => BlockSection::PaddingBottom,
+            x if x < self.height(&TranscriptScope::Terminal) => BlockSection::PaddingBottom,
             _ => BlockSection::NotContained,
         }
     }
@@ -2853,8 +2882,8 @@ impl Block {
     }
 
     /// Returns `true` if this block is a valid option to use as context for an AI model.
-    pub fn can_be_ai_context(&self, agent_view_state: &AgentViewState) -> bool {
-        self.is_visible(agent_view_state)
+    pub fn can_be_ai_context(&self, transcript_scope: &TranscriptScope) -> bool {
+        self.is_visible(transcript_scope)
             && !self.is_in_band_command_block()
             && !self.is_agent_monitoring()
     }

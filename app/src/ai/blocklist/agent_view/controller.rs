@@ -11,6 +11,7 @@ use warpui::{
 };
 
 use crate::terminal::input::message_bar::{Message, MessageItem};
+use crate::terminal::model::block::TranscriptScope;
 use crate::terminal::input::slash_commands::SlashCommandTrigger;
 use crate::util::bindings::keybinding_name_to_keystroke;
 use crate::{
@@ -117,6 +118,9 @@ pub enum AgentViewEntryOrigin {
     AIDocument,
     /// Entered agent view due to an automatic follow-up (not a direct user selection).
     AutoFollowUp,
+    /// Entered agent view via `jump_to_latest_agent_message`, which follows the
+    /// most recent agent activity rather than a user-selected conversation.
+    JumpToLatestAgentMessage,
     /// Entered agent view due to conversation restoration on startup or forking.
     RestoreExistingConversation,
     /// Entered agent view due to shared-session synchronization.
@@ -242,6 +246,34 @@ pub enum AgentViewState {
 }
 
 impl AgentViewState {
+    /// The transcript scope this agent-view state implies (#423).
+    ///
+    /// `AgentViewState` says what the agent view is doing; [`TranscriptScope`]
+    /// says which blocks a transcript should include. Only a **full-screen**
+    /// agent view scopes the transcript to its conversation -- an *inline* agent
+    /// view still renders the terminal transcript, so it maps to
+    /// [`TranscriptScope::Terminal`] exactly as `Inactive` does. Getting that
+    /// wrong would change which blocks render in inline agent mode.
+    ///
+    /// Note there is no `AgentViewState` that produces
+    /// [`TranscriptScope::Unfiltered`]: an unfiltered transcript is a scope the
+    /// agent view never asks for, which is precisely the capability this fork
+    /// could not express before `TranscriptScope` existed.
+    pub fn transcript_scope(&self) -> TranscriptScope {
+        match self {
+            AgentViewState::Active {
+                display_mode: AgentViewDisplayMode::FullScreen,
+                conversation_id,
+                ..
+            } => TranscriptScope::Conversation(*conversation_id),
+            AgentViewState::Active {
+                display_mode: AgentViewDisplayMode::Inline,
+                ..
+            }
+            | AgentViewState::Inactive => TranscriptScope::Terminal,
+        }
+    }
+
     pub fn active_conversation_id(&self) -> Option<AIConversationId> {
         match self {
             AgentViewState::Active {
@@ -567,6 +599,52 @@ impl AgentViewController {
     /// We only require a second press when the user is already in an active, non-empty
     /// conversation. This protects against accidental conversation resets from muscle-memory
     /// keypresses, while preserving single-step behavior for explicit typed/slash-menu execution.
+    /// As [`should_start_new_conversation_for_keybinding`], but for a keystroke
+    /// that is already known rather than one looked up from a named binding.
+    ///
+    /// Fixed bindings (cmd-enter / ctrl-shift-enter for "start new agent
+    /// conversation") have no entry in the editable-keybinding registry, so
+    /// `keybinding_name_to_keystroke` cannot resolve them. Without this the
+    /// terminal-context cmd-enter path skipped the confirmation entirely and
+    /// discarded a non-empty conversation on the first press.
+    ///
+    /// [`should_start_new_conversation_for_keybinding`]: Self::should_start_new_conversation_for_keybinding
+    pub fn should_start_new_conversation_for_keystroke(
+        &mut self,
+        keystroke: Keystroke,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let Some(conversation_id) = self.agent_view_state.active_conversation_id() else {
+            self.clear_new_conversation_keybinding_confirmation(ctx);
+            return true;
+        };
+        let is_empty = BlocklistAIHistoryModel::handle(ctx)
+            .as_ref(ctx)
+            .conversation(&conversation_id)
+            .is_none_or(|conversation| conversation.is_empty());
+        if is_empty {
+            self.clear_new_conversation_keybinding_confirmation(ctx);
+            return true;
+        }
+
+        let normalized_keystroke = keystroke.normalized();
+        if self.is_new_conversation_keybinding_confirmation_active_for(
+            conversation_id,
+            &normalized_keystroke,
+        ) {
+            self.clear_new_conversation_keybinding_confirmation(ctx);
+            return true;
+        }
+
+        self.set_new_conversation_keybinding_confirmation(
+            conversation_id,
+            keystroke,
+            normalized_keystroke,
+            ctx,
+        );
+        false
+    }
+
     pub fn should_start_new_conversation_for_keybinding(
         &mut self,
         keybinding_name: &str,

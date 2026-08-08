@@ -3626,6 +3626,13 @@ impl AIBlock {
 
     /// Handles find match focus changes by auto-expanding collapsed reasoning blocks
     /// that contain the focused match.
+    /// The number of cached find matches for this AI block. Test-only; used to
+    /// assert that find highlights are cleared when the find bar closes.
+    #[cfg(test)]
+    pub(crate) fn find_match_count(&self) -> usize {
+        self.find_state.match_count()
+    }
+
     fn handle_find_match_focus_change(&mut self, ctx: &mut ViewContext<Self>) {
         // Get the currently focused match ID from the terminal's find model
         let focused_match_id = self
@@ -4157,6 +4164,28 @@ impl AIBlock {
         SelectionSettings::handle(ctx).update(ctx, |selection_settings, ctx| {
             selection_settings.maybe_copy_on_select(ClipboardContent::plain_text(selection), ctx);
         });
+    }
+
+    /// Test-only helper to set the block-level text selection, which is normally
+    /// written by the `SelectableArea` selection callback during a drag.
+    #[cfg(any(test, feature = "integration_tests"))]
+    pub fn set_block_level_selected_text_for_test(&self, text: Option<String>) {
+        *self.selected_text.write() = text;
+    }
+
+    /// Test-only helper that simulates a block-level text selection in this AI
+    /// block: it writes the selected text and emits the same
+    /// [`AIBlockEvent::SelectionChanged`] signal that `AIBlockAction::SelectText`
+    /// does, so the terminal view mirrors it into the model's rich content
+    /// selection (which the copy/insert paths read).
+    #[cfg(any(test, feature = "integration_tests"))]
+    pub fn simulate_text_selection_for_test(
+        &mut self,
+        text: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        *self.selected_text.write() = text;
+        ctx.emit(AIBlockEvent::SelectionChanged);
     }
 
     /// Start a selection at the top left corner of the block's SelectableArea.
@@ -5132,6 +5161,12 @@ pub enum AIBlockEvent {
         is_expanded: bool,
     },
 
+    /// Emitted when this block's own text selection changed, so the terminal view
+    /// can mirror it into the model's rich content selection. Rich content
+    /// selections are not tied to the point-based model selection used for
+    /// regular blocks, so without this the copy/insert paths find nothing.
+    SelectionChanged,
+
     /// Emitted when the AI block requires user confirmation to execute.
     ActionBlockedOnUserConfirmation,
 
@@ -5480,6 +5515,10 @@ impl TypedActionView for AIBlock {
                 // If we have a selection, we should use the default cursor, even if it's over a link.
                 ctx.reset_cursor();
                 self.dismiss_ai_tooltips(ctx);
+                // Notify the terminal view so it can keep the model's record of which rich
+                // content block has an active selection in sync (rich content selections are
+                // not tied to the point-based model selection used for regular blocks).
+                ctx.emit(AIBlockEvent::SelectionChanged);
             }
             AIBlockAction::CopyOnSelect(selection) => {
                 self.maybe_copy_on_select(selection.clone(), ctx);

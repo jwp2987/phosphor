@@ -23,6 +23,15 @@ pub(crate) struct FindState {
 }
 
 impl FindState {
+    /// The number of cached find matches in this AI block.
+    ///
+    /// Test-only: used to assert that find highlights are actually cleared when
+    /// the find bar closes, rather than merely stopping being drawn.
+    #[cfg(test)]
+    pub(crate) fn match_count(&self) -> usize {
+        self.matches.len()
+    }
+
     pub(super) fn matches_for_location(
         &self,
         location: TextLocation,

@@ -175,6 +175,8 @@ pub enum TerminalAction {
     ShowFindBar,
     SelectPriorBlock,
     SelectBookmarkDown,
+    /// Enter the agent view for the most recent agent activity and scroll to it.
+    JumpToLatestAgentMessage,
     SelectBookmarkUp,
     BookmarkSelectedBlock,
     ScrollToBottomOfSelectedBlocks,
@@ -462,6 +464,7 @@ impl fmt::Debug for TerminalAction {
             ClearBuffer => f.write_str("ClearBuffer"),
             SelectBookmarkUp => f.write_str("SelectBookmarkUp"),
             SelectBookmarkDown => f.write_str("SelectBookmarkDown"),
+            JumpToLatestAgentMessage => f.write_str("JumpToLatestAgentMessage"),
             Focus => f.write_str("Focus"),
             FocusInputAndClearSelection => f.write_str("FocusInputAndClearSelection"),
             ShowFindBar => f.write_str("ShowFindBar"),

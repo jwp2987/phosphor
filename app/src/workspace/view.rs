@@ -77,7 +77,9 @@ use crate::settings_view::mcp_servers_page::MCPServersSettingsPage;
 use crate::terminal::model::terminal_model::ConversationTranscriptViewerStatus;
 use crate::terminal::session_settings::SessionSettings;
 use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionType;
-use crate::terminal::view::load_ai_conversation::{RestorationDirState, RestoredAIConversation};
+use crate::terminal::view::load_ai_conversation::{
+    RestorationDirState, RestoreConversationEntryBehavior, RestoredAIConversation,
+};
 use crate::terminal::view::{ConversationRestorationInNewPaneType, OnboardingIntention};
 use crate::ui_components::red_notification_dot::RedNotificationDot;
 #[cfg(feature = "local_fs")]
@@ -12042,6 +12044,7 @@ impl Workspace {
                         terminal_view.restore_conversation_after_view_creation(
                             RestoredAIConversation::new(forked_conversation.clone()),
                             true,
+                            RestoreConversationEntryBehavior::EnterRestoredConversation,
                             ctx,
                         );
                         terminal_view

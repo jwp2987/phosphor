@@ -1,5 +1,6 @@
 mod selection;
 
+use super::block::TranscriptScope;
 use crate::ai::agent::{conversation::AIConversationId, AIAgentActionId};
 use crate::ai::blocklist::SerializedBlockListItem;
 use crate::terminal::block_filter::BlockFilterQuery;
@@ -121,22 +122,18 @@ impl RichContentItem {
         Self::new(content_type, view_id, agent_view_conversation_id, false)
     }
 
-    pub fn should_hide_for_agent_view_state(&self, agent_view_state: &AgentViewState) -> bool {
+    pub fn should_hide_for_transcript_scope(&self, transcript_scope: &TranscriptScope) -> bool {
         if !FeatureFlag::AgentView.is_enabled() {
             return false;
         }
 
-        match agent_view_state {
-            AgentViewState::Active {
-                conversation_id,
-                display_mode: AgentViewDisplayMode::FullScreen,
-                ..
-            } => Some(*conversation_id) != self.agent_view_conversation_id,
-            AgentViewState::Active {
-                display_mode: AgentViewDisplayMode::Inline,
-                ..
+        match transcript_scope {
+            // An unfiltered transcript hides nothing on conversation grounds.
+            TranscriptScope::Unfiltered => false,
+            TranscriptScope::Terminal => self.agent_view_conversation_id.is_some(),
+            TranscriptScope::Conversation(conversation_id) => {
+                Some(*conversation_id) != self.agent_view_conversation_id
             }
-            | AgentViewState::Inactive => self.agent_view_conversation_id.is_some(),
         }
     }
 }
@@ -277,6 +274,15 @@ pub struct BlockList {
     /// The current block list selection.
     /// Do not set this value directly - use [`Self::set_selection`] and [`Self::clear_selection`] instead.
     selection: Option<BlockListSelection>,
+    /// Rich content (AI) block views that currently own a text selection.
+    ///
+    /// AI blocks render and manage their own selections, so the block list
+    /// cannot derive this from the point-based [`selection`](Self::selection).
+    /// Tracking it explicitly (via
+    /// [`set_rich_content_selection`](Self::set_rich_content_selection) /
+    /// [`clear_rich_content_selection`](Self::clear_rich_content_selection)) is
+    /// what lets copy/insert find text selected inside an AI block.
+    rich_content_selections: Vec<EntityId>,
     /// If this is Some, and if smart-select is enabled, double-clicking within this range will
     /// select this range instead of the normal smart-select logic. The purpose of this is to
     /// allow double-click selection to work on the TerminalView::highlighted_link even when it
@@ -367,6 +373,12 @@ pub struct BlockList {
     is_inverted: bool,
 
     agent_view_state: AgentViewState,
+    /// Which blocks contribute to the transcript layout (#423).
+    ///
+    /// Derived from [`agent_view_state`](Self::agent_view_state) whenever that is
+    /// set, but settable independently so callers can request
+    /// [`TranscriptScope::Unfiltered`] -- a scope no `AgentViewState` can express.
+    transcript_scope: TranscriptScope,
 
     /// The view ID of a rich content item that should always remain at the bottom
     /// of the blocklist. After any other insertion, this item is automatically
@@ -397,9 +409,9 @@ pub struct BlockFilter {
 
 impl BlockFilter {
     /// Tests if a block matches this filter.
-    pub fn matches(self, block: &Block, agent_view_state: &AgentViewState) -> bool {
+    pub fn matches(self, block: &Block, transcript_scope: &TranscriptScope) -> bool {
         (self.include_background || !block.is_background())
-            && (self.include_hidden || !block.is_empty(agent_view_state))
+            && (self.include_hidden || !block.is_empty(transcript_scope))
     }
 
     /// Block filter for visible command blocks. This excludes background output
@@ -665,6 +677,7 @@ impl BlockList {
             max_grid_size_limit: sizes.max_block_scroll_limit,
             event_proxy: event_proxy.clone(),
             selection: None,
+            rich_content_selections: Vec::new(),
             smart_select_override: None,
             bootstrap_stage,
             padding: sizes.block_padding,
@@ -688,6 +701,7 @@ impl BlockList {
             scroll_position_before_filter: None,
             is_inverted,
             agent_view_state: AgentViewState::Inactive,
+            transcript_scope: TranscriptScope::Terminal,
             pinned_to_bottom: None,
             is_executing_oz_environment_startup_commands: false,
         }
@@ -1016,7 +1030,7 @@ impl BlockList {
         // execution hasn't started yet. We don't use `started()` because it looks
         // at whether the command has started, which isn't in sync with prompt
         // arrival.
-        block.height(&self.agent_view_state) == Lines::zero()
+        block.height(&self.transcript_scope) == Lines::zero()
             && matches!(block.state(), BlockState::BeforeExecution)
             && !block.is_in_band_command_block()
     }
@@ -1063,8 +1077,8 @@ impl BlockList {
         };
 
         let gap = BlockHeightItem::Gap(gap_height.into());
-        let agent_view_state = self.agent_view_state.clone();
-        let active_block_height = self.active_block_mut().height(&agent_view_state).into();
+        let transcript_scope = self.transcript_scope;
+        let active_block_height = self.active_block_mut().height(&transcript_scope).into();
 
         if active_block_height > BlockHeight::zero() {
             self.block_heights
@@ -1299,7 +1313,7 @@ impl BlockList {
             return;
         };
 
-        let agent_view_state = &self.agent_view_state;
+        let transcript_scope = &self.transcript_scope;
         self.block_heights = {
             let mut cursor = self.block_heights.cursor::<TotalIndex, ()>();
             let mut new_tree = cursor.slice(&index, SeekBias::Right);
@@ -1309,7 +1323,7 @@ impl BlockList {
                     agent_view_conversation_id,
                     ..*item
                 }
-                .should_hide_for_agent_view_state(agent_view_state);
+                .should_hide_for_transcript_scope(transcript_scope);
                 new_tree.push(BlockHeightItem::RichContent(RichContentItem {
                     agent_view_conversation_id,
                     should_hide,
@@ -1527,6 +1541,60 @@ impl BlockList {
         }
     }
 
+    /// Ends the Oz environment startup-command phase at `block_id`, un-hiding every
+    /// non-background, non-static block from that point on and attaching them to
+    /// `conversation_id` if given.
+    ///
+    /// Startup commands are hidden while they run. Without this, they stay hidden
+    /// forever once the harness block is reached -- the blocks exist, occupy no
+    /// height, and never come back (#423).
+    pub fn finish_oz_environment_startup_commands_at_block(
+        &mut self,
+        block_id: &BlockId,
+        conversation_id: Option<AIConversationId>,
+    ) {
+        self.is_executing_oz_environment_startup_commands = false;
+        if let Some(block_index) = self.block_index_for_id(block_id) {
+            for block in self.blocks.iter_mut().skip(block_index.0) {
+                if block.is_background() || block.is_static() {
+                    continue;
+                }
+                block.unhide();
+                block.set_is_oz_environment_startup_command(false);
+                if let Some(conversation_id) = conversation_id {
+                    block.add_attached_conversation_id(conversation_id);
+                }
+            }
+        }
+        self.update_blocks_and_sumtree(None, None, |_| {}, |_| {});
+    }
+
+    /// Associates subsequent blocks with `conversation_id` and scopes the
+    /// transcript accordingly.
+    ///
+    /// NOTE(adapted): the oracle's signature also takes `is_cloud`, which it
+    /// forwards to `set_active_conversation_context`. This fork has no cloud
+    /// conversation context, so the parameter is dropped and the attachment side
+    /// effects mirror those in [`set_agent_view_state`](Self::set_agent_view_state).
+    /// An inline conversation keeps `Terminal` scope -- it renders in the
+    /// terminal transcript, not a conversation-scoped one.
+    pub fn enter_conversation_context(&mut self, conversation_id: AIConversationId, is_inline: bool) {
+        if !self.active_block().finished() {
+            if is_inline {
+                self.active_block_mut()
+                    .add_attached_conversation_id(conversation_id);
+            } else {
+                self.active_block_mut().set_conversation_id(conversation_id);
+            }
+        }
+        let scope = if is_inline {
+            TranscriptScope::Terminal
+        } else {
+            TranscriptScope::Conversation(conversation_id)
+        };
+        self.set_transcript_scope(scope);
+    }
+
     /// Resets the internal block object's index to its actual index in the block list.
     /// This does not move the block, but is necessary to be called after a move (inserting or removing blocks).
     /// Also updates the block ID to block index mapping.
@@ -1633,7 +1701,7 @@ impl BlockList {
             }
 
             // Only clear blocks that are currently visible in the agent view.
-            if block.is_empty(&self.agent_view_state) {
+            if block.is_empty(&self.transcript_scope) {
                 continue;
             }
 
@@ -1759,6 +1827,31 @@ impl BlockList {
         &self.agent_view_state
     }
 
+    /// The transcript membership currently used for layout and visibility (#423).
+    pub fn transcript_scope(&self) -> &TranscriptScope {
+        &self.transcript_scope
+    }
+
+    /// Updates the transcript membership used by the cached block-height layout.
+    ///
+    /// NOTE(adapted): the oracle splits scope from conversation attachment --
+    /// `set_transcript_scope` only sets the scope, and a separate
+    /// `set_active_conversation_context` performs the block-attachment side
+    /// effects. This fork keeps those side effects in
+    /// [`set_agent_view_state`](Self::set_agent_view_state) (which now also
+    /// maintains the scope), because the oracle's split carries an `is_cloud`
+    /// flag that has no meaning here. This setter is the direct path for callers
+    /// that want a scope *without* touching conversation attachment -- notably
+    /// [`TranscriptScope::Unfiltered`], which no `AgentViewState` can express.
+    pub fn set_transcript_scope(&mut self, scope: TranscriptScope) {
+        if self.transcript_scope == scope {
+            return;
+        }
+        self.transcript_scope = scope;
+        self.mark_agent_view_rich_content_dirty();
+        self.update_blocks_and_sumtree(None, None, |_| {}, |_| {});
+    }
+
     /// Sets the agent view state for this blocklist.
     ///
     /// With `FeatureFlag::AgentView` enabled, if the state is active, only blocks corresponding to
@@ -1769,6 +1862,9 @@ impl BlockList {
     /// agent view.
     pub fn set_agent_view_state(&mut self, state: AgentViewState) {
         self.agent_view_state = state;
+        // Keep the derived transcript scope in step: it is what block visibility
+        // and height now read (#423).
+        self.transcript_scope = self.agent_view_state.transcript_scope();
         if !self.active_block().finished() {
             if let Some(id) = self.agent_view_state.active_conversation_id() {
                 // For inline agent views, add the conversation ID to Terminal variant
@@ -2002,7 +2098,7 @@ impl BlockList {
         };
         let mut previous_block_height = BlockHeight::zero();
         let block_height = if let Some(block) = self.block_at(block_index) {
-            block.height(&self.agent_view_state).into()
+            block.height(&self.transcript_scope).into()
         } else {
             log::error!(
                 "Tried to update height of block at {block_index:?}, but no such block exists"
@@ -2175,7 +2271,7 @@ impl BlockList {
     {
         block_indices.into_iter().find(|index| {
             self.block_at(*index)
-                .is_some_and(|block| filter.matches(block, &self.agent_view_state))
+                .is_some_and(|block| filter.matches(block, &self.transcript_scope))
         })
     }
 
@@ -2339,7 +2435,7 @@ impl BlockList {
         F: Fn(&mut Block),
         G: Fn(&mut Gap),
     {
-        let agent_view_state = &self.agent_view_state;
+        let transcript_scope = &self.transcript_scope;
         self.block_heights = {
             let mut new_sum_tree = SumTree::new();
 
@@ -2357,7 +2453,7 @@ impl BlockList {
                         if let Some(block) = self.blocks.get_mut(block_index) {
                             block_update_fn(block);
                             new_sum_tree.push(BlockHeightItem::Block(
-                                block.height(agent_view_state).into(),
+                                block.height(transcript_scope).into(),
                             ));
                         } else {
                             log::error!("invalid block index in block heights");
@@ -2384,7 +2480,7 @@ impl BlockList {
                         new_sum_tree.push(BlockHeightItem::SubshellSeparator {
                             separator_id: *separator_id,
                             height_when_visible,
-                            is_hidden: agent_view_state.is_fullscreen(),
+                            is_hidden: self.agent_view_state.is_fullscreen(),
                         });
                     }
                     BlockHeightItem::RichContent(RichContentItem {
@@ -2401,7 +2497,7 @@ impl BlockList {
                             agent_view_conversation_id: *agent_view_conversation_id,
                             should_hide: false,
                         }
-                        .should_hide_for_agent_view_state(agent_view_state);
+                        .should_hide_for_transcript_scope(transcript_scope);
                         let updated_height = if let Some(updated_height) =
                             rich_content_heights.and_then(|heights| heights.get(view_id))
                         {
@@ -2431,7 +2527,7 @@ impl BlockList {
                             is_historical_conversation_restoration:
                                 *is_historical_conversation_restoration,
                             // Don't show restored block separators in the agent view.
-                            is_hidden: agent_view_state.is_fullscreen(),
+                            is_hidden: self.agent_view_state.is_fullscreen(),
                         });
                     }
                     BlockHeightItem::InlineBanner {
@@ -2439,7 +2535,7 @@ impl BlockList {
                         height_when_visible: height,
                         ..
                     } => {
-                        let is_hidden = agent_view_state.is_fullscreen()
+                        let is_hidden = self.agent_view_state.is_fullscreen()
                             && !banner.banner_type.is_visible_in_agent_view();
                         new_sum_tree.push(BlockHeightItem::InlineBanner {
                             banner: *banner,
@@ -2885,7 +2981,7 @@ impl BlockList {
         }
 
         self.block_heights.push(BlockHeightItem::Block(
-            block.height(&self.agent_view_state).into(),
+            block.height(&self.transcript_scope).into(),
         ));
         self.block_id_to_block_index
             .insert(block.id().clone(), block.index());
@@ -3515,14 +3611,14 @@ impl BlockList {
         let num_secrets_obfuscated = self
             .background_block_mut()
             .map(|block| block.num_secrets_obfuscated());
-        let agent_view_state = self.agent_view_state.clone();
+        let transcript_scope = self.transcript_scope;
         if let Some(background_block) = self.background_block_mut() {
             background_block.finish(0);
             let block_index = background_block.index();
 
             // It's common to have empty background blocks (because they only contained
             // typeahead), so we skip serializing them.
-            if !background_block.is_empty(&agent_view_state) {
+            if !background_block.is_empty(&transcript_scope) {
                 // This is similar to send_after_block_completed_event, but we can't
                 // call it because background_block mutably borrows self.
                 let block_type = background_block.into();
@@ -3575,7 +3671,7 @@ impl BlockList {
     /// Updates the sumtree with the block's new height.
     fn update_block_height_at_idx(&mut self, block_index: BlockIndex) {
         if let Some(block) = self.block_at(block_index) {
-            let new_block_height = block.height(&self.agent_view_state).into();
+            let new_block_height = block.height(&self.transcript_scope).into();
 
             self.block_heights = {
                 let mut cursor = self.block_heights.cursor::<BlockIndex, ()>();
@@ -3611,7 +3707,7 @@ impl BlockList {
         let block_to_filter = self
             .blocks
             .get_mut(block_index.0)
-            .filter(|block| !block.is_empty(&self.agent_view_state));
+            .filter(|block| !block.is_empty(&self.transcript_scope));
         if let Some(block) = block_to_filter {
             block.filter_output(filter_query);
             self.update_block_height_at_idx(block_index);
@@ -3630,7 +3726,7 @@ impl BlockList {
         let block_to_clear = self
             .blocks
             .get_mut(block_index.0)
-            .filter(|block| !block.is_empty(&self.agent_view_state));
+            .filter(|block| !block.is_empty(&self.transcript_scope));
         if let Some(block) = block_to_clear {
             block.clear_filter();
             self.update_block_height_at_idx(block_index);
@@ -3659,14 +3755,14 @@ impl BlockList {
     pub fn filter_for_block(&self, block_index: BlockIndex) -> Option<&BlockFilterQuery> {
         self.blocks
             .get(block_index.0)
-            .filter(|block| !block.is_empty(&self.agent_view_state))
+            .filter(|block| !block.is_empty(&self.transcript_scope))
             .and_then(|block| block.current_filter())
     }
 
     pub fn num_matched_lines_in_filter_for_block(&self, block_index: BlockIndex) -> Option<usize> {
         self.blocks
             .get(block_index.0)
-            .filter(|block| !block.is_empty(&self.agent_view_state))
+            .filter(|block| !block.is_empty(&self.transcript_scope))
             .and_then(|block| {
                 block
                     .output_grid()
@@ -4013,7 +4109,7 @@ impl ansi::Handler for BlockList {
 
                 if let Some(block) = self.blocks.last() {
                     self.block_heights = SumTree::from_item(BlockHeightItem::Block(
-                        block.height(&self.agent_view_state).into(),
+                        block.height(&self.transcript_scope).into(),
                     ));
                 } else {
                     self.block_heights = SumTree::new();

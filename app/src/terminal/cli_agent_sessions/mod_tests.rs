@@ -1,4 +1,6 @@
-use super::event::{parse_event, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventType};
+use super::event::{
+    parse_event, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType,
+};
 use super::{
     CLIAgentInputEntrypoint, CLIAgentInputState, CLIAgentSession, CLIAgentSessionContext,
     CLIAgentSessionStatus, CLIAgentSessionsModel,
@@ -257,6 +259,7 @@ fn apply_event_preserves_input_session() {
         plugin_version: None,
         draft_text: None,
         custom_command_prefix: None,
+        received_rich_notification: false,
     };
 
     let event = CLIAgentEvent {
@@ -270,6 +273,7 @@ fn apply_event_preserves_input_session() {
             summary: Some("Needs approval".to_string()),
             ..Default::default()
         },
+        source: CLIAgentEventSource::RichPlugin,
     };
 
     session.apply_event(&event);
@@ -293,6 +297,7 @@ fn stop_without_query_preserves_previous_prompt() {
         plugin_version: None,
         draft_text: None,
         custom_command_prefix: None,
+        received_rich_notification: false,
     };
 
     let event = CLIAgentEvent {
@@ -306,6 +311,7 @@ fn stop_without_query_preserves_previous_prompt() {
             response: Some("deepseek: turn complete".to_owned()),
             ..Default::default()
         },
+        source: CLIAgentEventSource::RichPlugin,
     };
 
     session.apply_event(&event);
@@ -333,6 +339,7 @@ fn is_remote_returns_true_when_remote_host_is_set() {
         draft_text: None,
         remote_host: Some("user@devbox".to_owned()),
         custom_command_prefix: None,
+        received_rich_notification: false,
     };
     assert!(session.is_remote());
 }
@@ -350,6 +357,7 @@ fn is_remote_returns_false_when_remote_host_is_none() {
         plugin_version: None,
         draft_text: None,
         custom_command_prefix: None,
+        received_rich_notification: false,
     };
     assert!(!session.is_remote());
 }
@@ -418,6 +426,7 @@ fn session_start_sets_plugin_version() {
         draft_text: None,
         remote_host: None,
         custom_command_prefix: None,
+        received_rich_notification: false,
     };
 
     let event = CLIAgentEvent {
@@ -431,6 +440,7 @@ fn session_start_sets_plugin_version() {
             plugin_version: Some("1.5.0".to_owned()),
             ..Default::default()
         },
+        source: CLIAgentEventSource::RichPlugin,
     };
 
     session.apply_event(&event);
@@ -450,6 +460,7 @@ fn session_start_without_plugin_version_leaves_none() {
         draft_text: None,
         remote_host: None,
         custom_command_prefix: None,
+        received_rich_notification: false,
     };
 
     let event = CLIAgentEvent {
@@ -460,6 +471,7 @@ fn session_start_without_plugin_version_leaves_none() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
 
     session.apply_event(&event);
@@ -502,6 +514,7 @@ fn blocked_claude_session_with_permission_state() -> CLIAgentSession {
         draft_text: None,
         remote_host: None,
         custom_command_prefix: None,
+        received_rich_notification: false,
     }
 }
 
@@ -524,6 +537,7 @@ fn stop_clears_permission_scoped_state() {
             response: Some("Memory is safe".to_owned()),
             ..Default::default()
         },
+        source: CLIAgentEventSource::RichPlugin,
     };
 
     session.apply_event(&event);
@@ -557,6 +571,7 @@ fn permission_replied_clears_permission_scoped_state() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
 
     session.apply_event(&event);
@@ -587,6 +602,7 @@ fn prompt_submit_clears_permission_scoped_state() {
             query: Some("next prompt".to_owned()),
             ..Default::default()
         },
+        source: CLIAgentEventSource::RichPlugin,
     };
 
     session.apply_event(&event);
@@ -619,6 +635,7 @@ fn tool_complete_clears_permission_scoped_state() {
         cwd: None,
         project: None,
         payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
     };
 
     session.apply_event(&event);
@@ -644,6 +661,7 @@ fn permission_request_still_populates_summary_and_tool_fields() {
         draft_text: None,
         remote_host: None,
         custom_command_prefix: None,
+        received_rich_notification: false,
     };
 
     let event = CLIAgentEvent {
@@ -659,6 +677,7 @@ fn permission_request_still_populates_summary_and_tool_fields() {
             tool_input_preview: Some("rm -rf /tmp".to_owned()),
             ..Default::default()
         },
+        source: CLIAgentEventSource::RichPlugin,
     };
 
     session.apply_event(&event);

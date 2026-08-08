@@ -1,3 +1,4 @@
+use crate::terminal::model::block::TranscriptScope;
 use crate::ai::blocklist::agent_view::{agent_view_bg_fill, AgentViewState};
 use crate::ai::blocklist::block::cli::CLI_SUBAGENT_MIN_RESIZABLE_WIDTH;
 use crate::ai::blocklist::{ai_brand_color, ATTACH_AS_AGENT_MODE_CONTEXT_TEXT};
@@ -2219,7 +2220,7 @@ impl BlockListElement {
                 {
                     if block_list
                         .block_at(block_index)
-                        .map(|block| block.should_hide_block(block_list.agent_view_state()))
+                        .map(|block| block.should_hide_block(block_list.transcript_scope()))
                         .unwrap_or(true)
                     {
                         any_hidden = true;
@@ -2429,9 +2430,9 @@ impl BlockListElement {
         ctx: &mut PaintContext,
         app: &AppContext,
     ) {
-        let block_height = block.height(agent_view_state).as_f64() as f32 * cell_size.y();
+        let block_height = block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
         if block.is_restored()
-            && (!FeatureFlag::AgentView.is_enabled() || !agent_view_state.is_fullscreen())
+            && (!FeatureFlag::AgentView.is_enabled() || !agent_view_state.transcript_scope().is_conversation())
         {
             ctx.scene
                 .draw_rect_with_hit_recording(RectF::new(
@@ -3876,7 +3877,7 @@ impl Element for BlockListElement {
 
                     // TODO(vorporeal): should probably use `Pixels` here
                     let block_pixel_height =
-                        block.height(agent_view_state).as_f64() as f32 * cell_size.y();
+                        block.height(&agent_view_state.transcript_scope()).as_f64() as f32 * cell_size.y();
 
                     let block_bottom_y = grid_origin.y() + block_pixel_height;
                     let selection_bottom_y = snackbar_header
@@ -3899,7 +3900,7 @@ impl Element for BlockListElement {
                         );
 
                         let can_be_ai_context = self.ai_render_context.borrow().is_ai_input_enabled
-                            && block.can_be_ai_context(agent_view_state);
+                            && block.can_be_ai_context(&agent_view_state.transcript_scope());
 
                         ctx.scene
                             .draw_rect_with_hit_recording(RectF::new(

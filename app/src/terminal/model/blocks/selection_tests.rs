@@ -1,3 +1,4 @@
+use crate::terminal::model::block::TranscriptScope;
 use float_cmp::assert_approx_eq;
 use warpui::App;
 
@@ -820,7 +821,7 @@ fn test_smart_selection_in_multiple_blocks() {
 
             let first_command_grid_offset = first_block.command_grid_offset();
             let first_output_grid_offset = first_block.output_grid_offset();
-            let first_block_height = first_block.height(&AgentViewState::Inactive);
+            let first_block_height = first_block.height(&TranscriptScope::Terminal);
             let second_command_grid_offset =
                 first_block_height + second_block.command_grid_offset();
             let second_output_grid_offset = first_block_height + second_block.output_grid_offset();
@@ -995,14 +996,14 @@ pub fn test_selection_to_string() {
             assert_eq!(second_block.prompt_and_command_number_of_rows(), 3);
             assert_eq!(second_block.output_grid().len(), 3);
 
-            assert_lines_approx_eq!(first_block.height(&AgentViewState::Inactive), 8.5);
-            assert_lines_approx_eq!(second_block.height(&AgentViewState::Inactive), 8.5);
+            assert_lines_approx_eq!(first_block.height(&TranscriptScope::Terminal), 8.5);
+            assert_lines_approx_eq!(second_block.height(&TranscriptScope::Terminal), 8.5);
             let semantic_selection = SemanticSelection::mock(false, "");
 
             // Save some positions for later use.
             let first_command_grid_offset = first_block.command_grid_offset();
             let first_output_grid_offset = first_block.output_grid_offset();
-            let first_block_height = first_block.height(&AgentViewState::Inactive);
+            let first_block_height = first_block.height(&TranscriptScope::Terminal);
             let second_command_grid_offset =
                 first_block_height + second_block.command_grid_offset();
             let second_output_grid_offset = first_block_height + second_block.output_grid_offset();
@@ -1510,7 +1511,7 @@ pub fn test_rect_selection_multi_block() {
 
             // Save some positions for later use.
             let first_command_grid_offset = first_block.command_grid_offset();
-            let first_block_height = first_block.height(&AgentViewState::Inactive);
+            let first_block_height = first_block.height(&TranscriptScope::Terminal);
             let second_output_grid_offset = first_block_height + second_block.output_grid_offset();
 
             // Start a selection at the start of the line in the first command grid.
