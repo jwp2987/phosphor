@@ -111,6 +111,15 @@ impl MouseState {
         self.click_count = click_count;
     }
 
+    /// Test-only: simulates the click count a real `LeftMouseDown` event
+    /// would have set, without driving the full event/paint pipeline.
+    /// Lets callers unit-test click-count-dependent dispatch logic (e.g.
+    /// double-click gestures) against a bare [`MouseStateHandle`].
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_click_count_for_test(&mut self, click_count: Option<u32>) {
+        self.click_count = click_count;
+    }
+
     /// True iff the element is considered hovered.
     ///
     /// This does not necessarily imply that the mouse

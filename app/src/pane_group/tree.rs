@@ -1385,6 +1385,26 @@ fn create_divider_placeholder(direction: SplitDirection, position_id: &str) -> B
     SavePosition::new(placeholder, position_id).finish()
 }
 
+/// Builds the [`PaneGroupAction`] a divider's mouse-down should dispatch:
+/// a double-click resets the owning branch's sizes instead of starting a
+/// resize drag.
+fn divider_mouse_down_action(
+    mouse_state: &MouseStateHandle,
+    border_id: EntityId,
+    direction: SplitDirection,
+    position: Vector2F,
+) -> PaneGroupAction {
+    if mouse_state.lock().unwrap().click_count() == Some(2) {
+        PaneGroupAction::ResetPaneSizes(border_id)
+    } else {
+        PaneGroupAction::StartResizing(DraggedBorder {
+            border_id,
+            direction,
+            previous_mouse_location: position,
+        })
+    }
+}
+
 fn create_divider(
     direction: SplitDirection,
     item: &Divider,
@@ -1402,6 +1422,7 @@ fn create_divider(
     };
 
     let border_id = item.id;
+    let mouse_state = item.mouse_state.clone();
 
     Hoverable::new(item.mouse_state.clone(), |_| {
         EventHandler::new(match direction {
@@ -1409,11 +1430,12 @@ fn create_divider(
             SplitDirection::Vertical => divider.with_height(get_divider_thickness()).finish(),
         })
         .on_left_mouse_down(move |ctx, _, position| {
-            ctx.dispatch_typed_action(PaneGroupAction::StartResizing(DraggedBorder {
+            ctx.dispatch_typed_action(divider_mouse_down_action(
+                &mouse_state,
                 border_id,
                 direction,
-                previous_mouse_location: position,
-            }));
+                position,
+            ));
             DispatchEventResult::StopPropagation
         })
         .finish()
@@ -1440,6 +1462,7 @@ fn create_minimalist_divider(
     };
 
     let border_id = item.id;
+    let mouse_state = item.mouse_state.clone();
     let hoverable = Hoverable::new(item.mouse_state.clone(), |_| {
         let container = match direction {
             SplitDirection::Horizontal => {
@@ -1457,11 +1480,12 @@ fn create_minimalist_divider(
         };
         EventHandler::new(container)
             .on_left_mouse_down(move |ctx, _, position| {
-                ctx.dispatch_typed_action(PaneGroupAction::StartResizing(DraggedBorder {
+                ctx.dispatch_typed_action(divider_mouse_down_action(
+                    &mouse_state,
                     border_id,
                     direction,
-                    previous_mouse_location: position,
-                }));
+                    position,
+                ));
                 DispatchEventResult::StopPropagation
             })
             .finish()

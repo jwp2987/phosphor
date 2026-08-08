@@ -695,6 +695,56 @@ fn test_reset_pane_sizes_only_resets_containing_branch() {
     );
 }
 
+// Issue #334: `reset_pane_sizes` (tested above) had a data layer but no
+// caller — nothing translated a double-click on a divider into a call to it,
+// so the gesture did nothing for users. These tests cover the wiring added
+// to close that gap: `divider_mouse_down_action` (the mouse-down handler
+// shared by `create_divider`/`create_minimalist_divider`) must dispatch
+// `ResetPaneSizes` on a double-click and `StartResizing` otherwise. Ported
+// from the pin's `divider_mouse_down_action` (Warp 2026.07.29.09.05, commit
+// 02b53fcd8, `app/src/pane_group/tree.rs`), which has no test of its own —
+// this test is new here.
+#[test]
+fn test_divider_mouse_down_action_double_click_resets_sizes() {
+    let mouse_state: MouseStateHandle = Default::default();
+    mouse_state.lock().unwrap().set_click_count_for_test(Some(2));
+
+    let border_id = EntityId::new();
+    let action = divider_mouse_down_action(
+        &mouse_state,
+        border_id,
+        SplitDirection::Horizontal,
+        Vector2F::zero(),
+    );
+
+    match action {
+        PaneGroupAction::ResetPaneSizes(id) => assert_eq!(id, border_id),
+        other => panic!("expected ResetPaneSizes, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_divider_mouse_down_action_single_click_starts_resizing() {
+    let mouse_state: MouseStateHandle = Default::default();
+    mouse_state.lock().unwrap().set_click_count_for_test(Some(1));
+
+    let border_id = EntityId::new();
+    let action = divider_mouse_down_action(
+        &mouse_state,
+        border_id,
+        SplitDirection::Vertical,
+        Vector2F::zero(),
+    );
+
+    match action {
+        PaneGroupAction::StartResizing(border) => {
+            assert_eq!(border.border_id, border_id);
+            assert_eq!(border.direction, SplitDirection::Vertical);
+        }
+        other => panic!("expected StartResizing, got {other:?}"),
+    }
+}
+
 #[test]
 fn test_hide_and_show_child_agent_pane() {
     let panes = [PaneId::dummy_pane_id(), PaneId::dummy_pane_id()];
