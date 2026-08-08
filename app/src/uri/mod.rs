@@ -250,10 +250,13 @@ impl UriHost {
             }
             UriHost::Settings => {
                 // We support opening different settings pages through URI:
-                // - warp://settings/environments - opens environments settings page
-                // - warp://settings/mcp - opens MCP servers settings page
-                // - warp://settings/platform - opens platform settings page
-                // - warp://settings/appearance - opens appearance settings page (themes, fonts, etc.)
+                // - zap://settings/environments - opens environments settings page
+                // - zap://settings/mcp - opens MCP servers settings page
+                // - zap://settings/platform - opens platform settings page
+                // - zap://settings/appearance - opens appearance settings page (themes, fonts, etc.)
+                // - zap://settings/warp_agent - opens the Zap Agent settings page
+                // - any other simple sub-page recognized by
+                //   `settings_section_for_simple_subpage` (see #414)
                 let settings_sub_page: Option<String> = url
                     .path_segments()
                     .into_iter()
@@ -309,17 +312,22 @@ impl UriHost {
                                 "The warp://settings/platform route has been retired in Zap; ignoring this request"
                             );
                         }
-                        "appearance" => {
-                            dispatch_action_in_new_or_existing_window(
-                                primary_window_id,
-                                "root_view:open_settings_page_in_existing_window",
-                                "root_view:open_settings_page_in_new_window",
-                                &SettingsSection::Appearance,
-                                ctx,
-                            );
-                        }
-                        _ => {
-                            log::warn!("Failed to open settings pane with uri={url}");
+                        // Any other simple, cloud-free sub-page (e.g. `appearance`,
+                        // `warp_agent`) resolved via `settings_section_for_simple_subpage`.
+                        maybe_simple_subpage => {
+                            if let Some(section) =
+                                settings_section_for_simple_subpage(maybe_simple_subpage)
+                            {
+                                dispatch_action_in_new_or_existing_window(
+                                    primary_window_id,
+                                    "root_view:open_settings_page_in_existing_window",
+                                    "root_view:open_settings_page_in_new_window",
+                                    &section,
+                                    ctx,
+                                );
+                            } else {
+                                log::warn!("Failed to open settings pane with uri={url}");
+                            }
                         }
                     }
                 } else {
@@ -1355,6 +1363,24 @@ fn dispatch_action_in_new_or_existing_window<T: 'static>(
         );
     } else {
         ctx.dispatch_global_action(new_window_action, args);
+    }
+}
+
+/// Resolves a `zap://settings/<subpage>` sub-page name to the `SettingsSection`
+/// it should open, for the simple sub-pages that need no extra query-param
+/// handling.
+///
+/// This mirrors the pinned oracle's `settings_section_for_simple_subpage`
+/// (`02b53fcd8`, `app/src/uri/mod.rs`), minus the two branches that mapped to
+/// sections this fork dropped as cloud: `billing_and_usage` ->
+/// `SettingsSection::BillingAndUsage` and `platform` ->
+/// `SettingsSection::OzCloudAPIKeys` (the latter is instead handled as an
+/// explicit no-op arm above, in the `platform` match case). See #414.
+fn settings_section_for_simple_subpage(subpage: &str) -> Option<SettingsSection> {
+    match subpage {
+        "appearance" => Some(SettingsSection::Appearance),
+        "warp_agent" => Some(SettingsSection::WarpAgent),
+        _ => None,
     }
 }
 

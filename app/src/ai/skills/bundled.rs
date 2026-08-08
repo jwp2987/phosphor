@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use ai::skills::{parse_bundled_skill, ParsedSkill, SkillReference};
 use futures::TryStreamExt;
 use warp_core::channel::ChannelState;
+use warp_core::execution_mode::AppExecutionMode;
+use warp_core::features::FeatureFlag;
 use warp_core::ui::icons::Icon;
 use warp_core::{report_error, safe_warn};
 use warpui::{AppContext, SingletonEntity};
@@ -25,10 +27,17 @@ use crate::ai::mcp::{McpIntegration, TemplatableMCPServerManager};
 use crate::settings::user_preferences_toml_file_path;
 
 /// Activation condition for a bundled skill.
+///
+/// `TuiOnly` and `RequiresFeature` ported from the pin's
+/// `ai/skills/bundled.rs::BundledSkillActivation` (`02b53fcd8`), issue #370.
 #[derive(Debug, Clone)]
 pub enum BundledSkillActivation {
     /// Always active.
     Always,
+    /// Active only in the TUI frontend.
+    TuiOnly,
+    /// Active only when a specific Warp feature is enabled.
+    RequiresFeature(FeatureFlag),
     /// Active only when a specific MCP server is running.
     RequiresMcp(McpIntegration),
     /// Active only when a specific file exists on disk.
@@ -39,6 +48,8 @@ impl BundledSkillActivation {
     pub fn is_enabled(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Always => true,
+            Self::TuiOnly => AppExecutionMode::as_ref(ctx).is_tui(),
+            Self::RequiresFeature(feature) => feature.is_enabled(),
             Self::RequiresMcp(integration) => {
                 TemplatableMCPServerManager::as_ref(ctx).is_mcp_server_running(*integration)
             }

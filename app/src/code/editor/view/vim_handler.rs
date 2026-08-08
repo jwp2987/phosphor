@@ -274,7 +274,9 @@ impl VimHandler for CodeEditorView {
                         }
 
                         let include_newline = operator != &VimOperator::Change
-                            && operator != &VimOperator::ToggleComment;
+                            && operator != &VimOperator::ToggleComment
+                            && operator != &VimOperator::Indent
+                            && operator != &VimOperator::Dedent;
                         model.vim_extend_selection_linewise(
                             include_newline,
                             *operator == VimOperator::Delete,
@@ -444,13 +446,14 @@ impl VimHandler for CodeEditorView {
                     }
                 });
             }
-            // The pinned oracle shifts the selection via `model.indent(shift, ctx)`
-            // here. Not ported: doing so without its 10 accompanying
-            // vim_handler_tests.rs cases would ship behavior with no mirrored
-            // coverage (AGENTS.md's mandatory-coverage rule), and verifying
-            // that port needs cargo/nextest, which is out of scope for this
-            // crates/vim/-only pass. Tracked as a follow-up.
-            VimOperator::Indent | VimOperator::Dedent => {}
+            VimOperator::Indent | VimOperator::Dedent => {
+                self.model.update(ctx, |model, ctx| {
+                    selection_change(model, ctx);
+                    let shift = *operator == VimOperator::Dedent;
+                    model.indent(shift, ctx);
+                    model.vim_move_to_first_nonwhitespace(false, ctx);
+                });
+            }
         }
     }
 
@@ -568,7 +571,9 @@ impl VimHandler for CodeEditorView {
     ) {
         self.model.update(ctx, |model, ctx| {
             // Compute the visual selection
-            let include_newline = *operator != VimOperator::Change;
+            let include_newline = *operator != VimOperator::Change
+                && *operator != VimOperator::Indent
+                && *operator != VimOperator::Dedent;
             model.vim_visual_selection_range(motion_type, include_newline, ctx);
 
             if matches!(
@@ -626,9 +631,11 @@ impl VimHandler for CodeEditorView {
                         model.vim_clear_selections(ctx);
                     }
                 }
-                // Not ported — see the matching comment on the `operation`
-                // arm above for why.
-                VimOperator::Indent | VimOperator::Dedent => {}
+                VimOperator::Indent | VimOperator::Dedent => {
+                    let shift = *operator == VimOperator::Dedent;
+                    model.indent(shift, ctx);
+                    model.vim_move_to_first_nonwhitespace(false, ctx);
+                }
             }
         });
 

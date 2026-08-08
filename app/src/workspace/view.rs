@@ -2,6 +2,7 @@ pub(crate) mod codex_modal;
 pub mod conversation_list;
 #[cfg(enable_crash_recovery)]
 mod crash_recovery;
+pub(crate) mod feature_intro_modal;
 pub mod global_search;
 pub(crate) mod launch_modal;
 pub(crate) mod left_panel;
@@ -6285,9 +6286,12 @@ impl Workspace {
             );
         } else {
             // Pass the active terminal's cwd to seed the branch picker's git lookup.
+            // Local-only: BranchPicker shells out to `git` against this path
+            // directly (#188), so a remote session's cwd must not be passed
+            // through as if it were local.
             let cwd = self
                 .active_session_view(ctx)
-                .and_then(|view| view.as_ref(ctx).pwd())
+                .and_then(|view| view.as_ref(ctx).pwd_if_local(ctx))
                 .map(PathBuf::from);
 
             let modal_title = format!("Open: {}", tab_config.name);
@@ -12006,7 +12010,13 @@ impl Workspace {
                         ctx,
                     )
                 } else {
-                    history_model.fork_conversation(&source_conversation, FORK_PREFIX, ctx)
+                    history_model.fork_conversation(
+                        &source_conversation,
+                        FORK_PREFIX,
+                        true, /* preserve_task_ids */
+                        None,
+                        ctx,
+                    )
                 }
             });
 
@@ -19748,9 +19758,12 @@ impl TypedActionView for Workspace {
                 self.open_tab_config(tab_config.clone(), ctx);
             }
             OpenNewWorktreeModal => {
+                // Local-only: BranchPicker (fed via NewWorktreeModal::on_open) shells
+                // out to `git` against this path directly (#188), so a remote
+                // session's cwd must not be passed through as if it were local.
                 let cwd = self
                     .active_session_view(ctx)
-                    .and_then(|view| view.as_ref(ctx).pwd())
+                    .and_then(|view| view.as_ref(ctx).pwd_if_local(ctx))
                     .map(PathBuf::from);
                 self.new_worktree_modal.view.update(ctx, |modal, ctx| {
                     modal.body().update(ctx, |body, ctx| {

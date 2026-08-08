@@ -103,11 +103,15 @@ impl FileDataSource {
         }
     }
 
-    fn contents(&self, app: &AppContext) -> Arc<Vec<FileSearchResult>> {
+    fn contents(&self, query: &str, app: &AppContext) -> Arc<Vec<FileSearchResult>> {
         match &self.mode {
             FileDataSourceMode::Repo => {
                 let file_search_model = FileSearchModel::as_ref(app);
-                file_search_model.get_repo_contents(app)
+                // File-only picker: directories are never openable here (see the
+                // `is_directory` guard below), so exclude them at the traversal
+                // level rather than fetching them only to discard them, which
+                // otherwise starves file matches of the repo-metadata result cap.
+                file_search_model.get_repo_file_contents(query, app)
             }
             FileDataSourceMode::CurrentFolder { cached_contents } => {
                 Arc::new(cached_contents.clone())
@@ -186,8 +190,6 @@ impl FileDataSource {
     > {
         let file_search_model = FileSearchModel::as_ref(app);
 
-        let contents = self.contents(app);
-
         // Strip any trailing : in case user is in the middle of typing a line / column arg.
         let query_text = query_text.strip_suffix(':').unwrap_or(query_text);
 
@@ -231,6 +233,11 @@ impl FileDataSource {
         let opened_files = repo_root
             .and_then(|repo_root| opened_files.opened_files_for_repo(&repo_root))
             .cloned();
+
+        // Fetch contents using the finalized query so it is pushed down into the
+        // repo-metadata traversal as a filter (matching files are not truncated
+        // away before fuzzy matching).
+        let contents = self.contents(&query_file_content, app);
 
         const CHUNK_SIZE: usize = 50;
 

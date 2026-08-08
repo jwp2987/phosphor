@@ -50,7 +50,13 @@ impl ReadSkillExecutor {
 
         // Cache hit: the proto's `SkillReference::Path(p)` only matches here when p
         // is exactly the real SKILL.md absolute path in the index.
-        if let Some(skill) = manager.skill_by_reference(skill_ref) {
+        //
+        // Uses `active_skill_by_reference` (not `skill_by_reference`) so a
+        // `BundledSkillId` reference is rejected once its activation condition is
+        // no longer met (a `tui_only` skill read from the GUI, a feature-gated
+        // skill whose flag flipped off, ...). Path-based user skills are
+        // unaffected: they have no activation condition to check. See issue #370.
+        if let Some(skill) = manager.active_skill_by_reference(skill_ref, ctx) {
             send_telemetry_from_ctx!(
                 SkillTelemetryEvent::Read {
                     reference: skill_ref.clone(),

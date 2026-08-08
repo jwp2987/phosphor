@@ -9,15 +9,19 @@
 //! those non-cloud gaps are to be built/ported and re-added here — not left out
 //! permanently. See specs/warp-oss-sync/SCOPE.md.
 
+mod history;
+
 // Test-only helpers for the `warp_tui` test suite (BYOP-adapted; cloud singletons dropped).
 #[cfg(any(test, feature = "test-util"))]
 pub use crate::suggestions::ignored_suggestions_model::IgnoredSuggestionsModel;
 #[cfg(any(test, feature = "test-util"))]
 pub use crate::tui_test_support::{
+    add_tui_history_test_models, append_tui_history_test_command,
     blocklist_ai_history_model_with_queries, queue_tui_permission_action,
-    register_tui_session_view_test_singletons,
+    register_tui_input_mode_test_settings, register_tui_session_view_test_singletons,
 };
 
+pub use self::history::{TuiUpArrowHistoryItem, TuiUpArrowHistoryItemKind, tui_up_arrow_history};
 pub use ::ai::agent::action::{AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType};
 pub use ::ai::agent::action_result::AskUserQuestionAnswerItem;
 pub use ::ai::agent::ask_user_question_session::{
@@ -153,7 +157,8 @@ pub use crate::terminal::input::slash_command_model::{
 pub use crate::search::slash_command_menu::{SlashCommandId, SlashCommandKind, StaticCommand};
 pub use crate::terminal::alt_screen::{should_intercept_mouse, should_intercept_scroll};
 pub use crate::terminal::color::{Colors as TerminalColors, List as TerminalColorList};
-pub use crate::terminal::history::up_arrow::prompt_history_for_terminal_view;
+pub use crate::terminal::history::up_arrow::{UpArrowHistoryConfig, prompt_history_for_terminal_view};
+pub use crate::terminal::history::{History, HistoryEvent, LinkedWorkflowData};
 pub use crate::terminal::event::AfterBlockCompletedEvent;
 pub use crate::terminal::input::CommandExecutionSource;
 pub use crate::terminal::input::decorations::parse_current_commands_and_tokens;
