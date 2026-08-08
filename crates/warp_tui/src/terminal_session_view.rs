@@ -121,6 +121,9 @@ use crate::ui::{compact_footer_path, conversation_restore_failed, conversation_r
 use crate::usage::render_context_usage_entry;
 use crate::warping_indicator::{render_response_summary, render_warping_indicator_row};
 use crate::zero_state::TuiZeroStateView;
+use crate::zero_state_animation::{
+    ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationLoadFailure,
+};
 mod input_detection;
 pub(crate) mod state;
 
@@ -191,6 +194,22 @@ const SWITCH_CONVERSATION_RUNNING_HINT: &str =
 const SWITCH_LOADING_HINT: &str = "Another conversation is already loading.";
 const SWITCH_UNAVAILABLE_HINT: &str = "That conversation is no longer available.";
 const LOADING_CONVERSATION_HINT: &str = "Loading conversation…";
+/// Shown in the footer when the configured zero-state ASCII art fails to
+/// load at startup (falls back to the built-in mark) or on reload (keeps the
+/// previous object). See `zero_state_animation_config`'s `AsciiArtError` and
+/// `show_zero_state_ascii_load_failure` below. Ported from the pin
+/// (`02b53fcd8` — see `ORACLE.md`) as part of #384.
+const ZERO_STATE_ASCII_INITIAL_LOAD_FAILED_HINT: &str =
+    "Could not load custom ASCII art. Using the built-in mark.";
+const ZERO_STATE_ASCII_RELOAD_FAILED_HINT: &str =
+    "Could not reload custom ASCII art. Keeping the current object.";
+
+fn zero_state_ascii_load_failure_hint(failure: ZeroStateAnimationLoadFailure) -> &'static str {
+    match failure {
+        ZeroStateAnimationLoadFailure::InitialLoad => ZERO_STATE_ASCII_INITIAL_LOAD_FAILED_HINT,
+        ZeroStateAnimationLoadFailure::Reload => ZERO_STATE_ASCII_RELOAD_FAILED_HINT,
+    }
+}
 const COMPACT_AND_REQUIRES_CONVERSATION_HINT: &str = "/compact-and requires an active conversation";
 const QUEUE_REQUIRES_CONVERSATION_HINT: &str = "/queue requires an active conversation";
 const QUEUE_REQUIRES_PROMPT_HINT: &str = "/queue requires a prompt argument";
@@ -1573,7 +1592,23 @@ impl TuiTerminalSessionView {
         ctx.spawn_stream_local(terminal_resize_rx, Self::handle_terminal_resize, |_, _| {});
         let zero_state_view =
             ctx.add_tui_view(|ctx| TuiZeroStateView::new(active_session.clone(), ctx));
-        Self {
+        // Surface a zero-state ASCII-art load/reload failure (bad or missing
+        // `TuiZeroStateObject::AsciiFile`) as a footer hint rather than
+        // silently falling back to the built-in mark. Ported from the pin
+        // (`02b53fcd8`) as part of #384.
+        let zero_state_animation_config = ZeroStateAnimationConfig::handle(ctx);
+        let initial_zero_state_load_failure =
+            zero_state_animation_config.as_ref(ctx).load_failure();
+        ctx.subscribe_to_model(
+            &zero_state_animation_config,
+            |view, _, event, ctx| match event {
+                ZeroStateAnimationConfigEvent::Updated => {}
+                ZeroStateAnimationConfigEvent::LoadFailed(failure) => {
+                    view.show_zero_state_ascii_load_failure(*failure, ctx);
+                }
+            },
+        );
+        let mut view = Self {
             transcript,
             input_view,
             attachment_bar,
@@ -1620,7 +1655,11 @@ impl TuiTerminalSessionView {
             active_blocker_view_id: None,
             statusline_config_view: None,
             zero_state_view,
+        };
+        if let Some(failure) = initial_zero_state_load_failure {
+            view.show_zero_state_ascii_load_failure(failure, ctx);
         }
+        view
     }
 
     /// The active front-of-queue blocking interaction, if any.
@@ -2188,6 +2227,24 @@ impl TuiTerminalSessionView {
             .show_success(text, ctx, |view| &mut view.transient_hint);
     }
 
+    /// Displays error-colored feedback in the transient footer slot.
+    fn show_error_hint(&mut self, text: String, ctx: &mut ViewContext<Self>) {
+        self.transient_hint
+            .show_error(text, ctx, |view| &mut view.transient_hint);
+    }
+
+    /// Surfaces a zero-state ASCII-art load/reload failure (see
+    /// `zero_state_animation_config::AsciiArtError`) as an error-colored
+    /// transient footer hint. Ported from the pin (`02b53fcd8`) as part of
+    /// #384.
+    fn show_zero_state_ascii_load_failure(
+        &mut self,
+        failure: ZeroStateAnimationLoadFailure,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.show_error_hint(zero_state_ascii_load_failure_hint(failure).to_owned(), ctx);
+    }
+
     /// Surfaces a `/usage` or `/cost` result. Mirrors the GUI's toast split: a plain transient
     /// hint when the command could not report anything, success-colored for the report itself.
     fn show_usage_cost_outcome(&mut self, outcome: UsageCostOutcome, ctx: &mut ViewContext<Self>) {
@@ -2371,6 +2428,7 @@ impl TuiTerminalSessionView {
             let style = match tone {
                 TransientHintTone::Muted => muted,
                 TransientHintTone::Success => builder.success_glyph_style(),
+                TransientHintTone::Error => builder.error_text_style(),
             };
             return TuiFlex::row().child(
                 TuiText::new(transient)
@@ -3356,7 +3414,9 @@ impl TuiTerminalSessionView {
         }
 
         match command.kind() {
-            SlashCommandKind::Agent | SlashCommandKind::New => {
+            // `/clear` is a TUI-only alias for `/agent`/`/new` (see `SlashCommandKind::Clear`'s
+            // doc comment): clearing the transcript and starting a new conversation.
+            SlashCommandKind::Agent | SlashCommandKind::New | SlashCommandKind::Clear => {
                 if !self
                     .ai_context_model
                     .as_ref(ctx)

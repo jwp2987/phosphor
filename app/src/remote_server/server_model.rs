@@ -1629,21 +1629,28 @@ impl ServerModel {
             ));
         }
 
-        let file_infos: Vec<FileStatusInfo> =
-            match msg.files.iter().map(FileStatusInfo::try_from).collect() {
-                Ok(infos) => infos,
-                Err(e) => {
-                    return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
-                        DiscardFilesResponse {
-                            result: Some(discard_files_response::Result::Error(
-                                DiscardFilesError {
-                                    message: format!("Invalid file status info: {e}"),
-                                },
-                            )),
-                        },
-                    ));
-                }
-            };
+        // Decoding is fallible: #326 replaced the infallible
+        // `proto_to_file_status_info` with a validating `TryFrom` that rejects
+        // non-absolute paths and missing status variants. Surface a malformed
+        // entry as a DiscardFilesError rather than acting on a half-decoded
+        // request -- discarding files against a bad path is destructive.
+        let file_infos: Vec<FileStatusInfo> = match msg
+            .files
+            .iter()
+            .map(FileStatusInfo::try_from)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(infos) => infos,
+            Err(err) => {
+                return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                    DiscardFilesResponse {
+                        result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                            message: format!("Invalid file entry in DiscardFilesRequest: {err}"),
+                        })),
+                    },
+                ));
+            }
+        };
         let should_stash = msg.should_stash;
         let branch = msg.branch_name.unwrap_or_else(|| "HEAD".to_string());
         let repo_path = PathBuf::from(canonical_path.to_local_path_lossy());
