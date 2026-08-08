@@ -1343,6 +1343,7 @@ Thumbs.db
                         let result1 = model.add_repository_internal(
                             StandardizedPath::from_local_canonicalized(&real_repo).unwrap(),
                             state.clone(),
+                            RootWatchMode::Recursive,
                             ctx,
                         );
                         assert!(result1.is_ok());
@@ -1351,6 +1352,7 @@ Thumbs.db
                         let result2 = model.add_repository_internal(
                             StandardizedPath::from_local_canonicalized(&symlink_repo).unwrap(),
                             state.clone(),
+                            RootWatchMode::Recursive,
                             ctx,
                         );
                         assert!(result2.is_ok());
@@ -1359,6 +1361,7 @@ Thumbs.db
                         let result3 = model.add_repository_internal(
                             StandardizedPath::from_local_canonicalized(&relative_repo).unwrap(),
                             state.clone(),
+                            RootWatchMode::Recursive,
                             ctx,
                         );
                         assert!(result3.is_ok());
