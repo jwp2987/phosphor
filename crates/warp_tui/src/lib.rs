@@ -54,7 +54,7 @@ mod model_menu;
 mod option_selector;
 mod platform;
 mod profile_menu;
-mod prompt_history_menu;
+mod prompt_and_command_history_menu;
 mod prompts_menu;
 mod read_only_menu;
 mod resume;

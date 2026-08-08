@@ -11,8 +11,8 @@ use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
     AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryModel,
     ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo,
-    SizeUpdate, TaskId, export_conversation_markdown, register_tui_session_view_test_singletons,
-    slash_commands,
+    SizeUpdate, TaskId, TuiUpArrowHistoryItemKind, export_conversation_markdown,
+    register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -2321,5 +2321,128 @@ fn cost_slash_command_rejects_an_empty_conversation_like_the_gui() {
                 Some(COST_EMPTY_CONVERSATION_HINT),
             );
         });
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Accepted prompt-and-command history (issue #387)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Accepting a command row from the up-arrow history menu runs it through the
+/// same shell-submission path as a typed command.
+#[test]
+fn accepted_command_history_executes_through_the_shell_submission_path() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let executed = Rc::new(RefCell::new(Vec::new()));
+        app.update(|ctx| {
+            let executed = executed.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if let TuiTerminalSessionEvent::ExecuteCommand(event) = event {
+                    executed.borrow_mut().push(event.command.clone());
+                }
+            });
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_accepted_prompt_and_command_history(
+                "echo from history".to_owned(),
+                TuiUpArrowHistoryItemKind::Command {
+                    linked_workflow_data: None,
+                },
+                ctx,
+            );
+        });
+
+        assert_eq!(executed.borrow().as_slice(), &["echo from history"]);
+        assert_eq!(app.read(|ctx| input_text(&view, ctx)), "");
+    });
+}
+
+/// A command row's linked workflow data survives to the emitted
+/// `ExecuteCommandEvent`, so a recalled workflow command still resolves back
+/// to its workflow (e.g. for cost/telemetry attribution).
+#[test]
+fn accepted_command_history_preserves_workflow_metadata() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let executed = Rc::new(RefCell::new(Vec::new()));
+        app.update(|ctx| {
+            let executed = executed.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if let TuiTerminalSessionEvent::ExecuteCommand(event) = event {
+                    executed.borrow_mut().push((**event).clone());
+                }
+            });
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_accepted_prompt_and_command_history(
+                "deploy production".to_owned(),
+                TuiUpArrowHistoryItemKind::Command {
+                    linked_workflow_data: Some(warp::tui_export::LinkedWorkflowData::Command(
+                        "deploy {{environment}}".to_owned(),
+                    )),
+                },
+                ctx,
+            );
+        });
+
+        let executed = executed.borrow();
+        let event = executed.as_slice().first().expect("command was executed");
+        assert_eq!(event.command, "deploy production");
+        assert_eq!(event.workflow_id, None);
+        assert_eq!(
+            event.workflow_command.as_deref(),
+            Some("deploy {{environment}}")
+        );
+    });
+}
+
+/// Accepting a prompt row sends it to the session's selected AI conversation,
+/// the same as a typed agent-mode submission.
+#[test]
+fn accepted_prompt_history_submits_to_the_selected_ai_conversation() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        // NOTE(adapted): the pin assumes a freshly activated session already
+        // has a selected conversation. This fork's `send_prompt` requires one
+        // explicitly (see `cost_slash_command_rejects_an_empty_conversation_like_the_gui`
+        // above for the same pattern), so start one first.
+        view.update(&mut app, |view, ctx| {
+            view.conversation_selection.update(ctx, |selection, ctx| {
+                selection
+                    .try_start_new_conversation(AgentViewEntryOrigin::Tui, ctx)
+                    .expect("test conversation should start");
+            });
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_accepted_prompt_and_command_history(
+                "explain the build".to_owned(),
+                TuiUpArrowHistoryItemKind::Prompt,
+                ctx,
+            );
+        });
+
+        view.read(&app, |view, ctx| {
+            let queries = view
+                .conversation_selection
+                .as_ref(ctx)
+                .selected_conversation(ctx)
+                .expect("selected conversation")
+                .latest_exchange()
+                .expect("accepted prompt should append an exchange")
+                .input
+                .iter()
+                .filter_map(|input| input.user_query())
+                .collect::<Vec<_>>();
+            assert_eq!(queries, vec!["explain the build"]);
+        });
+        assert_eq!(app.read(|ctx| input_text(&view, ctx)), "");
     });
 }

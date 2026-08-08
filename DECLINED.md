@@ -62,6 +62,39 @@ Warp gates the crash-reporting widget on
 `FeatureFlag::CrashReporting` instead, precisely so a locally-useful control is
 not hidden by a cloud-availability check.
 
+## Voice input — recording exists, transcription is cloud and disabled
+
+| what | issue | note |
+|---|---|---|
+| **Voice-input UI (TUI composer, statusline item, `/voice`)** | #389 | Not a gap — the transcription backend the UI would drive is cloud, and this fork has already turned it off. |
+
+`crates/voice_input` (audio capture: `cpal` input stream, resampling, WAV
+encoding) is real and already used by the GUI editor
+(`app/src/editor/view/voice.rs`). What consumes its output is not: Warp's
+`Transcriber` trait (`app/src/voice/transcriber.rs`) is implemented by
+`ServerVoiceTranscriber`, which calls `server_api.transcribe` to send audio to
+Warp's cloud Wispr speech-to-text — there is no local/BYOP transcription
+engine. This fork already made that call: `app/src/lib.rs` constructs
+`VoiceTranscriber::disabled()` instead of injecting `ServerVoiceTranscriber`
+(commit `9d92598c4`, "Phase 4-1 默认 VoiceTranscriber 改 disabled 跳过云端 Wispr
+STT" — default `VoiceTranscriber` changed to disabled, skipping cloud Wispr
+STT), and `TranscribeError::Disabled` documents why: "the BYOP genai protocol
+can't carry audio." So today, pressing the GUI's mic button *records* audio
+successfully and then always fails to transcribe it.
+
+Porting the TUI's voice composer state machine, border animation, and
+statusline item (the `crates/warp_tui/src/voice_input.rs` half of #389) would
+add a control with the same property in the surface that has none of it
+today: it would toggle, animate, and show a hint, and every real use would end
+in the same transcription failure the GUI already has. That is worse than no
+control — see AGENTS.md's guidance on shipping UI for a backend the fork
+doesn't have. Declined until a local/BYOP transcription path exists (e.g. a
+local Whisper-class model), at which point both the GUI button and the TUI
+composer should be wired to it together.
+
+The read-only menu surface #389 also asks for (`?` shortcuts, `/status`) is
+unrelated to voice and is not declined — see the issue for its state.
+
 ## Divergences where the fork deliberately differs
 
 | what | issue | note |
@@ -71,6 +104,7 @@ not hidden by a cloud-availability check.
 | **TUI/GUI shared app id** | — | The fork deliberately shares one app id (and therefore one keychain namespace and config) between GUI and TUI; the pin separates them. Two pin tests assert the separation and are intentionally not ported. |
 | **Privacy toggle defaults** | — | Warp defaults telemetry/crash-reporting **on** (opt-out, commercial product). This fork defaults them **off** — leaving them on would show "ON" while nothing goes out. |
 | **`CustomEndpoint` / `custom_model_providers` on `ApiKeyManager`** | #142, #347 | **DECIDED (PR #189, PR #227 — both merged 2026-08-07): superseded, not ported.** The pin's `ApiKeyManager` has a fixed four-provider list plus a `custom_endpoints: Vec<CustomEndpoint>` field, and `custom_model_providers_for_request` serializes those into a `CustomModelProviders` wire payload that tells Warp's *server* how to proxy to a user's endpoint on their behalf. This fork calls custom endpoints directly via genai (`chat_stream::build_client`) with no server proxy, and the pinned `warp_multi_agent_api` rev has no `CustomModelProviders` message to serialize into at all. The fork's actual BYOP surface for this is `AgentProviderSecrets` (`app/src/ai/agent_providers/secrets.rs`) — arbitrary user-defined providers each with their own `base_url`, a strict superset of the pin's fixed-four-plus-custom-endpoints design, with its own coverage (`app/src/ai/agent_providers/mod_test.rs`, 13 tests; `secrets_tests.rs`, 6 tests). Porting `CustomEndpoint` into `crates/ai/src/api_keys.rs` would stand up a second, competing provider store. Keeps 16 `api_keys_tests.rs` pin tests permanently unported — see that file's header comment for the per-test list. **#347 (`app/src/ai/llms.rs`), assessed 2026-08-07: also superseded, not a live gap.** #347 has two clusters. Cluster 2 (`CustomEndpoint`/`CustomEndpointModel`/`build_custom_llm_infos`, 8 tests, plus 5 more that depend on it) is this same declined surface viewed from `llms.rs` instead of `api_keys.rs` — the pin's `build_custom_llm_infos` takes `ai::api_keys::ApiKeys::custom_endpoints` as its direct input, so porting it would resurrect the exact competing provider store this row already declines. Cluster 1 (`DisableReason::should_clear_preference`, `is_usable_llm`, `usable_default_llm_info`, `should_show_host_icon_for_model`, 7 tests) exists in the pin to reconcile a *cloud*-fetched model list — subject to org-admin/quota/upgrade disables and AWS Bedrock / Gemini Enterprise host routing — against a BYOK override. Phosphor's model list is built entirely locally from `AgentProviderSecrets` (`LLMPreferences::new`'s own comment: "BYOP-only mode ... no longer consumes the upstream cloud model list at all"), so `DisableReason::AdminDisabled`/`OutOfRequests`/`ProviderOutage`/`RequiresUpgrade` are never constructed by any live code path (repo-wide grep finds only dead rendering-only branches in `execution_profiles/model_menu_items.rs` and `terminal/input/models/data_source.rs` that would fire if they ever were) and `LLMInfo::host_configs` is always the empty map. The fork's disable handling already works, by a different mechanism: `build_byop_llm_infos` (`app/src/ai/agent_providers/mod.rs`) omits disabled models from `choices` outright, and `LLMPreferences::on_server_update` already clears any profile preference pointing at a model id that dropped out of `choices` — no `should_clear_preference` distinction is needed because there is no disabled-but-still-BYOK-usable case to distinguish. `is_usable_llm`/`usable_default_llm_info` also cannot be ported standalone: the pin's own implementation falls back into `custom_llm_choices`, i.e. cluster 2. |
+| **`FEATURE_INTROS` content (feature-intro popover)** | #404 | The pin's `OneTimeModalModel` grew a reusable "feature intro" popover mechanism (`app/src/workspace/view/feature_intro_modal/`) — a data-driven registry (`FEATURE_INTROS: &[FeatureIntro]`) plus a non-blocking popover view, model wiring, and per-id "seen" tracking on `AISettings`. The mechanism itself is generic and non-cloud, and is ported. Its only registered entry (`FeatureIntroId::CustomModelRouter`) is not: it promotes a Warp-hosted custom-model-router feature this fork does not have, using Warp-branded marketing copy ("Build a custom model router for the Warp Agent..."), the same category of content declined for the "Oz updates" zero-state section (#321). `FEATURE_INTROS` ships empty in this fork; `FeatureIntroId`'s only variant is a `#[cfg(test)]` fixture. Populate it again once there is a real, non-cloud Phosphor feature worth announcing this way — that is a content decision, not a mechanism gap. |
 
 ## Retired features (decision pending on some)
 

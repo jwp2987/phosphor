@@ -213,7 +213,7 @@ pub struct History {
     session_id_to_shell_host: HashMap<SessionId, ShellHost>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkedWorkflowData {
     /// The history entry is linked to a `WorkflowObject` by its ID.
     Id(SyncId),

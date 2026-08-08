@@ -173,6 +173,7 @@ impl TuiProfileMenuModel {
                 .iter()
                 .map(|row| TuiInlineMenuRow {
                     title: row.title.clone(),
+                    prefix: None,
                     description: None,
                     state_suffix: row.is_active.then(|| "active".to_owned()),
                     is_selectable: true,

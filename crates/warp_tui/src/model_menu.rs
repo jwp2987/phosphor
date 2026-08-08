@@ -220,6 +220,7 @@ impl TuiModelMenuModel {
                 .iter()
                 .map(|row| TuiInlineMenuRow {
                     title: row.title.clone(),
+                    prefix: None,
                     description: (!row.is_selectable).then(|| "disabled".to_owned()),
                     state_suffix: row.key_connected.then(|| KEY_CONNECTED_SUFFIX.to_owned()),
                     is_selectable: row.is_selectable,
