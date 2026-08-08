@@ -10,44 +10,100 @@ package remote_server;
 // ── Top-level envelopes ───────────────────────────────────────────
 
 // Top-level envelope for all client → server messages.
+//
+// Wraps every request/notification in one of three scoping envelopes so the
+// daemon knows how to route it (Warp pin 02b53fcd8, "Add proper support for
+// host scoped requests" #12036):
+//
+//   - HostScopedRequest: targets the host, not a specific connection. The
+//     daemon *may* deliver the response on any open connection to that host.
+//   - SessionScopedRequest: targets the connection that sent it; the
+//     response always comes back on that same connection.
+//   - Notification: fire-and-forget, no response.
+//
+// Deviation from the pin (#438, envelope-only scope): this port carries only
+// the wire shape. It does not port the pin's cross-connection failover
+// machinery (`RemoteServerManager::pending_host_requests`,
+// `HostRequestHandle`, `host_response.rs` dispatch, `ClientEvent::
+// HostScopedWriteFailed`) — the daemon still answers a host-scoped request
+// on its originating connection only, identical to today's behavior. That
+// failover behavior is a separate, larger feature increment left for a
+// follow-up issue.
 message ClientMessage {
   string request_id = 1;
   oneof message {
-    Initialize initialize = 2;
-    Abort abort = 3;
-    NavigatedToDirectory navigated_to_directory = 4;
-    LoadRepoMetadataDirectory load_repo_metadata_directory = 5;
-    SessionBootstrapped session_bootstrapped = 6;
-    WriteFile write_file = 7;
-    DeleteFile delete_file = 8;
-    RunCommandRequest run_command = 9;
-    ReadFileContextRequest read_file_context = 10;
-    Authenticate authenticate = 11;
-    OpenBuffer open_buffer = 13;
-    BufferEdit buffer_edit = 14;
-    CloseBuffer close_buffer = 15;
-    SaveBuffer save_buffer = 16;
-    ResolveConflict resolve_conflict = 17;
-    ListDirectory list_directory = 18;
-    ResolvePath resolve_path = 19;
-    CreateDirectory create_directory = 20;
-    ReadFileChunk read_file_chunk = 21;
-    WriteFileChunk write_file_chunk = 22;
-    RipgrepSearchRequest ripgrep_search = 23;
-    GetBranches get_branches = 24;
-    GetCommittedBranchFilesRequest get_committed_branch_files = 25;
-    GetDiffState get_diff_state = 26;
-    UnsubscribeDiffState unsubscribe_diff_state = 27;
-    GitCommitChainRequest git_commit_chain = 28;
-    GitPushRequest git_push = 29;
-    GitCreatePrRequest git_create_pr = 30;
-    // Deviation from the pin (issue #437): the pin (02b53fcd8) carries this
-    // inside its `HostScopedRequest` envelope. The fork's `ClientMessage`
-    // oneof is still flat (the envelope is a separate, larger port — see
-    // issue #438), so this is added directly here instead. #438's in-flight
-    // work restructures this oneof; whichever of the two lands second must
-    // move `discard_files` into `HostScopedRequest` to reconcile.
-    DiscardFilesRequest discard_files = 31;
+    HostScopedRequest host_scoped = 2;
+    SessionScopedRequest session_scoped = 3;
+    Notification notification = 4;
+  }
+}
+
+// Request that targets the host, not a specific connection.
+//
+// Field numbers 12-16 (list_directory, resolve_path, create_directory,
+// read_file_chunk, write_file_chunk) are fork-original: the pin does not
+// have these RPCs at all, so there is no pin classification to follow for
+// them. They are grouped here because they are one-shot, host-local
+// filesystem operations with the same shape as `write_file`/`delete_file`,
+// which the pin does classify as host-scoped.
+//
+// discard_files (17): reconciled here from #508 (merged first), which added
+// `DiscardFilesRequest` directly to the old flat `ClientMessage` oneof
+// because this envelope restructuring (#438) hadn't landed yet — see #508's
+// own doc comment, which flagged exactly this move as required. Host-scoped
+// for the same reason as write_file/delete_file: a one-shot host-local
+// filesystem operation. Field number 17 is the next free slot in this
+// fork-invented oneof, not a verified pin field number (unlike 1-11, which
+// mirror the pin's classification; the exact pin numbering for this field
+// was not available to check against).
+message HostScopedRequest {
+  oneof message {
+    WriteFile write_file = 1;
+    DeleteFile delete_file = 2;
+    ReadFileContextRequest read_file_context = 3;
+    SaveBuffer save_buffer = 4;
+    ResolveConflict resolve_conflict = 5;
+    GetBranches get_branches = 6;
+    GitCommitChainRequest git_commit_chain = 7;
+    GitPushRequest git_push = 8;
+    GitCreatePrRequest git_create_pr = 9;
+    GetCommittedBranchFilesRequest get_committed_branch_files = 10;
+    RipgrepSearchRequest ripgrep_search = 11;
+    ListDirectory list_directory = 12;
+    ResolvePath resolve_path = 13;
+    CreateDirectory create_directory = 14;
+    ReadFileChunk read_file_chunk = 15;
+    WriteFileChunk write_file_chunk = 16;
+    DiscardFilesRequest discard_files = 17;
+  }
+}
+
+// Request that targets a specific connection/session.
+// The response is always delivered on the originating connection.
+message SessionScopedRequest {
+  oneof message {
+    Initialize initialize = 1;
+    NavigatedToDirectory navigated_to_directory = 2;
+    LoadRepoMetadataDirectory load_repo_metadata_directory = 3;
+    RunCommandRequest run_command = 4;
+    // Subscription-establishing requests: the daemon registers per-connection
+    // state (buffer / diff-state subscriptions) keyed to the originating
+    // connection, so the response must come back on that same connection.
+    OpenBuffer open_buffer = 5;
+    GetDiffState get_diff_state = 6;
+  }
+}
+
+// Fire-and-forget message. No response is expected.
+// The daemon processes these inline and does not track them.
+message Notification {
+  oneof message {
+    Abort abort = 1;
+    Authenticate authenticate = 2;
+    SessionBootstrapped session_bootstrapped = 3;
+    BufferEdit buffer_edit = 4;
+    CloseBuffer close_buffer = 5;
+    UnsubscribeDiffState unsubscribe_diff_state = 6;
   }
 }
 // Top-level envelope for all server → client messages.
