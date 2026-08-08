@@ -683,6 +683,25 @@ fn test_find_url_with_delimiter() {
         })
     );
 
+    // Fullwidth comma (U+FF0C), a CJK punctuation mark, must also terminate
+    // the URL even with no ASCII whitespace before it.
+    let blockgrid = mock_blockgrid("https://google.com，");
+    assert_eq!(
+        blockgrid
+            .grid_handler
+            .url_at_point(Point { row: 0, col: 0 }),
+        Some(Link {
+            range: Point { row: 0, col: 0 }..=Point { row: 0, col: 17 },
+            is_empty: false
+        })
+    );
+    assert_eq!(
+        blockgrid
+            .grid_handler
+            .url_at_point(Point { row: 0, col: 18 }),
+        None
+    );
+
     let blockgrid = mock_blockgrid("https://google.com/search?q=warp");
     assert_eq!(
         blockgrid

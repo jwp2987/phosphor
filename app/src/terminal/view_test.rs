@@ -2632,6 +2632,50 @@ fn test_copy_blocks() {
     })
 }
 
+// Regression test for APP-4330: copy() must prioritize selected text in the
+// input over a selected block. It's possible to have both a block and input
+// text selected at the same time, and in that case the user almost always
+// means to copy the input. No corresponding test exists at the oracle pin
+// (02b53fcd8) even though the behavior does; this test was written to cover
+// the port of that behavior (issue #221).
+#[test]
+fn test_copy_prioritizes_input_selection_over_selected_blocks() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_block("ls", "foo");
+            }
+
+            // Select the block.
+            view.selected_blocks.toggle(2.into(), None, Some(1.into()));
+            assert!(!view.selected_blocks.is_empty());
+
+            // Also select all text in the input.
+            view.input.update(ctx, |input, ctx| {
+                input.editor().update(ctx, |editor, ctx| {
+                    editor.set_buffer_text("echo hello", ctx);
+                    editor.select_all(ctx);
+                });
+            });
+            let input_selected_text = view.input.read(ctx, |input, ctx| {
+                input
+                    .editor()
+                    .read(ctx, |editor, ctx| editor.selected_text(ctx))
+            });
+            assert_eq!(input_selected_text, "echo hello");
+
+            // With both a block and input text selected, copy() must copy the
+            // input text, not the block.
+            view.copy(ctx);
+            assert_eq!(read_from_clipboard(ctx), "echo hello");
+        });
+    })
+}
+
 #[test]
 fn test_reinput_blocks() {
     App::test((), |mut app| async move {

@@ -63,6 +63,7 @@ pub(super) fn run_daemon_app(
 ) -> anyhow::Result<()> {
     use warpui::platform::app::AppCallbacks;
     use warpui::platform::AppBuilder;
+    use warpui::SingletonEntity;
 
     AppBuilder::new_headless(AppCallbacks::default(), Box::new(()), None).run(|ctx| {
         // Rotate log files from the previous daemon invocation in the background.
@@ -77,8 +78,47 @@ pub(super) fn run_daemon_app(
         // RepoMetadataModel because LocalRepoMetadataModel::new()
         // subscribes to DetectedRepositories::handle(ctx).
         ctx.add_singleton_model(DirectoryWatcher::new);
+        // Register the skill-provider directories as force-included paths so
+        // the gitignore-pruning watch descend filter still watches gitignored
+        // skill directories (e.g. `.agents/skills`) for `Repository`
+        // subscribers (LSP, MCP), mirroring the non-daemon registration in
+        // `app/src/lib.rs`. Registered before any repository begins watching
+        // so it gates descent on the very first registration. See #170.
+        DirectoryWatcher::handle(ctx).update(ctx, |watcher, _| {
+            watcher.register_force_included_paths(
+                ::ai::skills::SKILL_PROVIDER_DEFINITIONS
+                    .iter()
+                    .map(|provider| provider.skills_path.clone()),
+            );
+        });
         ctx.add_singleton_model(|_ctx| DetectedRepositories::default());
-        ctx.add_singleton_model(RepoMetadataModel::new_with_incremental_updates);
+        ctx.add_singleton_model(|ctx| {
+            let model = RepoMetadataModel::new_with_incremental_updates(ctx);
+
+            // Force-include project skill-provider directories even when
+            // gitignored, and register them as standing-query targets so the
+            // skill watcher's `StandingQueryResultsUpdated` subscription
+            // sees skill files as soon as they're discovered, without
+            // waiting on a full `RepositoryUpdated` tree rebuild. Mirrors
+            // the registration `app/src/lib.rs` performs for the non-daemon
+            // (app) path — the daemon previously skipped both calls, so
+            // remote project-skill discovery silently had nothing to watch.
+            // See #170.
+            model.register_force_included_paths(
+                ::ai::skills::SKILL_PROVIDER_DEFINITIONS
+                    .iter()
+                    .map(|provider| provider.skills_path.clone()),
+                ctx,
+            );
+            model.set_project_skill_provider_paths(
+                ::ai::skills::SKILL_PROVIDER_DEFINITIONS
+                    .iter()
+                    .map(|provider| provider.skills_path.clone()),
+                ctx,
+            );
+
+            model
+        });
         ctx.add_singleton_model(warp_files::FileModel::new);
         // GlobalBufferModel must be registered before ServerModel: the
         // server-side buffer-sync handling (server_model.rs /
