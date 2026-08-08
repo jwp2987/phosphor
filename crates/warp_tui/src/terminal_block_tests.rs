@@ -72,7 +72,7 @@ fn agent_monitored_command_block_is_not_rendered_at_top_level() {
     // Sanity: this is an agent-requested command whose hide flag is off, so it
     // is otherwise "visible" and would leak into the top-level transcript.
     assert!(block.is_agent_requested_command());
-    assert!(block.is_visible(block_list.agent_view_state()));
+    assert!(block.is_visible(block_list.transcript_scope()));
 
     // Regression: an agent's command is rendered inline inside its agent
     // block's shell-command view, so it must NOT also appear as a standalone

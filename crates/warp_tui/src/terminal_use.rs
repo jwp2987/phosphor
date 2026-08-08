@@ -89,7 +89,7 @@ pub(super) fn tui_input_target(terminal_model: &TerminalModel) -> TuiInputTarget
         block_list.is_script_execution(),
         block_list
             .active_block()
-            .is_visible(block_list.agent_view_state()),
+            .is_visible(block_list.transcript_scope()),
         block_list.is_bootstrapping_precmd_done(),
         inline_process_owns_input(terminal_model),
     )
