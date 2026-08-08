@@ -13,15 +13,35 @@
 # Measured on 2026-08-07 by the first `cargo nextest (Linux)` run this repo has
 # ever had: 4280 tests, 4269 passed, 11 failed, 33 skipped.
 
-# --- DELIBERATE: these pin defects that are open by design (5) ---------------
-# Ported by PR #259 to hold the behaviour of #251/#253 until a maintainer
-# decides the intended semantics. They assert the ORACLE's behaviour, which the
-# fork does not yet implement. Do not "fix" by weakening them.
-ai::blocklist::history_model::tests::fork_exact_reconciles_fork_point_client_tool_calls
-ai::blocklist::history_model::tests::rewind_orphans_subagent_subtask_invoked_after_rewind_point
-ai::blocklist::history_model::tests::rewind_removes_summarized_away_user_query_from_next_request
-ai::blocklist::history_model::tests::rewind_straddle_subagent_call_kept_result_removed_does_not_resend_subtask
-ai::blocklist::history_model::tests::straddle_rewind_followup_requests_are_clean_and_durable
+# Issues #251 and #253 are CLOSED -- the five tests that used to sit here now
+# pass, and the list is empty. They were never "open by design"; they asserted
+# the oracle's behaviour while this fork implemented three separate defects:
+#
+#   orphaned subtasks
+#       `truncate_from_exchange` only ever rewrote the ROOT task, so rewinding
+#       past a `ToolCall::Subagent` left the subtask it spawned in the store.
+#       Nothing referenced it, but request construction kept walking it, so the
+#       rewound sub-agent silently re-ran. Fixed by
+#       `TaskStore::prune_unreachable_subtasks` (BFS from the root over
+#       surviving sub-agent calls -- transitive, since a subtask may itself
+#       spawn one).
+#
+#   straddled sub-agent pairs
+#       a sub-agent's tool_call and its tool_call_result are written turns
+#       apart, so a rewind between them selected exactly one half. The orphan
+#       is a malformed request to every provider, and the surviving call kept
+#       the subtask reachable. Fixed by `expand_to_whole_subagent_pairs`. This
+#       also covered the summarization case, where the effect was a user query
+#       that had been deliberately summarized away being dragged back into the
+#       next request.
+#
+#   fork-point tool calls
+#       an exact fork can cut between a tool_call and its result.
+#       `reconcile_fork_point_tool_calls` now pulls a real result forward when
+#       one exists in a dropped turn, and synthesizes a Cancel only when none
+#       does -- never for a server tool_call (it would pop an agent off the
+#       server's run stack on restore) and never outside the fork-point
+#       exchange (pre-existing danglers are history, not damage).
 
 # Issue #441 is fully closed -- all three of its tests now pass, and each turned
 # out to be a distinct port omission rather than the single inverted queueing

@@ -3881,6 +3881,64 @@ impl AIConversation {
     /// exchanges are permanently deleted from this conversation.
     ///
     /// Returns the set of exchange IDs that were removed.
+    /// Grows `message_ids` so that, for every sub-agent tool_call/tool_call_result
+    /// pair it touches, BOTH halves are present.
+    ///
+    /// Truncation works in whole exchanges, but a sub-agent pair is not confined to
+    /// one: the call is written when the sub-agent is spawned and the result only
+    /// when it finishes, which may be several turns later. Rewinding between the two
+    /// therefore selects exactly one half. Keeping the orphan is not harmless -- a
+    /// `tool_use` with no matching result is a malformed request to every provider,
+    /// and the subtask stays reachable through the surviving call, so the sub-agent
+    /// is re-sent.
+    ///
+    /// Only sub-agent pairs are expanded. Ordinary tool calls (`run_shell_command`
+    /// and friends) are left alone: they own no task and a rewind that splits one is
+    /// the caller's existing, separately-tested behaviour.
+    fn expand_to_whole_subagent_pairs(
+        &self,
+        mut message_ids: HashSet<MessageId>,
+    ) -> HashSet<MessageId> {
+        use crate::ai::agent::task::helper::{MessageExt, ToolCallExt};
+
+        let Some(root_task) = self.task_store.root_task() else {
+            return message_ids;
+        };
+
+        // tool_call_id -> the message ids of both halves, for sub-agent calls only.
+        let mut subagent_pairs: HashMap<String, Vec<MessageId>> = HashMap::new();
+        let mut subagent_call_ids: HashSet<String> = HashSet::new();
+        for message in root_task.messages() {
+            if let Some(tool_call) = message.tool_call() {
+                if tool_call.subagent().is_some() {
+                    subagent_call_ids.insert(tool_call.tool_call_id.clone());
+                    subagent_pairs
+                        .entry(tool_call.tool_call_id.clone())
+                        .or_default()
+                        .push(MessageId::new(message.id.clone()));
+                }
+            }
+        }
+        // Second pass for results: a result can only be matched once its call is known.
+        for message in root_task.messages() {
+            if let Some(result) = message.tool_call_result() {
+                if subagent_call_ids.contains(&result.tool_call_id) {
+                    subagent_pairs
+                        .entry(result.tool_call_id.clone())
+                        .or_default()
+                        .push(MessageId::new(message.id.clone()));
+                }
+            }
+        }
+
+        for half_ids in subagent_pairs.into_values() {
+            if half_ids.iter().any(|id| message_ids.contains(id)) {
+                message_ids.extend(half_ids);
+            }
+        }
+        message_ids
+    }
+
     pub fn truncate_from_exchange(
         &mut self,
         from_exchange_id: AIAgentExchangeId,
@@ -3907,6 +3965,13 @@ impl AIConversation {
             .flat_map(|ex| ex.added_message_ids.iter().cloned())
             .collect();
 
+        // A sub-agent's tool_call and its tool_call_result can straddle the rewind
+        // point: the call is spawned in a kept turn, the result arrives in a turn
+        // being rewound. Removing only the half that falls inside the rewound range
+        // leaves the other half dangling -- a `tool_use` with no result, which the
+        // subtask still hangs off, so the rewound sub-agent re-runs. Both halves go.
+        let message_ids_to_remove = self.expand_to_whole_subagent_pairs(message_ids_to_remove);
+
         if let Some(new_todo_lists) = self.task_store.modify_root_task(|root_task| {
             root_task.truncate_exchanges_from(from_exchange_id);
             root_task.remove_messages(&message_ids_to_remove);
@@ -3916,6 +3981,16 @@ impl AIConversation {
         }) {
             self.todo_lists = new_todo_lists;
         }
+
+        // Truncation above only rewrites the ROOT task. A rewind that removes a
+        // sub-agent's `ToolCall::Subagent` message orphans the subtask it spawned:
+        // nothing references it any more, but it stays in the store and request
+        // construction keeps walking it, so the rewound sub-agent silently re-runs.
+        // Remove the rewound messages from subtasks too, then drop whatever is no
+        // longer reachable from the root.
+        self.task_store
+            .remove_messages_from_non_root_tasks(&message_ids_to_remove);
+        self.task_store.prune_unreachable_subtasks();
 
         // Make sure we don't have stale code review comment state
         self.code_review = None;

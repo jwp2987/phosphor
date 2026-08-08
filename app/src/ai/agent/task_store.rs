@@ -233,6 +233,79 @@ impl TaskStore {
         Some(task)
     }
 
+    /// Drops every task no longer reachable from the root by a surviving sub-agent
+    /// tool call, and returns the ids removed.
+    ///
+    /// A sub-agent's subtask is only ever reached through the `ToolCall::Subagent`
+    /// message that spawned it. Rewinding past that message therefore orphans the
+    /// subtask: nothing references it, but it stays in the store, and everything
+    /// that walks the store -- request construction above all -- keeps finding it.
+    /// The symptom is a rewound sub-agent silently re-running.
+    ///
+    /// Reachability is computed transitively, because a subtask may itself spawn a
+    /// sub-agent; pruning only direct children would strand whole subtrees.
+    pub fn prune_unreachable_subtasks(&mut self) -> Vec<TaskId> {
+        let root_id = self.root_task_id.clone();
+
+        // BFS from the root over surviving Subagent tool calls.
+        let mut reachable: std::collections::HashSet<TaskId> =
+            std::collections::HashSet::from([root_id.clone()]);
+        let mut frontier = vec![root_id];
+        while let Some(task_id) = frontier.pop() {
+            let Some(task) = self.tasks.get(&task_id) else {
+                continue;
+            };
+            for message in task.messages() {
+                let Some(subagent_call) = message
+                    .tool_call()
+                    .and_then(|tc: &api::message::ToolCall| tc.subagent())
+                else {
+                    continue;
+                };
+                let subtask_id = TaskId::new(subagent_call.task_id.clone());
+                if reachable.insert(subtask_id.clone()) {
+                    frontier.push(subtask_id);
+                }
+            }
+        }
+
+        let unreachable: Vec<TaskId> = self
+            .tasks
+            .keys()
+            .filter(|id| !reachable.contains(*id))
+            .cloned()
+            .collect();
+        for task_id in &unreachable {
+            self.tasks.remove(task_id);
+        }
+        if !unreachable.is_empty() {
+            self.linearized_refs
+                .retain(|r| !unreachable.contains(&r.task_id));
+        }
+        unreachable
+    }
+
+    /// Removes `message_ids` from every task except the root.
+    ///
+    /// Truncation only ever rewrote the root task, so a rewind that straddled a
+    /// sub-agent left the subtask's own messages intact and re-sendable.
+    pub fn remove_messages_from_non_root_tasks(
+        &mut self,
+        message_ids: &std::collections::HashSet<super::MessageId>,
+    ) {
+        if message_ids.is_empty() {
+            return;
+        }
+        let root_id = self.root_task_id.clone();
+        for (task_id, task) in self.tasks.iter_mut() {
+            if *task_id == root_id {
+                continue;
+            }
+            task.remove_messages(message_ids);
+        }
+        self.rebuild_linearized_refs_index();
+    }
+
     fn lookup_exchange(&self, r: &ExchangeRef) -> Option<&AIAgentExchange> {
         self.tasks
             .get(&r.task_id)?

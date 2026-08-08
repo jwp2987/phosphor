@@ -1486,6 +1486,25 @@ impl BlocklistAIHistoryModel {
             ));
         }
 
+        // An exact fork cuts at the end of the fork-point exchange, which can land
+        // between a tool_call and its result. Every unpaired client tool_call left
+        // at that boundary has to be reconciled, or the forked conversation opens
+        // with a `tool_use` no provider will accept.
+        let mut truncated_tasks = truncated_tasks;
+        if let Some(fork_point_exchange) = conversation.exchange_with_id(from_exchange_id) {
+            let fork_point_message_ids: HashSet<MessageId> = fork_point_exchange
+                .added_message_ids
+                .iter()
+                .cloned()
+                .collect();
+            reconcile_fork_point_tool_calls(
+                &mut truncated_tasks,
+                &source_tasks,
+                &root_task_id,
+                &fork_point_message_ids,
+            );
+        }
+
         let updated_tasks_with_new_ids = update_forked_task_properties(
             truncated_tasks,
             prefix,
@@ -2958,3 +2977,104 @@ pub const PRE_REWIND_PREFIX: &str = "(Pre-Rewind) ";
 #[cfg(test)]
 #[path = "history_model_test.rs"]
 mod tests;
+
+/// Pairs up client tool_calls that an exact fork left hanging at the fork point.
+///
+/// An exact fork keeps everything through the fork-point exchange and drops the
+/// rest, which can cut between a tool_call and its tool_call_result. Four cases
+/// arise, and only the first two get a result:
+///
+/// 1. The result exists in a dropped later turn -- pull the REAL result forward,
+///    so the fork keeps the work the tool actually did.
+/// 2. No result exists anywhere (the call was still in flight when the fork was
+///    taken) -- synthesize a `Cancel` immediately after the call, carrying the
+///    call's `request_id`.
+/// 3. A SERVER tool_call is deliberately left unresolved. Synthesizing a result
+///    for one pops an agent off the server's run stack when the conversation is
+///    restored, corrupting the fork in a way that is far worse than a dangling
+///    call.
+/// 4. A tool_call that was ALREADY dangling before the fork point is reproduced
+///    as-is. It is pre-existing history, not damage this fork caused, and
+///    "repairing" it would rewrite what the user actually saw.
+fn reconcile_fork_point_tool_calls(
+    truncated_tasks: &mut [warp_multi_agent_api::Task],
+    source_tasks: &[warp_multi_agent_api::Task],
+    root_task_id: &TaskId,
+    fork_point_message_ids: &HashSet<MessageId>,
+) {
+    use crate::ai::agent::task::helper::MessageExt;
+
+    let Some(root) = truncated_tasks
+        .iter_mut()
+        .find(|t| TaskId::new(t.id.clone()) == *root_task_id)
+    else {
+        return;
+    };
+    let source_root = source_tasks
+        .iter()
+        .find(|t| TaskId::new(t.id.clone()) == *root_task_id);
+
+    let already_paired: HashSet<String> = root
+        .messages
+        .iter()
+        .filter_map(|m| m.tool_call_result().map(|r| r.tool_call_id.clone()))
+        .collect();
+
+    // Collect first, mutate after: inserting while iterating would invalidate the
+    // indices this depends on.
+    let mut insertions: Vec<(usize, warp_multi_agent_api::Message)> = Vec::new();
+    for (index, message) in root.messages.iter().enumerate() {
+        // Case 4: only the fork-point exchange is reconciled.
+        if !fork_point_message_ids.contains(&MessageId::new(message.id.clone())) {
+            continue;
+        }
+        let Some(tool_call) = message.tool_call() else {
+            continue;
+        };
+        // Case 3: never synthesize for a server tool_call.
+        if matches!(
+            tool_call.tool,
+            Some(warp_multi_agent_api::message::tool_call::Tool::Server(_))
+        ) {
+            continue;
+        }
+        if already_paired.contains(&tool_call.tool_call_id) {
+            continue;
+        }
+
+        // Case 1: the real result, from a turn this fork dropped.
+        let real_result = source_root.and_then(|source_root| {
+            source_root
+                .messages
+                .iter()
+                .find(|m| {
+                    m.tool_call_result()
+                        .is_some_and(|r| r.tool_call_id == tool_call.tool_call_id)
+                })
+                .cloned()
+        });
+
+        let result_message = real_result.unwrap_or_else(|| {
+            // Case 2: cloned from the call so task_id, request_id and any future
+            // envelope fields carry over; only identity and payload change.
+            let mut cancel = message.clone();
+            cancel.id = format!("{}_cancel", message.id);
+            cancel.message = Some(warp_multi_agent_api::message::Message::ToolCallResult(
+                warp_multi_agent_api::message::ToolCallResult {
+                    tool_call_id: tool_call.tool_call_id.clone(),
+                    context: None,
+                    result: Some(
+                        warp_multi_agent_api::message::tool_call_result::Result::Cancel(()),
+                    ),
+                },
+            ));
+            cancel
+        });
+        insertions.push((index + 1, result_message));
+    }
+
+    for (shift, (index, message)) in insertions.into_iter().enumerate() {
+        root.messages.insert(index + shift, message);
+    }
+}
+
