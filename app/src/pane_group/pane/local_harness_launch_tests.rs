@@ -2,7 +2,8 @@ use warp_cli::agent::Harness;
 
 use super::{
     build_local_claude_child_command, build_local_opencode_child_command,
-    normalize_local_child_harness, validate_local_harness_shell,
+    normalize_local_child_harness, prepare_local_harness_child_launch,
+    validate_local_harness_shell,
 };
 use crate::terminal::shell::ShellType;
 
@@ -37,8 +38,43 @@ fn normalize_local_child_harness_accepts_supported_aliases() {
 #[test]
 fn normalize_local_child_harness_rejects_unsupported_values() {
     assert_eq!(normalize_local_child_harness("oz"), None);
-    assert_eq!(normalize_local_child_harness("codex"), None);
     assert_eq!(normalize_local_child_harness(""), None);
+}
+
+#[test]
+fn normalize_local_child_harness_accepts_codex() {
+    // Issue #411's pinned-parity requirement made `Harness::parse_local_child_harness`
+    // recognize "codex", so it now parses successfully. That does NOT mean local
+    // Codex child harnesses can actually be launched yet -- see
+    // `prepare_local_harness_child_launch_rejects_codex` below, which proves the
+    // rejection moved from parsing to launch rather than disappearing.
+    assert_eq!(
+        normalize_local_child_harness("codex"),
+        Some(Harness::Codex)
+    );
+}
+
+#[tokio::test]
+async fn prepare_local_harness_child_launch_rejects_codex() {
+    // "codex" now parses (see `normalize_local_child_harness_accepts_codex`), but
+    // there is no local-child spawn implementation for it yet (that's issue #323's
+    // scope). Launching must still fail clearly instead of silently no-oping.
+    let result = prepare_local_harness_child_launch(
+        "prompt".to_string(),
+        "codex".to_string(),
+        None,
+        Some(ShellType::Bash),
+        None,
+    )
+    .await;
+
+    match result {
+        Err(message) => assert_eq!(
+            message,
+            "Local Codex child harness support is not yet implemented."
+        ),
+        Ok(_) => panic!("local Codex child harness launch unexpectedly succeeded"),
+    }
 }
 
 #[test]

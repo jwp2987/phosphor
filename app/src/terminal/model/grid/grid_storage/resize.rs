@@ -337,7 +337,21 @@ impl GridStorage {
 
             loop {
                 // Remove all cells which require reflowing.
-                let mut wrapped = match row.shrink(columns) {
+                let shrunk = row.shrink(columns);
+                if !reflow {
+                    // If `row.shrink` just cut off a wide char's spacer (the char
+                    // itself lands exactly on the new last column), the row now ends
+                    // in an orphaned WIDE_CHAR with no WIDE_CHAR_SPACER to match it.
+                    // With reflow disabled there is no next row to carry the other
+                    // half into (see the `Some(wrapped) if reflow` arm below, which
+                    // does that relocation), so reset the cell instead of leaving the
+                    // grid in a state `assert_no_orphaned_wide_chars` rejects. Preserve
+                    // the cell's background so a cleared wide char doesn't lose its
+                    // attributes across the resize.
+                    reset_invalid_trailing_wide_char(&mut row, columns);
+                }
+
+                let mut wrapped = match shrunk {
                     Some(wrapped) if reflow => wrapped,
                     _ => {
                         let cursor_buffer_line =
@@ -353,19 +367,6 @@ impl GridStorage {
                             Vec::new()
                         } else {
                             // Since it fits, just push the existing line without any reflow.
-                            //
-                            // If `row.shrink` just cut off a wide char's spacer (the char
-                            // itself lands exactly on the new last column), the row now ends
-                            // in an orphaned WIDE_CHAR with no WIDE_CHAR_SPACER to match it.
-                            // With reflow disabled there is no next row to carry the other
-                            // half into (see the `Some(wrapped) if reflow` arm above, which
-                            // does that relocation), so clear the cell instead of leaving the
-                            // grid in a state `assert_no_orphaned_wide_chars` rejects.
-                            if row.len() >= columns
-                                && row[columns - 1].flags().contains(Flags::WIDE_CHAR)
-                            {
-                                row[columns - 1] = Cell::default();
-                            }
                             new_raw.push(row);
                             break;
                         }
@@ -485,4 +486,19 @@ impl GridStorage {
         // Clamp the saved cursor to the grid.
         self.saved_cursor.point.col = min(self.saved_cursor.point.col, columns - 1);
     }
+}
+
+/// If the last cell in the (already-shrunk) row is an orphaned `WIDE_CHAR`
+/// with no matching `WIDE_CHAR_SPACER` at `columns`, reset it so
+/// `assert_no_orphaned_wide_chars` doesn't reject the grid. This only
+/// happens when reflow is disabled and `row.shrink` lands the wide char's
+/// column exactly on the new last column, cutting off its spacer with
+/// nowhere to relocate the wide char to. Preserve the cell's background so
+/// the reset doesn't lose the cell's attributes across the resize.
+fn reset_invalid_trailing_wide_char(row: &mut Row, columns: usize) {
+    if columns == 0 || !row[columns - 1].flags().contains(Flags::WIDE_CHAR) {
+        return;
+    }
+    let bg = row[columns - 1].bg;
+    row[columns - 1] = bg.into();
 }

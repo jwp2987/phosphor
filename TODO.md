@@ -40,8 +40,8 @@ branches while the same ground was covered again. All branches survive locally.
 |---|---|---|---|
 | #480 | feat/wire-local-control-cli | #216 | RECOVERED, landed `974cb9cc4` |
 | #529 | ci/208-run-integration-tests | #208 | RECOVERED, landed `974cb9cc4` |
-| #538 | fix/422-419-grid-clear-and-dcs | #422,#419 | recovering -- 1 real bug found |
-| #546 | feat/394-411-288-cli-agent-variants | #411 | recovering -- 1 semantic conflict |
+| #538 | fix/422-419-grid-clear-and-dcs | #422,#419 | RECOVERED -- real bug fixed (`reset_invalid_trailing_wide_char` now preserves `bg`, matching the oracle) |
+| #546 | feat/394-411-288-cli-agent-variants | #411 | RECOVERED -- semantic conflict resolved (parse accepts `Harness::Codex`; local launch still rejects it, test relocated to prove both) |
 | #565 | test/418-399-terminal-view | #418 | SUPERSEDED (my port covers it) |
 | #566 | ci/multi-package-feature-check | -- | SUPERSEDED (precheck has it) |
 | #489 | fix/373-ask-user-question-auto-approve | #373 | maintainer chose to leave as-is |
@@ -84,9 +84,11 @@ only reality and never looking at the branches:**
 - [ ] #549 duplicate dead test-fixture helpers
 - [ ] #547 view_components: ActionButton.callout / AlertConfig::success / Dropdown::Naked unwired
 - [ ] #555 prompt/editor_modal: same-line-prompt toggle UI missing
-- [ ] #532 CLOSE-ON-INSPECTION: its premise is false. It claims #419 landed the DCS
-      session_id scaffolding; `requires_registered_session`, `is_registered_session`
-      and `should_validate_dcs_hook_session_id` are ABSENT from main. Fold into #419.
+- [x] #532 CLOSED 2026-08-08: #419 has now landed (recovered from PR #538) and
+      `requires_registered_session`, `is_registered_session`, and
+      `should_validate_dcs_hook_session_id` are present in
+      `app/src/terminal/model/ansi/{dcs_hooks,mod}.rs` and `terminal_model.rs`. The
+      original premise ("its premise is false, #419 hasn't landed") is now moot.
 
 ### Tier 2 — small (~half a day each)
 - [ ] #523 cmd-k: `try_clear_buffer_in_agent_view` still checks only `is_agent_monitoring`
@@ -101,8 +103,18 @@ only reality and never looking at the branches:**
 - [ ] #342 cannot port repository_gated_command_* without simulate_directory_for_completion
 - [ ] #396 forking a conversation starts the new pane in the wrong working directory
 - [ ] #403 notebooks/editor: mermaid asset-load relayout tracking missing
-- [ ] #411 warp_cli: Harness has no Codex variant
-- [ ] #422 terminal/grid: FullGridClearBehavior missing
+- [x] #411 warp_cli: Harness has no Codex variant -- DONE 2026-08-08. Recovered from
+      closed PR #546 (`feat/394-411-288-cli-agent-variants`); `Harness::Codex` parses
+      everywhere including local-child-harness normalization, but local launch still
+      returns "Local Codex child harness support is not yet implemented." (that gap
+      is #323's scope, not #411's). Test relocated in
+      `local_harness_launch_tests.rs` to assert both halves of the contract.
+- [x] #422 terminal/grid: FullGridClearBehavior missing -- DONE 2026-08-08. Recovered
+      from closed PR #538 (`fix/422-419-grid-clear-and-dcs`); fixed a real bug the
+      port's own test caught (shrink-resize was losing cell `bg` via
+      `Cell::default()` instead of preserving it -- see
+      `reset_invalid_trailing_wide_char` in
+      `app/src/terminal/model/grid/grid_storage/resize.rs`, matching the oracle).
 - [ ] #552 search/ai_context_menu: render_search_bar never called
 - [ ] #554 code/editor_management: CodeManagerEvent::EditCompleted has no subscriber
 
@@ -113,7 +125,9 @@ only reality and never looking at the branches:**
 - [ ] #147 · #216 · #217 · #254 · #256 · #316 · #323 · #338 · #341 · #343
 - [ ] #353 remote agent context snapshot (producer for #438's plumbing; #438 closed
       with `remote_agent_context_snapshot()` returning None in production until this lands)
-- [ ] #388 · #389 · #390 · #395 · #397 · #431 · #536 · #548 · #553 · #419
+- [ ] #388 · #389 · #390 · #395 · #397 · #431 · #536 · #548 · #553
+      (#419 DONE 2026-08-08, recovered from PR #538 alongside #422 -- see the
+      RECOVERED WORK table above)
 
 ### Tier 4 — large (a week+)
 - [ ] #210 · #252 · #289 · #381 · #382 · #236 · #349 · #324 · #142
