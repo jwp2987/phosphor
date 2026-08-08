@@ -122,6 +122,7 @@ fn restored_user_query_message(task_id: &str, request_id: &str, directory: &str)
         task_id: task_id.to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::UserQuery(api::message::UserQuery {
             query: "Show me local images and a Mermaid diagram".to_string(),
             context: Some(api::InputContext {
@@ -147,6 +148,7 @@ fn restored_agent_output_message(task_id: &str, request_id: &str) -> api::Messag
         task_id: task_id.to_string(),
         server_message_data: String::new(),
         citations: vec![],
+        fetched_memories: vec![],
         message: Some(api::message::Message::AgentOutput(
             api::message::AgentOutput {
                 text: concat!(
