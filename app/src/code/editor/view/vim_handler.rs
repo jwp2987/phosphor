@@ -13,8 +13,11 @@ use vim::vim::{
     VimMotion, VimOperand, VimOperator, VimTextObject, WordMotion,
 };
 use warp_editor::{
-    content::buffer::{AutoScrollBehavior, BufferEditAction, EditOrigin, SelectionOffsets, VimInsertPoint},
+    content::buffer::{
+        AutoScrollBehavior, BufferEditAction, EditOrigin, SelectionOffsets, VimInsertPoint,
+    },
     model::{CoreEditorModel, PlainTextEditorModel},
+    render::model::AutoScrollMode,
     selection::{TextDirection, TextUnit},
 };
 use warpui::{SingletonEntity, ViewContext};
@@ -966,6 +969,24 @@ impl VimHandler for CodeEditorView {
                 self.vim_escape(ctx);
             }
         }
+    }
+
+    fn center_cursor_vertically(&mut self, ctx: &mut ViewContext<Self>) {
+        let cursor_offset = self
+            .model
+            .as_ref(ctx)
+            .buffer_selection_model()
+            .as_ref(ctx)
+            .first_selection_head();
+        self.model
+            .as_ref(ctx)
+            .render_state()
+            .clone()
+            .update(ctx, |render_state, _ctx| {
+                render_state.request_autoscroll_to(AutoScrollMode::PositionOffsetInViewportCenter(
+                    cursor_offset,
+                ));
+            });
     }
 }
 

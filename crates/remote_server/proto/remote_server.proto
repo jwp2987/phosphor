@@ -41,6 +41,13 @@ message ClientMessage {
     GitCommitChainRequest git_commit_chain = 28;
     GitPushRequest git_push = 29;
     GitCreatePrRequest git_create_pr = 30;
+    // Deviation from the pin (issue #437): the pin (02b53fcd8) carries this
+    // inside its `HostScopedRequest` envelope. The fork's `ClientMessage`
+    // oneof is still flat (the envelope is a separate, larger port — see
+    // issue #438), so this is added directly here instead. #438's in-flight
+    // work restructures this oneof; whichever of the two lands second must
+    // move `discard_files` into `HostScopedRequest` to reconcile.
+    DiscardFilesRequest discard_files = 31;
   }
 }
 // Top-level envelope for all server → client messages.
@@ -79,6 +86,7 @@ message ServerMessage {
     GitCommitChainResponse git_commit_chain_response = 31;
     GitPushResponse git_push_response = 32;
     GitCreatePrResponse git_create_pr_response = 33;
+    DiscardFilesResponse discard_files_response = 34;
   }
 }
 
@@ -972,6 +980,25 @@ message UnsubscribeDiffState {
   DiffMode mode = 2;
 }
 
+// Client → server: discard changes for one or more files. Runs
+// git restore/stash/rm on the remote filesystem. The SSH-remote equivalent
+// of the local code-review "discard changes" action (issue #437).
+message DiscardFilesRequest {
+  string repo_path = 1;
+  repeated FileStatusInfo files = 2;
+  bool should_stash = 3;
+  // Branch to restore against. Absent means HEAD.
+  optional string branch_name = 4;
+  // The diff mode the request originated from. Deviation from the pin: the
+  // fork's daemon does not key a per-(repo, mode) model cache by this field
+  // (see `ServerModel::handle_discard_files`) — after a successful discard
+  // it refreshes every subscribed mode for the repo, since discarding a file
+  // changes the diff against every mode, not just the requesting one. The
+  // field is still carried over the wire for parity with the pin's request
+  // shape and in case future daemon-side model caching needs it.
+  DiffMode mode = 5;
+}
+
 // Error payload for GetDiffStateResponse.
 message DiffStateError {
   string message = 1;
@@ -1013,4 +1040,18 @@ message DiffStateFileDelta {
   string file_path = 3;
   optional FileDiff diff = 4;
   optional DiffMetadata metadata = 5;
+}
+
+// Server → client: result of a DiscardFilesRequest.
+message DiscardFilesResponse {
+  oneof result {
+    DiscardFilesSuccess success = 1;
+    DiscardFilesError error = 2;
+  }
+}
+
+message DiscardFilesSuccess {}
+
+message DiscardFilesError {
+  string message = 1;
 }
