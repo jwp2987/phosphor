@@ -1,16 +1,26 @@
 use super::*;
+use crate::LLMProvider;
 use warpui::App;
 
 // Ported from Warp's `crates/ai/src/api_keys_tests.rs` at the pinned oracle
 // (`02b53fcd8`, release `2026.07.29.09.05` stable — see `ORACLE.md`), which has
 // 903 lines / 67 `#[test]`s. An earlier pass measured against `warp/master`
 // (71 tests); the classification below is re-verified against the pin and the
-// buckets are: 10 ported / 5 blocked / 16 superseded / 36 cloud = 67.
+// buckets are: 12 ported / 3 blocked / 16 superseded / 36 cloud = 67.
 //
 // Every test below keeps Warp's assertions verbatim; only *shape* is adapted
 // (Warp's `persist_provider_key(LLMProvider, ..)` -> this fork's per-provider
 // setters, and the dropped `geap_binding` parameter on `api_keys_for_request`).
 // See issues #142 and #210.
+//
+// `llm_provider_parses_supported_api_key_provider_names` and
+// `llm_provider_rejects_unsupported_api_key_provider` were blocked pending
+// `LLMProvider::from_api_key_slug`, which now exists as `crate::LLMProvider`
+// (`llm_provider.rs`) -- ported alongside the `--set-provider-api-key` /
+// `--clear-provider-api-key` flags on `warp_tui`'s `TuiArgs`
+// (`crates/warp_tui/src/session.rs`) that are its only caller. See issues
+// #392 / #225 and `llm_provider.rs`'s module docs for why that type is
+// narrower than, and separate from, `app`'s own `ai::llms::LLMProvider`.
 //
 // The remaining Warp tests are blocked, and the reason matters more than the
 // count: in this fork `ApiKeyManager` is *not* the BYOP surface. The BYOP key
@@ -22,16 +32,8 @@ use warpui::App;
 // of upstream's fixed 4-provider `ApiKeyManager`"). Its own persistence
 // coverage now lives in `app/src/ai/agent_providers/secrets_tests.rs`.
 //
-// Blocked because the fork lacks the symbol (5 tests):
+// Blocked because the fork lacks the symbol (3 tests):
 //
-//   - `LLMProvider::from_api_key_slug` — the enum exists in this fork
-//     (`app/src/ai/llms.rs`) but not the slug parser, because the parser only
-//     exists at the pin to back the `--set-provider-api-key` /
-//     `--clear-provider-api-key` CLI flags on Warp's TUI
-//     (`crates/warp_tui/src/session.rs`), which this fork does not have.
-//     Porting the tests means porting that CLI flow first; tracked as #225.
-//     Blocks `llm_provider_parses_supported_api_key_provider_names` and
-//     `llm_provider_rejects_unsupported_api_key_provider` (2).
 //   - `ApiKeys::provider_key_count` — method absent. It is dead code at the
 //     pin too (defined and tested, zero non-test call sites), so adding it
 //     here would import dead code purely to host a test. Blocks the three
@@ -104,6 +106,33 @@ fn make_manager(keys: ApiKeys) -> ApiKeyManager {
         aws_credentials_state: AwsCredentialsState::Missing,
         aws_credentials_refresh_strategy: AwsCredentialsRefreshStrategy::default(),
     }
+}
+
+// ── provider slug parsing (#392 / #225) ─────────────────────────
+
+#[test]
+fn llm_provider_parses_supported_api_key_provider_names() {
+    assert_eq!(
+        LLMProvider::from_api_key_slug("anthropic"),
+        Ok(LLMProvider::Anthropic)
+    );
+    assert_eq!(
+        LLMProvider::from_api_key_slug("open-ai"),
+        Ok(LLMProvider::OpenAI)
+    );
+    assert_eq!(
+        LLMProvider::from_api_key_slug("google"),
+        Ok(LLMProvider::Google)
+    );
+    assert_eq!(LLMProvider::from_api_key_slug("grok"), Ok(LLMProvider::Xai));
+}
+
+#[test]
+fn llm_provider_rejects_unsupported_api_key_provider() {
+    assert_eq!(
+        LLMProvider::from_api_key_slug("openrouter"),
+        Err("provider must be one of: anthropic, openai, google, grok".to_owned())
+    );
 }
 
 // ── persisted provider keys ─────────────────────────────────────

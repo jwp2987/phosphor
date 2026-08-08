@@ -2957,6 +2957,42 @@ macro_rules! delegate {
     };
 }
 
+/// Like `delegate!`, but image completions are output, even before preexec.
+///
+/// A completed inline image (iTerm2 OSC 1337 or Kitty graphics) that arrives before the
+/// command starts running still belongs in the output grid, not the header/command grid —
+/// unlike ordinary character output, it should be visible immediately rather than dropped or
+/// mistaken for prompt content. The one exception is the `WarpInput` bootstrap stage, where
+/// there is no real output grid to route to yet.
+macro_rules! delegate_image_completion {
+    ($self:ident.$method:ident( $( $arg:expr_2021 ),* )) => {
+        match $self.header_grid.receiving_chars_for_prompt {
+            Some(ansi::PromptKind::Initial) => {
+                $self.header_grid.$method($( $arg ),*)
+            },
+            Some(ansi::PromptKind::Right) => {
+                if !$self.ignore_next_rprompt {
+                    $self.rprompt_grid.$method($( $arg ),*)
+                } else {
+                    Default::default()
+                }
+            },
+            _ if $self.bootstrap_stage == BootstrapStage::WarpInput => Default::default(),
+            _ => {
+                let had_visible_content = $self.output_grid.has_visible_content();
+                let retval = $self.output_grid.$method($( $arg ),*);
+                if !had_visible_content
+                    && $self.output_grid.has_visible_content()
+                    && !$self.output_grid.started()
+                {
+                    $self.output_grid.start();
+                }
+                retval
+            }
+        }
+    };
+}
+
 impl Block {
     /// Moves an unfinished block through the minimum execution transition needed before completion.
     ///
@@ -3425,7 +3461,7 @@ impl ansi::Handler for Block {
     }
 
     fn handle_completed_iterm_image(&mut self, image: ITermImage) {
-        delegate!(self.handle_completed_iterm_image(image))
+        delegate_image_completion!(self.handle_completed_iterm_image(image))
     }
 
     fn handle_completed_kitty_action(
@@ -3433,7 +3469,7 @@ impl ansi::Handler for Block {
         action: KittyAction,
         metadata: &mut HashMap<u32, StoredImageMetadata>,
     ) -> Option<KittyResponse> {
-        delegate!(self.handle_completed_kitty_action(action, metadata))
+        delegate_image_completion!(self.handle_completed_kitty_action(action, metadata))
     }
 
     fn set_keyboard_enhancement_flags(
