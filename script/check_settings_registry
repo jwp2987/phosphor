@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Fail if a settings group is registered in production but not in the test
+# harness that is supposed to mirror it.
+#
+# WHY THIS EXISTS
+# ----------------
+# PR #480 went red on nextest with:
+#
+#     Cannot get singleton model of type
+#     "warp::settings::local_control::LocalControlSettings" that was never
+#     registered
+#
+# `app/src/settings/init.rs`'s `register_all_settings` is the production list
+# of every settings group the app registers with the `SettingsManager` at
+# startup. `app/src/test_util/settings.rs`'s
+# `initialize_settings_for_tests_with_mode` is a second, hand-maintained copy
+# of that same list, built for tests that need a populated App context
+# without booting the whole app. The two are supposed to stay in lockstep,
+# but nothing enforces that: `LocalControlSettings::register` was added to
+# production in PR #472 (which added three settings groups) and the test
+# harness silently fell behind. It compiled fine and passed every test that
+# didn't happen to touch `LocalControlSettings` -- until one finally did,
+# months later, and the failure landed on an unrelated PR.
+#
+# WHY THE COMPILER CANNOT CATCH THIS
+# -----------------------------------
+# `register(ctx)` populates a runtime registry keyed by `TypeId`; nothing
+# about a missing call site fails to type-check. The `SettingsManager` panics
+# only when something later asks for a singleton that was never inserted --
+# at runtime, in whichever test happens to be first to drive that code path.
+# That is exactly the "compiles fine, blows up on whoever touches it next"
+# shape the stub-coverage guard exists for, one function over.
+#
+# HOW IT WORKS
+# ------------
+# Extract the brace-balanced body of `register_all_settings` in
+# `app/src/settings/init.rs` and of `initialize_settings_for_tests_with_mode`
+# in `app/src/test_util/settings.rs`, then pull every `<Name>::register(...)`
+# / `<Name>::register_and_subscribe_to_events(...)` call out of each (as a
+# direct call or as a bare function reference, e.g.
+# `app.update(AISettings::register_and_subscribe_to_events)`). This is
+# text-based, not `cfg`-aware -- a group registered behind
+# `#[cfg(feature = "local_fs")]` in both files still counts as present in
+# both, same approximation the other two guards make deliberately (see their
+# header comments).
+#
+# DIRECTION: production -> test is a hard failure. test -> production is not
+# -----------------------------------------------------------------------
+# A group in production but missing from the test harness is exactly PR
+# #480's crash: any test that reaches it panics. That direction fails this
+# check.
+#
+# A group registered ONLY in the test harness does not crash anything --
+# it is either legitimate test-only scaffolding (a mock or seam that has no
+# production registration path at all) or a stale leftover from a group that
+# was removed from production, which is harmless dead weight rather than a
+# live bug. Failing the build on it would mean any deliberate test double has
+# to fight this guard. So it is reported as an informational note, never a
+# failure -- the same asymmetry `check_cloud_boundary` uses for its
+# "allowlist entries no longer present" case.
+#
+# This compares the CURRENT relationship between the two files, not a
+# hardcoded list -- it passes whether or not any particular fix (e.g. PR
+# #480's `LocalControlSettings::register(app);` addition) has landed yet.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+PROD_FILE="app/src/settings/init.rs"
+PROD_FN="register_all_settings"
+TEST_FILE="app/src/test_util/settings.rs"
+TEST_FN="initialize_settings_for_tests_with_mode"
+
+for f in "$PROD_FILE" "$TEST_FILE"; do
+    if [[ ! -f "$f" ]]; then
+        echo "error: $f is missing" >&2
+        exit 2
+    fi
+done
+
+# Print the brace-balanced body of `fn <fn>(...) { ... }`, starting from the
+# line containing the signature and ending at the line whose closing brace
+# brings the depth back to zero. Handles multi-line signatures (the test
+# harness's does) because it only starts counting braces once it starts
+# capturing, and only treats depth 0 as "done" after depth has gone positive
+# at least once.
+extract_fn_body() {
+    local file="$1" fn="$2"
+    awk -v fn="$fn" '
+        !capturing && $0 ~ ("fn[ \t]+" fn "\\(") { capturing = 1 }
+        capturing {
+            print
+            depth += gsub(/\{/, "{")
+            depth -= gsub(/\}/, "}")
+            if (started && depth == 0) { exit }
+            if (depth > 0) { started = 1 }
+        }
+    ' "$file"
+}
+
+# Pull the settings-group type name out of every `<Name>::register(...)` or
+# `<Name>::register_and_subscribe_to_events` occurrence (call or bare
+# function reference). The trailing `\b` keeps this from matching unrelated
+# methods that merely start with "register", e.g.
+# `secure_storage::register_noop`.
+extract_register_calls() {
+    grep -oE '[A-Za-z_][A-Za-z0-9_]*::(register|register_and_subscribe_to_events)\b' \
+        | sed -E 's/::(register|register_and_subscribe_to_events)$//' \
+        | sort -u
+}
+
+prod_body="$(extract_fn_body "$PROD_FILE" "$PROD_FN")"
+test_body="$(extract_fn_body "$TEST_FILE" "$TEST_FN")"
+
+if [[ -z "$prod_body" ]]; then
+    echo "error: could not find fn $PROD_FN in $PROD_FILE (extraction is out of date)" >&2
+    exit 2
+fi
+if [[ -z "$test_body" ]]; then
+    echo "error: could not find fn $TEST_FN in $TEST_FILE (extraction is out of date)" >&2
+    exit 2
+fi
+
+prod_set="$(mktemp)"
+test_set="$(mktemp)"
+printf '%s\n' "$prod_body" | extract_register_calls > "$prod_set"
+printf '%s\n' "$test_body" | extract_register_calls > "$test_set"
+
+missing="$(comm -23 "$prod_set" "$test_set")"
+extra="$(comm -13 "$prod_set" "$test_set")"
+
+status=0
+
+if [[ -n "$missing" ]]; then
+    status=1
+    echo "error: settings group(s) registered in production but not in the test harness:" >&2
+    echo "$missing" | sed 's/^/  - /' >&2
+    cat >&2 <<EOF
+
+$PROD_FN ($PROD_FILE) registers these, but $TEST_FN
+($TEST_FILE) does not. This is the PR #480 shape: any test
+that drives one of these groups through the real App registry panics with
+"Cannot get singleton model of type ... that was never registered", in
+whichever test happens to exercise it first -- which can be long after the
+group was added to production.
+
+Fix: add the matching "<Name>::register(app);" call to
+$TEST_FN in $TEST_FILE.
+EOF
+fi
+
+if [[ -n "$extra" ]]; then
+    # Not a failure -- see header comment for why.
+    echo "note: settings group(s) registered only in the test harness (not in production):"
+    echo "$extra" | sed 's/^/  - /'
+fi
+
+if [[ $status -eq 0 && -z "$extra" ]]; then
+    echo "settings registry: ok ($(wc -l < "$prod_set" | tr -d ' ') group(s) registered in both)"
+fi
+
+rm -f "$prod_set" "$test_set"
+exit $status

@@ -46,8 +46,7 @@ use crate::{
     system::SystemInfo,
     system::SystemStats,
     terminal::{
-        alt_screen_reporting::AltScreenReporting, keys::TerminalKeybindings,
-        resizable_data::ResizableData, History, TerminalView,
+        keys::TerminalKeybindings, resizable_data::ResizableData, History, TerminalView,
     },
     workflows::local_workflows::LocalWorkflows,
     workspace::{sync_inputs::SyncedInputState, ActiveSession},
@@ -119,7 +118,6 @@ pub fn initialize_app_for_terminal_view(app: &mut App) {
     app.add_singleton_model(AgentConversationsModel::new);
 
     app.update(experiments::init);
-    AltScreenReporting::register(app);
 }
 
 /// Creates a window in `app` with a [`TerminalView`] as the root view.

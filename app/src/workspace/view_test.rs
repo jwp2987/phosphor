@@ -160,7 +160,6 @@ fn initialize_app(app: &mut App) {
 
     #[cfg(feature = "local_tty")]
     terminal::available_shells::register(app);
-    AltScreenReporting::register(app);
 
     #[cfg(enable_crash_recovery)]
     crate::crash_recovery::CrashRecovery::register_for_test(app);
