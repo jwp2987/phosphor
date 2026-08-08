@@ -159,6 +159,9 @@ pub fn proto_to_repo_metadata_update(
         repo_path,
         remove_entries,
         update_entries,
+        // The wire proto has no standing-results field yet (#439); default
+        // until that lands.
+        standing_results_delta: Default::default(),
     })
 }
 
@@ -179,6 +182,9 @@ pub fn proto_snapshot_to_update(
         repo_path,
         remove_entries: Vec::new(),
         update_entries,
+        // The wire proto has no standing-results field yet (#439); default
+        // until that lands.
+        standing_results_delta: Default::default(),
     })
 }
 
@@ -216,6 +222,9 @@ pub fn proto_load_repo_metadata_directory_response_to_update(
         repo_path,
         remove_entries: Vec::new(),
         update_entries,
+        // The wire proto has no standing-results field yet (#439); default
+        // until that lands.
+        standing_results_delta: Default::default(),
     })
 }
 

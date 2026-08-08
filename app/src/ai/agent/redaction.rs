@@ -362,3 +362,7 @@ fn redact_attachment(attachment: &mut AIAgentAttachment) {
         AIAgentAttachment::FilePathReference { .. } => {}
     }
 }
+
+#[cfg(test)]
+#[path = "redaction_tests.rs"]
+mod tests;

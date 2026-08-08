@@ -2,8 +2,10 @@ pub mod agent;
 pub mod api_keys;
 pub mod aws_credentials;
 pub mod llm_id;
+pub mod llm_provider;
 
 pub use llm_id::LLMId;
+pub use llm_provider::LLMProvider;
 pub mod diff_validation;
 pub mod document;
 pub mod gfm_table;

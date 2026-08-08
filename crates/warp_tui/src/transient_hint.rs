@@ -30,6 +30,7 @@ pub(crate) struct TransientHint {
 pub(crate) enum TransientHintTone {
     Muted,
     Success,
+    Error,
 }
 
 #[derive(Debug)]
@@ -61,6 +62,21 @@ impl TransientHint {
         transient_hint: impl Fn(&mut V) -> &mut TransientHint + 'static,
     ) {
         self.show_with_tone(text, TransientHintTone::Success, ctx, transient_hint);
+    }
+
+    /// Displays error feedback in the shared transient footer slot.
+    ///
+    /// Ported from Warp's `crates/warp_tui/src/transient_hint.rs` at the
+    /// pinned oracle (`02b53fcd8` — see `ORACLE.md`) as the #397 item-1
+    /// prerequisite for #384's zero-state ASCII-art load-failure hints; see
+    /// `terminal_session_view.rs`'s `show_zero_state_ascii_load_failure`.
+    pub(crate) fn show_error<V: Entity>(
+        &mut self,
+        text: String,
+        ctx: &mut ViewContext<V>,
+        transient_hint: impl Fn(&mut V) -> &mut TransientHint + 'static,
+    ) {
+        self.show_with_tone(text, TransientHintTone::Error, ctx, transient_hint);
     }
 
     fn show_with_tone<V: Entity>(
