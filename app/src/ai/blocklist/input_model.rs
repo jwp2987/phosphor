@@ -803,8 +803,15 @@ impl BlocklistAIInputModel {
                         current_input_type,
                         is_agent_follow_up,
                     };
-                    let new_input_type =
-                        classifier.detect_input_type(input.clone(), &context).await;
+                    // The classifier now also reports *why* it decided (an
+                    // `InputClassifierDecisionSource`, #428); this model does not
+                    // yet thread a decision source through its own input-type
+                    // state (that's the separate, larger `InputTypeAutoDetectionSource`
+                    // port tracked in #399/#254), so only the `InputType` is kept here.
+                    let new_input_type = classifier
+                        .detect_input_type(input.clone(), &context)
+                        .await
+                        .input_type;
 
                     futures_lite::future::yield_now().await;
 
