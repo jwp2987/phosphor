@@ -499,26 +499,24 @@ fn test_read_skill_executor_rejects_tui_only_skill_in_gui() {
 /// (`02b53fcd8`): a `RequiresFeature`-gated bundled skill is not readable while
 /// its feature is disabled.
 ///
-/// Pin deviation: the pin gates its `warpctrl` bundled skill on
-/// `FeatureFlag::WarpControlCli`, which does not exist in this fork yet (local
-/// Warp Control CLI support is separate, in-flight work — issues #200/#401/
-/// #184/#216, PR #480). This test exercises the same `RequiresFeature`
-/// mechanism with an existing, unrelated flag instead of inventing a
-/// `WarpControlCli` variant here that #480 would then collide with. Swap in
-/// `FeatureFlag::WarpControlCli` at this call site once #480 lands. See issue
-/// #370.
+/// Pin deviation: the pin drives this through its `warpctrl` bundled skill,
+/// whose directory this fork does not ship (`resources/bundled/skills/warpctrl`
+/// is absent — see `activation_for_bundled_skill`, and issue #370). The gating
+/// flag itself is real here, so the test registers a synthetic bundled skill
+/// behind the same `FeatureFlag::WarpControlCli` the pin uses; only the skill
+/// content is stood in for, not the mechanism or the flag.
 #[test]
 fn test_read_skill_executor_rejects_gated_bundled_skill_when_feature_disabled() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         let _bundled_skills = FeatureFlag::BundledSkills.override_enabled(true);
-        let _gate = FeatureFlag::DebugMode.override_enabled(false);
+        let _gate = FeatureFlag::WarpControlCli.override_enabled(false);
         let skill_id = "feature-gated-skill";
         SkillManager::handle(&app).update(&mut app, |manager, _ctx| {
             manager.add_bundled_skill_for_testing(
                 skill_id,
                 bundled_skill(skill_id),
-                BundledSkillActivation::RequiresFeature(FeatureFlag::DebugMode),
+                BundledSkillActivation::RequiresFeature(FeatureFlag::WarpControlCli),
             );
         });
         let executor_handle = app.add_model(|_| ReadSkillExecutor::new());

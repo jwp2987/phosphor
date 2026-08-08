@@ -297,14 +297,14 @@ pub(crate) fn icon_for_bundled_skill(skill_id: &str) -> Icon {
 /// Most skills are always active. Skills that depend on a bundled resource
 /// file use `RequiresFile` so they only appear when the resource is present.
 ///
-/// The pin also defines `TuiOnly` (gated on `AppExecutionMode::is_tui`) and
-/// `RequiresFeature(FeatureFlag)` variants (used for its `tui-migrate-setup` and
-/// `warpctrl` bundled skills). Neither is ported here: this fork's
-/// `resources/bundled/skills/` ships neither skill directory, and the `warpctrl`
-/// case additionally depends on `FeatureFlag::WarpControlCli`, which does not exist
-/// yet on this branch (`local_control`/`warpctrl` app-side is tracked separately —
-/// #200/#401/#184/#216, in flight as PR #480). Adding unreachable activation variants
-/// with no bundled skill to drive them would be untested dead code.
+/// The pin also gates two bundled skills here that this fork has no directory
+/// for: `tui-migrate-setup` (on `AppExecutionMode::is_tui`) and `warpctrl` (on
+/// `FeatureFlag::WarpControlCli`). Both arms are omitted because
+/// `resources/bundled/skills/` ships neither skill — an activation arm with no
+/// skill to drive it is unreachable, untested code. The flag and the underlying
+/// `RequiresFeature` mechanism both exist and are exercised by
+/// `read_skill_tests.rs`; only the skill content is missing. Porting the skill
+/// directories is #370.
 pub(crate) fn activation_for_bundled_skill(
     skill_id: &str,
     resources_dir: &Path,
