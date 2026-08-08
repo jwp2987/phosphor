@@ -876,11 +876,6 @@ pub(crate) fn is_tracking_state_git_file(path: &Path) -> bool {
 }
 
 /// Returns true for `.git/config` in the shared Git directory.
-///
-/// Part of the ported git-ref helper family; exercised by the entry tests and
-/// reserved for the watcher tracking-state logic (whose upstream model-side
-/// wiring is out of scope for this local lazy/budget-tree port).
-#[allow(dead_code)]
 pub(crate) fn is_common_git_config(path: &Path) -> bool {
     if extract_worktree_git_dir(path).is_some() {
         return false;

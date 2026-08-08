@@ -20,6 +20,8 @@ pub use input_classifier::InputType;
 
 use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentViewEntryOrigin};
 use super::context_model::BlocklistAIContextModel;
+use super::conversation_selection::ConversationSelectionEvent;
+use super::input_mode_policy::{InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate};
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputState, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
 };
@@ -146,6 +148,11 @@ pub struct BlocklistAIInputModel {
 
     terminal_view_id: EntityId,
 
+    /// View-supplied policy for decisions the model cannot make view-agnostically:
+    /// lock gating, the autodetection setting for the surface's current context,
+    /// and reactive config transitions driven by AI-settings events.
+    policy: InputModePolicyHandle,
+
     autodetect_abort_handle: Option<AbortHandle>,
     model: Arc<FairMutex<TerminalModel>>,
 }
@@ -181,6 +188,7 @@ impl BlocklistAIInputModel {
             agent_view_controller: None,
             ai_context_model,
             terminal_view_id,
+            policy,
             autodetect_abort_handle: None,
             model,
         })
@@ -190,6 +198,7 @@ impl BlocklistAIInputModel {
         model: Arc<FairMutex<TerminalModel>>,
         agent_view_controller: ModelHandle<AgentViewController>,
         ai_context_model: ModelHandle<BlocklistAIContextModel>,
+        policy: InputModePolicyHandle,
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
@@ -197,6 +206,7 @@ impl BlocklistAIInputModel {
             model,
             Some(agent_view_controller),
             ai_context_model,
+            policy,
             terminal_view_id,
             ctx,
         )
@@ -206,16 +216,18 @@ impl BlocklistAIInputModel {
     pub fn new_tui(
         model: Arc<FairMutex<TerminalModel>>,
         ai_context_model: ModelHandle<BlocklistAIContextModel>,
+        policy: InputModePolicyHandle,
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
-        Self::new_inner(model, None, ai_context_model, terminal_view_id, ctx)
+        Self::new_inner(model, None, ai_context_model, policy, terminal_view_id, ctx)
     }
 
     fn new_inner(
         model: Arc<FairMutex<TerminalModel>>,
         agent_view_controller: Option<ModelHandle<AgentViewController>>,
         ai_context_model: ModelHandle<BlocklistAIContextModel>,
+        policy: InputModePolicyHandle,
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
@@ -250,53 +262,19 @@ impl BlocklistAIInputModel {
         );
 
         ctx.subscribe_to_model(&AISettings::handle(ctx), move |me, event, ctx| {
-            match event {
-                AISettingsChangedEvent::AIAutoDetectionEnabled { .. }
-                    if FeatureFlag::AgentView.is_enabled() =>
-                {
-                    if me.agent_view_controller.as_ref().is_some_and(|c| c.as_ref(ctx).is_fullscreen()) {
-                        // Use context-specific check to determine if autodetection should be enabled
-                        let is_nld_enabled =
-                            AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
-
-                        // If autodetection is enabled, unlock the input.
-                        me.set_input_config_internal(
-                            InputConfig {
-                                is_locked: !is_nld_enabled,
-                                input_type: InputType::AI,
-                            },
-                            ctx,
-                        );
-                    }
-                }
-                AISettingsChangedEvent::AIAutoDetectionEnabled { .. } => {
-                    // Use context-specific check to determine if autodetection should be enabled
-                    let is_autodetection_enabled =
-                        me.is_autodetection_enabled_for_current_context(ctx);
-
-                    // If autodetection is enabled, unlock the input.
-                    me.set_input_config_internal(
-                        InputConfig {
-                            is_locked: !is_autodetection_enabled,
-                            ..me.input_config()
-                        },
-                        ctx,
-                    );
-                }
-                AISettingsChangedEvent::NLDInTerminalEnabled { .. }
-                    if FeatureFlag::AgentView.is_enabled()
-                        && !me.agent_view_controller.as_ref().is_none_or(|c| c.as_ref(ctx).is_active()) =>
-                {
-                    let is_nld_enabled = AISettings::as_ref(ctx).is_nld_in_terminal_enabled(ctx);
-                    me.set_input_config_internal(
-                        InputConfig {
-                            is_locked: !is_nld_enabled,
-                            input_type: InputType::Shell,
-                        },
-                        ctx,
-                    );
-                }
-                _ => (),
+            // Computing the guarded autodetection state takes the terminal-model lock, so only
+            // compute it for the one event whose handling can need it; the policy must not rely
+            // on it for any other event.
+            let is_autodetection_enabled_for_current_context =
+                matches!(event, AISettingsChangedEvent::AIAutoDetectionEnabled { .. })
+                    && me.is_autodetection_enabled_for_current_context(ctx);
+            if let Some(update) = me.policy.config_on_ai_settings_changed(
+                event,
+                me.input_config(),
+                is_autodetection_enabled_for_current_context,
+                ctx,
+            ) {
+                me.apply_policy_update(update, ctx);
             }
         });
 
@@ -382,25 +360,27 @@ impl BlocklistAIInputModel {
             }
         }
 
-        let is_autodetection_enabled = if FeatureFlag::AgentView.is_enabled() {
-            AISettings::as_ref(ctx).is_nld_in_terminal_enabled(ctx)
-        } else {
-            AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx)
-        };
+        let input_config = policy.initial_config(ctx);
         Self {
-            input_config: InputConfig {
-                input_type: InputType::Shell,
-                is_locked: !is_autodetection_enabled,
-            },
+            input_config,
             agent_view_controller,
             ai_context_model,
             terminal_view_id,
+            policy,
             last_ai_autodetection_ts: None,
             last_explicit_input_type_set_at: None,
             was_lock_set_with_empty_buffer: false,
             autodetect_abort_handle: None,
             model,
         }
+    }
+
+    /// Applies a policy-produced config update.
+    fn apply_policy_update(&mut self, update: PolicyConfigUpdate, ctx: &mut ModelContext<Self>) {
+        if update.temporarily_disable_autodetection {
+            self.temporarily_disable_autodetection();
+        }
+        self.set_input_config_internal(update.config, ctx);
     }
 
     /// Convenience wrapper around `BlocklistAIContextModel::has_locking_attachment`.
@@ -476,17 +456,12 @@ impl BlocklistAIInputModel {
         new_config: InputConfig,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
-        // When `AgentView` is enabled, AI input mode can only be set in the top-level terminal
-        // mode via autodetection; it cannot be locked to AI input mode unless there is an active
-        // agent view or a CLI agent rich input session is open. In the agent view case, executing
-        // autodetected AI input will trigger entering the agent view with that query. In the CLI
-        // agent rich input case, the input must be in AI mode to suppress shell decorations
-        // (syntax highlighting, error underlining).
-        if FeatureFlag::AgentView.is_enabled()
-            && !self.agent_view_controller.as_ref().is_none_or(|c| c.as_ref(ctx).is_active())
-            && new_config.input_type.is_ai()
+        // Locking the input to AI is only allowed when the view's policy permits it (e.g. the
+        // GUI only allows it inside an active agent view or an open CLI agent rich input
+        // session; the TUI always permits it).
+        if new_config.input_type.is_ai()
             && new_config.is_locked
-            && !CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id)
+            && !self.policy.allows_locked_ai_input(ctx)
         {
             return false;
         }
@@ -586,17 +561,7 @@ impl BlocklistAIInputModel {
             return false;
         }
 
-        let ai_settings = AISettings::as_ref(app);
-        if FeatureFlag::AgentView.is_enabled() {
-            if self.agent_view_controller.as_ref().is_some_and(|c| c.as_ref(app).is_fullscreen()) {
-                ai_settings.is_ai_autodetection_enabled(app)
-            } else {
-                ai_settings.is_nld_in_terminal_enabled(app)
-            }
-        } else {
-            // AgentView not enabled: use the main autodetection setting
-            ai_settings.is_ai_autodetection_enabled(app)
-        }
+        self.policy.is_autodetection_enabled(app)
     }
 
     /// Temporarily disable autodetection for a fixed duration.
@@ -803,8 +768,15 @@ impl BlocklistAIInputModel {
                         current_input_type,
                         is_agent_follow_up,
                     };
-                    let new_input_type =
-                        classifier.detect_input_type(input.clone(), &context).await;
+                    // The classifier now also reports *why* it decided (an
+                    // `InputClassifierDecisionSource`, #428); this model does not
+                    // yet thread a decision source through its own input-type
+                    // state (that's the separate, larger `InputTypeAutoDetectionSource`
+                    // port tracked in #399/#254), so only the `InputType` is kept here.
+                    let new_input_type = classifier
+                        .detect_input_type(input.clone(), &context)
+                        .await
+                        .input_type;
 
                     futures_lite::future::yield_now().await;
 
@@ -895,6 +867,145 @@ impl Entity for BlocklistAIInputModel {
     type Event = BlocklistAIInputEvent;
 }
 
+/// GUI implementation of [`InputModePolicy`], extracted verbatim from the logic
+/// [`BlocklistAIInputModel`] hardcoded before the policy seam existed: lock
+/// permission and the autodetection setting both depend on the pane's
+/// `AgentViewController` (fullscreen / active state) and, for lock permission,
+/// on whether a CLI agent rich input session is open. This is a pure refactor —
+/// it does not change GUI behavior.
+///
+/// `config_on_conversation_selection_changed` always returns `None` here: the
+/// GUI surface has no `ConversationSelection` implementation yet (only the
+/// TUI's `TuiConversationSelection` does), so agent-view enter/exit still
+/// drives config transitions via the `AgentViewController` subscription in
+/// `BlocklistAIInputModel::new_inner`, unchanged from before this policy
+/// existed. Porting a `ConversationSelection` for the GUI is a separate,
+/// larger feature gap than #313 (which is scoped to lock gating / initial
+/// config / AI-settings transitions).
+pub(crate) struct GuiInputModePolicy {
+    agent_view_controller: Option<ModelHandle<AgentViewController>>,
+    terminal_view_id: EntityId,
+}
+
+impl GuiInputModePolicy {
+    pub(crate) fn new(
+        agent_view_controller: ModelHandle<AgentViewController>,
+        terminal_view_id: EntityId,
+    ) -> Self {
+        Self {
+            agent_view_controller: Some(agent_view_controller),
+            terminal_view_id,
+        }
+    }
+}
+
+impl InputModePolicy for GuiInputModePolicy {
+    fn initial_config(&self, app: &AppContext) -> InputConfig {
+        let is_autodetection_enabled = if FeatureFlag::AgentView.is_enabled() {
+            AISettings::as_ref(app).is_nld_in_terminal_enabled(app)
+        } else {
+            AISettings::as_ref(app).is_ai_autodetection_enabled(app)
+        };
+        InputConfig {
+            input_type: InputType::Shell,
+            is_locked: !is_autodetection_enabled,
+        }
+    }
+
+    fn allows_locked_ai_input(&self, app: &AppContext) -> bool {
+        // When `AgentView` is enabled, AI input mode can only be set in the top-level terminal
+        // mode via autodetection; it cannot be locked to AI input mode unless there is an active
+        // agent view or a CLI agent rich input session is open. In the agent view case, executing
+        // autodetected AI input will trigger entering the agent view with that query. In the CLI
+        // agent rich input case, the input must be in AI mode to suppress shell decorations
+        // (syntax highlighting, error underlining).
+        !FeatureFlag::AgentView.is_enabled()
+            || self
+                .agent_view_controller
+                .as_ref()
+                .is_none_or(|c| c.as_ref(app).is_active())
+            || CLIAgentSessionsModel::as_ref(app).is_input_open(self.terminal_view_id)
+    }
+
+    fn is_autodetection_enabled(&self, app: &AppContext) -> bool {
+        let ai_settings = AISettings::as_ref(app);
+        if FeatureFlag::AgentView.is_enabled() {
+            if self
+                .agent_view_controller
+                .as_ref()
+                .is_some_and(|c| c.as_ref(app).is_fullscreen())
+            {
+                ai_settings.is_ai_autodetection_enabled(app)
+            } else {
+                ai_settings.is_nld_in_terminal_enabled(app)
+            }
+        } else {
+            // AgentView not enabled: use the main autodetection setting
+            ai_settings.is_ai_autodetection_enabled(app)
+        }
+    }
+
+    fn config_on_conversation_selection_changed(
+        &self,
+        _event: &ConversationSelectionEvent,
+        _current: InputConfig,
+        _app: &AppContext,
+    ) -> Option<PolicyConfigUpdate> {
+        None
+    }
+
+    fn config_on_ai_settings_changed(
+        &self,
+        event: &AISettingsChangedEvent,
+        current: InputConfig,
+        is_autodetection_enabled_for_current_context: bool,
+        app: &AppContext,
+    ) -> Option<PolicyConfigUpdate> {
+        match event {
+            AISettingsChangedEvent::AIAutoDetectionEnabled { .. }
+                if FeatureFlag::AgentView.is_enabled() =>
+            {
+                if self
+                    .agent_view_controller
+                    .as_ref()
+                    .is_some_and(|c| c.as_ref(app).is_fullscreen())
+                {
+                    // Use context-specific check to determine if autodetection should be enabled
+                    let is_nld_enabled = AISettings::as_ref(app).is_ai_autodetection_enabled(app);
+                    // If autodetection is enabled, unlock the input.
+                    Some(PolicyConfigUpdate::new(InputConfig {
+                        is_locked: !is_nld_enabled,
+                        input_type: InputType::AI,
+                    }))
+                } else {
+                    None
+                }
+            }
+            AISettingsChangedEvent::AIAutoDetectionEnabled { .. } => {
+                // If autodetection is enabled, unlock the input.
+                Some(PolicyConfigUpdate::new(InputConfig {
+                    is_locked: !is_autodetection_enabled_for_current_context,
+                    ..current
+                }))
+            }
+            AISettingsChangedEvent::NLDInTerminalEnabled { .. }
+                if FeatureFlag::AgentView.is_enabled()
+                    && !self
+                        .agent_view_controller
+                        .as_ref()
+                        .is_none_or(|c| c.as_ref(app).is_active()) =>
+            {
+                let is_nld_enabled = AISettings::as_ref(app).is_nld_in_terminal_enabled(app);
+                Some(PolicyConfigUpdate::new(InputConfig {
+                    is_locked: !is_nld_enabled,
+                    input_type: InputType::Shell,
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Returns whether the set of possibilities contains any close matches
 /// to the provided word, using the given similarity threshold.
 ///
@@ -932,3 +1043,7 @@ async fn has_any_close_matches<'a>(
 
     false
 }
+
+#[cfg(test)]
+#[path = "input_model_tests.rs"]
+mod tests;

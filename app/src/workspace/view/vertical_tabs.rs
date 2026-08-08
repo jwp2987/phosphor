@@ -9,6 +9,9 @@ use crate::terminal::cli_agent_sessions::listener::session_supports_rich_status;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::view::TerminalViewState;
 use crate::terminal::CLIAgent;
+use crate::ui_components::agent_icon::{
+    agent_icon_variant_from_terminal_inputs, CLISessionInputs, TerminalIconInputs,
+};
 use crate::ui_components::icon_with_status::{
     render_cli_agent_logo, render_icon_with_status, IconWithStatusSizing, IconWithStatusVariant,
 };
@@ -781,9 +784,18 @@ struct VerticalTabsSummaryBranchEntry {
     pull_request_label: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct VerticalTabsSummaryPrimaryLabel {
+    text: String,
+    /// Some when the contributing pane is a conversation with a known status. Drives
+    /// `sort_summary_primary_labels_status_first`, which surfaces in-progress/active
+    /// agent conversations ahead of plain terminal/code labels in Summary mode.
+    status: Option<ConversationStatus>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 struct VerticalTabsSummaryData {
-    primary_labels: Vec<String>,
+    primary_labels: Vec<VerticalTabsSummaryPrimaryLabel>,
     working_directories: Vec<String>,
     branch_entries: Vec<VerticalTabsSummaryBranchEntry>,
 }
@@ -854,6 +866,35 @@ fn push_normalized_unique_summary_text(
     values.push(normalized);
 }
 
+/// Push a primary label, preserving the first-seen display text and conversation status
+/// when the same normalized label is contributed by multiple panes.
+fn push_normalized_unique_summary_label(
+    values: &mut Vec<VerticalTabsSummaryPrimaryLabel>,
+    seen: &mut HashMap<String, ()>,
+    text: &str,
+    status: Option<ConversationStatus>,
+) {
+    let Some(normalized) = normalize_summary_text(text) else {
+        return;
+    };
+    if seen.contains_key(&normalized) {
+        return;
+    }
+    seen.insert(normalized.clone(), ());
+    values.push(VerticalTabsSummaryPrimaryLabel {
+        text: normalized,
+        status,
+    });
+}
+
+/// Stable sort that moves labels with a known `ConversationStatus` ahead of labels without
+/// one, while preserving the relative first-seen order within each group. Used in Summary
+/// mode so the visible primary-label line(s) prioritize conversation labels over plain
+/// terminal / non-conversation lines.
+fn sort_summary_primary_labels_status_first(values: &mut [VerticalTabsSummaryPrimaryLabel]) {
+    values.sort_by_key(|label| label.status.is_none());
+}
+
 fn normalize_summary_text(text: &str) -> Option<String> {
     let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
     (!normalized.is_empty()).then_some(normalized)
@@ -886,19 +927,47 @@ fn summary_overflow_count(total_count: usize, visible_limit: usize) -> usize {
     total_count.saturating_sub(visible_limit)
 }
 
-fn format_summary_primary_labels(labels: &[String], visible_limit: usize) -> Option<String> {
+fn format_summary_primary_labels(
+    labels: &[VerticalTabsSummaryPrimaryLabel],
+    visible_limit: usize,
+) -> Option<String> {
     const SEPARATOR: &str = " • ";
     if labels.is_empty() {
         return None;
     }
 
     let visible_count = labels.len().min(visible_limit);
-    let mut rendered = labels[..visible_count].join(SEPARATOR);
+    let mut rendered = labels[..visible_count]
+        .iter()
+        .map(|label| label.text.as_str())
+        .collect::<Vec<_>>()
+        .join(SEPARATOR);
     let overflow_count = summary_overflow_count(labels.len(), visible_limit);
     if overflow_count > 0 {
         rendered.push_str(&format!(" + {overflow_count} more"));
     }
     Some(rendered)
+}
+
+/// Returns the conversation status for a terminal pane, used to prioritize
+/// in-progress/active conversation labels ahead of plain terminal labels via
+/// `sort_summary_primary_labels_status_first`. Mirrors the status derivation
+/// used for the detail sidecar's status pill (`render_terminal_detail_section`).
+fn summary_conversation_status_for_terminal(
+    terminal_view: &TerminalView,
+    agent_text: &TerminalAgentText,
+    app: &AppContext,
+) -> Option<ConversationStatus> {
+    let cli_agent_session = CLIAgentSessionsModel::as_ref(app).session(terminal_view.id());
+    if let Some(session) =
+        cli_agent_session.filter(|s| s.listener.is_some() && session_supports_rich_status(s))
+    {
+        return Some(session.status.to_conversation_status());
+    }
+    if agent_text.is_oz_agent {
+        return terminal_view.selected_conversation_status_for_display(app);
+    }
+    None
 }
 
 fn summary_search_text_fragments(
@@ -909,7 +978,12 @@ fn summary_search_text_fragments(
     if let Some(title_override) = title_override.and_then(normalize_summary_text) {
         fragments.push(title_override);
     }
-    fragments.extend(summary.primary_labels.iter().cloned());
+    fragments.extend(
+        summary
+            .primary_labels
+            .iter()
+            .map(|label| label.text.clone()),
+    );
     fragments.extend(summary.working_directories.iter().cloned());
     for entry in &summary.branch_entries {
         fragments.push(entry.branch_name.clone());
@@ -2343,45 +2417,43 @@ fn resolve_icon_with_status_variant(
             let terminal_view = terminal_pane.terminal_view(app);
             let terminal_view = terminal_view.as_ref(app);
             let cli_agent_session = CLIAgentSessionsModel::as_ref(app).session(terminal_view.id());
-            let is_plugin_backed = cli_agent_session.is_some_and(|s| s.listener.is_some());
             let is_ambient = terminal_view.is_ambient_agent_session(app);
             let has_conversation = terminal_view
                 .selected_conversation_display_title(app)
                 .is_some();
-            let is_oz_agent = has_conversation || is_ambient;
 
-            if let Some(session) = cli_agent_session
-                .filter(|s| s.listener.is_some())
-                .filter(|s| !matches!(s.agent, CLIAgent::Unknown))
-            {
-                IconWithStatusVariant::CLIAgent {
+            // Centralized so this surface and the run-card / notification surfaces derive the
+            // same icon for the same logical run -- see `ui_components::agent_icon` and its
+            // cross-surface consistency tests.
+            //
+            // Deviation from the pinned oracle: the pin's terminal-view adapter also resolves
+            // a pre-dispatch third-party harness (`selected_third_party_cli_agent`) for a live
+            // ambient run before task data is available. This fork has no such live signal at
+            // the terminal-view level yet (`is_ambient_agent_session` is a hard-coded `false`
+            // stub -- see `ui_components::agent_icon`'s module doc), so it is passed as `None`
+            // here; the waterfall still carries the branch and it is exercised directly by
+            // `agent_icon_tests.rs`.
+            let inputs = TerminalIconInputs {
+                is_ambient,
+                cli_session: cli_agent_session.map(|session| CLISessionInputs {
                     agent: session.agent,
-                    status: if session_supports_rich_status(session) {
-                        Some(session.status.to_conversation_status())
-                    } else {
-                        None
-                    },
-                }
-            } else if let Some(session) = cli_agent_session
-                .filter(|_| !is_plugin_backed)
-                .filter(|s| !matches!(s.agent, CLIAgent::Unknown))
-            {
-                IconWithStatusVariant::CLIAgent {
-                    agent: session.agent,
-                    status: None,
-                }
-            } else if is_oz_agent {
-                IconWithStatusVariant::OzAgent {
-                    status: terminal_view.selected_conversation_status_for_display(app),
-                    is_ambient,
-                }
-            } else {
+                    has_listener: session.listener.is_some(),
+                    status: session.status.to_conversation_status(),
+                    supports_rich_status: session_supports_rich_status(session),
+                }),
+                selected_third_party_cli_agent: None,
+                selected_conversation_status: terminal_view
+                    .selected_conversation_status_for_display(app),
+                has_selected_conversation: has_conversation,
+            };
+
+            agent_icon_variant_from_terminal_inputs(&inputs).unwrap_or(
                 // Plain terminal: use foreground color per design spec
                 IconWithStatusVariant::Neutral {
                     icon: WarpIcon::Terminal,
                     icon_color: main_text,
-                }
-            }
+                },
+            )
         }
         TypedPane::Code(_) => {
             match icon_from_file_path(title, appearance) { Some(icon_element) => {
@@ -2758,10 +2830,12 @@ fn build_vertical_tabs_summary_data(
                     terminal_title_fallback_font(&agent_text),
                     terminal_view.last_completed_command_text(),
                 );
-                push_normalized_unique_summary_text(
+                let status = summary_conversation_status_for_terminal(terminal_view, &agent_text, app);
+                push_normalized_unique_summary_label(
                     &mut primary_labels,
                     &mut primary_seen,
                     primary_label.text(),
+                    status,
                 );
 
                 if let Some(working_directory) = working_directory {
@@ -2791,10 +2865,11 @@ fn build_vertical_tabs_summary_data(
                 }
             }
             TypedPane::Code(_) => {
-                push_normalized_unique_summary_text(
+                push_normalized_unique_summary_label(
                     &mut primary_labels,
                     &mut primary_seen,
                     &pane_title,
+                    None,
                 );
                 push_normalized_unique_summary_text(
                     &mut working_directories,
@@ -2813,14 +2888,17 @@ fn build_vertical_tabs_summary_data(
             | TypedPane::AIDocument
             | TypedPane::ExecutionProfileEditor
             | TypedPane::Other => {
-                push_normalized_unique_summary_text(
+                push_normalized_unique_summary_label(
                     &mut primary_labels,
                     &mut primary_seen,
                     &pane_title,
+                    None,
                 );
             }
         }
     }
+
+    sort_summary_primary_labels_status_first(&mut primary_labels);
 
     VerticalTabsSummaryData {
         primary_labels,

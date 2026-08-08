@@ -289,6 +289,7 @@ impl TuiApiKeysMenuModel {
                     .iter()
                     .map(|row| TuiInlineMenuRow {
                         title: row.title.clone(),
+                        prefix: None,
                         description: row.description.clone(),
                         state_suffix: row.state_suffix.clone(),
                         is_selectable: true,

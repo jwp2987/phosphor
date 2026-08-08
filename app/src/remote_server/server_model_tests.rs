@@ -4,13 +4,16 @@ use std::fs;
 
 use super::super::proto::{
     list_directory_response, read_file_chunk_response, resolve_path_response, server_message,
-    write_file_chunk_response, Authenticate, CreateDirectory, Initialize, ListDirectory,
-    ReadFileChunk, ResolvePath, WriteFileChunk,
+    write_file_chunk_response, write_file_response, Authenticate, CreateDirectory, Initialize,
+    ListDirectory, ReadFileChunk, ResolvePath, ServerMessage, WriteFileChunk, WriteFileResponse,
+    WriteFileSuccess,
 };
 use super::super::protocol::RequestId;
 #[cfg(feature = "local_fs")]
 use super::super::server_buffer_tracker::ServerBufferTracker;
-use super::{PendingFileOps, ServerModel};
+use super::{ConnectionId, PendingFileOps, ServerModel};
+#[cfg(feature = "local_fs")]
+use warp_util::standardized_path::StandardizedPath;
 
 fn test_model() -> ServerModel {
     ServerModel {
@@ -18,8 +21,17 @@ fn test_model() -> ServerModel {
         snapshot_sent_roots_by_connection: HashMap::new(),
         #[cfg(feature = "local_fs")]
         diff_state_subscriptions: HashMap::new(),
+        #[cfg(feature = "local_fs")]
+        git_status_models: HashMap::new(),
+        #[cfg(feature = "local_fs")]
+        github_repo_models: HashMap::new(),
+        #[cfg(feature = "local_fs")]
+        git_status_subscribers: HashMap::new(),
+        #[cfg(feature = "local_fs")]
+        git_status_repo_by_conn: HashMap::new(),
         grace_timer_cancel: None,
         in_progress: HashMap::new(),
+        host_scoped_requests: HashMap::new(),
         host_id: "test-host-id".to_string(),
         executors: HashMap::new(),
         pending_file_ops: PendingFileOps::new(),
@@ -130,7 +142,10 @@ fn resolve_path_reports_file_metadata() {
         success.canonical_path,
         fs::canonicalize(&file_path).unwrap().to_string_lossy()
     );
-    assert_eq!(success.kind, super::super::proto::FileSystemEntryKind::File as i32);
+    assert_eq!(
+        success.kind,
+        super::super::proto::FileSystemEntryKind::File as i32
+    );
     assert_eq!(success.size_bytes, Some(5));
 }
 
@@ -353,4 +368,236 @@ fn deregister_connection_cleans_up_diff_state_subscriptions() {
         });
         assert!(!has_sub_after);
     });
+}
+
+// ── Ported from the pinned oracle (02b53fcd8) ───────────────────────
+// These three exercise `send_server_message`'s host-scoped failover
+// mechanism directly, by inserting into `host_scoped_requests` the way the
+// pin's `handle_message` would (see the field's doc comment: the fork
+// doesn't populate this map from real traffic yet, since that requires the
+// host-scoped/session-scoped protocol envelope the pin uses to classify
+// requests — a separate, larger port). The delivery mechanism these tests
+// cover is unchanged from the pin.
+
+fn write_file_success_message() -> server_message::Message {
+    server_message::Message::WriteFileResponse(WriteFileResponse {
+        result: Some(write_file_response::Result::Success(WriteFileSuccess {})),
+    })
+}
+
+#[test]
+fn host_scoped_response_fails_over_when_target_send_fails() {
+    let mut model = test_model();
+    let request_id = RequestId::new();
+    let target: ConnectionId = uuid::Uuid::new_v4();
+    let alternate: ConnectionId = uuid::Uuid::new_v4();
+
+    // The target connection's receiver is dropped, so its sender still
+    // exists in the map but `try_send` fails (channel closed).
+    let (target_tx, target_rx) = async_channel::bounded(1);
+    drop(target_rx);
+    model.connection_senders.insert(target, target_tx);
+
+    // The alternate connection has a live receiver.
+    let (alt_tx, alt_rx) = async_channel::unbounded();
+    model.connection_senders.insert(alternate, alt_tx);
+
+    // Mark the request as host-scoped so failover is eligible.
+    model
+        .host_scoped_requests
+        .insert(request_id.clone(), target);
+
+    model.send_server_message(
+        Some(target),
+        Some(&request_id),
+        write_file_success_message(),
+    );
+
+    // The response was re-routed to the alternate connection.
+    let received = alt_rx
+        .try_recv()
+        .expect("alternate should receive failover response");
+    assert_eq!(received.request_id, request_id.to_string());
+    // The host-scoped entry is consumed regardless of delivery path.
+    assert!(!model.host_scoped_requests.contains_key(&request_id));
+}
+
+#[test]
+fn host_scoped_response_fails_over_when_target_missing() {
+    let mut model = test_model();
+    let request_id = RequestId::new();
+    let target: ConnectionId = uuid::Uuid::new_v4();
+    let alternate: ConnectionId = uuid::Uuid::new_v4();
+
+    // Target connection is gone entirely (not in the senders map), but the
+    // request is still tracked as host-scoped.
+    let (alt_tx, alt_rx) = async_channel::unbounded();
+    model.connection_senders.insert(alternate, alt_tx);
+    model
+        .host_scoped_requests
+        .insert(request_id.clone(), target);
+
+    model.send_server_message(
+        Some(target),
+        Some(&request_id),
+        write_file_success_message(),
+    );
+
+    let received = alt_rx
+        .try_recv()
+        .expect("alternate should receive failover response");
+    assert_eq!(received.request_id, request_id.to_string());
+    assert!(!model.host_scoped_requests.contains_key(&request_id));
+}
+
+#[test]
+fn non_host_scoped_response_is_not_failed_over() {
+    let mut model = test_model();
+    let request_id = RequestId::new();
+    let target: ConnectionId = uuid::Uuid::new_v4();
+    let alternate: ConnectionId = uuid::Uuid::new_v4();
+
+    // Target sender exists but is closed; the request is NOT tracked as
+    // host-scoped, so the message must be dropped rather than re-routed.
+    let (target_tx, target_rx) = async_channel::bounded(1);
+    drop(target_rx);
+    model.connection_senders.insert(target, target_tx);
+    let (alt_tx, alt_rx) = async_channel::unbounded::<ServerMessage>();
+    model.connection_senders.insert(alternate, alt_tx);
+
+    model.send_server_message(
+        Some(target),
+        Some(&request_id),
+        write_file_success_message(),
+    );
+
+    assert!(
+        alt_rx.try_recv().is_err(),
+        "non-host-scoped response must not fail over to another connection"
+    );
+}
+
+// ── Git status: per-connection subscription tracking (issue #330) ───
+//
+// The pin's `subscribe_git_status` / `unsubscribe_git_status` also evict a
+// per-repo `GitHubRepoModel` cache entry (`github_repo_models`) alongside
+// the git-status one. The fork now has `GitHubRepoModel` (ported by #463 for
+// issue #385) and `GitRepoStatusModel` (`code_review::git_status_update`),
+// so both fields are ported here with the pin's real types rather than
+// placeholders. What is *not* ported is the daemon-side wiring that would
+// ever populate them (`NavigatedToDirectory` subscribing a connection,
+// `UpdateGitStatus`/`UpdateGitHubPrInfo` notifications refreshing a model,
+// `GitStatusPush` broadcasts) — that is a separate, larger feature gap.
+// These 6 tests, like the pin's, exercise only the subscription bookkeeping,
+// so the two model maps are asserted for absence/presence but never
+// populated with a real handle.
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn subscribe_git_status_records_subscriber_and_current_repo() {
+    let mut model = test_model();
+    let conn = uuid::Uuid::new_v4();
+    let repo = StandardizedPath::try_new("/repo").unwrap();
+
+    model.subscribe_git_status(conn, &repo);
+
+    assert_eq!(model.git_status_repo_by_conn.get(&conn), Some(&repo));
+    assert!(model.git_status_subscribers[&repo].contains(&conn));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn navigating_between_repos_moves_the_subscription() {
+    let mut model = test_model();
+    let conn = uuid::Uuid::new_v4();
+    let repo_a = StandardizedPath::try_new("/repo-a").unwrap();
+    let repo_b = StandardizedPath::try_new("/repo-b").unwrap();
+
+    model.subscribe_git_status(conn, &repo_a);
+    model.subscribe_git_status(conn, &repo_b);
+
+    // Moved off A (now empty) and onto B.
+    assert!(!model.git_status_subscribers.contains_key(&repo_a));
+    assert!(model.git_status_subscribers[&repo_b].contains(&conn));
+    assert_eq!(model.git_status_repo_by_conn.get(&conn), Some(&repo_b));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn snapshot_request_does_not_move_another_repos_subscription() {
+    let mut model = test_model();
+    let conn = uuid::Uuid::new_v4();
+    let repo_a = StandardizedPath::try_new("/repo-a").unwrap();
+    let repo_b = StandardizedPath::try_new("/repo-b").unwrap();
+
+    // Navigation put the connection in repo A.
+    model.subscribe_git_status(conn, &repo_a);
+
+    // A snapshot request for repo B riding this connection must not move the
+    // navigation-driven subscription off repo A (mirrors the guard the pin
+    // applies in `handle_update_git_status`, not ported here since the
+    // notification handler itself is out of scope for #330).
+    if !model.git_status_repo_by_conn.contains_key(&conn) {
+        model.subscribe_git_status(conn, &repo_b);
+    }
+    assert_eq!(model.git_status_repo_by_conn.get(&conn), Some(&repo_a));
+    assert!(model.git_status_subscribers[&repo_a].contains(&conn));
+    assert!(!model.git_status_subscribers.contains_key(&repo_b));
+
+    // An untracked connection is registered normally.
+    let conn2 = uuid::Uuid::new_v4();
+    if !model.git_status_repo_by_conn.contains_key(&conn2) {
+        model.subscribe_git_status(conn2, &repo_b);
+    }
+    assert!(model.git_status_subscribers[&repo_b].contains(&conn2));
+    assert_eq!(model.git_status_repo_by_conn.get(&conn2), Some(&repo_b));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn last_subscriber_leaving_evicts_the_repo() {
+    let mut model = test_model();
+    let conn = uuid::Uuid::new_v4();
+    let repo = StandardizedPath::try_new("/repo").unwrap();
+
+    model.subscribe_git_status(conn, &repo);
+    assert!(model.git_status_subscribers.contains_key(&repo));
+
+    model.unsubscribe_git_status(conn);
+
+    // Subscriber set, current-repo mapping, and the per-repo model maps are
+    // all cleared once no connection remains in the repo.
+    assert!(!model.git_status_subscribers.contains_key(&repo));
+    assert!(!model.git_status_repo_by_conn.contains_key(&conn));
+    assert!(!model.git_status_models.contains_key(&repo));
+    assert!(!model.github_repo_models.contains_key(&repo));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn sibling_connection_keeps_the_repo_alive() {
+    let mut model = test_model();
+    let conn_a = uuid::Uuid::new_v4();
+    let conn_b = uuid::Uuid::new_v4();
+    let repo = StandardizedPath::try_new("/repo").unwrap();
+
+    model.subscribe_git_status(conn_a, &repo);
+    model.subscribe_git_status(conn_b, &repo);
+
+    // First connection leaves: the repo stays for the sibling.
+    model.unsubscribe_git_status(conn_a);
+    assert!(model.git_status_subscribers[&repo].contains(&conn_b));
+
+    // Second connection leaves: now evicted.
+    model.unsubscribe_git_status(conn_b);
+    assert!(!model.git_status_subscribers.contains_key(&repo));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn unsubscribe_unknown_connection_is_a_noop() {
+    let mut model = test_model();
+    model.unsubscribe_git_status(uuid::Uuid::new_v4());
+    assert!(model.git_status_subscribers.is_empty());
+    assert!(model.git_status_repo_by_conn.is_empty());
 }

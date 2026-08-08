@@ -2377,6 +2377,8 @@ impl Input {
             // Sync the editor text colors with the (now active or inactive)
             // alt-screen CLI agent background so input text stays legible.
             me.update_cli_agent_editor_text_colors(ctx);
+            // Re-sync enter_settings whenever the rich input opens or closes.
+            me.update_cli_agent_enter_settings(ctx);
             me.set_zero_state_hint_text(ctx);
             ctx.notify();
         });
@@ -5753,6 +5755,11 @@ impl Input {
             #[cfg(feature = "voice_input")]
             AISettingsChangedEvent::VoiceInputEnabled { .. } => {
                 self.update_voice_transcription_options(ctx);
+            }
+            AISettingsChangedEvent::SubmitRichInputOnCtrlEnter { .. } => {
+                // ctrl_enter now depends on the toggle: re-sync so flipping
+                // the setting mid-session takes effect immediately.
+                self.update_cli_agent_enter_settings(ctx);
             }
             _ => {}
         }
@@ -9463,9 +9470,7 @@ impl Input {
             }
             EditorEvent::Enter => self.input_enter(ctx),
             EditorEvent::CmdEnter => self.input_cmd_enter(ctx),
-            EditorEvent::CtrlEnter => {
-                ctx.emit(Event::CtrlEnter);
-            }
+            EditorEvent::CtrlEnter => self.input_ctrl_enter(ctx),
             EditorEvent::Escape => self.editor_escape(ctx),
             EditorEvent::CtrlC { cleared_buffer_len } => {
                 self.close_input_suggestions(/*should_focus_input=*/ true, ctx);
@@ -11738,15 +11743,18 @@ impl Input {
                 return;
             }
 
-            // When the `!` prefix was stripped (shell mode in CLI agent input),
-            // prepend it back so the CLI agent receives the mode-switch prefix,
-            // then exit shell mode so the next prompt starts in AI mode.
-            let mut text = self.editor.as_ref(ctx).buffer_text(ctx);
-            if self.is_locked_in_shell_mode(ctx) {
-                text = format!("{TERMINAL_INPUT_PREFIX}{text}");
-                self.exit_shell_mode_to_ai(ctx);
+            // When submit_on_ctrl_enter is enabled, Enter inserts a newline rather than
+            // submitting (Ctrl+Enter handles submission in that mode).
+            // Asymmetry: Enter replaces any active selection (the user asked for a newline
+            // edit); Ctrl+Enter preserves selections because it is a submit, not an edit.
+            if *AISettings::as_ref(ctx).submit_on_ctrl_enter {
+                self.editor.update(ctx, |editor, ctx| {
+                    editor.user_initiated_insert("\n", PlainTextEditorViewAction::NewLine, ctx);
+                });
+                return;
             }
-            ctx.emit(Event::SubmitCLIAgentInput { text });
+
+            self.emit_submit_cli_agent_input(ctx);
             return;
         }
         let command = self.editor.as_ref(ctx).buffer_text(ctx);
@@ -12106,6 +12114,33 @@ impl Input {
         });
     }
 
+    /// Submits the rich-input buffer on Ctrl+Enter when `submit_on_ctrl_enter` is enabled;
+    /// otherwise emits [`Event::CtrlEnter`]. Exposed `pub(crate)` for unit tests.
+    pub(crate) fn input_ctrl_enter(&mut self, ctx: &mut ViewContext<Self>) {
+        if CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id)
+            && *AISettings::as_ref(ctx).submit_on_ctrl_enter
+        {
+            self.emit_submit_cli_agent_input(ctx);
+        } else {
+            ctx.emit(Event::CtrlEnter);
+        }
+    }
+
+    /// Emits [`Event::SubmitCLIAgentInput`] with the current buffer contents.
+    /// Shared submit path for Enter (default mode) and Ctrl+Enter (`submit_on_ctrl_enter` mode);
+    /// callers must have already handled menu-intercept cases.
+    fn emit_submit_cli_agent_input(&mut self, ctx: &mut ViewContext<Self>) {
+        // When the `!` prefix was stripped (shell mode in CLI agent input),
+        // prepend it back so the CLI agent receives the mode-switch prefix,
+        // then exit shell mode so the next prompt starts in AI mode.
+        let mut text = self.editor.as_ref(ctx).buffer_text(ctx);
+        if self.is_locked_in_shell_mode(ctx) {
+            text = format!("{TERMINAL_INPUT_PREFIX}{text}");
+            self.exit_shell_mode_to_ai(ctx);
+        }
+        ctx.emit(Event::SubmitCLIAgentInput { text });
+    }
+
     fn input_cmd_enter(&mut self, ctx: &mut ViewContext<Self>) {
         // NaturalLanguageCommandSearch has its own `cmd+enter` behaviour, not expected to execute here
         let mode = self.suggestions_mode_model.as_ref(ctx).mode().clone();
@@ -12439,7 +12474,13 @@ impl Input {
         }
 
         self.ai_controller.update(ctx, move |controller, ctx| {
-            controller.send_queued_user_query_in_conversation(prompt, conversation_id, None, ctx);
+            controller.send_queued_user_query_in_conversation(
+                prompt,
+                conversation_id,
+                None,
+                Some(query_id),
+                ctx,
+            );
         });
         ctx.emit(Event::ExecuteAIQuery);
     }
@@ -12521,6 +12562,9 @@ impl Input {
                 controller.send_queued_user_query_in_conversation(
                     prompt,
                     conversation_id,
+                    None,
+                    // This legacy single-pending-query fallback has no backing queued row to
+                    // resolve attachments from; the send path falls back to live staging.
                     None,
                     ctx,
                 );

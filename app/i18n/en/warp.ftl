@@ -1035,6 +1035,7 @@ settings-ai-auto-show-rich-input = Auto show/hide Rich Input based on agent stat
 settings-ai-auto-show-rich-input-tooltip = Requires the Warp plugin for your coding agent
 settings-ai-auto-open-rich-input = Auto open Rich Input when a coding agent session starts
 settings-ai-auto-dismiss-rich-input = Auto dismiss Rich Input after prompt submission
+settings-ai-submit-on-ctrl-enter = Submit Rich Input with Ctrl+Enter
 settings-ai-toolbar-commands-label = Commands that enable the toolbar
 settings-ai-toolbar-commands-description = Add regex patterns to show the coding agent toolbar for matching commands.
 settings-ai-per-agent-section = Installed agents
@@ -2557,6 +2558,11 @@ slash-cmd-auto-approve-desc = Toggle auto approve
 slash-cmd-natural-language-detection-desc = Toggle natural language detection
 slash-cmd-usage-desc = Show how much of the model's context window this conversation uses
 slash-cmd-cost-desc = Show this conversation's cost at your configured provider rates
+slash-cmd-mcp-desc = View and manage MCP servers
+slash-cmd-exit-desc = Exit Phosphor
+slash-cmd-view-logs-desc = Bundle your logs into a zip archive
+slash-cmd-clear-desc = Clear the transcript and start a new conversation (alias for /agent)
+slash-cmd-set-tab-color-desc = Set the color of the current tab
 
 # --- ANCHOR-SUB-PROMPT-TIPS ---
 # Prompt editor modal (app/src/prompt/editor_modal.rs)

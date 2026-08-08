@@ -874,8 +874,14 @@ impl LocalDiffStateModel {
     }
 
     /// Removes files based on the operation type
+    ///
+    /// `pub(crate)` rather than private: the remote-server daemon's
+    /// `DiscardFiles` handler (`app/src/remote_server/server_model.rs`, #437)
+    /// calls this directly to run the same git restore/stash/rm logic
+    /// against its own filesystem, mirroring how `load_metadata_for_repo` /
+    /// `load_diff_data_for_mode` are already reused for `GetDiffState`.
     #[cfg(feature = "local_fs")]
-    async fn discard_files_impl(
+    pub(crate) async fn discard_files_impl(
         repo_path: &Path,
         file_infos: Vec<FileStatusInfo>,
         should_stash: bool,
@@ -1207,9 +1213,13 @@ impl LocalDiffStateModel {
             moved,
             commit_updated,
             index_lock_detected,
+            remote_ref_updated,
         } = update;
 
-        let invalidation_behavior = if commit_updated {
+        let invalidation_behavior = if commit_updated || remote_ref_updated {
+            // A changed tracked-remote ref (#294) is metadata, not file
+            // content — e.g. it moves the ahead/behind counts shown in the
+            // diff-state pane — so it's treated the same as commit_updated.
             InvalidationBehavior::All(InvalidationSource::MetadataChange)
         } else if index_lock_detected {
             InvalidationBehavior::All(InvalidationSource::IndexLockChange)

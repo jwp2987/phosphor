@@ -113,7 +113,13 @@ impl ModelEventDispatcher {
     }
 
     /// Sets the active session ID directly, for use in unit tests where there's no `Precmd` event.
-    #[cfg(test)]
+    ///
+    /// Not `#[cfg(test)]`: this crate's own tests (e.g. `terminal/input_test.rs`)
+    /// could use a `#[cfg(test)]` method fine, but `app/src/tui_test_support.rs`
+    /// also calls this from `add_tui_history_test_models` (issue #387) and is
+    /// itself compiled unconditionally so the external `warp_tui` crate's tests
+    /// can use it -- `#[cfg(test)]` never crosses a crate boundary, so a
+    /// test-only gate here would make it invisible to that caller.
     pub fn set_active_session_id(&mut self, session_id: SessionId) {
         self.active_session_id = Some(session_id);
     }

@@ -80,6 +80,63 @@ fn test_keybinding_name_to_display_string() {
     });
 }
 
+// Ported from the pin (Warp 2026.07.29.09.05, commit 02b53fcd8)
+// `app/src/util/bindings_tests.rs::test_toggle_maximize_pane_binding_is_editable`,
+// tracked as issue #410. Deviation from the pin (AGENTS.md §5.10): the non-mac
+// default assertion is `ctrl-alt-m`, not `None`. The fork's
+// `CustomAction::ToggleMaximizePane` (see `app/src/util/bindings.rs`) deliberately
+// gives Linux/Windows a default of `ctrl-alt-m` instead of leaving it unbound,
+// because `ctrl-shift-enter` / `alt-shift-enter` / `ctrl-alt-enter` are all already
+// claimed by prompt-suggestion bindings on those platforms. That divergence
+// predates this port and is intentional, so the test is adapted to match actual
+// (better) fork behavior rather than weakened to match the pin.
+#[test]
+fn test_toggle_maximize_pane_binding_is_editable() {
+    App::test((), |mut app| async move {
+        app.update(crate::pane_group::init);
+
+        app.update(|ctx| {
+            use crate::pane_group::TOGGLE_MAXIMIZE_PANE_BINDING_NAME;
+
+            // The toggle-maximize-pane action is registered as an editable binding so
+            // it can be assigned a shortcut in Settings → Keyboard shortcuts.
+            assert!(
+                ctx.editable_bindings()
+                    .any(|binding| binding.name == TOGGLE_MAXIMIZE_PANE_BINDING_NAME),
+                "{TOGGLE_MAXIMIZE_PANE_BINDING_NAME} should be registered as an editable binding"
+            );
+
+            // It ships with a mac-only default shortcut (cmd-shift-enter) via its custom
+            // action; other platforms default to ctrl-alt-m (see the module comment above
+            // for why). Either way, whatever resolves here is what the pane header menu
+            // item surfaces.
+            let default = keybinding_name_to_display_string(TOGGLE_MAXIMIZE_PANE_BINDING_NAME, ctx);
+            if OperatingSystem::get().is_mac() {
+                assert_eq!(Some("⇧⌘⏎"), default.as_deref());
+            } else {
+                assert_eq!(Some("Ctrl Alt M"), default.as_deref());
+            }
+
+            // A reassigned shortcut resolves to its display string on every platform.
+            ctx.set_custom_trigger(
+                TOGGLE_MAXIMIZE_PANE_BINDING_NAME.to_owned(),
+                Trigger::Keystrokes(vec![Keystroke::parse("cmd-shift-M").unwrap()]),
+            );
+
+            let displayed_keybinding = if OperatingSystem::get().is_mac() {
+                "⇧⌘M"
+            } else {
+                "Shift Logo M"
+            };
+            assert_eq!(
+                Some(displayed_keybinding),
+                keybinding_name_to_display_string(TOGGLE_MAXIMIZE_PANE_BINDING_NAME, ctx)
+                    .as_deref()
+            );
+        });
+    });
+}
+
 #[test]
 fn test_terminal_page_scroll_bindings_are_editable() {
     App::test((), |mut app| async move {

@@ -126,9 +126,10 @@ pub enum TuiInputViewEvent {
     AcceptedMcp(TuiMcpAction),
     /// Shift+Up should move focus from the first visual row to the region above.
     MoveFocusUp,
-    /// The user accepted a prompt from the up-arrow prompt-history menu. Carries
-    /// the prompt text to fill into the input and submit.
-    AcceptedPromptHistory(String),
+    /// The user accepted a row from the up-arrow prompt-and-command history
+    /// menu. Carries the text to fill into the input and submit, and the
+    /// row's kind (issue #387).
+    AcceptedPromptAndCommandHistory(String, warp::tui_export::TuiUpArrowHistoryItemKind),
     /// The user accepted a shell command/path completion from the Tab-completion
     /// popup. The session view applies the replacement to the input buffer.
     AcceptedCompletion(TuiAcceptedCompletion),
@@ -592,6 +593,13 @@ impl TuiView for TuiInputView {
     fn on_blur(&mut self, blur_ctx: &BlurContext, ctx: &mut ViewContext<Self>) {
         if blur_ctx.is_self_blurred() {
             self.focused = false;
+            // Losing focus dismisses any open inline menu the same way Escape
+            // does (issue #387): otherwise the up-arrow history menu's preview
+            // — including its input-type switch into shell mode — would
+            // silently survive a focus change to another view.
+            if let Some(inline_menu) = self.active_inline_menu(ctx) {
+                inline_menu.dismiss(ctx);
+            }
             ctx.notify();
         }
     }
@@ -735,10 +743,12 @@ impl TypedActionView for TuiInputView {
                     self.open_inline_menu(TuiInputSuggestionsMode::ConversationMenu, ctx);
                     TuiEditorInteractionOutcome::FollowCursor
                 } else if matches!(*command, TuiEditorCommand::MoveUp)
-                    && !self.is_shell_mode(ctx)
                     && self.single_cursor_on_first_row(ctx)
                 {
-                    self.open_inline_menu(TuiInputSuggestionsMode::PromptHistory, ctx);
+                    // Issue #387: agent mode lists prompts and commands, shell
+                    // mode lists commands only — both open the same combined
+                    // menu, which does its own mode-based filtering.
+                    self.open_inline_menu(TuiInputSuggestionsMode::PromptAndCommandHistory, ctx);
                     TuiEditorInteractionOutcome::FollowCursor
                 // With nothing left to delete, backspace removes the `!`
                 // affordance instead; typed text is preserved.
@@ -964,8 +974,10 @@ impl TuiInputView {
             TuiInlineMenuAccepted::Mcp(action) => {
                 ctx.emit(TuiInputViewEvent::AcceptedMcp(action));
             }
-            TuiInlineMenuAccepted::PromptHistory(text) => {
-                ctx.emit(TuiInputViewEvent::AcceptedPromptHistory(text));
+            TuiInlineMenuAccepted::PromptAndCommandHistory(row) => {
+                ctx.emit(TuiInputViewEvent::AcceptedPromptAndCommandHistory(
+                    row.text, row.kind,
+                ));
             }
             TuiInlineMenuAccepted::Completion(completion) => {
                 ctx.emit(TuiInputViewEvent::AcceptedCompletion(completion));

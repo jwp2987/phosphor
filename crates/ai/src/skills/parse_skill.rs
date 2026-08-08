@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use super::parser::parse_markdown_file;
 use super::skill_provider::{get_provider_for_path, get_scope_for_path, SkillProvider, SkillScope};
 use thiserror::Error;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 const MAX_SKILL_DESCRIPTION_CHARS: usize = 512;
 
@@ -64,7 +65,8 @@ impl Display for ParsedSkill {
 /// # Returns
 /// * `Result<ParsedSkill>` - Parsed skill with validated name and description
 pub fn parse_skill(path: &Path) -> Result<ParsedSkill> {
-    let provider = get_provider_for_path(path).unwrap_or(SkillProvider::Agents);
+    let provider_path = LocalOrRemotePath::Local(path.to_path_buf());
+    let provider = get_provider_for_path(&provider_path).unwrap_or(SkillProvider::Agents);
     let scope = get_scope_for_path(path);
     parse_skill_internal(path, provider, scope)
 }
