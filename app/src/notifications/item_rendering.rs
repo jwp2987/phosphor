@@ -420,6 +420,10 @@ fn render_agent_avatar(
         NotificationSourceAgent::CLI(cli) => IconWithStatusVariant::CLIAgent {
             agent: cli,
             status: Some(status),
+            // The mailbox has no ambient/cloud-run signal today (this fork is BYOP-local;
+            // see `ui_components::agent_icon`'s module doc), matching the sibling `OzAgent`
+            // arm above which is likewise always local.
+            is_ambient: false,
         },
     };
     render_icon_with_status(

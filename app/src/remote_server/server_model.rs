@@ -17,21 +17,19 @@ use warp_util::content_version::ContentVersion;
 use warp_util::file::FileId;
 
 use super::proto::{
-    client_message, delete_file_response, git_commit_chain_response, git_create_pr_response,
-    git_push_response, run_command_response, server_message,
-    write_file_response, Abort, Authenticate, ClientMessage, UnsubscribeDiffState, DeleteFile,
-    DeleteFileResponse,
-    DeleteFileSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
-    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
-    GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
-    GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPushRequest,
-    GitPushResponse, Initialize,
-    InitializeResponse,
-    NavigatedToDirectory,
-    NavigatedToDirectoryResponse, ReadFileContextResponse, RipgrepSearchRequest, RunCommandError,
-    RunCommandErrorCode,
+    client_message, delete_file_response, discard_files_response, git_commit_chain_response,
+    git_create_pr_response, git_push_response, host_scoped_request, notification,
+    run_command_response, server_message, session_scoped_request, write_file_response, Abort,
+    Authenticate, ClientMessage, DeleteFile, DeleteFileResponse, DeleteFileSuccess,
+    DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse, DiscardFilesSuccess, ErrorCode,
+    ErrorResponse, FailedFileRead, FileContextProto, FileOperationError, GetBranches,
+    GetCommittedBranchFilesRequest, GetDiffState, GitCommitChainMode, GitCommitChainRequest,
+    GitCommitChainResponse, GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse,
+    GitOpDelta, GitOpError, GitPushRequest, GitPushResponse, HostScopedRequest, Initialize,
+    InitializeResponse, NavigatedToDirectory, NavigatedToDirectoryResponse, Notification,
+    ReadFileContextResponse, RipgrepSearchRequest, RunCommandError, RunCommandErrorCode,
     RunCommandRequest, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionBootstrapped,
-    WriteFile, WriteFileResponse, WriteFileSuccess,
+    SessionScopedRequest, UnsubscribeDiffState, WriteFile, WriteFileResponse, WriteFileSuccess,
 };
 
 // Buffer-sync related: depends on GlobalBufferModel, whose server-local
@@ -53,6 +51,12 @@ use super::proto::{
 use super::server_buffer_tracker::{PendingBufferRequestKind, ServerBufferTracker};
 #[cfg(feature = "local_fs")]
 use crate::code::global_buffer_model::{GlobalBufferModel, GlobalBufferModelEvent};
+#[cfg(feature = "local_fs")]
+use crate::code_review::git_status_update::GitRepoStatusModel;
+#[cfg(feature = "local_fs")]
+use crate::code_review::github_repo_model::GitHubRepoModel;
+#[cfg(feature = "local_fs")]
+use warpui::ModelHandle;
 
 /// How long the daemon waits with no connections before exiting.
 pub const GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -210,6 +214,36 @@ pub struct ServerModel {
     /// and wholesale on connection teardown.
     #[cfg(feature = "local_fs")]
     diff_state_subscriptions: HashMap<ConnectionId, Vec<DiffStateSubscription>>,
+    /// Per-repo local git-status models tracked on the daemon, keyed by repo
+    /// path. Ported from the pin's `git_status_models` field. Only the
+    /// subscription bookkeeping is ported here (issue #330); the daemon-side
+    /// wiring that would actually populate this map — subscribing on
+    /// navigation and broadcasting `GitStatusPush` — is a separate, larger
+    /// feature gap and is not part of this change, so this map stays empty.
+    /// It exists now so `drop_subscription` evicts the right entries once
+    /// that wiring lands.
+    #[cfg(feature = "local_fs")]
+    git_status_models: HashMap<StandardizedPath, ModelHandle<GitRepoStatusModel>>,
+    /// Per-repo local GitHub-info models tracked on the daemon, keyed by repo
+    /// path. Ported from the pin's `github_repo_models` field. Same caveat as
+    /// `git_status_models`: stays empty until the daemon-side push wiring is
+    /// ported separately.
+    #[cfg(feature = "local_fs")]
+    github_repo_models: HashMap<StandardizedPath, ModelHandle<GitHubRepoModel>>,
+    /// Connections subscribed (via navigation) to each repo's git status,
+    /// keyed by repo path. A repo's git-status *and* GitHub-info models live
+    /// while this set is non-empty and are evicted once the last connection
+    /// unsubscribes (navigates away or disconnects). Mirrors
+    /// `diff_state_subscriptions`'s per-connection tracking, but keyed by
+    /// repo since git-status subscription is exclusive (one repo per
+    /// connection) rather than a list of `(repo, mode)` pairs.
+    #[cfg(feature = "local_fs")]
+    git_status_subscribers: HashMap<StandardizedPath, HashSet<ConnectionId>>,
+    /// Each connection's current git repo (a connection is in at most one
+    /// repo at a time), so a navigation can move its subscription and a
+    /// disconnect can drop it.
+    #[cfg(feature = "local_fs")]
+    git_status_repo_by_conn: HashMap<ConnectionId, StandardizedPath>,
     /// Abort handle for the active grace timer, if any.
     /// Calling `.abort()` cancels the timer before it fires.
     grace_timer_cancel: Option<SpawnedFutureHandle>,
@@ -217,6 +251,24 @@ pub struct ServerModel {
     /// Calling `.abort()` on the handle cancels the background future and
     /// triggers its `on_abort` callback.
     in_progress: HashMap<RequestId, SpawnedFutureHandle>,
+    /// In-flight requests that must reach *some* live connection to this
+    /// host, not necessarily the exact proxy connection that issued them.
+    /// Maps a tracked `RequestId` to the `ConnectionId` it was originally
+    /// dispatched to. `send_server_message` consults this map when the
+    /// original connection is gone or its channel is closed: if the
+    /// request is tracked here, the response is failed over to another
+    /// live connection instead of being silently dropped.
+    ///
+    /// The pin (`02b53fcd8`) populates this from a `HostScoped` request
+    /// envelope (`client_message::Message::HostScoped`) that classifies
+    /// every request kind as host- or session-scoped at dispatch time. The
+    /// fork's wire protocol has no such envelope yet (tracked separately —
+    /// see the parity issue on the host-scoped/session-scoped protocol
+    /// envelope), so this map is not yet populated from `handle_message`.
+    /// The delivery mechanism itself (this field plus the failover branch
+    /// in `send_server_message`) is ported now so it is ready to use once
+    /// that envelope lands.
+    host_scoped_requests: HashMap<RequestId, ConnectionId>,
     /// Stable host identifier generated once at process startup.
     /// Returned in every `InitializeResponse` so clients can deduplicate
     /// host-scoped models.
@@ -257,8 +309,17 @@ impl ServerModel {
             snapshot_sent_roots_by_connection: HashMap::new(),
             #[cfg(feature = "local_fs")]
             diff_state_subscriptions: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            git_status_models: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            github_repo_models: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            git_status_subscribers: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            git_status_repo_by_conn: HashMap::new(),
             grace_timer_cancel: None,
             in_progress: HashMap::new(),
+            host_scoped_requests: HashMap::new(),
             host_id,
             executors: HashMap::new(),
             pending_file_ops: PendingFileOps::new(),
@@ -581,6 +642,11 @@ impl ServerModel {
         self.snapshot_sent_roots_by_connection.remove(&conn_id);
         #[cfg(feature = "local_fs")]
         self.diff_state_subscriptions.remove(&conn_id);
+        // A connection is in at most one git-status repo, so `unsubscribe_git_status`
+        // also serves as the disconnect sweep (mirrors the pin's comment on the
+        // same method).
+        #[cfg(feature = "local_fs")]
+        self.unsubscribe_git_status(conn_id);
         // Guard against double-deregister (reader and writer tasks both call
         // this on connection close; the second call must be a safe no-op).
         if self.connection_senders.remove(&conn_id).is_none() {
@@ -635,119 +701,204 @@ impl ServerModel {
     ) {
         let request_id = RequestId::from(msg.request_id);
 
+        // Dispatches through the host-scoped / session-scoped / notification
+        // envelope (#438). Deviation from the pin: the daemon still answers a
+        // host-scoped request only on its originating connection — this port
+        // carries the wire shape but not the pin's cross-connection failover
+        // (see the envelope's proto doc comment for why that's out of scope
+        // here).
         let outcome = match msg.message {
-            Some(client_message::Message::Initialize(msg)) => {
-                self.handle_initialize(msg, &request_id)
+            Some(client_message::Message::HostScoped(HostScopedRequest { message })) => {
+                match message {
+                    Some(host_scoped_request::Message::WriteFile(msg)) => {
+                        self.handle_write_file(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::DeleteFile(msg)) => {
+                        self.handle_delete_file(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::ReadFileContext(msg)) => {
+                        self.handle_read_file_context(msg, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::SaveBuffer(msg)) => {
+                        self.handle_save_buffer(msg, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::ResolveConflict(msg)) => {
+                        self.handle_resolve_conflict(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::GetBranches(req)) => {
+                        self.handle_get_branches(req, &request_id, conn_id, ctx)
+                    }
+                    // Git write-ops over SSH (#116): the daemon runs the git / gh
+                    // subprocesses host-local against the daemon's filesystem,
+                    // mirroring the local code-review dialog so local and remote
+                    // behave identically.
+                    Some(host_scoped_request::Message::GitCommitChain(req)) => {
+                        self.handle_git_commit_chain(req, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::GitPush(req)) => {
+                        self.handle_git_push(req, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::GitCreatePr(req)) => {
+                        self.handle_create_pr(req, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::GetCommittedBranchFiles(req)) => {
+                        self.handle_get_committed_branch_files(req, &request_id, conn_id, ctx)
+                    }
+                    // Discard changes over SSH (#437): the SSH-remote equivalent of
+                    // the local code-review "discard changes" action. Runs
+                    // git restore/stash/rm on the daemon's filesystem.
+                    Some(host_scoped_request::Message::DiscardFiles(req)) => {
+                        self.handle_discard_files(req, &request_id, conn_id, ctx)
+                    }
+                    Some(host_scoped_request::Message::RipgrepSearch(req)) => {
+                        self.handle_ripgrep_search(req, &request_id, conn_id, ctx)
+                    }
+                    // Zap: directory listing for remote terminal file links (used
+                    // to validate path shape).
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::ListDirectory(msg)) => {
+                        self.handle_list_directory(msg)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::ResolvePath(msg)) => {
+                        self.handle_resolve_path(msg)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::CreateDirectory(msg)) => {
+                        self.handle_create_directory(msg)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::ReadFileChunk(msg)) => {
+                        self.handle_read_file_chunk(msg)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::WriteFileChunk(msg)) => {
+                        self.handle_write_file_chunk(msg)
+                    }
+                    #[cfg(not(feature = "local_fs"))]
+                    Some(
+                        host_scoped_request::Message::SaveBuffer(_)
+                        | host_scoped_request::Message::ResolveConflict(_)
+                        | host_scoped_request::Message::ListDirectory(_)
+                        | host_scoped_request::Message::ResolvePath(_)
+                        | host_scoped_request::Message::CreateDirectory(_)
+                        | host_scoped_request::Message::ReadFileChunk(_)
+                        | host_scoped_request::Message::WriteFileChunk(_),
+                    ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                        code: ErrorCode::InvalidRequest.into(),
+                        message: "Buffer syncing requires the local_fs feature".to_string(),
+                    })),
+                    None => {
+                        log::warn!(
+                            "Received HostScopedRequest with no message variant \
+                             (request_id={request_id})"
+                        );
+                        HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                            code: ErrorCode::InvalidRequest.into(),
+                            message: "HostScopedRequest had no message variant set".to_string(),
+                        }))
+                    }
+                }
             }
-            Some(client_message::Message::Authenticate(msg)) => {
-                self.handle_authenticate(msg);
-                return;
+            Some(client_message::Message::SessionScoped(SessionScopedRequest { message })) => {
+                match message {
+                    Some(session_scoped_request::Message::Initialize(msg)) => {
+                        self.handle_initialize(msg, &request_id)
+                    }
+                    Some(session_scoped_request::Message::NavigatedToDirectory(msg)) => {
+                        self.handle_navigated_to_directory(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(session_scoped_request::Message::LoadRepoMetadataDirectory(msg)) => {
+                        self.handle_load_repo_metadata_directory(msg, &request_id, ctx)
+                    }
+                    Some(session_scoped_request::Message::RunCommand(req)) => {
+                        self.handle_run_command(req, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(session_scoped_request::Message::OpenBuffer(msg)) => {
+                        self.handle_open_buffer(msg, &request_id, conn_id, ctx)
+                    }
+                    Some(session_scoped_request::Message::GetDiffState(req)) => {
+                        self.handle_get_diff_state(req, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(not(feature = "local_fs"))]
+                    Some(session_scoped_request::Message::OpenBuffer(_)) => {
+                        HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                            code: ErrorCode::InvalidRequest.into(),
+                            message: "Buffer syncing requires the local_fs feature".to_string(),
+                        }))
+                    }
+                    None => {
+                        log::warn!(
+                            "Received SessionScopedRequest with no message variant \
+                             (request_id={request_id})"
+                        );
+                        HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                            code: ErrorCode::InvalidRequest.into(),
+                            message: "SessionScopedRequest had no message variant set".to_string(),
+                        }))
+                    }
+                }
             }
-            Some(client_message::Message::SessionBootstrapped(msg)) => {
-                self.handle_session_bootstrapped(msg);
-                return;
+            Some(client_message::Message::Notification(Notification { message })) => {
+                match message {
+                    Some(notification::Message::Abort(abort)) => {
+                        self.handle_abort(abort, &request_id);
+                        return;
+                    }
+                    Some(notification::Message::Authenticate(msg)) => {
+                        self.handle_authenticate(msg);
+                        return;
+                    }
+                    Some(notification::Message::SessionBootstrapped(msg)) => {
+                        self.handle_session_bootstrapped(msg);
+                        return;
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(notification::Message::BufferEdit(msg)) => {
+                        self.handle_buffer_edit(msg, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(notification::Message::CloseBuffer(msg)) => {
+                        self.handle_close_buffer(msg, conn_id, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    Some(notification::Message::UnsubscribeDiffState(msg)) => {
+                        self.handle_unsubscribe_diff_state(msg, conn_id, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    // Notifications carry no response contract, but buffer
+                    // syncing is unavailable without `local_fs` — mirror the
+                    // host/session-scoped fallback and answer with an explicit
+                    // error rather than silently dropping the message, so the
+                    // client doesn't wait on state that will never change.
+                    #[cfg(not(feature = "local_fs"))]
+                    Some(
+                        notification::Message::BufferEdit(_)
+                        | notification::Message::CloseBuffer(_),
+                    ) => {
+                        self.send_server_message(
+                            Some(conn_id),
+                            Some(&request_id),
+                            server_message::Message::Error(ErrorResponse {
+                                code: ErrorCode::InvalidRequest.into(),
+                                message: "Buffer syncing requires the local_fs feature".to_string(),
+                            }),
+                        );
+                        return;
+                    }
+                    None => {
+                        log::warn!(
+                            "Received Notification with no message variant \
+                             (request_id={request_id})"
+                        );
+                        return;
+                    }
+                }
             }
-            Some(client_message::Message::Abort(abort)) => {
-                self.handle_abort(abort, &request_id);
-                return;
-            }
-            Some(client_message::Message::RunCommand(req)) => {
-                self.handle_run_command(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::RipgrepSearch(req)) => {
-                self.handle_ripgrep_search(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GetBranches(req)) => {
-                self.handle_get_branches(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GetCommittedBranchFiles(req)) => {
-                self.handle_get_committed_branch_files(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GetDiffState(req)) => {
-                self.handle_get_diff_state(req, &request_id, conn_id, ctx)
-            }
-            // Git write-ops over SSH (#116): the daemon runs the git / gh
-            // subprocesses host-local against the daemon's filesystem, mirroring
-            // the local code-review dialog so local and remote behave
-            // identically.
-            Some(client_message::Message::GitCommitChain(req)) => {
-                self.handle_git_commit_chain(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GitPush(req)) => {
-                self.handle_git_push(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::GitCreatePr(req)) => {
-                self.handle_create_pr(req, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::UnsubscribeDiffState(msg)) => {
-                self.handle_unsubscribe_diff_state(msg, conn_id, ctx);
-                return; // fire-and-forget notification
-            }
-            Some(client_message::Message::NavigatedToDirectory(msg)) => {
-                self.handle_navigated_to_directory(msg, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::LoadRepoMetadataDirectory(msg)) => {
-                self.handle_load_repo_metadata_directory(msg, &request_id, ctx)
-            }
-            Some(client_message::Message::WriteFile(msg)) => {
-                self.handle_write_file(msg, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::DeleteFile(msg)) => {
-                self.handle_delete_file(msg, &request_id, conn_id, ctx)
-            }
-            Some(client_message::Message::ReadFileContext(msg)) => {
-                self.handle_read_file_context(msg, &request_id, conn_id, ctx)
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::OpenBuffer(msg)) => {
-                self.handle_open_buffer(msg, &request_id, conn_id, ctx)
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::BufferEdit(msg)) => {
-                self.handle_buffer_edit(msg, ctx);
-                return; // fire-and-forget notification
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::CloseBuffer(msg)) => {
-                self.handle_close_buffer(msg, conn_id, ctx);
-                return; // fire-and-forget notification
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::SaveBuffer(msg)) => {
-                self.handle_save_buffer(msg, &request_id, conn_id, ctx)
-            }
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::ResolveConflict(msg)) => {
-                self.handle_resolve_conflict(msg, &request_id, conn_id, ctx)
-            }
-            // Zap: directory listing for remote terminal file links (used to
-            // validate path shape).
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::ListDirectory(msg)) => self.handle_list_directory(msg),
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::ResolvePath(msg)) => self.handle_resolve_path(msg),
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::CreateDirectory(msg)) => self.handle_create_directory(msg),
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::ReadFileChunk(msg)) => self.handle_read_file_chunk(msg),
-            #[cfg(feature = "local_fs")]
-            Some(client_message::Message::WriteFileChunk(msg)) => self.handle_write_file_chunk(msg),
-            #[cfg(not(feature = "local_fs"))]
-            Some(
-                client_message::Message::OpenBuffer(_)
-                | client_message::Message::BufferEdit(_)
-                | client_message::Message::CloseBuffer(_)
-                | client_message::Message::SaveBuffer(_)
-                | client_message::Message::ResolveConflict(_)
-                | client_message::Message::ListDirectory(_)
-                | client_message::Message::ResolvePath(_)
-                | client_message::Message::CreateDirectory(_)
-                | client_message::Message::ReadFileChunk(_)
-                | client_message::Message::WriteFileChunk(_),
-            ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
-                code: ErrorCode::InvalidRequest.into(),
-                message: "Buffer syncing requires the local_fs feature".to_string(),
-            })),
             None => {
                 log::warn!(
                     "Received ClientMessage with no message variant (request_id={request_id})"
@@ -779,21 +930,50 @@ impl ServerModel {
     ///   the request (used for all request/response pairs).
     /// - `conn_id = None` — broadcasts to every connected proxy (used for
     ///   server-initiated push notifications such as repo metadata updates).
+    ///
+    /// For host-scoped requests (tracked in `host_scoped_requests`): if the
+    /// target connection is gone, or its channel rejects the send, the
+    /// response is delivered through any other open connection instead of
+    /// being dropped. This covers a session disconnecting (e.g. closing a
+    /// tab) while a host-scoped request it issued is still in flight —
+    /// another tab connected to the same host still gets the response.
+    /// Non-host-scoped responses are never failed over; their target
+    /// connection owns state (e.g. a subscription) that a sibling
+    /// connection does not have.
     fn send_server_message(
-        &self,
+        &mut self,
         conn_id: Option<ConnectionId>,
         request_id: Option<&RequestId>,
         message: server_message::Message,
     ) {
+        // Sending a response is the terminal step of a host-scoped request,
+        // so its failover-tracking entry is dropped here regardless of
+        // which path below actually delivers it. Whether the request was
+        // tracked is snapshotted *before* removal, since that's what decides
+        // failover eligibility below. Push notifications (no request_id)
+        // are never tracked, so this is a no-op for them.
+        let is_host_scoped_response = request_id
+            .is_some_and(|rid| !rid.is_empty() && self.host_scoped_requests.contains_key(rid));
+        if let Some(rid) = request_id {
+            self.host_scoped_requests.remove(rid);
+        }
+
         let msg = ServerMessage {
             request_id: request_id.map(|id| id.clone().into()).unwrap_or_default(),
             message: Some(message),
         };
         if let Some(target) = conn_id {
             if let Some(conn_tx) = self.connection_senders.get(&target) {
-                if let Err(e) = conn_tx.try_send(msg) {
+                if let Err(e) = conn_tx.try_send(msg.clone()) {
                     log::warn!("Daemon: failed to send to conn {target}: {e}");
+                    if is_host_scoped_response {
+                        self.send_host_scoped_response_via_alternate_connection(target, msg);
+                    }
                 }
+            } else if is_host_scoped_response {
+                // Target connection is gone. Deliver the host-scoped
+                // response through any other open connection.
+                self.send_host_scoped_response_via_alternate_connection(target, msg);
             } else {
                 log::debug!("Daemon: no sender for conn {target} (already disconnected)");
             }
@@ -805,6 +985,36 @@ impl ServerModel {
                 }
             }
         }
+    }
+
+    /// Delivers a host-scoped response through a connected proxy other than
+    /// `target`. Used when the original connection has disappeared or its
+    /// outbound channel rejected the response.
+    fn send_host_scoped_response_via_alternate_connection(
+        &self,
+        target: ConnectionId,
+        msg: ServerMessage,
+    ) {
+        for (&alt_id, alt_tx) in &self.connection_senders {
+            if alt_id == target {
+                continue;
+            }
+            log::info!(
+                "Daemon: failover delivery for request_id={} from conn {target} to conn {alt_id}",
+                msg.request_id
+            );
+            match alt_tx.try_send(msg.clone()) {
+                Ok(()) => return,
+                Err(e) => {
+                    log::warn!("Daemon: failover delivery failed to conn {alt_id}: {e}");
+                }
+            }
+        }
+        log::warn!(
+            "Daemon: cannot deliver host-scoped response for request_id={}, \
+             no alternate connections available",
+            msg.request_id
+        );
     }
 
     /// Spawns an abortable future tied to `request_id` and wires up automatic
@@ -983,15 +1193,15 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => p.to_local_path_lossy(),
-                Err(e) => {
-                    return HandlerOutcome::Sync(server_message::Message::GetBranchesResponse(
-                        super::get_branches::error_response(format!("Invalid repo_path: {e}")),
-                    ));
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => p.to_local_path_lossy(),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GetBranchesResponse(
+                    super::get_branches::error_response(format!("Invalid repo_path: {e}")),
+                ));
+            }
+        };
 
         let max_branch_count = msg
             .max_branch_count
@@ -1038,19 +1248,19 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => p.to_local_path_lossy(),
-                Err(e) => {
-                    return HandlerOutcome::Sync(
-                        server_message::Message::GetCommittedBranchFilesResponse(
-                            super::get_committed_branch_files::error_response(format!(
-                                "Invalid repo_path: {e}"
-                            )),
-                        ),
-                    );
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => p.to_local_path_lossy(),
+            Err(e) => {
+                return HandlerOutcome::Sync(
+                    server_message::Message::GetCommittedBranchFilesResponse(
+                        super::get_committed_branch_files::error_response(format!(
+                            "Invalid repo_path: {e}"
+                        )),
+                    ),
+                );
+            }
+        };
 
         log::info!(
             "Handling GetCommittedBranchFiles repo={} (request_id={request_id})",
@@ -1081,9 +1291,7 @@ impl ServerModel {
     }
 
     /// Maps the wire commit-chain mode to the `util::git` orchestration mode.
-    fn commit_chain_mode_from_proto(
-        mode: GitCommitChainMode,
-    ) -> crate::util::git::CommitChainMode {
+    fn commit_chain_mode_from_proto(mode: GitCommitChainMode) -> crate::util::git::CommitChainMode {
         use crate::util::git::CommitChainMode;
         match mode {
             GitCommitChainMode::CommitOnly => CommitChainMode::CommitOnly,
@@ -1113,19 +1321,19 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => PathBuf::from(p.to_local_path_lossy()),
-                Err(e) => {
-                    return HandlerOutcome::Sync(
-                        server_message::Message::GitCommitChainResponse(GitCommitChainResponse {
-                            result: Some(git_commit_chain_response::Result::Error(GitOpError {
-                                message: format!("Invalid repo_path: {e}"),
-                            })),
-                        }),
-                    );
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GitCommitChainResponse(
+                    GitCommitChainResponse {
+                        result: Some(git_commit_chain_response::Result::Error(GitOpError {
+                            message: format!("Invalid repo_path: {e}"),
+                        })),
+                    },
+                ));
+            }
+        };
         let mode = Self::commit_chain_mode_from_proto(msg.mode());
         let message = msg.message;
         let include_unstaged = msg.include_unstaged;
@@ -1196,19 +1404,19 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => PathBuf::from(p.to_local_path_lossy()),
-                Err(e) => {
-                    return HandlerOutcome::Sync(server_message::Message::GitPushResponse(
-                        GitPushResponse {
-                            result: Some(git_push_response::Result::Error(GitOpError {
-                                message: format!("Invalid repo_path: {e}"),
-                            })),
-                        },
-                    ));
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GitPushResponse(
+                    GitPushResponse {
+                        result: Some(git_push_response::Result::Error(GitOpError {
+                            message: format!("Invalid repo_path: {e}"),
+                        })),
+                    },
+                ));
+            }
+        };
         let branch = msg.branch;
 
         log::info!(
@@ -1263,19 +1471,19 @@ impl ServerModel {
         conn_id: ConnectionId,
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
-        let repo_path =
-            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
-                Ok(p) => PathBuf::from(p.to_local_path_lossy()),
-                Err(e) => {
-                    return HandlerOutcome::Sync(server_message::Message::GitCreatePrResponse(
-                        GitCreatePrResponse {
-                            result: Some(git_create_pr_response::Result::Error(GitOpError {
-                                message: format!("Invalid repo_path: {e}"),
-                            })),
-                        },
-                    ));
-                }
-            };
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GitCreatePrResponse(
+                    GitCreatePrResponse {
+                        result: Some(git_create_pr_response::Result::Error(GitOpError {
+                            message: format!("Invalid repo_path: {e}"),
+                        })),
+                    },
+                ));
+            }
+        };
         let _ = msg.branch; // Used by Warp's AI generation; unused in the --fill path.
         let _ = msg.autogenerate_content; // BYOP: ignored, see doc comment.
 
@@ -1298,13 +1506,11 @@ impl ServerModel {
                             super::diff_state_proto::pr_info_to_proto(&pr),
                         )),
                     }),
-                    Err(e) => {
-                        server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
-                            result: Some(git_create_pr_response::Result::Error(GitOpError {
-                                message: format!("{e:#}"),
-                            })),
-                        })
-                    }
+                    Err(e) => server_message::Message::GitCreatePrResponse(GitCreatePrResponse {
+                        result: Some(git_create_pr_response::Result::Error(GitOpError {
+                            message: format!("{e:#}"),
+                        })),
+                    }),
                 };
                 me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
             },
@@ -1363,11 +1569,14 @@ impl ServerModel {
         let handle = self.spawn_request_handler(
             request_id.clone(),
             async move {
-                let metadata =
-                    LocalDiffStateModel::load_metadata_for_repo(repo_pathbuf.clone(), include_base_branch)
-                        .await;
+                let metadata = LocalDiffStateModel::load_metadata_for_repo(
+                    repo_pathbuf.clone(),
+                    include_base_branch,
+                )
+                .await;
                 let diff_data =
-                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf).await;
+                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf)
+                        .await;
                 (metadata, diff_data)
             },
             move |me, (metadata_result, diff_data), _ctx| {
@@ -1457,11 +1666,14 @@ impl ServerModel {
         let wire_repo_path = sub.wire_repo_path;
         ctx.spawn_abortable(
             async move {
-                let metadata =
-                    LocalDiffStateModel::load_metadata_for_repo(repo_pathbuf.clone(), include_base_branch)
-                        .await;
+                let metadata = LocalDiffStateModel::load_metadata_for_repo(
+                    repo_pathbuf.clone(),
+                    include_base_branch,
+                )
+                .await;
                 let diff_data =
-                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf).await;
+                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf)
+                        .await;
                 (metadata, diff_data)
             },
             move |me, (metadata_result, diff_data), _ctx| {
@@ -1496,6 +1708,134 @@ impl ServerModel {
         ))
     }
 
+    /// Handles `DiscardFilesRequest` — runs `git restore`/`git stash`/
+    /// `git rm` on the daemon's filesystem for the specified files, reusing
+    /// the same `LocalDiffStateModel::discard_files_impl` logic the local
+    /// code-review dialog uses (#437). On success, pushes a fresh diff-state
+    /// snapshot to every connection subscribed to this repo so the
+    /// code-review UI updates without waiting for the next file-watcher
+    /// event.
+    ///
+    /// `msg.mode` is accepted but not used to select a cached model — see
+    /// the field's doc comment in the proto for why (a discard invalidates
+    /// every mode's diff for this repo, not just the requesting one).
+    #[cfg(feature = "local_fs")]
+    fn handle_discard_files(
+        &mut self,
+        msg: DiscardFilesRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        use crate::code_review::diff_state::{FileStatusInfo, LocalDiffStateModel};
+
+        let canonical_path =
+            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+                Ok(p) => p,
+                Err(e) => {
+                    return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                        DiscardFilesResponse {
+                            result: Some(discard_files_response::Result::Error(
+                                DiscardFilesError {
+                                    message: format!("Invalid repo_path: {e}"),
+                                },
+                            )),
+                        },
+                    ));
+                }
+            };
+
+        if msg.files.is_empty() {
+            return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                DiscardFilesResponse {
+                    result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                        message: "No files specified in DiscardFilesRequest".to_string(),
+                    })),
+                },
+            ));
+        }
+
+        // Decoding is fallible: #326 replaced the infallible
+        // `proto_to_file_status_info` with a validating `TryFrom` that rejects
+        // non-absolute paths and missing status variants. Surface a malformed
+        // entry as a DiscardFilesError rather than acting on a half-decoded
+        // request -- discarding files against a bad path is destructive.
+        let file_infos: Vec<FileStatusInfo> = match msg
+            .files
+            .iter()
+            .map(FileStatusInfo::try_from)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(infos) => infos,
+            Err(err) => {
+                return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                    DiscardFilesResponse {
+                        result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                            message: format!("Invalid file entry in DiscardFilesRequest: {err}"),
+                        })),
+                    },
+                ));
+            }
+        };
+        let should_stash = msg.should_stash;
+        let branch = msg.branch_name.unwrap_or_else(|| "HEAD".to_string());
+        let repo_path = PathBuf::from(canonical_path.to_local_path_lossy());
+
+        log::info!(
+            "Handling DiscardFiles repo={} files={} (request_id={request_id})",
+            msg.repo_path,
+            file_infos.len(),
+        );
+
+        let request_id_for_response = request_id.clone();
+        let repo_path_for_push = canonical_path.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                guard_git_operation_in_progress(&repo_path)?;
+                LocalDiffStateModel::discard_files_impl(&repo_path, file_infos, should_stash, &branch)
+                    .await
+            },
+            move |me, result, ctx| {
+                let message = match result {
+                    Ok(_) => {
+                        me.push_diff_state_for_repo(&repo_path_for_push, ctx);
+                        server_message::Message::DiscardFilesResponse(DiscardFilesResponse {
+                            result: Some(discard_files_response::Result::Success(
+                                DiscardFilesSuccess {},
+                            )),
+                        })
+                    }
+                    Err(e) => server_message::Message::DiscardFilesResponse(DiscardFilesResponse {
+                        result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                            message: format!("{e:#}"),
+                        })),
+                    }),
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    #[cfg(not(feature = "local_fs"))]
+    fn handle_discard_files(
+        &mut self,
+        _msg: DiscardFilesRequest,
+        _request_id: &RequestId,
+        _conn_id: ConnectionId,
+        _ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+            DiscardFilesResponse {
+                result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                    message: "Discard files requires the local_fs feature".to_string(),
+                })),
+            },
+        ))
+    }
+
     /// Handles `UnsubscribeDiffState` — fire-and-forget removal of a diff-state
     /// subscription for a `(repo, mode)` pair on this connection.
     #[cfg(feature = "local_fs")]
@@ -1526,6 +1866,69 @@ impl ServerModel {
         _conn_id: ConnectionId,
         _ctx: &mut ModelContext<Self>,
     ) {
+    }
+
+    // ── Git-status / GitHub: per-connection subscription tracking ───────
+    //
+    // Ported from the pinned oracle's `subscribe_git_status` /
+    // `unsubscribe_git_status` (issue #330). Pure bookkeeping: which
+    // connection currently watches which repo's git status, and eviction of
+    // the (currently always-empty; see the `git_status_models` field doc)
+    // per-repo model caches once a repo has no subscribers left. The pin
+    // also drives these from `NavigatedToDirectory` / `UpdateGitStatus`
+    // handlers and pushes `GitStatusPush` messages on model events; that
+    // wiring is a separate, larger feature gap and is not part of this
+    // change.
+
+    /// Subscribe `conn` to `repo`'s git status (navigation in), moving it off
+    /// any repo it was previously in. A no-op if `conn` is already the repo's
+    /// subscriber.
+    ///
+    /// Not yet called from a handler — the `NavigatedToDirectory` wiring is
+    /// the separate feature gap noted above — so this is currently exercised
+    /// only by tests.
+    #[cfg(feature = "local_fs")]
+    #[allow(dead_code)]
+    fn subscribe_git_status(&mut self, conn: ConnectionId, repo: &StandardizedPath) {
+        match self.git_status_repo_by_conn.get(&conn) {
+            Some(prev) if prev == repo => return,
+            Some(prev) => {
+                let prev = prev.clone();
+                self.drop_git_status_subscription(&prev, conn);
+            }
+            None => {}
+        }
+        self.git_status_repo_by_conn.insert(conn, repo.clone());
+        self.git_status_subscribers
+            .entry(repo.clone())
+            .or_default()
+            .insert(conn);
+    }
+
+    /// Unsubscribe `conn` from its current repo (navigation out of git, or
+    /// disconnect). A connection is in at most one repo, so this single
+    /// method also serves as the disconnect sweep — see `deregister_connection`.
+    #[cfg(feature = "local_fs")]
+    fn unsubscribe_git_status(&mut self, conn: ConnectionId) {
+        if let Some(repo) = self.git_status_repo_by_conn.remove(&conn) {
+            self.drop_git_status_subscription(&repo, conn);
+        }
+    }
+
+    /// Removes one `(repo, conn)` subscription, evicting the per-repo
+    /// git-status and GitHub-info model caches once the repo has no
+    /// subscribers left.
+    #[cfg(feature = "local_fs")]
+    fn drop_git_status_subscription(&mut self, repo: &StandardizedPath, conn: ConnectionId) {
+        let Some(subscribers) = self.git_status_subscribers.get_mut(repo) else {
+            return;
+        };
+        subscribers.remove(&conn);
+        if subscribers.is_empty() {
+            self.git_status_subscribers.remove(repo);
+            self.github_repo_models.remove(repo);
+            self.git_status_models.remove(repo);
+        }
     }
 
     fn handle_run_command(
@@ -2197,8 +2600,7 @@ impl ServerModel {
                     let metadata = entry.metadata().ok();
                     let kind = entry_kind(file_type.as_ref(), metadata.as_ref());
                     let is_dir = kind == FileSystemEntryKind::Directory as i32;
-                    let size_bytes =
-                        metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len());
+                    let size_bytes = metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len());
                     let modified_epoch_millis = metadata
                         .as_ref()
                         .and_then(|m| m.modified().ok())
@@ -2424,10 +2826,7 @@ fn expand_user_path(path: &str) -> PathBuf {
 }
 
 #[cfg(feature = "local_fs")]
-fn entry_kind(
-    file_type: Option<&std::fs::FileType>,
-    metadata: Option<&std::fs::Metadata>,
-) -> i32 {
+fn entry_kind(file_type: Option<&std::fs::FileType>, metadata: Option<&std::fs::Metadata>) -> i32 {
     if file_type.is_some_and(|ft| ft.is_symlink()) {
         return FileSystemEntryKind::Symlink as i32;
     }

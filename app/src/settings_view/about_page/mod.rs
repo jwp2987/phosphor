@@ -162,9 +162,13 @@ impl SettingsWidget for AboutPageWidget {
     ) -> Box<dyn Element> {
         let ui_builder = appearance.ui_builder();
 
-        // Phosphor brand badge; the name is rendered as separate text below, from the channel's
-        // display name, no longer relying on an svg that includes the word "warp".
-        let image_path = "bundled/jpg/phosphor-logo.jpeg";
+        // Phosphor brand mark; the name is rendered as separate text below, from the channel's
+        // display name. Vector SVG (shared with the app icon source at
+        // app/channels/oss/icon/AppIcon.icon/Assets/logo.svg) rather than the old 1024x1024
+        // opaque JPEG: that badge baked in "PHOSPHOR TERMLNK / CRT TERMINAL" lettering that
+        // turned to noise once downscaled to the ~100px display size here, and its lack of
+        // alpha rendered as a hard rectangle instead of sitting on the settings background.
+        let image_path = "bundled/svg/phosphor-logo.svg";
 
         // GIT_RELEASE_TAG injected -> shows the tag; otherwise falls into Dev development mode
         let version = ChannelState::app_version().unwrap_or("Dev");

@@ -550,7 +550,7 @@ impl AgentInputFooter {
 
         let context_window_button = ctx.add_typed_action_view(|_ctx| {
             ActionButton::new("", AgentInputButtonTheme)
-                .with_icon(Icon::ConversationContext0)
+                .with_icon(Icon::ContextRemaining100)
                 .with_tooltip(crate::t!("ai-footer-context-window-usage-tooltip"))
                 .with_size(button_size)
                 .with_tooltip_alignment(TooltipAlignment::Left)
@@ -1698,7 +1698,7 @@ impl AgentInputFooter {
             // — keep the button's initial neutral tooltip rather than show "100% remaining".
             if usage == 0.0 {
                 self.context_window_button.update(ctx, |button, ctx| {
-                    button.set_icon(Some(Icon::ConversationContext0), ctx);
+                    button.set_icon(Some(Icon::ContextRemaining100), ctx);
                     button.set_tooltip(
                         Some(crate::t!("ai-footer-context-window-usage-tooltip")),
                         ctx,

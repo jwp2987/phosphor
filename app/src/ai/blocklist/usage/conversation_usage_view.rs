@@ -79,7 +79,10 @@ impl ConversationUsageView {
     }
     /// Helper to collect models grouped by category.
     /// Returns a HashMap mapping category name to list of (model_id, is_byok) tuples.
-    /// Handles both category-based fields and legacy warp_tokens/byok_tokens fields.
+    /// Custom-endpoint rows share the `is_byok` external-key icon bucket with BYOK
+    /// rows, since both represent the user's own credentials rather than Zap's.
+    /// Handles both category-based fields and legacy warp_tokens/byok_tokens/
+    /// custom_endpoint_tokens fields.
     fn collect_models_by_category(&self) -> HashMap<String, Vec<(String, bool)>> {
         let mut entries_by_category: HashMap<String, Vec<(String, bool)>> = HashMap::new();
 
@@ -101,6 +104,14 @@ impl ConversationUsageView {
                         .push((model.model_id.clone(), true));
                 }
             }
+            for (category, &tokens) in &model.custom_endpoint_token_usage_by_category {
+                if tokens > 0 {
+                    entries_by_category
+                        .entry(category.clone())
+                        .or_default()
+                        .push((model.model_id.clone(), true));
+                }
+            }
         }
 
         // Fallback to legacy fields for backwards compatibility
@@ -113,6 +124,12 @@ impl ConversationUsageView {
                         .push((model.model_id.clone(), false));
                 }
                 if model.byok_tokens > 0 {
+                    entries_by_category
+                        .entry(PRIMARY_AGENT_CATEGORY.to_string())
+                        .or_default()
+                        .push((model.model_id.clone(), true));
+                }
+                if model.custom_endpoint_tokens > 0 {
                     entries_by_category
                         .entry(PRIMARY_AGENT_CATEGORY.to_string())
                         .or_default()
@@ -528,4 +545,78 @@ fn render_value_text(text: String, appearance: &Appearance) -> Box<dyn Element> 
     Text::new(text, appearance.ui_font_family(), font_size)
         .with_color(text_color)
         .finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn placeholder_usage_info() -> ConversationUsageInfo {
+        ConversationUsageInfo {
+            credits_spent: 0.0,
+            credits_spent_for_last_block: None,
+            tool_calls: 0,
+            models: Vec::new(),
+            context_window_usage: 0.0,
+            files_changed: 0,
+            lines_added: 0,
+            lines_removed: 0,
+            commands_executed: 0,
+        }
+    }
+
+    /// Pin `02b53fcd8:app/src/ai/blocklist/usage/conversation_usage_view_tests.rs::
+    /// custom_endpoint_models_use_the_external_key_icon_bucket`, adapted to this
+    /// fork's simpler `ConversationUsageInfo` (no orchestration-rollup fields).
+    #[test]
+    fn custom_endpoint_models_use_the_external_key_icon_bucket() {
+        let view = ConversationUsageView::new(
+            ConversationUsageInfo {
+                models: vec![ModelTokenUsage {
+                    model_id: "Friendly alias".to_string(),
+                    custom_endpoint_tokens: 6,
+                    custom_endpoint_token_usage_by_category: HashMap::from([(
+                        PRIMARY_AGENT_CATEGORY.to_string(),
+                        6,
+                    )]),
+                    ..Default::default()
+                }],
+                ..placeholder_usage_info()
+            },
+            DisplayMode::Footer,
+            None,
+            MouseStateHandle::default(),
+        );
+
+        assert_eq!(
+            view.collect_models_by_category()
+                .get(PRIMARY_AGENT_CATEGORY),
+            Some(&vec![("Friendly alias".to_string(), true)])
+        );
+    }
+
+    #[test]
+    fn legacy_custom_endpoint_tokens_use_the_external_key_icon_bucket() {
+        // Backwards compatibility: rows persisted before per-category tracking
+        // existed only set the flat `custom_endpoint_tokens` counter.
+        let view = ConversationUsageView::new(
+            ConversationUsageInfo {
+                models: vec![ModelTokenUsage {
+                    model_id: "legacy-custom-endpoint".to_string(),
+                    custom_endpoint_tokens: 3,
+                    ..Default::default()
+                }],
+                ..placeholder_usage_info()
+            },
+            DisplayMode::Footer,
+            None,
+            MouseStateHandle::default(),
+        );
+
+        assert_eq!(
+            view.collect_models_by_category()
+                .get(PRIMARY_AGENT_CATEGORY),
+            Some(&vec![("legacy-custom-endpoint".to_string(), true)])
+        );
+    }
 }

@@ -972,6 +972,7 @@ settings-ai-auto-show-rich-input = 根据智能体状态自动显示/隐藏富�
 settings-ai-auto-show-rich-input-tooltip = 需要为你的编码智能体安装 Warp 插件
 settings-ai-auto-open-rich-input = 编码智能体会话启动时自动打开富输入
 settings-ai-auto-dismiss-rich-input = 提交提示后自动关闭富输入
+settings-ai-submit-on-ctrl-enter = 使用 Ctrl+Enter 提交富输入
 settings-ai-toolbar-commands-label = 启用工具栏的命令
 settings-ai-toolbar-commands-description = 添加正则表达式，匹配的命令将显示编码智能体工具栏。
 settings-ai-per-agent-section = 已安装的智能体

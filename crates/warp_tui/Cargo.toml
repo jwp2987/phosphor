@@ -30,6 +30,9 @@ futures.workspace = true
 futures-lite.workspace = true
 fs4 = { version = "0.13.1", features = ["sync"] }
 http_client.workspace = true
+# Masked-TTY prompt for `--set-provider-api-key` (falls back to piped stdin
+# when not a terminal). Same version `app` already pins for the same purpose.
+inquire = "0.9.1"
 instant.workspace = true
 itertools.workspace = true
 log.workspace = true
