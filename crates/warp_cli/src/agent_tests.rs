@@ -3,9 +3,6 @@ use super::*;
 /// Locks in [`Harness::config_name`] / [`Harness::from_config_name`] as a true inverse pair
 /// for every variant that maps to a real, server-recognized harness. If a new variant is
 /// added without a matching `from_config_name` arm, this round-trip test will fail.
-///
-/// The pinned oracle also covers `Harness::Codex`, which does not exist in this fork
-/// (no `codex` CLI delegation support yet) — see the tracked feature-gap issue.
 #[test]
 fn harness_config_name_round_trips_for_known_variants() {
     for harness in [
@@ -13,6 +10,7 @@ fn harness_config_name_round_trips_for_known_variants() {
         Harness::Claude,
         Harness::OpenCode,
         Harness::Gemini,
+        Harness::Codex,
     ] {
         assert_eq!(
             Harness::from_config_name(harness.config_name()),
