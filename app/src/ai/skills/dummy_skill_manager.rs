@@ -73,6 +73,16 @@ impl SkillManager {
         None
     }
 
+    /// No-op counterpart of `skill_manager::SkillManager::active_skill_by_reference`
+    /// for builds without a local filesystem (there is nothing to have cached).
+    pub fn active_skill_by_reference(
+        &self,
+        _reference: &SkillReference,
+        _ctx: &AppContext,
+    ) -> Option<&ParsedSkill> {
+        None
+    }
+
     pub fn skill_exists_for_any_provider(
         &self,
         _skill: &SkillDescriptor,

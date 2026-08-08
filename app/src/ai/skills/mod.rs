@@ -37,8 +37,8 @@ cfg_if::cfg_if! {
         mod bundled;
         mod skill_manager;
         pub use skill_manager::{
-            extract_skill_parent_directory, SkillInventoryDuplicate, SkillInventoryItem,
-            SkillManager, SkillManagerEvent,
+            extract_skill_parent_directory, BundledSkillActivation, SkillInventoryDuplicate,
+            SkillInventoryItem, SkillManager, SkillManagerEvent,
         };
         #[allow(unused_imports)]
         pub use skill_manager::SkillWatcher;
