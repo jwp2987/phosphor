@@ -353,6 +353,19 @@ impl GridStorage {
                             Vec::new()
                         } else {
                             // Since it fits, just push the existing line without any reflow.
+                            //
+                            // If `row.shrink` just cut off a wide char's spacer (the char
+                            // itself lands exactly on the new last column), the row now ends
+                            // in an orphaned WIDE_CHAR with no WIDE_CHAR_SPACER to match it.
+                            // With reflow disabled there is no next row to carry the other
+                            // half into (see the `Some(wrapped) if reflow` arm above, which
+                            // does that relocation), so clear the cell instead of leaving the
+                            // grid in a state `assert_no_orphaned_wide_chars` rejects.
+                            if row.len() >= columns
+                                && row[columns - 1].flags().contains(Flags::WIDE_CHAR)
+                            {
+                                row[columns - 1] = Cell::default();
+                            }
                             new_raw.push(row);
                             break;
                         }
