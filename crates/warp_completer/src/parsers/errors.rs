@@ -1,4 +1,12 @@
+// `ParseError::unexpected_eof` / `::extra_tokens` / `::internal_error` and
+// `ArgumentError::MissingMandatoryFlag` are ported but not yet constructed by
+// any parse failure path in this crate (only `::mismatch` / `::argument_error`
+// are live) — see #207's audit. Left as a module blanket rather than four
+// individual allows because a real build (not available in that audit
+// session) is needed to confirm which are dead_code-eligible vs. exempt as
+// public API of a lib crate.
 #![allow(dead_code)]
+
 use crate::meta::{Span, Spanned, SpannedItem};
 use getset::Getters;
 

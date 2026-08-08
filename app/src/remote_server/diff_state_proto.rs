@@ -13,13 +13,6 @@
 //! These live in `app` rather than the `remote_server` crate because the
 //! domain types are defined here and `remote_server` cannot depend on `app`.
 
-// `file_status_info_to_proto` / `proto_to_file_status_info` are now live
-// (client method + daemon handler, #437). The remaining non-test consumers
-// for the other converters here (e.g. `build_diff_state_file_delta`'s
-// debounced per-file push) land in later diff-state increments; until then
-// those stay exercised only by the unit tests below.
-#![allow(dead_code)]
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -593,8 +586,9 @@ pub(super) fn build_snapshot(
 /// re-serialize the whole repo on a single-file change.
 ///
 /// Not yet called outside tests: the debounced per-file push path lives in
-/// the daemon's diff-state tracker, which the fork has not ported yet (see
-/// the module doc comment's `#![allow(dead_code)]`).
+/// the daemon's diff-state tracker, which the fork has not ported yet
+/// (tracked by #324).
+#[allow(dead_code)] // no non-test caller until #324 lands the daemon push path
 pub(crate) fn build_diff_state_file_delta(
     repo_path: &str,
     mode: &DiffMode,
