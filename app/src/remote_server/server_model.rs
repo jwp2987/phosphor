@@ -55,6 +55,12 @@ use super::proto::{
 use super::server_buffer_tracker::{PendingBufferRequestKind, ServerBufferTracker};
 #[cfg(feature = "local_fs")]
 use crate::code::global_buffer_model::{GlobalBufferModel, GlobalBufferModelEvent};
+#[cfg(feature = "local_fs")]
+use crate::code_review::git_status_update::GitRepoStatusModel;
+#[cfg(feature = "local_fs")]
+use crate::code_review::github_repo_model::GitHubRepoModel;
+#[cfg(feature = "local_fs")]
+use warpui::ModelHandle;
 
 /// How long the daemon waits with no connections before exiting.
 pub const GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -212,6 +218,36 @@ pub struct ServerModel {
     /// and wholesale on connection teardown.
     #[cfg(feature = "local_fs")]
     diff_state_subscriptions: HashMap<ConnectionId, Vec<DiffStateSubscription>>,
+    /// Per-repo local git-status models tracked on the daemon, keyed by repo
+    /// path. Ported from the pin's `git_status_models` field. Only the
+    /// subscription bookkeeping is ported here (issue #330); the daemon-side
+    /// wiring that would actually populate this map — subscribing on
+    /// navigation and broadcasting `GitStatusPush` — is a separate, larger
+    /// feature gap and is not part of this change, so this map stays empty.
+    /// It exists now so `drop_subscription` evicts the right entries once
+    /// that wiring lands.
+    #[cfg(feature = "local_fs")]
+    git_status_models: HashMap<StandardizedPath, ModelHandle<GitRepoStatusModel>>,
+    /// Per-repo local GitHub-info models tracked on the daemon, keyed by repo
+    /// path. Ported from the pin's `github_repo_models` field. Same caveat as
+    /// `git_status_models`: stays empty until the daemon-side push wiring is
+    /// ported separately.
+    #[cfg(feature = "local_fs")]
+    github_repo_models: HashMap<StandardizedPath, ModelHandle<GitHubRepoModel>>,
+    /// Connections subscribed (via navigation) to each repo's git status,
+    /// keyed by repo path. A repo's git-status *and* GitHub-info models live
+    /// while this set is non-empty and are evicted once the last connection
+    /// unsubscribes (navigates away or disconnects). Mirrors
+    /// `diff_state_subscriptions`'s per-connection tracking, but keyed by
+    /// repo since git-status subscription is exclusive (one repo per
+    /// connection) rather than a list of `(repo, mode)` pairs.
+    #[cfg(feature = "local_fs")]
+    git_status_subscribers: HashMap<StandardizedPath, HashSet<ConnectionId>>,
+    /// Each connection's current git repo (a connection is in at most one
+    /// repo at a time), so a navigation can move its subscription and a
+    /// disconnect can drop it.
+    #[cfg(feature = "local_fs")]
+    git_status_repo_by_conn: HashMap<ConnectionId, StandardizedPath>,
     /// Abort handle for the active grace timer, if any.
     /// Calling `.abort()` cancels the timer before it fires.
     grace_timer_cancel: Option<SpawnedFutureHandle>,
@@ -277,6 +313,14 @@ impl ServerModel {
             snapshot_sent_roots_by_connection: HashMap::new(),
             #[cfg(feature = "local_fs")]
             diff_state_subscriptions: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            git_status_models: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            github_repo_models: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            git_status_subscribers: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            git_status_repo_by_conn: HashMap::new(),
             grace_timer_cancel: None,
             in_progress: HashMap::new(),
             host_scoped_requests: HashMap::new(),
@@ -602,6 +646,11 @@ impl ServerModel {
         self.snapshot_sent_roots_by_connection.remove(&conn_id);
         #[cfg(feature = "local_fs")]
         self.diff_state_subscriptions.remove(&conn_id);
+        // A connection is in at most one git-status repo, so `unsubscribe_git_status`
+        // also serves as the disconnect sweep (mirrors the pin's comment on the
+        // same method).
+        #[cfg(feature = "local_fs")]
+        self.unsubscribe_git_status(conn_id);
         // Guard against double-deregister (reader and writer tasks both call
         // this on connection close; the second call must be a safe no-op).
         if self.connection_senders.remove(&conn_id).is_none() {
@@ -1740,6 +1789,69 @@ impl ServerModel {
         _conn_id: ConnectionId,
         _ctx: &mut ModelContext<Self>,
     ) {
+    }
+
+    // ── Git-status / GitHub: per-connection subscription tracking ───────
+    //
+    // Ported from the pinned oracle's `subscribe_git_status` /
+    // `unsubscribe_git_status` (issue #330). Pure bookkeeping: which
+    // connection currently watches which repo's git status, and eviction of
+    // the (currently always-empty; see the `git_status_models` field doc)
+    // per-repo model caches once a repo has no subscribers left. The pin
+    // also drives these from `NavigatedToDirectory` / `UpdateGitStatus`
+    // handlers and pushes `GitStatusPush` messages on model events; that
+    // wiring is a separate, larger feature gap and is not part of this
+    // change.
+
+    /// Subscribe `conn` to `repo`'s git status (navigation in), moving it off
+    /// any repo it was previously in. A no-op if `conn` is already the repo's
+    /// subscriber.
+    ///
+    /// Not yet called from a handler — the `NavigatedToDirectory` wiring is
+    /// the separate feature gap noted above — so this is currently exercised
+    /// only by tests.
+    #[cfg(feature = "local_fs")]
+    #[allow(dead_code)]
+    fn subscribe_git_status(&mut self, conn: ConnectionId, repo: &StandardizedPath) {
+        match self.git_status_repo_by_conn.get(&conn) {
+            Some(prev) if prev == repo => return,
+            Some(prev) => {
+                let prev = prev.clone();
+                self.drop_git_status_subscription(&prev, conn);
+            }
+            None => {}
+        }
+        self.git_status_repo_by_conn.insert(conn, repo.clone());
+        self.git_status_subscribers
+            .entry(repo.clone())
+            .or_default()
+            .insert(conn);
+    }
+
+    /// Unsubscribe `conn` from its current repo (navigation out of git, or
+    /// disconnect). A connection is in at most one repo, so this single
+    /// method also serves as the disconnect sweep — see `deregister_connection`.
+    #[cfg(feature = "local_fs")]
+    fn unsubscribe_git_status(&mut self, conn: ConnectionId) {
+        if let Some(repo) = self.git_status_repo_by_conn.remove(&conn) {
+            self.drop_git_status_subscription(&repo, conn);
+        }
+    }
+
+    /// Removes one `(repo, conn)` subscription, evicting the per-repo
+    /// git-status and GitHub-info model caches once the repo has no
+    /// subscribers left.
+    #[cfg(feature = "local_fs")]
+    fn drop_git_status_subscription(&mut self, repo: &StandardizedPath, conn: ConnectionId) {
+        let Some(subscribers) = self.git_status_subscribers.get_mut(repo) else {
+            return;
+        };
+        subscribers.remove(&conn);
+        if subscribers.is_empty() {
+            self.git_status_subscribers.remove(repo);
+            self.github_repo_models.remove(repo);
+            self.git_status_models.remove(repo);
+        }
     }
 
     fn handle_run_command(
