@@ -1,29 +1,30 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
 use futures::channel::oneshot;
 use futures::io::{AsyncRead, AsyncWrite};
-use warpui::r#async::{executor, FutureExt as _};
+use warpui::r#async::{FutureExt as _, executor};
 
 use crate::proto::{
-    discard_files_response, host_scoped_request, notification, read_file_chunk_response,
-    server_message, session_scoped_request, Abort, Authenticate, BufferEdit, ClientMessage,
-    CloseBuffer, CreateDirectory, CreateDirectoryResponse, DeleteFile, DiffStateFileDelta,
-    DiffStateMetadataUpdate, DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches,
-    GetBranchesResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
-    GetDiffState, GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse,
-    GitCreatePrRequest, GitCreatePrResponse, GitPushRequest, GitPushResponse, Initialize,
-    InitializeResponse, ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
+    Abort, Authenticate, BufferEdit, ClientMessage, CloseBuffer, CreateDirectory,
+    CreateDirectoryResponse, DeleteFile, DiffStateFileDelta, DiffStateMetadataUpdate,
+    DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches, GetBranchesResponse,
+    GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse, GetDiffState,
+    GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest,
+    GitCreatePrResponse, GitPushRequest, GitPushResponse, Initialize, InitializeResponse,
+    ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
-    ReadFileChunkResponse, ReadFileContextRequest, ReadFileContextResponse, ResolveConflict,
-    ResolveConflictResponse, ResolvePath, ResolvePathResponse, RipgrepSearchRequest,
-    RipgrepSearchResponse, RunCommandRequest, RunCommandResponse, SaveBuffer, SaveBufferResponse,
-    ServerMessage, SessionBootstrapped, TextEdit, UnsubscribeDiffState, WriteFile, WriteFileChunk,
-    WriteFileChunkResponse,
+    ReadFileChunkResponse, ReadFileContextRequest, ReadFileContextResponse,
+    RemoteAgentContextSnapshot, ResolveConflict, ResolveConflictResponse, ResolvePath,
+    ResolvePathResponse, RipgrepSearchRequest, RipgrepSearchResponse, RunCommandRequest,
+    RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
+    TextEdit, UnsubscribeDiffState, WriteFile, WriteFileChunk, WriteFileChunkResponse,
+    discard_files_response, host_scoped_request, notification, read_file_chunk_response,
+    server_message, session_scoped_request,
 };
 
 use crate::protocol::{self, ProtocolError, RequestId};
@@ -98,6 +99,20 @@ pub enum ClientEvent {
     DiffStateFileDeltaReceived { delta: DiffStateFileDelta },
     /// A server message could not be decoded and had no parseable request_id.
     MessageDecodingError,
+    /// A server response carried a parseable `request_id` but could not be
+    /// decoded, and the id did not match any pending session-scoped request
+    /// (so it belongs to a host-scoped request the manager is tracking via
+    /// `send_host_scoped`). The manager fails that pending request
+    /// immediately instead of letting it hang until the request timeout.
+    /// #438 dependent feature 3.
+    HostScopedDecodeFailed { request_id: RequestId },
+    /// The daemon pushed a revisioned full replacement of its Agent Mode
+    /// context (skills + global rule files). #438 dependent feature 1 — see
+    /// the `RemoteAgentContextSnapshot` proto doc comment: no daemon in this
+    /// fork sends this yet (issue #353 tracks the producer side).
+    RemoteAgentContextSnapshotReceived {
+        snapshot: RemoteAgentContextSnapshot,
+    },
 }
 /// Client for communicating with a `remote_server` process over the remote server protocol.
 ///
@@ -129,6 +144,17 @@ pub struct RemoteServerClient {
     /// `send_request` after inserting into `pending_requests` to avoid hanging
     /// on a dead connection.
     disconnected: Arc<AtomicBool>,
+
+    /// Sender half of the channel `RemoteServerManager` drains to match
+    /// host-scoped responses (dispatched via `send_host_scoped`, which does
+    /// not register a `pending_requests` entry) against its own
+    /// `pending_host_requests`. Never read directly — the `reader_task` holds
+    /// its own clone and is the only writer; this copy exists only to keep
+    /// the channel's sender side reachable from the client itself. `expect`
+    /// (rather than `allow`) so we get nudged to drop the attribute if the
+    /// field ever starts being read.
+    #[expect(dead_code)]
+    host_response_tx: async_channel::Sender<ServerMessage>,
 }
 
 impl fmt::Debug for RemoteServerClient {
@@ -153,14 +179,20 @@ impl RemoteServerClient {
     /// [`spawn_stderr_forwarder`], then delegates to [`Self::new`] for the
     /// protocol reader/writer setup.
     ///
-    /// Returns the client and an event receiver that delivers push events
-    /// and a final `Disconnected` event when the connection drops.
+    /// Returns the client, an event receiver that delivers push events and a
+    /// final `Disconnected` event when the connection drops, and a
+    /// host-response receiver carrying responses to host-scoped requests
+    /// (see [`Self::send_host_scoped`]) for `RemoteServerManager` to drain.
     pub fn from_child_streams(
         stdin: async_process::ChildStdin,
         stdout: async_process::ChildStdout,
         stderr: async_process::ChildStderr,
         executor: &executor::Background,
-    ) -> (Self, async_channel::Receiver<ClientEvent>) {
+    ) -> (
+        Self,
+        async_channel::Receiver<ClientEvent>,
+        async_channel::Receiver<ServerMessage>,
+    ) {
         spawn_stderr_forwarder(stderr, executor);
         Self::new(stdout, stdin, executor)
     }
@@ -170,18 +202,25 @@ impl RemoteServerClient {
     /// Creates a new client, spawning background reader and writer tasks on the
     /// provided executor.
     ///
-    /// Returns the client and an event receiver that delivers push events
-    /// and a final `Disconnected` event when the connection drops.
+    /// Returns the client, an event receiver that delivers push events and a
+    /// final `Disconnected` event when the connection drops, and a
+    /// host-response receiver carrying responses to host-scoped requests
+    /// (see [`Self::send_host_scoped`]) for `RemoteServerManager` to drain.
     pub fn new(
         reader: impl AsyncRead + TransportStream,
         writer: impl AsyncWrite + TransportStream,
         executor: &executor::Background,
-    ) -> (Self, async_channel::Receiver<ClientEvent>) {
+    ) -> (
+        Self,
+        async_channel::Receiver<ClientEvent>,
+        async_channel::Receiver<ServerMessage>,
+    ) {
         let pending_requests: Arc<
             DashMap<RequestId, oneshot::Sender<Result<ServerMessage, ClientError>>>,
         > = Arc::new(DashMap::new());
         let (outbound_tx, outbound_rx) = async_channel::unbounded::<ClientMessage>();
         let (event_tx, event_rx) = async_channel::unbounded::<ClientEvent>();
+        let (host_response_tx, host_response_rx) = async_channel::unbounded::<ServerMessage>();
         let disconnected = Arc::new(AtomicBool::new(false));
 
         executor
@@ -197,6 +236,7 @@ impl RemoteServerClient {
                 Arc::clone(&pending_requests),
                 event_tx,
                 Arc::clone(&disconnected),
+                host_response_tx.clone(),
             ))
             .detach();
 
@@ -205,9 +245,25 @@ impl RemoteServerClient {
                 outbound_tx,
                 pending_requests,
                 disconnected,
+                host_response_tx,
             },
             event_rx,
+            host_response_rx,
         )
+    }
+
+    /// Returns `true` once the reader task has detected that the underlying
+    /// connection is gone (EOF or fatal error). The flag is one-way: a
+    /// client never transitions back to connected, since reconnection
+    /// produces a brand-new client instance.
+    ///
+    /// Callers can use this as a cheap, non-blocking gate to skip work that
+    /// would otherwise fail with [`ClientError::Disconnected`]. Returning
+    /// `false` does not guarantee the next request will succeed — it just
+    /// means the reader task has not yet observed a disconnect. #438
+    /// dependent feature 2.
+    pub fn is_disconnected(&self) -> bool {
+        self.disconnected.load(Ordering::Acquire)
     }
 
     /// Sends an `Initialize` request and awaits the `InitializeResponse`.
@@ -833,6 +889,9 @@ impl RemoteServerClient {
             server_message::Message::DiffStateFileDelta(delta) => {
                 Some(ClientEvent::DiffStateFileDeltaReceived { delta })
             }
+            server_message::Message::RemoteAgentContextSnapshot(snapshot) => {
+                Some(ClientEvent::RemoteAgentContextSnapshotReceived { snapshot })
+            }
             other => {
                 log::warn!("Unhandled push message variant: {other:?}");
                 None
@@ -931,6 +990,30 @@ impl RemoteServerClient {
         self.send_notification(msg);
     }
 
+    /// Public wrapper around [`Self::send_abort`] for callers outside this
+    /// module (`RemoteServerManager`'s host-request tracking) that need to
+    /// cancel an in-flight request by id, e.g. on
+    /// `RemoteServerManager::abort_host_request`. #438 dependent feature 4.
+    pub fn abort_request(&self, request_id_to_abort: &RequestId) {
+        self.send_abort(request_id_to_abort);
+    }
+
+    /// Sends a host-scoped request without registering it in
+    /// `pending_requests`.
+    ///
+    /// The response lifecycle for host-scoped requests is owned by the
+    /// `RemoteServerManager`, not this client (see
+    /// `RemoteServerManager::send_host_request`). The `reader_task` forwards
+    /// responses whose `request_id` doesn't match `pending_requests` to
+    /// `host_response_tx` so the manager can match them against its own
+    /// `pending_host_requests`. #438 dependent feature 5 (used by
+    /// `RemoteServerManager::start_ripgrep_search`).
+    pub fn send_host_scoped(&self, msg: ClientMessage) -> Result<(), ClientError> {
+        self.outbound_tx
+            .try_send(msg)
+            .map_err(|_| ClientError::Disconnected)
+    }
+
     /// Sends a message without registering a pending request (fire-and-forget).
     fn send_notification(&self, msg: ClientMessage) {
         // Use try_send to avoid blocking; if the channel is full or closed,
@@ -976,6 +1059,7 @@ impl RemoteServerClient {
         >,
         event_tx: async_channel::Sender<ClientEvent>,
         disconnected: Arc<AtomicBool>,
+        host_response_tx: async_channel::Sender<ServerMessage>,
     ) {
         let mut reader = futures::io::BufReader::new(reader);
         loop {
@@ -996,9 +1080,22 @@ impl RemoteServerClient {
                                 let _ = tx.send(Ok(msg));
                             }
                             _ => {
-                                log::warn!(
-                                    "Received unexpected response with request_id={request_id}"
+                                // Not a pending session-scoped request — assume it's a
+                                // response to a host-scoped request dispatched via
+                                // `send_host_scoped` (which never registers a
+                                // `pending_requests` entry). Forward it for
+                                // `RemoteServerManager` to match against
+                                // `pending_host_requests`. #438 dependent feature 5.
+                                log::debug!(
+                                    "Forwarding unmatched response as host-scoped: \
+                                     request_id={request_id}"
                                 );
+                                if host_response_tx.send(msg).await.is_err() {
+                                    log::warn!(
+                                        "Host-response channel closed, dropping response \
+                                         for request_id={request_id}"
+                                    );
+                                }
                             }
                         }
                     }
@@ -1016,10 +1113,21 @@ impl RemoteServerClient {
                             ))));
                         }
                         _ => {
+                            // Same reasoning as the `Ok(msg)` branch above: an
+                            // unmatched id here belongs to a host-scoped request.
+                            // Unlike a write failure, the daemon already produced a
+                            // reply — decoding just failed — so this is terminal for
+                            // that request. Fail it now via a dedicated event instead
+                            // of letting it hang until the manager's request timeout.
                             log::warn!(
-                                "Reader task: malformed response for \
-                             unknown request (request_id={request_id}): {err}"
+                                "Reader task: malformed response for host-scoped \
+                             request (request_id={request_id}): {err}"
                             );
+                            let _ = event_tx
+                                .send(ClientEvent::HostScopedDecodeFailed {
+                                    request_id: request_id.clone(),
+                                })
+                                .await;
                         }
                     }
                 }
@@ -1066,8 +1174,8 @@ pub fn spawn_stderr_forwarder(
     stderr: impl AsyncRead + TransportStream,
     executor: &executor::Background,
 ) {
-    use futures::io::AsyncBufReadExt;
     use futures::StreamExt;
+    use futures::io::AsyncBufReadExt;
 
     executor
         .spawn(async move {

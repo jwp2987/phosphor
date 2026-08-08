@@ -18,6 +18,7 @@ use async_channel::Receiver;
 use warpui::r#async::executor;
 
 use crate::client::{ClientEvent, RemoteServerClient};
+use crate::proto::ServerMessage;
 use crate::setup::{PreinstallCheckResult, RemotePlatform};
 
 /// A successful return from [`RemoteTransport::connect`].
@@ -35,6 +36,12 @@ use crate::setup::{PreinstallCheckResult, RemotePlatform};
 pub struct Connection {
     pub client: RemoteServerClient,
     pub event_rx: Receiver<ClientEvent>,
+    /// Responses to host-scoped requests (dispatched via
+    /// [`RemoteServerClient::send_host_scoped`]) that the reader task
+    /// couldn't match against a session-scoped pending request.
+    /// `RemoteServerManager` drains this to resolve its own
+    /// `pending_host_requests`. #438 dependent features 4/5.
+    pub host_response_rx: Receiver<ServerMessage>,
     /// The subprocess whose stdio backs the client (e.g.
     /// `ssh … remote-server-proxy`). Spawned with `kill_on_drop(true)`
     /// by the transport, so dropping this `Child` sends SIGKILL to the

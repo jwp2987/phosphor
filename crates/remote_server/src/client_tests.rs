@@ -2,15 +2,15 @@ use futures::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::proto::{
-    client_message, git_commit_chain_response, git_create_pr_response, git_push_response,
-    host_scoped_request, notification, read_file_chunk_response, resolve_path_response,
-    run_command_response, server_message, session_scoped_request, write_file_chunk_response,
     ClientMessage, ErrorCode, FileSystemEntryKind, GitCommitChainMode, GitCommitChainRequest,
     GitCommitChainResponse, GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse,
     GitOpDelta, GitOpError, GitPushRequest, GitPushResponse, HostScopedRequest, InitializeResponse,
     Notification, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess, ResolvePathResponse,
     ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionScopedRequest,
-    WriteFileChunkResponse, WriteFileChunkSuccess,
+    WriteFileChunkResponse, WriteFileChunkSuccess, client_message, git_commit_chain_response,
+    git_create_pr_response, git_push_response, host_scoped_request, notification,
+    read_file_chunk_response, resolve_path_response, run_command_response, server_message,
+    session_scoped_request, write_file_chunk_response,
 };
 use crate::protocol;
 use warp_core::SessionId;
@@ -68,7 +68,7 @@ where
     ));
 
     let executor = executor::Background::default();
-    let (client, event_rx) =
+    let (client, event_rx, _host_response_rx) =
         RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
     (client, event_rx, executor)
 }
@@ -133,7 +133,7 @@ async fn authenticate_sends_fire_and_forget_message() {
     let (server_read, _server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);
     let executor = executor::Background::default();
-    let (client, _event_rx) =
+    let (client, _event_rx, _host_response_rx) =
         RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
 
     client.authenticate("rotated-secret");
@@ -159,7 +159,7 @@ async fn disconnected_on_closed_stream() {
 
     let (client_read, client_write) = tokio::io::split(client_stream);
     let executor = executor::Background::default();
-    let (client, disconnect_rx) =
+    let (client, disconnect_rx, _host_response_rx) =
         RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
 
     // An initialize call on a dead stream must complete with an error rather than hang.
@@ -169,6 +169,156 @@ async fn disconnected_on_closed_stream() {
     // The reader task should detect EOF and emit a Disconnected event.
     let event = disconnect_rx.recv().await.unwrap();
     assert!(matches!(event, ClientEvent::Disconnected));
+
+    // After the Disconnected event has been observed, the reader task has
+    // already stored `true` into the atomic flag (it does the store before
+    // sending the event), so callers can rely on `is_disconnected()` to
+    // short-circuit further requests. #438 dependent feature 2.
+    assert!(client.is_disconnected());
+}
+
+#[tokio::test]
+async fn is_disconnected_starts_false() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|_| {
+        server_message::Message::InitializeResponse(InitializeResponse {
+            server_version: "test-0.1.0".to_string(),
+            host_id: "test-host-id".to_string(),
+        })
+    });
+
+    assert!(!client.is_disconnected());
+}
+
+/// Direct coverage for #438 dependent feature 1 (`RemoteAgentContextSnapshot`):
+/// a snapshot pushed by the server (empty request_id) is converted to a
+/// `ClientEvent`. No daemon in this fork sends this push yet (see the proto
+/// doc comment / issue #353) — this only proves the client-side plumbing.
+#[tokio::test]
+async fn remote_agent_context_snapshot_push_becomes_client_event() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    drop(server_read);
+
+    let executor = executor::Background::default();
+    let (_client, event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+    let mut writer = server_write.compat_write();
+
+    protocol::write_server_message(
+        &mut writer,
+        &ServerMessage {
+            request_id: String::new(),
+            message: Some(server_message::Message::RemoteAgentContextSnapshot(
+                crate::proto::RemoteAgentContextSnapshot {
+                    revision: 7,
+                    home_dir: "/home/user".to_string(),
+                    skills: vec![crate::proto::RemoteSkillProto {
+                        path: "/home/user/.agents/skills/test/SKILL.md".to_string(),
+                        content: "skill content".to_string(),
+                        source: Some(crate::proto::remote_skill_proto::Source::Home(
+                            crate::proto::HomeSkillMetadata {},
+                        )),
+                    }],
+                    global_rules: vec![crate::proto::RemoteContextFileProto {
+                        path: "/home/user/.agents/AGENTS.md".to_string(),
+                        content: "rule content".to_string(),
+                    }],
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    writer.flush().await.unwrap();
+
+    match event_rx.recv().await.unwrap() {
+        ClientEvent::RemoteAgentContextSnapshotReceived { snapshot } => {
+            assert_eq!(snapshot.revision, 7);
+            assert_eq!(snapshot.skills[0].content, "skill content");
+            assert_eq!(snapshot.global_rules[0].content, "rule content");
+        }
+        other => panic!("Expected RemoteAgentContextSnapshotReceived, got {other:?}"),
+    }
+}
+
+/// Direct coverage for #438 dependent feature 5 (manager-layer host-scoped
+/// dispatch): `send_host_scoped` queues the message without registering a
+/// `pending_requests` entry, and it reaches the wire with the host-scoped
+/// envelope intact.
+#[tokio::test]
+async fn send_host_scoped_returns_ok_when_connected() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (server_read, _server_write) = tokio::io::split(server_stream);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let executor = executor::Background::default();
+    let (client, _event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+
+    let msg = ClientMessage::host_scoped(
+        "req-host-1".to_string(),
+        host_scoped_request::Message::WriteFile(WriteFile {
+            path: "/tmp/foo.txt".to_string(),
+            content: "hello".to_string(),
+        }),
+    );
+
+    // On a healthy connection, dispatch succeeds (the message is queued).
+    assert!(client.send_host_scoped(msg).is_ok());
+
+    // The queued message is written to the server with the host-scoped envelope.
+    let received = protocol::read_client_message(&mut server_read.compat())
+        .await
+        .unwrap();
+    assert_eq!(received.request_id, "req-host-1");
+    match &received.message {
+        Some(client_message::Message::HostScoped(HostScopedRequest {
+            message: Some(host_scoped_request::Message::WriteFile(write)),
+        })) => {
+            assert_eq!(write.path, "/tmp/foo.txt");
+            assert_eq!(write.content, "hello");
+        }
+        other => panic!("Expected WriteFile host-scoped request, got {other:?}"),
+    }
+}
+
+/// Direct coverage for #438 dependent feature 3: a malformed response whose
+/// `request_id` doesn't match any pending session-scoped request (i.e. it's
+/// the response to a host-scoped request) emits `HostScopedDecodeFailed`
+/// instead of only being logged, so the manager can fail that pending
+/// request promptly instead of letting it hang until the request timeout.
+#[tokio::test]
+async fn malformed_host_scoped_response_emits_decode_failed_event() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    drop(server_read);
+
+    let executor = executor::Background::default();
+    let (_client, event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+    let mut server_write = server_write.compat_write();
+
+    // Field 1 (string): tag=0x0a, length=15, "host-req-decode", then invalid
+    // trailing bytes (field 1, reserved wire type 7) so prost decode fails
+    // while `try_extract_request_id` still recovers the request_id.
+    let mut payload = Vec::new();
+    payload.push(0x0a);
+    payload.push(15);
+    payload.extend_from_slice(b"host-req-decode");
+    payload.extend_from_slice(&[0x0F, 0x01]);
+
+    let len = payload.len() as u32;
+    server_write.write_all(&len.to_le_bytes()).await.unwrap();
+    server_write.write_all(&payload).await.unwrap();
+    server_write.flush().await.unwrap();
+
+    match event_rx.recv().await.unwrap() {
+        ClientEvent::HostScopedDecodeFailed { request_id } => {
+            assert_eq!(request_id.to_string(), "host-req-decode");
+        }
+        other => panic!("Expected HostScopedDecodeFailed, got {other:?}"),
+    }
 }
 
 #[tokio::test]

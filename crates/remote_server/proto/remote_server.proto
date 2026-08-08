@@ -143,6 +143,13 @@ message ServerMessage {
     GitPushResponse git_push_response = 32;
     GitCreatePrResponse git_create_pr_response = 33;
     DiscardFilesResponse discard_files_response = 34;
+    // Push (empty request_id): revisioned full replacement of the daemon
+    // host's Agent Mode context (skills + global rule files). See
+    // `RemoteAgentContextSnapshot` below. #438 dependent feature 1: wire
+    // shape + client/manager plumbing only — the daemon-side producer
+    // (skill/rule discovery + broadcast) is issue #353, not implemented here,
+    // so no daemon in this fork currently sends this message.
+    RemoteAgentContextSnapshot remote_agent_context_snapshot = 35;
   }
 }
 
@@ -242,6 +249,53 @@ enum ErrorCode {
 message ErrorResponse {
   ErrorCode code = 1;
   string message = 2;
+}
+
+// ── Remote Agent Mode context (#438 dependent feature 1) ──────────
+//
+// Ported from the pinned oracle (02b53fcd8): the daemon reads skills and
+// global rule files (e.g. AGENTS.md) from the remote host and pushes them to
+// every connected proxy so a local (BYOP) agent working over an SSH remote
+// session sees the same context it would locally. Deviation from the pin:
+// this only carries the `home` skill source — the pin also has a `bundled`
+// source (`BundledSkillMetadata`) for skills shipped with the Warp binary
+// itself, which has no fork equivalent (no bundled-skill catalog exists in
+// this fork), so it is omitted rather than stubbed.
+//
+// Wire shape only: no daemon in this fork populates or sends this message
+// yet. Discovering and reading skills/rule files on the remote host is
+// tracked separately (issue #353) as its own feature increment.
+
+// Marker metadata for a file-based skill from the daemon host's home
+// directory.
+message HomeSkillMetadata {}
+
+// One already-read remote skill published by the daemon.
+message RemoteSkillProto {
+  // Absolute path to the file on this host.
+  string path = 1;
+  string content = 2;
+  oneof source {
+    HomeSkillMetadata home = 3;
+  }
+}
+
+// One already-read remote context file (e.g. AGENTS.md) published by the
+// daemon.
+message RemoteContextFileProto {
+  // Absolute path to the file on this host.
+  string path = 1;
+  string content = 2;
+}
+
+// Revisioned full replacement of the daemon host's Agent Mode context.
+// Source discovery and reading happen daemon-side before this snapshot is
+// published; the client/manager only receive and dedup by `revision`.
+message RemoteAgentContextSnapshot {
+  uint64 revision = 1;
+  string home_dir = 2;
+  repeated RemoteSkillProto skills = 3;
+  repeated RemoteContextFileProto global_rules = 4;
 }
 
 // ── Shared repo metadata sub-messages ─────────────────────────────

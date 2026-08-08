@@ -34,6 +34,10 @@ getrandom = { version = "0.2", features = ["js"] }
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread"] }
 tokio-util = { workspace = true, features = ["compat"] }
+# `App::test` (used by manager_tests.rs to drive `RemoteServerManager` as a
+# real model, matching the pinned oracle's manager_tests.rs) requires the
+# `test-util` feature.
+warpui = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
 prost-build.workspace = true
