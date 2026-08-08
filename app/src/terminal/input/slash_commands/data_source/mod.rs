@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use fuzzy_match::FuzzyMatchResult;
 use ordered_float::OrderedFloat;
+use repo_metadata::repositories::DetectedRepositories;
 use warp_core::ui::appearance::Appearance;
 use warpui::fonts::FamilyId;
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
@@ -207,9 +208,11 @@ impl SlashCommandDataSource {
     /// for a running CLI agent (Claude Code, Codex, etc.).
     const CLI_AGENT_INPUT_ALLOWED_COMMANDS: &[&str] = &["/prompts", "/skills"];
 
-    fn recompute_active_commands(&mut self, ctx: &mut ModelContext<Self>) {
-        let is_cli_agent_input = self.is_cli_agent_input_open(ctx);
-
+    /// Computes the `Availability` bits for the current session state. Shared by
+    /// `recompute_active_commands` (which rebuilds the whole active-command set) and
+    /// `command_is_active` (which answers for a single command without waiting for the
+    /// next recompute pass).
+    fn session_context(&self, ctx: &AppContext) -> Availability {
         let mut session_context = Availability::empty();
 
         let is_agent_view_active = self.is_agent_view_active(ctx);
@@ -224,10 +227,6 @@ impl SlashCommandDataSource {
             session_context |= Availability::TERMINAL_VIEW;
         }
 
-        if self.active_repo_root.is_some() {
-            session_context |= Availability::REPOSITORY;
-        }
-
         let is_local = self
             .active_session
             .as_ref(ctx)
@@ -235,6 +234,20 @@ impl SlashCommandDataSource {
             .is_some_and(|st| st == SessionType::Local);
         if is_local {
             session_context |= Availability::LOCAL;
+        }
+
+        // Derive REPOSITORY from the *live* working directory rather than the
+        // cached `active_repo_root`. The cache is only refreshed once async git
+        // detection resolves and calls `set_active_repo_root`, but a `cd` is
+        // reflected in the live cwd immediately — keying off the cache left
+        // REPOSITORY-gated commands (e.g. `/open-code-review`) available in the
+        // stale window after leaving a repo, until detection caught up.
+        // `active_repo_root` is retained solely as the recompute trigger that
+        // re-runs this once detection caches a newly-entered repo's root.
+        // Ported from the pin's `SlashCommandDataSource::base_availability` /
+        // `cwd_is_in_repository` (`data_source/core.rs`). Issue #342.
+        if is_local && self.cwd_is_in_repository(ctx) {
+            session_context |= Availability::REPOSITORY;
         }
 
         if !self
@@ -260,6 +273,27 @@ impl SlashCommandDataSource {
         if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
             session_context |= Availability::AI_ENABLED;
         }
+
+        session_context
+    }
+
+    /// Whether `command` would currently be included in `active_commands()`, computed
+    /// fresh from session state rather than read from the (possibly stale until the next
+    /// `recompute_active_commands`) cached set. Used by tests that need a same-tick
+    /// answer for a single command.
+    pub(crate) fn command_is_active(&self, command: &StaticCommand, ctx: &AppContext) -> bool {
+        let is_cli_agent_input = self.is_cli_agent_input_open(ctx);
+        let is_tui_surface = self.agent_view_controller.is_none();
+        command.is_active(self.session_context(ctx))
+            && (!is_cli_agent_input
+                || Self::CLI_AGENT_INPUT_ALLOWED_COMMANDS.contains(&command.name))
+            && (!is_tui_surface || command.supports_tui())
+            && (is_tui_surface || command.supports_gui())
+    }
+
+    fn recompute_active_commands(&mut self, ctx: &mut ModelContext<Self>) {
+        let is_cli_agent_input = self.is_cli_agent_input_open(ctx);
+        let session_context = self.session_context(ctx);
 
         // The ratatui TUI surface (no agent-view controller) can only execute the
         // commands gated by `supports_tui`. Filtering here keeps the TUI slash
@@ -299,6 +333,11 @@ impl SlashCommandDataSource {
 
     /// Update the active repository root for this terminal. Called by the parent when
     /// the terminal navigates into or out of a git repository.
+    ///
+    /// This no longer feeds `Availability::REPOSITORY` directly (see
+    /// `cwd_is_in_repository`) — it only exists to trigger a recompute once async
+    /// git detection resolves and caches a newly-entered repo's root, so the active
+    /// command set picks up the change even though the live cwd itself didn't move.
     pub fn set_active_repo_root(
         &mut self,
         repo_root: Option<PathBuf>,
@@ -308,6 +347,43 @@ impl SlashCommandDataSource {
             self.active_repo_root = repo_root;
             self.recompute_active_commands(ctx);
         }
+    }
+
+    /// Whether the active session's current working directory is inside a detected git
+    /// repository. Uses the live cwd (via `DetectedRepositories::get_root_for_path`)
+    /// rather than the cached `active_repo_root`, so `Availability::REPOSITORY` updates
+    /// immediately on `cd` without waiting for async repo detection to resolve and call
+    /// `set_active_repo_root`.
+    ///
+    /// Ported from the pin's `SlashCommandDataSource::cwd_is_in_repository`
+    /// (`data_source/core.rs`), which fixed the same stale-cache regression. Issue #342.
+    fn cwd_is_in_repository(&self, ctx: &AppContext) -> bool {
+        let Some(cwd) = self.active_session.as_ref(ctx).current_working_directory() else {
+            return false;
+        };
+
+        // Repo detection converts the shell-native cwd (e.g. the Git
+        // Bash/MSYS2/WSL "/c/Users/..." form) to an OS-native path via
+        // `ShellLaunchData` before caching the repo root (see the
+        // `detect_possible_git_repo` call site in `terminal/view.rs`). The live
+        // cwd must go through the same conversion so it can match those cached
+        // roots. Fall back to the raw path when no session/launch-data
+        // conversion applies (the common native-shell case, where the
+        // conversion is already a no-op).
+        let path = self
+            .active_session
+            .as_ref(ctx)
+            .session(ctx)
+            .and_then(|session| {
+                session
+                    .launch_data()
+                    .and_then(|data| data.maybe_convert_absolute_path(cwd))
+            })
+            .unwrap_or_else(|| PathBuf::from(cwd));
+
+        DetectedRepositories::as_ref(ctx)
+            .get_root_for_path(&path)
+            .is_some()
     }
 
     pub fn active_commands(&self) -> impl Iterator<Item = (&SlashCommandId, &StaticCommand)> {
