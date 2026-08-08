@@ -27,8 +27,14 @@ pub use resolve_skill_spec::{
     clone_repo_for_skill, resolve_skill_spec, ResolveSkillError, ResolvedSkill,
 };
 
+#[cfg(not(target_family = "wasm"))]
+mod global_skills;
+#[cfg(not(target_family = "wasm"))]
+pub use global_skills::filter_skills_by_spec;
+
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
+        mod bundled;
         mod skill_manager;
         pub use skill_manager::{
             extract_skill_parent_directory, SkillInventoryDuplicate, SkillInventoryItem,

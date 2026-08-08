@@ -188,11 +188,13 @@ fn diff_state_maps_variants_and_folds_payload() {
 
 #[test]
 fn file_status_info_round_trips() {
+    // Path must be absolute: `FileStatusInfo::try_from` (issue #326) now
+    // rejects relative paths.
     let original = FileStatusInfo {
-        path: PathBuf::from("src/lib.rs"),
+        path: PathBuf::from("/repo/src/lib.rs"),
         status: GitFileStatus::Deleted,
     };
-    let back = proto_to_file_status_info(&file_status_info_to_proto(&original));
+    let back = FileStatusInfo::try_from(&file_status_info_to_proto(&original)).unwrap();
     assert_eq!(original.path, back.path);
     assert_eq!(original.status, back.status);
 }
@@ -264,7 +266,7 @@ fn diff_metadata_against_base_round_trips_and_encodes_empty_files() {
     let encoded = diff_metadata_against_base_to_proto(&original);
     // The fork carries no per-file list here; it must encode empty.
     assert!(encoded.files.is_empty());
-    let back = proto_to_diff_metadata_against_base(&encoded);
+    let back = DiffMetadataAgainstBase::try_from(&encoded).unwrap();
     assert_eq!(original, back);
 }
 
@@ -296,14 +298,14 @@ fn diff_metadata_round_trips() {
             base_branch: "main".to_string(),
         }),
     };
-    let back = proto_to_diff_metadata(&diff_metadata_to_proto(&original));
+    let back = DiffMetadata::try_from(&diff_metadata_to_proto(&original)).unwrap();
     assert_eq!(original, back);
 }
 
 #[test]
 fn diff_metadata_default_round_trips() {
     let original = DiffMetadata::default();
-    let back = proto_to_diff_metadata(&diff_metadata_to_proto(&original));
+    let back = DiffMetadata::try_from(&diff_metadata_to_proto(&original)).unwrap();
     assert_eq!(original, back);
 }
 
@@ -394,7 +396,7 @@ fn decode_snapshot_folds_loaded_diffs_and_metadata() {
         &metadata,
     );
 
-    let decoded = decode_snapshot(&snapshot);
+    let decoded = decode_snapshot(&snapshot).unwrap();
     match decoded.state {
         DiffState::Loaded(data) => assert_eq!(data, diffs),
         _ => panic!("expected Loaded"),
@@ -413,7 +415,7 @@ fn decode_snapshot_not_in_repository_has_no_diffs() {
         &DiffState::NotInRepository,
         &DiffMetadata::default(),
     );
-    let decoded = decode_snapshot(&snapshot);
+    let decoded = decode_snapshot(&snapshot).unwrap();
     assert!(matches!(decoded.state, DiffState::NotInRepository));
     assert!(decoded.diffs.is_none());
 }
@@ -473,7 +475,7 @@ fn decode_file_delta_decodes_path_diff_and_metadata() {
         )),
         metadata: Some(diff_metadata_to_proto(&metadata)),
     };
-    let decoded = decode_file_delta(&delta);
+    let decoded = decode_file_delta(&delta).unwrap();
     assert_eq!(decoded.file_path, "src/x.rs");
     let file = decoded.diff.expect("delta carried a diff");
     assert_eq!(file.content_at_head.as_deref(), Some("c"));
@@ -595,4 +597,92 @@ fn file_diff_to_proto_preserves_content_at_budget_boundary() {
         Some(at_budget.as_str())
     );
     assert_eq!(proto_diff.size, proto::DiffSize::Normal as i32);
+}
+
+// ── Ported from the pinned oracle (02b53fcd8) — issue #326 ─────────────
+// The pin's `FileStatusInfo`/`DiffMetadataAgainstBase`/`DiffMetadata` decode
+// via `TryFrom`, rejecting malformed wire data instead of silently defaulting.
+// Adapted to the fork's real types: the pin parses `path`/`old_path` as
+// `StandardizedPath`; the fork's `FileStatusInfo::path` stays a plain
+// `PathBuf` (see the `TryFrom<&proto::FileStatusInfo>` doc comment above for
+// why), so `file_status_info_valid_absolute_path` asserts a `PathBuf` rather
+// than a `StandardizedPath`. Same rejection assertions otherwise.
+
+#[test]
+fn file_status_info_valid_absolute_path() {
+    let proto_info = proto::FileStatusInfo {
+        path: "/repo/src/main.rs".into(),
+        status: Some(proto::GitFileStatus {
+            status: Some(proto::git_file_status::Status::NewFile(
+                proto::GitFileStatusNew {},
+            )),
+        }),
+    };
+
+    let info = FileStatusInfo::try_from(&proto_info).unwrap();
+    assert_eq!(info.path, PathBuf::from("/repo/src/main.rs"));
+    assert_eq!(info.status, GitFileStatus::New);
+}
+
+#[test]
+fn file_status_info_missing_status_is_error() {
+    let proto_info = proto::FileStatusInfo {
+        path: "/repo/file.rs".into(),
+        status: None,
+    };
+
+    assert!(FileStatusInfo::try_from(&proto_info).is_err());
+}
+
+#[test]
+fn file_status_info_missing_status_variant_is_error() {
+    let proto_info = proto::FileStatusInfo {
+        path: "/repo/file.rs".into(),
+        status: Some(proto::GitFileStatus { status: None }),
+    };
+
+    assert!(FileStatusInfo::try_from(&proto_info).is_err());
+}
+
+#[test]
+fn file_status_info_validates_renamed_old_path() {
+    let proto_info = proto::FileStatusInfo {
+        path: "/repo/new_name.rs".into(),
+        status: Some(proto::GitFileStatus {
+            status: Some(proto::git_file_status::Status::Renamed(
+                proto::GitFileStatusRenamed {
+                    old_path: "relative/old.rs".into(),
+                },
+            )),
+        }),
+    };
+
+    // old_path is relative — should fail validation.
+    assert!(FileStatusInfo::try_from(&proto_info).is_err());
+}
+
+#[test]
+fn diff_metadata_requires_against_head() {
+    let metadata = proto::DiffMetadata {
+        main_branch_name: "main".into(),
+        current_branch_name: "feature".into(),
+        against_head: None,
+        against_base_branch: None,
+        has_head_commit: true,
+        unpushed_commits: vec![],
+        upstream_ref: None,
+        pr_info: None,
+    };
+
+    assert!(DiffMetadata::try_from(&metadata).is_err());
+}
+
+#[test]
+fn diff_metadata_against_base_requires_stats() {
+    let against_base = proto::DiffMetadataAgainstBase {
+        aggregate_stats: None,
+        files: vec![],
+    };
+
+    assert!(DiffMetadataAgainstBase::try_from(&against_base).is_err());
 }

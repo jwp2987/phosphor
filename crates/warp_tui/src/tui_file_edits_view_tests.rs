@@ -5,21 +5,22 @@ use futures::channel::oneshot;
 use warp::appearance::Appearance;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
-    AIAgentActionId, AIConversationId, BlocklistAIActionModel, DiffSessionType, FileDiff,
-    RegisteredDiffStorage,
+    AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId, BlocklistAIActionModel,
+    BlocklistAIPermissions, DiffSessionType, FileDiff, RegisteredDiffStorage, TaskId,
+    queue_tui_permission_action, register_tui_session_view_test_singletons,
 };
 use warp_editor::content::buffer::InitialBufferState;
 use warp_editor::model::CoreEditorModel;
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, ModelHandle, ViewHandle, WindowInvalidation};
-use warpui_core::elements::tui::TuiRect;
+use warpui_core::elements::tui::{TuiBufferExt, TuiRect};
 use warpui_core::keymap::Keystroke;
-use warpui_core::presenter::tui::TuiPresenter;
+use warpui_core::presenter::tui::{TuiFrame, TuiPresenter};
 use warpui_core::{App, TuiView as _};
 
 use super::{
-    SectionKey, SectionStates, ToolCallDisplayState, TuiFileEditsView, deltas_for,
-    file_edit_header_label, verb_and_name,
+    FILE_EDITS_PERMISSION_ACTIVE, SectionKey, SectionStates, ToolCallDisplayState,
+    TuiFileEditsView, deltas_for, file_edit_header_label, verb_and_name,
 };
 use crate::test_fixtures::{TestHostView, add_test_action_model};
 use crate::tui_diff_storage::TuiDiffStorageHandle;
@@ -44,6 +45,78 @@ fn all_file_edit_sections_start_collapsed_and_toggle_independently() {
     assert!(!states.is_collapsed(SectionKey::File(0)));
     assert!(states.is_collapsed(SectionKey::File(1)));
 }
+
+/// `expand_all`/`collapse_all` move every keyed section together, mirroring
+/// the approval lifecycle: a card blocks (expand), then executes or finishes
+/// (collapse). Independent per-section toggles still work between the two.
+#[test]
+fn section_states_expand_and_collapse_for_approval_lifecycle() {
+    let states = SectionStates::default();
+    let keys = [
+        SectionKey::Summary,
+        SectionKey::File(0),
+        SectionKey::File(1),
+    ];
+
+    states.collapse_all(&keys);
+    assert!(states.is_collapsed(SectionKey::Summary));
+    assert!(states.is_collapsed(SectionKey::File(0)));
+    assert!(states.is_collapsed(SectionKey::File(1)));
+
+    states.expand_all(&keys);
+    assert!(!states.is_collapsed(SectionKey::Summary));
+    assert!(!states.is_collapsed(SectionKey::File(0)));
+    assert!(!states.is_collapsed(SectionKey::File(1)));
+
+    states.toggle_collapsed(SectionKey::File(0));
+    assert!(!states.is_collapsed(SectionKey::Summary));
+    assert!(states.is_collapsed(SectionKey::File(0)));
+    assert!(!states.is_collapsed(SectionKey::File(1)));
+
+    states.collapse_all(&keys);
+    assert!(states.is_collapsed(SectionKey::Summary));
+    assert!(states.is_collapsed(SectionKey::File(0)));
+    assert!(states.is_collapsed(SectionKey::File(1)));
+}
+
+/// `toggle_expand_all` collapses all when any section is expanded, and
+/// expands all when every section is already collapsed.
+#[test]
+fn toggle_expand_all_collapses_then_expands() {
+    let states = SectionStates::default();
+    let keys = [
+        SectionKey::Summary,
+        SectionKey::File(0),
+        SectionKey::File(1),
+    ];
+
+    states.expand_all(&keys);
+    states.toggle_expand_all(&keys);
+    for &key in &keys {
+        assert!(
+            states.is_collapsed(key),
+            "{key:?} should be collapsed after first toggle"
+        );
+    }
+
+    states.toggle_expand_all(&keys);
+    for &key in &keys {
+        assert!(
+            !states.is_collapsed(key),
+            "{key:?} should be expanded after second toggle"
+        );
+    }
+
+    states.toggle_collapsed(SectionKey::File(0));
+    states.toggle_expand_all(&keys);
+    for &key in &keys {
+        assert!(
+            states.is_collapsed(key),
+            "{key:?} should be collapsed after mixed toggle (any expanded collapses all)"
+        );
+    }
+}
+
 #[test]
 fn blocked_file_edit_headers_use_in_progress_wording() {
     assert_eq!(
@@ -275,6 +348,192 @@ fn ctrl_t_toggles_the_primary_section_like_the_mouse_click_handler() {
     });
 }
 
+/// Builds a `RequestFileEdits` agent action for the given action id.
+fn file_edits_action(id: &str) -> AIAgentAction {
+    AIAgentAction {
+        id: AIAgentActionId::from(id.to_owned()),
+        task_id: TaskId::new("task-1".to_owned()),
+        action: AIAgentActionType::RequestFileEdits {
+            file_edits: Vec::new(),
+            title: None,
+        },
+        requires_result: true,
+    }
+}
+
+/// Seeds `TuiDiffStorage` on the given view with two update diffs so that
+/// `render_diff_content` builds real collapsible sections.
+fn seed_two_file_diffs(app: &mut App, view: &ViewHandle<TuiFileEditsView>) {
+    let storage = app.read(|ctx| view.as_ref(ctx).storage.clone());
+    app.update(|ctx| {
+        TuiDiffStorageHandle::new(storage).set_candidate_diffs(
+            vec![
+                update_diff("/tmp/a/lib.rs", None),
+                update_diff("/tmp/b/main.rs", None),
+            ],
+            DiffSessionType::Local,
+            ctx,
+        );
+    });
+}
+
+/// Provisions the full app singleton graph the real action preprocess/execute
+/// pipeline reads (mirrors `tui_permission_prompt_tests::add_prompt` and
+/// `tui_shell_command_view_tests`), so queued actions block through the real
+/// pipeline rather than injected state. Sentinel-guarded against repeated
+/// calls in one test.
+fn ensure_real_pipeline(app: &mut App) {
+    if !app.read(|ctx| ctx.has_singleton_model::<BlocklistAIPermissions>()) {
+        register_tui_session_view_test_singletons(app);
+    }
+}
+
+/// The blocked file-edits card renders the permission header, the
+/// `e to expand/collapse` affordance, and the yes/no/Other options, with the
+/// diff sections expanded by default (AC 1, AC 3).
+/// Also asserts repaint-stability: a second render with no input still shows
+/// the expanded sections (guards a hover-state-defeats-default regression).
+#[test]
+fn blocked_file_edits_card_shows_expand_hint_sections_and_options() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        app.update(super::init);
+        app.update(crate::tui_revert_registry::TuiFileEditRevertRegistry::register);
+        ensure_real_pipeline(&mut app);
+        let action_model = add_test_action_model(&mut app);
+        let action_id = AIAgentActionId::from("file-edits-1".to_owned());
+        let conversation_id = AIConversationId::new();
+        let view = add_file_edits_view(&mut app, action_id.clone(), conversation_id, &action_model);
+
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(
+                model,
+                file_edits_action("file-edits-1"),
+                conversation_id,
+                ctx,
+            );
+        });
+        // Pump the async preprocess so the queued action reaches the pending
+        // queue and the permission card renders in its blocked state.
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
+        // Seed two real diffs so sections exist and the card can render them expanded.
+        seed_two_file_diffs(&mut app, &view);
+
+        // First render: the blocked card must show the expanded summary header
+        // and both file-section headers (AC 1).
+        let lines1 = present_file_edits_view(&mut app, &view).buffer.to_lines();
+
+        let has_header = lines1
+            .iter()
+            .any(|l| l.contains("Is it OK if I make these file edits?"));
+        assert!(has_header, "blocked card header missing in {lines1:?}");
+
+        // AC 3: the header row carries the `e to expand/collapse` affordance.
+        let has_expand_hint = lines1.iter().any(|l| l.contains("e to expand/collapse"));
+        assert!(
+            has_expand_hint,
+            "e-to-expand-collapse hint missing in {lines1:?}"
+        );
+
+        let has_yes_option = lines1.iter().any(|l| l.contains("yes"));
+        assert!(has_yes_option, "yes option missing in {lines1:?}");
+
+        // AC 1: the summary header and both file sections must be visible on first render.
+        let has_summary = lines1.iter().any(|l| l.contains("Editing 2 files"));
+        assert!(has_summary, "summary header missing in {lines1:?}");
+        let has_file_a = lines1.iter().any(|l| l.contains("Editing lib.rs"));
+        assert!(has_file_a, "lib.rs section missing in {lines1:?}");
+        let has_file_b = lines1.iter().any(|l| l.contains("Editing main.rs"));
+        assert!(has_file_b, "main.rs section missing in {lines1:?}");
+
+        // Second render, no input between renders: repaint-stability guards
+        // against `hover_state()`'s `entry().or_default()` silently
+        // re-collapsing sections on the second paint.
+        let lines2 = present_file_edits_view(&mut app, &view).buffer.to_lines();
+        assert_eq!(
+            lines1, lines2,
+            "a repaint with no input must not change the rendered card"
+        );
+    });
+}
+
+/// `e` dispatches `ToggleExpandAll` while the blocked card's option list owns
+/// focus, collapsing then re-expanding every section together.
+#[test]
+fn e_key_dispatches_toggle_expand_all_on_blocked_card() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        app.update(super::init);
+        app.update(crate::tui_revert_registry::TuiFileEditRevertRegistry::register);
+        ensure_real_pipeline(&mut app);
+        let action_model = add_test_action_model(&mut app);
+        let action_id = AIAgentActionId::from("file-edits-2".to_owned());
+        let conversation_id = AIConversationId::new();
+        let view = add_file_edits_view(&mut app, action_id.clone(), conversation_id, &action_model);
+
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(
+                model,
+                file_edits_action("file-edits-2"),
+                conversation_id,
+                ctx,
+            );
+        });
+        crate::test_fixtures::settle_until(&mut app, |app| {
+            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+        })
+        .await;
+        seed_two_file_diffs(&mut app, &view);
+        // `TuiPermissionPrompt::new`'s subscription already focused the
+        // selector when `ActionBlockedOnUserConfirmation` fired above, so
+        // the option list (yes/no/Other) owns focus without an explicit step.
+        present_file_edits_view(&mut app, &view);
+        app.read(|ctx| {
+            assert!(
+                view.as_ref(ctx)
+                    .keymap_context(ctx)
+                    .set
+                    .contains(FILE_EDITS_PERMISSION_ACTIVE),
+                "FILE_EDITS_PERMISSION_ACTIVE must be set while the blocked card's \
+                 option list owns focus"
+            );
+            assert!(
+                !view
+                    .as_ref(ctx)
+                    .section_states
+                    .is_collapsed(SectionKey::Summary),
+                "sections start expanded on a freshly blocked card"
+            );
+        });
+
+        assert!(dispatch_focused_key(&mut app, &view, "e"));
+        app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            assert!(
+                view.section_states.is_collapsed(SectionKey::Summary),
+                "e should collapse every section when any is expanded"
+            );
+            assert!(view.section_states.is_collapsed(SectionKey::File(0)));
+            assert!(view.section_states.is_collapsed(SectionKey::File(1)));
+        });
+
+        present_file_edits_view(&mut app, &view);
+        assert!(dispatch_focused_key(&mut app, &view, "e"));
+        app.read(|ctx| {
+            let view = view.as_ref(ctx);
+            assert!(
+                !view.section_states.is_collapsed(SectionKey::Summary),
+                "a second e should expand every section again"
+            );
+            assert!(!view.section_states.is_collapsed(SectionKey::File(0)));
+            assert!(!view.section_states.is_collapsed(SectionKey::File(1)));
+        });
+    });
+}
+
 fn add_file_edits_view(
     app: &mut App,
     action_id: AIAgentActionId,
@@ -296,7 +555,7 @@ fn add_file_edits_view(
     })
 }
 
-fn present_file_edits_view(app: &mut App, view: &ViewHandle<TuiFileEditsView>) {
+fn present_file_edits_view(app: &mut App, view: &ViewHandle<TuiFileEditsView>) -> TuiFrame {
     let mut presenter = TuiPresenter::new();
     app.update(|ctx| {
         let view_ref = view.as_ref(ctx);
@@ -308,8 +567,8 @@ fn present_file_edits_view(app: &mut App, view: &ViewHandle<TuiFileEditsView>) {
             .updated
             .extend(prompt.as_ref(ctx).child_view_ids(ctx));
         presenter.invalidate(&invalidation, ctx, view.window_id(ctx));
-        presenter.present(ctx, view, TuiRect::new(0, 0, 80, 20));
-    });
+        presenter.present(ctx, view, TuiRect::new(0, 0, 80, 20))
+    })
 }
 
 fn dispatch_focused_key(app: &mut App, view: &ViewHandle<TuiFileEditsView>, key: &str) -> bool {

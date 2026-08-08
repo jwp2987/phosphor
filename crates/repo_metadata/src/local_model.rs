@@ -1392,6 +1392,11 @@ impl LocalRepoMetadataModel {
             repo_path: root_entry.root_directory().as_ref().clone(),
             remove_entries,
             update_entries,
+            // Standing-query changes are tracked separately by the local
+            // model and emitted as their own `StandingQueryResultsUpdated`
+            // event (see `handle_watcher_event`), not folded into this
+            // file-tree-only update.
+            standing_results_delta: Default::default(),
         })
     }
 
