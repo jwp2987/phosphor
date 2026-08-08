@@ -30,6 +30,42 @@ Of 11 issues examined closely on 2026-08-08, four stated the opposite of the cod
 (#437, #418, #532, #548-partly) and three more were already partly done. Estimating
 from titles here is unreliable.
 
+### RECOVERED WORK from closed-unmerged PRs (2026-08-08)
+
+Nine PRs were closed without merging. When the workflow switched away from PRs
+that morning, the in-flight ones were never triaged -- so real work sat on local
+branches while the same ground was covered again. All branches survive locally.
+
+| PR | branch | issue | status |
+|---|---|---|---|
+| #480 | feat/wire-local-control-cli | #216 | RECOVERED, landed `974cb9cc4` |
+| #529 | ci/208-run-integration-tests | #208 | RECOVERED, landed `974cb9cc4` |
+| #538 | fix/422-419-grid-clear-and-dcs | #422,#419 | recovering -- 1 real bug found |
+| #546 | feat/394-411-288-cli-agent-variants | #411 | recovering -- 1 semantic conflict |
+| #565 | test/418-399-terminal-view | #418 | SUPERSEDED (my port covers it) |
+| #566 | ci/multi-package-feature-check | -- | SUPERSEDED (precheck has it) |
+| #489 | fix/373-ask-user-question-auto-approve | #373 | maintainer chose to leave as-is |
+| #198 | chore/governor-disk-hygiene | -- | stale docs, 335 commits behind |
+| #1 | review/oss-sync-shared | -- | review-only, never for merge |
+
+**Every one of these predates the compiler-in-the-loop policy.** PR #480's own
+body says "No compiler has touched this diff". They merge cleanly and compile,
+but running the tests found two real defects nobody had ever seen:
+- `FullGridClearBehavior` loses cell attributes across a shrink-resize (#538's
+  OWN test caught it)
+- `Harness::Codex` now parses where an existing test asserts it must not (#546
+  vs the local-child-harness contract)
+
+**Corrections this sweep forced, all one root cause -- treating `main` as the
+only reality and never looking at the branches:**
+- #208 was closed on faulty analysis (wrong directory: `src/test/` is the bin's
+  scenarios; `tests/` is the real cargo test target). REOPENED.
+- #532's premise was called false; it was actually written against #538's work,
+  which was closed rather than merged.
+- #401's "blocked by in-flight PR #480" was stale -- #480 was already closed.
+- The "5 cloud_boundary_allowlist entries" figure was mine and wrong: it is ONE
+  entry (4 of the lines were comments), and it is justified-local.
+
 ### Tier 1 — trivial (< 1h each)
 - [x] #334 pane divider double-click -- DONE 2026-08-08 (`315cfbb57`). Data layer was
       already in (PR #515); the gesture was never wired. Ported the pin's
