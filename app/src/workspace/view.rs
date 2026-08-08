@@ -6285,9 +6285,12 @@ impl Workspace {
             );
         } else {
             // Pass the active terminal's cwd to seed the branch picker's git lookup.
+            // Local-only: BranchPicker shells out to `git` against this path
+            // directly (#188), so a remote session's cwd must not be passed
+            // through as if it were local.
             let cwd = self
                 .active_session_view(ctx)
-                .and_then(|view| view.as_ref(ctx).pwd())
+                .and_then(|view| view.as_ref(ctx).pwd_if_local(ctx))
                 .map(PathBuf::from);
 
             let modal_title = format!("Open: {}", tab_config.name);
@@ -19748,9 +19751,12 @@ impl TypedActionView for Workspace {
                 self.open_tab_config(tab_config.clone(), ctx);
             }
             OpenNewWorktreeModal => {
+                // Local-only: BranchPicker (fed via NewWorktreeModal::on_open) shells
+                // out to `git` against this path directly (#188), so a remote
+                // session's cwd must not be passed through as if it were local.
                 let cwd = self
                     .active_session_view(ctx)
-                    .and_then(|view| view.as_ref(ctx).pwd())
+                    .and_then(|view| view.as_ref(ctx).pwd_if_local(ctx))
                     .map(PathBuf::from);
                 self.new_worktree_modal.view.update(ctx, |modal, ctx| {
                     modal.body().update(ctx, |body, ctx| {
