@@ -19,7 +19,7 @@ lazy_static! {
     static ref LANGUAGE_REGISTRY: LanguageRegistry = LanguageRegistry::new();
 }
 
-pub const SUPPORTED_LANGUAGES: [&str; 47] = [
+pub const SUPPORTED_LANGUAGES: [&str; 48] = [
     "rust",
     "golang",
     "yaml",
@@ -67,6 +67,7 @@ pub const SUPPORTED_LANGUAGES: [&str; 47] = [
     "clojure",
     "elm",
     "cmake",
+    "markdown",
 ];
 
 /// Registry that holds all of the supported languages.
@@ -217,6 +218,7 @@ pub fn language_by_filename(path: &Path) -> Option<Arc<Language>> {
         "clj" | "cljs" | "cljc" | "edn" => language_by_name("clojure"),
         "elm" => language_by_name("elm"),
         "cmake" => language_by_name("cmake"),
+        "md" | "markdown" => language_by_name("markdown"),
         _ => None,
     }
 }
@@ -329,6 +331,7 @@ fn get_arborium_highlight_query(lang: &str) -> Option<&str> {
         "clojure" => Some(arborium::lang_clojure::HIGHLIGHTS_QUERY),
         "elm" => Some(arborium::lang_elm::HIGHLIGHTS_QUERY),
         "cmake" => Some(arborium::lang_cmake::HIGHLIGHTS_QUERY),
+        "markdown" => Some(arborium::lang_markdown::HIGHLIGHTS_QUERY),
         _ => None,
     }
 }

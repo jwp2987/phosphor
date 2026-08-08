@@ -4,13 +4,14 @@ use std::fs;
 
 use super::super::proto::{
     list_directory_response, read_file_chunk_response, resolve_path_response, server_message,
-    write_file_chunk_response, Authenticate, CreateDirectory, Initialize, ListDirectory,
-    ReadFileChunk, ResolvePath, WriteFileChunk,
+    write_file_chunk_response, write_file_response, Authenticate, CreateDirectory, Initialize,
+    ListDirectory, ReadFileChunk, ResolvePath, ServerMessage, WriteFileChunk, WriteFileResponse,
+    WriteFileSuccess,
 };
 use super::super::protocol::RequestId;
 #[cfg(feature = "local_fs")]
 use super::super::server_buffer_tracker::ServerBufferTracker;
-use super::{PendingFileOps, ServerModel};
+use super::{ConnectionId, PendingFileOps, ServerModel};
 
 fn test_model() -> ServerModel {
     ServerModel {
@@ -20,6 +21,7 @@ fn test_model() -> ServerModel {
         diff_state_subscriptions: HashMap::new(),
         grace_timer_cancel: None,
         in_progress: HashMap::new(),
+        host_scoped_requests: HashMap::new(),
         host_id: "test-host-id".to_string(),
         executors: HashMap::new(),
         pending_file_ops: PendingFileOps::new(),
@@ -353,4 +355,111 @@ fn deregister_connection_cleans_up_diff_state_subscriptions() {
         });
         assert!(!has_sub_after);
     });
+}
+
+// ── Ported from the pinned oracle (02b53fcd8) ───────────────────────
+// These three exercise `send_server_message`'s host-scoped failover
+// mechanism directly, by inserting into `host_scoped_requests` the way the
+// pin's `handle_message` would (see the field's doc comment: the fork
+// doesn't populate this map from real traffic yet, since that requires the
+// host-scoped/session-scoped protocol envelope the pin uses to classify
+// requests — a separate, larger port). The delivery mechanism these tests
+// cover is unchanged from the pin.
+
+fn write_file_success_message() -> server_message::Message {
+    server_message::Message::WriteFileResponse(WriteFileResponse {
+        result: Some(write_file_response::Result::Success(WriteFileSuccess {})),
+    })
+}
+
+#[test]
+fn host_scoped_response_fails_over_when_target_send_fails() {
+    let mut model = test_model();
+    let request_id = RequestId::new();
+    let target: ConnectionId = uuid::Uuid::new_v4();
+    let alternate: ConnectionId = uuid::Uuid::new_v4();
+
+    // The target connection's receiver is dropped, so its sender still
+    // exists in the map but `try_send` fails (channel closed).
+    let (target_tx, target_rx) = async_channel::bounded(1);
+    drop(target_rx);
+    model.connection_senders.insert(target, target_tx);
+
+    // The alternate connection has a live receiver.
+    let (alt_tx, alt_rx) = async_channel::unbounded();
+    model.connection_senders.insert(alternate, alt_tx);
+
+    // Mark the request as host-scoped so failover is eligible.
+    model
+        .host_scoped_requests
+        .insert(request_id.clone(), target);
+
+    model.send_server_message(
+        Some(target),
+        Some(&request_id),
+        write_file_success_message(),
+    );
+
+    // The response was re-routed to the alternate connection.
+    let received = alt_rx
+        .try_recv()
+        .expect("alternate should receive failover response");
+    assert_eq!(received.request_id, request_id.to_string());
+    // The host-scoped entry is consumed regardless of delivery path.
+    assert!(!model.host_scoped_requests.contains_key(&request_id));
+}
+
+#[test]
+fn host_scoped_response_fails_over_when_target_missing() {
+    let mut model = test_model();
+    let request_id = RequestId::new();
+    let target: ConnectionId = uuid::Uuid::new_v4();
+    let alternate: ConnectionId = uuid::Uuid::new_v4();
+
+    // Target connection is gone entirely (not in the senders map), but the
+    // request is still tracked as host-scoped.
+    let (alt_tx, alt_rx) = async_channel::unbounded();
+    model.connection_senders.insert(alternate, alt_tx);
+    model
+        .host_scoped_requests
+        .insert(request_id.clone(), target);
+
+    model.send_server_message(
+        Some(target),
+        Some(&request_id),
+        write_file_success_message(),
+    );
+
+    let received = alt_rx
+        .try_recv()
+        .expect("alternate should receive failover response");
+    assert_eq!(received.request_id, request_id.to_string());
+    assert!(!model.host_scoped_requests.contains_key(&request_id));
+}
+
+#[test]
+fn non_host_scoped_response_is_not_failed_over() {
+    let mut model = test_model();
+    let request_id = RequestId::new();
+    let target: ConnectionId = uuid::Uuid::new_v4();
+    let alternate: ConnectionId = uuid::Uuid::new_v4();
+
+    // Target sender exists but is closed; the request is NOT tracked as
+    // host-scoped, so the message must be dropped rather than re-routed.
+    let (target_tx, target_rx) = async_channel::bounded(1);
+    drop(target_rx);
+    model.connection_senders.insert(target, target_tx);
+    let (alt_tx, alt_rx) = async_channel::unbounded::<ServerMessage>();
+    model.connection_senders.insert(alternate, alt_tx);
+
+    model.send_server_message(
+        Some(target),
+        Some(&request_id),
+        write_file_success_message(),
+    );
+
+    assert!(
+        alt_rx.try_recv().is_err(),
+        "non-host-scoped response must not fail over to another connection"
+    );
 }

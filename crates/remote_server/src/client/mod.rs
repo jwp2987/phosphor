@@ -10,9 +10,10 @@ use futures::io::{AsyncRead, AsyncWrite};
 use warpui::r#async::{executor, FutureExt as _};
 
 use crate::proto::{
-    client_message, server_message, Abort, Authenticate, BufferEdit, ClientMessage, CloseBuffer,
-    CreateDirectory, CreateDirectoryResponse, DeleteFile, DiffStateFileDelta,
-    DiffStateMetadataUpdate, DiffStateSnapshot, ErrorCode, GetBranches,
+    client_message, discard_files_response, server_message, Abort, Authenticate, BufferEdit,
+    ClientMessage, CloseBuffer, CreateDirectory, CreateDirectoryResponse, DeleteFile,
+    DiffStateFileDelta,
+    DiffStateMetadataUpdate, DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches,
     GetBranchesResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
     GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest, GitCreatePrResponse,
     GitPushRequest, GitPushResponse,
@@ -549,6 +550,30 @@ impl RemoteServerClient {
             },
             other => {
                 log::error!("Unexpected response variant for DeleteFile: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Discards changes for one or more files on the remote host (git
+    /// restore/stash/rm), mirroring the local code-review "discard changes"
+    /// action. Backs `RemoteDiffStateModel::discard_files` over SSH (#437).
+    pub async fn discard_files(&self, request: DiscardFilesRequest) -> Result<(), ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage {
+            request_id: request_id.to_string(),
+            message: Some(client_message::Message::DiscardFiles(request)),
+        };
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::DiscardFilesResponse(resp)) => match resp.result {
+                Some(discard_files_response::Result::Success(_)) | None => Ok(()),
+                Some(discard_files_response::Result::Error(e)) => {
+                    Err(ClientError::FileOperationFailed(e.message))
+                }
+            },
+            other => {
+                log::error!("Unexpected response variant for DiscardFiles: {other:?}");
                 Err(ClientError::UnexpectedResponse)
             }
         }

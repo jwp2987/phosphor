@@ -8,6 +8,7 @@
 use warp_util::standardized_path::StandardizedPath;
 
 use crate::entry::{DirectoryEntry, Entry, FileMetadata};
+use crate::standing_queries::StandingQueryResultsDelta;
 
 /// Mirrors `RepoMetadataUpdate` proto.
 ///
@@ -22,6 +23,16 @@ pub struct RepoMetadataUpdate {
     pub remove_entries: Vec<StandardizedPath>,
     /// Subtree patches to add or replace in the tree.
     pub update_entries: Vec<FileTreeEntryUpdate>,
+    /// Standing query changes synchronized with this tree change.
+    ///
+    /// Sourced from the pinned oracle's `RepoMetadataUpdate` proto mirror
+    /// (`02b53fcd8`). The wire proto (`crates/remote_server/src/repo_metadata_proto.rs`)
+    /// does not yet carry a corresponding field (#439), so every construction
+    /// site that builds a `RepoMetadataUpdate` from proto input defaults this
+    /// to `StandingQueryResultsDelta::default()` until #439 lands. The field
+    /// exists now so `RemoteRepoMetadataModel` has somewhere to apply a delta
+    /// once one is actually produced (#296).
+    pub standing_results_delta: StandingQueryResultsDelta,
 }
 
 /// Mirrors `FileTreeEntry` proto.
