@@ -25,6 +25,7 @@ use crate::notebooks::editor::keys::NotebookKeybindings;
 use crate::notebooks::editor::link_editor::LinkEditorAction;
 use crate::notebooks::editor::model::NotebooksEditorModel;
 use crate::notebooks::editor::rich_text_styles;
+use crate::notebooks::file::MarkdownDisplayMode;
 use crate::notebooks::link::{LinkEvent, NotebookLinks, SessionSource};
 
 use crate::settings::FontSettings;
@@ -148,6 +149,26 @@ fn link_offset(
                 == Some(link_url)
         })
         .expect("Expected link URL to exist in editor")
+}
+
+/// Mermaid blocks default to `Raw` (see `NotebooksEditorModel::set_mermaid_render_mode`); switch
+/// the block containing `block_offset` to `Rendered` so tests exercising rendered-block behavior
+/// (selection/click/drag against the diagram) have one to find.
+async fn render_mermaid_block(
+    app: &mut App,
+    editor_view: &ViewHandle<RichTextEditorView>,
+    block_offset: CharOffset,
+) {
+    editor_view.update(app, |editor, ctx| {
+        editor.model.update(ctx, |model, ctx| {
+            model.set_mermaid_render_mode(block_offset, MarkdownDisplayMode::Rendered, ctx);
+        });
+    });
+    let render_state = editor_view.read(app, |editor, ctx| {
+        editor.model.as_ref(ctx).render_state().clone()
+    });
+    app.read(|ctx| render_state.as_ref(ctx).layout_complete())
+        .await;
 }
 
 fn rendered_mermaid_block_range(
@@ -290,6 +311,7 @@ fn test_omnibar_is_hidden_for_rendered_mermaid_selection() {
         let (_, editor_view, _) = initialize_editor(&mut app);
         let markdown = "Before\n```mermaid\ngraph TD\nA --> B\n```\nAfter";
         reset_editor_with_markdown(&mut app, &editor_view, markdown).await;
+        render_mermaid_block(&mut app, &editor_view, CharOffset::from(7)).await;
 
         editor_view.update(&mut app, |editor, ctx| {
             let mermaid_block_range =
@@ -313,6 +335,7 @@ fn test_shift_click_on_rendered_mermaid_dispatches_selection_update_to_block_bou
         let (_, editor_view, _) = initialize_editor(&mut app);
         let markdown = "Before\n```mermaid\ngraph TD\nA --> B\n```\nAfter";
         reset_editor_with_markdown(&mut app, &editor_view, markdown).await;
+        render_mermaid_block(&mut app, &editor_view, CharOffset::from(7)).await;
 
         editor_view.update(&mut app, |editor, ctx| {
             editor.selection_start(CharOffset::from(2), false, ctx);
@@ -393,6 +416,7 @@ fn test_drag_on_rendered_mermaid_dispatches_selection_update_to_block_boundary()
         let (_, editor_view, _) = initialize_editor(&mut app);
         let markdown = "Before\n```mermaid\ngraph TD\nA --> B\n```\nAfter";
         reset_editor_with_markdown(&mut app, &editor_view, markdown).await;
+        render_mermaid_block(&mut app, &editor_view, CharOffset::from(7)).await;
 
         editor_view.update(&mut app, |editor, ctx| {
             editor.selection_start(CharOffset::from(2), false, ctx);

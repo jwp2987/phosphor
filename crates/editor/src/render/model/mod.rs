@@ -2,7 +2,7 @@ use core::slice;
 use std::{
     any::Any,
     cell::{Cell, Ref, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt, mem,
     num::NonZeroU8,
     ops::{Add, AddAssign, Range, Sub, SubAssign},
@@ -206,9 +206,13 @@ pub enum HitTestBlockType {
     Embedding,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RenderLayoutOptions {
     pub render_mermaid_diagrams: bool,
+    /// Buffer start offsets (0-indexed) of Mermaid blocks the user has explicitly toggled to
+    /// `Rendered`. Checked per-block in addition to `render_mermaid_diagrams`, so a block can be
+    /// rendered as a diagram even when the latter is `false`.
+    pub mermaid_render_offsets: HashSet<CharOffset>,
 }
 
 #[derive(Debug)]
@@ -1998,7 +2002,7 @@ impl RenderState {
     }
 
     pub fn layout_options(&self) -> RenderLayoutOptions {
-        self.layout_options
+        self.layout_options.clone()
     }
 
     pub fn set_render_mermaid_diagrams(&mut self, render_mermaid_diagrams: bool) -> bool {
@@ -2007,6 +2011,16 @@ impl RenderState {
         }
 
         self.layout_options.render_mermaid_diagrams = render_mermaid_diagrams;
+        true
+    }
+
+    /// Set the offsets of Mermaid blocks the user has explicitly toggled to `Rendered`. Returns
+    /// `true` when the set changed (the caller should trigger a relayout in that case).
+    pub fn set_mermaid_render_offsets(&mut self, offsets: HashSet<CharOffset>) -> bool {
+        if self.layout_options.mermaid_render_offsets == offsets {
+            return false;
+        }
+        self.layout_options.mermaid_render_offsets = offsets;
         true
     }
 
@@ -2635,7 +2649,7 @@ impl RenderState {
         let laid_out_edit = delta.layout_delta(
             &layout_context,
             self.document_path.as_deref(),
-            self.layout_options,
+            self.layout_options.clone(),
             hidden_ranges.clone(),
             app,
         );
