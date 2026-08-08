@@ -14,6 +14,7 @@ use ai::skills::SkillReference;
 use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
 use warp_core::ui::appearance::Appearance;
+use warp_core::ui::theme::AnsiColorIdentifier;
 #[cfg(feature = "local_fs")]
 use warp_util::path::{CleanPathResult, LineAndColumnArg};
 use warpui::clipboard::ClipboardContent;
@@ -36,8 +37,8 @@ use crate::search::slash_command_menu::static_commands::Availability;
 use crate::search::slash_command_menu::{SlashCommandId, SlashCommandKind, StaticCommand};
 use crate::server::ids::SyncId;
 use crate::server::telemetry::{AgentModeAutoDetectionSettingOrigin, SlashCommandAcceptedDetails};
-use crate::workflows::command_parser::compute_workflow_display_data;
 use crate::settings::AISettings;
+use crate::tab::SelectedTabColor;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
 use crate::terminal::input::inline_menu::{InlineMenuAction, InlineMenuType};
 use crate::terminal::input::message_bar::Message;
@@ -50,7 +51,9 @@ use crate::terminal::input::{
 #[cfg(feature = "local_fs")]
 use crate::terminal::model::session::Session;
 use crate::terminal::view::TerminalAction;
+use crate::ui_components::color_dot;
 use crate::view_components::DismissibleToast;
+use crate::workflows::command_parser::compute_workflow_display_data;
 use crate::workspace::{ForkedConversationDestination, ToastStack, WorkspaceAction};
 use crate::TelemetryEvent;
 
@@ -586,6 +589,57 @@ impl Input {
 
                 ctx.dispatch_typed_action(&WorkspaceAction::SetActiveTabName(name.to_owned()));
             }
+            set_tab_color if command.name == commands::SET_TAB_COLOR.name => {
+                // Ported from the pinned oracle's `SlashCommandKind::SetTabColor` handler.
+                // Reuses the already-shipped, already-tested `WorkspaceAction::SetActiveTabColor`
+                // (see `app/src/workspace/view_test.rs`) -- only this dispatch arm was missing.
+                let supported_options = || {
+                    color_dot::TAB_COLOR_OPTIONS
+                        .iter()
+                        .map(|c| c.to_string().to_ascii_lowercase())
+                        .chain(std::iter::once("none".to_owned()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+
+                let Some(arg) = argument
+                    .map(|name| name.trim())
+                    .filter(|name| !name.is_empty())
+                else {
+                    show_error_toast(
+                        format!(
+                            "Please provide a color after /set-tab-color ({})",
+                            supported_options()
+                        ),
+                        ctx,
+                    );
+                    return true;
+                };
+
+                let color = if arg.eq_ignore_ascii_case("none") {
+                    SelectedTabColor::Cleared
+                } else {
+                    let parsed = arg
+                        .parse::<AnsiColorIdentifier>()
+                        .ok()
+                        .filter(|c| color_dot::TAB_COLOR_OPTIONS.contains(c));
+                    match parsed {
+                        Some(c) => SelectedTabColor::Color(c),
+                        None => {
+                            show_error_toast(
+                                format!(
+                                    "Unknown tab color '{arg}'. Use one of: {}.",
+                                    supported_options()
+                                ),
+                                ctx,
+                            );
+                            return true;
+                        }
+                    }
+                };
+
+                ctx.dispatch_typed_action(&WorkspaceAction::SetActiveTabColor(color));
+            }
             create_project if command.name == commands::CREATE_NEW_PROJECT.name => {
                 if argument.is_none_or(|args| args.is_empty()) {
                     show_error_toast(
@@ -1016,7 +1070,11 @@ impl Input {
             tui_only
                 if command.name == commands::STATUSLINE.name
                     || command.name == commands::AUTO_APPROVE.name
-                    || command.name == commands::NATURAL_LANGUAGE_DETECTION.name =>
+                    || command.name == commands::NATURAL_LANGUAGE_DETECTION.name
+                    || command.name == commands::EXIT.name
+                    || command.name == commands::MCP.name
+                    || command.name == commands::VIEW_LOGS.name
+                    || command.name == commands::CLEAR.name =>
             {
                 debug_assert!(
                     false,

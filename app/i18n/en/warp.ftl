@@ -2558,6 +2558,11 @@ slash-cmd-auto-approve-desc = Toggle auto approve
 slash-cmd-natural-language-detection-desc = Toggle natural language detection
 slash-cmd-usage-desc = Show how much of the model's context window this conversation uses
 slash-cmd-cost-desc = Show this conversation's cost at your configured provider rates
+slash-cmd-mcp-desc = View and manage MCP servers
+slash-cmd-exit-desc = Exit Phosphor
+slash-cmd-view-logs-desc = Bundle your logs into a zip archive
+slash-cmd-clear-desc = Clear the transcript and start a new conversation (alias for /agent)
+slash-cmd-set-tab-color-desc = Set the color of the current tab
 
 # --- ANCHOR-SUB-PROMPT-TIPS ---
 # Prompt editor modal (app/src/prompt/editor_modal.rs)

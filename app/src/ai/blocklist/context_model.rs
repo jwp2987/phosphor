@@ -312,6 +312,34 @@ fn read_pending_file_for_context(file: &PendingFile) -> Option<FileContext> {
     ))
 }
 
+/// Splits an explicitly-resolved attachment set into the `AIAgentContext` entries it produces
+/// (an `Image` per image, plus the `File` content read from disk for each file — see
+/// `read_pending_file_for_context`) and the plain `PendingFile` list callers use to also add
+/// `FilePathReference` entries to `referenced_attachments` (via `add_pending_file_attachments`).
+///
+/// Used by callers that resolve their own attachment set — a fired queued row's captured
+/// attachments, or the currently-staged attachments for a direct send — instead of reading
+/// `pending_attachments` directly, so the built request reflects what was actually staged when
+/// the prompt was queued (or sent), not whatever happens to be staged when the request is built.
+pub fn context_and_files_for_attachments(
+    attachments: Vec<PendingAttachment>,
+) -> (Vec<AIAgentContext>, Vec<PendingFile>) {
+    let mut context = Vec::new();
+    let mut files = Vec::new();
+    for attachment in attachments {
+        match attachment {
+            PendingAttachment::Image(image) => context.push(AIAgentContext::Image(image)),
+            PendingAttachment::File(file) => {
+                if let Some(file_context) = read_pending_file_for_context(&file) {
+                    context.push(AIAgentContext::File(file_context));
+                }
+                files.push(file);
+            }
+        }
+    }
+    (context, files)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentType {
     Image,
@@ -852,28 +880,14 @@ impl BlocklistAIContextModel {
                 context.push(AIAgentContext::SelectedText(selected_text.clone()));
             }
 
-            // Add images from pending attachments
-            for attachment in &self.pending_attachments {
-                if let PendingAttachment::Image(image) = attachment {
-                    context.push(AIAgentContext::Image(image.clone()));
-                }
-            }
-
-            // Zap P0/P1: synchronously reads the PendingFile and pushes it into
-            // context as AIAgentContext::File.
-            // - text-like (parses as valid UTF-8) → StringContent → rendered via
-            //   user_context.rs::render_file into a <file> XML block (BYOP) /
-            //   api::input_context::File (warp-own)
-            // - binary (PDF / audio / other) → BinaryContent → goes through the
-            //   BYOP user_context Binary ContentPart upgrade path (warp-own drops it
-            //   outright in convert.rs:759, with no side effects)
-            for attachment in &self.pending_attachments {
-                if let PendingAttachment::File(file) = attachment {
-                    if let Some(file_context) = read_pending_file_for_context(file) {
-                        context.push(AIAgentContext::File(file_context));
-                    }
-                }
-            }
+            // Images and pending-file content are *not* added here: unlike blocks and selected
+            // text, they don't belong to "whatever is currently staged in this model" — they
+            // belong to whichever attachment set the caller resolved for this specific request
+            // (a fired queued row's captured attachments, or live staging captured at send
+            // time). Reading `self.pending_attachments` here would attach whatever happens to be
+            // staged when the request is *built*, not what was staged when it was queued. See
+            // `context_and_files_for_attachments`, which callers use to build this context
+            // themselves from their resolved set.
         }
 
         context

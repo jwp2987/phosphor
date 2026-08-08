@@ -9,6 +9,9 @@ use crate::terminal::cli_agent_sessions::listener::session_supports_rich_status;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::view::TerminalViewState;
 use crate::terminal::CLIAgent;
+use crate::ui_components::agent_icon::{
+    agent_icon_variant_from_terminal_inputs, CLISessionInputs, TerminalIconInputs,
+};
 use crate::ui_components::icon_with_status::{
     render_cli_agent_logo, render_icon_with_status, IconWithStatusSizing, IconWithStatusVariant,
 };
@@ -2414,45 +2417,43 @@ fn resolve_icon_with_status_variant(
             let terminal_view = terminal_pane.terminal_view(app);
             let terminal_view = terminal_view.as_ref(app);
             let cli_agent_session = CLIAgentSessionsModel::as_ref(app).session(terminal_view.id());
-            let is_plugin_backed = cli_agent_session.is_some_and(|s| s.listener.is_some());
             let is_ambient = terminal_view.is_ambient_agent_session(app);
             let has_conversation = terminal_view
                 .selected_conversation_display_title(app)
                 .is_some();
-            let is_oz_agent = has_conversation || is_ambient;
 
-            if let Some(session) = cli_agent_session
-                .filter(|s| s.listener.is_some())
-                .filter(|s| !matches!(s.agent, CLIAgent::Unknown))
-            {
-                IconWithStatusVariant::CLIAgent {
+            // Centralized so this surface and the run-card / notification surfaces derive the
+            // same icon for the same logical run -- see `ui_components::agent_icon` and its
+            // cross-surface consistency tests.
+            //
+            // Deviation from the pinned oracle: the pin's terminal-view adapter also resolves
+            // a pre-dispatch third-party harness (`selected_third_party_cli_agent`) for a live
+            // ambient run before task data is available. This fork has no such live signal at
+            // the terminal-view level yet (`is_ambient_agent_session` is a hard-coded `false`
+            // stub -- see `ui_components::agent_icon`'s module doc), so it is passed as `None`
+            // here; the waterfall still carries the branch and it is exercised directly by
+            // `agent_icon_tests.rs`.
+            let inputs = TerminalIconInputs {
+                is_ambient,
+                cli_session: cli_agent_session.map(|session| CLISessionInputs {
                     agent: session.agent,
-                    status: if session_supports_rich_status(session) {
-                        Some(session.status.to_conversation_status())
-                    } else {
-                        None
-                    },
-                }
-            } else if let Some(session) = cli_agent_session
-                .filter(|_| !is_plugin_backed)
-                .filter(|s| !matches!(s.agent, CLIAgent::Unknown))
-            {
-                IconWithStatusVariant::CLIAgent {
-                    agent: session.agent,
-                    status: None,
-                }
-            } else if is_oz_agent {
-                IconWithStatusVariant::OzAgent {
-                    status: terminal_view.selected_conversation_status_for_display(app),
-                    is_ambient,
-                }
-            } else {
+                    has_listener: session.listener.is_some(),
+                    status: session.status.to_conversation_status(),
+                    supports_rich_status: session_supports_rich_status(session),
+                }),
+                selected_third_party_cli_agent: None,
+                selected_conversation_status: terminal_view
+                    .selected_conversation_status_for_display(app),
+                has_selected_conversation: has_conversation,
+            };
+
+            agent_icon_variant_from_terminal_inputs(&inputs).unwrap_or(
                 // Plain terminal: use foreground color per design spec
                 IconWithStatusVariant::Neutral {
                     icon: WarpIcon::Terminal,
                     icon_color: main_text,
-                }
-            }
+                },
+            )
         }
         TypedPane::Code(_) => {
             match icon_from_file_path(title, appearance) { Some(icon_element) => {
