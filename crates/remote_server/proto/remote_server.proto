@@ -330,6 +330,21 @@ message RepoMetadataEntryUpdate {
   repeated RepoNodeMetadata subtree_metadata = 2;
 }
 
+// Mirrors StandingQueryContent in Rust.
+message StandingQueryContent {
+  string path = 1;
+  bool is_directory = 2;
+}
+
+// Mirrors StandingQueryResultsDelta in Rust. Project skills/rules discovery
+// changes synchronized alongside a file tree update.
+message StandingQueryResultsDelta {
+  repeated StandingQueryContent upserted_project_skills = 1;
+  repeated StandingQueryContent removed_project_skills = 2;
+  repeated StandingQueryContent upserted_project_rules = 3;
+  repeated StandingQueryContent removed_project_rules = 4;
+}
+
 // ── NavigatedToDirectory ──────────────────────────────────────────
 
 // Client → server: "I navigated to this directory, please index it."
@@ -458,6 +473,7 @@ message RepoMetadataSnapshot {
   string repo_path = 1;
   repeated RepoMetadataEntryUpdate entries = 2;
   bool sync_complete = 3;
+  StandingQueryResultsDelta standing_results = 4;
 }
 
 // Incremental repo metadata update. Mirrors RepoMetadataUpdate in Rust.
@@ -465,6 +481,7 @@ message RepoMetadataUpdatePush {
   string repo_path = 1;
   repeated string remove_entries = 2;
   repeated RepoMetadataEntryUpdate update_entries = 3;
+  StandingQueryResultsDelta standing_results_delta = 4;
 }
 
 // ── Buffer syncing ────────────────────────────────────────────────

@@ -8,6 +8,7 @@ use repo_metadata::file_tree_update::{
     DirectoryNodeMetadata, FileNodeMetadata, FileTreeEntryUpdate, RepoMetadataUpdate,
     RepoNodeMetadata,
 };
+use repo_metadata::{StandingQueryContent, StandingQueryResultsDelta};
 use warp_util::standardized_path::StandardizedPath;
 
 use crate::proto;
@@ -27,6 +28,47 @@ impl From<&RepoMetadataUpdate> for proto::RepoMetadataUpdatePush {
                 .update_entries
                 .iter()
                 .map(proto::RepoMetadataEntryUpdate::from)
+                .collect(),
+            standing_results_delta: Some((&update.standing_results_delta).into()),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "repo_metadata_proto_tests.rs"]
+mod tests;
+
+impl From<&StandingQueryContent> for proto::StandingQueryContent {
+    fn from(content: &StandingQueryContent) -> Self {
+        Self {
+            path: content.path.to_string(),
+            is_directory: content.is_directory,
+        }
+    }
+}
+
+impl From<&StandingQueryResultsDelta> for proto::StandingQueryResultsDelta {
+    fn from(delta: &StandingQueryResultsDelta) -> Self {
+        Self {
+            upserted_project_skills: delta
+                .upserted_project_skills
+                .iter()
+                .map(proto::StandingQueryContent::from)
+                .collect(),
+            removed_project_skills: delta
+                .removed_project_skills
+                .iter()
+                .map(proto::StandingQueryContent::from)
+                .collect(),
+            upserted_project_rules: delta
+                .upserted_project_rules
+                .iter()
+                .map(proto::StandingQueryContent::from)
+                .collect(),
+            removed_project_rules: delta
+                .removed_project_rules
+                .iter()
+                .map(proto::StandingQueryContent::from)
                 .collect(),
         }
     }
@@ -159,10 +201,48 @@ pub fn proto_to_repo_metadata_update(
         repo_path,
         remove_entries,
         update_entries,
-        // The wire proto has no standing-results field yet (#439); default
-        // until that lands.
-        standing_results_delta: Default::default(),
+        standing_results_delta: push
+            .standing_results_delta
+            .as_ref()
+            .map(proto_to_standing_results_delta)
+            .unwrap_or_default(),
     })
+}
+
+fn proto_to_standing_query_content(
+    content: &proto::StandingQueryContent,
+) -> Option<StandingQueryContent> {
+    Some(StandingQueryContent {
+        path: StandardizedPath::try_new(&content.path).ok()?,
+        is_directory: content.is_directory,
+    })
+}
+
+fn proto_to_standing_results_delta(
+    delta: &proto::StandingQueryResultsDelta,
+) -> StandingQueryResultsDelta {
+    StandingQueryResultsDelta {
+        upserted_project_skills: delta
+            .upserted_project_skills
+            .iter()
+            .filter_map(proto_to_standing_query_content)
+            .collect(),
+        removed_project_skills: delta
+            .removed_project_skills
+            .iter()
+            .filter_map(proto_to_standing_query_content)
+            .collect(),
+        upserted_project_rules: delta
+            .upserted_project_rules
+            .iter()
+            .filter_map(proto_to_standing_query_content)
+            .collect(),
+        removed_project_rules: delta
+            .removed_project_rules
+            .iter()
+            .filter_map(proto_to_standing_query_content)
+            .collect(),
+    }
 }
 
 /// Converts a `RepoMetadataSnapshot` proto into a `RepoMetadataUpdate`
@@ -182,9 +262,11 @@ pub fn proto_snapshot_to_update(
         repo_path,
         remove_entries: Vec::new(),
         update_entries,
-        // The wire proto has no standing-results field yet (#439); default
-        // until that lands.
-        standing_results_delta: Default::default(),
+        standing_results_delta: snapshot
+            .standing_results
+            .as_ref()
+            .map(proto_to_standing_results_delta)
+            .unwrap_or_default(),
     })
 }
 
@@ -222,8 +304,9 @@ pub fn proto_load_repo_metadata_directory_response_to_update(
         repo_path,
         remove_entries: Vec::new(),
         update_entries,
-        // The wire proto has no standing-results field yet (#439); default
-        // until that lands.
+        // LoadRepoMetadataDirectoryResponse is a lazy-expand response for a
+        // single subdirectory; it never carries standing-query results
+        // (those are seeded via RepoMetadataSnapshot / RepoMetadataUpdatePush).
         standing_results_delta: Default::default(),
     })
 }

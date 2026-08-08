@@ -19,7 +19,7 @@ use crate::local_model::{
 };
 use crate::remote_model::{RemoteRepoMetadataModel, RemoteRepositoryMetadataEvent};
 use crate::repository_identifier::{RemoteRepositoryIdentifier, RepositoryIdentifier};
-use crate::standing_queries::StandingQueryResultsDelta;
+use crate::standing_queries::{StandingQueryResults, StandingQueryResultsDelta};
 use crate::RepoMetadataError;
 
 /// Unified events emitted by the [`RepoMetadataModel`] wrapper.
@@ -202,6 +202,21 @@ impl RepoMetadataModel {
                 self.remote.as_ref(ctx).get_repository(remote_id)
             }
         }
+    }
+
+    /// Returns the current standing-query results (project skills, project
+    /// rule files) for a local repository, if tracked.
+    ///
+    /// Only local repositories evaluate standing queries directly; remote
+    /// repositories receive their results via `standing_results_delta` on a
+    /// snapshot or incremental update, so this always returns `None` for a
+    /// `RepositoryIdentifier::Remote`.
+    pub fn standing_query_results<'a>(
+        &self,
+        path: &StandardizedPath,
+        ctx: &'a AppContext,
+    ) -> Option<&'a StandingQueryResults> {
+        self.local.as_ref(ctx).standing_query_results(path)
     }
 
     /// Returns whether the given repository is indexed.
