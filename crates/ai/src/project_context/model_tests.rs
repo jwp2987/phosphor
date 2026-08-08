@@ -6,19 +6,22 @@ use std::path::PathBuf;
 // 11 of those are already present above (the `test_find_applicable_rules_*`
 // group); the remaining 18 break down as:
 //
-//   1 portable — `test_no_rules_returns_none`, ported at the bottom of this
-//     file. Issue #150 lists all 18 as blocked; that one is not, because it only
-//     needs `ProjectContextModel::default()` and `find_applicable_rules`, both
-//     of which this fork already has.
+//   7 portable — `test_no_rules_returns_none` (needs only
+//     `ProjectContextModel::default()` and `find_applicable_rules`, both
+//     already present) and the 6 `test_merge_*` tests, both ported at the
+//     bottom of this file. Issue #150 lists all 18 as blocked; these 7 are not.
 //
-//   6 blocked on `RulesDelta::merge` — the `test_merge_*` group. The method is
-//     absent here. It is also *dead code at the pin*: `merge` is private to
-//     `model.rs`, and `model.rs` never calls it (verified with
-//     `git grep '\.merge(' 02b53fcd8 -- crates/ai/src/project_context/`, which
-//     matches only `model_tests.rs`). Adding it would import dead code purely to
-//     host a test — the same call made for `ApiKeys::provider_key_count` in
-//     `crates/ai/src/api_keys_tests.rs`, and the defect class #207 tracks.
-//     Refs #150 item 2.
+//     `test_merge_*` needed `RulesDelta::merge`, ported alongside them in
+//     `model.rs`. At the pin `merge` is `#[cfg(test)]`-only — `model.rs` never
+//     calls it outside `model_tests.rs`
+//     (`git grep '\.merge(' 02b53fcd8 -- crates/ai/src/project_context/`
+//     matches only the pin's own test file) — so this fork's port keeps the
+//     same `#[cfg(test)]` gate rather than inventing a production call site
+//     that doesn't exist upstream either. This is a different situation from
+//     `ApiKeys::provider_key_count` in `crates/ai/src/api_keys_tests.rs`
+//     (#207): that method is dead in *every* build, test included, whereas
+//     `merge` is real, exercised pinned test code, just never called from
+//     non-test code at the pin.
 //
 //   5 blocked on global rules — `test_global_rule_alone_no_project_rules`,
 //     `test_global_rule_layered_with_project_warp`,
@@ -516,4 +519,119 @@ fn test_no_rules_returns_none() {
     let model = ProjectContextModel::default();
     let result = model.find_applicable_rules(&PathBuf::from("/some/path/file.rs"));
     assert!(result.is_none());
+}
+
+// Ported unchanged from the pinned oracle's `model_tests.rs`
+// (`02b53fcd8`, release `2026.07.29.09.05` stable). `RulesDelta` and
+// `ProjectRulePath` are field-identical between fork and pin, so these are a
+// pure port of `RulesDelta::merge`'s pinned test coverage. See #150 item 2.
+fn make_rule_path(path: &str) -> ProjectRulePath {
+    ProjectRulePath {
+        path: PathBuf::from(path),
+        project_root: PathBuf::from("/project"),
+    }
+}
+
+#[test]
+fn test_merge_independent_deltas() {
+    let mut delta = RulesDelta {
+        discovered_rules: vec![make_rule_path("/a/WARP.md")],
+        deleted_rules: vec![],
+    };
+    delta.merge(RulesDelta {
+        discovered_rules: vec![],
+        deleted_rules: vec![PathBuf::from("/b/WARP.md")],
+    });
+
+    assert_eq!(delta.discovered_rules.len(), 1);
+    assert_eq!(delta.discovered_rules[0].path, PathBuf::from("/a/WARP.md"));
+    assert_eq!(delta.deleted_rules, vec![PathBuf::from("/b/WARP.md")]);
+}
+
+#[test]
+fn test_merge_add_then_delete_yields_delete() {
+    let mut delta = RulesDelta {
+        discovered_rules: vec![make_rule_path("/a/WARP.md")],
+        deleted_rules: vec![],
+    };
+    delta.merge(RulesDelta {
+        discovered_rules: vec![],
+        deleted_rules: vec![PathBuf::from("/a/WARP.md")],
+    });
+
+    assert!(delta.discovered_rules.is_empty());
+    assert_eq!(delta.deleted_rules, vec![PathBuf::from("/a/WARP.md")]);
+}
+
+#[test]
+fn test_merge_delete_then_add_yields_add() {
+    let mut delta = RulesDelta {
+        discovered_rules: vec![],
+        deleted_rules: vec![PathBuf::from("/a/WARP.md")],
+    };
+    delta.merge(RulesDelta {
+        discovered_rules: vec![make_rule_path("/a/WARP.md")],
+        deleted_rules: vec![],
+    });
+
+    assert_eq!(delta.discovered_rules.len(), 1);
+    assert_eq!(delta.discovered_rules[0].path, PathBuf::from("/a/WARP.md"));
+    assert!(delta.deleted_rules.is_empty());
+}
+
+#[test]
+fn test_merge_add_delete_add_yields_add() {
+    let mut delta = RulesDelta::default();
+    delta.merge(RulesDelta {
+        discovered_rules: vec![make_rule_path("/a/WARP.md")],
+        deleted_rules: vec![],
+    });
+    delta.merge(RulesDelta {
+        discovered_rules: vec![],
+        deleted_rules: vec![PathBuf::from("/a/WARP.md")],
+    });
+    delta.merge(RulesDelta {
+        discovered_rules: vec![make_rule_path("/a/WARP.md")],
+        deleted_rules: vec![],
+    });
+
+    assert_eq!(delta.discovered_rules.len(), 1);
+    assert_eq!(delta.discovered_rules[0].path, PathBuf::from("/a/WARP.md"));
+    assert!(delta.deleted_rules.is_empty());
+}
+
+#[test]
+fn test_merge_delete_add_delete_yields_delete() {
+    let mut delta = RulesDelta::default();
+    delta.merge(RulesDelta {
+        discovered_rules: vec![],
+        deleted_rules: vec![PathBuf::from("/a/WARP.md")],
+    });
+    delta.merge(RulesDelta {
+        discovered_rules: vec![make_rule_path("/a/WARP.md")],
+        deleted_rules: vec![],
+    });
+    delta.merge(RulesDelta {
+        discovered_rules: vec![],
+        deleted_rules: vec![PathBuf::from("/a/WARP.md")],
+    });
+
+    assert!(delta.discovered_rules.is_empty());
+    assert_eq!(delta.deleted_rules, vec![PathBuf::from("/a/WARP.md")]);
+}
+
+#[test]
+fn test_merge_rediscovery_keeps_latest() {
+    let mut delta = RulesDelta {
+        discovered_rules: vec![make_rule_path("/a/WARP.md")],
+        deleted_rules: vec![],
+    };
+    // A second discovery of the same path (content update) should deduplicate.
+    delta.merge(RulesDelta {
+        discovered_rules: vec![make_rule_path("/a/WARP.md")],
+        deleted_rules: vec![],
+    });
+
+    assert_eq!(delta.discovered_rules.len(), 1);
+    assert!(delta.deleted_rules.is_empty());
 }

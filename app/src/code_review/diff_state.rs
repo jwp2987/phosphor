@@ -874,8 +874,14 @@ impl LocalDiffStateModel {
     }
 
     /// Removes files based on the operation type
+    ///
+    /// `pub(crate)` rather than private: the remote-server daemon's
+    /// `DiscardFiles` handler (`app/src/remote_server/server_model.rs`, #437)
+    /// calls this directly to run the same git restore/stash/rm logic
+    /// against its own filesystem, mirroring how `load_metadata_for_repo` /
+    /// `load_diff_data_for_mode` are already reused for `GetDiffState`.
     #[cfg(feature = "local_fs")]
-    async fn discard_files_impl(
+    pub(crate) async fn discard_files_impl(
         repo_path: &Path,
         file_infos: Vec<FileStatusInfo>,
         should_stash: bool,

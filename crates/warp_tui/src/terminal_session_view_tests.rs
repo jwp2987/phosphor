@@ -3,8 +3,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use instant::Instant;
+use tempfile::TempDir;
 use warp::appearance::Appearance;
-use warp::settings::{AISettings, TuiStatuslineConfig, TuiStatuslineItem};
+use warp::settings::{AISettings, TuiStatuslineConfig, TuiStatuslineItem, TuiZeroStateObject};
 use warp::terminal::model::ansi::{Handler, InputBufferValue};
 use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
@@ -56,6 +57,9 @@ use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_sessio
 use crate::transcript_view::TRANSCRIPT_BLOCK_SPACING;
 use crate::tui_builder::TuiUiBuilder;
 use crate::usage::render_context_usage_entry;
+use crate::zero_state_animation::{
+    ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationLoadFailure,
+};
 
 struct FocusTestFixture {
     window_id: warpui_core::WindowId,
@@ -1531,6 +1535,105 @@ fn new_slash_command_clears_shell_commands_from_transcript() {
         });
     });
 }
+
+/// `/clear` is a TUI-only alias for `/agent`/`/new` (pinned oracle
+/// `commands_tests.rs::clear_command_has_correct_registry_metadata`: "Clear the transcript and
+/// start a new conversation (alias for /agent)"). Mirrors
+/// `new_slash_command_clears_shell_commands_from_transcript` above to confirm `/clear` reaches
+/// the same `SlashCommandKind::Agent | SlashCommandKind::New | SlashCommandKind::Clear` handler.
+#[test]
+fn clear_slash_command_clears_shell_commands_from_transcript() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, _| {
+            let mut terminal_model = view.terminal_model.lock();
+            terminal_model.block_list_mut().set_bootstrapped();
+            terminal_model.simulate_block("echo before-clear", "before-clear\r\n");
+        });
+
+        view.read(&app, |view, ctx| {
+            assert!(!view.transcript.as_ref(ctx).is_empty());
+            assert!(
+                view.terminal_model
+                    .lock()
+                    .block_list()
+                    .blocks()
+                    .iter()
+                    .any(|block| block.command_to_string() == "echo before-clear")
+            );
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::CLEAR, None, ctx);
+        });
+
+        view.read(&app, |view, ctx| {
+            assert!(
+                view.transcript.as_ref(ctx).is_empty(),
+                "/clear should clear both agent and shell transcript blocks"
+            );
+            assert_eq!(
+                view.terminal_model.lock().block_list().blocks().len(),
+                1,
+                "/clear should leave only the active prompt block"
+            );
+        });
+    });
+}
+
+/// The `/exit` and `/view-logs` slash commands must be registered and TUI-executable (#338).
+/// Their dispatch arms already existed and are unchanged by this port -- `SlashCommandKind::Exit`
+/// terminates the process and `SlashCommandKind::ViewLogs` spawns a real filesystem zip + reveal
+/// in the file manager, neither of which this view-test harness can exercise end-to-end -- so
+/// this proves what #338 was actually blocked on: reachability from the `/` menu.
+#[test]
+fn exit_and_view_logs_slash_commands_are_registered_and_tui_executable() {
+    for command in [&*slash_commands::EXIT, &*slash_commands::VIEW_LOGS] {
+        assert!(
+            slash_commands::COMMAND_REGISTRY
+                .get_command_with_name(command.name)
+                .is_some(),
+            "{} must be registered",
+            command.name
+        );
+        assert!(
+            command.supports_tui(),
+            "{} must be executable in the TUI",
+            command.name
+        );
+    }
+}
+
+/// The `/mcp` slash command must be registered, TUI-executable, and open the MCP menu on
+/// execution -- the dispatch arm already existed (`SlashCommandKind::Mcp` in
+/// `execute_tui_slash_command`), but nothing produced it before `commands::MCP` was
+/// registered (#338).
+#[test]
+fn mcp_slash_command_opens_the_mcp_menu() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        assert!(slash_commands::MCP.supports_tui());
+
+        view.read(&app, |view, ctx| {
+            assert!(
+                !view.mcp_menu.as_ref(ctx).is_open(ctx),
+                "MCP menu should start closed"
+            );
+        });
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::MCP, None, ctx);
+        });
+        view.read(&app, |view, ctx| {
+            assert!(
+                view.mcp_menu.as_ref(ctx).is_open(ctx),
+                "/mcp should open the MCP menu"
+            );
+        });
+    });
+}
 #[test]
 fn footer_renders_agent_sections_left_aligned() {
     App::test((), |mut app| async move {
@@ -1693,6 +1796,77 @@ fn footer_transient_state_replaces_all_sections() {
         });
         let lines = render_footer_lines(&mut app, &view, 80);
         assert_eq!(lines, vec![CTRL_C_EXIT_HINT]);
+    });
+}
+
+/// Ported from Warp's `crates/warp_tui/src/terminal_session_view_tests.rs` at
+/// the pinned oracle (`02b53fcd8` — see `ORACLE.md`) as part of #384. A
+/// reload failure (e.g. the linked `TuiZeroStateObject::AsciiFile` was
+/// deleted or edited into something invalid) surfaces as an error-toned
+/// transient footer hint rather than failing silently.
+#[test]
+fn zero_state_reload_failure_renders_as_an_error_footer_hint() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        app.update(|ctx| {
+            ZeroStateAnimationConfig::handle(ctx).update(ctx, |_, ctx| {
+                ctx.emit(ZeroStateAnimationConfigEvent::LoadFailed(
+                    ZeroStateAnimationLoadFailure::Reload,
+                ));
+            });
+        });
+
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                super::ZERO_STATE_ASCII_RELOAD_FAILED_HINT.to_owned(),
+                super::TransientHintTone::Error
+            ))
+        );
+
+        let lines = render_footer_lines(&mut app, &view, 120);
+        assert_eq!(lines, vec![super::ZERO_STATE_ASCII_RELOAD_FAILED_HINT]);
+    });
+}
+
+/// Ported from Warp's `crates/warp_tui/src/terminal_session_view_tests.rs` at
+/// the pinned oracle (`02b53fcd8`) as part of #384. An initial-load failure
+/// (a configured `TuiZeroStateObject::AsciiFile` that never resolves, e.g. a
+/// missing file) also surfaces as an error-toned hint, checked at session
+/// construction rather than via a later `LoadFailed` event.
+#[test]
+fn zero_state_initial_load_failure_shows_an_error_footer_hint() {
+    App::test((), |mut app| async move {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ZeroStateAnimationConfig::load(
+            &TuiZeroStateObject::AsciiFile {
+                path: "missing.txt".into(),
+            },
+            5.0,
+            0.18,
+            temp_dir.path(),
+        );
+        app.add_singleton_model(move |_| config);
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                super::ZERO_STATE_ASCII_INITIAL_LOAD_FAILED_HINT.to_owned(),
+                super::TransientHintTone::Error
+            ))
+        );
     });
 }
 

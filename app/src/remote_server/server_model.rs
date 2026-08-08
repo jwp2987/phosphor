@@ -17,11 +17,13 @@ use warp_util::content_version::ContentVersion;
 use warp_util::file::FileId;
 
 use super::proto::{
-    client_message, delete_file_response, git_commit_chain_response, git_create_pr_response,
+    client_message, delete_file_response, discard_files_response, git_commit_chain_response,
+    git_create_pr_response,
     git_push_response, run_command_response, server_message,
     write_file_response, Abort, Authenticate, ClientMessage, UnsubscribeDiffState, DeleteFile,
     DeleteFileResponse,
-    DeleteFileSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
+    DeleteFileSuccess, DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse,
+    DiscardFilesSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
     FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
     GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
     GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPushRequest,
@@ -684,6 +686,12 @@ impl ServerModel {
             }
             Some(client_message::Message::GetDiffState(req)) => {
                 self.handle_get_diff_state(req, &request_id, conn_id, ctx)
+            }
+            // Discard changes over SSH (#437): the SSH-remote equivalent of
+            // the local code-review "discard changes" action. Runs
+            // git restore/stash/rm on the daemon's filesystem.
+            Some(client_message::Message::DiscardFiles(req)) => {
+                self.handle_discard_files(req, &request_id, conn_id, ctx)
             }
             // Git write-ops over SSH (#116): the daemon runs the git / gh
             // subprocesses host-local against the daemon's filesystem, mirroring
@@ -1571,6 +1579,134 @@ impl ServerModel {
             super::diff_state_proto::error_response(
                 "Diff state requires the local_fs feature".to_string(),
             ),
+        ))
+    }
+
+    /// Handles `DiscardFilesRequest` — runs `git restore`/`git stash`/
+    /// `git rm` on the daemon's filesystem for the specified files, reusing
+    /// the same `LocalDiffStateModel::discard_files_impl` logic the local
+    /// code-review dialog uses (#437). On success, pushes a fresh diff-state
+    /// snapshot to every connection subscribed to this repo so the
+    /// code-review UI updates without waiting for the next file-watcher
+    /// event.
+    ///
+    /// `msg.mode` is accepted but not used to select a cached model — see
+    /// the field's doc comment in the proto for why (a discard invalidates
+    /// every mode's diff for this repo, not just the requesting one).
+    #[cfg(feature = "local_fs")]
+    fn handle_discard_files(
+        &mut self,
+        msg: DiscardFilesRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        use crate::code_review::diff_state::{FileStatusInfo, LocalDiffStateModel};
+
+        let canonical_path =
+            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+                Ok(p) => p,
+                Err(e) => {
+                    return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                        DiscardFilesResponse {
+                            result: Some(discard_files_response::Result::Error(
+                                DiscardFilesError {
+                                    message: format!("Invalid repo_path: {e}"),
+                                },
+                            )),
+                        },
+                    ));
+                }
+            };
+
+        if msg.files.is_empty() {
+            return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                DiscardFilesResponse {
+                    result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                        message: "No files specified in DiscardFilesRequest".to_string(),
+                    })),
+                },
+            ));
+        }
+
+        // Decoding is fallible: #326 replaced the infallible
+        // `proto_to_file_status_info` with a validating `TryFrom` that rejects
+        // non-absolute paths and missing status variants. Surface a malformed
+        // entry as a DiscardFilesError rather than acting on a half-decoded
+        // request -- discarding files against a bad path is destructive.
+        let file_infos: Vec<FileStatusInfo> = match msg
+            .files
+            .iter()
+            .map(FileStatusInfo::try_from)
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(infos) => infos,
+            Err(err) => {
+                return HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+                    DiscardFilesResponse {
+                        result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                            message: format!("Invalid file entry in DiscardFilesRequest: {err}"),
+                        })),
+                    },
+                ));
+            }
+        };
+        let should_stash = msg.should_stash;
+        let branch = msg.branch_name.unwrap_or_else(|| "HEAD".to_string());
+        let repo_path = PathBuf::from(canonical_path.to_local_path_lossy());
+
+        log::info!(
+            "Handling DiscardFiles repo={} files={} (request_id={request_id})",
+            msg.repo_path,
+            file_infos.len(),
+        );
+
+        let request_id_for_response = request_id.clone();
+        let repo_path_for_push = canonical_path.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                guard_git_operation_in_progress(&repo_path)?;
+                LocalDiffStateModel::discard_files_impl(&repo_path, file_infos, should_stash, &branch)
+                    .await
+            },
+            move |me, result, ctx| {
+                let message = match result {
+                    Ok(_) => {
+                        me.push_diff_state_for_repo(&repo_path_for_push, ctx);
+                        server_message::Message::DiscardFilesResponse(DiscardFilesResponse {
+                            result: Some(discard_files_response::Result::Success(
+                                DiscardFilesSuccess {},
+                            )),
+                        })
+                    }
+                    Err(e) => server_message::Message::DiscardFilesResponse(DiscardFilesResponse {
+                        result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                            message: format!("{e:#}"),
+                        })),
+                    }),
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    #[cfg(not(feature = "local_fs"))]
+    fn handle_discard_files(
+        &mut self,
+        _msg: DiscardFilesRequest,
+        _request_id: &RequestId,
+        _conn_id: ConnectionId,
+        _ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        HandlerOutcome::Sync(server_message::Message::DiscardFilesResponse(
+            DiscardFilesResponse {
+                result: Some(discard_files_response::Result::Error(DiscardFilesError {
+                    message: "Discard files requires the local_fs feature".to_string(),
+                })),
+            },
         ))
     }
 

@@ -553,14 +553,17 @@ across agents have been merged.
   **Fix:** trim the autoupdate vocabulary from `search_terms` while the UI is
   hidden.
 
-- [ ] **JPEG logo: opaque background + baked-in text, illegible at ~100px** — now **#204**.
-  — `app/src/settings_view/about_page.rs:187` (now `about_page/mod.rs:167`,
-  `bundled/jpg/phosphor-logo.jpeg` — re-confirmed present on `main` 2026-08-06)
-  The 1024×1024 badge is downscaled to ~100px (its "PHOSPHOR TERMLNK / CRT
-  TERMINAL" lettering becomes noise), and being an opaque JPEG it renders as a
+- [x] **JPEG logo: opaque background + baked-in text, illegible at ~100px** — FIXED, **#204**.
+  — `app/src/settings_view/about_page.rs:187` (now `about_page/mod.rs:167`)
+  The 1024×1024 badge was downscaled to ~100px (its "PHOSPHOR TERMLNK / CRT
+  TERMINAL" lettering became noise), and being an opaque JPEG it rendered as a
   dark box on a light-themed About page.
-  **Fix:** use a transparent icon-only PNG/SVG mark for the About header; keep
-  the full badge for README/marketing.
+  **Fix:** point the About page at the existing vector Phosphor mark
+  (`app/channels/oss/icon/AppIcon.icon/Assets/logo.svg`, already the source of
+  truth for the app icon) copied to `bundled/svg/phosphor-logo.svg` — no baked
+  text, alpha background, crisp at any size. The old
+  `bundled/jpg/phosphor-logo.jpeg` (unused elsewhere) was removed; the
+  README/marketing badge at repo-root `assets/phosphor-logo.jpeg` is untouched.
 
 - [x] **Autoupdate observer now gated** — FIXED (subscribe only when SHOW_AUTOUPDATE_UI)
   — `app/src/settings_view/about_page.rs:61` (now `about_page/mod.rs:72`)

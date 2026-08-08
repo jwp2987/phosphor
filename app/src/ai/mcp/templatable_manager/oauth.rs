@@ -20,6 +20,9 @@ use warpui_extras::secure_storage::AppContextExt as _;
 use super::{MCPServerState, TemplatableMCPServerManager};
 use {crate::ai::mcp::FileBasedMCPManager, warpui::SingletonEntity};
 
+mod loopback;
+use loopback::LoopbackOAuthReceiver;
+
 pub(crate) const TEMPLATABLE_MCP_CREDENTIALS_KEY: &str = "TemplatableMcpCredentials";
 pub(crate) const FILE_BASED_MCP_CREDENTIALS_KEY: &str = "FileBasedMcpCredentials";
 
@@ -298,23 +301,31 @@ pub async fn make_authenticated_client(
     }
 
     // If we're in headless mode and we reach here, it means we either have no credentials
-    // or the cached credentials failed to refresh. Block interactive OAuth in headless mode.
-    if is_headless {
+    // or the cached credentials failed to refresh. There's no GUI to own a URL-scheme handler
+    // in headless mode (e.g. `warp_cli`), so bind a short-lived loopback HTTP server on
+    // 127.0.0.1 instead and use its URL as the OAuth redirect URI, rather than unconditionally
+    // failing. Refs #379.
+    let loopback_receiver = if is_headless {
         if is_file_based {
-            log::warn!(
+            log::info!(
                 "File-based MCP server {uuid} requires OAuth authentication; \
-                 skipping in headless mode. To use this server, authenticate it \
-                 in the Zap desktop app first."
+                 using a loopback callback because Zap is running headless."
             );
         }
-        return Err(AuthError::AuthorizationFailed(
-            "MCP server requires OAuth authentication. Please authenticate this server in the \
-             Zap desktop app first, then try again."
-                .to_string(),
-        ));
-    }
+        Some(LoopbackOAuthReceiver::bind().await?)
+    } else {
+        None
+    };
+    // `redirect_uri` shadows the custom-scheme URI computed above with the loopback server's
+    // URL when running headless; the custom-scheme value is still what was used for the
+    // cached-credential refresh path above, which doesn't depend on the redirect URI matching.
+    let redirect_uri = match &loopback_receiver {
+        Some(receiver) => receiver.redirect_uri().to_string(),
+        None => redirect_uri,
+    };
 
-    // Start the authorization process with our custom redirect URI
+    // Start the authorization process with our redirect URI (custom scheme normally, or the
+    // loopback server's URL in headless mode).
     oauth_state
         .start_authorization(&[], &redirect_uri, Some("Zap"))
         .await?;
@@ -389,9 +400,16 @@ pub async fn make_authenticated_client(
         })
         .unwrap_or_default();
 
+    // The loopback receiver validates `state` itself when the callback arrives, so it doesn't
+    // route through `pending_oauth_csrf`/`handle_oauth_callback` the way the custom-scheme deep
+    // link does. Keep a copy of the CSRF state for that direct validation before it moves into
+    // the spawner closure below.
+    let uses_loopback = loopback_receiver.is_some();
+    let csrf_state_for_loopback = csrf_state.clone();
+
     if let Err(e) = spawner
         .spawn(move |manager, ctx| {
-            if !csrf_state.is_empty() {
+            if !uses_loopback && !csrf_state.is_empty() {
                 manager.pending_oauth_csrf.insert(csrf_state, uuid);
             }
             ctx.open_url(&auth_url);
@@ -402,11 +420,18 @@ pub async fn make_authenticated_client(
         log::warn!("Failed to emit RequiresAuthentication state: {e:?}");
     }
 
-    // Wait for the authorization code from the OAuth callback channel.
-    let oauth_result = oauth_result_rx
-        .recv()
-        .await
-        .map_err(|e| AuthError::InternalError(e.to_string()))?;
+    // Wait for the authorization code. In headless mode it's delivered directly to our own
+    // loopback HTTP server (bound to 127.0.0.1 above), which validates `state` itself and shuts
+    // down as soon as it has handled the single callback it exists to receive. Otherwise it
+    // comes from the GUI's URL-scheme deep-link handler via `handle_oauth_callback`, delivered
+    // over `oauth_result_rx`.
+    let oauth_result = match loopback_receiver {
+        Some(receiver) => receiver.receive(&csrf_state_for_loopback).await?,
+        None => oauth_result_rx
+            .recv()
+            .await
+            .map_err(|e| AuthError::InternalError(e.to_string()))?,
+    };
 
     let (code, csrf_token) = match &oauth_result {
         CallbackResult::Success { code, csrf_token } => (code, csrf_token),
