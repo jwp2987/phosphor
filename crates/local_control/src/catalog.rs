@@ -287,7 +287,14 @@ define_action_catalog! {
         SurfaceRightPanelToggle => { name: "surface.right_panel.toggle", status: Implemented, target: Surface, params: None, result: Acknowledgement },
         SurfaceVerticalTabsOpen => { name: "surface.vertical_tabs.open", status: Implemented, target: Surface, params: None, result: Acknowledgement },
         SurfaceVerticalTabsToggle => { name: "surface.vertical_tabs.toggle", status: Implemented, target: Surface, params: None, result: Acknowledgement },
-        SurfaceAgentManagementOpen => { name: "surface.agent_management.open", status: Implemented, target: Surface, params: None, result: Acknowledgement },
+        // Fork-specific: Agent Management was removed with cloud-runner orchestration
+        // (see `app/src/notifications/model.rs`'s doc comment and
+        // `Workspace::set_is_agent_management_view_open`, a no-op stub in
+        // `app/src/workspace/view.rs`), so there is no view left for this action to
+        // open. Demoted from the oracle's `Implemented` to `Stub`: `is_implemented()`
+        // gates reject it before dispatch in both `mod.rs::issue_credential` and
+        // `bridge::validate_request_authority`.
+        SurfaceAgentManagementOpen => { name: "surface.agent_management.open", status: Stub, target: Surface, params: None, result: Acknowledgement },
     }
 
     file {

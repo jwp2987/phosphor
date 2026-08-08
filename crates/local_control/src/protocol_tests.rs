@@ -208,10 +208,20 @@ fn direct_surface_actions_have_stable_names() {
 fn catalog_actions_share_uniform_authorization() {
     for kind in ActionKind::ALL {
         let metadata = kind.metadata();
+        // Fork-specific: `SurfaceAgentManagementOpen` is `Stub`, not `Implemented`, in
+        // this fork -- the Agent Management view it would open was removed along with
+        // cloud-runner orchestration (see `catalog.rs`'s comment on this action and
+        // `Workspace::set_is_agent_management_view_open`, a no-op stub in
+        // `app/src/workspace/view.rs`). Every other retained action stays uniformly
+        // `Implemented`, matching the oracle.
+        let expected_status = if *kind == ActionKind::SurfaceAgentManagementOpen {
+            ActionImplementationStatus::Stub
+        } else {
+            ActionImplementationStatus::Implemented
+        };
         assert_eq!(
-            metadata.implementation_status,
-            ActionImplementationStatus::Implemented,
-            "{} should be implemented",
+            metadata.implementation_status, expected_status,
+            "{} should be {expected_status:?}",
             metadata.name,
         );
     }
@@ -223,5 +233,13 @@ fn implemented_catalog_contains_all_retained_actions() {
         .into_iter()
         .map(|metadata| metadata.kind)
         .collect::<Vec<_>>();
-    assert_eq!(actions, ActionKind::ALL);
+    // Fork-specific: `implemented_metadata()` excludes `SurfaceAgentManagementOpen`
+    // (see `catalog_actions_share_uniform_authorization` above), so the retained set
+    // here is `ActionKind::ALL` minus that one stub action.
+    let expected = ActionKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| *kind != ActionKind::SurfaceAgentManagementOpen)
+        .collect::<Vec<_>>();
+    assert_eq!(actions, expected);
 }
