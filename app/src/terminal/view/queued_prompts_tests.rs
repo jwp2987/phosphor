@@ -1006,6 +1006,14 @@ fn finished_receiving_output_drains_queue_when_sibling_block_masks_turn_end() {
     // its `finish_reason()` as `None`, and silently skip the drain. Refs #365.
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // The finished conversation's queued prompt actually fires through
+        // `send_queued_user_query_in_conversation`, which reads the global model-event
+        // sender, so the provider must be registered for the drain to complete.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+
         let terminal = add_window_with_terminal(&mut app, None);
         terminal.update(&mut app, |view, ctx| {
             let finished_block =
