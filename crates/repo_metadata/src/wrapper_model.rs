@@ -43,8 +43,13 @@ pub enum RepoMetadataEvent {
     /// `emit_incremental_updates` enabled.
     IncrementalUpdateReady { update: RepoMetadataUpdate },
     /// The paths retained for standing queries (project skills, project rule
-    /// files) changed for a repository. Only emitted by local repositories
-    /// today — the remote sub-model does not evaluate standing queries.
+    /// files) changed for a repository. For local repositories this comes
+    /// from re-evaluating the query definitions during a filesystem-watcher
+    /// pass. For remote repositories it comes from applying a
+    /// `standing_results_delta` on a snapshot or incremental update — today
+    /// that delta is always empty because the wire proto does not yet carry
+    /// it (#439), so this variant is not observed for remote repositories in
+    /// practice until that lands.
     StandingQueryResultsUpdated {
         id: RepositoryIdentifier,
         delta: StandingQueryResultsDelta,
@@ -171,6 +176,12 @@ impl RepoMetadataModel {
             RemoteRepositoryMetadataEvent::FileTreeEntryUpdated { id } => {
                 RepoMetadataEvent::FileTreeEntryUpdated {
                     id: RepositoryIdentifier::Remote(id.clone()),
+                }
+            }
+            RemoteRepositoryMetadataEvent::StandingQueryResultsUpdated { id, delta } => {
+                RepoMetadataEvent::StandingQueryResultsUpdated {
+                    id: RepositoryIdentifier::Remote(id.clone()),
+                    delta: delta.clone(),
                 }
             }
         };
