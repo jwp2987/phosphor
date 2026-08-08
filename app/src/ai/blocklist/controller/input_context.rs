@@ -13,7 +13,7 @@ use crate::{
             DocumentContentAttachmentSource, DriveObjectPayload,
         },
         block_context::BlockContext,
-        blocklist::BlocklistAIContextModel,
+        blocklist::{BlocklistAIContextModel, PendingFile},
         document::ai_document_model::{AIDocumentId, AIDocumentModel},
         facts::AIFactObjectModel,
         skills::list_skills,
@@ -175,28 +175,11 @@ pub(super) fn parse_context_attachments(
 
     referenced_attachments.extend(context_model.referenced_at_context_attachments(query));
 
-    // Add pending file attachments as FilePathReference.
-    // Duplicate basenames get a (1), (2), ... suffix to avoid collisions,
-    // matching the legacy attachment-key pattern.
-    for file in context_model.pending_files().iter() {
-        let attachment = AIAgentAttachment::FilePathReference {
-            file_id: uuid::Uuid::new_v4().to_string(),
-            file_name: file.file_name.clone(),
-            file_path: file.file_path.to_string_lossy().to_string(),
-        };
-        let mut key = file.file_name.clone();
-        if referenced_attachments.contains_key(&key) {
-            let mut suffix = 1;
-            loop {
-                key = format!("{} ({suffix})", file.file_name);
-                if !referenced_attachments.contains_key(&key) {
-                    break;
-                }
-                suffix += 1;
-            }
-        }
-        referenced_attachments.insert(key, attachment);
-    }
+    // Pending file attachments are *not* added here: unlike the reference kinds above (which
+    // are all keyed off of what's literally written in `query`), FilePathReference entries
+    // depend on which attachment set the caller resolved for this request (a fired queued row's
+    // captured files, or live staging), not on "whatever files happen to be staged in this
+    // model". Callers add them via `add_pending_file_attachments` after resolving that set.
 
     // Add pending AI document as attachment if present
     if let Some(document_id) = context_model.pending_document_id() {
@@ -215,6 +198,38 @@ pub(super) fn parse_context_attachments(
     }
 
     referenced_attachments
+}
+
+/// Adds `file_attachments` to `referenced_attachments` as `FilePathReference` entries.
+/// Duplicate basenames get a (1), (2), ... suffix to avoid collisions, matching the legacy
+/// attachment-key pattern.
+///
+/// Split out from `parse_context_attachments` so callers can supply their own resolved
+/// attachment set (a fired queued row's captured files, or live staging) instead of the model's
+/// currently-staged files.
+pub(super) fn add_pending_file_attachments(
+    referenced_attachments: &mut HashMap<String, AIAgentAttachment>,
+    file_attachments: Vec<PendingFile>,
+) {
+    for file in file_attachments {
+        let attachment = AIAgentAttachment::FilePathReference {
+            file_id: uuid::Uuid::new_v4().to_string(),
+            file_name: file.file_name.clone(),
+            file_path: file.file_path.to_string_lossy().to_string(),
+        };
+        let mut key = file.file_name.clone();
+        if referenced_attachments.contains_key(&key) {
+            let mut suffix = 1;
+            loop {
+                key = format!("{} ({suffix})", file.file_name);
+                if !referenced_attachments.contains_key(&key) {
+                    break;
+                }
+                suffix += 1;
+            }
+        }
+        referenced_attachments.insert(key, attachment);
+    }
 }
 
 /// Searches for a block across all terminal models in the application.

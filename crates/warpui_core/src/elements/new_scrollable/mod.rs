@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod dual_axis_config;
 mod single_axis_config;
 pub(crate) mod util;

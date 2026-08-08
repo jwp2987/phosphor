@@ -3,12 +3,13 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::proto::{
     client_message, git_commit_chain_response, git_create_pr_response, git_push_response,
-    read_file_chunk_response, resolve_path_response, run_command_response,
-    server_message, write_file_chunk_response, ClientMessage, ErrorCode, FileSystemEntryKind,
-    GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
-    GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPushRequest,
-    GitPushResponse, InitializeResponse, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess,
-    ResolvePathResponse, ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage,
+    host_scoped_request, notification, read_file_chunk_response, resolve_path_response,
+    run_command_response, server_message, session_scoped_request, write_file_chunk_response,
+    ClientMessage, ErrorCode, FileSystemEntryKind, GitCommitChainMode, GitCommitChainRequest,
+    GitCommitChainResponse, GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse,
+    GitOpDelta, GitOpError, GitPushRequest, GitPushResponse, HostScopedRequest, InitializeResponse,
+    Notification, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess, ResolvePathResponse,
+    ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionScopedRequest,
     WriteFileChunkResponse, WriteFileChunkSuccess,
 };
 use crate::protocol;
@@ -90,7 +91,9 @@ async fn initialize_round_trip() {
 async fn initialize_sends_empty_auth_token_when_none() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
         match &msg.message {
-            Some(client_message::Message::Initialize(init)) => {
+            Some(client_message::Message::SessionScoped(SessionScopedRequest {
+                message: Some(session_scoped_request::Message::Initialize(init)),
+            })) => {
                 assert!(init.auth_token.is_empty());
             }
             other => panic!("Expected Initialize, got {other:?}"),
@@ -108,7 +111,9 @@ async fn initialize_sends_empty_auth_token_when_none() {
 async fn initialize_sends_auth_token_when_provided() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
         match &msg.message {
-            Some(client_message::Message::Initialize(init)) => {
+            Some(client_message::Message::SessionScoped(SessionScopedRequest {
+                message: Some(session_scoped_request::Message::Initialize(init)),
+            })) => {
                 assert_eq!(init.auth_token, "secret-token");
             }
             other => panic!("Expected Initialize, got {other:?}"),
@@ -137,7 +142,9 @@ async fn authenticate_sends_fire_and_forget_message() {
         .await
         .unwrap();
     match msg.message {
-        Some(client_message::Message::Authenticate(auth)) => {
+        Some(client_message::Message::Notification(Notification {
+            message: Some(notification::Message::Authenticate(auth)),
+        })) => {
             assert_eq!(auth.auth_token, "rotated-secret");
         }
         other => panic!("Expected Authenticate, got {other:?}"),
@@ -168,7 +175,9 @@ async fn disconnected_on_closed_stream() {
 async fn run_command_round_trip() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
         let command = match &msg.message {
-            Some(client_message::Message::RunCommand(req)) => req.command.clone(),
+            Some(client_message::Message::SessionScoped(SessionScopedRequest {
+                message: Some(session_scoped_request::Message::RunCommand(req)),
+            })) => req.command.clone(),
             other => panic!("Expected RunCommand, got {other:?}"),
         };
         server_message::Message::RunCommandResponse(RunCommandResponse {
@@ -202,7 +211,9 @@ async fn run_command_round_trip() {
 async fn resolve_path_round_trip() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
         match &msg.message {
-            Some(client_message::Message::ResolvePath(req)) => {
+            Some(client_message::Message::HostScoped(HostScopedRequest {
+                message: Some(host_scoped_request::Message::ResolvePath(req)),
+            })) => {
                 assert_eq!(req.path, "~/project");
             }
             other => panic!("Expected ResolvePath, got {other:?}"),
@@ -228,7 +239,9 @@ async fn resolve_path_round_trip() {
 async fn read_file_chunk_round_trip() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
         match &msg.message {
-            Some(client_message::Message::ReadFileChunk(req)) => {
+            Some(client_message::Message::HostScoped(HostScopedRequest {
+                message: Some(host_scoped_request::Message::ReadFileChunk(req)),
+            })) => {
                 assert_eq!(req.path, "/tmp/blob.bin");
                 assert_eq!(req.offset, 4);
                 assert_eq!(req.max_bytes, 2);
@@ -262,7 +275,9 @@ async fn read_file_chunk_round_trip() {
 async fn write_file_chunk_round_trip() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
         match &msg.message {
-            Some(client_message::Message::WriteFileChunk(req)) => {
+            Some(client_message::Message::HostScoped(HostScopedRequest {
+                message: Some(host_scoped_request::Message::WriteFileChunk(req)),
+            })) => {
                 assert_eq!(req.path, "/tmp/blob.bin");
                 assert_eq!(req.offset, 0);
                 assert_eq!(req.bytes, vec![1, 2, 3]);
@@ -408,26 +423,30 @@ async fn server_returns_error_for_malformed_message_with_parseable_id() {
 async fn git_commit_chain_round_trip() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
         let req = match &msg.message {
-            Some(client_message::Message::GitCommitChain(req)) => req.clone(),
+            Some(client_message::Message::HostScoped(HostScopedRequest {
+                message: Some(host_scoped_request::Message::GitCommitChain(req)),
+            })) => req.clone(),
             other => panic!("Expected GitCommitChain, got {other:?}"),
         };
         assert_eq!(req.repo_path, "/remote/repo");
         assert_eq!(req.message, "a commit");
         assert_eq!(req.mode(), GitCommitChainMode::CommitAndCreatePr);
         server_message::Message::GitCommitChainResponse(GitCommitChainResponse {
-            result: Some(git_commit_chain_response::Result::Success(GitCommitChainSuccess {
-                delta: Some(GitOpDelta {
-                    unpushed_commits: Vec::new(),
-                    upstream_ref: Some("origin/feature".to_string()),
-                }),
-                pr_info: Some(PrInfo {
-                    number: 7,
-                    url: "https://example.test/pr/7".to_string(),
-                    state: "OPEN".to_string(),
-                    draft: false,
-                    base_branch: "main".to_string(),
-                }),
-            })),
+            result: Some(git_commit_chain_response::Result::Success(
+                GitCommitChainSuccess {
+                    delta: Some(GitOpDelta {
+                        unpushed_commits: Vec::new(),
+                        upstream_ref: Some("origin/feature".to_string()),
+                    }),
+                    pr_info: Some(PrInfo {
+                        number: 7,
+                        url: "https://example.test/pr/7".to_string(),
+                        state: "OPEN".to_string(),
+                        draft: false,
+                        base_branch: "main".to_string(),
+                    }),
+                },
+            )),
         })
     });
 
@@ -446,7 +465,10 @@ async fn git_commit_chain_round_trip() {
         Some(git_commit_chain_response::Result::Success(s)) => s,
         other => panic!("Expected GitCommitChainSuccess, got {other:?}"),
     };
-    assert_eq!(success.delta.unwrap().upstream_ref.as_deref(), Some("origin/feature"));
+    assert_eq!(
+        success.delta.unwrap().upstream_ref.as_deref(),
+        Some("origin/feature")
+    );
     assert_eq!(success.pr_info.unwrap().number, 7);
 }
 
@@ -454,7 +476,9 @@ async fn git_commit_chain_round_trip() {
 async fn git_push_round_trip() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
         let req = match &msg.message {
-            Some(client_message::Message::GitPush(req)) => req.clone(),
+            Some(client_message::Message::HostScoped(HostScopedRequest {
+                message: Some(host_scoped_request::Message::GitPush(req)),
+            })) => req.clone(),
             other => panic!("Expected GitPush, got {other:?}"),
         };
         assert_eq!(req.repo_path, "/remote/repo");
@@ -486,7 +510,9 @@ async fn git_push_round_trip() {
 async fn git_create_pr_round_trip_error() {
     let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
         let req = match &msg.message {
-            Some(client_message::Message::GitCreatePr(req)) => req.clone(),
+            Some(client_message::Message::HostScoped(HostScopedRequest {
+                message: Some(host_scoped_request::Message::GitCreatePr(req)),
+            })) => req.clone(),
             other => panic!("Expected GitCreatePr, got {other:?}"),
         };
         assert_eq!(req.repo_path, "/remote/repo");

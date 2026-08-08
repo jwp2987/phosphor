@@ -12020,7 +12020,13 @@ impl Workspace {
                         ctx,
                     )
                 } else {
-                    history_model.fork_conversation(&source_conversation, FORK_PREFIX, ctx)
+                    history_model.fork_conversation(
+                        &source_conversation,
+                        FORK_PREFIX,
+                        true, /* preserve_task_ids */
+                        None,
+                        ctx,
+                    )
                 }
             });
 

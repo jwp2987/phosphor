@@ -19,8 +19,9 @@ cfg_if::cfg_if! {
         use ignore::gitignore::Gitignore;
         use watcher::{BulkFilesystemWatcher, BulkFilesystemWatcherEvent};
         use crate::entry::{
-            extract_worktree_git_dir, is_commit_related_git_file, is_git_internal_path,
-            is_index_lock_file, is_shared_git_ref, should_ignore_git_path,
+            extract_worktree_git_dir, is_commit_related_git_file, is_common_git_config,
+            is_git_internal_path, is_index_lock_file, is_remote_tracking_ref, is_shared_git_ref,
+            is_tracking_state_git_file, should_ignore_git_path,
         };
         /// Duration between filesystem watch events in milliseconds
         const FILESYSTEM_WATCHER_DEBOUNCE_MILLI_SECS: u64 = 500;
@@ -150,15 +151,18 @@ impl DirectoryWatcher {
         self.directories.contains_key(path)
     }
 
-    /// Find repositories affected by a git directory change using three-tier
+    /// Find repositories affected by a git directory change using
     /// scope-aware routing:
     ///
     /// 1. **Worktree-specific** (`.git/worktrees/<name>/…`): only the repo
     ///    whose `external_git_directory` matches the extracted worktree gitdir.
-    /// 2. **Shared refs** (`.git/refs/heads/*`): all repos whose
+    /// 2. **Remote refs** (`.git/refs/remotes/*`): repos whose cached tracked
+    ///    upstream ref resolves to the changed loose remote ref.
+    /// 3. **Shared refs** (`.git/refs/heads/*`): all repos whose
     ///    `common_git_dir()` is a prefix of the event path (main repo +
     ///    all linked worktrees).
-    /// 3. **Repo-specific** (`.git/HEAD`, `.git/index.lock`, etc.): only the
+    /// 4. **Common config** (`.git/config`): all repos sharing that common Git directory.
+    /// 5. **Repo-specific** (`.git/HEAD`, `.git/index.lock`, etc.): only the
     ///    repo whose working tree directly contains `.git` (main repo).
     #[cfg(feature = "local_fs")]
     fn find_repos_for_git_event(
@@ -182,8 +186,22 @@ impl DirectoryWatcher {
                     }
                 }
             }
+        } else if is_remote_tracking_ref(git_path) {
+            // Tier 2: remote ref — route to every repo whose cached tracked
+            // upstream ref resolves to this loose ref file.
+            log::debug!(
+                "[GIT_EVENT_ROUTING] tier=remote-ref path={}",
+                git_path.display()
+            );
+            for repo_handle in self.directories.values() {
+                if repo_handle.read(ctx, |repo, _| repo.tracks_remote_ref_path(git_path))
+                    && !affected.iter().any(|r| r == repo_handle)
+                {
+                    affected.push(repo_handle.clone());
+                }
+            }
         } else if is_shared_git_ref(git_path) {
-            // Tier 2: shared ref — broadcast to every repo whose
+            // Tier 3: shared ref — broadcast to every repo whose
             // common_git_dir() is a prefix of the event path.
             log::debug!(
                 "[GIT_EVENT_ROUTING] tier=shared-ref path={}",
@@ -207,8 +225,23 @@ impl DirectoryWatcher {
                     }
                 }
             }
+        } else if is_common_git_config(git_path) {
+            // Tier 4: common config — every repo sharing this common `.git`
+            // directory (main repo + all linked worktrees).
+            log::debug!(
+                "[GIT_EVENT_ROUTING] tier=common-config path={}",
+                git_path.display()
+            );
+            if let Some(common_git_dir) = git_path.parent() {
+                for repo_handle in self.directories.values() {
+                    let common = repo_handle.read(ctx, |repo, _| repo.common_git_dir());
+                    if common == common_git_dir && !affected.iter().any(|r| r == repo_handle) {
+                        affected.push(repo_handle.clone());
+                    }
+                }
+            }
         } else {
-            // Tier 3: repo-specific (.git/HEAD, .git/index.lock) — only the
+            // Tier 5: repo-specific (.git/HEAD, .git/index.lock) — only the
             // repo whose root_dir directly contains .git.
             log::debug!(
                 "[GIT_EVENT_ROUTING] tier=repo-specific path={}",
@@ -431,6 +464,53 @@ impl DirectoryWatcher {
         Some(current)
     }
 
+    /// Routes a single `.git/`-internal path change to the repos it affects,
+    /// recording `commit_updated` / `index_lock_detected` / `remote_ref_updated`
+    /// on their pending [`RepositoryUpdate`], and separately collecting the
+    /// repos whose tracked upstream ref may now need re-resolving (`HEAD`,
+    /// `config`, `config.worktree` changes — the ref itself is looked up via
+    /// `git rev-parse`, not read directly off this event).
+    #[cfg(feature = "local_fs")]
+    fn record_git_internal_path_update(
+        &self,
+        path: &Path,
+        repo_updates: &mut HashMap<ModelHandle<Repository>, RepositoryUpdate>,
+        repos_to_refresh_tracked_remote_ref: &mut HashSet<ModelHandle<Repository>>,
+        ctx: &ModelContext<Self>,
+    ) {
+        let affected = self.find_repos_for_git_event(path, ctx);
+        let is_commit = is_commit_related_git_file(path);
+        let is_lock = is_index_lock_file(path);
+        let is_remote_ref = is_remote_tracking_ref(path);
+        let is_tracking_state = is_tracking_state_git_file(path);
+
+        for repo_handle in &affected {
+            if is_commit || is_lock || is_remote_ref {
+                let repo_update = repo_updates.entry(repo_handle.clone()).or_default();
+                if is_commit {
+                    repo_update.commit_updated = true;
+                }
+                if is_lock {
+                    repo_update.index_lock_detected = true;
+                }
+                if is_remote_ref {
+                    repo_update.remote_ref_updated = true;
+                }
+            }
+            if is_tracking_state {
+                repos_to_refresh_tracked_remote_ref.insert(repo_handle.clone());
+            }
+        }
+
+        if !affected.is_empty() {
+            log::debug!(
+                "[GIT_EVENT_ROUTING] dispatched path={} commit_updated={is_commit} remote_ref_updated={is_remote_ref} index_lock={is_lock} tracking_state={is_tracking_state} to {} repo(s)",
+                path.display(),
+                affected.len()
+            );
+        }
+    }
+
     /// Handles filesystem watcher events.
     ///
     /// Each loop below opens with the watch filter's emit predicate
@@ -446,65 +526,57 @@ impl DirectoryWatcher {
     ) {
         // Group changes by repository
         let mut repo_updates: HashMap<ModelHandle<Repository>, RepositoryUpdate> = HashMap::new();
+        let mut repos_to_refresh_tracked_remote_ref: HashSet<ModelHandle<Repository>> =
+            HashSet::new();
 
-        let mut process_upsert_paths = |paths: &HashSet<PathBuf>,
-                                        insert: &mut dyn FnMut(
-            &mut RepositoryUpdate,
-            TargetFile,
-        )| {
-            for path in paths {
-                if should_ignore_git_path(path) {
-                    continue;
-                }
-                // Check if this is a .git/ internal event (e.g. HEAD, index, refs update).
-                if is_git_internal_path(path) {
-                    let affected = self.find_repos_for_git_event(path, ctx);
-                    for repo_handle in &affected {
-                        let repo_update = repo_updates.entry(repo_handle.clone()).or_default();
-                        if is_commit_related_git_file(path) {
-                            repo_update.commit_updated = true;
+        {
+            let mut process_upsert_paths = |paths: &HashSet<PathBuf>,
+                                            insert: &mut dyn FnMut(
+                &mut RepositoryUpdate,
+                TargetFile,
+            )| {
+                for path in paths {
+                    if should_ignore_git_path(path) {
+                        continue;
+                    }
+                    // Check if this is a .git/ internal event (e.g. HEAD, index, refs update).
+                    if is_git_internal_path(path) {
+                        self.record_git_internal_path_update(
+                            path,
+                            &mut repo_updates,
+                            &mut repos_to_refresh_tracked_remote_ref,
+                            ctx,
+                        );
+                        continue;
+                    }
+
+                    // For non-git files, use standard path lookup
+                    if let Ok(standardized) =
+                        StandardizedPath::from_local_canonicalized(path.as_path())
+                    {
+                        if let Some(repo_handle) = self.find_containing_directory(&standardized) {
+                            let is_ignored =
+                                repo_handle.read(ctx, |repo, _| repo.check_gitignore_status(path));
+                            let target_file = TargetFile::new(path.to_path_buf(), is_ignored);
+                            let repo_update = repo_updates.entry(repo_handle).or_default();
+                            insert(repo_update, target_file);
                         }
-                        if is_index_lock_file(path) {
-                            repo_update.index_lock_detected = true;
-                        }
-                    }
-                    if !affected.is_empty() {
-                        let is_commit = is_commit_related_git_file(path);
-                        let is_lock = is_index_lock_file(path);
-                        log::debug!(
-                                "[GIT_EVENT_ROUTING] dispatched path={} commit_updated={is_commit} index_lock={is_lock} to {} repo(s)",
-                                path.display(),
-                                affected.len()
-                            );
-                    }
-                    continue;
-                }
-
-                // For non-git files, use standard path lookup
-                if let Ok(standardized) = StandardizedPath::from_local_canonicalized(path.as_path())
-                {
-                    if let Some(repo_handle) = self.find_containing_directory(&standardized) {
-                        let is_ignored =
-                            repo_handle.read(ctx, |repo, _| repo.check_gitignore_status(path));
-                        let target_file = TargetFile::new(path.to_path_buf(), is_ignored);
-                        let repo_update = repo_updates.entry(repo_handle).or_default();
-                        insert(repo_update, target_file);
                     }
                 }
-            }
-        };
+            };
 
-        // Process added files
-        process_upsert_paths(&event.added, &mut |repo_update, target_file| {
-            repo_update.added.insert(target_file);
-        });
+            // Process added files
+            process_upsert_paths(&event.added, &mut |repo_update, target_file| {
+                repo_update.added.insert(target_file);
+            });
 
-        // Process modified files
-        process_upsert_paths(&event.modified, &mut |repo_update, target_file| {
-            if !repo_update.added.contains(&target_file) {
-                repo_update.modified.insert(target_file);
-            }
-        });
+            // Process modified files
+            process_upsert_paths(&event.modified, &mut |repo_update, target_file| {
+                if !repo_update.added.contains(&target_file) {
+                    repo_update.modified.insert(target_file);
+                }
+            });
+        }
 
         // Process deleted files
         for path in &event.deleted {
@@ -513,16 +585,12 @@ impl DirectoryWatcher {
             }
             // Check if this is a .git/ internal event.
             if is_git_internal_path(path) {
-                let affected = self.find_repos_for_git_event(path, ctx);
-                for repo_handle in affected {
-                    let repo_update = repo_updates.entry(repo_handle).or_default();
-                    if is_commit_related_git_file(path) {
-                        repo_update.commit_updated = true;
-                    }
-                    if is_index_lock_file(path) {
-                        repo_update.index_lock_detected = true;
-                    }
-                }
+                self.record_git_internal_path_update(
+                    path,
+                    &mut repo_updates,
+                    &mut repos_to_refresh_tracked_remote_ref,
+                    ctx,
+                );
             } else {
                 // Because this file will no longer exist, which will fail canonicalization.
                 // We will just try the directory path instead, which hopefully still exists.
@@ -550,24 +618,21 @@ impl DirectoryWatcher {
             }
             // Check if this is a .git/ internal event.
             if is_git_internal_path(to_path) || is_git_internal_path(from_path) {
-                // Merge affected repos from both paths
-                let mut affected = self.find_repos_for_git_event(to_path, ctx);
-                for repo in self.find_repos_for_git_event(from_path, ctx) {
-                    if !affected.iter().any(|r| r == &repo) {
-                        affected.push(repo);
-                    }
+                if is_git_internal_path(to_path) {
+                    self.record_git_internal_path_update(
+                        to_path,
+                        &mut repo_updates,
+                        &mut repos_to_refresh_tracked_remote_ref,
+                        ctx,
+                    );
                 }
-                let paths = [to_path.as_path(), from_path.as_path()];
-                for repo_handle in affected {
-                    let repo_update = repo_updates.entry(repo_handle).or_default();
-                    for p in &paths {
-                        if is_commit_related_git_file(p) {
-                            repo_update.commit_updated = true;
-                        }
-                        if is_index_lock_file(p) {
-                            repo_update.index_lock_detected = true;
-                        }
-                    }
+                if is_git_internal_path(from_path) {
+                    self.record_git_internal_path_update(
+                        from_path,
+                        &mut repo_updates,
+                        &mut repos_to_refresh_tracked_remote_ref,
+                        ctx,
+                    );
                 }
             } else if let Ok(standardized) =
                 StandardizedPath::from_local_canonicalized(to_path.as_path())
@@ -598,6 +663,12 @@ impl DirectoryWatcher {
                 }
             }
         });
+
+        for repo_handle in repos_to_refresh_tracked_remote_ref {
+            repo_handle.update(ctx, |repo, ctx| {
+                repo.refresh_tracked_remote_ref(true, ctx);
+            });
+        }
     }
 }
 
@@ -669,6 +740,9 @@ pub struct RepositoryUpdate {
 
     /// Whether the git index lock file was created or removed (`.git/index.lock`).
     pub index_lock_detected: bool,
+
+    /// Whether the tracked upstream ref changed or the current tracked remote ref was updated.
+    pub remote_ref_updated: bool,
 }
 
 impl RepositoryUpdate {
@@ -680,6 +754,7 @@ impl RepositoryUpdate {
             && self.moved.is_empty()
             && !self.commit_updated
             && !self.index_lock_detected
+            && !self.remote_ref_updated
     }
 
     /// Iterator over all created and modified files.

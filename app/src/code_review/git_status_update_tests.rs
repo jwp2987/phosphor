@@ -29,14 +29,13 @@ fn should_refresh_metadata_ignores_ignored_file_updates() {
         .insert(TargetFile::new(PathBuf::from("/repo/src/main.rs"), false));
     assert!(GitRepoStatusModel::should_refresh_metadata(&tracked_update));
 
-    // The fork's `RepositoryUpdate` has no `remote_ref_updated` field (the pin's
-    // third case) — `commit_updated` is its equivalent "refresh immediately"
-    // signal independent of the changed-file sets.
-    let commit_update = RepositoryUpdate {
-        commit_updated: true,
+    let remote_ref_update = RepositoryUpdate {
+        remote_ref_updated: true,
         ..Default::default()
     };
-    assert!(GitRepoStatusModel::should_refresh_metadata(&commit_update));
+    assert!(GitRepoStatusModel::should_refresh_metadata(
+        &remote_ref_update
+    ));
 }
 
 #[test]
