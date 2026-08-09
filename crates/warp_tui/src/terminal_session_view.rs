@@ -94,7 +94,7 @@ use crate::orchestration_model::TuiOrchestrationModel;
 use crate::orchestration_tab_bar::{
     ORCHESTRATION_TAB_BAR_FOCUSED_FLAG, TuiOrchestrationSnapshot,
     TuiOrchestrationTabNavigationAction, orchestration_tab_bar_config,
-    register_orchestration_surface_bindings, render_orchestration_tab_footer,
+    register_orchestration_surface_bindings,
 };
 use crate::read_only_menu::TuiReadOnlyMenuKind;
 use ai::agent::action_result::RequestFileEditsResult;
