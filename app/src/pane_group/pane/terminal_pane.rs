@@ -951,6 +951,25 @@ fn handle_terminal_view_event(
                     log::warn!("No hidden pane found for child conversation {conversation_id:?}");
                 }
             }
+            Event::OpenChildAgentInNewPane { conversation_id } => {
+                // Only reveals an already-materialized hidden pane, same as
+                // `Event::RevealChildAgent` above. Warp's on-demand pane
+                // materialization (`ensure_hidden_child_agent_pane_for_conversation`)
+                // is pill-bar-adjacent `PaneGroup` machinery that doesn't exist in
+                // this fork yet -- see `TerminalAction::OpenChildAgentInNewPane`'s
+                // doc comment and #304's pill-bar Step 2.
+                if let Some(&child_pane_id) = group.child_agent_panes.get(conversation_id) {
+                    group.panes.show_pane_for_child_agent(child_pane_id);
+                    group.handle_pane_count_change(ctx);
+                    group.focus_pane(child_pane_id, true, ctx);
+                } else {
+                    log::warn!(
+                        "OpenChildAgentInNewPane: no hidden pane for child conversation \
+                         {conversation_id:?} yet, and this fork cannot materialize one \
+                         on demand (needs #304's pill-bar Step 2)"
+                    );
+                }
+            }
             _ => {}
         }
     } else {

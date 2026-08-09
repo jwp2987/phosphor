@@ -1851,6 +1851,12 @@ pub enum Event {
     RevealChildAgent {
         conversation_id: AIConversationId,
     },
+    /// Emitted when the user clicks a child agent avatar with no existing pane
+    /// (hidden or visible) anywhere. See `TerminalAction::OpenChildAgentInNewPane`'s
+    /// doc comment for the scope of what this currently does.
+    OpenChildAgentInNewPane {
+        conversation_id: AIConversationId,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -24529,6 +24535,7 @@ impl TypedActionView for TerminalView {
             | ExecuteRewindFromInlineMenu { .. }
             | ToggleUsageFooter
             | RevealChildAgent { .. }
+            | OpenChildAgentInNewPane { .. }
             | OpenCLIAgentRichInput
             | ToggleSessionRecording => Empty,
         }
@@ -25518,6 +25525,11 @@ impl TypedActionView for TerminalView {
             }
             RevealChildAgent { conversation_id } => {
                 ctx.emit(Event::RevealChildAgent {
+                    conversation_id: *conversation_id,
+                });
+            }
+            OpenChildAgentInNewPane { conversation_id } => {
+                ctx.emit(Event::OpenChildAgentInNewPane {
                     conversation_id: *conversation_id,
                 });
             }

@@ -39,6 +39,18 @@ impl AgentConversationEntryId {
     }
 }
 
+/// Navigation request input for resolving an entry to a `WorkspaceAction` at action time.
+///
+/// Upstream also has a `ServerToken(ServerConversationToken)` variant, used as a
+/// cloud-transcript-viewer fallback when there is no local entry for a raw server
+/// token. BYOP has no such fallback path (`AgentConversationIdentity::server_conversation_token`
+/// is always `None` here, see its doc comment), and upstream marks that variant
+/// `#[allow(dead_code)]` itself, so it is not carried over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentConversationNavigationSubject {
+    Entry(AgentConversationEntryId),
+}
+
 /// Cross-system identifiers that may refer to the same underlying conversation.
 ///
 /// BYOP has no cloud layer, so `server_conversation_token` is always `None`; the field is

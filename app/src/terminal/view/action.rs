@@ -388,6 +388,20 @@ pub enum TerminalAction {
     RevealChildAgent {
         conversation_id: AIConversationId,
     },
+    /// Open a child agent conversation in a separate pane (split off from the
+    /// orchestrator), for a child that has no pane -- hidden or visible --
+    /// anywhere yet. Dispatched as the fallback when
+    /// `dispatch_focus_or_open_child_agent_pane` finds no existing owner view.
+    ///
+    /// Only reveals an already-materialized hidden pane, matching
+    /// `RevealChildAgent`'s handler. Warp's `ensure_hidden_child_agent_pane_for_conversation`
+    /// / `unhide_child_agent_pane_for_split_off` (which materialize a *new* hidden
+    /// pane on demand) are pill-bar-adjacent `PaneGroup` machinery that does not
+    /// exist in this fork yet -- see `app/src/pane_group/pane/terminal_pane.rs`'s
+    /// `Event::OpenChildAgentInNewPane` handler and #304's pill-bar Step 2.
+    OpenChildAgentInNewPane {
+        conversation_id: AIConversationId,
+    },
     /// Toggle PTY recording for this session.
     ToggleSessionRecording,
     /// Open the rich input editor for composing a prompt to send to a CLI agent.
@@ -635,6 +649,7 @@ impl fmt::Debug for TerminalAction {
             AwsCliNotInstalledBanner(action) => write!(f, "AwsCliNotInstalledBanner({action:?})"),
             ToggleUsageFooter => write!(f, "ToggleUsageFooter"),
             RevealChildAgent { .. } => write!(f, "RevealChildAgent"),
+            OpenChildAgentInNewPane { .. } => write!(f, "OpenChildAgentInNewPane"),
             ToggleSessionRecording => write!(f, "ToggleSessionRecording"),
             OpenCLIAgentRichInput => write!(f, "OpenCLIAgentRichInput"),
         }
