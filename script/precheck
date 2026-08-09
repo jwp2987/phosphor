@@ -255,6 +255,50 @@ else
     fail "warpui_core suite changed against known_test_failures.txt (see above)"
 fi
 
+# ------------------------------------------- the rest of the workspace (#573)
+# Everything above covers three packages. These are the other 40, measured on
+# 2026-08-08: 2,126 tests that had never run in any gate, on any machine.
+#
+# They were not skipped out of carelessness -- the obvious command genuinely
+# does not work here, and each obstacle stops you before reaching a test:
+#
+#   * `nextest run --workspace` fails outright on command-signatures-v2, whose
+#     build script shells out to yarn to generate code. It has 0 tests, so it
+#     is excluded rather than fixed.
+#   * A cold --workspace build exceeds any reasonable CI/agent time budget, and
+#     it re-resolves features so it invalidates the cached single-package
+#     builds -- making the NEXT run slower too.
+#   * Per-package invocations are worse: each resolves features differently
+#     against the shared target dir and rebuilds the shared proc-macro crates.
+#
+# One invocation listing every package is the shape that works: features
+# resolve once, and the incremental build is reused. Keep it that way.
+#
+# Result of that measurement: 2,126 tests, 2,125 passing, and the single defect
+# was `persistence`, whose #[cfg(test)] module had not compiled since
+# api::Message gained a `fetched_memories` field -- so its 17 tests had silently
+# not existed. Unrun is not the same as broken; it just means nobody would know.
+#
+# NOTE (still open): this runs DEFAULT features. Code behind `local_fs`
+# (repo_metadata, persistence, ai), `plugin_host` (warp_cli) and `test-util` is
+# still not exercised. Calling the workspace green on the strength of this step
+# would repeat the exact warpui_core mistake.
+step "rest of the workspace (40 packages)"
+if ./script/check_test_failures \
+        -p sum_tree -p string-offset -p fuzzy_match -p handlebars -p syntax_tree \
+        -p languages -p asset_cache -p settings_value -p jsonrpc -p simple_logger \
+        -p warp_logging -p channel_versions -p command -p http_client -p warp_features \
+        -p managed_secrets_wasm -p voice_input -p warp_isolation_platform -p websocket \
+        -p input_classifier -p warp_search_core -p persistence -p settings \
+        -p warp_managed_secrets -p markdown_parser -p warp_util -p warp_core \
+        -p repo_metadata -p warp_terminal -p warp_files -p local_control -p vim \
+        -p warp_completer -p warpui -p warpui_extras -p ai -p remote_server \
+        -p usage_suite -p warp_editor -p warp_cli; then
+    ok "no change against known_test_failures.txt"
+else
+    fail "workspace suite changed against known_test_failures.txt (see above)"
+fi
+
 rm -f /tmp/precheck-check.$$ /tmp/precheck-unified.$$
 
 printf '\n'

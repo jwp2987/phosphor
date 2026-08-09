@@ -1524,6 +1524,7 @@ mod tests {
                     task_id: id.to_string(),
                     server_message_data: String::new(),
                     citations: vec![],
+                    fetched_memories: vec![],
                     message: None,
                     request_id: String::new(),
                     timestamp: None,
