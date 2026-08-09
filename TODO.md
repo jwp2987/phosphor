@@ -608,8 +608,14 @@ with `is_remote_child`.
 deleted orchestration storage deliberately; this is not a revert.
 
 ### Tier 4 — large (a week+)
-- [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #349 · #324
-      (#252, #289, #381, #142 all CLOSED 2026-08-08/09)
+- [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #349 · #324 · #405
+      (#252, #289, #142 CLOSED 2026-08-08/09)
+- [ ] #381 — **work DONE, issue still open.** Its two real modules
+      (`local_harness_setup.rs` 5 tests, `remote_context_files.rs` 4 tests) are
+      committed on `working` awaiting the tier-3 merge; the other four modules it
+      named are either done (`remote_agent_context.rs`), moved to tier 3.5
+      (`orchestration/`), or declined (`agent_management/`,
+      `active_agent_views_model.rs`). **Close it when the tier-3 batch merges.**
 
 **#210 was re-filed as #576 after re-measuring all ten rows against `main`.** Its
 figures were wrong in BOTH directions: pin counts undercounted 2-4x on 6 of 10 rows
