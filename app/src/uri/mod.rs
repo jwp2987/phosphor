@@ -15,7 +15,8 @@ use crate::root_view::{open_new_window_get_handles, OpenLaunchConfigArg};
 use crate::server::ids::ServerId;
 use crate::server::telemetry::{LaunchConfigUiLocation, TelemetryEvent};
 use crate::util::openable_file_type::{
-    is_file_openable_in_warp, is_markdown_file, is_runnable_shell_script, starts_with_shebang,
+    is_file_openable_in_warp, is_markdown_file, is_runnable_shell_script,
+    renders_in_warp_notebook_viewer, starts_with_shebang,
 };
 use crate::workspace::active_terminal_in_window;
 use crate::workspace::{PaneViewLocator, Workspace, WorkspaceAction, WorkspaceRegistry};
@@ -959,7 +960,7 @@ fn get_primary_window(
 /// What `open_file` should do with an incoming `file://` URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenFileAction {
-    /// Open in the markdown notebook pane.
+    /// Open in the notebook viewer pane (Markdown, or Jupyter when enabled).
     Notebook,
     /// Open in Zap's code/text editor pane.
     Editor,
@@ -975,14 +976,11 @@ enum OpenFileAction {
 /// file URLs to Zap via the file type registration in `Info.plist`. Since Zap
 /// cannot easily update that registration when the user toggles the viewer
 /// preference, the URI handler must check the preference before routing a
-/// Markdown file to the in-app notebook viewer.
-///
-/// Ported from the pin (app/src/uri/mod.rs); the pin also folds in Jupyter
-/// notebook routing here (behind `FeatureFlag::JupyterNotebookRendering`), which
-/// this fork does not have (see #240 for the ipynb-routing feature gap)
-/// and is deliberately NOT ported.
+/// Markdown file to the in-app notebook viewer. Other notebook viewer formats,
+/// such as Jupyter notebooks, are controlled by their own routing checks.
 fn classify_open_file_action(path: &Path, prefer_markdown_viewer: bool) -> OpenFileAction {
-    if is_markdown_file(path) && prefer_markdown_viewer {
+    if renders_in_warp_notebook_viewer(path) && (!is_markdown_file(path) || prefer_markdown_viewer)
+    {
         return OpenFileAction::Notebook;
     }
     if path.is_file() {
