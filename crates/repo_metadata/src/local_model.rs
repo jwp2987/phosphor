@@ -249,10 +249,7 @@ impl BuildTaskKey {
 enum BuildTaskKind {
     /// A full or lazy repository/directory index build, keyed by its own root.
     Index,
-    /// A single directory expansion (`load_directory`). Reserved: nothing
-    /// constructs this yet — coalescing concurrent `load_directory` calls
-    /// (the oracle's `load_directory_with_completion`) is not yet ported.
-    #[allow(dead_code)]
+    /// A single directory expansion ([`LocalRepoMetadataModel::load_directory`]).
     DirectoryLoad,
 }
 
@@ -260,13 +257,12 @@ enum BuildTaskKind {
 /// when its owning repository is removed) instead of silently finishing and
 /// clobbering newer state.
 struct BuildTask {
-    #[allow(dead_code)]
     kind: BuildTaskKind,
     handle: SpawnedFutureHandle,
-    /// Waiters for this task's completion. Always empty in this fork today —
-    /// nothing yet calls a `subscribe_to_build_task`-style API (that belongs
-    /// to the not-yet-ported `load_directory_with_completion`) — but the
-    /// field is real: a superseded task's waiters, if any existed, are
+    /// Waiters for this task's completion, registered via
+    /// [`LocalRepoMetadataModel::subscribe_to_build_task`] when a duplicate
+    /// concurrent `load_directory` call coalesces onto this task instead of
+    /// starting a second build. A superseded task's waiters, if any, are
     /// notified in [`LocalRepoMetadataModel::track_build_task`].
     completion_waiters: Vec<oneshot::Sender<Result<(), String>>>,
 }
@@ -588,6 +584,38 @@ impl LocalRepoMetadataModel {
         for waiter in waiters {
             let _ = waiter.send(result.clone());
         }
+    }
+
+    /// Registers `self` as a waiter on the in-flight `DirectoryLoad` build task at
+    /// `key`, if one exists, so a duplicate concurrent `load_directory` call
+    /// coalesces onto it instead of starting a second build. Returns `None` (and
+    /// starts a new build) for any other task kind, or if there is none.
+    fn subscribe_to_build_task(
+        &mut self,
+        key: &BuildTaskKey,
+    ) -> Option<oneshot::Receiver<Result<(), String>>> {
+        let task = self.build_tasks.get_mut(key)?;
+        if task.kind != BuildTaskKind::DirectoryLoad {
+            return None;
+        }
+        let (completion_tx, completion_rx) = oneshot::channel();
+        task.completion_waiters.push(completion_tx);
+        Some(completion_rx)
+    }
+
+    /// Adapts a completion-waiter channel into the public
+    /// `Result<(), RepoMetadataError>` future returned by
+    /// [`Self::load_directory_with_completion`].
+    fn wait_for_build_task(
+        completion_rx: oneshot::Receiver<Result<(), String>>,
+    ) -> BoxFuture<'static, Result<(), RepoMetadataError>> {
+        async move {
+            completion_rx
+                .await
+                .unwrap_or_else(|_| Err("Build task was cancelled".to_string()))
+                .map_err(RepoMetadataError::InvalidPath)
+        }
+        .boxed()
     }
 
     /// Aborts and drops every build task (and, under `local_fs`, every
@@ -1266,7 +1294,17 @@ impl LocalRepoMetadataModel {
         .map_err(RepoMetadataError::BuildTree)?;
 
         let state = FileTreeState::new_lazy_loaded(root_entry);
-        self.add_repository_internal(path.clone(), state, RootWatchMode::Recursive, ctx)?;
+        // On Linux, watch lazy (non-git) roots non-recursively to avoid
+        // registering an inotify watch for every directory in the subtree.
+        // Subdirectories get their own non-recursive watch as they are expanded
+        // (see `load_directory`/`watch_subdir`). macOS/Windows watch a whole
+        // tree with a single OS handle, so recursive watching stays cheap there.
+        let root_mode = if cfg!(target_os = "linux") {
+            RootWatchMode::NonRecursive
+        } else {
+            RootWatchMode::Recursive
+        };
+        self.add_repository_internal(path.clone(), state, root_mode, ctx)?;
         self.standing_results.insert(path.clone(), standing_results);
         self.lazy_loaded_paths.insert(path.clone(), 1);
         Ok(())
@@ -1300,20 +1338,147 @@ impl LocalRepoMetadataModel {
         dir_path: &StandardizedPath,
         ctx: &mut ModelContext<Self>,
     ) -> Result<(), RepoMetadataError> {
+        match self.load_directory_with_completion(repo_root, dir_path, ctx) {
+            Ok(completion) => {
+                std::mem::drop(completion);
+                Ok(())
+            }
+            Err(RepoMetadataError::RepositoryIndexingPending) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Loads a specific directory and resolves once the async load has been applied or rejected.
+    ///
+    /// A duplicate concurrent call for the same `(repo_root, dir_path)` coalesces onto the
+    /// in-flight build instead of starting a second one, via [`Self::subscribe_to_build_task`].
+    #[cfg(feature = "local_fs")]
+    pub fn load_directory_with_completion(
+        &mut self,
+        repo_root: &StandardizedPath,
+        dir_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) -> Result<BoxFuture<'static, Result<(), RepoMetadataError>>, RepoMetadataError> {
+        let task_key = BuildTaskKey::new(repo_root.clone(), dir_path.clone());
+        if let Some(completion_rx) = self.subscribe_to_build_task(&task_key) {
+            return Ok(Self::wait_for_build_task(completion_rx));
+        }
+
         let Some(IndexedRepoState::Indexed(state)) = self.repositories.get_mut(repo_root) else {
             return Err(RepoMetadataError::RepoNotFound(repo_root.to_string()));
         };
 
-        let mut gitignores = state.gitignores.clone();
-        state
+        let ancestor_is_ignored = state
             .entry
-            .load_at_path(dir_path, &mut gitignores)
-            .map_err(RepoMetadataError::BuildTree)?;
+            .get(dir_path)
+            .is_some_and(|entry| entry.ignored());
+        let dir_was_present = state.entry.contains(dir_path);
+        let target_unloaded_directory_path = match state.entry.get(dir_path) {
+            Some(FileTreeEntryState::Directory(directory)) if !directory.loaded => {
+                Some(directory.path.clone())
+            }
+            _ => None,
+        };
+        let mut gitignores = state.gitignores.clone();
+        let dir_path_for_build = dir_path.to_local_path_lossy();
+        let repo_root_for_build = repo_root.clone();
+        let dir_path_for_completion = dir_path.clone();
+        let task_key_for_completion = task_key.clone();
+        let task_future_id = Rc::new(Cell::new(None));
+        let task_future_id_for_completion = task_future_id.clone();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let build_handle = ctx.spawn(
+            async move {
+                let mut remaining_file_quota = LAZY_LOAD_FILE_LIMIT;
+                let mut files = Vec::new();
+                let result = Entry::build_tree_with_ignored_ancestor(
+                    dir_path_for_build,
+                    &mut files,
+                    &mut gitignores,
+                    Some(&mut remaining_file_quota),
+                    1, /* max_depth */
+                    0, /* current_depth */
+                    &IgnoredPathStrategy::Include,
+                    ancestor_is_ignored,
+                )
+                .await;
+                (repo_root_for_build, dir_path_for_completion, result)
+            },
+            move |model, (repo_root, dir_path, build_result), ctx| {
+                let completion = if let Some(task) = model.finish_build_task(
+                    &task_key_for_completion,
+                    task_future_id_for_completion.get(),
+                ) {
+                    let completion = match build_result {
+                        Ok(entry) => {
+                            if let Some(IndexedRepoState::Indexed(state)) =
+                                model.repositories.get_mut(&repo_root)
+                            {
+                                // Guard against the load target having changed while the
+                                // build was in flight (e.g. the directory was removed, or
+                                // replaced by a fresh unloaded placeholder from an
+                                // intervening watcher update): only apply this build's
+                                // result if the tree still has a slot that expects it.
+                                let target_still_accepts_load =
+                                    if let Some(expected_path) = &target_unloaded_directory_path {
+                                        matches!(
+                                            state.entry.get(&dir_path),
+                                            Some(FileTreeEntryState::Directory(directory))
+                                                if !directory.loaded
+                                                    && Arc::ptr_eq(&directory.path, expected_path)
+                                        )
+                                    } else {
+                                        !dir_was_present || state.entry.contains(&dir_path)
+                                    };
 
-        ctx.emit(RepositoryMetadataEvent::FileTreeEntryUpdated {
-            path: repo_root.clone(),
-        });
-        Ok(())
+                                if !target_still_accepts_load {
+                                    Err(RepoMetadataError::InvalidPath(format!(
+                                        "Directory load target changed while loading: {dir_path}"
+                                    )))
+                                } else {
+                                    state
+                                        .entry
+                                        .insert_entry_at_path(Arc::new(dir_path.clone()), entry);
+
+                                    // Start watching the directory we just expanded so its direct
+                                    // children stay fresh. For a non-recursive root this covers
+                                    // every expanded subdir; for a recursive root it covers
+                                    // gitignored dirs pruned from the root watch on Linux. No-op
+                                    // when the root watch already covers it.
+                                    model.watch_subdir(&repo_root, &dir_path, ctx);
+
+                                    ctx.emit(RepositoryMetadataEvent::FileTreeEntryUpdated {
+                                        path: repo_root,
+                                    });
+                                    Ok(())
+                                }
+                            } else {
+                                Err(RepoMetadataError::RepoNotFound(repo_root.to_string()))
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("Failed to load directory {dir_path}: {error:?}");
+                            Err(RepoMetadataError::BuildTree(error))
+                        }
+                    };
+                    let waiter_completion =
+                        completion.as_ref().map(|_| ()).map_err(ToString::to_string);
+                    Self::notify_completion_waiters(task.completion_waiters, waiter_completion);
+                    completion
+                } else {
+                    Err(RepoMetadataError::RepositoryNotIndexed)
+                };
+                let _ = completion_tx.send(completion);
+            },
+        );
+        task_future_id.set(Some(build_handle.future_id()));
+        self.track_build_task(task_key, BuildTaskKind::DirectoryLoad, build_handle);
+        Ok(async move {
+            completion_rx
+                .await
+                .unwrap_or(Err(RepoMetadataError::RepositoryNotIndexed))
+        }
+        .boxed())
     }
 
     /// Registers an on-demand non-recursive watch on `dir_path` when the root
