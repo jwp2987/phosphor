@@ -1851,6 +1851,13 @@ pub enum Event {
     RevealChildAgent {
         conversation_id: AIConversationId,
     },
+    /// See `TerminalAction::SpawnLocalChildAgents`'s doc comment. Handled in
+    /// `pane_group::pane::terminal_pane`, which has the `PaneGroup` access
+    /// needed to create the hidden child pane(s).
+    SpawnLocalChildAgents {
+        parent_conversation_id: AIConversationId,
+        argument: String,
+    },
     /// Emitted when the user clicks a child agent avatar with no existing pane
     /// (hidden or visible) anywhere. See `TerminalAction::OpenChildAgentInNewPane`'s
     /// doc comment for the scope of what this currently does.
@@ -24550,6 +24557,7 @@ impl TypedActionView for TerminalView {
             | ExecuteRewindFromInlineMenu { .. }
             | ToggleUsageFooter
             | RevealChildAgent { .. }
+            | SpawnLocalChildAgents { .. }
             | OpenChildAgentInNewPane { .. }
             | OpenChildAgentInNewTab { .. }
             | SwitchAgentViewToConversation { .. }
@@ -25545,6 +25553,15 @@ impl TypedActionView for TerminalView {
             RevealChildAgent { conversation_id } => {
                 ctx.emit(Event::RevealChildAgent {
                     conversation_id: *conversation_id,
+                });
+            }
+            SpawnLocalChildAgents {
+                parent_conversation_id,
+                argument,
+            } => {
+                ctx.emit(Event::SpawnLocalChildAgents {
+                    parent_conversation_id: *parent_conversation_id,
+                    argument: argument.clone(),
                 });
             }
             OpenChildAgentInNewPane { conversation_id } => {

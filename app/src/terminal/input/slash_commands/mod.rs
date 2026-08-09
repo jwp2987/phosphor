@@ -885,6 +885,40 @@ impl Input {
                     destination,
                 });
             }
+            orchestrate if command.name == commands::ORCHESTRATE.name => {
+                // User-invoked only -- see `commands::ORCHESTRATE`'s doc comment for why
+                // this does NOT go through `SlashCommandKind::Orchestrate` / get submitted
+                // as a prompt for the model to act on.
+                let Some(conversation_id) = self
+                    .ai_context_model
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+                else {
+                    show_error_toast(
+                        "/orchestrate requires an active conversation".to_owned(),
+                        ctx,
+                    );
+                    return true;
+                };
+
+                let Some(argument) = argument
+                    .map(|argument| argument.trim())
+                    .filter(|argument| !argument.is_empty())
+                else {
+                    show_error_toast(
+                        "Please describe at least one task after /orchestrate (separate \
+                         multiple tasks with ';')"
+                            .to_owned(),
+                        ctx,
+                    );
+                    return true;
+                };
+
+                ctx.dispatch_typed_action(&TerminalAction::SpawnLocalChildAgents {
+                    parent_conversation_id: conversation_id,
+                    argument: argument.to_owned(),
+                });
+            }
             fork_from if command.name == commands::FORK_FROM.name => {
                 self.open_user_query_menu(UserQueryMenuAction::ForkFrom, ctx);
                 return true;

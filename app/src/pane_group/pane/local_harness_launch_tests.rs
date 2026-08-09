@@ -2,8 +2,8 @@ use warp_cli::agent::Harness;
 
 use super::{
     build_local_claude_child_command, build_local_opencode_child_command,
-    normalize_local_child_harness, prepare_local_harness_child_launch,
-    validate_local_harness_shell,
+    compose_child_agent_prompt, normalize_local_child_harness,
+    prepare_local_harness_child_launch, split_orchestrate_tasks, validate_local_harness_shell,
 };
 use crate::terminal::shell::ShellType;
 
@@ -116,4 +116,50 @@ fn build_local_opencode_child_command_quotes_the_prompt() {
         build_local_opencode_child_command("hello world"),
         "opencode --prompt 'hello world'"
     );
+}
+
+#[test]
+fn split_orchestrate_tasks_splits_on_semicolon() {
+    assert_eq!(
+        split_orchestrate_tasks("write tests; update the docs"),
+        vec!["write tests".to_string(), "update the docs".to_string()]
+    );
+}
+
+#[test]
+fn split_orchestrate_tasks_trims_and_drops_empty_segments() {
+    // Leading, trailing, and doubled `;` should not produce empty tasks.
+    assert_eq!(
+        split_orchestrate_tasks("; write tests ;; update the docs ; "),
+        vec!["write tests".to_string(), "update the docs".to_string()]
+    );
+}
+
+#[test]
+fn split_orchestrate_tasks_single_task_has_no_semicolon() {
+    assert_eq!(
+        split_orchestrate_tasks("write tests"),
+        vec!["write tests".to_string()]
+    );
+}
+
+#[test]
+fn split_orchestrate_tasks_blank_argument_spawns_nothing() {
+    assert_eq!(split_orchestrate_tasks("   "), Vec::<String>::new());
+}
+
+#[test]
+fn compose_child_agent_prompt_trims_whitespace() {
+    assert_eq!(
+        compose_child_agent_prompt("  write tests  "),
+        "write tests"
+    );
+}
+
+#[test]
+fn compose_child_agent_prompt_is_a_verbatim_passthrough() {
+    // No parent-transcript summarization or wrapping -- see the doc comment
+    // on `compose_child_agent_prompt` for why.
+    let task = "Refactor `foo.rs` to use the new API; keep tests green";
+    assert_eq!(compose_child_agent_prompt(task), task);
 }

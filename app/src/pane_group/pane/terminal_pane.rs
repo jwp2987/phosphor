@@ -32,6 +32,11 @@ use crate::{
 #[cfg(feature = "local_fs")]
 use crate::ai::blocklist::BlocklistAIHistoryEvent;
 
+#[cfg(not(target_family = "wasm"))]
+use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
+#[cfg(not(target_family = "wasm"))]
+use warp_cli::agent::Harness;
+
 use warp_core::execution_mode::AppExecutionMode;
 
 use super::{
@@ -954,6 +959,18 @@ fn handle_terminal_view_event(
                     log::warn!("No hidden pane found for child conversation {conversation_id:?}");
                 }
             }
+            Event::SpawnLocalChildAgents {
+                parent_conversation_id,
+                argument,
+            } => {
+                #[cfg(not(target_family = "wasm"))]
+                spawn_local_child_agents(group, pane_id, *parent_conversation_id, argument, ctx);
+                #[cfg(target_family = "wasm")]
+                {
+                    let _ = (parent_conversation_id, argument);
+                    log::warn!("SpawnLocalChildAgents is not supported on wasm");
+                }
+            }
             Event::OpenChildAgentInNewPane { conversation_id } => {
                 // Only reveals an already-materialized hidden pane, same as
                 // `Event::RevealChildAgent` above. Warp's on-demand pane
@@ -1153,6 +1170,139 @@ fn kill_agent_conversation(
     );
 }
 
+/// Handles `TerminalAction::SpawnLocalChildAgents` (the `/orchestrate` slash
+/// command): prepares one local child harness launch per task and, once
+/// each is ready, materializes it via `finish_spawning_local_child_agent`.
+/// User-invoked only -- see `TerminalAction::SpawnLocalChildAgents`'s doc
+/// comment.
+#[cfg(not(target_family = "wasm"))]
+fn spawn_local_child_agents(
+    group: &mut PaneGroup,
+    base_pane_id: PaneId,
+    parent_conversation_id: AIConversationId,
+    argument: &str,
+    ctx: &mut ViewContext<PaneGroup>,
+) {
+    let tasks = super::local_harness_launch::split_orchestrate_tasks(argument);
+    if tasks.is_empty() {
+        log::warn!("SpawnLocalChildAgents: no tasks parsed from {argument:?}");
+        return;
+    }
+
+    let Some(base_terminal_view) = group.terminal_view_from_pane_id(base_pane_id, ctx) else {
+        log::warn!("SpawnLocalChildAgents: no terminal view for pane {base_pane_id:?}");
+        return;
+    };
+    // Structural context inheritance: same shell and working directory as
+    // the pane `/orchestrate` was typed in. See `compose_child_agent_prompt`
+    // for why the prompt text itself carries nothing beyond the task.
+    let shell_type = base_terminal_view.as_ref(ctx).active_session_shell_type(ctx);
+    let startup_directory =
+        group.startup_path_for_new_session(base_pane_id.as_terminal_pane_id(), ctx);
+    let parent_run_id = BlocklistAIHistoryModel::as_ref(ctx)
+        .conversation(&parent_conversation_id)
+        .and_then(|conversation| conversation.agent_link_id());
+
+    for task in tasks {
+        let prompt = super::local_harness_launch::compose_child_agent_prompt(&task);
+        if prompt.is_empty() {
+            continue;
+        }
+        let agent_name = prompt.clone();
+        let future = super::local_harness_launch::prepare_local_harness_child_launch(
+            prompt,
+            super::local_harness_launch::ORCHESTRATE_DEFAULT_HARNESS.to_string(),
+            parent_run_id.clone(),
+            shell_type,
+            startup_directory.clone(),
+        );
+        let _ = ctx.spawn(future, move |group, result, ctx| match result {
+            Ok(prepared) => {
+                finish_spawning_local_child_agent(
+                    group,
+                    base_pane_id,
+                    parent_conversation_id,
+                    agent_name,
+                    prepared,
+                    ctx,
+                );
+            }
+            Err(message) => {
+                log::error!(
+                    "SpawnLocalChildAgents: failed to prepare local child launch: {message}"
+                );
+                ctx.emit(pane_group::Event::ShowToast {
+                    message: format!("Could not start child agent: {message}"),
+                    flavor: ToastFlavor::Error,
+                    pane_id: Some(base_pane_id),
+                });
+            }
+        });
+    }
+}
+
+/// Materializes one spawned child agent: creates its hidden pane (inheriting
+/// the prepared env vars, notably `OZ_RUN_ID`/`OZ_PARENT_RUN_ID`), registers
+/// its conversation in the orchestration topology
+/// (`BlocklistAIHistoryModel::children_by_parent`, `PaneGroup::child_agent_panes`),
+/// and types the harness command into its PTY.
+///
+/// This is the actual display-path wiring #325 asked for: once this
+/// returns, the orchestration pill bar, `ChildAgentStatusCard`, and
+/// transcript rendering (all landed earlier on this branch, #304) pick the
+/// child up through the same `BlocklistAIHistoryModel`/`PaneGroup` state
+/// they already render restored children from -- nothing downstream needs
+/// to know a child was spawned by `/orchestrate` specifically.
+#[cfg(not(target_family = "wasm"))]
+fn finish_spawning_local_child_agent(
+    group: &mut PaneGroup,
+    base_pane_id: PaneId,
+    parent_conversation_id: AIConversationId,
+    agent_name: String,
+    prepared: super::local_harness_launch::PreparedLocalHarnessLaunch,
+    ctx: &mut ViewContext<PaneGroup>,
+) {
+    let new_pane_id =
+        group.insert_terminal_pane_hidden_for_child_agent(base_pane_id, prepared.env_vars, ctx);
+    let Some(new_terminal_view) = group.terminal_view_from_pane_id(new_pane_id, ctx) else {
+        log::error!("SpawnLocalChildAgents: failed to get terminal view for spawned child pane");
+        group.discard_pane(new_pane_id.into(), ctx);
+        return;
+    };
+    let child_terminal_view_id = new_terminal_view.id();
+
+    // The child's own view id is its `terminal_view_id`, matching how a
+    // brand-new top-level conversation is always registered under its own
+    // view (`enter_agent_view_internal` uses `self.terminal_view_id`) --
+    // not the parent's. `enter_agent_view` below checks liveness via
+    // `all_live_conversations_for_terminal_view(self.view_id)`, so
+    // registering under any other view would make that check fail.
+    let child_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+        let child_id = history_model.start_new_child_conversation(
+            child_terminal_view_id,
+            agent_name,
+            parent_conversation_id,
+            Some(Harness::Claude),
+            ctx,
+        );
+        history_model.assign_run_id_for_conversation(
+            child_id,
+            prepared.run_id.clone(),
+            Some(prepared.task_id),
+            child_terminal_view_id,
+            ctx,
+        );
+        child_id
+    });
+
+    new_terminal_view.update(ctx, |terminal_view, ctx| {
+        terminal_view.enter_agent_view(None, Some(child_id), AgentViewEntryOrigin::ChildAgent, ctx);
+        terminal_view.start_local_child_harness_process(&prepared.command, ctx);
+    });
+
+    group.child_agent_panes.insert(child_id, new_pane_id.into());
+}
+
 #[cfg(feature = "local_fs")]
 fn handle_ai_history_event(
     event: &BlocklistAIHistoryEvent,
@@ -1294,3 +1444,7 @@ fn handle_ai_history_event(
         | BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalViews { .. } => (),
     }
 }
+
+#[cfg(all(test, not(target_family = "wasm")))]
+#[path = "terminal_pane_tests.rs"]
+mod tests;

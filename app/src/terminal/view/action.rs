@@ -388,6 +388,25 @@ pub enum TerminalAction {
     RevealChildAgent {
         conversation_id: AIConversationId,
     },
+    /// Dispatched by the `/orchestrate` slash command: spawns one local child
+    /// agent per task in `argument` (see
+    /// `local_harness_launch::split_orchestrate_tasks` for the syntax).
+    /// User-invoked only -- this is deliberately NOT the pin's
+    /// `SlashCommandKind::Orchestrate` path, which submits the command as a
+    /// prompt for the model to act on via `AIAgentActionType::RunAgents`.
+    /// That agent-invoked mechanism is deferred (see #325); this action
+    /// spawns children directly from the user's typed command, with no
+    /// model in the decision loop.
+    ///
+    /// Local child processes have no wasm equivalent (see
+    /// `pane_group::pane::local_harness_launch`,
+    /// `#[cfg(not(target_family = "wasm"))]`); on wasm the handler shows an
+    /// error toast instead of spawning, matching `OpenCodeInWarp`/
+    /// `ExportToFile`'s wasm fallback pattern.
+    SpawnLocalChildAgents {
+        parent_conversation_id: AIConversationId,
+        argument: String,
+    },
     /// Open a child agent conversation in a separate pane (split off from the
     /// orchestrator), for a child that has no pane -- hidden or visible --
     /// anywhere yet. Dispatched as the fallback when
@@ -682,6 +701,7 @@ impl fmt::Debug for TerminalAction {
             AwsCliNotInstalledBanner(action) => write!(f, "AwsCliNotInstalledBanner({action:?})"),
             ToggleUsageFooter => write!(f, "ToggleUsageFooter"),
             RevealChildAgent { .. } => write!(f, "RevealChildAgent"),
+            SpawnLocalChildAgents { .. } => write!(f, "SpawnLocalChildAgents"),
             OpenChildAgentInNewPane { .. } => write!(f, "OpenChildAgentInNewPane"),
             OpenChildAgentInNewTab { .. } => write!(f, "OpenChildAgentInNewTab"),
             SwitchAgentViewToConversation { .. } => write!(f, "SwitchAgentViewToConversation"),
