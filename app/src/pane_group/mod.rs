@@ -4209,18 +4209,26 @@ impl PaneGroup {
     fn replace_file_pane_with_code_pane(
         &mut self,
         file_pane_id: PaneId,
-        path: std::path::PathBuf,
+        path: BufferLocation,
         source: Option<crate::code::editor_management::CodeSource>,
         ctx: &mut ViewContext<Self>,
     ) {
         use crate::code::editor_management::CodeSource;
         use crate::pane_group::CodePane;
 
-        // Use the provided source if available.
-        let source = source.unwrap_or(CodeSource::Link {
-            path,
-            range_start: None,
-            range_end: None,
+        // Use the provided source if available, or construct one from the
+        // location. `Remote` maps to `RemoteFileTree`, the same `CodeSource`
+        // the existing remote file-tree code-editing flow uses (see
+        // `workspace/view.rs`'s remote-file-tree open handlers) -- Raw mode
+        // for a remote notebook reuses that infra rather than inventing a
+        // second remote-fetch path.
+        let source = source.unwrap_or_else(|| match path {
+            BufferLocation::Local(path) => CodeSource::Link {
+                path,
+                range_start: None,
+                range_end: None,
+            },
+            BufferLocation::Remote(remote_path) => CodeSource::RemoteFileTree { remote_path },
         });
 
         let code_pane = CodePane::new(source, None, ctx);

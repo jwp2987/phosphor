@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc};
 
 use pathfinder_geometry::vector::vec2f;
 
@@ -8,11 +8,15 @@ use repo_metadata::{repositories::DetectedRepositories, watcher::DirectoryWatche
 use string_offset::CharOffset;
 use warp_core::features::FeatureFlag;
 use warp_core::ui::appearance::Appearance;
+use warp_core::HostId;
 use warp_editor::render::model::BlockItem;
 #[cfg(feature = "local_fs")]
 use warp_files::FileModel;
-use warpui::{platform::WindowStyle, App, SingletonEntity, View};
+use warp_util::standardized_path::StandardizedPath;
+use warpui::{platform::WindowStyle, App, SingletonEntity, TypedActionView, View};
 
+use crate::code::buffer_location::{BufferLocation, RemotePath};
+use crate::pane_group::PaneEvent;
 use crate::terminal::keys::TerminalKeybindings;
 use crate::{
     auth::{AuthManager, AuthStateProvider},
@@ -32,7 +36,7 @@ use crate::{
 
 use crate::notebooks::context_menu::MenuSource;
 
-use super::{FileNotebookView, FileState};
+use super::{FileNotebookAction, FileNotebookEvent, FileNotebookView, FileState, SourceFile};
 
 fn init_app(app: &mut App) {
     initialize_settings_for_tests(app);
@@ -383,5 +387,123 @@ fn test_file_notebook_mermaid_context_menu_does_not_show_copy_image() {
             let item_names = file_notebook.context_menu.item_names(ctx);
             assert!(!item_names.contains(&"Copy image"));
         });
+    });
+}
+
+/// Subscribes to `handle`'s `FileNotebookEvent`s and returns the collector
+/// they're pushed into, filtered to the `Pane` events -- the ones
+/// `ToggleMarkdownDisplayMode(Raw)` / `OpenAsCode` emit to ask the pane group
+/// to swap in a `CodePane`.
+fn collect_pane_events(
+    app: &mut App,
+    handle: &warpui::ViewHandle<FileNotebookView>,
+) -> Rc<RefCell<Vec<PaneEvent>>> {
+    let pane_events = Rc::new(RefCell::new(Vec::new()));
+    let collector = pane_events.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(handle, move |_, event: &FileNotebookEvent, _ctx| {
+            if let FileNotebookEvent::Pane(pane_event) = event {
+                collector.borrow_mut().push(pane_event.clone());
+            }
+        });
+    });
+    pane_events
+}
+
+#[test]
+fn test_toggle_raw_mode_local_notebook_emits_replace_with_code_pane() {
+    // Regression coverage for widening `PaneEvent::ReplaceWithCodePane`'s
+    // `path` field from a plain local `PathBuf` to `BufferLocation`: local
+    // notebooks must keep behaving exactly as before, emitting
+    // `BufferLocation::Local(path)`.
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        let (_, handle) = app.add_window(WindowStyle::NotStealFocus, FileNotebookView::new);
+        let session = Arc::new(Session::test());
+        handle
+            .update(&mut app, |file_notebook, ctx| {
+                file_notebook.open_local("../README.md", Some(session), ctx);
+
+                let file_id = file_notebook
+                    .file_id
+                    .expect("File should be opened and have a file_id");
+
+                let future_handle = FileModel::as_ref(ctx)
+                    .get_future_handle(file_id)
+                    .expect("Loading future should be present");
+
+                ctx.await_spawned_future(future_handle.future_id())
+            })
+            .await;
+
+        let expected_path = dunce::canonicalize("../README.md").expect("Path exists");
+        let pane_events = collect_pane_events(&mut app, &handle);
+
+        handle.update(&mut app, |view, ctx| {
+            view.handle_action(
+                &FileNotebookAction::ToggleMarkdownDisplayMode(MarkdownDisplayMode::Raw),
+                ctx,
+            );
+        });
+
+        assert_eq!(
+            pane_events.borrow().as_slice(),
+            [PaneEvent::ReplaceWithCodePane {
+                path: BufferLocation::Local(expected_path),
+                source: None,
+            }]
+        );
+    });
+}
+
+#[test]
+fn test_toggle_raw_mode_remote_notebook_replaces_pane_with_remote_code_pane() {
+    // Regression test for the gap this closes: Raw mode used to be a no-op
+    // for remote notebooks because `open_as_code` /
+    // `ToggleMarkdownDisplayMode(Raw)` gated on `local_path()`, which is
+    // always `None` for `SourceFile::Remote`. `ReplaceWithCodePane`'s `path`
+    // field now carries a `BufferLocation`, so Raw mode works for remote
+    // notebooks too: it targets the same `RemotePath` the notebook was
+    // opened with, via `CodeSource::RemoteFileTree` -- the same source the
+    // existing remote file-tree code-editing flow already uses to fetch and
+    // display remote file content.
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        let (_, handle) = app.add_window(WindowStyle::NotStealFocus, FileNotebookView::new);
+
+        let remote_path = RemotePath::new(
+            HostId::new("test-host".to_string()),
+            StandardizedPath::try_new("/home/user/notes/README.md").unwrap(),
+        );
+
+        // Simulate a remote notebook that has finished loading, bypassing the
+        // `ReadFileContextRequest` RPC that `open_remote` would issue over a
+        // live SSH connection -- this test only needs to exercise the
+        // pane-replacement plumbing that Raw mode drives, not the network
+        // fetch (which `RemoteServerManager`'s own tests cover).
+        handle.update(&mut app, |view, _ctx| {
+            view.file_state = FileState::Loaded(SourceFile::Remote {
+                remote_path: remote_path.clone(),
+            });
+        });
+
+        let pane_events = collect_pane_events(&mut app, &handle);
+
+        handle.update(&mut app, |view, ctx| {
+            view.handle_action(
+                &FileNotebookAction::ToggleMarkdownDisplayMode(MarkdownDisplayMode::Raw),
+                ctx,
+            );
+        });
+
+        assert_eq!(
+            pane_events.borrow().as_slice(),
+            [PaneEvent::ReplaceWithCodePane {
+                path: BufferLocation::Remote(remote_path),
+                source: None,
+            }],
+            "Raw mode must replace the pane with a CodePane targeting the remote \
+             file, not silently no-op"
+        );
     });
 }
