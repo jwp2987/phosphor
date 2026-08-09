@@ -353,6 +353,15 @@ enum FooterSegment {
 }
 
 impl FooterSegment {
+    /// Two-tier separator, matching the pin's Figma-group structure: " • "
+    /// joins segments within the same group (working-directory/git-branch;
+    /// date/time; consecutive active indicators; anything touching
+    /// shell-mode, which always stays plain), " | " joins segments across
+    /// different groups. Every other pairing among the "big set" of
+    /// unrelated single-segment groups (active indicator, model, working
+    /// directory, git branch, context-window usage, git diff, date/time --
+    /// each its own group when not paired with its git-branch/date-time
+    /// sibling) therefore falls through to " | ".
     fn separator_to(&self, next: &Self) -> &'static str {
         match (self, next) {
             // A leading vim indicator is joined to the shell-mode/model
@@ -366,9 +375,16 @@ impl FooterSegment {
             // revision of this port — see warp upstream 311deab98).
             (Self::ShellMode, Self::WorkingDirectory(_)) => " ",
             (Self::WorkingDirectory(_), Self::GitBranch(_)) => " ↬ ",
+            (Self::ActiveIndicator(_), Self::ActiveIndicator(_)) => " • ",
+            (
+                Self::WorkingDirectory(_) | Self::GitBranch(_),
+                Self::WorkingDirectory(_) | Self::GitBranch(_),
+            )
+            | (Self::DateTime(_), Self::DateTime(_))
+            | (Self::ShellMode, _)
+            | (_, Self::ShellMode) => " • ",
             (
                 Self::Vim(_)
-                | Self::ShellMode
                 | Self::ActiveIndicator(_)
                 | Self::Model(_)
                 | Self::WorkingDirectory(_)
@@ -377,7 +393,6 @@ impl FooterSegment {
                 | Self::GitDiff { .. }
                 | Self::DateTime(_),
                 Self::Vim(_)
-                | Self::ShellMode
                 | Self::ActiveIndicator(_)
                 | Self::Model(_)
                 | Self::WorkingDirectory(_)
@@ -385,7 +400,7 @@ impl FooterSegment {
                 | Self::ContextWindowUsage(_)
                 | Self::GitDiff { .. }
                 | Self::DateTime(_),
-            ) => " • ",
+            ) => " | ",
         }
     }
 }
@@ -396,10 +411,11 @@ struct FooterSegments {
 }
 
 /// Builds the status row from resolved segments. Working directory follows a
-/// leading model or shell-mode label with a plain space; an immediately
-/// following branch uses the existing ` ↬ ` relationship marker. Every other
-/// adjacent pair uses ` • `, and the first item never receives a separator.
-/// Every child truncates to a single row, so the row lays out one row tall.
+/// leading shell-mode or model label with a plain space; an immediately
+/// following branch uses ` ↬ ` as the relationship marker. Items in
+/// different Figma groups use ` | `; other adjacent pairs use ` • `. The
+/// first item never receives a separator. Every child truncates to a single
+/// row, so the row lays out one row tall.
 fn render_status_footer_row(segments: FooterSegments, builder: &TuiUiBuilder) -> TuiFlex {
     let muted = builder.muted_text_style();
     let mut row = TuiFlex::row();

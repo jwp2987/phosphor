@@ -74,7 +74,7 @@ struct FocusTestFixture {
 }
 
 #[test]
-fn footer_supports_arbitrary_order_and_branch_without_a_leading_arrow() {
+fn footer_supports_arbitrary_order_and_figma_group_dividers() {
     App::test((), |mut app| async move {
         app.update(|ctx| {
             ctx.add_singleton_model(|_| Appearance::mock());
@@ -86,6 +86,7 @@ fn footer_supports_arbitrary_order_and_branch_without_a_leading_arrow() {
                         FooterSegment::GitBranch("feature/statusline".to_owned()),
                         FooterSegment::ActiveIndicator("Auto-queue"),
                         FooterSegment::WorkingDirectory("/tmp/warp".to_owned()),
+                        FooterSegment::DateTime(TuiText::new("July 20, 2026").finish()),
                     ],
                 },
                 &builder,
@@ -93,7 +94,10 @@ fn footer_supports_arbitrary_order_and_branch_without_a_leading_arrow() {
             .finish();
             assert_eq!(
                 render_element(row, ctx, 120).to_lines(),
-                vec!["43% context • feature/statusline • Auto-queue • /tmp/warp".to_owned()],
+                vec![
+                    "43% context | feature/statusline | Auto-queue | /tmp/warp | July 20, 2026"
+                        .to_owned()
+                ],
             );
 
             let branch_only = render_status_footer_row(
@@ -106,6 +110,47 @@ fn footer_supports_arbitrary_order_and_branch_without_a_leading_arrow() {
             assert_eq!(
                 render_element(branch_only, ctx, 80).to_lines(),
                 vec!["main".to_owned()],
+            );
+        });
+    });
+}
+
+/// Segments within the same Figma group (consecutive active indicators, a
+/// working-directory/git-branch pair, consecutive date/time items) still use
+/// " • " or their dedicated marker; segments from different, otherwise
+/// unrelated groups use " | ".
+#[test]
+fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let builder = TuiUiBuilder::from_app(ctx);
+            let row = render_status_footer_row(
+                FooterSegments {
+                    ordered: vec![
+                        FooterSegment::ActiveIndicator("Auto-approve"),
+                        FooterSegment::ActiveIndicator("Auto-queue"),
+                        FooterSegment::Model(TuiText::new("model").finish()),
+                        FooterSegment::WorkingDirectory("/tmp/warp".to_owned()),
+                        FooterSegment::GitBranch("main".to_owned()),
+                        FooterSegment::GitDiff {
+                            additions: 31,
+                            deletions: 12,
+                        },
+                        FooterSegment::ContextWindowUsage(render_context_usage_entry(0.426, ctx)),
+                        FooterSegment::DateTime(TuiText::new("July 20, 2026").finish()),
+                        FooterSegment::DateTime(TuiText::new("1:08pm").finish()),
+                    ],
+                },
+                &builder,
+            )
+            .finish();
+            assert_eq!(
+                render_element(row, ctx, 160).to_lines(),
+                vec![
+                    "Auto-approve • Auto-queue | model /tmp/warp ↬ main | +31 -12 | 43% context | July 20, 2026 • 1:08pm"
+                        .to_owned()
+                ],
             );
         });
     });
@@ -1858,7 +1903,7 @@ fn footer_renders_agent_sections_left_aligned() {
 
             assert_eq!(
                 lines,
-                vec!["TestModel • /home/user/warp ↬ main • 18% context • +3 -1"],
+                vec!["TestModel | /home/user/warp ↬ main | 18% context | +3 -1"],
                 "agent footer is left-aligned in order model → cwd/branch → usage → diff"
             );
             assert!(
@@ -1954,7 +1999,7 @@ fn footer_renders_bash_sections_without_model_or_usage() {
 
             assert_eq!(
                 lines,
-                vec![format!("{SHELL_MODE_HINT} /home/user/warp ↬ main • +3 -1")],
+                vec![format!("{SHELL_MODE_HINT} /home/user/warp ↬ main | +3 -1")],
                 "bash footer leads with the shell-mode indicator and hides model/usage"
             );
             assert!(
