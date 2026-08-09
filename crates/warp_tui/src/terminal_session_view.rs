@@ -44,6 +44,7 @@ use warp::tui_export::{
     slash_command_selection_behavior, throttle, tui_completion_session_context,
     tui_conversation_actions_in_order, tui_fetch_completions, tui_set_active_profile,
 };
+use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
 use warp_core::settings::Setting;
 use warp_editor::model::CoreEditorModel;
@@ -53,7 +54,7 @@ use warpui_core::r#async::{SpawnedFutureHandle, Timer};
 use warpui_core::elements::MouseStateHandle;
 use warpui_core::elements::tui::{
     TuiAnimated, TuiChildView, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiHoverable,
-    TuiSize, TuiStyle, TuiText,
+    TuiSelectionHandle, TuiSize, TuiStyle, TuiText,
 };
 use warpui_core::keymap::macros::*;
 use warpui_core::keymap::{self, EditableBinding, FixedBinding};
@@ -82,13 +83,14 @@ use crate::input::view::TuiInputAction;
 use crate::input::{TuiInputView, TuiInputViewEvent};
 use crate::input_hints;
 use crate::input_mode_policy::{self, TuiInputModePolicy};
-use crate::input_suggestions_mode::TuiInputSuggestionsModeModel;
+use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 use crate::keybindings::{
     ATTACHMENTS_AVAILABLE_FLAG, CONTEXTUAL_PLAN_TOGGLE_BINDING_NAME,
     KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG, PLAN_TOGGLE_AVAILABLE_FLAG, PLAN_TOGGLE_BINDING_NAME,
     TUI_BINDING_GROUP,
 };
 use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
+use crate::read_only_menu::TuiReadOnlyMenuKind;
 use ai::agent::action_result::RequestFileEditsResult;
 
 use crate::api_keys_menu::{TuiApiKeysMenuEvent, TuiApiKeysMenuModel};
@@ -121,7 +123,10 @@ use crate::tui_cli_subagent_view::{
 };
 use crate::tui_diff_storage::revert_file_diffs;
 use crate::tui_revert_registry::TuiFileEditRevertRegistry;
-use crate::ui::{compact_footer_path, conversation_restore_failed, conversation_restoring};
+use crate::ui::{
+    abbreviate_home_prefix, compact_footer_path, conversation_restore_failed,
+    conversation_restoring,
+};
 use crate::usage::render_context_usage_entry;
 use crate::warping_indicator::{render_response_summary, render_warping_indicator_row};
 use crate::zero_state::TuiZeroStateView;
@@ -134,6 +139,7 @@ pub(crate) mod state;
 mod status_menu;
 
 use self::input_detection::InputDetectionState;
+use self::state::TuiTerminalSessionStateModel;
 
 /// Width used before the first layout pass pushes the real terminal width into the editor.
 const INITIAL_INPUT_WIDTH: u16 = 80;
@@ -146,6 +152,11 @@ const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
 /// How often a statusline date/time segment repaints itself.
 const STATUSLINE_DATETIME_REPAINT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Fallback strings for the `/status` status menu.
+const STATUS_UNAVAILABLE: &str = "\u{2014}"; // em dash
+const STATUS_UNTITLED_SESSION: &str = "Untitled";
+const STATUS_DEV_BUILD: &str = "dev build";
 const SESSION_CAN_CANCEL_RESTORE_FLAG: &str = "TuiSessionCanCancelRestore";
 const SESSION_CAN_HAND_BACK_CONTROL_FLAG: &str = "TuiSessionCanHandBackControl";
 /// Set while the agent is tagged into a long-running command and blocked on
@@ -276,6 +287,11 @@ fn log_bundle_success_message(path: &Path) -> String {
 
 fn raw_prompt_if_not_blank(input: &str) -> Option<&str> {
     (!input.trim().is_empty()).then_some(input)
+}
+fn format_status_conversation_id(conversation_id: Option<AIConversationId>) -> String {
+    conversation_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "None".to_owned())
 }
 fn format_statusline_date(now: NaiveDateTime) -> String {
     now.format("%B %-d, %Y").to_string()
@@ -602,6 +618,11 @@ pub(crate) enum TuiTerminalSessionAction {
     /// Scroll-wheel over the inline menu: scrolls the viewport by `delta` rows
     /// without changing the selection.
     InlineMenuMouseScrollBy(isize),
+    /// A drag selection started inside the shared read-only menu
+    /// (shortcuts/status).
+    ReadOnlyMenuSelectionStarted,
+    /// A non-empty read-only menu selection completed.
+    ReadOnlyMenuSelectionEnded(String),
 }
 
 /// The authenticated terminal/session surface rendered inside [`RootTuiView`].
@@ -611,6 +632,12 @@ pub(crate) struct TuiTerminalSessionView {
     attachment_bar: ViewHandle<TuiAttachmentBar>,
     inline_menus: Vec<TuiInlineMenu>,
     suggestions_mode: ModelHandle<TuiInputSuggestionsModeModel>,
+    /// Retained selection state for the shared read-only menu (shortcuts/status),
+    /// so a mouse-drag selection over it survives across re-renders.
+    read_only_menu_selection: TuiSelectionHandle,
+    /// Resolves a fresh session-interaction projection on demand; only
+    /// consumed by the `?`-opened shortcuts menu today.
+    session_state: TuiTerminalSessionStateModel,
     conversation_menu: ModelHandle<TuiConversationMenuModel>,
     model_menu: ModelHandle<TuiModelMenuModel>,
     completions_menu: ModelHandle<TuiCompletionsMenuModel>,
@@ -1105,6 +1132,41 @@ impl TuiTerminalSessionView {
         true
     }
 
+    /// Builds the `/status` menu's content from live session data. Drops the
+    /// oracle's `org`/`email` account fields -- this fork is BYOP with no
+    /// cloud account or sign-in, so there is nothing truthful to put there.
+    fn compute_status_info(&self, ctx: &AppContext) -> status_menu::TuiStatusInfo {
+        let cwd = self
+            .active_session
+            .as_ref(ctx)
+            .current_working_directory()
+            .map(|cwd| abbreviate_home_prefix(cwd))
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|cwd| abbreviate_home_prefix(&cwd.display().to_string()))
+            });
+        let session_name = self
+            .conversation_selection
+            .as_ref(ctx)
+            .selected_conversation(ctx)
+            .and_then(|conversation| conversation.title())
+            .unwrap_or_else(|| STATUS_UNTITLED_SESSION.to_owned());
+        let conversation_id = self
+            .conversation_selection
+            .as_ref(ctx)
+            .selected_conversation_id(ctx);
+        let version = ChannelState::app_version()
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| STATUS_DEV_BUILD.to_owned());
+        status_menu::TuiStatusInfo {
+            version,
+            session: session_name,
+            conversation_id: format_status_conversation_id(conversation_id),
+            working_directory: cwd.unwrap_or_else(|| STATUS_UNAVAILABLE.to_owned()),
+        }
+    }
+
     fn active_agent_controlled_target(&self, ctx: &AppContext) -> Option<CLISubagentTarget> {
         self.cli_subagent_controller
             .as_ref(ctx)
@@ -1474,7 +1536,7 @@ impl TuiTerminalSessionView {
 
         let editor_for_selection = input_editor_model.clone();
         let transcript_for_selection = transcript.clone();
-        ctx.subscribe_to_model(&input_editor_model, move |_, _, event, ctx| {
+        ctx.subscribe_to_model(&input_editor_model, move |view, _, event, ctx| {
             if !matches!(event, CodeEditorModelEvent::SelectionChanged) {
                 return;
             }
@@ -1485,6 +1547,7 @@ impl TuiTerminalSessionView {
                 .as_ref(ctx)
                 .first_selection_is_single_cursor();
             if has_selection {
+                view.read_only_menu_selection.clear();
                 transcript_for_selection.update(ctx, |transcript, ctx| {
                     transcript.clear_selection(ctx);
                 });
@@ -1545,6 +1608,7 @@ impl TuiTerminalSessionView {
 
         ctx.subscribe_to_view(&transcript, |view, _, event, ctx| match event {
             TuiTranscriptViewEvent::SelectionStarted => {
+                view.read_only_menu_selection.clear();
                 view.input_view
                     .update(ctx, |input, ctx| input.clear_selection(ctx));
             }
@@ -1636,7 +1700,10 @@ impl TuiTerminalSessionView {
         // The input box border color and the footer's shell-mode hint depend
         // on the input mode.
         ctx.subscribe_to_model(&ai_input_model, |_, _, _, ctx| ctx.notify());
-        ctx.subscribe_to_model(&suggestions_mode, |_, _, _, ctx| ctx.notify());
+        ctx.subscribe_to_model(&suggestions_mode, |view, _, _, ctx| {
+            view.read_only_menu_selection.clear();
+            ctx.notify();
+        });
         // The warping indicator between the transcript and the input box
         // tracks the selected conversation: re-render when its status changes
         // or an exchange starts (the elapsed counter's anchor) on this
@@ -1789,12 +1856,25 @@ impl TuiTerminalSessionView {
                 }
             },
         );
+        // A lightweight resolver holding only weak references, used to build a
+        // fresh `TuiTerminalSessionState` on demand (e.g. for the `?`-opened
+        // shortcuts menu) without a persistent subscription -- its `Entity`
+        // event type is `()`, so there is nothing to subscribe to anyway.
+        let session_state = TuiTerminalSessionStateModel::new(
+            &model,
+            &cli_subagent_controller,
+            &transcript,
+            &ai_input_model,
+            &suggestions_mode,
+        );
         let mut view = Self {
             transcript,
             input_view,
             attachment_bar,
             inline_menus,
             suggestions_mode,
+            read_only_menu_selection: TuiSelectionHandle::default(),
+            session_state,
             conversation_menu,
             model_menu,
             completions_menu,
@@ -3758,6 +3838,16 @@ impl TuiTerminalSessionView {
                 self.mcp_menu.update(ctx, |menu, ctx| menu.open(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
+            SlashCommandKind::Status => {
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                self.suggestions_mode.update(ctx, |mode, ctx| {
+                    mode.set_mode(
+                        TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Status),
+                        ctx,
+                    );
+                });
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
             SlashCommandKind::Exit => {
                 record_static_slash_command_accepted(command.name, true, ctx);
                 ctx.terminate_app(TerminationMode::ForceTerminate, None);
@@ -4599,6 +4689,40 @@ impl TuiView for TuiTerminalSessionView {
                     .finish(),
                 );
             }
+            if let Some(kind) = self.suggestions_mode.as_ref(ctx).mode().read_only_menu() {
+                let menu = match kind {
+                    TuiReadOnlyMenuKind::Shortcuts => {
+                        self.session_state.resolve(ctx).ok().map(|state| {
+                            let keymap_context = self.keymap_context(ctx);
+                            shortcuts::menu(&state, &keymap_context, builder, ctx)
+                        })
+                    }
+                    TuiReadOnlyMenuKind::Status => {
+                        Some(status_menu::menu(self.compute_status_info(ctx), builder))
+                    }
+                };
+                if let Some(menu) = menu {
+                    let menu = menu.render(
+                        self.read_only_menu_selection.clone(),
+                        builder,
+                        |event_ctx, _| {
+                            event_ctx.dispatch_typed_action(
+                                TuiTerminalSessionAction::ReadOnlyMenuSelectionStarted,
+                            );
+                        },
+                        |text, event_ctx, _| {
+                            event_ctx.dispatch_typed_action(
+                                TuiTerminalSessionAction::ReadOnlyMenuSelectionEnded(text),
+                            );
+                        },
+                    );
+                    content = content.child(
+                        TuiContainer::new(menu)
+                            .with_padding_top(INLINE_MENU_TOP_PADDING_ROWS)
+                            .finish(),
+                    );
+                }
+            }
             let border_style = if self.is_shell_mode(ctx) {
                 builder.shell_mode_accent_style()
             } else {
@@ -4736,6 +4860,21 @@ impl TypedActionView for TuiTerminalSessionView {
                 if let Some(menu) = active_inline_menu(&self.inline_menus, mode, ctx) {
                     menu.scroll_by_delta(*delta, ctx);
                     ctx.notify();
+                }
+            }
+            TuiTerminalSessionAction::ReadOnlyMenuSelectionStarted => {
+                self.transcript
+                    .update(ctx, |transcript, ctx| transcript.clear_selection(ctx));
+                self.input_view
+                    .update(ctx, |input, ctx| input.clear_selection(ctx));
+            }
+            TuiTerminalSessionAction::ReadOnlyMenuSelectionEnded(text) => {
+                match copy_to_clipboard(text) {
+                    Ok(()) => self.show_copy_hint(ctx),
+                    Err(error) => {
+                        log::warn!("Failed to copy TUI read-only menu selection: {error}");
+                        self.show_transient_hint(COPY_FAILED_HINT.to_owned(), ctx);
+                    }
                 }
             }
         }

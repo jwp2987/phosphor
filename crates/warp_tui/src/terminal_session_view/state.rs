@@ -8,11 +8,12 @@ use warp::tui_export::{BlocklistAIInputModel, CLISubagentController, TerminalMod
 use warpui_core::keymap::Context;
 use warpui_core::{AppContext, Entity, ModelHandle, ViewHandle, WeakModelHandle, WeakViewHandle};
 
-use super::AUTO_APPROVE_TOGGLE_BINDING_NAME;
+use super::{AUTO_APPROVE_TOGGLE_BINDING_NAME, DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME};
 use crate::agent_block::TuiBlockingChild;
 use crate::input_mode_policy;
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 use crate::keybindings::{PLAN_TOGGLE_BINDING_NAME, binding_hint};
+use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::terminal_use::{TuiInputTarget, inline_process_owns_input, tui_input_target};
 use crate::transcript_view::TuiTranscriptView;
 use crate::tui_ask_question_view::TuiAskQuestionView;
@@ -486,21 +487,24 @@ impl TuiTerminalSessionState {
         let TuiInteractionState::Composer(composer) = &state.interaction else {
             return None;
         };
-        // Warp also suppresses this hint while the read-only shortcuts/status
-        // overlay (opened by `?` / `/status`) is showing
-        // (`composer.suggestions_mode.read_only_menu().is_some()`). That
-        // overlay (`crate::read_only_menu`) has not landed in this fork yet —
-        // it is a separate, parallel port this round — so there is no
-        // suggestions-mode variant to check here yet. Nothing is silently
-        // dropped: the check simply cannot fire against a feature this fork
-        // does not have, and re-adding it is a one-line follow-up once
-        // `TuiInputSuggestionsMode::ReadOnlyMenu` exists.
+        // Suppress this hint while the read-only shortcuts/status overlay
+        // (opened by `?` / `/status`) is showing.
+        if composer.suggestions_mode.read_only_menu().is_some() {
+            return None;
+        }
         Some(match composer.mode {
             TuiComposerMode::Shell => SHELL_HINT.to_owned(),
             TuiComposerMode::Agent { .. } => {
                 agent_input_hint(state.transcript_is_empty, state.orchestration_available)
             }
         })
+    }
+
+    pub(crate) fn read_only_menu(&self) -> Option<TuiReadOnlyMenuKind> {
+        let TuiInteractionState::Composer(composer) = self.interaction() else {
+            return None;
+        };
+        composer.suggestions_mode.read_only_menu()
     }
 
     pub(crate) fn shortcut_sections(
@@ -598,16 +602,18 @@ impl TuiTerminalSessionState {
                     description: "take control",
                 }],
             });
+        } else if state.agent_is_tagged_in
+            && let Some(key) =
+                binding_hint(DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME, context, ctx)
+        {
+            sections.push(TuiShortcutSection {
+                title: "Terminal use",
+                shortcuts: vec![TuiShortcut {
+                    key,
+                    description: "return control to command",
+                }],
+            });
         }
-        // Warp also adds a "Terminal use" section here when the agent is
-        // manually tagged into a running command (`state.agent_is_tagged_in`),
-        // offering a shortcut to detach it. That keybinding — and its
-        // counterpart for attaching — do not exist in this fork's TUI yet;
-        // the GUI already supports tag-in/tag-out (`app/src/terminal/view.rs`
-        // uses `set_is_agent_tagged_in`), so this is a TUI-only surface gap,
-        // not a missing capability. `agent_is_tagged_in` above is still
-        // resolved correctly so a future keybinding port only needs to add
-        // the section here, not re-derive the state.
         if state.orchestration_available {
             sections.push(TuiShortcutSection {
                 title: "Orchestration",

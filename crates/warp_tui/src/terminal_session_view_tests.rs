@@ -49,10 +49,12 @@ use super::{
 };
 use crate::autoupdate::TuiAutoupdater;
 use crate::inline_menu::MAX_INLINE_MENU_ROWS;
+use crate::input_suggestions_mode::TuiInputSuggestionsMode;
 use crate::keybindings::{
     CONTEXTUAL_PLAN_TOGGLE_BINDING_NAME, KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG,
     PLAN_TOGGLE_AVAILABLE_FLAG, PLAN_TOGGLE_BINDING_NAME, TUI_BINDING_GROUP,
 };
+use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::root_view::RootTuiView;
 use crate::session_registry::{TuiSessionId, TuiSessions};
 use crate::statusline_config_view::TuiStatuslineConfigEvent;
@@ -213,6 +215,69 @@ fn enabled_auto_indicators_render_only_while_their_effective_states_are_on() {
                     .set_value(TuiStatuslineConfig::default(), ctx);
             });
         });
+    });
+}
+
+#[test]
+fn shortcuts_surface_renders_above_the_input() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.suggestions_mode.update(ctx, |mode, ctx| {
+                mode.set_mode(
+                    TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts),
+                    ctx,
+                );
+            });
+        });
+
+        let rendered = render_session(&mut app, &view, 80, 24).join("\n");
+        assert!(rendered.contains("Shortcuts"), "{rendered}");
+        assert!(rendered.contains("? shortcuts"), "{rendered}");
+        assert!(rendered.contains("/ commands"), "{rendered}");
+        assert!(rendered.contains("! shell mode"), "{rendered}");
+        assert!(rendered.contains("← conversations"), "{rendered}");
+        assert!(rendered.contains("↑ input history"), "{rendered}");
+        // The shortcuts panel must NOT include the status section (that
+        // lives in the dedicated status menu opened by /status).
+        assert!(
+            !rendered.contains("Version"),
+            "Shortcuts panel must not show Version:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("Working directory"),
+            "Shortcuts panel must not show Working directory:\n{rendered}"
+        );
+    });
+}
+
+#[test]
+fn status_slash_command_opens_the_status_menu() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::STATUS, None, ctx);
+        });
+
+        app.read(|ctx| {
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Status)
+            );
+        });
+
+        let rendered = render_session(&mut app, &view, 80, 24).join("\n");
+        assert!(rendered.contains("Status"), "{rendered}");
+        assert!(rendered.contains("Version"), "{rendered}");
+        assert!(rendered.contains("Session"), "{rendered}");
+        assert!(rendered.contains("Conversation ID"), "{rendered}");
+        assert!(rendered.contains("Working directory"), "{rendered}");
+        // Cloud account fields dropped -- BYOP has no org or sign-in email.
+        assert!(!rendered.contains("Org"), "{rendered}");
+        assert!(!rendered.contains("Email"), "{rendered}");
     });
 }
 

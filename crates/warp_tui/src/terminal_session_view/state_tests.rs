@@ -8,7 +8,10 @@ use super::{
     agent_input_hint, upgrade_terminal_model,
 };
 use crate::input_suggestions_mode::TuiInputSuggestionsMode;
-use crate::terminal_session_view::TuiTerminalSessionView;
+use crate::read_only_menu::TuiReadOnlyMenuKind;
+use crate::terminal_session_view::{
+    SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG, TuiTerminalSessionView,
+};
 use crate::terminal_use::TuiInputTarget;
 
 fn composer_state(mode: TuiComposerMode, orchestration_available: bool) -> TuiTerminalSessionState {
@@ -110,19 +113,36 @@ fn only_composer_interactions_produce_input_hints() {
         assert_eq!(state.hint_text(), None);
     }
 
-    let state = composer_state(
+    let mut state = composer_state(
         TuiComposerMode::Agent {
             agent_controlled_terminal_use: false,
         },
         false,
     );
     assert!(state.hint_text().is_some());
-    // Warp additionally covers a suggestions_mode == ReadOnlyMenu(..) case
-    // here, which suppresses the hint while the shortcuts/status overlay is
-    // open. That overlay (`crate::read_only_menu`) has not landed in this
-    // fork yet (a parallel port this round), so there is no
-    // `TuiInputSuggestionsMode` variant to construct that state with. See the
-    // comment on `TuiTerminalSessionState::hint_text`.
+    {
+        let TuiTerminalSessionState::Block(block) = &mut state else {
+            unreachable!();
+        };
+        let TuiInteractionState::Composer(composer) = &mut block.interaction else {
+            unreachable!();
+        };
+        composer.suggestions_mode =
+            TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts);
+    }
+    assert_eq!(state.hint_text(), None);
+    // The dedicated status overlay also suppresses the footer hint.
+    {
+        let TuiTerminalSessionState::Block(block) = &mut state else {
+            unreachable!();
+        };
+        let TuiInteractionState::Composer(composer) = &mut block.interaction else {
+            unreachable!();
+        };
+        composer.suggestions_mode =
+            TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Status);
+    }
+    assert_eq!(state.hint_text(), None);
 }
 
 #[test]
@@ -250,6 +270,45 @@ fn agent_terminal_use_and_orchestration_are_additive() {
                     .shortcuts
                     .iter()
                     .any(|shortcut| shortcut.description == "navigate to agents")
+            );
+        });
+    });
+}
+
+#[test]
+fn tagged_in_composer_exposes_detach_shortcut() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        app.read(|ctx| {
+            let mut state = composer_state(
+                TuiComposerMode::Agent {
+                    agent_controlled_terminal_use: false,
+                },
+                false,
+            );
+            let TuiTerminalSessionState::Block(block) = &mut state else {
+                unreachable!();
+            };
+            block.agent_is_tagged_in = true;
+            let mut context = Context::default();
+            context.set.insert(TuiTerminalSessionView::ui_name());
+            context
+                .set
+                .insert(SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG);
+
+            let sections = state.shortcut_sections(&context, ctx);
+
+            assert_eq!(
+                sections
+                    .iter()
+                    .map(|section| section.title)
+                    .collect::<Vec<_>>(),
+                vec!["Shortcuts", "Terminal use"]
+            );
+            assert_eq!(sections[1].shortcuts[0].key, "Escape");
+            assert_eq!(
+                sections[1].shortcuts[0].description,
+                "return control to command"
             );
         });
     });

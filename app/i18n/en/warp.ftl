@@ -2567,6 +2567,7 @@ slash-cmd-usage-desc = Show how much of the model's context window this conversa
 slash-cmd-cost-desc = Show this conversation's cost at your configured provider rates
 slash-cmd-mcp-desc = View and manage MCP servers
 slash-cmd-exit-desc = Exit Phosphor
+slash-cmd-status-desc = Show session status
 slash-cmd-view-logs-desc = Bundle your logs into a zip archive
 slash-cmd-clear-desc = Clear the transcript and start a new conversation (alias for /agent)
 slash-cmd-set-tab-color-desc = Set the color of the current tab

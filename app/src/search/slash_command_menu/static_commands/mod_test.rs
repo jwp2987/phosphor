@@ -1,5 +1,5 @@
-use super::commands;
 use super::Availability;
+use super::commands;
 
 /// Helper: constructs a session context for an agent view in a local session with a repo,
 /// no active LRC, and an active conversation.

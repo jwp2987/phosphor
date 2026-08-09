@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use warp_core::features::FeatureFlag;
 
-use crate::search::slash_command_menu::{static_commands::Argument, StaticCommand};
+use crate::search::slash_command_menu::{StaticCommand, static_commands::Argument};
 use crate::t_static;
 
 use super::Availability;
@@ -439,6 +439,19 @@ pub static MCP: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     argument: None,
 });
 
+/// TUI-only: opens the session-status overlay. Not executable in the GUI (see
+/// `execute_slash_command`'s explicit guard), which has its own status surfaces. Unlike the
+/// oracle's `/status`, this drops the `org`/`email` account fields -- this fork is BYOP with
+/// no cloud account or sign-in, so there is nothing truthful to show there.
+pub static STATUS: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/status",
+    description: t_static!("slash-cmd-status-desc"),
+    icon_path: "bundled/svg/info.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 /// TUI-only: quits the TUI process. Not executable in the GUI (see `execute_slash_command`'s
 /// explicit guard), which has its own window-close affordances.
 pub static EXIT: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
@@ -702,6 +715,7 @@ fn all_commands() -> Vec<StaticCommand> {
     // missing, so the rows were unreachable (see #147/#338).
     commands.push(EXIT.clone());
     commands.push(MCP.clone());
+    commands.push(STATUS.clone());
     commands.push(VIEW_LOGS.clone());
     commands.push(CLEAR.clone());
     // TUI-only, no feature flag (AGENTS §5.4): already has a live TUI dispatch handler
@@ -750,6 +764,22 @@ mod tests {
         assert!(!command.auto_enter_ai_mode);
         assert!(command.argument.is_none());
         assert!(command.supports_tui());
+    }
+
+    #[test]
+    fn status_command_is_registered_and_tui_only() {
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(STATUS.name)
+            .expect("expected /status to be registered");
+        assert_eq!(
+            command.kind(),
+            crate::search::slash_command_menu::static_commands::SlashCommandKind::Status
+        );
+        assert_eq!(command.availability, Availability::ALWAYS);
+        assert!(!command.auto_enter_ai_mode);
+        assert!(command.argument.is_none());
+        assert!(command.supports_tui());
+        assert!(command.is_tui_only());
     }
 
     /// Fork-authored (AGENTS §5.10): `/usage` and `/cost` mean something different here than

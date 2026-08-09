@@ -6,6 +6,8 @@
 
 use warpui_core::{Entity, ModelContext};
 
+use crate::read_only_menu::TuiReadOnlyMenuKind;
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TuiInputSuggestionsMode {
     #[default]
@@ -30,11 +32,32 @@ pub(crate) enum TuiInputSuggestionsMode {
     ExchangeMenu,
     /// BYOP provider API-key manager (the `/api-keys` menu).
     ApiKeys,
+    /// The shared read-only overlay: the `?`-opened shortcuts sheet or the
+    /// `/status` session info panel.
+    ReadOnlyMenu(TuiReadOnlyMenuKind),
 }
 
 impl TuiInputSuggestionsMode {
     pub(crate) fn is_visible(self) -> bool {
         self != Self::Closed
+    }
+
+    pub(crate) fn read_only_menu(self) -> Option<TuiReadOnlyMenuKind> {
+        match self {
+            Self::ReadOnlyMenu(kind) => Some(kind),
+            Self::Closed
+            | Self::SlashCommands
+            | Self::ConversationMenu
+            | Self::ModelSelector
+            | Self::SkillMenu
+            | Self::Mcp
+            | Self::PromptAndCommandHistory
+            | Self::Completions
+            | Self::ProfileSelector
+            | Self::PromptsMenu
+            | Self::ExchangeMenu
+            | Self::ApiKeys => None,
+        }
     }
 }
 
@@ -92,7 +115,8 @@ impl TuiInputSuggestionsModeModel {
             | TuiInputSuggestionsMode::ProfileSelector
             | TuiInputSuggestionsMode::PromptsMenu
             | TuiInputSuggestionsMode::ExchangeMenu
-            | TuiInputSuggestionsMode::ApiKeys => false,
+            | TuiInputSuggestionsMode::ApiKeys
+            | TuiInputSuggestionsMode::ReadOnlyMenu(_) => false,
         }
     }
 

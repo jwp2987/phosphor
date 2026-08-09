@@ -111,6 +111,9 @@ pub enum SlashCommandKind {
     AddMcp,
     AutoApprove,
     Mcp,
+    /// `/status`: opens the session-status overlay. Unlike the oracle, carries no
+    /// `org`/`email` account fields -- see [`crate::search::slash_command_menu::static_commands::commands::STATUS`].
+    Status,
     ViewLogs,
     /// `/natural-language-detection`: one toggle, matching the oracle. Warp's older
     /// `/enable-…` / `/disable-…` pair was collapsed upstream and neither name was ever
@@ -231,6 +234,7 @@ impl StaticCommand {
             "/agent" => SlashCommandKind::Agent,
             "/add-mcp" => SlashCommandKind::AddMcp,
             "/mcp" => SlashCommandKind::Mcp,
+            "/status" => SlashCommandKind::Status,
             "/create-environment" => SlashCommandKind::CreateEnvironment,
             "/docker-sandbox" => SlashCommandKind::CreateDockerSandbox,
             "/create-new-project" => SlashCommandKind::CreateNewProject,
@@ -314,6 +318,7 @@ impl StaticCommand {
                 | "/natural-language-detection"
                 | "/exit"
                 | "/mcp"
+                | "/status"
                 | "/view-logs"
                 | "/clear"
                 | "/theme"
@@ -351,6 +356,7 @@ impl StaticCommand {
                 | "/natural-language-detection"
                 | "/exit"
                 | "/mcp"
+                | "/status"
                 | "/view-logs"
                 | "/theme"
                 // Both report on local BYOP data (context window, provider token counts x

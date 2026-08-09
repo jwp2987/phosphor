@@ -24,10 +24,6 @@ fn entry(shortcut: &TuiShortcut, builder: &TuiUiBuilder) -> TuiReadOnlyMenuText 
 /// The panel lists contextual keybindings grouped by section. Status
 /// information is intentionally absent here -- it lives in the dedicated
 /// status menu opened by `/status`.
-// Not yet dispatched from a keybinding: wiring `TuiReadOnlyMenuKind::Shortcuts`
-// into the `?` binding and the suggestions-mode open/close path is #389's
-// scope (menu wiring), which lands after this issue.
-#[allow(dead_code)]
 pub(super) fn menu(
     state: &TuiTerminalSessionState,
     context: &Context,

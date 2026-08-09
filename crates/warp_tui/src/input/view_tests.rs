@@ -49,6 +49,7 @@ use crate::input_mode_policy::AI_LOCKED_CONFIG;
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 use crate::model_menu::TuiModelMenuModel;
 use crate::prompt_and_command_history_menu::TuiPromptAndCommandHistoryMenuModel;
+use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::slash_commands::{TuiSlashCommandModel, TuiSlashCommandRow};
 use crate::test_fixtures::{add_test_conversation_selection, add_test_semantic_selection};
 use crate::tui_builder::TuiUiBuilder;
@@ -2218,6 +2219,78 @@ fn bang_at_start_enters_shell_mode() {
             type_str(&view, ctx, "!ls");
             assert!(view.as_ref(ctx).is_shell_mode(ctx));
             assert_eq!(text(&view, ctx), "ls", "the `!` must not be inserted");
+        });
+    });
+}
+
+/// A `?` typed at the start of an empty buffer opens the shortcuts sheet
+/// instead of inserting; a second `?` closes it again without inserting
+/// either.
+#[test]
+fn question_mark_at_empty_agent_input_toggles_shortcuts() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "?");
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts)
+            );
+            assert_eq!(text(&view, ctx), "");
+            assert!(
+                view.as_ref(ctx)
+                    .keymap_context(ctx)
+                    .set
+                    .contains(INPUT_HANDLES_ESCAPE_FLAG)
+            );
+
+            type_str(&view, ctx, "?");
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::Closed
+            );
+            assert_eq!(text(&view, ctx), "", "the closing `?` must not be inserted");
+        });
+    });
+}
+
+/// Escape closes an open shortcuts sheet before it does anything else --
+/// including exiting shell mode, which needs its own following Escape.
+#[test]
+fn escape_closes_shortcuts_before_exiting_shell_mode() {
+    App::test((), |mut app| async move {
+        register_tui_session_view_test_singletons(&mut app);
+        app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "?");
+            dispatch(&view, ctx, &[TuiInputAction::HandleEscape]);
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::Closed
+            );
+            assert!(!view.as_ref(ctx).is_shell_mode(ctx));
+
+            type_str(&view, ctx, "!");
+            type_str(&view, ctx, "?");
+            assert!(view.as_ref(ctx).is_shell_mode(ctx));
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts)
+            );
+            dispatch(&view, ctx, &[TuiInputAction::HandleEscape]);
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::Closed
+            );
+            assert!(
+                view.as_ref(ctx).is_shell_mode(ctx),
+                "the first Escape should only close shortcuts"
+            );
+            dispatch(&view, ctx, &[TuiInputAction::HandleEscape]);
+            assert!(
+                !view.as_ref(ctx).is_shell_mode(ctx),
+                "the second Escape should exit shell mode"
+            );
         });
     });
 }

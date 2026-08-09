@@ -55,6 +55,7 @@ use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestions
 use crate::keybindings::{
     KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG, PLAN_TOGGLE_AVAILABLE_FLAG, TUI_BINDING_GROUP,
 };
+use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::transcript_view::TuiTranscriptView;
 use crate::tui_builder::TuiUiBuilder;
 
@@ -633,9 +634,14 @@ impl TypedActionView for TuiInputView {
         let outcome = match action {
             TuiInputAction::Editor(editor_action) => {
                 if let TuiEditorAction::PasteText(text) = editor_action {
+                    self.close_read_only_menu(ctx);
                     ctx.emit(TuiInputViewEvent::Pasted(text.clone()));
                     return;
                 }
+                // Any other editor action closes the shared read-only menu
+                // (shortcuts/status) if it is open, mirroring how typing
+                // dismisses the other suggestion menus.
+                let closed_menu = self.close_read_only_menu(ctx);
                 // Route every typed character through the shared Vim FSA when
                 // enabled. Insert-mode routing is required for insert counts
                 // and dot-repeat; prompt-specific insertion policy lives in
@@ -650,6 +656,33 @@ impl TypedActionView for TuiInputView {
                         }
                         return;
                     }
+                }
+                // A second `?` that merely closed the shortcuts sheet is
+                // swallowed rather than inserted literally -- `?` is a toggle
+                // trigger while the buffer is empty, not ordinary text.
+                if closed_menu == Some(TuiReadOnlyMenuKind::Shortcuts)
+                    && matches!(editor_action, TuiEditorAction::InsertChar('?'))
+                {
+                    return;
+                }
+                // A `?` typed at the very start of an empty, otherwise-idle
+                // input opens the keyboard-shortcuts sheet instead of
+                // inserting (matching the GUI's typed-only trigger).
+                if matches!(editor_action, TuiEditorAction::InsertChar('?'))
+                    && self.plain_text(ctx).is_empty()
+                    && self.is_cursor_at_start(ctx)
+                    && matches!(
+                        self.suggestions_mode.as_ref(ctx).mode(),
+                        TuiInputSuggestionsMode::Closed
+                    )
+                {
+                    self.suggestions_mode.update(ctx, |mode, ctx| {
+                        mode.set_mode(
+                            TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts),
+                            ctx,
+                        );
+                    });
+                    return;
                 }
                 // A `!` typed at the very start of the input enters shell mode
                 // instead of inserting (matching the GUI's typed-only trigger).
@@ -668,6 +701,7 @@ impl TypedActionView for TuiInputView {
                 }
             }
             TuiInputAction::Submit => {
+                self.close_read_only_menu(ctx);
                 self.submit(ctx);
                 TuiEditorInteractionOutcome::FollowCursor
             }
@@ -676,6 +710,7 @@ impl TypedActionView for TuiInputView {
                 TuiEditorInteractionOutcome::FollowCursor
             }
             TuiInputAction::EditorCommand(command) => {
+                self.close_read_only_menu(ctx);
                 if matches!(*command, TuiEditorCommand::SelectUp) && self.can_focus_above(ctx) {
                     ctx.emit(TuiInputViewEvent::MoveFocusUp);
                     return;
@@ -1041,6 +1076,9 @@ impl TuiInputView {
     /// order. New input modes should be added after the inline-menu branch so
     /// one Escape always closes the most local surface first.
     fn handle_escape(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if self.close_read_only_menu(ctx).is_some() {
+            return true;
+        }
         if let Some(inline_menu) = self.active_inline_menu(ctx) {
             inline_menu.dismiss(ctx);
             ctx.notify();
@@ -1088,6 +1126,17 @@ impl TuiInputView {
             self.suggestions_mode.as_ref(ctx).mode(),
             ctx,
         )
+    }
+
+    /// Closes the shared read-only menu (shortcuts/status) if it is open,
+    /// returning which kind was closed.
+    fn close_read_only_menu(&self, ctx: &mut ViewContext<Self>) -> Option<TuiReadOnlyMenuKind> {
+        let mode = self.suggestions_mode.as_ref(ctx).mode();
+        let kind = mode.read_only_menu()?;
+        self.suggestions_mode.update(ctx, |model, ctx| {
+            model.close_if_active(mode, ctx);
+        });
+        Some(kind)
     }
 }
 
