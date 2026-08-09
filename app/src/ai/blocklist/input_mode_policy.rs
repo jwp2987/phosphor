@@ -1,10 +1,12 @@
 //! Per-view input-mode policy consulted for decisions the input model cannot make
 //! view-agnostically.
 //!
-//! Ported from Warp OSS. BYOP adaptation: Zap has no `InputTypeAutoDetectionSource` (a
-//! telemetry-only decision tag), so `PolicyConfigUpdate` carries only the config and the
-//! autodetection-suppression flag, and the source-recording `with_source` constructor is
-//! dropped.
+//! Ported from Warp OSS. BYOP adaptation: `input_model.rs` has a minimal, single-variant
+//! `InputTypeAutoDetectionSource` (added for #312's `resolve_history_match`), not the pin's full
+//! ~30-variant decision-source tag -- threading that through the whole model is a separate,
+//! larger port tracked by #399/#254 item d. So here, `PolicyConfigUpdate` still carries only the
+//! config and the autodetection-suppression flag, and the source-recording `with_source`
+//! constructor is still dropped.
 
 use std::rc::Rc;
 

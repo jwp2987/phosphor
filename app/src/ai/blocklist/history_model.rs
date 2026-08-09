@@ -246,9 +246,10 @@ pub struct BlocklistAIHistoryModel {
     persisted_queries: Vec<PersistedAIInput>,
 
     /// Agent prompt-history candidates for NLD input classification, ascending
-    /// (oldest-first). Seeded from a persisted snapshot in `new`; #256 item 2 only --
-    /// the live-session append path and the NLD-classification consumer are tracked
-    /// separately (superseded by #336/#337/#331).
+    /// (oldest-first). Seeded from a persisted snapshot in `new` (#256 item 2) and
+    /// consumed by `input_model.rs`'s `resolve_history_match` (#312). The live-session
+    /// append path and the SQLite-backed snapshot source are tracked separately
+    /// (superseded by #336/#337/#331), so the snapshot is currently always empty.
     prompt_history: Vec<PromptHistoryEntry>,
 
     /// Metadata for both local and ambient agent conversations.
@@ -2176,14 +2177,14 @@ impl BlocklistAIHistoryModel {
     /// (ascending). The matcher reverses this to iterate newest-first.
     ///
     /// Ported from the pin (`app/src/ai/blocklist/history_model.rs:2370-2373`, `02b53fcd8`) for
-    /// #256, item 2 only. Currently seeded only from the snapshot passed to `new` -- the
-    /// live-session append path (`append_session_prompt` in the pin) and the NLD-classification
-    /// consumer (`input_model.rs`'s `FeatureFlag::NldPromptHistoryMatch` branch in the pin) are
-    /// tracked separately (superseded by #336/#337/#331), so this fork's `new` is currently
-    /// always called with an empty snapshot (see `lib.rs`) until that consumer work lands.
-    /// Deliberately unwired for now: no caller exists yet in this fork (see above); the port is
-    /// scoped to the snapshot plumbing only (#256 item 2).
-    #[allow(dead_code)]
+    /// #256, item 2. Consumed by `input_model.rs`'s `detect_and_set_input_type` (#312), gated on
+    /// `FeatureFlag::NldPromptHistoryMatch`. Still seeded only from the snapshot passed to `new`
+    /// -- the live-session append path (`append_session_prompt` in the pin) and the SQLite-backed
+    /// `nld_prompts` read that feeds the real production snapshot are tracked separately
+    /// (superseded by #336/#337/#331), so this fork's `new` is currently always called with an
+    /// empty snapshot (see `lib.rs`) until that persistence work lands. `NldPromptHistoryMatch`
+    /// is also off by default (matching the pin's own default-off state), so in production this
+    /// currently has no observable effect either way.
     pub(crate) fn prompt_history_candidates(&self) -> Vec<PromptHistoryEntry> {
         self.prompt_history.clone()
     }

@@ -727,6 +727,14 @@ pub enum FeatureFlag {
     /// in-process localhost control surface it talks to). See
     /// `crates/local_control` and `app/src/local_control`.
     WarpControlCli,
+
+    /// Gates NLD input classification matching the buffer against agent
+    /// prompt history (in addition to shell command history). Ported from
+    /// the pin (`02b53fcd8`) for #312; matches the pin's default-off state --
+    /// still in development there and disabled on all channels pending
+    /// misclassification-bug fixes (pin PR #12586) -- so this is not added to
+    /// `DOGFOOD_FLAGS`/`PREVIEW_FLAGS`/`RELEASE_FLAGS` here either.
+    NldPromptHistoryMatch,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
