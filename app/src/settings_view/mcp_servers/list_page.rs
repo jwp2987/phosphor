@@ -137,6 +137,8 @@ impl MCPServersListPageView {
                         // Refresh cards when servers are spawned or removed.
                         me.refresh_file_based_server_cards(ctx);
                     }
+                    // Diagnostics don't change which cards are shown, only their status.
+                    FileBasedMCPManagerEvent::ConfigDiagnosticChanged => {}
                 });
 
                 // Refresh cards when MCP config files are parsed or removed.
@@ -146,6 +148,7 @@ impl MCPServersListPageView {
                     | FileMCPWatcherEvent::ConfigRemoved { .. } => {
                         me.refresh_file_based_server_cards(ctx);
                     }
+                    FileMCPWatcherEvent::ConfigError { .. } => {}
                 });
             }
         );

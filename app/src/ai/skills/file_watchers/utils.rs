@@ -5,15 +5,114 @@ use std::{
 };
 
 use ai::skills::{
-    home_skills_path, read_skills, ParsedSkill, SkillProvider, SKILL_PROVIDER_DEFINITIONS,
+    home_skills_path, parse_skill, read_skills, ParsedSkill, SkillProvider,
+    SKILL_PROVIDER_DEFINITIONS,
 };
 use anyhow::Error;
 use regex::Regex;
-use repo_metadata::{local_model::GetContentsArgs, RepoContent, RepoMetadataModel};
+use repo_metadata::{
+    RepoContent, RepoMetadataModel, RepositoryIdentifier, local_model::GetContentsArgs,
+};
+use walkdir::{DirEntry, WalkDir};
 use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
+use warp_util::standardized_path::StandardizedPath;
 use warpui::AppContext;
 
 use crate::warp_managed_paths_watcher::warp_managed_skill_dirs;
+
+fn local_or_remote_path_for_repo_path(
+    repo_id: &RepositoryIdentifier,
+    path: &StandardizedPath,
+) -> LocalOrRemotePath {
+    match repo_id {
+        RepositoryIdentifier::Local(_) => LocalOrRemotePath::Local(path.to_local_path_lossy()),
+        RepositoryIdentifier::Remote(remote) => {
+            LocalOrRemotePath::Remote(RemotePath::new(remote.host_id.clone(), path.clone()))
+        }
+    }
+}
+
+/// Finds project skill files from stored standing results.
+///
+/// Symlinked project skills are resolved while evaluating standing queries on the process that
+/// owns the repository. This consumer treats those results as authoritative for both local and
+/// remote repositories; direct filesystem discovery remains confined to metadata-failure fallback.
+pub(super) fn find_project_skill_files_in_tree(
+    repo_id: &RepositoryIdentifier,
+    repo_metadata: &RepoMetadataModel,
+    ctx: &AppContext,
+) -> Vec<LocalOrRemotePath> {
+    repo_metadata
+        .standing_query_results(repo_id, ctx)
+        .into_iter()
+        .flat_map(|results| results.project_skills())
+        .filter(|content| !content.is_directory)
+        .map(|content| local_or_remote_path_for_repo_path(repo_id, &content.path))
+        .collect()
+}
+
+/// Finds local project skill files by discovering provider directories on the filesystem.
+///
+/// This is a local-only fallback for repositories whose repo metadata indexing fails. Successful
+/// local and remote project refreshes should use [`find_project_skill_files_in_tree`] so the
+/// normal metadata-backed path remains shared.
+pub(super) fn find_local_project_skill_files_on_filesystem(
+    scan_root: &Path,
+) -> Vec<LocalOrRemotePath> {
+    let direct_skill_file = scan_root.join("SKILL.md");
+    if is_skill_file(&direct_skill_file) {
+        return vec![LocalOrRemotePath::Local(direct_skill_file)];
+    }
+
+    find_local_provider_directories_on_filesystem(scan_root)
+        .into_iter()
+        .flat_map(|provider_dir| std::fs::read_dir(provider_dir).into_iter().flatten())
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let skill_dir = entry.path();
+            if !skill_dir.is_dir() {
+                return None;
+            }
+            let skill_file = skill_dir.join("SKILL.md");
+            skill_file
+                .exists()
+                .then_some(LocalOrRemotePath::Local(skill_file))
+        })
+        .collect()
+}
+
+fn find_local_provider_directories_on_filesystem(scan_root: &Path) -> Vec<PathBuf> {
+    let mut provider_dirs = Vec::new();
+    let mut entries = WalkDir::new(scan_root).follow_links(false).into_iter();
+    while let Some(entry) = entries.next() {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        if is_ignored_fallback_scan_entry(&entry) {
+            if entry.file_type().is_dir() {
+                entries.skip_current_dir();
+            }
+            continue;
+        }
+        if entry.file_type().is_dir() && is_project_provider_path(entry.path()) {
+            provider_dirs.push(entry.into_path());
+            entries.skip_current_dir();
+        }
+    }
+    provider_dirs.sort();
+    provider_dirs
+}
+
+fn is_ignored_fallback_scan_entry(entry: &DirEntry) -> bool {
+    entry.file_name().to_str() == Some(".git")
+}
+
+fn is_project_provider_path(path: &Path) -> bool {
+    SKILL_PROVIDER_DEFINITIONS
+        .iter()
+        .any(|provider| path.ends_with(&provider.skills_path))
+}
 
 /// Finds all skill directories in a repository by querying the RepoMetadataModel tree.
 ///
@@ -64,6 +163,14 @@ pub fn read_skills_from_directories(
     skill_dirs
         .into_iter()
         .flat_map(|dir| read_skills(&dir))
+        .collect()
+}
+
+/// Reads all skills from the given concrete skill files.
+pub fn read_skills_from_files(skill_files: impl IntoIterator<Item = PathBuf>) -> Vec<ParsedSkill> {
+    skill_files
+        .into_iter()
+        .filter_map(|path| parse_skill(&path).ok())
         .collect()
 }
 

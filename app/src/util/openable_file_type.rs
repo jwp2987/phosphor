@@ -4,7 +4,10 @@
 use crate::util::file::external_editor::{settings::EditorChoice, Editor, EditorSettings};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-pub use warp_util::file_type::{is_binary_file, is_file_content_binary, is_markdown_file};
+use warp_core::features::FeatureFlag;
+pub use warp_util::file_type::{
+    is_binary_file, is_file_content_binary, is_jupyter_notebook_file, is_markdown_file,
+};
 
 #[derive(
     Debug,
@@ -68,6 +71,15 @@ pub fn is_supported_code_file(path: impl AsRef<Path>) -> bool {
 #[cfg(not(feature = "local_fs"))]
 pub fn is_supported_code_file(_path: impl AsRef<Path>) -> bool {
     false
+}
+
+/// Whether `path` renders in Zap's notebook viewer (with a Rendered/Raw
+/// toggle): Markdown files always, Jupyter notebooks when the feature flag is
+/// enabled.
+pub fn renders_in_warp_notebook_viewer(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    is_markdown_file(path)
+        || (FeatureFlag::JupyterNotebookRendering.is_enabled() && is_jupyter_notebook_file(path))
 }
 
 pub fn is_supported_image_file(path: impl AsRef<Path>) -> bool {
@@ -171,6 +183,14 @@ pub fn resolve_file_target_to_open_in_warp(
     let is_markdown = matches!(openable_file_type, Some(OpenableFileType::Markdown));
     let layout = layout.unwrap_or(*settings.open_file_layout);
 
+    // Jupyter notebooks render in Zap's notebook viewer unconditionally when
+    // the feature flag is enabled (the whole point is to avoid raw JSON).
+    if openable_file_type.is_some()
+        && FeatureFlag::JupyterNotebookRendering.is_enabled()
+        && is_jupyter_notebook_file(path)
+    {
+        return FileTarget::MarkdownViewer(layout);
+    }
     if is_markdown && *settings.prefer_markdown_viewer {
         return FileTarget::MarkdownViewer(layout);
     }
@@ -205,6 +225,16 @@ pub fn resolve_file_target_with_editor_choice(
     let is_markdown = matches!(is_openable_in_warp, Some(OpenableFileType::Markdown));
     let layout = layout.unwrap_or(default_layout);
     let is_openable_in_warp = is_openable_in_warp.is_some();
+
+    // 0. Jupyter notebooks render in Zap's notebook viewer unconditionally
+    // when the feature flag is enabled (not gated on `prefer_markdown_viewer`
+    // or `editor_choice`, since rendering-instead-of-JSON is the whole point).
+    if is_openable_in_warp
+        && FeatureFlag::JupyterNotebookRendering.is_enabled()
+        && is_jupyter_notebook_file(path)
+    {
+        return FileTarget::MarkdownViewer(layout);
+    }
 
     // 1. Markdown Viewer (only if user preference specified)
     if is_markdown && prefer_markdown_viewer {
@@ -364,6 +394,56 @@ mod tests {
             None,
         );
         assert_eq!(target, FileTarget::EnvEditor);
+    }
+
+    #[test]
+    fn test_renders_in_warp_notebook_viewer() {
+        // Markdown always renders in the notebook viewer, independent of the flag.
+        let off = FeatureFlag::JupyterNotebookRendering.override_enabled(false);
+        assert!(renders_in_warp_notebook_viewer(Path::new("README.md")));
+        assert!(!renders_in_warp_notebook_viewer(Path::new(
+            "notebook.ipynb"
+        )));
+        assert!(!renders_in_warp_notebook_viewer(Path::new("main.rs")));
+        drop(off);
+
+        // With the flag on, Jupyter notebooks also render in the notebook viewer.
+        let _on = FeatureFlag::JupyterNotebookRendering.override_enabled(true);
+        assert!(renders_in_warp_notebook_viewer(Path::new("notebook.ipynb")));
+        assert!(renders_in_warp_notebook_viewer(Path::new("README.md")));
+        assert!(!renders_in_warp_notebook_viewer(Path::new("main.rs")));
+    }
+
+    #[test]
+    #[cfg(feature = "local_fs")]
+    fn test_resolve_file_target_jupyter_notebook_flag_on() {
+        let _flag = FeatureFlag::JupyterNotebookRendering.override_enabled(true);
+        // Even with prefer_markdown_viewer off and an explicit Zap editor choice,
+        // a Jupyter notebook routes to the notebook viewer (not the JSON editor).
+        let target = resolve_file_target_with_editor_choice(
+            Path::new("analysis.ipynb"),
+            EditorChoice::Zap,
+            false, /* prefer_markdown_viewer */
+            EditorLayout::SplitPane,
+            None,
+        );
+        assert_eq!(target, FileTarget::MarkdownViewer(EditorLayout::SplitPane));
+    }
+
+    #[test]
+    #[cfg(feature = "local_fs")]
+    fn test_resolve_file_target_jupyter_notebook_flag_off() {
+        let _flag = FeatureFlag::JupyterNotebookRendering.override_enabled(false);
+        // With the flag off, a Jupyter notebook opens as JSON in the code editor,
+        // exactly as it does today.
+        let target = resolve_file_target_with_editor_choice(
+            Path::new("analysis.ipynb"),
+            EditorChoice::Zap,
+            true, /* prefer_markdown_viewer */
+            EditorLayout::SplitPane,
+            None,
+        );
+        assert_eq!(target, FileTarget::CodeEditor(EditorLayout::SplitPane));
     }
 
     #[test]

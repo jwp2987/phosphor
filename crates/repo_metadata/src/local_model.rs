@@ -55,6 +55,7 @@ use crate::{
 use std::sync::Arc;
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
+        use std::collections::HashSet;
         use notify_debouncer_full::notify::RecursiveMode;
         use crate::entry::{repo_watch_filter, should_ignore_git_path};
         use crate::repositories::{DetectedRepositories, DetectedRepositoriesEvent};
@@ -193,18 +194,40 @@ impl IndexedRepoState {
 
 /// How a repository's ROOT directory is registered with the filesystem
 /// watcher.
+///
+/// This is orthogonal to the set of on-demand per-directory watches a repo may
+/// also hold (see [`RepoWatch::extra_dirs`]): a recursive root can now carry
+/// extra non-recursive watches too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootWatchMode {
     /// A single recursive watch on the root covers the whole subtree. Used
-    /// for git repos and, today, for every lazy-loaded root.
+    /// for git repos (which rely on gitignore pruning in the watch descend
+    /// filter) and, on macOS/Windows, for lazy non-git roots where a
+    /// recursive OS watch is cheap.
     Recursive,
-    /// The root is watched non-recursively; each loaded directory would get
-    /// its own non-recursive watch. Not yet produced by any call site in this
-    /// fork — per-directory watch registration/teardown for a non-recursive
-    /// root (the oracle's `repo_watches`/`extra_dirs` tracking) is not yet
-    /// ported, so nothing constructs this variant outside tests.
-    #[allow(dead_code)]
+    /// The root is watched non-recursively; each loaded directory gets its
+    /// own non-recursive watch, so the number of watches scales with what the
+    /// user expands rather than the whole subtree. Used for lazy (non-git)
+    /// roots on Linux, where per-directory inotify watches are otherwise
+    /// prohibitively expensive.
     NonRecursive,
+}
+
+/// Tracks how a repository is registered with the filesystem watcher.
+///
+/// `root_mode` describes how the ROOT directory is registered. `extra_dirs`
+/// holds the on-demand NON-recursive watches we register on individual
+/// subdirectories that the root watch does not cover: every loaded subdir under
+/// a non-recursive root, or expanded gitignored dirs under a recursive root on
+/// Linux. The root itself is never stored here — it is unregistered directly by
+/// its repo path on teardown. In practice `extra_dirs` is only populated on
+/// Linux, since other backends deliver gitignored events through the recursive
+/// root watch.
+#[cfg(feature = "local_fs")]
+#[derive(Debug)]
+struct RepoWatch {
+    root_mode: RootWatchMode,
+    extra_dirs: HashSet<StandardizedPath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -226,10 +249,7 @@ impl BuildTaskKey {
 enum BuildTaskKind {
     /// A full or lazy repository/directory index build, keyed by its own root.
     Index,
-    /// A single directory expansion (`load_directory`). Reserved: nothing
-    /// constructs this yet — coalescing concurrent `load_directory` calls
-    /// (the oracle's `load_directory_with_completion`) is not yet ported.
-    #[allow(dead_code)]
+    /// A single directory expansion ([`LocalRepoMetadataModel::load_directory`]).
     DirectoryLoad,
 }
 
@@ -237,13 +257,12 @@ enum BuildTaskKind {
 /// when its owning repository is removed) instead of silently finishing and
 /// clobbering newer state.
 struct BuildTask {
-    #[allow(dead_code)]
     kind: BuildTaskKind,
     handle: SpawnedFutureHandle,
-    /// Waiters for this task's completion. Always empty in this fork today —
-    /// nothing yet calls a `subscribe_to_build_task`-style API (that belongs
-    /// to the not-yet-ported `load_directory_with_completion`) — but the
-    /// field is real: a superseded task's waiters, if any existed, are
+    /// Waiters for this task's completion, registered via
+    /// [`LocalRepoMetadataModel::subscribe_to_build_task`] when a duplicate
+    /// concurrent `load_directory` call coalesces onto this task instead of
+    /// starting a second build. A superseded task's waiters, if any, are
     /// notified in [`LocalRepoMetadataModel::track_build_task`].
     completion_waiters: Vec<oneshot::Sender<Result<(), String>>>,
 }
@@ -286,6 +305,17 @@ pub struct LocalRepoMetadataModel {
     /// events after applying watcher mutations. Only the remote server
     /// variant enables this.
     emit_incremental_updates: bool,
+    /// Resolved symlink target directories for direct children of ignored-path interests.
+    ///
+    /// One resolved target may be referenced by multiple lexical symlinks, so retain every
+    /// alias rather than using a one-to-one bidirectional map.
+    #[cfg(feature = "local_fs")]
+    symlink_targets: HashMap<PathBuf, HashSet<SymlinkTarget>>,
+    /// Tracks how each repository is registered with the filesystem watcher, so
+    /// on-demand per-directory watches (see [`Self::watch_subdir`]) can be
+    /// registered/unregistered without duplicating or leaking OS watches.
+    #[cfg(feature = "local_fs")]
+    repo_watches: HashMap<StandardizedPath, RepoWatch>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -293,6 +323,13 @@ struct RepoUpdate {
     added: Vec<PathBuf>,
     deleted: Vec<PathBuf>,
     moved: HashMap<PathBuf, PathBuf>,
+}
+
+#[cfg(feature = "local_fs")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SymlinkTarget {
+    repo_path: StandardizedPath,
+    current_path: PathBuf,
 }
 
 /// Describes a single file-tree mutation computed on a background thread.
@@ -376,6 +413,10 @@ impl LocalRepoMetadataModel {
             #[cfg(feature = "local_fs")]
             watcher: None,
             emit_incremental_updates: false,
+            #[cfg(feature = "local_fs")]
+            symlink_targets: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            repo_watches: HashMap::new(),
         };
         cfg_if::cfg_if! {
             if #[cfg(feature = "local_fs")] {
@@ -485,6 +526,8 @@ impl LocalRepoMetadataModel {
         ctx: &mut ModelContext<Self>,
     ) {
         self.standing_results.remove(&repo_path);
+        #[cfg(feature = "local_fs")]
+        self.clear_symlink_targets_for_repo(&repo_path, ctx);
         self.replace_repository_state(repo_path.clone(), IndexedRepoState::Failed(error));
         ctx.emit(RepositoryMetadataEvent::UpdatingRepositoryFailed { path: repo_path });
     }
@@ -541,6 +584,38 @@ impl LocalRepoMetadataModel {
         for waiter in waiters {
             let _ = waiter.send(result.clone());
         }
+    }
+
+    /// Registers `self` as a waiter on the in-flight `DirectoryLoad` build task at
+    /// `key`, if one exists, so a duplicate concurrent `load_directory` call
+    /// coalesces onto it instead of starting a second build. Returns `None` (and
+    /// starts a new build) for any other task kind, or if there is none.
+    fn subscribe_to_build_task(
+        &mut self,
+        key: &BuildTaskKey,
+    ) -> Option<oneshot::Receiver<Result<(), String>>> {
+        let task = self.build_tasks.get_mut(key)?;
+        if task.kind != BuildTaskKind::DirectoryLoad {
+            return None;
+        }
+        let (completion_tx, completion_rx) = oneshot::channel();
+        task.completion_waiters.push(completion_tx);
+        Some(completion_rx)
+    }
+
+    /// Adapts a completion-waiter channel into the public
+    /// `Result<(), RepoMetadataError>` future returned by
+    /// [`Self::load_directory_with_completion`].
+    fn wait_for_build_task(
+        completion_rx: oneshot::Receiver<Result<(), String>>,
+    ) -> BoxFuture<'static, Result<(), RepoMetadataError>> {
+        async move {
+            completion_rx
+                .await
+                .unwrap_or_else(|_| Err("Build task was cancelled".to_string()))
+                .map_err(RepoMetadataError::InvalidPath)
+        }
+        .boxed()
     }
 
     /// Aborts and drops every build task (and, under `local_fs`, every
@@ -612,6 +687,142 @@ impl LocalRepoMetadataModel {
         }
     }
 
+    /// Replays filesystem-watcher activity under a resolved symlink target directory
+    /// back onto its lexical (symlinked) path(s), so that project-skill standing
+    /// queries -- which only ever see the lexical path, since symlinked directories
+    /// are intentionally absent from the canonical tree -- pick up the change.
+    ///
+    /// Directory symlinks are intentionally absent from the canonical tree, so target changes
+    /// must be replayed through their lexical paths to refresh standing-query results.
+    #[cfg(feature = "local_fs")]
+    fn add_symlink_target_updates(
+        &self,
+        event: &BulkFilesystemWatcherEvent,
+        repo_updates: &mut HashMap<StandardizedPath, RepoUpdate>,
+    ) -> HashSet<PathBuf> {
+        let mut matched_paths = HashSet::new();
+        let mut append_updates = |path: &Path| {
+            for (original_path, targets) in &self.symlink_targets {
+                if path != original_path && !path.starts_with(original_path) {
+                    continue;
+                }
+                matched_paths.insert(path.to_path_buf());
+                for target in targets {
+                    let update = repo_updates.entry(target.repo_path.clone()).or_default();
+                    if !update.deleted.contains(&target.current_path) {
+                        update.deleted.push(target.current_path.clone());
+                    }
+                    if target.current_path.is_dir() && !update.added.contains(&target.current_path)
+                    {
+                        update.added.push(target.current_path.clone());
+                    }
+                }
+            }
+        };
+
+        for path in event.added_or_updated_iter() {
+            append_updates(path);
+        }
+        for path in &event.deleted {
+            append_updates(path);
+        }
+        for (to_path, from_path) in &event.moved {
+            append_updates(from_path);
+            append_updates(to_path);
+        }
+        matched_paths
+    }
+
+    /// Synchronizes producer-side target watches for symlinked children of ignored-path interests.
+    #[cfg(feature = "local_fs")]
+    fn refresh_symlink_targets(
+        &mut self,
+        repo_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.emit_incremental_updates {
+            return;
+        }
+        let previously_watched = self.symlink_targets.keys().cloned().collect::<HashSet<_>>();
+        self.remove_symlink_targets_for_repo(repo_path);
+        let Some(local_repo_path) = repo_path.to_local_path() else {
+            return;
+        };
+        for interest in &self.force_included_paths {
+            let Ok(entries) = std::fs::read_dir(local_repo_path.join(interest)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let current_path = entry.path();
+                if !current_path.is_symlink() || !current_path.is_dir() {
+                    continue;
+                }
+                let Ok(original_path) = dunce::canonicalize(&current_path) else {
+                    continue;
+                };
+                self.symlink_targets
+                    .entry(original_path)
+                    .or_default()
+                    .insert(SymlinkTarget {
+                        repo_path: repo_path.clone(),
+                        current_path,
+                    });
+            }
+        }
+        self.sync_symlink_target_watches(previously_watched, ctx);
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn remove_symlink_targets_for_repo(&mut self, repo_path: &StandardizedPath) {
+        for targets in self.symlink_targets.values_mut() {
+            targets.retain(|target| &target.repo_path != repo_path);
+        }
+        self.symlink_targets
+            .retain(|_, targets| !targets.is_empty());
+    }
+
+    /// Drops all symlink-target tracking (and watches) for `repo_path`, e.g. when the
+    /// repository is removed or fails to index. Unlike [`Self::refresh_symlink_targets`],
+    /// this never re-scans -- there is nothing left to watch for.
+    #[cfg(feature = "local_fs")]
+    fn clear_symlink_targets_for_repo(
+        &mut self,
+        repo_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let previously_watched = self.symlink_targets.keys().cloned().collect();
+        self.remove_symlink_targets_for_repo(repo_path);
+        self.sync_symlink_target_watches(previously_watched, ctx);
+    }
+
+    /// Registers/unregisters watches on symlink target directories so the watched set
+    /// matches `self.symlink_targets`'s keys exactly, diffed against `previously_watched`.
+    #[cfg(feature = "local_fs")]
+    fn sync_symlink_target_watches(
+        &self,
+        previously_watched: HashSet<PathBuf>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let desired_target_dirs = self.symlink_targets.keys().cloned().collect::<HashSet<_>>();
+        if let Some(ref watcher) = self.watcher {
+            for target_dir in desired_target_dirs.difference(&previously_watched) {
+                let target_dir = target_dir.clone();
+                watcher.update(ctx, |watcher, _ctx| {
+                    std::mem::drop(watcher.register_path(
+                        &target_dir,
+                        repo_watch_filter(target_dir.clone(), Vec::new(), Vec::new()),
+                        RecursiveMode::NonRecursive,
+                    ));
+                });
+            }
+            for target_dir in previously_watched.difference(&desired_target_dirs) {
+                watcher.update(ctx, |watcher, _ctx| {
+                    std::mem::drop(watcher.unregister_path(target_dir));
+                });
+            }
+        }
+    }
+
     /// Handles events from the BulkFilesystemWatcher.
     ///
     /// Each loop below opens with the watch filter's emit predicate
@@ -629,6 +840,7 @@ impl LocalRepoMetadataModel {
     ) {
         // Create a map to collect changes per repository
         let mut repo_updates: HashMap<StandardizedPath, RepoUpdate> = HashMap::new();
+        let symlink_target_paths = self.add_symlink_target_updates(event, &mut repo_updates);
 
         // Process added or updated files
         for path in event.added_or_updated_iter() {
@@ -651,7 +863,7 @@ impl LocalRepoMetadataModel {
             {
                 let repo_update = repo_updates.entry(repo_path).or_default();
                 repo_update.deleted.push(path.to_path_buf());
-            } else {
+            } else if !symlink_target_paths.contains(path) {
                 log::warn!("Deleted file not found in any repo: {path:?} not found in any repo");
             }
         }
@@ -730,13 +942,14 @@ impl LocalRepoMetadataModel {
                                 .entry(repo_path.clone())
                                 .or_default()
                                 .replace_subtrees(&removed_roots, discovered_results);
+                            model.refresh_symlink_targets(&repo_path, ctx);
                             ctx.emit(RepositoryMetadataEvent::FileTreeEntryUpdated {
                                 path: repo_path.clone(),
                             });
 
                             if !standing_delta.is_empty() {
                                 ctx.emit(RepositoryMetadataEvent::StandingQueryResultsUpdated {
-                                    path: repo_path,
+                                    path: repo_path.clone(),
                                     delta: standing_delta,
                                 });
                             }
@@ -746,6 +959,15 @@ impl LocalRepoMetadataModel {
                                     update,
                                 });
                             }
+                        }
+
+                        // Drop per-directory watches for any directory that was
+                        // deleted or moved away (along with their tracked
+                        // descendants). Without this their stale `extra_dirs`
+                        // entries would make `watch_subdir` skip re-watching if a
+                        // directory is later recreated at the same path.
+                        for removed in &removed_roots {
+                            model.unwatch_removed_subtree(&repo_path, removed, ctx);
                         }
                     },
                 );
@@ -823,9 +1045,10 @@ impl LocalRepoMetadataModel {
     /// Adds or updates a repository's file tree state.
     ///
     /// `root_mode` controls how the root is registered with the filesystem
-    /// watcher. Every call site today passes [`RootWatchMode::Recursive`] —
-    /// see the doc comment on [`RootWatchMode::NonRecursive`] for why that
-    /// variant exists but is not yet produced.
+    /// watcher: [`RootWatchMode::Recursive`] registers a single recursive watch
+    /// (git repos, and lazy roots off Linux), while [`RootWatchMode::NonRecursive`]
+    /// registers the root non-recursively so expanded subdirectories can be
+    /// watched individually (see [`Self::watch_subdir`]).
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
     fn add_repository_internal(
         &mut self,
@@ -851,23 +1074,53 @@ impl LocalRepoMetadataModel {
 
         // Register this path with the watcher if we have one. Skip the home
         // directory and its ancestors to avoid recursively watching unrelated
-        // user data; those paths can still be listed in the file tree.
+        // user data; those paths can still be listed in the file tree. This
+        // guard is fork-original (absent from the pin) and applies to both the
+        // root registration and the `repo_watches` bookkeeping below: an unsafe
+        // root gets no root watch and no per-directory watches, so `watch_subdir`
+        // (which consults `repo_watches`) correctly no-ops for it too.
         #[cfg(feature = "local_fs")]
         {
-            if let Some(ref watcher) = self.watcher {
-                if !is_unsafe_watch_root(&local_path) {
-                    let watch_path = local_path.clone();
-                    let recursive_mode = match root_mode {
-                        RootWatchMode::Recursive => RecursiveMode::Recursive,
-                        RootWatchMode::NonRecursive => RecursiveMode::NonRecursive,
-                    };
+            if !is_unsafe_watch_root(&local_path) {
+                let watch_path = local_path.clone();
+                let recursive_mode = match root_mode {
+                    RootWatchMode::Recursive => RecursiveMode::Recursive,
+                    RootWatchMode::NonRecursive => RecursiveMode::NonRecursive,
+                };
+                // Replace any prior registration, dropping its root watch and stale
+                // per-directory watches before re-registering (e.g. a lazy
+                // non-recursive root upgraded to a recursive git repo, whose old
+                // per-dir watches would otherwise duplicate the recursive coverage).
+                let previous = self.repo_watches.insert(
+                    repo_path.clone(),
+                    RepoWatch {
+                        root_mode,
+                        extra_dirs: HashSet::new(),
+                    },
+                );
+                if let Some(ref watcher) = self.watcher {
                     // Build the gitignore set (root + global) and force-included
                     // path list so the descend filter prunes gitignored subtrees
                     // while still watching registered force-included paths (e.g.
                     // skills).
                     let (gitignores, force_included_paths) =
                         self.repo_watch_filter_inputs(&watch_path);
+                    let had_previous = previous.is_some();
+                    let previous_extra: Vec<PathBuf> = previous
+                        .map(|prev| {
+                            prev.extra_dirs
+                                .iter()
+                                .filter_map(|dir| dir.to_local_path())
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     watcher.update(ctx, |watcher, _ctx| {
+                        if had_previous {
+                            std::mem::drop(watcher.unregister_path(&watch_path));
+                        }
+                        for dir in &previous_extra {
+                            std::mem::drop(watcher.unregister_path(dir));
+                        }
                         std::mem::drop(watcher.register_path(
                             &watch_path,
                             repo_watch_filter(watch_path.clone(), gitignores, force_included_paths),
@@ -881,6 +1134,8 @@ impl LocalRepoMetadataModel {
         // Insert the repository state into the map
         let repo_path_for_event = repo_path.clone();
         self.replace_repository_state(repo_path, IndexedRepoState::Indexed(state));
+        #[cfg(feature = "local_fs")]
+        self.refresh_symlink_targets(&repo_path_for_event, ctx);
 
         ctx.emit(RepositoryMetadataEvent::RepositoryUpdated {
             path: repo_path_for_event,
@@ -905,15 +1160,33 @@ impl LocalRepoMetadataModel {
         }
         if self.remove_repository_state(repo_path).is_some() {
             self.standing_results.remove(repo_path);
-            // Unregister from watcher, mirroring the guard in add_repository_internal:
-            // home directory and ancestors are never registered, so skip them here too.
+            #[cfg(feature = "local_fs")]
+            self.clear_symlink_targets_for_repo(repo_path, ctx);
+            // Drop the recorded watch entry and unregister from the watcher,
+            // mirroring the guard in add_repository_internal: home directory
+            // and ancestors are never registered, so skip them here too.
             #[cfg(feature = "local_fs")]
             {
+                let removed = self.repo_watches.remove(repo_path);
                 if let Some(ref watcher) = self.watcher {
                     if let Some(local_path) = repo_path.to_local_path() {
                         if !is_unsafe_watch_root(&local_path) {
+                            // Uniform teardown: the root watch lives on the repo
+                            // path, plus any on-demand per-directory watches in
+                            // `extra_dirs`.
+                            let mut paths_to_unregister: Vec<PathBuf> = vec![local_path];
+                            if let Some(removed) = removed {
+                                paths_to_unregister.extend(
+                                    removed
+                                        .extra_dirs
+                                        .iter()
+                                        .filter_map(|dir| dir.to_local_path()),
+                                );
+                            }
                             watcher.update(ctx, |watcher, _ctx| {
-                                std::mem::drop(watcher.unregister_path(&local_path));
+                                for path in &paths_to_unregister {
+                                    std::mem::drop(watcher.unregister_path(path));
+                                }
                             });
                         }
                     }
@@ -1021,7 +1294,17 @@ impl LocalRepoMetadataModel {
         .map_err(RepoMetadataError::BuildTree)?;
 
         let state = FileTreeState::new_lazy_loaded(root_entry);
-        self.add_repository_internal(path.clone(), state, RootWatchMode::Recursive, ctx)?;
+        // On Linux, watch lazy (non-git) roots non-recursively to avoid
+        // registering an inotify watch for every directory in the subtree.
+        // Subdirectories get their own non-recursive watch as they are expanded
+        // (see `load_directory`/`watch_subdir`). macOS/Windows watch a whole
+        // tree with a single OS handle, so recursive watching stays cheap there.
+        let root_mode = if cfg!(target_os = "linux") {
+            RootWatchMode::NonRecursive
+        } else {
+            RootWatchMode::Recursive
+        };
+        self.add_repository_internal(path.clone(), state, root_mode, ctx)?;
         self.standing_results.insert(path.clone(), standing_results);
         self.lazy_loaded_paths.insert(path.clone(), 1);
         Ok(())
@@ -1055,20 +1338,264 @@ impl LocalRepoMetadataModel {
         dir_path: &StandardizedPath,
         ctx: &mut ModelContext<Self>,
     ) -> Result<(), RepoMetadataError> {
+        match self.load_directory_with_completion(repo_root, dir_path, ctx) {
+            Ok(completion) => {
+                std::mem::drop(completion);
+                Ok(())
+            }
+            Err(RepoMetadataError::RepositoryIndexingPending) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Loads a specific directory and resolves once the async load has been applied or rejected.
+    ///
+    /// A duplicate concurrent call for the same `(repo_root, dir_path)` coalesces onto the
+    /// in-flight build instead of starting a second one, via [`Self::subscribe_to_build_task`].
+    #[cfg(feature = "local_fs")]
+    pub fn load_directory_with_completion(
+        &mut self,
+        repo_root: &StandardizedPath,
+        dir_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) -> Result<BoxFuture<'static, Result<(), RepoMetadataError>>, RepoMetadataError> {
+        let task_key = BuildTaskKey::new(repo_root.clone(), dir_path.clone());
+        if let Some(completion_rx) = self.subscribe_to_build_task(&task_key) {
+            return Ok(Self::wait_for_build_task(completion_rx));
+        }
+
         let Some(IndexedRepoState::Indexed(state)) = self.repositories.get_mut(repo_root) else {
             return Err(RepoMetadataError::RepoNotFound(repo_root.to_string()));
         };
 
-        let mut gitignores = state.gitignores.clone();
-        state
+        let ancestor_is_ignored = state
             .entry
-            .load_at_path(dir_path, &mut gitignores)
-            .map_err(RepoMetadataError::BuildTree)?;
+            .get(dir_path)
+            .is_some_and(|entry| entry.ignored());
+        let dir_was_present = state.entry.contains(dir_path);
+        let target_unloaded_directory_path = match state.entry.get(dir_path) {
+            Some(FileTreeEntryState::Directory(directory)) if !directory.loaded => {
+                Some(directory.path.clone())
+            }
+            _ => None,
+        };
+        let mut gitignores = state.gitignores.clone();
+        let dir_path_for_build = dir_path.to_local_path_lossy();
+        let repo_root_for_build = repo_root.clone();
+        let dir_path_for_completion = dir_path.clone();
+        let task_key_for_completion = task_key.clone();
+        let task_future_id = Rc::new(Cell::new(None));
+        let task_future_id_for_completion = task_future_id.clone();
+        let (completion_tx, completion_rx) = oneshot::channel();
+        let build_handle = ctx.spawn(
+            async move {
+                let mut remaining_file_quota = LAZY_LOAD_FILE_LIMIT;
+                let mut files = Vec::new();
+                let result = Entry::build_tree_with_ignored_ancestor(
+                    dir_path_for_build,
+                    &mut files,
+                    &mut gitignores,
+                    Some(&mut remaining_file_quota),
+                    1, /* max_depth */
+                    0, /* current_depth */
+                    &IgnoredPathStrategy::Include,
+                    ancestor_is_ignored,
+                )
+                .await;
+                (repo_root_for_build, dir_path_for_completion, result)
+            },
+            move |model, (repo_root, dir_path, build_result), ctx| {
+                let completion = if let Some(task) = model.finish_build_task(
+                    &task_key_for_completion,
+                    task_future_id_for_completion.get(),
+                ) {
+                    let completion = match build_result {
+                        Ok(entry) => {
+                            if let Some(IndexedRepoState::Indexed(state)) =
+                                model.repositories.get_mut(&repo_root)
+                            {
+                                // Guard against the load target having changed while the
+                                // build was in flight (e.g. the directory was removed, or
+                                // replaced by a fresh unloaded placeholder from an
+                                // intervening watcher update): only apply this build's
+                                // result if the tree still has a slot that expects it.
+                                let target_still_accepts_load =
+                                    if let Some(expected_path) = &target_unloaded_directory_path {
+                                        matches!(
+                                            state.entry.get(&dir_path),
+                                            Some(FileTreeEntryState::Directory(directory))
+                                                if !directory.loaded
+                                                    && Arc::ptr_eq(&directory.path, expected_path)
+                                        )
+                                    } else {
+                                        !dir_was_present || state.entry.contains(&dir_path)
+                                    };
 
-        ctx.emit(RepositoryMetadataEvent::FileTreeEntryUpdated {
-            path: repo_root.clone(),
-        });
-        Ok(())
+                                if !target_still_accepts_load {
+                                    Err(RepoMetadataError::InvalidPath(format!(
+                                        "Directory load target changed while loading: {dir_path}"
+                                    )))
+                                } else {
+                                    state
+                                        .entry
+                                        .insert_entry_at_path(Arc::new(dir_path.clone()), entry);
+
+                                    // Start watching the directory we just expanded so its direct
+                                    // children stay fresh. For a non-recursive root this covers
+                                    // every expanded subdir; for a recursive root it covers
+                                    // gitignored dirs pruned from the root watch on Linux. No-op
+                                    // when the root watch already covers it.
+                                    model.watch_subdir(&repo_root, &dir_path, ctx);
+
+                                    ctx.emit(RepositoryMetadataEvent::FileTreeEntryUpdated {
+                                        path: repo_root,
+                                    });
+                                    Ok(())
+                                }
+                            } else {
+                                Err(RepoMetadataError::RepoNotFound(repo_root.to_string()))
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("Failed to load directory {dir_path}: {error:?}");
+                            Err(RepoMetadataError::BuildTree(error))
+                        }
+                    };
+                    let waiter_completion =
+                        completion.as_ref().map(|_| ()).map_err(ToString::to_string);
+                    Self::notify_completion_waiters(task.completion_waiters, waiter_completion);
+                    completion
+                } else {
+                    Err(RepoMetadataError::RepositoryNotIndexed)
+                };
+                let _ = completion_tx.send(completion);
+            },
+        );
+        task_future_id.set(Some(build_handle.future_id()));
+        self.track_build_task(task_key, BuildTaskKind::DirectoryLoad, build_handle);
+        Ok(async move {
+            completion_rx
+                .await
+                .unwrap_or(Err(RepoMetadataError::RepositoryNotIndexed))
+        }
+        .boxed())
+    }
+
+    /// Registers an on-demand non-recursive watch on `dir_path` when the root
+    /// watch does not already cover it, recording it in `extra_dirs` so it can
+    /// be unregistered on teardown. No-ops if `repo_root` is not tracked, the
+    /// directory is already watched, or the root watch already covers it.
+    ///
+    /// Decision by root mode:
+    /// - [`RootWatchMode::NonRecursive`]: nothing under the root is covered, so
+    ///   every loaded subdir gets its own watch.
+    /// - [`RootWatchMode::Recursive`]: the root watch already covers non-pruned
+    ///   subtrees; only gitignored dirs are pruned, and only on Linux (other
+    ///   backends ignore the descend filter and still deliver their events), so
+    ///   we watch those to keep expanded gitignored folders fresh.
+    #[cfg(feature = "local_fs")]
+    fn watch_subdir(
+        &mut self,
+        repo_root: &StandardizedPath,
+        dir_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(repo_watch) = self.repo_watches.get(repo_root) else {
+            return;
+        };
+        if repo_watch.extra_dirs.contains(dir_path) {
+            // Already watching this directory.
+            return;
+        }
+        let root_mode = repo_watch.root_mode;
+
+        let should_watch = match root_mode {
+            RootWatchMode::NonRecursive => true,
+            RootWatchMode::Recursive => {
+                cfg!(target_os = "linux") && self.dir_pruned_from_root_watch(repo_root, dir_path)
+            }
+        };
+        if !should_watch {
+            return;
+        }
+
+        let Some(local_path) = dir_path.to_local_path() else {
+            return;
+        };
+        let gitignores = gitignores_for_directory(&local_path);
+        let force_included_paths = self.force_included_paths.clone();
+        if let Some(repo_watch) = self.repo_watches.get_mut(repo_root) {
+            repo_watch.extra_dirs.insert(dir_path.clone());
+        }
+        if let Some(ref watcher) = self.watcher {
+            watcher.update(ctx, |watcher, _ctx| {
+                std::mem::drop(watcher.register_path(
+                    &local_path,
+                    repo_watch_filter(local_path.clone(), gitignores, force_included_paths),
+                    RecursiveMode::NonRecursive,
+                ));
+            });
+        }
+    }
+
+    /// Drops any on-demand per-directory watches at or under `removed_path` when
+    /// a directory is deleted or moved away. Each stale path is unregistered from
+    /// the watcher and removed from `extra_dirs`. Without this, a directory
+    /// recreated at the same path would be skipped by [`Self::watch_subdir`]
+    /// (which sees the stale `extra_dirs` entry) and never receive a fresh watch.
+    #[cfg(feature = "local_fs")]
+    fn unwatch_removed_subtree(
+        &mut self,
+        repo_root: &StandardizedPath,
+        removed_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(repo_watch) = self.repo_watches.get_mut(repo_root) else {
+            return;
+        };
+        // The removed directory plus any tracked descendants are now stale.
+        // `starts_with` is component-aware and matches the path itself, so this
+        // covers both an exact removed dir and everything expanded beneath it.
+        let stale: Vec<StandardizedPath> = repo_watch
+            .extra_dirs
+            .iter()
+            .filter(|dir| dir.starts_with(removed_path))
+            .cloned()
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        for dir in &stale {
+            repo_watch.extra_dirs.remove(dir);
+        }
+        if let Some(ref watcher) = self.watcher {
+            let local_paths: Vec<PathBuf> =
+                stale.iter().filter_map(|dir| dir.to_local_path()).collect();
+            watcher.update(ctx, |watcher, _ctx| {
+                for path in &local_paths {
+                    std::mem::drop(watcher.unregister_path(path));
+                }
+            });
+        }
+    }
+
+    /// Returns whether `dir_path` would be pruned from `repo_root`'s recursive
+    /// watch by the gitignore descend filter (i.e. it is gitignored relative to
+    /// the repo root). Used to decide whether an expanded directory needs its
+    /// own watch.
+    #[cfg(feature = "local_fs")]
+    fn dir_pruned_from_root_watch(
+        &self,
+        repo_root: &StandardizedPath,
+        dir_path: &StandardizedPath,
+    ) -> bool {
+        let Some(IndexedRepoState::Indexed(state)) = self.repositories.get(repo_root) else {
+            return false;
+        };
+        let Some(local) = dir_path.to_local_path() else {
+            return false;
+        };
+        Self::path_is_ignored(&local, &state.gitignores)
     }
 
     /// Checks whether the parent directory of `path` is loaded in the given entry.

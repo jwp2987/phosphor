@@ -311,7 +311,9 @@ use crate::util::bindings::{
 };
 use crate::util::clipboard::clipboard_content_with_escaped_paths;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::{is_markdown_file, resolve_file_target, FileTarget};
+use crate::util::openable_file_type::{
+    FileTarget, renders_in_warp_notebook_viewer, resolve_file_target,
+};
 use crate::view_components::{DismissibleToast, ToastFlavor};
 use crate::workflows::workflow::Workflow;
 use crate::workflows::WorkflowSelectionSource;
@@ -14996,7 +14998,7 @@ impl TerminalView {
                                     .into_item(),
                             ];
 
-                            if is_markdown_file(&path) {
+                            if renders_in_warp_notebook_viewer(&path) {
                                 items.push(
                                     MenuItemFields::new(crate::t!("menu-block-open-in-warp"))
                                         .with_on_select_action(TerminalAction::OpenFileInWarp(path))

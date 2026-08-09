@@ -241,12 +241,13 @@ where
 /// This checks:
 /// - Whether Zap is already the default editor (skip if so)
 /// - Whether this file is openable in Zap (skips binary files and directories)
-/// - Whether Zap is an OS-level default editor (skips Markdown files)
+/// - Whether the file renders in Zap's notebook viewer, which is reached via a
+///   different affordance (skips Markdown and, when enabled, Jupyter notebooks)
 #[cfg(feature = "local_fs")]
 pub fn should_show_open_in_warp_link(path: &Path, app: &AppContext) -> bool {
     use crate::{
         code::view::is_binary_file,
-        notebooks::file::is_markdown_file,
+        notebooks::file::renders_in_warp_notebook_viewer,
         util::file::external_editor::{settings::EditorChoice, EditorSettings},
     };
     use warpui::SingletonEntity;
@@ -257,7 +258,7 @@ pub fn should_show_open_in_warp_link(path: &Path, app: &AppContext) -> bool {
         return false;
     }
 
-    !is_markdown_file(path) && !is_binary_file(path) && !path.is_dir()
+    !renders_in_warp_notebook_viewer(path) && !is_binary_file(path) && !path.is_dir()
 }
 
 #[cfg(not(feature = "local_fs"))]

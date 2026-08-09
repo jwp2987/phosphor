@@ -205,18 +205,20 @@ impl RepoMetadataModel {
     }
 
     /// Returns the current standing-query results (project skills, project
-    /// rule files) for a local repository, if tracked.
-    ///
-    /// Only local repositories evaluate standing queries directly; remote
-    /// repositories receive their results via `standing_results_delta` on a
-    /// snapshot or incremental update, so this always returns `None` for a
-    /// `RepositoryIdentifier::Remote`.
+    /// rule files) for a repository identified by `id`, if tracked.
     pub fn standing_query_results<'a>(
         &self,
-        path: &StandardizedPath,
+        id: &RepositoryIdentifier,
         ctx: &'a AppContext,
     ) -> Option<&'a StandingQueryResults> {
-        self.local.as_ref(ctx).standing_query_results(path)
+        match id {
+            RepositoryIdentifier::Local(path) => {
+                self.local.as_ref(ctx).standing_query_results(path)
+            }
+            RepositoryIdentifier::Remote(remote_id) => {
+                self.remote.as_ref(ctx).standing_query_results(remote_id)
+            }
+        }
     }
 
     /// Returns whether the given repository is indexed.
@@ -454,6 +456,18 @@ impl RepoMetadataModel {
     ) {
         self.local.update(ctx, |local, _ctx| {
             local.insert_test_state(repo_path, state);
+        });
+    }
+
+    /// Inserts standing-query results directly into the local sub-model for testing.
+    pub fn insert_test_standing_results(
+        &self,
+        repo_path: StandardizedPath,
+        standing_results: StandingQueryResults,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.local.update(ctx, |local, _ctx| {
+            local.insert_test_standing_results(repo_path, standing_results);
         });
     }
 }

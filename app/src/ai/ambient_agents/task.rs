@@ -302,6 +302,26 @@ impl AmbientAgentTask {
         (duration.num_seconds() >= 0).then_some(duration)
     }
 
+    /// Returns the short label for this task: trimmed `agent_config_snapshot.name`,
+    /// trimmed `title`, or `"Agent"`.
+    pub fn display_name(&self) -> &str {
+        if let Some(name) = self
+            .agent_config_snapshot
+            .as_ref()
+            .and_then(|c| c.name.as_deref())
+        {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
+        let trimmed_title = self.title.trim();
+        if !trimmed_title.is_empty() {
+            return trimmed_title;
+        }
+        "Agent"
+    }
+
     /// Creator's display name, if available.
     pub fn creator_display_name(&self) -> Option<String> {
         self.creator.as_ref().and_then(|c| c.display_name.clone())

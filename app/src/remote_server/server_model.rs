@@ -501,7 +501,7 @@ impl ServerModel {
                         let standing_results: Option<super::proto::StandingQueryResultsDelta> =
                             repo_model
                                 .as_ref(ctx)
-                                .standing_query_results(path, ctx)
+                                .standing_query_results(&id, ctx)
                                 .map(|results| (&results.as_snapshot_delta()).into());
                         me.send_server_message(
                             None,
@@ -2322,7 +2322,7 @@ impl ServerModel {
                         let standing_results: Option<super::proto::StandingQueryResultsDelta> =
                             repo_model
                                 .as_ref(ctx)
-                                .standing_query_results(&root_path, ctx)
+                                .standing_query_results(&id, ctx)
                                 .map(|results| (&results.as_snapshot_delta()).into());
                         // Git snapshots target the requesting connection;
                         // non-git snapshots broadcast to all.

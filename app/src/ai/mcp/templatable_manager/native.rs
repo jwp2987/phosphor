@@ -194,6 +194,8 @@ impl TemplatableMCPServerManager {
             } => {
                 me.purge_file_based_server_credentials(installation_hashes, ctx);
             }
+            // Diagnostic surfacing is handled by the settings UI, not server lifecycle.
+            FileBasedMCPManagerEvent::ConfigDiagnosticChanged => {}
         });
 
         // TemplatableMCPServerManager is the source of truth for templatable MCP servers stored on the cloud

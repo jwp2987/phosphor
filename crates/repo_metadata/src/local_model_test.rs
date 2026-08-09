@@ -3,6 +3,7 @@
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod tests {
+    use crate::StandingQueryResults;
     use crate::entry::{
         BudgetExceededBehavior, BuildTreeOptions, DirectoryEntry, Entry, FileMetadata,
         IgnoredPathStrategy,
@@ -23,6 +24,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::path::PathBuf;
     use std::rc::Rc;
+    use std::sync::Arc;
     use std::task::Poll;
     use std::time::Duration;
     use virtual_fs::{Stub, VirtualFS};
@@ -45,6 +47,10 @@ mod tests {
                 #[cfg(feature = "local_fs")]
                 watcher: Default::default(),
                 emit_incremental_updates: false,
+                #[cfg(feature = "local_fs")]
+                symlink_targets: Default::default(),
+                #[cfg(feature = "local_fs")]
+                repo_watches: Default::default(),
             }
         }
     }
@@ -1820,6 +1826,353 @@ Thumbs.db
         );
     }
 
+    #[cfg(all(unix, feature = "local_fs"))]
+    #[test]
+    fn modified_external_symlink_target_upserts_lexical_project_skill() {
+        VirtualFS::test(
+            "modified_external_symlink_target_upserts_lexical_project_skill",
+            |dirs, mut vfs| {
+                vfs.mkdir("repo/.agents/skills")
+                    .mkdir("outside/linked-skill")
+                    .with_files(vec![Stub::FileWithContent(
+                        "outside/linked-skill/SKILL.md",
+                        "linked skill",
+                    )]);
+                let repo = dirs.tests().join("repo");
+                let logical_skill_dir = repo.join(".agents/skills/linked-skill");
+                let logical_skill_path = logical_skill_dir.join("SKILL.md");
+                let target_skill_path = dirs.tests().join("outside/linked-skill/SKILL.md");
+                std::os::unix::fs::symlink(
+                    dirs.tests().join("outside/linked-skill"),
+                    &logical_skill_dir,
+                )
+                .unwrap();
+
+                App::test((), |mut app| async move {
+                    let repo_path = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                    let logical_skill_path =
+                        StandardizedPath::try_from_local(&logical_skill_path).unwrap();
+                    let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                    model_handle.update(&mut app, |model, ctx| {
+                        model.set_emit_incremental_updates(true);
+                        model.register_force_included_paths([PathBuf::from(".agents/skills")]);
+                        model.set_project_skill_provider_paths([PathBuf::from(".agents/skills")]);
+                        model.repositories.insert(
+                            repo_path.clone(),
+                            IndexedRepoState::Indexed(empty_repo_state(&repo_path)),
+                        );
+                        let mut results = StandingQueryResults::default();
+                        results.insert_project_skill(StandingQueryContent::file(
+                            logical_skill_path.clone(),
+                        ));
+                        model.standing_results.insert(repo_path.clone(), results);
+                        model.refresh_symlink_targets(&repo_path, ctx);
+                    });
+
+                    let (tx, rx) = oneshot::channel();
+                    let received_delta = Rc::new(RefCell::new(Some(tx)));
+                    let received_delta_for_event = received_delta.clone();
+                    let logical_skill_path_for_event = logical_skill_path.clone();
+                    app.update(|ctx| {
+                        ctx.subscribe_to_model(&model_handle, move |_, event, _ctx| {
+                            if let RepositoryMetadataEvent::IncrementalUpdateReady { update } =
+                                event
+                                && update
+                                    .standing_results_delta
+                                    .upserted_project_skills
+                                    .iter()
+                                    .any(|content| {
+                                        content
+                                            == &StandingQueryContent::file(
+                                                logical_skill_path_for_event.clone(),
+                                            )
+                                    })
+                                && let Some(tx) = received_delta_for_event.borrow_mut().take()
+                            {
+                                let _ = tx.send(());
+                            }
+                        });
+                    });
+
+                    model_handle.update(&mut app, |model, ctx| {
+                        model.handle_watcher_event(
+                            &BulkFilesystemWatcherEvent {
+                                modified: std::collections::HashSet::from([target_skill_path]),
+                                ..Default::default()
+                            },
+                            ctx,
+                        );
+                    });
+
+                    rx.with_timeout(Duration::from_secs(5))
+                        .await
+                        .expect("timed out waiting for symlink target upsert")
+                        .expect("symlink target upsert sender dropped");
+                });
+            },
+        );
+    }
+
+    #[cfg(all(unix, feature = "local_fs"))]
+    #[test]
+    fn removed_then_recreated_external_symlink_target_refreshes_lexical_project_skill() {
+        VirtualFS::test(
+            "removed_then_recreated_external_symlink_target_refreshes_lexical_project_skill",
+            |dirs, mut vfs| {
+                vfs.mkdir("repo/.agents/skills")
+                    .mkdir("outside/linked-skill")
+                    .with_files(vec![Stub::FileWithContent(
+                        "outside/linked-skill/SKILL.md",
+                        "linked skill",
+                    )]);
+                let repo = dirs.tests().join("repo");
+                let logical_skill_dir = repo.join(".agents/skills/linked-skill");
+                let logical_skill_path = logical_skill_dir.join("SKILL.md");
+                let target_skill_path = dirs.tests().join("outside/linked-skill/SKILL.md");
+                std::os::unix::fs::symlink(
+                    dirs.tests().join("outside/linked-skill"),
+                    &logical_skill_dir,
+                )
+                .unwrap();
+
+                App::test((), |mut app| async move {
+                    let repo_path = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                    let logical_skill_path =
+                        StandardizedPath::try_from_local(&logical_skill_path).unwrap();
+                    let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                    model_handle.update(&mut app, |model, ctx| {
+                        model.set_emit_incremental_updates(true);
+                        model.register_force_included_paths([PathBuf::from(".agents/skills")]);
+                        model.set_project_skill_provider_paths([PathBuf::from(".agents/skills")]);
+                        model.repositories.insert(
+                            repo_path.clone(),
+                            IndexedRepoState::Indexed(empty_repo_state(&repo_path)),
+                        );
+                        let mut results = StandingQueryResults::default();
+                        results.insert_project_skill(StandingQueryContent::file(
+                            logical_skill_path.clone(),
+                        ));
+                        model.standing_results.insert(repo_path.clone(), results);
+                        model.refresh_symlink_targets(&repo_path, ctx);
+                    });
+
+                    let (tx, rx) = oneshot::channel();
+                    let received_delta = Rc::new(RefCell::new(Some(tx)));
+                    let received_delta_for_event = received_delta.clone();
+                    let logical_skill_path_for_event = logical_skill_path.clone();
+                    app.update(|ctx| {
+                        ctx.subscribe_to_model(&model_handle, move |_, event, _ctx| {
+                            if let RepositoryMetadataEvent::StandingQueryResultsUpdated {
+                                delta,
+                                ..
+                            } = event
+                                && delta.removed_project_skills.iter().any(|content| {
+                                    content
+                                        == &StandingQueryContent::file(
+                                            logical_skill_path_for_event.clone(),
+                                        )
+                                })
+                                && let Some(tx) = received_delta_for_event.borrow_mut().take()
+                            {
+                                let _ = tx.send(());
+                            }
+                        });
+                    });
+
+                    std::fs::remove_file(&target_skill_path).unwrap();
+                    model_handle.update(&mut app, |model, ctx| {
+                        model.handle_watcher_event(
+                            &BulkFilesystemWatcherEvent {
+                                deleted: std::collections::HashSet::from([
+                                    target_skill_path.clone(),
+                                ]),
+                                ..Default::default()
+                            },
+                            ctx,
+                        );
+                    });
+
+                    rx.with_timeout(Duration::from_secs(5))
+                        .await
+                        .expect("timed out waiting for symlink target removal")
+                        .expect("symlink target removal sender dropped");
+                    model_handle.read(&app, |model, _ctx| {
+                        assert!(
+                            model
+                                .standing_query_results(&repo_path)
+                                .expect("standing results should remain tracked")
+                                .project_skills()
+                                .all(|content| content
+                                    != &StandingQueryContent::file(logical_skill_path.clone()))
+                        );
+                    });
+
+                    let (tx, rx) = oneshot::channel();
+                    let received_delta = Rc::new(RefCell::new(Some(tx)));
+                    let received_delta_for_event = received_delta.clone();
+                    let logical_skill_path_for_event = logical_skill_path.clone();
+                    app.update(|ctx| {
+                        ctx.subscribe_to_model(&model_handle, move |_, event, _ctx| {
+                            if let RepositoryMetadataEvent::StandingQueryResultsUpdated {
+                                delta,
+                                ..
+                            } = event
+                                && delta.upserted_project_skills.iter().any(|content| {
+                                    content
+                                        == &StandingQueryContent::file(
+                                            logical_skill_path_for_event.clone(),
+                                        )
+                                })
+                                && let Some(tx) = received_delta_for_event.borrow_mut().take()
+                            {
+                                let _ = tx.send(());
+                            }
+                        });
+                    });
+                    std::fs::write(&target_skill_path, "linked skill").unwrap();
+                    model_handle.update(&mut app, |model, ctx| {
+                        model.handle_watcher_event(
+                            &BulkFilesystemWatcherEvent {
+                                added: std::collections::HashSet::from([target_skill_path]),
+                                ..Default::default()
+                            },
+                            ctx,
+                        );
+                    });
+                    rx.with_timeout(Duration::from_secs(5))
+                        .await
+                        .expect("timed out waiting for recreated symlink target upsert")
+                        .expect("recreated symlink target upsert sender dropped");
+                });
+            },
+        );
+    }
+
+    #[cfg(all(unix, feature = "local_fs"))]
+    #[test]
+    fn symlink_targets_retain_aliases_and_clear_for_removed_or_failed_repositories() {
+        VirtualFS::test(
+            "symlink_targets_retain_aliases_and_clear_for_removed_or_failed_repositories",
+            |dirs, mut vfs| {
+                vfs.mkdir("repo/.agents/skills")
+                    .mkdir("outside/shared-skill")
+                    .with_files(vec![Stub::FileWithContent(
+                        "outside/shared-skill/SKILL.md",
+                        "shared skill",
+                    )]);
+                let repo = dirs.tests().join("repo");
+                let target = dirs.tests().join("outside/shared-skill");
+                std::os::unix::fs::symlink(&target, repo.join(".agents/skills/first")).unwrap();
+                std::os::unix::fs::symlink(&target, repo.join(".agents/skills/second")).unwrap();
+
+                App::test((), |mut app| async move {
+                    let repo_path = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                    let target = dunce::canonicalize(target).unwrap();
+                    let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                    model_handle.update(&mut app, |model, ctx| {
+                        model.set_emit_incremental_updates(true);
+                        model.register_force_included_paths([PathBuf::from(".agents/skills")]);
+                        model.repositories.insert(
+                            repo_path.clone(),
+                            IndexedRepoState::Indexed(empty_repo_state(&repo_path)),
+                        );
+                        model.refresh_symlink_targets(&repo_path, ctx);
+                    });
+
+                    model_handle.read(&app, |model, _ctx| {
+                        assert_eq!(
+                            model
+                                .symlink_targets
+                                .get(&target)
+                                .expect("resolved target should be tracked")
+                                .len(),
+                            2
+                        );
+                    });
+
+                    model_handle.update(&mut app, |model, ctx| {
+                        model
+                            .remove_repository(&repo_path, ctx)
+                            .expect("repository should be removed");
+                    });
+                    model_handle.read(&app, |model, _ctx| {
+                        assert!(model.symlink_targets.is_empty());
+                    });
+
+                    model_handle.update(&mut app, |model, ctx| {
+                        model.repositories.insert(
+                            repo_path.clone(),
+                            IndexedRepoState::Indexed(empty_repo_state(&repo_path)),
+                        );
+                        model.refresh_symlink_targets(&repo_path, ctx);
+                        model.mark_repository_failed(
+                            repo_path.clone(),
+                            RepoMetadataError::RepoNotFound(repo_path.to_string()),
+                            ctx,
+                        );
+                    });
+                    model_handle.read(&app, |model, _ctx| {
+                        assert!(model.symlink_targets.is_empty());
+                    });
+                });
+            },
+        );
+    }
+
+    #[cfg(all(unix, feature = "local_fs"))]
+    #[test]
+    fn removed_external_symlink_target_directory_queues_lexical_removal_and_clears_mapping() {
+        VirtualFS::test(
+            "removed_external_symlink_target_directory_queues_lexical_removal_and_clears_mapping",
+            |dirs, mut vfs| {
+                vfs.mkdir("repo/.agents/skills")
+                    .mkdir("outside/linked-skill")
+                    .with_files(vec![Stub::FileWithContent(
+                        "outside/linked-skill/SKILL.md",
+                        "linked skill",
+                    )]);
+                let repo = dirs.tests().join("repo");
+                let logical_skill_dir = repo.join(".agents/skills/linked-skill");
+                let target_skill_dir = dirs.tests().join("outside/linked-skill");
+                std::os::unix::fs::symlink(&target_skill_dir, &logical_skill_dir).unwrap();
+
+                App::test((), |mut app| async move {
+                    let repo_path = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                    let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                    model_handle.update(&mut app, |model, ctx| {
+                        model.set_emit_incremental_updates(true);
+                        model.register_force_included_paths([PathBuf::from(".agents/skills")]);
+                        model.repositories.insert(
+                            repo_path.clone(),
+                            IndexedRepoState::Indexed(empty_repo_state(&repo_path)),
+                        );
+                        model.refresh_symlink_targets(&repo_path, ctx);
+                    });
+
+                    std::fs::remove_dir_all(&target_skill_dir).unwrap();
+                    model_handle.update(&mut app, |model, ctx| {
+                        let mut repo_updates = HashMap::new();
+                        let event = BulkFilesystemWatcherEvent {
+                            deleted: std::collections::HashSet::from([target_skill_dir.clone()]),
+                            ..Default::default()
+                        };
+                        let matched_paths =
+                            model.add_symlink_target_updates(&event, &mut repo_updates);
+                        assert!(matched_paths.contains(&target_skill_dir));
+                        let update = repo_updates
+                            .get(&repo_path)
+                            .expect("target directory deletion should queue a lexical refresh");
+                        assert_eq!(update.deleted, vec![logical_skill_dir.clone()]);
+                        assert!(update.added.is_empty());
+
+                        model.refresh_symlink_targets(&repo_path, ctx);
+                        assert!(model.symlink_targets.is_empty());
+                    });
+                });
+            },
+        );
+    }
+
     #[test]
     fn incremental_deep_event_under_unloaded_ignored_dir_is_collapsed() {
         VirtualFS::test(
@@ -2946,5 +3299,342 @@ Thumbs.db
                 });
             },
         );
+    }
+
+    /// Expanding a subdirectory of a lazy root should add a per-directory watch for
+    /// it on Linux (so its children stay fresh) while leaving non-Linux untouched.
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn load_directory_tracks_expanded_subdir_for_lazy_root() {
+        VirtualFS::test("lazy_load_subdir_tracking", |dirs, mut vfs| {
+            vfs.mkdir("workspace/sub/inner");
+            let root = StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace"))
+                .unwrap();
+            let sub =
+                StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace/sub"))
+                    .unwrap();
+
+            App::test((), |mut app| async move {
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .index_lazy_loaded_path(&root, ctx)
+                        .expect("should index lazy path");
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+
+                model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .load_directory(&root, &sub, ctx)
+                        .expect("should load subdir");
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+
+                model_handle.read(&app, |model, _ctx| {
+                    let repo_watch = model
+                        .repo_watches
+                        .get(&root)
+                        .expect("watch should be recorded");
+                    if cfg!(target_os = "linux") {
+                        // Linux: the expanded subdir now has its own non-recursive
+                        // watch; the root is never stored in `extra_dirs`.
+                        assert_eq!(repo_watch.root_mode, RootWatchMode::NonRecursive);
+                        assert!(repo_watch.extra_dirs.contains(&sub));
+                        assert!(!repo_watch.extra_dirs.contains(&root));
+                    } else {
+                        // Other platforms: a single recursive watch on the root.
+                        assert_eq!(repo_watch.root_mode, RootWatchMode::Recursive);
+                    }
+                });
+            });
+        });
+    }
+
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn load_directory_completion_resolves_after_tree_update() {
+        VirtualFS::test("lazy_load_completion_updates_tree", |dirs, mut vfs| {
+            vfs.mkdir("workspace/sub/inner")
+                .with_files(vec![Stub::FileWithContent(
+                    "workspace/sub/inner/file.txt",
+                    "x",
+                )]);
+            let root = StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace"))
+                .unwrap();
+            let sub =
+                StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace/sub"))
+                    .unwrap();
+            let nested = StandardizedPath::from_local_canonicalized(
+                &dirs.tests().join("workspace/sub/inner"),
+            )
+            .unwrap();
+
+            App::test((), |mut app| async move {
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .index_lazy_loaded_path(&root, ctx)
+                        .expect("should index lazy path");
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+
+                let completion = model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .load_directory_with_completion(&root, &sub, ctx)
+                        .expect("should start loading subdir")
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+                completion.await.expect("load should complete");
+
+                model_handle.read(&app, |model, _ctx| {
+                    let Some(IndexedRepoState::Indexed(state)) = model.repository_state(&root)
+                    else {
+                        panic!("expected indexed lazy-loaded path");
+                    };
+                    assert!(state.entry.contains(&nested));
+                });
+            });
+        });
+    }
+
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn load_directory_with_completion_coalesces_duplicate_inflight_load() {
+        VirtualFS::test("lazy_load_duplicate_completion", |dirs, mut vfs| {
+            vfs.mkdir("workspace/sub/inner")
+                .with_files(vec![Stub::FileWithContent(
+                    "workspace/sub/inner/file.txt",
+                    "x",
+                )]);
+            let root = StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace"))
+                .unwrap();
+            let sub =
+                StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace/sub"))
+                    .unwrap();
+
+            App::test((), |mut app| async move {
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .index_lazy_loaded_path(&root, ctx)
+                        .expect("should index lazy path");
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+
+                let (first_completion, second_completion) =
+                    model_handle.update(&mut app, |model, ctx| {
+                        let completion = model
+                            .load_directory_with_completion(&root, &sub, ctx)
+                            .expect("first load should start");
+                        let duplicate_completion = model
+                            .load_directory_with_completion(&root, &sub, ctx)
+                            .expect("duplicate load should wait for the in-flight task");
+                        let task = model
+                            .build_tasks
+                            .get(&build_task_key(&root, &sub))
+                            .expect("directory load should be tracked");
+                        assert_eq!(task.completion_waiters.len(), 1);
+                        (completion, duplicate_completion)
+                    });
+
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+                first_completion.await.expect("first load should complete");
+                second_completion
+                    .await
+                    .expect("duplicate load should complete");
+
+                model_handle.read(&app, |model, _ctx| {
+                    assert!(!model.build_tasks.contains_key(&build_task_key(&root, &sub)));
+                });
+            });
+        });
+    }
+
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn load_directory_completion_skips_removed_tree_entry() {
+        VirtualFS::test("lazy_load_removed_subdir", |dirs, mut vfs| {
+            vfs.mkdir("workspace/sub/inner")
+                .with_files(vec![Stub::FileWithContent(
+                    "workspace/sub/inner/file.txt",
+                    "x",
+                )]);
+            let root = StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace"))
+                .unwrap();
+            let sub =
+                StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace/sub"))
+                    .unwrap();
+
+            App::test((), |mut app| async move {
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .index_lazy_loaded_path(&root, ctx)
+                        .expect("should index lazy path");
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+
+                model_handle.read(&app, |model, _ctx| {
+                    let Some(IndexedRepoState::Indexed(state)) = model.repository_state(&root)
+                    else {
+                        panic!("expected indexed lazy-loaded path");
+                    };
+                    assert!(state.entry.contains(&sub));
+                });
+
+                model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .load_directory(&root, &sub, ctx)
+                        .expect("should start loading subdir");
+                    let Some(IndexedRepoState::Indexed(state)) = model.repositories.get_mut(&root)
+                    else {
+                        panic!("expected indexed lazy-loaded path");
+                    };
+                    state.entry.remove(&sub);
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+
+                model_handle.read(&app, |model, _ctx| {
+                    let Some(IndexedRepoState::Indexed(state)) = model.repository_state(&root)
+                    else {
+                        panic!("expected indexed lazy-loaded path");
+                    };
+                    assert!(!state.entry.contains(&sub));
+                });
+            });
+        });
+    }
+
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn load_directory_completion_skips_replaced_tree_entry() {
+        VirtualFS::test("lazy_load_replaced_subdir", |dirs, mut vfs| {
+            vfs.mkdir("workspace/sub/inner")
+                .with_files(vec![Stub::FileWithContent(
+                    "workspace/sub/inner/file.txt",
+                    "x",
+                )]);
+            let root = StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace"))
+                .unwrap();
+            let sub =
+                StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace/sub"))
+                    .unwrap();
+            let nested = StandardizedPath::from_local_canonicalized(
+                &dirs.tests().join("workspace/sub/inner"),
+            )
+            .unwrap();
+
+            App::test((), |mut app| async move {
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .index_lazy_loaded_path(&root, ctx)
+                        .expect("should index lazy path");
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+
+                let completion = model_handle.update(&mut app, |model, ctx| {
+                    let completion = model
+                        .load_directory_with_completion(&root, &sub, ctx)
+                        .expect("should start loading subdir");
+                    let Some(IndexedRepoState::Indexed(state)) = model.repositories.get_mut(&root)
+                    else {
+                        panic!("expected indexed lazy-loaded path");
+                    };
+                    state.entry.remove(&sub);
+                    state.entry.insert_entry_at_path(
+                        Arc::new(sub.clone()),
+                        Entry::File(FileMetadata::from_standardized(sub.clone(), false)),
+                    );
+                    completion
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+                assert!(matches!(
+                    completion.await,
+                    Err(RepoMetadataError::InvalidPath(_))
+                ));
+
+                model_handle.read(&app, |model, _ctx| {
+                    let Some(IndexedRepoState::Indexed(state)) = model.repository_state(&root)
+                    else {
+                        panic!("expected indexed lazy-loaded path");
+                    };
+                    assert!(matches!(
+                        state.entry.get(&sub),
+                        Some(FileTreeEntryState::File(_))
+                    ));
+                    assert!(!state.entry.contains(&nested));
+                });
+            });
+        });
+    }
+
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn load_directory_completion_skips_recreated_unloaded_tree_entry() {
+        VirtualFS::test("lazy_load_recreated_subdir", |dirs, mut vfs| {
+            vfs.mkdir("workspace/sub/inner")
+                .with_files(vec![Stub::FileWithContent(
+                    "workspace/sub/inner/file.txt",
+                    "x",
+                )]);
+            let root = StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace"))
+                .unwrap();
+            let sub =
+                StandardizedPath::from_local_canonicalized(&dirs.tests().join("workspace/sub"))
+                    .unwrap();
+            let nested = StandardizedPath::from_local_canonicalized(
+                &dirs.tests().join("workspace/sub/inner"),
+            )
+            .unwrap();
+
+            App::test((), |mut app| async move {
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .index_lazy_loaded_path(&root, ctx)
+                        .expect("should index lazy path");
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+
+                let completion = model_handle.update(&mut app, |model, ctx| {
+                    let completion = model
+                        .load_directory_with_completion(&root, &sub, ctx)
+                        .expect("should start loading subdir");
+                    let Some(IndexedRepoState::Indexed(state)) = model.repositories.get_mut(&root)
+                    else {
+                        panic!("expected indexed lazy-loaded path");
+                    };
+                    state.entry.remove(&sub);
+                    state.entry.insert_entry_at_path(
+                        Arc::new(sub.clone()),
+                        Entry::Directory(DirectoryEntry {
+                            path: sub.clone(),
+                            children: Vec::new(),
+                            ignored: false,
+                            loaded: false,
+                        }),
+                    );
+                    completion
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &root).await;
+                assert!(matches!(
+                    completion.await,
+                    Err(RepoMetadataError::InvalidPath(_))
+                ));
+
+                model_handle.read(&app, |model, _ctx| {
+                    let Some(IndexedRepoState::Indexed(state)) = model.repository_state(&root)
+                    else {
+                        panic!("expected indexed lazy-loaded path");
+                    };
+                    assert!(matches!(
+                        state.entry.get(&sub),
+                        Some(FileTreeEntryState::Directory(directory)) if !directory.loaded
+                    ));
+                    assert!(!state.entry.contains(&nested));
+                });
+            });
+        });
     }
 }
