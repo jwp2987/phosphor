@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::Local;
 use lazy_static::lazy_static;
@@ -58,7 +58,23 @@ pub(super) fn input_context_for_request(
     additional_context: Vec<AIAgentContext>,
     app: &AppContext,
 ) -> Arc<[AIAgentContext]> {
-    let mut context = context_model.pending_context(app, is_user_query);
+    // Resolves once per request: `Some(LocalOrRemotePath::Remote(..))` when the active
+    // session is a connected SSH host, `Some(Local(..))` for a local session, `None` when
+    // there's no known cwd yet (or a `WarpifiedRemote` session whose host_id hasn't
+    // resolved — see `ActiveSession::current_working_directory_location`'s doc comment).
+    // Drives both the skills lookup below and `pending_context`'s remote global-rules
+    // lookup, so a connected remote host's bundled/home skills and its
+    // `~/.agents/AGENTS.md` global rules reach agent context instead of only ever
+    // reflecting the local host.
+    let working_directory_location = active_session.current_working_directory_location(app);
+    let remote_host_id = working_directory_location
+        .as_ref()
+        .and_then(|location| match location {
+            LocalOrRemotePath::Remote(remote) => Some(&remote.host_id),
+            LocalOrRemotePath::Local(_) => None,
+        });
+
+    let mut context = context_model.pending_context(app, is_user_query, remote_host_id);
 
     context.push(AIAgentContext::CurrentTime {
         current_time: Local::now(),
@@ -91,13 +107,13 @@ pub(super) fn input_context_for_request(
         // sent in full every round rather than as a diff. Also doesn't push when the
         // list is empty, keeping context compact (the template's `{% if skills %}`
         // guard can then omit the section normally).
-        let skills = list_skills(
-            active_session
-                .current_working_directory()
-                .map(|cwd| LocalOrRemotePath::Local(PathBuf::from(cwd)))
-                .as_ref(),
-            app,
-        );
+        //
+        // `working_directory_location` carries a `Remote` path when the active session is
+        // a connected SSH host, so `SkillManager::get_skills_for_working_directory` (via
+        // `list_skills`) resolves `SkillPathOrigin::Remote` and surfaces that host's
+        // bundled + home skills (populated per-host by `RemoteAgentContext`) instead of
+        // the local catalog.
+        let skills = list_skills(working_directory_location.as_ref(), app);
         if !skills.is_empty() {
             context.push(AIAgentContext::Skills { skills });
         }

@@ -801,17 +801,41 @@ impl BlocklistAIContextModel {
     /// Returns `AIAgentContext` for the blocks to be included in the current AI query.
     /// If `is_user_query` is true, includes blocks, selected text, and images as context.
     /// If false, excludes these user-specific contexts but includes everything else.
-    pub fn pending_context(&self, app: &AppContext, is_user_query: bool) -> Vec<AIAgentContext> {
+    ///
+    /// `remote_host` is `Some` when the caller's active session is a connected
+    /// `WarpifiedRemote` (SSH) session (see `ActiveSession::current_working_directory_location`
+    /// / `input_context_for_request`), `None` for a local session. `self.current_pwd()` is a
+    /// bare `String` with no host dimension, so on a remote session it holds a path on the
+    /// *remote* host, not this machine — treating it as a local path (canonicalizing it and
+    /// stat/reading local rule files from it and its ancestors, as the local project-rules
+    /// path below does) would risk silently picking up an unrelated local directory's
+    /// AGENTS.md that happens to share the remote cwd's name. So when `remote_host` is
+    /// `Some`, this skips the local-disk lookups entirely and instead layers in that host's
+    /// stored global rules (`ProjectContextModel::remote_project_rules`, populated per-host
+    /// by `RemoteAgentContext` from the daemon's snapshot). There is no per-host project-rule
+    /// index in this fork (`path_to_rules` has no `HostId` dimension), so unlike the local
+    /// case this only ever surfaces that host's *global* rules, never project-scoped ones.
+    pub fn pending_context(
+        &self,
+        app: &AppContext,
+        is_user_query: bool,
+        remote_host: Option<&warp_util::host_id::HostId>,
+    ) -> Vec<AIAgentContext> {
         let pwd = self.current_pwd();
-        let is_pwd_indexed = if cfg!(feature = "agent_mode_evals") {
-            // In evals, we want to disable file outline based search.
+        let is_pwd_indexed = if remote_host.is_some() || cfg!(feature = "agent_mode_evals") {
+            // In evals, we want to disable file outline based search. On a remote session,
+            // `RepoOutlines` only ever indexes local directories, so checking it against a
+            // remote cwd string would be the same local/remote path confusion described
+            // above, just for symbol-search availability instead of rules.
             false
         } else {
             pwd.as_ref()
                 .is_some_and(|pwd| RepoOutlines::as_ref(app).is_directory_indexed(Path::new(&pwd)))
         };
 
-        let project_rules = if let Some(pwd) = pwd.clone().and_then(|path| {
+        let project_rules = if let Some(host_id) = remote_host {
+            ProjectContextModel::as_ref(app).remote_project_rules(host_id)
+        } else if let Some(pwd) = pwd.clone().and_then(|path| {
             PathBuf::from_str(&path)
                 .ok()
                 .and_then(|s| s.canonicalize().ok())
