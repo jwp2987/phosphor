@@ -612,14 +612,30 @@ deleted orchestration storage deliberately; this is not a revert.
 **ONE agent at a time. ONE build at a time. Each step lands green and merges before
 the next starts.** Coordinator builds and merges; agents never merge.
 
-- [ ] **Step 1** — `block/view_impl/orchestration.rs` (656) + `orchestration_avatar.rs`
-      (41) + `orchestration_conversation_links.rs` (299). Needs
-      `TerminalAction::OpenChildAgentInNewPane` (0 in fork) and
-      `AgentConversationsModel::resolve_open_action` / `AgentConversationNavigationSubject`
-      (0 in fork). ~1,000 lines. **The avatar cannot land alone** — it imports
-      `render_agent_avatar_disc`/`render_orchestrator_avatar_disc` from
-      `orchestration_pill_bar.rs` (`orchestration_avatar.rs:4-5`), so those two fns
-      come with it.
+- [ ] **Step 1a** — extract the avatar helpers into a new shared module
+      `agent_view/avatar_disc.rs`. Six items, ALL pure rendering with **zero**
+      pill-bar state (verified: `render_avatar_disc` has 0 references to telemetry,
+      `self`, or `PillBarModel`):
+      `render_orchestrator_avatar_disc` (pin pill_bar:127, 11 lines),
+      `render_agent_avatar_disc` (:143, 13 lines), `pill_avatar_color` (:109),
+      `pill_initial` (:117), `AvatarGlyph` (:196), `render_avatar_disc` (:2125).
+      ~60-90 lines total. The pin already exposes them `pub(crate)`, so Step 2's
+      pill bar imports them from here instead of defining them.
+- [ ] **Step 1b** — `orchestration_avatar.rs` (41 lines) + `block/view_impl/orchestration.rs`
+      (656). The latter uses `OrchestrationAvatar` 7x, so these go together.
+      `CollapsibleExpansionState` already exists generically in `block.rs` — not
+      gated on #329.
+- [ ] **Step 1c** — `orchestration_conversation_links.rs` (299). **Independent of
+      1a/1b** — uses `OrchestrationAvatar` 0 times. Needs
+      `TerminalAction::OpenChildAgentInNewPane` (0 in fork; note
+      `RevealChildAgent` already exists and is wired, so #410's second half is
+      partly done) and `AgentConversationsModel::resolve_open_action` /
+      `AgentConversationNavigationSubject` (0 in fork).
+
+      **CORRECTION 2026-08-09:** an earlier version of this plan said "the avatar
+      cannot land alone" and had Step 1 reach into Step 2's 2,539-line file. That
+      was wrong — the six helpers are self-contained, so 1a makes the split clean
+      and no structural deviation from the pin is needed.
 - [ ] **Step 2** — `orchestration_pill_bar.rs` (2,539). Port the
       `blocklist::telemetry` module FIRST (`BlocklistOrchestrationTelemetryEvent`:
       6 pin files, **0 in fork**), then the pill bar, then the new variants on
