@@ -393,6 +393,49 @@ all touch `crates/warp_tui/src/terminal_session_view.rs`; #390 depends on #395's
 completion-menu API; #390 and #397 both need `TuiUiBuilder::shell_command_accent_style`.
 Work them as one ordered sequence. Likewise #343 is blocked on #316 — one pair.
 
+### Tier 3.5 — LOCAL multi-agent orchestration (reopened 2026-08-08 late)
+
+Reversed from `DECLINED.md` on the maintainer's product call. The original
+decline was correct that the code is **non-cloud** (`SCOPE-AI.md` verdict D);
+what changed is that we want the feature. Reason it changed: the fork already
+ships the substrate — `app/src/pane_group/pane/local_harness_launch.rs` launches
+local child agents, and `agent_sdk/driver/harness/mod.rs:191-204` already stamps
+`OZ_RUN_ID`/`OZ_PARENT_RUN_ID`/`OZ_CLI`, so parent-child identity is tracked
+today. A 2026-08-08 audit also found **unwired, already-tested local scaffolding
+sitting dead in the tree**: `children_by_parent`, `ChildAgentStatusCard`, a
+de-cloud'ified `local_harness_launch.rs`. We were building the foundations while
+declining the feature.
+
+Sizing: ~72 of ~305 orchestration-adjacent pin tests are import-clean of cloud.
+
+**Build order — these have a real dependency chain, do not parallelise:**
+- [ ] #310 topology + events modules (the non-cloud core, 36 pinned tests) — FIRST
+- [ ] #376 `AgentConversationData` fields the view reads. **Verify each field
+      individually**: the issue's claim that `is_remote_child` is missing is
+      FALSE, it is already present.
+- [ ] #304 the orchestrator/child-agent view (pill bar, avatar, conversation
+      links, block view-impl, inline controls). Folds in **#410's second half**
+      (`cycle_next/previous_orchestration_child_agent` bindings) — #410 was
+      closed citing the orchestration decline, and that citation is now stale.
+- [ ] #325 run-agents child prompt composition — **LOCAL arm only.**
+- [ ] #329 collapsible defaults — LAST, it configures presentation of the above.
+- [ ] #309 topology half only. **The credit-rollup half stays declined** — Warp
+      credits are a billing concept with no BYOP equivalent.
+
+**Still declined, and this boundary matters:** the cloud-runner half. #290
+(RunAgents — children executing on Warp's servers) stays out. Children run as
+**local processes on this machine**. `is_remote_child` will be permanently
+`false`; the pin defines it as a placeholder for a child on a remote worker.
+
+**Warp never built "spawn an agent on your own SSH host."** That would be
+fork-original work, not parity — and Phosphor has better foundations for it than
+Warp does, since `remote_server` is a real daemon on the host. Do not confuse it
+with `is_remote_child`.
+
+**Persistence needs a NEW forward migration.**
+`crates/persistence/migrations/2026-03-23-180000_remove_orchestration_persistence`
+deleted orchestration storage deliberately; this is not a revert.
+
 ### Tier 4 — large (a week+)
 - [ ] #210 · #252 · #289 · #381 · #382 · #236 · #349 · #324 · #142
 - [ ] #405 notebooks/file: Jupyter (`.ipynb`) rendering missing
