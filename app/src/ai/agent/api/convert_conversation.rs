@@ -33,7 +33,7 @@ use crate::ai_assistant::execution_context::{WarpAiExecutionContext, WarpAiOsCon
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::terminal_model::BlockIndex;
 use ai::agent::action_result::{AskUserQuestionAnswerItem, AskUserQuestionResult, ReadSkillResult};
-use ai::skills::ParsedSkill;
+use ai::skills::{ParsedSkill, SkillPathOrigin};
 use chrono::{DateTime, Local, TimeZone};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -452,6 +452,7 @@ impl ConvertToExchanges for &api::Task {
                         // TODO(alokedesai): Support persistence for the code review state.
                         active_code_review: None,
                         task_id: &TaskId::new(api_message.task_id.clone()),
+                        skill_path_origin: &SkillPathOrigin::Unavailable,
                     })
                 {
                     current_outputs.push(output_msg);

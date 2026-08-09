@@ -7,6 +7,7 @@ use std::{
     ops::Deref,
 };
 
+use ai::skills::SkillPathOrigin;
 use chrono::DateTime;
 use field_mask::{FieldMaskError, FieldMaskOperation};
 use helper::{MessageExt, SubagentExt, ToolCallExt};
@@ -251,6 +252,7 @@ impl Task {
         parent_task: Option<&api::Task>,
         current_todo_list: Option<&AIAgentTodoList>,
         active_code_review: Option<&CodeReview>,
+        skill_path_origin: &SkillPathOrigin,
     ) -> Result<Self, UpgradeOptimisticTaskError> {
         match self.data {
             TaskImpl::Optimistic(optimistic::Task::Root) => {
@@ -298,6 +300,7 @@ impl Task {
                 exchange_id,
                 current_todo_list,
                 active_code_review,
+                skill_path_origin,
                 false,
             ) {
                 log::error!(
@@ -331,6 +334,7 @@ impl Task {
         existing_exchange: &AIAgentExchange,
         current_todo_list: Option<&AIAgentTodoList>,
         current_comment_state: Option<&CodeReview>,
+        skill_path_origin: &SkillPathOrigin,
         should_convert_input_messages: bool,
     ) -> Self {
         let subagent_call_and_id = parent_task.messages.iter().find_map(|message| {
@@ -385,6 +389,7 @@ impl Task {
             new_exchange_id,
             current_todo_list,
             current_comment_state,
+            skill_path_origin,
             should_convert_input_messages,
         )
         .expect("Exchange exists and output is in 'streaming' state.");
@@ -694,6 +699,7 @@ impl Task {
         exchange_id: AIAgentExchangeId,
         current_todo_list: Option<&AIAgentTodoList>,
         current_comments: Option<&CodeReview>,
+        skill_path_origin: &SkillPathOrigin,
         should_convert_input_messages: bool,
     ) -> Result<(), UpdateTaskError> {
         if self.source().is_none() {
@@ -704,6 +710,7 @@ impl Task {
             exchange_id,
             current_todo_list,
             current_comments,
+            skill_path_origin,
             should_convert_input_messages,
         )?;
         self.try_get_source_mut()?.messages.extend(messages);
@@ -734,6 +741,7 @@ impl Task {
         exchange_id: AIAgentExchangeId,
         current_todo_list: Option<&AIAgentTodoList>,
         current_comments: Option<&CodeReview>,
+        skill_path_origin: &SkillPathOrigin,
         mask: FieldMask,
         should_convert_input_messages: bool,
     ) -> Result<&api::Message, UpdateTaskError> {
@@ -749,6 +757,7 @@ impl Task {
                 exchange_id,
                 current_todo_list,
                 current_comments,
+                skill_path_origin,
                 should_convert_input_messages,
             )?;
             return self
@@ -771,6 +780,7 @@ impl Task {
             &updated_message,
             current_todo_list,
             current_comments,
+            skill_path_origin,
         )?;
 
         // Task message updates can carry tool call result updates with them,
@@ -817,6 +827,7 @@ impl Task {
         exchange_id: AIAgentExchangeId,
         current_todo_list: Option<&AIAgentTodoList>,
         current_comments: Option<&CodeReview>,
+        skill_path_origin: &SkillPathOrigin,
         mask: FieldMask,
     ) -> Result<&api::Message, UpdateTaskError> {
         let Some((idx, existing_message)) = self
@@ -843,6 +854,7 @@ impl Task {
             &updated_message,
             current_todo_list,
             current_comments,
+            skill_path_origin,
         )?;
 
         let source = self.try_get_source_mut()?;
@@ -969,6 +981,7 @@ impl Task {
         exchange_id: AIAgentExchangeId,
         current_todo_list: Option<&AIAgentTodoList>,
         active_code_review: Option<&CodeReview>,
+        skill_path_origin: &SkillPathOrigin,
         should_convert_input_messages: bool,
     ) -> Result<(), UpdateTaskError> {
         let exchange = self
@@ -1012,6 +1025,7 @@ impl Task {
                         task_id: &self.id,
                         current_todo_list,
                         active_code_review,
+                        skill_path_origin,
                     }) {
                         Ok(MaybeAIAgentOutputMessage::Message(m)) => Some(Ok(m)),
                         Ok(MaybeAIAgentOutputMessage::NoClientRepresentation) => None,
@@ -1050,6 +1064,7 @@ impl AIAgentExchange {
         task_message: &api::Message,
         todo_list: Option<&AIAgentTodoList>,
         comments: Option<&CodeReview>,
+        skill_path_origin: &SkillPathOrigin,
     ) -> Result<(), UpdateTaskError> {
         if let AIAgentOutputStatus::Streaming {
             output: Some(output),
@@ -1067,6 +1082,7 @@ impl AIAgentExchange {
                     current_todo_list: todo_list,
                     active_code_review: comments,
                     task_id,
+                    skill_path_origin,
                 })? {
                 MaybeAIAgentOutputMessage::Message(m) => {
                     // Extract citations from the message and add to the output citations

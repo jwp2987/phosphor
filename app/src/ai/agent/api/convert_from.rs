@@ -20,8 +20,10 @@ use crate::ai::agent::{
 };
 use crate::ai::artifact_download::sanitized_basename;
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentVersion};
+use ai::agent::action::ReadSkillRequest;
 use ai::agent::convert::ToolToAIAgentActionError;
 use ai::agent::UnknownCitationTypeError;
+use ai::skills::{skill_reference_from_read_skill_ref, SkillPathOrigin};
 use api::ask_user_question::question::QuestionType;
 use warp_core::channel::ChannelState;
 use warp_multi_agent_api as api;
@@ -97,6 +99,19 @@ pub struct ConversionParams<'a> {
     pub task_id: &'a TaskId,
     pub current_todo_list: Option<&'a AIAgentTodoList>,
     pub active_code_review: Option<&'a CodeReview>,
+    pub skill_path_origin: &'a SkillPathOrigin,
+}
+
+fn convert_read_skill(
+    read_skill: api::message::tool_call::ReadSkill,
+    skill_path_origin: &SkillPathOrigin,
+) -> Result<AIAgentActionType, ToolToAIAgentActionError> {
+    let Some(reference) = read_skill.skill_reference else {
+        return Err(ToolToAIAgentActionError::MissingSkillReference);
+    };
+    let skill = skill_reference_from_read_skill_ref(reference, skill_path_origin)
+        .map_err(|_| ToolToAIAgentActionError::MissingSkillReference)?;
+    Ok(AIAgentActionType::ReadSkill(ReadSkillRequest { skill }))
 }
 
 /// Trait for converting an [`api::Message`] to an [`AIAgentOutputMessage`].
@@ -673,7 +688,7 @@ impl ConvertAPIToolCallToAIAgentAction for api::message::ToolCall {
                 create_standard_action(insert_review_comments.into())
             }
             api::message::tool_call::Tool::ReadSkill(read_skill) => {
-                create_standard_action(read_skill.try_into()?)
+                create_standard_action(convert_read_skill(read_skill, params.skill_path_origin)?)
             }
             api::message::tool_call::Tool::AskUserQuestion(ask) => {
                 let questions = ask

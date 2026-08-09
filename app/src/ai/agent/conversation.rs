@@ -17,6 +17,7 @@ use crate::ai::agent::api::convert_conversation::{
     compute_time_to_first_token_ms_from_messages, ConvertToExchanges,
 };
 use ai::document::AIDocumentId;
+use ai::skills::SkillPathOrigin;
 use chrono::{DateTime, Local, TimeZone};
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
@@ -2303,6 +2304,7 @@ impl AIConversation {
         response_stream_id: &ResponseStreamId,
         terminal_view_id: EntityId,
         action: warp_multi_agent_api::client_action::Action,
+        skill_path_origin: &SkillPathOrigin,
         ctx: &mut ModelContext<BlocklistAIHistoryModel>,
     ) -> Result<(), UpdateConversationError> {
         use warp_multi_agent_api::client_action::*;
@@ -2352,6 +2354,7 @@ impl AIConversation {
                             parent_task.source(),
                             self.todo_lists.last(),
                             self.code_review.as_ref(),
+                            skill_path_origin,
                         )?;
                         ctx.emit(BlocklistAIHistoryEvent::UpgradedTask {
                             optimistic_id: optimistic_id.clone(),
@@ -2388,6 +2391,7 @@ impl AIConversation {
                             existing_exchange,
                             self.todo_lists.last(),
                             self.code_review.as_ref(),
+                            skill_path_origin,
                             // In shared-session viewers, we have to reconstruct what the original user input
                             // was using subsequent conversation messages (as the original input was not
                             // sent on this client). Once we reconstruct these inputs, we will insert them
@@ -2475,6 +2479,7 @@ impl AIConversation {
                             None,
                             self.todo_lists.last(),
                             self.code_review.as_ref(),
+                            skill_path_origin,
                         )?;
                         ctx.emit(BlocklistAIHistoryEvent::UpgradedTask {
                             optimistic_id: old_id,
@@ -2677,6 +2682,7 @@ impl AIConversation {
                     exchange_id,
                     current_todo_list.as_ref(),
                     current_comment_state.as_ref(),
+                    skill_path_origin,
                     // In shared-session viewers, we have to reconstruct what the original user input
                     // was using subsequent conversation messages (as the original input was not
                     // sent on this client). Once we reconstruct these inputs, we will insert them
@@ -2756,6 +2762,7 @@ impl AIConversation {
                             exchange_id,
                             current_todo_list.as_ref(),
                             current_comment_state.as_ref(),
+                            skill_path_origin,
                             mask,
                             is_viewing_shared_session,
                         )
@@ -2820,6 +2827,7 @@ impl AIConversation {
                             exchange_id,
                             current_todo_list.as_ref(),
                             current_comment_state.as_ref(),
+                            skill_path_origin,
                             mask,
                         )
                         .map(|msg| msg.todos_op().cloned())
