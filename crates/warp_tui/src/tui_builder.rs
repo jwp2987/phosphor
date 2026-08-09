@@ -18,6 +18,8 @@ use warpui_core::elements::tui::{
 use warpui_core::elements::{Fill as CoreFill, MouseStateHandle};
 use warpui_core::runtime::ProbedRgb;
 
+use crate::orchestrated_agent_identity_styling::{AgentIdentity, agent_identity_palette};
+use crate::tab_bar::TuiTabBarStyles;
 use crate::terminal_background::TuiHostTerminalBackground;
 
 /// Theme-derived styles and components for the TUI, mirroring the GUI's
@@ -295,6 +297,56 @@ impl TuiUiBuilder {
     /// Style for the warping indicator's spinner glyph.
     pub(crate) fn warping_spinner_style(&self) -> TuiStyle {
         TuiStyle::default().fg(cell_color(self.warping_base_fill()))
+    }
+
+    /// The magenta-tinted background behind the orchestration tab bar,
+    /// pre-blended over the probed base background.
+    pub(crate) fn orchestration_surface_background(&self) -> Color {
+        let magenta = ThemeFill::from(self.warp_theme.terminal_colors().normal.magenta);
+        cell_color(self.base_background().blend(&magenta.with_opacity(10)))
+    }
+
+    /// Bold fixed-label style over the orchestration tab-bar background.
+    pub(crate) fn orchestration_tab_bar_label_style(&self) -> TuiStyle {
+        self.primary_text_style()
+            .bg(self.orchestration_surface_background())
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Muted divider/overflow style over the orchestration tab background.
+    pub(crate) fn orchestration_tab_bar_chrome_style(&self) -> TuiStyle {
+        self.muted_text_style()
+            .bg(self.orchestration_surface_background())
+    }
+
+    /// Styles for the reusable [`crate::tab_bar`] component when rendered as
+    /// orchestration tabs.
+    pub(crate) fn orchestration_tab_bar_styles(&self) -> TuiTabBarStyles {
+        let background = self.orchestration_surface_background();
+        let selected_fill = ThemeFill::from(self.warp_theme.terminal_colors().normal.magenta);
+        let selected_background = cell_color(selected_fill);
+        let selected_foreground =
+            cell_color(self.warp_theme.font_color(selected_fill.into_solid()));
+        TuiTabBarStyles {
+            background: Some(background),
+            leading: self.orchestration_tab_bar_label_style(),
+            chrome: self.orchestration_tab_bar_chrome_style(),
+            tab: self.muted_text_style().bg(background),
+            selected_focused: TuiStyle::default()
+                .fg(selected_foreground)
+                .bg(selected_background)
+                .add_modifier(Modifier::BOLD),
+            selected_unfocused: self
+                .primary_text_style()
+                .bg(background)
+                .add_modifier(Modifier::BOLD),
+        }
+    }
+
+    /// The deterministic agent identity palette for this theme. See
+    /// [`crate::orchestrated_agent_identity_styling`].
+    pub(crate) fn agent_identity_palette(&self) -> Vec<AgentIdentity> {
+        agent_identity_palette(self.warp_theme.terminal_colors())
     }
 
     /// Bold magenta text for a selected option-selector row.
