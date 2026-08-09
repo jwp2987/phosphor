@@ -131,6 +131,7 @@ use crate::zero_state_animation::{
 mod input_detection;
 mod shortcuts;
 pub(crate) mod state;
+mod status_menu;
 
 use self::input_detection::InputDetectionState;
 

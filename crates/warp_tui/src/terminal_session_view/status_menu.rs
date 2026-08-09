@@ -2,14 +2,17 @@
 //!
 //! Ported from the pinned Warp oracle (`02b53fcd8`) for issue #389.
 //!
-//! **Not yet wired up.** In the oracle this lives at
-//! `terminal_session_view/status_menu.rs` and is invoked from
-//! `TuiTerminalSessionView::compute_status_info` (real session/account data)
-//! and dispatched by the `/status` slash command and the `?`-opened menu's
-//! session context — both in `terminal_session_view.rs`, which is out of
-//! scope for this change (owned by another agent this round). This module
-//! ports the presentation logic only; wiring it to real data and to the
-//! `/status` command is a follow-up.
+//! **Still not wired up.** This module previously landed at the crate-root
+//! path `crate::status_menu` instead of nested here under
+//! `terminal_session_view/`; it has been moved (not re-ported) to match the
+//! pin's layout, since `TuiTerminalSessionAction::ReadOnlyMenuSelectionStarted`/
+//! `ReadOnlyMenuSelectionEnded`, `TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind)`,
+//! `TuiTerminalSessionState::read_only_menu()`, and
+//! `TuiTerminalSessionView::compute_status_info` all live there. Wiring this
+//! module (and `shortcuts.rs`) up — the `?` keybinding, the `/status` slash
+//! command, the suggestions-mode variant, and real session/account data for
+//! `TuiStatusInfo` (`org`/`email` need a BYOP-appropriate source now that
+//! there is no cloud sign-in to read them from) — is still a follow-up.
 
 use crate::read_only_menu::{
     TuiReadOnlyMenu, TuiReadOnlyMenuRow, TuiReadOnlyMenuSection, TuiReadOnlyMenuText,
