@@ -16,7 +16,7 @@ use urlocator::{UrlLocation, UrlLocator};
 use vec1::Vec1;
 use warp_core::{features::FeatureFlag, ui::theme::Fill as ThemeFill};
 use warpui::{
-    AppContext,
+    AppContext, SingletonEntity,
     assets::asset_cache::{AssetCache, AssetSource, AssetState},
     fonts::Weight,
     image_cache::ImageType,
