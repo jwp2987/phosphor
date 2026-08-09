@@ -271,10 +271,47 @@ impl BlocklistAIHistoryModel {
                     .and_then(|data| data.parent_conversation_id.as_deref())
                 {
                     if let Ok(parent_id) = AIConversationId::try_from(parent_id_str.to_string()) {
-                        self.children_by_parent
-                            .entry(parent_id)
-                            .or_default()
-                            .push(conversation_id);
+                        let children = self.children_by_parent.entry(parent_id).or_default();
+                        if !children.contains(&conversation_id) {
+                            children.push(conversation_id);
+                        }
+                    }
+
+                    // Eagerly hydrate the child conversation -- and the
+                    // agent-id/token indices `conversation_id_for_agent_id`
+                    // reads -- into memory so orchestration transcript and
+                    // pill-bar name resolution (`resolve_orchestration_participant`)
+                    // can find a restored child before its parent's hidden
+                    // pane materializes it lazily via `restore_conversations`.
+                    // Restricted to orchestration children only; other
+                    // historical conversations still load lazily. A
+                    // subsequent `restore_conversations` call replaces this
+                    // entry idempotently.
+                    if let Some(data) = conversation_data.as_ref() {
+                        if let Some(run_id) = data.run_id.as_deref() {
+                            self.agent_id_to_conversation_id
+                                .insert(run_id.to_owned(), conversation_id);
+                        }
+                        if let Some(token) = data.server_conversation_token.as_ref() {
+                            self.server_token_to_conversation_id
+                                .insert(ServerConversationToken::new(token.clone()), conversation_id);
+                        }
+                    }
+                    let child_conversation = if agent_conv.tasks.is_empty() {
+                        self.load_conversation_from_db(&conversation_id)
+                    } else {
+                        convert_persisted_conversation_to_ai_conversation_with_metadata(
+                            agent_conv.clone(),
+                        )
+                    };
+                    if let Some(child_conversation) = child_conversation {
+                        self.conversations_by_id
+                            .insert(conversation_id, child_conversation);
+                    } else {
+                        log::warn!(
+                            "Failed to eagerly hydrate orchestration child {conversation_id}; \
+                             pill bar / name resolution will fall back to lazy materialization",
+                        );
                     }
                     return None;
                 }

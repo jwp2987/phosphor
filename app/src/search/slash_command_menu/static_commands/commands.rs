@@ -149,6 +149,32 @@ pub static FORK: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     argument: Some(Argument::optional().with_hint_text(t_static!("slash-cmd-fork-hint"))),
 });
 
+/// Spawns one or more local child agents for the current conversation.
+///
+/// User-invoked only: this executes directly (see the `/orchestrate` arm of
+/// `execute_slash_command`) rather than being submitted as a prompt for the
+/// model to act on. It deliberately does NOT use `SlashCommandKind::Orchestrate`
+/// -- that kind is the pin's agent-invoked semantics
+/// (`slash_command_is_submitted_as_prompt` routes it to the model, which
+/// would need `AIAgentActionType::RunAgents` to act on it). That path is
+/// deferred; `kind()` has no `"/orchestrate"` arm so this command falls
+/// through to `SlashCommandKind::Other`, same as any other fork-native
+/// command with no upstream counterpart.
+///
+/// No wasm: local child processes have no wasm equivalent (see
+/// `pane_group::pane::local_harness_launch`, `#[cfg(not(target_family = "wasm"))]`).
+pub static ORCHESTRATE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/orchestrate",
+    description: t_static!("slash-cmd-orchestrate-desc"),
+    icon_path: "bundled/svg/create-team.svg",
+    availability: Availability::ACTIVE_CONVERSATION
+        | Availability::NO_LRC_CONTROL
+        | Availability::LOCAL
+        | Availability::AI_ENABLED,
+    auto_enter_ai_mode: false,
+    argument: Some(Argument::required().with_hint_text(t_static!("slash-cmd-orchestrate-hint"))),
+});
+
 pub static OPEN_CODE_REVIEW: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     name: "/open-code-review",
     description: t_static!("slash-cmd-open-code-review-desc"),
@@ -665,6 +691,11 @@ fn all_commands() -> Vec<StaticCommand> {
         if FeatureFlag::ForkFromCommand.is_enabled() {
             commands.push(FORK_FROM.clone());
         }
+
+        // No feature flag (AGENTS §5.4): the maintainer asked for this usable
+        // before its options are fixed, and it has no half-built state to
+        // hide -- it either spawns a local child agent or shows an error.
+        commands.push(ORCHESTRATE.clone());
     }
 
     if !cfg!(target_family = "wasm") {
@@ -749,6 +780,47 @@ mod tests {
     #[test]
     fn version_command_is_not_registered() {
         assert!(COMMAND_REGISTRY.get_command_with_name("/version").is_none());
+    }
+
+    /// Fork-authored (AGENTS §5.10): `/orchestrate` is a fork-native, user-invoked command
+    /// with no pin equivalent to port a test from -- the pin's `/orchestrate` submits as a
+    /// prompt for the model (`SlashCommandKind::Orchestrate`); this one executes directly
+    /// (see `commands::ORCHESTRATE`'s doc comment for why they deliberately diverge).
+    #[test]
+    fn orchestrate_command_is_registered_local_only_and_gui_only() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(ORCHESTRATE.name)
+            .expect("expected /orchestrate to be registered");
+        // No `kind()` arm maps to it: this must stay `Other`, not
+        // `SlashCommandKind::Orchestrate` -- see the module doc comment on
+        // `ORCHESTRATE` for why reusing that kind would smuggle in the deferred
+        // agent-invoked path.
+        assert_eq!(command.kind(), SlashCommandKind::Other);
+        assert!(
+            !command.supports_tui(),
+            "/orchestrate depends on PaneGroup hidden-pane machinery the TUI doesn't have"
+        );
+        assert!(command.supports_gui());
+        assert!(!command.auto_enter_ai_mode);
+        assert_eq!(
+            command.availability,
+            Availability::ACTIVE_CONVERSATION
+                | Availability::NO_LRC_CONTROL
+                | Availability::LOCAL
+                | Availability::AI_ENABLED
+        );
+        let argument = command
+            .argument
+            .as_ref()
+            .expect("expected /orchestrate to declare an argument");
+        assert!(!argument.is_optional);
+        assert!(
+            !argument.should_execute_on_selection,
+            "selecting /orchestrate from the menu should insert text, not execute with no task"
+        );
+        assert!(argument.hint_text.is_some());
     }
 
     #[test]

@@ -30,6 +30,53 @@ pub(super) fn normalize_local_child_harness(harness_type: &str) -> Option<Harnes
     Harness::parse_local_child_harness(harness_type)
 }
 
+/// The harness `/orchestrate` launches children with. Fixed rather than a
+/// command-line argument: the maintainer asked for this feature usable
+/// before its options are settled, so `/orchestrate` deliberately has no
+/// flags at all (see [`split_orchestrate_tasks`] and
+/// [`compose_child_agent_prompt`]). Claude is the only harness with a real
+/// local-child implementation today -- OpenCode parses but has no caller
+/// exercising it yet, and Codex/Gemini/Oz are rejected by
+/// `normalize_local_child_harness`.
+pub(super) const ORCHESTRATE_DEFAULT_HARNESS: &str = "claude";
+
+/// Splits a raw `/orchestrate` argument into one task per child agent.
+///
+/// `/orchestrate` spawns one local child per `;`-separated segment, e.g.
+/// `/orchestrate write tests; update the docs` spawns two children. This is
+/// deliberately the command's *entire* argument syntax -- no flags for
+/// harness choice, child count, or anything else. Empty segments (a leading,
+/// trailing, or doubled `;`) are dropped so `/orchestrate task;` behaves the
+/// same as `/orchestrate task`.
+pub(super) fn split_orchestrate_tasks(argument: &str) -> Vec<String> {
+    argument
+        .split(';')
+        .map(str::trim)
+        .filter(|task| !task.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Composes a local child agent's prompt from one `/orchestrate` task.
+///
+/// Deliberately a trim-only pass-through: the child receives exactly the
+/// task text the user wrote for it, nothing more.
+///
+/// This is the prompt-composition decision for #325's local arm. Structural
+/// context -- the working directory, shell, and the `OZ_PARENT_RUN_ID`
+/// linkage back to the parent conversation -- is inherited automatically via
+/// [`prepare_local_harness_child_launch`]'s other parameters, which the
+/// caller derives from the parent pane. The parent conversation's
+/// *transcript* is deliberately NOT summarized or injected into the prompt:
+/// there is no cheap non-cloud way to condense an arbitrary transcript, and
+/// building one (length limits, what to include, how much) is exactly the
+/// kind of configuration surface the maintainer asked to defer. Each task
+/// segment must therefore be a self-contained instruction; the user, not an
+/// automatic summary, decides what a child needs to know.
+pub(super) fn compose_child_agent_prompt(task: &str) -> String {
+    task.trim().to_string()
+}
+
 pub(super) fn validate_local_harness_shell(shell_type: Option<ShellType>) -> Result<(), String> {
     match shell_type {
         Some(ShellType::Bash) | Some(ShellType::Zsh) | Some(ShellType::Fish) => Ok(()),

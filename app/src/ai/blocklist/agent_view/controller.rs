@@ -418,6 +418,10 @@ impl AgentViewController {
         }
     }
 
+    pub fn terminal_view_id(&self) -> EntityId {
+        self.terminal_view_id
+    }
+
     pub fn pane_group_id(&self) -> Option<EntityId> {
         self.pane_group_id
     }

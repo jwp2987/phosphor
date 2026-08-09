@@ -388,6 +388,72 @@ pub enum TerminalAction {
     RevealChildAgent {
         conversation_id: AIConversationId,
     },
+    /// Dispatched by the `/orchestrate` slash command: spawns one local child
+    /// agent per task in `argument` (see
+    /// `local_harness_launch::split_orchestrate_tasks` for the syntax).
+    /// User-invoked only -- this is deliberately NOT the pin's
+    /// `SlashCommandKind::Orchestrate` path, which submits the command as a
+    /// prompt for the model to act on via `AIAgentActionType::RunAgents`.
+    /// That agent-invoked mechanism is deferred (see #325); this action
+    /// spawns children directly from the user's typed command, with no
+    /// model in the decision loop.
+    ///
+    /// Local child processes have no wasm equivalent (see
+    /// `pane_group::pane::local_harness_launch`,
+    /// `#[cfg(not(target_family = "wasm"))]`); on wasm the handler shows an
+    /// error toast instead of spawning, matching `OpenCodeInWarp`/
+    /// `ExportToFile`'s wasm fallback pattern.
+    SpawnLocalChildAgents {
+        parent_conversation_id: AIConversationId,
+        argument: String,
+    },
+    /// Open a child agent conversation in a separate pane (split off from the
+    /// orchestrator), for a child that has no pane -- hidden or visible --
+    /// anywhere yet. Dispatched as the fallback when
+    /// `dispatch_focus_or_open_child_agent_pane` finds no existing owner view.
+    ///
+    /// Only reveals an already-materialized hidden pane, matching
+    /// `RevealChildAgent`'s handler. Warp's `ensure_hidden_child_agent_pane_for_conversation`
+    /// / `unhide_child_agent_pane_for_split_off` (which materialize a *new* hidden
+    /// pane on demand) are pill-bar-adjacent `PaneGroup` machinery that does not
+    /// exist in this fork yet -- see `app/src/pane_group/pane/terminal_pane.rs`'s
+    /// `Event::OpenChildAgentInNewPane` handler and #304's pill-bar Step 2.
+    OpenChildAgentInNewPane {
+        conversation_id: AIConversationId,
+    },
+    /// Open a child agent conversation in a separate tab. Same degraded
+    /// scope as `OpenChildAgentInNewPane`: reveals an already-materialized
+    /// hidden pane (as a sibling pane, not an actual new tab -- this fork
+    /// has no tab-splitting counterpart to the pin's
+    /// `pane_group::Event::OpenChildAgentInNewTab`) rather than materializing
+    /// on demand or opening a real new tab. Not in #304 Step 2's authorized
+    /// build list (only Swap and Kill were); revisit alongside
+    /// `OpenChildAgentInNewPane` if full pane/tab materialization ever lands.
+    OpenChildAgentInNewTab {
+        conversation_id: AIConversationId,
+    },
+    /// Switch the active terminal view's agent view to display the given
+    /// conversation in place, without opening a separate pane. Dispatched by
+    /// the orchestration pill bar for the orchestrator pill and by pill/menu
+    /// clicks that resolve to "switch in place" rather than "focus an
+    /// existing pane elsewhere" (see
+    /// `agent_view::orchestration_conversation_links::dispatch_focus_or_open_child_agent_pane`
+    /// for that latter path, which stays on `RevealChildAgent`/
+    /// `WorkspaceAction::FocusTerminalViewInWorkspace`).
+    SwitchAgentViewToConversation {
+        conversation_id: AIConversationId,
+    },
+    /// Stop the in-progress agent run for a child conversation, dispatched
+    /// from the orchestration pill bar's 3-dot overflow menu ("Stop agent").
+    StopAgentConversation {
+        conversation_id: AIConversationId,
+    },
+    /// Cancel (if running) and permanently remove a child agent conversation
+    /// from local history, dispatched from the orchestration pill bar's
+    /// 3-dot overflow menu ("Kill agent" / "Delete agent").
+    KillAgentConversation {
+        conversation_id: AIConversationId,
+    },
     /// Toggle PTY recording for this session.
     ToggleSessionRecording,
     /// Open the rich input editor for composing a prompt to send to a CLI agent.
@@ -635,6 +701,12 @@ impl fmt::Debug for TerminalAction {
             AwsCliNotInstalledBanner(action) => write!(f, "AwsCliNotInstalledBanner({action:?})"),
             ToggleUsageFooter => write!(f, "ToggleUsageFooter"),
             RevealChildAgent { .. } => write!(f, "RevealChildAgent"),
+            SpawnLocalChildAgents { .. } => write!(f, "SpawnLocalChildAgents"),
+            OpenChildAgentInNewPane { .. } => write!(f, "OpenChildAgentInNewPane"),
+            OpenChildAgentInNewTab { .. } => write!(f, "OpenChildAgentInNewTab"),
+            SwitchAgentViewToConversation { .. } => write!(f, "SwitchAgentViewToConversation"),
+            StopAgentConversation { .. } => write!(f, "StopAgentConversation"),
+            KillAgentConversation { .. } => write!(f, "KillAgentConversation"),
             ToggleSessionRecording => write!(f, "ToggleSessionRecording"),
             OpenCLIAgentRichInput => write!(f, "OpenCLIAgentRichInput"),
         }

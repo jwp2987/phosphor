@@ -1,4 +1,6 @@
 use warp_core::{features::FeatureFlag, send_telemetry_from_ctx, ui::appearance::Appearance};
+
+use crate::terminal::model::escape_sequences;
 use warpui::{keymap::Keystroke, EntityId, SingletonEntity, ViewContext};
 
 use crate::{
@@ -43,6 +45,22 @@ impl TerminalView {
         } else {
             self.enter_agent_view_for_new_conversation(initial_prompt, origin, ctx);
         }
+    }
+
+    /// Types a prepared local-child-harness command into this pane's PTY and
+    /// presses Enter, starting the harness CLI as though the user had typed
+    /// it themselves. Mirrors the "write to PTY so the process runs with a
+    /// real shell/tty behind it" pattern used elsewhere (e.g.
+    /// `run_aws_login_command`); this pane is created hidden specifically to
+    /// run the command headlessly (see `TerminalAction::SpawnLocalChildAgents`
+    /// and `pane_group::pane::terminal_pane::finish_spawning_local_child_agent`).
+    pub(crate) fn start_local_child_harness_process(
+        &mut self,
+        command: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.clear_line_editor_and_write_to_pty(command.as_bytes().to_vec(), ctx);
+        self.write_to_pty(vec![escape_sequences::C0::CR], ctx);
     }
 
     pub fn enter_agent_view_for_new_conversation(

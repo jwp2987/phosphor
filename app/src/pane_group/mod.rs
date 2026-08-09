@@ -3460,6 +3460,155 @@ impl PaneGroup {
             .original_pane_for_replacement(replacement_pane_id)
     }
 
+    pub fn replacement_pane_for_original(&self, original_pane_id: PaneId) -> Option<PaneId> {
+        self.panes.replacement_pane_for_original(original_pane_id)
+    }
+
+    /// Swaps the currently-focused pane's slot to display `conversation_id`
+    /// in place, used by the orchestration pill bar's navigation (the
+    /// orchestrator pill, and any child pill click that resolves to
+    /// "switch in place" rather than "focus an existing pane elsewhere").
+    ///
+    /// Ported from the pin, with two simplifications noted where they
+    /// diverge from `02b53fcd8`'s `swap_active_pane_to_conversation`:
+    ///
+    /// - Target-pane resolution only tries `child_agent_panes` (this fork's
+    ///   `create_missing_child_agent_panes` populates it eagerly, see that
+    ///   function's doc comment) then a same-group `find_pane_id_for_terminal_view`
+    ///   lookup. The pin also tries `find_visible_terminal_pane_for_conversation`
+    ///   and `pane_id_for_conversation_owner`, neither of which exist here;
+    ///   those covered visible-but-not-child-tracked panes and a
+    ///   cross-group owner lookup this fork's simpler pane model doesn't
+    ///   need for the pill bar's own children.
+    /// - Uses `focus_pane` instead of the pin's `focus_pane_preserving_maximized_state`
+    ///   (not ported; this fork's `focus_pane` does not special-case a
+    ///   maximized pane the way the pin's variant does).
+    ///
+    /// The revert-swap-on-reclaim behavior (if the target pane is currently
+    /// swapped out, revert that swap rather than leaving it in two tree
+    /// positions) IS ported faithfully -- the pin's comment on this point
+    /// held up under inspection: skipping it corrupts the pane tree on a
+    /// later revert.
+    pub fn swap_active_pane_to_conversation(
+        &mut self,
+        focused_pane_id: PaneId,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let from_child_panes = self.child_agent_panes.get(&conversation_id).copied();
+        let from_owner_lookup = BlocklistAIHistoryModel::as_ref(ctx)
+            .terminal_view_id_for_conversation(&conversation_id)
+            .and_then(|owner_terminal_view_id| {
+                self.find_pane_id_for_terminal_view(owner_terminal_view_id, ctx)
+            });
+        let target_pane_id = from_child_panes.or(from_owner_lookup);
+        let Some(target_pane_id) = target_pane_id else {
+            // No owning pane in this group (e.g. the conversation lives in
+            // another tab). Fall back to workspace-level navigation.
+            if let Some(owner_view_id) = BlocklistAIHistoryModel::as_ref(ctx)
+                .terminal_view_id_for_conversation(&conversation_id)
+            {
+                ctx.dispatch_typed_action(&WorkspaceAction::FocusTerminalViewInWorkspace {
+                    terminal_view_id: owner_view_id,
+                });
+                return;
+            }
+            log::warn!(
+                "swap_active_pane_to_conversation: no owning pane or terminal view found for \
+                 conversation {conversation_id:?} (focused_pane_id={focused_pane_id:?})"
+            );
+            return;
+        };
+
+        // No-op when the active pill is clicked.
+        if target_pane_id == focused_pane_id {
+            return;
+        }
+
+        // If the target is currently swapped out (some other pane sits in
+        // its slot), revert that swap and just focus the target. Skipping
+        // this would put the target in two tree positions and corrupt the
+        // layout on a later revert.
+        if let Some(replacement_id) = self.panes.replacement_pane_for_original(target_pane_id) {
+            self.panes.revert_temporary_replacement(replacement_id);
+            self.handle_pane_count_change(ctx);
+            self.focus_pane(target_pane_id, true, ctx);
+            for pane_id in [replacement_id, target_pane_id] {
+                if let Some(terminal_view) = self.terminal_view_from_pane_id(pane_id, ctx) {
+                    terminal_view.update(ctx, |view, ctx| {
+                        view.update_agent_view_back_button_state(ctx);
+                    });
+                }
+            }
+            ctx.emit(Event::TerminalViewStateChanged);
+            ctx.emit(Event::AppStateChanged);
+            return;
+        }
+
+        // If a swap is already active in this slot, revert it first; the
+        // anchor for the new operation becomes the original pane.
+        let anchor =
+            if let Some(original) = self.panes.original_pane_for_replacement(focused_pane_id) {
+                self.panes.revert_temporary_replacement(focused_pane_id);
+                original
+            } else {
+                focused_pane_id
+            };
+
+        // If revert landed us on the target, just focus and return.
+        if anchor == target_pane_id {
+            self.handle_pane_count_change(ctx);
+            self.focus_pane(anchor, true, ctx);
+            if let Some(terminal_view) = self.terminal_view_from_pane_id(anchor, ctx) {
+                terminal_view.update(ctx, |view, ctx| {
+                    view.update_agent_view_back_button_state(ctx);
+                });
+            }
+            ctx.emit(Event::TerminalViewStateChanged);
+            ctx.emit(Event::AppStateChanged);
+            return;
+        }
+
+        // If the target is already a visible sibling, just focus it.
+        if self.pane_contents.contains_key(&target_pane_id)
+            && !self.panes.is_pane_hidden(&target_pane_id)
+        {
+            self.handle_pane_count_change(ctx);
+            self.focus_pane(target_pane_id, true, ctx);
+            if let Some(terminal_view) = self.terminal_view_from_pane_id(target_pane_id, ctx) {
+                terminal_view.update(ctx, |view, ctx| {
+                    view.update_agent_view_back_button_state(ctx);
+                });
+            }
+            ctx.emit(Event::TerminalViewStateChanged);
+            ctx.emit(Event::AppStateChanged);
+            return;
+        }
+
+        // Substitute the target into the anchor's slot via temporary
+        // replacement; revert restores the anchor.
+        let success = self.panes.replace_pane(anchor, target_pane_id, true);
+        if !success {
+            log::warn!(
+                "swap_active_pane_to_conversation: replace_pane failed for anchor={anchor:?} target={target_pane_id:?}"
+            );
+            return;
+        }
+        self.handle_pane_count_change(ctx);
+        self.focus_pane(target_pane_id, true, ctx);
+        // Refresh the back-button label on both swapped panes; otherwise a
+        // stale label would persist until the next agent-view entry.
+        for pane_id in [anchor, target_pane_id] {
+            if let Some(terminal_view) = self.terminal_view_from_pane_id(pane_id, ctx) {
+                terminal_view.update(ctx, |view, ctx| {
+                    view.update_agent_view_back_button_state(ctx);
+                });
+            }
+        }
+        ctx.emit(Event::TerminalViewStateChanged);
+        ctx.emit(Event::AppStateChanged);
+    }
+
     pub fn pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
         self.pane_contents.keys().copied()
     }
@@ -3834,6 +3983,30 @@ impl PaneGroup {
             self.panes.remove_hidden_pane(child_pane_id);
             self.discard_pane(child_pane_id, ctx);
         }
+    }
+
+    /// Permanently discards the pane backing a single child agent
+    /// conversation, e.g. for the orchestration pill bar's "Kill agent"
+    /// action. Returns `false` if this group has no pane tracked for
+    /// `conversation_id` (it may be owned by a different pane group/tab).
+    ///
+    /// Simplified from the pin's `discard_child_agent_pane_for_conversation`:
+    /// this fork has no `child_agent_origin` (split-off-tab re-adoption)
+    /// field, so there is no split-off-tab fallback path to port -- a
+    /// direct `child_agent_panes` lookup is the only source this fork has.
+    /// Mirrors the per-child body of `remove_child_agent_panes` above,
+    /// scoped to one conversation id instead of all children of a parent.
+    pub fn discard_child_agent_pane_for_conversation(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let Some(child_pane_id) = self.child_agent_panes.remove(&conversation_id) else {
+            return false;
+        };
+        self.panes.remove_hidden_pane(child_pane_id);
+        self.discard_pane(child_pane_id, ctx);
+        true
     }
 
     pub fn close_pane(&mut self, pane_id: PaneId, ctx: &mut ViewContext<Self>) {

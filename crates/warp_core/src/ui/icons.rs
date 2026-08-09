@@ -26,6 +26,11 @@ pub enum Icon {
     DotsVertical,
     DotsHorizontal,
     Trash,
+    /// Outline pin glyph, used for the orchestration pill bar's "pin this
+    /// child agent" toggle in its unpinned state.
+    Pin,
+    /// Solid pin glyph, used for the orchestration pill bar's pinned state.
+    PinFilled,
     Terminal,
     TerminalInput,
     TextInput,
@@ -287,6 +292,8 @@ pub enum Icon {
     NLD,
     Oz,
     OzCloud,
+    /// The orchestrator avatar glyph shown on child-agent pills and breadcrumbs.
+    Agent,
     Conversation,
     Prompt,
     Grid,
@@ -340,6 +347,8 @@ impl From<Icon> for &'static str {
             Icon::Globe => "bundled/svg/globe-01.svg",
             Icon::Globe4 => "bundled/svg/globe-04.svg",
             Icon::Trash => "bundled/svg/trash-02.svg",
+            Icon::Pin => "bundled/svg/pin-01.svg",
+            Icon::PinFilled => "bundled/svg/pin-filled.svg",
             Icon::Terminal => "bundled/svg/terminal.svg",
             Icon::TerminalInput => "bundled/svg/terminal-input.svg",
             Icon::TextInput => "bundled/svg/text-input.svg",
@@ -602,6 +611,7 @@ impl From<Icon> for &'static str {
             Icon::NLD => "bundled/svg/nld.svg",
             Icon::Oz => "bundled/svg/oz.svg",
             Icon::OzCloud => "bundled/svg/oz-cloud.svg",
+            Icon::Agent => "bundled/svg/warp-drive.svg",
             Icon::Conversation => "bundled/svg/conversation.svg",
             Icon::Prompt => "bundled/svg/prompt.svg",
             Icon::Grid => "bundled/svg/grid.svg",

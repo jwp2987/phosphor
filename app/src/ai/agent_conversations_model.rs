@@ -6,7 +6,7 @@ use crate::ai::artifacts::Artifact;
 use crate::ai::blocklist::{format_credits, BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use crate::ai::conversation_entry::{
     AgentConversationDisplayData, AgentConversationEntry, AgentConversationEntryId,
-    AgentConversationIdentity,
+    AgentConversationIdentity, AgentConversationNavigationSubject,
 };
 use crate::ai::conversation_navigation::ConversationNavigationData;
 use crate::auth::{AuthStateProvider, UserUid};
@@ -1103,6 +1103,27 @@ impl AgentConversationsModel {
                         harness: wrapper.harness(),
                     },
                 })
+            }
+        }
+    }
+
+    /// Resolves a navigation subject to the `WorkspaceAction` that opens it, or `None`
+    /// if the underlying conversation/task is not currently in memory.
+    pub fn resolve_open_action(
+        subject: AgentConversationNavigationSubject,
+        restore_layout: Option<RestoreConversationLayout>,
+        app: &AppContext,
+    ) -> Option<WorkspaceAction> {
+        let model = Self::as_ref(app);
+        let AgentConversationNavigationSubject::Entry(id) = subject;
+        match &id {
+            AgentConversationEntryId::Conversation(conversation_id) => {
+                let metadata = model.conversations.get(conversation_id)?;
+                ConversationOrTask::Conversation(metadata).get_open_action(restore_layout)
+            }
+            AgentConversationEntryId::AmbientRun(task_id) => {
+                let task = model.tasks.get(task_id)?;
+                ConversationOrTask::Task(task).get_open_action(restore_layout)
             }
         }
     }
