@@ -1280,8 +1280,25 @@ impl BlocklistAIHistoryModel {
 
     /// Resolves a server-side agent identifier to a local conversation ID.
     /// The identifier may be a server conversation token (v1) or a run_id (v2).
+    ///
+    /// Falls back to `server_token_to_conversation_id` when there's no
+    /// `agent_id_to_conversation_id` entry: that index is only populated via
+    /// `assign_run_id_for_conversation` (the run_id/v2 path), so a
+    /// conversation identified purely by a v1 server_conversation_token --
+    /// e.g. `set_server_conversation_token_for_conversation` without a
+    /// run_id -- would otherwise never resolve here even though
+    /// `agent_link_id()` (used to key `agent_id_to_conversation_id` in the
+    /// first place) treats the two as equivalent, falling back to the token
+    /// itself when there's no run_id.
     pub fn conversation_id_for_agent_id(&self, agent_id: &str) -> Option<AIConversationId> {
-        self.agent_id_to_conversation_id.get(agent_id).copied()
+        self.agent_id_to_conversation_id
+            .get(agent_id)
+            .copied()
+            .or_else(|| {
+                self.server_token_to_conversation_id
+                    .get(&ServerConversationToken::new(agent_id.to_owned()))
+                    .copied()
+            })
     }
 
     /// Creates a new conversation and transfers relevant exchanges from
