@@ -602,11 +602,27 @@ with `is_remote_child`.
 deleted orchestration storage deliberately; this is not a revert.
 
 ### Tier 4 — large (a week+)
-- [ ] #210 · #252 · #289 · #381 · #382 · #236 · #349 · #324 · #142
-- [ ] #405 notebooks/file: Jupyter (`.ipynb`) rendering missing
-      (`FeatureFlag::JupyterNotebooks`). Added to this tier 2026-08-08 — it had
-      never been tiered at all, found by reconciling every open issue against the
-      tier lists. A whole feature, hence tier 4.
+- [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #349 · #324
+      (#252, #289, #381, #142 all CLOSED 2026-08-08/09)
+
+**#210 was re-filed as #576 after re-measuring all ten rows against `main`.** Its
+figures were wrong in BOTH directions: pin counts undercounted 2-4x on 6 of 10 rows
+(`input_tests.rs` 149 not 54, `view_tests.rs` 142 not 37); three rows listed as
+absent actually exist under fork-renamed paths at 78-94% ported (`input_test.rs`,
+`view_test.rs`, `local_model_test.rs`) — the exact filename-not-content error #210's
+own rules warned against; two rows were already closed (#142, #252); and
+`pane_group/mod_tests.rs` is majority-cloud (21 marker lines: `CodebaseIndexManager`,
+`IapManager`, `CloudConversationData`), not clean debt.
+**~521 claimed -> ~214 genuinely portable non-cloud tests.**
+- [x] #405 MOVED TO TIER 3 on 2026-08-09 after scoping. Verdict REAL, zero cloud,
+      but **~3-4x smaller than the tier-4 framing**: ~500-700 net-new lines across
+      ~12 files, ~30 tests, 1-3 days. The only genuinely new code is
+      `crates/ipynb_parser` (401 lines + 24 tests, self-contained nbformat-v4 JSON ->
+      `FormattedText`); everything else is 2-13 line hooks into files that already
+      exist, because ~90% of the scaffolding is already here (the whole
+      `app/src/notebooks/` subsystem, the `FeatureFlag` mechanism, `ContentFormat`,
+      `markdown_parser`, and `is_jupyter_notebook_file()` with its 6 tests already
+      passing). No blocking dependencies. See the issue for the 5-step order.
 
 **Being audited against the pin (2026-08-08), same treatment tier 3 got.** For
 this tier the TEST COUNTS are the main claim -- five of these issues assert a
