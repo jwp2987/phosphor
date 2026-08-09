@@ -21,6 +21,7 @@ use warpui_core::platform::{TerminationMode, WindowStyle};
 use warpui_core::runtime::spawn_tui_driver;
 use warpui_core::{AddWindowOptions, AppContext, ModelHandle, ViewHandle};
 
+use crate::orchestration_model::TuiOrchestrationModel;
 use crate::resume::TuiExitSummaryHandle;
 use crate::root_view::RootTuiView;
 use crate::session_registry::{TuiSessions, TuiSessionsEvent};
@@ -259,6 +260,8 @@ fn init(
         Ok(driver) => {
             let sessions =
                 ctx.add_singleton_model(|_| TuiSessions::new(driver, exit_summary, resume_token));
+            let orchestration = TuiOrchestrationModel::register(ctx);
+            TuiSessions::wire_orchestration(&sessions, &orchestration, ctx);
             root.update(ctx, |_, ctx| {
                 ctx.subscribe_to_model(&sessions, |_, _, event, ctx| match event {
                     TuiSessionsEvent::SessionRemoved(_) => ctx.notify(),

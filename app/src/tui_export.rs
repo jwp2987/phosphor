@@ -94,6 +94,14 @@ pub use crate::ai::blocklist::input_mode_policy::{
     InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate,
 };
 pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, InputType};
+// Local-only orchestration topology helpers (no remote-worker execution path in
+// this fork -- see `orchestration_topology`'s module doc). Feeds the TUI's
+// orchestration tab bar snapshot; kept separate from the (unported)
+// cloud-runner "RunAgents" orchestration family.
+pub use crate::ai::blocklist::orchestration_topology::{
+    OrderedOrchestrationDescendant, descendant_conversations_in_pill_order,
+    orchestration_root_conversation_id,
+};
 pub use crate::ai::blocklist::permissions::BlocklistAIPermissions;
 pub use crate::ai::blocklist::persistence::maybe_build_ai_query_upsert_event;
 pub use crate::ai::blocklist::view_util::format_credits;
