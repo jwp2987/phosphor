@@ -83,41 +83,28 @@ fn test_byte_offset_for_char_offset() {
     );
 }
 
-/// Regression test: double-clicking on a boundary character (e.g. the space
-/// between two words) must select just that character, not both flanking
-/// words. Previously `semantic_expansion_target` only looked at the
-/// character *after* (forward) or *before* (backward) the clicked position,
-/// never at the clicked character itself, so clicking the space in
-/// "foo bar" expanded forward into "bar" (because 'b' is a word char) and
-/// backward into "foo" (because 'o' is a word char), selecting the whole
-/// "foo bar" string.
-#[test]
-fn test_semantic_expansion_on_a_space_does_not_select_both_flanking_words() -> anyhow::Result<()> {
-    let buf = "foo bar";
-    let policy = WordBoundariesPolicy::Default;
-    let clicked = CharOffset::from(3); // the space between "foo" and "bar"
+// REMOVED: test_semantic_expansion_on_a_space_does_not_select_both_flanking_words.
+//
+// Added by 891f5b88e (2026-07-30) as a fork-only test asserting that
+// double-clicking a boundary character collapses the selection to that single
+// character. Removed on a maintainer decision (2026-08-08) after it was found to
+// contradict the pinned oracle's own test, `test_semantic_expansion_matches_block_list`
+// in `word_boundaries_tests.rs`, ported from `02b53fcd8` by 6f2a5afcd (2026-08-07).
+// The two encoded opposite behaviour; the collision went unseen for a day because
+// no gate ran `warpui_core` at all (#573).
+//
+// The pin's behaviour wins, for a reason beyond parity: this fork's own terminal
+// engine, `app/src/terminal/model/grid/grid_handler.rs::semantic_search_left`/`right`,
+// never special-cases the clicked position either. So the collapsing behaviour made
+// the TUI disagree with the GUI terminal, and the pinned test exists precisely to
+// keep those two implementations in step. See #574.
+//
+// This is a deliberate reversal of a previous decision, not a test weakened to go
+// green — the code was changed to match the pin and this assertion no longer
+// describes intended behaviour.
 
-    let start = buf.semantic_expansion_target(clicked, SelectionDirection::Backward, &policy)?;
-    let end = buf.semantic_expansion_target(clicked, SelectionDirection::Forward, &policy)?;
-    let start_offset = buf.to_offset(start)?.as_usize();
-    let end_offset = buf.to_offset(end)?.as_usize();
-
-    assert_ne!(
-        (start_offset, end_offset),
-        (0, 7),
-        "clicking the space must not select the entire \"foo bar\" span"
-    );
-    assert_eq!(
-        (start_offset, end_offset),
-        (3, 4),
-        "clicking the space must select just the single boundary character"
-    );
-
-    Ok(())
-}
-
-/// Sanity check that the fix above didn't regress the normal case: clicking a
-/// character inside a word still expands to the whole word.
+/// Sanity check on the normal case: clicking a character inside a word expands
+/// to the whole word.
 #[test]
 fn test_semantic_expansion_on_a_word_char_selects_the_whole_word() -> anyhow::Result<()> {
     let buf = "foo bar";

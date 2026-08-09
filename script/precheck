@@ -204,6 +204,26 @@ else
     fail "test suite changed against known_test_failures.txt (see above)"
 fi
 
+# warpui_core runs SEPARATELY, and `--features tui` is not optional (#573).
+#
+# It cannot join the invocation above because its tests are not all lib tests
+# and it needs a different feature set. Two ways this package went dark:
+#
+#   1. It was simply absent from the gate, so ~565 tests had never run at all.
+#   2. `tui` is OFF by default (Cargo.toml), and `elements/tui/` is
+#      `#[cfg(feature = "tui")]`. Without the flag that whole module is not
+#      compiled, so its tests do not fail -- they do not EXIST. A run reports
+#      306 passing and looks green while saying nothing about 259 others.
+#
+# The tell for (2) was a test count that did not move when a test was added.
+# If you ever change this line, check the count, not just the colour.
+step "warpui_core suite (--features tui)"
+if ./script/check_test_failures -p warpui_core --features tui; then
+    ok "no change against known_test_failures.txt"
+else
+    fail "warpui_core suite changed against known_test_failures.txt (see above)"
+fi
+
 rm -f /tmp/precheck-check.$$ /tmp/precheck-unified.$$
 
 printf '\n'
