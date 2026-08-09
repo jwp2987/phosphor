@@ -1825,10 +1825,12 @@ fn initialize_app(
 
     {
         let conversations = &multi_agent_conversations;
-        // #256 item 2: no `nld_prompts`-equivalent SQLite read exists in this fork yet (the pin
-        // reads `sqlite_data.nld_prompts`, gated on `FeatureFlag::NldPromptHistoryMatch`), so this
-        // snapshot is empty until that loading path -- and the NLD-classification consumer that
-        // would use it -- lands (superseded by #336/#337/#331).
+        // #256 item 2 / #312: the NLD-classification consumer now exists
+        // (`input_model.rs`'s `detect_and_set_input_type`, gated on
+        // `FeatureFlag::NldPromptHistoryMatch`, itself off by default), but no
+        // `nld_prompts`-equivalent SQLite read exists in this fork yet (the pin reads
+        // `sqlite_data.nld_prompts`), so this snapshot is empty until that loading path
+        // lands (superseded by #336/#337/#331).
         ctx.add_singleton_model(move |_| {
             BlocklistAIHistoryModel::new(ai_queries, vec![], conversations)
         });
