@@ -3637,4 +3637,153 @@ Thumbs.db
             });
         });
     }
+
+    #[test]
+    fn directory_load_coalescing_is_scoped_by_owner_and_kind() {
+        let parent_repo_path = StandardizedPath::try_new("/parent_repo").unwrap();
+        let nested_repo_path = StandardizedPath::try_new("/parent_repo/nested_repo").unwrap();
+
+        App::test((), |mut app| async move {
+            let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+            let (_index_release_tx, index_release_rx) = oneshot::channel::<()>();
+            let (_load_release_tx, load_release_rx) = oneshot::channel::<()>();
+            let (index_future_id, load_future_id) = model_handle.update(&mut app, |model, ctx| {
+                let nested_index_key = build_task_key(&nested_repo_path, &nested_repo_path);
+                let parent_load_key = build_task_key(&parent_repo_path, &nested_repo_path);
+
+                let index_handle = ctx.spawn(
+                    async move {
+                        let _ = index_release_rx.await;
+                    },
+                    |_, _, _| {},
+                );
+                let index_future_id = index_handle.future_id();
+                model.track_build_task(
+                    nested_index_key.clone(),
+                    BuildTaskKind::Index,
+                    index_handle,
+                );
+
+                assert!(
+                    model.subscribe_to_build_task(&parent_load_key).is_none(),
+                    "a parent directory load must not subscribe to a nested repo index task"
+                );
+                assert!(
+                    model.subscribe_to_build_task(&nested_index_key).is_none(),
+                    "directory-load waiters must not subscribe to index tasks"
+                );
+
+                let load_handle = ctx.spawn(
+                    async move {
+                        let _ = load_release_rx.await;
+                    },
+                    |_, _, _| {},
+                );
+                let load_future_id = load_handle.future_id();
+                model.track_build_task(
+                    parent_load_key.clone(),
+                    BuildTaskKind::DirectoryLoad,
+                    load_handle,
+                );
+
+                assert!(
+                    model.subscribe_to_build_task(&parent_load_key).is_some(),
+                    "matching directory-load tasks should still coalesce"
+                );
+                assert_eq!(
+                    model
+                        .build_tasks
+                        .get(&parent_load_key)
+                        .expect("parent load task should be tracked")
+                        .completion_waiters
+                        .len(),
+                    1
+                );
+
+                let index_task = model
+                    .build_tasks
+                    .remove(&nested_index_key)
+                    .expect("nested index task should be tracked");
+                let load_task = model
+                    .build_tasks
+                    .remove(&parent_load_key)
+                    .expect("parent load task should be tracked");
+                index_task.handle.abort();
+                load_task.handle.abort();
+
+                (index_future_id, load_future_id)
+            });
+
+            model_handle
+                .update(&mut app, |_, ctx| ctx.await_spawned_future(index_future_id))
+                .await;
+            model_handle
+                .update(&mut app, |_, ctx| ctx.await_spawned_future(load_future_id))
+                .await;
+        });
+    }
+
+    /// Expanding a gitignored directory inside a git repo registers an on-demand
+    /// non-recursive watch for it on Linux (where the recursive root watch prunes
+    /// gitignored dirs), while other platforms rely on the recursive root watch.
+    #[cfg(feature = "local_fs")]
+    #[test]
+    fn load_directory_watches_expanded_gitignored_dir_for_git_repo() {
+        VirtualFS::test("git_repo_gitignored_expand", |dirs, mut vfs| {
+            vfs.mkdir("repo/node_modules/pkg")
+                .with_files(vec![Stub::FileWithContent(
+                    "repo/.gitignore",
+                    "node_modules/\n",
+                )]);
+            let repo_path =
+                StandardizedPath::from_local_canonicalized(&dirs.tests().join("repo")).unwrap();
+            let node_modules =
+                StandardizedPath::from_local_canonicalized(&dirs.tests().join("repo/node_modules"))
+                    .unwrap();
+
+            App::test((), |mut app| async move {
+                let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
+                let (gitignore, _) = Gitignore::new(dirs.tests().join("repo/.gitignore"));
+                let root = Entry::Directory(DirectoryEntry {
+                    path: repo_path.clone(),
+                    children: Vec::new(),
+                    ignored: false,
+                    loaded: true,
+                });
+                let state = FileTreeState::new(root, vec![gitignore], None);
+
+                model_handle.update(&mut app, |model, ctx| {
+                    model
+                        .add_repository_internal(
+                            repo_path.clone(),
+                            state,
+                            RootWatchMode::Recursive,
+                            ctx,
+                        )
+                        .expect("repo should index");
+                    model
+                        .load_directory(&repo_path, &node_modules, ctx)
+                        .expect("should load gitignored dir");
+                });
+                await_build_tasks_for_repo(&mut app, &model_handle, &repo_path).await;
+
+                model_handle.read(&app, |model, _ctx| {
+                    let repo_watch = model
+                        .repo_watches
+                        .get(&repo_path)
+                        .expect("watch should be recorded");
+                    assert_eq!(repo_watch.root_mode, RootWatchMode::Recursive);
+                    if cfg!(target_os = "linux") {
+                        // Linux prunes node_modules from the recursive root watch, so
+                        // expanding it registers an on-demand non-recursive watch.
+                        assert!(repo_watch.extra_dirs.contains(&node_modules));
+                    } else {
+                        // Other backends still deliver gitignored events through the
+                        // recursive root watch, so no extra watch is registered.
+                        assert!(repo_watch.extra_dirs.is_empty());
+                    }
+                });
+            });
+        });
+    }
 }
