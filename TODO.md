@@ -583,6 +583,38 @@ with `is_remote_child`.
 `crates/persistence/migrations/2026-03-23-180000_remove_orchestration_persistence`
 deleted orchestration storage deliberately; this is not a revert.
 
+### Tier 3.5 remaining — AGREED SEQUENCE 2026-08-09
+
+**ONE agent at a time. ONE build at a time. Each step lands green and merges before
+the next starts.** Coordinator builds and merges; agents never merge.
+
+- [ ] **Step 1** — `block/view_impl/orchestration.rs` (656) + `orchestration_avatar.rs`
+      (41) + `orchestration_conversation_links.rs` (299). Needs
+      `TerminalAction::OpenChildAgentInNewPane` (0 in fork) and
+      `AgentConversationsModel::resolve_open_action` / `AgentConversationNavigationSubject`
+      (0 in fork). ~1,000 lines. **The avatar cannot land alone** — it imports
+      `render_agent_avatar_disc`/`render_orchestrator_avatar_disc` from
+      `orchestration_pill_bar.rs` (`orchestration_avatar.rs:4-5`), so those two fns
+      come with it.
+- [ ] **Step 2** — `orchestration_pill_bar.rs` (2,539). Port the
+      `blocklist::telemetry` module FIRST (`BlocklistOrchestrationTelemetryEvent`:
+      6 pin files, **0 in fork**), then the pill bar, then the new variants on
+      `PaneHeaderAction`/`MenuEvent`/`WorkspaceAction`/`TerminalAction`. Own session.
+- [ ] **Step 3** — #325. Add `AIAgentActionType::RunAgents` (16 pin sites) and let the
+      compiler walk the **59 files** matching that enum. Also needs
+      `StartAgentExecutionMode`/`RunAgentsExecutionMode`/`RunAgentsAgentRunConfig`
+      (all 0 in fork). LOCAL arm only. One deliberate compiler-checked pass.
+- [ ] **Step 4** — #329, collapsible defaults in `block.rs`. Small, and genuinely last:
+      it configures presentation of steps 1-2.
+- [x] **NOT IN THIS TIER** — `inline_action/orchestration_controls.rs` (~1,336) is
+      **cloud**: `orchestration_controls.rs:48` imports `crate::server::experiments`.
+      `DECLINED.md` covers it under the RunAgents entry; its one non-cloud caveat is
+      **#11's** scope. Do not port it here.
+
+**Deviating from this order requires asking first.** Recorded because the coordinator
+changed an agreed order twice on 2026-08-09 (#381 folded into the #440 batch against
+"after 440"; #405 re-tiered unasked) and both were wrong.
+
 ### Tier 4 — large (a week+)
 - [ ] #210 · #252 · #289 · #381 · #382 · #236 · #349 · #324 · #142
 - [ ] #405 notebooks/file: Jupyter (`.ipynb`) rendering missing
