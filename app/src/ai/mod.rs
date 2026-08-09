@@ -28,6 +28,7 @@ pub(crate) mod conversation_utils;
 pub(crate) mod document;
 pub(crate) mod harness_display;
 pub(crate) mod llms;
+pub(crate) mod local_harness_setup;
 pub mod onboarding;
 pub(crate) mod option_snapshot;
 pub(crate) mod predict;
