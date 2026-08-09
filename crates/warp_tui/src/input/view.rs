@@ -23,7 +23,7 @@
 use std::ops::Range;
 use std::rc::Rc;
 
-use string_offset::CharOffset;
+use string_offset::{ByteOffset, CharOffset};
 use vim::vim::{MotionType, VimMode, VimModel, VimSubscriber as _};
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::settings::AppEditorSettings;
@@ -36,6 +36,7 @@ use warpui_core::elements::MouseStateHandle;
 use warpui_core::elements::tui::{TuiContainer, TuiElement, TuiFlex, TuiHoverable, TuiText};
 use warpui_core::keymap::macros::*;
 use warpui_core::keymap::{self, EditableBinding, Keystroke};
+use warpui_core::text::{byte_offset_for_char_offset, count_chars_up_to_byte};
 use warpui_core::{
     AppContext, BlurContext, Entity, FocusContext, ModelHandle, SingletonEntity as _, TuiView,
     TypedActionView, ViewContext, ViewHandle,
@@ -170,6 +171,16 @@ pub enum TuiInputAction {
     /// Place the cursor at `offset` without starting a drag selection
     /// (the `!` gutter click).
     SetCursor { offset: CharOffset },
+}
+
+/// A snapshot of the input buffer and cursor position at the moment a shell
+/// completion request was issued, used to detect staleness once results
+/// arrive (the user may have kept typing while the async fetch was in
+/// flight).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TuiCompletionInputSnapshot {
+    pub(crate) buffer_text: String,
+    pub(crate) cursor_byte_offset: usize,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -870,6 +881,78 @@ impl TuiInputView {
             return String::new();
         }
         buffer.text().into_string()
+    }
+
+    /// Captures the buffer text and cursor position for a shell-completion
+    /// request, or `None` when the selection is not a single cursor (a
+    /// completion request needs one exact position, not a range).
+    ///
+    /// Unlike the pin, this is not gated on shell mode: this fork's Tab
+    /// completion is available in both shell and agent-composer input (see
+    /// `TRIGGER_COMPLETIONS_BINDING_NAME`'s context predicate), so gating the
+    /// snapshot itself would silently disable completion outside shell mode.
+    pub(crate) fn completion_snapshot(
+        &self,
+        ctx: &AppContext,
+    ) -> Option<TuiCompletionInputSnapshot> {
+        if !self.model.as_ref(ctx).selection_is_single_cursor(ctx) {
+            return None;
+        }
+        let buffer_text = self.plain_text(ctx);
+        let cursor_char_offset = self
+            .model
+            .as_ref(ctx)
+            .buffer_selection_model()
+            .as_ref(ctx)
+            .first_selection_head()
+            .as_usize()
+            .saturating_sub(1);
+        let cursor_byte_offset =
+            byte_offset_for_char_offset(&buffer_text, CharOffset::from(cursor_char_offset))?
+                .as_usize();
+        Some(TuiCompletionInputSnapshot {
+            buffer_text,
+            cursor_byte_offset,
+        })
+    }
+
+    /// Applies an accepted shell completion, replacing `acceptance`'s byte
+    /// range with its replacement text (plus a trailing space when
+    /// `append_space` is set). Returns `false` when the range is stale
+    /// relative to the current buffer.
+    pub(crate) fn apply_shell_completion(
+        &mut self,
+        acceptance: TuiAcceptedCompletion,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let buffer_text = self.plain_text(ctx);
+        let replacement_range = acceptance.span;
+        if replacement_range.start > replacement_range.end {
+            return false;
+        }
+        let Some(replacement_start) =
+            count_chars_up_to_byte(&buffer_text, ByteOffset::from(replacement_range.start))
+        else {
+            return false;
+        };
+        let Some(replacement_end) =
+            count_chars_up_to_byte(&buffer_text, ByteOffset::from(replacement_range.end))
+        else {
+            return false;
+        };
+        let selection_start = CharOffset::from(replacement_start.as_usize() + 1);
+        let selection_end = CharOffset::from(replacement_end.as_usize() + 1);
+        let mut replacement = acceptance.replacement;
+        if acceptance.append_space {
+            replacement.push(' ');
+        }
+        self.model.update(ctx, |model, ctx| {
+            model.select_at(selection_start, false, ctx);
+            model.set_last_selection_head(selection_end, ctx);
+            model.end_selection(ctx);
+            model.user_insert(&replacement, ctx);
+        });
+        true
     }
 
     fn cursor_offset(&self, ctx: &AppContext) -> CharOffset {

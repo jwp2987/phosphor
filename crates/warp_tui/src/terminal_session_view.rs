@@ -41,8 +41,8 @@ use warp::tui_export::{
     maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
     record_autodetection_toggle_from_slash_command, record_saved_prompt_accepted,
     record_static_slash_command_accepted, saved_prompt_text_for_id,
-    slash_command_selection_behavior, throttle, tui_completion_session_context,
-    tui_conversation_actions_in_order, tui_fetch_completions, tui_set_active_profile,
+    slash_command_selection_behavior, throttle, tui_conversation_actions_in_order,
+    tui_set_active_profile,
 };
 use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
@@ -133,6 +133,7 @@ use crate::zero_state::TuiZeroStateView;
 use crate::zero_state_animation::{
     ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationLoadFailure,
 };
+mod completions;
 mod input_detection;
 mod shortcuts;
 pub(crate) mod state;
@@ -649,8 +650,9 @@ pub(crate) struct TuiTerminalSessionView {
     /// summarize exchange on its conversation completes. See
     /// [`Self::maybe_send_queued_follow_up`].
     queued_follow_up: Option<TuiQueuedFollowUp>,
-    /// In-flight Tab-completion fetch from the shared completer engine.
-    completions_fetch: Option<SpawnedFutureHandle>,
+    /// In-flight Tab-completion fetch from the shared completer engine, plus
+    /// the request generation and menu snapshot used to detect staleness.
+    completion_request: completions::CompletionRequestState,
     skills_menu: ModelHandle<TuiSkillMenuModel>,
     mcp_menu: ModelHandle<TuiMcpMenuModel>,
     slash_commands_source: ModelHandle<TuiSlashCommandDataSource>,
@@ -1540,6 +1542,7 @@ impl TuiTerminalSessionView {
             if !matches!(event, CodeEditorModelEvent::SelectionChanged) {
                 return;
             }
+            view.handle_completion_editor_changed(ctx);
 
             let has_selection = !editor_for_selection
                 .as_ref(ctx)
@@ -1699,7 +1702,10 @@ impl TuiTerminalSessionView {
         });
         // The input box border color and the footer's shell-mode hint depend
         // on the input mode.
-        ctx.subscribe_to_model(&ai_input_model, |_, _, _, ctx| ctx.notify());
+        ctx.subscribe_to_model(&ai_input_model, |view, _, _, ctx| {
+            view.handle_completion_editor_changed(ctx);
+            ctx.notify();
+        });
         ctx.subscribe_to_model(&suggestions_mode, |view, _, _, ctx| {
             view.read_only_menu_selection.clear();
             ctx.notify();
@@ -1779,6 +1785,7 @@ impl TuiTerminalSessionView {
         });
         ctx.subscribe_to_model(&active_session, |view, _, event, ctx| match event {
             ActiveSessionEvent::UpdatedPwd => {
+                view.abort_shell_completion(ctx);
                 // Run repo detection so project rules and skills follow the
                 // session's working directory (the GUI's equivalent lives in
                 // `TerminalView::apply_block_metadata_update`). The first
@@ -1883,7 +1890,7 @@ impl TuiTerminalSessionView {
             exchange_menu,
             api_keys_menu,
             queued_follow_up: None,
-            completions_fetch: None,
+            completion_request: completions::CompletionRequestState::default(),
             skills_menu,
             mcp_menu,
             slash_commands_source,
@@ -2966,69 +2973,10 @@ impl TuiTerminalSessionView {
         }
     }
 
-    /// Tab-completion entry point. When the completions popup is already open,
-    /// Tab cycles to the next candidate; otherwise it fetches candidates for the
-    /// token under the cursor from the shared completer engine and opens the
-    /// popup. Completion operates on the existing buffer, so (unlike the other
-    /// inline menus) it does not clear or take over the input.
-    fn trigger_completions(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.completions_menu.as_ref(ctx).is_open(ctx) {
-            self.completions_menu
-                .update(ctx, |menu, ctx| menu.select_next(ctx));
-            ctx.notify();
-            return;
-        }
-        if let Some(future) = self.completions_fetch.take() {
-            future.abort();
-        }
-        let buffer_text = self.input_buffer_text(ctx);
-        // Complete at end of buffer: the TUI composer keeps the cursor at the
-        // tail for the common single-line case.
-        let cursor_pos = buffer_text.len();
-        if buffer_text[..cursor_pos].trim().is_empty() {
-            return;
-        }
-        let Some(current_working_directory) = self.current_working_directory(ctx) else {
-            return;
-        };
-        let Some(completion_context) = tui_completion_session_context(
-            self.active_session.as_ref(ctx),
-            current_working_directory,
-            ctx,
-        ) else {
-            return;
-        };
-        let completion_session = completion_context.session.clone();
-        self.completions_fetch = Some(ctx.spawn_abortable(
-            async move {
-                tui_fetch_completions(buffer_text.clone(), cursor_pos, completion_context).await
-            },
-            move |view, results, ctx| {
-                view.completions_fetch = None;
-                let Some(results) = results else {
-                    return;
-                };
-                // The composer keeps the cursor at the buffer tail (see the
-                // comment above), so a completion whose span reaches that
-                // tail is completing the last token in the buffer -- accepting
-                // it should append a trailing space, matching shell
-                // tab-completion, unless the candidate names a directory.
-                let append_space_at_buffer_end = results.replacement_span.end == cursor_pos;
-                view.completions_menu.update(ctx, |menu, ctx| {
-                    menu.show(
-                        results.candidates,
-                        results.replacement_span,
-                        append_space_at_buffer_end,
-                        ctx,
-                    );
-                });
-                ctx.notify();
-            },
-            move |_, _| {
-                completion_session.cancel_active_commands();
-            },
-        ));
-    }
+    // Tab-completion's entry point (request_shell_completion), staleness
+    // tracking (abort_shell_completion, handle_completion_editor_changed),
+    // and live-as-you-type result handling now live in
+    // terminal_session_view/completions.rs (#390).
 
     /// Applies an accepted completion: replaces the completed span in the input
     /// buffer with the chosen replacement text.
@@ -4850,7 +4798,7 @@ impl TypedActionView for TuiTerminalSessionView {
                     .update(ctx, |bar, ctx| bar.paste_from_clipboard(ctx));
             }
             TuiTerminalSessionAction::TriggerCompletions => {
-                self.trigger_completions(ctx);
+                self.request_shell_completion(ctx);
             }
             TuiTerminalSessionAction::InlineMenuMouseAcceptRow(index) => {
                 self.handle_inline_menu_mouse_accept(*index, ctx);
