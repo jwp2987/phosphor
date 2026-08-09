@@ -773,6 +773,33 @@ impl BlocklistAIHistoryModel {
             .map(|conversation| conversation.status())
     }
 
+    /// Returns the terminal view ID that owns the ambient-agent-run conversation with the given
+    /// task id, if any.
+    ///
+    /// For #316: substitutes for the first branch of the pin's
+    /// `ActiveAgentViewsModel::get_terminal_view_id_for_entry`
+    /// (`active_agent_views_model.rs:508-524`, `02b53fcd8`) -- that model is permanently removed
+    /// here (see `DECLINED.md`). Deliberately a linear scan rather than a maintained
+    /// `HashMap<AmbientAgentTaskId, EntityId>` kept in sync across every conversation
+    /// add/remove/clear site: reusing the same already-authoritative
+    /// `live_conversation_ids_for_terminal_view` + `all_conversations_metadata` state that
+    /// `terminal_view_id_for_conversation` below already scans keeps there being exactly one
+    /// source of truth, with no new state that could desync from it. Same cost class
+    /// (O(panes x conversations)) that method already accepts, called once per ambient-run list
+    /// row.
+    pub fn terminal_view_id_for_ambient_task(&self, task_id: AmbientAgentTaskId) -> Option<EntityId> {
+        self.live_conversation_ids_for_terminal_view
+            .iter()
+            .find(|(_, conversation_ids)| {
+                conversation_ids.iter().any(|conversation_id| {
+                    self.all_conversations_metadata
+                        .get(conversation_id)
+                        .is_some_and(|metadata| metadata.ambient_agent_task_id == Some(task_id))
+                })
+            })
+            .map(|(terminal_view_id, _)| *terminal_view_id)
+    }
+
     /// Returns the terminal view ID that owns the given conversation, if any.
     pub fn terminal_view_id_for_conversation(
         &self,

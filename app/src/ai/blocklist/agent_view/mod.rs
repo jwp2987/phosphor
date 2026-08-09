@@ -4,6 +4,7 @@ mod agent_view_block;
 pub mod child_agent_status_card;
 mod controller;
 pub(crate) mod conversation_navigation_links;
+pub(crate) mod conversation_selection;
 mod ephemeral_message_model;
 mod inline_agent_view_header;
 pub mod shortcuts;

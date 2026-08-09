@@ -42,6 +42,7 @@ use super::{
     AIQueryHistoryOutputStatus, BeginConversationRenameError, BlocklistAIHistoryModel,
     ForkConversationError, PersistedAIInput, PersistedAIInputType,
 };
+use crate::ai::ambient_agents::AmbientAgentTaskId;
 
 fn initialize_history_model_test_app(app: &mut App) {
     initialize_settings_for_tests(app);
@@ -3369,5 +3370,117 @@ fn prompt_history_candidates_seeds_from_snapshot() {
         let prompts = history_model.read(&app, |model, _| model.prompt_history_candidates());
         let texts: Vec<&str> = prompts.iter().map(|entry| &*entry.text).collect();
         assert_eq!(texts, vec!["restored query", "live query", "deploy it"]);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// #316: terminal_view_id_for_ambient_task, and terminal_view_id_for_conversation's
+// cleared-but-still-open behavior.
+// ---------------------------------------------------------------------------
+
+/// `terminal_view_id_for_ambient_task` finds the terminal view whose live conversation list
+/// contains a conversation whose metadata carries the given ambient task id, and returns `None`
+/// for a task id no live conversation carries.
+///
+/// This is a privileged test (this file is a `#[path]` submodule of `history_model.rs`, so it can
+/// see private fields) because the only production path that populates
+/// `all_conversations_metadata` with a non-`None` `ambient_agent_task_id` is
+/// `insert_forked_conversation_from_tasks`, which doesn't expose a way to set the task id on the
+/// resulting conversation before insertion. Constructing the metadata/live-list state directly
+/// exercises the lookup itself, which is this issue's actual scope.
+#[test]
+fn terminal_view_id_for_ambient_task_finds_owning_view() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+        let terminal_view_id = EntityId::new();
+        let conversation_id = AIConversationId::new();
+        let task_id: AmbientAgentTaskId = "11111111-1111-1111-1111-111111111111"
+            .parse()
+            .expect("valid UUID should parse as an AmbientAgentTaskId");
+        let other_task_id: AmbientAgentTaskId = "22222222-2222-2222-2222-222222222222"
+            .parse()
+            .expect("valid UUID should parse as an AmbientAgentTaskId");
+
+        history_model.update(&mut app, |model, _| {
+            model.all_conversations_metadata.insert(
+                conversation_id,
+                AIConversationMetadata {
+                    id: conversation_id,
+                    title: "Ambient run".to_string(),
+                    initial_query: String::new(),
+                    last_modified_at: Utc::now().naive_utc(),
+                    initial_working_directory: None,
+                    credits_spent: None,
+                    server_conversation_token: None,
+                    has_local_data: true,
+                    artifacts: vec![],
+                    ambient_agent_task_id: Some(task_id),
+                    parent_conversation_id: None,
+                    parent_agent_id: None,
+                },
+            );
+            model
+                .live_conversation_ids_for_terminal_view
+                .insert(terminal_view_id, vec![conversation_id]);
+        });
+
+        history_model.read(&app, |model, _| {
+            assert_eq!(
+                model.terminal_view_id_for_ambient_task(task_id),
+                Some(terminal_view_id),
+                "must find the terminal view whose live conversation carries this task id"
+            );
+            assert_eq!(
+                model.terminal_view_id_for_ambient_task(other_task_id),
+                None,
+                "must not match a task id no live conversation carries"
+            );
+        });
+    });
+}
+
+/// A conversation cleared from a terminal view (but not removed from history entirely) is no
+/// longer found by `terminal_view_id_for_conversation`, because clearing removes it from
+/// `live_conversation_ids_for_terminal_view` (see `clear_conversations_in_terminal_view`).
+///
+/// This documents a deliberate #316 choice: the pin's `ActiveAgentViewsModel`-backed lookup this
+/// replaces is permanently removed here (`DECLINED.md`), and its own semantics around a
+/// cleared-but-still-loaded conversation aren't reproducible without it. Reusing the pre-existing
+/// `terminal_view_id_for_conversation` (keyed on *live* conversations) means a cleared
+/// conversation classifies as "not open elsewhere" in `AgentViewConversationSelection::classify_entry`
+/// even though the conversation itself may still be loaded in memory -- accepted as the simplest
+/// correct behavior given what's available, rather than reintroducing removed infrastructure.
+#[test]
+fn terminal_view_id_for_conversation_does_not_find_cleared_conversations() {
+    App::test((), |mut app| async move {
+        initialize_history_model_test_app(&mut app);
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let terminal_view_id = EntityId::new();
+
+        let conversation_id = history_model.update(&mut app, |model, ctx| {
+            model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+
+        history_model.read(&app, |model, _| {
+            assert_eq!(
+                model.terminal_view_id_for_conversation(&conversation_id),
+                Some(terminal_view_id),
+                "a live conversation must be found"
+            );
+        });
+
+        history_model.update(&mut app, |model, ctx| {
+            model.clear_conversations_in_terminal_view(terminal_view_id, ctx);
+        });
+
+        history_model.read(&app, |model, _| {
+            assert_eq!(
+                model.terminal_view_id_for_conversation(&conversation_id),
+                None,
+                "a cleared conversation is no longer in the live list, so it is not found"
+            );
+        });
     });
 }
