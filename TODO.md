@@ -86,6 +86,52 @@ collision -- a July divergence contradicted by an August parity port, discovered
 in neither -- cost real time purely because nobody wrote it down. `DECLINED.md`
 already existed; it was not the tooling that failed.
 
+### DECISION 2026-08-08 late — the SSH half of `ai/skills/remote.rs` is UN-DROPPED
+
+**This partially reverses the #11 maintainer decision of 2026-08-02** ("AI skills:
+build `bundled` + `global` (local); DROP the `remote` daemon-sync / cloud-repo
+arm"). That verdict put two unrelated things under one label.
+
+What the file actually is: `02b53fcd8:app/src/ai/skills/remote.rs` is **59 lines,
+two functions** (`mcp_integration_wire_id`, `bundled_skill_snapshot_protos`), with
+**zero cloud imports** — no `warp_graphql`, no `server_api`, no
+`ServerApiProvider`, no `warp_server_client`. Its only external import is
+`remote_server::proto`, which is **Phosphor's own daemon**. Its doc comment
+describes the SSH path outright: *"Serializes a daemon-side bundled catalog for
+the aggregate remote Agent Mode snapshot — the daemon owns the files."*
+
+There is no cloud-repo resolution arm in that file.
+
+**It is also a hard dependency of #353**, approved for build the same evening: the
+pin's `app/src/remote_server/server_model.rs:91` imports
+`bundled_skill_snapshot_protos` and calls it at `:348` to build the snapshot that
+`refresh_remote_agent_context_snapshot` broadcasts at `:692`.
+
+**The boundary that replaces the old label** — use this to classify future cases:
+
+| verdict | shape |
+|---|---|
+| **build** | the daemon serializing its OWN LOCAL context outward to a connected host |
+| **dropped** | the client aggregating catalogs from MULTIPLE remote hosts |
+
+So `BundledSkills` (plural, client-side per-host multiplexing) **stays dropped**;
+singular `BundledSkill` plus `remote.rs`'s outward serialization are built.
+
+**How this was nearly missed, which is the reusable lesson.** #487 raised exactly
+this — *"the cloud-repo resolution arm is likely out of scope; the SSH/daemon arm
+may not be... needs classification per-arm rather than a blanket verdict"* — and
+was then closed citing #11's blanket verdict without performing the split. A
+correct doubt was recorded and then overridden by a broader statement that had
+never been checked against the code. **When a decision names two things with a
+slash, check whether the file actually contains both.**
+
+Porting notes for `remote.rs` (easy to lose in a port): `TuiOnly` skills are
+omitted (a daemon cannot expose client-local migration behaviour); `RequiresFile`
+and `RequiresFeature` are evaluated DAEMON-SIDE so the client only ever receives
+`Always` or `RequiresMcp`; results are sorted by skill path so pushes are
+deterministic across daemon restarts. `BundledSkill` needs an `iter_definitions()`
+yielding `(id, skill, activation)` — the fork's current `iter()` drops activation.
+
 ### RECONCILIATION 2026-08-08 late — every open issue is tiered
 
 Checked both directions programmatically (`gh issue list --state open` against
