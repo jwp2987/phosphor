@@ -174,6 +174,110 @@ jobs:
         shell: bash
         run: ./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui
 
+  # warpui_core (#573): `--features tui` is NOT optional. `tui` is off by
+  # default (crates/warpui_core/Cargo.toml) and `elements/tui/` is
+  # `#[cfg(feature = "tui")]`, so without the flag that whole module is not
+  # compiled -- its tests do not fail, they do not EXIST. A run without the
+  # flag reports ~306 passing and looks green while saying nothing about the
+  # other 259. This package cannot join the `test-linux` invocation above: it
+  # is not all lib tests and needs a different feature set, and
+  # check_test_failures treats a listed known failure that did not run as
+  # "fixed" and exits 1 -- mixing package sets across runs breaks that gate.
+  #
+  # This job (and the one below) is new: until 2026-08-08 this package had
+  # never run in ANY gate, on any machine (script/precheck, same commit).
+  # Runs as its own job, parallel with test-linux/integration-linux, rather
+  # than as an extra step in test-linux, so a failure here is unambiguous
+  # about which suite broke and so the job matrix runs concurrently instead
+  # of adding its ~565 tests' compile+run time serially onto test-linux.
+  test-warpui-core:
+    name: cargo nextest -p warpui_core --features tui (Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Free up disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
+          df -h /
+
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: linux
+          is_self_hosted: false
+
+      - name: Install cargo-nextest
+        shell: bash
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+      - name: cargo nextest -p warpui_core --features tui (regressions only)
+        shell: bash
+        run: ./script/check_test_failures -p warpui_core --features tui
+
+  # The rest of the workspace (#573): 40 further packages measured on
+  # 2026-08-08 -- 2,126 tests that, like warpui_core above, had never run in
+  # any gate, on any machine. That first run found one real defect
+  # (persistence's #[cfg(test)] fixture had stopped compiling, so its 17 tests
+  # had silently not existed).
+  #
+  # ONE invocation listing every package, exactly as script/precheck does --
+  # do not split this into per-package steps or jobs:
+  #   - `cargo nextest run --workspace` fails outright on
+  #     command-signatures-v2, whose build script shells out to yarn; it has
+  #     0 tests, so it is excluded by name rather than fixed.
+  #   - check_test_failures treats a listed known failure that did not run as
+  #     "fixed" and exits 1, so splitting the package list would fail this
+  #     gate on whichever half's known failures didn't run.
+  #   - splitting also thrashes the shared target dir: each partial
+  #     invocation resolves features separately and rebuilds shared
+  #     proc-macro crates, which is slower overall than one invocation.
+  #
+  # NOTE (still open, see script/precheck): this runs DEFAULT features only.
+  # Code behind `local_fs` (repo_metadata, persistence, ai), `plugin_host`
+  # (warp_cli) and `test-util` is still not exercised here.
+  test-workspace-rest:
+    name: cargo nextest (rest of the workspace, Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Free up disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
+          df -h /
+
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: linux
+          is_self_hosted: false
+
+      - name: Install cargo-nextest
+        shell: bash
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+      # Package list copied verbatim from script/precheck's "rest of the
+      # workspace (40 packages)" step -- do not retype it; a typo here
+      # silently drops a package from CI the same way it would locally.
+      - name: cargo nextest (40 packages, regressions only)
+        shell: bash
+        run: |
+          ./script/check_test_failures \
+              -p sum_tree -p string-offset -p fuzzy_match -p handlebars -p syntax_tree \
+              -p languages -p asset_cache -p settings_value -p jsonrpc -p simple_logger \
+              -p warp_logging -p channel_versions -p command -p http_client -p warp_features \
+              -p managed_secrets_wasm -p voice_input -p warp_isolation_platform -p websocket \
+              -p input_classifier -p warp_search_core -p persistence -p settings \
+              -p warp_managed_secrets -p markdown_parser -p warp_util -p warp_core \
+              -p repo_metadata -p warp_terminal -p warp_files -p local_control -p vim \
+              -p warp_completer -p warpui -p warpui_extras -p ai -p remote_server \
+              -p usage_suite -p warp_editor -p warp_cli
+
   # crates/integration (#208): ~300 GUI-driving scenarios that link, register,
   # and are enumerated by `--list`, but until this job existed were never
   # actually EXECUTED anywhere -- not in CI, not on any dev host in this fleet.
