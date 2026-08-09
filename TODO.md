@@ -109,10 +109,26 @@ builds once per batch and merges on green. `TODO.md` updated at each landing.
       shipping degraded. Rust side small; the PACKAGING half (artifact must ship
       `bundled_resources/`) touches the release pipeline — coordinator to report
       rather than change packaging unilaterally.
-- [ ] **#381** ~13 real tests. Three genuinely-absent local modules
-      (`local_harness_setup`, `remote_agent_context`, `remote_context_files`).
-      **CHECK FIRST:** `remote_agent_context` was just built under #438/#487 — this
-      issue's scope may have shrunk.
+- [ ] **#381 — FOLDED INTO THE #440 BATCH.** Scoped against `working` 2026-08-09:
+      real remaining work is **2 modules / 9 tests**, not six modules / 81.
+      `remote_agent_context.rs` (4) is DONE (built under #438/#487);
+      `orchestration/` (39) moved to #310/#304 when local orchestration was
+      reopened; `agent_management/` (19) + `active_agent_views_model.rs` (10) stay
+      DECLINED (the latter is permanently deleted; substitute pattern at
+      `app/src/notifications/model.rs:275`).
+      **What is left, both verified portable — every dependency present on `working`:**
+      - `local_harness_setup.rs` — 98 pin lines, imports only `warp_cli::agent::Harness`,
+        `FeatureFlag`, `util::path::resolve_executable`. Purely local CLI-harness
+        setup, the BYOP-relevant path. Cheapest item in any tier.
+      - `remote_context_files.rs` — 108 pin lines, imports `remote_server::proto`,
+        `HostId`, `LocalOrRemotePath`, `RemoteServerManager`.
+      **Why folded into #440 rather than worked alone:** the pin's
+      `remote_agent_context.rs` consumes `RemoteContextFileProto` (`:204`) — that is
+      the `global_rules` half the #353 port deliberately skipped (client
+      `ProjectContextModel` has no per-host storage). #440 makes the daemon ship
+      SKILLS; `remote_context_files` makes GLOBAL RULES arrive. Same files, same
+      feature, one batch. Together they take remote agent context from degraded to
+      complete.
 - [ ] **#382** ~19-24 tests, and PARTLY STALE: `prune_unreachable_subtasks` already
       landed (`8d3f9d9ba`), so item 1 is half-done. Re-verify each item before work.
 - [ ] **#236** ~12-14 tests. Only directory-load coalescing remains; the symlink/
