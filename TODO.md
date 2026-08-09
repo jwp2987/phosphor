@@ -533,17 +533,17 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
 - [x] #341 prompt-attachment plumbing DONE (`29049f4f8`); `register_mock_stream_for_test`  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       exists. Remaining: `schedule_auto_resume_after_error`, `fail_conversation_due_to_shell_exit`,
       `emit_response_event_for_test`.
-- [ ] #389 voice half DECLINED. Menu half is **ported but NOT WIRED** — `TuiReadOnlyMenuKind`
+- [x] #389 voice half DECLINED. Menu half is **ported but NOT WIRED** — `TuiReadOnlyMenuKind`  **LANDED 2026-08-09.**
       has zero call sites. Also: `status_menu.rs` landed at the WRONG PATH (top-level
       instead of nested under `terminal_session_view/`); move it, do not re-port.
-- [ ] #390 `state.rs` done. Remaining: `completions.rs`, `shortcuts.rs`, the
+- [x] #390 `state.rs` done. Remaining: `completions.rs`, `shortcuts.rs`, the  **LANDED 2026-08-09.**
       attach/detach running-command API, and `terminal_use.rs`'s missing 6th param
       `agent_owns_alt_screen_input`. **`completions.rs` is BLOCKED on #395's
       completion-menu API.**
-- [ ] #395 footer wording FIXED. Remaining: ask-question multiselect, blocked-action
+- [x] #395 footer wording FIXED. Remaining: ask-question multiselect, blocked-action  **LANDED 2026-08-09.**
       presentation, completion-menu API shape. File-edits expand/collapse: API landed
       but the DEFAULT still diverges (fork collapses, pin expands).
-- [ ] #397 error tone FIXED. Remaining: statusline datetime/footer grouping
+- [x] #397 error tone FIXED. Remaining: statusline datetime/footer grouping  **LANDED 2026-08-09.**
       (`format_statusline_*`, `render_statusline_datetime`,
       `TuiUiBuilder::shell_command_accent_style` — all absent).
 
