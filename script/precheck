@@ -71,6 +71,37 @@ if [[ -z "${TMPDIR:-}" || "$TMPDIR" == /tmp* ]]; then
     mkdir -p "$_tmp_root" 2>/dev/null && export TMPDIR="$_tmp_root"
 fi
 
+# ------------------------------------------------------------- scratch space
+# Before step 0, because a run that dies here dies WITHOUT a verdict.
+#
+# /tmp is a 23G RAM-backed tmpfs on this host, so anything living there consumes
+# real memory. On 2026-08-08 a stale 15G `target/` sat in a /tmp worktree --
+# created by a cargo run that bypassed script/agent-cargo and so never had its
+# CARGO_TARGET_DIR redirected to disk -- and precheck was killed mid-suite by the
+# resulting pressure. No OOM line in the kernel log, no exit code, the wrapper
+# never echoed its own status. The harness then reported the killed run as
+# "exit code 0". A truncated log looked green.
+#
+# Fail loudly up front instead: a refusal to start is diagnosable, a silent kill
+# halfway through is not. Checks the filesystem TMPDIR actually resolves to, so
+# it still does something useful when TMPDIR points at real disk.
+step "scratch space"
+_tmp_check="${TMPDIR:-/tmp}"
+_tmp_avail_mb=$(df -Pm "$_tmp_check" 2>/dev/null | awk 'NR==2 {print $4}')
+_tmp_pct=$(df -P "$_tmp_check" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
+if [[ -z "${_tmp_avail_mb:-}" ]]; then
+    ok "could not stat $_tmp_check -- skipping"
+elif ((_tmp_avail_mb < 4096)); then
+    fail "only ${_tmp_avail_mb}MB free on $_tmp_check (${_tmp_pct}% used) -- a build needs headroom here"
+    printf '       Largest consumers:\n'
+    du -sh "$_tmp_check"/* 2>/dev/null | sort -rh | head -5 | sed 's/^/         /'
+    printf '       A stray target/ under a /tmp worktree is the usual cause; it is\n'
+    printf '       regenerable, so deleting it is safe. Use script/agent-cargo, which\n'
+    printf '       redirects CARGO_TARGET_DIR to disk, rather than bare cargo.\n'
+else
+    ok "${_tmp_avail_mb}MB free on $_tmp_check"
+fi
+
 # ------------------------------------------------------------------ toolchain
 # Step 0 deliberately: every gate below reports on whatever compiler is first in
 # PATH, so a mismatch silently invalidates every result -- including the greens.
