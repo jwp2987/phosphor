@@ -53,6 +53,7 @@ mod mcp_menu;
 mod model_menu;
 mod option_selector;
 mod orchestrated_agent_identity_styling;
+mod orchestration_model;
 mod orchestration_tab_bar;
 mod platform;
 mod profile_menu;

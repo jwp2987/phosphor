@@ -16,6 +16,7 @@ use warpui::SingletonEntity;
 use warpui_core::runtime::TuiDriverHandle;
 use warpui_core::{AppContext, Entity, EntityId, ModelContext, ModelHandle, ViewHandle, WindowId};
 
+use crate::orchestration_model::TuiOrchestrationModel;
 use crate::resume::TuiExitSummaryHandle;
 use crate::terminal_session_view::TuiTerminalSessionView;
 use crate::transcript_view::TRANSCRIPT_BLOCK_SPACING;
@@ -56,6 +57,24 @@ impl TuiSessionView {
     pub(crate) fn activate(&self, ctx: &mut AppContext) {
         match self {
             Self::Terminal(view) => view.update(ctx, |view, ctx| view.activate(ctx)),
+        }
+    }
+
+    pub(crate) fn refresh_orchestration_tab_state(&self, ctx: &mut AppContext) {
+        match self {
+            Self::Terminal(view) => {
+                view.update(ctx, |view, ctx| view.refresh_orchestration_tab_state(ctx));
+            }
+        }
+    }
+
+    pub(crate) fn set_orchestration_tab_focus(&self, focused: bool, ctx: &mut AppContext) {
+        match self {
+            Self::Terminal(view) => {
+                view.update(ctx, |view, ctx| {
+                    view.set_orchestration_tab_focus(focused, ctx);
+                });
+            }
         }
     }
 }
@@ -182,6 +201,44 @@ impl TuiSessions {
         })
     }
 
+    /// Subscribes the session owner to orchestration lifecycle requests: the
+    /// focused session's tab bar refreshes when the orchestration model
+    /// notifies (topology changed) or when focus moves to a different
+    /// session -- see [`TuiOrchestrationModel`]'s module doc for why this is
+    /// a trimmed subset of the pin's `wire_orchestration` (no child-session
+    /// materialization subscription, since nothing in this fork emits a
+    /// request to create one).
+    pub(crate) fn wire_orchestration(
+        sessions: &ModelHandle<Self>,
+        orchestration: &ModelHandle<TuiOrchestrationModel>,
+        ctx: &mut AppContext,
+    ) {
+        let sessions_for_model_updates = sessions.clone();
+        ctx.observe_model(orchestration, move |_, ctx| {
+            let focused_view = sessions_for_model_updates
+                .as_ref(ctx)
+                .focused_session()
+                .map(|session| session.view().clone());
+            if let Some(focused_view) = focused_view {
+                focused_view.refresh_orchestration_tab_state(ctx);
+            }
+        });
+
+        let sessions_for_focus_updates = sessions.clone();
+        ctx.subscribe_to_model(sessions, move |_, event, ctx| {
+            let TuiSessionsEvent::FocusChanged(session_id) = event else {
+                return;
+            };
+            let focused_view = sessions_for_focus_updates
+                .as_ref(ctx)
+                .session(*session_id)
+                .map(|session| session.view().clone());
+            if let Some(focused_view) = focused_view {
+                focused_view.refresh_orchestration_tab_state(ctx);
+            }
+        });
+    }
+
     /// Creates the app's session container.
     pub(crate) fn new(
         driver: TuiDriverHandle,
@@ -281,6 +338,22 @@ impl TuiSessions {
         self.sessions
             .iter()
             .find_map(|session| (session.id.surface_id() == surface_id).then_some(session.id))
+    }
+
+    /// Applies orchestration tab focus to a specific registered session's
+    /// view (used when switching tab focus to a session other than the
+    /// caller's own).
+    pub(crate) fn set_orchestration_tab_focus(
+        session_id: TuiSessionId,
+        focused: bool,
+        ctx: &mut AppContext,
+    ) {
+        let view = Self::as_ref(ctx)
+            .session(session_id)
+            .map(|session| session.view.clone());
+        if let Some(view) = view {
+            view.set_orchestration_tab_focus(focused, ctx);
+        }
     }
 
     /// Builds the loaded conversation-to-session index used by one topology snapshot.
