@@ -64,6 +64,7 @@ use super::{
 use crate::code::editor_management::CodeSource;
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::FileTarget;
+use warp_core::features::FeatureFlag;
 use warp_core::ui::icons::ICON_DIMENSIONS;
 use warp_editor::model::CoreEditorModel;
 #[cfg(feature = "local_fs")]
@@ -71,7 +72,7 @@ use warp_files::{FileModel, FileModelEvent};
 #[cfg(feature = "local_fs")]
 use warp_util::file::FileId;
 
-pub use crate::util::openable_file_type::is_markdown_file;
+pub use crate::util::openable_file_type::{is_jupyter_notebook_file, is_markdown_file};
 
 /// Display mode for markdown files shown via the header segmented control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,11 +325,19 @@ impl FileNotebookView {
         ctx.focus(&self.editor);
     }
 
-    /// Reset the rich text contents based on the given Markdown content.
+    /// Reset the rich text contents based on the given file content.
+    ///
+    /// For now we put jupyternotebook under a feature flag, will remove once launch
     pub fn set_content(&mut self, content: &str, ctx: &mut ViewContext<Self>) {
         let doc_path = self.file_state.local_path().map(|p| p.to_path_buf());
+        let render_as_ipynb =
+            FeatureFlag::JupyterNotebookRendering.is_enabled() && self.is_jupyter_notebook_file();
         self.editor.update(ctx, |editor, ctx| {
-            editor.reset_with_markdown(content, ctx);
+            if render_as_ipynb {
+                editor.reset_with_ipynb(content, ctx);
+            } else {
+                editor.reset_with_markdown(content, ctx);
+            }
             // Set the document path for resolving relative image paths
             editor.model().update(ctx, |model, ctx| {
                 model.set_document_path(doc_path, ctx);
@@ -577,6 +586,26 @@ impl FileNotebookView {
     #[cfg(not(feature = "local_fs"))]
     fn is_markdown_file(&self) -> bool {
         false
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn is_jupyter_notebook_file(&self) -> bool {
+        self.file_state
+            .local_path()
+            .map(is_jupyter_notebook_file)
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(feature = "local_fs"))]
+    fn is_jupyter_notebook_file(&self) -> bool {
+        false
+    }
+
+    /// We show raw/rendered toggle for Jupyter notebook and markdown
+    fn shows_markdown_toggle(&self) -> bool {
+        self.is_markdown_file()
+            || (FeatureFlag::JupyterNotebookRendering.is_enabled()
+                && self.is_jupyter_notebook_file())
     }
 
     fn update_editor_display_mode(&mut self, ctx: &mut ViewContext<Self>) {
@@ -879,7 +908,12 @@ impl TypedActionView for FileNotebookView {
             }
             #[cfg(feature = "local_fs")]
             FileNotebookAction::OpenInEditor => {
-                if let Some(path) = self.local_path() {
+                if self.is_jupyter_notebook_file() {
+                    // With the flag on, `resolve_file_target` now routes .ipynb
+                    // right back to this notebook viewer; go straight to the raw
+                    // code editor instead so "Open in editor" isn't a no-op.
+                    self.open_as_code(ctx);
+                } else if let Some(path) = self.local_path() {
                     use crate::util::file::external_editor::EditorSettings;
                     use crate::util::openable_file_type::resolve_file_target;
                     // Resolve target and emit event - workspace will handle all cases
@@ -1002,8 +1036,8 @@ impl BackingView for FileNotebookView {
     ) -> view::HeaderContent {
         let title = self.pane_configuration.as_ref(app).title().to_owned();
 
-        if self.is_markdown_file() {
-            // For markdown files we use a custom header
+        if self.shows_markdown_toggle() {
+            // For markdown files (and rendered Jupyter notebooks) we use a custom header
             // so that the title stays centered identically in both rendered and raw (CodeView) modes.
             let appearance = Appearance::as_ref(app);
             let is_pane_dragging = ctx.draggable_state.is_dragging();
