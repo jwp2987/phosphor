@@ -11,6 +11,11 @@ pub use review_comments::{
 use serde::{Deserialize, Serialize};
 use strum_macros::EnumDiscriminants;
 use uuid::Uuid;
+// Local orchestration lifecycle status for a child agent (started/in-progress/
+// succeeded/failed/…). Re-exported here (not cloud-bound) so
+// `orchestration_events` can build/interpret lifecycle events for children
+// running as local processes on this machine.
+pub use warp_multi_agent_api::LifecycleEventType;
 use warp_terminal::model::BlockId;
 
 use crate::{

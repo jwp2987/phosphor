@@ -27,6 +27,7 @@ use std::{collections::HashMap, fmt::Display};
 use super::task_store::TaskStore;
 use uuid::Uuid;
 use vec1::{Size0Error, Vec1};
+use warp_cli::agent::Harness;
 use warp_core::command::ExitCode;
 use warp_core::execution_mode::AppExecutionMode;
 use warp_core::features::FeatureFlag;
@@ -279,16 +280,34 @@ pub struct AIConversation {
     parent_agent_id: Option<String>,
     /// The display name for this agent (e.g. "Agent 1"), assigned by the orchestrator.
     agent_name: Option<String>,
+    /// Harness metadata associated with this child agent in orchestration flows.
+    /// Used to render the child agent's icon in the orchestration pill bar
+    /// (`orchestration_avatar`). Local-only: identifies which CLI harness
+    /// (Claude, OpenCode, Codex, …) is driving this child, not a remote worker.
+    orchestration_harness_type: Option<String>,
     /// The local conversation ID of the parent that spawned this child, if any.
     parent_conversation_id: Option<AIConversationId>,
     /// True when this conversation is a placeholder for a child agent executing
     /// on a remote worker. The parent's client does not drive execution for
     /// these conversations — the remote worker's own client handles status
     /// reporting. TaskStatusSyncModel skips status updates for these.
+    ///
+    /// Phosphor only runs child agents as local processes on this machine
+    /// (see `pane_group/pane/local_harness_launch.rs`), so this is always
+    /// `false` here — there is no remote-worker execution path in this fork.
+    /// The field is kept (rather than dropped) because `orchestration_topology`
+    /// and the persisted `AgentConversationData` shape are otherwise identical
+    /// to the pin, and dropping it would mean re-adding it the moment a real
+    /// consumer needed it.
     is_remote_child: bool,
 
     /// Legacy cloud event cursor retained only for deserializing older conversations.
     last_event_sequence: Option<i64>,
+
+    /// Whether the user has pinned this child agent in the orchestration pill
+    /// bar. Persisted via `AgentConversationData.pinned`. Orchestrator
+    /// conversations (conversations without a parent) are never pinned.
+    pinned: bool,
 
     /// Zap BYOP local conversation compaction sidecar — decoupled from the warp protobuf
     /// message, keyed by message_id to attach metadata such as "is_summary /
@@ -304,6 +323,12 @@ pub struct AIConversation {
     /// truncated/summarized output, so this is needed to restore SSH and other
     /// interactive terminal content after the tab is closed.
     cli_subagent_block_snapshots: HashMap<BlockId, CliSubagentBlockSnapshot>,
+}
+
+fn parse_orchestration_harness_type(value: &str) -> Harness {
+    Harness::from_config_name(value)
+        .or_else(|| Harness::parse_orchestration_harness(value))
+        .unwrap_or(Harness::Unknown)
 }
 
 pub(crate) fn artifact_from_fork_proto(
@@ -350,9 +375,11 @@ impl AIConversation {
             artifacts: Vec::new(),
             parent_agent_id: None,
             agent_name: None,
+            orchestration_harness_type: None,
             parent_conversation_id: None,
             is_remote_child: false,
             last_event_sequence: None,
+            pinned: false,
             compaction_state: Default::default(),
             byop_repair_state: RepairStateStatus::default(),
             cli_subagent_block_snapshots: Default::default(),
@@ -492,10 +519,12 @@ impl AIConversation {
             parent_agent_id,
             is_remote_child,
             agent_name,
+            orchestration_harness_type,
             parent_conversation_id,
             run_id,
             autoexecute_override,
             last_event_sequence,
+            pinned,
             compaction_state,
             byop_repair_state,
             cli_subagent_block_snapshots,
@@ -519,6 +548,7 @@ impl AIConversation {
             let parent_agent_id = data.parent_agent_id;
             let is_remote_child = data.is_remote_child;
             let agent_name = data.agent_name;
+            let orchestration_harness_type = data.orchestration_harness_type;
             let parent_conversation_id = data
                 .parent_conversation_id
                 .and_then(|id| AIConversationId::try_from(id).ok());
@@ -531,6 +561,7 @@ impl AIConversation {
                 AIConversationAutoexecuteMode::default()
             };
             let last_event_sequence = data.last_event_sequence;
+            let pinned = data.pinned;
             let compaction_state = data
                 .compaction_state_json
                 .and_then(|json| {
@@ -559,10 +590,12 @@ impl AIConversation {
                 parent_agent_id,
                 is_remote_child,
                 agent_name,
+                orchestration_harness_type,
                 parent_conversation_id,
                 run_id,
                 autoexecute_override,
                 last_event_sequence,
+                pinned,
                 compaction_state,
                 byop_repair_state,
                 cli_subagent_block_snapshots,
@@ -579,8 +612,10 @@ impl AIConversation {
                 None,
                 None,
                 None,
+                None,
                 AIConversationAutoexecuteMode::default(),
                 None,
+                false,
                 crate::ai::byop_compaction::state::CompactionState::default(),
                 RepairStateStatus::default(),
                 HashMap::new(),
@@ -623,9 +658,11 @@ impl AIConversation {
             artifacts,
             parent_agent_id,
             agent_name,
+            orchestration_harness_type,
             parent_conversation_id,
             is_remote_child,
             last_event_sequence,
+            pinned,
             compaction_state,
             byop_repair_state,
             cli_subagent_block_snapshots,
@@ -937,6 +974,15 @@ impl AIConversation {
         self.task_id = Some(id);
     }
 
+    /// Returns the orchestration-scoped agent identifier used to link this
+    /// conversation into a parent/child tree (`orchestration_topology`,
+    /// `BlocklistAIHistoryModel::conversation_id_for_agent_id`). This is
+    /// always the local `run_id` — there is no server-side agent identity in
+    /// this fork.
+    pub fn orchestration_agent_id(&self) -> Option<String> {
+        self.run_id()
+    }
+
     /// Returns the last observed orchestration event sequence number, if any.
     /// The cursor is durable across restarts so a resumed poller does not
     /// replay events it already drained.
@@ -998,6 +1044,24 @@ impl AIConversation {
         self.agent_name = Some(name);
     }
 
+    pub fn orchestration_harness_type(&self) -> Option<&str> {
+        self.orchestration_harness_type.as_deref()
+    }
+
+    /// Returns the harness driving this child agent, parsed from the stored
+    /// config name. Local-only: identifies which CLI harness (Claude,
+    /// OpenCode, Codex, …) rendered this child's icon in the orchestration
+    /// pill bar — never a remote worker.
+    pub fn orchestration_harness(&self) -> Option<Harness> {
+        self.orchestration_harness_type
+            .as_deref()
+            .map(parse_orchestration_harness_type)
+    }
+
+    pub fn set_orchestration_harness(&mut self, harness: Harness) {
+        self.orchestration_harness_type = Some(harness.config_name().to_string());
+    }
+
     pub fn parent_conversation_id(&self) -> Option<AIConversationId> {
         self.parent_conversation_id
     }
@@ -1023,6 +1087,18 @@ impl AIConversation {
     /// Marks this conversation as a remote child placeholder.
     pub fn mark_as_remote_child(&mut self) {
         self.is_remote_child = true;
+    }
+
+    /// Returns whether the user has pinned this child agent in the
+    /// orchestration pill bar.
+    pub fn is_pinned(&self) -> bool {
+        self.pinned
+    }
+
+    /// Sets the pin state. Callers must follow up with
+    /// `write_updated_conversation_state` to push the change to SQLite.
+    pub fn set_pinned(&mut self, pinned: bool) {
+        self.pinned = pinned;
     }
 
     /// Returns a flat list of linearized messages across all tasks, interpolating subtask messages
@@ -3207,10 +3283,12 @@ impl AIConversation {
                 artifacts_json,
                 parent_agent_id: self.parent_agent_id.clone(),
                 agent_name: self.agent_name.clone(),
+                orchestration_harness_type: self.orchestration_harness_type.clone(),
                 parent_conversation_id: self.parent_conversation_id.map(|id| id.to_string()),
                 run_id: self.task_id.map(|id| id.to_string()),
                 autoexecute_override: Some(self.autoexecute_override.into()),
                 last_event_sequence: self.last_event_sequence,
+                pinned: self.pinned,
                 compaction_state_json: if self.compaction_state.completed().is_empty() {
                     None
                 } else {
