@@ -223,6 +223,38 @@ fn start_ripgrep_search_without_connected_host_resolves_immediately() {
 }
 
 #[test]
+fn host_request_handle_without_connected_host_resolves_immediately() {
+    // Mirrors `start_ripgrep_search_without_connected_host_resolves_immediately`:
+    // `HostRequestHandle` bounces through `send_host_request` the same way, so
+    // with no connected session for the host it must fail fast rather than
+    // hang or panic. Exercises `host_request_handle` → `HostRequestHandle::send`
+    // → `HostRequestHandle::read_file_context` end to end.
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let host_id = HostId::new("missing-host".to_string());
+        let handle = manager.update(&mut app, |manager, _ctx| {
+            manager.host_request_handle(&host_id)
+        });
+
+        let result = handle
+            .read_file_context(crate::proto::ReadFileContextRequest {
+                files: vec![crate::proto::ReadFileContextFile {
+                    path: "/tmp/does-not-matter".to_string(),
+                    line_ranges: vec![],
+                }],
+                max_file_bytes: None,
+                max_batch_bytes: None,
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(HostRequestError::AllSessionsDisconnected)
+        ));
+    });
+}
+
+#[test]
 fn handle_host_disconnected_fails_pending_host_requests_for_that_host_only() {
     App::test((), |mut app| async move {
         let manager = app.add_model(RemoteServerManager::new);

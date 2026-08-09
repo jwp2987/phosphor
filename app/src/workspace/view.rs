@@ -5435,9 +5435,15 @@ impl Workspace {
             #[cfg(feature = "local_tty")]
             LeftPanelEvent::OpenRemoteFile {
                 remote_path,
+                target,
                 line_col,
             } => {
-                self.open_remote_file_with_target(remote_path.clone(), *line_col, ctx);
+                self.open_remote_file_with_target(
+                    remote_path.clone(),
+                    target.clone(),
+                    *line_col,
+                    ctx,
+                );
             }
             #[cfg(not(feature = "local_tty"))]
             LeftPanelEvent::OpenRemoteFile { .. } => {}
@@ -5514,7 +5520,10 @@ impl Workspace {
         }
     }
 
-    /// Opens a file via the buffer-sync protocol after it's clicked in the remote file tree.
+    /// Opens a remote file via the buffer-sync protocol (used by the server
+    /// file browser, which — unlike the remote file tree / global search —
+    /// has no viewer-choice detection of its own, so this always targets the
+    /// code editor).
     ///
     /// Remote and local files both go through [`Self::open_code`] /
     /// `CodePane` / `CodeView` uniformly: this way remote files follow
@@ -5532,33 +5541,107 @@ impl Workspace {
         remote_path: crate::code::buffer_location::RemotePath,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.open_remote_file_with_target(remote_path, None, ctx);
+        let layout = *EditorSettings::as_ref(ctx).open_file_layout.value();
+        self.open_remote_file_with_target(remote_path, FileTarget::CodeEditor(layout), None, ctx);
     }
 
-    /// Same as [`Self::open_remote_file`], but can carry a `line_col` (line:column jump).
-    /// Used when Ctrl/Cmd+clicking a remote file path in the terminal, passing the line number all the way through to `open_code`.
+    /// Opens a remote file with the given viewer `target` (buffer-sync code
+    /// editor, or the markdown viewer for Markdown files), optionally
+    /// carrying a `line_col` (line:column jump).
+    ///
+    /// Naming note: the `_with_target` suffix refers to `target`, the
+    /// `FileTarget` viewer choice — a separate thing from `line_col` (a
+    /// line:column jump target).
+    ///
+    /// Used by the remote file tree (`FileTreeEvent::OpenRemoteFile`), remote
+    /// global search matches, the server file browser (always
+    /// `FileTarget::CodeEditor`, via [`Self::open_remote_file`]), and
+    /// Ctrl/Cmd+clicking a remote file path in the terminal (also always
+    /// `FileTarget::CodeEditor`, since a line:column jump only makes sense in
+    /// the code editor).
     #[cfg(feature = "local_tty")]
     pub fn open_remote_file_with_target(
         &mut self,
         remote_path: crate::code::buffer_location::RemotePath,
+        target: FileTarget,
         line_col: Option<LineAndColumnArg>,
         ctx: &mut ViewContext<Self>,
     ) {
         log::info!(
-            "Opening remote file: host={host} path={path}",
+            "Opening remote file: host={host} path={path} target={target:?}",
             host = remote_path.host_id,
             path = remote_path.path.as_str()
         );
 
-        let layout = *EditorSettings::as_ref(ctx).open_file_layout.value();
-        self.open_code(
-            CodeSource::RemoteFileTree { remote_path },
-            layout,
-            line_col,
-            false, /* preview */
-            &[],   /* additional_paths */
-            ctx,
-        );
+        match target {
+            FileTarget::MarkdownViewer(layout) => {
+                self.open_remote_file_notebook(remote_path, layout, ctx);
+            }
+            FileTarget::CodeEditor(layout) => {
+                self.open_code(
+                    CodeSource::RemoteFileTree { remote_path },
+                    layout,
+                    line_col,
+                    false, /* preview */
+                    &[],   /* additional_paths */
+                    ctx,
+                );
+            }
+            // Remote files only ever resolve to `MarkdownViewer` or
+            // `CodeEditor` (see `select_and_execute_item_at_id` in
+            // `file_tree/view.rs` and `handle_global_search_event`'s
+            // remote-match arm in `left_panel.rs`) — remote files have no
+            // local path, so external-editor / system-default /
+            // image-viewer targets don't apply here. Fall back to the
+            // buffer-sync code editor with the default layout rather than
+            // silently dropping the open.
+            _ => {
+                let layout = *EditorSettings::as_ref(ctx).open_file_layout.value();
+                self.open_code(
+                    CodeSource::RemoteFileTree { remote_path },
+                    layout,
+                    line_col,
+                    false,
+                    &[],
+                    ctx,
+                );
+            }
+        }
+    }
+
+    /// Opens a remote Markdown file in the (read-only) notebook / markdown
+    /// viewer, fetched via the remote-server `ReadFileContext` RPC rather
+    /// than the buffer-sync protocol — see [`FileNotebookView::open_remote`].
+    #[cfg(feature = "local_tty")]
+    fn open_remote_file_notebook(
+        &mut self,
+        remote_path: crate::code::buffer_location::RemotePath,
+        layout: EditorLayout,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let pane = FilePane::new_remote(remote_path, ctx);
+
+        match layout {
+            EditorLayout::NewTab => {
+                let new_tab_placement_setting = TabSettings::as_ref(ctx).new_tab_placement;
+                let new_idx = match new_tab_placement_setting {
+                    NewTabPlacement::AfterAllTabs => self.tab_count(),
+                    // Add tab after current tab
+                    NewTabPlacement::AfterCurrentTab => self.active_tab_index + 1,
+                };
+                self.add_tab_from_existing_pane(Box::new(pane), new_idx, ctx);
+            }
+            EditorLayout::SplitPane => {
+                self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+                    pane_group.add_pane_with_direction(
+                        Direction::Right,
+                        pane,
+                        true, /* focus_new_pane */
+                        ctx,
+                    );
+                });
+            }
+        }
     }
 
     fn handle_right_panel_event(&mut self, event: RightPanelEvent, ctx: &mut ViewContext<Self>) {
@@ -14260,12 +14343,21 @@ impl Workspace {
                 );
             }
             // Zap: Ctrl/Cmd+clicking a remote SSH file path in the terminal opens it via the buffer-sync protocol.
+            // Always targets the code editor: a line:column jump (the whole
+            // point of this entrypoint) only makes sense there, not in the
+            // (read-only, non-addressable) markdown viewer.
             #[cfg(all(feature = "local_tty", feature = "local_fs"))]
             pane_group::Event::OpenRemoteFileFromTerminal {
                 remote_path,
                 line_col,
             } => {
-                self.open_remote_file_with_target(remote_path.clone(), *line_col, ctx);
+                let layout = *EditorSettings::as_ref(ctx).open_file_layout.value();
+                self.open_remote_file_with_target(
+                    remote_path.clone(),
+                    FileTarget::CodeEditor(layout),
+                    *line_col,
+                    ctx,
+                );
             }
             #[cfg(feature = "local_fs")]
             pane_group::Event::FileRenamed { old_path, new_path } => {

@@ -2,6 +2,8 @@ use std::{path::PathBuf, sync::Arc};
 
 use warpui::{AppContext, ModelHandle, SingletonEntity, View, ViewContext, ViewHandle};
 
+#[cfg(feature = "local_tty")]
+use crate::code::buffer_location::RemotePath;
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
 use crate::{
@@ -73,6 +75,21 @@ impl FilePane {
         });
         Self::from_view(view, ctx)
     }
+    /// Create a new file notebook pane for a remote file, fetched via the
+    /// remote-server `ReadFileContext` RPC (see
+    /// [`FileNotebookView::open_remote`]). Unlike [`Self::new`], there's no
+    /// target-session fallback logic — remote panes are keyed by
+    /// [`RemotePath`], not a local [`Session`].
+    #[cfg(feature = "local_tty")]
+    pub fn new_remote<V: View>(remote_path: RemotePath, ctx: &mut ViewContext<V>) -> Self {
+        let view = ctx.add_typed_action_view(move |ctx| {
+            let mut view = FileNotebookView::new(ctx);
+            view.open_remote(remote_path, ctx);
+            view
+        });
+        Self::from_view(view, ctx)
+    }
+
     pub fn file_view(&self, ctx: &AppContext) -> ViewHandle<FileNotebookView> {
         self.view.as_ref(ctx).child(ctx)
     }

@@ -60,8 +60,11 @@ use super::{
     telemetry::NotebookTelemetryAction,
     NotebookLocation,
 };
+use crate::code::buffer_location::RemotePath;
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
+#[cfg(feature = "local_tty")]
+use crate::remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::FileTarget;
 use warp_core::ui::icons::ICON_DIMENSIONS;
@@ -157,12 +160,17 @@ impl From<ContextMenuAction> for FileNotebookAction {
 #[derive(Debug, Clone)]
 enum SourceFile {
     Local {
-        /// The full path to the open file - for now, _only_ local files are supported.
+        /// The full path to the open file.
         ///
         /// See [this comment](https://docs.google.com/document/d/18h7VzSAl6r5a94CovShlpPSahYqECX9WZliLjUqUsko/edit?disco=AAAA5Y1THuk);
         /// we cannot use [`PathBuf`] to represent non-local paths.
         local_path: PathBuf,
         session: Option<Arc<Session>>,
+    },
+    /// A file on a remote host, fetched via the remote-server
+    /// `ReadFileContext` RPC. See [`FileNotebookView::open_remote`].
+    Remote {
+        remote_path: RemotePath,
     },
     Static {
         title: String,
@@ -173,13 +181,14 @@ impl SourceFile {
     fn local_path(&self) -> Option<&Path> {
         match self {
             SourceFile::Local { local_path, .. } => Some(local_path.as_path()),
-            SourceFile::Static { .. } => None,
+            SourceFile::Remote { .. } | SourceFile::Static { .. } => None,
         }
     }
 
     fn display_name(&self) -> String {
         match self {
             SourceFile::Local { local_path, .. } => local_path.display().to_string(),
+            SourceFile::Remote { remote_path } => remote_path.path.as_str().to_string(),
             SourceFile::Static { title } => title.clone(),
         }
     }
@@ -483,6 +492,113 @@ impl FileNotebookView {
         }
     }
 
+    /// Asynchronously open a remote file, fetching its content over the
+    /// remote-server `ReadFileContext` RPC (via
+    /// `RemoteServerManager::host_request_handle`) rather than the SSH
+    /// buffer-sync protocol used by the code editor — this view is read-only,
+    /// so there's no need for the buffer-sync protocol's bidirectional
+    /// editing support.
+    #[cfg(feature = "local_tty")]
+    pub fn open_remote(&mut self, remote_path: RemotePath, ctx: &mut ViewContext<Self>) {
+        let display_name = remote_path.file_name().to_string();
+
+        self.pane_configuration.update(ctx, |pane_config, ctx| {
+            pane_config.set_title(display_name, ctx);
+        });
+
+        self.file_state = FileState::Loading(SourceFile::Remote {
+            remote_path: remote_path.clone(),
+        });
+
+        let host_id = remote_path.host_id.clone();
+        let manager = RemoteServerManager::handle(ctx);
+
+        // Subscribe to host connect/disconnect events so the disconnection
+        // banner appears/disappears when the remote session state changes.
+        let watched_host_id = host_id.clone();
+        ctx.subscribe_to_model(
+            &manager,
+            move |_me,
+                  _handle: ModelHandle<RemoteServerManager>,
+                  event: &RemoteServerManagerEvent,
+                  ctx| {
+                match event {
+                    RemoteServerManagerEvent::HostDisconnected { host_id }
+                    | RemoteServerManagerEvent::HostConnected { host_id }
+                        if *host_id == watched_host_id =>
+                    {
+                        ctx.notify();
+                    }
+                    _ => {}
+                }
+            },
+        );
+
+        let request = remote_server::proto::ReadFileContextRequest {
+            files: vec![remote_server::proto::ReadFileContextFile {
+                path: remote_path.path.as_str().to_string(),
+                line_ranges: vec![],
+            }],
+            max_file_bytes: None,
+            max_batch_bytes: None,
+        };
+
+        let handle = manager.as_ref(ctx).host_request_handle(&host_id);
+        ctx.spawn(
+            async move { handle.read_file_context(request).await },
+            move |me, result, ctx| match result {
+                Ok(response) => {
+                    if let Some(file_ctx) = response.file_contexts.first() {
+                        let text = match &file_ctx.content {
+                            Some(
+                                remote_server::proto::file_context_proto::Content::TextContent(
+                                    text,
+                                ),
+                            ) => text.as_str(),
+                            _ => "",
+                        };
+                        me.set_content(text, ctx);
+                        me.file_state = match mem::replace(&mut me.file_state, FileState::NoFile) {
+                            FileState::Loading(source) => FileState::Loaded(source),
+                            other => other,
+                        };
+                        me.pane_configuration.update(ctx, |pane_config, ctx| {
+                            pane_config.refresh_pane_header_overflow_menu_items(ctx);
+                        });
+                        ctx.notify();
+                        ctx.emit(FileNotebookEvent::FileLoaded);
+                    } else if let Some(failed) = response.failed_files.first() {
+                        let error_msg = failed
+                            .error
+                            .as_ref()
+                            .map(|e| e.message.as_str())
+                            .unwrap_or("unknown error");
+                        safe_warn!(
+                            safe: ("Failed to read remote markdown file"),
+                            full: ("Failed to read remote markdown file: {error_msg}")
+                        );
+                        me.file_state = match mem::replace(&mut me.file_state, FileState::NoFile) {
+                            FileState::Loading(source) => FileState::Error(source),
+                            other => other,
+                        };
+                        ctx.notify();
+                    }
+                }
+                Err(err) => {
+                    safe_warn!(
+                        safe: ("Remote server error reading markdown file"),
+                        full: ("Remote server error reading markdown file: {err}")
+                    );
+                    me.file_state = match mem::replace(&mut me.file_state, FileState::NoFile) {
+                        FileState::Loading(source) => FileState::Error(source),
+                        other => other,
+                    };
+                    ctx.notify();
+                }
+            },
+        );
+    }
+
     /// Open static Markdown as a file pane.
     pub fn open_static(
         &mut self,
@@ -526,19 +642,25 @@ impl FileNotebookView {
     fn reload_file(&mut self, ctx: &mut ViewContext<Self>) {
         // We can take the file state here because either it's (a) already NoFile or (b) about to
         // be replaced with a loading state.
-        let (local_path, session) = match mem::replace(&mut self.file_state, FileState::NoFile) {
+        let source = match mem::replace(&mut self.file_state, FileState::NoFile) {
             FileState::NoFile => return,
             FileState::Loading(source) | FileState::Error(source) | FileState::Loaded(source) => {
-                match source {
-                    SourceFile::Local {
-                        local_path,
-                        session,
-                    } => (local_path, session),
-                    SourceFile::Static { .. } => return,
-                }
+                source
             }
         };
-        self.open_local(local_path, session, ctx);
+        match source {
+            SourceFile::Local {
+                local_path,
+                session,
+            } => self.open_local(local_path, session, ctx),
+            SourceFile::Remote { remote_path } => {
+                #[cfg(feature = "local_tty")]
+                self.open_remote(remote_path, ctx);
+                #[cfg(not(feature = "local_tty"))]
+                let _ = remote_path;
+            }
+            SourceFile::Static { .. } => {}
+        }
     }
 
     #[cfg(feature = "local_fs")]
@@ -568,10 +690,16 @@ impl FileNotebookView {
 
     #[cfg(feature = "local_fs")]
     fn is_markdown_file(&self) -> bool {
-        self.file_state
-            .local_path()
-            .map(is_markdown_file)
-            .unwrap_or(false)
+        // `local_path()` is `None` for remote files, so check the source
+        // directly instead — remote markdown files still need the
+        // rendered/raw header toggle.
+        match self.file_state.source() {
+            Some(SourceFile::Local { local_path, .. }) => is_markdown_file(local_path),
+            Some(SourceFile::Remote { remote_path }) => {
+                is_markdown_file(Path::new(remote_path.path.as_str()))
+            }
+            Some(SourceFile::Static { .. }) | None => false,
+        }
     }
 
     #[cfg(not(feature = "local_fs"))]
@@ -949,33 +1077,42 @@ impl BackingView for FileNotebookView {
         _ctx: &AppContext,
     ) -> Vec<MenuItem<FileNotebookAction>> {
         let mut actions = vec![];
-        if let Some(SourceFile::Local {
-            local_path: _local_path,
-            ..
-        }) = self.file_state.source()
-        {
-            actions.push(
-                MenuItemFields::new(crate::t!("notebook-refresh-file"))
-                    .with_on_select_action(FileNotebookAction::ReloadFile)
-                    .into_item(),
-            );
-
-            #[cfg(feature = "local_fs")]
-            {
-                // The markdown rendered/raw toggle is always visible in the pane header, so we don't
-                // duplicate it in the overflow menu. Keep "Open in editor" available for local files.
+        match self.file_state.source() {
+            Some(SourceFile::Local { .. }) => {
                 actions.push(
-                    MenuItemFields::new(crate::t!("notebook-open-in-editor"))
-                        .with_on_select_action(FileNotebookAction::OpenInEditor)
+                    MenuItemFields::new(crate::t!("notebook-refresh-file"))
+                        .with_on_select_action(FileNotebookAction::ReloadFile)
                         .into_item(),
                 );
-                actions.extend([
-                    MenuItem::Separator,
-                    MenuItemFields::new(crate::t!("code-copy-file-path"))
-                        .with_on_select_action(FileNotebookAction::CopyFilePath)
-                        .into_item(),
-                ]);
+
+                #[cfg(feature = "local_fs")]
+                {
+                    // The markdown rendered/raw toggle is always visible in the pane header, so we don't
+                    // duplicate it in the overflow menu. Keep "Open in editor" available for local files.
+                    actions.push(
+                        MenuItemFields::new(crate::t!("notebook-open-in-editor"))
+                            .with_on_select_action(FileNotebookAction::OpenInEditor)
+                            .into_item(),
+                    );
+                    actions.extend([
+                        MenuItem::Separator,
+                        MenuItemFields::new(crate::t!("code-copy-file-path"))
+                            .with_on_select_action(FileNotebookAction::CopyFilePath)
+                            .into_item(),
+                    ]);
+                }
             }
+            Some(SourceFile::Remote { .. }) => {
+                // Remote files can be refreshed, but "Open in editor" / "Copy
+                // file path" are local-path actions (`local_path()` is `None`
+                // for remote sources) that don't apply here.
+                actions.push(
+                    MenuItemFields::new(crate::t!("notebook-refresh-file"))
+                        .with_on_select_action(FileNotebookAction::ReloadFile)
+                        .into_item(),
+                );
+            }
+            Some(SourceFile::Static { .. }) | None => {}
         }
         actions
     }
