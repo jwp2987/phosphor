@@ -5,6 +5,7 @@ use prost::Message;
 use std::collections::{HashMap, HashSet};
 use warp_multi_agent_api as api;
 
+use super::ConversationSummaryBackfill;
 use super::model::{AgentConversation, AgentConversationData, AgentConversationSummary};
 use crate::persistence::model::{AgentConversationRecord, AgentTaskRecord};
 use crate::persistence::schema::{self, agent_conversations, agent_tasks};
@@ -229,98 +230,129 @@ pub(super) fn select_conversations_to_evict(
     evicted
 }
 
-pub(super) fn read_agent_conversations(
+/// Reads conversation metadata from `agent_conversations` only, without
+/// loading or decoding the (potentially very large) `agent_tasks` blobs.
+///
+/// The returned [`AgentConversation`]s have empty `tasks`; consumers use the
+/// summary on each record plus lazy per-conversation loading
+/// ([`read_agent_conversation_by_id`]) for full task data.
+///
+/// Rows written before the `summary` column existed get their summary derived
+/// here from their own task snapshot (the one-time slow path); those
+/// derivations are returned as backfills so the caller can persist them (via
+/// [`backfill_conversation_summaries`]) and keep subsequent startups
+/// metadata-only.
+///
+/// Ported from the pin (`app/src/persistence/agent.rs:246-303`, `02b53fcd8`) for #431. Replaces
+/// the previous `read_agent_conversations`, which unconditionally loaded and decoded every
+/// `agent_tasks` blob for every conversation on every startup just to compute a possibly-already-
+/// valid summary.
+pub(super) fn read_agent_conversation_metadata(
     conn: &mut SqliteConnection,
-) -> Result<Vec<AgentConversation>, diesel::result::Error> {
+) -> Result<(Vec<AgentConversation>, Vec<ConversationSummaryBackfill>), diesel::result::Error> {
     use schema::agent_conversations::dsl::*;
 
-    let mut conversations_by_id = HashMap::<String, AgentConversation>::from_iter(
-        agent_conversations
-            .select(AgentConversationRecord::as_select())
-            .load(conn)?
-            .into_iter()
-            .map(|conversation| {
-                (
-                    conversation.conversation_id.clone(),
-                    AgentConversation {
-                        conversation,
-                        tasks: vec![],
-                    },
-                )
-            }),
-    );
-
-    let task_records: Vec<AgentTaskRecord> = agent_tasks::table
-        .select(AgentTaskRecord::as_select())
-        .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(&format!(
-            "length(task) <= {MAX_TASK_BLOB_BYTES}"
-        )))
+    let records: Vec<AgentConversationRecord> = agent_conversations
+        .select(AgentConversationRecord::as_select())
         .load(conn)?;
 
-    let mut invalid_conversation_ids = HashSet::new();
-    for task_record in task_records {
-        if let Some(conversation) = conversations_by_id.get_mut(&task_record.conversation_id) {
-            match api::Task::decode(&task_record.task[..]) {
-                Ok(api_task) => {
-                    conversation.tasks.push(api_task);
-                }
-                Err(e) => {
-                    log::error!("Failed to decode task protobuf: {e}");
-
-                    invalid_conversation_ids
-                        .insert(conversation.conversation.conversation_id.clone());
-                }
-            }
-        }
-    }
-
-    conversations_by_id.retain(|c_id, _| !invalid_conversation_ids.contains(c_id));
-
-    // Backfill the `summary` column for rows written before it existed (or
-    // whose serialized summary is invalid). The task snapshot is already
-    // decoded above, so deriving here is cheap; persisting keeps subsequent
-    // startups from re-deriving. Compare-and-set against the value observed at
-    // read time so a newer concurrent write is never clobbered, and restore
-    // `last_modified_at` afterwards so the `update_last_modified_at` trigger
-    // does not reorder the history list.
-    for conversation in conversations_by_id.values() {
-        let record = &conversation.conversation;
+    let mut conversations = Vec::with_capacity(records.len());
+    let mut backfills = Vec::new();
+    for mut record in records {
         let has_valid_summary = record
             .summary
             .as_deref()
             .is_some_and(|json| serde_json::from_str::<AgentConversationSummary>(json).is_ok());
-        if has_valid_summary {
-            continue;
-        }
+        if !has_valid_summary {
+            let task_records: Vec<AgentTaskRecord> = agent_tasks::table
+                .filter(schema::agent_tasks::dsl::conversation_id.eq(&record.conversation_id))
+                .select(AgentTaskRecord::as_select())
+                .load(conn)?;
 
-        let derived = AgentConversationSummary::from_tasks(conversation.tasks.iter());
-        let Ok(summary_json) = serde_json::to_string(&derived) else {
-            continue;
-        };
-
-        let update_target = agent_conversations.filter(conversation_id.eq(&record.conversation_id));
-        let updated = match record.summary.as_deref() {
-            Some(previous_summary) => {
-                diesel::update(update_target.filter(summary.eq(previous_summary)))
-                    .set(summary.eq(&summary_json))
-                    .execute(conn)?
+            let mut decoded_tasks = Vec::with_capacity(task_records.len());
+            let mut decode_failed = false;
+            for task_record in task_records {
+                match api::Task::decode(&task_record.task[..]) {
+                    Ok(task) => decoded_tasks.push(task),
+                    Err(e) => {
+                        log::error!("Failed to decode task protobuf: {e}");
+                        decode_failed = true;
+                        break;
+                    }
+                }
             }
-            None => diesel::update(update_target.filter(summary.is_null()))
-                .set(summary.eq(&summary_json))
-                .execute(conn)?,
-        };
+            // Matches the historical behavior of dropping conversations with
+            // undecodable tasks.
+            if decode_failed {
+                continue;
+            }
 
-        // The `update_last_modified_at_for_agent_conversations` trigger bumps
-        // `last_modified_at` whenever an update leaves it unchanged; restore
-        // the original value so backfilling does not reorder the history list.
-        if updated > 0 {
-            diesel::update(agent_conversations.filter(conversation_id.eq(&record.conversation_id)))
-                .set(last_modified_at.eq(record.last_modified_at))
-                .execute(conn)?;
+            let derived = AgentConversationSummary::from_tasks(decoded_tasks.iter());
+            let Ok(summary_json) = serde_json::to_string(&derived) else {
+                continue;
+            };
+            let previous_summary = record.summary.replace(summary_json.clone());
+            backfills.push(ConversationSummaryBackfill {
+                conversation_id: record.conversation_id.clone(),
+                summary_json,
+                previous_summary,
+                last_modified_at: record.last_modified_at,
+            });
         }
+
+        conversations.push(AgentConversation {
+            conversation: record,
+            tasks: vec![],
+        });
     }
 
-    Ok(conversations_by_id.into_values().collect())
+    Ok((conversations, backfills))
+}
+
+/// Persists read-time-derived summaries into the `summary` column so the
+/// derivation in [`read_agent_conversation_metadata`] only happens once per
+/// row.
+///
+/// Ported from the pin (`app/src/persistence/agent.rs:313-351`, `02b53fcd8`) verbatim, for #431.
+pub(super) fn backfill_conversation_summaries(
+    conn: &mut SqliteConnection,
+    backfills: Vec<ConversationSummaryBackfill>,
+) -> Result<(), diesel::result::Error> {
+    use schema::agent_conversations::dsl::*;
+
+    conn.transaction::<_, Error, _>(|conn| {
+        for backfill in backfills {
+            // Compare-and-set against the value observed at read time (NULL
+            // or invalid JSON), so invalid summaries heal while a newer
+            // write's summary is never overwritten.
+            let update_target =
+                agent_conversations.filter(conversation_id.eq(&backfill.conversation_id));
+            let updated = match &backfill.previous_summary {
+                Some(previous_summary) => {
+                    diesel::update(update_target.filter(summary.eq(previous_summary)))
+                        .set(summary.eq(&backfill.summary_json))
+                        .execute(conn)?
+                }
+                None => diesel::update(update_target.filter(summary.is_null()))
+                    .set(summary.eq(&backfill.summary_json))
+                    .execute(conn)?,
+            };
+
+            // The `update_last_modified_at_for_agent_conversations` trigger
+            // bumps `last_modified_at` on any update that leaves it
+            // unchanged; restore the original value so backfilling doesn't
+            // reorder the history list. Setting an explicit (different)
+            // value keeps the trigger from firing on this second update.
+            if updated > 0 {
+                diesel::update(
+                    agent_conversations.filter(conversation_id.eq(&backfill.conversation_id)),
+                )
+                .set(last_modified_at.eq(backfill.last_modified_at))
+                .execute(conn)?;
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Read a single agent conversation by its ID, including decoded tasks.

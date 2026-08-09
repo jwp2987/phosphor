@@ -178,6 +178,31 @@ impl Entity for PersistenceWriter {
 
 impl SingletonEntity for PersistenceWriter {}
 
+/// A conversation summary derived at read time by `agent::read_agent_conversation_metadata`
+/// for a pre-`summary`-column (or otherwise invalid-summary) row, queued so
+/// `agent::backfill_conversation_summaries` can persist it once, keeping subsequent startups
+/// metadata-only.
+///
+/// Ported from the pin (`app/src/persistence/mod.rs:144-155`, `02b53fcd8`) for #431. The pin
+/// drains these into a `PersistenceWriter` event (`BackfillConversationSummaries`) handled by the
+/// writer thread; this fork instead persists them synchronously in the same read-write connection
+/// used by `sqlite::initialize` (see `agent::read_agent_conversation_metadata`'s caller), since
+/// this fork's startup read already performs synchronous backfill writes on that connection
+/// (previously inline in the eager `read_agent_conversations` this replaces).
+#[derive(Debug)]
+pub struct ConversationSummaryBackfill {
+    pub conversation_id: String,
+    /// Serialized [`model::AgentConversationSummary`].
+    pub summary_json: String,
+    /// The `summary` column value observed at read time (`None` or invalid
+    /// JSON). The backfill only applies while the column still holds this
+    /// value, so it never overwrites a newer write.
+    pub previous_summary: Option<String>,
+    /// The row's pre-backfill `last_modified_at`, restored after the
+    /// update trigger bumps it.
+    pub last_modified_at: chrono::NaiveDateTime,
+}
+
 /// TODO: all of this data should eventually be indexed by user_id so that
 /// the logged in user sees the data for their user (and if another user logs in,
 /// they see their respective data). To do this, we can simply return a mapping

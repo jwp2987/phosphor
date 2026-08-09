@@ -84,7 +84,7 @@ use crate::drive::ZapDriveObjectSettings;
 use crate::env_vars::{EnvVarCollectionObject, EnvVarCollectionObjectModel};
 use crate::features::FeatureFlag;
 use crate::notebooks::{NotebookId, NotebookObject};
-use crate::persistence::agent::read_agent_conversations;
+use crate::persistence::agent::{backfill_conversation_summaries, read_agent_conversation_metadata};
 use crate::persistence::block_list::{
     get_all_restored_blocks, process_ai_queries_for_uparrow_prompt, read_recent_ai_queries,
 };
@@ -3344,7 +3344,14 @@ fn read_sqlite_data(
     let recent_ai_queries = read_recent_ai_queries(conn)?;
     let ai_queries = process_ai_queries_for_uparrow_prompt(recent_ai_queries);
 
-    let multi_agent_conversations = read_agent_conversations(conn)?;
+    // #431: metadata-only read (no `agent_tasks` blob decoding except for the rare row that
+    // still needs a summary derived and backfilled) instead of the previous eager read, which
+    // unconditionally loaded and decoded every task blob for every conversation on every startup.
+    let (multi_agent_conversations, conversation_summary_backfills) =
+        read_agent_conversation_metadata(conn)?;
+    if !conversation_summary_backfills.is_empty() {
+        backfill_conversation_summaries(conn, conversation_summary_backfills)?;
+    }
     let projects = get_all_projects(conn)?;
     let project_rules = get_all_project_rules(conn)?;
     let ignored_suggestions = get_all_ignored_suggestions(conn)?;
