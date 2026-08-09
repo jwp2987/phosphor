@@ -287,6 +287,8 @@ pub enum Icon {
     NLD,
     Oz,
     OzCloud,
+    /// The orchestrator avatar glyph shown on child-agent pills and breadcrumbs.
+    Agent,
     Conversation,
     Prompt,
     Grid,
@@ -602,6 +604,7 @@ impl From<Icon> for &'static str {
             Icon::NLD => "bundled/svg/nld.svg",
             Icon::Oz => "bundled/svg/oz.svg",
             Icon::OzCloud => "bundled/svg/oz-cloud.svg",
+            Icon::Agent => "bundled/svg/warp-drive.svg",
             Icon::Conversation => "bundled/svg/conversation.svg",
             Icon::Prompt => "bundled/svg/prompt.svg",
             Icon::Grid => "bundled/svg/grid.svg",

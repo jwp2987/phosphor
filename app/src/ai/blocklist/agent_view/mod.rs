@@ -1,6 +1,7 @@
 pub(crate) mod agent_input_footer;
 mod agent_message_bar;
 mod agent_view_block;
+pub(crate) mod avatar_disc;
 pub mod child_agent_status_card;
 mod controller;
 pub(crate) mod conversation_navigation_links;
