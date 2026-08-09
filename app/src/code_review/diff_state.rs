@@ -3174,6 +3174,11 @@ impl DiffStateModel {
             DiffStateModelEvent::BranchesReceived(branches) => {
                 ctx.emit(DiffStateModelEvent::BranchesReceived(branches.clone()));
             }
+            // Added for #388's idempotent disconnect handling. Forwarded like every
+            // other backend event so wrapper subscribers see it too.
+            DiffStateModelEvent::ConnectionLost => {
+                ctx.emit(DiffStateModelEvent::ConnectionLost);
+            }
         }
     }
 

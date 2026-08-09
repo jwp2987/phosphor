@@ -53,11 +53,22 @@ impl RemoteAgentContext {
             if let RemoteServerManagerEvent::RemoteAgentContextSnapshot { host_id, snapshot } =
                 event
             {
-                me.reconcile_snapshot(host_id.clone(), snapshot.clone(), ctx);
+                // `RemoteServerManagerEvent` carries `warp_core::HostId`, but the
+                // skills/context types use `warp_util::host_id::HostId`. These are
+                // distinct types in this fork (they are the same type in the pin), so
+                // bridge with the helper built for exactly this mismatch.
+                me.reconcile_snapshot(
+                    crate::code::buffer_location::core_host_id_to_util(host_id),
+                    snapshot.clone(),
+                    ctx,
+                );
                 return;
             }
             if let RemoteServerManagerEvent::HostDisconnected { host_id } = event {
-                me.remove_host_context(host_id, ctx);
+                me.remove_host_context(
+                    &crate::code::buffer_location::core_host_id_to_util(host_id),
+                    ctx,
+                );
             }
         });
         Self
