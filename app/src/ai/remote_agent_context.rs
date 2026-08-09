@@ -1,23 +1,29 @@
 //! Client-side reconciliation of `RemoteAgentContextSnapshot`s (#438 dependent feature 1,
-//! #353 producer, #487 SSH-arm reversal) into [`SkillManager`]'s per-host remote catalogs.
+//! #353 producer, #487 SSH-arm reversal, #575 global rules) into [`SkillManager`]'s
+//! per-host remote skill catalogs and [`ProjectContextModel`]'s per-host remote global
+//! rules.
 //!
-//! Ported from the pin's `ai/remote_agent_context.rs` (`02b53fcd8`), **scoped down**: the
-//! pin's `RemoteAgentContextState` also carries `global_rules` and reconciles them into
-//! `ProjectContextModel` via `set_remote_global_rules`/`remove_remote_global_rules`. Those
-//! methods don't exist on this fork's `ProjectContextModel` (`crates/ai/src/project_context/
-//! model.rs`), which is entirely local-`PathBuf`-based with no per-host storage — adding
-//! them is a separate, comparably-sized feature (remote-aware rule discovery threaded
-//! through `pending_context`'s system-prompt assembly), not attempted here. The daemon
-//! (`app/src/remote_server/server_model.rs`) still populates `snapshot.global_rules`
-//! (#353's producer serializes it unconditionally), so a remote host's AGENTS.md/WARP.md
-//! files already cross the wire — they are just not consumed client-side yet. Tracked as a
-//! known gap; do not assume `global_rules` do anything today.
+//! Ported from the pin's `ai/remote_agent_context.rs` (`02b53fcd8`). Global-rule
+//! reconciliation follows the pin's shape (`set_remote_global_rules`/
+//! `remove_remote_global_rules` on snapshot/disconnect) but stores raw
+//! `ProjectRule { path: PathBuf, .. }` entries rather than the pin's
+//! `LocalOrRemotePath`-typed ones: this fork's `ProjectContextModel::path_to_rules` has
+//! no per-host dimension at all (`ProjectRule::path` has no `LocalOrRemotePath` variant),
+//! so `remote_global_rules` is per-host scaffolding only — see `set_remote_global_rules`'s
+//! doc comment in `crates/ai/src/project_context/model.rs`. Nothing in this fork yet
+//! layers a host's stored entries into a rule lookup for a path on that host (there is no
+//! remote-path-aware `pending_context` equivalent to layer them into), so the stored
+//! entries are inert until such a consumer exists — the daemon-to-client wire transfer and
+//! per-host storage are complete, but end-to-end "a remote host's AGENTS.md affects an
+//! agent query" is not.
+use ai::project_context::model::{ProjectContextModel, ProjectRule};
 use ai::skills::{
     get_provider_for_path, parse_skill_content_at_location, ParsedSkill, SkillProvider,
     SkillScope,
 };
 use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use remote_server::proto::{remote_skill_proto, RemoteAgentContextSnapshot, RemoteSkillProto};
+use std::path::PathBuf;
 use warp_core::features::FeatureFlag;
 use warp_core::safe_warn;
 use warp_util::host_id::HostId;
@@ -39,6 +45,9 @@ struct HomeSkills {
 struct RemoteAgentContextState {
     bundled_skills: Option<BundledSkill>,
     home_skills: Option<HomeSkills>,
+    /// This host's file-based global rules (e.g. `~/.agents/AGENTS.md`), as
+    /// published by the daemon's `ProjectContextModel::global_rules()`. #575.
+    global_rules: Vec<ProjectRule>,
 }
 
 /// Singleton that subscribes to [`RemoteServerManager`] and feeds accepted snapshots into
@@ -83,6 +92,7 @@ impl RemoteAgentContext {
         let RemoteAgentContextState {
             bundled_skills,
             home_skills,
+            global_rules,
         } = parse_snapshot(&host_id, snapshot);
         SkillManager::handle(ctx).update(ctx, |manager, ctx| {
             manager.replace_remote_agent_context(
@@ -92,11 +102,17 @@ impl RemoteAgentContext {
                 ctx,
             );
         });
+        ProjectContextModel::handle(ctx).update(ctx, |model, _ctx| {
+            model.set_remote_global_rules(host_id, global_rules);
+        });
     }
 
     fn remove_host_context(&mut self, host_id: &HostId, ctx: &mut ModelContext<Self>) {
         SkillManager::handle(ctx).update(ctx, |manager, ctx| {
             manager.remove_remote_agent_context(host_id, ctx);
+        });
+        ProjectContextModel::handle(ctx).update(ctx, |model, _ctx| {
+            model.remove_remote_global_rules(host_id);
         });
     }
 }
@@ -105,6 +121,17 @@ fn parse_snapshot(host_id: &HostId, snapshot: RemoteAgentContextSnapshot) -> Rem
     let bundled_skills = FeatureFlag::BundledSkills
         .is_enabled()
         .then(|| bundled_skill_from_protos(host_id, &snapshot.skills));
+    // Global rules are plain (path, content) pairs — no host-scoped parsing to fail on,
+    // unlike skill/home-dir paths below, so this is collected unconditionally before the
+    // early return for an invalid home directory.
+    let global_rules = snapshot
+        .global_rules
+        .iter()
+        .map(|rule| ProjectRule {
+            path: PathBuf::from(&rule.path),
+            content: rule.content.clone(),
+        })
+        .collect();
     let Some(home_dir) = remote_path(host_id, &snapshot.home_dir) else {
         safe_warn!(
             safe: ("Ignoring remote home context with an invalid home directory"),
@@ -113,6 +140,7 @@ fn parse_snapshot(host_id: &HostId, snapshot: RemoteAgentContextSnapshot) -> Rem
         return RemoteAgentContextState {
             bundled_skills,
             home_skills: None,
+            global_rules,
         };
     };
     let skills = snapshot
@@ -132,6 +160,7 @@ fn parse_snapshot(host_id: &HostId, snapshot: RemoteAgentContextSnapshot) -> Rem
     RemoteAgentContextState {
         bundled_skills,
         home_skills: Some(HomeSkills { home_dir, skills }),
+        global_rules,
     }
 }
 
