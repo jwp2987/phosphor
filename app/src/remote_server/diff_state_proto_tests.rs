@@ -7,7 +7,8 @@ use super::*;
 use crate::code_review::diff_size_limits::{DiffSize, MAX_DIFF_SIZE};
 use crate::code_review::diff_state::{
     DiffHunk, DiffLine, DiffLineType, DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState,
-    DiffStats, FileDiff, FileStatusInfo, GitDiffData, GitFileStatus,
+    DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo, GitDiffData, GitDiffWithBaseContent,
+    GitFileStatus,
 };
 use crate::util::git::{Commit, FileChangeEntry, PrInfo};
 
@@ -455,6 +456,61 @@ fn snapshot_from_parts_picks_state_by_inputs() {
 
     // metadata None → NotInRepository
     let nir = snapshot_from_parts("/r".to_string(), &DiffMode::Head, None, Some(gdd));
+    assert!(matches!(
+        nir.state.and_then(|s| s.state),
+        Some(proto::diff_state::State::NotInRepository(_))
+    ));
+}
+
+#[test]
+fn snapshot_from_parts_with_base_content_carries_content_at_base() {
+    // Issue #388 item 4: unlike `snapshot_from_parts` (which only ever sees the
+    // content-less `GitDiffData`), the daemon's `GetDiffState` reply and live-push
+    // paths call this with the richer `GitDiffWithBaseContent` they already computed,
+    // and `content_at_base` must actually reach the wire instead of being dropped.
+    let diffs = GitDiffWithBaseContent {
+        files: vec![FileDiffAndContent {
+            file_diff: sample_file_diff(),
+            content_at_head: Some("fn main() {}".to_string()),
+        }],
+        total_additions: 3,
+        total_deletions: 1,
+        files_changed: 1,
+    };
+    let snapshot = snapshot_from_parts_with_base_content(
+        "/repo".to_string(),
+        &DiffMode::Head,
+        Some(DiffMetadata::default()),
+        Some(diffs),
+    );
+
+    assert!(matches!(
+        snapshot.state.as_ref().and_then(|s| s.state.as_ref()),
+        Some(proto::diff_state::State::Loaded(_))
+    ));
+    let diffs_proto = snapshot.diffs.expect("loaded → diffs present");
+    assert_eq!(diffs_proto.files.len(), 1);
+    assert_eq!(
+        diffs_proto.files[0].content_at_base.as_deref(),
+        Some("fn main() {}"),
+        "content_at_base must survive from GitDiffWithBaseContent onto the wire"
+    );
+
+    // metadata Some + diff None → Error, matching `snapshot_from_parts`.
+    let err = snapshot_from_parts_with_base_content(
+        "/repo".to_string(),
+        &DiffMode::Head,
+        Some(DiffMetadata::default()),
+        None,
+    );
+    assert!(matches!(
+        err.state.and_then(|s| s.state),
+        Some(proto::diff_state::State::Error(_))
+    ));
+    assert!(err.diffs.is_none());
+
+    // metadata None → NotInRepository, regardless of diff_data.
+    let nir = snapshot_from_parts_with_base_content("/repo".to_string(), &DiffMode::Head, None, None);
     assert!(matches!(
         nir.state.and_then(|s| s.state),
         Some(proto::diff_state::State::NotInRepository(_))

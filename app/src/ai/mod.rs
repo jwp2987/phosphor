@@ -32,6 +32,13 @@ pub mod onboarding;
 pub(crate) mod option_snapshot;
 pub(crate) mod predict;
 pub(crate) mod project_rules_persister;
+// Client-side `RemoteAgentContextSnapshot` reconciliation (#487): needs `SkillManager`'s
+// real (non-dummy) API (`replace_remote_agent_context` / `remove_remote_agent_context`,
+// only present under `local_fs` — see `ai/skills/mod.rs`) and `remote_server::manager` /
+// `remote_server::proto` (gated `not(wasm)` at the crate boundary), matching the same
+// double-gate as `ai::skills::remote`.
+#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+pub(crate) mod remote_agent_context;
 pub mod request_usage_model;
 pub(crate) mod restored_conversations;
 pub(crate) mod skills;

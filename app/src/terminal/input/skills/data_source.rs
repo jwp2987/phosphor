@@ -53,8 +53,7 @@ pub struct SelectableSkill {
 /// Fuzzy-matches skills available for `working_directory` against `query_text`, ranked for an
 /// inline menu (lower-ranked first; alphabetical tie-break).
 ///
-/// Ported from Warp OSS, adapted to Zap's `SkillManager::get_skills_for_working_directory`
-/// (which takes a `&Path`; BYOP working directories are always local).
+/// Ported from Warp OSS, adapted to Zap's `SkillManager::get_skills_for_working_directory`.
 pub fn query_selectable_skills(
     working_directory: Option<&warp_util::local_or_remote_path::LocalOrRemotePath>,
     terminal_view_id: EntityId,
@@ -62,20 +61,14 @@ pub fn query_selectable_skills(
     query_text: &str,
     app: &AppContext,
 ) -> Vec<SelectableSkill> {
-    use warp_util::local_or_remote_path::LocalOrRemotePath;
-
     let cli_agent_providers = CLIAgentSessionsModel::as_ref(app)
         .session(terminal_view_id)
         .filter(|session| matches!(session.input_state, CLIAgentInputState::Open { .. }))
         .map(|session| session.agent.supported_skill_providers());
     let skill_manager = SkillManager::as_ref(app);
     let query_text = query_text.trim();
-    let cwd_path: Option<PathBuf> = working_directory.and_then(|location| match location {
-        LocalOrRemotePath::Local(path) => Some(path.clone()),
-        LocalOrRemotePath::Remote(_) => None,
-    });
     let mut results = skill_manager
-        .get_skills_for_working_directory(cwd_path.as_deref(), app)
+        .get_skills_for_working_directory(working_directory, app)
         .into_iter()
         .filter(|skill| {
             if let Some(providers) = &cli_agent_providers {
@@ -194,11 +187,16 @@ impl SkillSelectorDataSource {
     }
 
     /// Get the current working directory from the active session
-    fn get_current_working_directory(&self, app: &AppContext) -> Option<PathBuf> {
+    fn get_current_working_directory(
+        &self,
+        app: &AppContext,
+    ) -> Option<warp_util::local_or_remote_path::LocalOrRemotePath> {
         self.active_session
             .as_ref(app)
             .current_working_directory()
-            .map(PathBuf::from)
+            .map(|cwd| {
+                warp_util::local_or_remote_path::LocalOrRemotePath::Local(PathBuf::from(cwd))
+            })
     }
 }
 
@@ -213,7 +211,7 @@ impl SyncDataSource for SkillSelectorDataSource {
         let cwd = self.get_current_working_directory(app);
         let cli_agent_providers = self.active_cli_agent_providers(app);
         let skills =
-            SkillManager::as_ref(app).get_skills_for_working_directory(cwd.as_deref(), app);
+            SkillManager::as_ref(app).get_skills_for_working_directory(cwd.as_ref(), app);
 
         // Filter out bundled skills when in open mode, since they cannot be opened.
         // When CLI agent input is open, filter to skills that exist in a supported

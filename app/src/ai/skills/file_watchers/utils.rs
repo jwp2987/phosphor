@@ -10,6 +10,7 @@ use ai::skills::{
 use anyhow::Error;
 use regex::Regex;
 use repo_metadata::{local_model::GetContentsArgs, RepoContent, RepoMetadataModel};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::AppContext;
 
 use crate::warp_managed_paths_watcher::warp_managed_skill_dirs;
@@ -67,7 +68,7 @@ pub fn read_skills_from_directories(
 }
 
 pub fn is_skill_file(path: &Path) -> bool {
-    extract_skill_parent_directory(path).is_ok()
+    extract_skill_parent_directory(&LocalOrRemotePath::Local(path.to_path_buf())).is_ok()
 }
 
 static SKILL_PROVIDER_PATHS: LazyLock<HashSet<String>> = LazyLock::new(|| {
@@ -93,7 +94,27 @@ static SKILL_FILE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Failed to compile skill file pattern")
 });
 
-pub fn extract_skill_parent_directory(path: &Path) -> Result<PathBuf, Error> {
+/// Finds the directory that owns a skill's provider folder (e.g. the repo root that owns
+/// `.agents/skills/`), given the skill's `SKILL.md` path.
+///
+/// Ported to `LocalOrRemotePath` for #299/#487: a remote host's home skills (published by
+/// its daemon and reconciled client-side in `remote_agent_context.rs`) flow through
+/// [`crate::ai::skills::SkillManager::handle_skills_added`] the same way local
+/// watcher-discovered skills do, so this must accept a remote path without an artificial
+/// local-only guard. Local paths keep the exact original regex-based matching (unchanged,
+/// already covered by `utils_tests.rs`); remote paths use structural parent-walking
+/// instead, since [`SKILL_FILE_PATTERN`] is platform-separator-specific and a remote
+/// path's separator does not depend on the local OS.
+pub fn extract_skill_parent_directory(path: &LocalOrRemotePath) -> Result<LocalOrRemotePath, Error> {
+    match path {
+        LocalOrRemotePath::Local(local_path) => {
+            extract_local_skill_parent_directory(local_path).map(LocalOrRemotePath::Local)
+        }
+        LocalOrRemotePath::Remote(_) => extract_remote_skill_parent_directory(path),
+    }
+}
+
+fn extract_local_skill_parent_directory(path: &Path) -> Result<PathBuf, Error> {
     let is_warp_home_skill = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -119,6 +140,21 @@ pub fn extract_skill_parent_directory(path: &Path) -> Result<PathBuf, Error> {
     }
 
     Err(anyhow::anyhow!("Not a skill path: {}", path.display()))
+}
+
+fn extract_remote_skill_parent_directory(path: &LocalOrRemotePath) -> Result<LocalOrRemotePath, Error> {
+    if path.file_name() != Some("SKILL.md") {
+        return Err(anyhow::anyhow!("Not a skill path: {}", path.display_path()));
+    }
+    let Some(skill_dir) = path.parent() else {
+        return Err(anyhow::anyhow!("Not a skill path: {}", path.display_path()));
+    };
+    let Some(skills_root) = skill_dir.parent() else {
+        return Err(anyhow::anyhow!("Not a skill path: {}", path.display_path()));
+    };
+
+    ai::skills::provider_parent_directory_for_skills_root(&skills_root)
+        .ok_or_else(|| anyhow::anyhow!("Not a skill path: {}", path.display_path()))
 }
 
 /// Check if this path is a skill directory under a home directory provider path

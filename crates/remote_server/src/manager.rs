@@ -291,6 +291,14 @@ pub enum RemoteServerManagerEvent {
     /// The last session for this host was disconnected or deregistered.
     /// Downstream features should tear down per-host models.
     HostDisconnected { host_id: HostId },
+    /// A newer full Agent Mode context snapshot published by the daemon host,
+    /// accepted by `accept_remote_agent_context_snapshot` (dedup by `revision`).
+    /// #438 dependent feature 1 / #353 producer / #487 SSH-arm reversal.
+    /// Consumed by `app::ai::remote_agent_context::RemoteAgentContext`.
+    RemoteAgentContextSnapshot {
+        host_id: HostId,
+        snapshot: crate::proto::RemoteAgentContextSnapshot,
+    },
 
     // --- Repo metadata events (forwarded from ClientEvent push channel) ---
     /// Response to a `navigate_to_directory` request.
@@ -350,14 +358,6 @@ pub enum RemoteServerManagerEvent {
         host_id: HostId,
         delta: crate::proto::DiffStateFileDelta,
     },
-    // Note: `RemoteAgentContextSnapshot` (#438 dependent feature 1) is
-    // deliberately *not* a `RemoteServerManagerEvent` variant. Every existing
-    // consumer of this enum (`app/src/terminal/**`) matches it exhaustively
-    // without a wildcard, so a new variant would require editing those match
-    // arms — out of scope here (another agent owns `app/src/terminal/**`).
-    // Instead, an accepted snapshot is stored per-host and exposed via the
-    // `remote_agent_context_snapshot()` query method below; see
-    // `accept_remote_agent_context_snapshot_revision`.
 
     // --- Setup events ---
     /// Intermediate state change during the binary check/install flow.
@@ -437,7 +437,10 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::BufferConflictDetected { .. }
             | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
             | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
-            | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. } => None,
+            | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. }
+            // Host-scoped: the agent-context snapshot is keyed by `HostId`, not by
+            // any one session on that host.
+            | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. } => None,
         }
     }
 }
@@ -1475,11 +1478,17 @@ impl RemoteServerManager {
                 ctx.emit(RemoteServerManagerEvent::DiffStateFileDeltaReceived { host_id, delta });
             }
             ClientEvent::RemoteAgentContextSnapshotReceived { snapshot } => {
-                // #438 dependent feature 1: dedup by revision per host and
-                // store for querying via `remote_agent_context_snapshot()`.
-                // Not surfaced as a `RemoteServerManagerEvent` — see that
-                // field's doc comment for why.
-                self.accept_remote_agent_context_snapshot(&host_id, snapshot);
+                // #438 dependent feature 1 / #487: dedup by revision per host,
+                // store for the `remote_agent_context_snapshot()` query method,
+                // and surface the accepted snapshot so
+                // `app::ai::remote_agent_context::RemoteAgentContext` can
+                // reconcile it into SkillManager's per-host catalogs.
+                if self.accept_remote_agent_context_snapshot(&host_id, snapshot.clone()) {
+                    ctx.emit(RemoteServerManagerEvent::RemoteAgentContextSnapshot {
+                        host_id,
+                        snapshot,
+                    });
+                }
             }
             ClientEvent::HostScopedDecodeFailed { request_id } => {
                 // #438 dependent feature 3/4: the response for a host-scoped
@@ -2089,9 +2098,19 @@ impl RemoteServerManager {
     /// Returns the most recently accepted `RemoteAgentContextSnapshot` for
     /// `host_id`, if the daemon has pushed one since the host last
     /// connected (`handle_host_disconnected` clears it on disconnect). #438
-    /// dependent feature 1 — no daemon in this fork populates this yet
-    /// (issue #353 tracks the producer side), so this is currently always
-    /// `None` in production.
+    /// dependent feature 1; the daemon-side producer is #353
+    /// (`app/src/remote_server/server_model.rs`). Callers generally don't need
+    /// this directly — `app::ai::remote_agent_context::RemoteAgentContext`
+    /// subscribes to `RemoteServerManagerEvent::RemoteAgentContextSnapshot`
+    /// (emitted right after a snapshot is accepted here) instead of polling.
+    /// Note two known gaps before assuming this snapshot is fully wired: (1) as of
+    /// #440 (reopened), the daemon has no `daemon_bundled_resources_dir()`, so
+    /// `snapshot.skills`'s bundled entries are always empty in production —
+    /// `home_dir` and home-scoped `snapshot.skills` entries are populated, though.
+    /// (2) `snapshot.global_rules` is always empty too: this fork's
+    /// `ProjectContextModel` has no per-host rule storage to source it from (see
+    /// `app/src/ai/remote_agent_context.rs`'s module doc comment) — a separate,
+    /// comparably-sized gap from #440, not fixed here either.
     pub fn remote_agent_context_snapshot(
         &self,
         host_id: &HostId,

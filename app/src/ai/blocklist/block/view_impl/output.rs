@@ -20,9 +20,7 @@ use crate::ai::blocklist::inline_action::create_or_edit_document::CreateOrEditDo
 use crate::ai::blocklist::secret_redaction::SecretRedactionState;
 use crate::ai::blocklist::view_util::format_credits;
 use crate::ai::skills::SkillOpenOrigin;
-use crate::ai::skills::{
-    icon_override_for_skill_name, render_skill_button, skill_path_from_file_path,
-};
+use crate::ai::skills::{icon_override_for_skill_name, render_skill_button, skill_path_from_location};
 
 use crate::code::editor_management::CodeSource;
 use crate::terminal::shared_session::SharedSessionStatus;
@@ -39,8 +37,7 @@ use ai::skills::SkillReference;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::theme::color::internal_colors;
-#[allow(unused_imports)]
-use warp_util::path::{common_path, CleanPathResult};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::elements::new_scrollable::SingleAxisConfig;
 use warpui::elements::{
     ChildAnchor, NewScrollable, OffsetPositioning, ParentAnchor, ParentOffsetBounds, Stack,
@@ -492,12 +489,28 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                         .collect_vec(),
                                 };
 
-                                let file_paths: Vec<_> = files.iter().map(|f| &f.name).collect();
-                                let skill = common_path(&file_paths)
-                                    .and_then(|common| skill_path_from_file_path(&common))
-                                    .and_then(|skill_path| {
-                                        SkillManager::as_ref(app).skill_by_path(&skill_path)
-                                    });
+                                // Resolve each read file to its owning skill's SKILL.md
+                                // location individually (not a single `common_path`
+                                // over the raw file names) so a read spanning two
+                                // sibling skill directories — or, once a call site
+                                // threads session/host identity through `Props`, two
+                                // different remote hosts — correctly refuses to
+                                // render a skill button rather than guessing from an
+                                // unrelated shared ancestor. See
+                                // `parsed_skill_for_common_locations`.
+                                let file_locations = files
+                                    .iter()
+                                    .map(|file| {
+                                        LocalOrRemotePath::Local(std::path::PathBuf::from(
+                                            shell_native_absolute_path(
+                                                &file.name,
+                                                props.shell_launch_data,
+                                                props.current_working_directory,
+                                            ),
+                                        ))
+                                    })
+                                    .collect::<Vec<_>>();
+                                let skill = parsed_skill_for_common_locations(file_locations, app);
                                 output_items.add_child(render_read_files(
                                     props,
                                     id,
@@ -1401,6 +1414,32 @@ fn render_read_skill(
     }
 
     renderable_action.render(app).finish()
+}
+
+/// Resolves the skill a `ReadFiles` action's files belong to, if every file resolves to
+/// the *same* skill's `SKILL.md` location.
+///
+/// Ported from the pin's `ai/blocklist/block/view_impl/output.rs::
+/// parsed_skill_for_common_locations` (`02b53fcd8`). Refuses to guess when the files
+/// don't share one owning skill — including when they were read from different remote
+/// hosts: `skill_path_from_location`'s ancestor-walk preserves each location's host
+/// identity (`LocalOrRemotePath::Remote` equality is host-aware), so two files from
+/// different hosts can never resolve to the same skill location even if their paths
+/// are textually identical.
+fn parsed_skill_for_common_locations(
+    file_locations: impl IntoIterator<Item = LocalOrRemotePath>,
+    app: &AppContext,
+) -> Option<&ai::skills::ParsedSkill> {
+    let skill_paths = file_locations
+        .into_iter()
+        .map(|location| skill_path_from_location(&location))
+        .collect::<Option<Vec<_>>>()?;
+    let first_skill_path = skill_paths.first()?;
+    skill_paths
+        .iter()
+        .all(|skill_path| skill_path == first_skill_path)
+        .then(|| SkillManager::as_ref(app).skill_by_path(first_skill_path))
+        .flatten()
 }
 
 fn render_read_files(

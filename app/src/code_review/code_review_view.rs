@@ -2272,6 +2272,11 @@ impl CodeReviewView {
                     self.update_git_operations_ui(ctx);
                 }
             }
+            DiffStateModelEvent::ConnectionLost => {
+                // Don't clear loaded state — keep stale diffs visible so the
+                // user can still see what they were looking at.
+                ctx.notify();
+            }
             DiffStateModelEvent::BranchesReceived(branches) => {
                 if let Some(repo) = self.active_repo.as_mut() {
                     let branch_count = branches.len();

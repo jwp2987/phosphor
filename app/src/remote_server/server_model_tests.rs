@@ -37,6 +37,12 @@ fn test_model() -> ServerModel {
         pending_file_ops: PendingFileOps::new(),
         #[cfg(feature = "local_fs")]
         buffers: ServerBufferTracker::new(),
+        #[cfg(feature = "local_fs")]
+        bundled_skills: Vec::new(),
+        #[cfg(feature = "local_fs")]
+        remote_agent_context_snapshot: Default::default(),
+        #[cfg(feature = "local_fs")]
+        remote_agent_context_snapshot_sent: std::collections::HashSet::new(),
         auth_token: None,
     }
 }
@@ -600,4 +606,53 @@ fn unsubscribe_unknown_connection_is_a_noop() {
     model.unsubscribe_git_status(uuid::Uuid::new_v4());
     assert!(model.git_status_subscribers.is_empty());
     assert!(model.git_status_repo_by_conn.is_empty());
+}
+
+// ── RemoteAgentContextSnapshot producer (#353) ──────────────────────
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn register_connection_sends_the_current_remote_agent_context_snapshot() {
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(|_ctx| {
+            let mut model = test_model();
+            model.remote_agent_context_snapshot = super::super::proto::RemoteAgentContextSnapshot {
+                revision: 5,
+                home_dir: "/home/daemon-user".to_string(),
+                skills: Vec::new(),
+                global_rules: Vec::new(),
+            };
+            model
+        });
+        let conn = uuid::Uuid::new_v4();
+        let (tx, rx) = async_channel::unbounded();
+
+        handle.update(&mut app, |model, ctx| {
+            model.register_connection(conn, tx, ctx);
+        });
+
+        let received = rx
+            .try_recv()
+            .expect("register_connection should push the current snapshot");
+        match received.message {
+            Some(server_message::Message::RemoteAgentContextSnapshot(snapshot)) => {
+                assert_eq!(snapshot.revision, 5);
+                assert_eq!(snapshot.home_dir, "/home/daemon-user");
+            }
+            other => panic!("expected RemoteAgentContextSnapshot, got {other:?}"),
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "a second register_connection push would be redundant"
+        );
+
+        // A second connection also gets the (still-current) snapshot, and the
+        // first connection isn't re-sent it.
+        let conn2 = uuid::Uuid::new_v4();
+        let (tx2, rx2) = async_channel::unbounded();
+        handle.update(&mut app, |model, ctx| {
+            model.register_connection(conn2, tx2, ctx);
+        });
+        assert!(rx2.try_recv().is_ok());
+    });
 }

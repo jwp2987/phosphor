@@ -182,7 +182,7 @@ impl RemoteDiffStateModel {
             }
             RemoteServerManagerEvent::HostDisconnected { host_id } => {
                 if host_id == &self.remote_path.host_id {
-                    self.state = InternalRemoteDiffState::Disconnected;
+                    self.mark_disconnected(ctx);
                 }
             }
             RemoteServerManagerEvent::HostConnected { host_id } => {
@@ -205,6 +205,18 @@ impl RemoteDiffStateModel {
         host_id == &self.remote_path.host_id
             && repo_path == self.repo_path_string()
             && mode == Some(&encode_diff_mode(&self.mode))
+    }
+
+    /// Transitions to `Disconnected` and emits [`DiffStateModelEvent::ConnectionLost`],
+    /// unless already disconnected. Idempotent so a second `HostDisconnected` push for
+    /// the same host (the manager can retry/re-deliver) doesn't re-signal a fresh loss
+    /// on every event.
+    fn mark_disconnected(&mut self, ctx: &mut ModelContext<Self>) {
+        if matches!(self.state, InternalRemoteDiffState::Disconnected) {
+            return;
+        }
+        self.state = InternalRemoteDiffState::Disconnected;
+        ctx.emit(DiffStateModelEvent::ConnectionLost);
     }
 
     fn apply_snapshot(&mut self, snapshot: &proto::DiffStateSnapshot, ctx: &mut ModelContext<Self>) {
@@ -292,6 +304,32 @@ impl RemoteDiffStateModel {
         };
         if let Some(metadata) = decoded.metadata {
             self.metadata = Some(metadata);
+        }
+        // Fold the per-file diff into the cached `GitDiffData` (upsert by path,
+        // or remove when the file no longer has changes) so `Self::get()`
+        // actually returns the updated diff instead of the pre-delta snapshot.
+        // Mirrors Warp's `apply_file_delta`
+        // (`warp/master:app/src/code_review/diff_state/remote.rs`). Previously
+        // this only updated `self.metadata` and fired the invalidation event
+        // with nothing behind it to invalidate to — the view re-read `get()`
+        // and got the same stale files list every time.
+        if let InternalRemoteDiffState::Loaded(diffs) = &mut self.state {
+            let file_path = PathBuf::from(&decoded.file_path);
+            match &decoded.diff {
+                Some(new_diff) => {
+                    if let Some(existing) =
+                        diffs.files.iter_mut().find(|f| f.file_path == file_path)
+                    {
+                        *existing = new_diff.file_diff.clone();
+                    } else {
+                        diffs.files.push(new_diff.file_diff.clone());
+                    }
+                }
+                None => diffs.files.retain(|f| f.file_path != file_path),
+            }
+            diffs.total_additions = diffs.files.iter().map(|f| f.additions()).sum();
+            diffs.total_deletions = diffs.files.iter().map(|f| f.deletions()).sum();
+            diffs.files_changed = diffs.files.len();
         }
         // A per-file delta invalidates just that path; the view re-reads the
         // model for the fresh diff. We surface it as a Files invalidation.

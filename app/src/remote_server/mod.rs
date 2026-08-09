@@ -128,6 +128,24 @@ pub(super) fn run_daemon_app(
         // registered". It subscribes to FileModel in its own `new()`, so it
         // must come after FileModel.
         ctx.add_singleton_model(crate::code::global_buffer_model::GlobalBufferModel::new);
+        // SkillManager backs the daemon's own `RemoteAgentContextSnapshot` producer
+        // (#353): `ServerModel::new` reads its home skills via
+        // `SkillManager::as_ref(ctx).home_skills()`. Must be registered before
+        // ServerModel, and its own `SkillWatcher` depends on `WarpManagedPathsWatcher`
+        // and (when the daemon host has a home directory) `HomeDirectoryWatcher` —
+        // mirroring their non-daemon registration in `app/src/lib.rs`. The daemon
+        // previously registered neither SkillManager nor these two watchers, so a
+        // daemon's `SkillManager::new()` would have panicked the moment `SkillWatcher`
+        // tried to subscribe to an unregistered `WarpManagedPathsWatcher`.
+        ctx.add_singleton_model(crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new);
+        if let Some(home_dir) = dirs::home_dir() {
+            ctx.add_singleton_model(|ctx| {
+                watcher::HomeDirectoryWatcher::new(home_dir, ctx)
+            });
+        } else {
+            log::info!("Home directory not found; skipping HomeDirectoryWatcher registration");
+        }
+        ctx.add_singleton_model(crate::ai::skills::SkillManager::new);
         ctx.add_singleton_model(server_model_init);
     })?;
     Ok(())

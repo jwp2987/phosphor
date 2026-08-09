@@ -666,6 +666,175 @@ fn apply_metadata_branch_change_updates_branch() {
     });
 }
 
+// ── apply_file_delta (issue #388 item 1) ─────────────────────────
+//
+// Ported (and adapted) from the pin's `apply_file_delta_*` tests
+// (`diff_state/remote_tests.rs`, `02b53fcd8`). Adapted because the fork's
+// `apply_file_delta` takes a `&proto::DiffStateFileDelta` (decoded internally via
+// `decode_file_delta`), not pin's already-decoded `(file_path, diff, metadata)`
+// triple, and the fork surfaces the change via `DiffMetadataChanged(InvalidationBehavior
+// ::Files(..))` rather than pin's dedicated `SingleFileUpdated { path, diff }` event.
+// `apply_file_delta_preserves_content_at_base_in_event` is not ported: the fork's
+// `GitDiffData`/`FileDiff` (unlike the pin's) has no base-content field at all — base
+// content lives only in the separate `FileDiffAndContent` wrapper carried by
+// `GitDiffWithBaseContent`, which nothing here stores persistently — so there is
+// nothing to assert survives into the model's state or a per-file event.
+
+fn file_delta(repo_relative_path: &str, diff: Option<FileDiff>) -> proto::DiffStateFileDelta {
+    let diff = diff.map(|file_diff| crate::code_review::diff_state::FileDiffAndContent {
+        file_diff,
+        content_at_head: None,
+    });
+    crate::remote_server::diff_state_proto::build_diff_state_file_delta(
+        TEST_REPO_PATH,
+        &DiffMode::Head,
+        repo_relative_path,
+        diff.as_ref(),
+        None,
+    )
+}
+
+#[test]
+fn apply_file_delta_ignored_when_not_loaded() {
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(|_ctx| {
+            RemoteDiffStateModel::new_for_test_folding(
+                DiffMode::Head,
+                InternalRemoteDiffState::Loading,
+                None,
+            )
+        });
+        let delta = file_delta("src/main.rs", Some(simple_file_diff("src/main.rs")));
+        handle.update(&mut app, |m, ctx| m.apply_file_delta(&delta, ctx));
+        assert!(matches!(
+            handle.read(&app, |m, _| m.get()),
+            DiffState::Loading
+        ));
+    });
+}
+
+#[test]
+fn apply_file_delta_adds_file() {
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(|_ctx| {
+            RemoteDiffStateModel::new_for_test_folding(
+                DiffMode::Head,
+                InternalRemoteDiffState::Loaded(GitDiffData {
+                    files: vec![],
+                    total_additions: 0,
+                    total_deletions: 0,
+                    files_changed: 0,
+                }),
+                None,
+            )
+        });
+        let delta = file_delta("src/new.rs", Some(simple_file_diff("src/new.rs")));
+        handle.update(&mut app, |m, ctx| m.apply_file_delta(&delta, ctx));
+        assert!(matches!(handle.read(&app, |m, _| m.get()), DiffState::Loaded(_)));
+    });
+}
+
+#[test]
+fn apply_file_delta_preserves_repo_relative_file_path() {
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(|_ctx| {
+            RemoteDiffStateModel::new_for_test_folding(
+                DiffMode::Head,
+                InternalRemoteDiffState::Loaded(GitDiffData {
+                    files: vec![],
+                    total_additions: 0,
+                    total_deletions: 0,
+                    files_changed: 0,
+                }),
+                None,
+            )
+        });
+        let delta = file_delta("src/new.rs", Some(simple_file_diff("src/new.rs")));
+        handle.update(&mut app, |m, ctx| m.apply_file_delta(&delta, ctx));
+        handle.read(&app, |m, _| {
+            let InternalRemoteDiffState::Loaded(diffs) = &m.state else {
+                panic!("state should be Loaded");
+            };
+            assert_eq!(diffs.files.len(), 1);
+            assert_eq!(diffs.files[0].file_path, PathBuf::from("src/new.rs"));
+        });
+    });
+}
+
+#[test]
+fn apply_file_delta_emits_event_with_repo_relative_path() {
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(|_ctx| {
+            RemoteDiffStateModel::new_for_test_folding(
+                DiffMode::Head,
+                InternalRemoteDiffState::Loaded(GitDiffData {
+                    files: vec![],
+                    total_additions: 0,
+                    total_deletions: 0,
+                    files_changed: 0,
+                }),
+                None,
+            )
+        });
+        let emitted_paths = Arc::new(Mutex::new(Vec::new()));
+        {
+            let emitted_paths = emitted_paths.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_model(&handle, move |_, event, _| {
+                    if let DiffStateModelEvent::DiffMetadataChanged(
+                        crate::code_review::diff_state::InvalidationBehavior::Files(paths),
+                    ) = event
+                    {
+                        emitted_paths
+                            .lock()
+                            .expect("emitted paths mutex should not be poisoned")
+                            .extend(paths.iter().cloned());
+                    }
+                });
+            });
+        }
+
+        let delta = file_delta("src/new.rs", Some(simple_file_diff("src/new.rs")));
+        handle.update(&mut app, |m, ctx| m.apply_file_delta(&delta, ctx));
+
+        assert_eq!(
+            emitted_paths
+                .lock()
+                .expect("emitted paths mutex should not be poisoned")
+                .as_slice(),
+            &[PathBuf::from("src/new.rs")]
+        );
+    });
+}
+
+#[test]
+fn apply_file_delta_none_removes_file() {
+    warpui::App::test((), |mut app| async move {
+        let existing = GitDiffData {
+            files: vec![simple_file_diff("src/old.rs")],
+            total_additions: 0,
+            total_deletions: 0,
+            files_changed: 1,
+        };
+        let handle = app.add_model(|_ctx| {
+            RemoteDiffStateModel::new_for_test_folding(
+                DiffMode::Head,
+                InternalRemoteDiffState::Loaded(existing),
+                None,
+            )
+        });
+        let delta = file_delta("src/old.rs", None);
+        handle.update(&mut app, |m, ctx| m.apply_file_delta(&delta, ctx));
+        handle.read(&app, |m, _| {
+            let InternalRemoteDiffState::Loaded(diffs) = &m.state else {
+                panic!("state should remain loaded");
+            };
+            assert!(diffs.files.is_empty());
+            assert_eq!(diffs.files_changed, 0);
+        });
+    });
+}
+
 #[test]
 fn read_api_with_metadata() {
     let m = RemoteDiffStateModel::new_for_test_folding(
@@ -789,13 +958,6 @@ fn empty_branch_names_become_none() {
 
 #[test]
 fn host_disconnected_for_matching_host_transitions_to_disconnected() {
-    // Adapted from the pin's `mark_disconnected_transitions_state_and_emits_
-    // connection_lost`: the fork has no dedicated `mark_disconnected` method
-    // and no `ConnectionLost` event (`DiffStateModelEvent` carries no such
-    // variant) — `handle_manager_event` sets the internal state inline with
-    // no signal to subscribers. See the filed feature-gap issue for the
-    // missing reconnect-banner signal; this test covers the state
-    // transition that does happen.
     warpui::App::test((), |mut app| async move {
         let handle = app.add_model(|_ctx| {
             RemoteDiffStateModel::new_for_test_folding(
@@ -813,6 +975,59 @@ fn host_disconnected_for_matching_host_transitions_to_disconnected() {
         handle.read(&app, |m, _| {
             assert!(matches!(m.state, InternalRemoteDiffState::Disconnected));
         });
+    });
+}
+
+#[test]
+fn mark_disconnected_transitions_state_and_emits_connection_lost() {
+    // Ported from the pin's `mark_disconnected_transitions_state_and_emits_
+    // connection_lost` (`diff_state/remote_tests.rs`, 02b53fcd8). Previously the
+    // fork had no dedicated `mark_disconnected` method and no `ConnectionLost`
+    // event — `handle_manager_event` set the internal state inline with no
+    // signal to subscribers, and a second `HostDisconnected` for an
+    // already-disconnected model would have re-signaled on every push.
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(|_ctx| {
+            RemoteDiffStateModel::new_for_test_folding(
+                DiffMode::Head,
+                InternalRemoteDiffState::Loading,
+                None,
+            )
+        });
+
+        let connection_lost_count = Arc::new(Mutex::new(0u32));
+        {
+            let connection_lost_count = connection_lost_count.clone();
+            app.update(|ctx| {
+                ctx.subscribe_to_model(&handle, move |_, event, _| {
+                    if matches!(event, DiffStateModelEvent::ConnectionLost) {
+                        *connection_lost_count
+                            .lock()
+                            .expect("connection lost count mutex should not be poisoned") += 1;
+                    }
+                });
+            });
+        }
+
+        handle.update(&mut app, |m, ctx| m.mark_disconnected(ctx));
+        handle.read(&app, |m, _| {
+            assert!(matches!(m.state, InternalRemoteDiffState::Disconnected));
+        });
+        assert_eq!(
+            *connection_lost_count
+                .lock()
+                .expect("connection lost count mutex should not be poisoned"),
+            1
+        );
+
+        // Idempotent: a second call should not re-emit ConnectionLost.
+        handle.update(&mut app, |m, ctx| m.mark_disconnected(ctx));
+        assert_eq!(
+            *connection_lost_count
+                .lock()
+                .expect("connection lost count mutex should not be poisoned"),
+            1
+        );
     });
 }
 

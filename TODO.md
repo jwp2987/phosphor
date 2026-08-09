@@ -100,6 +100,38 @@ immediately rather than batching. Verified intact afterwards: 1,339 lines across
 two commits. **Lesson: commit early even under a batch-build rule — the batch rule
 defers the BUILD, not the commit.**
 
+## LANDED 2026-08-09 — tier 2 batch COMPLETE (#353, #388, #487 SSH arm)
+
+Local main = `a1f121ad6`. `precheck: ok` — **5660 + 565 + 2178 = 8,403 tests, 0 failures.**
+Six pieces + 5 compile fixes. Closed: **#353, #388**. #487's SSH arm delivered.
+
+Landed: `BundledSkills` (per-host catalogs), the `skill_manager.rs` MERGE with the
+fork-original inventory feature preserved, `parsed_skill_for_common_locations` with
+mixed-host refusal, `RemoteAgentContext` client reconciliation, the #353 daemon
+producer + `ai/skills/remote.rs`, and #388's three real sub-items.
+
+**Two severe bugs found only by doing the work:**
+- `handle_skills_added` silently dropped EVERY remote skill via a `to_local_path()`
+  guard — the remote path would have been built then discarded at the last step.
+- The daemon never registered `SkillManager`/`WarpManagedPathsWatcher`/
+  `HomeDirectoryWatcher` at all, so the #353 producer would have **panicked the
+  daemon on startup**. Not testable without running the daemon; found by reasoning
+  through the registration chain.
+
+**The dual-HostId trap bit again** (`warp_core::HostId` vs `warp_util::host_id::HostId`
+— distinct here, same type in the pin). Second time tonight in this subsystem. Only
+the compiler catches it; bridge with `code::buffer_location::core_host_id_to_util`.
+
+**#353 ships DEGRADED until #440 + `remote_context_files`:** the daemon's catalog is
+empty without `daemon_bundled_resources_dir()`, so the snapshot carries `home_dir`
+but no skills and no global rules. Both are in the next batch.
+
+**Build infrastructure note:** two prechecks died mid-`cargo check` with 37G free and
+`/tmp` at 12% — NOT resource pressure. Cause is the harness's 600s cap killing the
+background process group. Fix: launch detached (`nohup setsid ... & disown`) and poll
+the log with an `until` loop. A killed run can also report "exit code 0" — **read the
+log, never trust the exit code.**
+
 ## AGREED QUEUE 2026-08-09 (maintainer)
 
 Order: **#440**, then **#381 → #382 → #236**. One sonnet agent per batch, coordinator

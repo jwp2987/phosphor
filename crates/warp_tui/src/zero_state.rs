@@ -491,12 +491,8 @@ fn render_project_context_body(
     }
 
     let cwd_path = LocalOrRemotePath::Local(PathBuf::from(cwd));
-    let cwd_local_path = match &cwd_path {
-        LocalOrRemotePath::Local(path) => Some(path.as_path()),
-        LocalOrRemotePath::Remote(_) => None,
-    };
     let project_skill_count = SkillManager::as_ref(app)
-        .get_skills_for_working_directory(cwd_local_path, app)
+        .get_skills_for_working_directory(Some(&cwd_path), app)
         .iter()
         .filter(|skill| skill.is_project_skill())
         .count();

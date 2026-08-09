@@ -1,15 +1,15 @@
 use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope};
+use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::App;
 
 use super::*;
 
-// The pin's `bundled_tests.rs` (`02b53fcd8`) has exactly two tests, neither of which
-// survives the port — see `bundled.rs`'s module doc comment for the remote-arm decision:
+// The pin's `bundled_tests.rs` (`02b53fcd8`) has exactly two tests:
 //
-// - `local_and_remote_catalogs_are_isolated` — exercises the pin's `BundledSkills`
-//   local/remote-host multiplexing. Dropped along with that wrapper (no remote-skill
-//   daemon here).
+// - `local_and_remote_catalogs_are_isolated` — exercises `BundledSkills`'
+//   local/remote-host multiplexing. Ported below now that the SSH arm is built
+//   (see `bundled.rs`'s module doc comment).
 // - `unavailable_bundled_context_path_renders_as_empty_string` — exercises
 //   `display_optional_path`, a helper that only exists because the pin's
 //   `build_bundled_skill_context` has `Option<PathBuf>`-typed GUI/TUI config-dir
@@ -18,8 +18,8 @@ use super::*;
 //   same reason `build_bundled_skill_context` here stays at its current (fork-original,
 //   already-tested) variable set.
 //
-// In their place, this adds direct coverage of the `BundledSkill` catalog surface
-// extracted out of `skill_manager.rs` by this port — previously only exercised
+// The rest of this file adds direct coverage of the `BundledSkill` catalog surface
+// extracted out of `skill_manager.rs` by an earlier port — previously only exercised
 // indirectly through `SkillManager`.
 
 fn test_skill(id: &str) -> ParsedSkill {
@@ -65,7 +65,7 @@ fn active_descriptors_includes_only_enabled_definitions() {
 fn reference_for_path_resolves_to_bundled_skill_id() {
     let mut bundled = BundledSkill::default();
     let skill = test_skill("modify-settings");
-    let path = skill.path.to_local_path().unwrap().to_path_buf();
+    let path = skill.path.clone();
     bundled.insert_for_testing("modify-settings", skill, BundledSkillActivation::Always);
 
     assert_eq!(
@@ -75,7 +75,9 @@ fn reference_for_path_resolves_to_bundled_skill_id() {
         ))
     );
     assert_eq!(
-        bundled.reference_for_path(std::path::Path::new("/not/a/bundled/skill/SKILL.md")),
+        bundled.reference_for_path(&LocalOrRemotePath::Local(
+            "/not/a/bundled/skill/SKILL.md".into()
+        )),
         None
     );
 }
@@ -119,4 +121,78 @@ fn iter_yields_every_definition_regardless_of_activation() {
     let mut ids: Vec<&str> = bundled.iter().map(|(id, _)| id).collect();
     ids.sort_unstable();
     assert_eq!(ids, vec!["one", "two"]);
+}
+
+fn bundled_skill_with_content(content: &str) -> BundledSkill {
+    let mut bundled_skill = BundledSkill::default();
+    bundled_skill.insert_for_testing(
+        "test-skill",
+        ParsedSkill {
+            name: "test-skill".to_string(),
+            description: "Test skill".to_string(),
+            path: LocalOrRemotePath::Local("/bundled/skills/test-skill/SKILL.md".into()),
+            content: content.to_string(),
+            line_range: None,
+            provider: SkillProvider::Zap,
+            scope: SkillScope::Bundled,
+        },
+        BundledSkillActivation::Always,
+    );
+    bundled_skill
+}
+
+fn remote_content<'a>(bundled_skills: &'a BundledSkills, host_id: &HostId) -> Option<&'a str> {
+    bundled_skills
+        .remote(host_id)?
+        .skill("test-skill")
+        .map(|skill| skill.content.as_str())
+}
+
+#[test]
+fn local_and_remote_catalogs_are_isolated() {
+    let first_host_id = HostId::new("first-host".to_string());
+    let second_host_id = HostId::new("second-host".to_string());
+    let mut bundled_skills = BundledSkills::default();
+    bundled_skills.set_local(bundled_skill_with_content("local"));
+    bundled_skills.insert_remote(first_host_id.clone(), bundled_skill_with_content("first"));
+    bundled_skills.insert_remote(second_host_id.clone(), bundled_skill_with_content("second"));
+
+    assert_eq!(
+        bundled_skills
+            .local_skill("test-skill")
+            .map(|skill| skill.content.as_str()),
+        Some("local")
+    );
+    assert_eq!(
+        remote_content(&bundled_skills, &first_host_id),
+        Some("first")
+    );
+    assert_eq!(
+        remote_content(&bundled_skills, &second_host_id),
+        Some("second")
+    );
+
+    // A reconnect refresh replaces the host's catalog wholesale.
+    bundled_skills.insert_remote(
+        first_host_id.clone(),
+        bundled_skill_with_content("first-refreshed"),
+    );
+    assert_eq!(
+        remote_content(&bundled_skills, &first_host_id),
+        Some("first-refreshed")
+    );
+
+    // Disconnecting one host leaves the local and sibling-host catalogs intact.
+    bundled_skills.remove_remote(&first_host_id);
+    assert_eq!(
+        bundled_skills
+            .local_skill("test-skill")
+            .map(|skill| skill.content.as_str()),
+        Some("local")
+    );
+    assert_eq!(remote_content(&bundled_skills, &first_host_id), None);
+    assert_eq!(
+        remote_content(&bundled_skills, &second_host_id),
+        Some("second")
+    );
 }

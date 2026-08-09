@@ -260,6 +260,26 @@ pub(super) fn git_diff_data_to_proto(data: &GitDiffData) -> proto::GitDiffData {
     }
 }
 
+/// Like [`git_diff_data_to_proto`], but threads each file's base content through
+/// instead of always dropping it. Use this whenever the caller already has a
+/// [`GitDiffWithBaseContent`] in hand (issue #388 item 4) — `git_diff_data_to_proto`'s
+/// unconditional `None` is only correct for callers that never had content to begin
+/// with (e.g. re-encoding a decoded proto, or a synthetic error/empty snapshot).
+pub(super) fn git_diff_with_base_content_to_proto(
+    data: &GitDiffWithBaseContent,
+) -> proto::GitDiffData {
+    proto::GitDiffData {
+        files: data
+            .files
+            .iter()
+            .map(|f| file_diff_to_proto(&f.file_diff, f.content_at_head.clone()))
+            .collect(),
+        total_additions: data.total_additions as u64,
+        total_deletions: data.total_deletions as u64,
+        files_changed: data.files_changed as u64,
+    }
+}
+
 pub(super) fn proto_to_git_diff_data(data: &proto::GitDiffData) -> GitDiffData {
     GitDiffData {
         files: data
@@ -630,6 +650,45 @@ pub(crate) fn snapshot_from_parts(
             &DiffState::NotInRepository,
             &DiffMetadata::default(),
         ),
+    }
+}
+
+/// Like [`snapshot_from_parts`], but takes the content-carrying
+/// [`GitDiffWithBaseContent`] so `content_at_base` reaches the wire (issue #388 item
+/// 4) instead of being unconditionally dropped. Used by
+/// `ServerModel::handle_get_diff_state` / `spawn_push_diff_state_snapshot`
+/// (`app/src/remote_server/server_model.rs`), paired with
+/// `LocalDiffStateModel::load_diff_with_base_content_for_mode`.
+pub(crate) fn snapshot_from_parts_with_base_content(
+    repo_path: String,
+    mode: &DiffMode,
+    metadata: Option<DiffMetadata>,
+    diff_data: Option<GitDiffWithBaseContent>,
+) -> proto::DiffStateSnapshot {
+    let Some(metadata) = metadata else {
+        return build_snapshot(
+            repo_path,
+            mode,
+            &DiffState::NotInRepository,
+            &DiffMetadata::default(),
+        );
+    };
+    let Some(data) = diff_data else {
+        return build_snapshot(
+            repo_path,
+            mode,
+            &DiffState::Error("Failed to compute diff".to_string()),
+            &metadata,
+        );
+    };
+    let diffs_proto = git_diff_with_base_content_to_proto(&data);
+    let state = DiffState::Loaded(data.into());
+    proto::DiffStateSnapshot {
+        repo_path,
+        mode: Some(diff_mode_to_proto(mode)),
+        metadata: Some(diff_metadata_to_proto(&metadata)),
+        state: Some(diff_state_to_proto(&state)),
+        diffs: Some(diffs_proto),
     }
 }
 
