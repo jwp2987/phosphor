@@ -55,6 +55,13 @@ pub(crate) enum PillBarActionKind {
     Switch,
     OpenInNewPane,
     OpenInNewTab,
+    // No `ViewInOz` variant: the pin's "View in Oz" menu item opens a
+    // Warp-cloud web URL (`{oz_root_url}/runs/{run_id}`) to view the run
+    // online. `oz_root_url` doesn't exist in this fork -- there is no cloud
+    // web app for a BYOP-local run to be viewed in -- so the menu item (and
+    // its telemetry kind) is dropped entirely rather than gated on a URL
+    // that can never resolve. See `orchestration_pill_bar.rs`'s
+    // `open_menu_for` for the corresponding menu-item omission.
     /// User picked "Focus pane" from a pill's 3-dot menu. Distinct
     /// from a pill-body click that resolves to the same outcome
     /// (those are `Switch` with `switch_outcome = focused_existing_pane`).
@@ -63,7 +70,6 @@ pub(crate) enum PillBarActionKind {
     Kill,
     TogglePinOn,
     TogglePinOff,
-    ViewInOz,
     OpenMenu,
 }
 

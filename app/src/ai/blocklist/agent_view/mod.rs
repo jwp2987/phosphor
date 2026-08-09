@@ -10,7 +10,8 @@ mod inline_agent_view_header;
 pub(crate) mod orchestration_avatar;
 // TODO: Move orchestration_conversation_links module import elsewhere.
 pub(crate) mod orchestration_conversation_links;
-pub(crate) mod orchestration_pill_bar_model;
+pub mod orchestration_pill_bar;
+pub mod orchestration_pill_bar_model;
 pub mod shortcuts;
 mod zero_state_block;
 
@@ -20,6 +21,7 @@ pub use agent_view_block::*;
 pub use controller::*;
 pub use ephemeral_message_model::*;
 pub use inline_agent_view_header::*;
+pub use orchestration_pill_bar::{render_orchestration_breadcrumbs, OrchestrationPillBar};
 use warpui::fonts::Properties;
 pub use zero_state_block::*;
 
