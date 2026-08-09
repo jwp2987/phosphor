@@ -410,10 +410,12 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
 - [ ] #431 no lazy metadata-only conversation read + summary backfill. Fork reads
       eagerly on every startup path (`sqlite.rs:3347`). 4 pinned tests. Real perf
       AND correctness gap.
-- [ ] #217 Zap -> Phosphor rename incomplete: **361** `"Zap"` Rust literals on main
-      (issue said 357; drift, not error). Fork-internal, no pin comparison applies.
-      NOTE: renaming risks breaking persisted keybindings — see the open
-      `zapctrl` vs `warpctrl` maintainer decision.
+- [x] #217 CLOSED 2026-08-09 by maintainer decision. Verified REAL first (361 `"Zap"`
+      literals on main; every cited example still present), so this is a deliberate
+      leave-it, not a false premise. Renaming touches persisted keybinding names and
+      settings keys, where a wrong move silently breaks existing users' configs, and
+      the `zapctrl` vs `warpctrl` naming decision is still open. If revisited: 19 of
+      the 361 are user-facing, the rest internal — that subset is the low-risk cut.
 - [ ] #254 NARROWED to two items: `Input::unfreeze_agent_input` (pin
       `input.rs:7625`) and `CommandExecutionSource::SharedSession`'s `preserve_input`
       field. Items b/c are already ported (`input.rs:2037,2064`) via #399.
