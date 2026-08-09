@@ -3,26 +3,32 @@
 //! Ported from the pinned oracle's `ai/skills/bundled.rs` (`02b53fcd8`), extracted out
 //! of `skill_manager.rs` where this logic previously lived inline.
 //!
-//! This fork's own daemon (`remote_server`, Phosphor-local, not cloud) *does* serialize
-//! this catalog outward to connected SSH clients — see `ai::skills::remote::
-//! bundled_skill_snapshot_protos`, the producer for issue #353. What this fork does not
-//! build is the *client-side* aggregation of several remote hosts' catalogs: the pin's
-//! `BundledSkills` wrapper multiplexes a local catalog against per-connected-host
-//! catalogs keyed by `HostId` (`SkillPathOrigin`-based dispatch over `LocalOrRemotePath`).
-//! That multi-host client catalog is dropped (#487/#11: "drop the client aggregating
-//! catalogs from multiple remote hosts"). `BundledSkill` here is the whole catalog on
-//! whichever host it runs on — client or daemon — there is only ever "the local host's".
+//! [`BundledSkills`] (plural) multiplexes a local catalog against per-connected-host
+//! catalogs keyed by [`HostId`], dispatching on `SkillPathOrigin` — the client-side
+//! aggregation the pin's own `BundledSkills` provides. This *is* built here: the SSH
+//! remote arm was un-dropped (#487's reversal, 2026-08-08) once #353's daemon producer
+//! and `ai::skills::remote::bundled_skill_snapshot_protos` were approved, so a
+//! connected remote host's bundled catalog is consumed client-side via
+//! `app::ai::remote_agent_context::RemoteAgentContext` and stored per-`HostId` here.
+//! [`BundledSkill`] (singular) remains the per-host inner catalog — whichever host a
+//! given instance describes, local (this app's own `resources/bundled/`) or remote (a
+//! connected daemon's, reconstructed client-side from its snapshot via
+//! [`BundledSkill::from_definitions`], or read directly daemon-side via
+//! [`BundledSkill::detect_in_resources_dir`]).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ai::skills::{parse_bundled_skill, ParsedSkill, SkillReference};
+use ai::skills::{parse_bundled_skill, ParsedSkill, SkillPathOrigin, SkillReference};
 use futures::TryStreamExt;
 use warp_core::channel::ChannelState;
 use warp_core::execution_mode::AppExecutionMode;
 use warp_core::features::FeatureFlag;
 use warp_core::ui::icons::Icon;
 use warp_core::{report_error, safe_warn};
+use warp_util::host_id::HostId;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
 use warpui::{AppContext, SingletonEntity};
 
 use super::SkillDescriptor;
@@ -61,6 +67,140 @@ impl BundledSkillActivation {
     }
 }
 
+/// Catalogs of bundled skills for the local host and connected remote hosts.
+///
+/// Ported from the pin's `ai/skills/bundled.rs::BundledSkills` (`02b53fcd8`). Populated
+/// client-side by `RemoteAgentContext::reconcile_snapshot`
+/// (`app/src/ai/remote_agent_context.rs`), which calls [`Self::insert_remote`] /
+/// [`Self::remove_remote`] as `RemoteAgentContextSnapshot`s arrive and hosts
+/// disconnect.
+#[derive(Debug, Default)]
+pub struct BundledSkills {
+    local: BundledSkill,
+    remote_by_host: HashMap<HostId, BundledSkill>,
+}
+
+impl BundledSkills {
+    pub fn set_local(&mut self, bundled_skill: BundledSkill) {
+        self.local = bundled_skill;
+    }
+
+    pub fn active_descriptors(
+        &self,
+        path_origin: &SkillPathOrigin,
+        ctx: &AppContext,
+    ) -> Vec<SkillDescriptor> {
+        match path_origin {
+            SkillPathOrigin::Local | SkillPathOrigin::RestoredDisplayOnly => {
+                self.local.active_descriptors(ctx)
+            }
+            SkillPathOrigin::Remote { host_id } => self
+                .remote(host_id)
+                .map(|bundled_skill| bundled_skill.active_path_referenced_descriptors(ctx))
+                .unwrap_or_default(),
+            SkillPathOrigin::Unavailable => Vec::new(),
+        }
+    }
+
+    pub fn reference_for_path(&self, path: &LocalOrRemotePath) -> Option<SkillReference> {
+        self.local.reference_for_path(path)
+    }
+
+    pub fn local_skill(&self, id: &str) -> Option<&ParsedSkill> {
+        self.local.skill(id)
+    }
+
+    /// Iterates the local catalog's `(id, skill)` pairs, regardless of activation.
+    ///
+    /// Fork-original (not in the pin): backs `SkillManager::find_skill_by_name`'s
+    /// bundled-skill name fallback, which — like [`Self::active_skill`] without an
+    /// explicit remote origin — only ever resolves against the local catalog.
+    pub(crate) fn local_definitions(&self) -> impl Iterator<Item = (&str, &ParsedSkill)> {
+        self.local.iter()
+    }
+
+    pub fn active_skill(
+        &self,
+        id: &str,
+        path_origin: &SkillPathOrigin,
+        ctx: &AppContext,
+    ) -> Option<&ParsedSkill> {
+        self.for_path_origin(path_origin)?.active_skill(id, ctx)
+    }
+
+    /// Installs the catalog for a connected remote host, replacing any
+    /// previous catalog from an earlier connection.
+    pub fn insert_remote(&mut self, host_id: HostId, bundled_skill: BundledSkill) {
+        self.remote_by_host.insert(host_id, bundled_skill);
+    }
+
+    /// Removes all catalog state for a disconnected remote host.
+    pub fn remove_remote(&mut self, host_id: &HostId) {
+        self.remote_by_host.remove(host_id);
+    }
+
+    /// Returns the catalog for a connected remote host.
+    pub fn remote(&self, host_id: &HostId) -> Option<&BundledSkill> {
+        self.remote_by_host.get(host_id)
+    }
+
+    /// Returns the remote catalog skill matching `path`, looked up in the
+    /// catalog of the host that owns the path. Remote bundled skills are
+    /// addressed by path (their paths are real files on the remote host),
+    /// unlike local bundled skills which are addressed by
+    /// [`SkillReference::BundledSkillId`].
+    pub fn remote_skill_by_path(&self, path: &RemotePath) -> Option<&ParsedSkill> {
+        self.remote_by_host
+            .get(&path.host_id)?
+            .skill_by_path(&LocalOrRemotePath::Remote(path.clone()))
+    }
+
+    /// Like [`Self::remote_skill_by_path`], but only returns the skill when
+    /// its activation condition is met.
+    pub fn remote_active_skill_by_path(
+        &self,
+        path: &RemotePath,
+        ctx: &AppContext,
+    ) -> Option<&ParsedSkill> {
+        self.remote_by_host
+            .get(&path.host_id)?
+            .active_skill_by_path(&LocalOrRemotePath::Remote(path.clone()), ctx)
+    }
+
+    /// Returns the bundled catalog selected by the execution path origin.
+    fn for_path_origin(&self, path_origin: &SkillPathOrigin) -> Option<&BundledSkill> {
+        match path_origin {
+            SkillPathOrigin::Local | SkillPathOrigin::RestoredDisplayOnly => Some(&self.local),
+            SkillPathOrigin::Remote { host_id } => self.remote(host_id),
+            SkillPathOrigin::Unavailable => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn insert_local_for_testing(
+        &mut self,
+        id: impl Into<String>,
+        skill: ParsedSkill,
+        activation: BundledSkillActivation,
+    ) {
+        self.local.insert_for_testing(id, skill, activation);
+    }
+
+    #[cfg(test)]
+    pub fn insert_remote_for_testing(
+        &mut self,
+        host_id: HostId,
+        id: impl Into<String>,
+        skill: ParsedSkill,
+        activation: BundledSkillActivation,
+    ) {
+        self.remote_by_host
+            .entry(host_id)
+            .or_default()
+            .insert_for_testing(id, skill, activation);
+    }
+}
+
 /// One bundled skill definition with its activation condition and icon.
 #[derive(Debug, Clone)]
 struct BundledSkillDefinition {
@@ -69,10 +209,10 @@ struct BundledSkillDefinition {
     icon: Icon,
 }
 
-/// Skills bundled into the app.
-///
-/// Unlike the pin's `BundledSkills`, this *is* the whole catalog — there is no
-/// per-remote-host split. See the module doc comment.
+/// Skills bundled with the app for a single host: the local host when read from this
+/// app's own `resources/bundled/`, or a connected remote host when read by its daemon
+/// (`detect_in_resources_dir`, #353) and reconstructed client-side from its snapshot
+/// (`BundledSkill::from_definitions`).
 #[derive(Debug, Default)]
 pub struct BundledSkill {
     definitions: HashMap<String, BundledSkillDefinition>,
@@ -84,6 +224,17 @@ impl BundledSkill {
         let Some(resources_dir) = warp_core::paths::bundled_resources_dir() else {
             return Self::default();
         };
+        Self::detect_in_resources_dir(resources_dir).await
+    }
+
+    /// Detect all skill definitions under the given resources root on the local
+    /// filesystem, rendering skill content against this host.
+    ///
+    /// Called directly by the remote-server daemon (`app/src/remote_server/
+    /// server_model.rs`), whose resources live at the global install location
+    /// rather than inside an app bundle (which is what
+    /// [`warp_core::paths::bundled_resources_dir`] resolves).
+    pub(crate) async fn detect_in_resources_dir(resources_dir: PathBuf) -> Self {
         let (mut definitions, figma_definitions) = futures::join!(
             load_bundled_skill_definitions(&resources_dir),
             load_figma_skill_definitions(&resources_dir)
@@ -103,15 +254,36 @@ impl BundledSkill {
             .collect()
     }
 
+    /// Returns descriptors for bundled skills whose activation conditions are
+    /// met, referenced by their `SKILL.md` paths instead of
+    /// [`SkillReference::BundledSkillId`].
+    ///
+    /// Used for remote-host catalogs: a `BundledSkillId` reference resolves
+    /// against the local catalog, so descriptors listed from a remote catalog
+    /// must carry the skill's real remote path — which resolves back to this
+    /// catalog through the path lookups — or invoking a listed skill would
+    /// serve the local client's content.
+    pub fn active_path_referenced_descriptors(&self, ctx: &AppContext) -> Vec<SkillDescriptor> {
+        self.definitions
+            .values()
+            .filter(|definition| definition.activation.is_enabled(ctx))
+            .map(|definition| {
+                let mut descriptor = SkillDescriptor::from(definition.skill.clone());
+                descriptor.icon_override = Some(definition.icon);
+                descriptor
+            })
+            .collect()
+    }
+
     /// Returns a bundled skill reference when the path belongs to a bundled skill.
-    pub fn reference_for_path(&self, path: &Path) -> Option<SkillReference> {
+    pub fn reference_for_path(&self, path: &LocalOrRemotePath) -> Option<SkillReference> {
         self.definitions
             .iter()
-            .find(|(_, definition)| definition.skill.path.to_local_path() == Some(path))
+            .find(|(_, definition)| definition.skill.path == *path)
             .map(|(id, _)| SkillReference::BundledSkillId(id.clone()))
     }
 
-    /// Returns a bundled skill definition by ID, regardless of activation.
+    /// Returns a bundled skill definition by ID.
     pub fn skill(&self, id: &str) -> Option<&ParsedSkill> {
         self.definitions.get(id).map(|definition| &definition.skill)
     }
@@ -123,6 +295,28 @@ impl BundledSkill {
             .activation
             .is_enabled(ctx)
             .then_some(&definition.skill)
+    }
+
+    /// Returns a bundled skill by its `SKILL.md` path.
+    pub fn skill_by_path(&self, path: &LocalOrRemotePath) -> Option<&ParsedSkill> {
+        self.definitions
+            .values()
+            .map(|definition| &definition.skill)
+            .find(|skill| skill.path == *path)
+    }
+
+    /// Returns a bundled skill by its `SKILL.md` path only if its activation
+    /// condition is met.
+    pub fn active_skill_by_path(
+        &self,
+        path: &LocalOrRemotePath,
+        ctx: &AppContext,
+    ) -> Option<&ParsedSkill> {
+        self.definitions
+            .values()
+            .find(|definition| definition.skill.path == *path)
+            .filter(|definition| definition.activation.is_enabled(ctx))
+            .map(|definition| &definition.skill)
     }
 
     /// Iterates every bundled skill definition as `(id, skill)`, regardless of
@@ -145,14 +339,10 @@ impl BundledSkill {
             .map(|(id, definition)| (id.as_str(), &definition.skill, &definition.activation))
     }
 
-    /// Builds a catalog from pre-parsed definitions.
-    ///
-    /// In the pin this also backs the client's reconstruction of a *remote* host's
-    /// bundled catalog from its daemon snapshot — this fork does not build that
-    /// client-side multi-host aggregation (see the module doc comment), so the only
-    /// caller here is `remote_tests.rs`, exercising `bundled_skill_snapshot_protos`'s
-    /// daemon-side serialization the other direction.
-    #[cfg(test)]
+    /// Builds a catalog from pre-parsed definitions. Used for catalogs received from a
+    /// connected remote host's daemon (`app::ai::remote_agent_context::
+    /// bundled_skill_from_protos`, reconstructing the wire snapshot client-side), which
+    /// parses and renders the skills against its own filesystem.
     pub(crate) fn from_definitions(
         definitions: impl IntoIterator<Item = (String, ParsedSkill, BundledSkillActivation)>,
     ) -> Self {
