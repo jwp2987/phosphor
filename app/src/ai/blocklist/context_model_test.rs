@@ -37,7 +37,7 @@ use crate::terminal::model::test_utils::block_size;
 use crate::terminal::model::{BlockId, TerminalModel};
 use crate::terminal::view::ambient_agent::AmbientAgentViewModel;
 #[cfg(feature = "local_fs")]
-use crate::ai::agent::AIAgentContext;
+use crate::ai::agent::{AIAgentContext, AnyFileContent, FileContext};
 #[cfg(feature = "local_fs")]
 use crate::code_review::git_status_update::GitRepoStatusModel;
 #[cfg(feature = "local_fs")]
@@ -735,4 +735,74 @@ fn pull_request_context_from_pr_info_rejects_numbers_that_do_not_fit_agent_conte
         BlocklistAIContextModel::pull_request_context_from_pr_info(&pr_info),
         None
     );
+}
+
+/// Proves a connected remote host's global rules reach agent context:
+/// `pending_context`'s `remote_host` argument is threaded all the way from
+/// `ProjectContextModel::remote_project_rules` into `AIAgentContext::ProjectRules`.
+/// Closes the gap `RemoteAgentContext`'s doc comment flagged — storage
+/// (`set_remote_global_rules`) previously had no consumer.
+#[cfg(feature = "local_fs")]
+#[test]
+fn pending_context_layers_remote_global_rules_for_remote_host() {
+    App::test((), |mut app| async move {
+        let project_context_model =
+            app.add_singleton_model(|_| ai::project_context::model::ProjectContextModel::default());
+        let host_id = warp_util::host_id::HostId::new("prod-1".to_owned());
+        project_context_model.update(&mut app, |model, _ctx| {
+            model.set_remote_global_rules(
+                host_id.clone(),
+                vec![ai::project_context::model::ProjectRule {
+                    path: std::path::PathBuf::from("/home/remote/.agents/AGENTS.md"),
+                    content: "remote agents content".to_owned(),
+                }],
+            );
+        });
+
+        let context_model = build_test_context_model(&mut app);
+
+        let context = context_model.read(&app, |model, ctx| {
+            model.pending_context(ctx, false, Some(&host_id))
+        });
+
+        let project_rules_entries: Vec<AIAgentContext> = context
+            .into_iter()
+            .filter(|entry| matches!(entry, AIAgentContext::ProjectRules { .. }))
+            .collect();
+        assert_eq!(
+            project_rules_entries,
+            vec![AIAgentContext::ProjectRules {
+                root_path: "/home/remote/.agents".to_owned(),
+                active_rules: vec![FileContext::new(
+                    "/home/remote/.agents/AGENTS.md".to_owned(),
+                    AnyFileContent::StringContent("remote agents content".to_owned()),
+                    None,
+                    None,
+                )],
+                additional_rule_paths: Vec::new(),
+            }]
+        );
+    });
+}
+
+/// With no remote host in scope, `pending_context` must not fall through to
+/// `ProjectContextModel::remote_project_rules` (there is nothing to layer for
+/// a purely local session, and the model's `directory_context.pwd` is `None`
+/// in this test fixture, so the local fast-path finds nothing either).
+#[cfg(feature = "local_fs")]
+#[test]
+fn pending_context_has_no_project_rules_without_remote_host_or_pwd() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| ai::project_context::model::ProjectContextModel::default());
+        let context_model = build_test_context_model(&mut app);
+
+        let context =
+            context_model.read(&app, |model, ctx| model.pending_context(ctx, false, None));
+
+        assert!(
+            !context
+                .iter()
+                .any(|entry| matches!(entry, AIAgentContext::ProjectRules { .. }))
+        );
+    });
 }

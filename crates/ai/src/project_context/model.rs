@@ -1063,6 +1063,43 @@ impl ProjectContextModel {
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
+
+    /// The remote-host counterpart to [`Self::find_rules_with_fast_path`]: builds a
+    /// `ProjectRulesResult` for a connected remote host, for `app/src/ai/blocklist/
+    /// context_model.rs::pending_context` to layer into `AIAgentContext::ProjectRules`
+    /// when the active session is that host. `None` when there is nothing to show
+    /// (no local global rules indexed, and nothing stored for `host_id`).
+    ///
+    /// Layers this client's own file-based global rules ([`Self::global_rules`],
+    /// e.g. this machine's `~/.agents/AGENTS.md`) ahead of `host_id`'s stored remote
+    /// global rules ([`Self::remote_global_rules`]) — same "local global rules apply
+    /// everywhere" precedent as the pin's `find_applicable_rules(&LocalOrRemotePath)`
+    /// (its `test_remote_global_rules_only_layer_for_matching_remote_host` asserts a
+    /// local-global entry appears for every host, matched-host remote entries appear
+    /// only for their own host, and content is fully isolated between hosts). Unlike
+    /// the local path, there is no per-host *project*-rule index to layer project-
+    /// scoped rules on top of (`path_to_rules` has no `HostId` dimension — see
+    /// `remote_global_rules`'s doc comment), so this never surfaces project-scoped
+    /// rules for a remote host, only global ones (local + that host's).
+    ///
+    /// `root_path` is synthesized as the parent of the first active rule's path,
+    /// matching `layer_global_rules`'s global-only fallback; a remote rule's raw wire
+    /// path is meaningful only in combination with `host_id`, not as a location on
+    /// this machine, but `root_path` here is display-only (it labels the rules in
+    /// `AIAgentContext::ProjectRules`, never used for further filesystem lookups).
+    pub fn remote_project_rules(&self, host_id: &HostId) -> Option<ProjectRulesResult> {
+        let mut active_rules: Vec<ProjectRule> = self.global_rules.active_rules().collect();
+        active_rules.extend(self.remote_global_rules(host_id).iter().cloned());
+        if active_rules.is_empty() {
+            return None;
+        }
+        let root_path = active_rules.first()?.path.parent()?.to_path_buf();
+        Some(ProjectRulesResult {
+            root_path,
+            active_rules,
+            additional_rule_paths: Vec::new(),
+        })
+    }
 }
 
 impl Entity for ProjectContextModel {

@@ -21171,10 +21171,25 @@ impl TerminalView {
             ctx,
         );
 
-        let context = self
-            .ai_context_model
+        // `Some` when the active session is a connected SSH host, so the code review's
+        // context also picks up that host's stored global rules — see
+        // `BlocklistAIContextModel::pending_context`'s doc comment.
+        let remote_host_id = self
+            .active_session
             .as_ref(ctx)
-            .pending_context(ctx, true /* is_user_query */);
+            .current_working_directory_location(ctx)
+            .and_then(|location| match location {
+                warp_util::local_or_remote_path::LocalOrRemotePath::Remote(remote) => {
+                    Some(remote.host_id)
+                }
+                warp_util::local_or_remote_path::LocalOrRemotePath::Local(_) => None,
+            });
+
+        let context = self.ai_context_model.as_ref(ctx).pending_context(
+            ctx,
+            true, /* is_user_query */
+            remote_host_id.as_ref(),
+        );
 
         let code_review_input = AIAgentInput::CodeReview {
             context: context.into(),
