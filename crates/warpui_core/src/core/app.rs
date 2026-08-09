@@ -4304,6 +4304,28 @@ impl AppContext {
                 self.windows
                     .get_mut(&window_id)
                     .and_then(|w| w.tui_views.insert(focused_id, focused));
+
+                let focus_ctx = FocusContext::DescendentFocused(focused_id);
+                // Ancestors of a TUI view live in `view_parents` (populated by the
+                // TUI presenter at render time), not the GUI presenter's tree.
+                // Skip the last entry, it is the focused view itself.
+                for view_id in self
+                    .view_ancestors(window_id, focused_id)
+                    .into_iter()
+                    .rev()
+                    .skip(1)
+                {
+                    if let Some(mut view) = self
+                        .windows
+                        .get_mut(&window_id)
+                        .and_then(|w| w.tui_views.remove(&view_id))
+                    {
+                        view.on_focus(&focus_ctx, self, window_id, view_id);
+                        self.windows
+                            .get_mut(&window_id)
+                            .and_then(|w| w.tui_views.insert(view_id, view));
+                    }
+                }
             }
         }
 
