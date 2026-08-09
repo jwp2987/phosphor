@@ -1,5 +1,6 @@
 use repo_metadata::repositories::DetectedRepositories;
 use repo_metadata::{DirectoryWatcher, RepoMetadataModel};
+use std::path::PathBuf;
 use warpui::App;
 use watcher::HomeDirectoryWatcher;
 
@@ -59,12 +60,10 @@ fn snapshot() -> RemoteAgentContextSnapshot {
             home_skill("/repo/.agents/skills/project/SKILL.md", "outside home"),
             home_skill("/home/user/not-a-skill.md", "unknown provider"),
         ],
-        // #353's producer serializes global rules unconditionally, but nothing
-        // client-side consumes them yet (see this module's doc comment) — kept
-        // populated here anyway so `snapshot_decoding_keeps_valid_context_from_
-        // each_source` documents that `parse_snapshot` ignores this field rather
-        // than erroring on it.
-        global_rules: vec![],
+        global_rules: vec![remote_server::proto::RemoteContextFileProto {
+            path: "/home/remote/.agents/AGENTS.md".to_string(),
+            content: "prefer 4-space indentation".to_string(),
+        }],
     }
 }
 
@@ -76,6 +75,10 @@ fn setup_context_models(app: &mut App) {
     app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
     app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
     app.add_singleton_model(SkillManager::new);
+    // #575: reconcile_snapshot/remove_host_context now also update
+    // ProjectContextModel's per-host remote_global_rules; it must be
+    // registered or those calls panic ("never registered").
+    app.add_singleton_model(|ctx| ProjectContextModel::new_from_persisted(Vec::new(), ctx));
 }
 
 #[test]
@@ -97,6 +100,14 @@ fn snapshot_decoding_keeps_valid_context_from_each_source() {
         assert_eq!(path.as_remote().unwrap().host_id, host_id);
         assert!(path.starts_with(&home.home_dir));
     }
+
+    // #575: global rules are plain (path, content) pairs, parsed unconditionally.
+    assert_eq!(state.global_rules.len(), 1);
+    assert_eq!(
+        state.global_rules[0].path,
+        PathBuf::from("/home/remote/.agents/AGENTS.md")
+    );
+    assert_eq!(state.global_rules[0].content, "prefer 4-space indentation");
 }
 
 #[test]
@@ -121,6 +132,7 @@ fn reconcile_snapshot_fully_replaces_all_host_context() {
     App::test((), |mut app| async move {
         setup_context_models(&mut app);
         let skills = SkillManager::handle(&app);
+        let project_context = ProjectContextModel::handle(&app);
         let context = app.add_singleton_model(|_| RemoteAgentContext);
 
         context.update(&mut app, |context, ctx| {
@@ -129,6 +141,13 @@ fn reconcile_snapshot_fully_replaces_all_host_context() {
         skills.read(&app, |manager, _| {
             assert!(manager.skill_by_path(&bundled_path).is_some());
             assert!(manager.skill_by_path(&home_path).is_some());
+        });
+        // #575: the snapshot's global rule made it all the way into
+        // ProjectContextModel's per-host remote storage.
+        project_context.read(&app, |model, _| {
+            let rules = model.remote_global_rules(&host_id);
+            assert_eq!(rules.len(), 1);
+            assert_eq!(rules[0].content, "prefer 4-space indentation");
         });
 
         context.update(&mut app, |context, ctx| {
@@ -147,6 +166,11 @@ fn reconcile_snapshot_fully_replaces_all_host_context() {
             assert!(manager.skill_by_path(&bundled_path).is_none());
             assert!(manager.skill_by_path(&home_path).is_none());
         });
+        // A replacement snapshot with no global rules fully replaces (not
+        // merges with) the previously-stored catalog.
+        project_context.read(&app, |model, _| {
+            assert!(model.remote_global_rules(&host_id).is_empty());
+        });
     });
 }
 
@@ -162,6 +186,7 @@ fn remove_host_context_clears_only_the_matching_host() {
     App::test((), |mut app| async move {
         setup_context_models(&mut app);
         let skills = SkillManager::handle(&app);
+        let project_context = ProjectContextModel::handle(&app);
         let context = app.add_singleton_model(|_| RemoteAgentContext);
 
         for host_id in [&first_host, &second_host] {
@@ -176,6 +201,12 @@ fn remove_host_context_clears_only_the_matching_host() {
         skills.read(&app, |manager, _| {
             assert!(manager.skill_by_path(&first_bundled_path).is_none());
             assert!(manager.skill_by_path(&second_bundled_path).is_some());
+        });
+        // #575: removing a host's context clears only that host's remote
+        // global rules, matching the per-host skills behavior above.
+        project_context.read(&app, |model, _| {
+            assert!(model.remote_global_rules(&first_host).is_empty());
+            assert_eq!(model.remote_global_rules(&second_host).len(), 1);
         });
     });
 }

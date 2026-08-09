@@ -1,10 +1,12 @@
 use super::*;
 use std::path::PathBuf;
+use warp_util::host_id::HostId;
 
 // Measured against the pinned oracle (`02b53fcd8`, release `2026.07.29.09.05`
 // stable — see `ORACLE.md`), whose same-path `model_tests.rs` has 29 `#[test]`s.
-// 11 of those are already present above (the `test_find_applicable_rules_*`
-// group); the remaining 18 break down as:
+// 16 of those are now present above/below (the `test_find_applicable_rules_*`
+// group, plus the 5 global-rule tests ported below as part of #575); the
+// remaining 13 break down as:
 //
 //   7 portable — `test_no_rules_returns_none` (needs only
 //     `ProjectContextModel::default()` and `find_applicable_rules`, both
@@ -23,15 +25,24 @@ use std::path::PathBuf;
 //     `merge` is real, exercised pinned test code, just never called from
 //     non-test code at the pin.
 //
-//   5 blocked on global rules — `test_global_rule_alone_no_project_rules`,
+//   5 UNBLOCKED by #575 — `test_global_rule_alone_no_project_rules`,
 //     `test_global_rule_layered_with_project_warp`,
 //     `test_global_rule_root_path_falls_back_to_parent`,
 //     `test_in_dir_warp_shadows_agents_with_global`,
-//     `test_multiple_global_rules_all_contribute`. The pin layers `~/.agents/`
-//     and `~/.warp/` rules ahead of project rules via `ProjectContextModel::
-//     global_rules`, fed by a `project_context/global_rules.rs` watcher module.
-//     This fork has neither the field nor the module, so there is nothing to
-//     layer. Local, non-cloud; refs #150 item 2.
+//     `test_multiple_global_rules_all_contribute`, ported below. #575 added
+//     `ProjectContextModel::global_rules` (a `GlobalRules`, fed by the new
+//     `project_context/global_rules.rs` watcher module) plus a *separate*
+//     `find_applicable_rules_with_globals` layering entry point — kept
+//     separate from the existing `find_applicable_rules` rather than folding
+//     globals into it, because `find_applicable_rules` has a project-only
+//     caller (`code_review_view.rs`'s "already initialized" hint) that must
+//     not regress when a stray `~/.agents/AGENTS.md` exists. Adapted from the
+//     pin's `model.find_applicable_rules(&local_path(...))` calls to this
+//     fork's `model.find_applicable_rules_with_globals(&PathBuf::from(...))`
+//     accordingly — same layering behavior, different (fork-specific) entry
+//     point name. The pin's 6th global-rule test,
+//     `test_remote_global_rules_only_layer_for_matching_remote_host`, stays
+//     blocked below (it also needs remote *project* rules).
 //
 //   2 blocked on `ProjectContextModel::reconcile_project_rules` —
 //     `test_missing_rule_content_preserves_cached_content_while_path_is_standing`
@@ -45,7 +56,12 @@ use std::path::PathBuf;
 //     `test_reconcile_project_rules_hydrates_local_and_remote_paths`. This
 //     fork's `ProjectRule::path`, `ProjectRulePath` and `path_to_rules` are all
 //     keyed by `PathBuf`; `find_applicable_project_rules` explicitly returns
-//     `None` for every remote path. Refs #150 item 2, #170.
+//     `None` for every remote path. #575 added per-host `remote_global_rules`
+//     storage (`set_remote_global_rules`/`remove_remote_global_rules`), but
+//     deliberately did not layer it into a lookup — there is no remote-path
+//     rule-lookup entry point in this fork for it to join, and inventing one
+//     here would be exactly the remote-project-rules work these 4 tests are
+//     blocked on. Refs #150 item 2, #170.
 
 /// Scans, then drops directory stamps for ancestors outside `root`.
 ///
@@ -519,6 +535,217 @@ fn test_no_rules_returns_none() {
     let model = ProjectContextModel::default();
     let result = model.find_applicable_rules(&PathBuf::from("/some/path/file.rs"));
     assert!(result.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Global-rules layering tests (#575), ported from the pinned oracle's
+// `model_tests.rs` (`02b53fcd8`). The pin exercises this via
+// `model.find_applicable_rules(&LocalOrRemotePath)`; this fork keeps
+// `find_applicable_rules` project-only (see the file-level comment above) and
+// exposes the layered lookup as `find_applicable_rules_with_globals` instead,
+// so calls below are adapted to that name and to this fork's local-only
+// `PathBuf` paths. Assertions are otherwise unchanged from the pin.
+// ---------------------------------------------------------------------------
+
+/// Helper for global-rules tests: inserts a synthetic global rule directly
+/// into the model, bypassing the watcher infrastructure (which requires the
+/// warpui runtime) so we can exercise the layering logic directly.
+///
+/// `GlobalRules::rules` only exists on the real (`local_fs`) implementation —
+/// the `!local_fs` build swaps in a fieldless dummy (`dummy_global_rules.rs`)
+/// — so this helper and everything that calls it is gated accordingly,
+/// mirroring the existing `fast_path_*` test gating above.
+#[cfg(feature = "local_fs")]
+fn insert_global_rule(model: &mut ProjectContextModel, path: &Path, content: &str) {
+    model.global_rules.rules.insert(
+        path.to_path_buf(),
+        ProjectRule {
+            path: path.to_path_buf(),
+            content: content.to_string(),
+        },
+    );
+}
+
+#[cfg(feature = "local_fs")]
+fn insert_project_rule(
+    model: &mut ProjectContextModel,
+    project_root: &Path,
+    rule_path: &Path,
+    content: &str,
+) {
+    let rules = model
+        .path_to_rules
+        .entry(project_root.to_path_buf())
+        .or_default();
+    rules.upsert_rule(rule_path, content.to_string());
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_global_rule_alone_no_project_rules() {
+    let mut model = ProjectContextModel::default();
+    insert_global_rule(
+        &mut model,
+        Path::new("/home/u/.agents/AGENTS.md"),
+        "global_content",
+    );
+
+    let result = model
+        .find_applicable_rules_with_globals(Path::new("/some/project/file.rs"))
+        .expect("global rule should produce a result");
+
+    assert_eq!(result.active_rules.len(), 1);
+    assert_eq!(
+        result.active_rules[0].path,
+        PathBuf::from("/home/u/.agents/AGENTS.md")
+    );
+    assert_eq!(result.active_rules[0].content, "global_content");
+    assert!(result.additional_rule_paths.is_empty());
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_global_rule_layered_with_project_warp() {
+    let mut model = ProjectContextModel::default();
+    insert_global_rule(&mut model, Path::new("/home/u/.agents/AGENTS.md"), "global");
+    insert_project_rule(
+        &mut model,
+        Path::new("/repo"),
+        Path::new("/repo/WARP.md"),
+        "project_warp",
+    );
+
+    let result = model
+        .find_applicable_rules_with_globals(Path::new("/repo/src/main.rs"))
+        .expect("layered rules should produce a result");
+
+    // Layered precedence: global first, then project rules.
+    assert_eq!(result.active_rules.len(), 2);
+    assert_eq!(result.active_rules[0].content, "global");
+    assert_eq!(result.active_rules[1].content, "project_warp");
+    assert_eq!(result.root_path, PathBuf::from("/repo"));
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_in_dir_warp_shadows_agents_with_global() {
+    let mut model = ProjectContextModel::default();
+    insert_global_rule(&mut model, Path::new("/home/u/.agents/AGENTS.md"), "global");
+    // Both WARP.md and AGENTS.md in the same project directory: WARP.md should
+    // shadow AGENTS.md (existing in-directory behavior preserved).
+    insert_project_rule(
+        &mut model,
+        Path::new("/repo"),
+        Path::new("/repo/WARP.md"),
+        "project_warp",
+    );
+    insert_project_rule(
+        &mut model,
+        Path::new("/repo"),
+        Path::new("/repo/AGENTS.md"),
+        "project_agents",
+    );
+
+    let result = model
+        .find_applicable_rules_with_globals(Path::new("/repo/src/main.rs"))
+        .expect("layered rules should produce a result");
+
+    // Expect: [global, project WARP.md]. project AGENTS.md is shadowed.
+    assert_eq!(result.active_rules.len(), 2);
+    assert_eq!(result.active_rules[0].content, "global");
+    assert_eq!(result.active_rules[1].content, "project_warp");
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_global_rule_root_path_falls_back_to_parent() {
+    let mut model = ProjectContextModel::default();
+    insert_global_rule(&mut model, Path::new("/home/u/.agents/AGENTS.md"), "global");
+
+    let result = model
+        .find_applicable_rules_with_globals(Path::new("/some/file.rs"))
+        .expect("global rule should produce a result");
+
+    // No project root indexed; root_path falls back to parent of the global rule.
+    assert_eq!(result.root_path, PathBuf::from("/home/u/.agents"));
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_multiple_global_rules_all_contribute() {
+    let mut model = ProjectContextModel::default();
+    insert_global_rule(
+        &mut model,
+        Path::new("/home/u/.agents/AGENTS.md"),
+        "agents_global",
+    );
+    insert_global_rule(
+        &mut model,
+        Path::new("/home/u/.warp/WARP.md"),
+        "warp_global",
+    );
+
+    let result = model
+        .find_applicable_rules_with_globals(Path::new("/repo/src/main.rs"))
+        .expect("globals should produce a result");
+
+    assert_eq!(result.active_rules.len(), 2);
+    let contents: Vec<&str> = result
+        .active_rules
+        .iter()
+        .map(|r| r.content.as_str())
+        .collect();
+    assert!(contents.contains(&"agents_global"));
+    assert!(contents.contains(&"warp_global"));
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_find_rules_with_fast_path_layers_globals() {
+    // find_rules_with_fast_path (the agent-context entry point) must also
+    // layer globals, not just find_applicable_rules_with_globals directly.
+    let mut model = ProjectContextModel::default();
+    insert_global_rule(&mut model, Path::new("/home/u/.agents/AGENTS.md"), "global");
+    insert_project_rule(
+        &mut model,
+        Path::new("/repo"),
+        Path::new("/repo/WARP.md"),
+        "project_warp",
+    );
+
+    let result = model
+        .find_rules_with_fast_path(Path::new("/repo/src/main.rs"))
+        .expect("layered rules should produce a result");
+
+    assert_eq!(result.active_rules.len(), 2);
+    assert_eq!(result.active_rules[0].content, "global");
+    assert_eq!(result.active_rules[1].content, "project_warp");
+}
+
+#[test]
+fn test_set_and_remove_remote_global_rules() {
+    // Per-host scaffolding round-trip (#575): storage only, no lookup
+    // layering exists yet for remote paths in this fork (see the file-level
+    // comment above), so this only asserts the getter/setter/remover
+    // themselves rather than a rule-lookup result.
+    let mut model = ProjectContextModel::default();
+    let host_a = HostId::new("host-a".to_string());
+
+    model.set_remote_global_rules(
+        host_a.clone(),
+        vec![ProjectRule {
+            path: PathBuf::from("/home/remote/.agents/AGENTS.md"),
+            content: "remote_global".to_string(),
+        }],
+    );
+    assert_eq!(model.remote_global_rules(&host_a).len(), 1);
+    assert_eq!(
+        model.remote_global_rules(&host_a)[0].content,
+        "remote_global"
+    );
+
+    model.remove_remote_global_rules(&host_a);
+    assert!(model.remote_global_rules(&host_a).is_empty());
 }
 
 // Ported unchanged from the pinned oracle's `model_tests.rs`

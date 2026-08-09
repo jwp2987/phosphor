@@ -146,6 +146,25 @@ pub(super) fn run_daemon_app(
             log::info!("Home directory not found; skipping HomeDirectoryWatcher registration");
         }
         ctx.add_singleton_model(crate::ai::skills::SkillManager::new);
+        // ProjectContextModel backs the daemon's own `RemoteAgentContextSnapshot.
+        // global_rules` producer (#575): `ServerModel::new`'s snapshot builder reads
+        // this host's global rules via `ProjectContextModel::as_ref(ctx).global_rules()`.
+        // Must be registered before ServerModel. Like SkillManager above, indexing
+        // global rules depends on `HomeDirectoryWatcher` (registered above, when this
+        // host has a home directory) — `index_global_rules` itself no-ops safely when
+        // `dirs::home_dir()` is `None`, matching the guard already used for
+        // `HomeDirectoryWatcher` above, so it's safe to call unconditionally here. The
+        // daemon has no persisted project rules of its own (no local SQLite store), so
+        // `new_from_persisted` is seeded with an empty list, matching the non-daemon
+        // (app) path's shape but with nothing to hydrate.
+        ctx.add_singleton_model(|ctx| {
+            ::ai::project_context::model::ProjectContextModel::new_from_persisted(
+                Vec::new(),
+                ctx,
+            )
+        });
+        ::ai::project_context::model::ProjectContextModel::handle(ctx)
+            .update(ctx, |me, ctx| me.index_global_rules(ctx));
         ctx.add_singleton_model(server_model_init);
     })?;
     Ok(())

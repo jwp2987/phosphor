@@ -2112,14 +2112,15 @@ impl RemoteServerManager {
     /// this directly — `app::ai::remote_agent_context::RemoteAgentContext`
     /// subscribes to `RemoteServerManagerEvent::RemoteAgentContextSnapshot`
     /// (emitted right after a snapshot is accepted here) instead of polling.
-    /// Note two known gaps before assuming this snapshot is fully wired: (1) as of
+    /// Note the known gap before assuming this snapshot is fully wired: as of
     /// #440 (reopened), the daemon has no `daemon_bundled_resources_dir()`, so
     /// `snapshot.skills`'s bundled entries are always empty in production —
     /// `home_dir` and home-scoped `snapshot.skills` entries are populated, though.
-    /// (2) `snapshot.global_rules` is always empty too: this fork's
-    /// `ProjectContextModel` has no per-host rule storage to source it from (see
-    /// `app/src/ai/remote_agent_context.rs`'s module doc comment) — a separate,
-    /// comparably-sized gap from #440, not fixed here either.
+    /// `snapshot.global_rules` is now populated too (#575): the daemon indexes its
+    /// own file-based global rules via `ProjectContextModel::global_rules()`, and
+    /// `app/src/ai/remote_agent_context.rs` stores each host's entries in
+    /// `ProjectContextModel::remote_global_rules` client-side — though that storage
+    /// has no rule-lookup consumer yet (see that file's module doc comment).
     pub fn remote_agent_context_snapshot(
         &self,
         host_id: &HostId,
