@@ -45,6 +45,33 @@ Of 11 issues examined closely on 2026-08-08, four stated the opposite of the cod
 (#437, #418, #532, #548-partly) and three more were already partly done. Estimating
 from titles here is unreliable.
 
+## LANDED 2026-08-09 early — tier 2 batch verified and merged
+
+Local main = `e1df34e3a`. `precheck: ok` — **5620 + 565 + 2178 = 8,363 tests, 0 failures.**
+20 commits. Closed on evidence: #545, #396, #403, #300, #299, #205 (dup of #299).
+
+Two real bugs the FIRST build of this batch caught, both invisible until compiled:
+- `crates/editor` called the pin's `AssetCache::as_ref(app)` without the pin's
+  `SingletonEntity` trait import — the #300/#403 mermaid port, uncompiled for hours.
+- `convert_conversation.rs` still called the removed `ParsedSkill::try_from` inside
+  an `if let Ok(..)`, so it failed **silently**: restored conversations dropped their
+  skill invocations and returned an empty input list. **Grep for other `if let Ok`
+  wrappers around migrated conversions — same shape, same silent-failure risk.**
+
+This is the argument for the batch-build rule paying off, not against it: both bugs
+were found in one pass, and neither would have been caught by review.
+
+### STILL OPEN from this batch (next agent)
+- `BundledSkills` multi-host router + `remote_home_directories`
+- `skill_manager.rs` **merge, not port** — the fork has a fork-original
+  `list_skill_inventory`/`SkillInventoryItem`/`SkillInventoryDuplicate` feature
+  (consumed by `app/src/skill_manager/panel.rs`) that the pin does NOT have.
+  **Enumerate its call sites BEFORE editing** — a "match the pin" rewrite deletes it.
+- `parsed_skill_for_common_locations` + 2 pinned tests
+- `remote_agent_context.rs`, `skill_watcher.rs` remote branch
+- #353 daemon producer, #388's three sub-items
+- #440 — or the above ships degraded (skills empty; `home_dir`/`global_rules` still work)
+
 ## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
 
 Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is
