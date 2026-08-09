@@ -1085,11 +1085,20 @@ pub enum PaneEvent {
         initial_query: Option<String>,
     },
     ClearHoveredTabIndex,
+    /// Switch a `FilePane` (rendered Markdown notebook) to the raw `CodePane`
+    /// editor. `path` uses `BufferLocation` (not a plain `PathBuf`) because
+    /// this must also cover remote notebooks opened via `FileNotebookView`'s
+    /// `SourceFile::Remote` — see `open_as_code` in
+    /// `crate::notebooks::file`.
     #[cfg(feature = "local_fs")]
     ReplaceWithCodePane {
-        path: std::path::PathBuf,
+        path: crate::code::buffer_location::BufferLocation,
         source: Option<crate::code::editor_management::CodeSource>,
     },
+    /// Switch a `CodePane` back to the rendered `FilePane`. Local-only by
+    /// design: remote code panes toggle rendered/raw inline within
+    /// `CodeView` instead (see `CodeView::set_remote_markdown_rendered`),
+    /// so this never needs to carry a remote path.
     #[cfg(feature = "local_fs")]
     ReplaceWithFilePane {
         path: std::path::PathBuf,

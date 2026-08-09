@@ -60,7 +60,7 @@ use super::{
     telemetry::NotebookTelemetryAction,
     NotebookLocation,
 };
-use crate::code::buffer_location::RemotePath;
+use crate::code::buffer_location::{BufferLocation, RemotePath};
 #[cfg(feature = "local_fs")]
 use crate::code::editor_management::CodeSource;
 #[cfg(feature = "local_tty")]
@@ -187,6 +187,18 @@ impl SourceFile {
         }
     }
 
+    /// The unified local-or-remote identity of this source file, used to
+    /// drive the Raw-mode toggle (`ReplaceWithCodePane`) for both local and
+    /// remote notebooks. `None` for `Static` content (e.g. rendered
+    /// in-conversation Markdown), which has no backing file to open as code.
+    fn buffer_location(&self) -> Option<BufferLocation> {
+        match self {
+            SourceFile::Local { local_path, .. } => Some(BufferLocation::Local(local_path.clone())),
+            SourceFile::Remote { remote_path } => Some(BufferLocation::Remote(remote_path.clone())),
+            SourceFile::Static { .. } => None,
+        }
+    }
+
     fn display_name(&self) -> String {
         match self {
             SourceFile::Local { local_path, .. } => local_path.display().to_string(),
@@ -208,6 +220,12 @@ impl FileState {
     /// The path to the open file, if it exists and is local.
     fn local_path(&self) -> Option<&Path> {
         self.source().and_then(|src| src.local_path())
+    }
+
+    /// The local-or-remote identity of the open file, if any. See
+    /// [`SourceFile::buffer_location`].
+    fn buffer_location(&self) -> Option<BufferLocation> {
+        self.source().and_then(|src| src.buffer_location())
     }
 
     fn source(&self) -> Option<&SourceFile> {
@@ -675,10 +693,14 @@ impl FileNotebookView {
 
     #[cfg(feature = "local_fs")]
     fn open_as_code(&mut self, ctx: &mut ViewContext<Self>) {
-        if let Some(path) = self.local_path() {
+        // `buffer_location()` covers both local and remote notebooks (unlike
+        // `local_path()`, which is `None` for remote sources); when
+        // `code_source` is `None`, `replace_file_pane_with_code_pane` builds
+        // the right `CodeSource` (`Link` or `RemoteFileTree`) from it.
+        if let Some(location) = self.file_state.buffer_location() {
             // Emit an event to the pane group to handle the replacement
             ctx.emit(FileNotebookEvent::Pane(PaneEvent::ReplaceWithCodePane {
-                path: path.clone(),
+                path: location,
                 source: self.code_source.clone(),
             }));
         }
@@ -1080,9 +1102,10 @@ impl TypedActionView for FileNotebookView {
                     MarkdownDisplayMode::Raw => {
                         #[cfg(feature = "local_fs")]
                         {
-                            if let Some(path) = self.local_path() {
+                            // Covers remote notebooks too -- see `open_as_code`.
+                            if let Some(location) = self.file_state.buffer_location() {
                                 ctx.emit(FileNotebookEvent::Pane(PaneEvent::ReplaceWithCodePane {
-                                    path,
+                                    path: location,
                                     source: self.code_source.clone(),
                                 }));
                             }
