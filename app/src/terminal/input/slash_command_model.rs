@@ -1,6 +1,7 @@
 use ai::skills::SkillReference;
 use input_classifier::InputType;
 use warp_core::features::FeatureFlag;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::blocklist::{BlocklistAIInputEvent, BlocklistAIInputModel};
@@ -279,10 +280,12 @@ impl SlashCommandModel {
         let skill_name = possible_command.strip_prefix('/')?;
 
         let cwd = self.active_session.as_ref(ctx).current_working_directory();
-        let cwd_path = cwd.as_ref().map(std::path::Path::new);
+        let cwd_path = cwd
+            .as_ref()
+            .map(|c| LocalOrRemotePath::Local(std::path::PathBuf::from(c)));
         let skills = SkillManager::handle(ctx)
             .as_ref(ctx)
-            .get_skills_for_working_directory(cwd_path, ctx);
+            .get_skills_for_working_directory(cwd_path.as_ref(), ctx);
 
         let matched_skill = skills.into_iter().find(|skill| skill.name == skill_name)?;
 
@@ -521,10 +524,12 @@ impl SlashCommandDataSource {
 
         let active_session = self.active_session().as_ref(ctx);
         let cwd = active_session.current_working_directory();
-        let cwd_path = cwd.as_ref().map(std::path::Path::new);
+        let cwd_path = cwd
+            .as_ref()
+            .map(|c| LocalOrRemotePath::Local(std::path::PathBuf::from(c)));
         let matched_skill = SkillManager::handle(ctx)
             .as_ref(ctx)
-            .get_skills_for_working_directory(cwd_path, ctx)
+            .get_skills_for_working_directory(cwd_path.as_ref(), ctx)
             .into_iter()
             .find(|skill| skill.name == skill_name)?;
 

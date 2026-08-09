@@ -10,6 +10,8 @@ use ai::skills::SkillReference;
 #[cfg(feature = "local_fs")]
 use ai::skills::parse_skill;
 use std::path::Path;
+#[cfg(feature = "local_fs")]
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{ModelContext, SingletonEntity};
 
 use crate::ai::agent::AIAgentActionType;
@@ -122,7 +124,10 @@ impl ReadSkillExecutor {
             // and nothing populates a remote skill reference here yet (issue #299
             // covers the type, not remote skill reads via this path).
             if let Some(local_path) = path.to_local_path()
-                && extract_skill_parent_directory(local_path).is_ok()
+                && extract_skill_parent_directory(&LocalOrRemotePath::Local(
+                    local_path.to_path_buf(),
+                ))
+                .is_ok()
             {
                 let path = local_path.to_path_buf();
                 let skill_ref_for_async = skill_ref.clone();

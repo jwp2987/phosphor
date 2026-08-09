@@ -5,6 +5,7 @@ use repo_metadata::{
     DirectoryWatcher, RepoMetadataModel,
 };
 use virtual_fs::{Stub, VirtualFS};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::App;
 
 use super::{
@@ -144,8 +145,8 @@ fn extract_skill_parent_directory_from_repo_root() {
         .join("skills")
         .join("my-skill")
         .join("SKILL.md");
-    let result = extract_skill_parent_directory(&skill_path);
-    assert_eq!(result.ok(), Some(parent_directory));
+    let result = extract_skill_parent_directory(&LocalOrRemotePath::Local(skill_path.clone()));
+    assert_eq!(result.ok(), Some(LocalOrRemotePath::Local(parent_directory)));
 }
 
 #[test]
@@ -160,8 +161,8 @@ fn extract_skill_parent_directory_from_subdirectory() {
         .join("skills")
         .join("build")
         .join("SKILL.md");
-    let result = extract_skill_parent_directory(&skill_path);
-    assert_eq!(result.ok(), Some(parent_directory));
+    let result = extract_skill_parent_directory(&LocalOrRemotePath::Local(skill_path.clone()));
+    assert_eq!(result.ok(), Some(LocalOrRemotePath::Local(parent_directory)));
 }
 
 #[test]
@@ -181,10 +182,10 @@ fn extract_skill_parent_directory_from_deep_subdirectory() {
         .join("skills")
         .join("test-skill")
         .join("SKILL.md");
-    let result = extract_skill_parent_directory(&skill_path);
+    let result = extract_skill_parent_directory(&LocalOrRemotePath::Local(skill_path.clone()));
     assert_eq!(
         result.ok(),
-        Some(parent_directory),
+        Some(LocalOrRemotePath::Local(parent_directory)),
         "Failed for path: {}",
         skill_path.display()
     );
@@ -204,10 +205,10 @@ fn extract_skill_parent_directory_different_providers() {
             .join("skills")
             .join("s")
             .join("SKILL.md");
-        let result = extract_skill_parent_directory(&path);
+        let result = extract_skill_parent_directory(&LocalOrRemotePath::Local(path.clone()));
         assert_eq!(
             result.ok(),
-            Some(repo.clone()),
+            Some(LocalOrRemotePath::Local(repo.clone())),
             "Failed for path: {}",
             path.display()
         );
@@ -228,7 +229,10 @@ fn extract_skill_parent_directory_returns_none_for_non_skill() {
         .join("skills")
         .join("my-skill")
         .join("README.md");
-    assert_eq!(extract_skill_parent_directory(&path).ok(), None);
+    assert_eq!(
+        extract_skill_parent_directory(&LocalOrRemotePath::Local(path)).ok(),
+        None
+    );
 
     // Wrong structure (skill directly in skills dir)
     let path = home_dir
@@ -236,7 +240,10 @@ fn extract_skill_parent_directory_returns_none_for_non_skill() {
         .join(".agents")
         .join("skills")
         .join("SKILL.md");
-    assert_eq!(extract_skill_parent_directory(&path).ok(), None);
+    assert_eq!(
+        extract_skill_parent_directory(&LocalOrRemotePath::Local(path)).ok(),
+        None
+    );
 
     // Too deeply nested
     let path = home_dir
@@ -246,11 +253,17 @@ fn extract_skill_parent_directory_returns_none_for_non_skill() {
         .join("a")
         .join("b")
         .join("SKILL.md");
-    assert_eq!(extract_skill_parent_directory(&path).ok(), None);
+    assert_eq!(
+        extract_skill_parent_directory(&LocalOrRemotePath::Local(path)).ok(),
+        None
+    );
 
     // Not in a skills directory
     let path = home_dir.join("repo").join("src").join("SKILL.md");
-    assert_eq!(extract_skill_parent_directory(&path).ok(), None);
+    assert_eq!(
+        extract_skill_parent_directory(&LocalOrRemotePath::Local(path)).ok(),
+        None
+    );
 }
 
 // ============================================================================
@@ -356,8 +369,8 @@ fn extract_skill_parent_directory_returns_home_dir_for_warp_home_skill() {
     };
 
     let skill_path = warp_home_skills_dir.join("test-skill").join("SKILL.md");
-    let result = extract_skill_parent_directory(&skill_path);
-    assert_eq!(result.ok(), Some(home_dir));
+    let result = extract_skill_parent_directory(&LocalOrRemotePath::Local(skill_path.clone()));
+    assert_eq!(result.ok(), Some(LocalOrRemotePath::Local(home_dir)));
 }
 
 #[test]

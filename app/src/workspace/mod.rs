@@ -81,7 +81,7 @@ pub fn is_feedback_skill_available(ctx: &AppContext) -> bool {
     AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
         && AIRequestUsageModel::as_ref(ctx).has_any_ai_remaining(ctx)
         && SkillManager::as_ref(ctx)
-            .active_bundled_skill("feedback", ctx)
+            .active_local_bundled_skill("feedback", ctx)
             .is_some()
 }
 

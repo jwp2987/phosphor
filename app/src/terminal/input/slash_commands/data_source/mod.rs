@@ -487,10 +487,12 @@ impl SyncDataSource for SlashCommandDataSource {
         if FeatureFlag::ListSkills.is_enabled() && AISettings::as_ref(app).is_any_ai_enabled(app) {
             let cli_agent_providers = self.active_cli_agent_providers(app);
             let cwd = self.active_session.as_ref(app).current_working_directory();
-            let cwd_path = cwd.as_ref().map(std::path::Path::new);
+            let cwd_path = cwd
+                .as_ref()
+                .map(|c| warp_util::local_or_remote_path::LocalOrRemotePath::Local(PathBuf::from(c)));
             let skills = SkillManager::handle(app)
                 .as_ref(app)
-                .get_skills_for_working_directory(cwd_path, app);
+                .get_skills_for_working_directory(cwd_path.as_ref(), app);
 
             let skill_manager = SkillManager::as_ref(app);
             for mut skill in skills {

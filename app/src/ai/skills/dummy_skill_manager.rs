@@ -1,38 +1,11 @@
-use std::path::{Path, PathBuf};
-
-use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope};
+use ai::skills::{ParsedSkill, SkillPathOrigin, SkillProvider, SkillReference};
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
-use crate::ai::skills::SkillDescriptor;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SkillManagerEvent {
-    InventoryChanged,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillInventoryDuplicate {
-    pub path: PathBuf,
-    pub name: String,
-    pub description: String,
-    pub content: String,
-    pub provider: SkillProvider,
-    pub scope: SkillScope,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillInventoryItem {
-    pub name: String,
-    pub default_skill: SkillInventoryDuplicate,
-    pub duplicates: Vec<SkillInventoryDuplicate>,
-}
-
-impl SkillInventoryItem {
-    pub fn has_duplicates(&self) -> bool {
-        self.duplicates.len() > 1
-    }
-}
+use crate::ai::skills::{
+    ActiveSkillLookupError, SkillDescriptor, SkillInventoryItem, SkillManagerEvent,
+    SkillPathQuery,
+};
 
 pub struct SkillManager {}
 
@@ -43,23 +16,40 @@ impl SkillManager {
 
     pub fn get_skills_for_working_directory(
         &self,
-        _working_directory: Option<&Path>,
+        _working_directory: Option<&LocalOrRemotePath>,
         _ctx: &AppContext,
     ) -> Vec<SkillDescriptor> {
         vec![]
     }
 
-    pub fn skill_by_path(&self, _skill_path: &Path) -> Option<&ParsedSkill> {
+    pub fn get_skills_for_working_directory_with_origin(
+        &self,
+        _working_directory: Option<&LocalOrRemotePath>,
+        _path_origin: &SkillPathOrigin,
+        _ctx: &AppContext,
+    ) -> Vec<SkillDescriptor> {
+        vec![]
+    }
+
+    pub fn skill_by_path<P: SkillPathQuery + ?Sized>(
+        &self,
+        _skill_path: &P,
+    ) -> Option<&ParsedSkill> {
         None
     }
 
+    /// No-op counterpart of `skill_manager::SkillManager::list_skill_inventory`
+    /// (fork-original, #_) for builds without a local filesystem.
     pub fn list_skill_inventory(&self, ctx: &AppContext) -> Vec<SkillInventoryItem> {
         let _ = ctx;
         vec![]
     }
 
-    pub fn reference_for_skill_path(&self, skill_path: &Path) -> SkillReference {
-        SkillReference::Path(LocalOrRemotePath::Local(skill_path.to_path_buf()))
+    pub fn reference_for_skill_path<P: SkillPathQuery + ?Sized>(
+        &self,
+        skill_path: &P,
+    ) -> SkillReference {
+        SkillReference::Path(skill_path.to_skill_location())
     }
 
     pub fn skill_by_reference(&self, _reference: &SkillReference) -> Option<&ParsedSkill> {
@@ -70,7 +60,7 @@ impl SkillManager {
         None
     }
 
-    pub fn active_bundled_skill(&self, _id: &str, _ctx: &AppContext) -> Option<&ParsedSkill> {
+    pub fn active_local_bundled_skill(&self, _id: &str, _ctx: &AppContext) -> Option<&ParsedSkill> {
         None
     }
 
@@ -82,6 +72,20 @@ impl SkillManager {
         _ctx: &AppContext,
     ) -> Option<&ParsedSkill> {
         None
+    }
+
+    /// No-op counterpart of
+    /// `skill_manager::SkillManager::active_skill_by_reference_with_origin`.
+    pub fn active_skill_by_reference_with_origin(
+        &self,
+        reference: &SkillReference,
+        path_origin: &SkillPathOrigin,
+        _ctx: &AppContext,
+    ) -> Result<&ParsedSkill, ActiveSkillLookupError> {
+        Err(ActiveSkillLookupError::for_reference(
+            reference,
+            path_origin,
+        ))
     }
 
     pub fn skill_exists_for_any_provider(

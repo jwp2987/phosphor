@@ -292,13 +292,25 @@ fn resolve_unqualified(
         });
     }
 
-    // Get all skill paths matching the requested name from the cache.
-    let all_matching_paths = skill_manager.skill_paths_by_name(&spec.skill_identifier);
+    // Get all skill paths matching the requested name from the cache. This resolver is
+    // local-only (`warp agent run --skill ...` and friends): `SkillManager` now tracks
+    // remote skills too (#487), so filter down to local paths right at the boundary
+    // rather than rewriting the rest of this file's `PathBuf`-based logic to
+    // `LocalOrRemotePath`.
+    let all_matching_paths: Vec<PathBuf> = skill_manager
+        .skill_paths_by_name(&spec.skill_identifier)
+        .into_iter()
+        .filter_map(|path| path.to_local_path().map(Path::to_path_buf))
+        .collect();
     let home_dir = dirs::home_dir();
 
     // Per the skills spec, home directory skills take precedence over project skills.
     // Check home directory skills first.
-    let home_skill_paths = skill_manager.home_skill_paths();
+    let home_skill_paths: Vec<PathBuf> = skill_manager
+        .home_skill_paths()
+        .into_iter()
+        .filter_map(|path| path.to_local_path().map(Path::to_path_buf))
+        .collect();
     let home_matches: Vec<PathBuf> = all_matching_paths
         .iter()
         .filter(|p| home_skill_paths.contains(p))
@@ -383,6 +395,7 @@ fn resolve_in_single_repo_root(
     let cached_paths: Vec<PathBuf> = skill_manager
         .skill_paths_by_name(&spec.skill_identifier)
         .into_iter()
+        .filter_map(|path| path.to_local_path().map(Path::to_path_buf))
         .filter(|p| repo_skill_paths.contains(p))
         .collect();
 

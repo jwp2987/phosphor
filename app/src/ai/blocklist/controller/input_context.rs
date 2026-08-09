@@ -1,9 +1,10 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use chrono::Local;
 use lazy_static::lazy_static;
 use regex::Regex;
 use warp_core::features::FeatureFlag;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, SingletonEntity};
 
 use crate::{
@@ -91,7 +92,10 @@ pub(super) fn input_context_for_request(
         // list is empty, keeping context compact (the template's `{% if skills %}`
         // guard can then omit the section normally).
         let skills = list_skills(
-            active_session.current_working_directory().map(Path::new),
+            active_session
+                .current_working_directory()
+                .map(|cwd| LocalOrRemotePath::Local(PathBuf::from(cwd)))
+                .as_ref(),
             app,
         );
         if !skills.is_empty() {

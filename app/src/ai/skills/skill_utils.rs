@@ -3,7 +3,8 @@
 use super::{SkillDescriptor, SkillManager};
 use crate::ai::blocklist::view_util::render_provider_icon_button;
 use ai::skills::{
-    home_skills_path, provider_rank, ParsedSkill, SkillProvider, SKILL_PROVIDER_DEFINITIONS,
+    home_skills_path, provider_parent_directory_for_skills_root, provider_rank, ParsedSkill,
+    SkillProvider, SKILL_PROVIDER_DEFINITIONS,
 };
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -19,8 +20,75 @@ use warpui::{AppContext, Element, SingletonEntity};
 
 use crate::warp_managed_paths_watcher::warp_managed_skill_dirs;
 
+/// Accumulates file-backed skills from one or more catalogs and keeps the best
+/// representative for each `(name, owning directory)` pair.
+///
+/// Ported from the pin's `ai/skills/skill_utils.rs::SkillDeduplicator` (`02b53fcd8`) —
+/// structurally, as the accumulator type `SkillManager::get_skills_for_working_directory_
+/// with_origin` builds against. Its dedup **key** deliberately stays this fork's own,
+/// pre-existing `(name, dir)` + priority-then-shortest-path tie-break (not the pin's
+/// `(dir, content)` hash): that is the fork-original P0-3 prompt-cache-stability fix
+/// (`226dcccc6`, `fdcf37261`, `2e30ccd4b`) which additionally same-name-dedups skills
+/// with *different* content across providers — the pin's content-hash key would keep
+/// both instead, and `unique_skills_name_dedup_same_name_different_providers` (in
+/// `skill_utils_tests.rs`) asserts the dedup behavior, not the content-hash one. See
+/// [`unique_skills`] for the equivalent free-function form kept for that test.
+#[derive(Default)]
+#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+pub(crate) struct SkillDeduplicator {
+    name_map: HashMap<(String, LocalOrRemotePath), SkillDescriptor>,
+}
+
+#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+impl SkillDeduplicator {
+    pub(crate) fn extend_paths(
+        &mut self,
+        skill_paths: &[(LocalOrRemotePath, LocalOrRemotePath)],
+        skills_by_path: &HashMap<LocalOrRemotePath, ParsedSkill>,
+    ) {
+        for (dir_path, path) in skill_paths {
+            let Some(skill) = skills_by_path.get(path) else {
+                continue;
+            };
+            let descriptor = SkillDescriptor::from(skill.clone());
+            match self.name_map.entry((descriptor.name.clone(), dir_path.clone())) {
+                Entry::Vacant(e) => {
+                    e.insert(descriptor);
+                }
+                Entry::Occupied(mut e) => {
+                    let new_rank = provider_rank(descriptor.provider);
+                    let existing_rank = provider_rank(e.get().provider);
+                    if new_rank < existing_rank
+                        || (new_rank == existing_rank
+                            && skill_reference_key(&descriptor.reference).len()
+                                < skill_reference_key(&e.get().reference).len())
+                    {
+                        e.insert(descriptor);
+                    }
+                }
+            }
+        }
+    }
+
+    /// **P0-3 prompt cache gap fix**: sorted lexicographically by `(name, reference)`.
+    /// Reason: `HashMap::into_values()`'s iteration order is unstable, and this return
+    /// value goes into the system prompt's skills section — order drift would
+    /// invalidate the prompt cache across every upstream provider (Anthropic / OpenAI /
+    /// DeepSeek). Same nature as the P0-3 MCP tools sort.
+    pub(crate) fn into_descriptors(self) -> Vec<SkillDescriptor> {
+        let mut out: Vec<SkillDescriptor> = self.name_map.into_values().collect();
+        out.sort_by(|a, b| {
+            a.name.cmp(&b.name).then_with(|| {
+                skill_reference_key(&a.reference).cmp(&skill_reference_key(&b.reference))
+            })
+        });
+        out
+    }
+}
+
 /// Deduplicates skills by **name and owning directory**, keeping a single best representative per
-/// skill name within each directory.
+/// skill name within each directory. Free-function form of [`SkillDeduplicator`], kept for
+/// `skill_utils_tests.rs`'s direct coverage of the dedup key.
 ///
 /// Priority rules (when multiple copies share the same skill name):
 ///
@@ -39,53 +107,14 @@ use crate::warp_managed_paths_watcher::warp_managed_skill_dirs;
 ///
 /// Each element of `skill_paths` is a `(dir_path, skill_file_path)` tuple where
 /// `dir_path` is the directory that owns the skill and participates in the dedup key.
-///
-/// **P0-3 prompt cache gap fix**: the returned Vec is sorted lexicographically by
-/// `(name, reference)`. Reason: `HashMap::into_values()`'s iteration order is
-/// unstable, and this return value goes into the system prompt's skills section —
-/// order drift would invalidate the prompt cache across every upstream provider
-/// (Anthropic / OpenAI / DeepSeek). Same nature as the P0-3 MCP tools sort.
-/// Currently deduplicated by `(name, owning directory)`, so different directories
-/// can keep a same-name skill simultaneously. reference still serves as the
-/// secondary key for stable sorting, guaranteeing reproducible output order.
-#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn unique_skills(
     skill_paths: &[(LocalOrRemotePath, LocalOrRemotePath)],
     skills_by_path: &HashMap<LocalOrRemotePath, ParsedSkill>,
 ) -> Vec<SkillDescriptor> {
-    let mut name_map: HashMap<(String, LocalOrRemotePath), SkillDescriptor> = HashMap::new();
-
-    for (dir_path, path) in skill_paths {
-        let Some(skill) = skills_by_path.get(path) else {
-            continue;
-        };
-        let descriptor = SkillDescriptor::from(skill.clone());
-        match name_map.entry((descriptor.name.clone(), dir_path.clone())) {
-            Entry::Vacant(e) => {
-                e.insert(descriptor);
-            }
-            Entry::Occupied(mut e) => {
-                let new_rank = provider_rank(descriptor.provider);
-                let existing_rank = provider_rank(e.get().provider);
-                if new_rank < existing_rank
-                    || (new_rank == existing_rank
-                        && skill_reference_key(&descriptor.reference).len()
-                            < skill_reference_key(&e.get().reference).len())
-                {
-                    e.insert(descriptor);
-                }
-            }
-        }
-    }
-
-    let mut out: Vec<SkillDescriptor> = name_map.into_values().collect();
-    // P0-3 gap fix: sorted lexicographically by (name, reference literal) to keep the system prompt stable.
-    out.sort_by(|a, b| {
-        a.name
-            .cmp(&b.name)
-            .then_with(|| skill_reference_key(&a.reference).cmp(&skill_reference_key(&b.reference)))
-    });
-    out
+    let mut deduplicator = SkillDeduplicator::default();
+    deduplicator.extend_paths(skill_paths, skills_by_path);
+    deduplicator.into_descriptors()
 }
 
 /// Generates a literal key for `SkillReference`, used for sorting.
@@ -111,7 +140,10 @@ fn skill_reference_key(reference: &ai::skills::SkillReference) -> String {
 /// every round — otherwise the skills section in the system prompt would vanish
 /// starting from the second round. So this is simplified to always returning the
 /// full set every round.
-pub fn list_skills(working_directory: Option<&Path>, app: &AppContext) -> Vec<SkillDescriptor> {
+pub fn list_skills(
+    working_directory: Option<&LocalOrRemotePath>,
+    app: &AppContext,
+) -> Vec<SkillDescriptor> {
     SkillManager::as_ref(app).get_skills_for_working_directory(working_directory, app)
 }
 
@@ -156,6 +188,10 @@ pub fn icon_override_for_skill_name(name: &str) -> Option<Icon> {
     }
 }
 
+/// Resolves a bare local file path to its owning skill's `SKILL.md` path, by walking up
+/// through `SKILL_PROVIDER_DEFINITIONS`. Local-only counterpart of
+/// [`skill_path_from_location`]; kept (rather than folded into it) because its home-skills
+/// pass additionally consults `warp_managed_skill_dirs()`, which has no remote analogue.
 pub fn skill_path_from_file_path(file_path: &Path) -> Option<PathBuf> {
     for definition in SKILL_PROVIDER_DEFINITIONS.iter() {
         let home_skill_dirs = if definition.provider == SkillProvider::Zap {
@@ -185,6 +221,34 @@ pub fn skill_path_from_file_path(file_path: &Path) -> Option<PathBuf> {
                 return Some(skill_dir.join("SKILL.md"));
             }
         }
+    }
+    None
+}
+
+/// Resolves a location (local or remote) to its owning skill's `SKILL.md` location, by
+/// walking up through ancestor directories looking for a known provider's skills root.
+///
+/// Ported from the pin's `ai/skills/skill_utils.rs::skill_path_from_location`
+/// (`02b53fcd8`). Unlike [`skill_path_from_file_path`], this has no home-skills fast
+/// path (`provider_parent_directory_for_skills_root` matches project and home provider
+/// directories alike via ancestor-walking), and works for remote locations because it
+/// never touches the local filesystem. Used by `parsed_skill_for_common_locations`
+/// (`app/src/ai/blocklist/block/view_impl/output.rs`), which needs the mixed-remote-host
+/// refusal this affords: two locations on different hosts never resolve to the same
+/// skill location (`LocalOrRemotePath` equality is host-aware), so the caller's
+/// "resolve only if all point at one skill" check naturally refuses to render a skill
+/// button when files were read from different hosts.
+pub fn skill_path_from_location(location: &LocalOrRemotePath) -> Option<LocalOrRemotePath> {
+    let mut current = Some(location.clone());
+    while let Some(candidate_skill_dir) = current {
+        if candidate_skill_dir
+            .parent()
+            .and_then(|provider_dir| provider_parent_directory_for_skills_root(&provider_dir))
+            .is_some()
+        {
+            return Some(candidate_skill_dir.join("SKILL.md"));
+        }
+        current = candidate_skill_dir.parent();
     }
     None
 }
