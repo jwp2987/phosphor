@@ -151,7 +151,7 @@ builds once per batch and merges on green. `TODO.md` updated at each landing.
       shipping degraded. Rust side small; the PACKAGING half (artifact must ship
       `bundled_resources/`) touches the release pipeline — coordinator to report
       rather than change packaging unilaterally.
-- [ ] **#381 — FOLDED INTO THE #440 BATCH.** Scoped against `working` 2026-08-09:
+- [ ] **#381 — TIER 4** (maintainer, 2026-08-09). Its code rode along with the #440 batch; the ISSUE is tracked in tier 4. Scoped against `working` 2026-08-09:
       real remaining work is **2 modules / 9 tests**, not six modules / 81.
       `remote_agent_context.rs` (4) is DONE (built under #438/#487);
       `orchestration/` (39) moved to #310/#304 when local orchestration was
