@@ -9,6 +9,10 @@
   local `main` and move to the next.
 - Work the tiers in order: trivial -> small -> medium -> large.
 - Update this section as each issue lands, so it survives context compaction.
+- **EVERY NEW ISSUE GETS TIERED AT FILING TIME.** Agreed 2026-08-09. An issue that
+  exists only on GitHub and not in a tier here is invisible to the plan — the
+  2026-08-08 reconciliation found 8 open issues untracked by any tier, 5 of them
+  already done. File it, tier it, in the same action.
 
 **Verification rule learned the hard way (2026-08-08):** when a signature in
 `app/src` changes, verify the DEPENDENTS too, not just the crate edited.
@@ -480,6 +484,20 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
       reason true?"* — and it was. It did not answer *"is this still consistent with
       what we decided since?"* **A decline can be individually sound and
       collectively wrong.** Re-check declines against decisions made after them.
+
+**FILED 2026-08-09 — tiered at filing per the rule above:**
+- [ ] #575 `RemoteAgentContextSnapshot.global_rules` is always empty. Split out of the
+      #440 batch after a scope correction: I had assumed `remote_context_files.rs`
+      supplied it — **it does not.** `global_rules` arrives pre-serialized in the
+      snapshot from daemon-side `ProjectContextModel::global_rules()`;
+      `remote_context_files.rs`'s real consumers (`metadata_project_rules.rs`,
+      `skill_watcher.rs::read_project_skill_contents`) are unrelated and absent here.
+      **Real scope:** daemon `ProjectContextModel::global_rules()` + client
+      `set_remote_global_rules`/`remove_remote_global_rules`/`remote_global_rules`
+      storage. **Blocker:** this fork's `ProjectContextModel`
+      (`crates/ai/src/project_context/model.rs`) is a flat local-only `path_to_rules`
+      map with no per-host scaffolding — comparable in size to the per-host skills
+      work that landed under #487/#353, not a wiring change. Tier 3.
 
 **REAL as filed:**
 - [ ] #284 no `received_rich_notification` latch on `CLIAgentSession`; fork derives
