@@ -8,8 +8,8 @@ use crate::{
     agent::{
         action::{
             AIAgentActionType, AIAgentPtyWriteMode, CommentSide, FileEdit, InsertReviewComment,
-            InsertedCommentLine, InsertedCommentLocation, ReadFilesRequest, ReadSkillRequest,
-            ShellCommandDelay, SuggestPromptRequest,
+            InsertedCommentLine, InsertedCommentLocation, ReadFilesRequest, ShellCommandDelay,
+            SuggestPromptRequest,
         },
         action_result::{AnyFileContent, FileContext},
         convert::ToolToAIAgentActionError,
@@ -17,7 +17,6 @@ use crate::{
     },
     diff_validation::{ParsedDiff, V4AHunk},
     document::AIDocumentId,
-    skills::SkillReference,
 };
 
 impl From<api::message::tool_call::RunShellCommand> for AIAgentActionType {
@@ -380,31 +379,6 @@ impl From<api::message::tool_call::TransferShellCommandControlToUser> for AIAgen
     fn from(value: api::message::tool_call::TransferShellCommandControlToUser) -> Self {
         AIAgentActionType::TransferShellCommandControlToUser {
             reason: value.reason,
-        }
-    }
-}
-
-impl TryFrom<api::message::tool_call::ReadSkill> for AIAgentActionType {
-    type Error = ToolToAIAgentActionError;
-
-    fn try_from(value: api::message::tool_call::ReadSkill) -> Result<Self, Self::Error> {
-        match value.skill_reference {
-            Some(reference) => Ok(AIAgentActionType::ReadSkill(ReadSkillRequest {
-                skill: SkillReference::from(reference),
-            })),
-            None => Err(ToolToAIAgentActionError::MissingSkillReference),
-        }
-    }
-}
-
-impl From<api::message::tool_call::read_skill::SkillReference> for SkillReference {
-    fn from(value: api::message::tool_call::read_skill::SkillReference) -> Self {
-        use warp_multi_agent_api::message::tool_call::read_skill::SkillReference as ApiSkillReference;
-        match value {
-            ApiSkillReference::SkillPath(skill_path) => {
-                SkillReference::Path(PathBuf::from(skill_path))
-            }
-            ApiSkillReference::BundledSkillId(id) => SkillReference::BundledSkillId(id),
         }
     }
 }
