@@ -9,6 +9,16 @@
   local `main` and move to the next.
 - Work the tiers in order: trivial -> small -> medium -> large.
 - Update this section as each issue lands, so it survives context compaction.
+- **TICK ITEMS WHEN YOU CLOSE THE ISSUE, not at end of session.** Added 2026-08-09
+  after a reconciliation found **19 closed issues still sitting as unchecked `- [ ]`
+  work** — the file claimed ~19 more items of work than existed. Both directions of
+  drift matter: untracked-open makes work invisible, unticked-closed makes the
+  backlog look worse than it is and wastes the next reader's time.
+  Check with: open issues vs `- [ ]` lines, both ways.
+- **EVERY NEW ISSUE GETS TIERED AT FILING TIME.** Agreed 2026-08-09. An issue that
+  exists only on GitHub and not in a tier here is invisible to the plan — the
+  2026-08-08 reconciliation found 8 open issues untracked by any tier, 5 of them
+  already done. File it, tier it, in the same action.
 
 **Verification rule learned the hard way (2026-08-08):** when a signature in
 `app/src` changes, verify the DEPENDENTS too, not just the crate edited.
@@ -141,7 +151,7 @@ builds once per batch and merges on green. `TODO.md` updated at each landing.
       shipping degraded. Rust side small; the PACKAGING half (artifact must ship
       `bundled_resources/`) touches the release pipeline — coordinator to report
       rather than change packaging unilaterally.
-- [ ] **#381 — FOLDED INTO THE #440 BATCH.** Scoped against `working` 2026-08-09:
+- [ ] **#381 — TIER 4** (maintainer, 2026-08-09). Its code rode along with the #440 batch; the ISSUE is tracked in tier 4. Scoped against `working` 2026-08-09:
       real remaining work is **2 modules / 9 tests**, not six modules / 81.
       `remote_agent_context.rs` (4) is DONE (built under #438/#487);
       `orchestration/` (39) moved to #310/#304 when local orchestration was
@@ -376,29 +386,29 @@ only reality and never looking at the branches:**
       exactly. If #401 still wants palette wiring, nothing blocks it now.
 
 **Premises for all of tier 1 were verified against the pin on 2026-08-08 (all 8 real).**
-- [ ] #342 port `repository_gated_command_{drops_when_leaving,stays_within}_repository`.
+- [x] #342 port `repository_gated_command_{drops_when_leaving,stays_within}_repository`.
       Blocker removed: `simulate_directory_for_completion` exists at `app/src/terminal/input_test.rs:515`.
       Pin source: `app/src/terminal/input/slash_command_model_tests.rs:556,627`.
       NB the issue title garbles the first test name.
-- [ ] #410 util/bindings: two editable-binding regressions vs the pin.
+- [x] #410 util/bindings: two editable-binding regressions vs the pin.
       Verified: fork declares AND registers `TOGGLE_MAXIMIZE_PANE_BINDING_NAME`
       (`pane_group/mod.rs:184,434`) but never uses it at the pin's second site,
       `terminal/view/pane_impl.rs:692`.
-- [ ] #436 warpui_core TuiViewportedList: no trimmed-selection-line-ends option.
+- [x] #436 warpui_core TuiViewportedList: no trimmed-selection-line-ends option.
       Verified absent; pin has `trim_selection_line_ends` + `trimmed_selection_row_end`
       in `crates/warpui_core/src/elements/tui/viewported_list.rs:21,168,438`.
-- [ ] #498 file tree: `show_hidden_files` has no Settings toggle / palette action.
+- [x] #498 file tree: `show_hidden_files` has no Settings toggle / palette action.
       Verified: setting IS read (`code/file_tree/view.rs:357,418,726,1704`), no UI entry.
-- [ ] #549 duplicate dead test-fixture helpers. Verified: `app/src/test_util/virtual_fs.rs`
+- [x] #549 duplicate dead test-fixture helpers. Verified: `app/src/test_util/virtual_fs.rs`
       and `crates/virtual_fs/src/lib.rs` both define `git_repository_fixture`/`executable`/
       `fixtures`; the ONLY callers are each file's own `git_repository_fixture` calling its
       own `fixtures()`. Trap: delete inner-first or you break the self-reference.
-- [ ] #547 view_components: ActionButton.callout / AlertConfig::success / Dropdown::Naked unwired.
+- [x] #547 view_components: ActionButton.callout / AlertConfig::success / Dropdown::Naked unwired.
       `AlertConfig::success` verified at zero uses; confirm the other two individually.
-- [ ] #552 search/ai_context_menu: `render_search_bar` never called. Verified: defined at
+- [x] #552 search/ai_context_menu: `render_search_bar` never called. Verified: defined at
       `app/src/search/ai_context_menu/view.rs:1656`, no call site. (The same-named methods in
       command_palette/welcome_palette/theme_chooser ARE called — do not confuse them.)
-- [ ] #555 prompt/editor_modal: same-line-prompt toggle UI missing. Verified:
+- [x] #555 prompt/editor_modal: same-line-prompt toggle UI missing. Verified:
       `render_same_line_prompt_section` defined once at `app/src/prompt/editor_modal.rs:592`,
       never called.
 - [x] #532 CLOSED 2026-08-08: #419 has now landed (recovered from PR #538) and
@@ -408,18 +418,18 @@ only reality and never looking at the branches:**
       original premise ("its premise is false, #419 hasn't landed") is now moot.
 
 ### Tier 2 — small (~half a day each)
-- [ ] #523 cmd-k: `try_clear_buffer_in_agent_view` still checks only `is_agent_monitoring`
+- [x] #523 cmd-k: `try_clear_buffer_in_agent_view` still checks only `is_agent_monitoring`
       (`clear_buffer` was fixed; this one guard remains)
-- [ ] #545 CLI-agent image paste: keystroke is still agent-agnostic. Pin sends `ESC v`
+- [x] #545 CLI-agent image paste: keystroke is still agent-agnostic. Pin sends `ESC v`
       ONLY for `CLIAgent::Claude` on Windows; fork sends it for every agent, in BOTH
       `cli_agent_paste_keystroke_bytes` and `TerminalView::paste`.
-- [ ] #205 skill path classification uses client home dir, misclassifies remote skills
-- [ ] #299 SkillReference lacks remote/SSH path support
-- [ ] #300 Mermaid code block does not defer to code-block rendering while loading/failed
-- [ ] #313 BlocklistAIInputModel does not take an injected InputModePolicy
-- [ ] #342 cannot port repository_gated_command_* without simulate_directory_for_completion
-- [ ] #396 forking a conversation starts the new pane in the wrong working directory
-- [ ] #403 notebooks/editor: mermaid asset-load relayout tracking missing
+- [x] #205 skill path classification uses client home dir, misclassifies remote skills
+- [x] #299 SkillReference lacks remote/SSH path support
+- [x] #300 Mermaid code block does not defer to code-block rendering while loading/failed
+- [x] #313 BlocklistAIInputModel does not take an injected InputModePolicy
+- [x] #342 cannot port repository_gated_command_* without simulate_directory_for_completion
+- [x] #396 forking a conversation starts the new pane in the wrong working directory
+- [x] #403 notebooks/editor: mermaid asset-load relayout tracking missing
 - [x] #411 warp_cli: Harness has no Codex variant -- DONE 2026-08-08. Recovered from
       closed PR #546 (`feat/394-411-288-cli-agent-variants`); `Harness::Codex` parses
       everywhere including local-child-harness normalization, but local launch still
@@ -432,8 +442,8 @@ only reality and never looking at the branches:**
       `Cell::default()` instead of preserving it -- see
       `reset_invalid_trailing_wide_char` in
       `app/src/terminal/model/grid/grid_storage/resize.rs`, matching the oracle).
-- [ ] #552 search/ai_context_menu: render_search_bar never called
-- [ ] #554 code/editor_management: CodeManagerEvent::EditCompleted has no subscriber
+- [x] #552 search/ai_context_menu: render_search_bar never called
+- [x] #554 code/editor_management: CodeManagerEvent::EditCompleted has no subscriber
 
 ### Tier 3 — medium (1-3 days each)
 
@@ -481,6 +491,20 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
       what we decided since?"* **A decline can be individually sound and
       collectively wrong.** Re-check declines against decisions made after them.
 
+**FILED 2026-08-09 — tiered at filing per the rule above:**
+- [ ] #575 `RemoteAgentContextSnapshot.global_rules` is always empty. Split out of the
+      #440 batch after a scope correction: I had assumed `remote_context_files.rs`
+      supplied it — **it does not.** `global_rules` arrives pre-serialized in the
+      snapshot from daemon-side `ProjectContextModel::global_rules()`;
+      `remote_context_files.rs`'s real consumers (`metadata_project_rules.rs`,
+      `skill_watcher.rs::read_project_skill_contents`) are unrelated and absent here.
+      **Real scope:** daemon `ProjectContextModel::global_rules()` + client
+      `set_remote_global_rules`/`remove_remote_global_rules`/`remote_global_rules`
+      storage. **Blocker:** this fork's `ProjectContextModel`
+      (`crates/ai/src/project_context/model.rs`) is a flat local-only `path_to_rules`
+      map with no per-host scaffolding — comparable in size to the per-host skills
+      work that landed under #487/#353, not a wiring change. Tier 3.
+
 **REAL as filed:**
 - [ ] #284 no `received_rich_notification` latch on `CLIAgentSession`; fork derives
       rich-status statically per agent type (`listener/mod.rs:36-38`) vs the pin's
@@ -515,7 +539,7 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
       OZ_CLI *prompt-text* augmentation (`local_claude_child_prompt`) are all absent.
 
 **PARTLY REAL — scope narrowed, see each issue's re-scope comment:**
-- [ ] #147 ONLY `/theme` remains. `/clear`+`/set-tab-color` done; `/rename-conversation`
+- [x] #147 ONLY `/theme` remains. `/clear`+`/set-tab-color` done; `/rename-conversation`
       is genuinely cloud-coupled; `/reset-statusline`+`/copy-debugging-id` never existed
       at the pin — **that issue cited `warp/master`, the exact ORACLE.md trap.**
 - [ ] #341 prompt-attachment plumbing DONE (`29049f4f8`); `register_mock_stream_for_test`
@@ -556,8 +580,8 @@ declining the feature.
 Sizing: ~72 of ~305 orchestration-adjacent pin tests are import-clean of cloud.
 
 **Build order — these have a real dependency chain, do not parallelise:**
-- [ ] #310 topology + events modules (the non-cloud core, 36 pinned tests) — FIRST
-- [ ] #376 `AgentConversationData` fields the view reads. **Verify each field
+- [x] #310 topology + events modules (the non-cloud core, 36 pinned tests) — FIRST
+- [x] #376 `AgentConversationData` fields the view reads. **Verify each field
       individually**: the issue's claim that `is_remote_child` is missing is
       FALSE, it is already present.
 - [ ] #304 the orchestrator/child-agent view (pill bar, avatar, conversation
@@ -566,7 +590,7 @@ Sizing: ~72 of ~305 orchestration-adjacent pin tests are import-clean of cloud.
       closed citing the orchestration decline, and that citation is now stale.
 - [ ] #325 run-agents child prompt composition — **LOCAL arm only.**
 - [ ] #329 collapsible defaults — LAST, it configures presentation of the above.
-- [ ] #309 topology half only. **The credit-rollup half stays declined** — Warp
+- [x] #309 topology half only. **The credit-rollup half stays declined** — Warp
       credits are a billing concept with no BYOP equivalent.
 
 **Still declined, and this boundary matters:** the cloud-runner half. #290
@@ -616,11 +640,34 @@ changed an agreed order twice on 2026-08-09 (#381 folded into the #440 batch aga
 "after 440"; #405 re-tiered unasked) and both were wrong.
 
 ### Tier 4 — large (a week+)
-- [ ] #210 · #252 · #289 · #381 · #382 · #236 · #349 · #324 · #142
-- [ ] #405 notebooks/file: Jupyter (`.ipynb`) rendering missing
-      (`FeatureFlag::JupyterNotebooks`). Added to this tier 2026-08-08 — it had
-      never been tiered at all, found by reconciling every open issue against the
-      tier lists. A whole feature, hence tier 4.
+- [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #349 · #324 · #405
+      (#252, #289, #142 CLOSED 2026-08-08/09)
+- [ ] #381 — **work DONE, issue still open.** Its two real modules
+      (`local_harness_setup.rs` 5 tests, `remote_context_files.rs` 4 tests) are
+      committed on `working` awaiting the tier-3 merge; the other four modules it
+      named are either done (`remote_agent_context.rs`), moved to tier 3.5
+      (`orchestration/`), or declined (`agent_management/`,
+      `active_agent_views_model.rs`). **Close it when the tier-3 batch merges.**
+
+**#210 was re-filed as #576 after re-measuring all ten rows against `main`.** Its
+figures were wrong in BOTH directions: pin counts undercounted 2-4x on 6 of 10 rows
+(`input_tests.rs` 149 not 54, `view_tests.rs` 142 not 37); three rows listed as
+absent actually exist under fork-renamed paths at 78-94% ported (`input_test.rs`,
+`view_test.rs`, `local_model_test.rs`) — the exact filename-not-content error #210's
+own rules warned against; two rows were already closed (#142, #252); and
+`pane_group/mod_tests.rs` is majority-cloud (21 marker lines: `CodebaseIndexManager`,
+`IapManager`, `CloudConversationData`), not clean debt.
+**~521 claimed -> ~214 genuinely portable non-cloud tests.**
+- [ ] #405 Jupyter (`.ipynb`) rendering. **STAYS IN TIER 4** (maintainer, 2026-08-09).
+      Scoped 2026-08-09: verdict REAL, zero cloud,
+      but **~3-4x smaller than the tier-4 framing**: ~500-700 net-new lines across
+      ~12 files, ~30 tests, 1-3 days. The only genuinely new code is
+      `crates/ipynb_parser` (401 lines + 24 tests, self-contained nbformat-v4 JSON ->
+      `FormattedText`); everything else is 2-13 line hooks into files that already
+      exist, because ~90% of the scaffolding is already here (the whole
+      `app/src/notebooks/` subsystem, the `FeatureFlag` mechanism, `ContentFormat`,
+      `markdown_parser`, and `is_jupyter_notebook_file()` with its 6 tests already
+      passing). No blocking dependencies. See the issue for the 5-step order.
 
 **Being audited against the pin (2026-08-08), same treatment tier 3 got.** For
 this tier the TEST COUNTS are the main claim -- five of these issues assert a
@@ -787,7 +834,7 @@ exercised here at all. They need a macOS or Windows machine (or CI) to progress.
   declined.
 
 ### Not started — true gaps
-- [ ] **Skill remote-path** — now **#205**. Promoted out of this ledger after finding a
+- [x] **Skill remote-path** — now **#205**. Promoted out of this ledger after finding a
   real correctness bug rather than a missing feature: `get_provider_for_path` **and**
   `get_scope_for_path` both resolve `home_skills_path` against the *client's* home, so
   a remote skill under a same-named home dir is silently misclassified as local.
@@ -813,7 +860,7 @@ exercised here at all. They need a macOS or Windows machine (or CI) to progress.
   **false**: `connection_label_for_session_info` is called in production at
   `remote_server_controller.rs:290` and `:526`, not only from its own tests.
   Re-verified against `main` `8c1841a94` on 2026-08-06.
-- [ ] **`local_control` / `warpctrl` app-side** — **#200 is now CLOSED**, as a subset
+- [x] **`local_control` / `warpctrl` app-side** — **#200 is now CLOSED**, as a subset
   of **#216** (open), the comprehensive tracking issue: app-side module (23+2+2+1
   tests) + CLI-side module (19 tests) + settings group (6 tests, already landed via
   PR #472) = 53 tests. `crates/local_control` exists (14 source files);
