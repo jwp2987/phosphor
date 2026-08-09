@@ -198,15 +198,81 @@ only reality and never looking at the branches:**
 - [ ] #554 code/editor_management: CodeManagerEvent::EditCompleted has no subscriber
 
 ### Tier 3 — medium (1-3 days each)
-- [ ] #284 received_rich_notification: latch landed 2026-08-08, but
-      `CLIAgentSession::supports_rich_status()` and the listener `plugin_already_active`
-      OSC 9 dedup are still ABSENT; static per-agent derivation is still the source of truth
-- [ ] #147 · #216 · #217 · #254 · #256 · #316 · #323 · #338 · #341 · #343
-- [ ] #353 remote agent context snapshot (producer for #438's plumbing; #438 closed
-      with `remote_agent_context_snapshot()` returning None in production until this lands)
-- [ ] #388 · #389 · #390 · #395 · #397 · #431 · #536 · #548 · #553
-      (#419 DONE 2026-08-08, recovered from PR #538 alongside #422 -- see the
-      RECOVERED WORK table above)
+
+**Fully re-audited against the pin 2026-08-08.** All 20 prior entries were
+verified with file:line evidence; none came back uncertain. Result: 4 closed, 2
+absorbed into the tier-2 batch, 14 remain — and most of those are NARROWER than
+their titles claim. Read the issue's latest comment, not its title.
+
+CLOSED 2026-08-08 on evidence:
+- #536, #553 — dead code AT THE PIN TOO (`snapshot.rs`, `for_update`). Not gaps.
+- #548 — the only `impl Slide for` in all of Warp is `oz_launch.rs`, pure cloud
+  marketing. Scaffolding is faithfully ported; its one implementor is declined.
+- #338 — composite; every sub-item already done, declined, or never a pin feature.
+
+ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
+- #353 — the skills full-parity work includes `remote_agent_context.rs` and the
+  daemon-side producer, which IS #353's scope.
+- #388 — its 3 real sub-items touch the same proto/daemon files, so folded in to
+  avoid a second proto-regeneration cycle. (Sub-item 3, `GetCommittedBranchFiles`,
+  is NOT a gap — the fork uses direct RPC, functionally equivalent.)
+
+**REAL as filed:**
+- [ ] #284 no `received_rich_notification` latch on `CLIAgentSession`; fork derives
+      rich-status statically per agent type (`listener/mod.rs:36-38`) vs the pin's
+      per-event latch (`cli_agent_sessions/mod.rs:153,412,441`). 3 pinned tests.
+      **Touches the same struct as tier-2 #545** — adjacent, low risk.
+- [ ] #343 `BlocklistAIContextModel` has no `try_start_new_conversation` for TUI;
+      fork hard-codes the GUI path and always errors on TUI (`context_model.rs:1184`).
+      **BLOCKED on #316** — needs a real `AgentViewConversationSelection` to inject.
+- [ ] #316 `AgentViewConversationSelection` never ported. Delegation half is real,
+      portable debt (the `AgentViewController` it needs already exists at
+      `agent_view/controller.rs:778`). **The `classify_entry` half is entangled with
+      the #418 DECLINED decision** — it calls `ActiveAgentViewsModel`, permanently
+      deleted here; needs a `BlocklistAIHistoryModel`-based substitute, not a port.
+- [ ] #256 no persisted prompt-history snapshot / `prompt_history_candidates`
+      (pin `history_model.rs:331-333,2370`). Items 1/3/4 of the original issue are
+      superseded by #336/#337/#331; only item 2 remains.
+- [ ] #431 no lazy metadata-only conversation read + summary backfill. Fork reads
+      eagerly on every startup path (`sqlite.rs:3347`). 4 pinned tests. Real perf
+      AND correctness gap.
+- [ ] #217 Zap -> Phosphor rename incomplete: **361** `"Zap"` Rust literals on main
+      (issue said 357; drift, not error). Fork-internal, no pin comparison applies.
+      NOTE: renaming risks breaking persisted keybindings — see the open
+      `zapctrl` vs `warpctrl` maintainer decision.
+- [ ] #254 NARROWED to two items: `Input::unfreeze_agent_input` (pin
+      `input.rs:7625`) and `CommandExecutionSource::SharedSession`'s `preserve_input`
+      field. Items b/c are already ported (`input.rs:2037,2064`) via #399.
+- [ ] #323 NARROWED: `Harness::Codex` now exists (landed under #411), but local
+      Codex launch still returns "not yet implemented" (`local_harness_launch.rs:145-148`),
+      and `ANTHROPIC_MODEL` merge, `normalize_orchestrator_agent_name`, and the
+      OZ_CLI *prompt-text* augmentation (`local_claude_child_prompt`) are all absent.
+
+**PARTLY REAL — scope narrowed, see each issue's re-scope comment:**
+- [ ] #147 ONLY `/theme` remains. `/clear`+`/set-tab-color` done; `/rename-conversation`
+      is genuinely cloud-coupled; `/reset-statusline`+`/copy-debugging-id` never existed
+      at the pin — **that issue cited `warp/master`, the exact ORACLE.md trap.**
+- [ ] #341 prompt-attachment plumbing DONE (`29049f4f8`); `register_mock_stream_for_test`
+      exists. Remaining: `schedule_auto_resume_after_error`, `fail_conversation_due_to_shell_exit`,
+      `emit_response_event_for_test`.
+- [ ] #389 voice half DECLINED. Menu half is **ported but NOT WIRED** — `TuiReadOnlyMenuKind`
+      has zero call sites. Also: `status_menu.rs` landed at the WRONG PATH (top-level
+      instead of nested under `terminal_session_view/`); move it, do not re-port.
+- [ ] #390 `state.rs` done. Remaining: `completions.rs`, `shortcuts.rs`, the
+      attach/detach running-command API, and `terminal_use.rs`'s missing 6th param
+      `agent_owns_alt_screen_input`. **`completions.rs` is BLOCKED on #395's
+      completion-menu API.**
+- [ ] #395 footer wording FIXED. Remaining: ask-question multiselect, blocked-action
+      presentation, completion-menu API shape. File-edits expand/collapse: API landed
+      but the DEFAULT still diverges (fork collapses, pin expands).
+- [ ] #397 error tone FIXED. Remaining: statusline datetime/footer grouping
+      (`format_statusline_*`, `render_statusline_datetime`,
+      `TuiUiBuilder::shell_command_accent_style` — all absent).
+
+**SEQUENCING — the warp_tui cluster is NOT parallelisable.** #389/#390/#395/#397
+all touch `crates/warp_tui/src/terminal_session_view.rs`; #390 depends on #395's
+completion-menu API; #390 and #397 both need `TuiUiBuilder::shell_command_accent_style`.
+Work them as one ordered sequence. Likewise #343 is blocked on #316 — one pair.
 
 ### Tier 4 — large (a week+)
 - [ ] #210 · #252 · #289 · #381 · #382 · #236 · #349 · #324 · #142
