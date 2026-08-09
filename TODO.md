@@ -86,6 +86,30 @@ collision -- a July divergence contradicted by an August parity port, discovered
 in neither -- cost real time purely because nobody wrote it down. `DECLINED.md`
 already existed; it was not the tooling that failed.
 
+### RECONCILIATION 2026-08-08 late — every open issue is tiered
+
+Checked both directions programmatically (`gh issue list --state open` against
+the tier lists): **0 untracked, 0 listed-but-closed.**
+
+| bucket | count |
+|---|---|
+| tier 2 (in flight) | 2 — #205, #299 |
+| absorbed into tier 2 | 2 — #353, #388 |
+| tier 3 | 14 |
+| tier 4 | 10 |
+| maintainer decision, not code | 7 |
+| **open total** | **35** |
+
+Started the day at 63. The drop is **not** mostly fixes: roughly half were closed
+because the premise did not hold — six were symbols the pin does not call either
+(#552, #555, #547, #554, #536, #553), and several were records of completed work
+that nobody closed (#523, #4, #208, #338).
+
+**Re-run this reconciliation after any closing spree.** Eight issues were found
+untracked by the tiers on 2026-08-08 — five already done and simply never closed,
+#405 never tiered at all, and #4/#208 stale-open. A tier list nobody reconciles
+drifts silently, and the drift always reads as "more work remaining than there is".
+
 ### RECOVERED WORK from closed-unmerged PRs (2026-08-08)
 
 Nine PRs were closed without merging. When the workflow switched away from PRs
