@@ -201,20 +201,28 @@ struct DiffStateSubscription {
     mode: crate::code_review::diff_state::DiffMode,
 }
 
-/// Resolves the global bundled resources directory populated by the install script.
+/// Resolves the global bundled resources directory populated by the install
+/// script (see `remote_server::setup::remote_server_bundled_resources_dir()`),
+/// expanding the shell-form `~/` prefix against this process's home directory.
 ///
-/// **Always returns `None` in this fork.** The pin resolves this via
-/// `remote_server::setup::remote_server_bundled_resources_dir()`, which does not exist
-/// here — see issue #440 (reopened): the fork's install script/setup module has no
-/// `BUNDLED_RESOURCES_DIR_NAME` / `remote_server_bundled_resources_dir()` /
-/// `remote_server_removal_command()`, and the release artifact doesn't ship a
-/// `resources/` tree at all. That is separate, larger work (touches the release
-/// pipeline, not just Rust) and is deliberately not attempted here. Until #440 lands,
-/// `bundled_skills` below stays empty and the daemon logs why — the rest of the
-/// `RemoteAgentContextSnapshot` plumbing (`home_dir`, home skills) is unaffected.
+/// This deliberately does not use any macOS app-bundle resource resolution:
+/// the global location is version-independent, and a headless remote daemon
+/// has no app bundle to resolve against anyway.
+///
+/// #440: the Rust side is now wired up, but this fork's
+/// `install_remote_server.sh` doesn't yet create or populate
+/// `BUNDLED_RESOURCES_DIR_NAME` from the release artifact's `resources/`
+/// tree — that is a packaging/release-pipeline change, not a Rust one. Until
+/// it lands, this directory never exists on a freshly installed host, so
+/// this still returns `None` in practice and the daemon logs why. The rest
+/// of the `RemoteAgentContextSnapshot` plumbing (`home_dir`, home skills) is
+/// unaffected either way.
 #[cfg(feature = "local_fs")]
 fn daemon_bundled_resources_dir() -> Option<PathBuf> {
-    None
+    let dir = remote_server::setup::remote_server_bundled_resources_dir();
+    let suffix = dir.strip_prefix("~/")?;
+    let dir = dirs::home_dir()?.join(suffix);
+    dir.is_dir().then_some(dir)
 }
 
 /// Builds a `RemoteAgentContextSnapshot` for this host at `revision`, combining the
@@ -344,8 +352,9 @@ pub struct ServerModel {
     #[cfg(feature = "local_fs")]
     buffers: ServerBufferTracker,
     /// This daemon's own bundled-skill catalog, serialized once at startup by
-    /// `daemon_bundled_resources_dir`/`bundled_skill_snapshot_protos` (#353). Always
-    /// empty pending #440 — see `daemon_bundled_resources_dir`'s doc comment.
+    /// `daemon_bundled_resources_dir`/`bundled_skill_snapshot_protos` (#353). Empty
+    /// until the install script actually ships a `bundled_resources/` tree — see
+    /// `daemon_bundled_resources_dir`'s doc comment (#440).
     #[cfg(feature = "local_fs")]
     bundled_skills: Vec<RemoteSkillProto>,
     /// Latest revisioned full replacement of this daemon host's Agent Mode context

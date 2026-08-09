@@ -550,18 +550,34 @@ fn version_hash_is_deterministic() {
     assert!(hash(version).chars().all(|c| c.is_ascii_hexdigit()));
 }
 
-// NOTE: the oracle also has `bundled_resources_dir_is_global_and_version_independent`,
-// `install_script_installs_binary_and_global_resources`,
-// `install_script_substitutes_bundled_resources_dir_name`,
-// `install_script_tolerates_tarball_without_resources`, and
-// `removal_command_removes_binary_but_leaves_global_resources`. Not ported:
-// they all exercise a global, version-independent "bundled resources"
-// install directory (`BUNDLED_RESOURCES_DIR_NAME`, `remote_server_bundled_resources_dir()`,
-// `remote_server_removal_command()`) that ships the artifact's `resources/`
-// tree (bundled skills, settings schema) to the remote host. This fork's
-// `setup.rs` / `install_remote_server.sh` have no equivalent — the install
-// script only ever places the binary. This is a feature gap, not test
-// debt: see the filed issue for details and its interaction with #170
-// (remote daemon force-included/project-skill watch registration) — even if
-// #170 wired up the daemon side, there is currently no client-side
-// mechanism shipping skill content to the remote host at all.
+#[test]
+fn bundled_resources_dir_is_global_and_version_independent() {
+    let dir = remote_server_bundled_resources_dir();
+    assert_eq!(
+        dir,
+        format!("{}/{}", remote_server_dir(), BUNDLED_RESOURCES_DIR_NAME)
+    );
+    // The whole point of the global location: no version in the path.
+    assert!(!dir.contains(pinned_version()));
+}
+
+#[test]
+fn removal_command_removes_binary_but_leaves_global_resources() {
+    let command = remote_server_removal_command();
+    assert_eq!(command, format!("rm -f {}", remote_server_binary()));
+    assert!(!command.contains(BUNDLED_RESOURCES_DIR_NAME));
+}
+
+// NOTE (#440): the oracle also has `install_script_installs_binary_and_global_resources`,
+// `install_script_substitutes_bundled_resources_dir_name`, and
+// `install_script_tolerates_tarball_without_resources`. Not ported: all three
+// exercise `install_remote_server.sh` actually creating and populating
+// `BUNDLED_RESOURCES_DIR_NAME` from the release artifact's `resources/` tree
+// (bundled skills, settings schema). That is a packaging/release-pipeline
+// change (the install script template plus what the release artifact ships),
+// not a Rust-side gap — `remote_server_bundled_resources_dir()` and
+// `remote_server_removal_command()` above are ported and correct, but until
+// the install script is updated to populate the directory they name, it
+// never exists on a freshly installed host and the daemon always takes its
+// "no bundled resources" branch at runtime. See the filed issue for the
+// packaging half.

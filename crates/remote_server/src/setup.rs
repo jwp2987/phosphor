@@ -425,6 +425,16 @@ pub fn binary_check_command() -> String {
     format!("{} --version", remote_server_binary())
 }
 
+/// Returns the shell command to remove the current remote-server binary.
+///
+/// The global bundled resources directory (see
+/// [`remote_server_bundled_resources_dir`]) is deliberately left in place:
+/// the next install overwrites it, and an older daemon that is still
+/// running parsed its skills from it at startup.
+pub fn remote_server_removal_command() -> String {
+    format!("rm -f {}", remote_server_binary())
+}
+
 /// Returns the version number used for the versioned install path. Prefers
 /// the compile-time-injected `GIT_RELEASE_TAG`; falls back to
 /// `CARGO_PKG_VERSION` when there's no release tag, keeping channels that
@@ -432,6 +442,32 @@ pub fn binary_check_command() -> String {
 /// corresponding release asset is missing rather than mistakenly using the unversioned path.
 fn pinned_version() -> &'static str {
     ChannelState::app_version().unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+/// Name of the global, version-independent resources directory inside
+/// [`remote_server_dir`], meant to be populated by the install script from
+/// the release artifact's `resources/` tree (bundled skills, settings
+/// schema).
+///
+/// NOTE (#440): this fork's `install_remote_server.sh` does not currently
+/// create or populate this directory — only [`remote_server_bundled_resources_dir`]
+/// and the Rust-side consumer (`daemon_bundled_resources_dir` in
+/// `app/src/remote_server/server_model.rs`) are ported here. Until the
+/// install script and release artifact are updated to ship a
+/// `resources/` tree, this directory never exists on a freshly installed
+/// host, so the daemon always takes its "no bundled resources" branch at
+/// runtime. See that issue for the packaging half.
+pub const BUNDLED_RESOURCES_DIR_NAME: &str = "bundled_resources";
+
+/// Returns the global, version-independent directory where the install
+/// script would place the artifact's `resources/` tree. Shell-form path
+/// (`~/...`); the daemon expands it against its own home directory.
+///
+/// Deliberately not version-scoped: the last install wins, and slight
+/// version skew between the resources and a running daemon is accepted
+/// (the daemon parses its skills once at startup).
+pub fn remote_server_bundled_resources_dir() -> String {
+    format!("{}/{}", remote_server_dir(), BUNDLED_RESOURCES_DIR_NAME)
 }
 
 /// The install script template lives in a separate `.sh` file for easier maintenance.
