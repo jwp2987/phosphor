@@ -10249,8 +10249,13 @@ impl TerminalView {
         ctx.notify();
     }
 
-    /// Sends telemetry if an AI-requested command caused the shell to exit.
-    fn maybe_send_agent_exited_shell_telemetry(&self, ctx: &mut ViewContext<Self>) {
+    /// Sends telemetry if an AI-requested command caused the shell to exit, and returns the
+    /// conversation that requested it (if any) so the caller can finalize it as a failure
+    /// via `BlocklistAIController::fail_conversation_due_to_shell_exit` (#341).
+    fn maybe_send_agent_exited_shell_telemetry(
+        &self,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<AIConversationId> {
         let model = self.model.lock();
         let block_list = model.block_list();
         let blocks = block_list.blocks();
@@ -10272,29 +10277,29 @@ impl TerminalView {
                         .get(prev_idx)
                         .filter(|b| b.requested_command_action_id().is_some())
                 })
-            });
+            })?;
 
-        if let Some(block) = agent_block {
-            let mut command = block.command_to_string();
-            redact_secrets(&mut command);
+        let mut command = agent_block.command_to_string();
+        redact_secrets(&mut command);
 
-            let server_output_id = block.ai_conversation_id().and_then(|conversation_id| {
-                BlocklistAIHistoryModel::as_ref(ctx)
-                    .conversation(&conversation_id)
-                    .and_then(|conversation| {
-                        conversation
-                            .latest_exchange()
-                            .and_then(|e| e.output_status.server_output_id())
-                    })
-            });
-            send_telemetry_from_ctx!(
-                TelemetryEvent::AgentExitedShellProcess {
-                    command,
-                    server_output_id,
-                },
-                ctx
-            );
-        }
+        let conversation_id = agent_block.ai_conversation_id();
+        let server_output_id = conversation_id.and_then(|conversation_id| {
+            BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .and_then(|conversation| {
+                    conversation
+                        .latest_exchange()
+                        .and_then(|e| e.output_status.server_output_id())
+                })
+        });
+        send_telemetry_from_ctx!(
+            TelemetryEvent::AgentExitedShellProcess {
+                command,
+                server_output_id,
+            },
+            ctx
+        );
+        conversation_id
     }
 
     /// Updates the agent view back button's disabled state and tooltip based on whether
@@ -10367,8 +10372,17 @@ impl TerminalView {
                 ctx.request_user_attention();
             }
             ModelEvent::Exit { reason } => {
-                if !self.manual_pty_shutdown_requested {
-                    self.maybe_send_agent_exited_shell_telemetry(ctx);
+                if !self.manual_pty_shutdown_requested
+                    && let Some(conversation_id) = self.maybe_send_agent_exited_shell_telemetry(ctx)
+                {
+                    // The agent's command caused the shell to exit. Finalize the
+                    // conversation as a failure (with a message) before the pane is
+                    // torn down, so status consumers report the failure instead of
+                    // "Cancelled by user" (which the pane-close cancellation would
+                    // otherwise produce).
+                    self.ai_controller.update(ctx, |controller, ctx| {
+                        controller.fail_conversation_due_to_shell_exit(conversation_id, ctx);
+                    });
                 }
 
                 // If the pty spawn has failed, we've already inserted a banner.

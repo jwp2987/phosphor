@@ -7,12 +7,36 @@ use warpui::{App, SingletonEntity};
 
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
-    AIAgentAttachment, AIAgentContext, AIAgentInput, ImageContext, PassiveSuggestionTrigger,
+    AIAgentAttachment, AIAgentContext, AIAgentExchange, AIAgentExchangeId, AIAgentInput,
+    AIAgentOutputStatus, CancellationReason, ImageContext, PassiveSuggestionTrigger,
     UserQueryMode,
 };
 use crate::ai::ambient_agents::AmbientAgentTaskId;
+use crate::ai::blocklist::controller::response_stream::{ResponseStream, ResponseStreamId};
 use crate::ai::blocklist::{BlocklistAIHistoryModel, PendingAttachment, PendingFile};
+use crate::ai::llms::LLMId;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
+
+/// Minimal streaming exchange, mirroring `terminal/view_test.rs`'s local `exchange_with_inputs`
+/// helper (not `pub`, so duplicated here rather than shared).
+fn streaming_exchange() -> AIAgentExchange {
+    AIAgentExchange {
+        id: AIAgentExchangeId::new(),
+        input: vec![],
+        output_status: AIAgentOutputStatus::Streaming { output: None },
+        added_message_ids: Default::default(),
+        start_time: chrono::Local::now(),
+        finish_time: None,
+        time_to_first_token_ms: None,
+        working_directory: None,
+        model_id: LLMId::from("test-model"),
+        request_cost: None,
+        coding_model_id: LLMId::from("test-coding-model"),
+        cli_agent_model_id: LLMId::from("test-cli-agent-model"),
+        computer_use_model_id: LLMId::from("test-computer-use-model"),
+        response_initiator: None,
+    }
+}
 
 fn new_ambient_agent_task_id() -> AmbientAgentTaskId {
     Uuid::new_v4().to_string().parse().unwrap()
@@ -178,6 +202,79 @@ fn input_for_query_converts_prompt_attachments_and_ignores_live_staging() {
             assert!(referenced_attachments.contains_key("notes.txt"));
             assert!(referenced_attachments.contains_key("notes.txt (1)"));
             assert!(!referenced_attachments.contains_key("live.txt"));
+        });
+    });
+}
+
+/// When an agent command exits the shell, the conversation must be finalized as
+/// `Error` (not `Cancelled`), and a subsequent `ManuallyCancelled` (as fired by
+/// the pane-close path) must not overwrite that failure.
+///
+/// Ported from the pin (`app/src/ai/blocklist/controller_tests.rs:338`, `02b53fcd8`) for #341.
+/// Adapted to set up the in-flight stream via `append_reassigned_exchange` +
+/// `register_mock_stream_for_test`, the pattern this fork's own
+/// `terminal/view_test.rs` mock-stream tests already use, rather than the pin's
+/// `RequestInput`/`update_conversation_for_new_request_input` path -- both make
+/// `is_processing_response_stream` return true for the stream id, which is all
+/// `fail_conversation_due_to_shell_exit` and `cancel_conversation_progress` need.
+#[test]
+fn fail_conversation_due_to_shell_exit_reports_error_and_survives_manual_cancel() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            let terminal_view_id = view.id();
+            let stream_id = ResponseStreamId::new_for_test();
+            let conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                    let conversation_id =
+                        history.start_new_conversation(terminal_view_id, false, false, ctx);
+                    history
+                        .conversation_mut(&conversation_id)
+                        .expect("conversation should exist")
+                        .append_reassigned_exchange(
+                            &stream_id,
+                            streaming_exchange(),
+                            terminal_view_id,
+                            ctx,
+                        )
+                        .expect("exchange should append");
+                    conversation_id
+                });
+            let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+            view.ai_controller().update(ctx, |controller, ctx| {
+                controller.register_mock_stream_for_test(stream_id, conversation_id, stream, ctx);
+                controller.fail_conversation_due_to_shell_exit(conversation_id, ctx);
+            });
+            conversation_id
+        });
+
+        // The in-flight request is finalized as Error (with the shell-exit error
+        // on its exchange), not Cancelled.
+        BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            assert_eq!(
+                history.conversation(&conversation_id).map(|c| c.status()),
+                Some(&crate::ai::agent::conversation::ConversationStatus::Error)
+            );
+        });
+
+        // The pane-close cancellation path must be a no-op now that the
+        // conversation is terminal.
+        terminal.update(&mut app, |view, ctx| {
+            view.ai_controller().update(ctx, |controller, ctx| {
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+            });
+        });
+        BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            assert_eq!(
+                history.conversation(&conversation_id).map(|c| c.status()),
+                Some(&crate::ai::agent::conversation::ConversationStatus::Error)
+            );
         });
     });
 }

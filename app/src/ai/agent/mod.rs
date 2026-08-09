@@ -102,6 +102,14 @@ pub enum CancellationReason {
     /// The long-running command completed while the agent was still streaming.
     /// This should be treated as a successful completion, not a cancellation.
     OptimisticCLISubagentCompletion,
+
+    /// An agent-issued command caused the shell process to exit (e.g. it ran
+    /// `exit`, or ran a failing command after enabling `set -e`). The in-flight
+    /// stream/actions are cancelled to stop work, but the conversation is
+    /// finalized as a terminal `Error` (with a shell-exit message) by
+    /// `BlocklistAIController::fail_conversation_due_to_shell_exit` rather than
+    /// reported as a user cancellation.
+    AgentExitedShell,
 }
 
 impl Display for CancellationReason {
@@ -115,6 +123,7 @@ impl Display for CancellationReason {
             CancellationReason::OptimisticCLISubagentCompletion => {
                 write!(f, "LRC command completed")
             }
+            CancellationReason::AgentExitedShell => write!(f, "agent command exited the shell"),
         }
     }
 }
@@ -141,6 +150,14 @@ impl CancellationReason {
 
     pub fn is_lrc_command_completed(&self) -> bool {
         matches!(self, CancellationReason::OptimisticCLISubagentCompletion)
+    }
+
+    /// The shell died under the agent; `fail_conversation_due_to_shell_exit` finalizes
+    /// this as a terminal `Error` directly, so the cancellation machinery
+    /// (`AIConversation::mark_request_cancelled`) must not stamp a `Cancelled` status
+    /// over it.
+    pub fn is_agent_exited_shell(&self) -> bool {
+        matches!(self, CancellationReason::AgentExitedShell)
     }
 }
 
@@ -645,6 +662,9 @@ pub enum RenderableAIError {
         /// connectivity before attempting the resume.
         waiting_for_network: bool,
     },
+    /// An agent-issued command caused the shell process to exit. Set by
+    /// `BlocklistAIController::fail_conversation_due_to_shell_exit`.
+    AgentExitedShell,
 }
 
 /// The cause behind a [`RenderableAIError::TransientNetworkError`]. Kept structured (rather than
@@ -672,6 +692,7 @@ pub enum TransientNetworkErrorKind {
 impl RenderableAIError {
     const TRANSIENT_NETWORK_ERROR_MESSAGE: &'static str =
         "Zap lost connection while receiving the agent response. This is usually temporary.";
+    const AGENT_EXITED_SHELL_MESSAGE: &'static str = "The shell exited while the agent was running a command, so the run could not continue. Ensure the agent is not asked to run commands or source scripts that can exit the shell.";
 
     /// Creates a transient network error. `kind` is the structured cause, preserved so user
     /// reports can disambiguate the different causes behind the shared user-facing copy.
@@ -800,6 +821,7 @@ impl Display for RenderableAIError {
                 )
             }
             Self::Other { error_message, .. } => write!(f, "{error_message}"),
+            Self::AgentExitedShell => write!(f, "{}", Self::AGENT_EXITED_SHELL_MESSAGE),
         }
     }
 }

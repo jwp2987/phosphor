@@ -1763,6 +1763,42 @@ impl BlocklistAIController {
         );
     }
 
+    /// Schedules an auto-resume-after-error for the conversation once the network is online,
+    /// so the resume doesn't fire while offline and immediately fail again.
+    ///
+    /// Adapted from the pin (`app/src/ai/blocklist/controller.rs:2058`, `02b53fcd8`) for #341.
+    /// Extracted from two identical inline call sites in this file (BYOP local-resume-on-bad-args
+    /// handling, and the `should_resume_conversation_after_stream_finished` path) that had
+    /// duplicated this exact wait-for-online-then-resume logic. Deliberately does NOT port the
+    /// pin's second wait condition, `OneTimeModalModel::wait_until_auto_handoff_sleep_modal_closed()`
+    /// -- that guards against racing Warp's cloud auto-handoff-on-sleep feature
+    /// (`workspace/auto_handoff.rs`, `AutoCloudHandoffTrigger`), which is cloud-only and dropped
+    /// here (see `SCOPE-AI.md`'s `blocklist/handoff/*` entries; `ActiveAgentViewsModel`, on which
+    /// that subsystem depends, is permanently removed per `DECLINED.md`). Without cloud handoff
+    /// there is no modal to race, so omitting the wait is a correct no-op, not a trim.
+    fn schedule_auto_resume_after_error(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let wait_for_online = NetworkStatus::as_ref(ctx).wait_until_online();
+        let handle = ctx.spawn(wait_for_online, move |me, _, ctx| {
+            // Clean up the pending handle now that the resume is executing.
+            me.pending_auto_resume_handles.remove(&conversation_id);
+            me.resume_conversation(
+                conversation_id,
+                // Don't allow a second resume-on-error to prevent a persistent loop.
+                /*can_attempt_resume_on_error*/
+                false,
+                /*is_auto_resume_after_error*/ true,
+                vec![],
+                ctx,
+            );
+        });
+        self.pending_auto_resume_handles
+            .insert(conversation_id, handle);
+    }
+
     pub fn send_passive_code_diff_request(
         &mut self,
         query: String,
@@ -3342,6 +3378,91 @@ impl BlocklistAIController {
         }
     }
 
+    /// Finalizes a conversation as a terminal failure because an agent-issued
+    /// command caused the shell process to exit (e.g. it ran `exit`, or ran a
+    /// failing command after enabling `set -e`).
+    ///
+    /// Invoked from the terminal view's shell-exit handler before the pane is
+    /// torn down. The conversation is moved into a terminal `Error` state with a
+    /// shell-exit message so that status consumers report a failure (with an
+    /// explanation) instead of "Cancelled by user", and so a subsequent
+    /// pane-close cancellation -- which is guarded by `is_in_progress` -- becomes
+    /// a no-op and cannot overwrite the failure.
+    ///
+    /// Ported from the pin (`app/src/ai/blocklist/controller.rs:2732`, `02b53fcd8`) for #341.
+    pub fn fail_conversation_due_to_shell_exit(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let terminal_view_id = self.terminal_view_id;
+        let history_model = BlocklistAIHistoryModel::handle(ctx);
+
+        // Only act on conversations that are still running. A finished
+        // conversation (e.g. the agent already completed) must not be
+        // retroactively marked as failed.
+        let is_in_progress = history_model
+            .as_ref(ctx)
+            .conversation(&conversation_id)
+            .is_some_and(|conversation| conversation.status().is_in_progress());
+        if !is_in_progress {
+            return;
+        }
+
+        // Finish any in-flight response stream(s) with the shell-exit error. This
+        // marks the streaming exchange(s) as errored, sets the conversation to
+        // `Error` (with a message), and renders the failure inline. We then cancel
+        // the underlying request so it stops streaming; the cancellation does not
+        // overwrite the status because `mark_request_cancelled` ignores the
+        // `AgentExitedShell` reason.
+        let stream_ids = self
+            .in_flight_response_streams
+            .stream_ids_for_conversation(conversation_id, ctx);
+        let had_in_flight_stream = !stream_ids.is_empty();
+        for stream_id in &stream_ids {
+            history_model.update(ctx, |history_model, ctx| {
+                history_model.mark_response_stream_completed_with_error(
+                    RenderableAIError::AgentExitedShell,
+                    /* recovery_pending */ false,
+                    stream_id,
+                    conversation_id,
+                    terminal_view_id,
+                    ctx,
+                );
+            });
+            self.try_cancel_pending_response_stream(
+                stream_id,
+                CancellationReason::AgentExitedShell,
+                ctx,
+            );
+        }
+
+        // Stop any pending or mid-execution actions so a queued action result
+        // can't subsequently move the conversation back to Success/Cancelled.
+        self.action_model.update(ctx, |action_model, ctx| {
+            action_model.cancel_all_pending_actions(
+                conversation_id,
+                Some(CancellationReason::AgentExitedShell),
+                ctx,
+            );
+        });
+
+        // If there was no in-flight stream to attach the error to (e.g. the agent
+        // ran `exit` and no follow-up request was in flight), set the terminal
+        // `Error` status directly.
+        if !had_in_flight_stream {
+            history_model.update(ctx, |history_model, ctx| {
+                history_model.update_conversation_status_with_error_message(
+                    terminal_view_id,
+                    conversation_id,
+                    ConversationStatus::Error,
+                    Some(RenderableAIError::AgentExitedShell.to_string()),
+                    ctx,
+                );
+            });
+        }
+    }
+
     /// Returns `true` if there is an in-flight response stream for the given conversation.
     pub fn has_active_stream_for_conversation(
         &self,
@@ -3798,22 +3919,7 @@ impl BlocklistAIController {
                              or _byop_intercepted) without queued action → schedule auto-resume. \
                              conversation_id={conversation_id:?}"
                         );
-                        let network_status = NetworkStatus::handle(ctx);
-                        let wait_for_online = network_status.as_ref(ctx).wait_until_online();
-                        let handle = ctx.spawn(wait_for_online, move |me, _, ctx| {
-                            me.pending_auto_resume_handles.remove(&conversation_id);
-                            me.resume_conversation(
-                                conversation_id,
-                                /*can_attempt_resume_on_error*/
-                                false,
-                                /*is_auto_resume_after_error*/
-                                true,
-                                vec![],
-                                ctx,
-                            );
-                        });
-                        self.pending_auto_resume_handles
-                            .insert(conversation_id, handle);
+                        self.schedule_auto_resume_after_error(conversation_id, ctx);
                     }
                 }
 
@@ -3827,25 +3933,7 @@ impl BlocklistAIController {
                     .as_ref(ctx)
                     .should_resume_conversation_after_stream_finished()
                 {
-                    let network_status = NetworkStatus::handle(ctx);
-                    let wait_for_online = network_status.as_ref(ctx).wait_until_online();
-                    let handle = ctx.spawn(wait_for_online, move |me, _, ctx| {
-                        // Clean up the pending handle now that the resume is executing.
-                        me.pending_auto_resume_handles.remove(&conversation_id);
-                        me.resume_conversation(
-                            conversation_id,
-                            // Don't allow a second resume-on-error to prevent a persistent
-                            // loop.
-                            /*can_attempt_resume_on_error*/
-                            false,
-                            /*is_auto_resume_after_error*/
-                            true,
-                            vec![],
-                            ctx,
-                        );
-                    });
-                    self.pending_auto_resume_handles
-                        .insert(conversation_id, handle);
+                    self.schedule_auto_resume_after_error(conversation_id, ctx);
                 }
 
                 // Clean up the response stream tracking entry now that the stream is complete.

@@ -2082,8 +2082,10 @@ impl AIConversation {
         self.write_updated_conversation_state(ctx);
 
         // Don't mark the conversation as Cancelled if we're just cancelling to send a follow-up
-        // on the same conversation. The conversation will be immediately set back to InProgress.
-        if !reason.is_follow_up_for_same_conversation() {
+        // on the same conversation (it will be immediately set back to InProgress), or if the
+        // shell exited under the agent -- `fail_conversation_due_to_shell_exit` finalizes that
+        // as a terminal `Error` directly and must not be overwritten with `Cancelled` here.
+        if !reason.is_follow_up_for_same_conversation() && !reason.is_agent_exited_shell() {
             self.update_status(ConversationStatus::Cancelled, terminal_view_id, ctx);
         }
         Ok(())
