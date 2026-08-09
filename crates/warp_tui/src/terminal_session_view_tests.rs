@@ -47,8 +47,9 @@ use super::{
     THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin, TuiQueuedFollowUp,
     TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
     cost_command_unavailable_hint, export_file_success_message, format_statusline_date,
-    format_statusline_time_12_hour, format_statusline_time_24_hour, log_bundle_success_message,
-    raw_prompt_if_not_blank, render_status_footer_row, render_statusline_datetime,
+    format_statusline_time_12_hour, format_statusline_time_24_hour, format_todo_progress,
+    log_bundle_success_message, raw_prompt_if_not_blank, render_status_footer_row,
+    render_statusline_datetime,
 };
 use crate::autoupdate::TuiAutoupdater;
 use crate::inline_menu::MAX_INLINE_MENU_ROWS;
@@ -146,6 +147,7 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
                         FooterSegment::ContextWindowUsage(render_context_usage_entry(0.426, ctx)),
                         FooterSegment::DateTime(TuiText::new("July 20, 2026").finish()),
                         FooterSegment::DateTime(TuiText::new("1:08pm").finish()),
+                        FooterSegment::AgentTodoList("❒ 1/10".to_owned()),
                     ],
                 },
                 &builder,
@@ -154,7 +156,7 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
             assert_eq!(
                 render_element(row, ctx, 160).to_lines(),
                 vec![
-                    "Auto-approve • Auto-queue | model /tmp/warp ↬ main | +31 -12 | 43% context | July 20, 2026 • 1:08pm"
+                    "Auto-approve • Auto-queue | model /tmp/warp ↬ main | +31 -12 | 43% context | July 20, 2026 • 1:08pm | ❒ 1/10"
                         .to_owned()
                 ],
             );
@@ -1942,6 +1944,10 @@ fn footer_does_not_render_credit_actions() {
     });
 }
 
+// The pin's `figma_statusline_metadata_formats_are_stable`. Its
+// `format_todo_progress` assertions were dropped when this test was first
+// ported (fix(#576) 1fce977cd) because that function did not exist in the
+// fork yet; they are restored now that `AgentTodoList` is ported.
 #[test]
 fn statusline_datetime_formats_are_stable() {
     let now = NaiveDate::from_ymd_opt(2026, 7, 20)
@@ -1951,6 +1957,8 @@ fn statusline_datetime_formats_are_stable() {
     assert_eq!(format_statusline_date(now), "July 20, 2026");
     assert_eq!(format_statusline_time_12_hour(now), "1:08pm");
     assert_eq!(format_statusline_time_24_hour(now), "13:08");
+    assert_eq!(format_todo_progress(1, 10, false), "❒ 1/10");
+    assert_eq!(format_todo_progress(10, 10, true), "✓ 10/10");
 }
 
 #[test]

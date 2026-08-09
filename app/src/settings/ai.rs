@@ -639,10 +639,11 @@ pub enum TuiStatuslineItem {
     Time12Hour,
     #[schemars(rename = "time_24_hour")]
     Time24Hour,
+    AgentTodoList,
 }
 
 impl TuiStatuslineItem {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::AutoApprove,
         Self::AutoQueue,
         Self::Model,
@@ -653,6 +654,7 @@ impl TuiStatuslineItem {
         Self::Date,
         Self::Time12Hour,
         Self::Time24Hour,
+        Self::AgentTodoList,
     ];
 
     pub fn label(self) -> &'static str {
@@ -667,6 +669,7 @@ impl TuiStatuslineItem {
             Self::Date => "Date",
             Self::Time12Hour => "Time (12 hour format)",
             Self::Time24Hour => "Time (24 hour format)",
+            Self::AgentTodoList => "Agent to-do list",
         }
     }
 }
