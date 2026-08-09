@@ -1221,6 +1221,8 @@ settings-code-project-explorer = Project explorer
 settings-code-project-explorer-desc = Adds an IDE-style project explorer / file tree to the left side tools panel.
 settings-code-global-search = Global file search
 settings-code-global-search-desc = Adds global file search to the left side tools panel.
+settings-code-show-hidden-files = Show hidden files in project explorer
+settings-code-show-hidden-files-desc = Show dotfiles and hidden files (starting with .) in the project explorer.
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----
@@ -1743,6 +1745,7 @@ keybinding-desc-workspace-save-launch-config = Save new launch configuration
 # Project Explorer / panels
 keybinding-desc-workspace-toggle-project-explorer = Toggle project explorer
 keybinding-desc-workspace-toggle-project-explorer-menu = Project Explorer
+keybinding-desc-workspace-toggle-hidden-files = Toggle hidden files in Project Explorer
 keybinding-desc-workspace-show-theme-chooser = Open theme picker
 keybinding-desc-workspace-toggle-tab-configs-menu = Open tab configs menu
 

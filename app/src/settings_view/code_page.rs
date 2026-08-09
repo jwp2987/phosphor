@@ -73,6 +73,7 @@ impl CodeSettingsPageView {
                 Box::new(CodeReviewDiffStatsToggleWidget::default()),
                 Box::new(ProjectExplorerToggleWidget::default()),
                 Box::new(GlobalSearchToggleWidget::default()),
+                Box::new(ShowHiddenFilesToggleWidget::default()),
             ];
             (widgets, Some(editor_view))
         } else {
@@ -101,6 +102,7 @@ impl CodeSettingsPageView {
                     Box::new(CodeReviewDiffStatsToggleWidget::default()),
                     Box::new(ProjectExplorerToggleWidget::default()),
                     Box::new(GlobalSearchToggleWidget::default()),
+                    Box::new(ShowHiddenFilesToggleWidget::default()),
                 ]
             } else {
                 vec![]
@@ -136,6 +138,7 @@ pub enum CodeSettingsPageAction {
     ToggleAutoOpenCodeReviewPane,
     ToggleProjectExplorer,
     ToggleGlobalSearch,
+    ToggleShowHiddenFiles,
 }
 
 impl TypedActionView for CodeSettingsPageView {
@@ -171,6 +174,12 @@ impl TypedActionView for CodeSettingsPageView {
             CodeSettingsPageAction::ToggleGlobalSearch => {
                 CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.show_global_search.toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            CodeSettingsPageAction::ToggleShowHiddenFiles => {
+                CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.show_hidden_files.toggle_and_save_value(ctx));
                 });
                 ctx.notify();
             }
@@ -456,6 +465,49 @@ impl SettingsWidget for GlobalSearchToggleWidget {
                 })
                 .finish(),
             Some(crate::t!("settings-code-global-search-desc")),
+        )
+    }
+}
+
+// Ported from the pin (`02b53fcd8:app/src/settings_view/code_page.rs`); issue #498. Mirrors
+// `ProjectExplorerToggleWidget` / `GlobalSearchToggleWidget` above -- see #340 for the
+// underlying setting and dotfile-filtering logic this exposes a control for.
+#[derive(Default)]
+struct ShowHiddenFilesToggleWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for ShowHiddenFilesToggleWidget {
+    type View = CodeSettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "show hidden files dotfiles project explorer file tree"
+    }
+
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let code_settings = CodeSettings::as_ref(app);
+
+        render_body_item::<CodeSettingsPageAction>(
+            crate::t!("settings-code-show-hidden-files"),
+            None,
+            LocalOnlyIconState::Hidden,
+            ToggleState::Enabled,
+            appearance,
+            appearance
+                .ui_builder()
+                .switch(self.switch_state.clone())
+                .check(*code_settings.show_hidden_files)
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(CodeSettingsPageAction::ToggleShowHiddenFiles);
+                })
+                .finish(),
+            Some(crate::t!("settings-code-show-hidden-files-desc")),
         )
     }
 }

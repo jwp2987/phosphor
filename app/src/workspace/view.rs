@@ -603,6 +603,11 @@ pub(crate) const LEFT_PANEL_WARP_DRIVE_BINDING_NAME: &str = "workspace:left_pane
 pub(crate) const LEFT_PANEL_AGENT_CONVERSATIONS_BINDING_NAME: &str =
     "workspace:left_panel_agent_conversations";
 pub(crate) const LEFT_PANEL_SKILL_MANAGER_BINDING_NAME: &str = "workspace:left_panel_skill_manager";
+// Matches the pin's literal binding name (`02b53fcd8:app/src/workspace/mod.rs`) rather than
+// the `workspace:` prefix used above -- the pin keys this one under `file_tree` since it's
+// conceptually a file-tree/project-explorer setting, even though it's registered here
+// alongside the other left-panel bindings. Issue #498.
+pub(crate) const TOGGLE_HIDDEN_FILES_BINDING_NAME: &str = "file_tree:toggle_hidden_files";
 
 const KEYBINDINGS_TO_CACHE: [&str; 4] = [
     ASK_AI_ASSISTANT_KEYBINDING_NAME,
@@ -21238,6 +21243,11 @@ impl TypedActionView for Workspace {
                         ctx,
                     );
                 }
+            }
+            ToggleHiddenFiles => {
+                CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings.show_hidden_files.toggle_and_save_value(ctx));
+                });
             }
             OpenGlobalSearch => {
                 if FeatureFlag::GlobalSearch.is_enabled()
