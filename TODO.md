@@ -45,6 +45,47 @@ Of 11 issues examined closely on 2026-08-08, four stated the opposite of the cod
 (#437, #418, #532, #548-partly) and three more were already partly done. Estimating
 from titles here is unreliable.
 
+## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
+
+Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is
+expensive by nature. Moving the pin later repeats tonight's motions, and most of
+it can be mechanised -- but only if the inputs are recorded WHILE the first pass
+happens. Retrofitting them afterwards costs as much as the pass itself.
+
+**Mechanisable, worth building:**
+- [ ] **Identical-to-pin manifest.** Per fork file, record whether it is
+      byte-identical to the pin. Files that are identical can be fast-forwarded
+      at the next re-pin with zero judgment. This single number tells us how
+      cheap re-pinning actually gets. Cheap to generate as a one-off measurement
+      (same method as the 2026-08-08 coverage measurement).
+- [ ] **Re-pin work queue generator.** `git diff <pin N> <pin N+1>` over
+      test-bearing files, bucketed by the existing `SCOPE-*.md` verdicts and
+      `script/check_cloud_boundary`, so cloud-touching changes drop out
+      automatically and what remains is a triaged list.
+- [ ] **Divergence-collision guard.** THE ONE TONIGHT PROVED WE NEED. Flag when
+      an incoming pin test collides with a deliberate fork divergence. Requires
+      `DECLINED.md` entries to carry machine-checkable markers (symbol names or
+      file paths), not just prose. Change how entries are written NOW, while they
+      are being created anyway.
+- [x] **Gates that actually run.** DONE 2026-08-08: `script/precheck` now covers
+      8,342 tests across 43 packages, up from 6,181 across 3.
+
+**Deliberately NOT automatable -- do not try:**
+- Cloud-vs-local calls on ambiguous subsystems. `CLAUDE.md` already warns that
+  `SCOPE-AI.md`'s verdict A is overstated (MIXED files collapse to their majority
+  bucket), so a script reading those verdicts will confidently mis-bucket.
+- Product divergences (e.g. the 2026-08-08 double-click decision). Maintainer's
+  call, every time.
+- This fork's own seams. Both focus bugs fixed tonight came from the GUI/TUI
+  storage split THIS fork introduced; the skills-path issues come from cloud
+  removal. Warp will never fix those, and they are where bugs concentrate.
+
+**The discipline that keeps re-pinning cheap:** record every intentional
+divergence in `DECLINED.md` the day you make it. Tonight's double-click
+collision -- a July divergence contradicted by an August parity port, discovered
+in neither -- cost real time purely because nobody wrote it down. `DECLINED.md`
+already existed; it was not the tooling that failed.
+
 ### RECOVERED WORK from closed-unmerged PRs (2026-08-08)
 
 Nine PRs were closed without merging. When the workflow switched away from PRs
