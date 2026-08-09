@@ -56,6 +56,32 @@ impl ThirdPartyHarness for ClaudeHarness {
         Some("https://code.claude.com/docs/en/quickstart")
     }
 
+    /// Ported verbatim from the pinned oracle (`02b53fcd8`) -- these are literal CLI-output
+    /// substrings, not cloud-specific. See #289.
+    fn runtime_error_patterns(&self) -> &'static [&'static str] {
+        &[
+            // Out-of-credits / billing.
+            "Credit balance too low",
+            // Plan/usage limits emitted as `You've hit your <kind> limit`.
+            // We match on the common prefix so the variants (session,
+            // weekly, Opus, etc.) all hit.
+            "You've hit your",
+            // Invalid or malformed API key.
+            "Invalid API key",
+            "This organization has been disabled",
+            "belongs to a disabled organization",
+            // OAuth / login state.
+            "Not logged in",
+            "OAuth token revoked",
+            "OAuth token has expired",
+            // Routines disabled by org policy.
+            "Routines are disabled by your organization's policy",
+            // Generic upstream API failures Claude Code surfaces verbatim.
+            "API Error: Request rejected (429)",
+            "authentication_error",
+        ]
+    }
+
     fn prepare_environment_config(
         &self,
         working_dir: &Path,

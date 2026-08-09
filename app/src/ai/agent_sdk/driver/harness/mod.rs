@@ -28,6 +28,7 @@ use super::{
 };
 
 mod claude_code;
+pub(crate) mod claude_transcript;
 mod gemini;
 mod json_utils;
 
@@ -56,6 +57,15 @@ pub(crate) trait ThirdPartyHarness: Send + Sync {
     /// CLI is installed on `PATH`; override for additional checks.
     fn validate(&self) -> Result<(), AgentDriverError> {
         validate_cli_installed(self.cli_agent().command_prefix(), self.install_docs_url())
+    }
+
+    /// Substrings to scan for in the running harness block's output. A hit
+    /// indicates the harness can't make a successful API request (e.g.
+    /// invalid key, no billing, quota exhausted). The driver matches
+    /// case-insensitively against the block's plaintext via the same DFA
+    /// machinery used by the find feature (`harness_output_monitor`).
+    fn runtime_error_patterns(&self) -> &'static [&'static str] {
+        &[]
     }
 
     /// Prepare CLI-specific config files before launching the harness command.
