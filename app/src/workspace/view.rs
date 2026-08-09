@@ -5574,6 +5574,9 @@ impl Workspace {
         );
 
         match target {
+            FileTarget::MarkdownViewer(layout) => {
+                self.open_remote_file_notebook(remote_path, layout, ctx);
+            }
             FileTarget::CodeEditor(layout) => {
                 self.open_code(
                     CodeSource::RemoteFileTree { remote_path },
@@ -5584,20 +5587,14 @@ impl Workspace {
                     ctx,
                 );
             }
-            // TODO(remote-viewer part 2): `FileTarget::MarkdownViewer` should
-            // open the (read-only) markdown/notebook viewer via
-            // `FileNotebookView::open_remote`, the same way
-            // `open_file_with_target`'s local `MarkdownViewer` arm calls
-            // `open_file_notebook` — not yet wired up, so it falls back to
-            // the buffer-sync code editor below like every other target.
-            //
-            // Remote files only otherwise resolve to `CodeEditor` (see
-            // `select_and_execute_item_at_id` in `file_tree/view.rs` and
-            // `handle_global_search_event`'s remote-match arm in
-            // `left_panel.rs`) — remote files have no local path, so
-            // external-editor / system-default / image-viewer targets don't
-            // apply here either. Fall back to the buffer-sync code editor
-            // with the default layout rather than silently dropping the open.
+            // Remote files only ever resolve to `MarkdownViewer` or
+            // `CodeEditor` (see `select_and_execute_item_at_id` in
+            // `file_tree/view.rs` and `handle_global_search_event`'s
+            // remote-match arm in `left_panel.rs`) — remote files have no
+            // local path, so external-editor / system-default /
+            // image-viewer targets don't apply here. Fall back to the
+            // buffer-sync code editor with the default layout rather than
+            // silently dropping the open.
             _ => {
                 let layout = *EditorSettings::as_ref(ctx).open_file_layout.value();
                 self.open_code(
@@ -5608,6 +5605,41 @@ impl Workspace {
                     &[],
                     ctx,
                 );
+            }
+        }
+    }
+
+    /// Opens a remote Markdown file in the (read-only) notebook / markdown
+    /// viewer, fetched via the remote-server `ReadFileContext` RPC rather
+    /// than the buffer-sync protocol — see [`FileNotebookView::open_remote`].
+    #[cfg(feature = "local_tty")]
+    fn open_remote_file_notebook(
+        &mut self,
+        remote_path: crate::code::buffer_location::RemotePath,
+        layout: EditorLayout,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let pane = FilePane::new_remote(remote_path, ctx);
+
+        match layout {
+            EditorLayout::NewTab => {
+                let new_tab_placement_setting = TabSettings::as_ref(ctx).new_tab_placement;
+                let new_idx = match new_tab_placement_setting {
+                    NewTabPlacement::AfterAllTabs => self.tab_count(),
+                    // Add tab after current tab
+                    NewTabPlacement::AfterCurrentTab => self.active_tab_index + 1,
+                };
+                self.add_tab_from_existing_pane(Box::new(pane), new_idx, ctx);
+            }
+            EditorLayout::SplitPane => {
+                self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+                    pane_group.add_pane_with_direction(
+                        Direction::Right,
+                        pane,
+                        true, /* focus_new_pane */
+                        ctx,
+                    );
+                });
             }
         }
     }
