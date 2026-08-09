@@ -16,7 +16,8 @@ use crate::elements::tui::{
 };
 use crate::platform::WindowStyle;
 use crate::{
-    AddWindowOptions, App, Entity, FocusContext, TypedActionView, ViewContext, ViewHandle,
+    AddWindowOptions, App, BlurContext, Entity, FocusContext, TypedActionView, ViewContext,
+    ViewHandle,
 };
 
 /// A leaf element with a fixed 1x1 footprint and no visible output; only the
@@ -514,6 +515,7 @@ impl TuiView for CountingLeafView {
 struct ParentView {
     child: ViewHandle<LeafView>,
     descendent_focus_events: usize,
+    descendent_blur_events: usize,
 }
 
 impl Entity for ParentView {
@@ -536,6 +538,12 @@ impl TuiView for ParentView {
     fn on_focus(&mut self, focus_ctx: &FocusContext, _ctx: &mut ViewContext<Self>) {
         if matches!(focus_ctx, FocusContext::DescendentFocused(_)) {
             self.descendent_focus_events += 1;
+        }
+    }
+
+    fn on_blur(&mut self, blur_ctx: &BlurContext, _ctx: &mut ViewContext<Self>) {
+        if matches!(blur_ctx, BlurContext::DescendentBlurred(_)) {
+            self.descendent_blur_events += 1;
         }
     }
 }
@@ -876,6 +884,7 @@ fn recurses_into_registered_child_view_and_reports_embeddings() {
             ctx.add_tui_view(window_id, move |_| ParentView {
                 child,
                 descendent_focus_events: 0,
+                descendent_blur_events: 0,
             })
         });
 
@@ -915,6 +924,7 @@ fn focusing_embedded_child_fires_descendent_focus_on_parent() {
             ctx.add_tui_view(window_id, move |_| ParentView {
                 child: child_for_view,
                 descendent_focus_events: 0,
+                descendent_blur_events: 0,
             })
         });
 
@@ -934,5 +944,50 @@ fn focusing_embedded_child_fires_descendent_focus_on_parent() {
         child.update(&mut app, |_, ctx| ctx.focus_self());
         assert_eq!(app.focused_view_id(window_id), Some(child.id()));
         assert_eq!(parent.read(&app, |view, _| view.descendent_focus_events), 1);
+    });
+}
+
+/// The symmetric case to the test above, and the reason it exists: the blur path
+/// had the identical gap. `AppContext::focus`'s TUI branch fired only
+/// `BlurContext::SelfBlurred` on the view losing focus and never walked the
+/// ancestor chain, so a parent was told when a descendent gained focus but never
+/// when it lost it.
+///
+/// The pin does not have this bug because it keeps a single `views` map and one
+/// unconditional walk (`02b53fcd8:crates/warpui_core/src/core/app.rs:4120`);
+/// splitting storage into `views`/`tui_views` for the TUI port dropped the TUI
+/// half. Nothing covered it, which is why it survived the fix to the focus half.
+#[test]
+fn blurring_embedded_child_fires_descendent_blur_on_parent() {
+    App::test((), |mut app| async move {
+        let (window_id, _root) =
+            app.update(|ctx| ctx.add_tui_window(window_options(), |_| RootStub));
+
+        let child = app.update(|ctx| ctx.add_tui_view(window_id, |_| LeafView));
+        let sibling = app.update(|ctx| ctx.add_tui_view(window_id, |_| LeafView));
+        let child_for_view = child.clone();
+        let parent = app.update(|ctx| {
+            ctx.add_tui_view(window_id, move |_| ParentView {
+                child: child_for_view,
+                descendent_focus_events: 0,
+                descendent_blur_events: 0,
+            })
+        });
+
+        let mut presenter = TuiPresenter::new();
+        app.update(|ctx| {
+            let invalidation = ctx.take_all_invalidations_for_window(window_id);
+            presenter.invalidate(&invalidation, ctx, window_id);
+            presenter.present(ctx, &parent, TuiRect::new(0, 0, 8, 3))
+        });
+
+        child.update(&mut app, |_, ctx| ctx.focus_self());
+        assert_eq!(parent.read(&app, |view, _| view.descendent_blur_events), 0);
+
+        // Moving focus off the embedded child must walk the ancestor chain and
+        // fire the parent's `on_blur` hook with `DescendentBlurred`.
+        sibling.update(&mut app, |_, ctx| ctx.focus_self());
+        assert_eq!(app.focused_view_id(window_id), Some(sibling.id()));
+        assert_eq!(parent.read(&app, |view, _| view.descendent_blur_events), 1);
     });
 }
