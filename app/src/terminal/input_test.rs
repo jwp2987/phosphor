@@ -24,7 +24,9 @@ use crate::pricing::PricingInfoModel;
 use crate::search::files::model::FileSearchModel;
 use crate::server::ids::ClientId;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
+use crate::terminal::event::BlockMetadataReceivedEvent;
 use crate::terminal::input::slash_command_model::SlashCommandEntryState;
+use crate::terminal::model_events::ModelEvent;
 use crate::terminal::input::slash_commands::SlashCommandsEvent;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use repo_metadata::repositories::DetectedRepositories;
@@ -511,7 +513,8 @@ pub async fn add_window_with_bootstrapped_terminal_and_window_id(
 /// paths when parsing commands, and without it, completion/highlighting will
 /// not run.
 ///
-/// In particular, this sends precmd data and sets the active block's metadata.
+/// In particular, this sends precmd data, notifies the model event dispatcher,
+/// and sets the active block's metadata.
 pub fn simulate_directory_for_completion<A, S>(
     session_id: SessionId,
     terminal: &ViewHandle<TerminalView>,
@@ -523,24 +526,42 @@ pub fn simulate_directory_for_completion<A, S>(
 {
     let directory = directory.into();
     terminal.update(app, |terminal, ctx| {
-        terminal
-            .model
-            .lock()
-            .block_list_mut()
-            .prompt_only_precmd(PromptMetadata {
+        let block_metadata = BlockMetadata::new(Some(session_id), Some(directory.clone()));
+        let block_index = {
+            let mut model = terminal.model.lock();
+            model.block_list_mut().prompt_only_precmd(PromptMetadata {
                 pwd: Some(directory.clone()),
                 session_id: Some(session_id.into()),
                 ..Default::default()
             });
+            model.block_list().active_block_index()
+        };
 
         // Normally, the precmd message should be sufficient to also set this block metadata.
-        // However, in unit tests the foreground executor does not relay the event.
+        // However, in unit tests the foreground executor does not relay the event, so notify
+        // the dispatcher directly for models that observe active-session metadata.
+        //
+        // `ActiveSession` learns the working directory only from this event, so without it
+        // anything keying off `ActiveSession::current_working_directory` -- notably
+        // `Availability::REPOSITORY` gating -- silently sees `None` no matter what
+        // directory the test simulated.
+        terminal
+            .model_event_dispatcher()
+            .update(ctx, |dispatcher, ctx| {
+                dispatcher.set_active_session_id(session_id);
+                ctx.emit(ModelEvent::BlockMetadataReceived(
+                    BlockMetadataReceivedEvent {
+                        block_metadata: block_metadata.clone(),
+                        block_index,
+                        is_after_in_band_command: false,
+                        is_done_bootstrapping: true,
+                    },
+                ));
+            });
+
+        // Keep the input's block metadata in sync with the active-session metadata above.
         terminal.input().update(ctx, |input, ctx| {
-            input.set_active_block_metadata(
-                BlockMetadata::new(Some(session_id), Some(directory)),
-                false,
-                ctx,
-            );
+            input.set_active_block_metadata(block_metadata, false, ctx);
         });
     });
 }
