@@ -892,6 +892,9 @@ pub enum CommandExecutionSource {
         /// in a shared session. This is used to associate the resulting command block
         /// with the original agent command.
         ai_metadata: Option<AgentInteractionMetadata>,
+        /// True when the command was dispatched by a queued command row rather than the current
+        /// editor buffer, so input draft state should be preserved.
+        preserve_input: bool,
     },
 
     /// A normal command execution request.
@@ -921,14 +924,15 @@ impl CommandExecutionSource {
     }
 
     /// Whether this execution should leave the user's in-progress editor draft alone.
-    ///
-    /// Adaptation from the pinned oracle: upstream also returns `true` for
-    /// `SharedSession { preserve_input: true, .. }`. Phosphor's `SharedSession` variant has no
-    /// `preserve_input` field yet, because adding it requires changing the construction site in
-    /// `terminal/view.rs`, which is owned by another in-flight change. The queued-command arm —
-    /// the one every ported test exercises — is identical to upstream.
     pub fn should_preserve_input(&self) -> bool {
-        matches!(self, CommandExecutionSource::QueuedCommand)
+        matches!(
+            self,
+            CommandExecutionSource::QueuedCommand
+                | CommandExecutionSource::SharedSession {
+                    preserve_input: true,
+                    ..
+                }
+        )
     }
 }
 
@@ -5886,6 +5890,7 @@ impl Input {
         &mut self,
         command: &str,
         participant_id: ParticipantId,
+        preserve_input: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
         // Cancel any active agent conversation when the sharer executes a command on behalf of the viewer
@@ -5914,6 +5919,7 @@ impl Input {
                 participant_id,
                 block_id,
                 ai_metadata: None,
+                preserve_input,
             },
             ctx,
         )
@@ -5980,6 +5986,7 @@ impl Input {
             self.try_execute_command_on_behalf_of_shared_session_participant(
                 command,
                 participant_id,
+                preserve_input,
                 ctx,
             )
         } else if preserve_input {
@@ -6230,6 +6237,48 @@ impl Input {
                 // Reinitialize the buffer to properly clear it
                 editor.reinitialize_buffer(None, ctx);
 
+                if let SharedSessionStatus::ActiveViewer { role } =
+                    self.model.lock().shared_session_status()
+                {
+                    // reinstate role for viewers
+                    editor.set_interaction_state(role.into(), ctx);
+                }
+
+                let appearance: &Appearance = Appearance::as_ref(ctx);
+                editor.set_text_colors(TextColors::from_appearance(appearance), ctx);
+            });
+        }
+    }
+
+    /// Restores the frozen/loading visual state of the agent input for both the sharer
+    /// and viewer without touching the buffer contents.
+    ///
+    /// Does NOT clear or reinitialize the buffer. Buffer clearing for agent prompts is
+    /// handled by the sharer emitting CRDT delete operations via `system_clear_buffer`
+    /// (triggered when `BlocklistAIControllerEvent::SentRequest` fires). Viewers receive
+    /// those delete ops through the normal CRDT sync path.
+    ///
+    /// Adapted from the pinned oracle (`app/src/terminal/input.rs:7288`, `02b53fcd8`). The
+    /// pin's version also calls `editor.exit_ephemeral_loading_state(ctx)` and, when
+    /// `is_shared_session_viewer_prompt_inflight` is true,
+    /// `editor.show_display_only_empty_buffer(ctx)`: an ephemeral CRDT buffer overlay used
+    /// to show an optimistic empty buffer to the viewer without touching the real buffer.
+    /// That overlay mechanism doesn't exist in this fork -- `freeze_input_in_loading_state`
+    /// here mutates the buffer text directly (appending `" ◌"`) instead of using an
+    /// ephemeral overlay, so there is no ephemeral state to exit and no display-only
+    /// overlay to show. `is_shared_session_viewer_prompt_inflight` is therefore currently
+    /// unused here; kept in the signature for call-site parity with the pin.
+    pub fn unfreeze_agent_input(
+        &mut self,
+        is_shared_session_viewer_prompt_inflight: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let _ = is_shared_session_viewer_prompt_inflight;
+        if matches!(
+            self.model.lock().shared_session_status(),
+            SharedSessionStatus::ActiveViewer { .. } | SharedSessionStatus::ActiveSharer
+        ) {
+            self.editor.update(ctx, |editor, ctx| {
                 if let SharedSessionStatus::ActiveViewer { role } =
                     self.model.lock().shared_session_status()
                 {
