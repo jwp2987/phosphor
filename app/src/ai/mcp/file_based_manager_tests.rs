@@ -1,6 +1,8 @@
 use super::{FileBasedMCPManager, FileBasedMCPManagerEvent, MCPProvider};
 use crate::ai::mcp::FileMCPWatcher;
+use crate::ai::mcp::FileMCPWatcherEvent;
 use crate::ai::mcp::ParsedTemplatableMCPServerResult;
+use crate::ai::mcp::file_mcp_watcher::{FileMCPConfigDiagnostic, FileMCPConfigDiagnosticKind};
 use crate::auth::AuthStateProvider;
 use crate::settings::{AISettings, FocusedTerminalInfo};
 use crate::warp_managed_paths_watcher::{warp_managed_mcp_config_path, WarpManagedPathsWatcher};
@@ -64,6 +66,7 @@ fn subscribe_events(
                     .extend(installation_uuids.iter().copied());
             }
             FileBasedMCPManagerEvent::PurgeCredentials { .. } => {}
+            FileBasedMCPManagerEvent::ConfigDiagnosticChanged => {}
         });
     });
     events
@@ -514,6 +517,41 @@ fn test_update_file_based_servers_removes_server_only_when_no_refs() {
             assert!(
                 !manager.file_based_servers.contains_key(&server_hash),
                 "Server should be completely removed"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_config_error_preserves_last_known_good_servers() {
+    let root_path = PathBuf::from("/tmp/test-repo");
+    let config_path = root_path.join(".mcp.json");
+    let parsed = parse_mcp_json(r#"{"test-server":{"command":"npx","args":["server-example"]}}"#);
+
+    App::test((), |mut app| async move {
+        let manager_handle = setup_app(&mut app);
+        manager_handle.update(&mut app, |manager, ctx| {
+            manager.apply_parsed_servers(root_path.clone(), MCPProvider::Zap, parsed, ctx);
+            assert_eq!(manager.file_based_servers.len(), 1);
+
+            manager.handle_watcher_event(
+                &FileMCPWatcherEvent::ConfigError {
+                    diagnostic: FileMCPConfigDiagnostic {
+                        config_path: config_path.clone(),
+                        provider: MCPProvider::Zap,
+                        kind: FileMCPConfigDiagnosticKind::Parse,
+                        message: "invalid JSON".to_string(),
+                    },
+                },
+                ctx,
+            );
+
+            assert_eq!(manager.file_based_servers.len(), 1);
+            assert_eq!(
+                manager
+                    .config_diagnostic(&config_path)
+                    .map(|diagnostic| diagnostic.message.as_str()),
+                Some("invalid JSON")
             );
         });
     });

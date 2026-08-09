@@ -1,4 +1,5 @@
 use super::MCPProvider;
+use super::file_mcp_watcher::FileMCPConfigDiagnostic;
 use super::{FileMCPWatcher, FileMCPWatcherEvent};
 use itertools::Itertools as _;
 use repo_metadata::repositories::DetectedRepositories;
@@ -25,6 +26,10 @@ pub struct FileBasedMCPManager {
     file_based_servers: HashMap<u64, TemplatableMCPServerInstallation>,
     /// Reverse mapping: logical root path → provider → set of server hashes.
     file_based_servers_by_root: HashMap<PathBuf, HashMap<MCPProvider, HashSet<u64>>>,
+    /// The most recent diagnostic for each config file that failed to read or parse, keyed by
+    /// config path. Cleared once that path parses (or is removed) successfully, so this only
+    /// ever reflects the current state, not history.
+    config_diagnostics_by_path: HashMap<PathBuf, FileMCPConfigDiagnostic>,
 }
 
 impl FileBasedMCPManager {
@@ -44,24 +49,52 @@ impl FileBasedMCPManager {
         Self {
             file_based_servers: Default::default(),
             file_based_servers_by_root: Default::default(),
+            config_diagnostics_by_path: Default::default(),
         }
+    }
+
+    /// The most recent diagnostic for the config file at `config_path`, if it failed to read or
+    /// parse. `None` once that path has parsed (or been removed) successfully.
+    pub fn config_diagnostic(&self, config_path: &Path) -> Option<&FileMCPConfigDiagnostic> {
+        self.config_diagnostics_by_path.get(config_path)
     }
 
     /// Handle an event from [`FileMCPWatcher`].
     fn handle_watcher_event(&mut self, event: &FileMCPWatcherEvent, ctx: &mut ModelContext<Self>) {
         match event {
             FileMCPWatcherEvent::ConfigParsed {
+                config_path,
                 root_path,
                 provider,
                 servers,
             } => {
+                if self
+                    .config_diagnostics_by_path
+                    .remove(config_path)
+                    .is_some()
+                {
+                    ctx.emit(FileBasedMCPManagerEvent::ConfigDiagnosticChanged);
+                }
                 self.apply_parsed_servers(root_path.clone(), *provider, servers.clone(), ctx);
             }
             FileMCPWatcherEvent::ConfigRemoved {
+                config_path,
                 root_path,
                 provider,
             } => {
+                if self
+                    .config_diagnostics_by_path
+                    .remove(config_path)
+                    .is_some()
+                {
+                    ctx.emit(FileBasedMCPManagerEvent::ConfigDiagnosticChanged);
+                }
                 self.remove_servers_for_root_provider(root_path, *provider, ctx);
+            }
+            FileMCPWatcherEvent::ConfigError { diagnostic } => {
+                self.config_diagnostics_by_path
+                    .insert(diagnostic.config_path.clone(), diagnostic.clone());
+                ctx.emit(FileBasedMCPManagerEvent::ConfigDiagnosticChanged);
             }
         }
     }
@@ -418,6 +451,8 @@ impl FileBasedMCPManager {
 }
 
 pub enum FileBasedMCPManagerEvent {
+    /// A config file's diagnostic (read/parse/missing-env-var error, or its resolution) changed.
+    ConfigDiagnosticChanged,
     SpawnServers {
         installations: Vec<TemplatableMCPServerInstallation>,
     },
