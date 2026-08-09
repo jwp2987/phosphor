@@ -657,6 +657,21 @@ changed an agreed order twice on 2026-08-09 (#381 folded into the #440 batch aga
 
 ### Tier 4 — large (a week+)
 - [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #349 · #324 · #405
+- [ ] #312 NLD prompt-history match — **moved here from the maintainer-decision bucket
+      2026-08-09; it was never a decision, it is ordinary local work.** Warp's
+      natural-language detection consults TWO history sources (shell command history +
+      agent prompt history) and breaks ties by recency, so retyping a previous agent
+      prompt locks the input to AI mode and retyping a previous shell command locks it
+      to Shell. The fork consults command history only, so a previously-sent prompt is
+      re-classified from scratch every time. Entirely local (both sources on disk),
+      9 pinned tests blocked.
+      **The issue's claim that none of the symbols exist is WRONG** — 4 of 5 are partly
+      present: `HistoryMatch` 2 fork/6 pin, `InputTypeAutoDetectionSource` 5/16,
+      `NldPromptHistoryMatch` 2/5, `prompt_history_candidates` 2/3. The genuinely
+      absent one is **`resolve_history_match` (0 fork / 2 pin)** — the tie-break itself.
+      **SEQUENCING: blocked on #256** (tier 3, in flight) — `prompt_history_candidates`
+      is its prompt-side source. Once #256 lands this is `resolve_history_match` plus
+      porting 9 tests.
       (#252, #289, #142 CLOSED 2026-08-08/09)
 - [ ] #381 — **work DONE, issue still open.** Its two real modules
       (`local_harness_setup.rs` 5 tests, `remote_context_files.rs` 4 tests) are
