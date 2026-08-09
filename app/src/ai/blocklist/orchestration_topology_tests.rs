@@ -183,6 +183,10 @@ fn descendant_conversation_ids_in_spawn_order_flattens_nested_children_preorder(
 #[test]
 fn adjacent_orchestration_child_navigation_uses_pinned_first_order() {
     App::test((), |mut app| async move {
+        // These two exercise the persistence path, which reads
+        // `GeneralSettings::persist_conversations` (conversation.rs:3328).
+        // Without the settings singletons registered the lookup panics.
+        crate::test_util::settings::initialize_settings_for_tests(&mut app);
         let terminal_view_id = EntityId::new();
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
@@ -391,6 +395,10 @@ fn has_local_orchestrated_children_detects_active_local_children() {
 #[test]
 fn has_local_orchestrated_children_ignores_remote_children() {
     App::test((), |mut app| async move {
+        // These two exercise the persistence path, which reads
+        // `GeneralSettings::persist_conversations` (conversation.rs:3328).
+        // Without the settings singletons registered the lookup panics.
+        crate::test_util::settings::initialize_settings_for_tests(&mut app);
         let terminal_view_id = EntityId::new();
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
