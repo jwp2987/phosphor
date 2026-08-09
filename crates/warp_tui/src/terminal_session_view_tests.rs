@@ -10,7 +10,7 @@ use warp::settings::{
     AISettings, TuiStatuslineConfig, TuiStatuslineItem, TuiTheme, TuiThemeSettings,
     TuiZeroStateObject,
 };
-use warp::terminal::model::ansi::{Handler, InputBufferValue};
+use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
     AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryModel,
@@ -36,11 +36,14 @@ use warpui_core::presenter::tui::TuiPresenter;
 use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalidation};
 
 use super::{
-    AUTO_APPROVE_DISABLED_HINT, AUTO_APPROVE_ENABLED_HINT, AUTO_APPROVE_FEEDBACK_DURATION,
-    AUTO_APPROVE_TOGGLE_BINDING_NAME, COST_CONVERSATION_IN_PROGRESS_HINT,
-    COST_EMPTY_CONVERSATION_HINT, COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT,
-    ConversationRestoreState, FooterSegment, FooterSegments, INLINE_MENU_TOP_PADDING_ROWS,
-    LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT, SHELL_MODE_HINT,
+    ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME, AUTO_APPROVE_DISABLED_HINT,
+    AUTO_APPROVE_ENABLED_HINT, AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME,
+    COST_CONVERSATION_IN_PROGRESS_HINT, COST_EMPTY_CONVERSATION_HINT,
+    COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState,
+    DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME, FooterSegment, FooterSegments,
+    INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
+    SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
+    SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG, SHELL_MODE_HINT,
     THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin, TuiQueuedFollowUp,
     TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
     cost_command_unavailable_hint, export_file_success_message, format_statusline_date,
@@ -2715,5 +2718,177 @@ fn accepted_prompt_history_submits_to_the_selected_ai_conversation() {
             assert_eq!(queries, vec!["explain the build"]);
         });
         assert_eq!(app.read(|ctx| input_text(&view, ctx)), "");
+    });
+}
+
+#[test]
+fn status_conversation_id_uses_the_selected_id_or_none() {
+    let conversation_id = AIConversationId::new();
+    assert_eq!(
+        super::format_status_conversation_id(Some(conversation_id)),
+        conversation_id.to_string()
+    );
+    assert_eq!(super::format_status_conversation_id(None), "None");
+}
+
+#[test]
+fn agent_controlled_alt_screen_keeps_output_and_composer_visible() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, _| {
+            let mut terminal_model = view.terminal_model.lock();
+            terminal_model.simulate_long_running_block("vim", "");
+            let conversation_id = AIConversationId::new();
+            let task_id = TaskId::new("alt-screen-terminal-use".to_owned());
+            let block = terminal_model.block_list_mut().active_block_mut();
+            block.set_agent_interaction_mode_for_requested_command(
+                AIAgentActionId::from("alt-screen-command".to_owned()),
+                Some(task_id.clone()),
+                conversation_id,
+            );
+            block
+                .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+                .expect("command should become agent monitored");
+            terminal_model.set_mode(Mode::SwapScreen {
+                save_cursor_and_clear_screen: true,
+            });
+            for character in "ALT SCREEN".chars() {
+                terminal_model.alt_screen_mut().input(character);
+            }
+        });
+
+        assert!(view.read(&app, |view, _| {
+            view.input_target().agent_editor_owns_input()
+        }));
+        let lines = render_session(&mut app, &view, 80, 12);
+        let compact_output = lines
+            .iter()
+            .flat_map(|line| line.chars())
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(
+            compact_output.contains("ALTSCREEN"),
+            "alternate-screen output should remain visible:\n{}",
+            lines.join("\n")
+        );
+        let alt_screen_row = lines
+            .iter()
+            .position(|line| line.contains("ALT"))
+            .expect("alternate-screen output should start in the output area");
+        let input_row = lines
+            .iter()
+            .position(|line| line.contains('┌'))
+            .expect("agent-controlled alternate screen should render the composer");
+        assert!(
+            alt_screen_row < input_row,
+            "alternate-screen output should render above the composer:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("auto (cost-efficient)")),
+            "the normal agent footer should remain visible:\n{}",
+            lines.join("\n")
+        );
+    });
+}
+
+#[test]
+fn running_command_attachment_bindings_are_context_scoped() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        app.read(|ctx| {
+            let attach = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME)
+                .expect("running-command attach binding");
+            assert_eq!(
+                *attach.trigger,
+                Trigger::Keystrokes(vec![Keystroke::parse("ctrl-shift-enter").unwrap()])
+            );
+            let detach = ctx
+                .editable_bindings()
+                .find(|binding| binding.name == DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME)
+                .expect("running-command detach binding");
+            assert_eq!(
+                *detach.trigger,
+                Trigger::Keystrokes(vec![Keystroke::parse("escape").unwrap()])
+            );
+
+            let mut input_context = Context::default();
+            input_context.set.insert("TuiInputView");
+            assert!(!attach.in_context(&input_context));
+            assert!(!detach.in_context(&input_context));
+
+            input_context
+                .set
+                .insert(SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG);
+            assert!(attach.in_context(&input_context));
+            assert!(!detach.in_context(&input_context));
+
+            input_context
+                .set
+                .remove(SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG);
+            input_context
+                .set
+                .insert(SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG);
+            assert!(!attach.in_context(&input_context));
+            assert!(detach.in_context(&input_context));
+        });
+    });
+}
+
+#[test]
+fn footer_renders_shell_mode_sections_without_model_or_usage() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let builder = TuiUiBuilder::from_app(ctx);
+            let row = render_status_footer_row(
+                FooterSegments {
+                    ordered: vec![
+                        FooterSegment::ShellMode,
+                        FooterSegment::WorkingDirectory("/home/user/warp".to_owned()),
+                        FooterSegment::GitBranch("main".to_owned()),
+                        FooterSegment::GitDiff {
+                            additions: 3,
+                            deletions: 1,
+                        },
+                    ],
+                },
+                &builder,
+            )
+            .finish();
+            let buffer = render_element(row, ctx, 120);
+            assert_eq!(
+                buffer[(0, 0)].fg,
+                builder
+                    .shell_command_accent_style()
+                    .fg
+                    .expect("shell command accent has a foreground")
+            );
+            let lines = buffer.to_lines();
+            let line = lines.join("\n");
+
+            assert_eq!(
+                lines,
+                vec![format!("{SHELL_MODE_HINT} /home/user/warp ⊢ main | +3 -1")],
+                "shell footer leads with the shell-mode indicator and hides model/usage"
+            );
+            assert!(
+                line.starts_with(SHELL_MODE_HINT),
+                "shell mode is the first segment"
+            );
+            assert!(
+                !line.contains("TestModel"),
+                "model segment is hidden in shell mode"
+            );
+            assert!(
+                !line.contains("2.5 credits"),
+                "usage segment is hidden in shell mode"
+            );
+        });
     });
 }

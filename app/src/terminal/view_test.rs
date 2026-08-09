@@ -43,6 +43,7 @@ use crate::ai::blocklist::{
     agent_view::AgentViewEntryOrigin, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
     InputConfig, InputType,
 };
+use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::features::FeatureFlag;
 use crate::terminal::cli_agent_sessions::event::{
     CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType,
@@ -4749,6 +4750,44 @@ fn submit_cli_agent_rich_input_codex_uses_bracketed_paste() {
 }
 
 #[test]
+fn submit_cli_agent_rich_input_hermes_multiline_uses_bracketed_paste() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let _cli_rich = FeatureFlag::CLIAgentRichInput.override_enabled(true);
+
+        let (_terminal, pty_writes) =
+            submit_rich_input_and_collect_pty_writes(&mut app, CLIAgent::Hermes, "line1\nline2");
+
+        let writes = pty_writes.borrow();
+        // BracketedPaste: first write is ESC[200~ + both lines + ESC[201~, second is \r.
+        // The embedded \n between lines must NOT split into a separate write or trigger
+        // a second submission — that was the voice-input auto-submit regression.
+        assert_eq!(
+            writes.len(),
+            2,
+            "expected 2 PTY writes (paste payload + submit \r), got {}: {:?}",
+            writes.len(),
+            writes
+        );
+
+        let mut expected_paste =
+            Vec::with_capacity(BRACKETED_PASTE_START.len() + 11 + BRACKETED_PASTE_END.len());
+        expected_paste.extend_from_slice(BRACKETED_PASTE_START);
+        expected_paste.extend_from_slice(b"line1\nline2");
+        expected_paste.extend_from_slice(BRACKETED_PASTE_END);
+        assert_eq!(
+            writes[0], expected_paste,
+            "first write should be the full bracketed paste payload"
+        );
+        assert_eq!(
+            writes[1], b"\r",
+            "second write should be the standalone submit \r"
+        );
+    })
+}
+
+#[test]
 fn submit_cli_agent_rich_input_opencode_defers_enter_and_close() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -7826,4 +7865,388 @@ fn cmd_enter_from_terminal_with_selected_block_enters_agent_view_with_context() 
             }
         });
     });
+}
+
+#[test]
+fn close_find_bar_clears_ai_block_find_highlights() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        // Create an AI block whose user query contains a searchable term.
+        terminal.update(&mut app, |view, ctx| {
+            append_exchange_and_handle_event(
+                view,
+                AIAgentInput::UserQuery {
+                    query: "highlight the needle here".to_owned(),
+                    context: Default::default(),
+                    static_query_type: None,
+                    referenced_attachments: Default::default(),
+                    user_query_mode: UserQueryMode::Normal,
+                    running_command: None,
+                    intended_agent: None,
+                },
+                ctx,
+            );
+        });
+
+        let ai_block = terminal.read(&app, |view, _| {
+            view.rich_content_views
+                .iter()
+                .find_map(|rich_content| {
+                    rich_content
+                        .ai_block_metadata()
+                        .map(|metadata| metadata.ai_block_handle.clone())
+                })
+                .expect("an AI block should have been inserted")
+        });
+
+        // Open the find bar and run find for a term that matches the AI block.
+        // The blocklist find pipeline only visits rich-content views that have
+        // been laid out, which does not happen in this headless test, so also
+        // drive the AI block's `run_find` directly to put it in the
+        // highlighted state.
+        let find_options = || FindOptions {
+            query: Some("needle".to_owned().into()),
+            ..Default::default()
+        };
+        terminal.update(&mut app, |view, ctx| {
+            view.show_find_bar(ctx);
+            view.run_find(find_options(), ctx);
+        });
+        ai_block.update(&mut app, |block, ctx| {
+            crate::terminal::find::FindableRichContentView::run_find(block, &find_options(), ctx);
+        });
+
+        assert_eq!(
+            ai_block.read(&app, |block, _| block.find_match_count()),
+            1,
+            "running find should highlight the match inside the AI block"
+        );
+
+        // Dismissing the find bar must clear the AI block's find highlights.
+        terminal.update(&mut app, |view, ctx| {
+            view.close_find_bar(ctx);
+        });
+
+        assert_eq!(
+            ai_block.read(&app, |block, _| block.find_match_count()),
+            0,
+            "closing the find bar should immediately clear AI block find highlights"
+        );
+    })
+}
+
+#[test]
+fn copy_selected_text_from_ai_block() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        // Insert an AI block with a user query.
+        terminal.update(&mut app, |view, ctx| {
+            append_exchange_and_handle_event(
+                view,
+                AIAgentInput::UserQuery {
+                    query: "the quick brown fox".to_owned(),
+                    context: Default::default(),
+                    static_query_type: None,
+                    referenced_attachments: Default::default(),
+                    user_query_mode: UserQueryMode::Normal,
+                    running_command: None,
+                    intended_agent: None,
+                },
+                ctx,
+            );
+        });
+
+        let ai_block = terminal.read(&app, |view, _| {
+            view.rich_content_views
+                .iter()
+                .find_map(|rich_content| {
+                    rich_content
+                        .ai_block_metadata()
+                        .map(|metadata| metadata.ai_block_handle.clone())
+                })
+                .expect("an AI block should have been inserted")
+        });
+
+        // Simulate a block-level text selection within the AI block and notify the
+        // terminal view (mirrors the `SelectableArea` selection callback plus the
+        // `AIBlockAction::SelectText` dispatch that happens on a real drag).
+        ai_block.update(&mut app, |block, ctx| {
+            block.set_block_level_selected_text_for_test(Some("quick brown".to_owned()));
+            block.handle_action(&AIBlockAction::SelectText, ctx);
+        });
+
+        // The model must now record that the AI block has an active text
+        // selection, which is what lets the copy/insert paths (via
+        // `selection_to_string`) find the selected text. This is the part the
+        // #12079 regression broke. We assert on the model record rather than the
+        // clipboard string because reading the selected text cross-view requires
+        // an active window, which the headless test harness does not provide (the
+        // end-to-end clipboard behavior is covered by manual/computer-use
+        // verification).
+        terminal.read(&app, |view, ctx| {
+            let semantic_selection = SemanticSelection::as_ref(ctx);
+            let model = view.model.lock();
+            assert!(
+                model
+                    .block_list()
+                    .has_renderable_selection(semantic_selection, false),
+                "the model must record the AI block's text selection so copy/insert can find it"
+            );
+        });
+
+        // Clearing the AI block's selection must clear the tracked model selection
+        // so stale text isn't returned by later copy/insert operations.
+        ai_block.update(&mut app, |block, ctx| {
+            block.set_block_level_selected_text_for_test(None);
+            block.handle_action(&AIBlockAction::SelectText, ctx);
+        });
+        terminal.read(&app, |view, ctx| {
+            let semantic_selection = SemanticSelection::as_ref(ctx);
+            let model = view.model.lock();
+            assert!(
+                !model
+                    .block_list()
+                    .has_renderable_selection(semantic_selection, false),
+                "clearing the AI block selection should clear the model's recorded selection"
+            );
+        });
+    })
+}
+
+#[test]
+fn codex_status_change_does_not_auto_open_rich_input() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let _cli_rich = FeatureFlag::CLIAgentRichInput.override_enabled(true);
+        // auto_toggle_rich_input defaults to true.
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let listener = ctx.add_model(|ctx| {
+                CLIAgentSessionListener::new(
+                    view.view_id,
+                    CLIAgent::Codex,
+                    &view.model_events_handle,
+                    ctx,
+                )
+            });
+            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.set_session(
+                    view.view_id,
+                    CLIAgentSession {
+                        agent: CLIAgent::Codex,
+                        status: CLIAgentSessionStatus::InProgress,
+                        session_context: CLIAgentSessionContext::default(),
+                        input_state: CLIAgentInputState::Closed,
+                        should_auto_toggle_input: true,
+                        listener: Some(listener),
+                        remote_host: None,
+                        plugin_version: None,
+                        draft_text: None,
+                        custom_command_prefix: None,
+                        received_rich_notification: false,
+                    },
+                    ctx,
+                );
+            });
+
+            // Rich input starts closed. Simulating a Stop event (the only
+            // status Codex's handler ever emits) must not re-open it,
+            // because the user may be navigating Codex's option menus.
+            assert!(!view.has_active_cli_agent_input_session(ctx));
+            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.update_from_event(
+                    view.view_id,
+                    &CLIAgentEvent {
+                        source: CLIAgentEventSource::CodexOsc9Fallback,
+                        v: 1,
+                        agent: CLIAgent::Codex,
+                        event: CLIAgentEventType::Stop,
+                        session_id: None,
+                        cwd: None,
+                        project: None,
+                        payload: CLIAgentEventPayload {
+                            query: Some("Agent turn complete".to_owned()),
+                            ..Default::default()
+                        },
+                    },
+                    ctx,
+                );
+            });
+        });
+
+        terminal.read(&app, |view, ctx| {
+            assert!(!view.has_active_cli_agent_input_session(ctx));
+        });
+    })
+}
+
+#[test]
+fn jump_to_latest_agent_message_enters_agent_view_and_records_pending_scroll() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let (conversation_id, _task_id, exchange_id, _stream_id) = terminal
+            .update(&mut app, |view, ctx| {
+                append_exchange_and_handle_event(view, agent_jump_user_query("hi"), ctx)
+            });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.jump_to_latest_agent_message(ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            let controller = view.agent_view_controller().as_ref(ctx);
+            match controller.agent_view_state() {
+                AgentViewState::Active { origin, .. } => {
+                    assert_eq!(
+                        controller.agent_view_state().active_conversation_id(),
+                        Some(conversation_id)
+                    );
+                    assert_eq!(*origin, AgentViewEntryOrigin::JumpToLatestAgentMessage);
+                }
+                state => panic!("expected an active agent view, got {state:?}"),
+            }
+            // Entering from the terminal mounts the target block on a later frame,
+            // so the scroll target is recorded for `after_terminal_view_layout`.
+            assert_eq!(view.pending_agent_scroll_target, Some(exchange_id));
+        });
+    })
+}
+
+#[test]
+fn jump_to_latest_agent_message_no_ops_when_agent_view_disabled() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        // Create a conversation while the agent view feature is enabled...
+        let agent_view = FeatureFlag::AgentView.override_enabled(true);
+        terminal.update(&mut app, |view, ctx| {
+            append_exchange_and_handle_event(view, agent_jump_user_query("hi"), ctx);
+        });
+        drop(agent_view);
+
+        // ...then turn the feature off: the action must be inert even though a
+        // conversation with a visible exchange exists.
+        let _agent_view_off = FeatureFlag::AgentView.override_enabled(false);
+        terminal.update(&mut app, |view, ctx| {
+            view.jump_to_latest_agent_message(ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            assert!(!view.agent_view_controller().as_ref(ctx).is_active());
+            assert_eq!(view.pending_agent_scroll_target, None);
+        });
+    })
+}
+
+#[test]
+fn jump_to_latest_agent_message_no_ops_without_conversations() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        // No conversations exist, so there is nothing to jump to.
+        terminal.update(&mut app, |view, ctx| {
+            view.jump_to_latest_agent_message(ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            assert!(!view.agent_view_controller().as_ref(ctx).is_active());
+            assert_eq!(view.pending_agent_scroll_target, None);
+        });
+    })
+}
+
+#[test]
+fn jump_to_latest_agent_message_scrolls_without_re_entering_when_already_in_view() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let (conversation_id, _task_id, _exchange_id, _stream_id) = terminal
+            .update(&mut app, |view, ctx| {
+                append_exchange_and_handle_event(view, agent_jump_user_query("hi"), ctx)
+            });
+
+        // First jump enters the agent view from the terminal and records a pending
+        // scroll target; simulate the layout pass consuming it.
+        terminal.update(&mut app, |view, ctx| {
+            view.jump_to_latest_agent_message(ctx);
+            view.pending_agent_scroll_target = None;
+        });
+
+        // Second jump: already in this conversation's agent view, so it scrolls
+        // directly without re-entering or recording a new pending target.
+        terminal.update(&mut app, |view, ctx| {
+            view.jump_to_latest_agent_message(ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            let active_conversation_id = view
+                .agent_view_controller()
+                .as_ref(ctx)
+                .agent_view_state()
+                .active_conversation_id()
+                .expect("agent view should be active");
+            assert_eq!(active_conversation_id, conversation_id);
+            assert_eq!(view.pending_agent_scroll_target, None);
+        });
+    })
+}
+
+#[test]
+fn jump_to_latest_agent_message_targets_latest_visible_exchange() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let (conversation_id, _task_id, _first_exchange_id, _stream_id) = terminal
+            .update(&mut app, |view, ctx| {
+                append_exchange_and_handle_event(view, agent_jump_user_query("first"), ctx)
+            });
+
+        // Append a second, newer exchange to the same conversation.
+        let second_exchange_id = terminal.update(&mut app, |view, ctx| {
+            let history_model = BlocklistAIHistoryModel::handle(ctx);
+            history_model.update(ctx, |history_model, ctx| {
+                let response_stream_id = ResponseStreamId::new_for_test();
+                let exchange = exchange_with_inputs(vec![agent_jump_user_query("second")]);
+                let exchange_id = exchange.id;
+                history_model
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation should exist")
+                    .append_reassigned_exchange(&response_stream_id, exchange, view.view_id, ctx)
+                    .expect("exchange should append");
+                exchange_id
+            })
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.jump_to_latest_agent_message(ctx);
+        });
+
+        terminal.read(&app, |view, _ctx| {
+            // The jump targets the latest visible exchange, not the first one.
+            assert_eq!(view.pending_agent_scroll_target, Some(second_exchange_id));
+        });
+    })
 }
