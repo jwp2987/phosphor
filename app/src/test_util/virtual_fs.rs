@@ -1,58 +1,11 @@
-use std::path::PathBuf;
 pub use virtual_fs::{Dirs, Stub, VirtualFS};
 
-pub trait WarpDirs {
-    #[allow(dead_code)]
-    fn git_repository_fixture(&self) -> PathBuf {
-        Zap::fixtures().join("git_repository")
-    }
-}
-
-impl WarpDirs for Dirs {}
-
-pub struct Zap;
-
-impl Zap {
-    #[allow(dead_code)]
-    pub fn executable() -> PathBuf {
-        let mut path = {
-            let mut build = "debug";
-
-            if !cfg!(debug_assertions) {
-                build = "release";
-            }
-
-            std::env::var("CARGO_TARGET_DIR")
-                .ok()
-                .map(|directory| PathBuf::from(directory).join(build))
-                .unwrap_or_else(|| Self::root().join(format!("target/{}", &build)))
-        };
-
-        path.push("warp");
-        path
-    }
-
-    #[allow(dead_code)]
-    pub fn fixtures() -> PathBuf {
-        Self::root().join("tests/fixtures")
-    }
-
-    pub fn root() -> PathBuf {
-        let manifest_dir = if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-            PathBuf::from(manifest_dir)
-        } else {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        };
-
-        if manifest_dir.join("Cargo.lock").exists() {
-            manifest_dir
-        } else {
-            manifest_dir
-                .parent()
-                .expect("Could not find the debug binaries directory")
-                .parent()
-                .expect("Could not find the debug binaries directory")
-                .to_path_buf()
-        }
-    }
-}
+// `WarpDirs::git_repository_fixture` / `Zap::executable` / `Zap::fixtures` used to be
+// defined here, duplicating `Dirs::git_repository_fixture` / `Zap::executable` /
+// `Zap::fixtures` in `crates/virtual_fs/src/lib.rs`. Both copies had zero callers
+// (this one doubly so: `mod virtual_fs` is private and `test_util::mod` only
+// re-exports `Stub`/`VirtualFS` from it, never `Dirs`/`Zap`/`WarpDirs`, so this copy
+// was unreachable even in principle). Removed as dead duplication (issue #549); the
+// `crates/virtual_fs` copy is left as-is since that crate is a real, actively used
+// dev-dependency (`VirtualFS`/`Stub`/`Dirs` have real callers there) and matches the
+// pin, which carries the same dead helper with `#[allow(dead_code)]`.
