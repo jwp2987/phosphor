@@ -100,6 +100,64 @@ immediately rather than batching. Verified intact afterwards: 1,339 lines across
 two commits. **Lesson: commit early even under a batch-build rule — the batch rule
 defers the BUILD, not the commit.**
 
+## AGREED QUEUE 2026-08-09 (maintainer)
+
+Order: **#440**, then **#381 → #382 → #236**. One sonnet agent per batch, coordinator
+builds once per batch and merges on green. `TODO.md` updated at each landing.
+
+- [ ] **#440** remote_server bundled resources — unblocks the #487/#353 chain from
+      shipping degraded. Rust side small; the PACKAGING half (artifact must ship
+      `bundled_resources/`) touches the release pipeline — coordinator to report
+      rather than change packaging unilaterally.
+- [ ] **#381 — FOLDED INTO THE #440 BATCH.** Scoped against `working` 2026-08-09:
+      real remaining work is **2 modules / 9 tests**, not six modules / 81.
+      `remote_agent_context.rs` (4) is DONE (built under #438/#487);
+      `orchestration/` (39) moved to #310/#304 when local orchestration was
+      reopened; `agent_management/` (19) + `active_agent_views_model.rs` (10) stay
+      DECLINED (the latter is permanently deleted; substitute pattern at
+      `app/src/notifications/model.rs:275`).
+      **What is left, both verified portable — every dependency present on `working`:**
+      - `local_harness_setup.rs` — 98 pin lines, imports only `warp_cli::agent::Harness`,
+        `FeatureFlag`, `util::path::resolve_executable`. Purely local CLI-harness
+        setup, the BYOP-relevant path. Cheapest item in any tier.
+      - `remote_context_files.rs` — 108 pin lines, imports `remote_server::proto`,
+        `HostId`, `LocalOrRemotePath`, `RemoteServerManager`.
+      **Why folded into #440 rather than worked alone:** the pin's
+      `remote_agent_context.rs` consumes `RemoteContextFileProto` (`:204`) — that is
+      the `global_rules` half the #353 port deliberately skipped (client
+      `ProjectContextModel` has no per-host storage). #440 makes the daemon ship
+      SKILLS; `remote_context_files` makes GLOBAL RULES arrive. Same files, same
+      feature, one batch. Together they take remote agent context from degraded to
+      complete.
+- [ ] **#382** — scoped against `working` 2026-08-09: **~19 real tests**, four
+      unrelated items. `prune_unreachable_subtasks` is ALREADY LANDED (`8d3f9d9ba`).
+      Remaining:
+      - `exchange_by_id` indexed lookup (~6 tests). Fork has only `exchange_mut`
+        (linear scan) — functionally equivalent, so this is a PERFORMANCE gap, not a
+        correctness one. Weigh accordingly.
+      - `AmbientAgentTask::display_name`. **TRAP:** the fork HAS a `display_name` at
+        `ambient_agents/task.rs:176`, but it is on `AgentSource` — a homonym. The
+        pin's is on `AmbientAgentTask` (snapshot name -> title -> `"Agent"`). A grep
+        alone says "already done"; it is not.
+      - `file_mcp_watcher` diagnostics — zero `diagnostic` refs in the fork's file.
+      - `skills/file_watchers/utils` — pin 23 tests, fork 20. Only 3 missing.
+- [ ] **#236** — scoped against `working` 2026-08-09: **~14 real tests**, 74% already
+      ported (pin `local_model_tests.rs` 54, fork `local_model_test.rs` 40 — note the
+      fork's rename drops the plural, which has caused false "absent" readings).
+      Remaining: `load_directory_with_completion` coalescing (5 pin tests, and
+      `local_model.rs:231` still carries the "not yet ported" marker), plus ~6 of the
+      7 symlink/lexical tests — `added_external_target_skill_symlink_routes_to_lexical_repository`
+      is already ported and wired via `find_repository_for_watcher_entry_path`.
+
+**Queue total after scoping: ~42 real tests across #381/#382/#236, not the ~113 their
+titles sum to.** Consistent with every audit this session: filed counts run 2-4x high.
+
+Deferred by explicit decision, do NOT pick up without asking:
+- Tier 3.5 orchestration (6 issues, needs a new forward migration)
+- #324 (live file collision with `integration/round4*` branches)
+- #210 (re-file first — counts wrong in both directions, 2 rows already done)
+- #405 Jupyter (whole feature), #349 (macOS half unverifiable on this host)
+
 ## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
 
 Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is
