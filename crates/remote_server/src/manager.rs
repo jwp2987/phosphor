@@ -1970,6 +1970,15 @@ impl RemoteServerManager {
         result_rx
     }
 
+    /// Creates a [`HostRequestHandle`] for dispatching host-scoped requests
+    /// from async contexts that don't have `&mut self` access.
+    pub fn host_request_handle(&self, host_id: &HostId) -> HostRequestHandle {
+        HostRequestHandle {
+            spawner: self.spawner.clone(),
+            host_id: host_id.clone(),
+        }
+    }
+
     /// Registers a remote ripgrep request synchronously and returns its
     /// typed pending result. #438 dependent feature 5 — the client already
     /// exposes a session-scoped-style `ripgrep_search` (used directly by
@@ -2148,6 +2157,72 @@ impl RemoteServerManager {
         self.remote_agent_context_snapshots.remove(&host_id);
         self.fail_pending_host_requests_for_disconnected_host(&host_id);
         ctx.emit(RemoteServerManagerEvent::HostDisconnected { host_id });
+    }
+}
+
+/// Handle for dispatching host-scoped requests from async contexts.
+///
+/// Pure-async callers don't have direct access to `&mut RemoteServerManager`.
+/// This handle wraps a `ModelSpawner` so the async function can bounce each
+/// request to the main thread for registration in `pending_host_requests`,
+/// then await the response on the caller's thread.
+///
+/// Obtain via [`RemoteServerManager::host_request_handle`].
+///
+/// Deviation from the pin: only the `send` dispatch and a `read_file_context`
+/// convenience wrapper are ported (what `FileNotebookView::open_remote`
+/// needs). The pin's other typed convenience methods (`write_file`,
+/// `delete_file`, `save_buffer`, `open_buffer`, ...) aren't ported here —
+/// add them the same way (wrap [`Self::send`], match the response variant)
+/// when a caller needs them.
+pub struct HostRequestHandle {
+    spawner: ModelSpawner<RemoteServerManager>,
+    host_id: HostId,
+}
+
+impl HostRequestHandle {
+    /// Sends a host-scoped request and awaits the raw `ServerMessage`.
+    ///
+    /// Bounces to the main thread to call `send_host_request`, then awaits
+    /// the response on the caller's thread.
+    pub async fn send(
+        &self,
+        inner: crate::proto::host_scoped_request::Message,
+    ) -> Result<crate::proto::ServerMessage, HostRequestError> {
+        let host_id = self.host_id.clone();
+        let request_id = crate::protocol::RequestId::new();
+        let msg = crate::proto::ClientMessage::host_scoped(request_id.to_string(), inner);
+        let rx = self
+            .spawner
+            .spawn(move |me, _ctx| me.send_host_request(&host_id, msg))
+            .await
+            .map_err(|_| HostRequestError::AllSessionsDisconnected)?;
+        rx.await
+            .map_err(|_| HostRequestError::AllSessionsDisconnected)?
+    }
+
+    /// Batch-reads one or more files from the remote host with full context
+    /// (line ranges, binary/image support, metadata, size limits).
+    ///
+    /// Per-file failures are reported in `ReadFileContextResponse::failed_files`
+    /// rather than as a top-level error; this only returns `Err` for transport
+    /// or unexpected-response failures.
+    pub async fn read_file_context(
+        &self,
+        request: crate::proto::ReadFileContextRequest,
+    ) -> Result<crate::proto::ReadFileContextResponse, HostRequestError> {
+        let msg = self
+            .send(crate::proto::host_scoped_request::Message::ReadFileContext(
+                request,
+            ))
+            .await?;
+        match msg.message {
+            Some(crate::proto::server_message::Message::ReadFileContextResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for ReadFileContext: {other:?}");
+                Err(HostRequestError::UnexpectedResponse)
+            }
+        }
     }
 }
 
