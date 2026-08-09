@@ -24,6 +24,29 @@ pub(super) fn build_mcp_servers_from_specs(
     for spec in specs {
         match spec {
             MCPSpec::Uuid(uuid) => {
+                // TRAP: `warp_id` is validated and accepted here but nothing in this
+                // fork can resolve it (#279, closed 2026-08-09 as no current impact).
+                //
+                // A `warp_id` identifies a *Warp-managed* MCP server, which lives in
+                // the cloud backend this fork drops. The entry written below is
+                // therefore malformed by construction: named by raw UUID, carrying no
+                // `command` and no `url`. A downstream agent will try to use it and
+                // fail with nothing explaining why.
+                //
+                // Nobody hits this today because no BYOP path produces a Warp-managed
+                // UUID -- you would have to hand-write one into a config file. It is
+                // latent, not broken.
+                //
+                // The pin also has `MCPSpec::WellKnown` for bare ids ("linear",
+                // "notion"), gated on `FeatureFlag::WellKnownMcpIds`. That half is
+                // deliberately NOT ported: upstream's own comment says "the server
+                // owns the set of recognized ids", so it is unresolvable here too.
+                //
+                // If this ever needs fixing, the choice is: drop `warp_id` validation
+                // as dead cloud surface, or define a local meaning for it. Do not
+                // port the well-known variant -- it would add a second spec the
+                // driver can construct but never resolve.
+                //
                 // TODO: Look up and use the real MCP server name from MCP managers instead of using the UUID.
                 let name = uuid.to_string();
                 insert_unique(
