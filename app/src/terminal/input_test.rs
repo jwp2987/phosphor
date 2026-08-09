@@ -8810,3 +8810,155 @@ fn unfreeze_agent_input_does_not_clear_buffer() {
         );
     });
 }
+
+#[test]
+fn question_mark_does_not_toggle_shortcuts_while_editing_queued_prompt() {
+    App::test((), |mut app| async move {
+        let _agent_view_flag = FeatureFlag::AgentView.override_enabled(true);
+        let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+        initialize_app(&mut app);
+
+        let (window_id, terminal) =
+            add_window_with_bootstrapped_terminal_and_window_id(&mut app, None, None).await;
+        let (input, editor) = terminal.read(&app, |terminal, ctx| {
+            let input = terminal.input().clone();
+            let editor = input.as_ref(ctx).editor().clone();
+            (input, editor)
+        });
+
+        // Enter fullscreen agent view so the `shift-?` binding's ACTIVE_AGENT_VIEW context is set.
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        None,
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("Should be able to enter agent view")
+            })
+        });
+
+        // Queue a prompt and put it into inline edit mode; the main input buffer stays empty.
+        let query_id = QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                QueuedQuery::new(
+                    "queued prompt".to_owned(),
+                    QueuedQueryOrigin::QueueSlashCommand,
+                ),
+                ctx,
+            )
+        });
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.enter_edit_mode(conversation_id, query_id, ctx);
+        });
+
+        let focus_path = [terminal.id(), input.id(), editor.id()];
+
+        // While editing the queued prompt, `?` must NOT be consumed by the shortcuts binding.
+        let handled = app
+            .dispatch_keystroke(
+                window_id,
+                &focus_path,
+                &Keystroke::parse("shift-?").unwrap(),
+                false,
+            )
+            .unwrap();
+        assert!(
+            !handled,
+            "`?` must not be consumed by the shortcuts binding while editing a queued prompt"
+        );
+        input.read(&app, |input, ctx| {
+            assert!(
+                !input
+                    .agent_shortcut_view_model
+                    .as_ref(ctx)
+                    .is_shortcut_view_open(),
+                "help/shortcuts panel must not open when typing `?` in the queued-prompt editor"
+            );
+        });
+
+        // Control: with no queued-prompt edit in progress, the same `?` DOES toggle the panel,
+        // confirming the binding is otherwise active in this exact state.
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.cancel_edit(conversation_id, ctx);
+        });
+        let handled = app
+            .dispatch_keystroke(
+                window_id,
+                &focus_path,
+                &Keystroke::parse("shift-?").unwrap(),
+                false,
+            )
+            .unwrap();
+        assert!(
+            handled,
+            "`?` should toggle the shortcuts panel in agent view when not editing a queued prompt"
+        );
+        input.read(&app, |input, ctx| {
+            assert!(
+                input
+                    .agent_shortcut_view_model
+                    .as_ref(ctx)
+                    .is_shortcut_view_open(),
+                "help/shortcuts panel should open for `?` outside the queued-prompt editor"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_open_slash_command_does_not_autofill_single_file_completion() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.clear_buffer_and_reset_undo_stack(ctx);
+            input.editor.update(ctx, |editor, ctx| {
+                editor.set_buffer_text("/open-file ", ctx)
+            });
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![file_suggestion("test.md")],
+                    (11, 11),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::SlashCommandAutoOpen,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "/open-file ");
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.handle_completion_suggestions_results(
+                build_suggestion_results(
+                    vec![file_suggestion("test.md")],
+                    (11, 11),
+                    MatchStrategy::CaseInsensitive,
+                ),
+                CompletionsTrigger::Keybinding,
+                editor_model_snapshot(input, ctx),
+                ctx,
+            );
+        });
+        input.read(&app, |input, ctx| {
+            assert_eq!(input.buffer_text(ctx), "/open-file test.md ");
+        });
+    });
+}
