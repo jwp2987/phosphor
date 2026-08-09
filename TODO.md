@@ -276,6 +276,30 @@ Work them as one ordered sequence. Likewise #343 is blocked on #316 — one pair
 
 ### Tier 4 — large (a week+)
 - [ ] #210 · #252 · #289 · #381 · #382 · #236 · #349 · #324 · #142
+- [ ] #405 notebooks/file: Jupyter (`.ipynb`) rendering missing
+      (`FeatureFlag::JupyterNotebooks`). Added to this tier 2026-08-08 — it had
+      never been tiered at all, found by reconciling every open issue against the
+      tier lists. A whole feature, hence tier 4.
+
+**Being audited against the pin (2026-08-08), same treatment tier 3 got.** For
+this tier the TEST COUNTS are the main claim -- five of these issues assert a
+number of blocked tests (~733 total between #210/#381/#252/#289/#382), and that
+number is what sets their priority. Verify claimed-vs-actual before acting.
+Suspected double-counting: #252 vs #289 (both agent_sdk) and #381 vs #382 (both
+app/src/ai). Tier 3's audit found 4 of 20 closeable and 8 more narrower than
+filed, so treat these numbers as unverified until the audit lands.
+
+Two flagged already:
+- **#142 looks mis-tiered — consider pulling it forward.** "7 of Warp's 82 tests
+  present, custom API endpoints (core BYOP) untested". BYOP *is* this fork's
+  purpose. Spot-check: the pin's `app/src/ai/agent_sdk/api_key_tests.rs` (7 tests)
+  and `app/src/ai/agent/api/impl_tests.rs` (13 tests) appear absent here entirely.
+- **#324 overlaps work in flight.** Its `diff_state_tracker.rs`
+  (`RemoteDiffStateManager`, ~472 lines) sits beside the `diff_state_remote.rs` /
+  `diff_state_proto.rs` / proto files the current tier-2 batch is editing for
+  #388/#353. Cheaper to do while that area is open.
+- **#349 is macOS-only** — cannot be built or verified on this host regardless of
+  verdict.
 
 ### Needs a maintainer decision, not code
 - [ ] #149 · #150 · #203 (design decision) · #206 · #207 · #279 · #312
