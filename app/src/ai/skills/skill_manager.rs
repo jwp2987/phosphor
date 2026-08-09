@@ -58,11 +58,11 @@ pub struct SkillManager {
     ///
     /// NOT:
     /// - Key: `/repo/frontend/.agents/skills`
-    directory_skills: HashMap<PathBuf, HashSet<PathBuf>>,
-    skills_by_path: HashMap<PathBuf, ParsedSkill>,
+    directory_skills: HashMap<LocalOrRemotePath, HashSet<LocalOrRemotePath>>,
+    skills_by_path: HashMap<LocalOrRemotePath, ParsedSkill>,
     /// Reverse lookup: skill name → set of paths with that name.
     /// This allows efficient lookup by skill name without scanning all paths.
-    skills_by_name: HashMap<String, HashSet<PathBuf>>,
+    skills_by_name: HashMap<String, HashSet<LocalOrRemotePath>>,
     /// Skills bundled into Zap.
     bundled: BundledSkill,
     #[allow(dead_code)]
@@ -110,17 +110,19 @@ impl SkillManager {
         // owning directory.
         let mut skill_paths = Vec::new();
 
-        if let Some(home_dir) = dirs::home_dir() {
+        if let Some(home_dir) = dirs::home_dir().map(LocalOrRemotePath::Local) {
             skill_paths.extend(
                 self.home_skill_paths()
                     .into_iter()
-                    .map(|path| (home_dir.clone(), path)),
+                    .map(|path| (home_dir.clone(), LocalOrRemotePath::Local(path))),
             );
         }
 
-        if let Some(working_directory) = working_directory {
+        if let Some(working_directory) =
+            working_directory.map(|dir| LocalOrRemotePath::Local(dir.to_path_buf()))
+        {
             let repo_root = repo_metadata::repositories::DetectedRepositories::as_ref(ctx)
-                .get_root_for_path(working_directory);
+                .get_root_for_lor_path(&working_directory);
 
             for (dir, dir_skill_paths) in &self.directory_skills {
                 if is_home_directory(dir) {
@@ -162,19 +164,28 @@ impl SkillManager {
 
     /// Returns the currently-known home skill file paths.
     pub fn home_skill_paths(&self) -> Vec<PathBuf> {
-        let Some(home_dir) = dirs::home_dir() else {
+        let Some(home_dir) = dirs::home_dir().map(LocalOrRemotePath::Local) else {
             return vec![];
         };
         self.directory_skills
             .get(&home_dir)
-            .map(|skills| skills.iter().cloned().collect())
+            .map(|skills| {
+                skills
+                    .iter()
+                    .filter_map(|path| path.to_local_path().map(Path::to_path_buf))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     /// Returns the currently-known directories which have skills registered.
     /// This includes both repo roots and subdirectories with skills.
     pub fn directories_with_skills(&self) -> Vec<PathBuf> {
-        let mut dirs: Vec<PathBuf> = self.directory_skills.keys().cloned().collect();
+        let mut dirs: Vec<PathBuf> = self
+            .directory_skills
+            .keys()
+            .filter_map(|path| path.to_local_path().map(Path::to_path_buf))
+            .collect();
         dirs.sort();
         dirs
     }
@@ -190,11 +201,16 @@ impl SkillManager {
     /// Both will be returned.
     pub fn skill_paths_in_scope(&self, scope_dir: &Path) -> Vec<PathBuf> {
         let mut paths = HashSet::new();
+        let scope_dir = LocalOrRemotePath::Local(scope_dir.to_path_buf());
 
         for (dir, skill_paths) in &self.directory_skills {
             // Include skills from directories that are under scope_dir
-            if dir.starts_with(scope_dir) {
-                paths.extend(skill_paths.iter().cloned());
+            if dir.starts_with(&scope_dir) {
+                paths.extend(
+                    skill_paths
+                        .iter()
+                        .filter_map(|path| path.to_local_path().map(Path::to_path_buf)),
+                );
             }
         }
 
@@ -259,7 +275,10 @@ impl SkillManager {
         self.skills_by_name
             .get(name)
             .map(|paths| {
-                let mut paths: Vec<PathBuf> = paths.iter().cloned().collect();
+                let mut paths: Vec<PathBuf> = paths
+                    .iter()
+                    .filter_map(|path| path.to_local_path().map(Path::to_path_buf))
+                    .collect();
                 paths.sort();
                 paths
             })
@@ -268,15 +287,16 @@ impl SkillManager {
 
     /// Returns a reference to a parsed skill for a specific SKILL.md file path, if it is cached.
     pub fn skill_by_path(&self, skill_path: &Path) -> Option<&ParsedSkill> {
-        self.skills_by_path.get(skill_path)
+        self.skills_by_path
+            .get(&LocalOrRemotePath::Local(skill_path.to_path_buf()))
     }
 
     /// Returns the appropriate `SkillReference` for a skill at the given path.
     /// For bundled skills, returns `BundledSkillId`; otherwise returns `Path`.
     pub fn reference_for_skill_path(&self, skill_path: &Path) -> SkillReference {
-        self.bundled
-            .reference_for_path(skill_path)
-            .unwrap_or_else(|| SkillReference::Path(skill_path.to_path_buf()))
+        self.bundled.reference_for_path(skill_path).unwrap_or_else(|| {
+            SkillReference::Path(LocalOrRemotePath::Local(skill_path.to_path_buf()))
+        })
     }
 
     /// Get the definition of a skill, if it is cached.
@@ -308,7 +328,7 @@ impl SkillManager {
                     .unwrap_or(usize::MAX)
             });
         if let Some(path) = best_fs_path {
-            if let Some(skill) = self.skills_by_path.get(&path) {
+            if let Some(skill) = self.skills_by_path.get(&LocalOrRemotePath::Local(path)) {
                 return Some(skill);
             }
         }
@@ -335,14 +355,14 @@ impl SkillManager {
     /// Ported from the pin's `SkillManager::active_skill_by_reference` (`02b53fcd8`).
     /// The pin also has `active_skill_by_reference_with_origin`, which additionally
     /// dispatches to a *remote* host's bundled-skill catalog for a `WarpifiedRemote`
-    /// session (keyed by `SkillPathOrigin`/`HostId`, over `LocalOrRemotePath`). That
-    /// half is deliberately not ported here: `SkillReference::Path` and
-    /// `ParsedSkill::path` in this fork are still plain `PathBuf` (issue #299 tracks
-    /// migrating them to `LocalOrRemotePath`), and there is no per-host bundled-skill
-    /// catalog to dispatch to (issue #487/#493 explicitly scoped that out too, for
-    /// the same missing-prerequisite reason). This method only ever resolves against
-    /// the local catalog — equivalent to always passing the pin's
-    /// `SkillPathOrigin::Local`. See issue #370.
+    /// session (keyed by `SkillPathOrigin`/`HostId`, over `LocalOrRemotePath`). As of
+    /// #299, `SkillReference::Path`/`ParsedSkill::path` do carry `LocalOrRemotePath`,
+    /// but this manager's own `bundled` field is still the single-host `BundledSkill`
+    /// (this file's `SkillPathOrigin`-aware rewrite — merging in a per-host
+    /// `BundledSkills` catalog and `remote_home_directories` — is deliberately staged
+    /// as separate follow-up work, not bundled into the #299 type migration). This
+    /// method only ever resolves against the local catalog — equivalent to always
+    /// passing the pin's `SkillPathOrigin::Local`. See issue #370.
     pub fn active_skill_by_reference(
         &self,
         reference: &SkillReference,
@@ -359,11 +379,17 @@ impl SkillManager {
         let mut by_name: HashMap<String, Vec<SkillInventoryDuplicate>> = HashMap::new();
 
         for skill in self.skills_by_path.values() {
+            // The inventory panel is local-only UI; skills without a local path
+            // representation (none exist yet -- nothing populates a remote skill
+            // into this cache today) are skipped rather than mis-displayed.
+            let Some(path) = skill.path.to_local_path().map(Path::to_path_buf) else {
+                continue;
+            };
             by_name
                 .entry(skill.name.clone())
                 .or_default()
                 .push(SkillInventoryDuplicate {
-                    path: skill.path.clone(),
+                    path,
                     name: skill.name.clone(),
                     description: skill.description.clone(),
                     content: skill.content.clone(),
@@ -415,7 +441,18 @@ impl SkillManager {
         }
 
         for skill in skills {
-            match extract_skill_parent_directory(&skill.path) { Ok(parent_dir) => {
+            // Skill discovery (SkillWatcher) only ever finds local files today, so this
+            // is always Some in practice; guarded rather than assumed since skill.path
+            // can now represent a remote location too (issue #299).
+            let Some(local_path) = skill.path.to_local_path() else {
+                log::warn!(
+                    "Skipping non-local skill (remote skill ingestion is not wired yet): {:?}",
+                    skill.path
+                );
+                continue;
+            };
+            match extract_skill_parent_directory(local_path) { Ok(parent_dir) => {
+                let parent_dir = LocalOrRemotePath::Local(parent_dir);
                 self.directory_skills
                     .entry(parent_dir)
                     .or_default()
@@ -443,13 +480,13 @@ impl SkillManager {
         }
 
         for path in paths {
-            self.handle_path_deleted(&path);
+            self.handle_path_deleted(&LocalOrRemotePath::Local(path));
         }
 
         ctx.emit(SkillManagerEvent::InventoryChanged);
     }
 
-    fn handle_path_deleted(&mut self, path: &Path) {
+    fn handle_path_deleted(&mut self, path: &LocalOrRemotePath) {
         // Delete all skills that are affected by this deleted path
         for (dir, skill_paths) in &self.directory_skills.clone() {
             if dir.starts_with(path) {
@@ -513,11 +550,11 @@ impl SkillManager {
     }
 }
 
-fn is_home_directory(path: &Path) -> bool {
+fn is_home_directory(path: &LocalOrRemotePath) -> bool {
     let Some(home_dir) = dirs::home_dir() else {
         return false;
     };
-    path == home_dir
+    path.to_local_path() == Some(home_dir.as_path())
 }
 
 impl Entity for SkillManager {

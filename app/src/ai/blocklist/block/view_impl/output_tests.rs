@@ -1,4 +1,5 @@
 use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 use super::read_skill_display_text;
 
@@ -6,9 +7,11 @@ fn make_skill(name: &str) -> ParsedSkill {
     ParsedSkill {
         name: name.to_string(),
         description: String::new(),
-        path: std::path::PathBuf::from("/home/user/.agents/skills")
-            .join(name)
-            .join("SKILL.md"),
+        path: LocalOrRemotePath::Local(
+            std::path::PathBuf::from("/home/user/.agents/skills")
+                .join(name)
+                .join("SKILL.md"),
+        ),
         content: String::new(),
         line_range: None,
         provider: SkillProvider::Agents,
@@ -33,7 +36,7 @@ fn read_skill_display_text_no_double_slash_when_skill_not_found_with_path_refere
     // absolute path starting with '/'. The display text must NOT prepend an
     // extra '/' — doing so would produce '//home/…'.
     let path = std::path::PathBuf::from("/home/devbox/.warp-local/skills/hello-world/SKILL.md");
-    let reference = SkillReference::Path(path);
+    let reference = SkillReference::Path(LocalOrRemotePath::Local(path));
     let display = read_skill_display_text(None, &reference);
     assert!(
         !display.starts_with("//"),

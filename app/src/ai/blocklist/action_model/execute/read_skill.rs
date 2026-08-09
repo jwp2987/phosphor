@@ -76,7 +76,7 @@ impl ReadSkillExecutor {
         // path by name here, covering every skill the Skill manager can see (file
         // skills + bundled skills).
         if let SkillReference::Path(p) = skill_ref {
-            if let Some(candidate_name) = name_candidate(p) {
+            if let Some(candidate_name) = p.to_local_path().and_then(name_candidate) {
                 if let Some(skill) = manager.find_skill_by_name(candidate_name) {
                     send_telemetry_from_ctx!(
                         SkillTelemetryEvent::Read {
@@ -117,8 +117,14 @@ impl ReadSkillExecutor {
         // `parse_skill` don't exist, so there's naturally no way to read from disk.
         #[cfg(feature = "local_fs")]
         if let SkillReference::Path(path) = skill_ref {
-            if extract_skill_parent_directory(path).is_ok() {
-                let path = path.clone();
+            // The cache-miss disk fallback only ever makes sense for a local path:
+            // extract_skill_parent_directory/parse_skill are local-fs operations,
+            // and nothing populates a remote skill reference here yet (issue #299
+            // covers the type, not remote skill reads via this path).
+            if let Some(local_path) = path.to_local_path()
+                && extract_skill_parent_directory(local_path).is_ok()
+            {
+                let path = local_path.to_path_buf();
                 let skill_ref_for_async = skill_ref.clone();
                 return ActionExecution::new_async(
                     async move { parse_skill(&path) },
@@ -126,7 +132,7 @@ impl ReadSkillExecutor {
                         Ok(skill) => AIAgentActionResultType::ReadSkill(
                             ReadSkillResult::Success {
                                 content: FileContext::new(
-                                    skill.path.to_string_lossy().into_owned(),
+                                    skill.path.display_path(),
                                     AnyFileContent::StringContent(skill.content.clone()),
                                     skill.line_range.clone(),
                                     None,
@@ -174,7 +180,7 @@ impl ReadSkillExecutor {
 /// Rust would require the function to declare its return type explicitly).
 fn success_execution(skill: &ai::skills::ParsedSkill) -> ActionExecution<anyhow::Result<ai::skills::ParsedSkill>> {
     let content = FileContext::new(
-        skill.path.to_string_lossy().into_owned(),
+        skill.path.display_path(),
         AnyFileContent::StringContent(skill.content.clone()),
         skill.line_range.clone(),
         None,

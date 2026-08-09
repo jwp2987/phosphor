@@ -15,6 +15,13 @@ use warpui::App;
 
 use super::SkillWatcher;
 
+/// Extracts the local filesystem path from a `ParsedSkill` built by `create_skill_file`,
+/// which always produces a `LocalOrRemotePath::Local` (there is no remote-skill discovery
+/// in tests — issue #299 covers the type, not remote skill ingestion).
+fn local_path(skill: &ParsedSkill) -> std::path::PathBuf {
+    skill.path.to_local_path().unwrap().to_path_buf()
+}
+
 /// Helper function for creating a single skill file
 fn create_skill_file(dir: &TempDir, name: &str, description: &str, content: &str) -> ParsedSkill {
     let skill_content = format!(
@@ -35,7 +42,7 @@ description: {}
     let line_range_start = skill_content.clone().lines().count() - content.lines().count() + 1;
     let line_range_end = skill_content.clone().lines().count() + 1;
     ParsedSkill {
-        path: skill_file_path,
+        path: warp_util::local_or_remote_path::LocalOrRemotePath::Local(skill_file_path),
         name: name.to_string(),
         description: description.to_string(),
         content: skill_content.clone(),
@@ -63,7 +70,7 @@ fn test_handle_repository_update_single_skill_added() {
         let skill = create_skill_file(&temp_dir, "test", "Test skill", "Test content");
 
         let update = RepositoryUpdate {
-            added: HashSet::from([TargetFile::new(skill.path.clone(), false)]),
+            added: HashSet::from([TargetFile::new(local_path(&skill), false)]),
             modified: HashSet::new(),
             deleted: HashSet::new(),
             moved: HashMap::new(),
@@ -101,7 +108,7 @@ fn test_handle_repository_update_skill_modified() {
 
         let update = RepositoryUpdate {
             added: HashSet::new(),
-            modified: HashSet::from([TargetFile::new(skill.path.clone(), false)]),
+            modified: HashSet::from([TargetFile::new(local_path(&skill), false)]),
             deleted: HashSet::new(),
             moved: HashMap::new(),
             commit_updated: false,
@@ -139,7 +146,7 @@ fn test_handle_repository_update_skill_deleted() {
         let update = RepositoryUpdate {
             added: HashSet::new(),
             modified: HashSet::new(),
-            deleted: HashSet::from([TargetFile::new(skill.path.clone(), false)]),
+            deleted: HashSet::from([TargetFile::new(local_path(&skill), false)]),
             moved: HashMap::new(),
             commit_updated: false,
             index_lock_detected: false,
@@ -154,7 +161,7 @@ fn test_handle_repository_update_skill_deleted() {
         assert_eq!(
             event,
             SkillWatcherEvent::SkillsDeleted {
-                paths: vec![skill.path]
+                paths: vec![local_path(&skill)]
             }
         );
     });
@@ -178,8 +185,8 @@ fn test_handle_repository_update_multiple_skills_deleted() {
             added: HashSet::new(),
             modified: HashSet::new(),
             deleted: HashSet::from([
-                TargetFile::new(skill_a.path.clone(), false),
-                TargetFile::new(skill_b.path.clone(), false),
+                TargetFile::new(local_path(&skill_a), false),
+                TargetFile::new(local_path(&skill_b), false),
             ]),
             moved: HashMap::new(),
             commit_updated: false,
@@ -196,7 +203,7 @@ fn test_handle_repository_update_multiple_skills_deleted() {
             panic!("Expected SkillsDeleted event");
         };
         paths.sort();
-        let mut expected = vec![skill_a.path, skill_b.path];
+        let mut expected = vec![local_path(&skill_a), local_path(&skill_b)];
         expected.sort();
         assert_eq!(paths, expected);
     });
@@ -222,8 +229,8 @@ fn test_handle_repository_update_skill_moved() {
             modified: HashSet::new(),
             deleted: HashSet::new(),
             moved: HashMap::from([(
-                TargetFile::new(new_skill.path.clone(), false),
-                TargetFile::new(old_skill.path.clone(), false),
+                TargetFile::new(local_path(&new_skill), false),
+                TargetFile::new(local_path(&old_skill), false),
             )]),
             commit_updated: false,
             index_lock_detected: false,
@@ -242,7 +249,7 @@ fn test_handle_repository_update_skill_moved() {
             skills: vec![new_skill],
         };
         let deleted_event = SkillWatcherEvent::SkillsDeleted {
-            paths: vec![old_skill.path],
+            paths: vec![local_path(&old_skill)],
         };
         assert!(
             (event1 == added_event && event2 == deleted_event)

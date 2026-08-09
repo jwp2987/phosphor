@@ -25344,19 +25344,37 @@ impl TypedActionView for TerminalView {
                     use ai::skills::SkillReference;
 
                     match skill_reference {
-                        SkillReference::Path(path) => {
-                            ctx.emit(Event::OpenCodeInWarp {
-                                source: CodeSource::Skill {
-                                    reference: skill_reference.clone(),
-                                    path: path.clone(),
-                                    origin: SkillOpenOrigin::OpenSkillCommand,
-                                },
-                                layout:
-                                    *crate::util::file::external_editor::EditorSettings::as_ref(ctx)
-                                        .open_file_layout
-                                        .value(),
-                            });
-                        }
+                        SkillReference::Path(path) => match path.to_local_path() {
+                            Some(local_path) => {
+                                ctx.emit(Event::OpenCodeInWarp {
+                                    source: CodeSource::Skill {
+                                        reference: skill_reference.clone(),
+                                        path: local_path.to_path_buf(),
+                                        origin: SkillOpenOrigin::OpenSkillCommand,
+                                    },
+                                    layout:
+                                        *crate::util::file::external_editor::EditorSettings::as_ref(ctx)
+                                            .open_file_layout
+                                            .value(),
+                                });
+                            }
+                            // Remote skills are unaffected in practice today (issue #299
+                            // tracks the type, nothing populates a remote ParsedSkill into
+                            // the manager yet); this arm exists so the match is exhaustive
+                            // over what the type now allows.
+                            None => {
+                                let window_id = ctx.window_id();
+                                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                                    toast_stack.add_ephemeral_toast(
+                                        DismissibleToast::error(
+                                            "Remote skills cannot be edited".to_string(),
+                                        ),
+                                        window_id,
+                                        ctx,
+                                    );
+                                });
+                            }
+                        },
                         SkillReference::BundledSkillId(_) => {
                             let window_id = ctx.window_id();
                             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
