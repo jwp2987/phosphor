@@ -257,6 +257,22 @@ pub struct BlocklistAIHistoryModel {
     /// via `set_parent_for_conversation` and `restore_conversations`.
     children_by_parent: HashMap<AIConversationId, Vec<AIConversationId>>,
 
+    /// Tombstone set of conversation ids explicitly killed via the
+    /// orchestration pill bar's "Kill agent" action. Bounded LRU, like the
+    /// pin's `OrchestrationEventStreamer::killed_run_ids` (which this
+    /// fork does not have -- that streamer is cloud, see DECLINED.md).
+    ///
+    /// Local equivalent, scoped to what this fork can actually resurrect a
+    /// killed conversation from: `start_new_child_conversation`, called when
+    /// a local lifecycle/spawn event for the same child arrives after Kill
+    /// already deleted it. Consulted there; not a full port of the pin's
+    /// event-batch-level filtering (which guards a server-relay path this
+    /// fork doesn't have).
+    killed_conversation_ids: HashSet<AIConversationId>,
+    /// Insertion order for `killed_conversation_ids`, so eviction is FIFO
+    /// once the bound is hit.
+    killed_conversation_id_order: std::collections::VecDeque<AIConversationId>,
+
     /// Optimistic conversation renames currently in flight, keyed by
     /// conversation ID. Present between `begin_conversation_rename` and the
     /// matching `complete_conversation_rename` / `fail_conversation_rename`.
@@ -439,6 +455,30 @@ impl BlocklistAIHistoryModel {
     }
 
     /// Creates a new child agent conversation.
+    /// Bound on `killed_conversation_ids`, mirroring the pin's
+    /// `MAX_KILLED_RUN_IDS` on `OrchestrationEventStreamer` (not ported --
+    /// see the field's doc comment).
+    const MAX_KILLED_CONVERSATION_IDS: usize = 256;
+
+    /// Tombstones `conversation_id` so a later local re-creation attempt for
+    /// it (see `start_new_child_conversation`'s check) is rejected instead of
+    /// silently resurrecting a conversation the user explicitly killed.
+    pub(crate) fn mark_conversation_killed(&mut self, conversation_id: AIConversationId) {
+        if self.killed_conversation_ids.insert(conversation_id) {
+            self.killed_conversation_id_order.push_back(conversation_id);
+        }
+        while self.killed_conversation_id_order.len() > Self::MAX_KILLED_CONVERSATION_IDS {
+            let Some(evicted) = self.killed_conversation_id_order.pop_front() else {
+                break;
+            };
+            self.killed_conversation_ids.remove(&evicted);
+        }
+    }
+
+    pub(crate) fn is_conversation_killed(&self, conversation_id: &AIConversationId) -> bool {
+        self.killed_conversation_ids.contains(conversation_id)
+    }
+
     pub fn start_new_child_conversation(
         &mut self,
         terminal_view_id: EntityId,

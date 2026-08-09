@@ -1857,6 +1857,21 @@ pub enum Event {
     OpenChildAgentInNewPane {
         conversation_id: AIConversationId,
     },
+    /// See `TerminalAction::OpenChildAgentInNewTab`'s doc comment for scope.
+    OpenChildAgentInNewTab {
+        conversation_id: AIConversationId,
+    },
+    /// Pill-bar navigation: swap the current pane's agent view to the given
+    /// conversation in place.
+    SwapPaneToConversation {
+        conversation_id: AIConversationId,
+    },
+    StopAgentConversation {
+        conversation_id: AIConversationId,
+    },
+    KillAgentConversation {
+        conversation_id: AIConversationId,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -10304,7 +10319,7 @@ impl TerminalView {
 
     /// Updates the agent view back button's disabled state and tooltip based on whether
     /// the user can exit agent mode, and shows a tooltip explaining when exiting is blocked.
-    fn update_agent_view_back_button_state(&mut self, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn update_agent_view_back_button_state(&mut self, ctx: &mut ViewContext<Self>) {
         let disabled_reason = self
             .can_exit_agent_view_for_terminal_view(ctx)
             .err()
@@ -24536,6 +24551,10 @@ impl TypedActionView for TerminalView {
             | ToggleUsageFooter
             | RevealChildAgent { .. }
             | OpenChildAgentInNewPane { .. }
+            | OpenChildAgentInNewTab { .. }
+            | SwitchAgentViewToConversation { .. }
+            | StopAgentConversation { .. }
+            | KillAgentConversation { .. }
             | OpenCLIAgentRichInput
             | ToggleSessionRecording => Empty,
         }
@@ -25530,6 +25549,27 @@ impl TypedActionView for TerminalView {
             }
             OpenChildAgentInNewPane { conversation_id } => {
                 ctx.emit(Event::OpenChildAgentInNewPane {
+                    conversation_id: *conversation_id,
+                });
+            }
+            OpenChildAgentInNewTab { conversation_id } => {
+                ctx.emit(Event::OpenChildAgentInNewTab {
+                    conversation_id: *conversation_id,
+                });
+            }
+            SwitchAgentViewToConversation { conversation_id } => {
+                // Pill-bar nav: every child has a hidden pane, so swap to it.
+                ctx.emit(Event::SwapPaneToConversation {
+                    conversation_id: *conversation_id,
+                });
+            }
+            StopAgentConversation { conversation_id } => {
+                ctx.emit(Event::StopAgentConversation {
+                    conversation_id: *conversation_id,
+                });
+            }
+            KillAgentConversation { conversation_id } => {
+                ctx.emit(Event::KillAgentConversation {
                     conversation_id: *conversation_id,
                 });
             }

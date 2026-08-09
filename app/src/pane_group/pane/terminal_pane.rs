@@ -11,7 +11,10 @@ use warpui::{
 };
 
 use crate::{
-    ai::{blocklist::BlocklistAIHistoryModel, llms::LLMPreferences, skills::SkillManager},
+    ai::{
+        agent::conversation::AIConversationId, blocklist::BlocklistAIHistoryModel,
+        llms::LLMPreferences, skills::SkillManager,
+    },
     app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot},
     pane_group::{self, Direction, Event::OpenConversationHistory, PaneGroup},
     persistence::{BlockCompleted, ModelEvent},
@@ -22,7 +25,7 @@ use crate::{
         TerminalManager, TerminalView,
     },
     view_components::ToastFlavor,
-    workspace::{sync_inputs::SyncedInputState, PaneViewLocator},
+    workspace::{sync_inputs::SyncedInputState, PaneViewLocator, WorkspaceRegistry},
     AIExecutionProfilesModel,
 };
 
@@ -970,11 +973,184 @@ fn handle_terminal_view_event(
                     );
                 }
             }
+            Event::OpenChildAgentInNewTab { conversation_id } => {
+                // Degraded, same as OpenChildAgentInNewPane above: reveals an
+                // already-materialized hidden pane as a sibling pane rather
+                // than a real new tab. See
+                // `TerminalAction::OpenChildAgentInNewTab`'s doc comment.
+                if let Some(&child_pane_id) = group.child_agent_panes.get(conversation_id) {
+                    group.panes.show_pane_for_child_agent(child_pane_id);
+                    group.handle_pane_count_change(ctx);
+                    group.focus_pane(child_pane_id, true, ctx);
+                } else {
+                    log::warn!(
+                        "OpenChildAgentInNewTab: no hidden pane for child conversation \
+                         {conversation_id:?}"
+                    );
+                }
+            }
+            Event::SwapPaneToConversation { conversation_id } => {
+                group.swap_active_pane_to_conversation(pane_id, *conversation_id, ctx);
+            }
+            Event::StopAgentConversation { conversation_id } => {
+                stop_agent_conversation(group, *conversation_id, ctx);
+            }
+            Event::KillAgentConversation { conversation_id } => {
+                let source_terminal_view_id = group
+                    .terminal_view_from_pane_id(terminal_pane_id, ctx)
+                    .map(|terminal_view| terminal_view.id());
+                kill_agent_conversation(group, source_terminal_view_id, *conversation_id, ctx);
+            }
             _ => {}
         }
     } else {
         log::warn!("Session {terminal_pane_id:?} not found");
     }
+}
+
+/// Minimal local action-state gate for the orchestration pill bar's
+/// Stop/Kill actions -- a scoped-down version of the pin's
+/// `AgentConversationActionState`. The pin's `task_id` /
+/// `is_cloud_cancel_candidate` fields aren't carried: this fork routes
+/// every stop/cancel through `TerminalView::stop_local_agent_conversation`
+/// (see `stop_agent_conversation` below) rather than branching to an
+/// ambient-task cloud-cancel path
+/// (`crate::ai::ambient_agents::cancel_task_with_toast`/`cancel_task_silently`),
+/// which doesn't exist in this fork. `is_remote_child` is also permanently
+/// false here (no remote-worker execution path), so that half of the pin's
+/// branch condition could never fire anyway.
+#[derive(Clone, Copy)]
+struct AgentConversationActionState {
+    owner_terminal_view_id: EntityId,
+    is_in_progress: bool,
+}
+
+fn agent_conversation_action_state(
+    conversation_id: AIConversationId,
+    ctx: &AppContext,
+) -> Option<AgentConversationActionState> {
+    let history_model = BlocklistAIHistoryModel::as_ref(ctx);
+    let conversation = history_model.conversation(&conversation_id)?;
+    let owner_terminal_view_id =
+        history_model.terminal_view_id_for_conversation(&conversation_id)?;
+    Some(AgentConversationActionState {
+        owner_terminal_view_id,
+        is_in_progress: conversation.status().is_in_progress(),
+    })
+}
+
+/// Cross-workspace lookup for the `TerminalView` owning `owner_terminal_view_id`,
+/// for when it isn't hosted in the pane group already at hand.
+fn terminal_view_handle_for_owner(
+    owner_terminal_view_id: EntityId,
+    ctx: &AppContext,
+) -> Option<ViewHandle<TerminalView>> {
+    WorkspaceRegistry::as_ref(ctx)
+        .all_workspaces(ctx)
+        .into_iter()
+        .find_map(|(_, workspace)| {
+            workspace.as_ref(ctx).tab_views().find_map(|pane_group| {
+                let group = pane_group.as_ref(ctx);
+                let pane_id = group.find_pane_id_for_terminal_view(owner_terminal_view_id, ctx)?;
+                group.terminal_view_from_pane_id(pane_id, ctx)
+            })
+        })
+}
+
+fn stop_agent_conversation(
+    group: &PaneGroup,
+    conversation_id: AIConversationId,
+    ctx: &mut ViewContext<PaneGroup>,
+) {
+    let Some(state) = agent_conversation_action_state(conversation_id, ctx) else {
+        log::warn!("StopAgentConversation: conversation {conversation_id:?} not found");
+        return;
+    };
+    if !state.is_in_progress {
+        return;
+    }
+    let terminal_view = group
+        .find_pane_id_for_terminal_view(state.owner_terminal_view_id, ctx)
+        .and_then(|pane_id| group.terminal_view_from_pane_id(pane_id, ctx))
+        .or_else(|| terminal_view_handle_for_owner(state.owner_terminal_view_id, ctx));
+    let Some(terminal_view) = terminal_view else {
+        log::warn!(
+            "StopAgentConversation: no terminal view found for conversation {conversation_id:?}"
+        );
+        // Still make the stop visible in history even though nothing in
+        // memory could actually cancel the in-flight work, mirroring the
+        // pin's fallback for a gone owner view.
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+            history_model.update_conversation_status(
+                state.owner_terminal_view_id,
+                conversation_id,
+                crate::ai::agent::conversation::ConversationStatus::Cancelled,
+                ctx,
+            );
+        });
+        return;
+    };
+    terminal_view.update(ctx, |terminal_view, ctx| {
+        terminal_view.stop_local_agent_conversation(conversation_id, ctx);
+    });
+}
+
+fn kill_agent_conversation(
+    group: &mut PaneGroup,
+    source_terminal_view_id: Option<EntityId>,
+    conversation_id: AIConversationId,
+    ctx: &mut ViewContext<PaneGroup>,
+) {
+    let state = agent_conversation_action_state(conversation_id, ctx);
+
+    // Tombstone before anything else so a late local event for this
+    // conversation can't recreate it. Local equivalent of the pin's
+    // `OrchestrationEventStreamer::mark_conversation_killed` -- that
+    // streamer is cloud (DECLINED.md, orchestration_event_streamer.rs) and
+    // not ported. See `BlocklistAIHistoryModel::mark_conversation_killed`'s
+    // doc comment: this guards the one local re-creation path this fork
+    // was confirmed to have (`start_new_child_conversation`); it is not a
+    // proven-exhaustive port of the pin's event-batch-level filtering,
+    // which guards a server-relay path this fork doesn't have at all.
+    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, _| {
+        history_model.mark_conversation_killed(conversation_id);
+    });
+
+    if let Some(state) = state
+        && state.is_in_progress
+    {
+        let terminal_view = group
+            .find_pane_id_for_terminal_view(state.owner_terminal_view_id, ctx)
+            .and_then(|pane_id| group.terminal_view_from_pane_id(pane_id, ctx))
+            .or_else(|| terminal_view_handle_for_owner(state.owner_terminal_view_id, ctx));
+        if let Some(terminal_view) = terminal_view {
+            terminal_view.update(ctx, |terminal_view, ctx| {
+                terminal_view.stop_local_agent_conversation(conversation_id, ctx);
+            });
+        }
+    }
+
+    let owner_terminal_view_id = state
+        .map(|state| state.owner_terminal_view_id)
+        .or(source_terminal_view_id);
+
+    if !group.discard_child_agent_pane_for_conversation(conversation_id, ctx) {
+        log::warn!("KillAgentConversation: no child pane found for {conversation_id:?}");
+    }
+
+    if owner_terminal_view_id.is_none() {
+        log::warn!(
+            "KillAgentConversation: no terminal view found for conversation {conversation_id:?}"
+        );
+    }
+    // Delete (not remove): drop the conversation from sqlite so a killed
+    // child does not resurrect on restart. The pin also drops a cloud copy
+    // here; there is no cloud copy in this fork.
+    crate::ai::conversation_utils::delete_conversation(
+        conversation_id,
+        owner_terminal_view_id,
+        ctx,
+    );
 }
 
 #[cfg(feature = "local_fs")]
