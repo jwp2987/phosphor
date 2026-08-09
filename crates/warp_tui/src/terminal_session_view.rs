@@ -128,6 +128,7 @@ use crate::zero_state_animation::{
     ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationLoadFailure,
 };
 mod input_detection;
+mod shortcuts;
 pub(crate) mod state;
 
 use self::input_detection::InputDetectionState;
@@ -153,10 +154,24 @@ const SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG: &str = "TuiSessionCanAllowBlock
 /// -- gates the reject keyboard path, the equivalent of clicking "[Reject]" in
 /// `TuiCLISubagentView`. Mirrors the GUI's `RejectBlockedAction { should_user_take_over: false }`.
 const SESSION_CAN_REJECT_BLOCKED_LRC_ACTION_FLAG: &str = "TuiSessionCanRejectBlockedLrcAction";
+/// Set while the active block is a user-controlled long-running command the
+/// agent is not yet tagged into, gating the keyboard path that hands the
+/// agent a manual prompt for it (mirrors the GUI's "Ask agent" affordance).
+const SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG: &str =
+    "TuiSessionCanAttachAgentToRunningCommand";
+/// Set while the agent is manually tagged into the active running command and
+/// the composer owns input, gating the keyboard path that discards the
+/// unsent prompt and returns input to the running command.
+const SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG: &str =
+    "TuiSessionCanDetachAgentFromRunningCommand";
 pub(crate) const SESSION_COMPOSER_OWNS_INPUT_FLAG: &str = "TuiSessionComposerOwnsInput";
 pub(crate) const TRIGGER_COMPLETIONS_BINDING_NAME: &str = "tui:session:trigger_completions";
 pub(crate) const PASTE_IMAGE_BINDING_NAME: &str = "tui:session:paste_image";
 pub(crate) const AUTO_APPROVE_TOGGLE_BINDING_NAME: &str = "tui:session:toggle_auto_approve";
+pub(crate) const ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME: &str =
+    "tui:session:attach_agent_to_running_command";
+pub(crate) const DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME: &str =
+    "tui:session:detach_agent_from_running_command";
 
 /// Events emitted by the TUI terminal session surface.
 pub(crate) enum TuiTerminalSessionEvent {
@@ -501,6 +516,12 @@ pub(crate) enum TuiTerminalSessionAction {
     CancelRestore,
     /// Return a user-controlled terminal-use command to the agent.
     HandBackTerminalUseControl,
+    /// Tags the agent into the active user-controlled running command,
+    /// switching the composer to a manual prompt for it.
+    AttachAgentToRunningCommand,
+    /// Detaches the agent from the active running command, discarding any
+    /// unsent prompt and returning input to the running command.
+    DetachAgentFromRunningCommand,
     /// Approve the agent's pending action on a long-running command it's
     /// driving (the keyboard path for the "[Allow]" affordance in
     /// `TuiCLISubagentView`, which was previously mouse-only).
@@ -690,6 +711,28 @@ pub(crate) fn init(app: &mut AppContext) {
         .with_context_predicate(view_context.clone())
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("ctrl-shift-I"),
+        EditableBinding::new(
+            ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME,
+            "Use the agent with the running command",
+            TuiTerminalSessionAction::AttachAgentToRunningCommand,
+        )
+        .with_context_predicate(
+            (id!(TuiInputView::ui_name()) | view_context.clone())
+                & id!(SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG),
+        )
+        .with_group(TUI_BINDING_GROUP)
+        .with_key_binding("ctrl-shift-enter"),
+        EditableBinding::new(
+            DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME,
+            "Return control to the running command",
+            TuiTerminalSessionAction::DetachAgentFromRunningCommand,
+        )
+        .with_context_predicate(
+            (id!(TuiInputView::ui_name()) | view_context.clone())
+                & id!(SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG),
+        )
+        .with_group(TUI_BINDING_GROUP)
+        .with_key_binding("escape"),
         EditableBinding::new(
             PLAN_TOGGLE_BINDING_NAME,
             "Toggle the latest plan",
@@ -965,6 +1008,66 @@ impl TuiTerminalSessionView {
             controller.handoff_active_command_control_to_agent(ctx);
         });
         self.update_process_input_focus(ctx);
+    }
+
+    /// Whether the active block is a user-controlled running command the
+    /// agent is not yet tagged into and could be manually invited into.
+    fn can_attach_agent_to_running_command(&self) -> bool {
+        self.terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_eligible_to_tag_in_agent()
+    }
+
+    /// Tags the agent into the active user-controlled running command,
+    /// switching the composer to a manual prompt for it. Returns `false` when
+    /// the active block is not eligible (already tagged in, not long-running,
+    /// or not bootstrapped).
+    fn try_attach_agent_to_running_command(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let did_attach = {
+            let mut terminal_model = self.terminal_model.lock();
+            let active_block = terminal_model.block_list_mut().active_block_mut();
+            if !active_block.is_eligible_to_tag_in_agent() {
+                false
+            } else {
+                active_block.set_is_agent_tagged_in(true);
+                true
+            }
+        };
+        if !did_attach {
+            return false;
+        }
+        self.input_view.update(ctx, |input, ctx| {
+            input.clear(ctx);
+            input.exit_shell_mode(ctx);
+        });
+        self.update_process_input_focus(ctx);
+        ctx.notify();
+        true
+    }
+
+    /// Detaches the agent from the active running command, discarding any
+    /// unsent prompt and returning input to the running command. Returns
+    /// `false` when no active block has a manually attached agent.
+    fn try_detach_agent_from_running_command(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let did_detach = {
+            let mut terminal_model = self.terminal_model.lock();
+            let active_block = terminal_model.block_list_mut().active_block_mut();
+            if !active_block.is_agent_tagged_in() {
+                false
+            } else {
+                active_block.set_is_agent_tagged_in(false);
+                true
+            }
+        };
+        if !did_detach {
+            return false;
+        }
+        self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+        self.update_process_input_focus(ctx);
+        ctx.notify();
+        true
     }
 
     fn active_agent_controlled_target(&self, ctx: &AppContext) -> Option<CLISubagentTarget> {
@@ -4196,6 +4299,24 @@ impl TuiView for TuiTerminalSessionView {
         if self.active_user_controlled_target(ctx).is_some() {
             context.set.insert(SESSION_CAN_HAND_BACK_CONTROL_FLAG);
         }
+        if self.can_attach_agent_to_running_command() {
+            context
+                .set
+                .insert(SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG);
+        }
+        if self
+            .terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_agent_tagged_in()
+            && self.input_target().agent_editor_owns_input()
+            && !self.suggestions_mode.as_ref(ctx).mode().is_visible()
+        {
+            context
+                .set
+                .insert(SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG);
+        }
         if self.active_agent_blocked_target(ctx).is_some() {
             context
                 .set
@@ -4522,6 +4643,12 @@ impl TypedActionView for TuiTerminalSessionView {
             }
             TuiTerminalSessionAction::HandBackTerminalUseControl => {
                 self.hand_back_terminal_use_control(ctx)
+            }
+            TuiTerminalSessionAction::AttachAgentToRunningCommand => {
+                let _ = self.try_attach_agent_to_running_command(ctx);
+            }
+            TuiTerminalSessionAction::DetachAgentFromRunningCommand => {
+                let _ = self.try_detach_agent_from_running_command(ctx);
             }
             TuiTerminalSessionAction::AllowBlockedLrcAction => self.allow_blocked_lrc_action(ctx),
             TuiTerminalSessionAction::RejectBlockedLrcAction => self.reject_blocked_lrc_action(ctx),

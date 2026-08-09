@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use parking_lot::FairMutex;
 use warp::tui_export::{
-    AIAgentActionId, AIConversationId, AgentInteractionMetadata, BlockId,
-    LongRunningCommandControlState, TaskId, TerminalModel, AgentViewState, UserTakeOverReason,
+    AIAgentActionId, AIConversationId, AgentInteractionMetadata, AgentViewState, BlockId,
+    LongRunningCommandControlState, TaskId, TerminalModel, UserTakeOverReason,
 };
 use warpui::EntityIdMap;
 use warpui_core::App;
@@ -76,12 +76,12 @@ fn shell_startup_routes_input_by_bootstrap_stage() {
     model.block_list_mut().reinit_shell();
     assert_eq!(tui_input_target(&model), TuiInputTarget::Disabled);
     assert_eq!(
-        tui_input_target_for_state(false, true, false, false, false),
+        tui_input_target_for_state(false, true, false, false, false, false),
         TuiInputTarget::Disabled,
         "silent startup-script execution should keep the bootstrap editor visible",
     );
     assert_eq!(
-        tui_input_target_for_state(false, true, true, false, false),
+        tui_input_target_for_state(false, true, true, false, false, false),
         TuiInputTarget::Pty,
         "visible startup-script output should accept interactive PTY input",
     );
@@ -90,12 +90,28 @@ fn shell_startup_routes_input_by_bootstrap_stage() {
 #[test]
 fn submit_policy_blocks_bootstrap_but_allows_ready_prompt() {
     assert!(
-        !tui_input_target_for_state(false, false, false, false, false).agent_editor_owns_input(),
+        !tui_input_target_for_state(false, false, false, false, false, false)
+            .agent_editor_owns_input(),
         "bootstrap submission must remain disabled"
     );
     assert!(
-        tui_input_target_for_state(false, false, false, true, false).agent_editor_owns_input(),
+        tui_input_target_for_state(false, false, false, true, false, false)
+            .agent_editor_owns_input(),
         "the normal prompt must accept submission"
+    );
+}
+
+#[test]
+fn alternate_screen_routes_input_to_its_current_owner() {
+    assert_eq!(
+        tui_input_target_for_state(true, false, false, true, false, false),
+        TuiInputTarget::Pty,
+        "a user-controlled alt-screen process should receive PTY input",
+    );
+    assert_eq!(
+        tui_input_target_for_state(true, false, false, true, false, true),
+        TuiInputTarget::AgentEditor,
+        "agent control should keep alt-screen keystrokes in the composer",
     );
 }
 #[test]
