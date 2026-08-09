@@ -568,16 +568,142 @@ fn removal_command_removes_binary_but_leaves_global_resources() {
     assert!(!command.contains(BUNDLED_RESOURCES_DIR_NAME));
 }
 
-// NOTE (#440): the oracle also has `install_script_installs_binary_and_global_resources`,
-// `install_script_substitutes_bundled_resources_dir_name`, and
-// `install_script_tolerates_tarball_without_resources`. Not ported: all three
-// exercise `install_remote_server.sh` actually creating and populating
-// `BUNDLED_RESOURCES_DIR_NAME` from the release artifact's `resources/` tree
-// (bundled skills, settings schema). That is a packaging/release-pipeline
-// change (the install script template plus what the release artifact ships),
-// not a Rust-side gap — `remote_server_bundled_resources_dir()` and
-// `remote_server_removal_command()` above are ported and correct, but until
-// the install script is updated to populate the directory they name, it
-// never exists on a freshly installed host and the daemon always takes its
-// "no bundled resources" branch at runtime. See the filed issue for the
-// packaging half.
+#[test]
+fn install_script_substitutes_bundled_resources_dir_name() {
+    let script = install_script(None);
+    assert!(
+        !script.contains("{bundled_resources_dir_name}"),
+        "the placeholder survived substitution -- install_script() is missing its \
+         .replace() for it, so the script would create a directory named after the \
+         literal placeholder",
+    );
+    assert!(
+        script.contains(BUNDLED_RESOURCES_DIR_NAME),
+        "the resources directory name never made it into the script",
+    );
+}
+
+/// Drives the *actual* production script end to end against a fabricated
+/// release tarball, so the assertion is about what a real install leaves on
+/// disk rather than about the template's text.
+///
+/// Uses the staging-tarball path (`install_script(Some(..))`) to skip the
+/// network download, and points `HOME` at a temp dir so `~/.zap/remote-server`
+/// resolves inside it.
+///
+/// Gated to Unix because the test invokes `/bin/bash` and `tar` directly.
+#[cfg(unix)]
+#[test]
+fn install_script_installs_binary_and_global_resources() {
+    let (home, script, install_dir) = run_install_with_tarball(true);
+
+    let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
+    assert!(
+        binary.is_file(),
+        "binary was not installed at {binary:?} (script: {script})",
+    );
+
+    // The resources tree landed at the global, version-independent path the
+    // daemon reads -- not under a versioned directory.
+    let resources = install_dir.join(BUNDLED_RESOURCES_DIR_NAME);
+    assert!(
+        resources.is_dir(),
+        "resources tree was not installed at {resources:?}",
+    );
+    assert_eq!(
+        std::fs::read_to_string(resources.join("skills/demo.md")).unwrap(),
+        "bundled skill",
+        "resources tree was installed but its contents are wrong",
+    );
+
+    // No staging leftovers: a concurrent daemon start must not find a
+    // half-populated directory or a stray .new/.old sibling.
+    for entry in std::fs::read_dir(&install_dir).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        assert!(
+            !name.contains(".new.") && !name.contains(".old."),
+            "install left a staging directory behind: {name}",
+        );
+    }
+
+    drop(home);
+}
+
+/// A tarball with no `resources/` tree must still install the binary and exit
+/// zero. This is the normal case for dev-mode installs, which cross-compile a
+/// bare binary, and for release artifacts that predate the resources tree.
+#[cfg(unix)]
+#[test]
+fn install_script_tolerates_tarball_without_resources() {
+    let (home, script, install_dir) = run_install_with_tarball(false);
+
+    let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
+    assert!(
+        binary.is_file(),
+        "binary was not installed at {binary:?} (script: {script})",
+    );
+    assert!(
+        !install_dir.join(BUNDLED_RESOURCES_DIR_NAME).exists(),
+        "the script invented a resources directory the tarball never contained",
+    );
+
+    drop(home);
+}
+
+/// Builds a release-shaped tarball (binary, plus a `resources/` tree when
+/// `with_resources`), runs the production install script against it with
+/// `HOME` pointed at a temp dir, and returns the temp dir guard, the script
+/// text (for failure messages) and the resolved install directory.
+#[cfg(unix)]
+fn run_install_with_tarball(with_resources: bool) -> (tempfile::TempDir, String, std::path::PathBuf) {
+    let home = tempfile::tempdir().expect("failed to create temp HOME");
+    let home_path = home.path().to_path_buf();
+
+    // Lay out the tarball contents: the binary the script looks for, and
+    // optionally the resources tree the release pipeline ships.
+    let staging = home_path.join("tarball-src");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join(binary_name()), "#!/bin/sh\nexit 0\n").unwrap();
+    if with_resources {
+        std::fs::create_dir_all(staging.join("resources/skills")).unwrap();
+        std::fs::write(staging.join("resources/skills/demo.md"), "bundled skill").unwrap();
+    }
+
+    let tarball = home_path.join("zap-upload.tar.gz");
+    let tar_status = Command::new("tar")
+        .arg("-czf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(&staging)
+        .arg(".")
+        .status()
+        .expect("failed to spawn tar");
+    assert!(tar_status.success(), "tar failed to build the test artifact");
+
+    let script = install_script(Some(tarball.to_str().unwrap()));
+
+    let bash = if std::path::Path::new("/bin/bash").exists() {
+        "/bin/bash"
+    } else {
+        "bash"
+    };
+    let output = Command::new(bash)
+        .arg("-c")
+        .arg(&script)
+        .env("HOME", &home_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to spawn bash");
+    assert!(
+        output.status.success(),
+        "install script exited with {:?}: stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let install_dir = std::path::PathBuf::from(
+        remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1),
+    );
+    (home, script, install_dir)
+}

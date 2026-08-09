@@ -86,6 +86,11 @@ fn build_test_context_model(app: &mut App) -> ModelHandle<BlocklistAIContextMode
 
     app.add_singleton_model(ObjectStoreModel::mock);
     app.add_singleton_model(UpdateManager::mock);
+    // #316's `AgentViewConversationSelection::new` subscribes to
+    // `BlocklistAIHistoryModel::handle(ctx)`, so constructing the selection below now
+    // requires this singleton. `get_singleton_model_as_ref` panics rather than
+    // returning None when it is missing.
+    app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
     let ambient_agent_view_model =
         app.add_model(|ctx| AmbientAgentViewModel::new(terminal_view_id, false, ctx));

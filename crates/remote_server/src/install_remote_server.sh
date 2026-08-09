@@ -7,6 +7,10 @@
 #   {binary_name}           - e.g. zap-oss
 #   {version_suffix}        - e.g. -v0.2026..., empty when there's no release tag
 #   {staging_tarball_path}  - pre-uploaded tarball path for the SCP fallback; empty for the normal download path
+#   {bundled_resources_dir_name}
+#                           - e.g. bundled_resources; the global, version-independent
+#                             directory under {install_dir} that receives the release
+#                             artifact's resources/ tree (bundled skills, settings schema)
 set -e
 
 arch=$(uname -m)
@@ -66,3 +70,31 @@ fi
 if [ -z "$bin" ]; then echo "no binary found in tarball" >&2; exit 1; fi
 chmod +x "$bin"
 mv "$bin" "$install_dir/{binary_name}{version_suffix}"
+
+# Install the artifact's resources/ tree (bundled skills, settings schema) into the
+# global, version-independent directory the daemon reads at startup
+# (`remote_server_bundled_resources_dir()` in setup.rs). Deliberately NOT
+# version-scoped: the last install wins, and the removal command leaves this
+# directory in place so an already-running older daemon keeps the skills it
+# parsed at startup.
+#
+# Absent resources/ is not an error: dev-mode installs cross-compile a bare
+# binary with no resources tree, and older release artifacts predate it.
+resources_src="$tmpdir/resources"
+if [ ! -d "$resources_src" ]; then
+  resources_src=$(find "$tmpdir" -maxdepth 3 -type d -name resources | head -n1)
+fi
+if [ -n "$resources_src" ] && [ -d "$resources_src" ]; then
+  resources_dir="$install_dir/{bundled_resources_dir_name}"
+  # Swap through a staging path so a failed install cannot leave the directory
+  # half-populated for a daemon that is starting up concurrently.
+  staged="$install_dir/.{bundled_resources_dir_name}.new.$$"
+  previous="$install_dir/.{bundled_resources_dir_name}.old.$$"
+  rm -rf "$staged" "$previous"
+  mv "$resources_src" "$staged"
+  if [ -d "$resources_dir" ]; then
+    mv "$resources_dir" "$previous"
+  fi
+  mv "$staged" "$resources_dir"
+  rm -rf "$previous"
+fi

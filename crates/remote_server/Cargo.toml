@@ -32,6 +32,9 @@ async-process.workspace = true
 getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
+# setup_tests.rs drives the real install script against a fabricated release
+# tarball under a temp HOME (#440).
+tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread"] }
 tokio-util = { workspace = true, features = ["compat"] }
 # `App::test` (used by manager_tests.rs to drive `RemoteServerManager` as a

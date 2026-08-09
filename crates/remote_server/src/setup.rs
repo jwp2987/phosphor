@@ -449,14 +449,16 @@ fn pinned_version() -> &'static str {
 /// the release artifact's `resources/` tree (bundled skills, settings
 /// schema).
 ///
-/// NOTE (#440): this fork's `install_remote_server.sh` does not currently
-/// create or populate this directory — only [`remote_server_bundled_resources_dir`]
-/// and the Rust-side consumer (`daemon_bundled_resources_dir` in
-/// `app/src/remote_server/server_model.rs`) are ported here. Until the
-/// install script and release artifact are updated to ship a
-/// `resources/` tree, this directory never exists on a freshly installed
-/// host, so the daemon always takes its "no bundled resources" branch at
-/// runtime. See that issue for the packaging half.
+/// `install_remote_server.sh` populates this from the artifact's `resources/`
+/// tree, substituting the name via the `{bundled_resources_dir_name}`
+/// placeholder in [`install_script`]; the release pipeline already tars that
+/// tree into the CLI asset (`phosphor_release.yml`). The daemon-side consumer
+/// is `daemon_bundled_resources_dir` in `app/src/remote_server/server_model.rs`.
+///
+/// A missing `resources/` tree is not an install failure: dev-mode installs
+/// cross-compile a bare binary (see [`DEV_MUSL_TARGET`]) and older release
+/// artifacts predate the tree, so the daemon still has to handle the "no
+/// bundled resources" branch.
 pub const BUNDLED_RESOURCES_DIR_NAME: &str = "bundled_resources";
 
 /// Returns the global, version-independent directory where the install
@@ -484,6 +486,7 @@ pub fn install_script(staging_tarball_path: Option<&str>) -> String {
         .replace("{binary_name}", binary_name())
         .replace("{version_suffix}", &version_suffix)
         .replace("{staging_tarball_path}", staging_tarball_path.unwrap_or(""))
+        .replace("{bundled_resources_dir_name}", BUNDLED_RESOURCES_DIR_NAME)
 }
 
 /// Builds the download base URL for the Zap CLI release asset.

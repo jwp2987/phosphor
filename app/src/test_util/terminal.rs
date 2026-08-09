@@ -116,6 +116,15 @@ pub fn initialize_app_for_terminal_view(app: &mut App) {
     app.add_singleton_model(ByoLlmAuthBannerSessionState::new);
     app.add_singleton_model(|_| GitHubAuthNotifier::new());
     app.add_singleton_model(AgentConversationsModel::new);
+    // #341's `fail_conversation_due_to_shell_exit` reaches this singleton on the error
+    // path, and `get_singleton_model_as_ref` panics rather than returning None when it
+    // is absent, so every terminal-view test needs it registered -- same idiom as
+    // `workspace/view_test.rs`. Registered last but before `experiments::init`, which
+    // is the consumer that cares about ordering.
+    let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+    app.add_singleton_model(|_| {
+        crate::global_resource_handles::GlobalResourceHandlesProvider::new(global_resource_handles)
+    });
 
     app.update(experiments::init);
 }
