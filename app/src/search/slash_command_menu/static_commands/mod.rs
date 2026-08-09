@@ -145,6 +145,8 @@ pub enum SlashCommandKind {
     RenameConversation,
     SetTabColor,
     Statusline,
+    /// `/theme`: TUI-only, sets `TuiTheme` (auto/light/dark). See #147.
+    Theme,
     Fork,
     MoveToCloud,
     OpenCodeReview,
@@ -240,6 +242,7 @@ impl StaticCommand {
             "/rename-tab" => SlashCommandKind::RenameTab,
             "/set-tab-color" => SlashCommandKind::SetTabColor,
             "/statusline" => SlashCommandKind::Statusline,
+            "/theme" => SlashCommandKind::Theme,
             "/auto-approve" => SlashCommandKind::AutoApprove,
             "/natural-language-detection" => SlashCommandKind::NaturalLanguageDetection,
             "/exit" => SlashCommandKind::Exit,
@@ -300,9 +303,9 @@ impl StaticCommand {
     /// rather than merely unlikely.
     ///
     /// This is NOT the oracle's full `TuiOnly` list, and copying that list would be a
-    /// regression here: the oracle also classifies `/theme` and `/status` as TUI-only,
-    /// while this fork ships `/theme` as a GUI command. Surfaces are a per-fork fact,
-    /// not something to inherit wholesale.
+    /// regression here: the oracle classifies `/status` as TUI-only, but this fork has no
+    /// `/status` command at all. Surfaces are a per-fork fact, not something to inherit
+    /// wholesale.
     pub fn is_tui_only(&self) -> bool {
         matches!(
             self.name,
@@ -313,6 +316,7 @@ impl StaticCommand {
                 | "/mcp"
                 | "/view-logs"
                 | "/clear"
+                | "/theme"
         )
     }
 
@@ -348,6 +352,7 @@ impl StaticCommand {
                 | "/exit"
                 | "/mcp"
                 | "/view-logs"
+                | "/theme"
                 // Both report on local BYOP data (context window, provider token counts x
                 // the user's own rates) and open no GUI pane, so AGENTS §5.9 requires them
                 // on the TUI too.

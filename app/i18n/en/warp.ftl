@@ -2570,6 +2570,7 @@ slash-cmd-exit-desc = Exit Phosphor
 slash-cmd-view-logs-desc = Bundle your logs into a zip archive
 slash-cmd-clear-desc = Clear the transcript and start a new conversation (alias for /agent)
 slash-cmd-set-tab-color-desc = Set the color of the current tab
+slash-cmd-theme-desc = Set color theme
 
 # --- ANCHOR-SUB-PROMPT-TIPS ---
 # Prompt editor modal (app/src/prompt/editor_modal.rs)
