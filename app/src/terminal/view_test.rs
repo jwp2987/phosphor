@@ -209,10 +209,13 @@ fn empty_agent_conversation_data_for_test() -> AgentConversationData {
         artifacts_json: None,
         parent_agent_id: None,
         agent_name: None,
+        orchestration_harness_type: None,
+        root_task_is_optimistic: None,
         parent_conversation_id: None,
         run_id: None,
         autoexecute_override: None,
         last_event_sequence: None,
+        pinned: false,
         compaction_state_json: None,
         byop_repair_state_json: None,
         cli_subagent_block_snapshots_json: None,
@@ -5124,6 +5127,7 @@ fn cli_session_status_updates_active_child_conversation() {
                         view.view_id,
                         "Agent 2".to_string(),
                         parent_conversation_id,
+                        None,
                         ctx,
                     )
                 });
@@ -7486,6 +7490,7 @@ fn cli_session_status_updates_single_child_conversation_without_agent_view() {
                         view.view_id,
                         "Agent 2".to_string(),
                         parent_conversation_id,
+                        None,
                         ctx,
                     )
                 });

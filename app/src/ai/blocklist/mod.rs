@@ -17,6 +17,12 @@ pub(super) use controller::RequestInput;
 pub mod history_model;
 pub mod inline_action;
 pub mod input_model;
+// Local (non-cloud) multi-agent orchestration core: pure helpers for walking
+// the parent/child conversation tree (`orchestration_topology`) and an
+// in-memory queue for agent-to-agent message/lifecycle-event delivery
+// (`orchestration_events`). See #310.
+pub(crate) mod orchestration_events;
+pub(crate) mod orchestration_topology;
 pub(crate) mod permissions;
 pub(crate) mod persistence;
 pub mod prompt;

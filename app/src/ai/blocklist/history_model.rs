@@ -7,6 +7,7 @@ use chrono::{DateTime, Local, NaiveDateTime};
 use itertools::Itertools as _;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use warp_cli::agent::Harness;
 use warp_multi_agent_api::response_event::stream_finished::ConversationUsageMetadata;
 use warp_multi_agent_api::{
     client_action::{Action, StartNewConversation},
@@ -471,6 +472,7 @@ impl BlocklistAIHistoryModel {
         terminal_view_id: EntityId,
         name: String,
         parent_conversation_id: AIConversationId,
+        orchestration_harness: Option<Harness>,
         ctx: &mut ModelContext<Self>,
     ) -> AIConversationId {
         let parent_agent_id = self
@@ -494,9 +496,39 @@ impl BlocklistAIHistoryModel {
                 conversation.set_parent_agent_id(id);
             }
             conversation.set_agent_name(name);
+            if let Some(harness) = orchestration_harness {
+                conversation.set_orchestration_harness(harness);
+            }
         }
         self.set_parent_for_conversation(conversation_id, parent_conversation_id);
         conversation_id
+    }
+
+    /// Resolves the parent of `conversation` in the orchestration tree.
+    ///
+    /// Prefers the local `parent_conversation_id` placeholder (set by
+    /// `set_parent_for_conversation` when this client spawned the child
+    /// itself); falls back to resolving `parent_agent_id` against the
+    /// `agent_id_to_conversation_id` index for children whose parent
+    /// linkage was established via the agent identifier alone.
+    pub fn resolved_parent_conversation_id_for_conversation(
+        &self,
+        conversation: &AIConversation,
+    ) -> Option<AIConversationId> {
+        self.resolved_parent_conversation_id_from_refs(
+            conversation.parent_conversation_id(),
+            conversation.parent_agent_id(),
+        )
+    }
+
+    fn resolved_parent_conversation_id_from_refs(
+        &self,
+        parent_conversation_id: Option<AIConversationId>,
+        parent_agent_id: Option<&str>,
+    ) -> Option<AIConversationId> {
+        parent_conversation_id.or_else(|| {
+            parent_agent_id.and_then(|agent_id| self.conversation_id_for_agent_id(agent_id))
+        })
     }
 
     /// Sets the parent conversation ID on a child conversation and updates
@@ -555,6 +587,48 @@ impl BlocklistAIHistoryModel {
                 return;
             };
             conversation.set_last_event_sequence(sequence);
+        }
+        self.persist_conversation_state(conversation_id, ctx);
+    }
+
+    /// Marks a conversation as a remote-child placeholder and persists the
+    /// change.
+    ///
+    /// This fork has no remote-worker execution path (see
+    /// [`AIConversation::is_remote_child`]'s doc comment), so nothing in
+    /// production ever calls this — `is_remote_child` is permanently
+    /// `false` in practice. It is kept so `has_local_orchestrated_children`'s
+    /// local/remote distinction stays testable and the shape matches the
+    /// pin, in case legacy/foreign data ever carries the flag set.
+    pub fn mark_conversation_as_remote_child(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        {
+            let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) else {
+                return;
+            };
+            conversation.mark_as_remote_child();
+        }
+        self.persist_conversation_state(conversation_id, ctx);
+    }
+
+    /// Toggles the orchestration pill-bar pin state for a conversation and
+    /// persists the change so it survives a restart. Orchestrator
+    /// conversations (no parent) are not pinnable — pinning only applies to
+    /// child agents in the pill bar.
+    pub fn set_conversation_pinned(
+        &mut self,
+        conversation_id: AIConversationId,
+        pinned: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        {
+            let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) else {
+                return;
+            };
+            conversation.set_pinned(pinned);
         }
         self.persist_conversation_state(conversation_id, ctx);
     }
@@ -1440,12 +1514,17 @@ impl BlocklistAIHistoryModel {
             // Forked conversation loses its parentage
             parent_agent_id: None,
             agent_name: None,
+            orchestration_harness_type: None,
+            root_task_is_optimistic: None,
             parent_conversation_id: None,
             run_id: None,
             autoexecute_override: Some(source_conversation.autoexecute_override().into()),
             // The event cursor belongs to the source conversation's run; the
             // forked conversation will establish its own cursor.
             last_event_sequence: None,
+            // A forked conversation is a fresh top-level conversation, not a
+            // pinned orchestration child.
+            pinned: false,
             compaction_state_json: None,
             byop_repair_state_json,
             cli_subagent_block_snapshots_json: None,
@@ -1635,12 +1714,17 @@ impl BlocklistAIHistoryModel {
             // Forked conversation loses its parentage.
             parent_agent_id: None,
             agent_name: None,
+            orchestration_harness_type: None,
+            root_task_is_optimistic: None,
             parent_conversation_id: None,
             run_id: None,
             autoexecute_override: Some(conversation.autoexecute_override().into()),
             // The event cursor belongs to the source conversation's run; the
             // forked conversation will establish its own cursor.
             last_event_sequence: None,
+            // A forked conversation is a fresh top-level conversation, not a
+            // pinned orchestration child.
+            pinned: false,
             compaction_state_json: None,
             byop_repair_state_json,
             cli_subagent_block_snapshots_json: None,

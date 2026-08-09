@@ -7,6 +7,7 @@ pub(crate) mod conversation_navigation_links;
 pub(crate) mod conversation_selection;
 mod ephemeral_message_model;
 mod inline_agent_view_header;
+pub(crate) mod orchestration_pill_bar_model;
 pub mod shortcuts;
 mod zero_state_block;
 

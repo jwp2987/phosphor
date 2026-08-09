@@ -156,7 +156,9 @@ use crate::uri::web_intent_parser::maybe_rewrite_web_url_to_intent;
 
 use ::ai::project_context::model::ProjectContextModel;
 pub use ai::agent::{todos::AIAgentTodoList, AIAgentActionResultType, FileEdit, TodoOperation};
+use ai::agent::conversation::AIConversationId;
 use ai::agent_conversations_model::AgentConversationsModel;
+use ai::blocklist::agent_view::orchestration_pill_bar_model::OrchestrationPillBarModel;
 use ai::blocklist::{BlocklistAIHistoryModel, BlocklistAIPermissions};
 use ai::execution_profiles::editor::ExecutionProfileEditorManager;
 use ai::execution_profiles::profiles::AIExecutionProfilesModel;
@@ -1831,6 +1833,28 @@ fn initialize_app(
             BlocklistAIHistoryModel::new(ai_queries, vec![], conversations)
         });
     }
+    // Seed the orchestration pin set from persisted conversation data before
+    // `multi_agent_conversations` is consumed by `RestoredAgentConversations::new`
+    // below. Each conversation's `AgentConversationData.pinned` is the source of
+    // truth; the singleton mirrors them in memory for fast cross-pane lookups.
+    let initial_pinned_conversations: HashSet<AIConversationId> = multi_agent_conversations
+        .iter()
+        .filter_map(|conv| {
+            let data = serde_json::from_str::<crate::persistence::model::AgentConversationData>(
+                &conv.conversation.conversation_data,
+            )
+            .ok()?;
+            if !data.pinned {
+                return None;
+            }
+            AIConversationId::try_from(conv.conversation.conversation_id.clone()).ok()
+        })
+        .collect();
+    // Cross-pane UI state for the orchestration pill bar. Registered after
+    // the history model since it subscribes to history events.
+    ctx.add_singleton_model(move |ctx| {
+        OrchestrationPillBarModel::new(initial_pinned_conversations, ctx)
+    });
     // Per-conversation queued prompts. Registered after the history model since it subscribes to
     // history events for cleanup.
     ctx.add_singleton_model(ai::blocklist::QueuedQueryModel::new);

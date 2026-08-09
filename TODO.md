@@ -466,7 +466,7 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
   is NOT a gap — the fork uses direct RPC, functionally equivalent.)
 
 **REOPENED 2026-08-08 late — #440, and it is a HARD DEPENDENCY of in-flight work:**
-- [ ] #440 remote_server: bundled global skills/resources install mechanism.
+- [x] #440 remote_server: bundled global skills/resources install mechanism.  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       **Reopened not because the decline was mislabelled** (a full 30-row
       `DECLINED.md` audit confirms it never claimed cloud — it is an honest
       packaging decision) **but because it became incoherent with the #487 SSH
@@ -506,22 +506,22 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
       work that landed under #487/#353, not a wiring change. Tier 3.
 
 **REAL as filed:**
-- [ ] #284 no `received_rich_notification` latch on `CLIAgentSession`; fork derives
+- [x] #284 no `received_rich_notification` latch on `CLIAgentSession`; fork derives  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       rich-status statically per agent type (`listener/mod.rs:36-38`) vs the pin's
       per-event latch (`cli_agent_sessions/mod.rs:153,412,441`). 3 pinned tests.
       **Touches the same struct as tier-2 #545** — adjacent, low risk.
-- [ ] #343 `BlocklistAIContextModel` has no `try_start_new_conversation` for TUI;
+- [x] #343 `BlocklistAIContextModel` has no `try_start_new_conversation` for TUI;  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       fork hard-codes the GUI path and always errors on TUI (`context_model.rs:1184`).
       **BLOCKED on #316** — needs a real `AgentViewConversationSelection` to inject.
-- [ ] #316 `AgentViewConversationSelection` never ported. Delegation half is real,
+- [x] #316 `AgentViewConversationSelection` never ported. Delegation half is real,  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       portable debt (the `AgentViewController` it needs already exists at
       `agent_view/controller.rs:778`). **The `classify_entry` half is entangled with
       the #418 DECLINED decision** — it calls `ActiveAgentViewsModel`, permanently
       deleted here; needs a `BlocklistAIHistoryModel`-based substitute, not a port.
-- [ ] #256 no persisted prompt-history snapshot / `prompt_history_candidates`
+- [x] #256 no persisted prompt-history snapshot / `prompt_history_candidates`  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       (pin `history_model.rs:331-333,2370`). Items 1/3/4 of the original issue are
       superseded by #336/#337/#331; only item 2 remains.
-- [ ] #431 no lazy metadata-only conversation read + summary backfill. Fork reads
+- [x] #431 no lazy metadata-only conversation read + summary backfill. Fork reads  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       eagerly on every startup path (`sqlite.rs:3347`). 4 pinned tests. Real perf
       AND correctness gap.
 - [x] #217 CLOSED 2026-08-09 by maintainer decision. Verified REAL first (361 `"Zap"`
@@ -530,10 +530,10 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
       settings keys, where a wrong move silently breaks existing users' configs, and
       the `zapctrl` vs `warpctrl` naming decision is still open. If revisited: 19 of
       the 361 are user-facing, the rest internal — that subset is the low-risk cut.
-- [ ] #254 NARROWED to two items: `Input::unfreeze_agent_input` (pin
+- [x] #254 NARROWED to two items: `Input::unfreeze_agent_input` (pin  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       `input.rs:7625`) and `CommandExecutionSource::SharedSession`'s `preserve_input`
       field. Items b/c are already ported (`input.rs:2037,2064`) via #399.
-- [ ] #323 NARROWED: `Harness::Codex` now exists (landed under #411), but local
+- [x] #323 NARROWED: `Harness::Codex` now exists (landed under #411), but local  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       Codex launch still returns "not yet implemented" (`local_harness_launch.rs:145-148`),
       and `ANTHROPIC_MODEL` merge, `normalize_orchestrator_agent_name`, and the
       OZ_CLI *prompt-text* augmentation (`local_claude_child_prompt`) are all absent.
@@ -542,7 +542,7 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
 - [x] #147 ONLY `/theme` remains. `/clear`+`/set-tab-color` done; `/rename-conversation`
       is genuinely cloud-coupled; `/reset-statusline`+`/copy-debugging-id` never existed
       at the pin — **that issue cited `warp/master`, the exact ORACLE.md trap.**
-- [ ] #341 prompt-attachment plumbing DONE (`29049f4f8`); `register_mock_stream_for_test`
+- [x] #341 prompt-attachment plumbing DONE (`29049f4f8`); `register_mock_stream_for_test`  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
       exists. Remaining: `schedule_auto_resume_after_error`, `fail_conversation_due_to_shell_exit`,
       `emit_response_event_for_test`.
 - [ ] #389 voice half DECLINED. Menu half is **ported but NOT WIRED** — `TuiReadOnlyMenuKind`
@@ -580,8 +580,8 @@ declining the feature.
 Sizing: ~72 of ~305 orchestration-adjacent pin tests are import-clean of cloud.
 
 **Build order — these have a real dependency chain, do not parallelise:**
-- [ ] #310 topology + events modules (the non-cloud core, 36 pinned tests) — FIRST
-- [ ] #376 `AgentConversationData` fields the view reads. **Verify each field
+- [x] #310 topology + events modules (the non-cloud core, 36 pinned tests) — FIRST
+- [x] #376 `AgentConversationData` fields the view reads. **Verify each field
       individually**: the issue's claim that `is_remote_child` is missing is
       FALSE, it is already present.
 - [ ] #304 the orchestrator/child-agent view (pill bar, avatar, conversation
@@ -590,7 +590,7 @@ Sizing: ~72 of ~305 orchestration-adjacent pin tests are import-clean of cloud.
       closed citing the orchestration decline, and that citation is now stale.
 - [ ] #325 run-agents child prompt composition — **LOCAL arm only.**
 - [ ] #329 collapsible defaults — LAST, it configures presentation of the above.
-- [ ] #309 topology half only. **The credit-rollup half stays declined** — Warp
+- [x] #309 topology half only. **The credit-rollup half stays declined** — Warp
       credits are a billing concept with no BYOP equivalent.
 
 **Still declined, and this boundary matters:** the cloud-runner half. #290
@@ -607,8 +607,71 @@ with `is_remote_child`.
 `crates/persistence/migrations/2026-03-23-180000_remove_orchestration_persistence`
 deleted orchestration storage deliberately; this is not a revert.
 
+### Tier 3.5 remaining — AGREED SEQUENCE 2026-08-09
+
+**ONE agent at a time. ONE build at a time. Each step lands green and merges before
+the next starts.** Coordinator builds and merges; agents never merge.
+
+- [ ] **Step 1a** — extract the avatar helpers into a new shared module
+      `agent_view/avatar_disc.rs`. Six items, ALL pure rendering with **zero**
+      pill-bar state (verified: `render_avatar_disc` has 0 references to telemetry,
+      `self`, or `PillBarModel`):
+      `render_orchestrator_avatar_disc` (pin pill_bar:127, 11 lines),
+      `render_agent_avatar_disc` (:143, 13 lines), `pill_avatar_color` (:109),
+      `pill_initial` (:117), `AvatarGlyph` (:196), `render_avatar_disc` (:2125).
+      ~60-90 lines total. The pin already exposes them `pub(crate)`, so Step 2's
+      pill bar imports them from here instead of defining them.
+- [ ] **Step 1b** — `orchestration_avatar.rs` (41 lines) + `block/view_impl/orchestration.rs`
+      (656). The latter uses `OrchestrationAvatar` 7x, so these go together.
+      `CollapsibleExpansionState` already exists generically in `block.rs` — not
+      gated on #329.
+- [ ] **Step 1c** — `orchestration_conversation_links.rs` (299). **Independent of
+      1a/1b** — uses `OrchestrationAvatar` 0 times. Needs
+      `TerminalAction::OpenChildAgentInNewPane` (0 in fork; note
+      `RevealChildAgent` already exists and is wired, so #410's second half is
+      partly done) and `AgentConversationsModel::resolve_open_action` /
+      `AgentConversationNavigationSubject` (0 in fork).
+
+      **CORRECTION 2026-08-09:** an earlier version of this plan said "the avatar
+      cannot land alone" and had Step 1 reach into Step 2's 2,539-line file. That
+      was wrong — the six helpers are self-contained, so 1a makes the split clean
+      and no structural deviation from the pin is needed.
+- [ ] **Step 2** — `orchestration_pill_bar.rs` (2,539). Port the
+      `blocklist::telemetry` module FIRST (`BlocklistOrchestrationTelemetryEvent`:
+      6 pin files, **0 in fork**), then the pill bar, then the new variants on
+      `PaneHeaderAction`/`MenuEvent`/`WorkspaceAction`/`TerminalAction`. Own session.
+- [ ] **Step 3** — #325. Add `AIAgentActionType::RunAgents` (16 pin sites) and let the
+      compiler walk the **59 files** matching that enum. Also needs
+      `StartAgentExecutionMode`/`RunAgentsExecutionMode`/`RunAgentsAgentRunConfig`
+      (all 0 in fork). LOCAL arm only. One deliberate compiler-checked pass.
+- [ ] **Step 4** — #329, collapsible defaults in `block.rs`. Small, and genuinely last:
+      it configures presentation of steps 1-2.
+- [x] **NOT IN THIS TIER** — `inline_action/orchestration_controls.rs` (~1,336) is
+      **cloud**: `orchestration_controls.rs:48` imports `crate::server::experiments`.
+      `DECLINED.md` covers it under the RunAgents entry; its one non-cloud caveat is
+      **#11's** scope. Do not port it here.
+
+**Deviating from this order requires asking first.** Recorded because the coordinator
+changed an agreed order twice on 2026-08-09 (#381 folded into the #440 batch against
+"after 440"; #405 re-tiered unasked) and both were wrong.
+
 ### Tier 4 — large (a week+)
 - [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #349 · #324 · #405
+- [ ] #312 NLD prompt-history match — **moved here from the maintainer-decision bucket
+      2026-08-09; it was never a decision, it is ordinary local work.** Warp's
+      natural-language detection consults TWO history sources (shell command history +
+      agent prompt history) and breaks ties by recency, so retyping a previous agent
+      prompt locks the input to AI mode and retyping a previous shell command locks it
+      to Shell. The fork consults command history only, so a previously-sent prompt is
+      re-classified from scratch every time. Entirely local (both sources on disk),
+      9 pinned tests blocked.
+      **The issue's claim that none of the symbols exist is WRONG** — 4 of 5 are partly
+      present: `HistoryMatch` 2 fork/6 pin, `InputTypeAutoDetectionSource` 5/16,
+      `NldPromptHistoryMatch` 2/5, `prompt_history_candidates` 2/3. The genuinely
+      absent one is **`resolve_history_match` (0 fork / 2 pin)** — the tie-break itself.
+      **SEQUENCING: blocked on #256** (tier 3, in flight) — `prompt_history_candidates`
+      is its prompt-side source. Once #256 lands this is `resolve_history_match` plus
+      porting 9 tests.
       (#252, #289, #142 CLOSED 2026-08-08/09)
 - [ ] #381 — **work DONE, issue still open.** Its two real modules
       (`local_harness_setup.rs` 5 tests, `remote_context_files.rs` 4 tests) are
