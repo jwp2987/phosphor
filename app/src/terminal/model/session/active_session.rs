@@ -127,16 +127,38 @@ impl ActiveSession {
         self.current_working_directory.as_ref()
     }
 
-    /// Returns the current working directory as a [`LocalOrRemotePath`]. BYOP sessions are local,
-    /// so this is always a `Local` path. Used by skill/slash-command surfaces that key off the
-    /// working directory.
+    /// Returns the current working directory as a [`LocalOrRemotePath`]: `Remote` when the
+    /// active session is a connected `WarpifiedRemote` (SSH) session, `Local` otherwise.
+    ///
+    /// Returns `None` for a `WarpifiedRemote` session whose `host_id` hasn't resolved yet
+    /// (the remote-server handshake hasn't completed — see [`SessionType::WarpifiedRemote`]'s
+    /// doc comment) rather than falling back to treating the cwd as local: a remote cwd string
+    /// interpreted as a *local* path can spuriously match an unrelated local directory of the
+    /// same name (e.g. `find_rules_with_fast_path` would stat/read local files that have
+    /// nothing to do with the remote session). Used by skill/slash-command surfaces that key
+    /// off the working directory.
     pub fn current_working_directory_location(
         &self,
-        _ctx: &AppContext,
+        ctx: &AppContext,
     ) -> Option<warp_util::local_or_remote_path::LocalOrRemotePath> {
-        self.current_working_directory
-            .as_ref()
-            .map(|cwd| warp_util::local_or_remote_path::LocalOrRemotePath::Local(cwd.into()))
+        let cwd = self.current_working_directory.as_ref()?;
+        match self.session(ctx).as_deref().map(Session::session_type) {
+            Some(SessionType::WarpifiedRemote {
+                host_id: Some(host_id),
+            }) => {
+                let path = warp_util::standardized_path::StandardizedPath::try_new(cwd).ok()?;
+                Some(warp_util::local_or_remote_path::LocalOrRemotePath::Remote(
+                    warp_util::remote_path::RemotePath::new(
+                        crate::code::buffer_location::core_host_id_to_util(&host_id),
+                        path,
+                    ),
+                ))
+            }
+            Some(SessionType::WarpifiedRemote { host_id: None }) => None,
+            Some(SessionType::Local) | None => Some(
+                warp_util::local_or_remote_path::LocalOrRemotePath::Local(cwd.into()),
+            ),
+        }
     }
 
     /// Returns the `WarpAiExecutionContext` for the active session.
@@ -164,4 +186,120 @@ pub enum ActiveSessionEvent {
 
 impl Entity for ActiveSession {
     type Event = ActiveSessionEvent;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal::model::session::{BootstrapSessionType, SessionInfo};
+    use warp_util::local_or_remote_path::LocalOrRemotePath;
+    use warpui::App;
+
+    const REMOTE_CWD: &str = "/work/repo";
+
+    /// Builds a registered session of `session_type` plus the `Sessions` /
+    /// `ModelEventDispatcher` / `ActiveSession` trio needed for
+    /// `ActiveSession::session` to resolve it, with `current_working_directory`
+    /// pre-populated (normally only set via `BlockMetadataReceived`/
+    /// `BlockWorkingDirectoryUpdated` events — set directly here via the private
+    /// field, since this test module is a descendant of `active_session`).
+    /// `resolved_host_id`, when `Some`, calls `Session::set_remote_host_id` after
+    /// registration, mirroring what `Sessions`'s own `RemoteServerManager`
+    /// subscription does once the remote-server handshake completes.
+    fn build_active_session(
+        app: &mut App,
+        session_type: BootstrapSessionType,
+        resolved_host_id: Option<warp_core::HostId>,
+    ) -> ModelHandle<ActiveSession> {
+        let session_id = SessionId::from(1);
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        sessions.update(app, |sessions, _| {
+            sessions.register_session_for_test(
+                SessionInfo::new_for_test()
+                    .with_id(session_id)
+                    .with_session_type(session_type),
+            );
+            if let Some(host_id) = resolved_host_id {
+                sessions
+                    .get(session_id)
+                    .expect("just registered")
+                    .set_remote_host_id(Some(host_id));
+            }
+        });
+
+        let (_events_tx, events_rx) = async_channel::unbounded();
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(events_rx, sessions.clone(), ctx));
+        model_events.update(app, |dispatcher, _| {
+            dispatcher.set_active_session_id(session_id);
+        });
+
+        let active_session = app.add_model(|ctx| ActiveSession::new(sessions, model_events, ctx));
+        active_session.update(app, |active_session, _ctx| {
+            active_session.current_working_directory = Some(REMOTE_CWD.to_owned());
+        });
+        active_session
+    }
+
+    #[test]
+    fn remote_session_with_resolved_host_returns_remote_location() {
+        App::test((), |mut app| async move {
+            let host_id = warp_core::HostId::new("prod-1".to_owned());
+            let active_session = build_active_session(
+                &mut app,
+                BootstrapSessionType::WarpifiedRemote,
+                Some(host_id.clone()),
+            );
+
+            let location = active_session
+                .read(&app, |active_session, ctx| {
+                    active_session.current_working_directory_location(ctx)
+                })
+                .expect("resolved remote host should produce a location");
+
+            match location {
+                LocalOrRemotePath::Remote(remote) => {
+                    assert_eq!(
+                        remote.host_id,
+                        crate::code::buffer_location::core_host_id_to_util(&host_id)
+                    );
+                    assert_eq!(remote.path.as_str(), REMOTE_CWD);
+                }
+                LocalOrRemotePath::Local(path) => {
+                    panic!("expected a remote location, got local path {path:?}")
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn remote_session_without_resolved_host_returns_none() {
+        // A `WarpifiedRemote` session whose `host_id` hasn't resolved yet (the
+        // remote-server handshake hasn't completed) must not be treated as local:
+        // the cwd string is a path on the not-yet-identified remote host, not this
+        // machine.
+        App::test((), |mut app| async move {
+            let active_session =
+                build_active_session(&mut app, BootstrapSessionType::WarpifiedRemote, None);
+
+            let location = active_session.read(&app, |active_session, ctx| {
+                active_session.current_working_directory_location(ctx)
+            });
+
+            assert!(location.is_none());
+        });
+    }
+
+    #[test]
+    fn local_session_returns_local_location() {
+        App::test((), |mut app| async move {
+            let active_session = build_active_session(&mut app, BootstrapSessionType::Local, None);
+
+            let location = active_session.read(&app, |active_session, ctx| {
+                active_session.current_working_directory_location(ctx)
+            });
+
+            assert_eq!(location, Some(LocalOrRemotePath::Local(REMOTE_CWD.into())));
+        });
+    }
 }
