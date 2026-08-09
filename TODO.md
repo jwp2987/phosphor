@@ -620,7 +620,10 @@ own rules warned against; two rows were already closed (#142, #252); and
 `pane_group/mod_tests.rs` is majority-cloud (21 marker lines: `CodebaseIndexManager`,
 `IapManager`, `CloudConversationData`), not clean debt.
 **~521 claimed -> ~214 genuinely portable non-cloud tests.**
-- [x] #405 MOVED TO TIER 3 on 2026-08-09 after scoping. Verdict REAL, zero cloud,
+- [ ] #405 SCOPED 2026-08-09 — **PARKED, not yet assigned to a tier batch.** It is
+      tier-3-sized work, but the tier-3 batch was already in flight when this was
+      scoped and must not be mutated mid-run. Slot it into the NEXT batch.
+      Verdict REAL, zero cloud,
       but **~3-4x smaller than the tier-4 framing**: ~500-700 net-new lines across
       ~12 files, ~30 tests, 1-3 days. The only genuinely new code is
       `crates/ipynb_parser` (401 lines + 24 tests, self-contained nbformat-v4 JSON ->
