@@ -388,7 +388,15 @@ impl ConvertToExchanges for &api::Task {
                 }
                 api::message::Message::InvokeSkill(invoke_skill) => {
                     if let Some(api_skill) = invoke_skill.skill.clone() {
-                        if let Ok(parsed_skill) = ParsedSkill::try_from(api_skill) {
+                        // Restored conversations are display-only: the skill's path is
+                        // whatever the server recorded and is not resolved against any
+                        // live host, so it carries `RestoredDisplayOnly` rather than a
+                        // Local/Remote origin. Matches the pin
+                        // (`02b53fcd8:app/src/ai/agent/api/convert_conversation.rs:468`).
+                        if let Ok(parsed_skill) = ParsedSkill::try_from_api_with_origin(
+                            api_skill,
+                            &SkillPathOrigin::RestoredDisplayOnly,
+                        ) {
                             let user_query = invoke_skill
                                 .user_query
                                 .clone()
