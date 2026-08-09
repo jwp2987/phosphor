@@ -1458,6 +1458,25 @@ impl LocalDiffStateModel {
         diffs.changes.ok().map(|diff| diff.into())
     }
 
+    /// Like [`Self::load_diff_data_for_mode`], but keeps each file's base content
+    /// instead of dropping it via the `GitDiffWithBaseContent -> GitDiffData`
+    /// conversion.
+    ///
+    /// Used by the remote-server daemon's `GetDiffState` reply and live-push paths
+    /// (`app/src/remote_server/server_model.rs`), which need the base content to
+    /// serialize `content_at_base` onto the wire for the client's inline diff
+    /// decorations (issue #388 item 4) — `load_diff_data_for_mode` computes the same
+    /// `GitDiffWithBaseContent` internally and then throws the content away before
+    /// the daemon ever gets to send it.
+    #[cfg(feature = "local_fs")]
+    pub async fn load_diff_with_base_content_for_mode(
+        mode: DiffMode,
+        repo_path: PathBuf,
+    ) -> Option<GitDiffWithBaseContent> {
+        let diffs = Self::load_diffs_for_repo(repo_path, mode, false).await;
+        diffs.changes.ok()
+    }
+
     async fn load_diffs_for_repo(
         repo_path: PathBuf,
         mode: DiffMode,
@@ -3071,6 +3090,14 @@ pub enum DiffStateModelEvent {
     /// `GetBranches` RPC). The payload is `(branch_name, is_main_branch)` pairs,
     /// as returned by [`LocalDiffStateModel::get_all_branches`].
     BranchesReceived(Vec<(String, bool)>),
+    /// The remote-server session for this repository's host was lost
+    /// (`RemoteServerManagerEvent::HostDisconnected`). Only ever emitted by
+    /// [`super::diff_state_remote::RemoteDiffStateModel`] — the local backend has
+    /// no transport to lose. Carries no payload; `RemoteDiffStateModel::get()`
+    /// keeps returning the last-known `Loaded` diffs (mapped from its internal
+    /// `Disconnected` state) so the view can keep showing stale data while
+    /// signaling the loss separately, e.g. a "reconnecting…" indicator.
+    ConnectionLost,
 }
 
 impl warpui::Entity for LocalDiffStateModel {
