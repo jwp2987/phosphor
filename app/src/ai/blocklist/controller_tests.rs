@@ -221,6 +221,16 @@ fn input_for_query_converts_prompt_attachments_and_ignores_live_staging() {
 fn fail_conversation_due_to_shell_exit_reports_error_and_survives_manual_cancel() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // #341's `fail_conversation_due_to_shell_exit` reaches this singleton on the
+        // error path; `get_singleton_model_as_ref` panics rather than returning None when
+        // it is absent. Registered here rather than in `initialize_app_for_terminal_view`
+        // because nine other callers of that helper already register it themselves.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::global_resource_handles::GlobalResourceHandlesProvider::new(
+                global_resource_handles,
+            )
+        });
         let terminal = add_window_with_terminal(&mut app, None);
 
         let conversation_id = terminal.update(&mut app, |view, ctx| {

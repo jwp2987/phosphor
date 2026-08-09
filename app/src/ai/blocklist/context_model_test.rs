@@ -306,14 +306,14 @@ fn enqueue_moves_staged_attachments_onto_the_row_and_clears_input() {
     // staging and the drained set is stored on the queued row via `new_with_attachments`, leaving
     // no attachments behind in the input.
     App::test((), |mut app| async move {
-        // `QueuedQueryModel::new` subscribes to the `BlocklistAIHistoryModel` singleton, which
-        // the lock-logic fixture deliberately does not stand up. Register it (and the settings /
-        // global-resource-handle singletons it needs) explicitly here rather than relying on
-        // another test having run first. Mirrors `queued_query_tests.rs::with_model`.
+        // `QueuedQueryModel::new` subscribes to the `BlocklistAIHistoryModel` singleton.
+        // `build_test_context_model` now registers that one itself (#316's
+        // `AgentViewConversationSelection::new` subscribes to it too), so only the
+        // settings and global-resource-handle singletons are needed here -- registering
+        // the history model again would panic on the duplicate.
         initialize_settings_for_tests(&mut app);
         let global_resource_handles = GlobalResourceHandles::mock(&mut app);
         app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
-        app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
         let model = build_test_context_model(&mut app);
         let queued = app.add_singleton_model(QueuedQueryModel::new);

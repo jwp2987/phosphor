@@ -11320,6 +11320,7 @@ dependencies = [
  "prost-build",
  "repo_metadata",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
