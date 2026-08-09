@@ -417,7 +417,7 @@ use crate::features::FeatureFlag;
 use crate::pane_group::SplitPaneState;
 use crate::pane_group::{
     CodeReviewPanelArg, PaneConfiguration, PaneEvent, PaneGroupAction, PaneHeaderAction,
-    TerminalViewResources,
+    TerminalViewResources, TOGGLE_MAXIMIZE_PANE_BINDING_NAME,
 };
 use crate::resource_center::{
     mark_feature_used_and_write_to_user_defaults, Tip, TipHint, TipsCompleted,
@@ -15528,7 +15528,7 @@ impl TerminalView {
                 MenuItemFields::toggle_pane_action(is_maximized)
                     .with_on_select_action(TerminalAction::ToggleMaximizePane)
                     .with_key_shortcut_label(keybinding_name_to_display_string(
-                        "pane_group:toggle_maximize_pane",
+                        TOGGLE_MAXIMIZE_PANE_BINDING_NAME,
                         ctx,
                     ))
                     .into_item(),
