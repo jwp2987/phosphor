@@ -2,7 +2,10 @@ use anyhow::Result;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use warp_util::host_id::HostId;
 use warpui::{Entity, ModelContext, SingletonEntity};
+
+use super::GlobalRules;
 
 /// Default list of rule files. Order = priority (earlier wins); when multiple
 /// files coexist in the same directory, `RuleAtPath::respected_rule()` only
@@ -248,11 +251,48 @@ pub struct ProjectContextModel {
     /// `pending_context(&self, app: &AppContext)`.
     #[cfg(feature = "local_fs")]
     fast_path_cache: RefCell<HashMap<PathBuf, FastPathEntry>>,
+    /// File-based global rules (e.g. `~/.agents/AGENTS.md`) and their local
+    /// watcher state. Kept separate from `path_to_rules`, which is
+    /// project-scoped. `pub(super)` (matching the pin) because
+    /// `global_rules.rs` — a sibling module of `model.rs`, not a descendant —
+    /// reaches into this field directly (`me.global_rules.rules...` inside
+    /// its `ctx.spawn`/`ctx.subscribe_to_model` callbacks, where `me: &mut
+    /// ProjectContextModel`); a private field would only be visible to
+    /// `model.rs` and its own descendants (e.g. `model_tests.rs`), not to
+    /// `project_context`'s other children. #575.
+    pub(super) global_rules: GlobalRules,
+    /// File-based global rules published by connected remote hosts, keyed by
+    /// the host that published them. Populated client-side by
+    /// `app::ai::remote_agent_context::RemoteAgentContext` from each
+    /// connected host's `RemoteAgentContextSnapshot.global_rules` (itself
+    /// produced daemon-side from that host's own `global_rules`, see
+    /// `remote_agent_context_snapshot` in `app/src/remote_server/
+    /// server_model.rs`), and cleared on host disconnect. #575.
+    ///
+    /// Per-host scaffolding only — this fork's `path_to_rules` has no
+    /// per-host dimension at all (`ProjectRule::path` is a plain local
+    /// `PathBuf`, not a `LocalOrRemotePath`), so unlike the pin, nothing in
+    /// this crate currently layers these into a rule lookup for a remote
+    /// path. Stored so it round-trips and is available once a remote-aware
+    /// consumer exists; see `set_remote_global_rules`'s doc comment for the
+    /// exact scope decision.
+    remote_global_rules: HashMap<HostId, Vec<ProjectRule>>,
 }
 
 #[derive(Default, Debug)]
 pub struct RulesDelta {
     pub discovered_rules: Vec<ProjectRulePath>,
+    pub deleted_rules: Vec<PathBuf>,
+}
+
+/// Delta of file-based global rule files (e.g. `~/.agents/AGENTS.md`)
+/// discovered or removed since the last event. Ported from the pinned oracle
+/// (`02b53fcd8`); field-identical to the pin's `GlobalRulesDelta` since both
+/// are local-only (`PathBuf`) by construction — see `global_rules.rs`'s
+/// module doc comment.
+#[derive(Default, Debug)]
+pub struct GlobalRulesDelta {
+    pub discovered_rules: Vec<PathBuf>,
     pub deleted_rules: Vec<PathBuf>,
 }
 
@@ -298,6 +338,8 @@ pub enum ProjectContextModelEvent {
     PathIndexed,
     /// Emitted when the known set of rule files changed
     KnownRulesChanged(RulesDelta),
+    /// Emitted when the set of indexed global rule files changed. #575.
+    GlobalRulesChanged(GlobalRulesDelta),
 }
 
 impl ProjectContextModel {
@@ -520,7 +562,13 @@ impl ProjectContextModel {
 
     /// Unified entry point for rule lookups: the normal path takes priority,
     /// with the synchronous fast-path as a fallback when async indexing isn't
-    /// ready yet.
+    /// ready yet. Layers file-based global rules (e.g. `~/.agents/AGENTS.md`,
+    /// see `Self::index_global_rules`) on top of whichever project result is
+    /// found, matching `Self::find_applicable_rules_with_globals`. This is
+    /// the entry point used to pack `AIAgentContext::ProjectRules` for an
+    /// agent query (`app/src/ai/blocklist/context_model.rs::pending_context`),
+    /// so it is deliberately the layered variant rather than the project-only
+    /// `find_applicable_rules`. #575.
     ///
     /// Aligned with opencode's `Instruction.systemPaths()` `findUp` behavior
     /// (`opencode/packages/opencode/src/session/instruction.ts`): stat rule
@@ -532,22 +580,78 @@ impl ProjectContextModel {
     /// subdirectory rules + real-time watcher updates).
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
     pub fn find_rules_with_fast_path(&self, cwd: &Path) -> Option<ProjectRulesResult> {
-        if let Some(found) = self.find_applicable_rules(cwd) {
+        let project_result = if let Some(found) = self.find_applicable_rules(cwd) {
             #[cfg(feature = "local_fs")]
             {
                 // Normal path is now available; drop the fast-path cache (avoid stale data later).
                 self.fast_path_cache.borrow_mut().remove(cwd);
             }
-            return Some(found);
+            Some(found)
+        } else {
+            #[cfg(feature = "local_fs")]
+            {
+                self.fast_path_lookup(cwd)
+            }
+            #[cfg(not(feature = "local_fs"))]
+            {
+                None
+            }
+        };
+        self.layer_global_rules(project_result)
+    }
+
+    /// Like [`Self::find_applicable_rules`], but layers file-based global
+    /// rules on top of the project rules found for `path`. Global rules are
+    /// always included when present, regardless of whether a project root
+    /// was found — matching the pin's `find_applicable_rules(&LocalOrRemotePath)`
+    /// layering semantics (global first, then project). #575.
+    ///
+    /// Deliberately a *separate* method from `find_applicable_rules` rather
+    /// than folding global-layering into it: `find_applicable_rules` has an
+    /// existing project-only caller (`app/src/code_review/
+    /// code_review_view.rs`'s "Repo is initialized with a {file_name} file."
+    /// hint) that must not have a stray `~/.agents/AGENTS.md` flip every repo
+    /// into "already initialized" — exactly the regression the pin's own
+    /// `specs/APP-3893/TECH.md` documents fixing by keeping that exact
+    /// distinction. Only local; there is no remote-host counterpart here
+    /// because `path_to_rules` has no per-host dimension in this fork (see
+    /// `remote_global_rules`'s doc comment).
+    pub fn find_applicable_rules_with_globals(&self, path: &Path) -> Option<ProjectRulesResult> {
+        self.layer_global_rules(self.find_applicable_rules(path))
+    }
+
+    /// Layers `self.global_rules` on top of an already-computed project
+    /// lookup. `project_result` may be `None` (no project root indexed / no
+    /// rules found there) — global-only results are still returned, with
+    /// `root_path` falling back to the parent of the first active rule.
+    fn layer_global_rules(
+        &self,
+        project_result: Option<ProjectRulesResult>,
+    ) -> Option<ProjectRulesResult> {
+        let mut active_rules: Vec<ProjectRule> = self.global_rules.active_rules().collect();
+        let (root_path, additional_rule_paths) = match project_result {
+            Some(project) => {
+                active_rules.extend(project.active_rules);
+                (Some(project.root_path), project.additional_rule_paths)
+            }
+            None => (None, Vec::new()),
+        };
+
+        if active_rules.is_empty() && additional_rule_paths.is_empty() {
+            return None;
         }
 
-        #[cfg(feature = "local_fs")]
-        {
-            return self.fast_path_lookup(cwd);
-        }
+        let root_path = root_path.or_else(|| {
+            active_rules
+                .first()
+                .and_then(|rule| rule.path.parent().map(Path::to_path_buf))
+        })?;
 
-        #[allow(unreachable_code)]
-        None
+        Some(ProjectRulesResult {
+            root_path,
+            active_rules,
+            additional_rule_paths,
+        })
     }
 
     /// Fast-path synchronous lookup + read of rule files in cwd and ancestor
@@ -888,6 +992,76 @@ impl ProjectContextModel {
                 })
             })
             .collect()
+    }
+
+    /// Index all configured global rule sources (e.g. `~/.agents/AGENTS.md`).
+    ///
+    /// `ProjectContextModel` remains the public rule-context facade; the
+    /// global source registry, cache, and watcher plumbing live in
+    /// `global_rules` (`crates/ai/src/project_context/global_rules.rs`).
+    /// Called once at startup — see `app/src/lib.rs` (local app/TUI) and
+    /// `app/src/remote_server/mod.rs::run_daemon_app` (remote daemon), both
+    /// of which run their own `ProjectContextModel` singleton. #575.
+    pub fn index_global_rules(&mut self, ctx: &mut ModelContext<Self>) {
+        self.global_rules.index(ctx);
+    }
+
+    /// Returns every indexed global rule with its cached content, sorted by
+    /// path. This is what the remote daemon serializes into
+    /// `RemoteAgentContextSnapshot.global_rules` for connected clients (see
+    /// `remote_agent_context_snapshot` in `app/src/remote_server/
+    /// server_model.rs`), and what `find_applicable_rules_with_globals` /
+    /// `find_rules_with_fast_path` layer on top of project rules locally.
+    /// #575.
+    pub fn global_rules(&self) -> impl Iterator<Item = ProjectRule> + '_ {
+        self.global_rules.active_rules()
+    }
+
+    /// Absolute locations of every indexed global rule file (e.g.
+    /// `~/.agents/AGENTS.md`), without their content. #575.
+    pub fn global_rule_paths(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.global_rules.paths()
+    }
+
+    /// Replaces the file-based global rule catalog published by one
+    /// connected remote host, keyed by `warp_util::host_id::HostId` — the
+    /// same per-host `HashMap` pattern `BundledSkills`
+    /// (`app/src/ai/skills/bundled.rs`) uses for remote skill catalogs
+    /// (#487/#353). Called from `app::ai::remote_agent_context::
+    /// RemoteAgentContext::reconcile_snapshot` as `RemoteAgentContextSnapshot`s
+    /// arrive.
+    ///
+    /// `rules` carries the *raw* paths from the wire (that host's own
+    /// `global_rules()` at the time of the snapshot) reparsed locally as
+    /// `PathBuf`s — this fork's `ProjectRule::path` has no `LocalOrRemotePath`
+    /// variant (unlike the pin), so these `PathBuf`s do not name a location
+    /// on *this* machine; they are meaningful only in combination with the
+    /// `host_id` key that disambiguates them. #575: this method and
+    /// `remote_global_rules` are scaffolding only — nothing in this fork
+    /// currently layers a host's stored entries into a rule lookup for a
+    /// path on that host (there is no remote-path-aware `pending_context`
+    /// equivalent here to layer them into), so populated entries are inert
+    /// until such a consumer exists.
+    pub fn set_remote_global_rules(&mut self, host_id: HostId, mut rules: Vec<ProjectRule>) {
+        rules.sort_by(|a, b| a.path.cmp(&b.path));
+        self.remote_global_rules.insert(host_id, rules);
+    }
+
+    /// Removes the file-based global rule catalog for a disconnected remote
+    /// host. Called from `RemoteAgentContext::remove_host_context`. #575.
+    pub fn remove_remote_global_rules(&mut self, host_id: &HostId) {
+        self.remote_global_rules.remove(host_id);
+    }
+
+    /// Returns the currently-stored global rule catalog for one remote host,
+    /// or an empty slice if none is stored (never connected, or removed on
+    /// disconnect). Mirrors `BundledSkills::remote` (`app/src/ai/skills/
+    /// bundled.rs`)'s per-host accessor shape. #575.
+    pub fn remote_global_rules(&self, host_id: &HostId) -> &[ProjectRule] {
+        self.remote_global_rules
+            .get(host_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
 
