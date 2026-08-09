@@ -437,7 +437,10 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::BufferConflictDetected { .. }
             | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
             | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
-            | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. } => None,
+            | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. }
+            // Host-scoped: the agent-context snapshot is keyed by `HostId`, not by
+            // any one session on that host.
+            | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. } => None,
         }
     }
 }
