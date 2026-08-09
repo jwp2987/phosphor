@@ -1,7 +1,11 @@
 use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope};
+use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
+use warp_util::standardized_path::StandardizedPath;
 
-use super::read_skill_display_text;
+use super::{parsed_skill_for_common_locations, read_skill_display_text};
+use crate::ai::skills::SkillManager;
 
 fn make_skill(name: &str) -> ParsedSkill {
     ParsedSkill {
@@ -56,4 +60,81 @@ fn read_skill_display_text_bundled_id_fallback_when_skill_not_found() {
     let reference = SkillReference::BundledSkillId("create-pr".to_string());
     let display = read_skill_display_text(None, &reference);
     assert_eq!(display, "create-pr");
+}
+
+fn remote_location(host_id: &HostId, path: &str) -> LocalOrRemotePath {
+    LocalOrRemotePath::Remote(RemotePath::new(
+        host_id.clone(),
+        StandardizedPath::try_new(path).unwrap(),
+    ))
+}
+
+#[test]
+fn parsed_skill_for_common_locations_resolves_cached_remote_skill() {
+    let host_id = HostId::new("remote-host".to_string());
+    let skill = ParsedSkill {
+        name: "deploy".to_string(),
+        description: "Deploy skill".to_string(),
+        path: remote_location(&host_id, "/repo/.agents/skills/deploy/SKILL.md"),
+        content: "# Deploy".to_string(),
+        line_range: None,
+        provider: SkillProvider::Agents,
+        scope: SkillScope::Project,
+    };
+    let locations = vec![
+        remote_location(&host_id, "/repo/.agents/skills/deploy/README.md"),
+        remote_location(&host_id, "/repo/.agents/skills/deploy/scripts/run.sh"),
+    ];
+
+    warpui::App::test((), |mut app| async move {
+        app.add_singleton_model(repo_metadata::DirectoryWatcher::new);
+        app.add_singleton_model(|_| repo_metadata::repositories::DetectedRepositories::default());
+        app.add_singleton_model(repo_metadata::RepoMetadataModel::new);
+        app.add_singleton_model(watcher::HomeDirectoryWatcher::new_for_test);
+        app.add_singleton_model(crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing);
+        let manager = app.add_singleton_model(SkillManager::new);
+        manager.update(&mut app, |manager, _| {
+            manager.add_skill_for_testing(skill.clone());
+        });
+
+        let resolved = manager.read(&app, |_, ctx| {
+            parsed_skill_for_common_locations(locations, ctx).map(|skill| skill.path.clone())
+        });
+        assert_eq!(resolved, Some(skill.path));
+    });
+}
+
+#[test]
+fn parsed_skill_for_common_locations_does_not_mix_remote_hosts() {
+    let first_host = HostId::new("first-host".to_string());
+    let second_host = HostId::new("second-host".to_string());
+    let skill = ParsedSkill {
+        name: "deploy".to_string(),
+        description: "Deploy skill".to_string(),
+        path: remote_location(&first_host, "/repo/.agents/skills/deploy/SKILL.md"),
+        content: "# Deploy".to_string(),
+        line_range: None,
+        provider: SkillProvider::Agents,
+        scope: SkillScope::Project,
+    };
+    let locations = vec![
+        remote_location(&first_host, "/repo/.agents/skills/deploy/README.md"),
+        remote_location(&second_host, "/repo/.agents/skills/deploy/README.md"),
+    ];
+
+    warpui::App::test((), |mut app| async move {
+        app.add_singleton_model(repo_metadata::DirectoryWatcher::new);
+        app.add_singleton_model(|_| repo_metadata::repositories::DetectedRepositories::default());
+        app.add_singleton_model(repo_metadata::RepoMetadataModel::new);
+        app.add_singleton_model(watcher::HomeDirectoryWatcher::new_for_test);
+        app.add_singleton_model(crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing);
+        let manager = app.add_singleton_model(SkillManager::new);
+        manager.update(&mut app, |manager, _| {
+            manager.add_skill_for_testing(skill);
+        });
+
+        assert!(manager.read(&app, |_, ctx| {
+            parsed_skill_for_common_locations(locations, ctx).is_none()
+        }));
+    });
 }
