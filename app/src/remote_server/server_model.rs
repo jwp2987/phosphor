@@ -32,6 +32,14 @@ use super::proto::{
     SessionScopedRequest, UnsubscribeDiffState, WriteFile, WriteFileResponse, WriteFileSuccess,
 };
 
+// Remote Agent Mode context snapshot (#438 dependent feature 1, #353 producer): depends
+// on `SkillManager`'s real (non-dummy) API, gated `local_fs` like the buffer-sync imports
+// below.
+#[cfg(feature = "local_fs")]
+use super::proto::{remote_skill_proto, HomeSkillMetadata, RemoteAgentContextSnapshot, RemoteSkillProto};
+#[cfg(feature = "local_fs")]
+use crate::ai::skills::{bundled_skill_snapshot_protos, BundledSkill, SkillManager, SkillManagerEvent};
+
 // Buffer-sync related: depends on GlobalBufferModel, whose server-local
 // operations are only available under `local_fs`, so the entire server-side
 // buffer handling is gated on `local_fs`.
@@ -193,6 +201,60 @@ struct DiffStateSubscription {
     mode: crate::code_review::diff_state::DiffMode,
 }
 
+/// Resolves the global bundled resources directory populated by the install script.
+///
+/// **Always returns `None` in this fork.** The pin resolves this via
+/// `remote_server::setup::remote_server_bundled_resources_dir()`, which does not exist
+/// here — see issue #440 (reopened): the fork's install script/setup module has no
+/// `BUNDLED_RESOURCES_DIR_NAME` / `remote_server_bundled_resources_dir()` /
+/// `remote_server_removal_command()`, and the release artifact doesn't ship a
+/// `resources/` tree at all. That is separate, larger work (touches the release
+/// pipeline, not just Rust) and is deliberately not attempted here. Until #440 lands,
+/// `bundled_skills` below stays empty and the daemon logs why — the rest of the
+/// `RemoteAgentContextSnapshot` plumbing (`home_dir`, home skills) is unaffected.
+#[cfg(feature = "local_fs")]
+fn daemon_bundled_resources_dir() -> Option<PathBuf> {
+    None
+}
+
+/// Builds a `RemoteAgentContextSnapshot` for this host at `revision`, combining the
+/// daemon's own bundled-skill catalog (`bundled_skills`, produced once at startup —
+/// see `daemon_bundled_resources_dir`) with its currently-cached home skills.
+///
+/// `global_rules` is left empty: unlike the pin, this fork's `ProjectContextModel`
+/// (`crates/ai/src/project_context/model.rs`) has no per-host rule storage or
+/// `global_rules()` accessor — building that (plus the client-side consumer in
+/// `app/src/ai/remote_agent_context.rs`) is a separate, comparably-sized feature and is
+/// out of scope here. See that file's module doc comment for the client-side half of
+/// the same decision.
+#[cfg(feature = "local_fs")]
+fn remote_agent_context_snapshot(
+    revision: u64,
+    bundled_skills: &[RemoteSkillProto],
+    ctx: &warpui::AppContext,
+) -> RemoteAgentContextSnapshot {
+    let home_dir = dirs::home_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut skills = bundled_skills.to_vec();
+    skills.extend(
+        SkillManager::as_ref(ctx)
+            .home_skills()
+            .map(|skill| RemoteSkillProto {
+                path: skill.path.display_path(),
+                content: skill.content.clone(),
+                source: Some(remote_skill_proto::Source::Home(HomeSkillMetadata {})),
+            }),
+    );
+    skills.sort_by(|a, b| a.path.cmp(&b.path));
+    RemoteAgentContextSnapshot {
+        revision,
+        home_dir,
+        skills,
+        global_rules: Vec::new(),
+    }
+}
+
 pub struct ServerModel {
     /// Per-connection outbound channels, keyed by `ConnectionId`.
     ///
@@ -281,6 +343,21 @@ pub struct ServerModel {
     /// buffer requests (OpenBuffer, SaveBuffer, ResolveConflict).
     #[cfg(feature = "local_fs")]
     buffers: ServerBufferTracker,
+    /// This daemon's own bundled-skill catalog, serialized once at startup by
+    /// `daemon_bundled_resources_dir`/`bundled_skill_snapshot_protos` (#353). Always
+    /// empty pending #440 — see `daemon_bundled_resources_dir`'s doc comment.
+    #[cfg(feature = "local_fs")]
+    bundled_skills: Vec<RemoteSkillProto>,
+    /// Latest revisioned full replacement of this daemon host's Agent Mode context
+    /// (#438 dependent feature 1 / #353), pushed to every connection and re-pushed on
+    /// (re)connect via `send_remote_agent_context_snapshot_to_connection`.
+    #[cfg(feature = "local_fs")]
+    remote_agent_context_snapshot: RemoteAgentContextSnapshot,
+    /// Connections that have already received the current
+    /// `remote_agent_context_snapshot` revision — avoids re-sending an unchanged
+    /// snapshot on every `register_connection`.
+    #[cfg(feature = "local_fs")]
+    remote_agent_context_snapshot_sent: HashSet<ConnectionId>,
     /// Daemon-wide bearer credential for the identity-scoped daemon.
     ///
     /// The token is written by Initialize when the client supplies a
@@ -304,6 +381,11 @@ impl ServerModel {
             std::process::id(),
             host_id
         );
+        #[cfg(feature = "local_fs")]
+        let bundled_skills: Vec<RemoteSkillProto> = Vec::new();
+        #[cfg(feature = "local_fs")]
+        let initial_remote_agent_context_snapshot =
+            remote_agent_context_snapshot(1, &bundled_skills, ctx);
         let mut model = Self {
             connection_senders: HashMap::new(),
             snapshot_sent_roots_by_connection: HashMap::new(),
@@ -325,6 +407,12 @@ impl ServerModel {
             pending_file_ops: PendingFileOps::new(),
             #[cfg(feature = "local_fs")]
             buffers: ServerBufferTracker::new(),
+            #[cfg(feature = "local_fs")]
+            bundled_skills,
+            #[cfg(feature = "local_fs")]
+            remote_agent_context_snapshot: initial_remote_agent_context_snapshot,
+            #[cfg(feature = "local_fs")]
+            remote_agent_context_snapshot_sent: HashSet::new(),
             auth_token: None,
         };
         // Subscribe to FileModel and RepoMetadataModel events
@@ -610,6 +698,44 @@ impl ServerModel {
                 }
             });
         }
+        // Refresh the pushed `RemoteAgentContextSnapshot` whenever the daemon's own
+        // home skills change. The fork's `SkillManagerEvent` (unlike the pin's
+        // `SkillsChanged { home_skills_changed }`) doesn't distinguish home from
+        // project skill changes, so this refreshes on every change — a superset of
+        // the pin's trigger, safe but occasionally redundant.
+        #[cfg(feature = "local_fs")]
+        {
+            let skill_manager = SkillManager::handle(ctx);
+            ctx.subscribe_to_model(&skill_manager, |me, event, ctx| match event {
+                SkillManagerEvent::InventoryChanged => {
+                    me.refresh_remote_agent_context_snapshot(ctx);
+                }
+            });
+        }
+        // Parse the bundled skill catalog from the global install location.
+        // Parsing never blocks the initialize handshake: connections that
+        // initialize before parsing completes receive the catalog via the
+        // completion broadcast instead. Deliberately not feature-flag gated:
+        // the flag controls exposure on the client (catalog storage and
+        // skill selection), where the connecting user's flag state actually
+        // lives — a headless daemon only sees its own channel defaults.
+        #[cfg(feature = "local_fs")]
+        if let Some(resources_dir) = daemon_bundled_resources_dir() {
+            ctx.spawn(
+                BundledSkill::detect_in_resources_dir(resources_dir),
+                |me, catalog, ctx| {
+                    let skills = bundled_skill_snapshot_protos(&catalog);
+                    log::info!("Daemon parsed {} bundled skills", skills.len());
+                    me.bundled_skills = skills;
+                    me.refresh_remote_agent_context_snapshot(ctx);
+                },
+            );
+        } else {
+            log::info!(
+                "Daemon found no global bundled resources directory; \
+                 bundled skills unavailable on this host"
+            );
+        }
         // Start the grace timer immediately so the daemon exits if no proxy
         // connects within GRACE_PERIOD. In practice the spawning proxy connects
         // within milliseconds, so the risk of premature shutdown is negligible;
@@ -617,6 +743,48 @@ impl ServerModel {
         // arrives.
         model.start_grace_timer(ctx);
         model
+    }
+
+    /// Recomputes `remote_agent_context_snapshot` at the next revision and
+    /// broadcasts it to every connection.
+    #[cfg(feature = "local_fs")]
+    fn refresh_remote_agent_context_snapshot(&mut self, ctx: &warpui::AppContext) {
+        let revision = self.remote_agent_context_snapshot.revision.saturating_add(1);
+        self.remote_agent_context_snapshot =
+            remote_agent_context_snapshot(revision, &self.bundled_skills, ctx);
+        self.broadcast_remote_agent_context_snapshot();
+    }
+
+    /// Pushes the current `remote_agent_context_snapshot` to every connection and
+    /// marks them all as having received it.
+    #[cfg(feature = "local_fs")]
+    fn broadcast_remote_agent_context_snapshot(&mut self) {
+        self.send_server_message(
+            None,
+            None,
+            server_message::Message::RemoteAgentContextSnapshot(
+                self.remote_agent_context_snapshot.clone(),
+            ),
+        );
+        self.remote_agent_context_snapshot_sent
+            .extend(self.connection_senders.keys().copied());
+    }
+
+    /// Sends the current `remote_agent_context_snapshot` to `conn_id` if it hasn't
+    /// already received this revision. Called on (re)connect.
+    #[cfg(feature = "local_fs")]
+    fn send_remote_agent_context_snapshot_to_connection(&mut self, conn_id: ConnectionId) {
+        if self.remote_agent_context_snapshot_sent.contains(&conn_id) {
+            return;
+        }
+        self.send_server_message(
+            Some(conn_id),
+            None,
+            server_message::Message::RemoteAgentContextSnapshot(
+                self.remote_agent_context_snapshot.clone(),
+            ),
+        );
+        self.remote_agent_context_snapshot_sent.insert(conn_id);
     }
 
     /// Called when a proxy connects.  Inserts `conn_tx` into the connection
@@ -639,6 +807,8 @@ impl ServerModel {
         self.connection_senders.insert(conn_id, conn_tx);
         self.snapshot_sent_roots_by_connection
             .insert(conn_id, HashSet::new());
+        #[cfg(feature = "local_fs")]
+        self.send_remote_agent_context_snapshot_to_connection(conn_id);
         ctx.notify();
     }
 
@@ -648,6 +818,8 @@ impl ServerModel {
         self.snapshot_sent_roots_by_connection.remove(&conn_id);
         #[cfg(feature = "local_fs")]
         self.diff_state_subscriptions.remove(&conn_id);
+        #[cfg(feature = "local_fs")]
+        self.remote_agent_context_snapshot_sent.remove(&conn_id);
         // A connection is in at most one git-status repo, so `unsubscribe_git_status`
         // also serves as the disconnect sweep (mirrors the pin's comment on the
         // same method).
@@ -1580,13 +1752,18 @@ impl ServerModel {
                     include_base_branch,
                 )
                 .await;
-                let diff_data =
-                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf)
-                        .await;
+                // Loads the content-carrying `GitDiffWithBaseContent` (rather than
+                // `load_diff_data_for_mode`'s content-less `GitDiffData`) so
+                // `content_at_base` can reach the wire — see issue #388 item 4.
+                let diff_data = LocalDiffStateModel::load_diff_with_base_content_for_mode(
+                    mode_for_compute,
+                    repo_pathbuf,
+                )
+                .await;
                 (metadata, diff_data)
             },
             move |me, (metadata_result, diff_data), _ctx| {
-                let snapshot = super::diff_state_proto::snapshot_from_parts(
+                let snapshot = super::diff_state_proto::snapshot_from_parts_with_base_content(
                     wire_repo_path,
                     &mode,
                     metadata_result.ok(),
@@ -1677,13 +1854,18 @@ impl ServerModel {
                     include_base_branch,
                 )
                 .await;
-                let diff_data =
-                    LocalDiffStateModel::load_diff_data_for_mode(mode_for_compute, repo_pathbuf)
-                        .await;
+                // See the matching comment in `handle_get_diff_state`: this loads
+                // the content-carrying variant so live pushes also carry
+                // `content_at_base` (issue #388 item 4).
+                let diff_data = LocalDiffStateModel::load_diff_with_base_content_for_mode(
+                    mode_for_compute,
+                    repo_pathbuf,
+                )
+                .await;
                 (metadata, diff_data)
             },
             move |me, (metadata_result, diff_data), _ctx| {
-                let snapshot = super::diff_state_proto::snapshot_from_parts(
+                let snapshot = super::diff_state_proto::snapshot_from_parts_with_base_content(
                     wire_repo_path,
                     &mode,
                     metadata_result.ok(),
