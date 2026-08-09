@@ -313,11 +313,19 @@ Suspected double-counting: #252 vs #289 (both agent_sdk) and #381 vs #382 (both
 app/src/ai). Tier 3's audit found 4 of 20 closeable and 8 more narrower than
 filed, so treat these numbers as unverified until the audit lands.
 
-Two flagged already:
-- **#142 looks mis-tiered — consider pulling it forward.** "7 of Warp's 82 tests
-  present, custom API endpoints (core BYOP) untested". BYOP *is* this fork's
-  purpose. Spot-check: the pin's `app/src/ai/agent_sdk/api_key_tests.rs` (7 tests)
-  and `app/src/ai/agent/api/impl_tests.rs` (13 tests) appear absent here entirely.
+Audit landed 2026-08-08 late. Results below.
+
+- **#142 — CLOSEABLE, already done. My earlier "pull it forward, BYOP is
+  untested" note here was WRONG and is retracted.** I saw `api_key` in two
+  absent pin filenames and assumed BYOP. They are absent, but they are Warp's
+  *cloud team API-key management* (`agent_sdk/api_key.rs` imports
+  `warp_graphql::mutations::{expire_api_key,generate_api_key}` and
+  `ServerApiProvider`) — programmatic tokens for Warp's own cloud API, a
+  different concept from BYOP provider keys. PR #189/#227 already reconciled the
+  real file: 12 ported / 3 blocked on pin-side dead code / 16 superseded by
+  `AgentProviderSecrets` (the fork's actual BYOP store, 19 fork-original tests) /
+  36 cloud. The "7 of 82" figure conflated four differently-scoped
+  `api_key`-named files. **Lesson: a filename is not a scope.**
 - **#324 overlaps work in flight.** Its `diff_state_tracker.rs`
   (`RemoteDiffStateManager`, ~472 lines) sits beside the `diff_state_remote.rs` /
   `diff_state_proto.rs` / proto files the current tier-2 batch is editing for
