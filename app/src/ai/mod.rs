@@ -40,6 +40,7 @@ pub(crate) mod project_rules_persister;
 // double-gate as `ai::skills::remote`.
 #[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
 pub(crate) mod remote_agent_context;
+pub(crate) mod remote_context_files;
 pub mod request_usage_model;
 pub(crate) mod restored_conversations;
 pub(crate) mod skills;
