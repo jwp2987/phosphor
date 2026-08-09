@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
 use warp_multi_agent_api as api;
 
 use super::{
@@ -16,12 +17,13 @@ struct ExchangeRef {
     exchange_index: usize,
 }
 
-/// Task storage with a linearized exchange index for O(1) first/last access.
+/// Task storage with a linearized exchange index for O(1) first/last access and
+/// O(1) average-case lookup of an exchange by id.
 #[derive(Debug, Clone)]
 pub struct TaskStore {
     root_task_id: TaskId,
     tasks: HashMap<TaskId, Task>,
-    linearized_refs: Vec<ExchangeRef>,
+    exchanges: IndexMap<AIAgentExchangeId, ExchangeRef>,
 }
 
 impl TaskStore {
@@ -29,11 +31,11 @@ impl TaskStore {
         let root_task_id = root_task.id().clone();
         let mut store = Self {
             tasks: HashMap::new(),
-            linearized_refs: Vec::new(),
+            exchanges: IndexMap::new(),
             root_task_id: root_task_id.clone(),
         };
         store.tasks.insert(root_task_id, root_task);
-        store.rebuild_linearized_refs_index();
+        store.rebuild_exchange_index();
         store
     }
 
@@ -42,10 +44,10 @@ impl TaskStore {
     pub fn from_tasks(tasks: HashMap<TaskId, Task>, root_task_id: TaskId) -> Self {
         let mut store = Self {
             tasks,
-            linearized_refs: Vec::new(),
+            exchanges: IndexMap::new(),
             root_task_id,
         };
-        store.rebuild_linearized_refs_index();
+        store.rebuild_exchange_index();
         store
     }
 
@@ -72,7 +74,7 @@ impl TaskStore {
             return false;
         };
         task.append_exchange(exchange);
-        self.rebuild_linearized_refs_index();
+        self.rebuild_exchange_index();
         true
     }
 
@@ -85,7 +87,7 @@ impl TaskStore {
     ) -> Option<AIAgentExchange> {
         let task = self.tasks.get_mut(task_id)?;
         let exchange = task.remove_exchange(exchange_id)?;
-        self.rebuild_linearized_refs_index();
+        self.rebuild_exchange_index();
         Some(exchange)
     }
 
@@ -97,6 +99,22 @@ impl TaskStore {
             }
         }
         None
+    }
+
+    /// Returns an exchange by its ID, using the index for an O(1) average-case
+    /// lookup. Falls back to a linear scan across tasks for exchanges not (yet)
+    /// reflected in the index, e.g. a subtask exchange added between rebuilds.
+    pub fn exchange_by_id(&self, exchange_id: AIAgentExchangeId) -> Option<&AIAgentExchange> {
+        if let Some(exchange) = self
+            .exchanges
+            .get(&exchange_id)
+            .and_then(|exchange_ref| self.lookup_exchange(exchange_ref))
+        {
+            return Some(exchange);
+        }
+        self.tasks
+            .values()
+            .find_map(|task| task.exchange(exchange_id))
     }
 
     /// Modifies a task via the provided closure and rebuilds the exchange index
@@ -115,7 +133,7 @@ impl TaskStore {
             .map(|t| t.exchanges_len())
             .unwrap_or(0);
         if exchange_count_before != exchange_count_after {
-            self.rebuild_linearized_refs_index();
+            self.rebuild_exchange_index();
         }
         Some(result)
     }
@@ -142,30 +160,30 @@ impl TaskStore {
     }
 
     pub fn first_exchange(&self) -> Option<&AIAgentExchange> {
-        self.linearized_refs
+        self.exchanges
             .first()
-            .and_then(|r| self.lookup_exchange(r))
+            .and_then(|(_, r)| self.lookup_exchange(r))
     }
 
     pub fn latest_exchange(&self) -> Option<&AIAgentExchange> {
-        self.linearized_refs
+        self.exchanges
             .last()
-            .and_then(|r| self.lookup_exchange(r))
+            .and_then(|(_, r)| self.lookup_exchange(r))
     }
 
     pub fn exchange_count(&self) -> usize {
-        self.linearized_refs.len()
+        self.exchanges.len()
     }
 
     pub fn all_exchanges(&self) -> impl Iterator<Item = &AIAgentExchange> {
-        self.linearized_refs
-            .iter()
+        self.exchanges
+            .values()
             .filter_map(|r| self.lookup_exchange(r))
     }
 
     pub fn all_exchanges_rev(&self) -> impl Iterator<Item = &AIAgentExchange> {
-        self.linearized_refs
-            .iter()
+        self.exchanges
+            .values()
             .rev()
             .filter_map(|r| self.lookup_exchange(r))
     }
@@ -173,7 +191,7 @@ impl TaskStore {
     pub fn all_exchanges_by_task(&self) -> Vec<(TaskId, Vec<&AIAgentExchange>)> {
         let mut result: Vec<(TaskId, Vec<&AIAgentExchange>)> = Vec::new();
 
-        for exchange_ref in &self.linearized_refs {
+        for exchange_ref in self.exchanges.values() {
             let Some(exchange) = self.lookup_exchange(exchange_ref) else {
                 continue;
             };
@@ -224,12 +242,12 @@ impl TaskStore {
 
     pub fn insert(&mut self, task: Task) {
         self.tasks.insert(task.id().clone(), task);
-        self.rebuild_linearized_refs_index();
+        self.rebuild_exchange_index();
     }
 
     pub fn remove(&mut self, task_id: &TaskId) -> Option<Task> {
         let task = self.tasks.remove(task_id)?;
-        self.linearized_refs.retain(|r| &r.task_id != task_id);
+        self.exchanges.retain(|_, r| &r.task_id != task_id);
         Some(task)
     }
 
@@ -279,8 +297,8 @@ impl TaskStore {
             self.tasks.remove(task_id);
         }
         if !unreachable.is_empty() {
-            self.linearized_refs
-                .retain(|r| !unreachable.contains(&r.task_id));
+            self.exchanges
+                .retain(|_, r| !unreachable.contains(&r.task_id));
         }
         unreachable
     }
@@ -303,7 +321,7 @@ impl TaskStore {
             }
             task.remove_messages(message_ids);
         }
-        self.rebuild_linearized_refs_index();
+        self.rebuild_exchange_index();
     }
 
     fn lookup_exchange(&self, r: &ExchangeRef) -> Option<&AIAgentExchange> {
@@ -314,30 +332,33 @@ impl TaskStore {
     }
 
     /// Rebuilds the linearized index from scratch using DFS traversal.
-    fn rebuild_linearized_refs_index(&mut self) {
-        self.linearized_refs = Self::build_linearized_refs(&self.tasks, &self.root_task_id);
+    fn rebuild_exchange_index(&mut self) {
+        self.exchanges = Self::build_exchange_index(&self.tasks, &self.root_task_id);
     }
 
     /// Builds linearized exchange refs via DFS traversal without mutating self.
     /// This allows us to borrow `tasks` immutably throughout the traversal.
-    fn build_linearized_refs(
+    fn build_exchange_index(
         tasks: &HashMap<TaskId, Task>,
         root_task_id: &TaskId,
-    ) -> Vec<ExchangeRef> {
-        let mut refs = Vec::new();
+    ) -> IndexMap<AIAgentExchangeId, ExchangeRef> {
+        let mut refs = IndexMap::new();
 
         fn append_refs_for_task(
             tasks: &HashMap<TaskId, Task>,
-            refs: &mut Vec<ExchangeRef>,
+            refs: &mut IndexMap<AIAgentExchangeId, ExchangeRef>,
             task: &Task,
         ) {
             let task_id = task.id().clone();
 
             for (exchange_index, exchange) in task.exchanges().enumerate() {
-                refs.push(ExchangeRef {
-                    task_id: task_id.clone(),
-                    exchange_index,
-                });
+                refs.insert(
+                    exchange.id,
+                    ExchangeRef {
+                        task_id: task_id.clone(),
+                        exchange_index,
+                    },
+                );
 
                 // Check for subagent calls in the exchange output.
                 if let Some(output) = exchange.output_status.output() {
