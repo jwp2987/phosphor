@@ -14,7 +14,12 @@ use crate::ai::{
 };
 
 use super::agent_view::{AgentViewController, AgentViewEntryOrigin, EnterAgentViewError};
-use super::conversation_selection::{ConversationSelection, ConversationSelectionHandle};
+// The runtime code here only ever holds the erased `ConversationSelectionHandle`; the trait
+// itself is named solely by the intra-doc links on `conversation_selection` and
+// `try_start_new_conversation`, which `unused_imports` does not count as a use.
+#[allow(unused_imports)]
+use super::conversation_selection::ConversationSelection;
+use super::conversation_selection::ConversationSelectionHandle;
 use ai::project_context::model::ProjectContextModel;
 use parking_lot::FairMutex;
 use warp_core::features::FeatureFlag;

@@ -57,7 +57,7 @@ impl AgentViewConversationSelection {
         agent_view_controller: ModelHandle<AgentViewController>,
         ctx: &mut ModelContext<Box<dyn ConversationSelection>>,
     ) -> Self {
-        ctx.subscribe_to_model(&agent_view_controller, |_, _, event, ctx| match event {
+        ctx.subscribe_to_model(&agent_view_controller, |_, event, ctx| match event {
             AgentViewControllerEvent::EnteredAgentView {
                 display_mode,
                 origin,
@@ -86,7 +86,7 @@ impl AgentViewConversationSelection {
         });
         ctx.subscribe_to_model(
             &BlocklistAIHistoryModel::handle(ctx),
-            |selection, _, event, ctx| selection.handle_history_event(event, ctx),
+            |selection, event, ctx| selection.handle_history_event(event, ctx),
         );
         Self {
             terminal_view_id,

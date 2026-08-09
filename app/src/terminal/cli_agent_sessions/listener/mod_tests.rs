@@ -244,7 +244,7 @@ fn omp_end_to_end_parsing_and_handling() {
     // session_start payload: proves SessionStart is skipped.
     let start_body = r#"{"v":1,"agent":"omp","event":"session_start"}"#;
     let parsed_start = handler
-        .try_parse(Some(CLI_AGENT_NOTIFICATION_SENTINEL), start_body)
+        .try_parse(Some(CLI_AGENT_NOTIFICATION_SENTINEL), start_body, false)
         .expect("should successfully parse session_start payload");
     assert_eq!(parsed_start.agent, CLIAgent::Omp);
     assert_eq!(parsed_start.event, CLIAgentEventType::SessionStart);
@@ -253,7 +253,7 @@ fn omp_end_to_end_parsing_and_handling() {
     // stop payload: proves Stop forwards with CLIAgent::Omp.
     let stop_body = r#"{"v":1,"agent":"omp","event":"stop"}"#;
     let parsed_stop = handler
-        .try_parse(Some(CLI_AGENT_NOTIFICATION_SENTINEL), stop_body)
+        .try_parse(Some(CLI_AGENT_NOTIFICATION_SENTINEL), stop_body, false)
         .expect("should successfully parse stop payload");
     assert_eq!(parsed_stop.agent, CLIAgent::Omp);
     assert_eq!(parsed_stop.event, CLIAgentEventType::Stop);

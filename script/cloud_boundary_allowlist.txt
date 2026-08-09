@@ -23,6 +23,12 @@ app/src/ai/agent_sdk/profiles.rs use crate::server::ids::SyncId;
 app/src/ai/agent_tips.rs use crate::server::telemetry::PaletteSource;
 app/src/ai/blocklist/action_model/execute/ask_user_question_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
 app/src/ai/blocklist/action_model/execute/ask_user_question_tests.rs use crate::cloud_object::update_manager::UpdateManager;
+# Test-harness registration only (`ObjectStoreModel::mock` / `UpdateManager::mock`), the same
+# two singletons ask_user_question_tests.rs registers above. No cloud call path: #316's
+# AgentViewConversationSelection is GUI-local, but the app harness will not start without
+# these two singletons present. Refs #316.
+app/src/ai/blocklist/agent_view/conversation_selection_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
+app/src/ai/blocklist/agent_view/conversation_selection_tests.rs use crate::cloud_object::update_manager::UpdateManager;
 app/src/ai/blocklist/agent_view/agent_input_footer/mod.rs use crate::server::telemetry::PluginChipTelemetryAction;
 app/src/ai/blocklist/block.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
 app/src/ai/blocklist/block.rs use crate::cloud_object::model::persistence::ObjectStoreModel;

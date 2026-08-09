@@ -42,7 +42,6 @@ use super::{
     AIQueryHistoryOutputStatus, BeginConversationRenameError, BlocklistAIHistoryModel,
     ForkConversationError, PersistedAIInput, PersistedAIInputType,
 };
-use crate::ai::ambient_agents::AmbientAgentTaskId;
 
 fn initialize_history_model_test_app(app: &mut App) {
     initialize_settings_for_tests(app);
