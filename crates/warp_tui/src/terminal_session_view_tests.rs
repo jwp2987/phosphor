@@ -2717,3 +2717,13 @@ fn accepted_prompt_history_submits_to_the_selected_ai_conversation() {
         assert_eq!(app.read(|ctx| input_text(&view, ctx)), "");
     });
 }
+
+#[test]
+fn status_conversation_id_uses_the_selected_id_or_none() {
+    let conversation_id = AIConversationId::new();
+    assert_eq!(
+        super::format_status_conversation_id(Some(conversation_id)),
+        conversation_id.to_string()
+    );
+    assert_eq!(super::format_status_conversation_id(None), "None");
+}
