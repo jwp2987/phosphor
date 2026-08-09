@@ -57,6 +57,8 @@ use crate::keybindings::{
     CONTEXTUAL_PLAN_TOGGLE_BINDING_NAME, KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG,
     PLAN_TOGGLE_AVAILABLE_FLAG, PLAN_TOGGLE_BINDING_NAME, TUI_BINDING_GROUP,
 };
+use crate::orchestrated_agent_identity_styling::AgentIdentity;
+use crate::orchestration_tab_bar::{orchestration_tab_icon, render_orchestration_tab_footer};
 use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::root_view::RootTuiView;
 use crate::session_registry::{TuiSessionId, TuiSessions};
@@ -2888,6 +2890,70 @@ fn footer_renders_shell_mode_sections_without_model_or_usage() {
             assert!(
                 !line.contains("2.5 credits"),
                 "usage segment is hidden in shell mode"
+            );
+        });
+    });
+}
+
+#[test]
+fn orchestration_tab_icon_replaces_identity_only_while_active_or_blocked() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let builder = TuiUiBuilder::from_app(ctx);
+            let identity = AgentIdentity {
+                glyph: "✠",
+                style: TuiStyle::default().fg(Color::Blue),
+            };
+            for (status, expected_glyph) in [
+                (ConversationStatus::InProgress, "●"),
+                (ConversationStatus::TransientError, "●"),
+                (ConversationStatus::WaitingForEvents, "●"),
+                (
+                    ConversationStatus::Blocked {
+                        blocked_action: "approval".to_owned(),
+                    },
+                    "■",
+                ),
+            ] {
+                assert_eq!(
+                    orchestration_tab_icon(&status, &identity, &builder).0,
+                    expected_glyph,
+                );
+            }
+            for status in [
+                ConversationStatus::Success,
+                ConversationStatus::Error,
+                ConversationStatus::Cancelled,
+            ] {
+                assert_eq!(
+                    orchestration_tab_icon(&status, &identity, &builder),
+                    (identity.glyph, identity.style),
+                );
+            }
+        });
+    });
+}
+
+#[test]
+fn orchestration_tab_footer_advertises_down_without_shift_or_escape_hint() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let builder = TuiUiBuilder::from_app(ctx);
+            let buffer = render_element(render_orchestration_tab_footer(&builder), ctx, 80);
+            let footer = buffer.to_lines().join("\n");
+            assert!(
+                footer.contains("↓ to send a message"),
+                "footer should advertise ↓: {footer}"
+            );
+            assert!(
+                !footer.contains("Shift + ↓"),
+                "footer must not advertise Shift + ↓: {footer}"
+            );
+            assert!(
+                !footer.to_lowercase().contains("esc"),
+                "footer must not advertise an Escape hint: {footer}"
             );
         });
     });
