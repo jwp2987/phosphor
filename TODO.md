@@ -310,6 +310,32 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
   avoid a second proto-regeneration cycle. (Sub-item 3, `GetCommittedBranchFiles`,
   is NOT a gap — the fork uses direct RPC, functionally equivalent.)
 
+**REOPENED 2026-08-08 late — #440, and it is a HARD DEPENDENCY of in-flight work:**
+- [ ] #440 remote_server: bundled global skills/resources install mechanism.
+      **Reopened not because the decline was mislabelled** (a full 30-row
+      `DECLINED.md` audit confirms it never claimed cloud — it is an honest
+      packaging decision) **but because it became incoherent with the #487 SSH
+      un-drop made the same evening.** The pin's daemon
+      (`02b53fcd8:app/src/remote_server/server_model.rs:724`) gates its whole
+      bundled-skill catalog on `daemon_bundled_resources_dir()`; with #440
+      declined it takes the `else` branch forever, so `bundled_skill_snapshot_protos`
+      — un-dropped tonight — serializes an empty catalog and #353's broadcast
+      carries no skills. We would ship the entire chain inert, knowingly.
+      Scope: `BUNDLED_RESOURCES_DIR_NAME` / `remote_server_bundled_resources_dir()`
+      / `remote_server_removal_command()` in `crates/remote_server/src/setup.rs`,
+      `daemon_bundled_resources_dir()` + the spawn in `server_model.rs`, removal
+      wiring in `ssh_transport.rs:289`, **plus the packaging half** — the
+      remote-server artifact must actually ship a `bundled_resources/` tree, which
+      touches the release pipeline, not just Rust. Tier 3 because of that packaging
+      half; the Rust side alone is small. **Do it with or before #353 ships**, or
+      #353 ships degraded (it still carries `home_dir` and `global_rules`, which
+      have separate sources — so degraded, not dead).
+
+      **Reusable lesson:** the audit that cleared this row answered *"is the stated
+      reason true?"* — and it was. It did not answer *"is this still consistent with
+      what we decided since?"* **A decline can be individually sound and
+      collectively wrong.** Re-check declines against decisions made after them.
+
 **REAL as filed:**
 - [ ] #284 no `received_rich_notification` latch on `CLIAgentSession`; fork derives
       rich-status statically per agent type (`listener/mod.rs:36-38`) vs the pin's
