@@ -251,20 +251,28 @@ message ErrorResponse {
   string message = 2;
 }
 
-// ── Remote Agent Mode context (#438 dependent feature 1) ──────────
+// ── Remote Agent Mode context (#438 dependent feature 1, #353 producer) ────
 //
 // Ported from the pinned oracle (02b53fcd8): the daemon reads skills and
 // global rule files (e.g. AGENTS.md) from the remote host and pushes them to
 // every connected proxy so a local (BYOP) agent working over an SSH remote
-// session sees the same context it would locally. Deviation from the pin:
-// this only carries the `home` skill source — the pin also has a `bundled`
-// source (`BundledSkillMetadata`) for skills shipped with the Warp binary
-// itself, which has no fork equivalent (no bundled-skill catalog exists in
-// this fork), so it is omitted rather than stubbed.
+// session sees the same context it would locally.
 //
-// Wire shape only: no daemon in this fork populates or sends this message
-// yet. Discovering and reading skills/rule files on the remote host is
-// tracked separately (issue #353) as its own feature increment.
+// `bundled` carries the daemon's own local bundled-skill catalog
+// (`BundledSkillMetadata`), serialized outward by
+// `ai::skills::remote::bundled_skill_snapshot_protos` — this is the daemon
+// exposing its own context, distinct from (and does not resurrect) the
+// per-connected-host client-side catalog aggregation the pin's `BundledSkills`
+// (plural) provided, which this fork deliberately does not build (#487).
+
+// Metadata for a skill bundled with the app itself, evaluated daemon-side.
+message BundledSkillMetadata {
+  // Directory-based skill ID, unique within the bundled catalog.
+  string id = 1;
+  // When set, the skill is only active while the named MCP integration is
+  // running on the client (e.g. "figma"). Evaluated client-side.
+  optional string requires_mcp = 2;
+}
 
 // Marker metadata for a file-based skill from the daemon host's home
 // directory.
@@ -277,6 +285,7 @@ message RemoteSkillProto {
   string content = 2;
   oneof source {
     HomeSkillMetadata home = 3;
+    BundledSkillMetadata bundled = 4;
   }
 }
 

@@ -10756,10 +10756,12 @@ impl Workspace {
             false
         };
 
-        // If restoring a conversation, use its initial working directory if it exists
+        // If restoring a conversation, use its startup working directory if it exists (the
+        // latest working directory for a fork, so the new pane continues where the source
+        // conversation left off; the initial one for other restoration modes).
         let startup_directory_from_conversation = conversation_restoration
             .as_ref()
-            .and_then(|restoration| restoration.initial_working_directory())
+            .and_then(|restoration| restoration.startup_working_directory())
             .map(PathBuf::from)
             .filter(|path| path.is_dir());
 
@@ -12052,6 +12054,14 @@ impl Workspace {
             }
         });
 
+        // True when the fork is paired with a follow-up that fires immediately after restore
+        // (a prompt to send, or a `/summarize` triggered by `summarize_after_fork`).
+        // Used to suppress the `couldn't find original conversation directory` ephemeral hint,
+        // which would otherwise mask the warping indicator while the agent processes the
+        // follow-up. See `BlocklistAIStatusBar::render`'s
+        // `ephemeral_message_model.current_message().is_none()` gate.
+        let has_initial_query = summarize_after_fork || initial_prompt.is_some();
+
         // Load the conversation data asynchronously
         let future = history_model
             .as_ref(ctx)
@@ -12152,6 +12162,7 @@ impl Workspace {
                     None,
                     Some(ConversationRestorationInNewPaneType::Forked {
                         conversation: forked_conversation,
+                        has_initial_query,
                     }),
                     false,
                     ctx,
@@ -12198,6 +12209,7 @@ impl Workspace {
                     None, /* chosen_shell */
                     Some(ConversationRestorationInNewPaneType::Forked {
                         conversation: forked_conversation.clone(),
+                        has_initial_query,
                     }),
                     ctx,
                 );

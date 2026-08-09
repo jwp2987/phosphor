@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::Icon;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::prelude::MouseStateHandle;
 use warpui::EventContext;
 use warpui::{AppContext, Element, SingletonEntity};
@@ -49,10 +50,10 @@ use crate::warp_managed_paths_watcher::warp_managed_skill_dirs;
 /// secondary key for stable sorting, guaranteeing reproducible output order.
 #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
 pub(crate) fn unique_skills(
-    skill_paths: &[(PathBuf, PathBuf)],
-    skills_by_path: &HashMap<PathBuf, ParsedSkill>,
+    skill_paths: &[(LocalOrRemotePath, LocalOrRemotePath)],
+    skills_by_path: &HashMap<LocalOrRemotePath, ParsedSkill>,
 ) -> Vec<SkillDescriptor> {
-    let mut name_map: HashMap<(String, PathBuf), SkillDescriptor> = HashMap::new();
+    let mut name_map: HashMap<(String, LocalOrRemotePath), SkillDescriptor> = HashMap::new();
 
     for (dir_path, path) in skill_paths {
         let Some(skill) = skills_by_path.get(path) else {
@@ -93,7 +94,7 @@ pub(crate) fn unique_skills(
 /// contains no path separators).
 fn skill_reference_key(reference: &ai::skills::SkillReference) -> String {
     match reference {
-        ai::skills::SkillReference::Path(p) => p.to_string_lossy().into_owned(),
+        ai::skills::SkillReference::Path(p) => p.display_path(),
         ai::skills::SkillReference::BundledSkillId(id) => id.clone(),
     }
 }

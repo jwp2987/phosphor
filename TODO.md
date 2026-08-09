@@ -45,6 +45,167 @@ Of 11 issues examined closely on 2026-08-08, four stated the opposite of the cod
 (#437, #418, #532, #548-partly) and three more were already partly done. Estimating
 from titles here is unreliable.
 
+## LANDED 2026-08-09 early — tier 2 batch verified and merged
+
+Local main = `e1df34e3a`. `precheck: ok` — **5620 + 565 + 2178 = 8,363 tests, 0 failures.**
+20 commits. Closed on evidence: #545, #396, #403, #300, #299, #205 (dup of #299).
+
+Two real bugs the FIRST build of this batch caught, both invisible until compiled:
+- `crates/editor` called the pin's `AssetCache::as_ref(app)` without the pin's
+  `SingletonEntity` trait import — the #300/#403 mermaid port, uncompiled for hours.
+- `convert_conversation.rs` still called the removed `ParsedSkill::try_from` inside
+  an `if let Ok(..)`, so it failed **silently**: restored conversations dropped their
+  skill invocations and returned an empty input list. **Grep for other `if let Ok`
+  wrappers around migrated conversions — same shape, same silent-failure risk.**
+
+This is the argument for the batch-build rule paying off, not against it: both bugs
+were found in one pass, and neither would have been caught by review.
+
+### STILL OPEN from this batch (next agent)
+- `BundledSkills` multi-host router + `remote_home_directories`
+- `skill_manager.rs` **merge, not port** — the fork has a fork-original
+  `list_skill_inventory`/`SkillInventoryItem`/`SkillInventoryDuplicate` feature
+  (consumed by `app/src/skill_manager/panel.rs`) that the pin does NOT have.
+  **Enumerate its call sites BEFORE editing** — a "match the pin" rewrite deletes it.
+- `parsed_skill_for_common_locations` + 2 pinned tests
+- `remote_agent_context.rs`, `skill_watcher.rs` remote branch
+- #353 daemon producer, #388's three sub-items
+- #440 — or the above ships degraded (skills empty; `home_dir`/`global_rules` still work)
+
+## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
+
+Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is
+expensive by nature. Moving the pin later repeats tonight's motions, and most of
+it can be mechanised -- but only if the inputs are recorded WHILE the first pass
+happens. Retrofitting them afterwards costs as much as the pass itself.
+
+**Mechanisable, worth building:**
+- [ ] **Identical-to-pin manifest.** Per fork file, record whether it is
+      byte-identical to the pin. Files that are identical can be fast-forwarded
+      at the next re-pin with zero judgment. This single number tells us how
+      cheap re-pinning actually gets. Cheap to generate as a one-off measurement
+      (same method as the 2026-08-08 coverage measurement).
+- [ ] **Re-pin work queue generator.** `git diff <pin N> <pin N+1>` over
+      test-bearing files, bucketed by the existing `SCOPE-*.md` verdicts and
+      `script/check_cloud_boundary`, so cloud-touching changes drop out
+      automatically and what remains is a triaged list.
+- [ ] **Divergence-collision guard.** THE ONE TONIGHT PROVED WE NEED. Flag when
+      an incoming pin test collides with a deliberate fork divergence. Requires
+      `DECLINED.md` entries to carry machine-checkable markers (symbol names or
+      file paths), not just prose. Change how entries are written NOW, while they
+      are being created anyway.
+- [x] **Gates that actually run.** DONE 2026-08-08: `script/precheck` now covers
+      8,342 tests across 43 packages, up from 6,181 across 3.
+
+**Deliberately NOT automatable -- do not try:**
+- Cloud-vs-local calls on ambiguous subsystems. `CLAUDE.md` already warns that
+  `SCOPE-AI.md`'s verdict A is overstated (MIXED files collapse to their majority
+  bucket), so a script reading those verdicts will confidently mis-bucket.
+- Product divergences (e.g. the 2026-08-08 double-click decision). Maintainer's
+  call, every time.
+- This fork's own seams. Both focus bugs fixed tonight came from the GUI/TUI
+  storage split THIS fork introduced; the skills-path issues come from cloud
+  removal. Warp will never fix those, and they are where bugs concentrate.
+
+**The discipline that keeps re-pinning cheap:** record every intentional
+divergence in `DECLINED.md` the day you make it. Tonight's double-click
+collision -- a July divergence contradicted by an August parity port, discovered
+in neither -- cost real time purely because nobody wrote it down. `DECLINED.md`
+already existed; it was not the tooling that failed.
+
+### DECISION 2026-08-08 late — the SSH half of `ai/skills/remote.rs` is UN-DROPPED
+
+**This partially reverses the #11 maintainer decision of 2026-08-02** ("AI skills:
+build `bundled` + `global` (local); DROP the `remote` daemon-sync / cloud-repo
+arm"). That verdict put two unrelated things under one label.
+
+What the file actually is: `02b53fcd8:app/src/ai/skills/remote.rs` is **59 lines,
+two functions** (`mcp_integration_wire_id`, `bundled_skill_snapshot_protos`), with
+**zero cloud imports** — no `warp_graphql`, no `server_api`, no
+`ServerApiProvider`, no `warp_server_client`. Its only external import is
+`remote_server::proto`, which is **Phosphor's own daemon**. Its doc comment
+describes the SSH path outright: *"Serializes a daemon-side bundled catalog for
+the aggregate remote Agent Mode snapshot — the daemon owns the files."*
+
+There is no cloud-repo resolution arm in that file.
+
+**It is also a hard dependency of #353**, approved for build the same evening: the
+pin's `app/src/remote_server/server_model.rs:91` imports
+`bundled_skill_snapshot_protos` and calls it at `:348` to build the snapshot that
+`refresh_remote_agent_context_snapshot` broadcasts at `:692`.
+
+**CORRECTED AGAIN, later the same evening — `BundledSkills` IS needed, build it.**
+I issued three different boundaries before getting this right. The final one:
+
+| verdict | shape |
+|---|---|
+| **BUILD** | anything keyed by `HostId` that stores or routes context for hosts we are SSH-connected to |
+| **DROPPED** | genuine cloud only — in this whole surface that is just `is_cloud_environment` |
+
+**The proof was in the FORK, not the pin**, which is why reasoning from #11's label
+kept failing. `crates/remote_server/src/manager.rs` already has, landed under #438:
+- `:619` `remote_agent_context_snapshots: HashMap<HostId, RemoteAgentContextSnapshot>`
+  — one snapshot PER HOST, with revision-based conflict resolution at `:2073`
+- `:588` `host_to_sessions: HashMap<HostId, HashSet<SessionId>>` — multiple
+  simultaneous hosts, each with multiple sessions
+
+and `crates/remote_server/proto/remote_server.proto:294` defines
+`RemoteAgentContextSnapshot { revision, home_dir, repeated RemoteSkillProto skills,
+repeated RemoteContextFileProto global_rules }`.
+
+So once #353's producer fills those snapshots, the client holds N hosts' skill
+catalogs at once. `BundledSkills { local, remote_by_host: HashMap<HostId,
+BundledSkill> }` is exactly the structure to hold and route them; without it a
+conversation on host B resolves against host A's catalog. `remote_home_directories:
+HashMap<HostId, LocalOrRemotePath>` is what proto field 2 (`home_dir`) is for, by
+the same argument. Singular `BundledSkill` survives as the per-host inner type.
+
+**The reusable lesson, which cost three reversals:** I reasoned downward from a
+decision's *label* ("drop the remote arm") instead of checking what the codebase
+already models. Every correction came from reading the fork's own structures. When
+a scope decision seems to say "we do not support X", check whether the fork
+already has data structures for X — if it does, the decision was about something
+narrower than its wording.
+
+**How this was nearly missed, which is the reusable lesson.** #487 raised exactly
+this — *"the cloud-repo resolution arm is likely out of scope; the SSH/daemon arm
+may not be... needs classification per-arm rather than a blanket verdict"* — and
+was then closed citing #11's blanket verdict without performing the split. A
+correct doubt was recorded and then overridden by a broader statement that had
+never been checked against the code. **When a decision names two things with a
+slash, check whether the file actually contains both.**
+
+Porting notes for `remote.rs` (easy to lose in a port): `TuiOnly` skills are
+omitted (a daemon cannot expose client-local migration behaviour); `RequiresFile`
+and `RequiresFeature` are evaluated DAEMON-SIDE so the client only ever receives
+`Always` or `RequiresMcp`; results are sorted by skill path so pushes are
+deterministic across daemon restarts. `BundledSkill` needs an `iter_definitions()`
+yielding `(id, skill, activation)` — the fork's current `iter()` drops activation.
+
+### RECONCILIATION 2026-08-08 late — every open issue is tiered
+
+Checked both directions programmatically (`gh issue list --state open` against
+the tier lists): **0 untracked, 0 listed-but-closed.**
+
+| bucket | count |
+|---|---|
+| tier 2 (in flight) | 2 — #205, #299 |
+| absorbed into tier 2 | 2 — #353, #388 |
+| tier 3 | 14 |
+| tier 4 | 10 |
+| maintainer decision, not code | 7 |
+| **open total** | **35** |
+
+Started the day at 63. The drop is **not** mostly fixes: roughly half were closed
+because the premise did not hold — six were symbols the pin does not call either
+(#552, #555, #547, #554, #536, #553), and several were records of completed work
+that nobody closed (#523, #4, #208, #338).
+
+**Re-run this reconciliation after any closing spree.** Eight issues were found
+untracked by the tiers on 2026-08-08 — five already done and simply never closed,
+#405 never tiered at all, and #4/#208 stale-open. A tier list nobody reconciles
+drifts silently, and the drift always reads as "more work remaining than there is".
+
 ### RECOVERED WORK from closed-unmerged PRs (2026-08-08)
 
 Nine PRs were closed without merging. When the workflow switched away from PRs
@@ -157,18 +318,185 @@ only reality and never looking at the branches:**
 - [ ] #554 code/editor_management: CodeManagerEvent::EditCompleted has no subscriber
 
 ### Tier 3 — medium (1-3 days each)
-- [ ] #284 received_rich_notification: latch landed 2026-08-08, but
-      `CLIAgentSession::supports_rich_status()` and the listener `plugin_already_active`
-      OSC 9 dedup are still ABSENT; static per-agent derivation is still the source of truth
-- [ ] #147 · #216 · #217 · #254 · #256 · #316 · #323 · #338 · #341 · #343
-- [ ] #353 remote agent context snapshot (producer for #438's plumbing; #438 closed
-      with `remote_agent_context_snapshot()` returning None in production until this lands)
-- [ ] #388 · #389 · #390 · #395 · #397 · #431 · #536 · #548 · #553
-      (#419 DONE 2026-08-08, recovered from PR #538 alongside #422 -- see the
-      RECOVERED WORK table above)
+
+**Fully re-audited against the pin 2026-08-08.** All 20 prior entries were
+verified with file:line evidence; none came back uncertain. Result: 4 closed, 2
+absorbed into the tier-2 batch, 14 remain — and most of those are NARROWER than
+their titles claim. Read the issue's latest comment, not its title.
+
+CLOSED 2026-08-08 on evidence:
+- #536, #553 — dead code AT THE PIN TOO (`snapshot.rs`, `for_update`). Not gaps.
+- #548 — the only `impl Slide for` in all of Warp is `oz_launch.rs`, pure cloud
+  marketing. Scaffolding is faithfully ported; its one implementor is declined.
+- #338 — composite; every sub-item already done, declined, or never a pin feature.
+
+ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
+- #353 — the skills full-parity work includes `remote_agent_context.rs` and the
+  daemon-side producer, which IS #353's scope.
+- #388 — its 3 real sub-items touch the same proto/daemon files, so folded in to
+  avoid a second proto-regeneration cycle. (Sub-item 3, `GetCommittedBranchFiles`,
+  is NOT a gap — the fork uses direct RPC, functionally equivalent.)
+
+**REOPENED 2026-08-08 late — #440, and it is a HARD DEPENDENCY of in-flight work:**
+- [ ] #440 remote_server: bundled global skills/resources install mechanism.
+      **Reopened not because the decline was mislabelled** (a full 30-row
+      `DECLINED.md` audit confirms it never claimed cloud — it is an honest
+      packaging decision) **but because it became incoherent with the #487 SSH
+      un-drop made the same evening.** The pin's daemon
+      (`02b53fcd8:app/src/remote_server/server_model.rs:724`) gates its whole
+      bundled-skill catalog on `daemon_bundled_resources_dir()`; with #440
+      declined it takes the `else` branch forever, so `bundled_skill_snapshot_protos`
+      — un-dropped tonight — serializes an empty catalog and #353's broadcast
+      carries no skills. We would ship the entire chain inert, knowingly.
+      Scope: `BUNDLED_RESOURCES_DIR_NAME` / `remote_server_bundled_resources_dir()`
+      / `remote_server_removal_command()` in `crates/remote_server/src/setup.rs`,
+      `daemon_bundled_resources_dir()` + the spawn in `server_model.rs`, removal
+      wiring in `ssh_transport.rs:289`, **plus the packaging half** — the
+      remote-server artifact must actually ship a `bundled_resources/` tree, which
+      touches the release pipeline, not just Rust. Tier 3 because of that packaging
+      half; the Rust side alone is small. **Do it with or before #353 ships**, or
+      #353 ships degraded (it still carries `home_dir` and `global_rules`, which
+      have separate sources — so degraded, not dead).
+
+      **Reusable lesson:** the audit that cleared this row answered *"is the stated
+      reason true?"* — and it was. It did not answer *"is this still consistent with
+      what we decided since?"* **A decline can be individually sound and
+      collectively wrong.** Re-check declines against decisions made after them.
+
+**REAL as filed:**
+- [ ] #284 no `received_rich_notification` latch on `CLIAgentSession`; fork derives
+      rich-status statically per agent type (`listener/mod.rs:36-38`) vs the pin's
+      per-event latch (`cli_agent_sessions/mod.rs:153,412,441`). 3 pinned tests.
+      **Touches the same struct as tier-2 #545** — adjacent, low risk.
+- [ ] #343 `BlocklistAIContextModel` has no `try_start_new_conversation` for TUI;
+      fork hard-codes the GUI path and always errors on TUI (`context_model.rs:1184`).
+      **BLOCKED on #316** — needs a real `AgentViewConversationSelection` to inject.
+- [ ] #316 `AgentViewConversationSelection` never ported. Delegation half is real,
+      portable debt (the `AgentViewController` it needs already exists at
+      `agent_view/controller.rs:778`). **The `classify_entry` half is entangled with
+      the #418 DECLINED decision** — it calls `ActiveAgentViewsModel`, permanently
+      deleted here; needs a `BlocklistAIHistoryModel`-based substitute, not a port.
+- [ ] #256 no persisted prompt-history snapshot / `prompt_history_candidates`
+      (pin `history_model.rs:331-333,2370`). Items 1/3/4 of the original issue are
+      superseded by #336/#337/#331; only item 2 remains.
+- [ ] #431 no lazy metadata-only conversation read + summary backfill. Fork reads
+      eagerly on every startup path (`sqlite.rs:3347`). 4 pinned tests. Real perf
+      AND correctness gap.
+- [ ] #217 Zap -> Phosphor rename incomplete: **361** `"Zap"` Rust literals on main
+      (issue said 357; drift, not error). Fork-internal, no pin comparison applies.
+      NOTE: renaming risks breaking persisted keybindings — see the open
+      `zapctrl` vs `warpctrl` maintainer decision.
+- [ ] #254 NARROWED to two items: `Input::unfreeze_agent_input` (pin
+      `input.rs:7625`) and `CommandExecutionSource::SharedSession`'s `preserve_input`
+      field. Items b/c are already ported (`input.rs:2037,2064`) via #399.
+- [ ] #323 NARROWED: `Harness::Codex` now exists (landed under #411), but local
+      Codex launch still returns "not yet implemented" (`local_harness_launch.rs:145-148`),
+      and `ANTHROPIC_MODEL` merge, `normalize_orchestrator_agent_name`, and the
+      OZ_CLI *prompt-text* augmentation (`local_claude_child_prompt`) are all absent.
+
+**PARTLY REAL — scope narrowed, see each issue's re-scope comment:**
+- [ ] #147 ONLY `/theme` remains. `/clear`+`/set-tab-color` done; `/rename-conversation`
+      is genuinely cloud-coupled; `/reset-statusline`+`/copy-debugging-id` never existed
+      at the pin — **that issue cited `warp/master`, the exact ORACLE.md trap.**
+- [ ] #341 prompt-attachment plumbing DONE (`29049f4f8`); `register_mock_stream_for_test`
+      exists. Remaining: `schedule_auto_resume_after_error`, `fail_conversation_due_to_shell_exit`,
+      `emit_response_event_for_test`.
+- [ ] #389 voice half DECLINED. Menu half is **ported but NOT WIRED** — `TuiReadOnlyMenuKind`
+      has zero call sites. Also: `status_menu.rs` landed at the WRONG PATH (top-level
+      instead of nested under `terminal_session_view/`); move it, do not re-port.
+- [ ] #390 `state.rs` done. Remaining: `completions.rs`, `shortcuts.rs`, the
+      attach/detach running-command API, and `terminal_use.rs`'s missing 6th param
+      `agent_owns_alt_screen_input`. **`completions.rs` is BLOCKED on #395's
+      completion-menu API.**
+- [ ] #395 footer wording FIXED. Remaining: ask-question multiselect, blocked-action
+      presentation, completion-menu API shape. File-edits expand/collapse: API landed
+      but the DEFAULT still diverges (fork collapses, pin expands).
+- [ ] #397 error tone FIXED. Remaining: statusline datetime/footer grouping
+      (`format_statusline_*`, `render_statusline_datetime`,
+      `TuiUiBuilder::shell_command_accent_style` — all absent).
+
+**SEQUENCING — the warp_tui cluster is NOT parallelisable.** #389/#390/#395/#397
+all touch `crates/warp_tui/src/terminal_session_view.rs`; #390 depends on #395's
+completion-menu API; #390 and #397 both need `TuiUiBuilder::shell_command_accent_style`.
+Work them as one ordered sequence. Likewise #343 is blocked on #316 — one pair.
+
+### Tier 3.5 — LOCAL multi-agent orchestration (reopened 2026-08-08 late)
+
+Reversed from `DECLINED.md` on the maintainer's product call. The original
+decline was correct that the code is **non-cloud** (`SCOPE-AI.md` verdict D);
+what changed is that we want the feature. Reason it changed: the fork already
+ships the substrate — `app/src/pane_group/pane/local_harness_launch.rs` launches
+local child agents, and `agent_sdk/driver/harness/mod.rs:191-204` already stamps
+`OZ_RUN_ID`/`OZ_PARENT_RUN_ID`/`OZ_CLI`, so parent-child identity is tracked
+today. A 2026-08-08 audit also found **unwired, already-tested local scaffolding
+sitting dead in the tree**: `children_by_parent`, `ChildAgentStatusCard`, a
+de-cloud'ified `local_harness_launch.rs`. We were building the foundations while
+declining the feature.
+
+Sizing: ~72 of ~305 orchestration-adjacent pin tests are import-clean of cloud.
+
+**Build order — these have a real dependency chain, do not parallelise:**
+- [ ] #310 topology + events modules (the non-cloud core, 36 pinned tests) — FIRST
+- [ ] #376 `AgentConversationData` fields the view reads. **Verify each field
+      individually**: the issue's claim that `is_remote_child` is missing is
+      FALSE, it is already present.
+- [ ] #304 the orchestrator/child-agent view (pill bar, avatar, conversation
+      links, block view-impl, inline controls). Folds in **#410's second half**
+      (`cycle_next/previous_orchestration_child_agent` bindings) — #410 was
+      closed citing the orchestration decline, and that citation is now stale.
+- [ ] #325 run-agents child prompt composition — **LOCAL arm only.**
+- [ ] #329 collapsible defaults — LAST, it configures presentation of the above.
+- [ ] #309 topology half only. **The credit-rollup half stays declined** — Warp
+      credits are a billing concept with no BYOP equivalent.
+
+**Still declined, and this boundary matters:** the cloud-runner half. #290
+(RunAgents — children executing on Warp's servers) stays out. Children run as
+**local processes on this machine**. `is_remote_child` will be permanently
+`false`; the pin defines it as a placeholder for a child on a remote worker.
+
+**Warp never built "spawn an agent on your own SSH host."** That would be
+fork-original work, not parity — and Phosphor has better foundations for it than
+Warp does, since `remote_server` is a real daemon on the host. Do not confuse it
+with `is_remote_child`.
+
+**Persistence needs a NEW forward migration.**
+`crates/persistence/migrations/2026-03-23-180000_remove_orchestration_persistence`
+deleted orchestration storage deliberately; this is not a revert.
 
 ### Tier 4 — large (a week+)
 - [ ] #210 · #252 · #289 · #381 · #382 · #236 · #349 · #324 · #142
+- [ ] #405 notebooks/file: Jupyter (`.ipynb`) rendering missing
+      (`FeatureFlag::JupyterNotebooks`). Added to this tier 2026-08-08 — it had
+      never been tiered at all, found by reconciling every open issue against the
+      tier lists. A whole feature, hence tier 4.
+
+**Being audited against the pin (2026-08-08), same treatment tier 3 got.** For
+this tier the TEST COUNTS are the main claim -- five of these issues assert a
+number of blocked tests (~733 total between #210/#381/#252/#289/#382), and that
+number is what sets their priority. Verify claimed-vs-actual before acting.
+Suspected double-counting: #252 vs #289 (both agent_sdk) and #381 vs #382 (both
+app/src/ai). Tier 3's audit found 4 of 20 closeable and 8 more narrower than
+filed, so treat these numbers as unverified until the audit lands.
+
+Audit landed 2026-08-08 late. Results below.
+
+- **#142 — CLOSEABLE, already done. My earlier "pull it forward, BYOP is
+  untested" note here was WRONG and is retracted.** I saw `api_key` in two
+  absent pin filenames and assumed BYOP. They are absent, but they are Warp's
+  *cloud team API-key management* (`agent_sdk/api_key.rs` imports
+  `warp_graphql::mutations::{expire_api_key,generate_api_key}` and
+  `ServerApiProvider`) — programmatic tokens for Warp's own cloud API, a
+  different concept from BYOP provider keys. PR #189/#227 already reconciled the
+  real file: 12 ported / 3 blocked on pin-side dead code / 16 superseded by
+  `AgentProviderSecrets` (the fork's actual BYOP store, 19 fork-original tests) /
+  36 cloud. The "7 of 82" figure conflated four differently-scoped
+  `api_key`-named files. **Lesson: a filename is not a scope.**
+- **#324 overlaps work in flight.** Its `diff_state_tracker.rs`
+  (`RemoteDiffStateManager`, ~472 lines) sits beside the `diff_state_remote.rs` /
+  `diff_state_proto.rs` / proto files the current tier-2 batch is editing for
+  #388/#353. Cheaper to do while that area is open.
+- **#349 is macOS-only** — cannot be built or verified on this host regardless of
+  verdict.
 
 ### Needs a maintainer decision, not code
 - [ ] #149 · #150 · #203 (design decision) · #206 · #207 · #279 · #312

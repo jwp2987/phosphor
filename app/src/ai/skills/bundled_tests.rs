@@ -1,4 +1,5 @@
 use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::App;
 
 use super::*;
@@ -25,7 +26,7 @@ fn test_skill(id: &str) -> ParsedSkill {
     ParsedSkill {
         name: id.to_string(),
         description: format!("{id} description"),
-        path: format!("/bundled/skills/{id}/SKILL.md").into(),
+        path: LocalOrRemotePath::Local(format!("/bundled/skills/{id}/SKILL.md").into()),
         content: format!("# {id}"),
         line_range: None,
         provider: SkillProvider::Zap,
@@ -64,7 +65,7 @@ fn active_descriptors_includes_only_enabled_definitions() {
 fn reference_for_path_resolves_to_bundled_skill_id() {
     let mut bundled = BundledSkill::default();
     let skill = test_skill("modify-settings");
-    let path = skill.path.clone();
+    let path = skill.path.to_local_path().unwrap().to_path_buf();
     bundled.insert_for_testing("modify-settings", skill, BundledSkillActivation::Always);
 
     assert_eq!(

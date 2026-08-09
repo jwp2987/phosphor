@@ -1368,31 +1368,36 @@ fn render_read_skill(
     renderable_action =
         renderable_action.with_icon(action_icon(id, props.action_model, props.model, app).finish());
 
-    // Renders the 'open skill' button for known, non-bundled skills.
-    if let Some(skill) = skill {
-        if !skill.is_bundled() {
-            let source = CodeSource::Skill {
-                reference: skill_reference.clone(),
-                path: skill.path.clone(),
-                origin: SkillOpenOrigin::ReadSkill,
-            };
+    // Renders the 'open skill' button for known, non-bundled skills. `CodeSource::Skill`
+    // is a local-editor-pane concern (PathBuf-keyed, see editor_management.rs) that
+    // doesn't yet support opening a remote skill file, so this only renders for skills
+    // with a local path -- unaffected in practice today (issue #299 tracks the type,
+    // nothing populates a remote ParsedSkill into the manager yet).
+    if let Some(skill) = skill
+        && !skill.is_bundled()
+        && let Some(local_path) = skill.path.to_local_path()
+    {
+        let source = CodeSource::Skill {
+            reference: skill_reference.clone(),
+            path: local_path.to_path_buf(),
+            origin: SkillOpenOrigin::ReadSkill,
+        };
 
-            let skill_icon_override = icon_override_for_skill_name(&skill.name);
-            let open_button = render_skill_button(
-                "Open skill",
-                props.state_handles.open_skill_button_handle.clone(),
-                appearance,
-                skill.provider,
-                skill_icon_override,
-                move |ctx| {
-                    ctx.dispatch_typed_action(AIBlockAction::OpenCodeInWarp {
-                        source: source.clone(),
-                    });
-                },
-            );
+        let skill_icon_override = icon_override_for_skill_name(&skill.name);
+        let open_button = render_skill_button(
+            "Open skill",
+            props.state_handles.open_skill_button_handle.clone(),
+            appearance,
+            skill.provider,
+            skill_icon_override,
+            move |ctx| {
+                ctx.dispatch_typed_action(AIBlockAction::OpenCodeInWarp {
+                    source: source.clone(),
+                });
+            },
+        );
 
-            renderable_action = renderable_action.with_action_button(open_button);
-        }
+        renderable_action = renderable_action.with_action_button(open_button);
     }
 
     renderable_action.render(app).finish()
@@ -1472,13 +1477,17 @@ fn render_read_files(
     };
 
     // Renders the 'open skill' button if all files belong to the same skill directory.
-    if let Some(skill) = parsed_skill {
+    // As above, CodeSource::Skill is local-path-only, so this only renders when the
+    // skill has a local path (unaffected today -- see the comment in render_read_skill).
+    if let Some(skill) = parsed_skill
+        && let Some(local_path) = skill.path.to_local_path()
+    {
         let reference = SkillManager::handle(app)
             .as_ref(app)
-            .reference_for_skill_path(&skill.path);
+            .reference_for_skill_path(local_path);
         let source = CodeSource::Skill {
             reference,
-            path: skill.path.clone(),
+            path: local_path.to_path_buf(),
             origin: SkillOpenOrigin::ReadFiles,
         };
         let skill_icon_override = icon_override_for_skill_name(&skill.name);

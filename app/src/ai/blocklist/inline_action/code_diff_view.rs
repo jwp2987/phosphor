@@ -1609,8 +1609,13 @@ impl CodeDiffView {
         let skill = common_path(&file_paths)
             .and_then(|common| skill_path_from_file_path(&common))
             .and_then(|skill_path| SkillManager::as_ref(app).skill_by_path(&skill_path));
-        if let Some(skill) = skill {
-            let skill_path = skill.path.clone();
+        // OpenSkill's `path` field is local-editor-pane-only (PathBuf-keyed, see
+        // editor_management.rs's CodeSource::Skill), so this only renders for skills
+        // with a local path -- unaffected in practice today (issue #299 tracks the
+        // type, nothing populates a remote ParsedSkill into the manager yet).
+        if let Some(skill) = skill
+            && let Some(skill_path) = skill.path.to_local_path().map(Path::to_path_buf)
+        {
             let skill_reference = SkillManager::handle(app)
                 .as_ref(app)
                 .reference_for_skill_path(&skill_path);

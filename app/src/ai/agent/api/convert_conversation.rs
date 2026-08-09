@@ -33,7 +33,7 @@ use crate::ai_assistant::execution_context::{WarpAiExecutionContext, WarpAiOsCon
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::terminal_model::BlockIndex;
 use ai::agent::action_result::{AskUserQuestionAnswerItem, AskUserQuestionResult, ReadSkillResult};
-use ai::skills::ParsedSkill;
+use ai::skills::{ParsedSkill, SkillPathOrigin};
 use chrono::{DateTime, Local, TimeZone};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -388,7 +388,15 @@ impl ConvertToExchanges for &api::Task {
                 }
                 api::message::Message::InvokeSkill(invoke_skill) => {
                     if let Some(api_skill) = invoke_skill.skill.clone() {
-                        if let Ok(parsed_skill) = ParsedSkill::try_from(api_skill) {
+                        // Restored conversations are display-only: the skill's path is
+                        // whatever the server recorded and is not resolved against any
+                        // live host, so it carries `RestoredDisplayOnly` rather than a
+                        // Local/Remote origin. Matches the pin
+                        // (`02b53fcd8:app/src/ai/agent/api/convert_conversation.rs:468`).
+                        if let Ok(parsed_skill) = ParsedSkill::try_from_api_with_origin(
+                            api_skill,
+                            &SkillPathOrigin::RestoredDisplayOnly,
+                        ) {
                             let user_query = invoke_skill
                                 .user_query
                                 .clone()
@@ -452,6 +460,7 @@ impl ConvertToExchanges for &api::Task {
                         // TODO(alokedesai): Support persistence for the code review state.
                         active_code_review: None,
                         task_id: &TaskId::new(api_message.task_id.clone()),
+                        skill_path_origin: &SkillPathOrigin::Unavailable,
                     })
                 {
                     current_outputs.push(output_msg);

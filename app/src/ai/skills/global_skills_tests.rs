@@ -28,7 +28,7 @@ fn filter_skills_by_spec_only_loads_requested_simple_names() {
     ];
     let specs = global_specs(&["warpdotdev/warp-internal:read-google-doc".to_string()]);
 
-    let filtered = filter_skills_by_spec(&repo_path, skills, &specs);
+    let filtered = filter_skills_by_spec(&LocalOrRemotePath::Local(repo_path), skills, &specs);
 
     assert_eq!(skill_paths(filtered), vec![requested_skill_path]);
 }
@@ -43,7 +43,7 @@ fn filter_skills_by_spec_matches_simple_names_by_parsed_skill_name() {
         parsed_skill(directory_name_match_path, "unrelated-skill"),
     ];
     let specs = global_specs(&["warpdotdev/warp-internal:read-google-doc".to_string()]);
-    let filtered = filter_skills_by_spec(&repo_path, skills, &specs);
+    let filtered = filter_skills_by_spec(&LocalOrRemotePath::Local(repo_path), skills, &specs);
 
     assert_eq!(skill_paths(filtered), vec![requested_skill_path]);
 }
@@ -58,7 +58,7 @@ fn filter_skills_by_spec_uses_provider_precedence_for_simple_names() {
         parsed_skill(agents_skill_path.clone(), "deploy"),
     ];
     let specs = global_specs(&["warpdotdev/warp-internal:deploy".to_string()]);
-    let filtered = filter_skills_by_spec(&repo_path, skills, &specs);
+    let filtered = filter_skills_by_spec(&LocalOrRemotePath::Local(repo_path), skills, &specs);
 
     assert_eq!(skill_paths(filtered), vec![agents_skill_path]);
 }
@@ -80,7 +80,7 @@ fn filter_skills_by_spec_matches_full_path_specs() {
         "warpdotdev/warp-internal:{}",
         requested_relative_path.display()
     )]);
-    let filtered = filter_skills_by_spec(&repo_path, skills, &specs);
+    let filtered = filter_skills_by_spec(&LocalOrRemotePath::Local(repo_path), skills, &specs);
 
     assert_eq!(skill_paths(filtered), vec![requested_skill_path]);
 }
@@ -101,8 +101,8 @@ fn skill_path(repo_path: &Path, provider_dir: &str, skill_name: &str) -> PathBuf
 }
 
 fn parsed_skill(path: PathBuf, name: &str) -> ParsedSkill {
-    let provider = get_provider_for_path(&LocalOrRemotePath::Local(path.clone()))
-        .unwrap_or(SkillProvider::Agents);
+    let path = LocalOrRemotePath::Local(path);
+    let provider = get_provider_for_path(&path).unwrap_or(SkillProvider::Agents);
     ParsedSkill {
         path,
         name: name.to_string(),
@@ -115,5 +115,8 @@ fn parsed_skill(path: PathBuf, name: &str) -> ParsedSkill {
 }
 
 fn skill_paths(skills: Vec<ParsedSkill>) -> Vec<PathBuf> {
-    skills.into_iter().map(|skill| skill.path).collect()
+    skills
+        .into_iter()
+        .map(|skill| skill.path.to_local_path().unwrap().to_path_buf())
+        .collect()
 }

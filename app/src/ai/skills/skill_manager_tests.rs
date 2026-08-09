@@ -34,7 +34,7 @@ fn list_skill_inventory_groups_same_name_skills_and_marks_default() {
         let agents_skill = ParsedSkill {
             name: "deploy".to_string(),
             description: "Agents copy".to_string(),
-            path: agents_path.clone(),
+            path: LocalOrRemotePath::Local(agents_path.clone()),
             content: "# Deploy".to_string(),
             line_range: None,
             provider: SkillProvider::Agents,
@@ -43,7 +43,7 @@ fn list_skill_inventory_groups_same_name_skills_and_marks_default() {
         let codex_skill = ParsedSkill {
             name: "deploy".to_string(),
             description: "Codex copy".to_string(),
-            path: codex_path,
+            path: LocalOrRemotePath::Local(codex_path),
             content: "# Deploy".to_string(),
             line_range: None,
             provider: SkillProvider::Codex,
@@ -89,7 +89,7 @@ fn skill_manager_emits_inventory_changed_when_skills_change() {
         let skill = ParsedSkill {
             name: "deploy".to_string(),
             description: "Deploy skill".to_string(),
-            path: skill_path,
+            path: LocalOrRemotePath::Local(skill_path),
             content: "# Deploy".to_string(),
             line_range: None,
             provider: SkillProvider::Agents,
@@ -128,7 +128,7 @@ fn get_skills_for_working_directory_scopes_subdirectory_skills() {
     let root_skill = ParsedSkill {
         name: "root-skill".to_string(),
         description: "A root skill".to_string(),
-        path: root_skill_path.clone(),
+        path: LocalOrRemotePath::Local(root_skill_path.clone()),
         content: "# Root skill".to_string(),
         line_range: None,
         provider: SkillProvider::Agents,
@@ -138,7 +138,7 @@ fn get_skills_for_working_directory_scopes_subdirectory_skills() {
     let frontend_skill = ParsedSkill {
         name: "frontend-skill".to_string(),
         description: "A frontend skill".to_string(),
-        path: frontend_skill_path.clone(),
+        path: LocalOrRemotePath::Local(frontend_skill_path.clone()),
         content: "# Frontend skill".to_string(),
         line_range: None,
         provider: SkillProvider::Agents,
@@ -146,19 +146,23 @@ fn get_skills_for_working_directory_scopes_subdirectory_skills() {
     };
 
     // Build the internal state manually
-    let mut directory_skills: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
+    let mut directory_skills: HashMap<LocalOrRemotePath, HashSet<LocalOrRemotePath>> =
+        HashMap::new();
     directory_skills
-        .entry(repo.clone())
+        .entry(LocalOrRemotePath::Local(repo.clone()))
         .or_default()
-        .insert(root_skill_path.clone());
+        .insert(LocalOrRemotePath::Local(root_skill_path.clone()));
     directory_skills
-        .entry(frontend_dir.clone())
+        .entry(LocalOrRemotePath::Local(frontend_dir.clone()))
         .or_default()
-        .insert(frontend_skill_path.clone());
+        .insert(LocalOrRemotePath::Local(frontend_skill_path.clone()));
 
-    let mut skills_by_path: HashMap<PathBuf, ParsedSkill> = HashMap::new();
-    skills_by_path.insert(root_skill_path.clone(), root_skill);
-    skills_by_path.insert(frontend_skill_path.clone(), frontend_skill);
+    let mut skills_by_path: HashMap<LocalOrRemotePath, ParsedSkill> = HashMap::new();
+    skills_by_path.insert(LocalOrRemotePath::Local(root_skill_path.clone()), root_skill);
+    skills_by_path.insert(
+        LocalOrRemotePath::Local(frontend_skill_path.clone()),
+        frontend_skill,
+    );
 
     App::test((), |mut app| async move {
         app.add_singleton_model(DirectoryWatcher::new);
@@ -251,7 +255,7 @@ fn get_skills_for_working_directory_name_collision_returns_both() {
     let root_skill = ParsedSkill {
         name: "deploy".to_string(),
         description: "Root deploy".to_string(),
-        path: root_skill_path.clone(),
+        path: LocalOrRemotePath::Local(root_skill_path.clone()),
         content: "# Root deploy".to_string(),
         line_range: None,
         provider: SkillProvider::Agents,
@@ -261,26 +265,30 @@ fn get_skills_for_working_directory_name_collision_returns_both() {
     let subdir_skill = ParsedSkill {
         name: "deploy".to_string(),
         description: "Subdir deploy".to_string(),
-        path: subdir_skill_path.clone(),
+        path: LocalOrRemotePath::Local(subdir_skill_path.clone()),
         content: "# Subdir deploy".to_string(),
         line_range: None,
         provider: SkillProvider::Agents,
         scope: SkillScope::Project,
     };
 
-    let mut directory_skills: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
+    let mut directory_skills: HashMap<LocalOrRemotePath, HashSet<LocalOrRemotePath>> =
+        HashMap::new();
     directory_skills
-        .entry(repo.clone())
+        .entry(LocalOrRemotePath::Local(repo.clone()))
         .or_default()
-        .insert(root_skill_path.clone());
+        .insert(LocalOrRemotePath::Local(root_skill_path.clone()));
     directory_skills
-        .entry(subdir.clone())
+        .entry(LocalOrRemotePath::Local(subdir.clone()))
         .or_default()
-        .insert(subdir_skill_path.clone());
+        .insert(LocalOrRemotePath::Local(subdir_skill_path.clone()));
 
-    let mut skills_by_path: HashMap<PathBuf, ParsedSkill> = HashMap::new();
-    skills_by_path.insert(root_skill_path.clone(), root_skill);
-    skills_by_path.insert(subdir_skill_path.clone(), subdir_skill);
+    let mut skills_by_path: HashMap<LocalOrRemotePath, ParsedSkill> = HashMap::new();
+    skills_by_path.insert(LocalOrRemotePath::Local(root_skill_path.clone()), root_skill);
+    skills_by_path.insert(
+        LocalOrRemotePath::Local(subdir_skill_path.clone()),
+        subdir_skill,
+    );
 
     App::test((), |mut app| async move {
         app.add_singleton_model(DirectoryWatcher::new);
@@ -459,7 +467,7 @@ fn make_skill(name: &str, provider_dir: &str) -> ParsedSkill {
     ParsedSkill {
         name: name.to_string(),
         description: format!("{name} skill"),
-        path,
+        path: LocalOrRemotePath::Local(path),
         content: format!("# {name}"),
         line_range: None,
         provider: get_provider_for_path(&LocalOrRemotePath::Local(PathBuf::from(format!(

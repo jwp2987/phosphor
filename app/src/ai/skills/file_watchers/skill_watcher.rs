@@ -549,7 +549,11 @@ impl SkillWatcher {
     /// via `DirectoryWatcher` so that modifications to the real file are detected.
     fn register_symlink_watches(&mut self, skills: &[ParsedSkill], ctx: &mut ModelContext<Self>) {
         for skill in skills {
-            let original_path = &skill.path;
+            // Symlink resolution is a local filesystem concern; skills discovered
+            // on a remote host (issue #299) have nothing to canonicalize here.
+            let Some(original_path) = skill.path.to_local_path() else {
+                continue;
+            };
             let Ok(canonical_path) = dunce::canonicalize(original_path) else {
                 continue;
             };
@@ -560,7 +564,7 @@ impl SkillWatcher {
             self.symlink_canonical_to_originals
                 .entry(canonical_path.clone())
                 .or_default()
-                .insert(original_path.clone());
+                .insert(original_path.to_path_buf());
 
             let Some(canonical_dir) = canonical_path.parent() else {
                 continue;

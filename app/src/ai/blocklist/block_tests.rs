@@ -134,12 +134,13 @@ fn open_code_action_routes_links_to_configured_editor_and_non_links_to_warp() {
     ));
 
     // Adaptation: this fork's `CodeSource::Skill` carries a plain `PathBuf`
-    // `path` rather than the oracle's `location: LocalOrRemotePath`, and its
-    // `SkillReference::Path` wraps a `PathBuf` rather than a
-    // `LocalOrRemotePath`. The routing behaviour under test is unchanged.
+    // `path` rather than the oracle's `location: LocalOrRemotePath` (that field
+    // stays local-editor-pane-only — see `editor_management.rs`). As of #299,
+    // `SkillReference::Path` does wrap a `LocalOrRemotePath`, matching the pin.
+    // The routing behaviour under test is unchanged.
     let skill_source = CodeSource::Skill {
-        reference: SkillReference::Path(PathBuf::from(
-            "/workspace/project/.warp/skills/example/SKILL.md",
+        reference: SkillReference::Path(warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+            PathBuf::from("/workspace/project/.warp/skills/example/SKILL.md"),
         )),
         path: PathBuf::from("/workspace/project/.warp/skills/example/SKILL.md"),
         origin: crate::ai::skills::SkillOpenOrigin::ReadSkill,

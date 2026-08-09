@@ -2,6 +2,7 @@ use itertools::Itertools;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use ai::skills::{ParsedSkill, SkillProvider, SkillScope};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 #[cfg(feature = "local_fs")]
 use warpui::assets::asset_cache::AssetSource;
 use warpui::App;
@@ -37,7 +38,9 @@ fn query_prefix_highlight_len_highlights_invoke_skill_inputs() {
     let input = AIAgentInput::InvokeSkill {
         context: Arc::new([]),
         skill: ParsedSkill {
-            path: PathBuf::from("/tmp/.agents/skills/review-pr/SKILL.md"),
+            path: LocalOrRemotePath::Local(PathBuf::from(
+                "/tmp/.agents/skills/review-pr/SKILL.md",
+            )),
             name: "review-pr".to_string(),
             description: "Review a pull request.".to_string(),
             content: String::new(),

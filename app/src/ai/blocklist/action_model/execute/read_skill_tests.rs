@@ -17,6 +17,7 @@ use std::io::Write;
 use tempfile::TempDir;
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warp_core::features::FeatureFlag;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::App;
 use watcher::HomeDirectoryWatcher;
 
@@ -31,13 +32,14 @@ fn initialize_app(app: &mut App) {
 }
 
 /// A synthetic bundled skill for activation tests, matching the pin's
-/// `read_skill_tests.rs::bundled_skill` helper (`02b53fcd8`) minus the
-/// `LocalOrRemotePath` typing (issue #299 — not yet migrated in this fork).
+/// `read_skill_tests.rs::bundled_skill` helper (`02b53fcd8`).
 fn bundled_skill(name: &str) -> ParsedSkill {
     ParsedSkill {
         name: name.to_string(),
         description: format!("{name} bundled skill"),
-        path: std::path::PathBuf::from(format!("/bundled/skills/{name}/SKILL.md")),
+        path: LocalOrRemotePath::Local(std::path::PathBuf::from(format!(
+            "/bundled/skills/{name}/SKILL.md"
+        ))),
         content: format!("# {name}"),
         line_range: None,
         provider: SkillProvider::Zap,
@@ -92,7 +94,7 @@ fn test_read_skill_executor_success() {
         let action = AIAgentAction {
             id: AIAgentActionId::from("test-action-id".to_string()),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
-                skill: SkillReference::Path(skill_path.clone()),
+                skill: SkillReference::Path(LocalOrRemotePath::Local(skill_path.clone())),
             }),
             task_id: TaskId::new("test-task-id".to_string()),
             requires_result: false,
@@ -131,7 +133,7 @@ fn test_read_skill_executor_file_not_found() {
         let action = AIAgentAction {
             id: AIAgentActionId::from("test-action-id".to_string()),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
-                skill: SkillReference::Path(skill_path),
+                skill: SkillReference::Path(LocalOrRemotePath::Local(skill_path)),
             }),
             task_id: TaskId::new("test-task-id".to_string()),
             requires_result: false,
@@ -176,7 +178,7 @@ fn test_read_skill_executor_fallback_reads_disk_on_cache_miss() {
         let action = AIAgentAction {
             id: AIAgentActionId::from("fallback-action".to_string()),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
-                skill: SkillReference::Path(skill_path.clone()),
+                skill: SkillReference::Path(LocalOrRemotePath::Local(skill_path.clone())),
             }),
             task_id: TaskId::new("fallback-task".to_string()),
             requires_result: false,
@@ -238,7 +240,7 @@ fn test_read_skill_executor_fallback_returns_error_when_file_missing() {
         let action = AIAgentAction {
             id: AIAgentActionId::from("missing-action".to_string()),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
-                skill: SkillReference::Path(skill_path),
+                skill: SkillReference::Path(LocalOrRemotePath::Local(skill_path)),
             }),
             task_id: TaskId::new("missing-task".to_string()),
             requires_result: false,
@@ -297,7 +299,9 @@ fn test_read_skill_executor_resolves_by_name() {
         let action = AIAgentAction {
             id: AIAgentActionId::from("name-lookup-action".to_string()),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
-                skill: SkillReference::Path(std::path::PathBuf::from("byop-named-skill")),
+                skill: SkillReference::Path(LocalOrRemotePath::Local(std::path::PathBuf::from(
+                    "byop-named-skill",
+                ))),
             }),
             task_id: TaskId::new("name-lookup-task".to_string()),
             requires_result: false,
@@ -335,7 +339,9 @@ fn test_read_skill_executor_rejects_unknown_name() {
         let action = AIAgentAction {
             id: AIAgentActionId::from("unknown-name-action".to_string()),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
-                skill: SkillReference::Path(std::path::PathBuf::from("no-such-skill")),
+                skill: SkillReference::Path(LocalOrRemotePath::Local(std::path::PathBuf::from(
+                    "no-such-skill",
+                ))),
             }),
             task_id: TaskId::new("unknown-name-task".to_string()),
             requires_result: false,
@@ -379,7 +385,7 @@ fn test_read_skill_executor_rejects_non_skill_path_on_cache_miss() {
         let action = AIAgentAction {
             id: AIAgentActionId::from("non-skill-action".to_string()),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
-                skill: SkillReference::Path(non_skill_path),
+                skill: SkillReference::Path(LocalOrRemotePath::Local(non_skill_path)),
             }),
             task_id: TaskId::new("non-skill-task".to_string()),
             requires_result: false,

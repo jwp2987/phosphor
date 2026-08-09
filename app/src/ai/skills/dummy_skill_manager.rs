@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 use crate::ai::skills::SkillDescriptor;
@@ -58,7 +59,7 @@ impl SkillManager {
     }
 
     pub fn reference_for_skill_path(&self, skill_path: &Path) -> SkillReference {
-        SkillReference::Path(skill_path.to_path_buf())
+        SkillReference::Path(LocalOrRemotePath::Local(skill_path.to_path_buf()))
     }
 
     pub fn skill_by_reference(&self, _reference: &SkillReference) -> Option<&ParsedSkill> {

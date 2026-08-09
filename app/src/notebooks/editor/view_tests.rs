@@ -195,6 +195,72 @@ fn rendered_mermaid_block_range(
 }
 
 #[test]
+fn test_loaded_mermaid_diagram_with_placeholder_height_needs_relayout() {
+    App::test((), |app| async move {
+        let _flag = FeatureFlag::MarkdownMermaid.override_enabled(true);
+        let contents = "graph TD\nA[Start] --> B[Finish]\n";
+        let asset_source = warp_editor::content::mermaid_diagram::mermaid_asset_source(contents);
+
+        let pending = app.read(|ctx| {
+            let asset_cache = warpui::assets::asset_cache::AssetCache::as_ref(ctx);
+            match asset_cache.load_asset::<warpui::image_cache::ImageType>(asset_source.clone()) {
+                warpui::assets::asset_cache::AssetState::Loading { handle } => {
+                    handle.when_loaded(asset_cache)
+                }
+                warpui::assets::asset_cache::AssetState::Loaded { .. } => None,
+                warpui::assets::asset_cache::AssetState::Evicted => {
+                    panic!("Mermaid asset should not be evicted during test")
+                }
+                warpui::assets::asset_cache::AssetState::FailedToLoad(err) => {
+                    panic!("Mermaid asset should load successfully: {err}")
+                }
+            }
+        });
+        if let Some(future) = pending {
+            future.await;
+        }
+
+        app.read(|ctx| {
+            let config = warp_editor::render::model::ImageBlockConfig {
+                width: warpui::units::Pixels::new(640.),
+                height: warpui::units::Pixels::new(120.),
+                spacing: warp_editor::render::model::BlockSpacing::default(),
+            };
+            let block = warp_editor::render::model::BlockItem::MermaidDiagram {
+                content_length: CharOffset::from(contents.chars().count()),
+                asset_source,
+                config,
+            };
+            let asset_cache = warpui::assets::asset_cache::AssetCache::as_ref(ctx);
+
+            assert!(matches!(
+                RichTextEditorView::layout_affecting_asset_load(&block, asset_cache),
+                Some(super::LayoutAffectingAssetLoad::LoadedNeedsRelayout)
+            ));
+        });
+    })
+}
+
+#[test]
+fn layout_affecting_asset_loads_rebuild_selectable_and_editable_layouts() {
+    assert!(
+        RichTextEditorView::should_rebuild_layout_after_layout_affecting_asset_load(
+            InteractionState::Selectable,
+        )
+    );
+    assert!(
+        RichTextEditorView::should_rebuild_layout_after_layout_affecting_asset_load(
+            InteractionState::Editable,
+        )
+    );
+    assert!(
+        RichTextEditorView::should_rebuild_layout_after_layout_affecting_asset_load(
+            InteractionState::EditableWithInvalidSelection,
+        )
+    );
+}
+
+#[test]
 fn test_focus() {
     App::test((), |mut app| async move {
         let (window, editor_view, test_view) = initialize_editor(&mut app);
