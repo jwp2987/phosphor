@@ -310,6 +310,12 @@ fn format_statusline_time_12_hour(now: NaiveDateTime) -> String {
 fn format_statusline_time_24_hour(now: NaiveDateTime) -> String {
     now.format("%H:%M").to_string()
 }
+/// Formats the active AI conversation's to-do progress for the statusline:
+/// `❒` while items remain pending, `✓` once the list is finished.
+fn format_todo_progress(completed: usize, total: usize, finished: bool) -> String {
+    let marker = if finished { "✓" } else { "❒" };
+    format!("{marker} {completed}/{total}")
+}
 /// Renders a self-repainting statusline datetime segment: `formatter` maps
 /// the current local time to display text, and the element schedules its own
 /// repaint every [`STATUSLINE_DATETIME_REPAINT_INTERVAL`] so the footer stays
@@ -357,6 +363,9 @@ enum FooterSegment {
     },
     /// A configured date/time item (`Date`, `Time12Hour`, `Time24Hour`).
     DateTime(Box<dyn TuiElement>),
+    /// The selected AI conversation's active to-do list progress
+    /// (`format_todo_progress`), shown while that list is non-empty.
+    AgentTodoList(String),
 }
 
 impl FooterSegment {
@@ -366,9 +375,9 @@ impl FooterSegment {
     /// shell-mode, which always stays plain), " | " joins segments across
     /// different groups. Every other pairing among the "big set" of
     /// unrelated single-segment groups (active indicator, model, working
-    /// directory, git branch, context-window usage, git diff, date/time --
-    /// each its own group when not paired with its git-branch/date-time
-    /// sibling) therefore falls through to " | ".
+    /// directory, git branch, context-window usage, git diff, date/time,
+    /// agent to-do list -- each its own group when not paired with its
+    /// git-branch/date-time sibling) therefore falls through to " | ".
     fn separator_to(&self, next: &Self) -> &'static str {
         match (self, next) {
             // A leading vim indicator is joined to the shell-mode/model
@@ -398,7 +407,8 @@ impl FooterSegment {
                 | Self::GitBranch(_)
                 | Self::ContextWindowUsage(_)
                 | Self::GitDiff { .. }
-                | Self::DateTime(_),
+                | Self::DateTime(_)
+                | Self::AgentTodoList(_),
                 Self::Vim(_)
                 | Self::ActiveIndicator(_)
                 | Self::Model(_)
@@ -406,7 +416,8 @@ impl FooterSegment {
                 | Self::GitBranch(_)
                 | Self::ContextWindowUsage(_)
                 | Self::GitDiff { .. }
-                | Self::DateTime(_),
+                | Self::DateTime(_)
+                | Self::AgentTodoList(_),
             ) => " | ",
         }
     }
@@ -461,6 +472,9 @@ fn render_status_footer_row(segments: FooterSegments, builder: &TuiUiBuilder) ->
             }
             FooterSegment::WorkingDirectory(cwd) | FooterSegment::GitBranch(cwd) => {
                 row = row.child(TuiText::new(cwd).with_style(muted).truncate().finish());
+            }
+            FooterSegment::AgentTodoList(progress) => {
+                row = row.child(TuiText::new(progress).with_style(muted).truncate().finish());
             }
             FooterSegment::GitDiff {
                 additions,
@@ -3018,6 +3032,22 @@ impl TuiTerminalSessionView {
                         builder.muted_text_style(),
                     )))
                 }
+                TuiStatuslineItem::AgentTodoList => (!shell_mode)
+                    .then(|| {
+                        self.conversation_selection
+                            .as_ref(ctx)
+                            .selected_conversation(ctx)
+                    })
+                    .flatten()
+                    .and_then(|conversation| conversation.active_todo_list())
+                    .filter(|todo_list| !todo_list.is_empty())
+                    .map(|todo_list| {
+                        FooterSegment::AgentTodoList(format_todo_progress(
+                            todo_list.completed_items().len(),
+                            todo_list.len(),
+                            todo_list.is_finished(),
+                        ))
+                    }),
             };
             if let Some(segment) = segment {
                 ordered.push(segment);
