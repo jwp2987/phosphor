@@ -48,6 +48,8 @@ mod tests {
                 emit_incremental_updates: false,
                 #[cfg(feature = "local_fs")]
                 symlink_targets: Default::default(),
+                #[cfg(feature = "local_fs")]
+                repo_watches: Default::default(),
             }
         }
     }
