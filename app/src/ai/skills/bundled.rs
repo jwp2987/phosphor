@@ -3,12 +3,15 @@
 //! Ported from the pinned oracle's `ai/skills/bundled.rs` (`02b53fcd8`), extracted out
 //! of `skill_manager.rs` where this logic previously lived inline.
 //!
-//! Unlike the pin, this fork has no remote-skill daemon: the SSH remote-skill-sync arm
-//! (`ai/skills/remote.rs` upstream) is deliberately not built (see `DECLINED.md` / issue
-//! #487). The pin's `BundledSkills` wrapper — which multiplexes a local catalog against
-//! per-connected-host catalogs keyed by `HostId` — is therefore dropped entirely, along
-//! with `SkillPathOrigin`-based dispatch and `LocalOrRemotePath`. `BundledSkill` here is
-//! the whole catalog: there is only ever the local host's.
+//! This fork's own daemon (`remote_server`, Phosphor-local, not cloud) *does* serialize
+//! this catalog outward to connected SSH clients — see `ai::skills::remote::
+//! bundled_skill_snapshot_protos`, the producer for issue #353. What this fork does not
+//! build is the *client-side* aggregation of several remote hosts' catalogs: the pin's
+//! `BundledSkills` wrapper multiplexes a local catalog against per-connected-host
+//! catalogs keyed by `HostId` (`SkillPathOrigin`-based dispatch over `LocalOrRemotePath`).
+//! That multi-host client catalog is dropped (#487/#11: "drop the client aggregating
+//! catalogs from multiple remote hosts"). `BundledSkill` here is the whole catalog on
+//! whichever host it runs on — client or daemon — there is only ever "the local host's".
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -104,7 +107,7 @@ impl BundledSkill {
     pub fn reference_for_path(&self, path: &Path) -> Option<SkillReference> {
         self.definitions
             .iter()
-            .find(|(_, definition)| definition.skill.path.as_path() == path)
+            .find(|(_, definition)| definition.skill.path.to_local_path() == Some(path))
             .map(|(id, _)| SkillReference::BundledSkillId(id.clone()))
     }
 
@@ -129,6 +132,53 @@ impl BundledSkill {
         self.definitions
             .iter()
             .map(|(id, definition)| (id.as_str(), &definition.skill))
+    }
+
+    /// Iterates every bundled skill definition as `(id, skill, activation)`, regardless
+    /// of activation. Used by `ai::skills::remote::bundled_skill_snapshot_protos` to
+    /// serialize this catalog outward to connected SSH clients.
+    pub fn iter_definitions(
+        &self,
+    ) -> impl Iterator<Item = (&str, &ParsedSkill, &BundledSkillActivation)> {
+        self.definitions
+            .iter()
+            .map(|(id, definition)| (id.as_str(), &definition.skill, &definition.activation))
+    }
+
+    /// Builds a catalog from pre-parsed definitions.
+    ///
+    /// In the pin this also backs the client's reconstruction of a *remote* host's
+    /// bundled catalog from its daemon snapshot — this fork does not build that
+    /// client-side multi-host aggregation (see the module doc comment), so the only
+    /// caller here is `remote_tests.rs`, exercising `bundled_skill_snapshot_protos`'s
+    /// daemon-side serialization the other direction.
+    #[cfg(test)]
+    pub(crate) fn from_definitions(
+        definitions: impl IntoIterator<Item = (String, ParsedSkill, BundledSkillActivation)>,
+    ) -> Self {
+        let definitions = definitions
+            .into_iter()
+            .map(|(id, skill, activation)| {
+                // MCP-gated skills carry their integration's brand icon, like
+                // the local figma catalog loaded from `mcp_skills/figma`.
+                let icon = match &activation {
+                    BundledSkillActivation::RequiresMcp(McpIntegration::Figma) => Icon::Figma,
+                    BundledSkillActivation::Always
+                    | BundledSkillActivation::TuiOnly
+                    | BundledSkillActivation::RequiresFeature(_)
+                    | BundledSkillActivation::RequiresFile(_) => icon_for_bundled_skill(&id),
+                };
+                (
+                    id,
+                    BundledSkillDefinition {
+                        skill,
+                        activation,
+                        icon,
+                    },
+                )
+            })
+            .collect();
+        Self { definitions }
     }
 
     #[cfg(test)]
@@ -228,7 +278,7 @@ pub(crate) async fn read_bundled_skills(skills_dir: &Path) -> HashMap<String, Pa
         let Some(skill_id) = entry_path.file_name().and_then(|s| s.to_str()) else {
             safe_warn!(
                 safe: ("Could not resolve bundled skill ID, skipping skill"),
-                full: ("Could not resolve bundled skill ID from {}, skipping skill", skill.path.display())
+                full: ("Could not resolve bundled skill ID from {}, skipping skill", skill.path.display_path())
             );
             continue;
         };
