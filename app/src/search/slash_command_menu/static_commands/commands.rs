@@ -125,6 +125,18 @@ pub static STATUSLINE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand 
     argument: None,
 });
 
+/// TUI-only: sets the TUI color theme (`auto`/`light`/`dark`, backed by `TuiTheme`). Not
+/// executable in the GUI (see `execute_slash_command`'s explicit guard); the GUI has its own
+/// theme chooser (`workspace:show_theme_chooser`).
+pub static THEME: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/theme",
+    description: t_static!("slash-cmd-theme-desc"),
+    icon_path: "bundled/svg/settings.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: Some(Argument::required().with_hint_text("<auto|light|dark>")),
+});
+
 pub static FORK: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     name: "/fork",
     description: t_static!("slash-cmd-fork-desc"),
@@ -692,6 +704,10 @@ fn all_commands() -> Vec<StaticCommand> {
     commands.push(MCP.clone());
     commands.push(VIEW_LOGS.clone());
     commands.push(CLEAR.clone());
+    // TUI-only, no feature flag (AGENTS §5.4): already has a live TUI dispatch handler
+    // (`TuiTerminalSessionView::toggle_theme`) backed by the already-shipped `TuiTheme`
+    // setting; only the registry entry and dispatch arm were missing (see #147).
+    commands.push(THEME.clone());
     // GUI-only, no feature flag: reuses the already-shipped, already-tested
     // `WorkspaceAction::SetActiveTabColor` (see `app/src/workspace/view_test.rs`); only the
     // slash-command registration and dispatch arm were missing (see #147).
@@ -858,6 +874,35 @@ mod tests {
 
         let local_context = Availability::NO_LRC_CONTROL | Availability::AI_ENABLED;
         assert!(command.is_active(local_context));
+    }
+
+    /// Ported from the pinned oracle's `commands_tests.rs::theme_command_is_registered_only_for_tui_mode`.
+    /// The oracle asserts the GUI-mode registry never yields `SlashCommandKind::Theme`; the
+    /// fork has one registry rather than a GUI/TUI-filtered one, so "TUI only" is expressed
+    /// via `supports_tui()`/`is_tui_only()` here, matching the other ported TUI-only commands
+    /// (see `exit_mcp_and_view_logs_commands_are_registered_and_tui_only`).
+    #[test]
+    fn theme_command_has_correct_registry_metadata() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(THEME.name)
+            .expect("expected /theme to be registered");
+        assert_eq!(command.kind(), SlashCommandKind::Theme);
+        assert!(command.supports_tui());
+        assert!(
+            !command.supports_gui(),
+            "/theme is TUI-only, matching the oracle"
+        );
+        assert!(!command.auto_enter_ai_mode);
+        assert_eq!(command.availability, Availability::ALWAYS);
+        let argument = command
+            .argument
+            .as_ref()
+            .expect("expected /theme to require an argument");
+        assert!(!argument.is_optional);
+        assert!(!argument.should_execute_on_selection);
+        assert_eq!(argument.hint_text, Some("<auto|light|dark>"));
     }
 
     /// Ported from the pinned oracle's `commands_tests.rs::set_tab_color_command_requires_argument`.

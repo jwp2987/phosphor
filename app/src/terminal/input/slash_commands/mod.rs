@@ -1074,7 +1074,8 @@ impl Input {
                     || command.name == commands::EXIT.name
                     || command.name == commands::MCP.name
                     || command.name == commands::VIEW_LOGS.name
-                    || command.name == commands::CLEAR.name =>
+                    || command.name == commands::CLEAR.name
+                    || command.name == commands::THEME.name =>
             {
                 debug_assert!(
                     false,

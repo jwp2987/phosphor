@@ -72,6 +72,34 @@ were found in one pass, and neither would have been caught by review.
 - #353 daemon producer, #388's three sub-items
 - #440 — or the above ships degraded (skills empty; `home_dir`/`global_rules` still work)
 
+## LANDED 2026-08-09 — #147 and #289 (parallel worktree)
+
+Local main = `682ea7eca`. `precheck: ok` — **8,384 tests, 0 failures** (+21 from these ports).
+
+- **#147 CLOSED** — `/theme` was the only remaining sub-claim; ported TUI-only per the
+  pin, reusing the fork's existing `TuiTheme` settings type. 3 tests.
+- **#289 CLOSED with two limitations recorded, not hidden:**
+  - `harness_output_monitor.rs` — ported AND wired into `AgentDriver::run_harness`,
+    with a real non-empty `runtime_error_patterns()` for `ClaudeHarness` rather than
+    a stub default (the fake-coverage trap the issue itself warns about). 8 tests.
+  - `claude_transcript.rs` — ported (10 tests) but **has NO production call site**.
+    The pin's remaining functions rehydrate an envelope downloaded from Warp's
+    server for cloud resume; the fork has no resume feature to hook them into, so
+    wiring would mean inventing one. **DECIDED 2026-08-09: KEEP.** Not
+    the #207 dead-code class after all -- removal would delete 10 passing tests AND
+    re-block a pinned one (`claude_code_tests.rs:562` says
+    `write_session_index_entry_creates_expected_entry` needs this module). It is a
+    tested primitive whose consumer does not exist yet, not dead weight.
+  - `codex_transcript.rs` — not portable: the fork's `Harness` enum has **no `Codex`
+    variant at all**, so nothing to wire it to at the type level. That is #183.
+
+**Operational note:** this worktree suffered an unexplained mid-task
+`reset: moving to HEAD` that discarded uncommitted work (visible in `git reflog`,
+not performed by the agent). The agent redid both issues and committed
+immediately rather than batching. Verified intact afterwards: 1,339 lines across
+two commits. **Lesson: commit early even under a batch-build rule — the batch rule
+defers the BUILD, not the commit.**
+
 ## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
 
 Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is
@@ -382,10 +410,12 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
 - [ ] #431 no lazy metadata-only conversation read + summary backfill. Fork reads
       eagerly on every startup path (`sqlite.rs:3347`). 4 pinned tests. Real perf
       AND correctness gap.
-- [ ] #217 Zap -> Phosphor rename incomplete: **361** `"Zap"` Rust literals on main
-      (issue said 357; drift, not error). Fork-internal, no pin comparison applies.
-      NOTE: renaming risks breaking persisted keybindings — see the open
-      `zapctrl` vs `warpctrl` maintainer decision.
+- [x] #217 CLOSED 2026-08-09 by maintainer decision. Verified REAL first (361 `"Zap"`
+      literals on main; every cited example still present), so this is a deliberate
+      leave-it, not a false premise. Renaming touches persisted keybinding names and
+      settings keys, where a wrong move silently breaks existing users' configs, and
+      the `zapctrl` vs `warpctrl` naming decision is still open. If revisited: 19 of
+      the 361 are user-facing, the rest internal — that subset is the low-risk cut.
 - [ ] #254 NARROWED to two items: `Input::unfreeze_agent_input` (pin
       `input.rs:7625`) and `CommandExecutionSource::SharedSession`'s `preserve_input`
       field. Items b/c are already ported (`input.rs:2037,2064`) via #399.

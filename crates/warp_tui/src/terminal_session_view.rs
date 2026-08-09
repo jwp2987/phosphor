@@ -12,10 +12,12 @@ use parking_lot::FairMutex;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::settings::{
     AISettings, AISettingsChangedEvent, AppEditorSettings, TuiStatuslineConfig, TuiStatuslineItem,
+    TuiTheme, TuiThemeSettings,
 };
 use warp::tui_export::{
     AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
     AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
+    Appearance,
     ActiveSession, ActiveSessionEvent, AgentConversationEntryId, AgentConversationListEntryState,
     AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, BlockId,
     BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
@@ -59,6 +61,7 @@ use warpui_core::elements::tui::{
 use warpui_core::keymap::macros::*;
 use warpui_core::keymap::{self, EditableBinding, FixedBinding};
 use warpui_core::platform::TerminationMode;
+use warpui_core::runtime::background_luminance;
 use warpui_core::{
     AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext, ViewHandle,
 };
@@ -107,6 +110,7 @@ use crate::session_registry::TuiSessions;
 use crate::skills_menu::{TuiSkillMenuEvent, TuiSkillMenuModel};
 use crate::slash_commands::TuiSlashCommandModel;
 use crate::statusline_config_view::{TuiStatuslineConfigEvent, TuiStatuslineConfigView};
+use crate::terminal_background::TuiHostTerminalBackground;
 use crate::terminal_content_element::TuiTerminalContentElement;
 use crate::terminal_use::{
     TerminalUseInterruptAction, TuiInputTarget, hide_agent_requested_command_from_top_level,
@@ -243,6 +247,8 @@ const NLD_PERSISTENCE_FAILED_HINT: &str = "Could not save the natural language d
 const VIM_MODE_ENABLED_HINT: &str = "Vim mode enabled.";
 const VIM_MODE_DISABLED_HINT: &str = "Vim mode disabled.";
 const VIM_MODE_PERSISTENCE_FAILED_HINT: &str = "Could not save the vim mode setting.";
+const THEME_INVALID_ARGUMENT_HINT: &str = "Theme must be auto, light, or dark.";
+const THEME_PERSISTENCE_FAILED_HINT: &str = "Could not save the theme setting.";
 const COST_NO_ACTIVE_CONVERSATION_HINT: &str =
     "Cannot show conversation cost: no active conversation";
 const COST_EMPTY_CONVERSATION_HINT: &str = "Cannot show conversation cost: conversation is empty";
@@ -3839,6 +3845,9 @@ impl TuiTerminalSessionView {
             SlashCommandKind::VimMode => {
                 self.toggle_vim_mode(command.name, ctx);
             }
+            SlashCommandKind::Theme => {
+                self.toggle_theme(command.name, argument.map(String::as_str), ctx);
+            }
             SlashCommandKind::CloudAgent
             | SlashCommandKind::AddMcp
             | SlashCommandKind::CreateEnvironment
@@ -4011,6 +4020,55 @@ impl TuiTerminalSessionView {
                     log::warn!("Failed to disable TUI vim mode: {error}");
                 }
                 self.show_transient_hint(VIM_MODE_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
+            }
+        }
+        record_static_slash_command_accepted(command_name, true, ctx);
+    }
+
+    fn toggle_theme(
+        &mut self,
+        command_name: &'static str,
+        argument: Option<&str>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+        let Some(theme) = argument.and_then(|argument| argument.trim().parse::<TuiTheme>().ok())
+        else {
+            self.show_transient_hint(THEME_INVALID_ARGUMENT_HINT.to_owned(), ctx);
+            record_static_slash_command_accepted(command_name, true, ctx);
+            return;
+        };
+        let result = TuiThemeSettings::handle(ctx)
+            .update(ctx, |settings, ctx| settings.theme.set_value(theme, ctx));
+        match result {
+            Ok(()) => {
+                // `TuiHostTerminalBackground` is only registered by the real TUI session
+                // (`session.rs::run`); it is absent in lightweight test contexts, where the
+                // host background is simply unknown and `background_luminance` falls back to
+                // dark (matching `TuiUiBuilder::from_app`'s identical guard).
+                let terminal_background = ctx
+                    .has_singleton_model::<TuiHostTerminalBackground>()
+                    .then(|| TuiHostTerminalBackground::as_ref(ctx).terminal_background())
+                    .flatten();
+                let resolved =
+                    theme.resolve_for_background(background_luminance(terminal_background));
+                Appearance::handle(ctx).update(ctx, |appearance, ctx| {
+                    appearance.set_theme(resolved, ctx);
+                });
+                let hint = match theme {
+                    TuiTheme::Auto => format!(
+                        "Theme set to auto mode (currently {}).",
+                        TuiTheme::from(Appearance::as_ref(ctx).theme()).display_name()
+                    ),
+                    TuiTheme::Light | TuiTheme::Dark => {
+                        format!("Theme set to {} mode.", theme.display_name())
+                    }
+                };
+                self.show_success_hint(hint, ctx);
+            }
+            Err(error) => {
+                log::warn!("Failed to save TUI theme selection: {error}");
+                self.show_transient_hint(THEME_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
             }
         }
         record_static_slash_command_accepted(command_name, true, ctx);
