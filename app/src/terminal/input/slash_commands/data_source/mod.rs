@@ -486,10 +486,13 @@ impl SyncDataSource for SlashCommandDataSource {
         // Skills are invoked by the agent, so they're hidden entirely when AI is globally off.
         if FeatureFlag::ListSkills.is_enabled() && AISettings::as_ref(app).is_any_ai_enabled(app) {
             let cli_agent_providers = self.active_cli_agent_providers(app);
-            let cwd = self.active_session.as_ref(app).current_working_directory();
-            let cwd_path = cwd
-                .as_ref()
-                .map(|c| warp_util::local_or_remote_path::LocalOrRemotePath::Local(PathBuf::from(c)));
+            // A `Remote` path (connected SSH session) resolves against that host's stored
+            // catalog via `SkillPathOrigin::Remote`; see
+            // `ActiveSession::current_working_directory_location`'s doc comment.
+            let cwd_path = self
+                .active_session
+                .as_ref(app)
+                .current_working_directory_location(app);
             let skills = SkillManager::handle(app)
                 .as_ref(app)
                 .get_skills_for_working_directory(cwd_path.as_ref(), app);

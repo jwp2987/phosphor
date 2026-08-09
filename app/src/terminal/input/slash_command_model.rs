@@ -1,7 +1,6 @@
 use ai::skills::SkillReference;
 use input_classifier::InputType;
 use warp_core::features::FeatureFlag;
-use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::blocklist::{BlocklistAIInputEvent, BlocklistAIInputModel};
@@ -279,10 +278,13 @@ impl SlashCommandModel {
 
         let skill_name = possible_command.strip_prefix('/')?;
 
-        let cwd = self.active_session.as_ref(ctx).current_working_directory();
-        let cwd_path = cwd
-            .as_ref()
-            .map(|c| LocalOrRemotePath::Local(std::path::PathBuf::from(c)));
+        // A `Remote` path (connected SSH session) resolves against that host's stored
+        // catalog via `SkillPathOrigin::Remote`; see
+        // `ActiveSession::current_working_directory_location`'s doc comment.
+        let cwd_path = self
+            .active_session
+            .as_ref(ctx)
+            .current_working_directory_location(ctx);
         let skills = SkillManager::handle(ctx)
             .as_ref(ctx)
             .get_skills_for_working_directory(cwd_path.as_ref(), ctx);
@@ -511,8 +513,8 @@ impl SlashCommandDataSource {
     /// Matches `buffer` against skills available for the active working directory.
     ///
     /// Ported from Warp OSS's `SlashCommandDataSource::parse_skill_command`, using Zap's
-    /// `ActiveSession::current_working_directory` (Zap has no CLI-agent provider filtering on
-    /// this path).
+    /// `ActiveSession::current_working_directory_location` (Zap has no CLI-agent provider
+    /// filtering on this path).
     pub fn parse_skill_command(&self, buffer: &str, ctx: &AppContext) -> Option<DetectedSkillCommand> {
         let (possible_command, possible_argument) =
             if let Some((command, argument)) = buffer.split_once(' ') {
@@ -522,11 +524,10 @@ impl SlashCommandDataSource {
             };
         let skill_name = possible_command.strip_prefix('/')?;
 
-        let active_session = self.active_session().as_ref(ctx);
-        let cwd = active_session.current_working_directory();
-        let cwd_path = cwd
-            .as_ref()
-            .map(|c| LocalOrRemotePath::Local(std::path::PathBuf::from(c)));
+        let cwd_path = self
+            .active_session()
+            .as_ref(ctx)
+            .current_working_directory_location(ctx);
         let matched_skill = SkillManager::handle(ctx)
             .as_ref(ctx)
             .get_skills_for_working_directory(cwd_path.as_ref(), ctx)

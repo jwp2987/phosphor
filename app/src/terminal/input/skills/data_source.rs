@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use ai::skills::{SkillProvider, SkillReference, SkillScope};
 use fuzzy_match::{match_indices_case_insensitive, FuzzyMatchResult};
 use ordered_float::OrderedFloat;
@@ -186,17 +184,18 @@ impl SkillSelectorDataSource {
         self.include_bundled = include_bundled;
     }
 
-    /// Get the current working directory from the active session
+    /// Get the current working directory from the active session as a
+    /// [`warp_util::local_or_remote_path::LocalOrRemotePath`]: `Remote` for a connected SSH
+    /// session (resolving skills against that host's stored catalog via
+    /// `SkillPathOrigin::Remote`), `Local` otherwise. See
+    /// `ActiveSession::current_working_directory_location`'s doc comment.
     fn get_current_working_directory(
         &self,
         app: &AppContext,
     ) -> Option<warp_util::local_or_remote_path::LocalOrRemotePath> {
         self.active_session
             .as_ref(app)
-            .current_working_directory()
-            .map(|cwd| {
-                warp_util::local_or_remote_path::LocalOrRemotePath::Local(PathBuf::from(cwd))
-            })
+            .current_working_directory_location(app)
     }
 }
 
