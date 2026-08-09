@@ -36,9 +36,18 @@ use super::proto::{
 // on `SkillManager`'s real (non-dummy) API, gated `local_fs` like the buffer-sync imports
 // below.
 #[cfg(feature = "local_fs")]
-use super::proto::{remote_skill_proto, HomeSkillMetadata, RemoteAgentContextSnapshot, RemoteSkillProto};
+use super::proto::{
+    remote_skill_proto, HomeSkillMetadata, RemoteAgentContextSnapshot, RemoteContextFileProto,
+    RemoteSkillProto,
+};
 #[cfg(feature = "local_fs")]
 use crate::ai::skills::{bundled_skill_snapshot_protos, BundledSkill, SkillManager, SkillManagerEvent};
+// Daemon-side producer for `RemoteAgentContextSnapshot.global_rules` (#575):
+// this host's own file-based global rules (e.g. `~/.agents/AGENTS.md`),
+// indexed by the same `ProjectContextModel` singleton `app/src/remote_server/
+// mod.rs::run_daemon_app` registers for exactly this purpose.
+#[cfg(feature = "local_fs")]
+use ai::project_context::model::{ProjectContextModel, ProjectContextModelEvent};
 
 // Buffer-sync related: depends on GlobalBufferModel, whose server-local
 // operations are only available under `local_fs`, so the entire server-side
@@ -227,14 +236,16 @@ fn daemon_bundled_resources_dir() -> Option<PathBuf> {
 
 /// Builds a `RemoteAgentContextSnapshot` for this host at `revision`, combining the
 /// daemon's own bundled-skill catalog (`bundled_skills`, produced once at startup —
-/// see `daemon_bundled_resources_dir`) with its currently-cached home skills.
+/// see `daemon_bundled_resources_dir`) with its currently-cached home skills, plus
+/// this host's file-based global rules (e.g. `~/.agents/AGENTS.md`).
 ///
-/// `global_rules` is left empty: unlike the pin, this fork's `ProjectContextModel`
-/// (`crates/ai/src/project_context/model.rs`) has no per-host rule storage or
-/// `global_rules()` accessor — building that (plus the client-side consumer in
-/// `app/src/ai/remote_agent_context.rs`) is a separate, comparably-sized feature and is
-/// out of scope here. See that file's module doc comment for the client-side half of
-/// the same decision.
+/// `global_rules` is sourced from `ProjectContextModel::global_rules()` (#575):
+/// unlike the previous state of this fork, `ProjectContextModel`
+/// (`crates/ai/src/project_context/model.rs`) now indexes file-based global rules
+/// itself (`crates/ai/src/project_context/global_rules.rs`) via the
+/// `index_global_rules` call in `app/src/remote_server/mod.rs::run_daemon_app`. See
+/// `app/src/ai/remote_agent_context.rs`'s module doc comment for the client-side
+/// consumer that turns this into per-host `remote_global_rules` storage.
 #[cfg(feature = "local_fs")]
 fn remote_agent_context_snapshot(
     revision: u64,
@@ -255,11 +266,19 @@ fn remote_agent_context_snapshot(
             }),
     );
     skills.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut global_rules = ProjectContextModel::as_ref(ctx)
+        .global_rules()
+        .map(|rule| RemoteContextFileProto {
+            path: rule.path.to_string_lossy().into_owned(),
+            content: rule.content,
+        })
+        .collect::<Vec<_>>();
+    global_rules.sort_by(|a, b| a.path.cmp(&b.path));
     RemoteAgentContextSnapshot {
         revision,
         home_dir,
         skills,
-        global_rules: Vec::new(),
+        global_rules,
     }
 }
 
@@ -717,6 +736,18 @@ impl ServerModel {
             let skill_manager = SkillManager::handle(ctx);
             ctx.subscribe_to_model(&skill_manager, |me, event, ctx| match event {
                 SkillManagerEvent::InventoryChanged => {
+                    me.refresh_remote_agent_context_snapshot(ctx);
+                }
+            });
+        }
+        // Refresh the pushed `RemoteAgentContextSnapshot` whenever the daemon's own
+        // file-based global rules change (e.g. `~/.agents/AGENTS.md` is created,
+        // edited, or removed on this host). #575.
+        #[cfg(feature = "local_fs")]
+        {
+            let project_context = ProjectContextModel::handle(ctx);
+            ctx.subscribe_to_model(&project_context, |me, event, ctx| {
+                if matches!(event, ProjectContextModelEvent::GlobalRulesChanged(_)) {
                     me.refresh_remote_agent_context_snapshot(ctx);
                 }
             });
