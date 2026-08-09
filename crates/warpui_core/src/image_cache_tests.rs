@@ -540,7 +540,12 @@ fn test_evict_size_drops_arc_only_for_targeted_entry() {
     assert_eq!(weak_large.strong_count(), 1);
 
     // Evict only the small size entry.
-    image_cache.evict_size(&source, small_bounds, AnimatedImageBehavior::FullAnimation);
+    image_cache.evict_size(
+        &source,
+        small_bounds,
+        FitType::Cover,
+        AnimatedImageBehavior::FullAnimation,
+    );
 
     assert_eq!(
         weak_small.strong_count(),
