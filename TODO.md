@@ -100,6 +100,30 @@ immediately rather than batching. Verified intact afterwards: 1,339 lines across
 two commits. **Lesson: commit early even under a batch-build rule — the batch rule
 defers the BUILD, not the commit.**
 
+## AGREED QUEUE 2026-08-09 (maintainer)
+
+Order: **#440**, then **#381 → #382 → #236**. One sonnet agent per batch, coordinator
+builds once per batch and merges on green. `TODO.md` updated at each landing.
+
+- [ ] **#440** remote_server bundled resources — unblocks the #487/#353 chain from
+      shipping degraded. Rust side small; the PACKAGING half (artifact must ship
+      `bundled_resources/`) touches the release pipeline — coordinator to report
+      rather than change packaging unilaterally.
+- [ ] **#381** ~13 real tests. Three genuinely-absent local modules
+      (`local_harness_setup`, `remote_agent_context`, `remote_context_files`).
+      **CHECK FIRST:** `remote_agent_context` was just built under #438/#487 — this
+      issue's scope may have shrunk.
+- [ ] **#382** ~19-24 tests, and PARTLY STALE: `prune_unreachable_subtasks` already
+      landed (`8d3f9d9ba`), so item 1 is half-done. Re-verify each item before work.
+- [ ] **#236** ~12-14 tests. Only directory-load coalescing remains; the symlink/
+      lexical family is mostly ported already.
+
+Deferred by explicit decision, do NOT pick up without asking:
+- Tier 3.5 orchestration (6 issues, needs a new forward migration)
+- #324 (live file collision with `integration/round4*` branches)
+- #210 (re-file first — counts wrong in both directions, 2 rows already done)
+- #405 Jupyter (whole feature), #349 (macOS half unverifiable on this host)
+
 ## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
 
 Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is
