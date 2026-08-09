@@ -107,15 +107,38 @@ pin's `app/src/remote_server/server_model.rs:91` imports
 `bundled_skill_snapshot_protos` and calls it at `:348` to build the snapshot that
 `refresh_remote_agent_context_snapshot` broadcasts at `:692`.
 
-**The boundary that replaces the old label** — use this to classify future cases:
+**CORRECTED AGAIN, later the same evening — `BundledSkills` IS needed, build it.**
+I issued three different boundaries before getting this right. The final one:
 
 | verdict | shape |
 |---|---|
-| **build** | the daemon serializing its OWN LOCAL context outward to a connected host |
-| **dropped** | the client aggregating catalogs from MULTIPLE remote hosts |
+| **BUILD** | anything keyed by `HostId` that stores or routes context for hosts we are SSH-connected to |
+| **DROPPED** | genuine cloud only — in this whole surface that is just `is_cloud_environment` |
 
-So `BundledSkills` (plural, client-side per-host multiplexing) **stays dropped**;
-singular `BundledSkill` plus `remote.rs`'s outward serialization are built.
+**The proof was in the FORK, not the pin**, which is why reasoning from #11's label
+kept failing. `crates/remote_server/src/manager.rs` already has, landed under #438:
+- `:619` `remote_agent_context_snapshots: HashMap<HostId, RemoteAgentContextSnapshot>`
+  — one snapshot PER HOST, with revision-based conflict resolution at `:2073`
+- `:588` `host_to_sessions: HashMap<HostId, HashSet<SessionId>>` — multiple
+  simultaneous hosts, each with multiple sessions
+
+and `crates/remote_server/proto/remote_server.proto:294` defines
+`RemoteAgentContextSnapshot { revision, home_dir, repeated RemoteSkillProto skills,
+repeated RemoteContextFileProto global_rules }`.
+
+So once #353's producer fills those snapshots, the client holds N hosts' skill
+catalogs at once. `BundledSkills { local, remote_by_host: HashMap<HostId,
+BundledSkill> }` is exactly the structure to hold and route them; without it a
+conversation on host B resolves against host A's catalog. `remote_home_directories:
+HashMap<HostId, LocalOrRemotePath>` is what proto field 2 (`home_dir`) is for, by
+the same argument. Singular `BundledSkill` survives as the per-host inner type.
+
+**The reusable lesson, which cost three reversals:** I reasoned downward from a
+decision's *label* ("drop the remote arm") instead of checking what the codebase
+already models. Every correction came from reading the fork's own structures. When
+a scope decision seems to say "we do not support X", check whether the fork
+already has data structures for X — if it does, the decision was about something
+narrower than its wording.
 
 **How this was nearly missed, which is the reusable lesson.** #487 raised exactly
 this — *"the cloud-repo resolution arm is likely out of scope; the SSH/daemon arm
