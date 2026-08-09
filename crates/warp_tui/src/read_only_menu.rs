@@ -214,7 +214,11 @@ impl TuiReadOnlyMenu {
             viewport_state,
             TuiReadOnlyMenuContent { rows, background },
             builder.selection_style(),
-        );
+        )
+        // Ported from the pin (`02b53fcd8:crates/warp_tui/src/read_only_menu.rs`); issue
+        // #436. A mouse-drag selection copy over this read-only menu (e.g. the help/keybinding
+        // list) should not drag in trailing blank cells past each row's real content.
+        .with_trimmed_selection_line_ends();
         let selectable = TuiSelectable::new(selection, viewport)
             .on_selection_start(on_selection_start)
             .on_copy(on_copy);

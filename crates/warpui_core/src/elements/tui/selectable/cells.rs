@@ -46,6 +46,21 @@ pub(crate) fn row_glyphs(buffer: &TuiBuffer, row: u16, width: u16) -> Vec<TuiRow
     glyphs
 }
 
+/// Removes whitespace-only glyphs from the end of one rendered row.
+///
+/// Ported from the pin (`02b53fcd8:crates/warpui_core/src/elements/tui/selectable/cells.rs`);
+/// issue #436. Backs `TuiViewportedList::with_trimmed_selection_line_ends`, so a mouse-drag
+/// selection copy can cap each row at its last non-whitespace glyph instead of extending
+/// through trailing blank cells to the drag's raw column extent.
+pub(crate) fn trim_trailing_whitespace(glyphs: &mut Vec<TuiRowGlyph>) {
+    while glyphs
+        .last()
+        .is_some_and(|glyph| glyph.text.chars().all(char::is_whitespace))
+    {
+        glyphs.pop();
+    }
+}
+
 /// Returns the character cell span at `point`.
 pub(crate) fn cell_span(point: TuiGridPoint, width: u16) -> TuiSelectionSpan {
     TuiSelectionSpan {

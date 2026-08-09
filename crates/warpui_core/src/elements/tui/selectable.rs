@@ -27,7 +27,7 @@ mod cells;
 mod state;
 
 pub use cells::{TuiRowGlyph, TuiSelectionSpan, point_after_col};
-pub(crate) use cells::{cell_span, row_glyphs, row_text};
+pub(crate) use cells::{cell_span, row_glyphs, row_text, trim_trailing_whitespace};
 pub use state::TuiSelectionHandle;
 
 type SelectionCallback = Box<dyn FnMut(&mut TuiEventContext, &AppContext)>;
