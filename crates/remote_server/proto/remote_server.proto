@@ -260,10 +260,12 @@ message ErrorResponse {
 //
 // `bundled` carries the daemon's own local bundled-skill catalog
 // (`BundledSkillMetadata`), serialized outward by
-// `ai::skills::remote::bundled_skill_snapshot_protos` — this is the daemon
-// exposing its own context, distinct from (and does not resurrect) the
-// per-connected-host client-side catalog aggregation the pin's `BundledSkills`
-// (plural) provided, which this fork deliberately does not build (#487).
+// `ai::skills::remote::bundled_skill_snapshot_protos` — the daemon exposing its
+// own context. Client-side, this is consumed into the pin's `BundledSkills`
+// (plural): a per-connected-host catalog aggregation keyed by `HostId`,
+// reconciled from these snapshots by `app::ai::remote_agent_context::
+// RemoteAgentContext` into `SkillManager`. #487 un-dropped this client-side
+// aggregation (it was previously declined as unbuilt).
 
 // Metadata for a skill bundled with the app itself, evaluated daemon-side.
 message BundledSkillMetadata {

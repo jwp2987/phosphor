@@ -1906,6 +1906,12 @@ fn initialize_app(
     // SkillManager is used to cache SKILL.md files for all active terminal views and their working directories
     ctx.add_singleton_model(SkillManager::new);
 
+    // RemoteAgentContext reconciles connected SSH hosts' `RemoteAgentContextSnapshot`
+    // pushes into SkillManager's per-host bundled/home-skill catalogs (#487). Registered
+    // after both SkillManager and RemoteServerManager, which it subscribes to and updates.
+    #[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+    ctx.add_singleton_model(crate::ai::remote_agent_context::RemoteAgentContext::new);
+
     // ObjectStoreViewModel subscribes to UpdateManager so that it can be notified when objects are
     // created or mutated in the local object store.
     ctx.add_singleton_model(ObjectStoreViewModel::new);
