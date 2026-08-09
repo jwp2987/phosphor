@@ -79,6 +79,20 @@ impl HarnessConfig {
     }
 }
 
+/// A user-selected model override for a third-party harness run, merged into the harness's
+/// launch environment (e.g. `ANTHROPIC_MODEL` for Claude) by
+/// `agent_sdk::driver::harness::harness_model_env_vars`.
+///
+/// Ported from the pin (`crates/cloud_object_models/src/scheduled_ambient_agent.rs:87-91`,
+/// `02b53fcd8`) for #323. The pin's copy lives in a cloud-object-model crate this fork doesn't
+/// have; placed here instead, alongside `HarnessConfig`, since it's a plain runtime data type
+/// with nothing cloud-specific about it (unlike most of that crate's other content).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HarnessModelConfig {
+    pub model_id: String,
+    pub reasoning_level: Option<String>,
+}
+
 /// Parses a harness type name (e.g. `"claude"`) into a [`Harness`] variant.
 /// Unknown values fall back to [`Harness::Unknown`] so we don't
 /// misrepresent a future-server harness as Oz; UI surfaces should treat

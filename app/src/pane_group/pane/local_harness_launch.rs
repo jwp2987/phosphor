@@ -7,10 +7,13 @@ use warp_managed_secrets::ManagedSecretValue;
 
 use crate::ai::{
     agent_sdk::{
-        driver::AgentDriverError, task_env_vars, validate_cli_installed, ClaudeHarness,
-        ThirdPartyHarness,
+        driver::AgentDriverError, harness_model_env_vars, task_env_vars, validate_cli_installed,
+        ClaudeHarness, ThirdPartyHarness,
     },
-    ambient_agents::{task::HarnessConfig, AgentConfigSnapshot, AmbientAgentTaskId},
+    ambient_agents::{
+        task::{HarnessConfig, HarnessModelConfig},
+        AgentConfigSnapshot, AmbientAgentTaskId,
+    },
 };
 use crate::terminal::cli_agent_sessions::plugin_manager::plugin_manager_for;
 use crate::terminal::shell::ShellType;
@@ -41,6 +44,43 @@ pub(super) fn validate_local_harness_shell(shell_type: Option<ShellType>) -> Res
     }
 }
 
+/// Instructions prepended to a local Claude child's prompt so it knows how to coordinate with
+/// the lead agent via the Oz CLI messaging environment (`OZ_CLI`/`OZ_RUN_ID`/`OZ_PARENT_RUN_ID`,
+/// set as env vars by `task_env_vars` below).
+///
+/// Ported from the pin (`app/src/pane_group/pane/local_harness_launch.rs:85-113`, `02b53fcd8`)
+/// for #323, with "Warp" replaced by "Zap" to match this fork's product-name convention.
+const LOCAL_CLAUDE_CHILD_ORCHESTRATION_INSTRUCTIONS: &str = r#"You are a local Claude Code child agent launched by a lead agent in Zap.
+
+Coordinate with the lead agent through the Oz CLI messaging environment:
+- Your run id is in OZ_RUN_ID.
+- The lead agent id is in OZ_PARENT_RUN_ID.
+- The Oz CLI command is in OZ_CLI.
+
+If OZ_CLI, OZ_RUN_ID, or OZ_PARENT_RUN_ID is missing, report that blocker in your final response.
+Do not use Claude Code Agent or SendMessage tools to contact the lead agent; use the Oz CLI commands below.
+Do not ask to inspect help before messaging. The command shapes below are complete.
+
+Send a message to the lead agent at start, when blocked, and when complete:
+"$OZ_CLI" run message send --sender-run-id "$OZ_RUN_ID" --to "$OZ_PARENT_RUN_ID" --subject "<subject>" --body "<body>"
+All four send arguments are required: --sender-run-id "$OZ_RUN_ID", --to "$OZ_PARENT_RUN_ID", --subject, and --body.
+Do not pass "$OZ_PARENT_RUN_ID" as a positional argument to send.
+
+After sending a message, and before ending or standing by, check recent inbox messages:
+"$OZ_CLI" run message list "$OZ_RUN_ID" --limit 25
+
+The plugin may already have read incoming messages while staging them, so do not rely on --unread.
+If recent messages from "$OZ_PARENT_RUN_ID" are present and you have not handled them, read them and use the latest lead-agent mailbox message as task context:
+"$OZ_CLI" run message read "$MESSAGE_ID"
+
+If a surfaced message requires acknowledgement, mark it delivered:
+"$OZ_CLI" run message mark-delivered "$MESSAGE_ID"
+"#;
+
+pub(super) fn local_claude_child_prompt(task_prompt: &str) -> String {
+    format!("{LOCAL_CLAUDE_CHILD_ORCHESTRATION_INSTRUCTIONS}\nTask:\n{task_prompt}")
+}
+
 pub(super) fn build_local_claude_child_command(prompt: &str) -> String {
     let session_id = Uuid::new_v4();
     let quoted_prompt = shell_quote(prompt);
@@ -54,6 +94,11 @@ pub(super) fn build_local_claude_child_command(prompt: &str) -> String {
 pub(super) fn build_local_opencode_child_command(prompt: &str) -> String {
     let quoted_prompt = shell_quote(prompt);
     format!("opencode --prompt {quoted_prompt}")
+}
+
+pub(super) fn build_local_codex_child_command(prompt: &str) -> String {
+    let quoted_prompt = shell_quote(prompt);
+    format!("codex --dangerously-bypass-approvals-and-sandbox {quoted_prompt}")
 }
 
 fn local_child_task_config(harness: Harness) -> Option<AgentConfigSnapshot> {
@@ -71,10 +116,19 @@ fn local_child_task_config(harness: Harness) -> Option<AgentConfigSnapshot> {
 pub(super) async fn prepare_local_harness_child_launch(
     prompt: String,
     harness_type: String,
+    model_id: Option<String>,
     parent_run_id: Option<String>,
     shell_type: Option<ShellType>,
     startup_directory: Option<PathBuf>,
 ) -> Result<PreparedLocalHarnessLaunch, String> {
+    // Ported from the pin (`local_harness_launch.rs:180-186`, `02b53fcd8`) for #323's
+    // ANTHROPIC_MODEL merge sub-item.
+    let harness_model_config = model_id
+        .filter(|id| !id.is_empty())
+        .map(|model_id| HarnessModelConfig {
+            model_id,
+            reasoning_level: None,
+        });
     let Some(harness) = normalize_local_child_harness(&harness_type) else {
         let harness_name = harness_type.trim();
         return Err(if harness_name.is_empty() {
@@ -111,7 +165,7 @@ pub(super) async fn prepare_local_harness_child_launch(
                 }
             }
 
-            build_local_claude_child_command(&prompt)
+            build_local_claude_child_command(&local_claude_child_prompt(&prompt))
         }
         Harness::OpenCode => {
             validate_cli_installed("opencode", Some("https://opencode.ai/docs"))
@@ -119,14 +173,21 @@ pub(super) async fn prepare_local_harness_child_launch(
             build_local_opencode_child_command(&prompt)
         }
         // `Harness::parse_local_child_harness` now recognizes "codex" (issue
-        // #411's pinned-parity requirement), so this arm is reachable, unlike
-        // the `unreachable!()` arms above for harnesses the parser filters
-        // out. There is no local-child spawn implementation yet -- no
-        // `build_local_codex_child_command`, no disabled-product-message
-        // gating -- that's issue #323's scope, not #411's. Fail clearly
-        // instead of pretending to launch a child that was never started.
+        // #411's pinned-parity requirement); #323 completes the launch.
         Harness::Codex => {
-            return Err("Local Codex child harness support is not yet implemented.".to_string());
+            // Local Codex child panes must rely on the user's existing local
+            // auth/session state, same as Claude above. Unlike Claude, there is
+            // no per-child environment-config prep to run here -- the fork has
+            // no `CodexHarness`/`ThirdPartyHarness` impl (only `validate()` +
+            // `prepare_environment_config()` on `ClaudeHarness`/`GeminiHarness`),
+            // and the pin's own Codex branch deliberately skips that shared prep
+            // too ("it can seed OPENAI_API_KEY into ~/.codex/auth.json and
+            // rewrite ~/.codex/config.toml for the whole machine"). A plain
+            // CLI-presence check, matching the OpenCode arm above, is what's
+            // actually needed before claiming success.
+            validate_cli_installed("codex", Some("https://developers.openai.com/codex/cli"))
+                .map_err(|error: AgentDriverError| error.to_string())?;
+            build_local_codex_child_command(&prompt)
         }
         Harness::Gemini => unreachable!("normalize_local_child_harness filters out Gemini"),
     };
@@ -138,9 +199,18 @@ pub(super) async fn prepare_local_harness_child_launch(
     let _ = local_child_task_config(harness);
     let task_id = AmbientAgentTaskId::new_local();
 
+    let mut env_vars = task_env_vars(Some(&task_id), parent_run_id.as_deref(), harness);
+    // Propagate the selected model to Claude Code via ANTHROPIC_MODEL. Codex local
+    // children never receive a model override -- `harness_model_env_vars` only acts
+    // on `Harness::Claude`.
+    env_vars.extend(harness_model_env_vars(
+        harness,
+        harness_model_config.as_ref(),
+    ));
+
     Ok(PreparedLocalHarnessLaunch {
         command,
-        env_vars: task_env_vars(Some(&task_id), parent_run_id.as_deref(), harness),
+        env_vars,
         run_id: task_id.to_string(),
         task_id,
     })

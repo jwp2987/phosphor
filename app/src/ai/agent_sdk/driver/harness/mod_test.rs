@@ -11,8 +11,11 @@
 //! Re-verified against the pin again in round 5 (2026-08-07): still a feature
 //! gap, still deliberately not stubbed.
 
-use super::validate_cli_installed;
+use warp_cli::agent::Harness;
+
+use super::{harness_model_env_vars, validate_cli_installed};
 use crate::ai::agent_sdk::driver::AgentDriverError;
+use crate::ai::ambient_agents::task::HarnessModelConfig;
 
 fn assert_harness_setup_failed(err: &AgentDriverError) -> (&str, &str) {
     match err {
@@ -43,4 +46,42 @@ fn validate_cli_installed_includes_docs_url_in_error() {
     let (_, reason) = assert_harness_setup_failed(&err);
     assert!(reason.contains(url));
     assert!(reason.contains("Install it first"));
+}
+
+/// #323: not ported from the pin (no isolated unit test exists there for this function --
+/// only exercised indirectly via `local_harness_launch_tests.rs`'s
+/// `prepare_local_claude_child_merges_anthropic_model_env_var`, which this fork doesn't port
+/// since it drives the full launch pipeline and needs a real `claude` CLI on PATH).
+#[test]
+fn harness_model_env_vars_sets_anthropic_model_for_claude() {
+    let config = HarnessModelConfig {
+        model_id: "claude-opus-4".to_string(),
+        reasoning_level: None,
+    };
+    let env_vars = harness_model_env_vars(Harness::Claude, Some(&config));
+    assert_eq!(
+        env_vars.get(std::ffi::OsStr::new("ANTHROPIC_MODEL")),
+        Some(&std::ffi::OsString::from("claude-opus-4"))
+    );
+}
+
+#[test]
+fn harness_model_env_vars_empty_for_non_claude_harnesses() {
+    let config = HarnessModelConfig {
+        model_id: "gpt-5-codex".to_string(),
+        reasoning_level: None,
+    };
+    assert!(harness_model_env_vars(Harness::Codex, Some(&config)).is_empty());
+    assert!(harness_model_env_vars(Harness::OpenCode, Some(&config)).is_empty());
+    assert!(harness_model_env_vars(Harness::Gemini, Some(&config)).is_empty());
+}
+
+#[test]
+fn harness_model_env_vars_empty_when_no_config_or_empty_model_id() {
+    assert!(harness_model_env_vars(Harness::Claude, None).is_empty());
+    let empty_model = HarnessModelConfig {
+        model_id: String::new(),
+        reasoning_level: None,
+    };
+    assert!(harness_model_env_vars(Harness::Claude, Some(&empty_model)).is_empty());
 }

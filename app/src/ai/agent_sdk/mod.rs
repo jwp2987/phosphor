@@ -40,7 +40,8 @@ use crate::ai::skills::{
 };
 
 pub(crate) use driver::harness::{
-    task_env_vars, validate_cli_installed, ClaudeHarness, ThirdPartyHarness,
+    harness_model_env_vars, task_env_vars, validate_cli_installed, ClaudeHarness,
+    ThirdPartyHarness,
 };
 pub use driver::AgentDriver;
 use warp_cli::agent::{Harness, Prompt, RunAgentArgs};

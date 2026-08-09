@@ -1,11 +1,30 @@
 use warp_cli::agent::Harness;
 
 use super::{
-    build_local_claude_child_command, build_local_opencode_child_command,
-    normalize_local_child_harness, prepare_local_harness_child_launch,
-    validate_local_harness_shell,
+    build_local_claude_child_command, build_local_codex_child_command,
+    build_local_opencode_child_command, local_claude_child_prompt,
+    normalize_local_child_harness, validate_local_harness_shell,
 };
 use crate::terminal::shell::ShellType;
+
+/// Ported from the pin (`app/src/pane_group/pane/local_harness_launch_tests.rs:26-38`,
+/// `02b53fcd8`) verbatim, for #323.
+#[test]
+fn local_claude_child_prompt_includes_oz_cli_messaging_instructions() {
+    let prompt = local_claude_child_prompt("List files");
+
+    assert!(prompt.contains("OZ_CLI"));
+    assert!(prompt.contains("OZ_RUN_ID"));
+    assert!(prompt.contains("OZ_PARENT_RUN_ID"));
+    assert!(prompt.contains("run message send --sender-run-id"));
+    assert!(prompt.contains("All four send arguments are required"));
+    assert!(prompt.contains("Do not pass \"$OZ_PARENT_RUN_ID\" as a positional argument to send"));
+    assert!(prompt.contains("run message list \"$OZ_RUN_ID\" --limit 25"));
+    assert!(prompt.contains("do not rely on --unread"));
+    assert!(!prompt.contains("--unread --limit"));
+    assert!(prompt.contains("Do not use Claude Code Agent or SendMessage tools"));
+    assert!(prompt.ends_with("Task:\nList files"));
+}
 
 #[test]
 fn normalize_local_child_harness_accepts_supported_aliases() {
@@ -44,37 +63,14 @@ fn normalize_local_child_harness_rejects_unsupported_values() {
 #[test]
 fn normalize_local_child_harness_accepts_codex() {
     // Issue #411's pinned-parity requirement made `Harness::parse_local_child_harness`
-    // recognize "codex", so it now parses successfully. That does NOT mean local
-    // Codex child harnesses can actually be launched yet -- see
-    // `prepare_local_harness_child_launch_rejects_codex` below, which proves the
-    // rejection moved from parsing to launch rather than disappearing.
+    // recognize "codex", so it now parses successfully. #323 completed the launch
+    // side (`build_local_codex_child_command`, wired into
+    // `prepare_local_harness_child_launch`'s `Harness::Codex` arm), so parsing and
+    // launching are both supported now.
     assert_eq!(
         normalize_local_child_harness("codex"),
         Some(Harness::Codex)
     );
-}
-
-#[tokio::test]
-async fn prepare_local_harness_child_launch_rejects_codex() {
-    // "codex" now parses (see `normalize_local_child_harness_accepts_codex`), but
-    // there is no local-child spawn implementation for it yet (that's issue #323's
-    // scope). Launching must still fail clearly instead of silently no-oping.
-    let result = prepare_local_harness_child_launch(
-        "prompt".to_string(),
-        "codex".to_string(),
-        None,
-        Some(ShellType::Bash),
-        None,
-    )
-    .await;
-
-    match result {
-        Err(message) => assert_eq!(
-            message,
-            "Local Codex child harness support is not yet implemented."
-        ),
-        Ok(_) => panic!("local Codex child harness launch unexpectedly succeeded"),
-    }
 }
 
 #[test]
@@ -115,5 +111,14 @@ fn build_local_opencode_child_command_quotes_the_prompt() {
     assert_eq!(
         build_local_opencode_child_command("hello world"),
         "opencode --prompt 'hello world'"
+    );
+}
+
+/// Ported from the pin (`local_harness_launch_tests.rs:165-171`, `02b53fcd8`) verbatim, for #323.
+#[test]
+fn build_local_codex_child_command_quotes_the_prompt() {
+    assert_eq!(
+        build_local_codex_child_command("hello world"),
+        "codex --dangerously-bypass-approvals-and-sandbox 'hello world'"
     );
 }
