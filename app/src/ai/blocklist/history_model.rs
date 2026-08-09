@@ -187,6 +187,17 @@ struct InFlightConversationRename {
     previous_cached_metadata_title: Option<String>,
 }
 
+/// A single agent prompt-history candidate with prompt text and start_ts.
+///
+/// Ported from the pin (`app/src/ai/blocklist/history_model.rs:236-241`, `02b53fcd8`) for #256.
+#[derive(Clone, Debug)]
+pub(crate) struct PromptHistoryEntry {
+    /// The user prompt text.
+    pub(crate) text: Arc<str>,
+    /// When the prompt was submitted.
+    pub(crate) start_ts: DateTime<Local>,
+}
+
 /// Responsible for managing the history of user and AI exchanges.
 #[derive(Default)]
 pub struct BlocklistAIHistoryModel {
@@ -233,6 +244,12 @@ pub struct BlocklistAIHistoryModel {
     /// history.
     persisted_queries: Vec<PersistedAIInput>,
 
+    /// Agent prompt-history candidates for NLD input classification, ascending
+    /// (oldest-first). Seeded from a persisted snapshot in `new`; #256 item 2 only --
+    /// the live-session append path and the NLD-classification consumer are tracked
+    /// separately (superseded by #336/#337/#331).
+    prompt_history: Vec<PromptHistoryEntry>,
+
     /// Metadata for both local and ambient agent conversations.
     /// Does not include the actual content of the conversations.
     all_conversations_metadata: HashMap<AIConversationId, AIConversationMetadata>,
@@ -269,6 +286,7 @@ pub struct BlocklistAIHistoryModel {
 impl BlocklistAIHistoryModel {
     pub(crate) fn new(
         persisted_queries: Vec<PersistedAIInput>,
+        prompt_history: Vec<(String, DateTime<Local>)>,
         multi_agent_conversations: &[AgentConversation],
     ) -> Self {
         #[cfg(feature = "local_fs")]
@@ -278,8 +296,18 @@ impl BlocklistAIHistoryModel {
                 .map(|conn| Arc::new(Mutex::new(conn)))
         });
 
+        let prompt_history = prompt_history
+            .into_iter()
+            .filter(|(text, _)| !text.trim().is_empty())
+            .map(|(text, start_ts)| PromptHistoryEntry {
+                text: Arc::from(text),
+                start_ts,
+            })
+            .collect();
+
         let mut model = Self {
             persisted_queries,
+            prompt_history,
             #[cfg(feature = "local_fs")]
             db_connection,
             ..Self::default()
@@ -2031,6 +2059,22 @@ impl BlocklistAIHistoryModel {
             .into_iter()
             .chain(cleared_queries_vec)
             .chain(live_queries_vec)
+    }
+
+    /// Returns the prompt-history candidates for NLD input classification, oldest-first
+    /// (ascending). The matcher reverses this to iterate newest-first.
+    ///
+    /// Ported from the pin (`app/src/ai/blocklist/history_model.rs:2370-2373`, `02b53fcd8`) for
+    /// #256, item 2 only. Currently seeded only from the snapshot passed to `new` -- the
+    /// live-session append path (`append_session_prompt` in the pin) and the NLD-classification
+    /// consumer (`input_model.rs`'s `FeatureFlag::NldPromptHistoryMatch` branch in the pin) are
+    /// tracked separately (superseded by #336/#337/#331), so this fork's `new` is currently
+    /// always called with an empty snapshot (see `lib.rs`) until that consumer work lands.
+    /// Deliberately unwired for now: no caller exists yet in this fork (see above); the port is
+    /// scoped to the snapshot plumbing only (#256 item 2).
+    #[allow(dead_code)]
+    pub(crate) fn prompt_history_candidates(&self) -> Vec<PromptHistoryEntry> {
+        self.prompt_history.clone()
     }
 
     /// Returns `Some` with the [`AIConversationId`] of the active conversation inside the

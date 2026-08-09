@@ -62,7 +62,7 @@ fn build_history_model(prompts: Vec<String>) -> BlocklistAIHistoryModel {
     // `prompt_history: Vec<(String, DateTime<Local>)>` parameter that Warp has;
     // Warp's test always passed an empty Vec for it, so dropping the argument
     // here is behavior-preserving.
-    BlocklistAIHistoryModel::new(persisted_queries, &[])
+    BlocklistAIHistoryModel::new(persisted_queries, vec![], &[])
 }
 
 fn command_entry(

@@ -71,7 +71,7 @@ pub fn blocklist_ai_history_model_with_queries(queries: Vec<String>) -> Blocklis
 
     // Zap's `new` takes `(persisted_queries, multi_agent_conversations)` (no cloud
     // sync-state arg that upstream passes as `Vec::new()`).
-    BlocklistAIHistoryModel::new(persisted_queries, &[])
+    BlocklistAIHistoryModel::new(persisted_queries, vec![], &[])
 }
 
 /// Queues an action as the active confirmation request for a TUI view test.

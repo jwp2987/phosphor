@@ -130,7 +130,7 @@ fn test_display_status_uses_setup_task_states() {
 #[test]
 fn test_display_status_uses_matching_conversation_for_in_progress_task() {
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let now = Utc::now();
         let conversation_id = AIConversationId::new();
@@ -185,7 +185,7 @@ fn test_display_status_uses_matching_conversation_for_in_progress_task() {
 #[test]
 fn test_display_status_updates_when_blocked_conversation_resumes() {
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let now = Utc::now();
         let conversation_id = AIConversationId::new();
@@ -264,7 +264,7 @@ fn test_display_status_updates_when_blocked_conversation_resumes() {
 #[test]
 fn test_display_status_terminal_task_state_overrides_matching_conversation() {
     App::test((), |mut app| async move {
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let now = Utc::now();
         let conversation_id = AIConversationId::new();
@@ -319,7 +319,7 @@ fn test_display_status_terminal_task_state_overrides_matching_conversation() {
 fn test_status_filter_uses_display_status_for_task_backed_conversations() {
     App::test((), |mut app| async move {
         app.add_singleton_model(|_| AuthStateProvider::new_for_test());
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let now = Utc::now();
         let conversation_id = AIConversationId::new();
@@ -465,7 +465,7 @@ fn all_owner_filters() -> AgentManagementFilters {
 fn test_environment_none_filter_includes_conversations() {
     App::test((), |mut app| async move {
         app.add_singleton_model(|_| AuthStateProvider::new_for_test());
-        app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let now = Utc::now();
 
@@ -605,7 +605,7 @@ fn test_task_status_maps_blocked_state_to_blocked() {
 fn test_get_tasks_and_conversations_prefers_task_when_task_id_matches_conversation_run_id() {
     App::test((), |mut app| async move {
         app.add_singleton_model(|_| AuthStateProvider::new_for_test());
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let now = Utc::now();
         let conversation_id = AIConversationId::new();
@@ -666,7 +666,7 @@ fn test_get_tasks_and_conversations_prefers_task_when_task_id_matches_conversati
 fn test_get_tasks_and_conversations_prefers_task_when_server_token_matches() {
     App::test((), |mut app| async move {
         app.add_singleton_model(|_| AuthStateProvider::new_for_test());
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let now = Utc::now();
         let conversation_id = AIConversationId::new();
@@ -727,7 +727,7 @@ fn test_get_tasks_and_conversations_prefers_task_when_server_token_matches() {
 fn test_get_tasks_and_conversations_keeps_unrelated_tasks_and_conversations() {
     App::test((), |mut app| async move {
         app.add_singleton_model(|_| AuthStateProvider::new_for_test());
-        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let now = Utc::now();
         let conversation_id = AIConversationId::new();
@@ -819,7 +819,7 @@ fn task_with_harness(
 fn test_harness_filter_matches_only_selected_harness() {
     App::test((), |mut app| async move {
         app.add_singleton_model(|_| AuthStateProvider::new_for_test());
-        app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[]));
+        app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let mut model = create_test_model();
 
