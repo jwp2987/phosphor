@@ -13,13 +13,19 @@ use warpui::r#async::executor::Background;
 use warpui::{App, EntityId, ModelHandle};
 
 use super::{BlocklistAIContextModel, PendingAttachment, PendingFile};
-use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::agent::conversation::{AIConversationAutoexecuteMode, AIConversationId};
 use crate::ai::agent::{AIAgentAttachment, ImageContext};
+use crate::ai::blocklist::agent_view::conversation_selection::AgentViewConversationSelection;
 use crate::ai::blocklist::agent_view::{
-    AgentViewController, AgentViewEntryOrigin, EphemeralMessageModel,
+    AgentViewController, AgentViewEntryOrigin, EnterAgentViewError, EphemeralMessageModel,
 };
+use crate::ai::blocklist::conversation_selection::{ConversationSelection, ConversationSelectionEvent};
 use crate::ai::blocklist::{
-    BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel, QueuedQueryOrigin,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, QueuedQuery, QueuedQueryModel,
+    QueuedQueryOrigin,
+};
+use crate::ai::conversation_entry::{
+    AgentConversationEntry, AgentConversationListEntryState, AgentConversationListPolicy,
 };
 use crate::global_resource_handles::{GlobalResourceHandles, GlobalResourceHandlesProvider};
 use crate::test_util::settings::initialize_settings_for_tests;
@@ -93,12 +99,20 @@ fn build_test_context_model(app: &mut App) -> ModelHandle<BlocklistAIContextMode
             ctx,
         )
     });
+    let conversation_selection = app.add_model(|ctx| {
+        Box::new(AgentViewConversationSelection::new(
+            terminal_view_id,
+            agent_view_controller.clone(),
+            ctx,
+        )) as Box<dyn ConversationSelection>
+    });
 
     app.add_model(|_| {
         BlocklistAIContextModel::new_for_test(
             terminal_model,
             terminal_view_id,
             agent_view_controller,
+            conversation_selection,
         )
     })
 }
@@ -332,9 +346,128 @@ fn enqueue_moves_staged_attachments_onto_the_row_and_clears_input() {
     });
 }
 
+/// Minimal fake [`ConversationSelection`] that actually creates and tracks conversations in
+/// [`BlocklistAIHistoryModel`], unlike [`MockConversationSelection`] (a pure no-op stub). Used to
+/// test [`BlocklistAIContextModel::try_start_new_conversation`] on a TUI-shaped context model
+/// (no `agent_view_controller`) without depending on `crates/warp_tui`'s real
+/// `TuiConversationSelection` (which can't be used from `app`'s own tests: `warp_tui` depends on
+/// `app`, not the other way around).
+///
+/// Ported from the pin (`app/src/ai/blocklist/context_model_tests.rs:58-`, `02b53fcd8`), adapted
+/// to this fork's `conversation_entry`-based `AgentConversationListPolicy`/`AgentConversationEntry`
+/// (pin: `agent_conversations_model`) and `start_new_conversation`'s 3-bool-free arity (this fork
+/// has no `is_cli_agent_transcript` parameter).
+struct TestConversationSelection {
+    terminal_view_id: EntityId,
+    selected_conversation_id: Option<AIConversationId>,
+}
+
+impl TestConversationSelection {
+    fn new(
+        terminal_view_id: EntityId,
+        _: &mut warpui::ModelContext<Box<dyn ConversationSelection>>,
+    ) -> Self {
+        Self {
+            terminal_view_id,
+            selected_conversation_id: None,
+        }
+    }
+}
+
+impl AgentConversationListPolicy for TestConversationSelection {
+    fn classify_entry(
+        &self,
+        _: &AgentConversationEntry,
+        _: &warpui::AppContext,
+    ) -> AgentConversationListEntryState {
+        AgentConversationListEntryState::Unavailable
+    }
+}
+
+impl ConversationSelection for TestConversationSelection {
+    fn selected_conversation_id(&self, _: &warpui::AppContext) -> Option<AIConversationId> {
+        self.selected_conversation_id
+    }
+
+    fn is_conversation_active(&self, _: &warpui::AppContext) -> bool {
+        self.selected_conversation_id.is_some()
+    }
+
+    fn is_conversation_fullscreen(&self, _: &warpui::AppContext) -> bool {
+        self.selected_conversation_id.is_some()
+    }
+
+    fn select_existing_conversation(
+        &mut self,
+        conversation_id: AIConversationId,
+        _: AgentViewEntryOrigin,
+        ctx: &mut warpui::ModelContext<Box<dyn ConversationSelection>>,
+    ) {
+        if self.selected_conversation_id != Some(conversation_id) {
+            self.selected_conversation_id = Some(conversation_id);
+            ctx.emit(ConversationSelectionEvent::Changed);
+        }
+    }
+
+    fn select_new_conversation(
+        &mut self,
+        _: AgentViewEntryOrigin,
+        ctx: &mut warpui::ModelContext<Box<dyn ConversationSelection>>,
+    ) {
+        if self.selected_conversation_id.take().is_some() {
+            ctx.emit(ConversationSelectionEvent::Changed);
+        }
+    }
+
+    fn try_start_new_conversation(
+        &mut self,
+        _: AgentViewEntryOrigin,
+        ctx: &mut warpui::ModelContext<Box<dyn ConversationSelection>>,
+    ) -> Result<AIConversationId, EnterAgentViewError> {
+        let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            history.start_new_conversation(self.terminal_view_id, false, false, ctx)
+        });
+        self.select_existing_conversation(conversation_id, AgentViewEntryOrigin::Cli, ctx);
+        Ok(conversation_id)
+    }
+
+    fn pending_query_autoexecute_override(
+        &self,
+        app: &warpui::AppContext,
+    ) -> AIConversationAutoexecuteMode {
+        self.selected_conversation_id
+            .as_ref()
+            .and_then(|conversation_id| {
+                BlocklistAIHistoryModel::as_ref(app).conversation(conversation_id)
+            })
+            .map(|conversation| conversation.autoexecute_override())
+            .unwrap_or_default()
+    }
+
+    fn toggle_pending_query_autoexecute(
+        &mut self,
+        ctx: &mut warpui::ModelContext<Box<dyn ConversationSelection>>,
+    ) {
+        if let Some(conversation_id) = self.selected_conversation_id {
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                history.toggle_autoexecute_override(&conversation_id, self.terminal_view_id, ctx);
+            });
+        }
+    }
+
+    fn handle_history_event(
+        &mut self,
+        _: &BlocklistAIHistoryEvent,
+        _: &mut warpui::ModelContext<Box<dyn ConversationSelection>>,
+    ) {
+    }
+}
+
 /// Builds a context model for the TUI surface, which has no agent-view controller and
-/// therefore tracks the selected conversation purely through `pending_query_state`.
-fn build_tui_context_model(app: &mut App) -> ModelHandle<BlocklistAIContextModel> {
+/// therefore tracks the selected conversation purely through `pending_query_state`. Backed by
+/// [`TestConversationSelection`] (not [`MockConversationSelection`]) so
+/// `try_start_new_conversation` actually creates a conversation, matching the real TUI.
+fn build_tui_context_model(app: &mut App) -> (ModelHandle<BlocklistAIContextModel>, EntityId) {
     let terminal_model = Arc::new(FairMutex::new(TerminalModel::new_for_test(
         block_size(),
         color::List::from(&Colors::default()),
@@ -346,17 +479,26 @@ fn build_tui_context_model(app: &mut App) -> ModelHandle<BlocklistAIContextModel
         false, /* is_inverted */
         None,  /* session_startup_path */
     )));
-    let terminal_surface_id = EntityId::new();
+    let terminal_view_id = EntityId::new();
+    let conversation_selection = app.add_model(|ctx| {
+        Box::new(TestConversationSelection::new(terminal_view_id, ctx))
+            as Box<dyn ConversationSelection>
+    });
 
-    app.add_model(|_| {
-        BlocklistAIContextModel::mock_agent_view_less(terminal_model, terminal_surface_id)
-    })
+    let model = app.add_model(|_| {
+        BlocklistAIContextModel::mock_agent_view_less(
+            terminal_model,
+            terminal_view_id,
+            conversation_selection,
+        )
+    });
+    (model, terminal_view_id)
 }
 
 #[test]
 fn tui_context_tracks_selected_conversation() {
     App::test((), |mut app| async move {
-        let model = build_tui_context_model(&mut app);
+        let (model, _) = build_tui_context_model(&mut app);
         let conversation_id = AIConversationId::new();
 
         model.update(&mut app, |model, ctx| {
@@ -375,6 +517,43 @@ fn tui_context_tracks_selected_conversation() {
         });
         model.read(&app, |model, ctx| {
             assert_eq!(model.selected_conversation_id(ctx), None);
+        });
+    });
+}
+
+/// Ported from the pin (`app/src/ai/blocklist/context_model_tests.rs:312-334`, `02b53fcd8`),
+/// adapted to `all_live_conversations_for_terminal_view` (this fork's name for
+/// `all_live_conversations_for_terminal_surface`). #343: before that issue,
+/// `try_start_new_conversation` (then `try_enter_agent_view_for_new_conversation`) always
+/// returned `Err` on a TUI-shaped context model (no `agent_view_controller`), so this scenario
+/// was unreachable.
+#[test]
+fn tui_new_conversation_is_selected_and_terminal_surface_scoped() {
+    App::test((), |mut app| async move {
+        // `TestConversationSelection::try_start_new_conversation` calls
+        // `BlocklistAIHistoryModel::handle`, which panics if the singleton was never registered
+        // (unlike `build_test_context_model`'s fixture, `build_tui_context_model` doesn't
+        // register it, since `tui_context_tracks_selected_conversation` above doesn't need it).
+        let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let (model, terminal_view_id) = build_tui_context_model(&mut app);
+
+        let conversation_id = model
+            .update(&mut app, |model, ctx| {
+                model.try_start_new_conversation(AgentViewEntryOrigin::Cli, ctx)
+            })
+            .expect("TUI conversation creation should succeed");
+
+        model.read(&app, |model, ctx| {
+            assert_eq!(model.selected_conversation_id(ctx), Some(conversation_id));
+        });
+        history.read(&app, |history, _| {
+            assert_eq!(
+                history
+                    .all_live_conversations_for_terminal_view(terminal_view_id)
+                    .map(|conversation| conversation.id())
+                    .collect::<Vec<_>>(),
+                vec![conversation_id]
+            );
         });
     });
 }

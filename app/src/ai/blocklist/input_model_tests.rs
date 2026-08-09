@@ -124,8 +124,14 @@ fn build_input_model(app: &mut App, policy: StubPolicy) -> ModelHandle<Blocklist
         None,  /* session_startup_path */
     )));
     let terminal_view_id = EntityId::new();
+    let conversation_selection = app
+        .add_model(|_| Box::new(MockConversationSelection) as Box<dyn ConversationSelection>);
     let ai_context_model = app.add_model(|_| {
-        BlocklistAIContextModel::mock_agent_view_less(terminal_model.clone(), terminal_view_id)
+        BlocklistAIContextModel::mock_agent_view_less(
+            terminal_model.clone(),
+            terminal_view_id,
+            conversation_selection,
+        )
     });
     app.add_model(|ctx| {
         BlocklistAIInputModel::new_tui(

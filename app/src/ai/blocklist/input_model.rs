@@ -20,7 +20,9 @@ pub use input_classifier::InputType;
 
 use super::agent_view::{AgentViewController, AgentViewControllerEvent, AgentViewEntryOrigin};
 use super::context_model::BlocklistAIContextModel;
-use super::conversation_selection::ConversationSelectionEvent;
+use super::conversation_selection::{ConversationSelection, ConversationSelectionEvent};
+#[cfg(any(test, feature = "test-util"))]
+use super::conversation_selection::MockConversationSelection;
 use super::input_mode_policy::{InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate};
 use crate::terminal::cli_agent_sessions::{
     CLIAgentInputState, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
@@ -176,8 +178,14 @@ impl BlocklistAIInputModel {
         // Use the singleton-free, agent-view-less context model so `mock` does not
         // depend on the `BlocklistAIHistoryModel`/`LLMPreferences`/`AISettings`
         // singleton web that `BlocklistAIContextModel::new` subscribes to.
+        let conversation_selection = ctx
+            .add_model(|_| Box::new(MockConversationSelection) as Box<dyn ConversationSelection>);
         let ai_context_model = ctx.add_model(|_| {
-            BlocklistAIContextModel::mock_agent_view_less(model.clone(), terminal_view_id)
+            BlocklistAIContextModel::mock_agent_view_less(
+                model.clone(),
+                terminal_view_id,
+                conversation_selection,
+            )
         });
         let input_config = policy.initial_config(ctx);
         ctx.add_model(|_| Self {
@@ -874,13 +882,12 @@ impl Entity for BlocklistAIInputModel {
 /// on whether a CLI agent rich input session is open. This is a pure refactor —
 /// it does not change GUI behavior.
 ///
-/// `config_on_conversation_selection_changed` always returns `None` here: the
-/// GUI surface has no `ConversationSelection` implementation yet (only the
-/// TUI's `TuiConversationSelection` does), so agent-view enter/exit still
-/// drives config transitions via the `AgentViewController` subscription in
-/// `BlocklistAIInputModel::new_inner`, unchanged from before this policy
-/// existed. Porting a `ConversationSelection` for the GUI is a separate,
-/// larger feature gap than #313 (which is scoped to lock gating / initial
+/// `config_on_conversation_selection_changed` always returns `None` here: even though the GUI
+/// now has a `ConversationSelection` implementation (`AgentViewConversationSelection`, #316),
+/// this policy doesn't consume it -- agent-view enter/exit still drives config transitions via
+/// the `AgentViewController` subscription in `BlocklistAIInputModel::new_inner`, unchanged from
+/// before this policy existed. Routing `GuiInputModePolicy` through `ConversationSelection`
+/// instead is a separate, larger feature gap than #313 (which is scoped to lock gating / initial
 /// config / AI-settings transitions).
 pub(crate) struct GuiInputModePolicy {
     agent_view_controller: Option<ModelHandle<AgentViewController>>,

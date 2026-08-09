@@ -45,12 +45,14 @@ use std::ops::Deref as _;
 
 use crate::ai::blocklist::agent_view::fork_from_last_known_good_state_exchange_id;
 use crate::ai::blocklist::agent_view::ENTER_AGENT_VIEW_NEW_CONVERSATION_KEYSTROKE;
+use crate::ai::blocklist::agent_view::conversation_selection::AgentViewConversationSelection;
 use crate::ai::blocklist::agent_view::{
     agent_view_bg_fill, AgentViewController, AgentViewControllerEvent, AgentViewDisplayMode,
     AgentViewEntryBlockParams, AgentViewEntryOrigin, AgentViewHeaderDisabledTheme,
     AgentViewHeaderTheme, AgentViewZeroStateBlock, AgentViewZeroStateEvent, EphemeralMessageModel,
     ExitAgentViewError, ExitConfirmationTrigger, InlineAgentViewHeader,
 };
+use crate::ai::blocklist::conversation_selection::ConversationSelection;
 use crate::ai::conversation_utils;
 use crate::ai::predict::prompt_suggestions::{
     has_pending_code_or_unit_test_prompt_suggestion,
@@ -3185,6 +3187,15 @@ impl TerminalView {
             ctx.notify();
         });
 
+        // #343: the GUI's ConversationSelection implementation, backed by the
+        // AgentViewController already constructed above.
+        let conversation_selection = ctx.add_model(|ctx| {
+            Box::new(AgentViewConversationSelection::new(
+                terminal_view_id,
+                agent_view_controller.clone(),
+                ctx,
+            )) as Box<dyn ConversationSelection>
+        });
         let ai_context_model = ctx.add_model(|ctx| {
             BlocklistAIContextModel::new(
                 sessions.clone(),
@@ -3192,6 +3203,7 @@ impl TerminalView {
                 model.clone(),
                 terminal_view_id,
                 Some(agent_view_controller.clone()),
+                conversation_selection,
                 ctx,
             )
         });

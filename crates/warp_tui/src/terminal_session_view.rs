@@ -1099,6 +1099,12 @@ impl TuiTerminalSessionView {
                 terminal_surface_id,
                 // The TUI has no agent-view controller.
                 None,
+                // #343: previously discarded, so `context_model`'s new-conversation creation
+                // always failed on the TUI (it only ever tried `agent_view_controller`, which is
+                // always `None` here). This is the same handle used for every other
+                // conversation-selection operation on this surface (`view.conversation_selection`
+                // below).
+                conversation_selection.clone(),
                 ctx,
             )
         });

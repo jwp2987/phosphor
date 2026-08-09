@@ -14,6 +14,7 @@ use crate::ai::{
 };
 
 use super::agent_view::{AgentViewController, AgentViewEntryOrigin, EnterAgentViewError};
+use super::conversation_selection::{ConversationSelection, ConversationSelectionHandle};
 use ai::project_context::model::ProjectContextModel;
 use parking_lot::FairMutex;
 use warp_core::features::FeatureFlag;
@@ -442,6 +443,22 @@ pub struct BlocklistAIContextModel {
     /// tracks the active conversation via its own conversation-selection model).
     agent_view_controller: Option<ModelHandle<AgentViewController>>,
 
+    /// This surface's [`ConversationSelection`] implementation: `AgentViewConversationSelection`
+    /// on the GUI, `TuiConversationSelection` (`crates/warp_tui`) on the TUI, or
+    /// `MockConversationSelection` in tests. Used by [`Self::try_start_new_conversation`] so new
+    /// -conversation creation works uniformly on both surfaces instead of only through
+    /// `agent_view_controller`, which is always `None` on the TUI.
+    ///
+    /// For #343: the pin (`02b53fcd8`) replaces `agent_view_controller` with this field entirely,
+    /// routing every method in this `impl` block through it (and drops `pending_query_state` from
+    /// this struct altogether, since `ConversationSelection` implementations own that state
+    /// themselves). That's a much larger structural change -- adopted here narrowly for
+    /// `try_start_new_conversation` only, leaving `agent_view_controller` and every other
+    /// existing method (the fullscreen check, the `ClearedConversationsInTerminalView`/
+    /// `SplitConversation` handling, `selected_conversation_id`, etc.) untouched and working
+    /// exactly as before, to keep this fix's blast radius to the one bug it targets.
+    conversation_selection: ConversationSelectionHandle,
+
     /// Block IDs of user-executed commands to be auto-attached as context.
     /// When `AgentViewBlockContext` is enabled, completed user commands are tracked here
     /// and automatically included as context with the next user query.
@@ -494,6 +511,7 @@ impl BlocklistAIContextModel {
         terminal_model: Arc<FairMutex<TerminalModel>>,
         terminal_view_id: EntityId,
         agent_view_controller: Option<ModelHandle<AgentViewController>>,
+        conversation_selection: ConversationSelectionHandle,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         ctx.subscribe_to_model(model_event_dispatcher, move |me, event, ctx| match event {
@@ -617,6 +635,7 @@ impl BlocklistAIContextModel {
             pending_query_state,
             terminal_view_id,
             agent_view_controller,
+            conversation_selection,
             pending_inline_diff_hunk_attachments: Default::default(),
             pending_inline_at_context_attachments: Default::default(),
             pending_document_id: None,
@@ -637,6 +656,7 @@ impl BlocklistAIContextModel {
         terminal_model: Arc<FairMutex<TerminalModel>>,
         terminal_view_id: EntityId,
         agent_view_controller: ModelHandle<AgentViewController>,
+        conversation_selection: ConversationSelectionHandle,
     ) -> Self {
         Self {
             terminal_model,
@@ -647,6 +667,7 @@ impl BlocklistAIContextModel {
             pending_query_state: PendingQueryState::default(),
             terminal_view_id,
             agent_view_controller: Some(agent_view_controller),
+            conversation_selection,
             pending_inline_diff_hunk_attachments: Default::default(),
             pending_inline_at_context_attachments: Default::default(),
             pending_document_id: None,
@@ -660,10 +681,16 @@ impl BlocklistAIContextModel {
     /// subscribing to any singletons (unlike [`Self::new`], which subscribes to
     /// `BlocklistAIHistoryModel`/`LLMPreferences`). Mirrors the real TUI surface,
     /// which has no agent-view controller. Used by `BlocklistAIInputModel::mock`.
+    /// `conversation_selection` is caller-provided (typically [`MockConversationSelection`], a
+    /// no-op stub) rather than built internally, so callers that need a
+    /// non-mock-but-still-lightweight selection (e.g. one that actually creates conversations in
+    /// `BlocklistAIHistoryModel`, for testing [`Self::try_start_new_conversation`]) can supply
+    /// their own.
     #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn mock_agent_view_less(
         terminal_model: Arc<FairMutex<TerminalModel>>,
         terminal_view_id: EntityId,
+        conversation_selection: ConversationSelectionHandle,
     ) -> Self {
         Self {
             terminal_model,
@@ -674,6 +701,7 @@ impl BlocklistAIContextModel {
             pending_query_state: PendingQueryState::default(),
             terminal_view_id,
             agent_view_controller: None,
+            conversation_selection,
             pending_inline_diff_hunk_attachments: Default::default(),
             pending_inline_at_context_attachments: Default::default(),
             pending_document_id: None,
@@ -1169,25 +1197,34 @@ impl BlocklistAIContextModel {
         }
     }
 
-    /// Attempts to enter agent view for a new conversation and returns the conversation ID.
-    /// This should be used when a slash command needs to create a new conversation
-    /// and the AgentView feature flag is enabled.
+    /// Starts and selects a new conversation via this surface's [`ConversationSelection`]
+    /// implementation (`AgentViewConversationSelection` on the GUI, `TuiConversationSelection` on
+    /// the TUI). Enters Agent View when this is a GUI selection.
     ///
-    /// Returns `Ok(conversation_id)` on success, or `Err` if entry is blocked.
-    pub fn try_enter_agent_view_for_new_conversation(
+    /// Ported from the pin (`app/src/ai/blocklist/context_model.rs:681-689`, `02b53fcd8`) for
+    /// #343, renamed from `try_enter_agent_view_for_new_conversation` to match. That name used to
+    /// be accurate: it went straight to `self.agent_view_controller`, which is always `None` on
+    /// the TUI, so this always returned `Err(EnterAgentViewError::AlreadyInAgentView)` there
+    /// regardless of whether agent view was actually active. Delegating to
+    /// `conversation_selection` instead works on both surfaces: on the GUI it calls the exact
+    /// same `agent_view_controller.try_enter_agent_view(None, origin, ctx)` this used to call
+    /// directly (via `AgentViewConversationSelection::try_start_new_conversation`), and on the
+    /// TUI it creates and selects a conversation through `TuiConversationSelection`.
+    ///
+    /// Unlike the pin, still syncs `self.pending_query_state` afterward (to `Existing`, not the
+    /// old code's `default()`/New): this fork's `selected_conversation_id` falls back to
+    /// `pending_query_state` whenever there's no `agent_view_controller` to consult (true for
+    /// every TUI call), so leaving it as New here would silently disagree with what
+    /// `conversation_selection` just selected.
+    pub fn try_start_new_conversation(
         &mut self,
         origin: AgentViewEntryOrigin,
         ctx: &mut ModelContext<Self>,
     ) -> Result<AIConversationId, EnterAgentViewError> {
-        // The TUI has no agent-view controller; it never routes new-conversation creation
-        // through the agent view (it uses its own conversation-selection model instead).
-        let Some(agent_view_controller) = &self.agent_view_controller else {
-            return Err(EnterAgentViewError::AlreadyInAgentView);
-        };
-        let conversation_id = agent_view_controller.update(ctx, |controller, ctx| {
-            controller.try_enter_agent_view(None, origin, ctx)
+        let conversation_id = self.conversation_selection.update(ctx, |selection, ctx| {
+            selection.try_start_new_conversation(origin, ctx)
         })?;
-        self.set_pending_query_state(PendingQueryState::default(), ctx);
+        self.set_pending_query_state(PendingQueryState::Existing { conversation_id }, ctx);
         Ok(conversation_id)
     }
 

@@ -138,7 +138,7 @@ impl SlashCommandRequest {
             if FeatureFlag::AgentView.is_enabled() {
                 controller.context_model.update(ctx, |context_model, ctx| {
                     context_model
-                        .try_enter_agent_view_for_new_conversation(
+                        .try_start_new_conversation(
                             AgentViewEntryOrigin::SlashCommand {
                                 trigger: SlashCommandTrigger::input(),
                             },
