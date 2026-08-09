@@ -377,6 +377,10 @@ pub(super) struct AIBlockStateHandles {
     /// Mouse state handles per citation.
     /// A given citation should only appear once per block.
     footer_citation_chip_handles: HashMap<AIAgentCitation, MouseStateHandle>,
+    /// Persistent mouse-state handles per received-message transcript row,
+    /// used by the clickable sender avatar.
+    pub(super) transcript_avatar_handles: HashMap<MessageId, MouseStateHandle>,
+
     references_section_collapsible_handle: MouseStateHandle,
 
     autoread_files_speedbump_checkbox_handle: MouseStateHandle,
@@ -745,6 +749,16 @@ impl CollapsibleElementState {
                 }
             )
     }
+}
+
+const RECEIVED_MESSAGE_COLLAPSIBLE_ID_PREFIX: &str = "received-message:";
+
+/// Collapsible-state key for an orchestration message received from a child
+/// agent, so its transcript body can be independently expanded/collapsed.
+pub(crate) fn received_message_collapsible_id(message_id: &str) -> MessageId {
+    MessageId::new(format!(
+        "{RECEIVED_MESSAGE_COLLAPSIBLE_ID_PREFIX}{message_id}"
+    ))
 }
 
 pub struct AIBlock {
@@ -1939,13 +1953,25 @@ impl AIBlock {
                     .or_insert_with(CollapsibleElementState::collapsed);
             }
 
-            if matches!(
-                &message.message,
-                AIAgentOutputMessageType::MessagesReceivedFromAgents { .. }
-            ) {
-                self.collapsible_block_states
-                    .entry(message.id.clone())
-                    .or_default();
+            // Register per-row collapsible state and a persistent avatar mouse-state
+            // handle for each individual message in a MessagesReceivedFromAgents
+            // batch, keyed by `received_message_collapsible_id` (not the batch
+            // message's own id) since each inner message renders its own
+            // collapsible transcript row.
+            if let AIAgentOutputMessageType::MessagesReceivedFromAgents { messages } =
+                &message.message
+            {
+                for received_message in messages {
+                    let collapsible_id =
+                        received_message_collapsible_id(&received_message.message_id);
+                    self.collapsible_block_states
+                        .entry(collapsible_id.clone())
+                        .or_default();
+                    self.state_handles
+                        .transcript_avatar_handles
+                        .entry(collapsible_id)
+                        .or_default();
+                }
             }
         }
 

@@ -111,6 +111,7 @@ use super::common::{
     STATUS_FOOTER_VERTICAL_PADDING, STATUS_ICON_SIZE_DELTA,
 };
 use super::imported_comments::render_imported_comments;
+use super::orchestration;
 use super::todos::render_todos;
 use super::CONTENT_HORIZONTAL_PADDING;
 use super::{
@@ -842,6 +843,13 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                     output_message.id
                                 );
                             }
+                        }
+                        AIAgentOutputMessageType::MessagesReceivedFromAgents { messages } => {
+                            output_items.add_child(
+                                orchestration::render_messages_received_from_agents(
+                                    messages, props, app,
+                                ),
+                            );
                         }
                         AIAgentOutputMessageType::DebugOutput { text } => {
                             if ChannelState::enable_debug_features() {
