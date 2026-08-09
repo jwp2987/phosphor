@@ -40,7 +40,7 @@ use crate::terminal::model::session::Session;
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::resolve_file_target_with_editor_choice;
+use crate::util::openable_file_type::{is_markdown_file, resolve_file_target_with_editor_choice};
 use crate::util::openable_file_type::FileTarget;
 use crate::workspace::view::conversation_list::view::{
     ConversationListView, Event as ConversationListViewEvent,
@@ -109,10 +109,13 @@ pub enum LeftPanelEvent {
     OpenSkillFile {
         source: CodeSource,
     },
-    /// The user clicks a file in the remote file tree → the main window should open it as a remote buffer.
+    /// The user clicks a file in the remote file tree → the main window should open it with the given viewer.
     #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
     OpenRemoteFile {
         remote_path: crate::code::buffer_location::RemotePath,
+        /// Which viewer to open the file with (buffer-sync code editor, or the
+        /// markdown viewer for Markdown files).
+        target: FileTarget,
         /// Optional line/column jump (set by global search; `None` from the
         /// file tree, which just opens the file).
         line_col: Option<LineAndColumnArg>,
@@ -893,10 +896,25 @@ impl LeftPanelView {
                     LocalOrRemotePath::Remote(remote) => {
                         // Remote match: open the file as a remote buffer on its
                         // host, carrying the line/column jump through.
+                        // Local-fs-based target resolution can't inspect remote
+                        // files directly; mirror the file tree's remote handling
+                        // (code editor, or markdown viewer by extension +
+                        // `prefer_markdown_viewer`).
+                        let settings = EditorSettings::as_ref(ctx);
+                        let layout = *settings.open_file_layout;
+                        let is_markdown =
+                            is_markdown_file(std::path::Path::new(remote.path.as_str()));
+                        let target = if is_markdown && *settings.prefer_markdown_viewer {
+                            FileTarget::MarkdownViewer(layout)
+                        } else {
+                            FileTarget::CodeEditor(layout)
+                        };
+
                         ctx.emit(LeftPanelEvent::OpenRemoteFile {
                             remote_path: crate::code::buffer_location::util_remote_path_to_buffer(
                                 remote,
                             ),
+                            target,
                             line_col: Some(line_col),
                         });
                     }
@@ -945,14 +963,18 @@ impl LeftPanelView {
                     pane_group::Event::OpenDirectoryInNewTab { path: path.clone() },
                 ));
             }
-            FileTreeEvent::OpenRemoteFile { remote_path } => {
+            FileTreeEvent::OpenRemoteFile {
+                remote_path,
+                target,
+            } => {
                 #[cfg(feature = "local_tty")]
                 ctx.emit(LeftPanelEvent::OpenRemoteFile {
                     remote_path: remote_path.clone(),
+                    target: target.clone(),
                     line_col: None,
                 });
                 #[cfg(not(feature = "local_tty"))]
-                let _ = remote_path;
+                let _ = (remote_path, target);
             }
             FileTreeEvent::OpenRemoteImage { remote_path } => {
                 #[cfg(feature = "local_tty")]

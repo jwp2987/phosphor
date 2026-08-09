@@ -51,7 +51,9 @@ use crate::terminal::view::{TerminalDropTargetData, TerminalView};
 use crate::ui_components::item_highlight::{ImageOrIcon, ItemHighlightState};
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
-use crate::util::openable_file_type::{is_file_content_binary, EditorLayout, FileTarget};
+use crate::util::openable_file_type::{
+    is_file_content_binary, is_markdown_file, EditorLayout, FileTarget,
+};
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::{
     resolve_file_target_to_open_in_warp, resolve_file_target_with_editor_choice,
@@ -2251,7 +2253,9 @@ impl FileTreeView {
                     let path = metadata.path.to_local_path_lossy();
                     self.open_file(&path, None, ctx);
                 } else {
-                    // Remote file: images go through the image viewer, everything
+                    // Remote file: images go through the image viewer, markdown
+                    // goes through the markdown viewer (respecting
+                    // `prefer_markdown_viewer`, same as local files), everything
                     // else opens via the buffer-sync protocol.
                     #[cfg(feature = "local_tty")]
                     if let Some(host_id) = root_dir.remote_host_id.clone() {
@@ -2259,16 +2263,34 @@ impl FileTreeView {
                             host_id,
                             (*metadata.path).clone(),
                         );
-                        // `is_supported_image_file` accepts `impl AsRef<Path>`, but
-                        // `metadata.path` is a `StandardizedPath` (no `AsRef<Path>`) —
-                        // converting to a local PathBuf is only to read the
-                        // extension; it has no remote-path semantics.
-                        if crate::util::openable_file_type::is_supported_image_file(
-                            metadata.path.to_local_path_lossy(),
-                        ) {
+                        // `is_supported_image_file`/`is_markdown_file` accept
+                        // `impl AsRef<Path>`, but `metadata.path` is a
+                        // `StandardizedPath` (no `AsRef<Path>`) — converting to a
+                        // local PathBuf is only to read the extension; it has no
+                        // remote-path semantics.
+                        let local_lossy = metadata.path.to_local_path_lossy();
+                        if crate::util::openable_file_type::is_supported_image_file(&local_lossy) {
                             ctx.emit(FileTreeEvent::OpenRemoteImage { remote_path });
                         } else {
-                            ctx.emit(FileTreeEvent::OpenRemoteFile { remote_path });
+                            #[cfg(feature = "local_fs")]
+                            let target = {
+                                let settings = EditorSettings::as_ref(ctx);
+                                let layout = *settings.open_file_layout;
+                                if is_markdown_file(&local_lossy)
+                                    && *settings.prefer_markdown_viewer
+                                {
+                                    FileTarget::MarkdownViewer(layout)
+                                } else {
+                                    FileTarget::CodeEditor(layout)
+                                }
+                            };
+                            #[cfg(not(feature = "local_fs"))]
+                            let target = FileTarget::CodeEditor(EditorLayout::SplitPane);
+
+                            ctx.emit(FileTreeEvent::OpenRemoteFile {
+                                remote_path,
+                                target,
+                            });
                         }
                     }
                 }
@@ -2908,10 +2930,12 @@ pub enum FileTreeEvent {
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     OpenDirectoryInNewTab { path: PathBuf },
     /// Emitted when a file in the remote file tree is clicked, requesting it be
-    /// opened as a remote buffer.
+    /// opened with the given viewer (buffer-sync code editor, or the markdown
+    /// viewer for Markdown files).
     #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
     OpenRemoteFile {
         remote_path: crate::code::buffer_location::RemotePath,
+        target: FileTarget,
     },
     /// Emitted when an image file in the remote file tree is clicked,
     /// requesting it be opened with the remote image viewer.
