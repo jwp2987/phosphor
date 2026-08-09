@@ -129,10 +129,28 @@ builds once per batch and merges on green. `TODO.md` updated at each landing.
       SKILLS; `remote_context_files` makes GLOBAL RULES arrive. Same files, same
       feature, one batch. Together they take remote agent context from degraded to
       complete.
-- [ ] **#382** ~19-24 tests, and PARTLY STALE: `prune_unreachable_subtasks` already
-      landed (`8d3f9d9ba`), so item 1 is half-done. Re-verify each item before work.
-- [ ] **#236** ~12-14 tests. Only directory-load coalescing remains; the symlink/
-      lexical family is mostly ported already.
+- [ ] **#382** — scoped against `working` 2026-08-09: **~19 real tests**, four
+      unrelated items. `prune_unreachable_subtasks` is ALREADY LANDED (`8d3f9d9ba`).
+      Remaining:
+      - `exchange_by_id` indexed lookup (~6 tests). Fork has only `exchange_mut`
+        (linear scan) — functionally equivalent, so this is a PERFORMANCE gap, not a
+        correctness one. Weigh accordingly.
+      - `AmbientAgentTask::display_name`. **TRAP:** the fork HAS a `display_name` at
+        `ambient_agents/task.rs:176`, but it is on `AgentSource` — a homonym. The
+        pin's is on `AmbientAgentTask` (snapshot name -> title -> `"Agent"`). A grep
+        alone says "already done"; it is not.
+      - `file_mcp_watcher` diagnostics — zero `diagnostic` refs in the fork's file.
+      - `skills/file_watchers/utils` — pin 23 tests, fork 20. Only 3 missing.
+- [ ] **#236** — scoped against `working` 2026-08-09: **~14 real tests**, 74% already
+      ported (pin `local_model_tests.rs` 54, fork `local_model_test.rs` 40 — note the
+      fork's rename drops the plural, which has caused false "absent" readings).
+      Remaining: `load_directory_with_completion` coalescing (5 pin tests, and
+      `local_model.rs:231` still carries the "not yet ported" marker), plus ~6 of the
+      7 symlink/lexical tests — `added_external_target_skill_symlink_routes_to_lexical_repository`
+      is already ported and wired via `find_repository_for_watcher_entry_path`.
+
+**Queue total after scoping: ~42 real tests across #381/#382/#236, not the ~113 their
+titles sum to.** Consistent with every audit this session: filed counts run 2-4x high.
 
 Deferred by explicit decision, do NOT pick up without asking:
 - Tier 3.5 orchestration (6 issues, needs a new forward migration)
