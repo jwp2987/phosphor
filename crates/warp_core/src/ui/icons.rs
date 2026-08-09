@@ -26,6 +26,11 @@ pub enum Icon {
     DotsVertical,
     DotsHorizontal,
     Trash,
+    /// Outline pin glyph, used for the orchestration pill bar's "pin this
+    /// child agent" toggle in its unpinned state.
+    Pin,
+    /// Solid pin glyph, used for the orchestration pill bar's pinned state.
+    PinFilled,
     Terminal,
     TerminalInput,
     TextInput,
@@ -342,6 +347,8 @@ impl From<Icon> for &'static str {
             Icon::Globe => "bundled/svg/globe-01.svg",
             Icon::Globe4 => "bundled/svg/globe-04.svg",
             Icon::Trash => "bundled/svg/trash-02.svg",
+            Icon::Pin => "bundled/svg/pin-01.svg",
+            Icon::PinFilled => "bundled/svg/pin-filled.svg",
             Icon::Terminal => "bundled/svg/terminal.svg",
             Icon::TerminalInput => "bundled/svg/terminal-input.svg",
             Icon::TextInput => "bundled/svg/text-input.svg",
