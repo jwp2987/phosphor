@@ -492,18 +492,6 @@ ABSORBED into the tier-2 batch (maintainer decision 2026-08-08):
       collectively wrong.** Re-check declines against decisions made after them.
 
 **FILED 2026-08-09 — tiered at filing per the rule above:**
-- [ ] #575 `RemoteAgentContextSnapshot.global_rules` is always empty. Split out of the
-      #440 batch after a scope correction: I had assumed `remote_context_files.rs`
-      supplied it — **it does not.** `global_rules` arrives pre-serialized in the
-      snapshot from daemon-side `ProjectContextModel::global_rules()`;
-      `remote_context_files.rs`'s real consumers (`metadata_project_rules.rs`,
-      `skill_watcher.rs::read_project_skill_contents`) are unrelated and absent here.
-      **Real scope:** daemon `ProjectContextModel::global_rules()` + client
-      `set_remote_global_rules`/`remove_remote_global_rules`/`remote_global_rules`
-      storage. **Blocker:** this fork's `ProjectContextModel`
-      (`crates/ai/src/project_context/model.rs`) is a flat local-only `path_to_rules`
-      map with no per-host scaffolding — comparable in size to the per-host skills
-      work that landed under #487/#353, not a wiring change. Tier 3.
 
 **REAL as filed:**
 - [x] #284 no `received_rich_notification` latch on `CLIAgentSession`; fork derives  **LANDED 2026-08-09** (tier 3 batch, 8,434 tests green).
@@ -657,6 +645,24 @@ changed an agreed order twice on 2026-08-09 (#381 folded into the #440 batch aga
 
 ### Tier 4 — large (a week+)
 - [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #349 · #324 · #405
+- [ ] #575 `RemoteAgentContextSnapshot.global_rules` is always empty. Split out of the
+      #440 batch after a scope correction: I had assumed `remote_context_files.rs`
+      supplied it — **it does not.** `global_rules` arrives pre-serialized in the
+      snapshot from daemon-side `ProjectContextModel::global_rules()`;
+      `remote_context_files.rs`'s real consumers (`metadata_project_rules.rs`,
+      `skill_watcher.rs::read_project_skill_contents`) are unrelated and absent here.
+      **Real scope:** daemon `ProjectContextModel::global_rules()` + client
+      `set_remote_global_rules`/`remove_remote_global_rules`/`remote_global_rules`
+      storage. **Blocker:** this fork's `ProjectContextModel`
+      (`crates/ai/src/project_context/model.rs`) is a flat local-only `path_to_rules`
+      map with no per-host scaffolding — comparable in size to the per-host skills
+      work that landed under #487/#353, not a wiring change. **MOVED TO TIER 4 2026-08-09 by maintainer** — sized like the #487/#353
+      per-host skills work, not like the rest of tier 3, and it was the only item
+      holding tier 3 open. Verified before the move: `project_context/` has **zero**
+      `HostId` references (model.rs 0, mod.rs 0, model_tests.rs 0), no `global_rules()`
+      accessor exists at all, and `app/src/remote_server/server_model.rs:262` hardcodes
+      `global_rules: Vec::new()`. The protocol half is already correct —
+      `protocol_tests.rs` round-trips the field.
 - [ ] #312 NLD prompt-history match — **moved here from the maintainer-decision bucket
       2026-08-09; it was never a decision, it is ordinary local work.** Warp's
       natural-language detection consults TWO history sources (shell command history +
