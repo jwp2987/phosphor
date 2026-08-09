@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::report_error::report_error;
 use async_channel::Sender;
 use instant::Instant;
 use parking_lot::FairMutex;
@@ -15,41 +16,36 @@ use warp::settings::{
     TuiTheme, TuiThemeSettings,
 };
 use warp::tui_export::{
-    AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
+    AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
     AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
-    Appearance,
     ActiveSession, ActiveSessionEvent, AgentConversationEntryId, AgentConversationListEntryState,
-    AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, BlockId,
-    BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
-    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
-    CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, FORK_PREFIX, PRE_REWIND_PREFIX,
-    CancellationReason, ChangelogModel, tui_conversation_actions_in_order,
-    ChangelogRequestType, LoadedConversationData, CommandExecutionSource, ConversationFileExport,
-    ConversationSelection, ConversationSelectionHandle,
-    ExecuteCommandEvent, GitRepoModels, GitRepoStatusModel, LinkedWorkflowData,
-    TuiUpArrowHistoryItemKind,
-    GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
-    LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, ModelEvent, ParsedSlashCommandInput,
-    PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
-    ServerConversationToken, ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference,
-    SlashCommandKind, SlashCommandSelectionBehavior, UsageCostOutcome,
-    context_usage_report, conversation_cost_report,
-    StaticCommand, TerminalModel, TerminalSurface,
-    AgentViewState, TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
-    TuiSlashCommandDataSourceArgs, TuiZeroStateDataSource, UserTakeOverReason,
-    WAKEUP_THROTTLE_PERIOD, block_context_from_terminal_model, build_slash_command_mixer,
-    detect_possible_git_repo, export_conversation_markdown, log_out_tui,
+    AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, AgentViewState,
+    Appearance, BlockId, BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel,
+    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel,
+    CLISubagentController, CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY,
+    CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
+    CommandExecutionSource, ConversationFileExport, ConversationSelection,
+    ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, GitRepoModels,
+    GitRepoStatusModel, GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
+    LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData, LoadedConversationData,
+    ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput, PersistenceWriter, PtyIntent,
+    PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource, ServerConversationToken,
+    ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference, SlashCommandKind,
+    SlashCommandSelectionBehavior, StaticCommand, TerminalModel, TerminalSurface,
+    TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
+    TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind, TuiZeroStateDataSource,
+    UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD,
+    block_context_from_terminal_model, build_slash_command_mixer, context_usage_report,
+    conversation_cost_report, detect_possible_git_repo, export_conversation_markdown, log_out_tui,
     maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
     record_autodetection_toggle_from_slash_command, record_saved_prompt_accepted,
     record_static_slash_command_accepted, saved_prompt_text_for_id,
-    slash_command_selection_behavior, throttle,
-    tui_completion_session_context, tui_fetch_completions,
-    ClientProfileId, tui_set_active_profile,
+    slash_command_selection_behavior, throttle, tui_completion_session_context,
+    tui_conversation_actions_in_order, tui_fetch_completions, tui_set_active_profile,
 };
 use warp_core::features::FeatureFlag;
 use warp_core::settings::Setting;
 use warp_editor::model::CoreEditorModel;
-use crate::report_error::report_error;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::SingletonEntity;
 use warpui_core::r#async::{SpawnedFutureHandle, Timer};
@@ -73,6 +69,9 @@ use crate::attachment_bar::{
     TuiAttachmentPasteDisposition,
 };
 use crate::clipboard::copy_to_clipboard;
+use crate::completions_menu::{
+    TuiAcceptedCompletion, TuiCompletionsMenuEvent, TuiCompletionsMenuModel,
+};
 use crate::conversation_menu::{TuiConversationMenuEvent, TuiConversationMenuModel};
 use crate::conversation_selection::TuiConversationSelection;
 use crate::editor_interaction::TuiEditorCommand;
@@ -89,22 +88,17 @@ use crate::keybindings::{
     TUI_BINDING_GROUP,
 };
 use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
-use crate::completions_menu::{
-    TuiAcceptedCompletion, TuiCompletionsMenuEvent, TuiCompletionsMenuModel,
-};
 use ai::agent::action_result::RequestFileEditsResult;
 
 use crate::api_keys_menu::{TuiApiKeysMenuEvent, TuiApiKeysMenuModel};
 use crate::exchange_menu::{TuiExchangeMenuAction, TuiExchangeMenuEvent, TuiExchangeMenuModel};
-use crate::tui_diff_storage::revert_file_diffs;
-use crate::tui_revert_registry::TuiFileEditRevertRegistry;
-use crate::profile_menu::{TuiProfileMenuEvent, TuiProfileMenuModel};
-use crate::prompts_menu::{TuiPromptsMenuEvent, TuiPromptsMenuModel};
 use crate::model_menu::{TuiModelMenuEvent, TuiModelMenuModel};
 use crate::platform::reveal_path_in_file_manager;
+use crate::profile_menu::{TuiProfileMenuEvent, TuiProfileMenuModel};
 use crate::prompt_and_command_history_menu::{
     TuiPromptAndCommandHistoryMenuEvent, TuiPromptAndCommandHistoryMenuModel,
 };
+use crate::prompts_menu::{TuiPromptsMenuEvent, TuiPromptsMenuModel};
 use crate::resume::TuiExitSummaryHandle;
 use crate::session_registry::TuiSessions;
 use crate::skills_menu::{TuiSkillMenuEvent, TuiSkillMenuModel};
@@ -124,6 +118,8 @@ use crate::tui_cli_subagent_view::{
     ALLOW_BLOCKED_ACTION_KEY_BINDING, HAND_BACK_KEY_BINDING, REJECT_BLOCKED_ACTION_KEY_BINDING,
     TuiCLISubagentView,
 };
+use crate::tui_diff_storage::revert_file_diffs;
+use crate::tui_revert_registry::TuiFileEditRevertRegistry;
 use crate::ui::{compact_footer_path, conversation_restore_failed, conversation_restoring};
 use crate::usage::render_context_usage_entry;
 use crate::warping_indicator::{render_response_summary, render_warping_indicator_row};
@@ -287,7 +283,10 @@ enum FooterSegment {
     /// credits/cost, so unlike upstream's clickable credits⇄cost toggle this
     /// wraps Zap's informational context-% entry (`crate::usage`).
     ContextWindowUsage(Box<dyn TuiElement>),
-    GitDiff { additions: usize, deletions: usize },
+    GitDiff {
+        additions: usize,
+        deletions: usize,
+    },
 }
 
 impl FooterSegment {
@@ -989,6 +988,21 @@ impl TuiTerminalSessionView {
             .filter(|target| target.control_state.is_agent_blocked())
     }
 
+    /// The specific action `target`'s `TuiCLISubagentView` is displaying as
+    /// blocked, if that view is still registered. Looking this up (rather
+    /// than guessing at the conversation's first pending action) keeps the
+    /// keyboard shortcut targeting the exact action the card shows, matching
+    /// the mouse-click path in `TuiCLISubagentView`.
+    fn blocked_action_for_target(
+        &self,
+        target: &CLISubagentTarget,
+        app: &AppContext,
+    ) -> Option<AIAgentAction> {
+        self.cli_subagent_views
+            .get(&target.block_id)?
+            .read(app, |view, app| view.blocked_action(app))
+    }
+
     /// Approves the agent's pending action on the long-running command it's
     /// driving -- the keyboard equivalent of clicking "[Allow]" in
     /// `TuiCLISubagentView` (`TuiCLISubagentViewAction::Allow`'s handler).
@@ -996,8 +1010,17 @@ impl TuiTerminalSessionView {
         let Some(target) = self.active_agent_blocked_target(ctx) else {
             return;
         };
+        let Some(blocked_action) = self.blocked_action_for_target(&target, ctx) else {
+            return;
+        };
+        let conversation_id = target.conversation_id;
         self.ai_action_model.update(ctx, |action_model, ctx| {
-            action_model.execute_next_action_for_user(target.conversation_id, ctx);
+            crate::tui_cli_subagent_view::execute_blocked_action(
+                action_model,
+                conversation_id,
+                &blocked_action,
+                ctx,
+            );
         });
     }
 
@@ -1005,27 +1028,21 @@ impl TuiTerminalSessionView {
     /// driving, without taking over the command -- the keyboard equivalent of
     /// clicking "[Reject]" in `TuiCLISubagentView`
     /// (`TuiCLISubagentViewAction::Reject`'s handler). Mirrors the GUI's
-    /// `RejectBlockedAction { should_user_take_over: false }`: the front
-    /// pending action for the conversation is cancelled (same action
-    /// `execute_next_action_for_user` would have run), and control stays with
-    /// the agent.
+    /// `RejectBlockedAction { should_user_take_over: false }`: the specific
+    /// displayed action is cancelled and control stays with the agent.
     fn reject_blocked_lrc_action(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(target) = self.active_agent_blocked_target(ctx) else {
             return;
         };
+        let Some(blocked_action) = self.blocked_action_for_target(&target, ctx) else {
+            return;
+        };
         let conversation_id = target.conversation_id;
         self.ai_action_model.update(ctx, |action_model, ctx| {
-            let Some(action_id) = action_model
-                .get_pending_actions_for_conversation(&conversation_id)
-                .next()
-                .map(|action| action.id.clone())
-            else {
-                return;
-            };
-            action_model.cancel_action_with_id(
+            crate::tui_cli_subagent_view::cancel_blocked_action(
+                action_model,
                 conversation_id,
-                &action_id,
-                CancellationReason::ManuallyCancelled,
+                &blocked_action,
                 ctx,
             );
         });
@@ -1260,9 +1277,12 @@ impl TuiTerminalSessionView {
         });
         let completions_menu =
             ctx.add_model(|_| TuiCompletionsMenuModel::new(suggestions_mode.clone()));
-        ctx.subscribe_to_model(&completions_menu, |_, _, _: &TuiCompletionsMenuEvent, ctx| {
-            ctx.notify();
-        });
+        ctx.subscribe_to_model(
+            &completions_menu,
+            |_, _, _: &TuiCompletionsMenuEvent, ctx| {
+                ctx.notify();
+            },
+        );
         let profile_menu = ctx.add_model(|ctx| {
             TuiProfileMenuModel::new(
                 input_editor_model.clone(),
@@ -2061,10 +2081,7 @@ impl TuiTerminalSessionView {
             ctx.notify();
         }
 
-        if matches!(
-            event,
-            BlocklistAIHistoryEvent::RestoredConversations { .. }
-        ) {
+        if matches!(event, BlocklistAIHistoryEvent::RestoredConversations { .. }) {
             self.refresh_exit_summary(ctx);
         }
         match event {
@@ -2548,9 +2565,7 @@ impl TuiTerminalSessionView {
                     .then(|| self.selected_conversation_context_usage(ctx))
                     .flatten()
                     .map(|fraction| {
-                        FooterSegment::ContextWindowUsage(render_context_usage_entry(
-                            fraction, ctx,
-                        ))
+                        FooterSegment::ContextWindowUsage(render_context_usage_entry(fraction, ctx))
                     }),
             };
             if let Some(segment) = segment {
@@ -2760,15 +2775,19 @@ impl TuiTerminalSessionView {
                 let Some(results) = results else {
                     return;
                 };
-                let rows = results
-                    .candidates
-                    .into_iter()
-                    .map(|candidate| {
-                        (candidate.display, candidate.replacement, candidate.description)
-                    })
-                    .collect::<Vec<_>>();
+                // The composer keeps the cursor at the buffer tail (see the
+                // comment above), so a completion whose span reaches that
+                // tail is completing the last token in the buffer -- accepting
+                // it should append a trailing space, matching shell
+                // tab-completion, unless the candidate names a directory.
+                let append_space_at_buffer_end = results.replacement_span.end == cursor_pos;
                 view.completions_menu.update(ctx, |menu, ctx| {
-                    menu.show(rows, results.replacement_span, ctx);
+                    menu.show(
+                        results.candidates,
+                        results.replacement_span,
+                        append_space_at_buffer_end,
+                        ctx,
+                    );
                 });
                 ctx.notify();
             },
@@ -2786,10 +2805,17 @@ impl TuiTerminalSessionView {
         ctx: &mut ViewContext<Self>,
     ) {
         let buffer_text = self.input_buffer_text(ctx);
-        let TuiAcceptedCompletion { replacement, span } = completion;
-        let Some(new_text) =
-            crate::completions_menu::apply_completion_replacement(&buffer_text, &replacement, &span)
-        else {
+        let TuiAcceptedCompletion {
+            replacement,
+            span,
+            append_space,
+        } = completion;
+        let Some(new_text) = crate::completions_menu::apply_completion_replacement(
+            &buffer_text,
+            &replacement,
+            &span,
+            append_space,
+        ) else {
             return;
         };
         self.input_view
@@ -3139,9 +3165,13 @@ impl TuiTerminalSessionView {
         // = false extends through the selected response, matching the GUI).
         let fork_result = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
             match fork_from_exchange {
-                Some(exchange_id) => {
-                    history.fork_conversation_at_exchange(&source, exchange_id, false, FORK_PREFIX, ctx)
-                }
+                Some(exchange_id) => history.fork_conversation_at_exchange(
+                    &source,
+                    exchange_id,
+                    false,
+                    FORK_PREFIX,
+                    ctx,
+                ),
                 None => history.fork_conversation(
                     &source,
                     FORK_PREFIX,
@@ -3172,13 +3202,12 @@ impl TuiTerminalSessionView {
             PostForkAction::CompactThenPrompt(initial_prompt) => {
                 // Arm the follow-up before triggering the summarize so its
                 // InProgress transition is observed (see maybe_send_queued_follow_up).
-                self.queued_follow_up = normalize_optional_prompt(initial_prompt).map(|prompt| {
-                    TuiQueuedFollowUp {
+                self.queued_follow_up =
+                    normalize_optional_prompt(initial_prompt).map(|prompt| TuiQueuedFollowUp {
                         conversation_id: forked_id,
                         prompt,
                         seen_in_progress: false,
-                    }
-                });
+                    });
                 self.send_prompt(
                     warp::tui_export::slash_commands::COMPACT.name.to_owned(),
                     ctx,
@@ -3189,11 +3218,7 @@ impl TuiTerminalSessionView {
 
     /// Opens the exchange picker for `/fork-from` or `/rewind` over the selected
     /// conversation's user queries.
-    fn open_exchange_menu(
-        &mut self,
-        action: TuiExchangeMenuAction,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    fn open_exchange_menu(&mut self, action: TuiExchangeMenuAction, ctx: &mut ViewContext<Self>) {
         let Some(conversation_id) = self
             .conversation_selection
             .as_ref(ctx)
@@ -3213,7 +3238,8 @@ impl TuiTerminalSessionView {
         action: TuiExchangeMenuAction,
         ctx: &mut ViewContext<Self>,
     ) {
-        self.exchange_menu.update(ctx, |menu, ctx| menu.dismiss(ctx));
+        self.exchange_menu
+            .update(ctx, |menu, ctx| menu.dismiss(ctx));
         match action {
             TuiExchangeMenuAction::ForkFrom => {
                 // Fork up to the chosen exchange; no initial prompt (matches the GUI).
@@ -3238,11 +3264,7 @@ impl TuiTerminalSessionView {
     /// in the current session. Edits from a restored conversation carry no base
     /// content and cannot be reverted (same limitation as the GUI); the pre-rewind
     /// backup preserves the full history either way.
-    fn rewind_to_exchange(
-        &mut self,
-        exchange_id: AIAgentExchangeId,
-        ctx: &mut ViewContext<Self>,
-    ) {
+    fn rewind_to_exchange(&mut self, exchange_id: AIAgentExchangeId, ctx: &mut ViewContext<Self>) {
         let Some(conversation_id) = self
             .conversation_selection
             .as_ref(ctx)
@@ -3288,31 +3310,31 @@ impl TuiTerminalSessionView {
         // Save a pre-rewind backup so the full history can be recovered later.
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
             if let Some(conversation) = history.conversation(&conversation_id).cloned() {
-                if let Err(error) =
-                    history.fork_conversation(
-                        &conversation,
-                        PRE_REWIND_PREFIX,
-                        false, /* preserve_task_ids */
-                        None,
-                        ctx,
-                    )
-                {
+                if let Err(error) = history.fork_conversation(
+                    &conversation,
+                    PRE_REWIND_PREFIX,
+                    false, /* preserve_task_ids */
+                    None,
+                    ctx,
+                ) {
                     log::warn!("Failed to save pre-rewind backup of {conversation_id}: {error}");
                 }
             }
         });
         // Truncate the conversation at the chosen exchange.
-        let removed_exchange_ids = match BlocklistAIHistoryModel::handle(ctx)
-            .update(ctx, |history, ctx| {
+        let removed_exchange_ids =
+            match BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
                 history.truncate_conversation_from_exchange(conversation_id, exchange_id, ctx)
             }) {
-            Ok(removed) => removed,
-            Err(error) => {
-                log::warn!("Failed to truncate conversation {conversation_id} for rewind: {error}");
-                self.show_transient_hint(REWIND_FAILED_HINT.to_owned(), ctx);
-                return;
-            }
-        };
+                Ok(removed) => removed,
+                Err(error) => {
+                    log::warn!(
+                        "Failed to truncate conversation {conversation_id} for rewind: {error}"
+                    );
+                    self.show_transient_hint(REWIND_FAILED_HINT.to_owned(), ctx);
+                    return;
+                }
+            };
         // Revert the file edits in the removed exchanges, newest-first so that
         // repeated edits to the same file unwind back to the original content.
         let mut actions_to_revert: Vec<AIAgentActionId> = revert_candidates
@@ -3322,8 +3344,9 @@ impl TuiTerminalSessionView {
             .collect();
         actions_to_revert.reverse();
         for action_id in &actions_to_revert {
-            let diffs = TuiFileEditRevertRegistry::handle(ctx)
-                .update(ctx, |registry, _| registry.take_diffs(&conversation_id, action_id));
+            let diffs = TuiFileEditRevertRegistry::handle(ctx).update(ctx, |registry, _| {
+                registry.take_diffs(&conversation_id, action_id)
+            });
             if let Some(diffs) = diffs {
                 revert_file_diffs(&diffs, ctx);
             }
@@ -3419,22 +3442,21 @@ impl TuiTerminalSessionView {
         // on `is_shell_mode`, so recalling a command while the composer sits in
         // agent mode would otherwise send that command to the model as a prompt
         // instead of executing it (and vice versa for a recalled prompt).
-        self.pending_history_command_workflow_data =
-            self.input_view.update(ctx, |input, ctx| {
-                input.set_text(&text, ctx);
-                match kind {
-                    TuiUpArrowHistoryItemKind::Prompt => {
-                        input.exit_shell_mode(ctx);
-                        None
-                    }
-                    TuiUpArrowHistoryItemKind::Command {
-                        linked_workflow_data,
-                    } => {
-                        input.enter_shell_mode(ctx);
-                        linked_workflow_data
-                    }
+        self.pending_history_command_workflow_data = self.input_view.update(ctx, |input, ctx| {
+            input.set_text(&text, ctx);
+            match kind {
+                TuiUpArrowHistoryItemKind::Prompt => {
+                    input.exit_shell_mode(ctx);
+                    None
                 }
-            });
+                TuiUpArrowHistoryItemKind::Command {
+                    linked_workflow_data,
+                } => {
+                    input.enter_shell_mode(ctx);
+                    linked_workflow_data
+                }
+            }
+        });
         self.handle_submitted(text, ctx);
     }
 
@@ -4002,8 +4024,9 @@ impl TuiTerminalSessionView {
             return;
         }
         let enabled = !AppEditorSettings::as_ref(ctx).vim_mode_enabled();
-        let result = AppEditorSettings::handle(ctx)
-            .update(ctx, |settings, ctx| settings.vim_mode.set_value(enabled, ctx));
+        let result = AppEditorSettings::handle(ctx).update(ctx, |settings, ctx| {
+            settings.vim_mode.set_value(enabled, ctx)
+        });
         match result {
             Ok(()) => {
                 if enabled {
@@ -4174,8 +4197,12 @@ impl TuiView for TuiTerminalSessionView {
             context.set.insert(SESSION_CAN_HAND_BACK_CONTROL_FLAG);
         }
         if self.active_agent_blocked_target(ctx).is_some() {
-            context.set.insert(SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG);
-            context.set.insert(SESSION_CAN_REJECT_BLOCKED_LRC_ACTION_FLAG);
+            context
+                .set
+                .insert(SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG);
+            context
+                .set
+                .insert(SESSION_CAN_REJECT_BLOCKED_LRC_ACTION_FLAG);
         }
         if self.transcript.as_ref(ctx).has_toggleable_plan(ctx) {
             context.set.insert(PLAN_TOGGLE_AVAILABLE_FLAG);
@@ -4202,8 +4229,7 @@ impl TuiView for TuiTerminalSessionView {
             } => return conversation_restoring(ctx),
             ConversationRestoreState::Loading {
                 origin:
-                    TuiConversationRestoreOrigin::ConversationList
-                    | TuiConversationRestoreOrigin::Fork,
+                    TuiConversationRestoreOrigin::ConversationList | TuiConversationRestoreOrigin::Fork,
                 ..
             } => {}
             ConversationRestoreState::Failed(message) => {
@@ -4497,12 +4523,8 @@ impl TypedActionView for TuiTerminalSessionView {
             TuiTerminalSessionAction::HandBackTerminalUseControl => {
                 self.hand_back_terminal_use_control(ctx)
             }
-            TuiTerminalSessionAction::AllowBlockedLrcAction => {
-                self.allow_blocked_lrc_action(ctx)
-            }
-            TuiTerminalSessionAction::RejectBlockedLrcAction => {
-                self.reject_blocked_lrc_action(ctx)
-            }
+            TuiTerminalSessionAction::AllowBlockedLrcAction => self.allow_blocked_lrc_action(ctx),
+            TuiTerminalSessionAction::RejectBlockedLrcAction => self.reject_blocked_lrc_action(ctx),
             TuiTerminalSessionAction::ToggleResponseSummaryVisibility => {
                 self.toggle_response_summary_visibility(ctx)
             }

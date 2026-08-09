@@ -32,26 +32,12 @@ fn delta(range: std::ops::Range<usize>, insertion: &str) -> DiffDelta {
     }
 }
 
-#[test]
-fn all_file_edit_sections_start_collapsed_and_toggle_independently() {
-    let states = SectionStates::default();
-
-    assert!(states.is_collapsed(SectionKey::Summary));
-    assert!(states.is_collapsed(SectionKey::File(0)));
-    assert!(states.is_collapsed(SectionKey::File(1)));
-
-    states.toggle_collapsed(SectionKey::File(0));
-    assert!(states.is_collapsed(SectionKey::Summary));
-    assert!(!states.is_collapsed(SectionKey::File(0)));
-    assert!(states.is_collapsed(SectionKey::File(1)));
-}
-
 /// `expand_all`/`collapse_all` move every keyed section together, mirroring
 /// the approval lifecycle: a card blocks (expand), then executes or finishes
 /// (collapse). Independent per-section toggles still work between the two.
 #[test]
 fn section_states_expand_and_collapse_for_approval_lifecycle() {
-    let states = SectionStates::default();
+    let mut states = SectionStates::default();
     let keys = [
         SectionKey::Summary,
         SectionKey::File(0),
@@ -83,7 +69,7 @@ fn section_states_expand_and_collapse_for_approval_lifecycle() {
 /// expands all when every section is already collapsed.
 #[test]
 fn toggle_expand_all_collapses_then_expands() {
-    let states = SectionStates::default();
+    let mut states = SectionStates::default();
     let keys = [
         SectionKey::Summary,
         SectionKey::File(0),
@@ -416,7 +402,12 @@ fn blocked_file_edits_card_shows_expand_hint_sections_and_options() {
         // Pump the async preprocess so the queued action reaches the pending
         // queue and the permission card renders in its blocked state.
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
         // Seed two real diffs so sections exist and the card can render them expanded.
@@ -483,7 +474,12 @@ fn e_key_dispatches_toggle_expand_all_on_blocked_card() {
             );
         });
         crate::test_fixtures::settle_until(&mut app, |app| {
-            app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
+            app.read(|ctx| {
+                view.as_ref(ctx)
+                    .permission_prompt
+                    .as_ref(ctx)
+                    .is_active(ctx)
+            })
         })
         .await;
         seed_two_file_diffs(&mut app, &view);

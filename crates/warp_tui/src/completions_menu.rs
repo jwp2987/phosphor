@@ -11,6 +11,7 @@
 
 use std::ops::Range;
 
+use warp::tui_export::TuiCompletionCandidate;
 use warpui_core::{AppContext, Entity, ModelContext, ModelHandle};
 
 use crate::inline_menu::{
@@ -29,6 +30,11 @@ pub(crate) struct TuiCompletionRow {
     replacement: String,
     /// Optional trailing description (e.g. a flag's help text).
     description: Option<String>,
+    /// Whether accepting this row should append a trailing space. Only set
+    /// when the row was fetched at the end of the buffer and does not name a
+    /// directory -- a directory completion leaves the cursor ready to keep
+    /// typing the next path segment, so it never gets the trailing space.
+    append_space: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -51,6 +57,8 @@ pub(crate) struct TuiCompletionsMenuEvent;
 pub(crate) struct TuiAcceptedCompletion {
     pub(crate) replacement: String,
     pub(crate) span: Range<usize>,
+    /// Whether the caller should insert a trailing space after `replacement`.
+    pub(crate) append_space: bool,
 }
 
 pub(crate) struct TuiCompletionsMenuModel {
@@ -66,6 +74,44 @@ impl TuiCompletionsMenuModel {
         }
     }
 
+    /// Builds a model already open with `candidates`, bypassing `show`'s
+    /// input-mode negotiation. For tests that need a populated popup without
+    /// wiring up a full session view.
+    // Unused until `terminal_session_view/completions.rs` lands (#390) and
+    // exercises it from its own tests.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn new_for_test(
+        suggestions_mode: ModelHandle<TuiInputSuggestionsModeModel>,
+        candidates: Vec<TuiCompletionCandidate>,
+        replacement_span: Range<usize>,
+        selected_index: usize,
+    ) -> Self {
+        let mut list = TuiInlineMenuListState::default();
+        list.replace_rows(
+            candidates
+                .into_iter()
+                .map(|candidate| TuiCompletionRow {
+                    display: candidate.display,
+                    replacement: candidate.replacement,
+                    description: candidate.description,
+                    append_space: false,
+                })
+                .collect(),
+            false,
+            Some(selected_index),
+            MAX_VISIBLE_ROWS,
+            |_| true,
+        );
+        Self {
+            suggestions_mode,
+            state: TuiCompletionsMenuState::Open {
+                list,
+                replacement_span,
+            },
+        }
+    }
+
     fn has_open_state(&self) -> bool {
         matches!(self.state, TuiCompletionsMenuState::Open { .. })
     }
@@ -75,16 +121,20 @@ impl TuiCompletionsMenuModel {
             && self.suggestions_mode.as_ref(ctx).mode() == TuiInputSuggestionsMode::Completions
     }
 
-    /// Populates the popup with freshly-fetched candidates and opens it. Rows
-    /// are `(display, replacement, description)`. Returns `false` (and opens
-    /// nothing) when there are no rows or another mode owns the input.
+    /// Populates the popup with freshly-fetched candidates and opens it.
+    /// `append_space_at_buffer_end` is true when the completion span reaches
+    /// the end of the input buffer, so non-directory candidates get a
+    /// trailing space on accept (matching shell tab-completion). Returns
+    /// `false` (and opens nothing) when there are no candidates or another
+    /// mode owns the input.
     pub(crate) fn show(
         &mut self,
-        rows: Vec<(String, String, Option<String>)>,
+        candidates: Vec<TuiCompletionCandidate>,
         replacement_span: Range<usize>,
+        append_space_at_buffer_end: bool,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
-        if rows.is_empty() {
+        if candidates.is_empty() {
             self.dismiss(ctx);
             return false;
         }
@@ -96,11 +146,13 @@ impl TuiCompletionsMenuModel {
         }
         let mut list = TuiInlineMenuListState::default();
         list.replace_rows(
-            rows.into_iter()
-                .map(|(display, replacement, description)| TuiCompletionRow {
-                    display,
-                    replacement,
-                    description,
+            candidates
+                .into_iter()
+                .map(|candidate| TuiCompletionRow {
+                    display: candidate.display,
+                    replacement: candidate.replacement,
+                    description: candidate.description,
+                    append_space: append_space_at_buffer_end && !candidate.is_directory,
                 })
                 .collect(),
             false,
@@ -168,7 +220,10 @@ impl TuiCompletionsMenuModel {
         ctx.emit(TuiCompletionsMenuEvent);
     }
 
-    pub(crate) fn accept_selected(&mut self, ctx: &mut ModelContext<Self>) -> Option<TuiAcceptedCompletion> {
+    pub(crate) fn accept_selected(
+        &mut self,
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<TuiAcceptedCompletion> {
         if !self.is_open(ctx) {
             return None;
         }
@@ -184,6 +239,7 @@ impl TuiCompletionsMenuModel {
             TuiAcceptedCompletion {
                 replacement: row.replacement.clone(),
                 span: replacement_span.clone(),
+                append_space: row.append_space,
             }
         };
         self.dismiss(ctx);
@@ -234,6 +290,7 @@ pub(crate) fn apply_completion_replacement(
     buffer_text: &str,
     replacement: &str,
     span: &Range<usize>,
+    append_space: bool,
 ) -> Option<String> {
     if span.start > span.end
         || span.end > buffer_text.len()
@@ -242,10 +299,13 @@ pub(crate) fn apply_completion_replacement(
     {
         return None;
     }
-    let mut new_text =
-        String::with_capacity(buffer_text.len() - (span.end - span.start) + replacement.len());
+    let trailing_space = if append_space { " " } else { "" };
+    let mut new_text = String::with_capacity(
+        buffer_text.len() - (span.end - span.start) + replacement.len() + trailing_space.len(),
+    );
     new_text.push_str(&buffer_text[..span.start]);
     new_text.push_str(replacement);
+    new_text.push_str(trailing_space);
     new_text.push_str(&buffer_text[span.end..]);
     Some(new_text)
 }

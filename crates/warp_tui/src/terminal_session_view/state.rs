@@ -168,43 +168,42 @@ impl TuiTerminalSessionStateModel {
                     .as_ref(ctx)
                     .active_target()
                     .map(|target| target.control_state);
-                let interaction = if let Some(source) =
-                    transcript.as_ref(ctx).active_blocking_child(ctx)
-                {
-                    TuiInteractionState::Blocking(source.into())
-                } else if terminal_use_control
-                    .as_ref()
-                    .is_some_and(|control| control.is_user_in_control())
-                {
-                    TuiInteractionState::Pty(TuiPtyState::UserControlledTerminalUse)
-                } else if user_owns_running_command {
-                    TuiInteractionState::Blocking(BlockingInputSource::LongRunningCommand)
-                } else {
-                    match input_target {
-                        TuiInputTarget::Disabled => TuiInteractionState::StartingShell,
-                        TuiInputTarget::Pty => TuiInteractionState::Pty(TuiPtyState::Process),
-                        TuiInputTarget::AgentEditor => {
-                            let mode = if terminal_use_control
-                                .as_ref()
-                                .is_some_and(|control| control.is_agent_in_control())
-                            {
-                                TuiComposerMode::Agent {
-                                    agent_controlled_terminal_use: true,
-                                }
-                            } else if input_mode_policy::is_shell_mode(input_mode.as_ref(ctx)) {
-                                TuiComposerMode::Shell
-                            } else {
-                                TuiComposerMode::Agent {
-                                    agent_controlled_terminal_use: false,
-                                }
-                            };
-                            TuiInteractionState::Composer(TuiComposerState {
-                                mode,
-                                suggestions_mode: suggestions_mode.as_ref(ctx).mode(),
-                            })
+                let interaction =
+                    if let Some(source) = transcript.as_ref(ctx).active_blocking_child(ctx) {
+                        TuiInteractionState::Blocking(source.into())
+                    } else if terminal_use_control
+                        .as_ref()
+                        .is_some_and(|control| control.is_user_in_control())
+                    {
+                        TuiInteractionState::Pty(TuiPtyState::UserControlledTerminalUse)
+                    } else if user_owns_running_command {
+                        TuiInteractionState::Blocking(BlockingInputSource::LongRunningCommand)
+                    } else {
+                        match input_target {
+                            TuiInputTarget::Disabled => TuiInteractionState::StartingShell,
+                            TuiInputTarget::Pty => TuiInteractionState::Pty(TuiPtyState::Process),
+                            TuiInputTarget::AgentEditor => {
+                                let mode = if terminal_use_control
+                                    .as_ref()
+                                    .is_some_and(|control| control.is_agent_in_control())
+                                {
+                                    TuiComposerMode::Agent {
+                                        agent_controlled_terminal_use: true,
+                                    }
+                                } else if input_mode_policy::is_shell_mode(input_mode.as_ref(ctx)) {
+                                    TuiComposerMode::Shell
+                                } else {
+                                    TuiComposerMode::Agent {
+                                        agent_controlled_terminal_use: false,
+                                    }
+                                };
+                                TuiInteractionState::Composer(TuiComposerState {
+                                    mode,
+                                    suggestions_mode: suggestions_mode.as_ref(ctx).mode(),
+                                })
+                            }
                         }
-                    }
-                };
+                    };
                 let state = TuiBlockSessionState {
                     interaction,
                     transcript_is_empty: transcript.as_ref(ctx).is_empty(),

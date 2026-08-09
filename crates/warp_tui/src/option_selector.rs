@@ -110,6 +110,8 @@ pub(crate) enum TuiOptionSelectorEvent {
     Confirmed { id: String },
     /// The custom-text footer editor was submitted with a valid value.
     CustomTextSubmitted { value: String },
+    /// A checked question-card Other value was selected again and cleared.
+    CustomTextCleared,
     /// The question-card Other editor was opened.
     CustomTextOpened,
     /// The custom-text editor was left without submitting a new value.
@@ -744,6 +746,26 @@ impl TuiOptionSelector {
             ctx.notify();
         }
     }
+
+    /// Clears a committed question-card Other value without opening its editor.
+    fn clear_custom_text(&mut self, ctx: &mut ViewContext<Self>) {
+        self.custom_text.committed_value = None;
+        self.custom_text.editing = CustomTextEditingState::Inactive;
+        self.custom_text
+            .editor
+            .update(ctx, |editor, ctx| editor.set_text("", ctx));
+        self.page.snapshot.selected_id = self
+            .page
+            .snapshot
+            .rows
+            .iter()
+            .find(|row| self.selected_ids.contains(&row.id))
+            .map(|row| row.id.clone());
+        ctx.focus_self();
+        ctx.emit(TuiOptionSelectorEvent::CustomTextCleared);
+        ctx.notify();
+    }
+
     /// Clears focused search text, returning whether it consumed Back.
     fn clear_focused_search(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         if !matches!(self.focus_zone(ctx), SelectorFocusZone::Search)
@@ -974,6 +996,10 @@ impl TuiOptionSelector {
             }
             SelectorItem::Retry => ctx.emit(TuiOptionSelectorEvent::RetryRequested),
             SelectorItem::CustomText => {
+                if self.show_selection_markers && self.custom_text.committed_value.is_some() {
+                    self.clear_custom_text(ctx);
+                    return true;
+                }
                 self.begin_custom_text_editing(ctx);
                 return true;
             }
@@ -1127,11 +1153,11 @@ impl TuiOptionSelector {
         let mut spans = vec![(shortcut_prefix, detail_style)];
         if self.show_selection_markers {
             spans.push((
-                if is_selected { "✓ " } else { "  " }.to_string(),
+                if is_selected { "[✓] " } else { "[ ] " }.to_string(),
                 if is_selected {
                     builder.success_glyph_style()
                 } else {
-                    builder.muted_text_style()
+                    builder.primary_text_style()
                 },
             ));
         }
@@ -1284,62 +1310,62 @@ impl TuiOptionSelector {
             let digit = (position < 9).then_some(position + 1);
             let is_selected = !self.custom_text.is_editing()
                 && self.interaction.selection.selected_index() == Some(index);
-            let element =
-                match item {
-                    SelectorItem::Row(row_index) => {
-                        let Some(row) = self.page.snapshot.rows.get(row_index) else {
-                            continue;
-                        };
-                        let shortcut =
-                            self.page.row_shortcuts.get(&row.id).copied().or_else(|| {
-                                digit.and_then(|digit| char::from_digit(digit as u32, 10))
-                            });
-                        self.render_row(row, shortcut, is_selected, builder)
-                    }
-                    SelectorItem::Retry => self.render_virtual_row(
-                        "↻ Retry".to_string(),
-                        digit,
-                        is_selected,
-                        None,
-                        builder.error_text_style(),
-                        builder,
-                    ),
-                    SelectorItem::CustomText => {
-                        match (&self.page.snapshot.footer, self.custom_text.is_editing()) {
-                            (Some(OptionFooter::CustomText { label }), true) => self
-                                .render_editor_field(
-                                    digit.map_or_else(
-                                        || "    ".to_string(),
-                                        |digit| format!("({digit}) "),
-                                    ),
-                                    label,
-                                    &self.custom_text.editor,
-                                    self.custom_text
-                                        .error_is_visible()
-                                        .then_some(CUSTOM_TEXT_EMPTY_ERROR),
-                                    self.show_selection_markers
-                                        .then_some(self.custom_text.committed_value.is_some()),
-                                    builder,
+            let element = match item {
+                SelectorItem::Row(row_index) => {
+                    let Some(row) = self.page.snapshot.rows.get(row_index) else {
+                        continue;
+                    };
+                    let shortcut = self
+                        .page
+                        .row_shortcuts
+                        .get(&row.id)
+                        .copied()
+                        .or_else(|| digit.and_then(|digit| char::from_digit(digit as u32, 10)));
+                    self.render_row(row, shortcut, is_selected, builder)
+                }
+                SelectorItem::Retry => self.render_virtual_row(
+                    "↻ Retry".to_string(),
+                    digit,
+                    is_selected,
+                    None,
+                    builder.error_text_style(),
+                    builder,
+                ),
+                SelectorItem::CustomText => {
+                    match (&self.page.snapshot.footer, self.custom_text.is_editing()) {
+                        (Some(OptionFooter::CustomText { label }), true) => self
+                            .render_editor_field(
+                                digit.map_or_else(
+                                    || "    ".to_string(),
+                                    |digit| format!("({digit}) "),
                                 ),
-                            (Some(OptionFooter::CustomText { label }), false) => {
-                                let custom_text_selected =
-                                    self.custom_text.committed_value.is_some();
-                                self.render_virtual_row(
-                                    self.custom_text
-                                        .committed_value
-                                        .clone()
-                                        .unwrap_or_else(|| label.clone()),
-                                    digit,
-                                    is_selected,
-                                    self.show_selection_markers.then_some(custom_text_selected),
-                                    builder.primary_text_style(),
-                                    builder,
-                                )
-                            }
-                            (Some(OptionFooter::CreateNewAuthSecret) | None, _) => continue,
+                                label,
+                                &self.custom_text.editor,
+                                self.custom_text
+                                    .error_is_visible()
+                                    .then_some(CUSTOM_TEXT_EMPTY_ERROR),
+                                self.show_selection_markers
+                                    .then_some(self.custom_text.committed_value.is_some()),
+                                builder,
+                            ),
+                        (Some(OptionFooter::CustomText { label }), false) => {
+                            let custom_text_selected = self.custom_text.committed_value.is_some();
+                            self.render_virtual_row(
+                                self.custom_text
+                                    .committed_value
+                                    .clone()
+                                    .unwrap_or_else(|| label.clone()),
+                                digit,
+                                is_selected,
+                                self.show_selection_markers.then_some(custom_text_selected),
+                                builder.primary_text_style(),
+                                builder,
+                            )
                         }
+                        (Some(OptionFooter::CreateNewAuthSecret) | None, _) => continue,
                     }
-                };
+                }
+            };
             // Each visible row is clickable through its own persistent
             // mouse-state handle.
             let element = match self.item_mouse_states.get(index) {

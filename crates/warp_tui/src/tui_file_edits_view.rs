@@ -18,7 +18,6 @@
 //! verb while awaiting approval. When the storage was never seeded (failed or
 //! cancelled actions, or actions that resolved before this view existed), the
 //! view falls back to a one-line label from the action's recorded result.
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -170,49 +169,16 @@ pub(super) enum SectionKey {
 /// Persistent collapse and hover state for each section.
 #[derive(Default)]
 struct SectionStates {
-    states: RefCell<HashMap<SectionKey, SectionUiState>>,
-}
-
-/// UI state for a single collapsible section.
-struct SectionUiState {
-    collapsed: bool,
-    /// Hover state for the header row. Owned here so it survives element-tree
-    /// rebuilds (the GUI `MouseStateHandle` pattern).
-    hover_state: MouseStateHandle,
-}
-impl Default for SectionUiState {
-    fn default() -> Self {
-        Self {
-            collapsed: true,
-            hover_state: MouseStateHandle::default(),
-        }
-    }
+    states: HashMap<SectionKey, SectionUiState>,
 }
 
 impl SectionStates {
-    /// Whether the keyed section is collapsed (default: collapsed).
-    fn is_collapsed(&self, key: SectionKey) -> bool {
-        self.states
-            .borrow()
-            .get(&key)
-            .map(|state| state.collapsed)
-            .unwrap_or(true)
-    }
-
-    /// Flips the collapse state of the keyed section.
-    fn toggle_collapsed(&self, key: SectionKey) {
-        let mut states = self.states.borrow_mut();
-        let state = states.entry(key).or_default();
-        state.collapsed = !state.collapsed;
-    }
-
     /// Expands every keyed section (resets any independent per-section
     /// hover/collapse state, matching a fresh disclosure).
-    fn expand_all(&self, keys: &[SectionKey]) {
-        let mut states = self.states.borrow_mut();
-        states.clear();
+    fn expand_all(&mut self, keys: &[SectionKey]) {
+        self.states.clear();
         for key in keys {
-            states.insert(
+            self.states.insert(
                 *key,
                 SectionUiState {
                     collapsed: false,
@@ -223,11 +189,10 @@ impl SectionStates {
     }
 
     /// Collapses every keyed section.
-    fn collapse_all(&self, keys: &[SectionKey]) {
-        let mut states = self.states.borrow_mut();
-        states.clear();
+    fn collapse_all(&mut self, keys: &[SectionKey]) {
+        self.states.clear();
         for key in keys {
-            states.insert(
+            self.states.insert(
                 *key,
                 SectionUiState {
                     collapsed: true,
@@ -237,27 +202,55 @@ impl SectionStates {
         }
     }
 
-    /// Toggles all sections between fully expanded and fully collapsed: if
-    /// any section is currently expanded, collapses all; otherwise expands
+    /// Whether the keyed section is collapsed.
+    fn is_collapsed(&self, key: SectionKey) -> bool {
+        self.states
+            .get(&key)
+            .expect("file-edit section state initialized before render")
+            .collapsed
+    }
+
+    /// Flips the collapse state of the keyed section.
+    fn toggle_collapsed(&mut self, key: SectionKey) {
+        let state = self
+            .states
+            .get_mut(&key)
+            .expect("file-edit section state initialized before toggle");
+        state.collapsed = !state.collapsed;
+    }
+
+    /// Toggles all sections between fully expanded and fully collapsed:
+    /// if any section is currently expanded, collapse all; otherwise expand
     /// all.
-    fn toggle_expand_all(&self, keys: &[SectionKey]) {
+    fn toggle_expand_all(&mut self, keys: &[SectionKey]) {
         let any_expanded = keys.iter().any(|key| !self.is_collapsed(*key));
         let target_collapsed = any_expanded;
-        let mut states = self.states.borrow_mut();
         for key in keys {
-            states.entry(*key).or_default().collapsed = target_collapsed;
+            let state = self
+                .states
+                .get_mut(key)
+                .expect("file-edit section state initialized before toggle");
+            state.collapsed = target_collapsed;
         }
     }
 
     /// The persistent hover state handle for the keyed section.
     fn hover_state(&self, key: SectionKey) -> MouseStateHandle {
         self.states
-            .borrow_mut()
-            .entry(key)
-            .or_default()
+            .get(&key)
+            .expect("file-edit section state initialized before render")
             .hover_state
             .clone()
     }
+}
+
+/// UI state for a single collapsible section.
+#[derive(Default)]
+struct SectionUiState {
+    collapsed: bool,
+    /// Hover state for the header row. Owned here so it survives element-tree
+    /// rebuilds (the GUI `MouseStateHandle` pattern).
+    hover_state: MouseStateHandle,
 }
 
 impl TuiFileEditsView {
@@ -440,13 +433,13 @@ impl TuiFileEditsView {
     }
 
     /// Expands every current section (summary + files) together.
-    fn expand_all_sections(&self) {
+    fn expand_all_sections(&mut self) {
         let keys = self.section_keys();
         self.section_states.expand_all(&keys);
     }
 
     /// Collapses every current section (summary + files) together.
-    fn collapse_all_sections(&self) {
+    fn collapse_all_sections(&mut self) {
         let keys = self.section_keys();
         self.section_states.collapse_all(&keys);
     }

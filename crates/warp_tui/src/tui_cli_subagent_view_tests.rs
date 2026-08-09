@@ -1,11 +1,20 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
-use warp::tui_export::{LongRunningCommandControlState, UserTakeOverReason};
+use warp::tui_export::{
+    AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentPtyWriteMode, AIConversationId,
+    BlockId, BlocklistAIActionEvent, CancellationReason, LongRunningCommandControlState, TaskId,
+    UserTakeOverReason, queue_tui_permission_action,
+};
+use warpui_core::App;
 
 use super::{
-    format_next_check_remaining, remaining_for_fixed_delay, resolve_latest_instruction,
-    terminal_use_status_text,
+    BlockedActionPresentation, blocked_action_presentation, cancel_blocked_action,
+    display_pty_input, execute_blocked_action, format_next_check_remaining,
+    remaining_for_fixed_delay, resolve_latest_instruction, terminal_use_status_text,
 };
+use crate::test_fixtures::add_test_action_model;
 
 #[test]
 fn terminal_use_status_covers_control_and_lifecycle_states() {
@@ -70,6 +79,82 @@ fn terminal_use_status_covers_control_and_lifecycle_states() {
     );
 }
 
+fn test_action(id: &str) -> AIAgentAction {
+    AIAgentAction {
+        id: AIAgentActionId::from(id.to_owned()),
+        task_id: TaskId::new("terminal-use-task".to_owned()),
+        action: AIAgentActionType::WriteToLongRunningShellCommand {
+            block_id: BlockId::new(),
+            input: b"input".to_vec().into(),
+            mode: AIAgentPtyWriteMode::Raw,
+        },
+        requires_result: true,
+    }
+}
+
+#[test]
+fn allow_executes_the_exact_displayed_action() {
+    App::test((), |mut app| async move {
+        let action_model = add_test_action_model(&mut app);
+        let conversation_id = AIConversationId::new();
+        let first = test_action("first");
+        let displayed = test_action("displayed");
+        let executing_ids = Rc::new(RefCell::new(Vec::new()));
+        let executing_ids_for_event = executing_ids.clone();
+
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&action_model, move |_, event, _| {
+                if let BlocklistAIActionEvent::ExecutingAction(action_id) = event {
+                    executing_ids_for_event.borrow_mut().push(action_id.clone());
+                }
+            });
+            action_model.update(ctx, |action_model, ctx| {
+                queue_tui_permission_action(action_model, first, conversation_id, ctx);
+                queue_tui_permission_action(action_model, displayed.clone(), conversation_id, ctx);
+                execute_blocked_action(action_model, conversation_id, &displayed, ctx);
+            });
+        });
+
+        assert_eq!(executing_ids.borrow().first(), Some(&displayed.id));
+    });
+}
+
+#[test]
+fn reject_cancels_only_the_exact_displayed_action() {
+    App::test((), |mut app| async move {
+        let action_model = add_test_action_model(&mut app);
+        let conversation_id = AIConversationId::new();
+        let first = test_action("first");
+        let displayed = test_action("displayed");
+        let finished_actions = Rc::new(RefCell::new(Vec::new()));
+        let finished_actions_for_event = finished_actions.clone();
+
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&action_model, move |_, event, _| {
+                if let BlocklistAIActionEvent::FinishedAction {
+                    action_id,
+                    cancellation_reason,
+                    ..
+                } = event
+                {
+                    finished_actions_for_event
+                        .borrow_mut()
+                        .push((action_id.clone(), *cancellation_reason));
+                }
+            });
+            action_model.update(ctx, |action_model, ctx| {
+                queue_tui_permission_action(action_model, first, conversation_id, ctx);
+                queue_tui_permission_action(action_model, displayed.clone(), conversation_id, ctx);
+                cancel_blocked_action(action_model, conversation_id, &displayed, ctx);
+            });
+        });
+
+        assert!(finished_actions.borrow().iter().any(|(action_id, reason)| {
+            action_id == &displayed.id && *reason == Some(CancellationReason::ManuallyCancelled)
+        }));
+    });
+}
+
 #[test]
 fn controller_instruction_precedes_stale_exchange_input() {
     assert_eq!(
@@ -102,5 +187,50 @@ fn next_check_countdown_formats_seconds_and_minutes() {
     assert_eq!(
         format_next_check_remaining(Duration::from_secs(65)),
         " · Check in 1m"
+    );
+}
+
+#[test]
+fn write_action_presentation_shows_input_and_mode_without_internal_ids() {
+    let action = AIAgentActionType::WriteToLongRunningShellCommand {
+        block_id: BlockId::new(),
+        input: b"iRoses\nViolets\x1b".to_vec().into(),
+        mode: AIAgentPtyWriteMode::Raw,
+    };
+
+    let presentation = blocked_action_presentation(&action);
+
+    assert_eq!(
+        presentation,
+        BlockedActionPresentation {
+            summary: "Agent wants to write to the running command".to_owned(),
+            detail: Some("Input:\niRoses\nViolets<Esc>".to_owned()),
+        }
+    );
+    assert!(!presentation.summary.contains("block id"));
+    assert!(!presentation.detail.unwrap().contains("block id"));
+}
+
+#[test]
+fn transfer_action_presentation_shows_the_agents_reason() {
+    let presentation =
+        blocked_action_presentation(&AIAgentActionType::TransferShellCommandControlToUser {
+            reason: "Enter the sudo password".to_owned(),
+        });
+
+    assert_eq!(
+        presentation,
+        BlockedActionPresentation {
+            summary: "Agent wants to hand command control to you".to_owned(),
+            detail: Some("Reason: Enter the sudo password".to_owned()),
+        }
+    );
+}
+
+#[test]
+fn pty_input_display_names_control_bytes_and_preserves_lines() {
+    assert_eq!(
+        display_pty_input(b"first\r\nsecond\x03"),
+        "first<Enter>\nsecond<0x03>"
     );
 }

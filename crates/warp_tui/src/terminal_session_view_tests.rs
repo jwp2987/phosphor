@@ -37,12 +37,11 @@ use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalida
 use super::{
     AUTO_APPROVE_DISABLED_HINT, AUTO_APPROVE_ENABLED_HINT, AUTO_APPROVE_FEEDBACK_DURATION,
     AUTO_APPROVE_TOGGLE_BINDING_NAME, COST_CONVERSATION_IN_PROGRESS_HINT,
-    COST_EMPTY_CONVERSATION_HINT,
-    COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState, FooterSegment,
-    FooterSegments, INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
-    SHELL_MODE_HINT, THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin,
-    TuiTerminalSessionAction,
-    TuiQueuedFollowUp, TuiTerminalSessionEvent, TuiTerminalSessionView,
+    COST_EMPTY_CONVERSATION_HINT, COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT,
+    ConversationRestoreState, FooterSegment, FooterSegments, INLINE_MENU_TOP_PADDING_ROWS,
+    LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT, SHELL_MODE_HINT,
+    THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin, TuiQueuedFollowUp,
+    TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
     cost_command_unavailable_hint, export_file_success_message, log_bundle_success_message,
     raw_prompt_if_not_blank, render_status_footer_row,
 };

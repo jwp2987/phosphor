@@ -22,6 +22,7 @@ pub use crate::tui_test_support::{
 };
 
 pub use self::history::{TuiUpArrowHistoryItem, TuiUpArrowHistoryItemKind, tui_up_arrow_history};
+pub use crate::util::repo_detection::{RepoDetectionSessionType, detect_possible_git_repo};
 pub use ::ai::agent::action::{AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType};
 pub use ::ai::agent::action_result::AskUserQuestionAnswerItem;
 pub use ::ai::agent::ask_user_question_session::{
@@ -29,19 +30,15 @@ pub use ::ai::agent::ask_user_question_session::{
     QuestionDraft,
 };
 pub use repo_metadata::repositories::RepoDetectionSource;
-pub use crate::util::repo_detection::{detect_possible_git_repo, RepoDetectionSessionType};
 use warp_completer::completer::{
-    suggestions as completer_suggestions, CompleterOptions, CompletionContext as _,
-    TopLevelCommandCaseSensitivity,
+    CompleterOptions, CompletionContext as _, EngineFileType, TopLevelCommandCaseSensitivity,
+    suggestions as completer_suggestions,
 };
 use warp_completer::signatures::CommandRegistry;
 
 pub use crate::ai::agent::api::ServerConversationToken;
 pub use crate::ai::agent::conversation::{
     AIConversation, AIConversationAutoexecuteMode, AIConversationId, ConversationStatus, TodoStatus,
-};
-pub use crate::ai::usage_cost::{
-    context_usage_report, conversation_cost_report, UsageCostOutcome,
 };
 pub use crate::ai::agent::task::TaskId;
 pub use crate::ai::agent::todos::AIAgentTodoList;
@@ -59,17 +56,10 @@ pub use crate::ai::agent_conversations_model::{
     AgentConversationsModel, AgentConversationsModelEvent, AgentManagementFilters,
     AgentRunDisplayStatus, HarnessFilter,
 };
-pub use crate::ai::conversation_entry::{
-    AgentConversationDisplayData, AgentConversationEntry, AgentConversationEntryId,
-    AgentConversationIdentity, AgentConversationListEntryState, AgentConversationListPolicy,
-    AgentConversationQueryResult, query_conversation_entries,
-};
-pub use warp_cli::agent::Harness;
 pub use crate::ai::blocklist::action_model::{
     AIActionStatus, BlocklistAIActionEvent, BlocklistAIActionModel, NewConversationDecision,
     ShellCommandExecutor, ShellCommandExecutorEvent,
 };
-pub use crate::ai::blocklist::permissions::BlocklistAIPermissions;
 pub use crate::ai::blocklist::agent_view::{
     AgentViewController, AgentViewDisplayMode, AgentViewEntryOrigin, AgentViewState,
     EnterAgentViewError, EphemeralMessageModel,
@@ -78,69 +68,85 @@ pub use crate::ai::blocklist::block::cli_controller::{
     CLISubagentController, CLISubagentEvent, CLISubagentTarget, LongRunningCommandControlState,
     UserTakeOverReason,
 };
-pub use crate::ai::blocklist::context_model::{
-    AttachmentType, BlocklistAIContextEvent, BlocklistAIContextModel, PendingAttachmentSummary,
-    PendingQueryState, block_context_from_terminal_model,
-};
-pub use crate::ai::blocklist::conversation_selection::{
-    ConversationSelection, ConversationSelectionEvent, ConversationSelectionHandle,
-};
-pub use crate::ai::conversation_export::{export_conversation_markdown, ConversationFileExport};
-pub use crate::terminal::conversation_restoration::{
-    prepare_conversation_block_restoration, ConversationBlockRestorationPlan,
-};
-pub use crate::terminal::view::blocklist_filter::should_show_task_in_blocklist;
-pub use crate::ai::blocklist::diff_storage::{
-    changed_lines_from_op, DiffStorage, DiffStorageHelper, FileSnapshot, RegisteredDiffStorage,
-    SaveFuture, UpdatedFileState,
-};
-pub use crate::ai::blocklist::input_mode_policy::{
-    InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate,
-};
-pub use crate::ai::blocklist::block::view_impl::common::format_elapsed_seconds;
-pub use crate::ai::blocklist::controller::BlocklistAIController;
-pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, InputType};
-pub use crate::ai::blocklist::view_util::format_credits;
-pub use crate::ai::blocklist::view_util::{
-    failed_output_presentation, should_show_failed_output_usage_notice, FailedOutputPresentation,
-    FAILED_OUTPUT_USAGE_NOTICE_TEXT,
-};
 pub use crate::ai::blocklist::block::model::{
     AIBlockModel, AIBlockModelHelper, AIBlockModelImpl, AIBlockOutputStatus, AIRequestType,
     OutputStatusUpdateCallback,
 };
-pub use crate::ai::blocklist::history_model::{
-    AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, LoadedConversationData,
-    FORK_PREFIX, PRE_REWIND_PREFIX,
+pub use crate::ai::blocklist::block::view_impl::common::format_elapsed_seconds;
+pub use crate::ai::blocklist::context_model::{
+    AttachmentType, BlocklistAIContextEvent, BlocklistAIContextModel, PendingAttachmentSummary,
+    PendingQueryState, block_context_from_terminal_model,
 };
+pub use crate::ai::blocklist::controller::BlocklistAIController;
+pub use crate::ai::blocklist::conversation_selection::{
+    ConversationSelection, ConversationSelectionEvent, ConversationSelectionHandle,
+};
+pub use crate::ai::blocklist::diff_storage::{
+    DiffStorage, DiffStorageHelper, FileSnapshot, RegisteredDiffStorage, SaveFuture,
+    UpdatedFileState, changed_lines_from_op,
+};
+pub use crate::ai::blocklist::history_model::{
+    AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, FORK_PREFIX,
+    LoadedConversationData, PRE_REWIND_PREFIX,
+};
+pub use crate::ai::blocklist::inline_action::code_diff_view::{DiffSessionType, FileDiff};
+pub use crate::ai::blocklist::input_mode_policy::{
+    InputModePolicy, InputModePolicyHandle, PolicyConfigUpdate,
+};
+pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, InputType};
+pub use crate::ai::blocklist::permissions::BlocklistAIPermissions;
 pub use crate::ai::blocklist::persistence::maybe_build_ai_query_upsert_event;
+pub use crate::ai::blocklist::view_util::format_credits;
+pub use crate::ai::blocklist::view_util::{
+    FAILED_OUTPUT_USAGE_NOTICE_TEXT, FailedOutputPresentation, failed_output_presentation,
+    should_show_failed_output_usage_notice,
+};
+pub use crate::ai::conversation_entry::{
+    AgentConversationDisplayData, AgentConversationEntry, AgentConversationEntryId,
+    AgentConversationIdentity, AgentConversationListEntryState, AgentConversationListPolicy,
+    AgentConversationQueryResult, query_conversation_entries,
+};
+pub use crate::ai::conversation_export::{ConversationFileExport, export_conversation_markdown};
 pub use crate::ai::llms::{LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent};
 pub use crate::ai::option_snapshot::{
     OptionBadge, OptionFooter, OptionRow, OptionSnapshot, OptionSourceStatus,
 };
 pub use crate::ai::skills::{SkillManager, SkillReference};
-pub use crate::terminal::input::skills::{
-    AcceptSkill, SelectableSkill, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, query_selectable_skills,
-};
-pub use crate::code_review::git_status_update::{
-    GitRepoModels, GitRepoStatusModel, GitStatusMetadata,
-};
+pub use crate::ai::usage_cost::{UsageCostOutcome, context_usage_report, conversation_cost_report};
 pub use crate::appearance::Appearance;
-pub use crate::tui::log_out_tui;
-pub use crate::tui::{
-    TuiMcpAction, TuiMcpConfigState, TuiMcpManager, TuiMcpManagerEvent, TuiMcpServerId,
-    TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTransport,
-};
 pub use crate::banner::BannerState;
 pub use crate::changelog_model::{
     ChangelogModel, ChangelogRequestType, ChangelogState, Event as ChangelogModelEvent,
 };
 pub use crate::code::DiffResult;
+pub use crate::code_review::git_status_update::{
+    GitRepoModels, GitRepoStatusModel, GitStatusMetadata,
+};
 pub use crate::completer::SessionContext;
 pub use crate::persistence::PersistenceWriter;
-pub use crate::ai::blocklist::inline_action::code_diff_view::{DiffSessionType, FileDiff};
 pub use crate::search::slash_command_menu::static_commands::commands::{
     self as slash_commands, COMMAND_REGISTRY,
+};
+pub use crate::search::slash_command_menu::{SlashCommandId, SlashCommandKind, StaticCommand};
+pub use crate::terminal::alt_screen::{should_intercept_mouse, should_intercept_scroll};
+pub use crate::terminal::color::{Colors as TerminalColors, List as TerminalColorList};
+pub use crate::terminal::conversation_restoration::{
+    ConversationBlockRestorationPlan, prepare_conversation_block_restoration,
+};
+pub use crate::terminal::event::AfterBlockCompletedEvent;
+pub use crate::terminal::history::up_arrow::{
+    UpArrowHistoryConfig, prompt_history_for_terminal_view,
+};
+pub use crate::terminal::history::{History, HistoryEvent, LinkedWorkflowData};
+pub use crate::terminal::input::CommandExecutionSource;
+pub use crate::terminal::input::decorations::parse_current_commands_and_tokens;
+pub use crate::terminal::input::models::{ModelPickerChoice, query_model_picker_choices};
+pub use crate::terminal::input::skills::{
+    AcceptSkill, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, SelectableSkill,
+    query_selectable_skills,
+};
+pub use crate::terminal::input::slash_command_model::{
+    DetectedCommand, DetectedSkillCommand, ParsedSlashCommandInput,
 };
 pub use crate::terminal::input::slash_commands::{
     AcceptSlashCommandOrSavedPrompt, SlashCommandDataSource, SlashCommandMixer,
@@ -151,18 +157,6 @@ pub use crate::terminal::input::slash_commands::{
     should_close_slash_command_menu_for_exact_match, slash_command_query,
     slash_command_selection_behavior,
 };
-pub use crate::terminal::input::slash_command_model::{
-    DetectedCommand, DetectedSkillCommand, ParsedSlashCommandInput,
-};
-pub use crate::search::slash_command_menu::{SlashCommandId, SlashCommandKind, StaticCommand};
-pub use crate::terminal::alt_screen::{should_intercept_mouse, should_intercept_scroll};
-pub use crate::terminal::color::{Colors as TerminalColors, List as TerminalColorList};
-pub use crate::terminal::history::up_arrow::{UpArrowHistoryConfig, prompt_history_for_terminal_view};
-pub use crate::terminal::history::{History, HistoryEvent, LinkedWorkflowData};
-pub use crate::terminal::event::AfterBlockCompletedEvent;
-pub use crate::terminal::input::CommandExecutionSource;
-pub use crate::terminal::input::decorations::parse_current_commands_and_tokens;
-pub use crate::terminal::input::models::{query_model_picker_choices, ModelPickerChoice};
 pub use crate::terminal::local_tty::TerminalManager as LocalTtyTerminalManager;
 pub use crate::terminal::local_tty::terminal_manager::TerminalManagerInit;
 pub use crate::terminal::model::block::{AgentInteractionMetadata, Block, BlockId};
@@ -178,20 +172,27 @@ pub use crate::terminal::model::session::active_session::{ActiveSession, ActiveS
 pub use crate::terminal::model::terminal_model::BlockIndex;
 pub use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 pub use crate::terminal::shared_session::IsSharedSessionCreator;
+pub use crate::terminal::view::blocklist_filter::should_show_task_in_blocklist;
 pub use crate::terminal::view::{ExecuteCommandEvent, WAKEUP_THROTTLE_PERIOD};
-pub use crate::terminal::{
-    PtyIntent, PtyIntentEvent, TerminalSurface, TerminalSurfaceInit, TerminalSurfaceResult,
-};
 pub use crate::terminal::{
     BlockPadding, BlockSpacing, ShellLaunchData, SizeInfo, SizeUpdate,
     TerminalManager as TerminalManagerTrait, TerminalModel,
 };
+pub use crate::terminal::{
+    PtyIntent, PtyIntentEvent, TerminalSurface, TerminalSurfaceInit, TerminalSurfaceResult,
+};
 pub use crate::themes::default_themes::{dark_theme, light_theme};
 pub use crate::throttle::throttle;
+pub use crate::tui::log_out_tui;
+pub use crate::tui::{
+    TuiMcpAction, TuiMcpConfigState, TuiMcpManager, TuiMcpManagerEvent, TuiMcpServerId,
+    TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTransport,
+};
 pub use crate::util::image::{
     MAX_IMAGE_COUNT_FOR_QUERY, MAX_IMAGE_SIZE_BYTES, MIME_SNIFF_BYTES, ProcessImageResult,
     infer_mime_type, is_supported_image_mime_type, process_image_for_agent,
 };
+pub use warp_cli::agent::Harness;
 
 /// Builds the live-shell completion context used to parse TUI input for NLD.
 pub fn tui_completion_session_context(
@@ -251,6 +252,10 @@ pub struct TuiCompletionCandidate {
     pub display: String,
     pub replacement: String,
     pub description: Option<String>,
+    /// Whether this candidate names a directory. Directory completions must
+    /// not get a trailing space appended on accept (the user is expected to
+    /// keep typing into the directory), unlike file/command completions.
+    pub is_directory: bool,
 }
 
 /// The result of a TUI completion fetch: candidates plus the byte span in the
@@ -291,6 +296,7 @@ pub async fn tui_fetch_completions(
             display: matched.display().to_string(),
             replacement: matched.replacement().to_string(),
             description: matched.description(),
+            is_directory: matched.suggestion.file_type == Some(EngineFileType::Directory),
         })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
@@ -503,9 +509,7 @@ pub fn tui_list_agent_provider_keys(app: &warpui::AppContext) -> Vec<TuiApiKeyPr
             } else {
                 provider.name.clone()
             };
-            let has_key = secrets
-                .get(&provider.id)
-                .is_some_and(|key| !key.is_empty());
+            let has_key = secrets.get(&provider.id).is_some_and(|key| !key.is_empty());
             TuiApiKeyProvider {
                 provider_id: provider.id,
                 display_name,
@@ -553,7 +557,7 @@ pub fn tui_clear_agent_provider_api_key(app: &mut warpui::AppContext, provider_i
 ///
 /// Non-BYOP ids (and BYOP ids whose provider has since been removed) return `false`.
 pub fn tui_agent_provider_has_connected_key(app: &warpui::AppContext, id: &LLMId) -> bool {
-    use crate::ai::agent_providers::{llm_id, AgentProviderSecrets};
+    use crate::ai::agent_providers::{AgentProviderSecrets, llm_id};
     use crate::settings::AISettings;
     use settings::Setting as _;
     use warpui::SingletonEntity as _;

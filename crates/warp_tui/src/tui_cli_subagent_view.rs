@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use parking_lot::FairMutex;
 use warp::tui_export::{
-    AIAgentActionType, AIAgentInput, AIBlockModel, AIBlockModelImpl, AIConversationId, BlockId,
-    BlocklistAIActionModel, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, CLISubagentController,
-    CLISubagentTarget, CancellationReason, LongRunningCommandControlState, ShellCommandDelay,
-    ShellCommandExecutor, TaskId, TerminalModel, UserTakeOverReason,
+    AIAgentAction, AIAgentActionType, AIAgentInput, AIAgentPtyWriteMode, AIBlockModel,
+    AIBlockModelHelper, AIBlockModelImpl, AIConversationId, BlockId, BlocklistAIActionModel,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, CLISubagentController, CLISubagentTarget,
+    CancellationReason, LongRunningCommandControlState, ShellCommandDelay, ShellCommandExecutor,
+    TaskId, TerminalModel, UserTakeOverReason,
 };
 use warpui::SingletonEntity;
 use warpui_core::r#async::Timer;
@@ -20,7 +21,7 @@ use warpui_core::elements::tui::{
     TuiParentElement, TuiSize, TuiText,
 };
 use warpui_core::{
-    AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext,
+    AppContext, Entity, EntityId, ModelContext, ModelHandle, TuiView, TypedActionView, ViewContext,
 };
 
 use crate::tui_builder::TuiUiBuilder;
@@ -107,6 +108,124 @@ fn format_next_check_remaining(remaining: Duration) -> String {
     } else {
         format!(" · Check in {}m", seconds / 60)
     }
+}
+
+/// The human-readable summary and (optional) detail shown for a blocked
+/// terminal-use action, so the user can see what the agent wants to do
+/// before approving or rejecting it -- previously only the generic "Agent
+/// needs your input" status text was shown, with no indication of what was
+/// actually being requested.
+#[derive(Debug, PartialEq, Eq)]
+struct BlockedActionPresentation {
+    summary: String,
+    detail: Option<String>,
+}
+
+/// Renders raw PTY input bytes as a readable string: printable characters
+/// pass through, and control characters render as named/hex escapes so a
+/// pending `WriteToLongRunningShellCommand` action's payload is legible.
+fn display_pty_input(input: &[u8]) -> String {
+    String::from_utf8_lossy(input)
+        .chars()
+        .map(|character| match character {
+            '\n' | '\t' => character.to_string(),
+            '\r' => "<Enter>".to_owned(),
+            '\u{1b}' => "<Esc>".to_owned(),
+            character if character.is_control() => {
+                format!("<0x{:02X}>", u32::from(character))
+            }
+            character => character.to_string(),
+        })
+        .collect()
+}
+
+/// Describes a blocked action for display: a one-line summary plus an
+/// optional detail block for actions whose payload is worth showing (the
+/// bytes being written, the files being read, and so on). Actions without a
+/// bespoke summary fall back to their generic display name with no detail.
+fn blocked_action_presentation(action: &AIAgentActionType) -> BlockedActionPresentation {
+    let (summary, detail) = match action {
+        AIAgentActionType::WriteToLongRunningShellCommand { input, mode, .. } => {
+            let input_kind = match mode {
+                AIAgentPtyWriteMode::Raw => "Input",
+                AIAgentPtyWriteMode::Line => "Line input",
+                AIAgentPtyWriteMode::Block => "Pasted input",
+            };
+            (
+                "Agent wants to write to the running command".to_owned(),
+                Some(format!("{input_kind}:\n{}", display_pty_input(input))),
+            )
+        }
+        AIAgentActionType::TransferShellCommandControlToUser { reason } => (
+            "Agent wants to hand command control to you".to_owned(),
+            Some(format!("Reason: {reason}")),
+        ),
+        AIAgentActionType::ReadFiles(request) => (
+            "Agent wants to read files".to_owned(),
+            Some(
+                request
+                    .locations
+                    .iter()
+                    .map(|location| location.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ),
+        AIAgentActionType::Grep { queries, path } => (
+            "Agent wants to search file contents".to_owned(),
+            Some(format!("Patterns: {}\nPath: {path}", queries.join(", "))),
+        ),
+        AIAgentActionType::FileGlob { patterns, path } => (
+            "Agent wants to find files".to_owned(),
+            Some(format!(
+                "Patterns: {}\nPath: {}",
+                patterns.join(", "),
+                path.as_deref().unwrap_or(".")
+            )),
+        ),
+        AIAgentActionType::FileGlobV2 {
+            patterns,
+            search_dir,
+        } => (
+            "Agent wants to find files".to_owned(),
+            Some(format!(
+                "Patterns: {}\nPath: {}",
+                patterns.join(", "),
+                search_dir.as_deref().unwrap_or(".")
+            )),
+        ),
+        _ => (action.user_friendly_name(), None),
+    };
+    BlockedActionPresentation { summary, detail }
+}
+
+/// Executes exactly the displayed blocked action, rather than whichever
+/// action happens to be first in the conversation's pending queue -- the two
+/// can differ if more than one action is pending, which previously risked
+/// approving a different action than the one the user was shown.
+pub(super) fn execute_blocked_action(
+    action_model: &mut BlocklistAIActionModel,
+    conversation_id: AIConversationId,
+    blocked_action: &AIAgentAction,
+    ctx: &mut ModelContext<BlocklistAIActionModel>,
+) {
+    action_model.execute_action(&blocked_action.id, conversation_id, ctx);
+}
+
+/// Cancels exactly the displayed blocked action; see [`execute_blocked_action`]
+/// for why this targets the specific action rather than the queue's head.
+pub(super) fn cancel_blocked_action(
+    action_model: &mut BlocklistAIActionModel,
+    conversation_id: AIConversationId,
+    blocked_action: &AIAgentAction,
+    ctx: &mut ModelContext<BlocklistAIActionModel>,
+) {
+    action_model.cancel_action_with_id(
+        conversation_id,
+        &blocked_action.id,
+        CancellationReason::ManuallyCancelled,
+        ctx,
+    );
 }
 
 /// Events emitted to whichever command surface hosts this view.
@@ -297,6 +416,13 @@ impl TuiCLISubagentView {
         self.conversation_id
     }
 
+    /// The specific action this block's agent is currently blocked on, if
+    /// any -- used to describe what the agent wants to do (see
+    /// [`blocked_action_presentation`]).
+    pub(super) fn blocked_action(&self, app: &AppContext) -> Option<AIAgentAction> {
+        self.model.as_ref()?.blocked_action(&self.action_model, app)
+    }
+
     fn render_action(
         label: &'static str,
         mouse_state: &MouseStateHandle,
@@ -344,6 +470,25 @@ impl TuiCLISubagentView {
             );
         }
         if target.control_state.is_agent_blocked() {
+            if let Some(action) = self.blocked_action(app) {
+                let presentation = blocked_action_presentation(&action.action);
+                content.add_child(
+                    TuiText::new(presentation.summary)
+                        .with_style(builder.primary_text_style())
+                        .finish(),
+                );
+                if let Some(detail) = presentation.detail {
+                    content.add_child(
+                        TuiContainer::new(
+                            TuiText::new(detail)
+                                .with_style(builder.muted_text_style())
+                                .finish(),
+                        )
+                        .with_padding_left(2)
+                        .finish(),
+                    );
+                }
+            }
             content.add_child(
                 TuiFlex::row()
                     .with_spacing(1)
@@ -434,26 +579,21 @@ impl TypedActionView for TuiCLISubagentView {
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
             TuiCLISubagentViewAction::Allow => {
+                let Some(blocked_action) = self.blocked_action(ctx) else {
+                    return;
+                };
+                let conversation_id = self.conversation_id;
                 self.action_model.update(ctx, |action_model, ctx| {
-                    action_model.execute_next_action_for_user(self.conversation_id, ctx);
+                    execute_blocked_action(action_model, conversation_id, &blocked_action, ctx);
                 });
             }
             TuiCLISubagentViewAction::Reject => {
+                let Some(blocked_action) = self.blocked_action(ctx) else {
+                    return;
+                };
                 let conversation_id = self.conversation_id;
                 self.action_model.update(ctx, |action_model, ctx| {
-                    let Some(action_id) = action_model
-                        .get_pending_actions_for_conversation(&conversation_id)
-                        .next()
-                        .map(|action| action.id.clone())
-                    else {
-                        return;
-                    };
-                    action_model.cancel_action_with_id(
-                        conversation_id,
-                        &action_id,
-                        CancellationReason::ManuallyCancelled,
-                        ctx,
-                    );
+                    cancel_blocked_action(action_model, conversation_id, &blocked_action, ctx);
                 });
             }
         }
