@@ -187,6 +187,11 @@ fn adjacent_orchestration_child_navigation_uses_pinned_first_order() {
         // `GeneralSettings::persist_conversations` (conversation.rs:3328).
         // Without the settings singletons registered the lookup panics.
         crate::test_util::settings::initialize_settings_for_tests(&mut app);
+        // Also reaches the sqlite-backed persist path, which looks up
+        // `GlobalResourceHandlesProvider` (history_model.rs:1414). Mock it the same
+        // way the notebooks tests do.
+        let global_resources = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| crate::GlobalResourceHandlesProvider::new(global_resources));
         let terminal_view_id = EntityId::new();
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
