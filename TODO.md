@@ -85,8 +85,11 @@ Local main = `682ea7eca`. `precheck: ok` — **8,384 tests, 0 failures** (+21 fr
   - `claude_transcript.rs` — ported (10 tests) but **has NO production call site**.
     The pin's remaining functions rehydrate an envelope downloaded from Warp's
     server for cloud resume; the fork has no resume feature to hook them into, so
-    wiring would mean inventing one. **#207 class, landed knowingly. MAINTAINER
-    DECISION OUTSTANDING: keep as documented dead code, or remove.**
+    wiring would mean inventing one. **DECIDED 2026-08-09: KEEP.** Not
+    the #207 dead-code class after all -- removal would delete 10 passing tests AND
+    re-block a pinned one (`claude_code_tests.rs:562` says
+    `write_session_index_entry_creates_expected_entry` needs this module). It is a
+    tested primitive whose consumer does not exist yet, not dead weight.
   - `codex_transcript.rs` — not portable: the fork's `Harness` enum has **no `Codex`
     variant at all**, so nothing to wire it to at the type level. That is #183.
 
