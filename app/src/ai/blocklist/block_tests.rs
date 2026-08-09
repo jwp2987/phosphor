@@ -1,5 +1,8 @@
-use super::{CollapsibleElementState, CollapsibleExpansionState};
-use crate::settings::AISettings;
+use super::{
+    default_collapsible_state_for_orchestration_message, CollapsibleElementState,
+    CollapsibleExpansionState,
+};
+use crate::settings::{AISettings, OrchestrationMessageDisplayMode};
 use crate::test_util::settings::initialize_settings_for_tests;
 use settings::Setting;
 use warpui::{App, SingletonEntity};
@@ -96,6 +99,78 @@ fn collapsed_initializer_starts_collapsed() {
     assert!(matches!(
         state.expansion_state,
         CollapsibleExpansionState::Collapsed
+    ));
+}
+
+// The pin also has orchestration_send_message_starts_collapsed,
+// non_orchestration_actions_do_not_get_collapsible_state_defaults,
+// orchestration_show_and_collapse_starts_sent_messages_expanded, and
+// orchestration_always_show_starts_sent_messages_expanded, all exercising
+// default_collapsible_state_for_orchestration_action against
+// AIAgentActionType::SendMessageToAgent. Not ported: that variant does not
+// exist in this fork (see default_collapsible_state_for_orchestration_action's
+// doc comment in block.rs), so these 4 tests cannot compile here.
+
+#[test]
+fn orchestration_show_and_collapse_collapses_after_finish() {
+    let mut state = default_collapsible_state_for_orchestration_message(
+        OrchestrationMessageDisplayMode::ShowAndCollapse,
+    );
+
+    state.finish_orchestration_message(OrchestrationMessageDisplayMode::ShowAndCollapse);
+
+    assert!(matches!(
+        state.expansion_state,
+        CollapsibleExpansionState::Collapsed
+    ));
+}
+
+#[test]
+fn orchestration_always_show_stays_expanded_after_finish() {
+    let mut state = default_collapsible_state_for_orchestration_message(
+        OrchestrationMessageDisplayMode::AlwaysShow,
+    );
+
+    state.finish_orchestration_message(OrchestrationMessageDisplayMode::AlwaysShow);
+
+    assert!(matches!(
+        state.expansion_state,
+        CollapsibleExpansionState::Expanded {
+            is_finished: true,
+            scroll_pinned_to_bottom: false
+        }
+    ));
+}
+
+#[test]
+fn orchestration_received_messages_follow_initial_message_display_mode() {
+    let show_and_collapse = default_collapsible_state_for_orchestration_message(
+        OrchestrationMessageDisplayMode::ShowAndCollapse,
+    );
+    assert!(matches!(
+        show_and_collapse.expansion_state,
+        CollapsibleExpansionState::Expanded {
+            is_finished: false,
+            scroll_pinned_to_bottom: true
+        }
+    ));
+    let collapsed = default_collapsible_state_for_orchestration_message(
+        OrchestrationMessageDisplayMode::AlwaysCollapse,
+    );
+    assert!(matches!(
+        collapsed.expansion_state,
+        CollapsibleExpansionState::Collapsed
+    ));
+    let expanded = default_collapsible_state_for_orchestration_message(
+        OrchestrationMessageDisplayMode::AlwaysShow,
+    );
+
+    assert!(matches!(
+        expanded.expansion_state,
+        CollapsibleExpansionState::Expanded {
+            is_finished: false,
+            scroll_pinned_to_bottom: true
+        }
     ));
 }
 
