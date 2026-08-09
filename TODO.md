@@ -72,6 +72,31 @@ were found in one pass, and neither would have been caught by review.
 - #353 daemon producer, #388's three sub-items
 - #440 — or the above ships degraded (skills empty; `home_dir`/`global_rules` still work)
 
+## LANDED 2026-08-09 — #147 and #289 (parallel worktree)
+
+Local main = `682ea7eca`. `precheck: ok` — **8,384 tests, 0 failures** (+21 from these ports).
+
+- **#147 CLOSED** — `/theme` was the only remaining sub-claim; ported TUI-only per the
+  pin, reusing the fork's existing `TuiTheme` settings type. 3 tests.
+- **#289 CLOSED with two limitations recorded, not hidden:**
+  - `harness_output_monitor.rs` — ported AND wired into `AgentDriver::run_harness`,
+    with a real non-empty `runtime_error_patterns()` for `ClaudeHarness` rather than
+    a stub default (the fake-coverage trap the issue itself warns about). 8 tests.
+  - `claude_transcript.rs` — ported (10 tests) but **has NO production call site**.
+    The pin's remaining functions rehydrate an envelope downloaded from Warp's
+    server for cloud resume; the fork has no resume feature to hook them into, so
+    wiring would mean inventing one. **#207 class, landed knowingly. MAINTAINER
+    DECISION OUTSTANDING: keep as documented dead code, or remove.**
+  - `codex_transcript.rs` — not portable: the fork's `Harness` enum has **no `Codex`
+    variant at all**, so nothing to wire it to at the type level. That is #183.
+
+**Operational note:** this worktree suffered an unexplained mid-task
+`reset: moving to HEAD` that discarded uncommitted work (visible in `git reflog`,
+not performed by the agent). The agent redid both issues and committed
+immediately rather than batching. Verified intact afterwards: 1,339 lines across
+two commits. **Lesson: commit early even under a batch-build rule — the batch rule
+defers the BUILD, not the commit.**
+
 ## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
 
 Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is
