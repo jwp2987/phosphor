@@ -83,6 +83,10 @@ fn toggle_and_reorder_are_reflected_in_saved_config() {
                 TuiStatuslineItem::GitBranch,
                 TuiStatuslineItem::GitDiffStatus,
                 TuiStatuslineItem::ContextWindowUsage,
+                TuiStatuslineItem::Date,
+                TuiStatuslineItem::Time12Hour,
+                TuiStatuslineItem::Time24Hour,
+                TuiStatuslineItem::AgentTodoList,
             ]
         );
         assert_eq!(
