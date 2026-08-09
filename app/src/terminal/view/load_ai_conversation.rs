@@ -104,7 +104,16 @@ pub enum ConversationRestorationInNewPaneType {
 
     /// Fork an existing conversation into this new pane.
     /// This is like Historical but requires special persistence handling.
-    Forked { conversation: AIConversation },
+    Forked {
+        conversation: AIConversation,
+        /// True when the fork is paired with a follow-up prompt or summarize that
+        /// will be sent immediately after restore.
+        /// We skip the `couldn't find original conversation directory` ephemeral
+        /// hint in that case so the warping indicator (gated on
+        /// `ephemeral_message_model.current_message().is_none()` in
+        /// `BlocklistAIStatusBar::render`) isn't suppressed by the hint.
+        has_initial_query: bool,
+    },
 
     /// Load a CLI agent conversation from its downloaded snapshot.
     HistoricalCLIAgent {
@@ -126,7 +135,10 @@ impl ConversationRestorationInNewPaneType {
     pub fn should_show_restore_context_hint(&self) -> bool {
         match self {
             Self::Startup { .. } => false,
-            Self::Historical { .. } | Self::Forked { .. } | Self::HistoricalCLIAgent { .. } => true,
+            Self::Forked {
+                has_initial_query, ..
+            } => !has_initial_query,
+            Self::Historical { .. } | Self::HistoricalCLIAgent { .. } => true,
         }
     }
 
@@ -156,6 +168,26 @@ impl ConversationRestorationInNewPaneType {
                 conversation.metadata.working_directory.clone()
             }
             Self::Startup { .. } => None,
+        }
+    }
+
+    /// Returns the working directory the newly-created pane's shell should start
+    /// in when restoring this conversation.
+    ///
+    /// For a forked conversation we start the shell in the conversation's
+    /// *current* (latest) working directory so the fork continues where the
+    /// source conversation left off, rather than the directory it was originally
+    /// started in (which is what `initial_working_directory` returns). If no
+    /// later exchange recorded a working directory we fall back to the initial
+    /// one. Other restoration modes keep using the initial working directory.
+    pub fn startup_working_directory(&self) -> Option<String> {
+        match self {
+            Self::Forked { conversation, .. } => conversation
+                .current_working_directory()
+                .or_else(|| conversation.initial_working_directory()),
+            Self::Startup { .. } | Self::Historical { .. } | Self::HistoricalCLIAgent { .. } => {
+                self.initial_working_directory()
+            }
         }
     }
 }
@@ -721,7 +753,9 @@ impl TerminalView {
             conversation_restoration.should_show_restore_context_hint();
 
         // Save the target working directory so we can detect when the dir doesn't exist on this machine.
-        let target_dir = conversation_restoration.initial_working_directory();
+        // Use the same directory the new pane's shell starts in (the latest one for forks) so the
+        // "couldn't find original conversation directory" hint stays consistent with the spawned shell.
+        let target_dir = conversation_restoration.startup_working_directory();
 
         // Extract the active conversation ID if agent view was open (only for startup restoration)
         let active_conversation_id_to_restore = match &conversation_restoration {
@@ -743,7 +777,7 @@ impl TerminalView {
             ConversationRestorationInNewPaneType::Historical { conversation, .. } => {
                 vec![RestoredAIConversation::new(conversation)]
             }
-            ConversationRestorationInNewPaneType::Forked { conversation } => {
+            ConversationRestorationInNewPaneType::Forked { conversation, .. } => {
                 vec![RestoredAIConversation::new(conversation)]
             }
             ConversationRestorationInNewPaneType::HistoricalCLIAgent { conversation, .. } => {
@@ -1384,4 +1418,117 @@ fn command_block_indices_for_exchanges<'a>(
     }
 
     result
+}
+
+#[cfg(test)]
+mod working_directory_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// Build a user query message that records `pwd` as its directory context, so
+    /// the restored exchange picks up that working directory.
+    fn user_query_with_pwd(id: &str, request_id: &str, query: &str, pwd: &str) -> api::Message {
+        api::Message {
+            fetched_memories: vec![],
+            id: id.to_string(),
+            task_id: "root-task".to_string(),
+            server_message_data: String::new(),
+            citations: vec![],
+            message: Some(api::message::Message::UserQuery(api::message::UserQuery {
+                query: query.to_string(),
+                context: Some(api::InputContext {
+                    directory: Some(api::input_context::Directory {
+                        pwd: pwd.to_string(),
+                        home: String::new(),
+                        pwd_file_symbols_indexed: false,
+                    }),
+                    ..Default::default()
+                }),
+                referenced_attachments: HashMap::new(),
+                mode: None,
+                intended_agent: Default::default(),
+            })),
+            request_id: request_id.to_string(),
+            timestamp: None,
+        }
+    }
+
+    fn agent_output(id: &str, request_id: &str) -> api::Message {
+        api::Message {
+            fetched_memories: vec![],
+            id: id.to_string(),
+            task_id: "root-task".to_string(),
+            server_message_data: String::new(),
+            citations: vec![],
+            message: Some(api::message::Message::AgentOutput(
+                api::message::AgentOutput {
+                    text: "Done".to_string(),
+                },
+            )),
+            request_id: request_id.to_string(),
+            timestamp: None,
+        }
+    }
+
+    /// A restored conversation whose first exchange ran in `initial` and whose
+    /// latest exchange ran in `latest` (e.g. after the agent `cd`'d into a worktree).
+    fn conversation_with_dirs(initial: &str, latest: &str) -> AIConversation {
+        let messages = vec![
+            user_query_with_pwd("user-0", "request-0", "first", initial),
+            agent_output("agent-0", "request-0"),
+            user_query_with_pwd("user-1", "request-1", "second", latest),
+            agent_output("agent-1", "request-1"),
+        ];
+
+        AIConversation::new_restored(
+            AIConversationId::new(),
+            vec![api::Task {
+                id: "root-task".to_string(),
+                messages,
+                dependencies: None,
+                description: String::new(),
+                summary: String::new(),
+                server_data: String::new(),
+            }],
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn conversation_tracks_initial_and_latest_working_directory() {
+        let conversation = conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
+
+        assert_eq!(
+            conversation.initial_working_directory().as_deref(),
+            Some("/home/user/code/warp"),
+        );
+        assert_eq!(
+            conversation.current_working_directory().as_deref(),
+            Some("/home/user/code/warp/wt"),
+        );
+    }
+
+    #[test]
+    fn forked_startup_working_directory_uses_latest_directory() {
+        let conversation = conversation_with_dirs("/home/user/code/warp", "/home/user/code/warp/wt");
+
+        let restoration = ConversationRestorationInNewPaneType::Forked {
+            conversation,
+            has_initial_query: false,
+        };
+
+        // Regression: forking must start the new pane in the conversation's *latest*
+        // working directory, not the directory it was originally started in.
+        assert_eq!(
+            restoration.startup_working_directory().as_deref(),
+            Some("/home/user/code/warp/wt"),
+        );
+        // The initial working directory getter still returns the original directory.
+        assert_eq!(
+            restoration.initial_working_directory().as_deref(),
+            Some("/home/user/code/warp"),
+        );
+    }
 }
