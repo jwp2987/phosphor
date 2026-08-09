@@ -5,7 +5,6 @@ use crate::code::editor::{add_color, remove_color};
 use crate::code::icon_from_file_path;
 use crate::safe_triangle::SafeTriangle;
 use crate::send_telemetry_from_app_ctx;
-use crate::terminal::cli_agent_sessions::listener::session_supports_rich_status;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::view::TerminalViewState;
 use crate::terminal::CLIAgent;
@@ -960,7 +959,7 @@ fn summary_conversation_status_for_terminal(
 ) -> Option<ConversationStatus> {
     let cli_agent_session = CLIAgentSessionsModel::as_ref(app).session(terminal_view.id());
     if let Some(session) =
-        cli_agent_session.filter(|s| s.listener.is_some() && session_supports_rich_status(s))
+        cli_agent_session.filter(|s| s.listener.is_some() && s.supports_rich_status())
     {
         return Some(session.status.to_conversation_status());
     }
@@ -2439,7 +2438,7 @@ fn resolve_icon_with_status_variant(
                     agent: session.agent,
                     has_listener: session.listener.is_some(),
                     status: session.status.to_conversation_status(),
-                    supports_rich_status: session_supports_rich_status(session),
+                    supports_rich_status: session.supports_rich_status(),
                 }),
                 selected_third_party_cli_agent: None,
                 selected_conversation_status: terminal_view
@@ -5551,7 +5550,7 @@ fn render_terminal_detail_section(
         preferred_agent_tab_titles(&agent_text, agent_tab_text_preference(app));
     let kind_label = terminal_kind_badge_label(agent_text.is_oz_agent, agent_text.cli_agent);
     let status = if let Some(session) =
-        cli_agent_session.filter(|s| s.listener.is_some() && session_supports_rich_status(s))
+        cli_agent_session.filter(|s| s.listener.is_some() && s.supports_rich_status())
     {
         Some(session.status.to_conversation_status())
     } else if agent_text.is_oz_agent {

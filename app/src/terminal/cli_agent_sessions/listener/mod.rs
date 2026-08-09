@@ -16,46 +16,23 @@ trait CLIAgentSessionHandler {
     /// The default implementation delegates to the structured JSON parser
     /// (`parse_event`); agents with non-JSON notification formats (e.g. Codex
     /// OSC 9 plain text) should override this.
-    fn try_parse(&self, title: Option<&str>, body: &str) -> Option<CLIAgentEvent> {
+    ///
+    /// `plugin_already_active` is true when the session has already received a
+    /// structured OSC 777 notification; Codex uses it to drop OSC 9 fallback
+    /// once the rich plugin is active. Other handlers ignore it.
+    fn try_parse(
+        &mut self,
+        title: Option<&str>,
+        body: &str,
+        plugin_already_active: bool,
+    ) -> Option<CLIAgentEvent> {
+        let _ = plugin_already_active;
         parse_event(title, body)
     }
 
     /// Decide whether a parsed event should be forwarded to the sessions model.
     /// Returns the event (possibly transformed) if it should be processed.
     fn handle_event(&mut self, event: CLIAgentEvent) -> Option<CLIAgentEvent>;
-
-    /// Whether this handler provides meaningful, fine-grained status
-    /// (e.g. in-progress / blocked / success) that should be shown in the UI.
-    /// Handlers backed by the structured plugin protocol report rich status;
-    /// handlers that only forward opaque OS notifications (e.g. Codex) do not.
-    fn supports_rich_status(&self) -> bool {
-        true
-    }
-}
-
-/// Whether the listener for the given agent provides rich status.
-/// Returns `false` for agents without a handler or whose handler opts out.
-pub fn agent_supports_rich_status(agent: &CLIAgent) -> bool {
-    create_handler(agent).is_some_and(|h| h.supports_rich_status())
-}
-
-/// Returns whether this concrete session has enough event context to render
-/// fine-grained status in UI surfaces.
-pub fn session_supports_rich_status(session: &CLIAgentSession) -> bool {
-    if !agent_supports_rich_status(&session.agent) {
-        return false;
-    }
-
-    // DeepSeek has two listener paths:
-    // - legacy OSC 9 completion notifications, registered from command detection,
-    //   with no session id or lifecycle events;
-    // - structured OSC 777 hooks, which include the DeepSeek hook session id.
-    // Only the latter can drive rich status accurately.
-    if matches!(session.agent, CLIAgent::DeepSeek) && session.session_context.session_id.is_none() {
-        return false;
-    }
-
-    true
 }
 
 /// Returns `true` if the given CLI agent has a supported session handler.
@@ -160,9 +137,16 @@ impl CodexSessionHandler {
 }
 
 impl CLIAgentSessionHandler for CodexSessionHandler {
-    /// Codex sends plain-text OSC 9 notifications (title = `None`) instead of
-    /// the structured OSC 777 JSON used by Claude Code / OpenCode.
-    fn try_parse(&self, title: Option<&str>, body: &str) -> Option<CLIAgentEvent> {
+    /// Before Codex had structured plugin support, we relied on OSC 9 to
+    /// trigger notifications. Here we try to parse an OSC 777 event first, and
+    /// once the session has seen one (`plugin_already_active`), we ignore OSC 9
+    /// notifications so we don't double-process both channels.
+    fn try_parse(
+        &mut self,
+        title: Option<&str>,
+        body: &str,
+        plugin_already_active: bool,
+    ) -> Option<CLIAgentEvent> {
         // If the notification carries the structured sentinel, try the normal
         // JSON parser first (future-proofing in case Codex adds plugin
         // support later). A structured event that belongs to a different agent
@@ -174,8 +158,9 @@ impl CLIAgentSessionHandler for CodexSessionHandler {
             }
             return None;
         }
-        // OSC 9 notifications have no title.
-        if title.is_some() {
+        // OSC 9 notifications have no title. Skip OSC 9 once the rich plugin is
+        // active, otherwise we'd process both OSC 777 and OSC 9 notifications.
+        if title.is_some() || plugin_already_active {
             return None;
         }
         Self::parse_osc9_text(body)
@@ -184,18 +169,15 @@ impl CLIAgentSessionHandler for CodexSessionHandler {
     fn handle_event(&mut self, event: CLIAgentEvent) -> Option<CLIAgentEvent> {
         Some(event)
     }
-
-    fn supports_rich_status(&self) -> bool {
-        false
-    }
 }
 
 /// DeepSeek-TUI handler: listens for structured OSC 777 events and legacy
 /// OSC 9 plain-text notifications.
 /// DeepSeek-TUI emits `\x1b]9;deepseek: turn complete\x07` (optionally with
 /// elapsed time and cost) when a turn finishes. Those legacy notifications are
-/// treated as `Stop` events. Rich status is only available when DeepSeek hooks
-/// emit structured OSC 777 events with a session id.
+/// treated as `Stop` events tagged `CodexOsc9Fallback`, so they never latch
+/// `CLIAgentSession::received_rich_notification`. Rich status is only latched
+/// when DeepSeek hooks emit structured OSC 777 events.
 struct DeepSeekSessionHandler;
 
 impl DeepSeekSessionHandler {
@@ -218,7 +200,12 @@ impl DeepSeekSessionHandler {
 
 impl CLIAgentSessionHandler for DeepSeekSessionHandler {
     /// DeepSeek-TUI uses OSC 9 with no title (same channel as Codex).
-    fn try_parse(&self, title: Option<&str>, body: &str) -> Option<CLIAgentEvent> {
+    fn try_parse(
+        &mut self,
+        title: Option<&str>,
+        body: &str,
+        _plugin_already_active: bool,
+    ) -> Option<CLIAgentEvent> {
         // Future-proof: try structured JSON first in case a plugin is added later.
         if let Some(parsed) = parse_event(title, body) {
             return Some(parsed);
@@ -253,10 +240,6 @@ impl CLIAgentSessionHandler for DeepSeekSessionHandler {
     fn handle_event(&mut self, event: CLIAgentEvent) -> Option<CLIAgentEvent> {
         Some(event)
     }
-
-    fn supports_rich_status(&self) -> bool {
-        true
-    }
 }
 
 /// Per-agent listener that subscribes to PTY events and forwards them to the
@@ -286,7 +269,13 @@ impl CLIAgentSessionListener {
         // `handle_event` then filters/transforms the result.
         ctx.subscribe_to_model(model_event_dispatcher, move |me, event, ctx| {
             if let ModelEvent::PluggableNotification { title, body } = event {
-                let Some(parsed) = me.inner.try_parse(title.as_deref(), body) else {
+                let plugin_already_active = CLIAgentSessionsModel::as_ref(ctx)
+                    .session(me.terminal_view_id)
+                    .is_some_and(|session| session.received_rich_notification);
+                let Some(parsed) =
+                    me.inner
+                        .try_parse(title.as_deref(), body, plugin_already_active)
+                else {
                     return;
                 };
                 if let Some(event) = me.inner.handle_event(parsed) {

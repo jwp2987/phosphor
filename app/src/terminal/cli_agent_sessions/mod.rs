@@ -152,6 +152,16 @@ impl CLIAgentSession {
         self.remote_host.is_some()
     }
 
+    /// Whether the session surfaces trustworthy fine-grained status
+    /// (in-progress / blocked / success). True only after receiving a rich OSC
+    /// 777 notification. Codex's OSC 9 fallback emits only opaque `Stop`
+    /// notifications and never sets `received_rich_notification`, so it does
+    /// not qualify. Synthetic listener registration also does not qualify until
+    /// an actual rich notification arrives.
+    pub fn supports_rich_status(&self) -> bool {
+        self.received_rich_notification
+    }
+
     /// Clears state populated by `PermissionRequest`. Called whenever the
     /// session leaves the permission flow (the user replied, a blocking tool
     /// completed, a new prompt is submitted, or the session ends successfully)

@@ -31,7 +31,7 @@ use crate::{
     settings_view::SettingsSection,
     terminal::{
         cli_agent_sessions::{
-            listener::session_supports_rich_status, CLIAgentInputState, CLIAgentSessionsModel,
+            CLIAgentInputState, CLIAgentSessionsModel,
             CLIAgentSessionsModelEvent,
         },
         input::{models::InlineModelSelectorTab, MenuPositioningProvider},
@@ -479,7 +479,7 @@ impl AgentInputFooter {
                 // (Codex always has a listener but no actual plugin to install.)
                 if CLIAgentSessionsModel::as_ref(ctx)
                     .session(me.terminal_view_id)
-                    .is_some_and(|s| s.listener.is_some() && session_supports_rich_status(s))
+                    .is_some_and(|s| s.listener.is_some() && s.supports_rich_status())
                 {
                     me.plugin_chip_ready = false;
                 }
@@ -501,8 +501,7 @@ impl AgentInputFooter {
                                         let suppress = CLIAgentSessionsModel::as_ref(ctx)
                                             .session(me.terminal_view_id)
                                             .is_some_and(|s| {
-                                                s.listener.is_some()
-                                                    && session_supports_rich_status(s)
+                                                s.listener.is_some() && s.supports_rich_status()
                                             });
                                         if !suppress {
                                             me.plugin_chip_ready = true;

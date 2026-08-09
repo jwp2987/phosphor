@@ -47,9 +47,9 @@ pub(crate) struct CLISessionInputs {
     /// status; command-detected sessions only know that an agent is running.
     pub(crate) has_listener: bool,
     pub(crate) status: ConversationStatus,
-    /// Whether the agent's session handler exposes rich status (plugin-backed handlers report
-    /// rich status; handlers that only forward opaque OS notifications do not -- see
-    /// `terminal::cli_agent_sessions::listener::session_supports_rich_status`).
+    /// Whether the session has received a structured rich notification (plugin-backed sessions
+    /// latch this; sessions that only ever see opaque OS notifications do not -- see
+    /// `terminal::cli_agent_sessions::CLIAgentSession::supports_rich_status`).
     pub(crate) supports_rich_status: bool,
 }
 

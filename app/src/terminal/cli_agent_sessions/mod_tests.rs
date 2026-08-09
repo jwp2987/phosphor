@@ -363,6 +363,52 @@ fn is_remote_returns_false_when_remote_host_is_none() {
 }
 
 #[test]
+fn codex_session_not_rich_until_rich_notification() {
+    // Codex's OSC 9 fallback never sets `received_rich_notification`, so the
+    // session must not claim rich status even when a fallback listener exists.
+    let mut session = CLIAgentSession {
+        agent: CLIAgent::Codex,
+        status: CLIAgentSessionStatus::InProgress,
+        session_context: CLIAgentSessionContext::default(),
+        input_state: CLIAgentInputState::Closed,
+        should_auto_toggle_input: false,
+        listener: None,
+        plugin_version: None,
+        remote_host: None,
+        draft_text: None,
+        custom_command_prefix: None,
+        received_rich_notification: false,
+    };
+    assert!(!session.supports_rich_status());
+
+    // A structured OSC 777 notification latches the flag -> rich status.
+    session.received_rich_notification = true;
+    assert!(session.supports_rich_status());
+}
+
+#[test]
+fn non_codex_session_rich_after_rich_notification() {
+    let mut session = CLIAgentSession {
+        agent: CLIAgent::Claude,
+        status: CLIAgentSessionStatus::InProgress,
+        session_context: CLIAgentSessionContext::default(),
+        input_state: CLIAgentInputState::Closed,
+        should_auto_toggle_input: false,
+        listener: None,
+        plugin_version: None,
+        remote_host: None,
+        draft_text: None,
+        custom_command_prefix: None,
+        received_rich_notification: false,
+    };
+    // No listener and no rich notification yet.
+    assert!(!session.supports_rich_status());
+
+    session.received_rich_notification = true;
+    assert!(session.supports_rich_status());
+}
+
+#[test]
 fn local_failure_is_shared_across_local_sessions() {
     let mut model = CLIAgentSessionsModel::new();
 
