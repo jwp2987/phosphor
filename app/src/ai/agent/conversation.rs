@@ -3290,9 +3290,11 @@ impl AIConversation {
                 last_event_sequence: self.last_event_sequence,
                 pinned: self.pinned,
                 // Persisted-only flag: an optimistic root task has been created
-                // locally but not yet confirmed. `AIConversation` has no
-                // equivalent in-memory field, so it serializes as false here.
-                root_task_is_optimistic: false,
+                // locally but not yet confirmed. `AIConversation` has no equivalent
+                // in-memory field, so it serializes as unset rather than asserting
+                // a value it does not know. Matches the default at
+                // `crates/persistence/src/model.rs:1764`.
+                root_task_is_optimistic: None,
                 compaction_state_json: if self.compaction_state.completed().is_empty() {
                     None
                 } else {
