@@ -644,7 +644,12 @@ changed an agreed order twice on 2026-08-09 (#381 folded into the #440 batch aga
 "after 440"; #405 re-tiered unasked) and both were wrong.
 
 ### Tier 4 — large (a week+)
-- [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #349 · #324 · #405
+- [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #324 · #405
+- [x] **#349 PARKED 2026-08-09 (maintainer).** `computer_use` per-window activation
+      (`mac/activation.rs`, `mac/window.rs`, `mac/post.rs`, `linux/x11/seat.rs`,
+      `linux/x11/windows.rs`). Parked, not declined: the macOS half cannot be built or
+      verified on this host, so porting it would ship code no one here can test.
+      Revisit only if a macOS build host becomes available.
 - [ ] #575 `RemoteAgentContextSnapshot.global_rules` is always empty. Split out of the
       #440 batch after a scope correction: I had assumed `remote_context_files.rs`
       supplied it — **it does not.** `global_rules` arrives pre-serialized in the
