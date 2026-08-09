@@ -9,7 +9,7 @@
 //! without needing to spin up a window, model singletons, etc.
 use vim::vim::{CharacterMotion, Direction, MotionType, VimMotion, VimOperand};
 
-use super::{bounded_repeated_text, vim_operand_motion_type, MAX_VIM_PASTE_BYTES};
+use super::{MAX_VIM_PASTE_BYTES, bounded_repeated_text, vim_operand_motion_type};
 
 /// Regression test for the vim replace-mode DoS: a count-prefixed replace
 /// (`999999999r`) or continuous `R`-mode used to build
@@ -63,7 +63,10 @@ fn bounded_repeated_text_handles_empty_text() {
 
 #[test]
 fn vim_operand_motion_type_matches_operand_shape() {
-    assert_eq!(vim_operand_motion_type(&VimOperand::Line), MotionType::Linewise);
+    assert_eq!(
+        vim_operand_motion_type(&VimOperand::Line),
+        MotionType::Linewise
+    );
 
     let charwise_motion = VimOperand::Motion {
         motion_type: MotionType::Charwise,
@@ -83,4 +86,3 @@ fn vim_operand_motion_type_matches_operand_shape() {
         MotionType::Linewise
     );
 }
-

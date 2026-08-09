@@ -41,12 +41,12 @@ use warpui_core::{
     TypedActionView, ViewContext, ViewHandle,
 };
 
+use crate::completions_menu::TuiAcceptedCompletion;
 use crate::editor_element::{TuiEditorAction, TuiEditorElement, TuiEditorStyles};
 use crate::editor_interaction::{
     TuiEditorBehavior, TuiEditorCommand, TuiEditorInteractionOutcome, TuiEditorState,
     apply_editor_action, apply_editor_clipboard_action, apply_editor_paste, follow_editor_cursor,
 };
-use crate::completions_menu::TuiAcceptedCompletion;
 use crate::exchange_menu::TuiExchangeMenuAction;
 use crate::inline_menu::{TuiInlineMenu, TuiInlineMenuAccepted, active_inline_menu};
 use crate::input_hints;
@@ -532,7 +532,7 @@ impl TuiInputView {
     fn prompt_row(&self, ctx: &AppContext) -> Box<dyn TuiElement> {
         let builder = TuiUiBuilder::from_app(ctx);
         let (prefix_text, prefix_style) = if self.is_shell_mode(ctx) {
-            ("!", builder.shell_mode_accent_style())
+            ("!", builder.shell_command_accent_style())
         } else {
             (">", builder.accent_text_style())
         };

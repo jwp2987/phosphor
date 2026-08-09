@@ -18,16 +18,16 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use warpui::platform::OperatingSystem;
 use warpui::{
-    platform::keyboard::KeyCode, AppContext, Entity, ModelContext, SingletonEntity, UpdateModel,
+    AppContext, Entity, ModelContext, SingletonEntity, UpdateModel, platform::keyboard::KeyCode,
 };
 
 use settings::{
-    define_settings_group, RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud,
+    RespectUserSyncSetting, Setting, SupportedPlatforms, SyncToCloud, define_settings_group,
 };
 use warp_core::execution_mode::AppExecutionMode;
 use warp_core::features::FeatureFlag;
 
-use serde::{de::Deserializer, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Deserializer};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 
@@ -558,10 +558,15 @@ pub enum TuiStatuslineItem {
     GitBranch,
     GitDiffStatus,
     ContextWindowUsage,
+    Date,
+    #[schemars(rename = "time_12_hour")]
+    Time12Hour,
+    #[schemars(rename = "time_24_hour")]
+    Time24Hour,
 }
 
 impl TuiStatuslineItem {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 10] = [
         Self::AutoApprove,
         Self::AutoQueue,
         Self::Model,
@@ -569,6 +574,9 @@ impl TuiStatuslineItem {
         Self::GitBranch,
         Self::GitDiffStatus,
         Self::ContextWindowUsage,
+        Self::Date,
+        Self::Time12Hour,
+        Self::Time24Hour,
     ];
 
     pub fn label(self) -> &'static str {
@@ -580,6 +588,9 @@ impl TuiStatuslineItem {
             Self::GitBranch => "Git branch",
             Self::GitDiffStatus => "Git diff status",
             Self::ContextWindowUsage => "Context window usage",
+            Self::Date => "Date",
+            Self::Time12Hour => "Time (12 hour format)",
+            Self::Time24Hour => "Time (24 hour format)",
         }
     }
 }
@@ -1281,7 +1292,9 @@ impl AgentProvider {
     /// feedback.
     pub fn validation_error(&self) -> Option<String> {
         if self.api_type.is_vertex() && self.vertex_project.trim().is_empty() {
-            return Some(crate::t!("settings-agent-providers-vertex-project-required"));
+            return Some(crate::t!(
+                "settings-agent-providers-vertex-project-required"
+            ));
         }
         None
     }
@@ -2843,9 +2856,10 @@ impl AISettings {
             }
         }
 
-        report_if_error!(self
-            .ai_request_quota_info
-            .set_value(AIRequestQuotaInfo { cycle_history }, ctx));
+        report_if_error!(
+            self.ai_request_quota_info
+                .set_value(AIRequestQuotaInfo { cycle_history }, ctx)
+        );
     }
 
     /// Updates the quota info based on the latest RequestLimitInfo.
@@ -2891,9 +2905,10 @@ impl AISettings {
             cycle_history.push(new_cycle);
         }
 
-        report_if_error!(self
-            .ai_request_quota_info
-            .set_value(AIRequestQuotaInfo { cycle_history }, ctx));
+        report_if_error!(
+            self.ai_request_quota_info
+                .set_value(AIRequestQuotaInfo { cycle_history }, ctx)
+        );
     }
 
     pub fn is_command_denylist_editable(&self, app: &AppContext) -> bool {
@@ -2994,9 +3009,10 @@ impl AISettings {
             }
         };
 
-        report_if_error!(self
-            .voice_input_toggle_key
-            .set_value(voice_input_toggle_key, ctx));
+        report_if_error!(
+            self.voice_input_toggle_key
+                .set_value(voice_input_toggle_key, ctx)
+        );
 
         report_if_error!(self.explicitly_interacted_with_voice.set_value(true, ctx));
 
@@ -3022,9 +3038,10 @@ impl AISettings {
 
         let mut map = self.cli_agent_footer_enabled_commands.value().0.clone();
         map.insert(command.to_string(), String::new());
-        report_if_error!(self
-            .cli_agent_footer_enabled_commands
-            .set_value(ToolbarCommandMap::new(map), ctx));
+        report_if_error!(
+            self.cli_agent_footer_enabled_commands
+                .set_value(ToolbarCommandMap::new(map), ctx)
+        );
     }
 
     pub fn remove_cli_agent_footer_enabled_command(
@@ -3035,9 +3052,10 @@ impl AISettings {
         let command = command.trim();
         let mut map = self.cli_agent_footer_enabled_commands.value().0.clone();
         map.shift_remove(command);
-        report_if_error!(self
-            .cli_agent_footer_enabled_commands
-            .set_value(ToolbarCommandMap::new(map), ctx));
+        report_if_error!(
+            self.cli_agent_footer_enabled_commands
+                .set_value(ToolbarCommandMap::new(map), ctx)
+        );
     }
 
     pub fn set_cli_agent_for_command(
@@ -3052,9 +3070,10 @@ impl AISettings {
         }
         let value = agent.map(|a| a.to_serialized_name()).unwrap_or_default();
         map.insert(pattern.to_string(), value);
-        report_if_error!(self
-            .cli_agent_footer_enabled_commands
-            .set_value(ToolbarCommandMap::new(map), ctx));
+        report_if_error!(
+            self.cli_agent_footer_enabled_commands
+                .set_value(ToolbarCommandMap::new(map), ctx)
+        );
     }
 
     /// Whether the feature-intro popover with the given id key has been seen.
@@ -3110,9 +3129,10 @@ impl AISettings {
     ) {
         let mut map = self.plugin_update_chip_dismissed_for_version_map.clone();
         map.insert(key.to_owned(), version);
-        report_if_error!(self
-            .plugin_update_chip_dismissed_for_version_map
-            .set_value(map, ctx));
+        report_if_error!(
+            self.plugin_update_chip_dismissed_for_version_map
+                .set_value(map, ctx)
+        );
     }
 
     // ── Per-agent settings ──

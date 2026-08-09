@@ -501,7 +501,8 @@ fn build_view_with_orchestration_tabs(
     // later unguarded registration panic with "called twice".
     add_test_semantic_selection(ctx);
     let suggestions_mode = add_suggestions_mode(ctx, TuiInputSuggestionsMode::Closed);
-    let prompt_history_menu = add_prompt_and_command_history_menu(ctx, &input_model, &input_mode, &suggestions_mode);
+    let prompt_history_menu =
+        add_prompt_and_command_history_menu(ctx, &input_model, &input_mode, &suggestions_mode);
     let orchestration_tabs_available_for_view = orchestration_tabs_available.clone();
     let (_window_id, view) = ctx.add_tui_window(
         AddWindowOptions {
@@ -558,7 +559,8 @@ fn build_view_with_conversation_menu(
     });
     let inline_menu = TuiInlineMenu::new(TestConversationMenuHandle(menu_model.clone()));
     let inline_menu_for_view = inline_menu.clone();
-    let prompt_history_menu = add_prompt_and_command_history_menu(ctx, &input_model, &input_mode, &suggestions_mode);
+    let prompt_history_menu =
+        add_prompt_and_command_history_menu(ctx, &input_model, &input_mode, &suggestions_mode);
     let prompt_history_inline_menu = TuiInlineMenu::new(prompt_history_menu);
     let (_window_id, view) = ctx.add_tui_window(
         AddWindowOptions {
@@ -626,7 +628,8 @@ fn build_view_with_inline_menu_gate(
             0,
         )
     });
-    let prompt_history_menu = add_prompt_and_command_history_menu(ctx, &input_model, &input_mode, &suggestions_mode);
+    let prompt_history_menu =
+        add_prompt_and_command_history_menu(ctx, &input_model, &input_mode, &suggestions_mode);
     let inline_menu = TuiInlineMenu::new(menu_model.clone());
     let prompt_history_inline_menu = TuiInlineMenu::new(prompt_history_menu);
     let (_window_id, view) = ctx.add_tui_window(
@@ -673,7 +676,8 @@ fn build_view_with_model_menu(
             0,
         )
     });
-    let prompt_history_menu = add_prompt_and_command_history_menu(ctx, &input_model, &input_mode, &suggestions_mode);
+    let prompt_history_menu =
+        add_prompt_and_command_history_menu(ctx, &input_model, &input_mode, &suggestions_mode);
     let inline_menu = TuiInlineMenu::new(menu_model.clone());
     let prompt_history_inline_menu = TuiInlineMenu::new(prompt_history_menu);
     let (_window_id, view) = ctx.add_tui_window(
@@ -2278,6 +2282,13 @@ fn autodetected_unlocked_shell_uses_shell_mode_ui() {
                 );
             }
             assert!(buffer.to_lines()[0].starts_with("! "));
+            assert_eq!(
+                buffer[(0, 0)].fg,
+                TuiUiBuilder::from_app(ctx)
+                    .shell_command_accent_style()
+                    .fg
+                    .expect("shell command accent has a foreground")
+            );
         });
     });
 }

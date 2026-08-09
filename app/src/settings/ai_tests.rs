@@ -410,9 +410,11 @@ fn test_toolbar_command_map_matched_agent() {
         map.insert("^custom-tool".to_string(), String::new());
 
         AISettings::handle(&app).update(&mut app, |settings, ctx| {
-            report_if_error!(settings
-                .cli_agent_footer_enabled_commands
-                .set_value(ToolbarCommandMap::new(map), ctx));
+            report_if_error!(
+                settings
+                    .cli_agent_footer_enabled_commands
+                    .set_value(ToolbarCommandMap::new(map), ctx)
+            );
         });
 
         app.read(|ctx| {
@@ -1181,9 +1183,18 @@ fn validation_error_ignores_empty_vertex_project_for_non_vertex_providers() {
 
 #[test]
 fn vertex_model_family_routes_claude_to_anthropic_else_gemini() {
-    assert_eq!(vertex_model_family("claude-sonnet-4-6"), AgentProviderApiType::Anthropic);
-    assert_eq!(vertex_model_family("Claude-Opus"), AgentProviderApiType::Anthropic);
-    assert_eq!(vertex_model_family("gemini-2.5-flash"), AgentProviderApiType::Gemini);
+    assert_eq!(
+        vertex_model_family("claude-sonnet-4-6"),
+        AgentProviderApiType::Anthropic
+    );
+    assert_eq!(
+        vertex_model_family("Claude-Opus"),
+        AgentProviderApiType::Anthropic
+    );
+    assert_eq!(
+        vertex_model_family("gemini-2.5-flash"),
+        AgentProviderApiType::Gemini
+    );
     assert_eq!(vertex_model_family("llama-3"), AgentProviderApiType::Gemini);
 }
 
@@ -1267,9 +1278,7 @@ fn submission_mode_file_value_uses_snake_case() {
         Some(PromptSubmissionMode::Queue)
     );
     assert_eq!(
-        LongRunningCommandSubmissionMode::from_file_value(&serde_json::json!(
-            "send_immediately"
-        )),
+        LongRunningCommandSubmissionMode::from_file_value(&serde_json::json!("send_immediately")),
         Some(LongRunningCommandSubmissionMode::SendImmediately)
     );
 }

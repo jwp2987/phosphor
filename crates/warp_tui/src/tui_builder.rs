@@ -265,6 +265,13 @@ impl TuiUiBuilder {
         TuiStyle::default().fg(cell_color(ThemeFill::Solid(self.warp_theme.ansi_fg_blue())))
     }
 
+    /// Pale-green accent shared by shell command markers and shell-mode labels.
+    pub(crate) fn shell_command_accent_style(&self) -> TuiStyle {
+        TuiStyle::default().fg(cell_color(ThemeFill::from(
+            self.warp_theme.terminal_colors().bright.green,
+        )))
+    }
+
     /// The warping indicator's base fill: the terminal palette's bright
     /// magenta, corresponding to the design's Lilac-200.
     fn warping_base_fill(&self) -> ThemeFill {

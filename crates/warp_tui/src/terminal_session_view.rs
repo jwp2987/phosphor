@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::report_error::report_error;
 use async_channel::Sender;
+use chrono::{Local, NaiveDateTime};
 use instant::Instant;
 use parking_lot::FairMutex;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
@@ -51,8 +52,8 @@ use warpui::SingletonEntity;
 use warpui_core::r#async::{SpawnedFutureHandle, Timer};
 use warpui_core::elements::MouseStateHandle;
 use warpui_core::elements::tui::{
-    TuiChildView, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiHoverable, TuiSize,
-    TuiText,
+    TuiAnimated, TuiChildView, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiHoverable,
+    TuiSize, TuiStyle, TuiText,
 };
 use warpui_core::keymap::macros::*;
 use warpui_core::keymap::{self, EditableBinding, FixedBinding};
@@ -142,6 +143,8 @@ const AUTO_APPROVE_FEEDBACK_DURATION: Duration = Duration::from_secs(3);
 /// The footer hint shown while the ctrl-c exit confirmation is armed.
 const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
+/// How often a statusline date/time segment repaints itself.
+const STATUSLINE_DATETIME_REPAINT_INTERVAL: Duration = Duration::from_secs(60);
 const SESSION_CAN_CANCEL_RESTORE_FLAG: &str = "TuiSessionCanCancelRestore";
 const SESSION_CAN_HAND_BACK_CONTROL_FLAG: &str = "TuiSessionCanHandBackControl";
 /// Set while the agent is tagged into a long-running command and blocked on
@@ -273,6 +276,31 @@ fn log_bundle_success_message(path: &Path) -> String {
 fn raw_prompt_if_not_blank(input: &str) -> Option<&str> {
     (!input.trim().is_empty()).then_some(input)
 }
+fn format_statusline_date(now: NaiveDateTime) -> String {
+    now.format("%B %-d, %Y").to_string()
+}
+fn format_statusline_time_12_hour(now: NaiveDateTime) -> String {
+    now.format("%-I:%M%P").to_string()
+}
+fn format_statusline_time_24_hour(now: NaiveDateTime) -> String {
+    now.format("%H:%M").to_string()
+}
+/// Renders a self-repainting statusline datetime segment: `formatter` maps
+/// the current local time to display text, and the element schedules its own
+/// repaint every [`STATUSLINE_DATETIME_REPAINT_INTERVAL`] so the footer stays
+/// current without the whole session view re-rendering on a timer.
+fn render_statusline_datetime(
+    formatter: fn(NaiveDateTime) -> String,
+    style: TuiStyle,
+) -> Box<dyn TuiElement> {
+    TuiAnimated::new(STATUSLINE_DATETIME_REPAINT_INTERVAL, move || {
+        TuiText::new(formatter(Local::now().naive_local()))
+            .with_style(style)
+            .truncate()
+            .finish()
+    })
+    .finish()
+}
 fn cost_command_unavailable_hint(
     selected_conversation: Option<(bool, bool)>,
 ) -> Option<&'static str> {
@@ -302,6 +330,8 @@ enum FooterSegment {
         additions: usize,
         deletions: usize,
     },
+    /// A configured date/time item (`Date`, `Time12Hour`, `Time24Hour`).
+    DateTime(Box<dyn TuiElement>),
 }
 
 impl FooterSegment {
@@ -326,7 +356,8 @@ impl FooterSegment {
                 | Self::WorkingDirectory(_)
                 | Self::GitBranch(_)
                 | Self::ContextWindowUsage(_)
-                | Self::GitDiff { .. },
+                | Self::GitDiff { .. }
+                | Self::DateTime(_),
                 Self::Vim(_)
                 | Self::ShellMode
                 | Self::ActiveIndicator(_)
@@ -334,7 +365,8 @@ impl FooterSegment {
                 | Self::WorkingDirectory(_)
                 | Self::GitBranch(_)
                 | Self::ContextWindowUsage(_)
-                | Self::GitDiff { .. },
+                | Self::GitDiff { .. }
+                | Self::DateTime(_),
             ) => " • ",
         }
     }
@@ -368,7 +400,7 @@ fn render_status_footer_row(segments: FooterSegments, builder: &TuiUiBuilder) ->
             FooterSegment::ShellMode => {
                 row = row.child(
                     TuiText::new(SHELL_MODE_HINT)
-                        .with_style(builder.shell_mode_accent_style())
+                        .with_style(builder.shell_command_accent_style())
                         .truncate()
                         .finish(),
                 );
@@ -381,7 +413,9 @@ fn render_status_footer_row(segments: FooterSegments, builder: &TuiUiBuilder) ->
                         .finish(),
                 );
             }
-            FooterSegment::Model(model) | FooterSegment::ContextWindowUsage(model) => {
+            FooterSegment::Model(model)
+            | FooterSegment::ContextWindowUsage(model)
+            | FooterSegment::DateTime(model) => {
                 row = row.child(model);
             }
             FooterSegment::WorkingDirectory(cwd) | FooterSegment::GitBranch(cwd) => {
@@ -2670,6 +2704,21 @@ impl TuiTerminalSessionView {
                     .map(|fraction| {
                         FooterSegment::ContextWindowUsage(render_context_usage_entry(fraction, ctx))
                     }),
+                TuiStatuslineItem::Date => Some(FooterSegment::DateTime(
+                    render_statusline_datetime(format_statusline_date, builder.muted_text_style()),
+                )),
+                TuiStatuslineItem::Time12Hour => {
+                    Some(FooterSegment::DateTime(render_statusline_datetime(
+                        format_statusline_time_12_hour,
+                        builder.muted_text_style(),
+                    )))
+                }
+                TuiStatuslineItem::Time24Hour => {
+                    Some(FooterSegment::DateTime(render_statusline_datetime(
+                        format_statusline_time_24_hour,
+                        builder.muted_text_style(),
+                    )))
+                }
             };
             if let Some(segment) = segment {
                 ordered.push(segment);

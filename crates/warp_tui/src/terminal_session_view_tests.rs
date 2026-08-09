@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use chrono::NaiveDate;
 use instant::Instant;
 use tempfile::TempDir;
 use warp::appearance::Appearance;
@@ -42,8 +43,9 @@ use super::{
     LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT, SHELL_MODE_HINT,
     THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin, TuiQueuedFollowUp,
     TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
-    cost_command_unavailable_hint, export_file_success_message, log_bundle_success_message,
-    raw_prompt_if_not_blank, render_status_footer_row,
+    cost_command_unavailable_hint, export_file_success_message, format_statusline_date,
+    format_statusline_time_12_hour, format_statusline_time_24_hour, log_bundle_success_message,
+    raw_prompt_if_not_blank, render_status_footer_row, render_statusline_datetime,
 };
 use crate::autoupdate::TuiAutoupdater;
 use crate::inline_menu::MAX_INLINE_MENU_ROWS;
@@ -1823,6 +1825,33 @@ fn footer_does_not_render_credit_actions() {
 }
 
 #[test]
+fn statusline_datetime_formats_are_stable() {
+    let now = NaiveDate::from_ymd_opt(2026, 7, 20)
+        .unwrap()
+        .and_hms_opt(13, 8, 0)
+        .unwrap();
+    assert_eq!(format_statusline_date(now), "July 20, 2026");
+    assert_eq!(format_statusline_time_12_hour(now), "1:08pm");
+    assert_eq!(format_statusline_time_24_hour(now), "13:08");
+}
+
+#[test]
+fn statusline_datetime_requests_a_periodic_repaint() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let datetime =
+                render_statusline_datetime(format_statusline_time_24_hour, TuiStyle::default());
+            let mut presenter = TuiPresenter::new();
+            let frame = presenter.present_element(datetime, TuiRect::new(0, 0, 5, 1), ctx);
+            assert!(
+                frame.repaint_at.is_some(),
+                "visible date/time items must repaint so their value cannot freeze"
+            );
+        });
+    });
+}
+
+#[test]
 fn footer_renders_bash_sections_without_model_or_usage() {
     App::test((), |mut app| async move {
         app.update(|ctx| {
@@ -1847,7 +1876,15 @@ fn footer_renders_bash_sections_without_model_or_usage() {
                 &builder,
             )
             .finish();
-            let lines = render_element(row, ctx, 120).to_lines();
+            let buffer = render_element(row, ctx, 120);
+            assert_eq!(
+                buffer[(0, 0)].fg,
+                builder
+                    .shell_command_accent_style()
+                    .fg
+                    .expect("shell command accent has a foreground")
+            );
+            let lines = buffer.to_lines();
             let line = lines.join("\n");
 
             assert_eq!(
