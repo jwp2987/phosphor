@@ -41,27 +41,31 @@ use warp_util::host_id::HostId;
 //     fork's `model.find_applicable_rules_with_globals(&PathBuf::from(...))`
 //     accordingly — same layering behavior, different (fork-specific) entry
 //     point name. The pin's 6th global-rule test,
-//     `test_remote_global_rules_only_layer_for_matching_remote_host`, stays
-//     blocked below (it also needs remote *project* rules).
+//     `test_remote_global_rules_only_layer_for_matching_remote_host`, is now
+//     split: its global-rules-layering-and-per-host-isolation half is adapted
+//     below as `test_remote_project_rules_layers_local_global_ahead_of_remote_global`
+//     (added once `ProjectContextModel::remote_project_rules` gave
+//     `remote_global_rules` an actual consumer — see that method's doc comment
+//     in `model.rs`); its remote *project*-rule half stays blocked alongside
+//     `test_remote_project_rules_require_matching_host` below, for the same
+//     reason.
 //
 //   2 blocked on `ProjectContextModel::reconcile_project_rules` —
 //     `test_missing_rule_content_preserves_cached_content_while_path_is_standing`
 //     and `test_rule_missing_from_standing_results_is_removed_from_cached_content`.
 //     Absent here, along with `ProjectRules::rule_paths`. Refs #150 item 2, #201.
 //
-//   4 blocked on remote (`LocalOrRemotePath`) project rules —
+//   3 blocked on remote (`LocalOrRemotePath`) *project* rules (as opposed to
+//     *global* rules, which now have a lookup — see above) —
 //     `test_remote_project_rules_require_matching_host`,
-//     `test_remote_global_rules_only_layer_for_matching_remote_host`,
 //     `test_remote_standing_results_preserve_host_qualified_rule_paths`,
 //     `test_reconcile_project_rules_hydrates_local_and_remote_paths`. This
 //     fork's `ProjectRule::path`, `ProjectRulePath` and `path_to_rules` are all
 //     keyed by `PathBuf`; `find_applicable_project_rules` explicitly returns
-//     `None` for every remote path. #575 added per-host `remote_global_rules`
-//     storage (`set_remote_global_rules`/`remove_remote_global_rules`), but
-//     deliberately did not layer it into a lookup — there is no remote-path
-//     rule-lookup entry point in this fork for it to join, and inventing one
-//     here would be exactly the remote-project-rules work these 4 tests are
-//     blocked on. Refs #150 item 2, #170.
+//     `None` for every remote path, and porting these would mean giving
+//     `path_to_rules` a `HostId` dimension it doesn't have — a materially
+//     larger restructuring than adding the global-rules-only lookup above.
+//     Refs #150 item 2, #170.
 
 /// Scans, then drops directory stamps for ancestors outside `root`.
 ///
@@ -724,10 +728,9 @@ fn test_find_rules_with_fast_path_layers_globals() {
 
 #[test]
 fn test_set_and_remove_remote_global_rules() {
-    // Per-host scaffolding round-trip (#575): storage only, no lookup
-    // layering exists yet for remote paths in this fork (see the file-level
-    // comment above), so this only asserts the getter/setter/remover
-    // themselves rather than a rule-lookup result.
+    // Per-host storage round-trip (#575): asserts the getter/setter/remover
+    // themselves. `remote_project_rules` (exercised by the tests below) is the
+    // lookup that now consumes this storage.
     let mut model = ProjectContextModel::default();
     let host_a = HostId::new("host-a".to_string());
 
@@ -746,6 +749,145 @@ fn test_set_and_remove_remote_global_rules() {
 
     model.remove_remote_global_rules(&host_a);
     assert!(model.remote_global_rules(&host_a).is_empty());
+}
+
+#[test]
+fn test_remote_project_rules_none_when_nothing_stored() {
+    let model = ProjectContextModel::default();
+    let host = HostId::new("host-a".to_string());
+    assert!(model.remote_project_rules(&host).is_none());
+}
+
+#[test]
+fn test_remote_project_rules_isolates_by_host() {
+    // No local global rules in this one (deliberately not `#[cfg(feature =
+    // "local_fs")]`-gated, unlike the richer layering test below, which needs
+    // `insert_global_rule`): `remote_project_rules` must work standalone from
+    // `remote_global_rules` storage alone.
+    let mut model = ProjectContextModel::default();
+    let host_a = HostId::new("host-a".to_string());
+    let host_b = HostId::new("host-b".to_string());
+
+    model.set_remote_global_rules(
+        host_a.clone(),
+        vec![ProjectRule {
+            path: PathBuf::from("/home/remote/.agents/AGENTS.md"),
+            content: "remote_global_a".to_string(),
+        }],
+    );
+    model.set_remote_global_rules(
+        host_b.clone(),
+        vec![ProjectRule {
+            path: PathBuf::from("/home/remote/.agents/AGENTS.md"),
+            content: "remote_global_b".to_string(),
+        }],
+    );
+
+    let result_a = model
+        .remote_project_rules(&host_a)
+        .expect("host-a rules should produce a result");
+    assert_eq!(result_a.active_rules.len(), 1);
+    assert_eq!(result_a.active_rules[0].content, "remote_global_a");
+    assert_eq!(result_a.root_path, PathBuf::from("/home/remote/.agents"));
+
+    let result_b = model
+        .remote_project_rules(&host_b)
+        .expect("host-b rules should produce a result");
+    assert_eq!(result_b.active_rules.len(), 1);
+    assert_eq!(result_b.active_rules[0].content, "remote_global_b");
+
+    // Neither host's result may leak the other's content.
+    assert!(
+        !result_a
+            .active_rules
+            .iter()
+            .any(|rule| rule.content == "remote_global_b")
+    );
+    assert!(
+        !result_b
+            .active_rules
+            .iter()
+            .any(|rule| rule.content == "remote_global_a")
+    );
+
+    let host_c = HostId::new("host-c".to_string());
+    assert!(
+        model.remote_project_rules(&host_c).is_none(),
+        "a host with nothing stored and no local global rules should produce no result"
+    );
+}
+
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_remote_project_rules_layers_local_global_ahead_of_remote_global() {
+    // Adapted from the pin's `test_remote_global_rules_only_layer_for_matching_remote_host`
+    // (`02b53fcd8`): that test also layers a remote *project* rule, which this fork can't
+    // produce (`path_to_rules` has no per-host dimension — see `remote_global_rules`'s doc
+    // comment in `model.rs`), so this covers the part that IS portable: this client's own
+    // global rules apply ahead of every host's own remote global rules, and a host's
+    // `remote_project_rules` never leaks another host's content.
+    let mut model = ProjectContextModel::default();
+    insert_global_rule(
+        &mut model,
+        Path::new("/home/local/.agents/AGENTS.md"),
+        "local_global",
+    );
+
+    let host_a = HostId::new("host-a".to_string());
+    let host_b = HostId::new("host-b".to_string());
+    model.set_remote_global_rules(
+        host_a.clone(),
+        vec![ProjectRule {
+            path: PathBuf::from("/home/remote/.agents/AGENTS.md"),
+            content: "remote_global_a".to_string(),
+        }],
+    );
+    model.set_remote_global_rules(
+        host_b.clone(),
+        vec![ProjectRule {
+            path: PathBuf::from("/home/remote/.agents/AGENTS.md"),
+            content: "remote_global_b".to_string(),
+        }],
+    );
+
+    let result_a = model
+        .remote_project_rules(&host_a)
+        .expect("host-a should produce a result");
+    assert_eq!(
+        result_a
+            .active_rules
+            .iter()
+            .map(|rule| rule.content.as_str())
+            .collect::<Vec<_>>(),
+        ["local_global", "remote_global_a"]
+    );
+
+    let result_b = model
+        .remote_project_rules(&host_b)
+        .expect("host-b should produce a result");
+    assert_eq!(
+        result_b
+            .active_rules
+            .iter()
+            .map(|rule| rule.content.as_str())
+            .collect::<Vec<_>>(),
+        ["local_global", "remote_global_b"]
+    );
+
+    // A host with nothing stored still sees the local global rule (it applies
+    // everywhere), but never another host's remote content.
+    let host_c = HostId::new("host-c".to_string());
+    let result_c = model
+        .remote_project_rules(&host_c)
+        .expect("local global rule alone should still produce a result");
+    assert_eq!(
+        result_c
+            .active_rules
+            .iter()
+            .map(|rule| rule.content.as_str())
+            .collect::<Vec<_>>(),
+        ["local_global"]
+    );
 }
 
 // Ported unchanged from the pinned oracle's `model_tests.rs`
