@@ -3289,6 +3289,10 @@ impl AIConversation {
                 autoexecute_override: Some(self.autoexecute_override.into()),
                 last_event_sequence: self.last_event_sequence,
                 pinned: self.pinned,
+                // Persisted-only flag: an optimistic root task has been created
+                // locally but not yet confirmed. `AIConversation` has no
+                // equivalent in-memory field, so it serializes as false here.
+                root_task_is_optimistic: false,
                 compaction_state_json: if self.compaction_state.completed().is_empty() {
                     None
                 } else {
