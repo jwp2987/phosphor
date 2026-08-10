@@ -1,23 +1,16 @@
-//! Cross-process API-key hot reload.
+//! Cross-process API-key hot reload: the subscriber half.
 //!
 //! Ported from Warp's `app/src/ai/tui_api_keys.rs` at the pinned oracle
 //! (`02b53fcd8`, Warp `2026.07.29.09.05` stable — see `ORACLE.md`).
 //!
-//! [`ApiKeyManager`] reads secure storage once, when it is constructed. A key
-//! can also be written by a *different* process — `zap-tui
-//! --set-provider-api-key <provider>` persists a key and immediately exits
-//! (`crates/warp_tui/src/session.rs`). Without a signal, every already-running
-//! process keeps serving the keys it read at startup, and the key the user
-//! just saved looks like it was ignored until the app is restarted.
+//! The mechanism, the revision file and the writer half are documented on
+//! [`ai::secret_revision`]; the subscriber half lives here because the
+//! filesystem watcher it hangs off ([`WarpManagedPathsWatcher`]) is an `app`
+//! singleton. Both of this fork's secret stores subscribe:
+//! [`ApiKeyManager`] (the pin's fixed four-provider BYOK store) and
+//! [`AgentProviderSecrets`] (this fork's arbitrary-provider BYOP store).
 //!
-//! The signal is a revision file: the writer stamps a fresh UUID into it, and
-//! every other process notices via [`WarpManagedPathsWatcher`] and re-reads
-//! secure storage. The file's *contents* are not the payload — the keys still
-//! come from the OS keyring — so nothing secret is written to disk. Writing a
-//! new UUID rather than, say, touching an mtime keeps the change visible to a
-//! content-hashing watcher as well as a metadata-watching one.
-//!
-//! # Deviations from the pin, both required by recorded fork decisions
+//! # Deviations from the pin, all required by recorded fork decisions
 //!
 //! - **One config directory.** The pin resolves the revision file against
 //!   `warp_core::paths::tui_config_local_dir()`, which does not exist in this
@@ -45,41 +38,40 @@
 //!   this fork than upstream, so narrowing it to the TUI would drop the case
 //!   that motivates it.
 //!
-//! # Not wired (deliberately): the GUI-side setters
+//! - **Every write notifies, not just the `zap-tui` key CLI.** The pin's single
+//!   call site is `--set-provider-api-key` / `--clear-provider-api-key`, again
+//!   because upstream a GUI-side write cannot reach a TUI's keyring. It can
+//!   here, so the notification moved into the two stores' write choke points
+//!   (`ApiKeyManager::write_keys_to_secure_storage` and
+//!   `AgentProviderSecrets::persist`) and now covers the GUI's Settings > AI
+//!   editors and the TUI's `/api-keys` picker as well. The explicit call in
+//!   `crates/warp_tui/src/session.rs` is kept: it is what turns a failed stamp
+//!   into a message on the CLI's stderr instead of a line in the log.
 //!
-//! Only the `zap-tui --set-provider-api-key` / `--clear-provider-api-key` CLI
-//! calls [`notify_tui_api_keys_changed`], matching the pin's single call site.
-//! Because this fork shares one keyring, the GUI's own key-editing surfaces
-//! could reasonably notify too, so that a running TUI picks up a key saved
-//! from Settings. That is a behaviour change with no pin to port from, so it
-//! is left for a maintainer call rather than taken unilaterally.
+//! - **`AgentProviderSecrets` subscribes too.** It has no counterpart at the
+//!   pin — upstream's BYOP keys live in `ApiKeys::custom_endpoints` — but it is
+//!   the store this fork's GUI key editor actually writes, so leaving it out
+//!   would have fixed the notification for the store neither surface edits.
 
 use ai::api_keys::ApiKeyManager;
-use anyhow::Context as _;
-use uuid::Uuid;
+use ai::secret_revision;
 use warpui::{ModelContext, SingletonEntity as _};
 
+use crate::ai::agent_providers::AgentProviderSecrets;
 use crate::warp_managed_paths_watcher::{
     WarpManagedPathsWatcher, WarpManagedPathsWatcherEvent, repository_update_touches_path,
 };
 
-fn revision_file_path() -> std::path::PathBuf {
-    warp_core::paths::config_local_dir().join("api_keys.revision")
-}
-
 /// Signals other running Zap processes to reload their API keys from secure
 /// storage. Call this *after* the write to secure storage has completed, so a
 /// reader that reacts immediately cannot observe the old value.
+///
+/// Both stores already stamp the revision from their own write choke points, so
+/// this remains only for `zap-tui`'s key CLI, which wants to report a failed
+/// stamp to the user rather than only log it.
 #[cfg_attr(not(feature = "tui"), allow(dead_code))]
 pub fn notify_tui_api_keys_changed() -> anyhow::Result<()> {
-    let path = revision_file_path();
-    let parent = path
-        .parent()
-        .context("API-key revision path has no parent directory")?;
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("Failed to create config directory {}", parent.display()))?;
-    std::fs::write(&path, Uuid::new_v4().to_string())
-        .with_context(|| format!("Failed to update API-key revision {}", path.display()))
+    secret_revision::bump()
 }
 
 /// Reloads the shared secure-storage namespace when another process changes it.
@@ -98,8 +90,22 @@ impl TuiApiKeyRefresher for ApiKeyManager {
             &WarpManagedPathsWatcher::handle(ctx),
             |manager, event, ctx| {
                 let WarpManagedPathsWatcherEvent::FilesChanged(update) = event;
-                if repository_update_touches_path(update, &revision_file_path()) {
+                if repository_update_touches_path(update, &secret_revision::revision_file_path()) {
                     manager.reload_keys_from_secure_storage(ctx);
+                }
+            },
+        );
+    }
+}
+
+impl TuiApiKeyRefresher for AgentProviderSecrets {
+    fn subscribe_to_tui_api_key_changes(&mut self, ctx: &mut ModelContext<Self>) {
+        ctx.subscribe_to_model(
+            &WarpManagedPathsWatcher::handle(ctx),
+            |secrets, event, ctx| {
+                let WarpManagedPathsWatcherEvent::FilesChanged(update) = event;
+                if repository_update_touches_path(update, &secret_revision::revision_file_path()) {
+                    secrets.reload_from_secure_storage(ctx);
                 }
             },
         );

@@ -56,6 +56,25 @@ impl AgentProviderSecrets {
         }
     }
 
+    /// Re-reads every key from secure storage, discarding the in-memory copy.
+    ///
+    /// [`Self::new`] reads secure storage once, at construction. That is enough
+    /// while a process is the only writer, but this store is shared with every
+    /// other Zap process (the GUI and the TUI use one app id, so one keyring
+    /// namespace). Both surfaces edit BYOP keys — the GUI through Settings > AI,
+    /// the TUI through `/api-keys` — so without this an already-running process
+    /// keeps serving the keys it read at startup and the newly-saved key appears
+    /// to have been ignored. Driven by the revision file; see
+    /// [`crate::ai::tui_api_keys`].
+    ///
+    /// Emits [`AgentProviderSecretsEvent::KeysUpdated`] unconditionally, matching
+    /// [`Self::set`]: subscribers re-derive from [`Self::get`] rather than diffing.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub fn reload_from_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
+        self.keys = Self::load_from_storage(ctx);
+        ctx.emit(AgentProviderSecretsEvent::KeysUpdated);
+    }
+
     fn load_from_storage(ctx: &mut ModelContext<Self>) -> HashMap<String, String> {
         let raw = match ctx.secure_storage().read_value(SECURE_STORAGE_KEY) {
             Ok(json) => json,
@@ -71,6 +90,11 @@ impl AgentProviderSecrets {
         })
     }
 
+    /// The single choke point for every write to this store: [`Self::set`] and
+    /// [`Self::remove`] are its only callers, and between them they cover every
+    /// GUI and TUI mutation (add, edit, clear, delete a provider). The
+    /// cross-process notification is therefore stamped here rather than at each
+    /// of the five call sites, so a new mutation path cannot forget it.
     fn persist(&self, ctx: &mut ModelContext<Self>) {
         let json = match serde_json::to_string(&self.keys) {
             Ok(json) => json,
@@ -81,7 +105,14 @@ impl AgentProviderSecrets {
         };
         if let Err(e) = ctx.secure_storage().write_value(SECURE_STORAGE_KEY, &json) {
             log::error!("Failed to write agent provider secrets: {e:#}");
+            // Deliberately no revision bump on a failed write -- see the same
+            // note in `ai::api_keys::ApiKeyManager::write_keys_to_secure_storage`.
+            return;
         }
+
+        // The keyring is shared with every other Zap process, so tell them to
+        // re-read it. See `ai::secret_revision`.
+        ::ai::secret_revision::bump_or_log();
     }
 }
 

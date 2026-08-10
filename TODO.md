@@ -721,13 +721,17 @@ feature.
 
 ## OPEN QUESTIONS FROM TONIGHT'S WORK — small, need a maintainer answer
 
-- [ ] **Should the GUI's Settings key editors also notify the TUI?** The API-key
-      hot-reload hook landed matching the pin: only the `zap-tui` key CLI writes
-      the revision file. But the pin gates on `LaunchMode::Tui` because upstream's
-      GUI has a **separate** keyring, whereas this fork shares one — so a running
-      GUI goes stale on a TUI-side change identically. Making the GUI editors
-      notify too is a behaviour change with no pin to port from, so it was flagged
-      rather than taken.
+- [x] **Should the GUI's Settings key editors also notify the TUI? — TAKEN
+      2026-08-10.** Answer: yes, and the reverse direction needed the same fix.
+      The stamp moved out of the single `zap-tui` CLI call site into the two
+      secret stores' write choke points (`ApiKeyManager::write_keys_to_secure_storage`
+      and `AgentProviderSecrets::persist`), so every GUI *and* TUI mutation
+      notifies. Two corrections to the original entry: the *subscriber* was
+      already ungated on `LaunchMode::Tui` in this fork, so the GUI already
+      reloaded on a TUI-side write — only the writer side was missing; and the
+      store this fork's GUI key editor actually writes is `AgentProviderSecrets`,
+      not `ApiKeyManager`, which had no cross-process reload at all in either
+      direction. See `crates/ai/src/secret_revision.rs` for the mechanism.
 - [x] **Issue #578 — CLOSED 2026-08-10** with the fix referenced. The rule conflict it exposed is settled going forward: every agent brief now says do not file issues; the operator routes findings. Original text: It accurately describes
       the `SettingsSection` persistence bug (now fixed, `35baf6e4a`). The
       maintainer had asked that issues not be filed without checking first;

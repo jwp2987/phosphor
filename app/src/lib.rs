@@ -1466,7 +1466,17 @@ fn initialize_app(
 
     // The API key for custom Agent Providers is stored in secure storage via its own
     // singleton, decoupled from ApiKeyManager (which forwards BYOK to warp-server).
-    ctx.add_singleton_model(crate::ai::agent_providers::AgentProviderSecrets::new);
+    ctx.add_singleton_model(|ctx| {
+        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+        let mut secrets = crate::ai::agent_providers::AgentProviderSecrets::new(ctx);
+        // This -- not `ApiKeyManager` -- is the store both of this fork's key
+        // editors write (GUI Settings > AI, and the TUI's `/api-keys` picker),
+        // and they share one keyring namespace, so it needs the same
+        // cross-process reload as `ApiKeyManager` above.
+        #[cfg(not(target_family = "wasm"))]
+        secrets.subscribe_to_tui_api_key_changes(ctx);
+        secrets
+    });
 
     // Issue #72: the global HTTP proxy's Basic Auth password goes through the OS keychain.
     // Reapply immediately after registering, so the empty-string placeholder global slot

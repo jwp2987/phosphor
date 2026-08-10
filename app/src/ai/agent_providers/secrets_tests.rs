@@ -235,3 +235,85 @@ fn setting_an_empty_api_key_clears_the_provider() {
         assert_eq!(persisted_map(&store), HashMap::new());
     });
 }
+
+// ── cross-process reload ────────────────────────────────────────
+//
+// Fork-original, with no Warp counterpart: this store does not exist at the pin
+// (upstream keeps BYOP keys in `ApiKeys::custom_endpoints`), and the pin stamps
+// its revision file only from `zap-tui`'s key CLI because upstream's GUI has a
+// separate app id and keyring. This fork shares one app id, one keyring and one
+// config directory between the GUI and the TUI, so a GUI-side edit and a
+// TUI-side edit invalidate each other symmetrically. See `ai::secret_revision`
+// and `crate::ai::tui_api_keys`.
+
+/// Covers every GUI and TUI mutation at once: `set` and `remove` are the only
+/// ways into `persist`, and the GUI Settings > AI actions
+/// (`SaveAgentProviderEdits`, `UpdateAgentProviderApiKey`, `RemoveAgentProvider`)
+/// and the TUI's `/api-keys` picker all go through them.
+#[test]
+fn writing_a_provider_key_stamps_the_cross_process_revision() {
+    App::test((), |mut app| async move {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let _revision_guard =
+            ::ai::secret_revision::SecretRevisionDirOverrideGuard::new(dir.path().to_owned());
+
+        let store = InMemorySecureStorage::default();
+        register_storage(&mut app, &store);
+        let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+
+        assert_eq!(
+            ::ai::secret_revision::current_revision(),
+            None,
+            "nothing has been written yet, so there should be no revision file"
+        );
+
+        secrets.update(&mut app, |secrets, ctx| {
+            secrets.set("my-provider", "sk-a".to_owned(), ctx);
+        });
+        let after_set = ::ai::secret_revision::current_revision().expect(
+            "saving a BYOP key from the GUI should stamp the revision so a running TUI \
+             re-reads the keyring",
+        );
+
+        secrets.update(&mut app, |secrets, ctx| {
+            secrets.remove("my-provider", ctx);
+        });
+        let after_remove = ::ai::secret_revision::current_revision()
+            .expect("deleting a provider should stamp the revision too");
+
+        assert_ne!(
+            after_set, after_remove,
+            "every write needs a fresh stamp; an unchanged file wakes no watcher"
+        );
+    });
+}
+
+/// The other half of the mechanism: the stamp is only useful if the reload it
+/// triggers actually picks up the other process's write.
+#[test]
+fn reloading_picks_up_another_processs_write() {
+    App::test((), |mut app| async move {
+        let store = InMemorySecureStorage::default();
+        register_storage(&mut app, &store);
+        let secrets = app.add_singleton_model(AgentProviderSecrets::new);
+
+        secrets.read(&app, |secrets, _| {
+            assert_eq!(secrets.get("my-provider"), None);
+        });
+
+        // Stands in for another Zap process writing the shared keyring.
+        store.seed(r#"{"my-provider":"sk-from-the-other-process"}"#);
+
+        secrets.update(&mut app, |secrets, ctx| {
+            secrets.reload_from_secure_storage(ctx);
+        });
+
+        secrets.read(&app, |secrets, _| {
+            assert_eq!(
+                secrets.get("my-provider"),
+                Some("sk-from-the-other-process"),
+                "a reload must discard the copy read at startup, not merge with it"
+            );
+        });
+    });
+}

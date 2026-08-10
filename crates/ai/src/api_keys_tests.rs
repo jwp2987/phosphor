@@ -1,6 +1,8 @@
 use super::*;
 use crate::LLMProvider;
+use crate::secret_revision;
 use warpui::App;
+use warpui_extras::secure_storage::SecureStorage;
 
 // Ported from Warp's `crates/ai/src/api_keys_tests.rs` at the pinned oracle
 // (`02b53fcd8`, release `2026.07.29.09.05` stable — see `ORACLE.md`), which has
@@ -56,6 +58,11 @@ use warpui::App;
 //   - `ApiKeyManager::reload_keys_from_secure_storage` — now present, added
 //     alongside the TUI API-key hot-reload hook (`app/src/ai/tui_api_keys.rs`).
 //     Untested at the pin, so it carries no pinned tests either way.
+//
+// Two tests at the end of this file are fork-original rather than ported (they
+// do not count against the buckets above): the cross-process revision stamp is
+// a fork behaviour, because unlike upstream this fork shares one keyring
+// between the GUI and the TUI. See the section header there.
 //
 // Superseded by the fork's own BYOP provider store, not simply dropped
 // (16 tests) — `CustomEndpoint` / `CustomEndpointModel` /
@@ -255,4 +262,98 @@ fn api_keys_for_request_omits_keys_when_byo_disabled() {
     });
     // With BYO disabled and no other credentials, returns None.
     assert!(mgr.api_keys_for_request(false, false).is_none());
+}
+
+// ── cross-process revision stamp ────────────────────────────────
+//
+// Fork-original, not ported: the pin stamps the revision file from exactly one
+// place, `zap-tui --set-provider-api-key`, because upstream's GUI has its own
+// app id and keyring namespace and so cannot invalidate a TUI's cached keys.
+// This fork shares one app id, one keyring and one config directory between the
+// GUI and the TUI, so *every* write has to stamp it; the stamp therefore lives
+// in this store's write choke point. See `crate::secret_revision` and
+// `app/src/ai/tui_api_keys.rs`.
+
+/// A [`SecureStorage`] whose writes always fail, so a test can tell a stamped
+/// revision from a merely attempted write.
+struct FailingSecureStorage;
+
+impl SecureStorage for FailingSecureStorage {
+    fn write_value(&self, _key: &str, _value: &str) -> Result<(), secure_storage::Error> {
+        Err(secure_storage::Error::Unknown(anyhow::anyhow!(
+            "keyring unavailable"
+        )))
+    }
+
+    fn read_value(&self, _key: &str) -> Result<String, secure_storage::Error> {
+        Err(secure_storage::Error::NotFound)
+    }
+
+    fn remove_value(&self, _key: &str) -> Result<(), secure_storage::Error> {
+        Ok(())
+    }
+}
+
+#[test]
+fn saving_a_provider_key_stamps_the_cross_process_revision() {
+    App::test((), |mut app| async move {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let _revision_guard =
+            secret_revision::SecretRevisionDirOverrideGuard::new(dir.path().to_owned());
+
+        app.update(|ctx| secure_storage::register_noop("test", ctx));
+        let manager = app.add_singleton_model(ApiKeyManager::new);
+
+        assert_eq!(
+            secret_revision::current_revision(),
+            None,
+            "nothing has been written yet, so there should be no revision file"
+        );
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.set_anthropic_key(Some("sk-ant-test".to_owned()), ctx);
+        });
+        let after_save = secret_revision::current_revision().expect(
+            "saving a key should stamp the revision so other processes re-read the keyring",
+        );
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.set_anthropic_key(None, ctx);
+        });
+        let after_clear = secret_revision::current_revision()
+            .expect("clearing a key should stamp the revision too");
+
+        assert_ne!(
+            after_save, after_clear,
+            "every write needs a fresh stamp; an unchanged file wakes no watcher"
+        );
+    });
+}
+
+#[test]
+fn a_failed_keyring_write_does_not_stamp_the_revision() {
+    App::test((), |mut app| async move {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let _revision_guard =
+            secret_revision::SecretRevisionDirOverrideGuard::new(dir.path().to_owned());
+
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| -> secure_storage::Model {
+                Box::new(FailingSecureStorage)
+            });
+        });
+        let manager = app.add_singleton_model(ApiKeyManager::new);
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.set_anthropic_key(Some("sk-ant-test".to_owned()), ctx);
+        });
+
+        assert_eq!(
+            secret_revision::current_revision(),
+            None,
+            "a key that never reached the keyring must not tell anyone to re-read it -- this \
+             process is still serving it from memory, and its own watcher would reload the old \
+             value back over it"
+        );
+    });
 }

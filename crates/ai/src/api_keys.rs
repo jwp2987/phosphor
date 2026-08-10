@@ -218,6 +218,9 @@ impl ApiKeyManager {
         keys
     }
 
+    /// The single choke point for every write to this store: all four setters
+    /// funnel through it, so the cross-process notification is stamped here
+    /// rather than at each call site.
     fn write_keys_to_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
         let keys = self.keys.clone();
 
@@ -231,7 +234,15 @@ impl ApiKeyManager {
 
         if let Err(e) = ctx.secure_storage().write_value(SECURE_STORAGE_KEY, &json) {
             log::error!("Failed to write API keys to secure storage: {e:#}");
+            // Deliberately no revision bump on a failed write: this process is
+            // still serving the new key from memory, and stamping the revision
+            // would make its own watcher reload the *old* value back over it.
+            return;
         }
+
+        // The keyring is shared with every other Zap process -- GUI and TUI use
+        // one app id -- so tell them to re-read it. See `crate::secret_revision`.
+        crate::secret_revision::bump_or_log();
     }
 }
 
