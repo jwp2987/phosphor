@@ -25,7 +25,7 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity};
 
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::artifacts::Artifact;
-use crate::ai::blocklist::BlocklistAIHistoryEvent;
+use crate::ai::blocklist::{BlocklistAIHistoryEvent, ConversationStatusUpdate};
 use crate::notifications::item::{
     NotificationCategory, NotificationId, NotificationItem, NotificationItems, NotificationOrigin,
     NotificationSourceAgent,
@@ -230,7 +230,8 @@ impl NotificationsModel {
             terminal_view_id,
             conversation_id,
             // A conversation restored on startup shouldn't trigger a notification.
-            is_restored: false,
+            update: ConversationStatusUpdate::Changed { .. },
+            ..
         } = event
         else {
             return;

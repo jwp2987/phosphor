@@ -206,7 +206,8 @@ use crate::ai::{
         AIBlock, AIBlockEvent, BlocklistAIActionEvent, BlocklistAIActionModel,
         BlocklistAIContextEvent, BlocklistAIContextModel, BlocklistAIController,
         BlocklistAIControllerEvent, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-        BlocklistAIInputEvent, BlocklistAIInputModel, GuiInputModePolicy, InputConfig, InputType,
+        BlocklistAIInputEvent, BlocklistAIInputModel, ConversationStatusUpdate,
+        GuiInputModePolicy, InputConfig, InputType,
         LegacyPassiveSuggestionsEvent, LegacyPassiveSuggestionsModel, MaaPassiveSuggestionsEvent,
         MaaPassiveSuggestionsModel, PassiveSuggestionsModels, PendingQueryState,
         PromptSuggestionExecutor, PromptSuggestionExecutorEvent, RequestFileEditsFormatKind,
@@ -5613,7 +5614,7 @@ impl TerminalView {
             }
             BlocklistAIHistoryEvent::UpdatedConversationStatus {
                 conversation_id,
-                is_restored,
+                update,
                 ..
             } => {
                 // A conversation-status change is the primary signal for an
@@ -5627,7 +5628,7 @@ impl TerminalView {
 
                 // Don't send notifications or insert ambient agent session ended tombstone
                 // if we're restoring this conversation on startup.
-                if *is_restored {
+                if matches!(update, ConversationStatusUpdate::Restored) {
                     return;
                 }
 

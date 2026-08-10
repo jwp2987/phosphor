@@ -3,7 +3,9 @@ use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::ambient_agents::{AgentSource, AmbientAgentTask, AmbientAgentTaskState};
 use crate::ai::artifacts::Artifact;
-use crate::ai::blocklist::{format_credits, BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
+use crate::ai::blocklist::{
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatusUpdate, format_credits,
+};
 use crate::ai::conversation_entry::{
     AgentConversationDisplayData, AgentConversationEntry, AgentConversationEntryId,
     AgentConversationIdentity, AgentConversationNavigationSubject,
@@ -722,11 +724,26 @@ pub enum AgentConversationsModelEvent {
     /// Existing task data may have been updated (e.g., state changes).
     TasksUpdated,
     /// Conversation status data was updated
-    ConversationUpdated,
+    ConversationUpdated { kind: ConversationUpdateKind },
     /// Conversation artifacts were updated (plans, PRs, etc.)
     ConversationArtifactsUpdated { conversation_id: AIConversationId },
     /// A task was manually opened from the management page.
     TaskManuallyOpened,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationUpdateKind {
+    /// The conversation was re-loaded into a terminal view.
+    Restored,
+    /// The conversation's status was set.
+    StatusSet {
+        prev_filter: StatusFilter,
+        new_filter: StatusFilter,
+    },
+    /// Conversation metadata or capabilities changed.
+    MetadataChanged,
+    /// Conversation title changed.
+    TitleChanged,
 }
 
 impl Entity for AgentConversationsModel {
@@ -874,15 +891,29 @@ impl AgentConversationsModel {
             | BlocklistAIHistoryEvent::RemoveConversation { .. }
             | BlocklistAIHistoryEvent::DeletedConversation { .. }
             | BlocklistAIHistoryEvent::ClearedConversationsInTerminalView { .. }
-            | BlocklistAIHistoryEvent::UpdatedConversationTitle { .. }
             | BlocklistAIHistoryEvent::ClearedActiveConversation { .. }
             | BlocklistAIHistoryEvent::ConversationTransferredBetweenTerminalViews { .. } => {
                 self.sync_conversations(ctx);
             }
 
             // Status changes - just trigger re-render since status is looked up at render time
-            BlocklistAIHistoryEvent::UpdatedConversationStatus { .. } => {
-                ctx.emit(AgentConversationsModelEvent::ConversationUpdated);
+            BlocklistAIHistoryEvent::UpdatedConversationStatus {
+                update, new_status, ..
+            } => {
+                let kind = match update {
+                    ConversationStatusUpdate::Restored => ConversationUpdateKind::Restored,
+                    ConversationStatusUpdate::Changed { prev_status } => {
+                        ConversationUpdateKind::StatusSet {
+                            prev_filter: AgentRunDisplayStatus::from_conversation_status(
+                                prev_status,
+                            )
+                            .status_filter(),
+                            new_filter: AgentRunDisplayStatus::from_conversation_status(new_status)
+                                .status_filter(),
+                        }
+                    }
+                };
+                ctx.emit(AgentConversationsModelEvent::ConversationUpdated { kind });
             }
 
             // Artifact changes - sync live artifacts into the cached task and notify.
@@ -908,6 +939,29 @@ impl AgentConversationsModel {
                 });
             }
 
+            // Title changes don't affect which conversations/tasks exist, so we avoid a full
+            // sync_conversations(). We do need to patch the title of any task that shadows this
+            // conversation (self.tasks isn't touched by sync_conversations, which only rebuilds
+            // self.conversations), then let subscribers refresh their own caches via TitleChanged.
+            BlocklistAIHistoryEvent::UpdatedConversationTitle {
+                conversation_id,
+                title,
+                ..
+            } => {
+                let history_model = BlocklistAIHistoryModel::as_ref(ctx);
+                for task in self.tasks.values_mut() {
+                    if Self::conversation_id_shadowed_by_task(task, history_model)
+                        == Some(*conversation_id)
+                    {
+                        task.title = title.clone();
+                    }
+                }
+
+                ctx.emit(AgentConversationsModelEvent::ConversationUpdated {
+                    kind: ConversationUpdateKind::TitleChanged,
+                });
+            }
+
             // Task/exchange-level changes that don't affect conversation navigation.
             BlocklistAIHistoryEvent::CreatedSubtask { .. }
             | BlocklistAIHistoryEvent::UpgradedTask { .. }
@@ -919,8 +973,16 @@ impl AgentConversationsModel {
             // doesn't change any ConversationNavigationData fields (title comes from
             // UpdateTaskDescription, last_updated uses exchange.start_time which is set at append time).
             | BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. }
-            | BlocklistAIHistoryEvent::ConversationAgentIdAssigned { .. }
             => {}
+
+            // The conversation's server-assigned agent id was first resolved (or a run_id was
+            // assigned for a remote child conversation) - this can change which task the
+            // conversation is shadowed by, so treat it like other metadata changes.
+            BlocklistAIHistoryEvent::ConversationAgentIdAssigned { .. } => {
+                ctx.emit(AgentConversationsModelEvent::ConversationUpdated {
+                    kind: ConversationUpdateKind::MetadataChanged,
+                });
+            }
         }
     }
 

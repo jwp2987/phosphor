@@ -6,7 +6,7 @@ use warp::tui_export::{
     AIAgentExchangeId, AIAgentInput, AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType,
     AIAgentText, AIAgentTextSection, AIAgentTodo, AIBlockModel, AIBlockOutputStatus,
     AIConversationId, AIRequestType, Appearance, BlockHeightItem, BlocklistAIHistoryEvent,
-    LLMId, MessageId, OutputStatusUpdateCallback,
+    ConversationStatus, ConversationStatusUpdate, LLMId, MessageId, OutputStatusUpdateCallback,
     RichContentItem, RichContentType, ServerOutputId, Shared, TerminalModel, TodoOperation,
     UserQueryMode,
 };
@@ -373,7 +373,10 @@ fn todo_and_conversation_status_events_dirty_affected_agent_blocks() {
                 &BlocklistAIHistoryEvent::UpdatedConversationStatus {
                     conversation_id: first_conversation_id,
                     terminal_view_id: terminal_surface_id,
-                    is_restored: false,
+                    update: ConversationStatusUpdate::Changed {
+                        prev_status: ConversationStatus::InProgress,
+                    },
+                    new_status: ConversationStatus::Success,
                 },
                 ctx,
             );
@@ -389,7 +392,10 @@ fn todo_and_conversation_status_events_dirty_affected_agent_blocks() {
                 &BlocklistAIHistoryEvent::UpdatedConversationStatus {
                     conversation_id: second_conversation_id,
                     terminal_view_id: terminal_surface_id,
-                    is_restored: false,
+                    update: ConversationStatusUpdate::Changed {
+                        prev_status: ConversationStatus::InProgress,
+                    },
+                    new_status: ConversationStatus::Success,
                 },
                 ctx,
             );

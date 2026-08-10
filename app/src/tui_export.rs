@@ -86,8 +86,8 @@ pub use crate::ai::blocklist::diff_storage::{
     UpdatedFileState, changed_lines_from_op,
 };
 pub use crate::ai::blocklist::history_model::{
-    AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, FORK_PREFIX,
-    LoadedConversationData, PRE_REWIND_PREFIX,
+    AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatusUpdate,
+    FORK_PREFIX, LoadedConversationData, PRE_REWIND_PREFIX,
 };
 pub use crate::ai::blocklist::inline_action::code_diff_view::{DiffSessionType, FileDiff};
 pub use crate::ai::blocklist::input_mode_policy::{

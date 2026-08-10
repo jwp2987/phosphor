@@ -62,7 +62,7 @@ pub(crate) use controller::{
 };
 pub(crate) use history_model::{
     AIQueryHistory, AIQueryHistoryOutputStatus, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-    FORK_PREFIX, PRE_REWIND_PREFIX,
+    ConversationStatusUpdate, FORK_PREFIX, PRE_REWIND_PREFIX,
 };
 // `AutofireAction` and `is_lrc_auto_queue_active` are consumed by the drain wiring in a
 // follow-up increment; re-exported (allow-unused) so this stays a pure additive surface.
