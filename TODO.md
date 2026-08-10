@@ -354,7 +354,7 @@ pin tests, and these carry few or none.
       non-cloud source unless it cites a `DECLINED.md` row or a `TODO.md` issue.
       Cheaper than any of the four restorations it would have prevented.
 
-## LICENCE COMPLIANCE 2026-08-10 — one BLOCKING item
+## LICENCE COMPLIANCE 2026-08-10 — CLOSED 2026-08-10
 
 Read-only review against pin `02b53fcd8`. Reviewer is not a lawyer; these are
 located concerns with evidence, not a legal opinion.
@@ -416,15 +416,33 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       dark-mode bug with no upstream fix to inherit (we do ship Windows builds);
       waiting on #4453 is not a strategy after 7+ months of silence. The
       availability risk is gone — the source is now an account we own.
-      - [ ] **Follow-up, cheap and permanent:** help review or land
+      - [x] **Follow-up, cheap and permanent:** **[CLOSED 2026-08-10 — tracked
+            externally; nothing actionable in this repo. Not a compliance item:
+            the fork is correctly attributed. Landing it would only let us delete
+            the fork and drop the maintenance.]** help review or land
             `rust-windowing/winit#4453`. If it merges, this fork can be deleted
             and `Cargo.toml` can point at `warpdotdev/winit` or crates.io again.
 
-- [ ] Informational, no action forced: `lib/rust-genai` is vendored correctly with
-      both licence files but is skipped by `about.toml` as a path dep, so its
-      attribution never reaches the generated notice; `warpui`/`warpui_core`
-      declare MIT while depending on AGPL `markdown_parser`/`sum_tree`
-      (inherited from upstream, verified identical at the pin).
+- [x] **[CLOSED 2026-08-10. The genai half was STALE — the eighth entry in this ledger
+      found stating the opposite of the tree.]** The claim that genai's attribution
+      "never reaches the generated notice" is **false**: `script/prepare_bundled_resources`
+      appends it by hand at line 122 —
+      `"genai (rust-genai)|MIT OR Apache-2.0|lib/rust-genai/LICENSE-MIT"` — under a comment
+      giving the reason ("Vendored path dependency: skipped by about.toml/deny.toml as a
+      path dep, so `cargo about` never reaches it"). The same `ADDITIONAL_LICENSES`
+      mechanism carries libgit2, winit, Chromium and five others. Nothing to fix.
+
+      Recorded rather than acted on: genai is dual `MIT OR Apache-2.0` and we ship the MIT
+      text, which satisfies MIT's notice requirement — while
+      `lib/rust-genai/src/adapter/adapters/anthropic/adapter_impl.rs` carries a header
+      citing *Apache-2.0 §4(b)* for our modifications. Harmless under either licence, and
+      `CHANGES-PHOSPHOR.md` documents the changes, but the two should agree if anyone tidies
+      it.
+
+      The other half stands as **accepted state, not debt**: `warpui`/`warpui_core` declare
+      MIT while depending on AGPL `markdown_parser`/`sum_tree` — inherited from upstream and
+      verified identical at the pin, so it is Warp's characterisation, not one this fork
+      introduced.
 
 **Reviewer could not determine (8 items) — do not read the above as exhaustive:**
 provenance of `password.ttf`; identity/licence of the ~359-icon set (naming
