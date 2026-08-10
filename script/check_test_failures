@@ -49,6 +49,49 @@ fi
 
 echo "running: ${CARGO_RUN[*]} nextest run ${*}" >&2
 "${CARGO_RUN[@]}" nextest run "$@" --no-fail-fast 2>&1 | tee "$out"
+nextest_status="${PIPESTATUS[0]}"
+
+# This bit ALSO bit for real, and worse than the retry bug below.
+#
+# The pipe to `tee` discards nextest's exit status, and the only signal this
+# script reads afterwards is the set of `FAIL` lines. A build failure prints no
+# FAIL lines at all -- so "the test binary did not compile" and "every test
+# passed" produced byte-identical input to the comparison, and the gate reported
+# `ok  no change against known_test_failures.txt`.
+#
+# On 2026-08-09 `warp_tui`'s lib test failed to compile with 9 errors, the
+# warp + warp_tui suite (~5,686 tests) never ran, precheck exited 0, and the
+# result was pushed as green. The tell was in the output the whole time: the
+# summary counts covered only the other two steps. Nobody reads counts.
+#
+# nextest exit codes: 0 = all passed, 100 = tests failed (expected here -- the
+# known-failures comparison below is what judges those), anything else is the
+# run itself failing (101 = build error). Treat that as fatal, and separately
+# require evidence that a suite actually ran, so a future silent-skip mode
+# cannot slip through either.
+if [[ "$nextest_status" -ne 0 && "$nextest_status" -ne 100 ]]; then
+    echo "" >&2
+    echo "=============================================================" >&2
+    echo "THE TEST RUN ITSELF FAILED -- no tests were judged." >&2
+    echo "=============================================================" >&2
+    echo "error: nextest exited $nextest_status (not 0=passed / 100=test failures)." >&2
+    echo "This is almost always a COMPILE error in the test build. Scroll up." >&2
+    echo "" >&2
+    echo "This is NOT 'no regressions'. Nothing ran, so nothing was checked." >&2
+    exit 2
+fi
+
+if ! grep -qE '^\s+Summary \[' "$out"; then
+    echo "" >&2
+    echo "=============================================================" >&2
+    echo "NO TEST SUMMARY -- the suite did not run." >&2
+    echo "=============================================================" >&2
+    echo "error: nextest printed no 'Summary [...]' line, so no tests were" >&2
+    echo "executed even though it exited $nextest_status." >&2
+    echo "" >&2
+    echo "An empty failure set here means 'nothing ran', not 'nothing broke'." >&2
+    exit 2
+fi
 
 # nextest prints a summary line per failure:  "        FAIL [   0.1s] (n/m) warp  path::to::test"
 # ...and for a test it RETRIED, it prints:     "  TRY 3 FAIL [   0.1s] (n/m) warp  path::to::test"
