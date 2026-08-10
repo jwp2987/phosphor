@@ -195,6 +195,9 @@ pub(crate) fn redact_inputs(inputs: &mut [AIAgentInput]) {
                     | AIAgentActionResultType::EditDocuments(_)
                     | AIAgentActionResultType::CreateDocuments(_) => {}
 
+                    // SendMessageToAgent results contain only a message ID or error string, no secrets
+                    AIAgentActionResultType::SendMessageToAgent(_) => {}
+
                     // TransferShellCommandControlToUser result - similar to WriteToLongRunningShellCommand
                     AIAgentActionResultType::TransferShellCommandControlToUser(result) => {
                         match result {

@@ -658,6 +658,9 @@ impl TryFrom<AIAgentActionResult> for api::request::input::user_inputs::user_inp
             AIAgentActionResultType::AskUserQuestion(ask_user_question_result) => {
                 Some(ask_user_question_result.into())
             }
+            AIAgentActionResultType::SendMessageToAgent(send_message_result) => {
+                Some(send_message_result.into())
+            }
         };
         Ok(
             api::request::input::user_inputs::user_input::Input::ToolCallResult(
