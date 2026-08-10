@@ -586,10 +586,21 @@ pub(crate) fn icon_for_bundled_skill(skill_id: &str) -> Icon {
 /// annotation as its source of truth for which settings are migratable, and this
 /// fork dropped `SettingSurfaces` / `SettingsMode` (`DECLINED.md`), so
 /// `generate_settings_schema` emits no such annotation. Shipping it would point
-/// an agent at a migration that cannot be performed. The `TuiOnly` arm is
-/// therefore omitted along with it — an activation with no skill to drive it is
-/// unreachable code — but `TuiOnly` itself is exercised by
-/// `tui_only_bundled_skill_is_listed_and_resolved_only_in_tui`. See #370.
+/// an agent at a migration that cannot be performed. See #370.
+///
+/// `tui-settings` replaces it: the same subject (a GUI setup and a TUI reading
+/// it) answered for this fork's architecture — which settings actually drive the
+/// TUI, given that there is one settings file rather than two to reconcile. Its
+/// activation is deliberately **not** the pin's `TuiOnly`. `TuiOnly` is right for
+/// a migration performed *by* the TUI; it is wrong for an explanation of a file
+/// the GUI writes too. A GUI user asking "does my vim-mode setting apply to the
+/// terminal UI?", or hitting the `[appearance] theme` / `[appearance.themes]
+/// theme` near-collision, needs this skill in the GUI process, where a `TuiOnly`
+/// gate would hide it. The listed arm is redundant with the `Always` fallback and
+/// exists to record that choice where a future porter will look for it.
+///
+/// `TuiOnly` therefore still has no shipped skill driving it, and is exercised
+/// directly by `tui_only_bundled_skill_is_listed_and_resolved_only_in_tui`.
 pub(crate) fn activation_for_bundled_skill(
     skill_id: &str,
     resources_dir: &Path,
@@ -599,6 +610,7 @@ pub(crate) fn activation_for_bundled_skill(
             BundledSkillActivation::RequiresFile(resources_dir.join("settings_schema.json"))
         }
         "warpctrl" => BundledSkillActivation::RequiresFeature(FeatureFlag::WarpControlCli),
+        "tui-settings" => BundledSkillActivation::Always,
         _ => BundledSkillActivation::Always,
     }
 }
