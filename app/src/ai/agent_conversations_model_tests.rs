@@ -22,9 +22,9 @@ use crate::auth::AuthStateProvider;
 use crate::test_util::ai_agent_tasks::{create_api_task, create_message};
 
 use super::{
-    AgentConversationsModel, AgentConversationsModelEvent, AgentManagementFilters,
-    AgentRunDisplayStatus, ArtifactFilter, ConversationMetadata, ConversationOrTask,
-    EnvironmentFilter, HarnessFilter, OwnerFilter, StatusFilter,
+    AgentConversationEntryId, AgentConversationsModel, AgentConversationsModelEvent,
+    AgentManagementFilters, AgentRunDisplayStatus, ArtifactFilter, ConversationMetadata,
+    ConversationOrTask, EnvironmentFilter, HarnessFilter, OwnerFilter, StatusFilter,
 };
 use crate::ai::ambient_agents::task::HarnessConfig;
 use warp_cli::agent::Harness;
@@ -802,6 +802,45 @@ fn test_get_tasks_and_conversations_keeps_unrelated_tasks_and_conversations() {
             assert_eq!(items.len(), 2);
             assert!(items.contains(&format!("task:{}", task.task_id)));
             assert!(items.contains(&format!("conversation:{conversation_id}")));
+        });
+    });
+}
+
+/// Adapted from the pin's `test_get_entries_includes_local_only_entry`
+/// (`agent_conversations_model_tests.rs` @ `02b53fcd8`). `get_entries` is not dead code here --
+/// unlike `get_tasks_and_conversations` (used by the GUI conversation list), it is the live
+/// merge function for the TUI `/conversations` menu (`crates/warp_tui/src/conversation_menu.rs`)
+/// -- but it had no direct test coverage of its own. The pin's assertions also cover
+/// `entry.identity.ambient_agent_task_id`, `entry.provenance` and `entry.backing`, fields that
+/// don't exist on the fork's `AgentConversationEntry`: `conversation_entry.rs` documents that
+/// its entry type is intentionally a narrower "just the fields the conversation-list surfaces
+/// actually read" projection (no ambient-run/cloud provenance concept applies without a cloud
+/// backend). This keeps every assertion the fork's entry type can express; it does not drop or
+/// weaken any of them.
+#[test]
+fn test_get_entries_includes_local_conversation() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+
+        let conversation_id = AIConversationId::new();
+        let mut model = create_test_model();
+        model.conversations.insert(
+            conversation_id,
+            create_test_conversation_metadata(conversation_id, "Local conversation"),
+        );
+
+        app.update(|ctx| {
+            let entries = model.get_entries(&all_owner_filters(), ctx);
+
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(
+                entry.id,
+                AgentConversationEntryId::Conversation(conversation_id)
+            );
+            assert_eq!(entry.identity.local_conversation_id, Some(conversation_id));
+            assert_eq!(entry.display.title, "Local conversation");
         });
     });
 }

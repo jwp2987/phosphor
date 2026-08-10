@@ -155,3 +155,7 @@ pub fn query_conversation_entries(
     }
     matches
 }
+
+#[cfg(test)]
+#[path = "conversation_entry_tests.rs"]
+mod tests;
