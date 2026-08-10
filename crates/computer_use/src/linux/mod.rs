@@ -2,9 +2,11 @@ mod keysym;
 mod wayland;
 mod x11;
 
+use std::sync::OnceLock;
+
 use async_trait::async_trait;
 
-use crate::{Action, ActionResult, Options};
+use crate::{ActionResult, Options, TargetedAction};
 
 /// Returns true if a Wayland environment is available.
 fn is_wayland_available() -> bool {
@@ -22,6 +24,35 @@ fn is_x11_available() -> bool {
 
 pub fn is_supported_on_current_platform() -> bool {
     is_wayland_available() || is_x11_available()
+}
+
+/// Reports whether background, per-window control is available. On X11 it is implemented with a
+/// dedicated XInput2 (MPX) master device pair, so it requires an XI2-capable server; the Wayland
+/// path drives inputs through XDG portals, which have no per-window targeting.
+pub fn background_supported() -> bool {
+    if is_wayland_available() || !is_x11_available() {
+        return false;
+    }
+    // The probe opens an X connection; cache it since this is consulted on every agent request.
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(x11::probe_background_support)
+}
+
+/// Enumerates the on-screen windows so a caller can pick one to target. Only supported on X11;
+/// returns an empty list on Wayland or when no display is reachable.
+pub fn enumerate_windows() -> Vec<crate::WindowInfo> {
+    if is_wayland_available() || !is_x11_available() {
+        return Vec::new();
+    }
+    x11::enumerate_windows()
+}
+
+/// Lists on-screen windows as a formatted diagnostic string. Only supported on X11.
+pub fn list_windows() -> Result<String, String> {
+    if is_wayland_available() || !is_x11_available() {
+        return Err("Window listing is only supported on X11.".to_string());
+    }
+    x11::list_windows()
 }
 
 pub struct Actor {
@@ -77,7 +108,7 @@ impl super::Actor for Actor {
 
     async fn perform_actions(
         &mut self,
-        actions: &[Action],
+        actions: &[TargetedAction],
         options: Options,
     ) -> Result<ActionResult, String> {
         match &mut self.inner {
