@@ -934,3 +934,75 @@ fn test_initial_widths_are_computed_correctly() {
         });
     });
 }
+
+/// Tests that focusing two different panes in quick succession does not cause
+/// an infinite loop of focus changes, as outlined in this PR's description:
+/// https://github.com/warpdotdev/warp-internal/pull/8990
+#[cfg_attr(windows, ignore = "TODO(CORE-3626)")]
+#[test]
+fn test_pane_focus_does_not_have_an_infinite_event_loop() {
+    App::test((), |mut app| async move {
+        // Create a pane group with two terminal panes that will fight for
+        // focus.
+        let mock_options = MockOptions {
+            layout: PanesLayout::Template(PaneTemplateType::PaneBranchTemplate {
+                split_direction: crate::launch_configs::launch_config::SplitDirection::Horizontal,
+                panes: vec![
+                    PaneTemplateType::PaneTemplate {
+                        is_focused: Some(true),
+                        cwd: "/".into(),
+                        commands: vec![],
+                        pane_mode: PaneMode::Terminal,
+                        shell: None,
+                    },
+                    PaneTemplateType::PaneTemplate {
+                        is_focused: None,
+                        cwd: "/".into(),
+                        commands: vec![],
+                        pane_mode: PaneMode::Terminal,
+                        shell: None,
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let pane_group = mock_pane_group_with_options(&mut app, mock_options);
+
+        // The cycle requires that we are constantly trying to focus the input.
+        // An active and long-running block causes focus to move to the
+        // terminal instead of the input, so we need to wait until we've
+        // finished bootstrapping to ensure no such block will exist.
+        loop {
+            let mut all_terminals_bootstrapped = true;
+            pane_group.update(&mut app, |pane_group, ctx| {
+                pane_group.for_all_terminal_panes(
+                    |terminal_view, _ctx| {
+                        let model = terminal_view.model.lock();
+                        let active_block = model.block_list().active_block();
+                        if active_block.bootstrap_stage()
+                            != crate::terminal::model::bootstrap::BootstrapStage::PostBootstrapPrecmd
+                            || active_block.is_active_and_long_running()
+                        {
+                            all_terminals_bootstrapped = false;
+                        }
+                    },
+                    ctx,
+                );
+            });
+            if all_terminals_bootstrapped {
+                break;
+            }
+            // Return control back to the executor briefly so we can make
+            // progress.
+            futures_lite::future::yield_now().await;
+        }
+
+        pane_group.update(&mut app, |pane_group, ctx| {
+            // Switch panes twice in quick succession.  We want to make
+            // sure the test terminates and doesn't get into an infinite
+            // loop.
+            pane_group.navigate_next_pane(ctx);
+            pane_group.navigate_next_pane(ctx);
+        });
+    });
+}
