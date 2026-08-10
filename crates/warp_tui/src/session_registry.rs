@@ -129,18 +129,47 @@ impl TuiSessions {
         startup_directory: Option<PathBuf>,
         ctx: &mut AppContext,
     ) -> (TuiSessionId, ViewHandle<TuiTerminalSessionView>) {
+        Self::create_local_terminal_session_with_env(
+            sessions,
+            window_id,
+            focus,
+            startup_directory,
+            HashMap::new(),
+            ctx,
+        )
+    }
+
+    /// Creates and registers a full local terminal session, merging
+    /// `extra_env_vars` on top of the process's own environment. Used by
+    /// [`crate::pane_group::TuiPaneGroup`] to hand a hidden child-agent
+    /// session the `OZ_RUN_ID`/`OZ_PARENT_RUN_ID`/model env vars
+    /// `local_harness_launch` prepares -- mirroring how the GUI's
+    /// `insert_terminal_pane_hidden_for_child_agent` seeds a new pane's PTY
+    /// environment before its shell starts (env vars set after the shell is
+    /// already running are invisible to the process the user's typed command
+    /// launches).
+    pub(crate) fn create_local_terminal_session_with_env(
+        sessions: &ModelHandle<Self>,
+        window_id: WindowId,
+        focus: bool,
+        startup_directory: Option<PathBuf>,
+        extra_env_vars: HashMap<OsString, OsString>,
+        ctx: &mut AppContext,
+    ) -> (TuiSessionId, ViewHandle<TuiTerminalSessionView>) {
         let (exit_summary, keyboard_enhancement_supported) = sessions.read(ctx, |sessions, _| {
             (
                 sessions.exit_summary.clone(),
                 sessions.keyboard_enhancement_supported,
             )
         });
+        let mut env_vars = HashMap::<OsString, OsString>::from_iter(std::env::vars_os());
+        env_vars.extend(extra_env_vars);
         // The manager uses this internal model for unsupported-shell state; the
         // TUI does not render a separate banner surface.
         let banner = ctx.add_model(|_| BannerState::default());
         let manager = LocalTtyTerminalManager::<TuiTerminalSessionView>::create_tui_model(
             startup_directory,
-            HashMap::<OsString, OsString>::from_iter(std::env::vars_os()),
+            env_vars,
             // Zap's create_tui_model has no shared-session-creator or block-spacing params.
             None,
             banner.clone(),

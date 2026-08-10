@@ -1105,3 +1105,71 @@ pub enum PaneEvent {
         source: Option<crate::code::editor_management::CodeSource>,
     },
 }
+
+// --- TUI child-agent launch seam --------------------------------------------
+//
+// The TUI (`crates/warp_tui`) has no `PaneGroup` -- it materializes
+// child-agent sessions through its own `TuiPaneGroup`
+// (`crates/warp_tui/src/pane_group.rs`), a structural analog scoped to
+// hidden child sessions rather than the GUI's full visual pane tree. It
+// still needs `local_harness_launch`'s harness validation, prompt
+// composition, and subprocess-launch logic (the actual `claude
+// --dangerously-skip-permissions ...` command this builds) -- but every item
+// in that module is `pub(super)` to `pane_group::pane`, and no visibility
+// modifier crosses a crate boundary, so `warp_tui` cannot reach it directly
+// no matter how it's spelled.
+//
+// These wrappers are the legal route instead: they live in `pane_group::pane`
+// itself, a sibling of `local_harness_launch` (so its `pub(super)` items are
+// visible here), and are re-exported through `tui_export`.
+// `local_harness_launch`'s own visibility is untouched by this -- nothing
+// outside `pane_group::pane` gained access to it; only this narrow new
+// surface did.
+#[cfg(not(target_family = "wasm"))]
+pub struct TuiPreparedChildAgentLaunch {
+    pub command: String,
+    pub env_vars: std::collections::HashMap<std::ffi::OsString, std::ffi::OsString>,
+    pub run_id: String,
+    pub task_id: crate::ai::ambient_agents::AmbientAgentTaskId,
+}
+
+/// TUI counterpart of [`local_harness_launch::split_orchestrate_tasks`].
+#[cfg(not(target_family = "wasm"))]
+pub fn tui_split_orchestrate_tasks(argument: &str) -> Vec<String> {
+    local_harness_launch::split_orchestrate_tasks(argument)
+}
+
+/// TUI counterpart of [`local_harness_launch::compose_child_agent_prompt`].
+#[cfg(not(target_family = "wasm"))]
+pub fn tui_compose_child_agent_prompt(task: &str) -> String {
+    local_harness_launch::compose_child_agent_prompt(task)
+}
+
+/// TUI counterpart of [`local_harness_launch::prepare_local_harness_child_launch`],
+/// fixed to the same Claude-only default harness `/orchestrate` uses
+/// (`local_harness_launch::ORCHESTRATE_DEFAULT_HARNESS`) since the TUI has no
+/// model/harness-selection UI for child agents either.
+#[cfg(not(target_family = "wasm"))]
+pub async fn prepare_tui_child_agent_launch(
+    prompt: String,
+    parent_run_id: Option<String>,
+    shell_type: Option<warp_terminal::shell::ShellType>,
+    startup_directory: Option<std::path::PathBuf>,
+) -> Result<TuiPreparedChildAgentLaunch, String> {
+    let prepared = local_harness_launch::prepare_local_harness_child_launch(
+        prompt,
+        local_harness_launch::ORCHESTRATE_DEFAULT_HARNESS.to_string(),
+        // model_id: no TUI model-selection UI for child agents yet.
+        None,
+        parent_run_id,
+        shell_type,
+        startup_directory,
+    )
+    .await?;
+    Ok(TuiPreparedChildAgentLaunch {
+        command: prepared.command,
+        env_vars: prepared.env_vars,
+        run_id: prepared.run_id,
+        task_id: prepared.task_id,
+    })
+}

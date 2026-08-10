@@ -55,6 +55,7 @@ mod option_selector;
 mod orchestrated_agent_identity_styling;
 mod orchestration_model;
 mod orchestration_tab_bar;
+mod pane_group;
 mod platform;
 mod profile_menu;
 mod prompt_and_command_history_menu;

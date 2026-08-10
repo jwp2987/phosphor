@@ -1212,6 +1212,10 @@ fn spawn_local_child_agents(
         let future = super::local_harness_launch::prepare_local_harness_child_launch(
             prompt,
             super::local_harness_launch::ORCHESTRATE_DEFAULT_HARNESS.to_string(),
+            // /orchestrate has no model-selection flag (see
+            // `ORCHESTRATE_DEFAULT_HARNESS`'s doc comment above), so there is
+            // never a per-child model override here.
+            None,
             parent_run_id.clone(),
             shell_type,
             startup_directory.clone(),
