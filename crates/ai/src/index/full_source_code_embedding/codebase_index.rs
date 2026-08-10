@@ -314,6 +314,16 @@ pub enum CodebaseIndexEvent {
     RetrievalRequestCompleted {
         retrieval_id: RetrievalID,
         fragments: Arc<HashSet<CodeContextLocation>>,
+        /// The retrieved files in rank order, best first, deduplicated.
+        ///
+        /// `fragments` is a `HashSet`, so it cannot carry an order — and the whole
+        /// point of reranking is the order. Inherited from the pin, where the set
+        /// was handed to a server that ranked it again; here reranking is the last
+        /// ranking step there is (`rerank_fragments` reorders but never truncates,
+        /// so without this field a reranker changes *nothing* an agent can observe).
+        /// Emitted alongside rather than replacing `fragments` so the existing
+        /// set-shaped consumers keep working unchanged.
+        ranked_paths: Arc<Vec<PathBuf>>,
         out_of_sync_delay: Option<Duration>,
     },
     RetrievalRequestFailed {
@@ -1509,6 +1519,9 @@ impl CodebaseIndex {
     ) {
         match relevant_fragments_result {
             Err(err) => {
+                // Same bookkeeping as the success path: a failed request is over,
+                // so its abort handle must not outlive it.
+                self.retrieval_requests.remove(&retrieval_id);
                 report_error!(
                     "Failed to retrieve relevant fragment",
                     extra: { "root" => ?self.last_server_synced_root_node() }
@@ -1566,14 +1579,27 @@ impl CodebaseIndex {
     }
 
     /// Turn the list of fragments into a list of paths with fragments, then send them back through the provided channel.
+    ///
+    /// Takes `&mut self` so the finished request can be dropped from
+    /// `retrieval_requests`; see the note there.
     fn process_reranked_fragments(
-        &self,
+        &mut self,
         retrieval_id: RetrievalID,
         reranked_fragments: Result<Vec<Fragment>, Error>,
         ctx: &mut ModelContext<Self>,
     ) {
+        // The request is over either way. `abort_retrieval_request` was the only
+        // thing that ever removed an entry, so a retrieval that simply *finished*
+        // left its abort handle behind forever -- unbounded growth, one entry per
+        // query, invisible while nothing queried the index.
+        self.retrieval_requests.remove(&retrieval_id);
+
         match reranked_fragments {
             Ok(reranked_fragments) => {
+                // The rank order, captured before `process_fragments` collapses the
+                // reranked list into an unordered set.
+                let ranked_paths = self.ranked_paths_for(&reranked_fragments);
+
                 // Create a HashSet of CodeContextLocation::Fragment instances
                 let code_fragments =
                     self.process_fragments(reranked_fragments, RETRIEVE_FRAGMENT_CONTEXT_LENGTH);
@@ -1581,6 +1607,7 @@ impl CodebaseIndex {
                 ctx.emit(CodebaseIndexEvent::RetrievalRequestCompleted {
                     retrieval_id,
                     fragments: Arc::new(code_fragments),
+                    ranked_paths: Arc::new(ranked_paths),
                     out_of_sync_delay: self.out_of_sync_delay(),
                 });
             }
@@ -1591,6 +1618,27 @@ impl CodebaseIndex {
                 });
             }
         };
+    }
+
+    /// The distinct files behind `fragments`, in the order the fragments arrived.
+    ///
+    /// `fragments` comes straight from `rerank_fragments`, so "the order they
+    /// arrived" is the rank order. A file is listed at the position of its
+    /// best-ranked fragment.
+    fn ranked_paths_for(&self, fragments: &[Fragment]) -> Vec<PathBuf> {
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        let mut ranked = Vec::new();
+        for fragment in fragments {
+            let Some(metadatas) = self.fragment_metadatas_from_hash(fragment.content_hash()) else {
+                continue;
+            };
+            for metadata in metadatas {
+                if seen.insert(metadata.absolute_path.clone()) {
+                    ranked.push(metadata.absolute_path.clone());
+                }
+            }
+        }
+        ranked
     }
 
     pub(super) fn abort_retrieval_request(&mut self, retrieval_id: RetrievalID) {

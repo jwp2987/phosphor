@@ -123,7 +123,11 @@ pub const REGISTRY: &[&OpenAiTool] = &[
     // relevant repository files from the local RepoOutlines index. The BYOP realization of
     // Warp's cloud GetRelevantFiles action; not mapped to a protobuf executor variant.
     // chat_stream intercepts it by name and runs get_relevant_files_runtime directly.
-    // Gating: shares codebase_context_enabled with search_codebase; filtered out when off.
+    // Gating: available when EITHER mechanism is -- the per-profile
+    // codebase_context_enabled (outline filter, shared with search_codebase) or the
+    // settings-level code.indexing.agent_mode_codebase_context (embedding index). See
+    // `get_relevant_files_runtime::relevant_files_tool_available`, the single predicate
+    // the tools array and the dispatcher both use.
     &get_relevant_files::GET_RELEVANT_FILES,
     // Computer use: drives the user's real mouse/keyboard through `crates/computer_use`.
     // Unlike every other entry, these two schemas have no pin to mirror — Warp's server owns

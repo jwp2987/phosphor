@@ -1013,7 +1013,31 @@ tested with zero production callers.
 
 ### Confirmed unwired — ranked by user impact
 
-- [ ] **#1 The codebase embedding index is built, maintained, and never queried.**
+- [x] **#1 The codebase embedding index is built, maintained, and never queried.**
+      **DONE** — wired up; the index now answers the agent's `get_relevant_files`
+      tool. `app/src/ai/codebase_retrieval.rs` is the pin's
+      `GetRelevantFilesController` lifecycle re-homed (one model, one
+      `CodebaseIndexManagerEvent` subscription, in-flight `RetrievalID`s, abort on
+      supersede), keyed by repository instead of `AIAgentActionId` because this fork
+      has no `SearchCodebase` action, and answering over a `oneshot` instead of an
+      event because the `chat_stream` interceptor has no `AppContext`. A
+      `ModelSpawner` created once per controller is what lets the async interceptor
+      drive a `&mut ModelContext` call.
+      **The two settings are NOT the same and now do different, documented things:**
+      `code.indexing.agent_mode_codebase_context` (settings) gates the embedding
+      index — it pays for it, and now it is read; `AIExecutionProfile::
+      codebase_context_enabled` (per profile) gates the outline mechanism and
+      `search_codebase`. `get_relevant_files` is answered by either, so it is
+      advertised when either is on — see the single predicate
+      `get_relevant_files_runtime::relevant_files_tool_available`.
+      Two defects the wiring exposed, both fixed here: reranking was **entirely
+      discarded** (`process_fragments` collapsed the reranked `Vec<Fragment>` into a
+      `HashSet`, and `rerank_fragments` reorders without truncating, so all of
+      `c7b8d779d`'s RRF/cross-encoder work changed nothing observable) — a
+      `ranked_paths` field now carries the order; and `retrieval_requests` only ever
+      dropped entries in `abort_retrieval_request`, so every *completed* retrieval
+      leaked an `AbortHandle` forever. Both are inherited from the pin.
+      Original finding:
       `CodebaseIndexManager::retrieve_relevant_files`
       (`crates/ai/src/index/full_source_code_embedding/manager.rs:1224`) is the only
       retrieval API, and a tree-wide grep returns exactly three lines: the

@@ -3743,6 +3743,12 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     let is_lrc = params.lrc_command_id.is_some();
     let web_enabled = params.web_search_enabled;
     let codebase_enabled = params.codebase_context_enabled;
+    // `get_relevant_files` is answered by either mechanism, so it stays available when
+    // the embedding index alone is configured. See `build_tools_array` for the reasoning.
+    let relevant_files_enabled = tools::get_relevant_files_runtime::relevant_files_tool_available(
+        codebase_enabled,
+        params.codebase_retrieval.is_some(),
+    );
     let computer_use_enabled = params.computer_use_enabled;
     let plan_mode = is_plan_mode_turn(&params.input);
     let mut names: Vec<String> = tools::REGISTRY
@@ -3759,10 +3765,10 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
             {
                 return false;
             }
-            if !codebase_enabled
-                && (t.name == tools::codebase::TOOL_NAME
-                    || t.name == tools::get_relevant_files::TOOL_NAME)
-            {
+            if !codebase_enabled && t.name == tools::codebase::TOOL_NAME {
+                return false;
+            }
+            if !relevant_files_enabled && t.name == tools::get_relevant_files::TOOL_NAME {
                 return false;
             }
             if t.name == "suggest_new_conversation" {
@@ -3808,6 +3814,17 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
     let is_lrc = params.lrc_command_id.is_some();
     let web_enabled = params.web_search_enabled;
     let codebase_enabled = params.codebase_context_enabled;
+    // The two codebase-context mechanisms have separate gates, so they get separate
+    // predicates. `search_codebase` is outline-only and stays on the profile flag.
+    // `get_relevant_files` is answered by the outline filter *or* the embedding index,
+    // so it is advertised when either is available -- otherwise a user who enabled
+    // `code.indexing.agent_mode_codebase_context` (and is paying to embed their
+    // repository) would still have no way for the agent to reach the result, which is
+    // exactly the defect this wiring closes.
+    let relevant_files_enabled = tools::get_relevant_files_runtime::relevant_files_tool_available(
+        codebase_enabled,
+        params.codebase_retrieval.is_some(),
+    );
     let computer_use_enabled = params.computer_use_enabled;
     let plan_mode = is_plan_mode_turn(&params.input);
     // Zap BYOP: the `suggest_prompt` chip UI has been restored via the view layer
@@ -3846,10 +3863,10 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
             // BYOP local codebase search is gated by the standalone
             // profile.codebase_context_enabled setting (opt-in). When off, don't advertise
             // the tool to the upstream model at all.
-            if !codebase_enabled
-                && (t.name == tools::codebase::TOOL_NAME
-                    || t.name == tools::get_relevant_files::TOOL_NAME)
-            {
+            if !codebase_enabled && t.name == tools::codebase::TOOL_NAME {
+                return false;
+            }
+            if !relevant_files_enabled && t.name == tools::get_relevant_files::TOOL_NAME {
                 return false;
             }
             // suggest_new_conversation: no UI implementation; Zap changed the executor to
@@ -6056,6 +6073,7 @@ pub async fn generate_byop_output(
                     &args_str,
                     params.codebase_context_enabled,
                     params.relevant_files.as_deref(),
+                    params.codebase_retrieval.as_ref(),
                 )
                 .await;
 
@@ -6642,12 +6660,20 @@ async fn dispatch_byop_get_relevant_files_tool(
     args_str: &str,
     codebase_context_enabled: bool,
     snapshot: Option<&tools::get_relevant_files_runtime::RelevantFilesSnapshot>,
+    retrieval: Option<&crate::ai::codebase_retrieval::CodebaseRetrievalHandle>,
 ) -> Value {
     use tools::get_relevant_files_runtime;
-    if !codebase_context_enabled {
-        log::warn!(
-            "[byop] get_relevant_files tool call rejected: codebase_context_enabled=false"
-        );
+    // Two independent mechanisms answer this tool, on two independent settings: the
+    // outline filter (`codebase_context_enabled`, per profile) and the embedding index
+    // (`code.indexing.agent_mode_codebase_context`, in settings, which is what
+    // `retrieval` being `Some` already means). Reject only when *neither* is permitted
+    // -- gating the embedding index behind the profile flag would recreate the bug this
+    // wiring fixes, where a paid-for index is never consulted.
+    if !get_relevant_files_runtime::relevant_files_tool_available(
+        codebase_context_enabled,
+        retrieval.is_some(),
+    ) {
+        log::warn!("[byop] get_relevant_files tool call rejected: codebase_context_enabled=false");
         return get_relevant_files_runtime::error_to_json(&anyhow::anyhow!(
             "codebase_context_enabled is disabled for this profile"
         ));
@@ -6662,19 +6688,12 @@ async fn dispatch_byop_get_relevant_files_tool(
             ));
         }
     };
-    let Some(snapshot) = snapshot else {
-        // The gate is on but no snapshot materialized (no BYOP one-shot configured, or the
-        // outline isn't ready). Graceful `no_context`, not an error.
-        return get_relevant_files_runtime::output_to_json(
-            &get_relevant_files_runtime::GetRelevantFilesOutput {
-                query: args.query,
-                status: "no_context".to_owned(),
-                total_candidates: 0,
-                relevant_files: Vec::new(),
-            },
-        );
-    };
-    let out = get_relevant_files_runtime::run_get_relevant_files(args, snapshot).await;
+    // A missing snapshot (no BYOP one-shot configured, or the outline isn't ready) is
+    // no longer the end of the road: the embedding index may still answer. Both being
+    // absent yields a graceful `no_context`, not an error.
+    let snapshot = snapshot.filter(|_| codebase_context_enabled);
+    let out =
+        get_relevant_files_runtime::run_get_relevant_files_merged(args, snapshot, retrieval).await;
     get_relevant_files_runtime::output_to_json(&out)
 }
 
