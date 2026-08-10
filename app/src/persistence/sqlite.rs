@@ -1515,9 +1515,12 @@ fn save_pane_state(
                 SettingsPaneSnapshot::Local { current_page, .. } => current_page,
             };
 
+            // Store the stable key, never `Display`: `Display` is localized in
+            // this fork, so persisting it makes the restored page depend on the
+            // UI language at write time (see `SettingsSection::persistence_key`).
             let settings_pane = model::NewSettingsPane {
                 id,
-                current_page: current_page.to_string(),
+                current_page: current_page.persistence_key().to_string(),
             };
 
             diesel::insert_into(schema::settings_panes::dsl::settings_panes)
@@ -2664,9 +2667,14 @@ fn read_node(conn: &mut SqliteConnection, node: model::PaneNode) -> Result<PaneN
                         .select(model::SettingsPane::as_select())
                         .first(conn)?;
 
-                    let current_page = SettingsSection::from_str(&settings_pane.current_page)
-                        .ok()
-                        .unwrap_or_default();
+                    // Accepts the stable key plus every legacy value an older
+                    // build could have written (English labels, and localized
+                    // ones), so nobody loses their settings pane on the first
+                    // launch after the key change. The row is rewritten with
+                    // the stable key on the next snapshot.
+                    let current_page =
+                        SettingsSection::from_persistence_key(&settings_pane.current_page)
+                            .unwrap_or_default();
                     LeafContents::Settings(SettingsPaneSnapshot::Local {
                         current_page,
                         search_query: None,
