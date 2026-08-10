@@ -27,6 +27,7 @@ use diesel_migrations::MigrationHarness;
 use instant::Instant;
 use itertools::Itertools;
 use libsqlite3_sys as sqlite3;
+use lsp::supported_servers::LSPServerType;
 use num_traits::FromPrimitive;
 use pathfinder_geometry::{rect::RectF, vector::Vector2F};
 use persistence::model::AMBIENT_AGENT_PANE_KIND;
@@ -64,6 +65,7 @@ use crate::ai::execution_profiles::{AIExecutionProfileObject, AIExecutionProfile
 use crate::ai::facts::{AIFactObject, AIFactObjectModel};
 use crate::ai::mcp::templatable::{TemplatableMCPServerObject, TemplatableMCPServerObjectModel};
 use crate::ai::mcp::templatable_installation::VariableValue;
+use crate::ai::persisted_workspace::EnablementState;
 use crate::ai::mcp::{
     MCPServerObject, MCPServerObjectModel, TemplatableMCPServer, TemplatableMCPServerInstallation,
 };
@@ -856,6 +858,12 @@ fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> a
             delete_codebase_index_metadata(connection, &repo_path)
                 .context("error deleting codebase index metadata")
         }
+        ModelEvent::UpsertWorkspaceLanguageServer {
+            workspace_path,
+            lsp_type,
+            enabled,
+        } => upsert_workspace_language_server(connection, &workspace_path, lsp_type, enabled)
+            .context("error upserting workspace language server"),
         ModelEvent::UpsertProject { project } => {
             save_project(connection, project).context("error upserting project")
         }
@@ -1708,10 +1716,101 @@ fn get_all_codebase_index_metadata(
         .collect_vec())
 }
 
-// The pin defines `get_all_workspace_language_servers_by_workspace` and
-// `upsert_workspace_language_server` next to these. Neither is restored: both
-// are keyed by `lsp::supported_servers::LSPServerType`, and the `lsp` crate does
-// not exist in this fork. See `app/src/ai/persisted_workspace.rs` (LSP seam).
+/// Reads every persisted language-server enablement back at startup, grouped by
+/// workspace root, for `PersistedWorkspace::new`.
+///
+/// Rows whose `language_server_name` or `enabled` no longer deserialize (e.g. a
+/// server variant that has since been renamed) are skipped rather than failing
+/// the whole read — same as the pin.
+///
+/// Note the `inner_join`: a `workspace_language_server` row whose parent
+/// `workspace_metadata` row is gone would be silently dropped here, and the
+/// user's *enabled* server would read back as *disabled*. The table's FK
+/// declares `ON DELETE CASCADE`
+/// (`2026-08-10-000000_restore_workspace_language_server`) so that state cannot
+/// arise; `clean_up_expired_metadata` additionally refuses to delete a parent
+/// that still has Yes/No children, preserving the user's choice.
+fn get_all_workspace_language_servers_by_workspace(
+    conn: &mut SqliteConnection,
+) -> Result<HashMap<PathBuf, HashMap<LSPServerType, EnablementState>>, diesel::result::Error> {
+    use schema::workspace_language_server::dsl::*;
+    use schema::workspace_metadata;
+
+    let results = workspace_language_server
+        .inner_join(workspace_metadata::table)
+        .select((workspace_metadata::repo_path, language_server_name, enabled))
+        .load::<(String, String, String)>(conn)?;
+
+    let mut grouped: HashMap<PathBuf, HashMap<LSPServerType, EnablementState>> = HashMap::new();
+    for (path_str, server_name, enablement_str) in results {
+        let path = PathBuf::from(path_str);
+        let Some(server_type) = serde_json::from_str(&server_name).ok() else {
+            continue;
+        };
+
+        let Some(enablement) = serde_json::from_str(&enablement_str).ok() else {
+            continue;
+        };
+
+        grouped
+            .entry(path)
+            .or_default()
+            .insert(server_type, enablement);
+    }
+
+    Ok(grouped)
+}
+
+fn upsert_workspace_language_server(
+    conn: &mut SqliteConnection,
+    workspace_path: &Path,
+    server_type: LSPServerType,
+    enablement: EnablementState,
+) -> Result<()> {
+    use schema::workspace_language_server::dsl::*;
+    use schema::workspace_metadata::dsl::*;
+    let path_string = workspace_path.to_string_lossy().to_string();
+
+    // Try to find existing workspace
+    let metadata = workspace_metadata
+        .filter(repo_path.eq(&path_string))
+        .first::<WorkspaceMetadataModel>(conn)
+        .optional()?
+        .ok_or(anyhow::anyhow!("Can't find workspace for path"))?;
+
+    let ws_id = metadata.id;
+    let server_name = serde_json::to_string(&server_type)?;
+
+    // Now upsert the language server setting
+    // Check if record already exists
+    let existing = workspace_language_server
+        .filter(workspace_id.eq(ws_id))
+        .filter(language_server_name.eq(server_name.clone()))
+        .first::<model::WorkspaceLanguageServer>(conn)
+        .optional()?;
+
+    let enablement_str = serde_json::to_string(&enablement)?;
+
+    if let Some(existing_record) = existing {
+        // Update existing record
+        diesel::update(workspace_language_server.find(existing_record.id))
+            .set(enabled.eq(enablement_str))
+            .execute(conn)?;
+    } else {
+        // Insert new record
+        let new_language_server = model::NewWorkspaceLanguageServer {
+            workspace_id: ws_id,
+            language_server_name: server_name,
+            enabled: enablement_str.to_string(),
+        };
+
+        diesel::insert_into(workspace_language_server)
+            .values(&new_language_server)
+            .execute(conn)?;
+    }
+
+    Ok(())
+}
 
 fn delete_codebase_index_metadata(conn: &mut SqliteConnection, index_path: &Path) -> Result<()> {
     use schema::workspace_metadata::dsl::*;
@@ -3440,6 +3539,7 @@ fn read_sqlite_data(
         backfill_conversation_summaries(conn, conversation_summary_backfills)?;
     }
     let codebase_indices = get_all_codebase_index_metadata(conn)?;
+    let workspace_language_servers = get_all_workspace_language_servers_by_workspace(conn)?;
     let projects = get_all_projects(conn)?;
     let project_rules = get_all_project_rules(conn)?;
     let ignored_suggestions = get_all_ignored_suggestions(conn)?;
@@ -3458,6 +3558,7 @@ fn read_sqlite_data(
         experiments: server_experiments,
         ai_queries,
         codebase_indices,
+        workspace_language_servers,
         multi_agent_conversations,
         projects,
         project_rules,
