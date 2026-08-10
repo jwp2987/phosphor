@@ -1099,12 +1099,12 @@ Sizing: ~72 of ~305 orchestration-adjacent pin tests are import-clean of cloud.
 - [x] #376 `AgentConversationData` fields the view reads. **Verify each field
       individually**: the issue's claim that `is_remote_child` is missing is
       FALSE, it is already present.
-- [ ] #304 the orchestrator/child-agent view (pill bar, avatar, conversation
+- [x] #304 the orchestrator/child-agent view **[DONE — issue CLOSED; orchestration_pill_bar.rs + _model.rs + avatar + conversation_links all present with tests]** (pill bar, avatar, conversation
       links, block view-impl, inline controls). Folds in **#410's second half**
       (`cycle_next/previous_orchestration_child_agent` bindings) — #410 was
       closed citing the orchestration decline, and that citation is now stale.
-- [ ] #325 run-agents child prompt composition — **LOCAL arm only.**
-- [ ] #329 collapsible defaults — LAST, it configures presentation of the above.
+- [x] #325 run-agents child prompt composition **[DONE — issue CLOSED]** — **LOCAL arm only.**
+- [x] #329 collapsible defaults **[DONE — issue CLOSED]** — LAST, it configures presentation of the above.
 - [x] #309 topology half only. **The credit-rollup half stays declined** — Warp
       credits are a billing concept with no BYOP equivalent.
 
@@ -1127,7 +1127,7 @@ deleted orchestration storage deliberately; this is not a revert.
 **ONE agent at a time. ONE build at a time. Each step lands green and merges before
 the next starts.** Coordinator builds and merges; agents never merge.
 
-- [ ] **Step 1a** — extract the avatar helpers into a new shared module
+- [x] **Step 1a** **[DONE — orchestration avatar helpers extracted]** — extract the avatar helpers into a new shared module
       `agent_view/avatar_disc.rs`. Six items, ALL pure rendering with **zero**
       pill-bar state (verified: `render_avatar_disc` has 0 references to telemetry,
       `self`, or `PillBarModel`):
@@ -1136,11 +1136,11 @@ the next starts.** Coordinator builds and merges; agents never merge.
       `pill_initial` (:117), `AvatarGlyph` (:196), `render_avatar_disc` (:2125).
       ~60-90 lines total. The pin already exposes them `pub(crate)`, so Step 2's
       pill bar imports them from here instead of defining them.
-- [ ] **Step 1b** — `orchestration_avatar.rs` (41 lines) + `block/view_impl/orchestration.rs`
+- [x] **Step 1b** **[DONE — orchestration_avatar.rs present with tests]** — `orchestration_avatar.rs` (41 lines) + `block/view_impl/orchestration.rs`
       (656). The latter uses `OrchestrationAvatar` 7x, so these go together.
       `CollapsibleExpansionState` already exists generically in `block.rs` — not
       gated on #329.
-- [ ] **Step 1c** — `orchestration_conversation_links.rs` (299). **Independent of
+- [x] **Step 1c** **[DONE — orchestration_conversation_links.rs present]** — `orchestration_conversation_links.rs` (299). **Independent of
       1a/1b** — uses `OrchestrationAvatar` 0 times. Needs
       `TerminalAction::OpenChildAgentInNewPane` (0 in fork; note
       `RevealChildAgent` already exists and is wired, so #410's second half is
@@ -1151,15 +1151,15 @@ the next starts.** Coordinator builds and merges; agents never merge.
       cannot land alone" and had Step 1 reach into Step 2's 2,539-line file. That
       was wrong — the six helpers are self-contained, so 1a makes the split clean
       and no structural deviation from the pin is needed.
-- [ ] **Step 2** — `orchestration_pill_bar.rs` (2,539). Port the
+- [x] **Step 2** **[DONE — orchestration_pill_bar.rs present with tests]** — `orchestration_pill_bar.rs` (2,539). Port the
       `blocklist::telemetry` module FIRST (`BlocklistOrchestrationTelemetryEvent`:
       6 pin files, **0 in fork**), then the pill bar, then the new variants on
       `PaneHeaderAction`/`MenuEvent`/`WorkspaceAction`/`TerminalAction`. Own session.
-- [ ] **Step 3** — #325. Add `AIAgentActionType::RunAgents` (16 pin sites) and let the
+- [x] **Step 3** **[DONE — #325 CLOSED]** — #325. Add `AIAgentActionType::RunAgents` (16 pin sites) and let the
       compiler walk the **59 files** matching that enum. Also needs
       `StartAgentExecutionMode`/`RunAgentsExecutionMode`/`RunAgentsAgentRunConfig`
       (all 0 in fork). LOCAL arm only. One deliberate compiler-checked pass.
-- [ ] **Step 4** — #329, collapsible defaults in `block.rs`. Small, and genuinely last:
+- [x] **Step 4** **[DONE — #329 CLOSED]** — #329, collapsible defaults in `block.rs`. Small, and genuinely last:
       it configures presentation of steps 1-2.
 - [x] **NOT IN THIS TIER** — `inline_action/orchestration_controls.rs` (~1,336) is
       **cloud**: `orchestration_controls.rs:48` imports `crate::server::experiments`.
