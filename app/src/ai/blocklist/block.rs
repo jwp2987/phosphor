@@ -751,10 +751,8 @@ impl CollapsibleElementState {
     }
 
     /// Applies orchestration message display behavior after streaming finishes
-    /// (#329). Generic over the pin's `finish_orchestration_message`: shared
-    /// by the SendMessageToAgent-action path (not ported -- see
-    /// `default_collapsible_state_for_orchestration_action`'s doc comment)
-    /// and the MessagesReceivedFromAgents path, which this fork does have.
+    /// (#329). Shared by the `SendMessageToAgent`-action path and the
+    /// `MessagesReceivedFromAgents` path.
     fn finish_orchestration_message(&mut self, display_mode: OrchestrationMessageDisplayMode) {
         let should_auto_collapse = self.should_auto_collapse_on_finish();
 
@@ -791,15 +789,23 @@ fn default_collapsible_state_for_orchestration_message(
     default_orchestration_collapsible_state(display_mode.should_expand_agent_message_body())
 }
 
-// Not ported: the pin's `default_collapsible_state_for_orchestration_action`.
-// Its only match arm is `AIAgentActionType::SendMessageToAgent { .. }` (every
-// other action returns `None`); that variant does not exist in this fork's
-// `AIAgentActionType` (see Step 1b's orchestration.rs -- render_send_message
-// was dropped for the same reason: SendMessageToAgent and
-// AIAgentActionResultType::SendMessageToAgent/SendMessageToAgentResult exist
-// nowhere here). Porting it would mean a function whose one real branch can
-// never be reached. If SendMessageToAgent is ever added, port this alongside
-// it, not before.
+/// Builds the default collapsible state for a newly-arrived
+/// `SendMessageToAgent` action body, per the `orchestration_message_display_mode`
+/// setting (#329). `None` for every other action -- only orchestration
+/// messages get a default collapsible state.
+fn default_collapsible_state_for_orchestration_action(
+    action: &AIAgentActionType,
+    display_mode: OrchestrationMessageDisplayMode,
+) -> Option<CollapsibleElementState> {
+    match action {
+        AIAgentActionType::SendMessageToAgent { .. } => {
+            Some(default_orchestration_collapsible_state(
+                display_mode.should_expand_agent_message_body(),
+            ))
+        }
+        _ => None,
+    }
+}
 
 fn default_orchestration_collapsible_state(expanded: bool) -> CollapsibleElementState {
     if expanded {
@@ -2152,12 +2158,6 @@ impl AIBlock {
 
     /// Applies final display behavior to orchestration message bodies once
     /// their output has completely finished streaming (#329).
-    ///
-    /// Scoped to `MessagesReceivedFromAgents` only. The pin's version also
-    /// handles `AIAgentActionType::SendMessageToAgent` action messages; that
-    /// variant doesn't exist in this fork (see
-    /// `default_collapsible_state_for_orchestration_action`'s doc comment),
-    /// so there is no such message to iterate here.
     fn finish_orchestration_message_collapsible_states(
         &mut self,
         output: &AIAgentOutput,
@@ -2165,18 +2165,31 @@ impl AIBlock {
     ) {
         let display_mode = AISettings::as_ref(ctx).orchestration_message_display_mode;
         for message in &output.messages {
-            let AIAgentOutputMessageType::MessagesReceivedFromAgents { messages } =
+            if let AIAgentOutputMessageType::MessagesReceivedFromAgents { messages } =
                 &message.message
+            {
+                for received_message in messages {
+                    let collapsible_id =
+                        received_message_collapsible_id(&received_message.message_id);
+                    self.collapsible_block_states
+                        .entry(collapsible_id)
+                        .or_insert_with(|| {
+                            default_collapsible_state_for_orchestration_message(display_mode)
+                        })
+                        .finish_orchestration_message(display_mode);
+                }
+                continue;
+            }
+            let AIAgentOutputMessageType::Action(AIAgentAction { action, .. }) = &message.message
             else {
                 continue;
             };
-            for received_message in messages {
-                let collapsible_id = received_message_collapsible_id(&received_message.message_id);
+            if let Some(default_state) =
+                default_collapsible_state_for_orchestration_action(action, display_mode)
+            {
                 self.collapsible_block_states
-                    .entry(collapsible_id)
-                    .or_insert_with(|| {
-                        default_collapsible_state_for_orchestration_message(display_mode)
-                    })
+                    .entry(message.id.clone())
+                    .or_insert_with(|| default_state)
                     .finish_orchestration_message(display_mode);
             }
         }

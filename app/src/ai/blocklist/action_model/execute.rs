@@ -13,7 +13,9 @@ pub(super) mod shell_command;
 pub(super) mod suggest_new_conversation;
 pub(super) mod suggest_prompt;
 
-use ai::agent::action_result::{InsertReviewCommentsResult, RequestCommandOutputResult};
+use ai::agent::action_result::{
+    InsertReviewCommentsResult, RequestCommandOutputResult, SendMessageToAgentResult,
+};
 pub use ask_user_question::AskUserQuestionExecutor;
 pub(crate) use call_mcp_tool::coerce_integer_args;
 use call_mcp_tool::CallMCPToolExecutor;
@@ -436,6 +438,11 @@ impl BlocklistAIActionExecutor {
             AIAgentActionType::AskUserQuestion { .. } => self
                 .ask_user_question_executor
                 .update(ctx, |executor, ctx| executor.preprocess_action(input, ctx)),
+            // No dedicated executor: `/orchestrate` (the user-invoked route this fork
+            // ships instead of agent-initiated `RunAgents`) doesn't issue this action,
+            // and nothing yet constructs it from model tool calls either -- see
+            // DECLINED.md's #325 row.
+            AIAgentActionType::SendMessageToAgent { .. } => futures::future::ready(()).boxed(),
         }
     }
 
@@ -605,6 +612,13 @@ impl BlocklistAIActionExecutor {
                 .ask_user_question_executor
                 .update(ctx, |executor, ctx| executor.execute(input, ctx))
                 .into(),
+            // No dedicated executor exists yet (see the `preprocess_action` comment
+            // above); if this action ever reaches execution, treat it the same as a
+            // cancelled action rather than pretending it was sent.
+            AIAgentActionType::SendMessageToAgent { .. } => ActionExecution::<()>::Sync(
+                AIAgentActionResultType::SendMessageToAgent(SendMessageToAgentResult::Cancelled),
+            )
+            .into(),
         };
 
         let action_id = action_clone.id.clone();
@@ -813,6 +827,10 @@ impl BlocklistAIActionExecutor {
             AIAgentActionType::AskUserQuestion { .. } => self
                 .ask_user_question_executor
                 .update(ctx, |executor, ctx| executor.should_autoexecute(input, ctx)),
+            // No dedicated executor exists yet (see the `preprocess_action` comment
+            // above), so this is unreachable in practice; default to requiring
+            // confirmation rather than silently auto-sending a message.
+            AIAgentActionType::SendMessageToAgent { .. } => false,
         }
     }
 

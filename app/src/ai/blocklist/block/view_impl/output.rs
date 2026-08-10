@@ -851,6 +851,28 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                                 ),
                             );
                         }
+                        AIAgentOutputMessageType::Action(AIAgentAction {
+                            action:
+                                AIAgentActionType::SendMessageToAgent {
+                                    addresses,
+                                    subject,
+                                    message,
+                                },
+                            id,
+                            ..
+                        }) => {
+                            should_render_footer = false;
+                            should_render_suggestions = false;
+                            output_items.add_child(orchestration::render_send_message(
+                                props,
+                                id,
+                                addresses,
+                                subject,
+                                message,
+                                &output_message.id,
+                                app,
+                            ));
+                        }
                         AIAgentOutputMessageType::DebugOutput { text } => {
                             if ChannelState::enable_debug_features() {
                                 if let Some(element) = render_collapsible_debug_output(

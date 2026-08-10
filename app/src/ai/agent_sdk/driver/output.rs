@@ -250,6 +250,8 @@ pub mod text {
                 | AIAgentActionResultType::CreateDocuments(_) => Ok(()),
                 AIAgentActionResultType::ReadShellCommandOutput { .. } => Ok(()),
                 AIAgentActionResultType::TransferShellCommandControlToUser { .. } => Ok(()),
+                // SendMessageToAgent is a client-side orchestration action, not used in SDK
+                AIAgentActionResultType::SendMessageToAgent(_) => Ok(()),
                 AIAgentActionResultType::AskUserQuestion(_) => Ok(()),
             },
         }
@@ -340,6 +342,15 @@ pub mod text {
                     | AIAgentActionType::TransferShellCommandControlToUser { .. } => (),
                     AIAgentActionType::ReadSkill(request) => {
                         writeln!(w, "Reading skill: {}", request.skill)?;
+                    }
+                    AIAgentActionType::SendMessageToAgent {
+                        addresses, subject, ..
+                    } => {
+                        writeln!(
+                            w,
+                            "Sending message to [{}]: {subject}",
+                            addresses.join(", ")
+                        )?;
                     }
                     AIAgentActionType::AskUserQuestion { .. } => (),
                 },
@@ -974,6 +985,7 @@ pub mod json {
                     | AIAgentActionType::CreateDocuments(_)
                     | AIAgentActionType::ReadShellCommandOutput { .. }
                     | AIAgentActionType::ReadSkill(_)
+                    | AIAgentActionType::SendMessageToAgent { .. }
                     | AIAgentActionType::TransferShellCommandControlToUser { .. } => None,
                     AIAgentActionType::AskUserQuestion { .. } => None,
                 },

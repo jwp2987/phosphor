@@ -437,8 +437,24 @@ fn label_for_action(
                 State::Cancelled => format!("Cancelled reading skill {skill}"),
             }
         }
-        // BYOP: FetchConversation, StartAgent, and SendMessageToAgent are cloud/orchestration
+        // BYOP: FetchConversation and StartAgent are cloud/orchestration
         // AIAgentActionType variants absent from Zap; their label arms are dropped.
+        AIAgentActionType::SendMessageToAgent {
+            addresses, subject, ..
+        } => {
+            let subject = single_line(subject);
+            match state {
+                State::Constructing => "Composing message…".to_owned(),
+                State::Pending | State::Blocked => format!("Send message: {subject}"),
+                State::Running => format!(
+                    "Sending message to {}: {subject}",
+                    count_label(addresses.len(), "agent", "agents")
+                ),
+                State::Succeeded => format!("Sent message: {subject}"),
+                State::Failed => format!("Failed to send message: {subject}"),
+                State::Cancelled => "Send message cancelled".to_owned(),
+            }
+        }
         AIAgentActionType::TransferShellCommandControlToUser { reason } => match state {
             State::Constructing => "Handing control to you…".to_owned(),
             State::Pending | State::Blocked | State::Running => {

@@ -74,6 +74,12 @@ pub enum AIAgentActionResultType {
     TransferShellCommandControlToUser(TransferShellCommandControlToUserResult),
     /// The result of asking the user a question.
     AskUserQuestion(AskUserQuestionResult),
+
+    /// The result of sending a message to another agent. Ported from the
+    /// pin alongside `AIAgentActionType::SendMessageToAgent`; agent-initiated
+    /// spawning (`AIAgentActionResultType::RunAgents`/`RunAgentsResult`) is
+    /// deliberately not part of this fork -- see `DECLINED.md`'s `#325` row.
+    SendMessageToAgent(SendMessageToAgentResult),
 }
 
 /// A single file that could not be read, with the reason why.
@@ -141,6 +147,7 @@ impl Display for AIAgentActionResultType {
             AIAgentActionResultType::InsertReviewComments(result) => result.fmt(f),
             AIAgentActionResultType::TransferShellCommandControlToUser(result) => result.fmt(f),
             AIAgentActionResultType::AskUserQuestion(result) => result.fmt(f),
+            AIAgentActionResultType::SendMessageToAgent(result) => result.fmt(f),
             AIAgentActionResultType::OpenCodeReview | AIAgentActionResultType::InitProject => {
                 Ok(())
             }
@@ -669,6 +676,7 @@ impl AIAgentActionResultType {
             AIAgentActionResultType::AskUserQuestion(_) => {
                 "The user's answers to clarifying questions"
             }
+            AIAgentActionResultType::SendMessageToAgent(_) => "The result of sending a message",
         }
     }
 
@@ -699,6 +707,7 @@ impl AIAgentActionResultType {
                 | TransferShellCommandControlToUserResult::CommandFinished { .. },
             ) => true,
             Self::AskUserQuestion(AskUserQuestionResult::Success { .. }) => true,
+            Self::SendMessageToAgent(SendMessageToAgentResult::Success { .. }) => true,
             _ => false,
         }
     }
@@ -718,6 +727,7 @@ impl AIAgentActionResultType {
             | Self::CreateDocuments(CreateDocumentsResult::Error(_))
             | Self::InsertReviewComments(InsertReviewCommentsResult::Error { .. })
             | Self::AskUserQuestion(AskUserQuestionResult::Error(_))
+            | Self::SendMessageToAgent(SendMessageToAgentResult::Error(_))
             | Self::TransferShellCommandControlToUser(
                 TransferShellCommandControlToUserResult::Error(_),
             ) => true,
@@ -755,7 +765,8 @@ impl AIAgentActionResultType {
             )
             | Self::ReadSkill(ReadSkillResult::Cancelled)
             // SkippedByAutoApprove is intentionally excluded: the agent should continue.
-            | Self::AskUserQuestion(AskUserQuestionResult::Cancelled) => true,
+            | Self::AskUserQuestion(AskUserQuestionResult::Cancelled)
+            | Self::SendMessageToAgent(SendMessageToAgentResult::Cancelled) => true,
             _ => false,
         }
     }
@@ -1110,6 +1121,25 @@ impl Display for AskUserQuestionResult {
                     question_ids.len()
                 )
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SendMessageToAgentResult {
+    Success { message_id: String },
+    Error(String),
+    Cancelled,
+}
+
+impl Display for SendMessageToAgentResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SendMessageToAgentResult::Success { message_id } => {
+                write!(f, "Sent message with id {message_id}")
+            }
+            SendMessageToAgentResult::Error(error) => write!(f, "Send message error: {error}"),
+            SendMessageToAgentResult::Cancelled => write!(f, "Send message cancelled"),
         }
     }
 }

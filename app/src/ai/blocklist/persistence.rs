@@ -272,6 +272,7 @@ impl From<&AIAgentActionType> for PersistedAIAgentActionType {
             | AIAgentActionType::CreateDocuments(_)
             | AIAgentActionType::ReadShellCommandOutput { .. }
             | AIAgentActionType::ReadSkill(_)
+            | AIAgentActionType::SendMessageToAgent { .. }
             | AIAgentActionType::TransferShellCommandControlToUser { .. } => Self::NotPersisted,
             AIAgentActionType::AskUserQuestion { questions } => Self::AskUserQuestion {
                 questions: questions.clone(),

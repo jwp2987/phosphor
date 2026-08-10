@@ -1016,6 +1016,34 @@ impl From<AskUserQuestionResult> for api::request::input::tool_call_result::Resu
     }
 }
 
+impl From<SendMessageToAgentResult> for api::request::input::tool_call_result::Result {
+    fn from(result: SendMessageToAgentResult) -> Self {
+        api::request::input::tool_call_result::Result::SendMessageToAgent(
+            api::SendMessageToAgentResult {
+                result: match result {
+                    SendMessageToAgentResult::Success { message_id } => {
+                        Some(api::send_message_to_agent_result::Result::Success(
+                            api::send_message_to_agent_result::Success { message_id },
+                        ))
+                    }
+                    SendMessageToAgentResult::Error(error) => {
+                        Some(api::send_message_to_agent_result::Result::Error(
+                            api::send_message_to_agent_result::Error { message: error },
+                        ))
+                    }
+                    SendMessageToAgentResult::Cancelled => {
+                        Some(api::send_message_to_agent_result::Result::Error(
+                            api::send_message_to_agent_result::Error {
+                                message: "Cancelled by user".to_string(),
+                            },
+                        ))
+                    }
+                },
+            },
+        )
+    }
+}
+
 impl TryFrom<InsertReviewCommentsResult> for api::request::input::tool_call_result::Result {
     type Error = ConvertToAPITypeError;
 
