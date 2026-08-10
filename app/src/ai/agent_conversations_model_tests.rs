@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use parking_lot::Mutex;
 use persistence::model::AgentConversationData;
 use std::{
     collections::HashMap,
@@ -8,7 +9,7 @@ use std::{
     },
 };
 use warp_core::features::FeatureFlag;
-use warpui::{App, EntityId};
+use warpui::{App, EntityId, ModelHandle};
 
 use crate::ai::agent::conversation::{AIConversation, AIConversationId, ConversationStatus};
 use crate::ai::ambient_agents::task::{TaskCreatorInfo, TaskStatusMessage};
@@ -16,15 +17,19 @@ use crate::ai::ambient_agents::AgentConfigSnapshot;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::ambient_agents::{AmbientAgentTask, AmbientAgentTaskState};
 use crate::ai::artifacts::Artifact;
-use crate::ai::blocklist::history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
+use crate::ai::blocklist::history_model::{
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatusUpdate,
+};
 use crate::ai::conversation_navigation::ConversationNavigationData;
 use crate::auth::AuthStateProvider;
 use crate::test_util::ai_agent_tasks::{create_api_task, create_message};
+use crate::test_util::settings::initialize_history_persistence_for_tests;
 
 use super::{
     AgentConversationEntryId, AgentConversationsModel, AgentConversationsModelEvent,
     AgentManagementFilters, AgentRunDisplayStatus, ArtifactFilter, ConversationMetadata,
-    ConversationOrTask, EnvironmentFilter, HarnessFilter, OwnerFilter, StatusFilter,
+    ConversationOrTask, ConversationUpdateKind, EnvironmentFilter, HarnessFilter, OwnerFilter,
+    StatusFilter,
 };
 use crate::ai::ambient_agents::task::HarnessConfig;
 use warp_cli::agent::Harness;
@@ -74,7 +79,10 @@ fn test_conversation_status_update_emits_conversation_updated() {
         app.update(|ctx| {
             let saw_conversation_updated = saw_conversation_updated.clone();
             ctx.subscribe_to_model(&agent_model, move |_, event, _| {
-                if matches!(event, AgentConversationsModelEvent::ConversationUpdated) {
+                if matches!(
+                    event,
+                    AgentConversationsModelEvent::ConversationUpdated { .. }
+                ) {
                     saw_conversation_updated.store(true, Ordering::SeqCst);
                 }
             });
@@ -85,13 +93,222 @@ fn test_conversation_status_update_emits_conversation_updated() {
                 &BlocklistAIHistoryEvent::UpdatedConversationStatus {
                     conversation_id: AIConversationId::new(),
                     terminal_view_id: EntityId::new(),
-                    is_restored: false,
+                    update: ConversationStatusUpdate::Changed {
+                        prev_status: ConversationStatus::InProgress,
+                    },
+                    new_status: ConversationStatus::Success,
                 },
                 ctx,
             );
         });
 
         assert!(saw_conversation_updated.load(Ordering::SeqCst));
+    });
+}
+
+type CapturedConversationUpdate = Mutex<Option<ConversationUpdateKind>>;
+
+/// Test-only handler that mirrors the production view subscription: extracts the
+/// `ConversationUpdated` payload and stashes it on a shared cell that test cases assert
+/// against.
+fn handle_agent_conversation_model_event(
+    captured: &CapturedConversationUpdate,
+    event: &AgentConversationsModelEvent,
+) {
+    if let AgentConversationsModelEvent::ConversationUpdated { kind } = event {
+        *captured.lock() = Some(*kind);
+    }
+}
+
+/// Subscribes a [`handle_agent_conversation_model_event`] capture cell to `model` and
+/// returns the cell so individual cases can assert on the most recent emission without
+/// re-implementing the subscription bookkeeping.
+fn subscribe_to_conversation_updated(
+    app: &mut App,
+    model: &ModelHandle<AgentConversationsModel>,
+) -> Arc<CapturedConversationUpdate> {
+    let captured = Arc::new(Mutex::new(None));
+    let captured_clone = captured.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_model(model, move |_, event, _| {
+            handle_agent_conversation_model_event(&captured_clone, event);
+        });
+    });
+    captured
+}
+
+#[test]
+fn test_restored_conversation_emits_restored_kind() {
+    App::test((), |mut app| async move {
+        let _interactive_management_guard =
+            FeatureFlag::InteractiveConversationManagementView.override_enabled(true);
+        let agent_model = app.add_singleton_model(|_| create_test_model());
+        let captured = subscribe_to_conversation_updated(&mut app, &agent_model);
+
+        agent_model.update(&mut app, |model, ctx| {
+            model.handle_history_event(
+                &BlocklistAIHistoryEvent::UpdatedConversationStatus {
+                    conversation_id: AIConversationId::new(),
+                    terminal_view_id: EntityId::new(),
+                    update: ConversationStatusUpdate::Restored,
+                    new_status: ConversationStatus::Success,
+                },
+                ctx,
+            );
+        });
+
+        let captured = *captured.lock();
+        assert_eq!(captured, Some(ConversationUpdateKind::Restored));
+    });
+}
+
+#[test]
+fn test_status_transition_emits_status_set_with_filter_buckets() {
+    App::test((), |mut app| async move {
+        let _interactive_management_guard =
+            FeatureFlag::InteractiveConversationManagementView.override_enabled(true);
+        let agent_model = app.add_singleton_model(|_| create_test_model());
+        let captured = subscribe_to_conversation_updated(&mut app, &agent_model);
+
+        agent_model.update(&mut app, |model, ctx| {
+            model.handle_history_event(
+                &BlocklistAIHistoryEvent::UpdatedConversationStatus {
+                    conversation_id: AIConversationId::new(),
+                    terminal_view_id: EntityId::new(),
+                    update: ConversationStatusUpdate::Changed {
+                        prev_status: ConversationStatus::InProgress,
+                    },
+                    new_status: ConversationStatus::Success,
+                },
+                ctx,
+            );
+        });
+
+        let captured = *captured.lock();
+        assert_eq!(
+            captured,
+            Some(ConversationUpdateKind::StatusSet {
+                prev_filter: StatusFilter::Working,
+                new_filter: StatusFilter::Done,
+            }),
+        );
+    });
+}
+
+#[test]
+fn test_same_bucket_re_emission_emits_status_set_with_equal_filters() {
+    App::test((), |mut app| async move {
+        let _interactive_management_guard =
+            FeatureFlag::InteractiveConversationManagementView.override_enabled(true);
+        let agent_model = app.add_singleton_model(|_| create_test_model());
+        let captured = subscribe_to_conversation_updated(&mut app, &agent_model);
+
+        agent_model.update(&mut app, |model, ctx| {
+            model.handle_history_event(
+                &BlocklistAIHistoryEvent::UpdatedConversationStatus {
+                    conversation_id: AIConversationId::new(),
+                    terminal_view_id: EntityId::new(),
+                    update: ConversationStatusUpdate::Changed {
+                        prev_status: ConversationStatus::InProgress,
+                    },
+                    new_status: ConversationStatus::InProgress,
+                },
+                ctx,
+            );
+        });
+
+        let captured = *captured.lock();
+        assert_eq!(
+            captured,
+            Some(ConversationUpdateKind::StatusSet {
+                prev_filter: StatusFilter::Working,
+                new_filter: StatusFilter::Working,
+            }),
+        );
+    });
+}
+
+#[test]
+fn test_title_update_refreshes_shadowing_task_title() {
+    App::test((), |mut app| async move {
+        let _interactive_management_guard =
+            FeatureFlag::InteractiveConversationManagementView.override_enabled(true);
+        initialize_history_persistence_for_tests(&mut app);
+        app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let agent_model = app.add_singleton_model(|_| create_test_model());
+        let captured = subscribe_to_conversation_updated(&mut app, &agent_model);
+
+        let terminal_view_id = EntityId::new();
+        let conversation_id = AIConversationId::new();
+        let server_token = "rename-token";
+        let task_id = make_uuid(3900);
+
+        let conversation = create_restored_conversation(
+            conversation_id,
+            "root-task",
+            AgentConversationData {
+                server_conversation_token: Some(server_token.to_string()),
+                conversation_usage_metadata: None,
+                reverted_action_ids: None,
+                forked_from_server_conversation_token: None,
+                artifacts_json: None,
+                parent_agent_id: None,
+                agent_name: None,
+                orchestration_harness_type: None,
+                parent_conversation_id: None,
+                is_remote_child: false,
+                root_task_is_optimistic: None,
+                run_id: None,
+                autoexecute_override: None,
+                last_event_sequence: None,
+                pinned: false,
+                compaction_state_json: None,
+                byop_repair_state_json: None,
+                cli_subagent_block_snapshots_json: None,
+            },
+        );
+
+        history_model.update(&mut app, |model, ctx| {
+            model.restore_conversations(terminal_view_id, vec![conversation], ctx);
+            model.apply_conversation_title(
+                conversation_id,
+                "Renamed conversation".to_string(),
+                ctx,
+            );
+        });
+
+        agent_model.update(&mut app, |model, _| {
+            let mut task = create_test_task(&task_id, "user-a", Utc::now());
+            task.title = "Old task title".to_string();
+            task.conversation_id = Some(server_token.to_string());
+            model.tasks.insert(task.task_id, task);
+        });
+
+        agent_model.update(&mut app, |model, ctx| {
+            model.handle_history_event(
+                &BlocklistAIHistoryEvent::UpdatedConversationTitle {
+                    terminal_view_id: Some(terminal_view_id),
+                    conversation_id,
+                    title: "Renamed conversation".to_string(),
+                },
+                ctx,
+            );
+        });
+
+        assert_eq!(*captured.lock(), Some(ConversationUpdateKind::TitleChanged));
+        agent_model.read(&app, |model, ctx| {
+            let task_id: AmbientAgentTaskId = task_id.parse().unwrap();
+            assert_eq!(
+                model.get_task_data(&task_id).map(|task| task.title),
+                Some("Renamed conversation".to_string()),
+            );
+            let entry = model
+                .get_entry_by_id(&AgentConversationEntryId::AmbientRun(task_id), ctx)
+                .expect("task-backed entry should exist");
+            assert_eq!(entry.display.title, "Renamed conversation");
+        });
     });
 }
 
