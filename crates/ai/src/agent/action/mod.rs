@@ -25,9 +25,9 @@ use crate::{
             CreateDocumentsResult, EditDocumentsResult, FileGlobResult, FileGlobV2Result,
             GrepResult, InsertReviewCommentsResult, ReadDocumentsResult, ReadFilesResult,
             ReadMCPResourceResult, ReadShellCommandOutputResult, ReadSkillResult,
-            RequestCommandOutputResult, RequestFileEditsResult, SuggestNewConversationResult,
-            SuggestPromptResult, TransferShellCommandControlToUserResult,
-            WriteToLongRunningShellCommandResult,
+            RequestCommandOutputResult, RequestFileEditsResult, SendMessageToAgentResult,
+            SuggestNewConversationResult, SuggestPromptResult,
+            TransferShellCommandControlToUserResult, WriteToLongRunningShellCommandResult,
         },
         AIAgentCitation, FileLocations,
     },
@@ -138,6 +138,18 @@ pub enum AIAgentActionType {
     // AI requested to read a skill.
     ReadSkill(ReadSkillRequest),
 
+    /// AI requested to send a message to another agent (e.g. a child agent
+    /// spawned via the user-invoked `/orchestrate` route). Ported from the
+    /// pin alongside `AIAgentActionResultType::SendMessageToAgent` /
+    /// `SendMessageToAgentResult`; agent-initiated spawning
+    /// (`AIAgentActionType::RunAgents` and friends) is deliberately not
+    /// part of this fork -- see `DECLINED.md`'s `#325` row.
+    SendMessageToAgent {
+        addresses: Vec<String>,
+        subject: String,
+        message: String,
+    },
+
     /// Transfer control of a running shell command to the user.
     TransferShellCommandControlToUser {
         /// The reason provided by the agent for transferring control.
@@ -218,6 +230,9 @@ impl AIAgentActionType {
                 AIAgentActionResultType::InsertReviewComments(InsertReviewCommentsResult::Cancelled)
             }
             Self::ReadSkill(_) => AIAgentActionResultType::ReadSkill(ReadSkillResult::Cancelled),
+            Self::SendMessageToAgent { .. } => {
+                AIAgentActionResultType::SendMessageToAgent(SendMessageToAgentResult::Cancelled)
+            }
             Self::TransferShellCommandControlToUser { .. } => {
                 AIAgentActionResultType::TransferShellCommandControlToUser(
                     TransferShellCommandControlToUserResult::Cancelled,
@@ -252,6 +267,7 @@ impl AIAgentActionType {
             Self::ReadShellCommandOutput { .. } => "Reading shell output",
             Self::InsertCodeReviewComments { .. } => "Inserting review comments",
             Self::ReadSkill(_) => "Reading skill",
+            Self::SendMessageToAgent { .. } => "Sending message",
             Self::TransferShellCommandControlToUser { .. } => "Transferring control",
             Self::AskUserQuestion { .. } => "Asking question",
         }
@@ -285,6 +301,7 @@ impl AIAgentActionType {
                 format!("Insert {} code review comments", comments.len())
             }
             Self::ReadSkill(_) => "Read skill".to_string(),
+            Self::SendMessageToAgent { subject, .. } => format!("Send message: {subject}"),
             Self::TransferShellCommandControlToUser { .. } => {
                 "Transfer shell command control to user".to_string()
             }
@@ -421,6 +438,15 @@ impl Display for AIAgentActionType {
             }
             AIAgentActionType::ReadSkill(req) => {
                 write!(f, "ReadSkill: {}", req.skill)
+            }
+            AIAgentActionType::SendMessageToAgent {
+                addresses, subject, ..
+            } => {
+                write!(
+                    f,
+                    "SendMessageToAgent: to=[{}] subject={subject}",
+                    addresses.join(", ")
+                )
             }
             AIAgentActionType::TransferShellCommandControlToUser { reason } => {
                 write!(f, "TransferShellCommandControlToUser: {reason}")
