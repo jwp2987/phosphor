@@ -20,7 +20,13 @@ fn test_model() -> ServerModel {
         connection_senders: HashMap::new(),
         snapshot_sent_roots_by_connection: HashMap::new(),
         #[cfg(feature = "local_fs")]
-        diff_state_subscriptions: HashMap::new(),
+        diff_state_subscribers: HashMap::new(),
+        #[cfg(feature = "local_fs")]
+        diff_state_keys_by_conn: HashMap::new(),
+        #[cfg(feature = "local_fs")]
+        diff_state_in_flight: std::collections::HashSet::new(),
+        #[cfg(feature = "local_fs")]
+        diff_state_pending_responses: HashMap::new(),
         #[cfg(feature = "local_fs")]
         git_status_models: HashMap::new(),
         #[cfg(feature = "local_fs")]
@@ -323,18 +329,19 @@ fn guard_git_operation_in_progress_blocks_on_held_index_lock() {
 
 // ── Ported from the pinned oracle (02b53fcd8) ───────────────────────
 // The pin tracks diff-state subscriptions in a separate `RemoteDiffStateManager`
-// entity (`diff_state_tracker.rs`), which the fork has not ported (see the
-// feature-gap issue on `diff_state_tracker_tests.rs`). The fork tracks the
-// same per-connection subscription lifecycle inline on `ServerModel` via
-// `diff_state_subscriptions`; these two tests are adapted to that field
-// instead of the missing manager, preserving the pin's actual assertions:
-// the map starts empty, and disconnecting a client cleans up its entry.
+// entity (`diff_state_tracker.rs`); this fork tracks the same lifecycle inline
+// on `ServerModel` via `diff_state_subscribers` (key -> conns) plus the
+// reverse `diff_state_keys_by_conn` index (#324 restructured this from an
+// earlier conn -> keys design — see the field docs in `server_model.rs`).
+// These two tests preserve the pin's actual assertions: the map starts
+// empty, and disconnecting a client cleans up its entries.
 
 #[cfg(feature = "local_fs")]
 #[test]
-fn diff_state_subscriptions_start_empty() {
+fn diff_state_subscribers_start_empty() {
     let model = test_model();
-    assert!(model.diff_state_subscriptions.is_empty());
+    assert!(model.diff_state_subscribers.is_empty());
+    assert!(model.diff_state_keys_by_conn.is_empty());
 }
 
 #[cfg(feature = "local_fs")]
@@ -344,24 +351,15 @@ fn deregister_connection_cleans_up_diff_state_subscriptions() {
         let handle = app.add_model(|_ctx| test_model());
         let conn = uuid::Uuid::new_v4();
         let (tx, _rx) = async_channel::unbounded();
+        let key = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
 
         handle.update(&mut app, |model, _ctx| {
             model.connection_senders.insert(conn, tx);
-            model.diff_state_subscriptions.insert(
-                conn,
-                vec![super::DiffStateSubscription {
-                    canonical_path: warp_util::standardized_path::StandardizedPath::try_new(
-                        "/repo",
-                    )
-                    .unwrap(),
-                    wire_repo_path: "/repo".to_string(),
-                    mode: crate::code_review::diff_state::DiffMode::Head,
-                }],
-            );
+            model.register_diff_state_subscription(conn, key.clone(), "/repo".to_string());
         });
 
         let has_sub_before = handle.read(&app, |model, _ctx| {
-            model.diff_state_subscriptions.contains_key(&conn)
+            model.diff_state_keys_by_conn.contains_key(&conn)
         });
         assert!(has_sub_before);
 
@@ -370,10 +368,292 @@ fn deregister_connection_cleans_up_diff_state_subscriptions() {
         });
 
         let has_sub_after = handle.read(&app, |model, _ctx| {
-            model.diff_state_subscriptions.contains_key(&conn)
+            model.diff_state_keys_by_conn.contains_key(&conn)
+                || model.diff_state_subscribers.contains_key(&key)
         });
         assert!(!has_sub_after);
     });
+}
+
+// ── New coverage for #324's key -> conns restructuring and the added
+// model-sharing-adjacent capabilities (pending-response dedup queueing,
+// queued-response abort). These are fork-original: the pin's equivalent
+// tests in `diff_state_tracker_tests.rs` exercise a separate
+// `RemoteDiffStateManager` entity with its own `ModelHandle`-cached
+// `LocalDiffStateModel` per key, which this change deliberately does not
+// port (see the #324 module doc note in `server_model.rs`) — so the
+// bookkeeping semantics these tests assert are the same in spirit
+// (subscribe/unsubscribe/disconnect lifecycle, queued-response tracking)
+// but the shape under test is this fork's own manager-free design.
+
+#[cfg(feature = "local_fs")]
+fn diff_state_test_key(
+    repo: &str,
+    mode: crate::code_review::diff_state::DiffMode,
+) -> super::DiffModelKey {
+    super::DiffModelKey {
+        repo_path: warp_util::standardized_path::StandardizedPath::try_new(repo).unwrap(),
+        mode,
+    }
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn subscribe_registers_connection_with_its_wire_path() {
+    let mut model = test_model();
+    let key = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let conn = uuid::Uuid::new_v4();
+
+    model.register_diff_state_subscription(conn, key.clone(), "/repo".to_string());
+
+    let subs = model.diff_state_subscribers.get(&key).expect("key present");
+    assert_eq!(subs.get(&conn), Some(&"/repo".to_string()));
+    assert!(
+        model
+            .diff_state_keys_by_conn
+            .get(&conn)
+            .unwrap()
+            .contains(&key)
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn subscribe_multiple_connections_to_same_key() {
+    let mut model = test_model();
+    let key = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let conn_a = uuid::Uuid::new_v4();
+    let conn_b = uuid::Uuid::new_v4();
+
+    model.register_diff_state_subscription(conn_a, key.clone(), "/repo".to_string());
+    model.register_diff_state_subscription(conn_b, key.clone(), "/repo".to_string());
+
+    let subs = model.diff_state_subscribers.get(&key).expect("key present");
+    assert_eq!(subs.len(), 2);
+    assert!(subs.contains_key(&conn_a));
+    assert!(subs.contains_key(&conn_b));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn subscribe_same_connection_to_different_keys() {
+    let mut model = test_model();
+    let key_head = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let key_main = diff_state_test_key(
+        "/repo",
+        crate::code_review::diff_state::DiffMode::MainBranch,
+    );
+    let conn = uuid::Uuid::new_v4();
+
+    model.register_diff_state_subscription(conn, key_head.clone(), "/repo".to_string());
+    model.register_diff_state_subscription(conn, key_main.clone(), "/repo".to_string());
+
+    let keys = model
+        .diff_state_keys_by_conn
+        .get(&conn)
+        .expect("conn present");
+    assert!(keys.contains(&key_head));
+    assert!(keys.contains(&key_main));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn different_modes_are_different_diff_state_keys() {
+    let mut model = test_model();
+    let key_head = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let key_main = diff_state_test_key(
+        "/repo",
+        crate::code_review::diff_state::DiffMode::MainBranch,
+    );
+    let conn = uuid::Uuid::new_v4();
+
+    model.register_diff_state_subscription(conn, key_head.clone(), "/repo".to_string());
+
+    assert!(model.diff_state_subscribers.contains_key(&key_head));
+    assert!(!model.diff_state_subscribers.contains_key(&key_main));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn different_repos_are_different_diff_state_keys() {
+    let mut model = test_model();
+    let key_a = diff_state_test_key("/repo-a", crate::code_review::diff_state::DiffMode::Head);
+    let key_b = diff_state_test_key("/repo-b", crate::code_review::diff_state::DiffMode::Head);
+    let conn = uuid::Uuid::new_v4();
+
+    model.register_diff_state_subscription(conn, key_a.clone(), "/repo-a".to_string());
+
+    assert!(model.diff_state_subscribers.contains_key(&key_a));
+    assert!(!model.diff_state_subscribers.contains_key(&key_b));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn drop_diff_state_subscription_removes_one_of_two_keeps_other() {
+    let mut model = test_model();
+    let key = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let conn_a = uuid::Uuid::new_v4();
+    let conn_b = uuid::Uuid::new_v4();
+    model.register_diff_state_subscription(conn_a, key.clone(), "/repo".to_string());
+    model.register_diff_state_subscription(conn_b, key.clone(), "/repo".to_string());
+
+    model.drop_diff_state_subscription(&key, conn_a);
+
+    let subs = model
+        .diff_state_subscribers
+        .get(&key)
+        .expect("key still present");
+    assert_eq!(subs.len(), 1);
+    assert!(subs.contains_key(&conn_b));
+    assert!(
+        !model
+            .diff_state_keys_by_conn
+            .get(&conn_a)
+            .is_some_and(|k| k.contains(&key))
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn drop_diff_state_subscription_last_connection_removes_key() {
+    let mut model = test_model();
+    let key = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let conn = uuid::Uuid::new_v4();
+    model.register_diff_state_subscription(conn, key.clone(), "/repo".to_string());
+
+    model.drop_diff_state_subscription(&key, conn);
+
+    assert!(!model.diff_state_subscribers.contains_key(&key));
+    assert!(!model.diff_state_keys_by_conn.contains_key(&conn));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn remove_diff_state_connection_unsubscribes_from_all_keys() {
+    let mut model = test_model();
+    let key_head = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let key_main = diff_state_test_key(
+        "/repo",
+        crate::code_review::diff_state::DiffMode::MainBranch,
+    );
+    let conn = uuid::Uuid::new_v4();
+    model.register_diff_state_subscription(conn, key_head.clone(), "/repo".to_string());
+    model.register_diff_state_subscription(conn, key_main.clone(), "/repo".to_string());
+
+    model.remove_diff_state_connection(conn);
+
+    assert!(!model.diff_state_subscribers.contains_key(&key_head));
+    assert!(!model.diff_state_subscribers.contains_key(&key_main));
+    assert!(!model.diff_state_keys_by_conn.contains_key(&conn));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn remove_diff_state_connection_keeps_key_with_other_subscribers() {
+    let mut model = test_model();
+    let key = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let conn_a = uuid::Uuid::new_v4();
+    let conn_b = uuid::Uuid::new_v4();
+    model.register_diff_state_subscription(conn_a, key.clone(), "/repo".to_string());
+    model.register_diff_state_subscription(conn_b, key.clone(), "/repo".to_string());
+
+    model.remove_diff_state_connection(conn_a);
+
+    let subs = model
+        .diff_state_subscribers
+        .get(&key)
+        .expect("key still present");
+    assert_eq!(subs.len(), 1);
+    assert!(subs.contains_key(&conn_b));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn remove_diff_state_connection_clears_its_pending_responses() {
+    let mut model = test_model();
+    let key = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let conn_a = uuid::Uuid::new_v4();
+    let conn_b = uuid::Uuid::new_v4();
+    model.diff_state_pending_responses.insert(
+        key.clone(),
+        vec![
+            super::PendingDiffStateResponse {
+                request_id: RequestId::from("req-a".to_string()),
+                conn_id: conn_a,
+                wire_repo_path: "/repo".to_string(),
+            },
+            super::PendingDiffStateResponse {
+                request_id: RequestId::from("req-b".to_string()),
+                conn_id: conn_b,
+                wire_repo_path: "/repo".to_string(),
+            },
+        ],
+    );
+
+    model.remove_diff_state_connection(conn_a);
+
+    let remaining = model
+        .diff_state_pending_responses
+        .get(&key)
+        .expect("key still present");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].conn_id, conn_b);
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn second_request_for_same_key_does_not_mark_a_new_in_flight_entry() {
+    // Mirrors what `handle_get_diff_state` does before spawning: the first
+    // request for a key claims `diff_state_in_flight`; a second request for
+    // the same key while it's still set must see it's already claimed
+    // (`insert` returning `false`) so it queues instead of recomputing.
+    let mut model = test_model();
+    let key = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+
+    assert!(model.diff_state_in_flight.insert(key.clone()));
+    assert!(!model.diff_state_in_flight.insert(key.clone()));
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn abort_diff_state_pending_response_removes_only_the_targeted_request() {
+    let mut model = test_model();
+    let key = diff_state_test_key("/repo", crate::code_review::diff_state::DiffMode::Head);
+    let conn_a = uuid::Uuid::new_v4();
+    let conn_b = uuid::Uuid::new_v4();
+    let target = RequestId::from("target".to_string());
+    model.diff_state_pending_responses.insert(
+        key.clone(),
+        vec![
+            super::PendingDiffStateResponse {
+                request_id: target.clone(),
+                conn_id: conn_a,
+                wire_repo_path: "/repo".to_string(),
+            },
+            super::PendingDiffStateResponse {
+                request_id: RequestId::from("other".to_string()),
+                conn_id: conn_b,
+                wire_repo_path: "/repo".to_string(),
+            },
+        ],
+    );
+
+    let found = model.abort_diff_state_pending_response(&target);
+
+    assert!(found);
+    let remaining = model
+        .diff_state_pending_responses
+        .get(&key)
+        .expect("key still present");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].conn_id, conn_b);
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn abort_diff_state_pending_response_returns_false_for_unknown_request() {
+    let mut model = test_model();
+    assert!(!model.abort_diff_state_pending_response(&RequestId::from("nope".to_string())));
 }
 
 // ── Ported from the pinned oracle (02b53fcd8) ───────────────────────
