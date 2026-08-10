@@ -35,6 +35,7 @@ use mcp_servers_page::MCPServersSettingsPageView;
 use nav::{SettingsNavItem, SettingsUmbrella};
 use pathfinder_geometry::vector::Vector2F;
 use privacy_page::{PrivacyPageView, PrivacyPageViewEvent};
+use scripting_page::ScriptingSettingsPageView;
 use settings_file_footer::{render_footer, SettingsFooterKind, SettingsFooterMouseStates};
 use settings_page::{
     MatchData, SettingsPage, SettingsPageEvent, SettingsPageMeta, SettingsPageViewHandle,
@@ -88,6 +89,7 @@ mod privacy_page;
 // Zap Wave 6-8: `referrals_page` / `show_blocks_view` were removed along with the
 // `ReferralsClient` / `BlockClient` traits -- both pages were entirely stub Err / empty lists,
 // with no local value.
+mod scripting_page;
 mod settings_file_footer;
 pub(crate) mod settings_page;
 // Zap Wave 7-3: `telemetry` was removed along with its only variant `EnvironmentsPageOpened`
@@ -220,6 +222,9 @@ pub enum SettingsSection {
     Network,
     /// Secret redaction, crash reporting and app analytics.
     Privacy,
+    /// Local scripting: the opt-in for the `warpctrl` local-control stack.
+    /// Only listed in the sidebar when `FeatureFlag::WarpControlCli` is on.
+    Scripting,
     /// Internal backing-page identifier for CodeSettingsPageView. EditorAndCodeReview
     /// is currently the only sub-page label, but we keep `Code` as the backing-page
     /// key so that page lookup still works after the LSP-management subpage was
@@ -260,6 +265,7 @@ impl Display for SettingsSection {
             // in all three languages: en / zh-CN / ja.
             SettingsSection::Network => crate::t!("settings-section-network"),
             SettingsSection::Privacy => crate::t!("settings-section-privacy"),
+            SettingsSection::Scripting => crate::t!("settings-section-scripting"),
             // Zap Wave 3-1: the `OzCloudAPIKeys` Display arm was removed along with the variant.
             // Zap Wave 7-3: the `CloudEnvironments` Display arm was removed along with the
             // variant.
@@ -342,6 +348,7 @@ impl FromStr for SettingsSection {
             "Editor and Code Review" | "EditorAndCodeReview" => Ok(Self::EditorAndCodeReview),
             "Network" | "网络" => Ok(Self::Network),
             "Privacy" => Ok(Self::Privacy),
+            "Scripting" => Ok(Self::Scripting),
             // Zap Wave 3-1: `OzCloudAPIKeys` was removed along with the UI.
             // Zap Wave 7-3: the `CloudEnvironments` FromStr arm was removed along with the
             // variant.
@@ -971,6 +978,7 @@ macro_rules! update_page {
             // Issue #72: the global HTTP proxy settings page.
             SettingsPageViewHandle::Network(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::Privacy(handle) => $ctx.update_view(handle, $update),
+            SettingsPageViewHandle::Scripting(handle) => $ctx.update_view(handle, $update),
         }
     };
 }
@@ -1092,6 +1100,15 @@ impl SettingsView {
             me.handle_privacy_page_event(event, ctx);
         });
 
+        // Scripting page (the opt-in for the `warpctrl` local-control stack).
+        // Only constructed behind the flag, exactly as the oracle does: the
+        // page's whole content is the local-control permission surface.
+        let scripting_page_handle = if FeatureFlag::WarpControlCli.is_enabled() {
+            Some(ctx.add_typed_action_view(ScriptingSettingsPageView::new))
+        } else {
+            None
+        };
+
         let font_family = Appearance::as_ref(ctx).ui_font_family();
         let search_editor = ctx.add_typed_action_view(|ctx| {
             let options = SingleLineEditorOptions {
@@ -1131,6 +1148,10 @@ impl SettingsView {
             SettingsPage::new(warp_drive_page_handle),
         ];
 
+        if let Some(scripting_page_handle) = scripting_page_handle {
+            settings_pages.push(SettingsPage::new(scripting_page_handle));
+        }
+
         settings_pages.extend(vec![
             SettingsPage::new(mcp_servers_page_handle),
             SettingsPage::new(privacy_page_handle),
@@ -1168,9 +1189,27 @@ impl SettingsView {
             nav_items.insert(about_pos, SettingsNavItem::Page(SettingsSection::Network));
         }
 
+        // Only list the Scripting page in the sidebar when its flag is on.
+        // The oracle inserts it directly after Warpify (before the pages this
+        // fork dropped with the cloud account surface); the same slot here
+        // means it lands immediately before Privacy.
+        if FeatureFlag::WarpControlCli.is_enabled() {
+            let privacy_pos = nav_items
+                .iter()
+                .position(|i| matches!(i, SettingsNavItem::Page(SettingsSection::Privacy)))
+                .unwrap_or(nav_items.len());
+            nav_items.insert(privacy_pos, SettingsNavItem::Page(SettingsSection::Scripting));
+        }
+
         // Resolve the initial page: map internal backing-page sections to their default subpage.
         let initial_page = match page {
             Some(SettingsSection::AI) => SettingsSection::WarpAgent,
+            // Asking for Scripting while the flag is off would select a page
+            // that was never assembled, leaving the pane blank; fall back to
+            // the default section instead.
+            Some(SettingsSection::Scripting) if !FeatureFlag::WarpControlCli.is_enabled() => {
+                SettingsSection::default()
+            }
             Some(section) if section.is_subpage() => section,
             other => other.unwrap_or_default(),
         };
@@ -1876,6 +1915,7 @@ impl SettingsView {
             // Issue #72: the global HTTP proxy settings page.
             SettingsPageViewHandle::Network(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::Privacy(v) => v.as_ref(app).should_render(app),
+            SettingsPageViewHandle::Scripting(v) => v.as_ref(app).should_render(app),
         }
     }
 

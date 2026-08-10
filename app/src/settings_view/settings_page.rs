@@ -15,6 +15,7 @@ use super::{
     mcp_servers_page::MCPServersSettingsPageView,
     network_page::NetworkPageView,
     privacy_page::PrivacyPageView,
+    scripting_page::ScriptingSettingsPageView,
     warp_drive_page::WarpDriveSettingsPageView,
     warpify_page::WarpifyPageView,
     SettingsSection,
@@ -115,6 +116,9 @@ pub enum SettingsPageViewHandle {
     Network(ViewHandle<NetworkPageView>),
     /// Secret redaction / crash reporting / app analytics.
     Privacy(ViewHandle<PrivacyPageView>),
+    /// Local scripting / `warpctrl` control permissions. Only constructed when
+    /// `FeatureFlag::WarpControlCli` is enabled.
+    Scripting(ViewHandle<ScriptingSettingsPageView>),
 }
 
 impl SettingsPageViewHandle {
@@ -137,6 +141,7 @@ impl SettingsPageViewHandle {
             ZapDrive(view_handle) => ChildView::new(view_handle).finish(),
             Network(view_handle) => ChildView::new(view_handle).finish(),
             Privacy(view_handle) => ChildView::new(view_handle).finish(),
+            Scripting(view_handle) => ChildView::new(view_handle).finish(),
         }
     }
 }
