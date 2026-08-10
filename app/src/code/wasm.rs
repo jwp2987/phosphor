@@ -50,6 +50,16 @@ pub enum CodeViewEvent {
     RunTabConfigSkill {
         path: PathBuf,
     },
+    /// Request to open LSP logs in a terminal pane.
+    ///
+    /// The WASM `CodeView` never emits this — there is no local LSP server and
+    /// no terminal pane to tail into. The variant exists because
+    /// `pane_group::pane::code_pane` compiles for WASM and matches on it
+    /// exhaustively (with a `#[cfg(target_family = "wasm")]` no-op arm), which
+    /// it cannot do unless the variant is declared on both sides.
+    OpenLspLogs {
+        log_path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone)]

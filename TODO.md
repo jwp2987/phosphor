@@ -232,40 +232,75 @@ Treat all of this as staged, not validated.
    `install_warpctrl` widget, and `app_menus.rs` in D1 (macOS-gated, will not
    compile on this host or in Linux CI).
 
-## LSP TRACK — **[>] ONE GAP LEFT, precisely named** (verdict 2026-08-10: RESTORE)
+## LSP TRACK — **[>] document lifecycle CODE-COMPLETE, UNBUILT** (verdict 2026-08-10: RESTORE)
 
-**Status: NOT functional, and the reason is exactly one thing.** Everything above
-the document lifecycle is merged and wired — the crate, the driver
-(install/spawn/detect), the shutdown scan, the real `footer.rs`,
+**Status: the functional gap is closed in code and has never been compiled.**
+Everything above the document lifecycle was already merged and wired — the crate,
+the driver (install/spawn/detect), the shutdown scan, the real `footer.rs`,
 `try_connect_lsp_server` on buffer load, `format_and_save` on save, hover,
 goto-definition, find-references, the context menu, vim `gd`/`gr`/`K`,
 diagnostics *rendering*, and log routing to a terminal.
 
-**Nothing ever sends `didOpen` or `didChange`.** The server starts, the editor
-connects, `refresh_diagnostics` runs, and the server holds no document so it
-publishes nothing. Hover / goto-def / find-refs also return empty — they are
-position queries against a document the server was never given. This is the
-"looks finished, silently dead" failure mode, and closing it is the entire
-remaining functional gap.
+Nothing ever sent `didOpen` or `didChange`: the server started, the editor
+connected, `refresh_diagnostics` ran, and the server held no document so it
+published nothing. Hover / goto-def / find-refs returned empty for the same
+reason — position queries against a document the server was never given. That is
+the "looks finished, silently dead" failure mode, and it is what step 5 closes.
+**Until someone builds and runs it, "functional" is a code claim, not a
+measurement.**
 
-- [>] **Step 5 — `global_buffer_model.rs`, hand-integrated.** Fresh agent
-      assigned 2026-08-10 (the previous one exhausted its budget and stopped
-      rather than half-editing this file, correctly). **Must NOT be
-      wholesale-replaced**: the fork's 1,868 lines are not a subset of the pin's
-      2,477 — five fork-only functions (`is_remote`, `save_remote_buffer`,
-      `subscribe_to_remote_server_manager`, `populate_buffer_with_read_content`,
-      `close_buffer`) are this fork's diff-state-over-SSH remote-buffer layer,
-      built over PRs #61-71. Replacing the file deletes SSH buffer support.
-      Work required, verified: `BufferState` needs two more fields
-      (`initial_content_version`, `latest_buffer_version`) that the sync logic
-      reads to choose incremental-vs-full resync; the **local-buffer
-      `ContentChanged` subscription does not exist here at all** (the fork's only
-      one, ~line 1161, is the *remote* one) and must be reconstructed; then 12
-      pin-only functions (~81 LSP lines) and 5 call sites. **Additive, not a
-      trade-off** — the remote path has its own subscription and edit batching,
-      so no LSP function contends with a remote-buffer function.
-- [ ] **Step 6 — `code_page.rs`, `code/wasm.rs`, `local_code_editor_wasm.rs`**
-      (~1,100). Settings UI plus a wasm-only build break; not function.
+- [x] **Step 5 — `global_buffer_model.rs`, hand-integrated** (branch
+      `lsp/document-lifecycle`). `initial_content_version` on
+      `BufferSource::{Local,ServerLocal}` and `latest_buffer_version` on
+      `InternalBufferState`; the local `ContentChanged` subscription
+      reconstructed in both `create_new_buffer` and `register_buffer_for_path`;
+      `lsp_server_for_path`, `log_lsp_sync_debug`,
+      `open_or_sync_document_with_lsp`, `close_document_with_lsp`,
+      `handle_lsp_manager_events`, `notify_lsp_of_content_change`; didClose on
+      `cleanup_file_id` / `remove_deallocated_buffers` / `rename`. The
+      remote-buffer layer was untouched — the two paths are genuinely additive,
+      as predicted.
+- [x] **Step 6a — the wasm build break.** `code_pane.rs` was ported verbatim
+      from the pin including its `#[cfg(target_family = "wasm")]`
+      `CodeViewEvent::OpenLspLogs` no-op arm, but `code/wasm.rs` never declared
+      the variant. Declared it, matching the pin.
+- [ ] **Step 6b — the `code_page.rs` LSP settings subpage. Re-scope before
+      assigning.** The handover estimated ~1,100 lines for all of step 6; the
+      real figure for this file alone is much larger — the pin's `code_page.rs`
+      is **3,012 lines against the fork's 513**, and the fork's is a deliberate
+      rewrite whose own doc comment records retiring the LSP subpage. This is a
+      2,500-line hand-integration into a diverged host, not a "section".
+      **It is not on the functional path**: enable / install-and-enable /
+      restart / stop / remove all reach `PersistedWorkspace` through
+      `footer.rs` → `CodeFooterViewEvent` → `local_code_editor.rs`, verified
+      wired end to end. The settings page is a second, redundant entry point.
+
+### Corrections to the step-5 handover (verified against the pin, do not re-derive)
+- **`BufferState` was never divergent.** Both fork and pin carry exactly
+  `file_id` + `buffer`. The two extra fields live on `InternalBufferState`
+  (`latest_buffer_version`) and on `BufferSource::{Local,ServerLocal}`
+  (`initial_content_version`). The handover conflated the two structs.
+- **Model-event closures take 3 arguments here, not the pin's 4.**
+  `ModelContext::subscribe_to_model` is
+  `FnMut(&mut T, &S::Event, &mut ModelContext<T>)`; only `ViewContext` takes the
+  4-arg form. So `handle_lsp_manager_events` drops the pin's `ModelHandle`
+  parameter. Pasting the pin's signature compiles nowhere.
+- **The pin's `new()` shape would crash the remote-server daemon.** The daemon
+  registers `GlobalBufferModel` (`app/src/remote_server/mod.rs`) and never calls
+  `lsp::init`; `LspManagerModel::handle` panics on an unregistered singleton.
+  Resolved by gating on `has_singleton_model::<LspManagerModel>()` in `new()`
+  and returning `None` from `lsp_server_for_path` — one guard on the single
+  resolver every LSP entry point funnels through. This also leaves
+  `buffer_location_tests` and `global_buffer_model_tests` working unchanged,
+  with no test relaxed. Same hazard class as the one already documented on
+  `subscribe_to_remote_server_manager`.
+- **`local_code_editor_wasm.rs` needs nothing.** The handover expected
+  `language_server_enabled` / `add_footer` / `with_find_references_provider` to
+  be missing there; the **pin's own wasm stub has none of the three**, because
+  every call site is excluded on wasm (`view.rs` → `wasm.rs`,
+  `language_server_shutdown_manager` → `#[cfg(feature = "local_fs")]`, which
+  wasm does not enable). The fork's stub also diverges from the pin in
+  fork-favouring ways; do not sync it as part of this track.
 
 ### Adjudication verdicts (evidence-based, do not re-derive)
 - 8 `LocalCodeEditorView` fields LSP-caused → restored; 3 explicitly NOT
