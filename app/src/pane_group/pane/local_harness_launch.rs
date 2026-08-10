@@ -205,8 +205,17 @@ pub(super) async fn prepare_local_harness_child_launch(
             // but there are no Zap-managed secrets to materialize into the
             // hidden child pane.
             let managed_secrets: HashMap<String, ManagedSecretValue> = HashMap::new();
+            // No MCP servers: a local child pane has no `--mcp` specs to resolve, and
+            // `ClaudeHarness` ignores them here anyway (its model goes through
+            // `ANTHROPIC_MODEL`, merged into `env_vars` below).
             claude_harness
-                .prepare_environment_config(&working_dir, None, &managed_secrets)
+                .prepare_environment_config(
+                    &working_dir,
+                    None,
+                    &managed_secrets,
+                    &HashMap::new(),
+                    harness_model_config.as_ref(),
+                )
                 .map_err(|error: AgentDriverError| error.to_string())?;
             if let Some(manager) = plugin_manager_for(claude_harness.cli_agent()) {
                 if let Err(error) = manager.install().await {

@@ -15,7 +15,9 @@ use warpui::{ModelHandle, ModelSpawner};
 
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent_events::AgentEventStreamClient;
+use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
+use crate::ai::mcp::JSONMCPServer;
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::session::ExecuteCommandOptions;
 use crate::terminal::CLIAgent;
@@ -82,11 +84,20 @@ impl ThirdPartyHarness for ClaudeHarness {
         ]
     }
 
+    /// `resolved_mcp_servers` is unused: at the pin, Claude's MCP servers are staged as a
+    /// temp JSON file passed to the CLI with `--mcp-config` from `build_runner`, not written
+    /// into a config file here — and that flag is not ported to this fork yet.
+    ///
+    /// `_third_party_harness_model_config` is unused at the pin too: Claude's model is set
+    /// through the `ANTHROPIC_MODEL` env var (see [`super::harness_model_env_vars`]), not a
+    /// config file.
     fn prepare_environment_config(
         &self,
         working_dir: &Path,
         _system_prompt: Option<&str>,
         secrets: &HashMap<String, ManagedSecretValue>,
+        _resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
+        _third_party_harness_model_config: Option<&HarnessModelConfig>,
     ) -> Result<(), AgentDriverError> {
         prepare_claude_environment_config(working_dir, secrets).map_err(|error| {
             AgentDriverError::HarnessConfigSetupFailed {

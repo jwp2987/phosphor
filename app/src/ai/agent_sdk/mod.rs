@@ -210,15 +210,33 @@ fn build_merged_config_and_task(
         None => (None, None),
     };
 
+    // When a non-Oz harness is active, `--model` targets the harness rather than the Oz
+    // model: it names a model of the third-party CLI's own (e.g. a Codex model id), which
+    // is not in Zap's agent-mode model list, so it must skip
+    // `validate_agent_mode_base_model_id` below. Ported from the pin
+    // (`app/src/ai/agent_sdk/mod.rs:393-410`, `02b53fcd8`).
+    let harness_model_id = if args.harness != Harness::Oz {
+        args.model.model.clone()
+    } else {
+        None
+    };
     let harness_override = (args.harness != Harness::Oz).then_some(HarnessConfig {
         harness_type: args.harness,
+        model_id: harness_model_id,
+        reasoning_level: None,
     });
+
+    let oz_model = if args.harness == Harness::Oz {
+        args.model.model.clone().or(file_merged.model_id)
+    } else {
+        None
+    };
 
     let mut merged_config = AgentConfigSnapshot {
         // CLI name > skill name > file name
         name: args.name.clone().or(skill_name).or(file_merged.name),
         environment_id: None,
-        model_id: args.model.model.clone().or(file_merged.model_id),
+        model_id: oz_model,
         // Skill base_prompt takes precedence over file base_prompt
         base_prompt: runtime_base_prompt.clone().or(file_merged.base_prompt),
         mcp_servers: config_file::merge_mcp_servers(file_merged.mcp_servers, cli_mcp_servers),
@@ -476,11 +494,15 @@ impl AgentDriverRunner {
         let prompt_clone = prompt.clone();
         let (task, mut driver_options) = foreground
             .spawn(move |_, ctx| -> anyhow::Result<_> {
-                let task =
-                    build_merged_config_and_task(&args, &resolved_skill, &prompt_clone, ctx)?.1;
+                let (merged_config, task) =
+                    build_merged_config_and_task(&args, &resolved_skill, &prompt_clone, ctx)?;
 
                 let should_share = false;
 
+                let third_party_harness_model_config = merged_config
+                    .harness
+                    .as_ref()
+                    .and_then(|harness| harness.model_config());
                 let driver_options = driver::AgentDriverOptions {
                     working_dir: working_dir.clone(),
                     task_id: None,
@@ -489,6 +511,7 @@ impl AgentDriverRunner {
                     idle_on_complete: args.idle_on_complete.map(|d| d.into()),
                     secrets: Default::default(),
                     selected_harness: args.harness,
+                    third_party_harness_model_config,
                 };
 
                 Ok((task, driver_options))

@@ -821,3 +821,90 @@ fn resolve_openai_base_url_from_secret_returns_none_when_api_key_not_in_resolved
     }
     assert_eq!(result, None);
 }
+
+/// The MCP servers and model config now reach Codex's `config.toml` through the
+/// `ThirdPartyHarness` trait, not just through the free functions above.
+///
+/// Before the trait carried them, `CodexHarness::prepare_environment_config` passed
+/// `&HashMap::new()` / `None` unconditionally, so `write_codex_mcp_servers` and
+/// `set_codex_model` were reachable only from these unit tests. This is the
+/// regression test for that: it drives the real trait method.
+#[test]
+#[serial_test::serial]
+fn codex_harness_prepare_environment_config_writes_mcp_servers_and_model() {
+    let tmp = TempDir::new().unwrap();
+    let codex_home = tmp.path().join("codex-home");
+    let working_dir = tmp.path().join("workspace");
+    fs::create_dir_all(&working_dir).unwrap();
+    let prev_codex_home = std::env::var(CODEX_HOME_ENV).ok();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(CODEX_HOME_ENV, &codex_home) };
+
+    let servers = HashMap::from([(
+        "docs".to_string(),
+        JSONMCPServer {
+            transport_type: JSONTransportType::CLIServer {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "docs-mcp".to_string()],
+                env: HashMap::new(),
+                working_directory: None,
+            },
+        },
+    )]);
+    let model_config = harness_model_config("gpt-5.4-codex", Some("high"));
+
+    let result = CodexHarness.prepare_environment_config(
+        &working_dir,
+        None,
+        &HashMap::new(),
+        &servers,
+        Some(&model_config),
+    );
+
+    match prev_codex_home {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        Some(v) => unsafe { std::env::set_var(CODEX_HOME_ENV, v) },
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var(CODEX_HOME_ENV) },
+    }
+
+    result.unwrap();
+    let cfg = read_codex_config(&codex_home.join(CODEX_CONFIG_TOML_FILE_NAME));
+    assert_eq!(cfg["mcp_servers"]["docs"]["command"].as_str(), Some("npx"));
+    assert_eq!(cfg["model"].as_str(), Some("gpt-5.4-codex"));
+    assert_eq!(cfg["model_reasoning_effort"].as_str(), Some("high"));
+}
+
+/// Without a model selection the harness must not pin one, so Codex keeps its own
+/// default -- the behaviour the old hard-coded `None` produced for every run.
+#[test]
+#[serial_test::serial]
+fn codex_harness_prepare_environment_config_omits_model_when_unselected() {
+    let tmp = TempDir::new().unwrap();
+    let codex_home = tmp.path().join("codex-home");
+    let working_dir = tmp.path().join("workspace");
+    fs::create_dir_all(&working_dir).unwrap();
+    let prev_codex_home = std::env::var(CODEX_HOME_ENV).ok();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(CODEX_HOME_ENV, &codex_home) };
+
+    let result = CodexHarness.prepare_environment_config(
+        &working_dir,
+        None,
+        &HashMap::new(),
+        &HashMap::new(),
+        None,
+    );
+
+    match prev_codex_home {
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        Some(v) => unsafe { std::env::set_var(CODEX_HOME_ENV, v) },
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        None => unsafe { std::env::remove_var(CODEX_HOME_ENV) },
+    }
+
+    result.unwrap();
+    let cfg = read_codex_config(&codex_home.join(CODEX_CONFIG_TOML_FILE_NAME));
+    assert!(!cfg.contains_key("model"));
+    assert!(!cfg.contains_key("mcp_servers"));
+}

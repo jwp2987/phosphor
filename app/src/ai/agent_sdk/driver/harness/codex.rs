@@ -123,22 +123,18 @@ impl ThirdPartyHarness for CodexHarness {
     ///
     /// The oracle threads resolved secret env vars, resolved MCP servers and the
     /// selected harness model down from the run request. This fork's
-    /// `ThirdPartyHarness::prepare_environment_config` only carries `secrets`, so:
-    /// - the resolved env vars are rebuilt here from the same `build_secret_env_vars`
-    ///   the driver uses for the terminal session, preserving the oracle's precedence
-    ///   rules exactly (a worker-injected process env var beats a managed secret);
-    /// - MCP servers are empty because this fork has no third-party-harness MCP
-    ///   plumbing — `write_codex_mcp_servers` is ported and tested regardless, so
-    ///   wiring it up later is a one-argument change;
-    /// - the model config is `None` because this fork routes model selection through
-    ///   `AgentDriver::set_base_model_override` / `harness_model_env_vars` rather than
-    ///   a `HarnessModelConfig` on the harness. `set_codex_model` and
-    ///   `set_codex_model_reasoning_effort` are likewise ported and tested.
+    /// `ThirdPartyHarness::prepare_environment_config` now carries the MCP servers
+    /// and the model config too; only the resolved secret env vars are still absent
+    /// from the trait, so they are rebuilt here from the same `build_secret_env_vars`
+    /// the driver uses for the terminal session, preserving the oracle's precedence
+    /// rules exactly (a worker-injected process env var beats a managed secret).
     fn prepare_environment_config(
         &self,
         working_dir: &Path,
         system_prompt: Option<&str>,
         secrets: &HashMap<String, ManagedSecretValue>,
+        resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
+        third_party_harness_model_config: Option<&HarnessModelConfig>,
     ) -> Result<(), AgentDriverError> {
         let resolved_env_vars = super::super::build_secret_env_vars(secrets);
         prepare_codex_environment_config(
@@ -146,8 +142,8 @@ impl ThirdPartyHarness for CodexHarness {
             system_prompt,
             &resolved_env_vars,
             secrets,
-            &HashMap::new(),
-            None,
+            resolved_mcp_servers,
+            third_party_harness_model_config,
         )
         .map_err(|error| AgentDriverError::HarnessConfigSetupFailed {
             harness: self.cli_agent().command_prefix().to_owned(),
