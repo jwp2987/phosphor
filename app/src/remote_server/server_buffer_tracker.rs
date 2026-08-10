@@ -191,6 +191,24 @@ impl ServerBufferTracker {
             .push((request_id, conn_id, kind));
     }
 
+    /// Connections with an in-flight `OpenBuffer` request for `file_id`.
+    ///
+    /// Used to exclude those connections from a `BufferUpdatedPush` broadcast:
+    /// they are about to receive the same content in their `OpenBufferResponse`,
+    /// and applying both would double-apply the edit.
+    pub fn pending_connections_for_open_buffer(&self, file_id: &FileId) -> HashSet<ConnectionId> {
+        self.pending_requests
+            .get(file_id)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|(_, _, kind)| matches!(kind, PendingBufferRequestKind::OpenBuffer))
+                    .map(|(_, conn_id, _)| *conn_id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Retrieve and remove pending requests that match `kind` for the given
     /// FileId. Other pending requests for the same FileId are left in place.
     pub fn take_pending_by_kind(

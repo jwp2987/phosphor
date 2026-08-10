@@ -14797,6 +14797,12 @@ impl TerminalView {
     }
 
     pub fn shell_family(&self, ctx: &mut ViewContext<Self>) -> ShellFamily {
+        self.shell_family_from_app(ctx)
+    }
+
+    /// Same as [`Self::shell_family`], but usable from `&AppContext`-only call
+    /// sites (the surface-trait callbacks are not given a `ViewContext`).
+    pub(crate) fn shell_family_from_app(&self, ctx: &AppContext) -> ShellFamily {
         self.active_block_session_id()
             .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
             .map(|session| session.shell().shell_type().into())
@@ -14810,6 +14816,39 @@ impl TerminalView {
                         .shell_family()
                 })
             })
+    }
+
+    /// Whether a `BlockStarted` for `command` would actually reach the block list
+    /// as a normal command block.
+    ///
+    /// Warpify-compatible subshell commands (`ssh`, `python`, `docker run`, ...)
+    /// are handled by the warpification path instead, so arming the
+    /// password-prompt poller for them produces a spurious "needs attention"
+    /// notification when the user navigates away. Mirrors the alias expansion
+    /// done for warpify detection in `BlockStarted` so an aliased `ssh` is
+    /// suppressed too.
+    #[cfg(unix)]
+    fn would_emit_block_started_for_password_prompt_polling(
+        &self,
+        command: &str,
+        ctx: &AppContext,
+    ) -> bool {
+        let expanded_command = self
+            .active_block_session_id()
+            .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
+            .and_then(|session| {
+                let (first_word, rest) = command_first_word_and_suffix(command)?;
+                let alias_value = session.alias_value(first_word)?;
+                Some(format!("{alias_value}{rest}"))
+            });
+        let warpify_command = expanded_command.as_deref().unwrap_or(command);
+        let shell_family = self.shell_family_from_app(ctx);
+        let warpify_settings = WarpifySettings::as_ref(ctx);
+        let is_compatible_subshell_command = warpify_settings
+            .is_compatible_subshell_command(command, shell_family)
+            || warpify_settings.is_compatible_subshell_command(warpify_command, shell_family);
+
+        !is_compatible_subshell_command
     }
 
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
@@ -24254,7 +24293,10 @@ impl TerminalSurface for TerminalView {
     }
 
     #[cfg(unix)]
-    fn should_start_password_prompt_polling(&self, _command: &str, ctx: &AppContext) -> bool {
+    fn should_start_password_prompt_polling(&self, command: &str, ctx: &AppContext) -> bool {
+        if !self.would_emit_block_started_for_password_prompt_polling(command, ctx) {
+            return false;
+        }
         password_notifications_enabled(ctx)
             || (self.is_ssh_uploader() && FeatureFlag::SshDragAndDrop.is_enabled())
     }

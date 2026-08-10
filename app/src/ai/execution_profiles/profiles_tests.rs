@@ -209,3 +209,34 @@ fn cli_profile_refuses_computer_use_override_when_local_computer_use_is_off() {
          override must not silently grant computer use"
     );
 }
+
+// ── Ask-User-Question speedbump dropdown (#11) ──
+//
+// The speedbump dropdown selects by *label* (`Dropdown::set_selected_by_name`),
+// so the labels must be distinct -- a duplicate would make the dropdown silently
+// show the wrong permission as selected.
+#[test]
+fn ask_user_question_permission_labels_are_distinct() {
+    use crate::ai::execution_profiles::AskUserQuestionPermission;
+    use std::collections::HashSet;
+
+    let offered = [
+        AskUserQuestionPermission::Never,
+        AskUserQuestionPermission::AskExceptInAutoApprove,
+        AskUserQuestionPermission::AlwaysAsk,
+    ];
+    let labels: HashSet<&str> = offered.iter().map(|p| p.label()).collect();
+    assert_eq!(
+        labels.len(),
+        offered.len(),
+        "each selectable permission needs its own dropdown label"
+    );
+    assert!(labels.iter().all(|label| !label.is_empty()));
+
+    // `Unknown` is a deserialization catch-all that is never offered in the
+    // dropdown, but it must still render as something sensible.
+    assert_eq!(
+        AskUserQuestionPermission::Unknown.label(),
+        AskUserQuestionPermission::AlwaysAsk.label()
+    );
+}

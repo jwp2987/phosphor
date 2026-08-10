@@ -8250,3 +8250,38 @@ fn jump_to_latest_agent_message_targets_latest_visible_exchange() {
         });
     })
 }
+
+// ── Password-prompt polling must not arm on warpify-compatible subshells (#7) ──
+//
+// Subshell launches are handled by the warpification path, not by a normal
+// command block, so arming the poller for them produces a spurious "needs
+// attention" notification when the user navigates away.
+#[cfg(unix)]
+#[test]
+fn password_prompt_polling_is_suppressed_for_warpify_compatible_subshells() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let (_window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            for command in [
+                "bash",
+                "/bin/zsh",
+                "docker run -it ubuntu bash",
+                "aws-vault exec prod",
+            ] {
+                assert!(
+                    !view.would_emit_block_started_for_password_prompt_polling(command, ctx),
+                    "{command} is a warpify-compatible subshell; the poller must not arm"
+                );
+            }
+
+            for command in ["sudo apt update", "git push", "ls -la"] {
+                assert!(
+                    view.would_emit_block_started_for_password_prompt_polling(command, ctx),
+                    "{command} is an ordinary command; the poller must still arm"
+                );
+            }
+        });
+    })
+}

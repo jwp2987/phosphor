@@ -153,6 +153,7 @@ use crate::ai::agent::{
     RenderableAIError, RequestCommandOutputResult, SuggestedLoggingId, SummarizationType,
 };
 use crate::ai::blocklist::inline_action::code_diff_view;
+use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::blocklist::inline_action::requested_command::{
     self, RequestedActionViewType, RequestedCommand, RequestedCommandView,
     RequestedCommandViewEvent,
@@ -389,6 +390,9 @@ pub(super) struct AIBlockStateHandles {
     codebase_search_speedbump_option_handles: Vec<MouseStateHandle>,
     codebase_search_speedbump_radio_button_handle: RadioButtonStateHandle,
     manage_autonomy_settings_link_handle: MouseStateHandle,
+    /// Settings link handle for the Ask-User-Question speedbump footer. Owned
+    /// here (not by the inline view) so it survives the view being rebuilt.
+    ask_user_question_speedbump_settings_link_handle: MouseStateHandle,
 
     /// Mouse state handle for the overflow menu button
     overflow_menu_handle: MouseStateHandle,
@@ -464,6 +468,15 @@ pub enum AutonomySettingSpeedbump {
     },
     /// Show an informational footer for execution profile command autoexecution settings.
     ShouldShowForProfileCommandAutoexecution {
+        /// Which action this corresponds to.
+        action_id: AIAgentActionId,
+        /// Whether or not the speedbump is actually shown.
+        ///
+        /// Set at render-time.
+        shown: Arc<Mutex<bool>>,
+    },
+    /// Show a one-shot dropdown-based speedbump for ask-user-question permission.
+    ShouldShowForAskUserQuestion {
         /// Which action this corresponds to.
         action_id: AIAgentActionId,
         /// Whether or not the speedbump is actually shown.
@@ -2496,31 +2509,50 @@ impl AIBlock {
             }
         }
 
-        for action_id in output.actions().filter_map(|action| {
+        // The ask-user-question one-shot flag is consumed only after the footer is
+        // actually attached, so restored blocks and views that haven't arrived yet
+        // don't burn the flag.
+        for action in output.actions() {
             let should_show_file_access_speedbump =
                 action.is_get_specific_files() || action.is_grep() || action.is_file_glob();
-            should_show_file_access_speedbump.then_some(&action.id)
-        }) {
-            if is_agent_mode_autonomy_allowed(ctx)
-                && *AISettings::as_ref(ctx).should_show_agent_mode_autoread_files_speedbump
+            if should_show_file_access_speedbump {
+                if is_agent_mode_autonomy_allowed(ctx)
+                    && *AISettings::as_ref(ctx).should_show_agent_mode_autoread_files_speedbump
+                {
+                    // Try to show the speedbump for autoread files setting
+                    // if we haven't shown it enough before.
+                    self.autonomy_setting_speedbump =
+                        AutonomySettingSpeedbump::ShouldShowForFileAccess {
+                            action_id: action.id.clone(),
+                            checked: true,
+                            shown: Arc::new(Mutex::new(false)),
+                        };
+                    // Mark the speedbump as shown in settings so that we do not render it again.
+                    AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
+                        if let Err(err) = ai_settings
+                            .should_show_agent_mode_autoread_files_speedbump
+                            .set_value(false, ctx)
+                        {
+                            log::warn!(
+                                "Error with marking autoread files speedbump as shown {err}"
+                            );
+                        }
+                    })
+                }
+            } else if matches!(action.action, AIAgentActionType::AskUserQuestion { .. })
+                && !self.model.is_restored()
+                && FeatureFlag::AskUserQuestion.is_enabled()
+                && is_agent_mode_autonomy_allowed(ctx)
+                && *AISettings::as_ref(ctx).should_show_agent_mode_ask_user_question_speedbump
             {
-                // Try to show the speedbump for autoread files setting
-                // if we haven't shown it enough before.
                 self.autonomy_setting_speedbump =
-                    AutonomySettingSpeedbump::ShouldShowForFileAccess {
-                        action_id: action_id.clone(),
-                        checked: true,
+                    AutonomySettingSpeedbump::ShouldShowForAskUserQuestion {
+                        action_id: action.id.clone(),
                         shown: Arc::new(Mutex::new(false)),
                     };
-                // Mark the speedbump as shown in settings so that we do not render it again.
-                AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
-                    if let Err(err) = ai_settings
-                        .should_show_agent_mode_autoread_files_speedbump
-                        .set_value(false, ctx)
-                    {
-                        log::warn!("Error with marking autoread files speedbump as shown {err}");
-                    }
-                })
+                if self.sync_ask_user_question_speedbump_footer(ctx) {
+                    Self::mark_ask_user_question_speedbump_as_shown(ctx);
+                }
             }
         }
 
@@ -3345,7 +3377,58 @@ impl AIBlock {
         {
             ctx.focus(&view);
         }
+        // The speedbump variant may have been seeded before this view existed; attach
+        // the footer now and only then consume the one-shot flag.
+        if self.sync_ask_user_question_speedbump_footer(ctx)
+            && *AISettings::as_ref(ctx).should_show_agent_mode_ask_user_question_speedbump
+        {
+            Self::mark_ask_user_question_speedbump_as_shown(ctx);
+        }
         ctx.notify();
+    }
+
+    fn mark_ask_user_question_speedbump_as_shown(ctx: &mut ViewContext<Self>) {
+        AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
+            if let Err(err) = ai_settings
+                .should_show_agent_mode_ask_user_question_speedbump
+                .set_value(false, ctx)
+            {
+                log::warn!("Could not mark ask-user-question speedbump as shown: {err}");
+            }
+        });
+    }
+
+    /// Attaches the footer to the view if the speedbump variant matches. Called from
+    /// both the variant-seeding and view-creation paths.
+    fn sync_ask_user_question_speedbump_footer(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(view) = self.ask_user_question_view.clone() else {
+            return false;
+        };
+        let speedbump_matches = matches!(
+            &self.autonomy_setting_speedbump,
+            AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { action_id, .. }
+                if action_id == view.as_ref(ctx).action_id()
+        );
+        if speedbump_matches {
+            let settings_link_handle = self
+                .state_handles
+                .ask_user_question_speedbump_settings_link_handle
+                .clone();
+            if let AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { shown, .. } =
+                &self.autonomy_setting_speedbump
+            {
+                *shown.lock() = true;
+            }
+            let terminal_view_id = self.terminal_view_id;
+            view.update(ctx, |view, ctx| {
+                view.set_speedbump_settings_link(Some(settings_link_handle), ctx);
+                view.init_speedbump_dropdown(ctx);
+                view.refresh_speedbump_dropdown_selection(terminal_view_id, ctx);
+            });
+            true
+        } else {
+            false
+        }
     }
 
     fn handle_ask_user_question_view_event(
@@ -3364,6 +3447,18 @@ impl AIBlock {
 
         match event {
             AskUserQuestionViewEvent::Updated => {
+                ctx.notify();
+            }
+            AskUserQuestionViewEvent::SpeedbumpPermissionChanged(permission) => {
+                let permission = *permission;
+                let profile_id = *AIExecutionProfilesModel::as_ref(ctx)
+                    .active_profile(Some(self.terminal_view_id), ctx)
+                    .id();
+                AIExecutionProfilesModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.set_ask_user_question(profile_id, permission, ctx);
+                });
+                Self::mark_ask_user_question_speedbump_as_shown(ctx);
+                self.autonomy_setting_speedbump = AutonomySettingSpeedbump::None;
                 ctx.notify();
             }
         }

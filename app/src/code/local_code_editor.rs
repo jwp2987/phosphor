@@ -336,6 +336,11 @@ pub struct LocalCodeEditorView {
     was_edited: bool,
     /// Content version of the base file state.
     base_content_version: Option<ContentVersion>,
+    /// Set to `true` when a `RemoteBufferConflict` event fires for this buffer,
+    /// cleared when the buffer is reloaded or saved. Remote buffers have no
+    /// local `ContentVersion` to compare against, so this flag -- not
+    /// `base_content_version` -- is what drives their conflict banner.
+    has_remote_conflict: bool,
     conflict_banner_mouse_states: ConflictResolutionBannerMouseStates,
     /// Default directory to use for save dialogs when creating new files
     default_directory: Option<PathBuf>,
@@ -550,6 +555,7 @@ impl LocalCodeEditorView {
             selection_as_context_tooltip: None,
             was_edited: false,
             base_content_version: None,
+            has_remote_conflict: false,
             conflict_banner_mouse_states: Default::default(),
             default_directory: None,
             lsp_server: None,
@@ -1638,7 +1644,13 @@ impl LocalCodeEditorView {
                 GlobalBufferModelEvent::BufferLoaded {
                     content_version, ..
                 } => {
+                    // A second BufferLoaded is a re-open (the Discard path for a
+                    // remote conflict): accept the fresh version and clear the
+                    // conflict, but don't redo the one-time load wiring.
+                    me.has_remote_conflict = false;
                     if me.base_content_version.is_some() {
+                        me.base_content_version = Some(*content_version);
+                        ctx.notify();
                         return;
                     }
                     me.base_content_version = Some(*content_version);
@@ -1666,6 +1678,7 @@ impl LocalCodeEditorView {
                     }
                 }
                 GlobalBufferModelEvent::FileSaved { .. } => {
+                    me.has_remote_conflict = false;
                     ctx.emit(LocalCodeEditorEvent::FileSaved);
                 }
                 GlobalBufferModelEvent::FailedToSave { error, .. } => {
@@ -1674,15 +1687,24 @@ impl LocalCodeEditorView {
                         error: error.clone(),
                     });
                 }
-                // Remote buffer sync events are consumed internally by
-                // GlobalBufferModel / ServerModel; the local editor view doesn't care about them.
-                GlobalBufferModelEvent::RemoteBufferConflict { .. }
-                | GlobalBufferModelEvent::ServerLocalBufferUpdated { .. } => {}
+                GlobalBufferModelEvent::RemoteBufferConflict { .. } => {
+                    me.has_remote_conflict = true;
+                    ctx.notify();
+                }
+                // Server-local pushes are consumed internally by
+                // GlobalBufferModel / ServerModel; the local editor view doesn't
+                // care about them.
+                GlobalBufferModelEvent::ServerLocalBufferUpdated { .. } => {}
             }
         });
     }
 
     pub fn has_version_conflicts(&self, app: &AppContext) -> bool {
+        // Remote buffers use the SyncClock on the daemon side for conflict
+        // detection; the flag is set by the RemoteBufferConflict handler above.
+        if matches!(self.metadata, Some(LoadedFileMetadata::RemoteFile { .. })) {
+            return self.has_remote_conflict;
+        }
         let Some(file_id) = self.file_id() else {
             return false;
         };
@@ -2378,6 +2400,19 @@ impl TypedActionView for LocalCodeEditorView {
                 if let Some(path) = self.file_path().map(Path::to_path_buf) {
                     self.base_content_version = Some(self.editor().as_ref(ctx).version(ctx));
                     ctx.emit(LocalCodeEditorEvent::DiscardUnsavedChanges { path });
+                } else if self.has_remote_conflict {
+                    // Remote file: there is no local path to re-read, so re-open
+                    // the buffer from the server to get the latest on-disk
+                    // content. The resulting BufferLoaded clears
+                    // has_remote_conflict and updates base_content_version. If
+                    // the re-open fails, the flag stays set and the banner
+                    // remains visible so the user can retry.
+                    #[cfg(feature = "local_tty")]
+                    if let Some(file_id) = self.file_id() {
+                        GlobalBufferModel::handle(ctx).update(ctx, |model, ctx| {
+                            model.reopen_remote_buffer(file_id, ctx);
+                        });
+                    }
                 }
             }
             LocalCodeEditorAction::NavigateToTarget(location) => {

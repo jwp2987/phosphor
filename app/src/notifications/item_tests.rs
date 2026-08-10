@@ -96,3 +96,60 @@ fn remove_by_origin_returns_false_when_nothing_to_remove() {
     let removed = items.remove_by_origin(NotificationOrigin::CLISession(terminal_view_id));
     assert!(!removed);
 }
+
+// ── Unread-per-terminal, which drives the vertical-tab activity dot ──
+// `has_unread_activity` in `workspace/view/vertical_tabs.rs` reads exactly this
+// predicate; before it was wired it returned a hardcoded `false`.
+
+#[test]
+fn has_unread_for_terminal_view_is_false_without_notifications() {
+    let items = NotificationItems::default();
+    assert!(!items.has_unread_for_terminal_view(EntityId::new()));
+}
+
+#[test]
+fn has_unread_for_terminal_view_only_matches_its_own_terminal() {
+    let mut items = NotificationItems::default();
+    let terminal_a = EntityId::new();
+    let terminal_b = EntityId::new();
+
+    items.push(make_cli_session_notification(terminal_a));
+
+    assert!(items.has_unread_for_terminal_view(terminal_a));
+    assert!(!items.has_unread_for_terminal_view(terminal_b));
+}
+
+#[test]
+fn has_unread_for_terminal_view_clears_once_that_terminal_is_read() {
+    let mut items = NotificationItems::default();
+    let terminal_a = EntityId::new();
+    let terminal_b = EntityId::new();
+
+    items.push(make_cli_session_notification(terminal_a));
+    items.push(make_cli_session_notification(terminal_b));
+
+    assert!(items.mark_all_terminal_view_items_as_read(terminal_a));
+    assert!(!items.has_unread_for_terminal_view(terminal_a));
+    // Focusing terminal A must not clear terminal B's dot.
+    assert!(items.has_unread_for_terminal_view(terminal_b));
+}
+
+#[test]
+fn has_unread_for_terminal_view_ignores_notifications_read_individually() {
+    let mut items = NotificationItems::default();
+    let terminal_view_id = EntityId::new();
+    let conversation_id = AIConversationId::new();
+
+    items.push(make_conversation_notification(
+        conversation_id,
+        terminal_view_id,
+    ));
+    let id = items
+        .items_filtered(NotificationFilter::All)
+        .next()
+        .expect("notification should be present")
+        .id;
+
+    assert!(items.mark_item_read(id));
+    assert!(!items.has_unread_for_terminal_view(terminal_view_id));
+}

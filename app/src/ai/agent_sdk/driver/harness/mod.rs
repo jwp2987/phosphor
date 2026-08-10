@@ -235,8 +235,11 @@ fn task_env_vars_for_harness_name(
                 .unwrap_or_else(|_| ChannelState::channel().cli_command_name().into()),
         ),
     );
-    // `OZ_HARNESS` is consumed by child-agent telemetry when the child CLI emits
-    // `agent message *` events.
+    // `OZ_HARNESS` names the harness the child was launched under. It is exported
+    // for the child process and for user hooks to read; nothing in this repo
+    // consumes it. (An earlier comment here claimed child-agent telemetry read it
+    // on `agent message *` -- it does not: `agent_message.rs` and
+    // `warp_cli::agent_mailbox` read only `OZ_AGENT_MAILBOX_ROOT`.)
     env_vars.insert(
         OsString::from(OZ_HARNESS_ENV),
         OsString::from(selected_harness.to_string()),

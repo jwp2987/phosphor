@@ -320,3 +320,58 @@ fn pending_batch_discarded_on_conflict_detected() {
         });
     })
 }
+
+// ── Re-open (discard local edits) for a remote buffer ────────────
+//
+// `reopen_remote_buffer` backs the conflict banner's Discard button. It is
+// dispatched from a view that only knows it has *some* file id, so its guards
+// must return before touching `RemoteServerManager` for anything that is not a
+// live remote buffer -- otherwise a stray Discard panics on a missing singleton.
+
+#[cfg(feature = "local_tty")]
+#[test]
+fn reopen_remote_buffer_is_a_noop_for_an_unknown_file_id() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+
+        let unknown = warp_util::file::FileId::new();
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.reopen_remote_buffer(unknown, ctx);
+        });
+    })
+}
+
+#[cfg(feature = "local_tty")]
+#[test]
+fn reopen_remote_buffer_keeps_the_buffer_when_the_host_has_no_client() {
+    App::test((), |mut app| async move {
+        init_app(&mut app);
+        app.add_singleton_model(GlobalBufferModel::new);
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
+
+        let buffer_state = gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.seed_remote_buffer_for_test(test_host_id(), test_path(), "hello", 1, ctx)
+        });
+        let file_id = buffer_state.file_id;
+
+        // No client is connected for this host, so the re-open fails immediately.
+        gbm(&app).update(&mut app, |gbm, ctx| {
+            gbm.reopen_remote_buffer(file_id, ctx);
+        });
+
+        // Unlike the initial open, a failed re-open must NOT clean the file id
+        // up: the user is still looking at the buffer and its conflict banner,
+        // and needs to be able to press Discard again. The surviving sync clock
+        // proves the buffer is still tracked.
+        let handle = gbm(&app);
+        app.read(|ctx| {
+            assert!(
+                handle
+                    .as_ref(ctx)
+                    .sync_clock_for_remote_test(file_id)
+                    .is_some()
+            );
+        });
+    })
+}
