@@ -120,6 +120,10 @@ pub use crate::ai::llms::{LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent};
 pub use crate::ai::option_snapshot::{
     OptionBadge, OptionFooter, OptionRow, OptionSnapshot, OptionSourceStatus,
 };
+// Lets `--set-provider-api-key` / `--clear-provider-api-key` tell already-running
+// Zap processes to re-read the shared keyring after it persists a key.
+#[cfg(not(target_family = "wasm"))]
+pub use crate::ai::tui_api_keys::notify_tui_api_keys_changed;
 pub use crate::ai::skills::{SkillManager, SkillReference};
 pub use crate::ai::usage_cost::{UsageCostOutcome, context_usage_report, conversation_cost_report};
 pub use crate::appearance::Appearance;

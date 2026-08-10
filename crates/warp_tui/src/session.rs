@@ -190,6 +190,20 @@ pub fn run() -> Result<()> {
                     // `from_api_key_slug` never produces `Unknown`.
                     LLMProvider::Xai | LLMProvider::Unknown => {}
                 });
+                // The setters above write the shared keyring synchronously, so
+                // this process is done persisting by the time it bumps the
+                // revision file. Already-running Zap processes -- GUI or TUI --
+                // watch that file and re-read the keyring, instead of serving
+                // the keys they read at their own startup until restarted.
+                // A failure here means only that other processes keep stale
+                // keys until they restart; the key itself is already saved, so
+                // it must not turn a successful save into an error exit.
+                if let Err(error) = warp::tui_export::notify_tui_api_keys_changed() {
+                    log::warn!(
+                        "API key was saved, but signalling running Zap processes to \
+                         reload it failed: {error:#}"
+                    );
+                }
                 println!("{} API key {success_verb}", provider.display_name());
                 ctx.terminate_app(TerminationMode::ForceTerminate, None);
             }),

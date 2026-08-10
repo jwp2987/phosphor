@@ -46,13 +46,16 @@ use warpui::App;
 //     instead of being published as if it had been saved; the fork's setters
 //     publish first and only `log::error!` a failed write. The two
 //     `persisted_provider_api_key_*` tests are ported onto the setters below.
-//   - `ApiKeyManager::reload_keys_from_secure_storage` — absent. Warp uses it
-//     so a key written by a separate process (its TUI setup commands) is
-//     picked up by the live app. Untested at the pin.
 //   - `ApiKeyManager::has_any_key` — absent on the manager (present on
 //     `ApiKeys`). At the pin it only adds "…or a connected Grok
 //     subscription", so its four `manager_has_any_key_*` tests are counted
 //     under cloud below.
+//
+// No longer absent (this header used to list it):
+//
+//   - `ApiKeyManager::reload_keys_from_secure_storage` — now present, added
+//     alongside the TUI API-key hot-reload hook (`app/src/ai/tui_api_keys.rs`).
+//     Untested at the pin, so it carries no pinned tests either way.
 //
 // Superseded by the fork's own BYOP provider store, not simply dropped
 // (16 tests) — `CustomEndpoint` / `CustomEndpointModel` /

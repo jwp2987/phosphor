@@ -150,6 +150,8 @@ pub use crate::tui::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase, log_out_tui};
 pub mod themes;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::aws_credentials::AwsCredentialRefresher as _;
+#[cfg(not(target_family = "wasm"))]
+use crate::ai::tui_api_keys::TuiApiKeyRefresher as _;
 use crate::ai::mcp::FileBasedMCPManager;
 use crate::ai::mcp::FileMCPWatcher;
 use crate::uri::web_intent_parser::maybe_rewrite_web_url_to_intent;
@@ -1398,6 +1400,14 @@ fn initialize_app(
     ctx.add_singleton_model(|ctx| {
         #[cfg_attr(target_family = "wasm", allow(unused_mut))]
         let mut manager = ::ai::api_keys::ApiKeyManager::new(ctx);
+        // Reload keys when another process writes them (see
+        // `ai::tui_api_keys`). Safe here because `WarpManagedPathsWatcher` is
+        // registered as a singleton earlier in this function. Unlike the pin
+        // this is not gated on `LaunchMode::Tui`: the GUI and TUI share one
+        // app id and therefore one keyring namespace, so a GUI process goes
+        // stale on a TUI-side write exactly as a TUI process does.
+        #[cfg(not(target_family = "wasm"))]
+        manager.subscribe_to_tui_api_key_changes(ctx);
         #[cfg(not(target_family = "wasm"))]
         manager.subscribe_to_settings_changes(ctx);
         manager
