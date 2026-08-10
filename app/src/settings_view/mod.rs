@@ -1329,6 +1329,11 @@ impl SettingsView {
             SettingsNavItem::Page(SettingsSection::Features),
             SettingsNavItem::Page(SettingsSection::Keybindings),
             SettingsNavItem::Page(SettingsSection::Warpify),
+            // The pin orders this `Referrals, SharedBlocks, WarpDrive, Privacy`
+            // (`02b53fcd8:mod.rs:1360-1363`). This fork dropped Referrals and
+            // SharedBlocks with the cloud account surface, so immediately before
+            // Privacy is the same slot.
+            SettingsNavItem::Page(SettingsSection::ZapDrive),
             SettingsNavItem::Page(SettingsSection::Privacy),
             SettingsNavItem::Page(SettingsSection::About),
         ];
@@ -1345,17 +1350,14 @@ impl SettingsView {
 
         // Only list the Scripting page in the sidebar when its flag is on.
         // The oracle inserts it directly after Warpify (before the pages this
-        // fork dropped with the cloud account surface); the same slot here
-        // means it lands immediately before Privacy.
+        // fork dropped with the cloud account surface), which puts it ahead of
+        // the Drive page — so anchor on that rather than on Privacy.
         if FeatureFlag::WarpControlCli.is_enabled() {
-            let privacy_pos = nav_items
+            let drive_pos = nav_items
                 .iter()
-                .position(|i| matches!(i, SettingsNavItem::Page(SettingsSection::Privacy)))
+                .position(|i| matches!(i, SettingsNavItem::Page(SettingsSection::ZapDrive)))
                 .unwrap_or(nav_items.len());
-            nav_items.insert(
-                privacy_pos,
-                SettingsNavItem::Page(SettingsSection::Scripting),
-            );
+            nav_items.insert(drive_pos, SettingsNavItem::Page(SettingsSection::Scripting));
         }
 
         // Resolve the initial page: map internal backing-page sections to their default subpage.

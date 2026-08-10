@@ -198,7 +198,7 @@ app-menu-compact-mode = Compact Mode
 app-menu-tab = Tab
 app-menu-ai = AI
 app-menu-blocks = Blocks
-app-menu-drive = Drive
+app-menu-drive = Library
 app-menu-show-in-band-command-blocks = Show In-band Command Blocks
 app-menu-hide-in-band-command-blocks = Hide In-band Command Blocks
 app-menu-show-warpified-ssh-blocks = Show Phosphorized SSH Blocks
@@ -255,8 +255,8 @@ ssh-remote-choice-continue-without-installing-desc = You'll still get a Phosphor
 ssh-remote-choice-manage-warpify-settings = Manage Phosphorize settings
 ai-document-show-version-history = Show version history
 ai-document-update-agent = Update Agent
-ai-document-save-and-sync-tooltip = Save and auto-sync this plan to your Phosphor Drive
-ai-document-show-in-warp-drive = Show in Phosphor Drive
+ai-document-save-and-sync-tooltip = Save this plan to your Library
+ai-document-show-in-warp-drive = Show in Library
 ai-document-save-as-markdown-file = Save as markdown file
 ai-document-attach-to-active-session = Attach to active session
 ai-document-copy-plan-id = Copy plan ID
@@ -580,7 +580,7 @@ settings-section-features = Features
 settings-section-keybindings = Keyboard shortcuts
 settings-section-referrals = Referrals
 settings-section-shared-blocks = Shared blocks
-settings-section-warp-drive = Phosphor Drive
+settings-section-warp-drive = Library
 settings-section-warpify = Phosphorize
 settings-section-network = Network
 settings-section-privacy = Privacy
@@ -880,7 +880,7 @@ settings-privacy-page-title = Privacy
 
 # Secret redaction
 settings-privacy-secret-redaction-title = Secret redaction
-settings-privacy-secret-redaction-description = When this setting is enabled, Phosphor will scan blocks, the contents of Phosphor Drive objects, and agent prompts for potential sensitive information and prevent saving or sending this data to any servers. You can customize this list via regexes.
+settings-privacy-secret-redaction-description = When this setting is enabled, Phosphor will scan blocks, the contents of Library objects, and agent prompts for potential sensitive information and prevent saving or sending this data to any servers. You can customize this list via regexes.
 settings-privacy-secret-redaction-enabled-by-org = Enabled by your organization.
 settings-privacy-secret-display-mode-label = Secret visual redaction mode
 settings-privacy-secret-display-mode-description = Choose how secrets are visually presented in the block list while keeping them searchable. This setting only affects what you see in the block list.
@@ -1747,7 +1747,7 @@ quit-warning-unsaved-editor-tab = Do you want to save the changes you made to { 
 quit-warning-unsaved-editor-tab-fallback-name = this file
 
 # --- ANCHOR-SUB-RULES-PAGE (agent-rules-page) ---
-# The Manage Rules page (the AI Fact Collection in Phosphor Drive).
+# The Manage Rules page (the AI Fact Collection in Library).
 rules-collection-name = Rules
 
 # --- ANCHOR-SUB-KEYBINDING-DESC (agent-keybinding-descriptions) ---
@@ -1836,12 +1836,12 @@ keybinding-desc-workspace-toggle-vertical-tabs-menu = Toggle Vertical Tabs Panel
 keybinding-desc-workspace-left-panel-agent-conversations = Left Panel: Agent conversations
 keybinding-desc-workspace-left-panel-project-explorer = Left Panel: Project explorer
 keybinding-desc-workspace-left-panel-global-search = Left Panel: Global search
-keybinding-desc-workspace-left-panel-warp-drive = Left Panel: Phosphor Drive
+keybinding-desc-workspace-left-panel-warp-drive = Left Panel: Library
 keybinding-desc-workspace-left-panel-skill-manager = Left Panel: Skill Manager
 keybinding-desc-workspace-open-global-search = Open global search
 keybinding-desc-workspace-open-global-search-menu = Global Search
-keybinding-desc-workspace-toggle-warp-drive = Toggle Phosphor Drive
-keybinding-desc-workspace-toggle-warp-drive-menu = Phosphor Drive
+keybinding-desc-workspace-toggle-warp-drive = Toggle Library
+keybinding-desc-workspace-toggle-warp-drive-menu = Library
 keybinding-desc-workspace-toggle-conversation-list-view = Toggle Agent conversation list view
 keybinding-desc-workspace-toggle-conversation-list-view-menu = Agent conversation list view
 keybinding-desc-workspace-close-panel = Close focused panel
@@ -1853,7 +1853,7 @@ keybinding-desc-workspace-toggle-navigation-palette = Toggle navigation palette
 keybinding-desc-workspace-toggle-navigation-palette-menu = Navigation Palette
 keybinding-desc-workspace-toggle-launch-config-palette = Launch configuration palette
 keybinding-desc-workspace-toggle-files-palette = Toggle Files Palette
-keybinding-desc-workspace-search-drive = Search Phosphor Drive
+keybinding-desc-workspace-search-drive = Search Library
 keybinding-desc-workspace-move-tab-left = Move tab left
 keybinding-desc-workspace-move-tab-up = move tab up
 keybinding-desc-workspace-move-tab-right = Move tab right
@@ -1895,7 +1895,7 @@ keybinding-desc-workspace-view-changelog = View latest changelog
 
 # Resource center / Drive export / CLI
 keybinding-desc-workspace-toggle-resource-center = Toggle resource center
-keybinding-desc-workspace-export-all-warp-drive-objects = Export all Phosphor Drive objects
+keybinding-desc-workspace-export-all-warp-drive-objects = Export all Library objects
 keybinding-desc-workspace-install-cli = Install Oz CLI command
 keybinding-desc-workspace-uninstall-cli = Uninstall Oz CLI command
 keybinding-desc-workspace-install-warpctrl = Install the warpctrl CLI globally for use outside of Phosphor
@@ -1913,7 +1913,7 @@ keybinding-desc-workspace-create-personal-ai-prompt-menu = New Personal Prompt
 # Focus / import
 keybinding-desc-workspace-shift-focus-left = Switch Focus to Left Panel
 keybinding-desc-workspace-shift-focus-right = Switch Focus to Right Panel
-keybinding-desc-workspace-import-to-personal-drive = Import To Personal Drive
+keybinding-desc-workspace-import-to-personal-drive = Import To Personal Library
 
 # Drive / repository / AI rules / MCP
 keybinding-desc-workspace-open-repository = Open repository
@@ -2693,7 +2693,7 @@ search-filter-display-sessions = sessions
 search-filter-display-tabs = tabs
 search-filter-display-conversations = conversations
 search-filter-display-launch-configurations = launch configurations
-search-filter-display-drive = Phosphor Drive
+search-filter-display-drive = Library
 search-filter-display-environment-variables = environment variables
 search-filter-display-prompt-history = prompt history
 search-filter-display-files = files
@@ -2756,7 +2756,7 @@ drive-import-file-upload-error = Failed to upload file to server
 drive-import-folder-upload-error = Failed to upload folder to server
 
 # Drive main panel and workflow editor (app/src/drive/index.rs, app/src/drive/workflows/*)
-drive-title = Drive
+drive-title = Library
 drive-environment-variables = Environment variables
 drive-folder = Folder
 drive-notebook = Notebook
@@ -2778,7 +2778,7 @@ drive-trash-title = Trash
 drive-trash-deletion-warning = Items in the trash will be deleted forever after 30 days.
 drive-team-space-zero-state = Team spaces are unavailable in local builds. Manage workflows and notebooks in Personal.
 drive-sign-up-storage-limit = Local storage limits are enforced on this device.
-drive-local-storage-limit-description = Local storage limits are enforced on this device. Remove unused items to create space for new Phosphor Drive objects.
+drive-local-storage-limit-description = Local storage limits are enforced on this device. Remove unused items to create space for new Library objects.
 drive-sign-up = Manage locally
 drive-copy-link = Copy link
 drive-collapse-all = Collapse all
@@ -2885,7 +2885,7 @@ project-explorer-unavailable-disabled-description = The Project Explorer require
 project-explorer-unavailable-remote-description = The Project Explorer requires access to your local workspace, which isn’t supported in remote sessions.
 project-explorer-unavailable-wsl-description = The Project Explorer doesn't currently work in WSL.
 workspace-left-panel-global-search = Global search
-workspace-left-panel-warp-drive = Phosphor Drive
+workspace-left-panel-warp-drive = Library
 workspace-left-panel-agent-conversations = Agent conversations
 workspace-left-panel-server-file-browser = Server files
 workspace-left-panel-skill-manager = Skill Manager
@@ -3057,7 +3057,7 @@ wasm-nux-download-title = Download Phosphor Desktop?
 wasm-nux-download-description = Phosphor is the intelligent terminal with AI and your dev team's knowledge built-in.
 wasm-nux-learn-more = Learn more
 wasm-nux-download-confirm = Download
-wasm-nux-object-kind-drive-objects = Phosphor Drive objects
+wasm-nux-object-kind-drive-objects = Library objects
 wasm-nux-object-kind-warp-links = Phosphor links
 wasm-nux-always-open-on-web-title = Always open { $object_kind } on the web?
 wasm-nux-always-open-on-web-detail = You can change this at any time in settings.
@@ -3065,8 +3065,8 @@ wasm-nux-yes = Yes
 
 # Auth override warning (app/src/auth/auth_override_warning_body.rs)
 auth-override-warning-title = New login detected
-auth-override-warning-confirm-title = Delete personal Phosphor Drive objects and preferences?
-auth-override-warning-description = It looks like you logged into a Phosphor account through a web browser. If you continue, any personal Phosphor Drive objects and preferences from this anonymous session will be permanently deleted.
+auth-override-warning-confirm-title = Delete personal Library objects and preferences?
+auth-override-warning-description = It looks like you logged into a Phosphor account through a web browser. If you continue, any personal Library objects and preferences from this anonymous session will be permanently deleted.
 auth-override-warning-cannot-undo = This cannot be undone.
 auth-override-warning-export = Export your data
 auth-override-warning-export-description =  to import later.
@@ -3117,7 +3117,7 @@ auth-logout-shared-sessions-warning = You have { $count } remote { $count ->
         [one] session
        *[other] sessions
     }.
-auth-logout-unsynced-drive-objects-warning = You have { $count } unsynced Phosphor Drive { $count ->
+auth-logout-unsynced-drive-objects-warning = You have { $count } unsynced Library { $count ->
         [one] object
        *[other] objects
     }. Logging out will cause you to lose the { $count ->
@@ -3200,7 +3200,7 @@ agent-tip-plan = `/plan` <prompt> to create a plan for the agent before executin
 agent-tip-command-palette = <keybinding> to open the Command Palette and access Phosphor actions and shortcuts.
 agent-tip-warp-drive = Store reusable workflows, notebooks, and prompts in your
 agent-tip-redirect-running-agent = Enter a new prompt to redirect the agent while it's running.
-agent-tip-add-context = `@` to add context from files, blocks, or Phosphor Drive objects to your prompt.
+agent-tip-add-context = `@` to add context from files, blocks, or Library objects to your prompt.
 agent-tip-attach-prior-output = <keybinding> to attach the prior command output as agent context.
 agent-tip-init-index = `/init` to index the repo so the agent can understand your codebase.
 agent-tip-agent-profiles = Add agent profiles to customize permissions and models per session.
@@ -3229,7 +3229,7 @@ agent-tip-auto-approve = <keybinding> to auto-approve the agent's commands and d
 agent-tip-desktop-notifications = Enable desktop notifications to get an alert when an agent needs your attention.
 agent-tip-cancel-task = <keybinding> to cancel the current agent task.
 agent-tip-action-open-palette = Open palette
-agent-tip-action-warp-drive = Phosphor Drive.
+agent-tip-action-warp-drive = Library.
 agent-tip-action-show-diff-view = Show diff view
 agent-tip-voice-input = Hold <keybinding> to speak your prompt directly to the agent.
 hoa-welcome-banner-title = Introducing universal agent support: level up any coding agent with Phosphor
@@ -3352,7 +3352,7 @@ onboarding-customize-horizontal = Horizontal
 onboarding-customize-conversation-history = Conversation history
 onboarding-customize-file-explorer = File explorer
 onboarding-customize-global-file-search = Global file search
-onboarding-customize-warp-drive = Phosphor Drive
+onboarding-customize-warp-drive = Library
 onboarding-customize-tools-panel = Tools panel
 onboarding-customize-code-review = Code review
 
@@ -3366,20 +3366,20 @@ auth-terms-prefix = Continuing keeps this setup on your device.{" "}
 auth-terms-of-service = Local setup
 auth-log-in = Log in
 auth-paste-token-from-browser = Click here to paste your token from the browser
-auth-login-slide-title-warp-drive = Get started with Phosphor Drive
+auth-login-slide-title-warp-drive = Get started with Library
 auth-login-slide-title-ai = Get started with AI
 auth-login-slide-subtitle-warp-drive = Connect your account to save and share notebooks, workflows, and more across devices.
 auth-login-slide-subtitle-ai = Connect your account to enable AI-powered planning, coding, and automation.
-auth-disable-warp-drive = Disable Phosphor Drive
+auth-disable-warp-drive = Disable Library
 auth-disable-ai-features = Disable AI features
-auth-enable-warp-drive = Enable Phosphor Drive
+auth-enable-warp-drive = Enable Library
 auth-enable-ai-features = Enable AI features
 auth-browser-sign-in-one-line-title = Sign in on your browser to continue
 auth-open-page-manually-line-prefix = {" "}and open
 auth-open-page-manually-line-suffix = the page manually.
-auth-disable-warp-drive-confirm-title = Are you sure you want to disable Phosphor Drive?
+auth-disable-warp-drive-confirm-title = Are you sure you want to disable Library?
 auth-disable-ai-features-confirm-title = Are you sure you want to disable AI features?
-auth-disable-warp-drive-confirm-body = Phosphor Drive lets you save workflows and knowledge across devices and share them with your team. By continuing, you won't have access to the following features:
+auth-disable-warp-drive-confirm-body = Library lets you save workflows and knowledge on this device. By continuing, you won't have access to the following features:
 auth-disable-ai-features-confirm-body = Phosphor is better with AI. By continuing, you won't have access to any of the following features:
 auth-feature-session-sharing = Session Sharing
 auth-sign-up = Continue locally
@@ -3392,7 +3392,7 @@ auth-skip-login-confirm-line-1 = You can sign up later, but some features, such 
 auth-skip-login-confirm-line-2-prefix = are only available to logged-in users.{" "}
 auth-yes-skip-login = Yes, skip login
 auth-require-login-ai-collaboration = Local AI features do not require a Phosphor account.
-auth-require-login-drive-limit = Phosphor Drive objects are stored locally in Phosphor.
+auth-require-login-drive-limit = Library objects are stored locally in Phosphor.
 auth-require-login-share = Sharing is unavailable in local Phosphor builds.
 auth-welcome-title = Welcome to Phosphor!
 auth-sign-up-for-warp = Continue in Phosphor
@@ -3616,7 +3616,7 @@ workspace-auto-reload = Auto-reload
 workspace-add-new-repo = {" "}+ Add new repo
 workspace-notification-permission-denied-toast = Phosphor doesn't have permission to send desktop notifications.
 workspace-troubleshoot-notifications-link = Troubleshoot notifications
-workspace-plan-synced-to-warp-drive-toast = Plan synced to your Phosphor Drive
+workspace-plan-synced-to-warp-drive-toast = Plan saved to your Library
 workspace-remote-control-link-copied-toast = Remote control link copied.
 workspace-update-now = Update now
 workspace-update-warp = Update Phosphor
