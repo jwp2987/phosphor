@@ -299,6 +299,11 @@ use crate::root_view::{
 };
 pub use crate::server::telemetry::{
     AgentModeEntrypoint, AgentModeEntrypointSelectionType, TelemetryEvent,
+    // Re-exported for `remote_server::codebase_index_model`, which must not
+    // import from `crate::server::` directly (`script/check_cloud_boundary`).
+    // These are telemetry *shapes*, not a cloud dependency --
+    // `send_telemetry_from_ctx!` is already a compiled-out no-op in this fork.
+    RemoteCodebaseAutoIndexTrigger, RemoteCodebaseIndexStatusTelemetrySource,
 };
 use crate::server::telemetry::{AppStartupInfo, CloseTarget, PaletteSource};
 use crate::terminal::CustomSecretRegexUpdater;

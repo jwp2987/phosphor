@@ -39,11 +39,11 @@ use crate::ai::codebase_auto_indexing::{
     should_use_codebase_indexing,
 };
 use crate::code::buffer_location::{core_host_id_to_util, util_host_id_to_core};
-use crate::server::telemetry::{
-    RemoteCodebaseAutoIndexTrigger, RemoteCodebaseIndexStatusTelemetrySource,
-};
 use crate::settings::CodeSettings;
-use crate::{TelemetryEvent, send_telemetry_from_ctx};
+use crate::{
+    RemoteCodebaseAutoIndexTrigger, RemoteCodebaseIndexStatusTelemetrySource, TelemetryEvent,
+    send_telemetry_from_ctx,
+};
 
 /// One daemon-reported status paired with the [`RemotePath`] it describes.
 ///
