@@ -142,6 +142,91 @@ background process group. Fix: launch detached (`nohup setsid ... & disown`) and
 the log with an `until` loop. A killed run can also report "exit code 0" — **read the
 log, never trust the exit code.**
 
+## LANDED 2026-08-10 (late) — five merges, ALL UNBUILT
+
+**Nothing below has been compiled.** Building was frozen by the maintainer
+part-way through, and every agent was correctly barred from cargo. Local `main`
+is 26 commits ahead of origin; the last build-verified commit is `26b04309f`.
+Treat all of this as staged, not validated.
+
+- [x] **Licence compliance** (`b5fea7a86`, six commits A-F). Alacritty
+      attribution restored — **18 files, not 16**: two upstream files were
+      *renamed* not deleted (`grid_handler_tests.rs` → `grid_handler_test.rs`,
+      `cell_tests.rs` → `cell_test.rs`), matched on contents since the rename
+      predates our history. Headers copied per-file, not from a template —
+      `control_sequence_parameters.rs` credits **the vte crate**, not
+      alacritty_terminal. Also README licensing, About-page source offer
+      (AGPL §13), licence CI job, libgit2/winit/genai notices, asset
+      attribution, and trademark de-branding (separable, commit F).
+      **The libgit2 `[licenses.exceptions]` entry was correctly REFUSED**: my
+      brief's premise was wrong — `libgit2-sys` declares MIT so cargo-deny never
+      sees the vendored GPL, upstream ran the same check green, and SPDX has no
+      identifier for libgit2's bespoke linking exception.
+- [x] **`getpwuid_r` panic** (`951be89c4`). Three tiers restored. **Found a
+      SECOND panic the brief missed**: `shell.rs` called
+      `User::from_uid(..).expect(..).expect(..)` directly rather than going
+      through `unix.rs`, so fixing only `unix.rs` would have left the crash.
+- [x] **`all_working_directories` single home** (`9fb1900fd`). Pre-emptive; the
+      duplicate only appears when D2c lands. Named
+      `ai/terminal_working_directories.rs` because
+      `pane_group/working_directories.rs` already exists and is NOT a duplicate.
+- [x] **Scripting page + warpctrl skill** (`242e84af6`). Wired to the EXISTING
+      `LocalControlSettings` group. `FromStr` now accepts `"Scripting"`, so the
+      already-shipped `surface.settings.open --page Scripting` action reaches it.
+- [x] **`crates/lsp` + initial wiring** (`f4e99118a`). Step 1 + part of step 2.
+      **This is not working LSP.**
+
+### Corrections to the parity audit, found by doing the work
+- [x] ~~External-editor Warp-bundle guard absent~~ — **FALSE POSITIVE.** The
+      guard exists as `is_zap_bundle` (`external_editor/mac.rs:367`), is wired at
+      the pin's call site, and both tests were already present. The audit's
+      evidence (`git grep -c is_warp_bundle` → 0) was true but not evidence of
+      absence — the port renamed it. It *did* surface a real bug there: the fork
+      asserted `dev.warp.Zap`, which is not a real bundle id anywhere. Fixed.
+- **Lesson worth keeping:** a zero grep count for a pin identifier proves the
+  *name* is absent, never the *behaviour*. Two audit findings this session were
+  wrong in exactly this way (this one, and `all_working_directories` "exists
+  twice"). Grep for behaviour before filing.
+
+### New, from doing the work — not previously tracked
+- [ ] **`warpctrl` wrapper is never bundled.** `cli_install::warpctrl_bundle_source_path()`
+      expects `Contents/Resources/bin/<warpctrl_command_name>`, and
+      `grep -rn warpctrl script/` returns **nothing**. So the macOS install button
+      errors with "does not contain the expected wrapper" on a locally-built
+      Phosphor, and `{{warpctrl_wrapper_path}}` in the skill points at a missing
+      file. `warpctrl` mode itself still works via the app binary's `--warpctrl`
+      flag. Bundling scripts were off-limits to the agent.
+- [ ] **`tui-migrate-setup` skill — NEEDS MAINTAINER SIGN-OFF (AGENTS §5.10).**
+      Not merely unported: two *existing* DECLINED decisions make it
+      unshippable. It resolves `gui_settings_file_path` against
+      `tui_settings_file_path`, but this fork shares one app id and one
+      `config_local_dir()` between GUI and TUI, so both sides of every pair
+      resolve to the same file — and `warp_core::paths` has no
+      `gui_config_local_dir`/`tui_config_local_dir` at all. It also treats the
+      schema's `x-warp-surfaces` annotation as authoritative, and this fork
+      dropped `SettingSurfaces`, so the generator emits no such annotation.
+- [ ] **Localized `Display` + English-literal `FromStr` on `SettingsSection`**
+      breaks settings-pane persistence round-trips if any `settings-section-*`
+      key is ever translated (`persistence/sqlite.rs:2667`). Pre-existing for
+      every section; the `"Network" | "网络"` arm in `FromStr` suggests someone
+      already hit this once.
+- [ ] **LSP: the `ON DELETE CASCADE` guard arm is still outstanding.** The LSP
+      agent chose CASCADE (verified `PRAGMA foreign_keys = ON` is per-connection)
+      but argued correctly that **CASCADE does not close the guard out** — they
+      fix different halves. CASCADE makes the orphan state unrepresentable;
+      the pin's guard preserves the *user's choice* by keeping the workspace row
+      alive, which CASCADE deletes. Both are needed for parity.
+
+### Immediate follow-ups when building resumes
+1. **Regenerate `Cargo.lock`** — `lsp-types 0.97.0` and `fluent-uri 0.1.4` are
+   new and unlocked. `--locked` builds fail until an unlocked build runs.
+2. **Expect `cargo deny` to reject those two deps.** The licence job is new and
+   has never run; `deny.toml` was off-limits to the LSP agent.
+3. Highest residual compile risks, per the agents' own ranking: the About-page
+   element-tree code (licence B, new and untypechecked), the macOS-only
+   `install_warpctrl` widget, and `app_menus.rs` in D1 (macOS-gated, will not
+   compile on this host or in Linux CI).
+
 ## LSP TRACK (opened 2026-08-10, maintainer verdict: RESTORE)
 
 Was the largest item with no home — removed deliberately by `efcaa42b8` and
