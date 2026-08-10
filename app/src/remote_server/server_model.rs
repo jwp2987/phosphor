@@ -32,6 +32,41 @@ use super::proto::{
     SessionScopedRequest, UnsubscribeDiffState, WriteFile, WriteFileResponse, WriteFileSuccess,
 };
 
+// Remote codebase indexing (Delta D2, remote-daemon leg). Gated `local_fs`
+// because the daemon's index manager is: it walks the host's filesystem and
+// stores its snapshots and vectors there.
+#[cfg(feature = "local_fs")]
+use super::codebase_index_status::{
+    codebase_index_status_to_proto, disabled_codebase_index_status,
+    not_enabled_codebase_index_status, queued_codebase_index_status,
+    unavailable_codebase_index_status,
+};
+#[cfg(feature = "local_fs")]
+use super::codebase_index_store::daemon_store_client;
+#[cfg(feature = "local_fs")]
+use super::proto::{
+    get_fragment_metadata_from_hash_response, CodebaseIndexLimits, CodebaseIndexStatus,
+    CodebaseIndexStatusUpdated, CodebaseIndexStatusesSnapshot, CodebaseResyncMode,
+    DropCodebaseIndex, FragmentMetadata as ProtoFragmentMetadata,
+    FragmentMetadataLookupError as ProtoFragmentMetadataLookupError,
+    FragmentMetadataLookupErrorCode, GetFragmentMetadataFromHash,
+    GetFragmentMetadataFromHashResponse, GetFragmentMetadataFromHashSuccess, IndexCodebase,
+    MissingFragmentMetadata, ResyncCodebase, UpdatePreferences,
+};
+#[cfg(feature = "local_fs")]
+use crate::ai::agent_providers::embeddings::EmbeddingEndpoint;
+#[cfg(feature = "local_fs")]
+use ::ai::index::full_source_code_embedding::manager::{
+    CodebaseIndexManager, CodebaseIndexManagerEvent,
+    FragmentMetadataLookupError as LocalFragmentMetadataLookupError,
+};
+#[cfg(feature = "local_fs")]
+use ::ai::index::full_source_code_embedding::{
+    ContentHash, EmbeddingConfig, FragmentMetadata as LocalFragmentMetadata, NodeHash,
+};
+#[cfg(feature = "local_fs")]
+use warp_core::features::FeatureFlag;
+
 // Remote Agent Mode context snapshot (#438 dependent feature 1, #353 producer): depends
 // on `SkillManager`'s real (non-dummy) API, gated `local_fs` like the buffer-sync imports
 // below.
@@ -452,6 +487,18 @@ pub struct ServerModel {
     /// intentionally retained across proxy connection teardown and cleared
     /// only by daemon process exit.
     auth_token: Option<String>,
+    /// Whether a `CodebaseIndexManager` singleton exists in this process.
+    ///
+    /// `ServerModel` is constructed both by `run_daemon_app` (where the manager
+    /// is registered first) and by tests and the integration harness (where it
+    /// is not). `CodebaseIndexManager::handle(ctx)` panics on an unregistered
+    /// singleton — this fork has already shipped that panic once, for
+    /// `GlobalBufferModel` and once for `WarpManagedPathsWatcher`, see the
+    /// registration comments in `mod.rs` — so every codebase-index path checks
+    /// this flag first. Captured once in `new`, because registration order is
+    /// fixed by then and cannot change underneath us.
+    #[cfg(feature = "local_fs")]
+    codebase_indexing_available: bool,
     /// Live git watches backing granular per-file diff-state pushes (#577),
     /// keyed by repository root — one watch per repo, shared by every
     /// `(repo, mode)` subscription on it, since the filesystem events do not
@@ -527,6 +574,8 @@ impl ServerModel {
             #[cfg(feature = "local_fs")]
             remote_agent_context_snapshot_sent: HashSet::new(),
             auth_token: None,
+            #[cfg(feature = "local_fs")]
+            codebase_indexing_available: ctx.has_singleton_model::<CodebaseIndexManager>(),
             #[cfg(feature = "local_fs")]
             diff_state_watches: HashMap::new(),
             #[cfg(feature = "local_fs")]
@@ -884,6 +933,22 @@ impl ServerModel {
                  bundled skills unavailable on this host"
             );
         }
+        // Codebase-index status pushes (Delta D2). Guarded rather than assumed:
+        // `ServerModel::new` also runs under tests and the integration harness,
+        // where no `CodebaseIndexManager` is registered and
+        // `CodebaseIndexManager::handle` would panic.
+        #[cfg(feature = "local_fs")]
+        if model.codebase_indexing_available {
+            let index_manager = CodebaseIndexManager::handle(ctx);
+            ctx.subscribe_to_model(&index_manager, |me, event, ctx| {
+                me.handle_codebase_index_manager_event(event, ctx);
+            });
+        } else {
+            log::info!(
+                "Daemon has no CodebaseIndexManager singleton; remote codebase \
+                 indexing is inert in this process"
+            );
+        }
         // Start the grace timer immediately so the daemon exits if no proxy
         // connects within GRACE_PERIOD. In practice the spawning proxy connects
         // within milliseconds, so the risk of premature shutdown is negligible;
@@ -957,6 +1022,10 @@ impl ServerModel {
             .insert(conn_id, HashSet::new());
         #[cfg(feature = "local_fs")]
         self.send_remote_agent_context_snapshot_to_connection(conn_id);
+        // Bootstrap the new proxy with what this host already has indexed, so a
+        // reconnecting client does not have to poll for it.
+        #[cfg(feature = "local_fs")]
+        self.push_codebase_index_statuses_snapshot(conn_id, ctx);
         ctx.notify();
     }
 
@@ -1108,6 +1177,25 @@ impl ServerModel {
                     Some(host_scoped_request::Message::WriteFileChunk(msg)) => {
                         self.handle_write_file_chunk(msg)
                     }
+                    // Remote codebase indexing (Delta D2). `local_fs` for the
+                    // same reason as buffer syncing: the daemon's index manager
+                    // walks and stores on the host's filesystem.
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::IndexCodebase(msg)) => {
+                        self.handle_index_codebase(msg, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::ResyncCodebase(msg)) => {
+                        self.handle_resync_codebase(msg, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::DropCodebaseIndex(msg)) => {
+                        self.handle_drop_codebase_index(msg, &request_id, conn_id, ctx)
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::GetFragmentMetadataFromHash(msg)) => {
+                        self.handle_get_fragment_metadata_from_hash(msg, &request_id, conn_id, ctx)
+                    }
                     #[cfg(not(feature = "local_fs"))]
                     Some(
                         host_scoped_request::Message::SaveBuffer(_)
@@ -1120,6 +1208,16 @@ impl ServerModel {
                     ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
                         code: ErrorCode::InvalidRequest.into(),
                         message: "Buffer syncing requires the local_fs feature".to_string(),
+                    })),
+                    #[cfg(not(feature = "local_fs"))]
+                    Some(
+                        host_scoped_request::Message::IndexCodebase(_)
+                        | host_scoped_request::Message::ResyncCodebase(_)
+                        | host_scoped_request::Message::DropCodebaseIndex(_)
+                        | host_scoped_request::Message::GetFragmentMetadataFromHash(_),
+                    ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                        code: ErrorCode::InvalidRequest.into(),
+                        message: "Codebase indexing requires the local_fs feature".to_string(),
                     })),
                     None => {
                         log::warn!(
@@ -1136,7 +1234,7 @@ impl ServerModel {
             Some(client_message::Message::SessionScoped(SessionScopedRequest { message })) => {
                 match message {
                     Some(session_scoped_request::Message::Initialize(msg)) => {
-                        self.handle_initialize(msg, &request_id)
+                        self.handle_initialize(msg, &request_id, ctx)
                     }
                     Some(session_scoped_request::Message::NavigatedToDirectory(msg)) => {
                         self.handle_navigated_to_directory(msg, &request_id, conn_id, ctx)
@@ -1200,6 +1298,19 @@ impl ServerModel {
                     Some(notification::Message::UnsubscribeDiffState(msg)) => {
                         self.handle_unsubscribe_diff_state(msg, conn_id, ctx);
                         return; // fire-and-forget notification
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(notification::Message::UpdatePreferences(msg)) => {
+                        self.handle_update_preferences(msg, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    // Without `local_fs` there is nothing to configure: the
+                    // daemon cannot index. Dropping it is correct here (unlike
+                    // the buffer-sync case below) because the client expects no
+                    // state change it could be left waiting on.
+                    #[cfg(not(feature = "local_fs"))]
+                    Some(notification::Message::UpdatePreferences(_)) => {
+                        return;
                     }
                     // Notifications carry no response contract, but buffer
                     // syncing is unavailable without `local_fs` — mirror the
@@ -1388,10 +1499,25 @@ impl ServerModel {
     /// deployed builds. The client treats an empty version as "unknown" and
     /// skips strict version enforcement, which keeps the
     /// `script/deploy_remote_server` developer workflow functional.
-    fn handle_initialize(&mut self, msg: Initialize, request_id: &RequestId) -> HandlerOutcome {
+    fn handle_initialize(
+        &mut self,
+        msg: Initialize,
+        request_id: &RequestId,
+        #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))] ctx: &mut ModelContext<
+            Self,
+        >,
+    ) -> HandlerOutcome {
         log::info!("Handling Initialize (request_id={request_id})");
         if !msg.auth_token.is_empty() {
             self.auth_token = Some(msg.auth_token);
+        }
+        // Configure indexing before answering: the client may send an
+        // `IndexCodebase` immediately after the handshake, and it must not
+        // race an unconfigured store client.
+        #[cfg(feature = "local_fs")]
+        {
+            Self::apply_embedding_provider(msg.embedding_provider.as_ref());
+            self.apply_codebase_index_limits(msg.codebase_index_limits.as_ref(), ctx);
         }
         let server_version = ChannelState::app_version().unwrap_or("").to_string();
         HandlerOutcome::Sync(server_message::Message::InitializeResponse(
@@ -1400,6 +1526,577 @@ impl ServerModel {
                 host_id: self.host_id.clone(),
             },
         ))
+    }
+
+    // ── Remote codebase indexing (Delta D2, remote-daemon leg) ────────────
+    //
+    // Ported from `02b53fcd8:app/src/remote_server/server_model.rs`. Two
+    // differences run through the whole block:
+    //
+    //  * Every guard also checks `self.codebase_indexing_available`, because
+    //    this fork constructs `ServerModel` in processes with no
+    //    `CodebaseIndexManager` singleton, where the pin's unconditional
+    //    `CodebaseIndexManager::handle(ctx)` would panic.
+    //  * The pin authenticated each request against a Warp bearer token
+    //    (`validate_remote_codebase_index_auth`). There is no such credential
+    //    here; the daemon is configured once with the user's own embedding
+    //    endpoint, so the equivalent precondition is "an embedding provider has
+    //    been configured", checked by `codebase_indexing_ready`.
+
+    /// Whether this process can actually index: the manager exists, the feature
+    /// flag is on, and a client has supplied an embedding endpoint.
+    #[cfg(feature = "local_fs")]
+    fn codebase_indexing_ready(&self) -> Result<(), String> {
+        if !self.codebase_indexing_available {
+            return Err("This host's daemon was built without codebase indexing".to_string());
+        }
+        if !FeatureFlag::RemoteCodebaseIndexing.is_enabled() {
+            return Err("Remote codebase indexing is not enabled".to_string());
+        }
+        match daemon_store_client() {
+            Some(client) if client.is_configured() => Ok(()),
+            Some(_) => Err(
+                "No embedding provider has been configured for this host; add one under \
+                 Settings > AI on the client"
+                    .to_string(),
+            ),
+            None => Err("This host's daemon has no codebase index store".to_string()),
+        }
+    }
+
+    /// Applies an `EmbeddingProviderConfig` from `Initialize` /
+    /// `UpdatePreferences` to the daemon's store client.
+    ///
+    /// An absent or unparseable config clears the endpoint rather than leaving
+    /// a stale one: continuing to embed against a model the user has removed
+    /// would write vectors under a storage key nothing will ever query.
+    #[cfg(feature = "local_fs")]
+    fn apply_embedding_provider(config: Option<&super::proto::EmbeddingProviderConfig>) {
+        let Some(store_client) = daemon_store_client() else {
+            return;
+        };
+        let Some(config) = config else {
+            log::info!(
+                "[Remote codebase indexing] Client supplied no embedding provider; \
+                 clearing the daemon's endpoint"
+            );
+            store_client.configure(None, None);
+            return;
+        };
+        let Some(embedding_config) =
+            EmbeddingConfig::from_storage_key(&config.embedding_storage_key)
+        else {
+            log::warn!(
+                "[Remote codebase indexing] Unrecognized embedding storage key {:?}; \
+                 clearing the daemon's endpoint rather than guessing a model",
+                config.embedding_storage_key
+            );
+            store_client.configure(None, None);
+            return;
+        };
+        log::info!(
+            "[Remote codebase indexing] Daemon configured for embedding model {}",
+            embedding_config.storage_key()
+        );
+        store_client.configure(
+            Some(EmbeddingEndpoint {
+                base_url: config.base_url.clone(),
+                api_key: config.api_key.clone(),
+            }),
+            Some(embedding_config),
+        );
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn handle_codebase_index_manager_event(
+        &mut self,
+        event: &CodebaseIndexManagerEvent,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !FeatureFlag::RemoteCodebaseIndexing.is_enabled() {
+            return;
+        }
+
+        match event {
+            CodebaseIndexManagerEvent::SyncStateUpdated { root_path }
+            | CodebaseIndexManagerEvent::NewIndexCreated { root_path } => {
+                self.push_codebase_index_status(&root_path.clone(), ctx);
+            }
+            CodebaseIndexManagerEvent::RemoveExpiredIndexMetadata { expired_metadata } => {
+                for repo_path in expired_metadata.iter() {
+                    self.push_codebase_index_status_update(disabled_codebase_index_status(
+                        repo_path.to_string_lossy().to_string(),
+                    ));
+                }
+            }
+            CodebaseIndexManagerEvent::RetrievalRequestCompleted { .. }
+            | CodebaseIndexManagerEvent::RetrievalRequestFailed { .. }
+            | CodebaseIndexManagerEvent::IndexMetadataUpdated { .. } => {}
+        }
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn push_codebase_index_status(&mut self, repo_path: &Path, ctx: &mut ModelContext<Self>) {
+        let Some(status) = self.codebase_index_status(repo_path, ctx) else {
+            return;
+        };
+        self.push_codebase_index_status_update(status);
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn push_codebase_index_status_update(&mut self, status: CodebaseIndexStatus) {
+        self.send_server_message(
+            None,
+            None,
+            server_message::Message::CodebaseIndexStatusUpdated(CodebaseIndexStatusUpdated {
+                status: Some(status),
+            }),
+        );
+    }
+
+    /// Pushes the daemon's whole status table to a freshly-connected proxy, so
+    /// a reconnecting client learns what this host already has without polling.
+    #[cfg(feature = "local_fs")]
+    fn push_codebase_index_statuses_snapshot(
+        &mut self,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.codebase_indexing_available || !FeatureFlag::RemoteCodebaseIndexing.is_enabled() {
+            log::info!(
+                "[Remote codebase indexing] Daemon skipping bootstrap codebase index statuses \
+                 snapshot because remote indexing is unavailable: conn_id={conn_id}"
+            );
+            return;
+        }
+        let snapshot = self.codebase_index_statuses_snapshot(ctx);
+        let status_count = snapshot.statuses.len();
+        log::debug!(
+            "[Remote codebase indexing] Daemon pushing bootstrap codebase index statuses \
+             snapshot: conn_id={conn_id} bootstrap_status_count={status_count}"
+        );
+        self.send_server_message(
+            Some(conn_id),
+            None,
+            server_message::Message::CodebaseIndexStatusesSnapshot(snapshot),
+        );
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn codebase_index_statuses_snapshot(
+        &self,
+        ctx: &mut ModelContext<Self>,
+    ) -> CodebaseIndexStatusesSnapshot {
+        let index_manager = CodebaseIndexManager::handle(ctx);
+        let statuses = index_manager
+            .as_ref(ctx)
+            .get_codebase_index_statuses(ctx)
+            .map(|(repo_path, status)| codebase_index_status_to_proto(repo_path.as_path(), &status))
+            .collect();
+        CodebaseIndexStatusesSnapshot { statuses }
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn codebase_index_status(
+        &self,
+        repo_path: &Path,
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<CodebaseIndexStatus> {
+        if !self.codebase_indexing_available {
+            return None;
+        }
+        let index_manager = CodebaseIndexManager::handle(ctx);
+        index_manager
+            .as_ref(ctx)
+            .get_codebase_index_status_for_path(repo_path, ctx)
+            .map(|status| codebase_index_status_to_proto(repo_path, &status))
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn handle_index_codebase(
+        &mut self,
+        msg: IndexCodebase,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        let repo_path = match self.prepare_codebase_index_request(
+            "IndexCodebase",
+            msg.repo_path,
+            CodebaseIndexRequestPathKind::Canonicalized,
+            request_id,
+            conn_id,
+        ) {
+            Ok(repo_path) => repo_path,
+            Err(outcome) => return *outcome,
+        };
+        let status = CodebaseIndexManager::handle(ctx).update(ctx, |manager, ctx| {
+            manager.with_indexed_codebase(
+                &repo_path,
+                |manager, indexed_repo_path, ctx| {
+                    Self::current_codebase_index_status_or_queued(manager, indexed_repo_path, ctx)
+                },
+                |manager, repo_path, ctx| {
+                    if !manager.is_indexing_enabled() {
+                        log::info!(
+                            "[Remote codebase indexing] Daemon cannot start IndexCodebase because \
+                             indexing is disabled: repo_path={}",
+                            repo_path.display()
+                        );
+                        not_enabled_codebase_index_status(repo_path.to_string_lossy().to_string())
+                    } else if !manager.can_create_new_indices() {
+                        let failure_message = "Cannot index remote codebase because the maximum \
+                                               number of codebase indexes has been reached."
+                            .to_string();
+                        log::warn!(
+                            "[Remote codebase indexing] Daemon cannot start IndexCodebase: \
+                             repo_path={} reason={failure_message}",
+                            repo_path.display()
+                        );
+                        unavailable_codebase_index_status(
+                            repo_path.to_string_lossy().to_string(),
+                            failure_message,
+                        )
+                    } else if manager.index_directory(repo_path.to_path_buf(), ctx) {
+                        Self::current_codebase_index_status_or_queued(manager, repo_path, ctx)
+                    } else {
+                        let failure_message =
+                            "Cannot index remote codebase because indexing did not start."
+                                .to_string();
+                        log::warn!(
+                            "[Remote codebase indexing] Daemon cannot start IndexCodebase: \
+                             repo_path={} reason={failure_message}",
+                            repo_path.display()
+                        );
+                        unavailable_codebase_index_status(
+                            repo_path.to_string_lossy().to_string(),
+                            failure_message,
+                        )
+                    }
+                },
+                ctx,
+            )
+        });
+
+        codebase_index_status_response(status)
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn handle_resync_codebase(
+        &mut self,
+        msg: ResyncCodebase,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        let ResyncCodebase { repo_path, mode } = msg;
+        let mode = match CodebaseResyncMode::try_from(mode) {
+            Ok(mode) => mode,
+            Err(_) => {
+                return invalid_request_response(format!("Invalid ResyncCodebase mode: {mode}"));
+            }
+        };
+        let repo_path = match self.prepare_codebase_index_request(
+            "ResyncCodebase",
+            repo_path,
+            CodebaseIndexRequestPathKind::Canonicalized,
+            request_id,
+            conn_id,
+        ) {
+            Ok(repo_path) => repo_path,
+            Err(outcome) => return *outcome,
+        };
+        let status = CodebaseIndexManager::handle(ctx).update(ctx, |manager, ctx| {
+            manager.with_indexed_codebase(
+                &repo_path,
+                |manager, indexed_repo_path, ctx| {
+                    match mode {
+                        CodebaseResyncMode::Full => {
+                            manager.try_manual_resync_codebase(indexed_repo_path, ctx);
+                        }
+                        CodebaseResyncMode::Incremental => {
+                            if let Err(error) =
+                                manager.trigger_incremental_sync_for_path(indexed_repo_path, ctx)
+                            {
+                                log::warn!(
+                                    "Failed to trigger remote codebase incremental sync: \
+                                     repo_path={} error={error}",
+                                    indexed_repo_path.display()
+                                );
+                            }
+                        }
+                    }
+                    Self::current_codebase_index_status_or_queued(manager, indexed_repo_path, ctx)
+                },
+                |_, repo_path, _| {
+                    unavailable_codebase_index_status(
+                        repo_path.to_string_lossy().to_string(),
+                        "Cannot resync remote codebase because it has not been indexed."
+                            .to_string(),
+                    )
+                },
+                ctx,
+            )
+        });
+
+        codebase_index_status_response(status)
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn current_codebase_index_status_or_queued(
+        manager: &CodebaseIndexManager,
+        indexed_repo_path: &Path,
+        ctx: &mut ModelContext<CodebaseIndexManager>,
+    ) -> CodebaseIndexStatus {
+        manager
+            .get_codebase_index_status_for_path(indexed_repo_path, ctx)
+            .map(|status| codebase_index_status_to_proto(indexed_repo_path, &status))
+            .unwrap_or_else(|| {
+                queued_codebase_index_status(indexed_repo_path.to_string_lossy().to_string())
+            })
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn handle_drop_codebase_index(
+        &mut self,
+        msg: DropCodebaseIndex,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        let repo_path = match self.prepare_codebase_index_request(
+            "DropCodebaseIndex",
+            msg.repo_path,
+            // Dropping uses the path as asked for, not the canonicalized one:
+            // a repository that has been deleted or unmounted can still be
+            // dropped from the index.
+            CodebaseIndexRequestPathKind::Requested,
+            request_id,
+            conn_id,
+        ) {
+            Ok(repo_path) => repo_path,
+            Err(outcome) => return *outcome,
+        };
+        CodebaseIndexManager::handle(ctx).update(ctx, |manager, ctx| {
+            manager.drop_index(repo_path.clone(), ctx);
+        });
+
+        codebase_index_status_response(disabled_codebase_index_status(
+            repo_path.to_string_lossy().to_string(),
+        ))
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn handle_get_fragment_metadata_from_hash(
+        &self,
+        msg: GetFragmentMetadataFromHash,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        log::info!(
+            "[Remote codebase indexing] Daemon handling GetFragmentMetadataFromHash: \
+             request_id={request_id} conn_id={conn_id} repo_path={} root_hash={} hash_count={}",
+            msg.repo_path,
+            msg.root_hash,
+            msg.content_hashes.len()
+        );
+
+        if let Err(message) = self.codebase_indexing_ready() {
+            return fragment_metadata_lookup_error_response(
+                FragmentMetadataLookupErrorCode::RemoteCodebaseIndexingNotEnabled,
+                message,
+                None,
+            );
+        }
+
+        let repo_path = match canonicalize_index_repo_path(&msg.repo_path) {
+            Ok(repo_path) => repo_path,
+            Err(error) => {
+                return fragment_metadata_lookup_error_response(
+                    FragmentMetadataLookupErrorCode::InvalidRepoPath,
+                    error,
+                    None,
+                );
+            }
+        };
+        let root_hash = match msg.root_hash.parse::<NodeHash>() {
+            Ok(root_hash) => root_hash,
+            Err(error) => {
+                return fragment_metadata_lookup_error_response(
+                    FragmentMetadataLookupErrorCode::InvalidRootHash,
+                    format!("Invalid root_hash: {error}"),
+                    None,
+                );
+            }
+        };
+        if let Err(error) = self.validate_fragment_metadata_lookup(&repo_path, &root_hash, ctx) {
+            return fragment_metadata_lookup_error_response_from_error(error);
+        }
+
+        let mut valid_hashes = Vec::new();
+        let mut missing_hashes = Vec::new();
+        for content_hash in msg.content_hashes {
+            match content_hash.parse::<ContentHash>() {
+                Ok(parsed_hash) => valid_hashes.push((content_hash, parsed_hash)),
+                Err(error) => missing_hashes.push(missing_fragment_metadata(
+                    content_hash,
+                    format!("Invalid content hash: {error}"),
+                )),
+            }
+        }
+
+        let content_hashes = valid_hashes
+            .iter()
+            .map(|(_, hash)| hash.clone())
+            .collect::<Vec<_>>();
+        let metadata_by_hash = match CodebaseIndexManager::handle(ctx)
+            .as_ref(ctx)
+            .fragment_metadatas_from_hashes(&repo_path, &root_hash, &content_hashes, ctx)
+        {
+            Ok(metadata_by_hash) => metadata_by_hash,
+            Err(error) => {
+                return fragment_metadata_lookup_error_response_from_error(error);
+            }
+        };
+
+        let mut fragments = Vec::new();
+        for (content_hash_string, content_hash) in valid_hashes {
+            match metadata_by_hash.get(&content_hash) {
+                Some(metadata) => {
+                    fragments.extend(
+                        metadata
+                            .iter()
+                            .map(|metadata| fragment_metadata_to_proto(&content_hash, metadata)),
+                    );
+                }
+                None => missing_hashes.push(missing_fragment_metadata(
+                    content_hash_string,
+                    "No fragment metadata found for content hash".to_string(),
+                )),
+            }
+        }
+
+        HandlerOutcome::Sync(
+            server_message::Message::GetFragmentMetadataFromHashResponse(
+                GetFragmentMetadataFromHashResponse {
+                    result: Some(get_fragment_metadata_from_hash_response::Result::Success(
+                        GetFragmentMetadataFromHashSuccess {
+                            fragments,
+                            missing_hashes,
+                        },
+                    )),
+                },
+            ),
+        )
+    }
+
+    #[cfg(feature = "local_fs")]
+    fn validate_fragment_metadata_lookup(
+        &self,
+        repo_path: &Path,
+        root_hash: &NodeHash,
+        ctx: &mut ModelContext<Self>,
+    ) -> Result<(), LocalFragmentMetadataLookupError> {
+        let Some(status) = CodebaseIndexManager::handle(ctx)
+            .as_ref(ctx)
+            .get_codebase_index_status_for_path(repo_path, ctx)
+        else {
+            return Err(LocalFragmentMetadataLookupError::IndexNotFound);
+        };
+        if !status.has_synced_version() {
+            return Err(LocalFragmentMetadataLookupError::IndexNotSynced);
+        }
+        let Some(current_root_hash) = status.root_hash() else {
+            return Err(LocalFragmentMetadataLookupError::IndexNotSynced);
+        };
+        if current_root_hash != root_hash {
+            return Err(LocalFragmentMetadataLookupError::RootHashMismatch {
+                requested: root_hash.clone(),
+                current: current_root_hash.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Validates the shared preconditions of `IndexCodebase`, `ResyncCodebase`
+    /// and `DropCodebaseIndex`, returning the resolved repository path.
+    #[cfg(feature = "local_fs")]
+    fn prepare_codebase_index_request(
+        &self,
+        operation_name: &str,
+        repo_path: String,
+        path_kind: CodebaseIndexRequestPathKind,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+    ) -> Result<PathBuf, Box<HandlerOutcome>> {
+        let repo_path_for_log = repo_path.clone();
+        if let Err(message) = self.codebase_indexing_ready() {
+            log::info!(
+                "[Remote codebase indexing] Daemon rejecting {operation_name}: \
+                 request_id={request_id} conn_id={conn_id} repo_path={repo_path_for_log} \
+                 reason={message}"
+            );
+            return Err(Box::new(codebase_index_status_response(
+                not_enabled_codebase_index_status(repo_path),
+            )));
+        }
+
+        let repo_path = match path_kind {
+            CodebaseIndexRequestPathKind::Canonicalized => canonicalize_index_repo_path(&repo_path),
+            CodebaseIndexRequestPathKind::Requested => requested_repo_path(&repo_path),
+        }
+        .map_err(|error| Box::new(invalid_request_response(error)))?;
+
+        log::info!(
+            "[Remote codebase indexing] Daemon handling {operation_name}: \
+             request_id={request_id} conn_id={conn_id} repo_path={repo_path_for_log}"
+        );
+        Ok(repo_path)
+    }
+
+    /// Applies client-resolved index limits, so a remote index obeys the same
+    /// caps as a local one.
+    #[cfg(feature = "local_fs")]
+    fn apply_codebase_index_limits(
+        &self,
+        limits: Option<&CodebaseIndexLimits>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.codebase_indexing_available {
+            return;
+        }
+        let Some(limits) = limits else {
+            return;
+        };
+        let max_indices_allowed = limits.max_indices_allowed.map(|limit| limit as usize);
+        let max_files_per_repo = usize::try_from(limits.max_files_per_repo).unwrap_or(usize::MAX);
+        let embedding_generation_batch_size =
+            usize::try_from(limits.embedding_generation_batch_size).unwrap_or(usize::MAX);
+
+        log::info!(
+            "[Remote codebase indexing] Daemon applying codebase index limits: \
+             max_indices_allowed={max_indices_allowed:?} max_files_per_repo={max_files_per_repo} \
+             embedding_generation_batch_size={embedding_generation_batch_size}"
+        );
+        CodebaseIndexManager::handle(ctx).update(ctx, |manager, ctx| {
+            manager.update_max_limits(
+                max_indices_allowed,
+                max_files_per_repo,
+                embedding_generation_batch_size,
+                ctx,
+            );
+        });
+    }
+
+    /// Handles `UpdatePreferences`. This is a notification — no response is
+    /// sent.
+    #[cfg(feature = "local_fs")]
+    fn handle_update_preferences(&mut self, msg: UpdatePreferences, ctx: &mut ModelContext<Self>) {
+        log::info!("Handling UpdatePreferences");
+        Self::apply_embedding_provider(msg.embedding_provider.as_ref());
+        self.apply_codebase_index_limits(msg.codebase_index_limits.as_ref(), ctx);
     }
 
     /// Handles `Authenticate` by replacing the daemon-wide credential.
@@ -3615,6 +4312,129 @@ fn file_context_result_to_proto(result: ReadFileContextResult) -> ReadFileContex
     ReadFileContextResponse {
         file_contexts,
         failed_files,
+    }
+}
+
+// ── Remote codebase indexing helpers (Delta D2) ───────────────────────────
+//
+// Ported verbatim from `02b53fcd8:app/src/remote_server/server_model.rs`
+// except where noted.
+
+/// Whether a codebase-index request's path should be canonicalized against the
+/// filesystem, or taken as the client asked for it.
+#[cfg(feature = "local_fs")]
+#[derive(Clone, Copy)]
+enum CodebaseIndexRequestPathKind {
+    Canonicalized,
+    Requested,
+}
+
+/// A malformed request. Shares the shape every other handler in this file uses
+/// for `ErrorCode::InvalidRequest`; extracted because the codebase-index
+/// handlers need it from three places.
+#[cfg(feature = "local_fs")]
+fn invalid_request_response(message: String) -> HandlerOutcome {
+    HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+        code: ErrorCode::InvalidRequest.into(),
+        message,
+    }))
+}
+
+#[cfg(feature = "local_fs")]
+fn codebase_index_status_response(status: CodebaseIndexStatus) -> HandlerOutcome {
+    HandlerOutcome::Sync(server_message::Message::CodebaseIndexStatusUpdated(
+        CodebaseIndexStatusUpdated {
+            status: Some(status),
+        },
+    ))
+}
+
+#[cfg(feature = "local_fs")]
+fn requested_repo_path(repo_path: &str) -> Result<PathBuf, String> {
+    if repo_path.is_empty() {
+        return Err("repo_path is required".to_string());
+    }
+    StandardizedPath::from_local_canonicalized(Path::new(repo_path))
+        .map(|path| path.to_local_path_lossy())
+        .map_err(|error| format!("Invalid repo_path {repo_path}: {error}"))
+}
+
+#[cfg(feature = "local_fs")]
+fn canonicalize_index_repo_path(repo_path: &str) -> Result<PathBuf, String> {
+    requested_repo_path(repo_path)?;
+    let standardized_path = StandardizedPath::from_local_canonicalized(Path::new(repo_path))
+        .map_err(|error| format!("Invalid repo_path {repo_path}: {error}"))?;
+    Ok(standardized_path
+        .to_local_path()
+        .unwrap_or_else(|| standardized_path.to_local_path_lossy()))
+}
+
+#[cfg(feature = "local_fs")]
+fn missing_fragment_metadata(content_hash: String, message: String) -> MissingFragmentMetadata {
+    MissingFragmentMetadata {
+        content_hash,
+        error: Some(FileOperationError { message }),
+    }
+}
+
+#[cfg(feature = "local_fs")]
+fn fragment_metadata_lookup_error_response(
+    code: FragmentMetadataLookupErrorCode,
+    message: String,
+    current_root_hash: Option<String>,
+) -> HandlerOutcome {
+    HandlerOutcome::Sync(
+        server_message::Message::GetFragmentMetadataFromHashResponse(
+            GetFragmentMetadataFromHashResponse {
+                result: Some(get_fragment_metadata_from_hash_response::Result::Error(
+                    ProtoFragmentMetadataLookupError {
+                        code: code.into(),
+                        message,
+                        current_root_hash,
+                    },
+                )),
+            },
+        ),
+    )
+}
+
+#[cfg(feature = "local_fs")]
+fn fragment_metadata_lookup_error_response_from_error(
+    error: LocalFragmentMetadataLookupError,
+) -> HandlerOutcome {
+    let (code, message, current_root_hash) = match error {
+        LocalFragmentMetadataLookupError::IndexNotFound => (
+            FragmentMetadataLookupErrorCode::IndexNotFound,
+            "Codebase index not found".to_string(),
+            None,
+        ),
+        LocalFragmentMetadataLookupError::IndexNotSynced => (
+            FragmentMetadataLookupErrorCode::IndexNotSynced,
+            "Codebase index has no synced root hash".to_string(),
+            None,
+        ),
+        LocalFragmentMetadataLookupError::RootHashMismatch { requested, current } => (
+            FragmentMetadataLookupErrorCode::RootHashMismatch,
+            format!("Codebase index root hash mismatch: requested {requested}, current {current}"),
+            Some(current.to_string()),
+        ),
+    };
+
+    fragment_metadata_lookup_error_response(code, message, current_root_hash)
+}
+
+#[cfg(feature = "local_fs")]
+fn fragment_metadata_to_proto(
+    content_hash: &ContentHash,
+    metadata: &LocalFragmentMetadata,
+) -> ProtoFragmentMetadata {
+    ProtoFragmentMetadata {
+        content_hash: content_hash.to_string(),
+        path: metadata.absolute_path.to_string_lossy().to_string(),
+        start_line: metadata.location.start_line as u32,
+        end_line: metadata.location.end_line as u32,
+        byte_start: metadata.location.byte_range.start.as_usize() as u64,
+        byte_end: metadata.location.byte_range.end.as_usize() as u64,
     }
 }
 

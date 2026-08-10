@@ -327,6 +327,47 @@ pub fn active_embedding_config(app: &AppContext) -> EmbeddingConfig {
     resolve_configured_embedding_model(app).unwrap_or_default()
 }
 
+/// What a remote-server daemon needs to index a repository on its own host:
+/// the same limits the local index obeys, plus the user's embedding endpoint.
+///
+/// This is where the fork's BYOP substitution shows up on the wire. The pin
+/// sent the daemon a Warp bearer token and let it reach the shared store; there
+/// is no shared store here, so the daemon is given the endpoint directly. It is
+/// resolved on this side because only the client has the settings and the
+/// keychain.
+///
+/// Returns `embedding_provider: None` when nothing is configured — deliberately
+/// not a default, because a daemon that embedded a whole repository against a
+/// model the user never chose would produce vectors under a storage key nothing
+/// queries.
+#[cfg(not(target_family = "wasm"))]
+pub fn remote_client_preferences(app: &AppContext) -> remote_server::client::ClientPreferences {
+    use crate::ai::agent_providers::embeddings::resolve_embedding_endpoint;
+    use crate::ai::AIRequestUsageModel;
+
+    let limits = AIRequestUsageModel::as_ref(app).codebase_context_limits();
+    let codebase_index_limits = Some(remote_server::proto::CodebaseIndexLimits {
+        max_indices_allowed: limits.max_indices_allowed.map(|value| value as u64),
+        max_files_per_repo: limits.max_files_per_repo as u64,
+        embedding_generation_batch_size: limits.embedding_generation_batch_size as u64,
+    });
+
+    let embedding_provider = resolve_configured_embedding_model(app).and_then(|config| {
+        resolve_embedding_endpoint(app, config).map(|endpoint| {
+            remote_server::proto::EmbeddingProviderConfig {
+                base_url: endpoint.base_url,
+                api_key: endpoint.api_key,
+                embedding_storage_key: config.storage_key().to_string(),
+            }
+        })
+    });
+
+    remote_server::client::ClientPreferences {
+        codebase_index_limits,
+        embedding_provider,
+    }
+}
+
 #[cfg(test)]
 #[path = "codebase_embeddings_tests.rs"]
 mod tests;

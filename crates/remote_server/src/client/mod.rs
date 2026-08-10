@@ -22,7 +22,8 @@ use crate::proto::{
     RemoteAgentContextSnapshot, ResolveConflict, ResolveConflictResponse, ResolvePath,
     ResolvePathResponse, RipgrepSearchRequest, RipgrepSearchResponse, RunCommandRequest,
     RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
-    TextEdit, UnsubscribeDiffState, WriteFile, WriteFileChunk, WriteFileChunkResponse,
+    TextEdit, UnsubscribeDiffState, UpdatePreferences, WriteFile, WriteFileChunk,
+    WriteFileChunkResponse,
     discard_files_response, host_scoped_request, notification, read_file_chunk_response,
     server_message, session_scoped_request,
 };
@@ -62,6 +63,23 @@ pub enum ClientError {
 
     #[error("File operation failed: {0}")]
     FileOperationFailed(String),
+}
+
+/// Client-resolved preferences the daemon needs in order to index a codebase
+/// on its own host.
+///
+/// Sent on the `Initialize` handshake and refreshed with
+/// [`RemoteServerClient::update_preferences`]. Both fields are `None` on a
+/// build with no indexing configured, which is also the state a fresh install
+/// is in — the daemon then reports the index as `Unavailable` rather than
+/// producing an empty one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClientPreferences {
+    pub codebase_index_limits: Option<crate::proto::CodebaseIndexLimits>,
+    /// The user's own embedding endpoint. This is the BYOP replacement for the
+    /// pin's Warp bearer token — see the `EmbeddingProviderConfig` message in
+    /// `proto/remote_server.proto`.
+    pub embedding_provider: Option<crate::proto::EmbeddingProviderConfig>,
 }
 
 /// Events received from the remote server, delivered through the event
@@ -116,6 +134,16 @@ pub enum ClientEvent {
     /// fork sends this yet (issue #353 tracks the producer side).
     RemoteAgentContextSnapshotReceived {
         snapshot: RemoteAgentContextSnapshot,
+    },
+    /// The daemon pushed its full set of codebase-index statuses. Sent once per
+    /// connection, right after the handshake, so a reconnecting client learns
+    /// what the host already has without polling.
+    CodebaseIndexStatusesSnapshotReceived {
+        statuses: Vec<crate::codebase_index_proto::RemoteCodebaseIndexStatus>,
+    },
+    /// The daemon pushed one changed codebase-index status.
+    CodebaseIndexStatusUpdated {
+        status: crate::codebase_index_proto::RemoteCodebaseIndexStatus,
     },
 }
 /// Client for communicating with a `remote_server` process over the remote server protocol.
@@ -278,12 +306,15 @@ impl RemoteServerClient {
     pub async fn initialize(
         &self,
         auth_token: Option<&str>,
+        preferences: ClientPreferences,
     ) -> Result<InitializeResponse, ClientError> {
         let request_id = RequestId::new();
         let msg = ClientMessage::session_scoped(
             request_id.to_string(),
             session_scoped_request::Message::Initialize(Initialize {
                 auth_token: auth_token.unwrap_or_default().to_owned(),
+                codebase_index_limits: preferences.codebase_index_limits,
+                embedding_provider: preferences.embedding_provider,
             }),
         );
 
@@ -296,6 +327,21 @@ impl RemoteServerClient {
                 Err(ClientError::UnexpectedResponse)
             }
         }
+    }
+
+    /// Sends an `UpdatePreferences` notification after the handshake, when the
+    /// user edits their embedding providers or their index limits change.
+    ///
+    /// Fire-and-forget: a daemon that misses one keeps using the previous
+    /// configuration, and the next connection's `Initialize` re-establishes it.
+    pub fn update_preferences(&self, preferences: ClientPreferences) {
+        let msg = ClientMessage::notification(notification::Message::UpdatePreferences(
+            UpdatePreferences {
+                codebase_index_limits: preferences.codebase_index_limits,
+                embedding_provider: preferences.embedding_provider,
+            },
+        ));
+        self.send_notification(msg);
     }
 
     /// Sends an `Authenticate` notification to rotate the daemon-wide
@@ -899,6 +945,21 @@ impl RemoteServerClient {
             }
             server_message::Message::RemoteAgentContextSnapshot(snapshot) => {
                 Some(ClientEvent::RemoteAgentContextSnapshotReceived { snapshot })
+            }
+            server_message::Message::CodebaseIndexStatusesSnapshot(snapshot) => {
+                Some(ClientEvent::CodebaseIndexStatusesSnapshotReceived {
+                    statuses:
+                        crate::codebase_index_proto::proto_to_codebase_index_statuses_snapshot(
+                            &snapshot,
+                        ),
+                })
+            }
+            server_message::Message::CodebaseIndexStatusUpdated(update) => {
+                // A status whose state is `UNSPECIFIED` is dropped rather than
+                // guessed at: an unknown state from a newer daemon must not be
+                // shown as `Ready`.
+                crate::codebase_index_proto::proto_to_codebase_index_status_updated(&update)
+                    .map(|status| ClientEvent::CodebaseIndexStatusUpdated { status })
             }
             other => {
                 log::warn!("Unhandled push message variant: {other:?}");

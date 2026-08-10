@@ -479,6 +479,37 @@ impl LaunchMode {
         }
     }
 
+    /// Returns `true` if this process can build and sync codebase indices.
+    ///
+    /// Ported from the pin (`02b53fcd8:app/src/lib.rs:566`). Two arms differ,
+    /// both because of what this fork's `LaunchMode` is rather than a policy
+    /// choice:
+    ///
+    /// * `RemoteServerDaemon` is a unit variant here and never reaches
+    ///   `initialize_app` — the daemon bootstraps itself in
+    ///   `remote_server::run_daemon_app`, which registers its own
+    ///   `CodebaseIndexManager`. This arm is therefore unreachable in practice
+    ///   and answers `false` rather than duplicating the daemon's own
+    ///   `FeatureFlag::RemoteCodebaseIndexing` check in a second place, where
+    ///   the two could drift.
+    /// * The `Tui` arm keeps the pin's `false` and the pin's reason verbatim.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    fn supports_indexing(&self) -> bool {
+        match self {
+            LaunchMode::CommandLine { command, .. } => {
+                matches!(command, CliCommand::Agent(AgentCommand::Run(_)))
+            }
+            LaunchMode::App { .. } | LaunchMode::Test { .. } => true,
+            LaunchMode::RemoteServerProxy | LaunchMode::RemoteServerDaemon => false,
+            // Codebase indexing stays off for the TUI until it has deferred
+            // persisted-index restore and multi-process-safe snapshot writes
+            // (the GUI may run concurrently against the same data dir).
+            // Project rules/skills discovery does not depend on this; see
+            // `PersistedWorkspace::new`.
+            LaunchMode::Tui { .. } => false,
+        }
+    }
+
     /// Whether or not to start a crash recovery process (on platforms that support it).
     #[cfg(enable_crash_recovery)]
     pub(crate) fn crash_recovery_enabled(&self) -> bool {
@@ -2044,6 +2075,9 @@ fn initialize_app(
     // the manager gets its own copy.
     #[cfg(feature = "local_fs")]
     let persisted_workspaces_for_index = persisted_workspaces.clone();
+    // Resolved outside the closure so it does not borrow `launch_mode`.
+    #[cfg(feature = "local_fs")]
+    let launch_mode_supports_indexing = launch_mode.supports_indexing();
 
     // Codebase embedding index. Restored with the subsystem (Delta D2c);
     // registered before `PersistedWorkspace`, which subscribes to it.
@@ -2055,17 +2089,20 @@ fn initialize_app(
     // * The store client is `crate::ai::codebase_embeddings::build_store_client`
     //   — a local vector store plus the user's own embedding provider — where
     //   the pin passed `server_api_provider.as_ref(ctx).get()`.
-    // * `launch_mode.supports_indexing()` does not exist here, and neither does
-    //   `daemon_codebase_index_snapshot_storage` / the `RemoteServerDaemon`
-    //   deferral, because remote-daemon indexing is a separate port
-    //   (`FeatureFlag::RemoteCodebaseIndexing`). The flag itself stands in for
-    //   the launch-mode check, so a build with indexing off registers a manager
-    //   that no-ops rather than no manager at all — `PersistedWorkspace` and the
-    //   settings page both call `CodebaseIndexManager::handle(ctx)`
-    //   unconditionally.
+    // * `daemon_codebase_index_snapshot_storage` has no counterpart here: this
+    //   fork's `LaunchMode::RemoteServerDaemon` never reaches `initialize_app`
+    //   (see `LaunchMode::supports_indexing`). The daemon registers its own
+    //   manager, with its own snapshot storage and its own store client, in
+    //   `remote_server::run_daemon_app`.
+    //
+    // A launch mode that does not support indexing still gets a manager, one
+    // that no-ops, rather than no manager at all: `PersistedWorkspace` and the
+    // settings page both call `CodebaseIndexManager::handle(ctx)`
+    // unconditionally, and an unregistered singleton panics.
     #[cfg(feature = "local_fs")]
     ctx.add_singleton_model(|ctx| {
-        let indexing_enabled = FeatureFlag::FullSourceCodeEmbedding.is_enabled();
+        let indexing_enabled =
+            launch_mode_supports_indexing && FeatureFlag::FullSourceCodeEmbedding.is_enabled();
         let should_restore_indices = indexing_enabled
             && UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx);
         let indices_to_restore = if should_restore_indices {
@@ -2086,6 +2123,31 @@ fn initialize_app(
 
         CodebaseIndexManager::new_with_config(codebase_index_config, ctx)
     });
+
+    // Hand the remote-server manager what a daemon needs to index on its own
+    // host, and refresh it whenever the user edits their providers. Registered
+    // here, after `AISettings` and `AIRequestUsageModel`, because
+    // `remote_client_preferences` reads both; `RemoteServerManager` itself was
+    // registered much earlier, with no sessions yet, so nothing has connected
+    // in between.
+    #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
+    {
+        use crate::ai::codebase_embeddings::remote_client_preferences;
+        use remote_server::manager::RemoteServerManager;
+
+        let preferences = remote_client_preferences(ctx);
+        RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
+            manager.update_client_preferences(preferences);
+        });
+        ctx.subscribe_to_model(&AISettings::handle(ctx), |_, _, ctx| {
+            let preferences = remote_client_preferences(ctx);
+            RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
+                // `update_client_preferences` no-ops when nothing changed, so
+                // subscribing to every AI-settings event is cheap.
+                manager.update_client_preferences(preferences);
+            });
+        });
+    }
 
     ctx.add_singleton_model(|ctx| {
         ProjectContextModel::new_from_persisted(persisted_project_rules, ctx)
