@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::{FutureExt, future::BoxFuture};
 use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::{
@@ -12,12 +12,12 @@ use crate::{
         blocklist::BlocklistAIPermissions,
         paths::host_native_absolute_path,
     },
-    terminal::model::session::{active_session::ActiveSession, SessionType},
+    terminal::model::session::{SessionType, active_session::ActiveSession},
 };
 
 use super::{
-    describe_failed_files, read_local_file_context, ActionExecution, AnyActionExecution,
-    ExecuteActionInput, PreprocessActionInput, ReadFileContextResult,
+    ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput,
+    ReadFileContextResult, describe_failed_files, read_local_file_context,
 };
 
 pub struct ReadFilesExecutor {

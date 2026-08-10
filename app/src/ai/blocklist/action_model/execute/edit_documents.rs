@@ -1,5 +1,5 @@
 use ai::diff_validation::DiffDelta;
-use futures::{future::BoxFuture, FutureExt};
+use futures::{FutureExt, future::BoxFuture};
 use std::collections::HashMap;
 use warpui::{Entity, ModelContext, SingletonEntity};
 

@@ -6,35 +6,35 @@ use std::time::Duration;
 
 use warp_util::standardized_path::StandardizedPath;
 
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use warpui::r#async::FutureExt as AsyncFutureExt;
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
+use crate::PrivacySettings;
 use crate::ai::agent::redaction::redact_secrets;
 use crate::ai::agent::{
-    conversation::AIConversationId, AIAgentAction, AIAgentActionType, GrepResult, ServerOutputId,
+    AIAgentAction, AIAgentActionType, GrepResult, ServerOutputId, conversation::AIConversationId,
 };
 use crate::ai::blocklist::{
-    telemetry_banner::should_collect_ai_ugc_telemetry, BlocklistAIPermissions,
+    BlocklistAIPermissions, telemetry_banner::should_collect_ai_ugc_telemetry,
 };
 use crate::ai::paths::{host_native_absolute_path, shell_native_absolute_path};
-use crate::terminal::model::session::command_executor::shell_quote_arg;
 use crate::terminal::model::session::ExecuteCommandOptions;
-use crate::PrivacySettings;
+use crate::terminal::model::session::command_executor::shell_quote_arg;
 use crate::{
+    TelemetryEvent,
     ai::agent::{AIAgentActionResultType, GrepFileMatch, GrepLineMatch},
     send_telemetry_from_app_ctx,
     terminal::{
-        model::session::active_session::ActiveSession, model::session::Session, shell::ShellType,
-        ShellLaunchData,
+        ShellLaunchData, model::session::Session, model::session::active_session::ActiveSession,
+        shell::ShellType,
     },
-    TelemetryEvent,
 };
 
 use super::{
-    get_server_output_id, is_file_path, is_git_repository, ActionExecution, AnyActionExecution,
-    ExecuteActionInput, PreprocessActionInput,
+    ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput,
+    get_server_output_id, is_file_path, is_git_repository,
 };
 
 const GREP_TIMEOUT: Duration = Duration::from_secs(10);

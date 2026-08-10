@@ -16,21 +16,21 @@ pub(super) mod suggest_prompt;
 
 use ai::agent::action_result::{InsertReviewCommentsResult, RequestCommandOutputResult};
 pub use ask_user_question::AskUserQuestionExecutor;
-pub(crate) use call_mcp_tool::coerce_integer_args;
 use call_mcp_tool::CallMCPToolExecutor;
+pub(crate) use call_mcp_tool::coerce_integer_args;
 use create_documents::CreateDocumentsExecutor;
 use edit_documents::EditDocumentsExecutor;
 use file_glob::FileGlobExecutor;
-use futures::{future::BoxFuture, FutureExt};
+use futures::{FutureExt, future::BoxFuture};
 use grep::GrepExecutor;
 use parking_lot::FairMutex;
 use read_documents::ReadDocumentsExecutor;
 pub(super) use read_files::ReadFilesExecutor;
 use read_mcp_resource::ReadMCPResourceExecutor;
 use read_skill::ReadSkillExecutor;
-pub(crate) use request_file_edits::apply_edits;
 pub(crate) use request_file_edits::FileReadResult;
 pub(crate) use request_file_edits::MalformedFinalLineProxyEvent;
+pub(crate) use request_file_edits::apply_edits;
 pub use request_file_edits::{
     EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent, EditResolvedEvent, EditStats,
     RequestFileEditsExecutor, RequestFileEditsFormatKind, RequestFileEditsTelemetryEvent,
@@ -55,13 +55,13 @@ use warp_util::file::FileLoadError;
 #[cfg(feature = "local_fs")]
 use warp_util::file_type::is_buffer_binary;
 use warpui::{
-    r#async::{Spawnable, SpawnableOutput},
     AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity,
+    r#async::{Spawnable, SpawnableOutput},
 };
 
 #[cfg(feature = "local_fs")]
 use crate::util::image::{
-    is_supported_image_mime_type, process_image_for_agent, ProcessImageResult,
+    ProcessImageResult, is_supported_image_mime_type, process_image_for_agent,
 };
 #[cfg(feature = "local_fs")]
 use mime_guess::from_path;
@@ -69,24 +69,24 @@ use mime_guess::from_path;
 #[cfg(feature = "local_fs")]
 use crate::ai::{agent::AnyFileContent, paths::host_native_absolute_path};
 use crate::{
+    BlocklistAIHistoryModel,
     ai::{
         agent::{
-            conversation::AIConversationId, AIAgentAction, AIAgentActionId, AIAgentActionResult,
-            AIAgentActionResultType, AIAgentActionType, CancellationReason, FileContext,
-            FileLocations, ReadFilesFailedFile, ServerOutputId,
+            AIAgentAction, AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
+            AIAgentActionType, CancellationReason, FileContext, FileLocations, ReadFilesFailedFile,
+            ServerOutputId, conversation::AIConversationId,
         },
         ambient_agents::AmbientAgentTaskId,
     },
     terminal::{
+        ShellLaunchData, TerminalModel,
         model::session::{
-            active_session::ActiveSession, command_executor::shell_quote_arg,
-            ExecuteCommandOptions, Session,
+            ExecuteCommandOptions, Session, active_session::ActiveSession,
+            command_executor::shell_quote_arg,
         },
         model_events::ModelEventDispatcher,
         shell::ShellType,
-        ShellLaunchData, TerminalModel,
     },
-    BlocklistAIHistoryModel,
 };
 
 /// Types of actions that can be executed in parallel.
@@ -1178,8 +1178,6 @@ async fn read_binary_file_context(
         bytes_read,
     })
 }
-
-
 
 /// Builds the "is this a file?" probe with the path passed as data, not shell syntax.
 fn build_is_file_path_command(path: &str, shell_type: ShellType) -> String {

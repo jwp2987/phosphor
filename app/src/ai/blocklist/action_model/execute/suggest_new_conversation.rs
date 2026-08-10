@@ -1,4 +1,4 @@
-use futures::{future::BoxFuture, FutureExt};
+use futures::{FutureExt, future::BoxFuture};
 use warpui::{Entity, ModelContext};
 
 use crate::ai::agent::{

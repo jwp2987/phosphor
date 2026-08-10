@@ -25,19 +25,19 @@ use crate::ai::{
     blocklist::action_model::execute::suggest_new_conversation::SuggestNewConversationExecutor,
 };
 use chrono::Local;
-pub(crate) use execute::apply_edits;
-pub(crate) use execute::coerce_integer_args;
 pub(crate) use execute::FileReadResult;
 pub(crate) use execute::MalformedFinalLineProxyEvent;
+pub(crate) use execute::apply_edits;
+pub(crate) use execute::coerce_integer_args;
 pub use execute::{
-    read_local_file_context, EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent,
-    EditResolvedEvent, EditStats, NewConversationDecision, PromptSuggestionExecutor,
-    PromptSuggestionExecutorEvent, ReadFileContextResult, RequestFileEditsExecutor,
-    RequestFileEditsFormatKind, RequestFileEditsTelemetryEvent, ShellCommandExecutor,
-    ShellCommandExecutorEvent,
+    EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent, EditResolvedEvent, EditStats,
+    NewConversationDecision, PromptSuggestionExecutor, PromptSuggestionExecutorEvent,
+    ReadFileContextResult, RequestFileEditsExecutor, RequestFileEditsFormatKind,
+    RequestFileEditsTelemetryEvent, ShellCommandExecutor, ShellCommandExecutorEvent,
+    read_local_file_context,
 };
 
-use futures::future::{join_all, BoxFuture};
+use futures::future::{BoxFuture, join_all};
 use preprocess::{PendingPreprocessedActions, PreprocessId};
 
 use std::{
@@ -54,14 +54,14 @@ use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonE
 use crate::{
     ai::agent::{AIAgentAction, AIAgentActionId, AIAgentActionResult},
     terminal::{
-        model::session::active_session::ActiveSession, model_events::ModelEventDispatcher,
-        TerminalModel,
+        TerminalModel, model::session::active_session::ActiveSession,
+        model_events::ModelEventDispatcher,
     },
 };
 
 use self::execute::{
-    ask_user_question::AskUserQuestionExecutor, BlocklistAIActionExecutor,
-    BlocklistAIActionExecutorEvent, NotExecutedReason, RunningActionPhase, TryExecuteResult,
+    BlocklistAIActionExecutor, BlocklistAIActionExecutorEvent, NotExecutedReason,
+    RunningActionPhase, TryExecuteResult, ask_user_question::AskUserQuestionExecutor,
 };
 
 use super::BlocklistAIHistoryModel;
@@ -963,6 +963,33 @@ impl BlocklistAIActionModel {
                 ctx,
             );
         });
+    }
+
+    /// Installs a front-of-queue confirmation action without preprocessing.
+    ///
+    /// Ported from the pin (`02b53fcd8`). The fork had never ported this, so
+    /// `queue_tui_permission_action` fell back to `queue_action_for_test`, which
+    /// routes through `ctx.spawn`'d preprocessing -- the action's status is still
+    /// `None` when a test asserts immediately after queueing. That silently broke
+    /// four ported `tui_ask_question_view` tests: with no blocked status,
+    /// `is_awaiting_answers` is false, so `on_focus` never delegates to the option
+    /// selector and every focus/keystroke assertion fails.
+    #[cfg(all(feature = "tui", any(test, feature = "test-util")))]
+    pub fn queue_confirmation_action(
+        &mut self,
+        action: AIAgentAction,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let action_id = action.id.clone();
+        self.pending_actions
+            .entry(conversation_id)
+            .or_default()
+            .push_back(action);
+        ctx.emit(BlocklistAIActionEvent::QueuedAction(action_id.clone()));
+        ctx.emit(BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(
+            action_id,
+        ));
     }
 
     fn handle_preprocess_actions_results(

@@ -1,15 +1,15 @@
-﻿//! Module containing helper code to apply suggested diffs from an LLM
+//! Module containing helper code to apply suggested diffs from an LLM
 //! to a set of files on the user's filesystem.
 
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     future::Future,
     sync::Arc,
 };
 
 use ai::diff_validation::{
-    fuzzy_match_diffs, fuzzy_match_v4a_diffs, AIRequestedCodeDiff, DiffDelta, DiffMatchFailures,
-    DiffType, ParsedDiff, SearchAndReplace, V4AHunk,
+    AIRequestedCodeDiff, DiffDelta, DiffMatchFailures, DiffType, ParsedDiff, SearchAndReplace,
+    V4AHunk, fuzzy_match_diffs, fuzzy_match_v4a_diffs,
 };
 use itertools::Itertools;
 use vec1::Vec1;

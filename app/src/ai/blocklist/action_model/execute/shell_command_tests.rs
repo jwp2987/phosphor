@@ -195,7 +195,10 @@ fn multiline_heredoc_keeps_delimiter_and_closer_on_their_own_lines() {
             ")",
             "closing paren isn't alone on its own line: {wrapped}"
         );
-        assert!(wrapped.contains("PAGER=cat"), "pager suppression lost: {wrapped}");
+        assert!(
+            wrapped.contains("PAGER=cat"),
+            "pager suppression lost: {wrapped}"
+        );
     }
 }
 
@@ -240,8 +243,14 @@ fn single_line_command_stays_on_one_line() {
         ShellType::PowerShell,
     ] {
         let wrapped = wrap_command_without_pager(Some(shell), command);
-        assert!(!wrapped.contains('\n'), "{shell:?} single-line command got split: {wrapped}");
-        assert!(wrapped.contains(command), "{shell:?} command got lost: {wrapped}");
+        assert!(
+            !wrapped.contains('\n'),
+            "{shell:?} single-line command got split: {wrapped}"
+        );
+        assert!(
+            wrapped.contains(command),
+            "{shell:?} command got lost: {wrapped}"
+        );
     }
 }
 

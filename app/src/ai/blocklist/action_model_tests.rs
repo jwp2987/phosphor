@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use super::*;
-use crate::ai::agent::{task::TaskId, AIAgentActionResultType};
+use crate::ai::agent::{AIAgentActionResultType, task::TaskId};
 
 fn make_action_result(id: &str) -> Arc<AIAgentActionResult> {
     Arc::new(AIAgentActionResult {

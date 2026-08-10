@@ -86,7 +86,7 @@ pub fn queue_tui_permission_action(
     conversation_id: AIConversationId,
     ctx: &mut ModelContext<BlocklistAIActionModel>,
 ) {
-    action_model.queue_action_for_test(action, conversation_id, ctx);
+    action_model.queue_confirmation_action(action, conversation_id, ctx);
 }
 
 /// Registers the app models required to construct full TUI session views in tests.
@@ -160,9 +160,7 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
     });
 
     app.add_singleton_model(|_| {
-        crate::changelog_model::ChangelogModel::new(std::sync::Arc::new(
-            http_client::Client::new(),
-        ))
+        crate::changelog_model::ChangelogModel::new(std::sync::Arc::new(http_client::Client::new()))
     });
     app.add_singleton_model(crate::tui::TuiMcpManager::new_for_test);
     app.add_singleton_model(|_| ::ai::project_context::model::ProjectContextModel::default());
@@ -172,7 +170,9 @@ pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
     app.add_singleton_model(repo_metadata::watcher::DirectoryWatcher::new);
     #[cfg(feature = "local_fs")]
     app.add_singleton_model(repo_metadata::RepoMetadataModel::new);
-    app.add_singleton_model(crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing);
+    app.add_singleton_model(
+        crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing,
+    );
     app.add_singleton_model(crate::workflows::local_workflows::LocalWorkflows::new);
     app.add_singleton_model(SkillManager::new);
 }

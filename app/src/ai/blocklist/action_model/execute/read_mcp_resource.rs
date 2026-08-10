@@ -2,15 +2,15 @@ use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessA
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::terminal::model::session::active_session::ActiveSession;
-use futures::{future::BoxFuture, FutureExt};
+use futures::{FutureExt, future::BoxFuture};
 use warpui::{Entity, EntityId, ModelContext, ModelHandle};
 
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::{
     agent::{AIAgentActionResultType, ReadMCPResourceResult},
     blocklist::{
-        action_model::{AIAgentAction, AIAgentActionType},
         BlocklistAIPermissions,
+        action_model::{AIAgentAction, AIAgentActionType},
     },
 };
 #[cfg(not(target_family = "wasm"))]

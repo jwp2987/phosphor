@@ -19,7 +19,7 @@ use crate::ai::blocklist::SessionContext;
 use crate::auth::AuthStateProvider;
 use crate::terminal::model::session::active_session::ActiveSession;
 
-use super::diff_application::{apply_edits, DiffApplicationError, FileReadResult};
+use super::diff_application::{DiffApplicationError, FileReadResult, apply_edits};
 
 /// Entity submodel that encapsulates filesystem access for diff application.
 ///

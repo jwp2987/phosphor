@@ -1,10 +1,11 @@
 use super::*;
+use crate::LaunchMode;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{AIAgentAction, AIAgentActionId, AIAgentActionResultType};
 use crate::ai::blocklist::{BlocklistAIHistoryModel, BlocklistAIPermissions};
 use crate::ai::execution_profiles::{
-    profiles::AIExecutionProfilesModel, AskUserQuestionPermission,
+    AskUserQuestionPermission, profiles::AIExecutionProfilesModel,
 };
 use crate::ai::mcp::templatable_manager::TemplatableMCPServerManager;
 use crate::auth::AuthStateProvider;
@@ -13,7 +14,6 @@ use crate::cloud_object::update_manager::UpdateManager;
 use crate::network::NetworkStatus;
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::workspaces::user_workspaces::UserWorkspaces;
-use crate::LaunchMode;
 use ai::agent::action::AskUserQuestionItem;
 use ai::agent::action_result::{AskUserQuestionAnswerItem, AskUserQuestionResult};
 use warpui::{App, EntityId, ModelHandle};

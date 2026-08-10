@@ -8,16 +8,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use ai::diff_validation::AIRequestedCodeDiff;
-use futures::{channel::oneshot, future::BoxFuture, FutureExt};
+use futures::{FutureExt, channel::oneshot, future::BoxFuture};
 use itertools::Itertools;
-use vec1::{vec1, Vec1};
+use vec1::{Vec1, vec1};
 use warp_core::send_telemetry_from_ctx;
 use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity as _, ViewHandle};
 
 use apply_diff_model::ApplyDiffModel;
-pub(crate) use diff_application::apply_edits;
 use diff_application::DiffApplicationError;
 pub(crate) use diff_application::FileReadResult;
+pub(crate) use diff_application::apply_edits;
 pub(crate) use telemetry::MalformedFinalLineProxyEvent;
 #[allow(unused_imports)]
 pub use telemetry::{EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent};
@@ -27,23 +27,23 @@ pub use telemetry::{
 };
 
 use crate::{
+    BlocklistAIHistoryModel,
     ai::{
         agent::{
-            conversation::AIConversationId, AIAgentAction, AIAgentActionId,
-            AIAgentActionResultType, AIAgentActionType, AIAgentOutputMessage,
-            AIAgentOutputMessageType, AIIdentifiers, RequestFileEditsResult, UpdatedFileContext,
+            AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentActionType,
+            AIAgentOutputMessage, AIAgentOutputMessageType, AIIdentifiers, RequestFileEditsResult,
+            UpdatedFileContext, conversation::AIConversationId,
         },
         blocklist::{
+            BlocklistAIPermissions, RequestedEditResolution,
             inline_action::code_diff_view::{
                 CodeDiffView, CodeDiffViewEvent, DiffSessionType, FileDiff,
             },
-            BlocklistAIPermissions, RequestedEditResolution,
         },
         paths::host_native_absolute_path,
     },
     safe_warn,
-    terminal::model::session::{active_session::ActiveSession, SessionType},
-    BlocklistAIHistoryModel,
+    terminal::model::session::{SessionType, active_session::ActiveSession},
 };
 
 use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
@@ -55,7 +55,10 @@ pub struct RequestFileEditsExecutor {
     /// TUI diff storages, registered by non-GUI surfaces via
     /// [`Self::register_requested_edits_storage`]. Parallel to `diff_views`; a given action
     /// has an entry in at most one of the two maps.
-    tui_diff_storages: HashMap<AIAgentActionId, Box<dyn crate::ai::blocklist::diff_storage::RegisteredDiffStorage>>,
+    tui_diff_storages: HashMap<
+        AIAgentActionId,
+        Box<dyn crate::ai::blocklist::diff_storage::RegisteredDiffStorage>,
+    >,
     /// Set of action IDs where diff application failed.
     diff_application_failures: HashMap<AIAgentActionId, Vec1<DiffApplicationError>>,
     terminal_view_id: EntityId,

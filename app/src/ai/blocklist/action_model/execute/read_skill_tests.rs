@@ -1,16 +1,16 @@
 use super::*;
-use crate::ai::agent::task::TaskId;
 use crate::ai::agent::AIAgentActionResultType;
 use crate::ai::agent::ReadSkillRequest;
 use crate::ai::agent::ReadSkillResult;
+use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{AIAgentAction, AIAgentActionId, AIAgentActionType};
 use crate::ai::blocklist::action_model::AIConversationId;
 use crate::ai::skills::{BundledSkillActivation, SkillManager};
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use ai::agent::action_result::AnyFileContent;
-use ai::skills::{parse_skill, ParsedSkill, SkillProvider, SkillReference, SkillScope};
+use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope, parse_skill};
 use repo_metadata::{
-    repositories::DetectedRepositories, watcher::DirectoryWatcher, RepoMetadataModel,
+    RepoMetadataModel, repositories::DetectedRepositories, watcher::DirectoryWatcher,
 };
 use std::fs;
 use std::io::Write;
@@ -261,7 +261,9 @@ fn test_read_skill_executor_fallback_returns_error_when_file_missing() {
             on_complete,
         } = execution
         else {
-            panic!("Legal-shaped skill path should still produce Async execution before disk check");
+            panic!(
+                "Legal-shaped skill path should still produce Async execution before disk check"
+            );
         };
 
         let async_result = execute_future.await;
