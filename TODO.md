@@ -201,25 +201,34 @@ Treat all of this as staged, not validated.
       Phosphor, and `{{warpctrl_wrapper_path}}` in the skill points at a missing
       file. `warpctrl` mode itself still works via the app binary's `--warpctrl`
       flag. Bundling scripts were off-limits to the agent.
-- [ ] **Claude harness cannot receive MCP servers.** The pin stages them as a
+- [x] **Claude harness cannot receive MCP servers.** **[DONE 28d21e520 — ported
+      the pin's approach unchanged. `serialize_claude_mcp_config` emits Claude's
+      `{"mcpServers": {name: entry}}` shape (types byte-identical to the pin);
+      `--mcp-config` added to `claude_command`; `resolved_mcp_servers` threaded
+      through `ThirdPartyHarness::build_runner` and `ClaudeHarnessRunner::new`;
+      `write_temp_file_with_suffix` is the new suffix-taking form, with the old
+      `.txt` signature kept as a wrapper. Codex/Gemini take the parameter and
+      ignore it, as at the pin. The pin's 4 serialization tests are ported plus
+      2 for the flag itself, which closes 4 of the pin-test gaps that
+      `claude_code_tests.rs` enumerated. 5421/5421 green.]** The pin stages them as a
       temp JSON passed with `--mcp-config` from `build_runner`. That flag,
       `serialize_claude_mcp_config`, and a suffix parameter on `write_temp_file`
       are all absent here. A capability port, not trait plumbing — deliberately
       not invented during the trait work. When it lands, `build_runner` will also
       need `resolved_mcp_servers`; the doc comment on `claude_code.rs` records
       this. Gemini needs nothing — it ignores both at the pin too.
-- [ ] **Guard the shell-to-Rust name agreement.** The warpctrl defect was a
+- [x] **Guard the shell-to-Rust name agreement.** **[DONE 8eca0b2eb — `script/check_channel_command_names` compares the bundle scripts' channel maps against `crates/warp_core/src/channel/mod.rs`. Wired into both `script/precheck` and `.github/workflows/pr-check.yml`, so it fails locally before CI.]** The warpctrl defect was a
       silent mismatch between a bundle script's channel map and
       `crates/warp_core/src/channel/mod.rs:50`, caught only because the install
       button failed at runtime. There is now a **second** pair of the same shape
       (`oz`/`zap-oss`). A grep-based CI gate comparing the bundle scripts' maps
       against `channel/mod.rs` would prevent recurrence. Deliberately not added
       during the fix: gate wiring overlaps the `ci/clearer-test-gate` work.
-- [ ] **`script/test_warpctrl_early_dispatch` not ported.** The pin has it; it
+- [x] **`script/test_warpctrl_early_dispatch` not ported.** **[DONE 8eca0b2eb — ported, plus a one-character fix to `windows-installer.iss:243`. Wired into precheck and pr-check.]** The pin has it; it
       needs a built binary. This is the missing half of the coverage — the new
       bash test proves the wrapper forwards `--warpctrl`, but nothing proves the
       binary still honours it.
-- [ ] **`tui-migrate-setup` skill — NEEDS MAINTAINER SIGN-OFF (AGENTS §5.10).**
+- [x] **`tui-migrate-setup` skill — NEEDS MAINTAINER SIGN-OFF (AGENTS §5.10).** **[RESOLVED 4b4e87a38 — maintainer chose option 2 (2026-08-10): rather than port a skill whose premise two DECLINED decisions contradict, ship a `tui-settings` orientation skill that explains the shared-config reality instead of pretending GUI and TUI have separate files. `resources/bundled/skills/tui-settings/SKILL.md`.]**
       Not merely unported: two *existing* DECLINED decisions make it
       unshippable. It resolves `gui_settings_file_path` against
       `tui_settings_file_path`, but this fork shares one app id and one
@@ -1823,11 +1832,21 @@ exercised here at all. They need a macOS or Windows machine (or CI) to progress.
   closing comment quotes the ledger's own "Maintainer BYOP decisions — 2026-08-02"
   section, settled before the WON'T-DO note was ever written: *"AI skills: build
   `bundled` + `global` (local); DROP the `remote` daemon-sync / cloud-repo arm."*
-  Verified against `origin/main` today: `app/src/ai/skills/` is missing exactly
+  ~~Verified against `origin/main` today: `app/src/ai/skills/` is missing exactly
   `bundled.rs`, `bundled_tests.rs`, `global_skills.rs`, `global_skills_tests.rs`
-  (plus `remote.rs`/`remote_tests.rs`, which stay dropped per the decision above).
-  This is real open work, tracked at **#487** (open) — do not treat it as done or
-  declined.
+  (plus `remote.rs`/`remote_tests.rs`, which stay dropped per the decision above).~~
+  **STALE-WRONG A SECOND TIME — re-verified against the working tree 2026-08-10.**
+  All four of those files are PRESENT, and so are `remote.rs`/`remote_tests.rs`.
+  `bundled.rs` is fully wired (`skill_manager.rs:33-36`), and home/global skill
+  directories are loaded through `SkillManager`'s own `directory_skills` /
+  `home_directory_for_origin` path. The file-presence claim above was simply
+  false; do not act on it without re-checking `ls app/src/ai/skills/`.
+
+  What is *actually* left is narrow: `global_skills::filter_skills_by_spec` has
+  **no production callers** — it is exported from `mod.rs:132` and covered by
+  `global_skills_tests.rs`, but nothing outside the module calls it. So it is
+  either dead code to delete or an unwired helper to connect. Resolve that one
+  question rather than re-porting a subsystem that is already here.
 
 ### Not started — true gaps
 - [x] **Skill remote-path** — now **#205**. Promoted out of this ledger after finding a
