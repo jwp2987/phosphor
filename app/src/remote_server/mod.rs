@@ -12,6 +12,8 @@ pub mod get_branches;
 pub mod get_committed_branch_files;
 #[cfg(not(target_family = "wasm"))]
 pub mod diff_state_proto;
+#[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
+pub mod diff_state_tracker;
 #[cfg(not(target_family = "wasm"))]
 pub mod ripgrep_search;
 #[cfg(not(target_family = "wasm"))]

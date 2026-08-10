@@ -615,3 +615,134 @@ fn uncommitted_stats_none_for_test_model() {
         assert!(stats.is_none());
     });
 }
+
+// ── classify_repository_update ───────────────────────────────────────────────
+//
+// These rules had no direct coverage while `LocalDiffStateModel` was their only
+// consumer. The remote-server daemon is now a second consumer (#577), and it
+// depends on the `Files` case specifically — that is what lets it push a
+// per-file `DiffStateFileDelta` instead of the whole repo. A silent change to
+// any rule below would either send wrong deltas or quietly collapse every
+// change back to a full snapshot, so pin them.
+
+#[cfg(feature = "local_fs")]
+fn target(path: &str, is_ignored: bool) -> repo_metadata::watcher::TargetFile {
+    repo_metadata::watcher::TargetFile::new(PathBuf::from(path), is_ignored)
+}
+
+#[cfg(feature = "local_fs")]
+fn update_with_modified(
+    files: Vec<repo_metadata::watcher::TargetFile>,
+) -> repo_metadata::RepositoryUpdate {
+    repo_metadata::RepositoryUpdate {
+        modified: files.into_iter().collect(),
+        ..Default::default()
+    }
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn classify_repository_update_reports_plain_edits_per_file() {
+    let behavior = classify_repository_update(update_with_modified(vec![
+        target("/repo/src/main.rs", false),
+        target("/repo/src/lib.rs", false),
+    ]))
+    .expect("a non-ignored edit is a change worth reacting to");
+
+    let InvalidationBehavior::Files(mut files) = behavior else {
+        panic!("plain file edits must stay per-file, not escalate to a full reload");
+    };
+    files.sort();
+    assert_eq!(
+        files,
+        vec![
+            PathBuf::from("/repo/src/lib.rs"),
+            PathBuf::from("/repo/src/main.rs")
+        ]
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn classify_repository_update_ignores_gitignored_files() {
+    // Every changed file is ignored, so there is nothing to invalidate — not an
+    // empty `Files` list, which would still cost a round of per-file diffs.
+    assert!(
+        classify_repository_update(update_with_modified(vec![
+            target("/repo/target/debug/build", true),
+            target("/repo/node_modules/x", true),
+        ]))
+        .is_none()
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn classify_repository_update_escalates_a_touched_gitignore_to_full_reload() {
+    // A changed .gitignore can change which files belong in the diff at all, so
+    // per-file invalidation of just that path would leave the rest stale.
+    let behavior = classify_repository_update(update_with_modified(vec![target(
+        "/repo/.gitignore",
+        false,
+    )]))
+    .expect("a .gitignore edit is a change");
+
+    assert!(
+        matches!(
+            behavior,
+            InvalidationBehavior::All(InvalidationSource::MetadataChange)
+        ),
+        "a touched .gitignore must force a full reload, got {behavior:?}"
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn classify_repository_update_treats_commit_and_remote_ref_moves_as_metadata() {
+    // #294: a tracked-remote-ref move is metadata (it shifts ahead/behind
+    // counts), not file content, so it takes the same path as a commit.
+    for update in [
+        repo_metadata::RepositoryUpdate {
+            commit_updated: true,
+            ..Default::default()
+        },
+        repo_metadata::RepositoryUpdate {
+            remote_ref_updated: true,
+            ..Default::default()
+        },
+    ] {
+        let behavior = classify_repository_update(update).expect("ref moves are changes");
+        assert!(
+            matches!(
+                behavior,
+                InvalidationBehavior::All(InvalidationSource::MetadataChange)
+            ),
+            "ref moves must be metadata invalidations, got {behavior:?}"
+        );
+    }
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn classify_repository_update_flags_a_locked_index_distinctly() {
+    // The index lock gets its own source so consumers can decline to reload
+    // against half-written state rather than treating it as a normal change.
+    let behavior = repo_metadata::RepositoryUpdate {
+        index_lock_detected: true,
+        ..Default::default()
+    };
+    let behavior = classify_repository_update(behavior).expect("a lock change is a change");
+    assert!(
+        matches!(
+            behavior,
+            InvalidationBehavior::All(InvalidationSource::IndexLockChange)
+        ),
+        "a locked index must be distinguishable from an ordinary metadata change, got {behavior:?}"
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn classify_repository_update_returns_none_for_an_empty_update() {
+    assert!(classify_repository_update(repo_metadata::RepositoryUpdate::default()).is_none());
+}

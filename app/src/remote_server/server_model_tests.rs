@@ -50,6 +50,12 @@ fn test_model() -> ServerModel {
         #[cfg(feature = "local_fs")]
         remote_agent_context_snapshot_sent: std::collections::HashSet::new(),
         auth_token: None,
+        #[cfg(feature = "local_fs")]
+        diff_state_watches: HashMap::new(),
+        // These tests exercise bookkeeping only, never a real watch; the
+        // receiver is dropped, so any send from a subscriber is a no-op.
+        #[cfg(feature = "local_fs")]
+        diff_state_watch_tx: async_channel::unbounded().0,
     }
 }
 

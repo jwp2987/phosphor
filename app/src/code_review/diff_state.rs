@@ -1201,57 +1201,8 @@ impl LocalDiffStateModel {
         update: RepositoryUpdate,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
-        // Refresh if there are file changes or if commit state has been updated
-        if update.is_empty() {
+        let Some(invalidation_behavior) = classify_repository_update(update) else {
             return false;
-        }
-
-        let RepositoryUpdate {
-            added,
-            modified,
-            deleted,
-            moved,
-            commit_updated,
-            index_lock_detected,
-            remote_ref_updated,
-        } = update;
-
-        let invalidation_behavior = if commit_updated || remote_ref_updated {
-            // A changed tracked-remote ref (#294) is metadata, not file
-            // content — e.g. it moves the ahead/behind counts shown in the
-            // diff-state pane — so it's treated the same as commit_updated.
-            InvalidationBehavior::All(InvalidationSource::MetadataChange)
-        } else if index_lock_detected {
-            InvalidationBehavior::All(InvalidationSource::IndexLockChange)
-        } else {
-            // Filter out gitignored files and extract paths
-            let changed_files = added
-                .into_iter()
-                .chain(modified)
-                .chain(deleted)
-                .chain(moved.clone().into_keys())
-                .chain(moved.into_values())
-                .filter(|target_file| !target_file.is_ignored)
-                .map(|target_file| target_file.path)
-                .collect::<Vec<PathBuf>>();
-
-            if changed_files.is_empty() {
-                return false;
-            }
-
-            // Check if .gitignore was modified - if so, do a full reload since
-            // this can fundamentally change which files should appear in the diff
-            let gitignore_modified = changed_files.iter().any(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name == ".gitignore")
-            });
-
-            if gitignore_modified {
-                InvalidationBehavior::All(InvalidationSource::MetadataChange)
-            } else {
-                InvalidationBehavior::Files(changed_files)
-            }
         };
         ctx.emit(DiffStateModelEvent::DiffMetadataChanged(
             invalidation_behavior,
@@ -3497,6 +3448,85 @@ enum DiffStateRepositoryUpdate {
     /// The receiver should mark a full invalidation pending without triggering
     /// a diff reload (the data would be stale).
     InvalidationWithLockedIndex,
+}
+
+/// Decides what a raw watcher [`RepositoryUpdate`] means for diff state.
+///
+/// Returns `None` when the update carries nothing worth reacting to (empty, or
+/// every changed file gitignored).
+///
+/// Extracted from [`LocalDiffStateModel::handle_file_update`] so the remote-server
+/// daemon can classify updates with **exactly** these rules rather than a
+/// second copy of them (#577). The daemon needs the `Files(..)` case in
+/// particular: it is what lets it push a per-file `DiffStateFileDelta` instead
+/// of re-serializing the whole repo on every change. The subtleties here are
+/// the reason this is shared and not reimplemented — a tracked-remote-ref move
+/// is metadata rather than content (#294), a locked index must not trigger a
+/// reload against stale data, and a touched `.gitignore` can change which files
+/// belong in the diff at all, so it forces a full reload.
+#[cfg(feature = "local_fs")]
+pub(crate) fn classify_repository_update(
+    update: RepositoryUpdate,
+) -> Option<InvalidationBehavior> {
+    // Refresh if there are file changes or if commit state has been updated
+    if update.is_empty() {
+        return None;
+    }
+
+    let RepositoryUpdate {
+        added,
+        modified,
+        deleted,
+        moved,
+        commit_updated,
+        index_lock_detected,
+        remote_ref_updated,
+    } = update;
+
+    if commit_updated || remote_ref_updated {
+        // A changed tracked-remote ref (#294) is metadata, not file
+        // content — e.g. it moves the ahead/behind counts shown in the
+        // diff-state pane — so it's treated the same as commit_updated.
+        return Some(InvalidationBehavior::All(
+            InvalidationSource::MetadataChange,
+        ));
+    }
+    if index_lock_detected {
+        return Some(InvalidationBehavior::All(
+            InvalidationSource::IndexLockChange,
+        ));
+    }
+
+    // Filter out gitignored files and extract paths
+    let changed_files = added
+        .into_iter()
+        .chain(modified)
+        .chain(deleted)
+        .chain(moved.clone().into_keys())
+        .chain(moved.into_values())
+        .filter(|target_file| !target_file.is_ignored)
+        .map(|target_file| target_file.path)
+        .collect::<Vec<PathBuf>>();
+
+    if changed_files.is_empty() {
+        return None;
+    }
+
+    // Check if .gitignore was modified - if so, do a full reload since
+    // this can fundamentally change which files should appear in the diff
+    let gitignore_modified = changed_files.iter().any(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == ".gitignore")
+    });
+
+    if gitignore_modified {
+        Some(InvalidationBehavior::All(
+            InvalidationSource::MetadataChange,
+        ))
+    } else {
+        Some(InvalidationBehavior::Files(changed_files))
+    }
 }
 
 #[cfg(feature = "local_fs")]

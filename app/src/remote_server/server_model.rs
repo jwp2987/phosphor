@@ -452,6 +452,24 @@ pub struct ServerModel {
     /// intentionally retained across proxy connection teardown and cleared
     /// only by daemon process exit.
     auth_token: Option<String>,
+    /// Live git watches backing granular per-file diff-state pushes (#577),
+    /// keyed by repository root — one watch per repo, shared by every
+    /// `(repo, mode)` subscription on it, since the filesystem events do not
+    /// depend on the mode.
+    ///
+    /// A repo present here is delta-capable: its live updates come from this
+    /// watch, and the coarse `RepositoryUpdated` whole-snapshot push is skipped
+    /// for it. A repo absent here (no detected/watched `Repository`) keeps the
+    /// old whole-snapshot path — coarse updates beat none.
+    #[cfg(feature = "local_fs")]
+    diff_state_watches: HashMap<StandardizedPath, super::diff_state_tracker::DiffStateWatch>,
+    /// Sender cloned into every watch subscriber; the receiver is streamed in
+    /// `new` and drives `handle_diff_state_watch_update`.
+    #[cfg(feature = "local_fs")]
+    diff_state_watch_tx: async_channel::Sender<(
+        std::path::PathBuf,
+        super::diff_state_tracker::DiffStateWatchUpdate,
+    )>,
 }
 
 impl Entity for ServerModel {
@@ -473,6 +491,8 @@ impl ServerModel {
         #[cfg(feature = "local_fs")]
         let initial_remote_agent_context_snapshot =
             remote_agent_context_snapshot(1, &bundled_skills, ctx);
+        #[cfg(feature = "local_fs")]
+        let (diff_state_watch_tx, diff_state_watch_rx) = async_channel::unbounded();
         let mut model = Self {
             connection_senders: HashMap::new(),
             snapshot_sent_roots_by_connection: HashMap::new(),
@@ -507,7 +527,21 @@ impl ServerModel {
             #[cfg(feature = "local_fs")]
             remote_agent_context_snapshot_sent: HashSet::new(),
             auth_token: None,
+            #[cfg(feature = "local_fs")]
+            diff_state_watches: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            diff_state_watch_tx,
         };
+        // Drives granular per-file diff-state pushes (#577). The watches that
+        // feed this are established lazily, on the first subscription for a repo.
+        #[cfg(feature = "local_fs")]
+        ctx.spawn_stream_local(
+            diff_state_watch_rx,
+            |me, (repo_root, update), ctx| {
+                me.handle_diff_state_watch_update(repo_root, update, ctx);
+            },
+            |_, _| {},
+        );
         // Subscribe to FileModel and RepoMetadataModel events
         // file operation results and repo metadata pushes are forwarded to all
         // connected proxy sessions.
@@ -607,8 +641,17 @@ impl ServerModel {
                     }
                     // The repository's contents changed — push a fresh diff-state
                     // snapshot to any connection subscribed to it.
+                    //
+                    // Only for repos with no git watch. A watched repo drives its
+                    // own pushes from `handle_diff_state_watch_update`, which can
+                    // tell a single-file edit from a repo-wide change and sends a
+                    // delta for the former (#577); pushing here as well would mean
+                    // recomputing the whole repo alongside every delta, i.e. doing
+                    // strictly more work than before the deltas existed.
                     #[cfg(feature = "local_fs")]
-                    me.push_diff_state_for_repo(path, ctx);
+                    if !me.diff_state_watches.contains_key(path) {
+                        me.push_diff_state_for_repo(path, ctx);
+                    }
                 }
                 RepoMetadataEvent::RepositoryRemoved { .. }
                 | RepoMetadataEvent::FileTreeUpdated { .. }
@@ -922,7 +965,12 @@ impl ServerModel {
     pub fn deregister_connection(&mut self, conn_id: ConnectionId, ctx: &mut ModelContext<Self>) {
         self.snapshot_sent_roots_by_connection.remove(&conn_id);
         #[cfg(feature = "local_fs")]
-        self.remove_diff_state_connection(conn_id);
+        {
+            let touched_repos = self.remove_diff_state_connection(conn_id);
+            for repo in touched_repos {
+                self.release_diff_state_watch_if_unused(&repo, ctx);
+            }
+        }
         #[cfg(feature = "local_fs")]
         self.remote_agent_context_snapshot_sent.remove(&conn_id);
         // A connection is in at most one git-status repo, so `unsubscribe_git_status`
@@ -1860,6 +1908,10 @@ impl ServerModel {
 
         // Register the subscription for live pushes on repository change.
         self.register_diff_state_subscription(conn_id, key.clone(), wire_repo_path.clone());
+        // Try to make this repo delta-capable so its live updates are per-file
+        // rather than whole-repo (#577). Failure is fine and silent: the repo
+        // simply keeps the coarse `RepositoryUpdated` push path.
+        self.ensure_diff_state_watch(&key.repo_path, ctx);
 
         // Queue this request; if a computation for `key` is already in
         // flight (another connection watching the same repo/mode, or a fast
@@ -1923,6 +1975,183 @@ impl ServerModel {
         HandlerOutcome::Async(None)
     }
 
+    /// Establishes the git watch that makes `repo` delta-capable, if it isn't
+    /// already (#577).
+    ///
+    /// Returns whether the repo is delta-capable afterwards. `false` means the
+    /// daemon has no watched `Repository` for the path — the repo was never
+    /// detected, or detection is still in flight — and the caller must keep the
+    /// coarse whole-snapshot push for it. Being coarse is a performance problem;
+    /// being silent would be a correctness one, so the fallback is never removed
+    /// on a guess.
+    #[cfg(feature = "local_fs")]
+    fn ensure_diff_state_watch(&mut self, repo: &StandardizedPath, ctx: &mut ModelContext<Self>) -> bool {
+        use repo_metadata::repositories::DetectedRepositories;
+
+        if self.diff_state_watches.contains_key(repo) {
+            return true;
+        }
+        let repo_local = repo.to_local_path_lossy();
+        let Some(repository) =
+            DetectedRepositories::as_ref(ctx).get_watched_repo_for_path(&repo_local, ctx)
+        else {
+            log::debug!(
+                "No watched repository for {repo}; diff-state pushes stay whole-snapshot"
+            );
+            return false;
+        };
+
+        let subscriber = super::diff_state_tracker::DiffStateTrackerSubscriber {
+            tx: self.diff_state_watch_tx.clone(),
+            repo_root: repo_local,
+        };
+        let start = repository.update(ctx, |repository, ctx| {
+            repository.start_watching(Box::new(subscriber), ctx)
+        });
+        // The registration future reports scan failure; a failed scan leaves the
+        // subscription inert, so drop the watch and fall back rather than
+        // silently never pushing again.
+        let repo_for_failure = repo.clone();
+        ctx.spawn(start.registration_future, move |me, result, ctx| {
+            if let Err(err) = result {
+                log::warn!("Diff-state watch registration failed for {repo_for_failure}: {err}");
+                if let Some(watch) = me.diff_state_watches.remove(&repo_for_failure) {
+                    watch.stop(ctx);
+                }
+            }
+        });
+        self.diff_state_watches.insert(
+            repo.clone(),
+            super::diff_state_tracker::DiffStateWatch {
+                repository,
+                subscriber_id: start.subscriber_id,
+            },
+        );
+        log::info!("Diff-state watch established for {repo}; pushes are now per-file deltas");
+        true
+    }
+
+    /// Routes one classified watcher update to the right push shape (#577).
+    #[cfg(feature = "local_fs")]
+    fn handle_diff_state_watch_update(
+        &mut self,
+        repo_root: std::path::PathBuf,
+        update: super::diff_state_tracker::DiffStateWatchUpdate,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        use super::diff_state_tracker::DiffStateWatchUpdate;
+
+        let Ok(repo) = StandardizedPath::from_local_canonicalized(&repo_root) else {
+            return;
+        };
+        match update {
+            DiffStateWatchUpdate::Files(files) => {
+                self.push_diff_state_file_deltas(&repo, files, ctx);
+            }
+            DiffStateWatchUpdate::All => self.push_diff_state_for_repo(&repo, ctx),
+            // Deliberately nothing: recomputing against a locked index reads
+            // half-written state. The lock release produces a fresh commit
+            // update, which arrives here as `All`.
+            DiffStateWatchUpdate::LockedIndex => {}
+        }
+    }
+
+    /// Pushes one `DiffStateFileDelta` per changed file to every connection
+    /// subscribed to `repo`, for each mode they subscribed with (#577).
+    ///
+    /// This is the whole point of the watch: the previous path re-serialized
+    /// every file in the repository for every subscriber on every change.
+    ///
+    /// Each connection is addressed with the exact `repo_path` string it sent,
+    /// preserving the same echo constraint the snapshot path has — the client
+    /// matches incoming pushes against the literal string it subscribed with.
+    #[cfg(feature = "local_fs")]
+    fn push_diff_state_file_deltas(
+        &mut self,
+        repo: &StandardizedPath,
+        files: Vec<std::path::PathBuf>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        use crate::code_review::diff_state::{DiffMode, LocalDiffStateModel};
+
+        let matching_keys: Vec<DiffModelKey> = self
+            .diff_state_subscribers
+            .keys()
+            .filter(|key| &key.repo_path == repo)
+            .cloned()
+            .collect();
+        if matching_keys.is_empty() || files.is_empty() {
+            return;
+        }
+
+        let repo_pathbuf = std::path::PathBuf::from(repo.to_local_path_lossy());
+        for key in matching_keys {
+            let Some(subs) = self.diff_state_subscribers.get(&key).cloned() else {
+                continue;
+            };
+            let mode = key.mode.clone();
+            let files = files.clone();
+            let repo_pathbuf = repo_pathbuf.clone();
+            ctx.spawn(
+                async move {
+                    // `Head` has no merge base; the other modes need one, and it
+                    // is the same for every file in this batch, so resolve it
+                    // once rather than per file.
+                    let merge_base = if matches!(mode, DiffMode::Head) {
+                        None
+                    } else {
+                        LocalDiffStateModel::compute_merge_base(&repo_pathbuf, &mode)
+                            .await
+                            .ok()
+                    };
+                    let mut deltas = Vec::with_capacity(files.len());
+                    for file in files {
+                        match LocalDiffStateModel::retrieve_diff_state(
+                            &repo_pathbuf,
+                            &file,
+                            &mode,
+                            merge_base.as_deref(),
+                        )
+                        .await
+                        {
+                            // `retrieve_diff_state` returns the repo-relative
+                            // path, which is the form the client matches
+                            // against its cached `GitDiffData` entries.
+                            Ok((relative, diff)) => deltas.push((relative, diff)),
+                            Err(err) => {
+                                log::warn!(
+                                    "Per-file diff-state delta failed for {}: {err}",
+                                    file.display()
+                                );
+                            }
+                        }
+                    }
+                    (mode, deltas)
+                },
+                move |me, (mode, deltas), _ctx| {
+                    for (relative, diff) in deltas {
+                        let delta = super::diff_state_proto::build_diff_state_file_delta(
+                            "",
+                            &mode,
+                            &relative.to_string_lossy(),
+                            diff.as_ref(),
+                            None,
+                        );
+                        for (conn_id, wire_repo_path) in &subs {
+                            let mut delta = delta.clone();
+                            delta.repo_path = wire_repo_path.clone();
+                            me.send_server_message(
+                                Some(*conn_id),
+                                None,
+                                server_message::Message::DiffStateFileDelta(delta),
+                            );
+                        }
+                    }
+                },
+            );
+        }
+    }
+
     /// Records a `(repo, mode)` diff-state subscription for `conn_id`,
     /// storing the exact `repo_path` string the client sent (overwriting any
     /// previous string for the same `(key, conn_id)` — see the field doc on
@@ -1969,7 +2198,12 @@ impl ServerModel {
     /// drops any of its queued pending responses, since a disconnected
     /// connection can no longer receive one.
     #[cfg(feature = "local_fs")]
-    fn remove_diff_state_connection(&mut self, conn_id: ConnectionId) {
+    /// Returns the repositories this connection had subscriptions on, so the
+    /// caller can release any now-unused git watch (#577). Kept free of
+    /// `ModelContext` so it stays a pure bookkeeping operation, unit-testable
+    /// against a bare `ServerModel` with no `App`.
+    fn remove_diff_state_connection(&mut self, conn_id: ConnectionId) -> Vec<StandardizedPath> {
+        let mut touched_repos = Vec::new();
         if let Some(keys) = self.diff_state_keys_by_conn.remove(&conn_id) {
             for key in keys {
                 if let Some(subs) = self.diff_state_subscribers.get_mut(&key) {
@@ -1978,10 +2212,35 @@ impl ServerModel {
                         self.diff_state_subscribers.remove(&key);
                     }
                 }
+                touched_repos.push(key.repo_path);
             }
         }
         for pending in self.diff_state_pending_responses.values_mut() {
             pending.retain(|p| p.conn_id != conn_id);
+        }
+        touched_repos
+    }
+
+    /// Stops `repo`'s git watch once nothing is subscribed to it (#577).
+    ///
+    /// Without this the daemon keeps a filesystem watcher alive for every
+    /// repository any client ever asked about, for the life of the process.
+    #[cfg(feature = "local_fs")]
+    fn release_diff_state_watch_if_unused(
+        &mut self,
+        repo: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self
+            .diff_state_subscribers
+            .keys()
+            .any(|key| &key.repo_path == repo)
+        {
+            return;
+        }
+        if let Some(watch) = self.diff_state_watches.remove(repo) {
+            watch.stop(ctx);
+            log::debug!("Released diff-state watch for {repo} (no subscribers left)");
         }
     }
 
@@ -2300,7 +2559,7 @@ impl ServerModel {
         &mut self,
         msg: UnsubscribeDiffState,
         conn_id: ConnectionId,
-        _ctx: &mut ModelContext<Self>,
+        ctx: &mut ModelContext<Self>,
     ) {
         let Ok(canonical_path) =
             StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
@@ -2313,6 +2572,7 @@ impl ServerModel {
             mode,
         };
         self.drop_diff_state_subscription(&key, conn_id);
+        self.release_diff_state_watch_if_unused(&key.repo_path, ctx);
     }
 
     #[cfg(not(feature = "local_fs"))]
