@@ -119,6 +119,14 @@ pub(crate) fn initialize_app(app: &mut App) {
     // Zap (localization, Phase 5): `PreferencesSyncer` was physically removed; the test singleton is no longer needed.
     app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
     app.add_singleton_model(|_| CLIAgentSessionsModel::new());
+    // The vertical-tab unread-activity dot reads this, via `has_unread_activity`
+    // -> `NotificationItems::has_unread_for_terminal_view`. Registered here and
+    // not earlier because `NotificationsModel::new` calls
+    // `BlocklistAIHistoryModel::handle` and `CLIAgentSessionsModel::handle` while
+    // constructing (`notifications/model.rs:65,70`), so both must already exist —
+    // the same ordering constraint `lib.rs` records as a comment on its own
+    // registration.
+    app.add_singleton_model(crate::notifications::model::NotificationsModel::new);
     app.add_singleton_model(AgentConversationsModel::new);
     app.add_singleton_model(LLMPreferences::new);
     app.add_singleton_model(|_| SettingsPaneManager::new());
