@@ -232,7 +232,13 @@ Treat all of this as staged, not validated.
    `install_warpctrl` widget, and `app_menus.rs` in D1 (macOS-gated, will not
    compile on this host or in Linux CI).
 
-## LSP TRACK (opened 2026-08-10, maintainer verdict: RESTORE)
+## LSP TRACK (opened 2026-08-10, maintainer verdict: RESTORE) — **[>] IN FLIGHT**
+
+**Status 2026-08-10:** step 1 + part of step 2 MERGED (`f4e99118a`). The original
+agent was **resumed** and is continuing with `language_server_extension.rs`,
+`find_references_view.rs`, the shutdown manager, the server selector, the
+`code_page.rs` section, the persistence half (unblocked now D1 landed), and the
+`ON DELETE CASCADE` guard arm. **This is not working LSP yet.**
 
 Was the largest item with no home — removed deliberately by `efcaa42b8` and
 recorded in neither `DECLINED.md` nor this file. Maintainer decided 2026-08-10
@@ -380,7 +386,11 @@ and its `CodebaseIndexManager` seams are where indexing attaches. Porting one
 without the other leaves either dangling seams or an indexer with nothing to
 hang it on.
 
-### D1 — PersistedWorkspace (CODE COMPLETE 2026-08-10, UNBUILT — branch `feat/restore-persisted-workspace`)
+### D1 — PersistedWorkspace (**MERGED 2026-08-10** `ec227975d`, UNBUILT)
+
+Rebuilt onto current `main` rather than merged from its branch: the original
+carried the polluted #577 commit and would have duplicated work `main` already
+had. Unblocks the LSP persistence half, which foreign-keys `workspace_metadata`.
 ~1,289 lines (`git show 02b53fcd8:app/src/ai/persisted_workspace.rs`).
 Local content: recent repositories / workspace metadata, per-workspace LSP
 enable-disable state, project-context and project-rules wiring,
@@ -397,7 +407,12 @@ enable-disable state, project-context and project-rules wiring,
 - Note: the pin's command-palette recent-repos data source (audit finding 9) is
   backed by `PersistedWorkspace`, so it lands naturally with this.
 
-### D2 — Codebase indexing subsystem
+### D2 — Codebase indexing subsystem — **[>] IN FLIGHT (full scope, one agent, maintainer's call 2026-08-10)**
+
+**Status:** a single agent is building all three stages. I advised against one
+pass for ~12.4k lines across two crates plus a subsystem with no pin to copy;
+the maintainer reaffirmed, so it is running with instructions to commit per
+stage and report honestly rather than bluff completion.
 32 files / **12,316 lines** at `crates/ai/src/index/full_source_code_embedding/`,
 plus `app/src/ai/codebase_auto_indexing.rs` (82). The fork's
 `crates/ai/src/index/` now holds only `file_outline`, `locations.rs`, `mod.rs`.
