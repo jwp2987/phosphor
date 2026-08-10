@@ -201,6 +201,13 @@ Treat all of this as staged, not validated.
       Phosphor, and `{{warpctrl_wrapper_path}}` in the skill points at a missing
       file. `warpctrl` mode itself still works via the app binary's `--warpctrl`
       flag. Bundling scripts were off-limits to the agent.
+- [ ] **Claude harness cannot receive MCP servers.** The pin stages them as a
+      temp JSON passed with `--mcp-config` from `build_runner`. That flag,
+      `serialize_claude_mcp_config`, and a suffix parameter on `write_temp_file`
+      are all absent here. A capability port, not trait plumbing — deliberately
+      not invented during the trait work. When it lands, `build_runner` will also
+      need `resolved_mcp_servers`; the doc comment on `claude_code.rs` records
+      this. Gemini needs nothing — it ignores both at the pin too.
 - [ ] **Guard the shell-to-Rust name agreement.** The warpctrl defect was a
       silent mismatch between a bundle script's channel map and
       `crates/warp_core/src/channel/mod.rs:50`, caught only because the install
@@ -703,7 +710,7 @@ feature.
       AGENTS §5.11 requires an issue per defect. The two rules conflict — needs a
       ruling on which wins for agent-filed defects. All later briefs now say do
       not file.
-- [ ] **MCP servers and model config reach the Codex harness only as empty
+- [x] **MCP servers and model config reach the Codex harness only as empty
       arguments.** `write_codex_mcp_servers` and `set_codex_model` /
       `set_codex_model_reasoning_effort` are fully ported and tested, but this
       fork's `ThirdPartyHarness` trait has nowhere to pass them, so they are
@@ -732,6 +739,7 @@ of the four turned out to be worth reversing.
 | `b0b1faef9` | 05-05 | zero | −2,794 / 41 files | InitProject wizard | **under review** — rationale never verified |
 | `9765692e1` | 04-30 | zero | −936 / 17 files | computer-use dispatch | **being restored** |
 
+      **[DONE 2026-08-10 — both flow through `prepare_environment_config`. Found two REAL bugs beyond scope: `--harness codex --model X` was REJECTED as an unknown Zap model, and `--harness claude --model X` silently ignored the model because `harness_model_env_vars` was never called. Both fixed. `context` not ported (would be permanently None here). Claude MCP staging NOT wired — needs `--mcp-config` + `serialize_claude_mcp_config`, a capability port; see below.]**
 - [>] **Computer-use dispatch** — agent assigned 2026-08-10. `crates/computer_use`
       is fully restored and green, but `create_actor()` has exactly one caller
       (the dev CLI) because the dispatch path is gone, so no agent can drive it.
