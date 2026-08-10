@@ -152,14 +152,24 @@ pub static FORK: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
 /// Spawns one or more local child agents for the current conversation.
 ///
 /// User-invoked only: this executes directly (see the `/orchestrate` arm of
-/// `execute_slash_command`) rather than being submitted as a prompt for the
-/// model to act on. It deliberately does NOT use `SlashCommandKind::Orchestrate`
-/// -- that kind is the pin's agent-invoked semantics
+/// `execute_slash_command` on the GUI, and the `SlashCommandKind::Other`
+/// name-guarded arm in `TuiTerminalSessionView::execute_tui_slash_command`
+/// on the TUI) rather than being submitted as a prompt for the model to act
+/// on. It deliberately does NOT use `SlashCommandKind::Orchestrate` -- that
+/// kind is the pin's agent-invoked semantics
 /// (`slash_command_is_submitted_as_prompt` routes it to the model, which
 /// would need `AIAgentActionType::RunAgents` to act on it). That path is
 /// deferred; `kind()` has no `"/orchestrate"` arm so this command falls
 /// through to `SlashCommandKind::Other`, same as any other fork-native
 /// command with no upstream counterpart.
+///
+/// TUI and GUI both spawn through the same `local_harness_launch` machinery
+/// -- the GUI via `pane_group::pane::terminal_pane::spawn_local_child_agents`
+/// (real `PaneGroup` hidden panes), the TUI via
+/// `crate::pane_group::TuiPaneGroup::spawn_local_child_agents`
+/// (`crates/warp_tui/src/pane_group.rs`, hidden `TuiSessions` sessions
+/// reached through the `pub` seam in `pane_group::pane::mod`) -- so the two
+/// surfaces stay at parity (AGENTS §5.9).
 ///
 /// No wasm: local child processes have no wasm equivalent (see
 /// `pane_group::pane::local_harness_launch`, `#[cfg(not(target_family = "wasm"))]`).
@@ -831,7 +841,7 @@ mod tests {
     /// prompt for the model (`SlashCommandKind::Orchestrate`); this one executes directly
     /// (see `commands::ORCHESTRATE`'s doc comment for why they deliberately diverge).
     #[test]
-    fn orchestrate_command_is_registered_local_only_and_gui_only() {
+    fn orchestrate_command_is_registered_and_available_on_both_surfaces() {
         use crate::search::slash_command_menu::static_commands::SlashCommandKind;
 
         let command = COMMAND_REGISTRY
@@ -840,11 +850,15 @@ mod tests {
         // No `kind()` arm maps to it: this must stay `Other`, not
         // `SlashCommandKind::Orchestrate` -- see the module doc comment on
         // `ORCHESTRATE` for why reusing that kind would smuggle in the deferred
-        // agent-invoked path.
+        // agent-invoked path. The TUI dispatches it via a name guard on the
+        // `Other` arm of `execute_tui_slash_command` (AGENTS §5.9 parity) --
+        // see `crates/warp_tui/src/pane_group.rs`'s `TuiPaneGroup` for the TUI's
+        // local-child-spawning counterpart to the GUI's `PaneGroup`.
         assert_eq!(command.kind(), SlashCommandKind::Other);
         assert!(
-            !command.supports_tui(),
-            "/orchestrate depends on PaneGroup hidden-pane machinery the TUI doesn't have"
+            command.supports_tui(),
+            "/orchestrate must stay at TUI/GUI parity (AGENTS §5.9): TuiPaneGroup closed the \
+             PaneGroup hidden-pane gap this command used to be GUI-only for"
         );
         assert!(command.supports_gui());
         assert!(!command.auto_enter_ai_mode);

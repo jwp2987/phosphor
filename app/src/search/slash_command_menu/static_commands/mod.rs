@@ -345,6 +345,7 @@ impl StaticCommand {
                 | "/fork"
                 | "/fork-and-compact"
                 | "/fork-from"
+                | "/orchestrate"
                 | "/rewind"
                 | "/conversations"
                 | "/export-to-clipboard"

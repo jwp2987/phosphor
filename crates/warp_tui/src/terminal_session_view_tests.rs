@@ -42,6 +42,7 @@ use super::{
     COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState,
     DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME, FooterSegment, FooterSegments,
     INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
+    ORCHESTRATE_REQUIRES_CONVERSATION_HINT, ORCHESTRATE_REQUIRES_TASK_HINT,
     SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
     SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG, SHELL_MODE_HINT,
     THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin, TuiQueuedFollowUp,
@@ -61,6 +62,7 @@ use crate::keybindings::{
 use crate::orchestrated_agent_identity_styling::AgentIdentity;
 use crate::orchestration_model::TuiOrchestrationModel;
 use crate::orchestration_tab_bar::{orchestration_tab_icon, render_orchestration_tab_footer};
+use crate::pane_group::TuiPaneGroup;
 use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::root_view::RootTuiView;
 use crate::session_registry::{TuiSessionId, TuiSessions};
@@ -3200,6 +3202,130 @@ fn add_orchestration_child(
         })
     });
     (view, session_id, conversation_id)
+}
+
+/// `/orchestrate` requires an active conversation, mirroring the GUI's guard in
+/// `execute_slash_command` (`app/src/terminal/input/slash_commands/mod.rs`). Regression
+/// coverage for the TUI dispatch arm added to close #325's TUI gap: `/orchestrate`
+/// deliberately keeps `kind() == SlashCommandKind::Other` (see `commands::ORCHESTRATE`'s doc
+/// comment), so without a name guard specifically for it, this would silently fall into
+/// `execute_tui_slash_command`'s GUI-only `debug_assert!(false, ...)` catch-all instead of
+/// this hint.
+#[test]
+fn orchestrate_slash_command_requires_active_conversation() {
+    App::test((), |mut app| async move {
+        assert!(slash_commands::ORCHESTRATE.supports_tui());
+
+        let fixture = focus_test_fixture(&mut app);
+        app.update(TuiPaneGroup::register);
+        // No conversation registered on this session.
+        let (view, _session_id) = add_focus_test_session(&mut app, &fixture, true);
+
+        let task = "write tests".to_owned();
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::ORCHESTRATE, Some(&task), ctx);
+        });
+
+        view.read(&app, |view, _| {
+            assert_eq!(
+                view.transient_hint.current(),
+                Some((
+                    ORCHESTRATE_REQUIRES_CONVERSATION_HINT,
+                    crate::transient_hint::TransientHintTone::Muted
+                ))
+            );
+        });
+    });
+}
+
+/// `/orchestrate` requires a non-blank task after the command, mirroring the GUI's
+/// `argument.map(|a| a.trim()).filter(|a| !a.is_empty())` guard. Covers both a missing
+/// argument (menu-selected with no text typed) and a whitespace-only one.
+#[test]
+fn orchestrate_slash_command_requires_task_argument() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        app.update(TuiPaneGroup::register);
+        let (view, _session_id, _conversation_id) =
+            add_orchestration_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::ORCHESTRATE, None, ctx);
+        });
+        view.read(&app, |view, _| {
+            assert_eq!(
+                view.transient_hint.current(),
+                Some((
+                    ORCHESTRATE_REQUIRES_TASK_HINT,
+                    crate::transient_hint::TransientHintTone::Muted
+                ))
+            );
+        });
+
+        let blank = "   ".to_owned();
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::ORCHESTRATE, Some(&blank), ctx);
+        });
+        view.read(&app, |view, _| {
+            assert_eq!(
+                view.transient_hint.current(),
+                Some((
+                    ORCHESTRATE_REQUIRES_TASK_HINT,
+                    crate::transient_hint::TransientHintTone::Muted
+                ))
+            );
+        });
+    });
+}
+
+/// `/orchestrate` with a real conversation and task must route into
+/// `TuiPaneGroup::spawn_local_child_agents` rather than falling into
+/// `execute_tui_slash_command`'s GUI-only `debug_assert!(false, ...)` catch-all -- that
+/// assertion is live in test builds, so the regression this guards against would panic this
+/// test, not merely misbehave silently. Combined with the guard-path coverage above, this
+/// proves the name-guarded `SlashCommandKind::Other` arm is reached for exactly the right
+/// conditions.
+///
+/// The rest of the pipeline is deliberately NOT driven to completion here, matching this
+/// project's established convention for the same real-PTY/real-CLI gap:
+/// `local_harness_launch_tests.rs` leaves `prepare_local_harness_child_launch` (the async half
+/// that shells out to validate the `claude` CLI) untested for the same reason, and
+/// `pane_group_tests.rs`'s own doc comment calls `spawn_local_child_agents`'s real-session-
+/// creation half "untested, per project convention for real-PTY paths". What IS covered, by
+/// `pane_group_tests.rs::finish_spawning_local_child_agent_registers_and_tracks_child`, is that
+/// once a child session materializes, it reaches `TuiOrchestrationModel::snapshot` -- i.e. the
+/// orchestration tab bar. This test closes the remaining gap: that `/orchestrate` in the TUI
+/// actually reaches `TuiPaneGroup::spawn_local_child_agents` in the first place.
+#[test]
+fn orchestrate_slash_command_routes_to_tui_pane_group_without_falling_into_gui_only_catch_all() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        app.update(TuiPaneGroup::register);
+        let (view, _session_id, _conversation_id) =
+            add_orchestration_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("/orchestrate write tests", ctx);
+            });
+        });
+
+        let task = "write tests".to_owned();
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::ORCHESTRATE, Some(&task), ctx);
+        });
+
+        // Neither guard hint fired: a real conversation and a real task were supplied, so
+        // the arm proceeded past both early returns into TuiPaneGroup.
+        view.read(&app, |view, _| {
+            let hint = view.transient_hint.current().map(|(text, _)| text);
+            assert_ne!(hint, Some(ORCHESTRATE_REQUIRES_CONVERSATION_HINT));
+            assert_ne!(hint, Some(ORCHESTRATE_REQUIRES_TASK_HINT));
+        });
+        // The dispatch arm clears the composer before handing off to TuiPaneGroup, same as
+        // every other executing slash command.
+        assert_eq!(app.read(|ctx| input_text(&view, ctx)), "");
+    });
 }
 
 #[test]

@@ -32,11 +32,17 @@
 //! new wrapper was the right move instead of widening
 //! `local_harness_launch`'s existing `pub(super)` visibility.
 //!
-//! Not yet ported from the GUI: a UI trigger (`/orchestrate` is not in
-//! `supports_tui()` yet), per-pane working-directory/shell inheritance (this
-//! always inherits the *process's* cwd/`$SHELL`, not the specific session
-//! `/orchestrate` was typed in -- the TUI has no per-session cwd tracking
-//! the way `PaneGroup::startup_path_for_new_session` does), and
+//! The UI trigger lives in `TuiTerminalSessionView::execute_tui_slash_command`
+//! (`crates/warp_tui/src/terminal_session_view.rs`): a name-guarded arm on
+//! `SlashCommandKind::Other` (matching `commands::ORCHESTRATE.name`, since
+//! `/orchestrate` deliberately keeps `kind() == Other` -- see that static's
+//! doc comment) validates the active conversation and task argument, then
+//! calls [`TuiPaneGroup::spawn_local_child_agents`].
+//!
+//! Not yet ported from the GUI: per-pane working-directory/shell inheritance
+//! (this always inherits the *process's* cwd/`$SHELL`, not the specific
+//! session `/orchestrate` was typed in -- the TUI has no per-session cwd
+//! tracking the way `PaneGroup::startup_path_for_new_session` does), and
 //! `inherit_child_agent_settings` (per-conversation AI profile inheritance).
 use std::collections::HashMap;
 
