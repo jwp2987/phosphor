@@ -18,6 +18,7 @@ use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::{AppContext, Element, Entity, EntityId, SingletonEntity as _};
 
 use crate::ai::agent_providers::{llm_id as byop_llm_id, lookup_byop};
+use crate::ai::execution_profiles::model_menu_items::is_auto;
 use crate::ai::llms::{
     is_using_api_key_for_provider, DisableReason, LLMId, LLMInfo, LLMPreferences, LLMProvider,
     LLMSpec,
@@ -138,6 +139,46 @@ impl ModelSelectorDataSource {
     pub fn new(terminal_view_id: EntityId) -> Self {
         Self { terminal_view_id }
     }
+
+    /// Orders model-picker `choices` with "auto" models first, otherwise
+    /// preserving the incoming order.
+    ///
+    /// Zap port of the pin's `order_model_choices`
+    /// (`02b53fcd8:app/src/terminal/input/models/data_source.rs:251`), which
+    /// buckets choices into four groups, in this order: custom-router, auto,
+    /// custom (BYOK/`CustomEndpoint`), then everything else. Only the auto
+    /// bucket is ported here — the pin's other two predicates have no
+    /// equivalent in this fork:
+    /// - `is_custom_router_id(llm.id.as_str())` (checked first, ahead of
+    ///   "auto", because custom-router ids contain "auto" and would otherwise
+    ///   land in the auto bucket) guards a Warp-hosted custom-model-router
+    ///   feature this fork never got at all. `DECLINED.md`'s `FEATURE_INTROS`
+    ///   row (#404) records that `FeatureIntroId::CustomModelRouter` ships
+    ///   unpopulated for exactly this reason. There is no
+    ///   `custom_model_routers` module, no `custom-router:` id prefix, and no
+    ///   `is_custom_router_id` fn in this fork to call.
+    /// - `llm_preferences.custom_llm_info_for_id(&llm.id)` resolves the pin's
+    ///   `ApiKeyManager::custom_endpoints` store, which `DECLINED.md` #142/#347
+    ///   supersede: this fork's BYOP surface is `AgentProviderSecrets`
+    ///   instead, and `LLMPreferences` here has no `custom_llm_info_for_id`
+    ///   method to call.
+    ///
+    /// If either surface above is ever ported, restore the matching bucket
+    /// here rather than re-deriving the ordering from scratch.
+    fn order_model_choices<'a>(choices: Vec<&'a LLMInfo>) -> Vec<&'a LLMInfo> {
+        let mut auto_choices = Vec::new();
+        let mut other_choices = Vec::new();
+
+        for llm in choices {
+            if is_auto(llm) {
+                auto_choices.push(llm);
+            } else {
+                other_choices.push(llm);
+            }
+        }
+
+        auto_choices.into_iter().chain(other_choices).collect()
+    }
 }
 
 /// Frontend-neutral model picker result shared by the GUI and `warp_tui` surfaces.
@@ -168,8 +209,9 @@ impl ModelPickerChoice {
     }
 }
 
-/// Applies the model picker's fuzzy filtering and effective disabled state to a
-/// set of `choices`, returning surface-agnostic [`ModelPickerChoice`]s ordered
+/// Orders `choices` auto-first (see [`ModelSelectorDataSource::order_model_choices`]),
+/// then applies the model picker's fuzzy filtering and effective disabled
+/// state, returning surface-agnostic [`ModelPickerChoice`]s ordered auto/
 /// selectable-first then by match score.
 ///
 /// Mirrors the filtering in [`ModelSelectorDataSource::run_query`] but is
@@ -177,11 +219,11 @@ impl ModelPickerChoice {
 /// gated behind `RequiresUpgrade` is treated as enabled when the user already
 /// has a BYOK key for its provider.
 pub fn query_model_picker_choices<'a>(
-    _llm_preferences: &LLMPreferences,
     choices: impl IntoIterator<Item = &'a LLMInfo>,
     query_text: &str,
     app: &AppContext,
 ) -> Vec<ModelPickerChoice> {
+    let choices = ModelSelectorDataSource::order_model_choices(choices.into_iter().collect());
     let query_text = query_text.trim().to_lowercase();
     let mut results = choices
         .into_iter()
@@ -741,3 +783,7 @@ impl SearchItem for ModelSearchItem {
 fn should_show_discount_chip(discount_percentage: Option<f32>, is_using_byok: bool) -> bool {
     discount_percentage.is_some_and(|p| p > 0.) && !is_using_byok
 }
+
+#[cfg(test)]
+#[path = "data_source_tests.rs"]
+mod tests;

@@ -1164,13 +1164,34 @@ tested with zero production callers.
       Pin impl at `02b53fcd8:editor/view/mod.rs:2480` needs adapting — the fork's
       `reset_selections_to_point` is on `EditorView`, not `EditorModel`.
 
-- [ ] **#10 The model picker lost its ordering. NEEDS A JUDGEMENT CALL.**
-      `query_model_picker_choices(_llm_preferences, …)`
+- [x] **#10 The model picker lost its ordering. NEEDS A JUDGEMENT CALL.**
+      **[DONE `9ce314db4` — `ModelSelectorDataSource::order_model_choices`
+      ported with only the "auto first" bucket, plus tests in the new
+      `data_source_tests.rs`.]** `query_model_picker_choices(_llm_preferences, …)`
       (`app/src/terminal/input/models/data_source.rs:179`); the pin's first
       statement is `order_model_choices` (`02b53fcd8:data_source.rs:159`, helper
       `:251`), absent here. Two of its three bucket predicates
       (`is_custom_router_id`, `custom_llm_info_for_id`) belong to the surface
       `DECLINED.md` declines under #142/#347, so **only "auto first" is portable.**
+      Confirmed against `DECLINED.md`: `is_custom_router_id` guards a
+      Warp-hosted custom-model-router feature this fork never got at all (see
+      the `FEATURE_INTROS` row, #404 — `FeatureIntroId::CustomModelRouter`
+      ships unpopulated for exactly that reason; no `custom_model_routers`
+      module or `custom-router:` id prefix exists here). `custom_llm_info_for_id`
+      resolves the pin's `ApiKeyManager::custom_endpoints` store, superseded
+      per #142/#347 by `AgentProviderSecrets`; `LLMPreferences` has no such
+      method here. Dropped the now-fully-unused `llm_preferences` parameter
+      from `query_model_picker_choices` per AGENTS.md 5.2 (delete unused
+      params, don't `_`-prefix) and updated its one call site
+      (`crates/warp_tui/src/model_menu.rs`). **Caveat found while porting: the
+      pin's GUI `run_query` calls `query_model_picker_choices` too
+      (`02b53fcd8:data_source.rs:325`), so this fix would cover the GUI there.
+      This fork's `ModelSelectorDataSource::run_query` (same file, already
+      diverged pre-existing from the pin) duplicates the filtering inline
+      instead and never calls `query_model_picker_choices` at all — so this
+      change fixes ordering for the TUI model menu (the function's one live
+      caller in this fork) but NOT for the GUI dropdown, which is a separate,
+      still-open gap.**
 
 - [ ] **#11 `should_show_agent_mode_ask_user_question_speedbump` has zero
       consumers.** `app/src/settings/ai.rs:2134`, covered by two tests, referenced
