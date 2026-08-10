@@ -67,14 +67,18 @@ pub use sqlite::establish_ro_connection;
 /// Read paths for the codebase embedding index. New in this fork — at the pin
 /// this data was on the server, so nothing local read it.
 #[cfg(any(feature = "local_fs", feature = "integration_tests"))]
-pub use sqlite::{codebase_index_children, codebase_index_vectors, known_codebase_index_hashes};
+pub use sqlite::{
+    codebase_index_children, codebase_index_node_summaries, codebase_index_vectors,
+    known_codebase_index_hashes,
+};
 /// Direct write paths for the codebase embedding index, plus the standalone
 /// connection that owns them. Used only by the remote-server daemon, which has
 /// no `PersistenceWriter` to route writes through — see
 /// [`sqlite::establish_codebase_index_connection`].
 #[cfg(any(feature = "local_fs", feature = "integration_tests"))]
 pub use sqlite::{
-    establish_codebase_index_connection, save_codebase_index_embeddings, save_codebase_index_nodes,
+    establish_codebase_index_connection, save_codebase_index_embeddings,
+    save_codebase_index_node_summaries, save_codebase_index_nodes,
 };
 
 /// Initializes the persistence "subsystem".
@@ -411,6 +415,20 @@ pub enum ModelEvent {
     UpsertCodebaseIndexEmbeddings {
         embedding_space: String,
         embeddings: Vec<(String, i32, Vec<u8>)>,
+    },
+    /// Records the codebase index's per-node search summaries.
+    ///
+    /// New in this fork. These are what let a query prune a subtree instead of
+    /// scoring every fragment beneath it; see
+    /// `crates/ai/src/index/full_source_code_embedding/vector_index.rs`. Each
+    /// entry is `(node_hash, leaf_count, radius_radians, dimensions,
+    /// little_endian_f32_mean)`.
+    ///
+    /// Written once per index build rather than per sync batch, so this is a
+    /// rarer and larger event than `UpsertCodebaseIndexEmbeddings`.
+    UpsertCodebaseIndexNodeSummaries {
+        embedding_space: String,
+        summaries: Vec<(String, i32, f32, i32, Vec<u8>)>,
     },
     /// Writes one `workspace_language_server` row (insert-or-update on the
     /// (workspace, server) pair). The workspace must already have a

@@ -5,6 +5,8 @@
 //! wrong: the truncation-parameter branch between provider families, and the
 //! ordering of the returned vectors.
 
+use futures::executor::block_on;
+
 use super::*;
 
 #[test]
@@ -159,4 +161,131 @@ fn embedding_dimensions_match_the_model_names() {
     assert_eq!(EmbeddingConfig::VoyageCode3_512.dimensions(), 512);
     assert_eq!(EmbeddingConfig::Voyage4_512.dimensions(), 512);
     assert_eq!(EmbeddingConfig::Voyage3_5_Lite_512.dimensions(), 512);
+}
+
+// --------------------------------------------------------------------------
+// Reranking
+// --------------------------------------------------------------------------
+
+#[test]
+fn a_rerank_response_parses_from_either_field_name() {
+    // Voyage returns the scores under `data`, Cohere under `results`. Getting
+    // this wrong would not fail loudly -- it would make every rerank fall back to
+    // the hybrid path, and the user would just get slightly worse ordering
+    // forever with no error anywhere.
+    let voyage: RerankResponse =
+        serde_json::from_str(r#"{"data":[{"index":0,"relevance_score":0.4}]}"#).expect("parses");
+    assert!(voyage.data.is_some() && voyage.results.is_none());
+
+    let cohere: RerankResponse =
+        serde_json::from_str(r#"{"results":[{"index":0,"relevance_score":0.9}]}"#).expect("parses");
+    assert!(cohere.results.is_some() && cohere.data.is_none());
+}
+
+#[test]
+fn a_rerank_response_ignores_fields_it_does_not_know() {
+    // Both providers send `object`, `model` and `usage` alongside the scores, and
+    // Cohere's entries can carry a `document`. An unknown field must not be a
+    // parse failure.
+    let body = r#"{
+        "object": "list",
+        "model": "rerank-2.5",
+        "usage": {"total_tokens": 12},
+        "data": [{"index": 1, "relevance_score": 0.7, "document": "fn main() {}"}]
+    }"#;
+    let parsed: RerankResponse = serde_json::from_str(body).expect("parses");
+    let data = parsed.data.expect("data present");
+    assert_eq!(data.len(), 1);
+    assert_eq!(data[0].index, 1);
+}
+
+#[test]
+fn the_rerank_request_body_carries_the_model_query_and_documents() {
+    let body = RerankRequest {
+        model: "rerank-2.5",
+        query: "resolve embedding endpoint",
+        documents: vec!["fn a() {}".to_owned(), "fn b() {}".to_owned()],
+    };
+    let json = serde_json::to_value(&body).expect("serializable");
+
+    assert_eq!(json["model"], "rerank-2.5");
+    assert_eq!(json["query"], "resolve embedding endpoint");
+    assert_eq!(
+        json["documents"],
+        serde_json::json!(["fn a() {}", "fn b() {}"])
+    );
+}
+
+#[test]
+fn no_rerank_model_appears_twice_in_the_supported_list() {
+    // The list is walked in preference order and the first match wins, so a
+    // duplicate would be dead weight at best and a silently unreachable
+    // preference at worst.
+    let mut seen: Vec<&'static str> = SUPPORTED_RERANK_MODELS.to_vec();
+    seen.sort_unstable();
+    let count = seen.len();
+    seen.dedup();
+    assert_eq!(count, seen.len());
+    assert!(count >= 2, "at least the two provider families must be listed");
+}
+
+#[test]
+fn a_rerank_provider_reports_the_model_it_will_call() {
+    // Surfaced in the log at startup, because "is my reranker actually being
+    // used?" is otherwise unanswerable from outside.
+    let provider = HttpRerankProvider::new(
+        Client::new_for_test(),
+        EmbeddingEndpoint {
+            base_url: "https://api.voyageai.com/v1".to_owned(),
+            api_key: "k".to_owned(),
+        },
+        "rerank-2.5",
+    );
+    assert_eq!(provider.model_id(), "rerank-2.5");
+}
+
+#[test]
+fn a_rerank_provider_refuses_to_send_a_key_over_plaintext() {
+    // Same rule as the chat and embedding paths. A rerank request carries the
+    // user's source code as well as their key, so this one is not optional.
+    block_on(async {
+        let provider = HttpRerankProvider::new(
+            Client::new_for_test(),
+            EmbeddingEndpoint {
+                base_url: "http://example.com/v1".to_owned(),
+                api_key: "secret".to_owned(),
+            },
+            "rerank-2.5",
+        );
+
+        let error = provider
+            .rerank("query", vec!["fn a() {}".to_owned()])
+            .await
+            .expect_err("a plaintext host with a key must be refused");
+        assert!(
+            error.to_string().contains("plaintext"),
+            "the error must say why: {error}"
+        );
+    });
+}
+
+#[test]
+fn an_empty_rerank_costs_no_request() {
+    block_on(async {
+        let provider = HttpRerankProvider::new(
+            Client::new_for_test(),
+            EmbeddingEndpoint {
+                base_url: "https://api.voyageai.com/v1".to_owned(),
+                api_key: "k".to_owned(),
+            },
+            "rerank-2.5",
+        );
+        assert!(
+            provider
+                .rerank("query", Vec::new())
+                .await
+                .expect("nothing to rerank is not a failure")
+                .is_empty()
+        );
+    });
 }

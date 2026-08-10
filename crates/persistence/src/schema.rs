@@ -151,6 +151,19 @@ diesel::table! {
 }
 
 diesel::table! {
+    codebase_index_node_summaries (id) {
+        id -> Integer,
+        embedding_space -> Text,
+        node_hash -> Text,
+        leaf_count -> Integer,
+        radius -> Float,
+        dimensions -> Integer,
+        mean -> Binary,
+        last_modified_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     codebase_index_nodes (id) {
         id -> Integer,
         embedding_space -> Text,

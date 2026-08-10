@@ -408,10 +408,11 @@ fn establish_connection(database_url: &str, read_only: bool) -> Result<SqliteCon
 /// This exists for the remote-server daemon, which indexes repositories on its
 /// own host but has none of the app's persistence: no `PersistenceWriter`, no
 /// migrations, no `warp.sqlite`. Running the app's full migration set on the
-/// daemon would give it every table in the product for the sake of two, so the
-/// two are created directly here. The DDL is copied verbatim from
+/// daemon would give it every table in the product for the sake of three, so the
+/// three are created directly here. The DDL is copied verbatim from
 /// `crates/persistence/migrations/2026-08-10-000000_add_codebase_index_vectors/up.sql`
-/// with `IF NOT EXISTS` added; if that migration ever changes shape, this must
+/// and `…/2026-08-10-010000_add_codebase_index_node_summaries/up.sql` with
+/// `IF NOT EXISTS` added; if either migration ever changes shape, this must
 /// change with it.
 ///
 /// Unlike the app's store, this connection is used for both reads and writes:
@@ -440,6 +441,18 @@ pub fn establish_codebase_index_connection(database_url: &str) -> Result<SqliteC
         );
         CREATE UNIQUE INDEX IF NOT EXISTS ux_codebase_index_embeddings_space_hash
             ON codebase_index_embeddings (embedding_space, content_hash);
+        CREATE TABLE IF NOT EXISTS codebase_index_node_summaries (
+            id INTEGER PRIMARY KEY NOT NULL,
+            embedding_space TEXT NOT NULL,
+            node_hash TEXT NOT NULL,
+            leaf_count INTEGER NOT NULL,
+            radius FLOAT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            mean BLOB NOT NULL,
+            last_modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_codebase_index_node_summaries_space_hash
+            ON codebase_index_node_summaries (embedding_space, node_hash);
     "#,
     )
     .context("Failed to create the daemon's codebase index tables")?;
@@ -913,6 +926,11 @@ fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> a
             embeddings,
         } => save_codebase_index_embeddings(connection, embedding_space, embeddings)
             .context("error upserting codebase index embeddings"),
+        ModelEvent::UpsertCodebaseIndexNodeSummaries {
+            embedding_space,
+            summaries,
+        } => save_codebase_index_node_summaries(connection, embedding_space, summaries)
+            .context("error upserting codebase index node summaries"),
         ModelEvent::UpsertWorkspaceLanguageServer {
             workspace_path,
             lsp_type,
@@ -1887,8 +1905,8 @@ const SQLITE_MAX_BOUND_PARAMETERS: usize = 900;
 ///
 /// New in this fork — see `ModelEvent::UpsertCodebaseIndexNodes`. Written as one
 /// transaction per batch so a partially-written batch cannot leave a parent
-/// recorded without its children, which would make the tree walk in
-/// `SqliteVectorStore::leaves_under` silently skip a subtree.
+/// recorded without its children, which would make the codebase index's tree
+/// walk silently skip a subtree.
 pub fn save_codebase_index_nodes(
     conn: &mut SqliteConnection,
     space: String,
@@ -1937,6 +1955,42 @@ pub fn save_codebase_index_embeddings(
             diesel::insert_into(codebase_index_embeddings)
                 .values(row.clone())
                 .on_conflict((embedding_space, content_hash))
+                .do_update()
+                .set(&row)
+                .execute(conn)?;
+        }
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+/// Insert-or-update the codebase index's per-node search summaries.
+///
+/// New in this fork — see `ModelEvent::UpsertCodebaseIndexNodeSummaries`. One
+/// transaction per batch, like the node writer: a summary is only meaningful
+/// alongside the rest of its level, and a half-written batch would leave the
+/// search opening subtrees it could have skipped.
+pub fn save_codebase_index_node_summaries(
+    conn: &mut SqliteConnection,
+    space: String,
+    summaries: Vec<(String, i32, f32, i32, Vec<u8>)>,
+) -> Result<()> {
+    use schema::codebase_index_node_summaries::dsl::*;
+
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        for (hash, leaves, radius_radians, dims, bytes) in summaries {
+            let row = model::NewCodebaseIndexNodeSummary {
+                embedding_space: space.clone(),
+                node_hash: hash,
+                leaf_count: leaves,
+                radius: radius_radians,
+                dimensions: dims,
+                mean: bytes,
+            };
+            diesel::insert_into(codebase_index_node_summaries)
+                .values(row.clone())
+                .on_conflict((embedding_space, node_hash))
                 .do_update()
                 .set(&row)
                 .execute(conn)?;
@@ -2030,6 +2084,32 @@ pub fn codebase_index_vectors(
                 .filter(content_hash.eq_any(chunk))
                 .select((content_hash, dimensions, vector))
                 .load::<(String, i32, Vec<u8>)>(conn)?,
+        );
+    }
+    Ok(out)
+}
+
+/// The stored search summaries for `hashes`, as
+/// `(node_hash, leaf_count, radius_radians, dimensions, mean_bytes)`.
+///
+/// A hash with no summary is simply absent: the search reads that as "this
+/// subtree is unbounded, open it", which is slow but correct. That is the normal
+/// state for a tree that has been synced but not yet indexed.
+pub fn codebase_index_node_summaries(
+    conn: &mut SqliteConnection,
+    space: &str,
+    hashes: &[String],
+) -> Result<Vec<(String, i32, f32, i32, Vec<u8>)>, diesel::result::Error> {
+    use schema::codebase_index_node_summaries::dsl::*;
+
+    let mut out = Vec::new();
+    for chunk in hashes.chunks(SQLITE_MAX_BOUND_PARAMETERS) {
+        out.extend(
+            codebase_index_node_summaries
+                .filter(embedding_space.eq(space))
+                .filter(node_hash.eq_any(chunk))
+                .select((node_hash, leaf_count, radius, dimensions, mean))
+                .load::<(String, i32, f32, i32, Vec<u8>)>(conn)?,
         );
     }
     Ok(out)

@@ -10,7 +10,8 @@ use warp_multi_agent_api::{self as api, response_event::stream_finished};
 use super::schema::{
     active_mcp_servers, agent_conversations, agent_tasks, ai_document_panes, ai_memory_panes,
     ambient_agent_panes, app, blocks, cloud_objects_refreshes, code_pane_tabs, code_panes,
-    code_review_panes, codebase_index_embeddings, codebase_index_nodes, commands,
+    code_review_panes, codebase_index_embeddings, codebase_index_node_summaries,
+    codebase_index_nodes, commands,
     current_user_information, env_var_collection_panes, folders, generic_string_objects,
     ignored_suggestions, mcp_environment_variables, mcp_server_installations, mcp_server_panes,
     notebook_panes, notebooks, object_actions, object_metadata, object_permissions, pane_branches,
@@ -254,6 +255,38 @@ pub struct NewCodebaseIndexEmbedding {
     pub content_hash: String,
     pub dimensions: i32,
     pub vector: Vec<u8>,
+}
+
+/// One merkle node's summary in embedding space: the search index that lets a
+/// query skip a subtree instead of scoring every fragment under it.
+///
+/// New in this fork. `mean` is the unnormalized mean of every embedded leaf
+/// beneath the node, in the same little-endian f32 encoding as
+/// `CodebaseIndexEmbedding::vector`; `radius` is the angle in radians that
+/// covers all of them. Keyed by node hash, which in a merkle tree covers the
+/// whole subtree — so a row is either correct or absent, never stale.
+#[derive(Clone, Debug, Identifiable, Queryable, AsChangeset)]
+#[diesel(table_name = codebase_index_node_summaries)]
+pub struct CodebaseIndexNodeSummary {
+    pub id: i32,
+    pub embedding_space: String,
+    pub node_hash: String,
+    pub leaf_count: i32,
+    pub radius: f32,
+    pub dimensions: i32,
+    pub mean: Vec<u8>,
+    pub last_modified_at: NaiveDateTime,
+}
+
+#[derive(Clone, Debug, Insertable, AsChangeset)]
+#[diesel(table_name = codebase_index_node_summaries)]
+pub struct NewCodebaseIndexNodeSummary {
+    pub embedding_space: String,
+    pub node_hash: String,
+    pub leaf_count: i32,
+    pub radius: f32,
+    pub dimensions: i32,
+    pub mean: Vec<u8>,
 }
 
 /// A row of the `workspace_language_server` table: one per (workspace, language

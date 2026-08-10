@@ -2,6 +2,7 @@ mod changed_files;
 mod chunker;
 mod codebase_index;
 mod fragment_metadata;
+pub mod lexical;
 pub mod local_store_client;
 pub mod manager;
 mod merkle_tree;
@@ -10,6 +11,7 @@ pub mod search_shaping;
 mod snapshot;
 pub mod store_client;
 mod sync_client;
+pub mod vector_index;
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};

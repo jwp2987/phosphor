@@ -561,17 +561,41 @@ restored recent-repos pruning. Configuration reuses `AISettings::agent_providers
 — no new settings mechanism. `all_working_directories` is CALLED, not duplicated.
 
 **Honest quality delta vs the pin, stated not buried:**
-- **Reranking is worse.** Pin used a cross-encoder (query + fragment scored
-  together); this is a bi-encoder cosine over independently-encoded vectors.
-  Recall unchanged, top-few ordering measurably worse. Biggest regression.
-- Search is **exact rather than approximate** — more accurate, but latency grows
-  linearly with repo size where the pin's was roughly flat.
-- `populate_merkle_tree_cache` is the one genuine no-op (it warmed a *remote*
-  cache for other clients; writing nodes locally already did that work).
-  Documented, and its caller treats the result as advisory.
+- ~~**Reranking is worse.**~~ **FIXED** — see the D2d row below.
+- ~~Search is **exact rather than approximate**, so latency grows linearly with
+  repo size.~~ **FIXED** — see the D2d row below. Still exact; no longer linear.
+- ~~`populate_merkle_tree_cache` is the one genuine no-op.~~ It now builds the
+  local search index, which is the local equivalent of what it warmed remotely.
+  Its caller still treats the result as advisory, which stays correct: without an
+  index a search is slow, never wrong.
 - **Nothing degrades to a silent empty answer** — a missing provider raises
   `Error::NoEmbeddingProvider` naming the model, because an empty result set is
   indistinguishable from an empty store and would re-embed the repo every sync.
+
+### D2d — the two D2 regressions, closed
+
+- [x] **Latency.** The merkle tree now doubles as a ball tree in cosine space:
+      each node carries a `NodeSummary` (centroid, leaf count, angular radius) in
+      a new `codebase_index_node_summaries` table, and retrieval descends
+      best-first, skipping any subtree whose *best possible* score cannot reach
+      the current k-th best. **Still exact** — same fragments, same order as
+      scoring every leaf, asserted directly against an independent exhaustive
+      implementation. Measured on synthetic corpora with directory locality: a
+      query reads ~88 leaf vectors at 512 fragments and ~72 at 8,192, i.e. flat
+      where it used to be all of them. With *no* locality it degrades toward the
+      full scan (416 of 512) and stays correct; that case is tested too.
+      Summaries are keyed by node hash, so they can be absent but never stale.
+- [x] **Reranking.** `RerankProvider` calls the user's own `/rerank` model where
+      their provider has one (`SUPPORTED_RERANK_MODELS`, Voyage and Cohere
+      shapes) — a real cross-encoder, the pin's design bought rather than
+      approximated. Where they have none, reranking fuses the bi-encoder with
+      BM25 over the same fragments (code-aware tokenizer: identifiers emitted
+      whole *and* split on case/underscore), combined by reciprocal rank fusion.
+      Measured on a fixture with known answers: MRR 0.625 bi-encoder only,
+      0.8125 lexical only, **1.0 fused**.
+- Answers the old "open question for the maintainer" below: both options it
+  listed were taken, in the order it suggested — provider-side where available,
+  no local model dependency added.
 
 - [x] **DONE 2026-08-10** (`623937230`) — remote-daemon indexing, settings UI and all 39 daemon tests landed; `LaunchMode::supports_indexing()` ported properly and `daemon_codebase_index_data_dir` lives next to the daemon (this fork's `RemoteServerDaemon` never reaches `initialize_app`). Originally: remote-daemon indexing (the pin's
       `LaunchMode::supports_indexing()` gate has no fork equivalent;
@@ -579,10 +603,12 @@ restored recent-repos pruning. Configuration reuses `AISettings::agent_providers
       two new `CodeSettings` toggles and for picking an embedding provider (both
       reachable via `settings.toml` today), and
       `app/src/remote_server/codebase_index_model_tests.rs` (39 tests).
-- [ ] **Open question for the maintainer:** reranking quality. If the bi-encoder
-      ordering proves too weak in practice, the options are a local cross-encoder
-      model or a provider-side rerank endpoint. Worth deciding only after someone
-      uses it.
+- [x] **Answered (D2d above):** reranking quality. Provider-side rerank endpoint
+      where the user has one, hybrid vector+BM25 where they do not. A local
+      cross-encoder was considered and declined: `crates/input_classifier` proves
+      the fork *can* run local inference (candle/ort behind `onnx_*` features),
+      but it would add a model download and inference cost to a path that a
+      provider already serves for a fraction of a cent.
 
 **Status:** a single agent is building all three stages. I advised against one
 pass for ~12.4k lines across two crates plus a subsystem with no pin to copy;

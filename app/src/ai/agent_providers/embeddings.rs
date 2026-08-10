@@ -21,12 +21,21 @@
 //! answer with `{"data": [{"index": n, "embedding": [...]}]}`, so one request
 //! path serves both. They disagree on one field name — OpenAI truncates with
 //! `dimensions`, Voyage with `output_dimension` — which is the only branch.
+//!
+//! # Reranking
+//!
+//! [`HttpRerankProvider`] is the same idea for `POST {base}/rerank`: the pin
+//! reranked with a server-side cross-encoder, and where the user's provider
+//! sells one this buys it rather than approximating it. It is resolved as a
+//! capability rather than a setting — see [`SUPPORTED_RERANK_MODELS`] — and
+//! returning `None` is an ordinary outcome, because the index has a hybrid
+//! fallback that needs no reranking model at all.
 
 use std::sync::{Arc, Mutex};
 
 use ai::index::full_source_code_embedding::EmbeddingConfig;
 use ai::index::full_source_code_embedding::Error as IndexError;
-use ai::index::full_source_code_embedding::local_store_client::EmbeddingProvider;
+use ai::index::full_source_code_embedding::local_store_client::{EmbeddingProvider, RerankProvider};
 use async_trait::async_trait;
 use http_client::Client;
 use serde::{Deserialize, Serialize};
@@ -277,6 +286,215 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
 /// Convenience alias for the shape the index wants.
 pub fn shared_provider(provider: HttpEmbeddingProvider) -> Arc<dyn EmbeddingProvider> {
     Arc::new(provider)
+}
+
+/// Every reranking model this fork knows how to call, in preference order.
+///
+/// # Why a list and not a setting
+///
+/// A reranker is a *capability*, not a choice: either the provider the user
+/// already configured has one or it does not, and there is nothing for them to
+/// decide. So this is resolved exactly the way the embedding model is — find a
+/// usable provider whose model list contains one of these ids — rather than
+/// adding a setting whose only correct value is "whatever my provider offers".
+///
+/// Order is newest-and-strongest first within each family, Voyage before Cohere
+/// to match [`SUPPORTED_EMBEDDING_MODELS`]'s preference for Voyage. A user who
+/// has configured several gets the best one they are paying for.
+///
+/// Both families take `POST {base}/rerank` with `{model, query, documents}` and
+/// answer with a list of `{index, relevance_score}`; they disagree only on
+/// whether that list is called `data` (Voyage) or `results` (Cohere), which
+/// [`RerankResponse`] accepts either of. A provider whose reranker does not
+/// speak this shape must not be added here — it would fail every call, and
+/// reranking would silently fall back on every search.
+pub const SUPPORTED_RERANK_MODELS: &[&str] = &[
+    "rerank-2.5",
+    "rerank-2.5-lite",
+    "rerank-2",
+    "rerank-2-lite",
+    "rerank-lite-1",
+    "rerank-v3.5",
+    "rerank-english-v3.0",
+    "rerank-multilingual-v3.0",
+];
+
+/// The reranking model the user has configured, and where to reach it.
+///
+/// `None` — no usable provider lists any model in [`SUPPORTED_RERANK_MODELS`] —
+/// is the ordinary case, not an error. `LocalStoreClient` then reranks with
+/// hybrid vector + lexical scoring, which needs no provider capability at all.
+pub fn resolve_rerank_endpoint(app: &AppContext) -> Option<(EmbeddingEndpoint, &'static str)> {
+    let providers = AISettings::as_ref(app).agent_providers.value().clone();
+
+    for model_id in SUPPORTED_RERANK_MODELS.iter().copied() {
+        let Some(provider) = providers.iter().find(|provider| {
+            provider.is_usable()
+                && provider
+                    .models
+                    .iter()
+                    .any(|model| model.id == model_id && !model.disabled)
+        }) else {
+            continue;
+        };
+
+        let Ok(base_url) = normalize_base_url(&provider.resolved_base_url()) else {
+            continue;
+        };
+        let api_key = AgentProviderSecrets::as_ref(app)
+            .get(&provider.id)
+            .map(str::to_owned)
+            .unwrap_or_default();
+
+        return Some((EmbeddingEndpoint { base_url, api_key }, model_id));
+    }
+
+    None
+}
+
+/// Calls a user-configured `/rerank` endpoint over HTTP.
+///
+/// This is the one piece of the pin's retrieval quality that the bi-encoder
+/// cannot reproduce: a cross-encoder reads the query and the fragment *together*
+/// and scores their interaction, where a bi-encoder compares two vectors that
+/// were computed without ever seeing each other. Buying it from the provider the
+/// user already brought is cheaper — in code, in binary size and in latency —
+/// than shipping a local model, and it is the only option that costs this fork
+/// no model dependency at all.
+pub struct HttpRerankProvider {
+    client: Client,
+    endpoint: EmbeddingEndpoint,
+    model_id: &'static str,
+}
+
+impl HttpRerankProvider {
+    pub fn new(client: Client, endpoint: EmbeddingEndpoint, model_id: &'static str) -> Self {
+        Self {
+            client,
+            endpoint,
+            model_id,
+        }
+    }
+
+    /// Builds one from the app's current settings, or `None` when the user's
+    /// providers offer no reranking model.
+    pub fn from_app(app: &AppContext) -> Option<Self> {
+        let (endpoint, model_id) = resolve_rerank_endpoint(app)?;
+        Some(Self::new(Client::new(), endpoint, model_id))
+    }
+
+    /// Which model this will call. Reported at startup so a user who wonders
+    /// whether their reranker is being used can find out from the log.
+    pub fn model_id(&self) -> &'static str {
+        self.model_id
+    }
+}
+
+#[derive(Serialize)]
+struct RerankRequest<'a> {
+    model: &'a str,
+    query: &'a str,
+    documents: Vec<String>,
+}
+
+/// One provider's opinion of one document.
+#[derive(Deserialize)]
+struct RerankDatum {
+    /// Which input document this scores. Providers are permitted to answer in
+    /// score order rather than input order, so this is what pairs a score back
+    /// to its fragment; ignoring it would shuffle the results silently.
+    #[serde(default)]
+    index: usize,
+    relevance_score: f32,
+}
+
+/// Voyage returns the scores under `data`, Cohere under `results`. Nothing else
+/// about the two calls differs, so accepting both is one field rather than a
+/// second request path.
+#[derive(Deserialize)]
+struct RerankResponse {
+    #[serde(default)]
+    data: Option<Vec<RerankDatum>>,
+    #[serde(default)]
+    results: Option<Vec<RerankDatum>>,
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+impl RerankProvider for HttpRerankProvider {
+    async fn rerank(&self, query: &str, documents: Vec<String>) -> Result<Vec<f32>, IndexError> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let expected = documents.len();
+        let body = RerankRequest {
+            model: self.model_id,
+            query,
+            documents,
+        };
+
+        let url = format!("{}/rerank", self.endpoint.base_url);
+        let mut request = self.client.post(&url).json(&body);
+        if !self.endpoint.api_key.trim().is_empty() {
+            // Same rule as the embedding and chat paths: an API key never goes
+            // out as a plaintext bearer token to a non-loopback host.
+            if super::is_plaintext_bearer_risk(&self.endpoint.base_url) {
+                return Err(IndexError::Other(anyhow::anyhow!(
+                    "refusing to send the API key to {} over plaintext HTTP — use https, or point this provider at a local runtime",
+                    self.endpoint.base_url
+                )));
+            }
+            request = request.bearer_auth(&self.endpoint.api_key);
+        }
+
+        let response = request.send().await.map_err(|error| {
+            IndexError::Other(anyhow::anyhow!(error).context("rerank request failed"))
+        })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            return Err(IndexError::Other(anyhow::anyhow!(
+                "rerank request to {url} failed with HTTP {}: {detail}",
+                status.as_u16()
+            )));
+        }
+
+        let parsed: RerankResponse = response.json().await.map_err(|error| {
+            IndexError::Other(anyhow::anyhow!(error).context("failed to parse rerank response"))
+        })?;
+
+        let data = parsed
+            .data
+            .or(parsed.results)
+            .ok_or_else(|| IndexError::Other(anyhow::anyhow!(
+                "rerank response from {url} has neither a `data` nor a `results` list"
+            )))?;
+        if data.len() != expected {
+            return Err(IndexError::Other(anyhow::anyhow!(
+                "rerank provider returned {} scores for {expected} documents",
+                data.len()
+            )));
+        }
+
+        // Placed by index rather than appended, because the provider is allowed
+        // to answer in score order. A score landing on the wrong fragment would
+        // be an unfalsifiable ranking bug: the results would look plausible and
+        // be wrong.
+        let mut scores = vec![f32::NEG_INFINITY; expected];
+        for datum in data {
+            let Some(slot) = scores.get_mut(datum.index) else {
+                return Err(IndexError::Other(anyhow::anyhow!(
+                    "rerank provider scored document {} of {expected}",
+                    datum.index
+                )));
+            };
+            *slot = datum.relevance_score;
+        }
+
+        Ok(scores)
+    }
 }
 
 #[cfg(test)]
