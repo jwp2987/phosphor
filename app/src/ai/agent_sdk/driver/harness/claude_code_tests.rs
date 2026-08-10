@@ -49,7 +49,7 @@ fn write_surfaced_parent_bridge_message(state_dir: &Path, record: &MessageBridge
 #[test]
 fn claude_command_uses_session_id_when_not_resuming() {
     let uuid = Uuid::new_v4();
-    let cmd = claude_command("claude", &uuid, "/tmp/prompt.txt", None);
+    let cmd = claude_command("claude", &uuid, "/tmp/prompt.txt", None, None);
     assert!(
         cmd.contains(&format!("--session-id {uuid}")),
         "expected --session-id flag, got: {cmd}"
@@ -61,9 +61,32 @@ fn claude_command_uses_session_id_when_not_resuming() {
 }
 
 #[test]
+fn claude_command_passes_mcp_config_when_present() {
+    let uuid = Uuid::new_v4();
+    let cmd = claude_command(
+        "claude",
+        &uuid,
+        "/tmp/prompt.txt",
+        None,
+        Some("/tmp/oz_mcp_config_abc.json"),
+    );
+    assert!(
+        cmd.contains("--mcp-config '/tmp/oz_mcp_config_abc.json'"),
+        "{cmd}"
+    );
+}
+
+#[test]
+fn claude_command_omits_mcp_config_when_absent() {
+    let uuid = Uuid::new_v4();
+    let cmd = claude_command("claude", &uuid, "/tmp/prompt.txt", None, None);
+    assert!(!cmd.contains("--mcp-config"), "{cmd}");
+}
+
+#[test]
 fn claude_command_pipes_prompt_path() {
     let uuid = Uuid::new_v4();
-    let cmd = claude_command("claude", &uuid, "/tmp/prompt with spaces.txt", None);
+    let cmd = claude_command("claude", &uuid, "/tmp/prompt with spaces.txt", None, None);
     assert!(
         cmd.contains("< '/tmp/prompt with spaces.txt'"),
         "expected single-quoted stdin redirect of the prompt path, got: {cmd}"
@@ -549,16 +572,20 @@ fn prepare_claude_settings_merges_existing_settings() {
 // ── Tests ported from the pinned Warp oracle (`02b53fcd8`) ───────────────────
 //
 // Source: `app/src/ai/agent_sdk/driver/harness/claude_code_tests.rs` at the pin.
-// All 13 remaining oracle tests are enumerated in issue #252 (`claude_transcript`
+// All 9 remaining oracle tests are enumerated in issue #252 (`claude_transcript`
 // itself in #289). Re-verified against the pin again in round 5 (2026-08-07) by
 // tracing each test's actual imports, refining round 4's framing:
 //
-// - 10 are a genuine **feature gap**, non-cloud: 4 need `serialize_claude_mcp_config`,
+// The 4 `serialize_claude_mcp_config` tests that this note used to list as a
+// feature gap are no longer missing: `--mcp-config` is wired, so they are
+// ported below alongside the rest.
+//
+// - 6 are a genuine **feature gap**, non-cloud:
 //   2 need the parent-bridge event cursor (`read/write_parent_bridge_event_cursor`
 //   — pure local disk I/O, despite living in a `parent_bridge.rs` that also has
 //   cloud-tied code elsewhere), 2 need `MessageBridgeCleanupDisposition`
 //   (`MessageBridge::cleanup()` here takes no argument), 1 needs `--resume`
-//   support in `claude_command()`, and 1 (`write_session_index_entry_creates_expected_entry`)
+//   support in `claude_command(, None)`, and 1 (`write_session_index_entry_creates_expected_entry`)
 //   needs the local `claude_transcript` module (#289).
 // - 2 are **cloud**, not merely "local wake absent" as round 4 characterized them:
 //   `prepare_local_wake_command_rehydrates_transcript_with_self_managed_listener`
@@ -682,4 +709,89 @@ fn suffix_uses_worker_injected_env_when_present() {
     assert_eq!(suffix.as_deref(), Some(expected));
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::remove_var(ANTHROPIC_API_KEY_ENV) };
+}
+
+// ── `--mcp-config` serialization, ported from the pin ────────────────────────
+//
+// The shape is Claude Code's, not ours: `{ "mcpServers": { name: entry } }` with
+// a `type` discriminator of `stdio` or `http`. These assert the wire format
+// rather than the Rust types, because that JSON is the contract with the CLI.
+
+#[test]
+fn serialize_claude_mcp_config_cli_server() {
+    let servers = HashMap::from([(
+        "test-server".to_string(),
+        JSONMCPServer {
+            transport_type: JSONTransportType::CLIServer {
+                command: "node".to_string(),
+                args: vec!["server.js".to_string()],
+                env: HashMap::from([("API_KEY".to_string(), "secret".to_string())]),
+                working_directory: None,
+            },
+        },
+    )]);
+    let json = serialize_claude_mcp_config(&servers).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let server = &parsed["mcpServers"]["test-server"];
+    assert_eq!(server["type"], "stdio");
+    assert_eq!(server["command"], "node");
+    assert_eq!(server["args"][0], "server.js");
+    assert_eq!(server["env"]["API_KEY"], "secret");
+}
+
+#[test]
+fn serialize_claude_mcp_config_cli_server_with_cwd() {
+    let servers = HashMap::from([(
+        "test-server".to_string(),
+        JSONMCPServer {
+            transport_type: JSONTransportType::CLIServer {
+                command: "node".to_string(),
+                args: vec!["server.js".to_string()],
+                env: HashMap::new(),
+                working_directory: Some("/opt/mcp".to_string()),
+            },
+        },
+    )]);
+    let json = serialize_claude_mcp_config(&servers).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let server = &parsed["mcpServers"]["test-server"];
+    assert_eq!(server["cwd"], "/opt/mcp");
+}
+
+#[test]
+fn serialize_claude_mcp_config_cli_server_omits_cwd_when_none() {
+    let servers = HashMap::from([(
+        "test-server".to_string(),
+        JSONMCPServer {
+            transport_type: JSONTransportType::CLIServer {
+                command: "node".to_string(),
+                args: vec![],
+                env: HashMap::new(),
+                working_directory: None,
+            },
+        },
+    )]);
+    let json = serialize_claude_mcp_config(&servers).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let server = &parsed["mcpServers"]["test-server"];
+    assert!(server.get("cwd").is_none());
+}
+
+#[test]
+fn serialize_claude_mcp_config_sse_server() {
+    let servers = HashMap::from([(
+        "remote".to_string(),
+        JSONMCPServer {
+            transport_type: JSONTransportType::SSEServer {
+                url: "https://mcp.example.com".to_string(),
+                headers: HashMap::from([("Authorization".to_string(), "Bearer tok".to_string())]),
+            },
+        },
+    )]);
+    let json = serialize_claude_mcp_config(&servers).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let server = &parsed["mcpServers"]["remote"];
+    assert_eq!(server["type"], "http");
+    assert_eq!(server["url"], "https://mcp.example.com");
+    assert_eq!(server["headers"]["Authorization"], "Bearer tok");
 }

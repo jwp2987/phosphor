@@ -1144,6 +1144,7 @@ impl AgentDriver {
                 task_id,
                 agent_event_stream_client,
                 terminal_driver,
+                &resolved_mcp_servers,
             )?
             .into();
 

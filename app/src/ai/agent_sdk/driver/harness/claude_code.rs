@@ -17,7 +17,7 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent_events::AgentEventStreamClient;
 use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
-use crate::ai::mcp::JSONMCPServer;
+use crate::ai::mcp::{JSONMCPServer, JSONTransportType};
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::session::ExecuteCommandOptions;
 use crate::terminal::CLIAgent;
@@ -25,7 +25,10 @@ use crate::terminal::CLIAgent;
 use super::super::terminal::{CommandHandle, TerminalDriver};
 use super::super::{AgentDriver, AgentDriverError};
 use super::json_utils::{read_json_file_or_default, write_json_file};
-use super::{write_temp_file, HarnessRunner, ManagedSecretValue, SavePoint, ThirdPartyHarness};
+use super::{
+    write_temp_file, write_temp_file_with_suffix, HarnessRunner, ManagedSecretValue, SavePoint,
+    ThirdPartyHarness,
+};
 mod parent_bridge;
 
 #[cfg(test)]
@@ -84,9 +87,9 @@ impl ThirdPartyHarness for ClaudeHarness {
         ]
     }
 
-    /// `resolved_mcp_servers` is unused: at the pin, Claude's MCP servers are staged as a
-    /// temp JSON file passed to the CLI with `--mcp-config` from `build_runner`, not written
-    /// into a config file here — and that flag is not ported to this fork yet.
+    /// `resolved_mcp_servers` is unused *here* by design: Claude's MCP servers are staged
+    /// as a temp JSON file passed to the CLI with `--mcp-config` from `build_runner`, not
+    /// written into a config file. See `serialize_claude_mcp_config` below.
     ///
     /// `_third_party_harness_model_config` is unused at the pin too: Claude's model is set
     /// through the `ANTHROPIC_MODEL` env var (see [`super::harness_model_env_vars`]), not a
@@ -116,6 +119,7 @@ impl ThirdPartyHarness for ClaudeHarness {
         task_id: Option<AmbientAgentTaskId>,
         agent_event_stream_client: Arc<dyn AgentEventStreamClient>,
         terminal_driver: ModelHandle<TerminalDriver>,
+        resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
     ) -> Result<Box<dyn HarnessRunner>, AgentDriverError> {
         // Claude treats the user-turn message as immediate intent, so the resumption preamble
         // is most reliable when prepended directly to the prompt that gets piped into the CLI.
@@ -131,6 +135,7 @@ impl ThirdPartyHarness for ClaudeHarness {
             task_id,
             agent_event_stream_client,
             terminal_driver,
+            resolved_mcp_servers,
         )?))
     }
 }
@@ -149,10 +154,14 @@ fn claude_command(
     session_id: &Uuid,
     prompt_path: &str,
     system_prompt_path: Option<&str>,
+    mcp_config_path: Option<&str>,
 ) -> String {
     let mut cmd = format!("{cli_name} --session-id {session_id} --dangerously-skip-permissions");
     if let Some(sp_path) = system_prompt_path {
         let _ = write!(cmd, " --append-system-prompt-file '{sp_path}'");
+    }
+    if let Some(mcp_path) = mcp_config_path {
+        let _ = write!(cmd, " --mcp-config '{mcp_path}'");
     }
     format!("{cmd} < '{prompt_path}'")
 }
@@ -176,6 +185,7 @@ struct ClaudeHarnessRunner {
     _temp_prompt_file: NamedTempFile,
     /// Held so the system prompt temp file is cleaned up when the runner is dropped.
     _temp_system_prompt_file: Option<NamedTempFile>,
+    _temp_mcp_config_file: Option<NamedTempFile>,
     agent_event_stream_client: Arc<dyn AgentEventStreamClient>,
     terminal_driver: ModelHandle<TerminalDriver>,
     state: Mutex<ClaudeRunnerState>,
@@ -196,6 +206,7 @@ impl ClaudeHarnessRunner {
         task_id: Option<AmbientAgentTaskId>,
         agent_event_stream_client: Arc<dyn AgentEventStreamClient>,
         terminal_driver: ModelHandle<TerminalDriver>,
+        resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
     ) -> Result<Self, AgentDriverError> {
         // Write the prompt to a temp file so we can feed it via stdin redirect,
         // avoiding shell-quoting issues with complex content (e.g. skill instructions).
@@ -207,6 +218,19 @@ impl ClaudeHarnessRunner {
         let temp_system_prompt_file = system_prompt
             .map(|sp| write_temp_file("oz_system_prompt_", sp))
             .transpose()?;
+
+        // Claude takes MCP servers as a temp JSON file via `--mcp-config`, not through
+        // its config file -- which is why `prepare_environment_config` ignores them.
+        let temp_mcp_config_file = (!resolved_mcp_servers.is_empty())
+            .then(|| {
+                let mcp_json = serialize_claude_mcp_config(resolved_mcp_servers)
+                    .map_err(AgentDriverError::ConfigBuildFailed)?;
+                write_temp_file_with_suffix("oz_mcp_config_", &mcp_json, ".json")
+            })
+            .transpose()?;
+        let mcp_config_path = temp_mcp_config_file
+            .as_ref()
+            .map(|f| f.path().display().to_string());
         let system_prompt_path = temp_system_prompt_file
             .as_ref()
             .map(|f| f.path().display().to_string());
@@ -221,10 +245,13 @@ impl ClaudeHarnessRunner {
                 &session_id,
                 &prompt_path,
                 system_prompt_path.as_deref(),
+                mcp_config_path.as_deref(),
             ),
             cli_name: cli_command.to_string(),
             _temp_prompt_file: temp_file,
             _temp_system_prompt_file: temp_system_prompt_file,
+            // Held so the file outlives the CLI invocation that reads it.
+            _temp_mcp_config_file: temp_mcp_config_file,
             agent_event_stream_client,
             terminal_driver,
             state: Mutex::new(ClaudeRunnerState::Preexec),
@@ -563,3 +590,71 @@ fn suffix_of(key: &str) -> Option<&str> {
 #[cfg(test)]
 #[path = "claude_code_tests.rs"]
 mod tests;
+
+/// Claude Code's `--mcp-config` file shape: `{ "mcpServers": { name: entry } }`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeMcpConfig {
+    mcp_servers: HashMap<String, ClaudeMcpServerEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum ClaudeMcpServerEntry {
+    #[serde(rename = "stdio")]
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        #[serde(skip_serializing_if = "HashMap::is_empty")]
+        env: HashMap<String, String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    #[serde(rename = "http")]
+    Http {
+        url: String,
+        #[serde(skip_serializing_if = "HashMap::is_empty")]
+        headers: HashMap<String, String>,
+    },
+}
+
+impl ClaudeMcpServerEntry {
+    fn from_json_mcp_server(server: &JSONMCPServer) -> Self {
+        match &server.transport_type {
+            JSONTransportType::CLIServer {
+                command,
+                args,
+                env,
+                working_directory,
+            } => Self::Stdio {
+                command: command.clone(),
+                args: args.clone(),
+                env: env.clone(),
+                cwd: working_directory.clone(),
+            },
+            JSONTransportType::SSEServer { url, headers } => Self::Http {
+                url: url.clone(),
+                headers: headers.clone(),
+            },
+        }
+    }
+}
+
+/// Serializes resolved MCP servers into Claude Code's `--mcp-config` JSON.
+pub(crate) fn serialize_claude_mcp_config(
+    servers: &HashMap<String, JSONMCPServer>,
+) -> anyhow::Result<String> {
+    use anyhow::Context as _;
+    let config = ClaudeMcpConfig {
+        mcp_servers: servers
+            .iter()
+            .map(|(name, server)| {
+                (
+                    name.clone(),
+                    ClaudeMcpServerEntry::from_json_mcp_server(server),
+                )
+            })
+            .collect(),
+    };
+    serde_json::to_string_pretty(&config).context("Failed to serialize Claude MCP config")
+}

@@ -160,6 +160,7 @@ impl ThirdPartyHarness for CodexHarness {
         _task_id: Option<AmbientAgentTaskId>,
         _agent_event_stream_client: Arc<dyn AgentEventStreamClient>,
         terminal_driver: ModelHandle<TerminalDriver>,
+        _resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
     ) -> Result<Box<dyn HarnessRunner>, AgentDriverError> {
         // Mirror Claude harness behavior: prepend the resumption preamble to the
         // user-turn prompt so codex treats it as immediate intent.

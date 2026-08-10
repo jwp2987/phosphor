@@ -110,6 +110,7 @@ pub(crate) trait ThirdPartyHarness: Send + Sync {
         task_id: Option<AmbientAgentTaskId>,
         agent_event_stream_client: Arc<dyn AgentEventStreamClient>,
         terminal_driver: ModelHandle<TerminalDriver>,
+        resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
     ) -> Result<Box<dyn HarnessRunner>, AgentDriverError>;
 }
 
@@ -391,9 +392,23 @@ pub(super) fn write_temp_file(
     prefix: &str,
     content: &str,
 ) -> Result<NamedTempFile, AgentDriverError> {
+    write_temp_file_with_suffix(prefix, content, ".txt")
+}
+
+/// As [`write_temp_file`], but with a caller-chosen extension.
+///
+/// Claude's `--mcp-config` needs a `.json` file; the pin carries this as a third
+/// parameter on `write_temp_file` itself, but every existing caller here wants
+/// `.txt`, so the suffix-taking form is the new one and the old signature is
+/// preserved.
+pub(super) fn write_temp_file_with_suffix(
+    prefix: &str,
+    content: &str,
+    suffix: &str,
+) -> Result<NamedTempFile, AgentDriverError> {
     let mut file = tempfile::Builder::new()
         .prefix(prefix)
-        .suffix(".txt")
+        .suffix(suffix)
         .tempfile()
         .map_err(|e| {
             AgentDriverError::ConfigBuildFailed(anyhow::anyhow!(
