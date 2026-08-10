@@ -406,6 +406,8 @@ pub struct NotebookPane {
     pub kind: String,
     pub notebook_id: Option<String>,
     pub local_path: Option<Vec<u8>>,
+    pub remote_host_id: Option<String>,
+    pub remote_path: Option<String>,
 }
 
 #[derive(Identifiable, Queryable, Selectable)]
@@ -592,6 +594,8 @@ pub struct NewNotebookPane {
     pub id: i32,
     pub notebook_id: Option<String>,
     pub local_path: Option<Vec<u8>>,
+    pub remote_host_id: Option<String>,
+    pub remote_path: Option<String>,
 }
 
 #[derive(Insertable)]

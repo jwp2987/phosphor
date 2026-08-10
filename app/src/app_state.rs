@@ -12,6 +12,7 @@ use crate::ai::agent_conversations_model::AgentManagementFilters;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::InputConfig;
 use crate::ai::blocklist::SerializedBlockListItem;
+use crate::code::buffer_location::RemotePath;
 use crate::code::editor_management::CodeSource;
 use crate::drive::ZapDriveObjectSettings;
 use crate::root_view::quake_mode_window_id;
@@ -193,6 +194,10 @@ impl LeafContents {
             LeafContents::Code(CodePaneSnapShot::Local { source, .. }) => {
                 source.as_ref().map(|s| s.is_restorable()).unwrap_or(true)
             }
+            // Unlike the remote code pane above, `NotebookPaneSnapshot::Remote` is always
+            // persisted: `FileNotebookView::open_remote` is a stateless one-shot RPC fetch, not a
+            // buffer-sync connection, so reopening it at restore time is safe even if the host
+            // isn't connected yet — see `NotebookPaneSnapshot::Remote`'s doc comment.
             LeafContents::Terminal(_)
             | LeafContents::Notebook(_)
             | LeafContents::AIDocument(_)
@@ -254,6 +259,18 @@ pub enum NotebookPaneSnapshot {
         /// the pane contained an unreadable file.
         path: Option<PathBuf>,
     },
+    /// A file notebook pane open on a remote host, keyed by the same
+    /// [`RemotePath`] (host + standardized path) that
+    /// `FileNotebookView::open_remote` and `CodeSource::RemoteFileTree` use.
+    /// Unlike remote code panes, this is persisted and restored: the
+    /// notebook viewer is read-only and fetches content with a one-shot
+    /// `ReadFileContext` RPC rather than the buffer-sync protocol's
+    /// stateful, bidirectional SSH connection, so it's safe to eagerly
+    /// re-issue at restore time. If the host isn't connected yet, the
+    /// reopen attempt fails the same way a manual reload would, and the
+    /// pane shows its existing load-error/retry UI rather than silently
+    /// appearing empty.
+    Remote { remote_path: RemotePath },
 }
 
 #[derive(Clone, Debug, PartialEq)]

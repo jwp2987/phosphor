@@ -2,6 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use warpui::{AppContext, ModelHandle, SingletonEntity, View, ViewContext, ViewHandle};
 
+use crate::code::buffer_location::BufferLocation;
 #[cfg(feature = "local_tty")]
 use crate::code::buffer_location::RemotePath;
 #[cfg(feature = "local_fs")]
@@ -167,8 +168,19 @@ impl PaneContent for FilePane {
     }
 
     fn snapshot(&self, app: &AppContext) -> LeafContents {
-        let path = self.file_view(app).as_ref(app).local_path();
-        LeafContents::Notebook(NotebookPaneSnapshot::LocalFileNotebook { path })
+        // `buffer_location()` (unlike `local_path()`) is populated for remote
+        // sources too, so it's what distinguishes a remote notebook pane from
+        // a local one when building the restore snapshot.
+        let snapshot = match self.file_view(app).as_ref(app).buffer_location() {
+            Some(BufferLocation::Local(path)) => {
+                NotebookPaneSnapshot::LocalFileNotebook { path: Some(path) }
+            }
+            Some(BufferLocation::Remote(remote_path)) => {
+                NotebookPaneSnapshot::Remote { remote_path }
+            }
+            None => NotebookPaneSnapshot::LocalFileNotebook { path: None },
+        };
+        LeafContents::Notebook(snapshot)
     }
 
     fn has_application_focus(&self, ctx: &mut ViewContext<PaneGroup>) -> bool {

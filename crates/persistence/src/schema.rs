@@ -227,6 +227,8 @@ diesel::table! {
         kind -> Text,
         notebook_id -> Nullable<Text>,
         local_path -> Nullable<Binary>,
+        remote_host_id -> Nullable<Text>,
+        remote_path -> Nullable<Text>,
     }
 }
 

@@ -1625,6 +1625,22 @@ impl PaneGroup {
                         None,
                         ctx,
                     )),
+                    // Reopen against the same host + path via `open_remote`,
+                    // exactly like a fresh remote-notebook open. If the host
+                    // isn't connected, that call fails the same way a manual
+                    // reload would and the pane lands in its existing
+                    // load-error/retry state — see `NotebookPaneSnapshot::Remote`.
+                    #[cfg(feature = "local_tty")]
+                    NotebookPaneSnapshot::Remote { remote_path } => {
+                        Box::new(FilePane::new_remote(remote_path, ctx))
+                    }
+                    #[cfg(not(feature = "local_tty"))]
+                    NotebookPaneSnapshot::Remote { remote_path } => {
+                        let _ = remote_path;
+                        return Err(anyhow::anyhow!(
+                            "Remote notebook pane restoration not supported on this platform"
+                        ));
+                    }
                 };
 
                 let pane_id = pane.as_pane().id();

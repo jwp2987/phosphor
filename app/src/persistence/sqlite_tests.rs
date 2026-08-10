@@ -3,13 +3,17 @@ use std::fs;
 use std::{path::PathBuf, sync::Arc};
 
 use warp_core::features::FeatureFlag;
+use warp_core::HostId;
+use warp_util::standardized_path::StandardizedPath;
 
 use crate::{
     app_state::{
         AppState, CodePaneSnapShot, CodePaneTabSnapshot, LeafContents, LeafSnapshot,
-        PaneNodeSnapshot, TabGroupSnapshot, TabSnapshot, TerminalPaneSnapshot, WindowSnapshot,
+        NotebookPaneSnapshot, PaneNodeSnapshot, TabGroupSnapshot, TabSnapshot, TerminalPaneSnapshot,
+        WindowSnapshot,
     },
     cloud_object::{Owner, StoredObjectPermissions},
+    code::buffer_location::RemotePath,
     code::editor_management::CodeSource,
     notebooks::{NotebookObject, NotebookObjectModel},
     persistence::{model::ObjectPermissions, BlockCompleted, ModelEvent},
@@ -363,6 +367,92 @@ fn test_sqlite_round_trips_code_pane_with_multiple_tabs() {
     assert_eq!(tabs[1].path, Some(PathBuf::from("/tmp/lib.rs")));
     assert_eq!(tabs[2].path, None);
     assert!(matches!(source, Some(CodeSource::FileTree { .. })));
+}
+
+/// Verifies that a remote notebook pane (`NotebookPaneSnapshot::Remote`) round-trips through
+/// save/restore with the same host and path it was opened with — the data restore reopens
+/// against (`pane_group::restore_pane_leaf` calls `FilePane::new_remote(remote_path, ..)` with
+/// exactly this value).
+#[test]
+fn test_sqlite_round_trips_remote_notebook_pane() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let remote_path = RemotePath::new(
+        HostId::new("host-abc123".to_string()),
+        StandardizedPath::try_new("/home/user/notes/readme.md").expect("valid standardized path"),
+    );
+
+    let app_state = AppState {
+        windows: vec![WindowSnapshot {
+            tabs: vec![TabSnapshot {
+                custom_title: None,
+                root: PaneNodeSnapshot::Leaf(LeafSnapshot {
+                    is_focused: true,
+                    custom_vertical_tabs_title: None,
+                    contents: LeafContents::Notebook(NotebookPaneSnapshot::Remote {
+                        remote_path: remote_path.clone(),
+                    }),
+                }),
+                default_directory_color: None,
+                selected_color: SelectedTabColor::default(),
+                left_panel: None,
+                right_panel: None,
+                group_id: None,
+                pinned: false,
+            }],
+            active_tab_index: 0,
+            bounds: None,
+            fullscreen_state: Default::default(),
+            quake_mode: false,
+            universal_search_width: None,
+            warp_ai_width: None,
+            voltron_width: None,
+            warp_drive_index_width: None,
+            left_panel_open: false,
+            vertical_tabs_panel_open: false,
+            left_panel_width: None,
+            right_panel_width: None,
+            cli_subagent_width: None,
+            cli_subagent_height: None,
+            agent_management_filters: None,
+            theme_override: None,
+            tab_groups: vec![],
+        }],
+        active_window_index: Some(0),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    let restored = read_sqlite_data(&mut conn, None)
+        .expect("app state should load")
+        .app_state;
+
+    assert_eq!(restored.windows.len(), 1);
+    let restored_tab = &restored.windows[0].tabs[0];
+    let PaneNodeSnapshot::Leaf(LeafSnapshot {
+        contents:
+            LeafContents::Notebook(NotebookPaneSnapshot::Remote {
+                remote_path: restored_remote_path,
+            }),
+        ..
+    }) = &restored_tab.root
+    else {
+        panic!("Expected remote notebook pane leaf");
+    };
+
+    assert_eq!(restored_remote_path, &remote_path);
+    assert_eq!(
+        restored_remote_path.host_id,
+        HostId::new("host-abc123".to_string())
+    );
+    assert_eq!(
+        restored_remote_path.path.as_str(),
+        "/home/user/notes/readme.md"
+    );
 }
 
 /// Verifies that a tab group and its membership round-trip through save/restore.
