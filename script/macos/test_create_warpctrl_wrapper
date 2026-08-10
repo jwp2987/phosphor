@@ -1,0 +1,62 @@
+#!/bin/bash
+#
+# Verifies `script/macos/create_warpctrl_wrapper` against the two ways the
+# wrapper is actually invoked:
+#
+#   1. Directly, by its real path inside `<App>.app/Contents/Resources/bin/`.
+#   2. Through the /usr/local/bin symlink that `install_warpctrl()` creates,
+#      which is why the wrapper resolves symlinks before locating the binary.
+#
+# In both cases the wrapper must exec the shared executable with `--warpctrl`
+# prepended and every user argument forwarded verbatim (including arguments
+# containing spaces).
+#
+# Ported from the pin (02b53fcd8) `script/macos/test_create_warpctrl_wrapper`.
+# It only needs bash, so it runs on any host -- there is nothing macOS-specific
+# about the wrapper's shell logic.
+#
+# Usage:
+#   script/macos/test_create_warpctrl_wrapper
+
+set -e
+
+workspace_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+temp_dir="$(mktemp -d)"
+trap 'rm -rf "$temp_dir"' EXIT
+
+bundle_dir="$temp_dir/WarpDev.app/Contents"
+wrapper_path="$bundle_dir/Resources/bin/warpctrl-dev"
+binary_path="$bundle_dir/MacOS/dev"
+installed_path="$temp_dir/usr/local/bin/warpctrl-dev"
+forwarded_args_file="$temp_dir/forwarded-args"
+expected_args_file="$temp_dir/expected-args"
+
+mkdir -p "$(dirname "$binary_path")" "$(dirname "$installed_path")"
+cat > "$binary_path" << 'EOF'
+#!/bin/bash
+printf '%s\n' "$@" > "$FORWARDED_ARGS_FILE"
+EOF
+chmod +x "$binary_path"
+
+"$workspace_root/script/macos/create_warpctrl_wrapper" \
+  "$wrapper_path" \
+  "../../MacOS/dev"
+
+cat > "$expected_args_file" << 'EOF'
+--warpctrl
+tab
+create
+--instance
+inst 123
+EOF
+
+FORWARDED_ARGS_FILE="$forwarded_args_file" \
+  "$wrapper_path" tab create --instance "inst 123"
+cmp "$expected_args_file" "$forwarded_args_file"
+
+ln -s "$wrapper_path" "$installed_path"
+FORWARDED_ARGS_FILE="$forwarded_args_file" \
+  "$installed_path" tab create --instance "inst 123"
+cmp "$expected_args_file" "$forwarded_args_file"
+
+echo "create_warpctrl_wrapper: ok"
