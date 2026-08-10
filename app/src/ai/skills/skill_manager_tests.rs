@@ -1305,3 +1305,119 @@ fn warp_control_direct_read_respects_warp_control_feature() {
         drop(warp_control_cli_enabled);
     });
 }
+
+// ── Ported from the pinned oracle (02b53fcd8),
+// `app/src/ai/skills/skill_manager_tests.rs` ──
+//
+// `SkillReference::Path` lookup for a REMOTE skill. Everything here already
+// covered the local-path and bundled-id cases; the remote-path case had no test,
+// and it is the one that can go wrong quietly. `LocalOrRemotePath::Remote`
+// compares host *and* path, so two SSH hosts with an identically-named skill at
+// an identical path must not resolve to each other's copy -- the failure mode is
+// running the wrong host's skill, with no error anywhere.
+
+#[test]
+fn active_skill_by_reference_resolves_exact_remote_identity() {
+    let remote_skill = make_remote_skill(&HostId::new("remote-host".to_string()), "deploy");
+    let reference = SkillReference::Path(remote_skill.path.clone());
+
+    App::test((), |mut app| async move {
+        app.add_singleton_model(DirectoryWatcher::new);
+        app.add_singleton_model(AISettings::new_with_defaults);
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        app.add_singleton_model(RepoMetadataModel::new);
+        app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
+        app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
+        let handle = app.add_singleton_model(SkillManager::new);
+
+        handle.update(&mut app, |manager, _| {
+            manager.add_skill_for_testing(remote_skill.clone());
+        });
+
+        let resolved = handle.read(&app, |manager, ctx| {
+            manager
+                .active_skill_by_reference(&reference, ctx)
+                .map(|skill| skill.path.clone())
+        });
+
+        assert_eq!(resolved, Some(remote_skill.path));
+    });
+}
+
+#[test]
+fn active_skill_by_reference_distinguishes_remote_hosts_with_the_same_display_path() {
+    let first_skill = make_remote_skill(&HostId::new("first-host".to_string()), "deploy");
+    let second_skill = make_remote_skill(&HostId::new("second-host".to_string()), "deploy");
+    let first_path = first_skill.path.clone();
+    let second_path = second_skill.path.clone();
+    let first_reference = SkillReference::Path(first_skill.path.clone());
+    let second_reference = SkillReference::Path(second_skill.path.clone());
+
+    App::test((), |mut app| async move {
+        app.add_singleton_model(DirectoryWatcher::new);
+        app.add_singleton_model(AISettings::new_with_defaults);
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        app.add_singleton_model(RepoMetadataModel::new);
+        app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
+        app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
+        let handle = app.add_singleton_model(SkillManager::new);
+
+        handle.update(&mut app, |manager, _| {
+            manager.add_skill_for_testing(first_skill);
+            manager.add_skill_for_testing(second_skill);
+        });
+
+        let resolved = handle.read(&app, |manager, ctx| {
+            (
+                manager
+                    .active_skill_by_reference(&first_reference, ctx)
+                    .map(|skill| skill.path.clone()),
+                manager
+                    .active_skill_by_reference(&second_reference, ctx)
+                    .map(|skill| skill.path.clone()),
+            )
+        });
+        assert_eq!(resolved, (Some(first_path), Some(second_path)));
+    });
+}
+
+/// Origin-aware lookup reports *why* a skill could not be resolved: a bundled id
+/// on a session with no bundled catalog is `BundledSkillsUnavailable`, not a
+/// generic "not found". The distinction is what the agent surfaces to the user.
+#[test]
+fn active_skill_by_reference_with_origin_returns_typed_lookup_errors() {
+    App::test((), |app| async move {
+        app.add_singleton_model(DirectoryWatcher::new);
+        app.add_singleton_model(AISettings::new_with_defaults);
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        app.add_singleton_model(RepoMetadataModel::new);
+        app.add_singleton_model(HomeDirectoryWatcher::new_for_test);
+        app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
+        let handle = app.add_singleton_model(SkillManager::new);
+        let reference = SkillReference::BundledSkillId("missing".to_string());
+
+        let unavailable_error = handle.read(&app, |manager, ctx| {
+            manager
+                .active_skill_by_reference_with_origin(
+                    &reference,
+                    &SkillPathOrigin::Unavailable,
+                    ctx,
+                )
+                .unwrap_err()
+        });
+        assert_eq!(
+            unavailable_error,
+            ActiveSkillLookupError::BundledSkillsUnavailable
+        );
+
+        let not_found_error = handle.read(&app, |manager, ctx| {
+            manager
+                .active_skill_by_reference_with_origin(&reference, &SkillPathOrigin::Local, ctx)
+                .unwrap_err()
+        });
+        assert_eq!(
+            not_found_error,
+            ActiveSkillLookupError::NotFound { reference }
+        );
+    });
+}

@@ -61,13 +61,13 @@ use crate::agent::{AgentCommand, AgentMessageCommand, Harness};
 // - `AgentCommand::RunCloud` (dispatch to Warp's hosted MAA infra) plus the
 //   `--task-id`/`--conversation`/snapshot-upload flags on `AgentCommand::Run` that only make
 //   sense on the server-side "hosted" prompt path -- never ported. Tests:
-//   agent_run_cloud_accepts_file_short_flag, agent_run_cloud_accepts_model,
-//   agent_run_cloud_accepts_agent_flag, agent_run_cloud_accepts_mcp,
+//   agent_run_cloud_accepts_model,
+//   agent_run_cloud_accepts_agent_flag,
 //   agent_run_cloud_accepts_run_ambient_alias, agent_run_cloud_accepts_snapshot_flags,
 //   agent_run_cloud_accepts_computer_use_flag, agent_run_cloud_accepts_no_computer_use_flag,
 //   agent_run_cloud_rejects_both_computer_use_flags,
-//   agent_run_cloud_defaults_to_no_computer_use_override, agent_run_cloud_accepts_harness_flag,
-//   agent_run_cloud_defaults_harness_to_oz, agent_run_cloud_accepts_claude_auth_secret_with_harness,
+//   agent_run_cloud_defaults_to_no_computer_use_override,
+//   agent_run_cloud_accepts_claude_auth_secret_with_harness,
 //   agent_run_cloud_claude_auth_secret_without_harness_parses, run_cloud_help_lists_harness_and_auth_secret_flags,
 //   run_cloud_accepts_claude_auth_secret, run_cloud_accepts_codex_auth_secret,
 //   run_cloud_rejects_claude_auth_secret_without_claude_harness,
@@ -99,6 +99,14 @@ use crate::agent::{AgentCommand, AgentMessageCommand, Harness};
 // `api_key_before_subcommand_parses` / `debug_before_subcommand_parses` /
 // `multiple_global_flags_before_subcommand_parse` are ported below, adapted to target
 // `whoami` instead of the removed `login` -- see the comment at their definition.
+//
+// CORRECTION (#2 sweep): four of the `run-cloud` tests above were listed as
+// unportable because of the subcommand they sit on, not because of what they
+// assert. `--harness`, `-f` and `--mcp` are all live flags on the surviving
+// `agent run`. `agent_run_cloud_accepts_harness_flag`,
+// `agent_run_cloud_defaults_harness_to_oz`, `agent_run_cloud_accepts_file_short_flag`
+// and `agent_run_cloud_accepts_mcp` are now ported at the end of this file under
+// `agent run` names, and have been struck from the list above.
 
 /// Ported from warp/master `identifies_worker_subcommands`.
 #[test]
@@ -725,4 +733,110 @@ fn multiple_global_flags_before_subcommand_parse() {
         panic!("Expected `warp whoami` command");
     };
     assert!(matches!(boxed_cmd.as_ref(), CliCommand::Whoami));
+}
+
+// ── Ported from the pinned oracle (02b53fcd8), `crates/warp_cli/src/lib_tests.rs` ──
+//
+// The pin asserts these three `RunAgentArgs` flags on `agent run-cloud`, which this
+// fork removed; the flags themselves are on the surviving `agent run`, where nothing
+// covered them. Adaptation is the subcommand name and the enum variant
+// (`AgentCommand::RunCloud` -> `AgentCommand::Run`, whose payload is boxed here).
+//
+// The header audit above classifies these as belonging to the removed `run-cloud`
+// twin. That is true of where the pin puts them and wrong about what they test:
+// `--harness`, `-f` and `--mcp` are all live on `agent run` in this fork.
+
+/// `--harness` chooses whether a run uses Oz's own agent loop or shells out to the
+/// `claude` / `codex` / `opencode` CLI -- the substrate `/orchestrate` builds on.
+/// Nothing asserted that it parses from argv at all.
+#[test]
+fn agent_run_accepts_harness_flag() {
+    let args = Args::try_parse_from([
+        "warp", "agent", "run", "--prompt", "hello", "--harness", "claude",
+    ])
+    .unwrap();
+
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `warp agent run` command");
+    };
+    let CliCommand::Agent(AgentCommand::Run(run_args)) = boxed_cmd.as_ref() else {
+        panic!("Expected `warp agent run` command");
+    };
+
+    assert_eq!(run_args.harness, Harness::Claude);
+}
+
+/// Omitting `--harness` must keep the built-in Oz harness. A regression in the
+/// `default_value_t` would silently route every run through an external CLI.
+#[test]
+fn agent_run_defaults_harness_to_oz() {
+    let args = Args::try_parse_from(["warp", "agent", "run", "--prompt", "hello"]).unwrap();
+
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `warp agent run` command");
+    };
+    let CliCommand::Agent(AgentCommand::Run(run_args)) = boxed_cmd.as_ref() else {
+        panic!("Expected `warp agent run` command");
+    };
+
+    assert_eq!(run_args.harness, Harness::Oz);
+}
+
+/// `-f` is the documented short form of `--file`; only the long form was covered,
+/// so dropping the `short = 'f'` attribute would go unnoticed.
+#[test]
+fn agent_run_accepts_file_short_flag() {
+    let args = Args::try_parse_from([
+        "warp",
+        "agent",
+        "run",
+        "--prompt",
+        "hello",
+        "-f",
+        "config.json",
+    ])
+    .unwrap();
+
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `warp agent run` command");
+    };
+    let CliCommand::Agent(AgentCommand::Run(run_args)) = boxed_cmd.as_ref() else {
+        panic!("Expected `warp agent run` command");
+    };
+
+    assert_eq!(
+        run_args.config_file.file.as_ref().and_then(|p| p.to_str()),
+        Some("config.json")
+    );
+}
+
+/// A bare UUID passed to `--mcp` still resolves to `MCPSpec::Uuid` -- the
+/// `MCPSpecParser` tries UUID before falling back to path/inline-JSON. `mcp_tests.rs`
+/// covers the parser in isolation; nothing covered it reaching `RunAgentArgs`.
+#[test]
+fn agent_run_accepts_mcp() {
+    let uuid = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+    let args = Args::try_parse_from([
+        "warp",
+        "agent",
+        "run",
+        "--prompt",
+        "hello",
+        "--mcp",
+        "550e8400-e29b-41d4-a716-446655440000",
+    ])
+    .unwrap();
+
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `warp agent run` command");
+    };
+    let CliCommand::Agent(AgentCommand::Run(run_args)) = boxed_cmd.as_ref() else {
+        panic!("Expected `warp agent run` command");
+    };
+
+    assert!(matches!(
+        run_args.mcp_specs.as_slice(),
+        [crate::mcp::MCPSpec::Uuid(parsed_uuid)] if *parsed_uuid == uuid
+    ));
 }

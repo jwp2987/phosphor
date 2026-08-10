@@ -4,6 +4,18 @@ Oracle: **`02b53fcd8`** (Warp `2026.07.29.09.05` stable), the pin recorded in `O
 Fork side: `origin/main` @ `4f33fcf9c`. Slice: every `*_tests.rs` file under `app/src/ai/`
 and `crates/ai/` that exists at the pin. Refs #2.
 
+> **Counts here are stale, and verdict A means less than it looks (2026-08-10, #2 sweep).**
+> The fork side was measured at `4f33fcf9c`; a lot has landed since, so every `miss`
+> column reads high. **The per-file verdicts and the quoted import evidence are still
+> good — the numbers are not.** For a current per-file, per-test count see
+> `docs/SWEEP-INVENTORY.md`.
+>
+> Verdict **A** also asks only whether the fork ships a file of that name. It does not
+> ask whether that file is the same module, whether the API under test still exists, or
+> whether the fork deliberately inverted the behaviour — all three occur, and all three
+> read as straight debt here. The known "MIXED files collapse to their majority bucket"
+> caveat is real but is the smaller of the two errors.
+
 ## Method
 
 Test functions are counted by attribute, not by filename: a function counts when it

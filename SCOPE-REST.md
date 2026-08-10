@@ -5,6 +5,18 @@ Oracle pin: `02b53fcd8` (Warp `2026.07.29.09.05` stable), per `ORACLE.md`. **Not
 **Slice.** Every test file at the pin *except* those under `app/src/ai/`, `crates/ai/`,
 `app/src/terminal/`, `crates/warp_terminal/`, `crates/warp_tui/` (covered by two sibling audits).
 
+> **Counts here are stale, and verdict A means less than it looks (2026-08-10, #2 sweep).**
+> The fork side was measured on 2026-08-06; roughly 1,800 tests have landed since, so
+> every `miss` column reads high. **The per-file verdicts and the quoted import evidence
+> are still good — the numbers are not.** For a current per-file, per-test count see
+> `docs/SWEEP-INVENTORY.md`.
+>
+> Verdict **A** also asks only whether the fork ships a file of that name. It does not
+> ask whether that file is the same module (`app/src/remote_server/diff_state_tracker.rs`
+> is a *different* module here), whether the API under test still exists
+> (`pty_controller.rs`), or whether the fork deliberately inverted the behaviour
+> (`unique_skills`). All three read as straight debt here and are not.
+
 ## Method
 
 Every number below is a **test-function count**, produced by extracting the name of every

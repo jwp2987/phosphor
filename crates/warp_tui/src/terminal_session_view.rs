@@ -2775,6 +2775,18 @@ impl TuiTerminalSessionView {
             ctx.terminate_app(TerminationMode::ForceTerminate, None);
             return;
         }
+        // ctrl-c dismisses an open read-only sheet (the `?` shortcuts sheet, the
+        // `/status` menu) before it does anything else, exactly as escape does.
+        // Without this the sheet stays painted over the session while the
+        // interrupt takes control of a running command underneath it, and only
+        // a second, unrelated keystroke clears it. Ported from the pin
+        // (`02b53fcd8:crates/warp_tui/src/terminal_session_view.rs`), where this
+        // block sits in the same position; it was missing here.
+        self.suggestions_mode.update(ctx, |mode, ctx| {
+            if let Some(kind) = mode.mode().read_only_menu() {
+                mode.close_if_active(TuiInputSuggestionsMode::ReadOnlyMenu(kind), ctx);
+            }
+        });
         if self.handle_terminal_use_interrupt(ctx) {
             self.exit_confirmation.disarm();
             ctx.notify();

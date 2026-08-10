@@ -309,6 +309,83 @@ fn shortcuts_surface_renders_above_the_input() {
     });
 }
 
+/// Regression coverage for a real divergence found by the #2 sweep, not a straight
+/// port. The pin's `handle_interrupt` closes any open read-only sheet before it does
+/// anything else; this fork's did not, so ctrl-c left the `?` shortcuts sheet (and the
+/// `/status` menu) painted over the session while the interrupt did its work
+/// underneath, and only a second, unrelated keystroke cleared it. See the comment on
+/// the `suggestions_mode` block in `handle_interrupt`.
+///
+/// The pin asserts this through `terminal_use_interrupt_closes_shortcuts_before_taking_control`,
+/// which additionally sets up an agent-monitored long-running command and checks that
+/// control transferred to the user. That half is unaffected by the fix and already has
+/// its own coverage (`terminal_use_interrupt_follows_takeover_then_process_interrupt_policy`
+/// in `terminal_use_tests.rs`), so this pins the part that was broken, on the path any
+/// ctrl-c takes.
+#[test]
+fn interrupt_closes_an_open_read_only_menu() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.suggestions_mode.update(ctx, |mode, ctx| {
+                mode.set_mode(
+                    TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts),
+                    ctx,
+                );
+            });
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts)
+            );
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&TuiTerminalSessionAction::Interrupt, ctx);
+        });
+
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::Closed,
+                "ctrl-c should dismiss the shortcuts sheet"
+            );
+        });
+    });
+}
+
+/// The same, for the `/status` sheet -- both are `ReadOnlyMenu` kinds and the fix is
+/// kind-agnostic, so pin both rather than leaving the other kind to drift.
+#[test]
+fn interrupt_closes_an_open_status_menu() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.suggestions_mode.update(ctx, |mode, ctx| {
+                mode.set_mode(
+                    TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Status),
+                    ctx,
+                );
+            });
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&TuiTerminalSessionAction::Interrupt, ctx);
+        });
+
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::Closed,
+                "ctrl-c should dismiss the status menu"
+            );
+        });
+    });
+}
+
 #[test]
 fn status_slash_command_opens_the_status_menu() {
     App::test((), |mut app| async move {
