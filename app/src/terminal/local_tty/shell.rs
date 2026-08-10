@@ -180,14 +180,19 @@ impl ShellStarter {
     fn compute_fallback_shell() -> Option<ShellStarterSource> {
         cfg_if::cfg_if! {
             if #[cfg(unix)] {
-                let pw_shell_path = nix::unistd::User::from_uid(nix::unistd::getuid())
-                    .expect("should not fail to read user information")
-                    .expect("current user should exist")
-                    .shell
-                    .display()
-                    .to_string();
+                // Resolving the current user can fail on hosts whose uid only
+                // resolves out-of-process (LDAP/SSSD, unusual `nsswitch.conf`,
+                // minimal containers). That must degrade to the built-in shell
+                // defaults below, never abort the app.
+                let pw_shell_path = super::unix::resolve_current_user().map(|user| user.shell);
+                if pw_shell_path.is_none() {
+                    warp_core::report_error!(
+                        "could not resolve the current user (getpwuid, getent, and /etc/passwd all failed)",
+                        extra: { "uid" => %nix::unistd::getuid().as_raw() }
+                    );
+                }
                 if let Some((resolved_pw_shell_path, shell_type)) =
-                    supported_shell_path_and_type(&pw_shell_path)
+                    pw_shell_path.as_deref().and_then(supported_shell_path_and_type)
                 {
                     return Some(ShellStarterSource::UserDefault(DirectShellStarter {
                         args: arguments_for_session_spawning_command(
@@ -198,7 +203,7 @@ impl ShellStarter {
                         shell_type,
                     }));
                 }
-                let unsupported_shell = Some(pw_shell_path);
+                let unsupported_shell = pw_shell_path;
 
                 let (resolved_default_shell_path, shell_type) = if let Some(shell_path_and_type) =
                     supported_shell_path_and_type(ZSH_SHELL_PATH)
