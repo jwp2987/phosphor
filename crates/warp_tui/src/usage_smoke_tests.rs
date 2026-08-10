@@ -24,9 +24,9 @@ use std::sync::Arc;
 use parking_lot::FairMutex;
 use warp::editor::CodeEditorModel;
 use warp::tui_export::{
-    AIAgentActionId, ActiveSession, Appearance, BlocklistAIPermissions,
-    AcceptSlashCommandOrSavedPrompt, ModelEventDispatcher, Sessions, SlashCommandId,
-    SlashCommandMixer, TerminalModel, register_tui_session_view_test_singletons,
+    AIAgentActionId, AcceptSlashCommandOrSavedPrompt, ActiveSession, Appearance,
+    BlocklistAIPermissions, ModelEventDispatcher, Sessions, SlashCommandId, SlashCommandMixer,
+    TerminalModel, TuiCompletionCandidate, register_tui_session_view_test_singletons,
 };
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, App, EntityId};
@@ -44,8 +44,8 @@ use crate::test_fixtures::{
     TestHostView, add_test_action_model, add_test_action_model_and_events,
     add_test_conversation_selection, settle,
 };
-use crate::tui_permission_prompt::{TuiPermissionPrompt, render_permission_card};
 use crate::transcript_view::TuiTranscriptView;
+use crate::tui_permission_prompt::{TuiPermissionPrompt, render_permission_card};
 use crate::zero_state::TuiZeroStateView;
 
 /// `usage_tui_zero_state_render`: a fresh session's zero-state view renders the
@@ -198,13 +198,13 @@ fn usage_tui_completions_menu() {
     App::test((), |mut app| async move {
         app.update(|ctx| {
             let suggestions_mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
-            let menu =
-                ctx.add_model(|_| TuiCompletionsMenuModel::new(suggestions_mode.clone()));
+            let menu = ctx.add_model(|_| TuiCompletionsMenuModel::new(suggestions_mode.clone()));
 
             let opened = menu.update(ctx, |m, ctx| {
                 m.show(
                     completion_rows(&[("checkout", "checkout"), ("cherry-pick", "cherry-pick")]),
                     4..7,
+                    false,
                     ctx,
                 )
             });
@@ -266,7 +266,9 @@ fn usage_tui_conversation_menu() {
             (window_id, menu)
         });
 
-        menu.read(&app, |m, ctx| assert!(!m.is_open(ctx), "menu starts closed"));
+        menu.read(&app, |m, ctx| {
+            assert!(!m.is_open(ctx), "menu starts closed")
+        });
 
         menu.update(&mut app, |m, ctx| m.open(ctx));
         settle().await;
@@ -351,10 +353,17 @@ fn usage_tui_slash_command_palette() {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-fn completion_rows(pairs: &[(&str, &str)]) -> Vec<(String, String, Option<String>)> {
+fn completion_rows(pairs: &[(&str, &str)]) -> Vec<TuiCompletionCandidate> {
     pairs
         .iter()
-        .map(|(display, replacement)| ((*display).to_owned(), (*replacement).to_owned(), None))
+        .map(|(display, replacement)| TuiCompletionCandidate {
+            display: (*display).to_owned(),
+            replacement: (*replacement).to_owned(),
+            description: None,
+            // These fixtures are command completions, not paths, so no
+            // directory-suppression of the trailing space applies.
+            is_directory: false,
+        })
         .collect()
 }
 

@@ -4935,17 +4935,17 @@ impl TuiView for TuiTerminalSessionView {
                     TuiReadOnlyMenuKind::Shortcuts => {
                         self.session_state.resolve(ctx).ok().map(|state| {
                             let keymap_context = self.keymap_context(ctx);
-                            shortcuts::menu(&state, &keymap_context, builder, ctx)
+                            shortcuts::menu(&state, &keymap_context, &builder, ctx)
                         })
                     }
                     TuiReadOnlyMenuKind::Status => {
-                        Some(status_menu::menu(self.compute_status_info(ctx), builder))
+                        Some(status_menu::menu(self.compute_status_info(ctx), &builder))
                     }
                 };
                 if let Some(menu) = menu {
                     let menu = menu.render(
                         self.read_only_menu_selection.clone(),
-                        builder,
+                        &builder,
                         |event_ctx, _| {
                             event_ctx.dispatch_typed_action(
                                 TuiTerminalSessionAction::ReadOnlyMenuSelectionStarted,

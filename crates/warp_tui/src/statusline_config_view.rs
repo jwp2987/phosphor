@@ -213,6 +213,7 @@ impl TuiStatuslineConfigView {
                 ctx.emit(TuiStatuslineConfigEvent::Cancelled);
             }
             TuiOptionSelectorEvent::CustomTextSubmitted { .. }
+            | TuiOptionSelectorEvent::CustomTextCleared
             | TuiOptionSelectorEvent::CustomTextOpened
             | TuiOptionSelectorEvent::CustomTextClosed
             | TuiOptionSelectorEvent::RetryRequested => {}
