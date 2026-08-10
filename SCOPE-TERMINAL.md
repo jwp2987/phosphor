@@ -9,6 +9,19 @@ and `crates/warp_tui/` **as it exists at the pinned oracle**.
 | Fork side | `origin/main` @ `4f33fcf9c` |
 | Method | test-**function**-name set comparison, file by file. No path matching. |
 
+> **Counts here are stale, and verdict A means less than it looks (2026-08-10, #2 sweep).**
+> The fork side was measured at `4f33fcf9c`; a lot has landed since, so every `miss`
+> column reads high. Spot-checked examples: `input/view_tests.rs` says 22 missing, is
+> 12; `agent_block_tests.rs` says 6, is 5; `terminal_session_view_tests.rs` says 57, is
+> 27. **The per-file verdicts and the quoted import evidence are still good — the
+> numbers are not.** For a current per-file, per-test count see `docs/SWEEP-INVENTORY.md`.
+>
+> Verdict **A** also asks only whether the fork ships a file of that name. It does not
+> ask whether that file is the same module, whether the API under test still exists, or
+> whether the fork deliberately inverted the behaviour — all three occur, and all three
+> read as straight debt here. See the inventory's caveats before treating an A row as a
+> work queue.
+
 ## Method
 
 1. Every `#[test]` / `#[tokio::test]` / `#[gpui::test]` / `#[rstest]` / `#[test_case]`

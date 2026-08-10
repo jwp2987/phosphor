@@ -2295,6 +2295,54 @@ fn escape_closes_shortcuts_before_exiting_shell_mode() {
     });
 }
 
+// ── Ported from the pinned oracle (02b53fcd8), `crates/warp_tui/src/input/view_tests.rs` ──
+
+/// `?` opens the shortcuts sheet from an empty buffer even in shell mode, and a second
+/// `?` closes it again -- neither one reaching the buffer. Escape-closing was covered;
+/// the `?`-toggle itself was not, so a regression in either half of the carve-out at
+/// `input/view.rs` (the swallow on close, or the empty-buffer/cursor-at-start guard on
+/// open) would ship silently.
+#[test]
+fn question_mark_at_empty_shell_input_toggles_shortcuts() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "!?");
+            assert!(view.as_ref(ctx).is_shell_mode(ctx));
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts)
+            );
+            assert_eq!(text(&view, ctx), "");
+
+            type_str(&view, ctx, "?");
+            assert!(view.as_ref(ctx).is_shell_mode(ctx));
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::Closed
+            );
+            assert_eq!(text(&view, ctx), "");
+        });
+    });
+}
+
+/// The `?`-swallow is `?`-only: any other character closes the sheet and is inserted.
+/// Nothing pinned that the carve-out does not over-swallow.
+#[test]
+fn typing_into_an_open_shortcuts_surface_closes_it_and_inserts() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "?a");
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::Closed
+            );
+            assert_eq!(text(&view, ctx), "a");
+        });
+    });
+}
+
 #[test]
 fn explicit_shell_mode_survives_deleting_the_buffer() {
     App::test((), |mut app| async move {
@@ -2737,13 +2785,43 @@ fn up_on_first_row_opens_prompt_and_command_history_menu() {
     });
 }
 
-// `up_from_shortcuts_replaces_it_with_prompt_and_command_history` (pin
-// `crates/warp_tui/src/input/view_tests.rs`) is not ported: it asserts that Up
-// closes the `?` shortcuts sheet (`TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts)`)
-// and replaces it with this menu. This fork has no shortcuts sheet yet (issue
-// #389's `?`-sheet half needs a contextual-keybindings state machine —
-// `TuiTerminalSessionState`/`shortcut_sections()` — that doesn't exist here;
-// see the #389 PR notes). Revisit once #389's shortcuts sheet lands.
+/// Up from an open shortcuts sheet replaces it with the prompt-and-command-history
+/// menu rather than dead-ending inside the sheet.
+///
+/// Ported from the pin (`02b53fcd8`) by the #2 sweep. A comment here previously said
+/// this was unportable because "this fork has no shortcuts sheet yet (issue #389's
+/// `?`-sheet half ...)". That went stale when #389's sheet landed --
+/// `read_only_menu.rs`'s `TuiReadOnlyMenuKind::Shortcuts`, the "Shortcuts" section in
+/// `terminal_session_view/state.rs`, and this file's own
+/// `escape_closes_shortcuts_before_exiting_shell_mode` all drive it. Left in place it
+/// would have kept a portable test looking permanently blocked.
+#[test]
+fn up_from_shortcuts_replaces_it_with_prompt_and_command_history() {
+    agent_mode_test(|mut app| async move {
+        let (view, menu) =
+            initialized_history_view(&mut app, &["deploy the app", "run the tests"], &[]).await;
+        app.update(|ctx| {
+            type_str(&view, ctx, "?");
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts)
+            );
+
+            dispatch(
+                &view,
+                ctx,
+                &[TuiInputAction::EditorCommand(TuiEditorCommand::MoveUp)],
+            );
+
+            assert!(menu.as_ref(ctx).is_open(ctx));
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::PromptAndCommandHistory
+            );
+            assert_eq!(text(&view, ctx), "run the tests");
+        });
+    });
+}
 
 /// Up on a lower visual row still moves the cursor and does not open the menu.
 #[test]

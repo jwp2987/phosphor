@@ -1965,9 +1965,16 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   mechanical diff against the pin, per file, with the specific absent test names and a
   bucket for each. The real number is **2,357 absent** (down from `ORACLE.md`'s 3,902 on
   08-06; the fork went 7,884 → 9,716 tests in between), across 269 files, **not 379
-  modules**. 17 ported in that pass (task-store subtask pruning ×4, `agent run` flag
+  modules**. 20 ported in that pass (task-store subtask pruning ×4, `agent run` flag
   parsing ×4, project-skill tree discovery ×3, remote skill resolution ×5, PR-info proto
-  round trip). **Three things the inventory establishes, worth not re-deriving:**
+  round trip, TUI shortcuts-sheet toggle/insert/up ×3), plus **one real code defect
+  fixed**: the TUI's `handle_interrupt` did not close an open `?` shortcuts sheet or
+  `/status` menu, so ctrl-c left it painted over the session while the interrupt worked
+  underneath. The pin closes it first; this fork's copy was missing that block. Found by
+  tracing `terminal_use_interrupt_closes_shortcuts_before_taking_control`, which reads
+  like test debt and is not — it would have compiled and gone red. Fixed in
+  `crates/warp_tui/src/terminal_session_view.rs`, pinned by two new tests.
+  **Three things the inventory establishes, worth not re-deriving:**
   (a) name-diffing over-reports by roughly a quarter — 566 of the 2,357 absent names
   already appear verbatim in fork prose that adjudicates them, and three separate
   mechanisms produce false "missing" verdicts (renamed-with-the-code, replaced-by-a-
@@ -1979,7 +1986,12 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   results render as a JSON text blob rather than a tree, there is no `/index` slash
   command so indexing is auto-only, TUI selection cannot trim trailing whitespace or
   select a styled word, and `languages::language_by_filename` has no `StandardizedPath`
-  overload. (Anchor Stop/auto-resume regression already code-fixed.)
+  overload. All four are written up in the inventory. Cheapest next ports, already
+  traced: the two `apply_shell_completion` UTF-8 span tests (that function has zero
+  coverage today), `move_left_from_shortcuts_replaces_it_with_conversation_menu`, and
+  re-adding the three attach-hint assertions dropped from
+  `visible_startup_script_shows_no_interrupt_hint`.
+  (Anchor Stop/auto-resume regression already code-fixed.)
 - [x] **#5 deferred low-sev** — **STALE-WRONG, corrected: #5 is CLOSED (2026-08-05),
   not "all still present."** All 5 findings were dispositioned: mouse-wheel scroll
   reuse was FIXED (#78); the other 4 (multi-cursor selection span, footer statusline

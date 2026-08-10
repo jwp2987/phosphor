@@ -29,15 +29,17 @@ since, and the absent count has fallen from 3,902 to 2,357).
 
 | bucket | tests | of which hand-traced |
 |---|---:|---:|
-| PORTED | 17 | 17 |
-| PORTABLE? | 370 | 0 |
+| PORTED | 20 | 20 |
+| DEFECT-FIXED | 1 | 1 |
+| PORTABLE | 3 | 3 |
+| PORTABLE? | 340 | 0 |
 | CLOUD? | 1219 | 0 |
 | DECLINED? | 340 | 0 |
 | DIVERGENT? | 345 | 0 |
-| DIVERGENT | 63 | 63 |
-| CLOUD | 1 | 1 |
+| DIVERGENT | 83 | 83 |
+| CLOUD | 4 | 4 |
 | DECLINED | 2 | 2 |
-| **total** | **2357** | **83** |
+| **total** | **2357** | **113** |
 
 A bucket name ending in `?` is the **mechanical** verdict: derived from imports and
 module presence, not from reading the test. A bucket without `?` was traced by hand
@@ -72,6 +74,24 @@ whether the fork *ships a file of that name*. It does not ask whether that file 
 the same module (`diff_state_tracker.rs`), whether the API under test still exists
 (`pty_controller.rs`), or whether the fork deliberately inverted the behaviour
 (`unique_skills`). Every one of those reads as straight debt and is not.
+
+## The code defect this found
+
+**ctrl-c did not dismiss an open `?` shortcuts sheet or `/status` menu in the TUI.**
+
+The pin's `TuiTerminalSessionView::handle_interrupt` closes any open read-only sheet
+before it does anything else — the same thing escape does. This fork's did not, so
+pressing ctrl-c with the sheet open left it painted over the session while the
+interrupt did its work underneath, and only a second, unrelated keystroke cleared it.
+
+Found by tracing the pin's `terminal_use_interrupt_closes_shortcuts_before_taking_control`,
+which reads like a test gap and is not one: every symbol it needs exists here, so it
+would have compiled and then failed. **Fixed in the code** (`handle_interrupt` now
+carries the pin's `suggestions_mode` close block, in the pin's position), with
+`interrupt_closes_an_open_read_only_menu` and `interrupt_closes_an_open_status_menu`
+pinning it. The pin test's other half — that control transfers to the user — was
+never broken and is already covered by
+`terminal_use_interrupt_follows_takeover_then_process_interrupt_policy`.
 
 ## Findings that are not test debt
 
@@ -1004,24 +1024,28 @@ pin 90 · fork 63 · source `crates/warp_tui/src/terminal_session_view.rs` · fo
   - `voice_input_uses_ctrl_s_only_when_the_composer_owns_input`  _(named in fork prose)_
   - `voice_slash_command_rejects_arguments_before_prompt_fallback`  _(named in fork prose)_
   - `voice_toggle_stops_listening_and_ignores_transcribing`  _(named in fork prose)_
+- **DEFECT-FIXED** — NOT a test gap -- a real behaviour divergence. The pin's `handle_interrupt` closes an open read-only sheet before anything else; this fork's did not, so ctrl-c left the `?` sheet painted over the session. Code fixed in this pass; pinned by `interrupt_closes_an_open_read_only_menu` / `interrupt_closes_an_open_status_menu`.
+  - `terminal_use_interrupt_closes_shortcuts_before_taking_control`  _(named in fork prose)_
+- **DIVERGENT** — already ported as `..._from_the_footer_usage_entry`; renamed because BYOP has no `TuiUsageDisplayMode` (see `usage.rs:3-12`)
+  - `response_summary_visibility_is_independent_from_the_footer_usage_mode`  _(named in fork prose; near-name fork test `response_summary_visibility_is_independent_from_the_footer_usage_entry`)_
+- **DIVERGENT** — already ported as `visible_startup_script_shows_no_interrupt_hint`. NOTE: three of the pin's assertions were dropped in that port and WOULD compile here (`can_attach_agent_to_running_command`, `SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG`, `try_attach_agent_to_running_command`); re-adding them is the cheapest win in this file.
+  - `visible_startup_script_shows_no_running_command_hint`  _(named in fork prose; near-name fork test `visible_startup_script_shows_no_interrupt_hint`)_
+- **DIVERGENT** — already ported under the fork name `statusline_datetime_formats_are_stable`
+  - `figma_statusline_metadata_formats_are_stable`  _(named in fork prose)_
 - **PORTABLE?**
   - `blocked_terminal_use_action_acceptance_uses_ctrl_enter_without_rebinding_submit`  _(named in fork prose)_
-  - `figma_statusline_metadata_formats_are_stable`  _(named in fork prose)_
   - `grok_oauth_block_exclusively_owns_input_until_escape`  _(named in fork prose)_
   - `manual_attach_and_detach_switch_running_command_input_ownership`  _(named in fork prose)_
   - `nld_reset_only_unlocks_after_agent_control_and_not_on_user_edit`  _(named in fork prose)_
   - `provider_api_key_shell_command_uses_shared_tui_launcher`  _(named in fork prose)_
-  - `response_summary_visibility_is_independent_from_the_footer_usage_mode`  _(named in fork prose; near-name fork test `response_summary_visibility_is_independent_from_the_footer_usage_entry`)_
   - `resume_shell_commands_use_shared_tui_launcher`  _(named in fork prose)_
   - `running_command_completion_clears_transient_attachment_lock`  _(named in fork prose)_
   - `shell_mode_reserves_tab_even_when_attachments_render`  _(named in fork prose)_
   - `status_slash_command_opens_dedicated_status_menu_via_shared_structure`  _(named in fork prose)_
   - `tagged_in_alt_screen_keeps_output_and_composer_visible`  _(named in fork prose; near-name fork test `agent_controlled_alt_screen_keeps_output_and_composer_visible`)_
-  - `terminal_use_interrupt_closes_shortcuts_before_taking_control`  _(named in fork prose)_
   - `tui_cli_shell_command_uses_channel_entry_points`  _(named in fork prose)_
   - `user_controlled_alt_screen_keeps_full_session_input_on_the_pty`  _(named in fork prose)_
   - `user_info_updates_only_require_an_open_status_menu_repaint`  _(named in fork prose)_
-  - `visible_startup_script_shows_no_running_command_hint`  _(named in fork prose; near-name fork test `visible_startup_script_shows_no_interrupt_hint`)_
   - `zero_state_running_command_hint_shows_attachment`  _(named in fork prose)_
 
 ### `crates/build_cache/src/lib_tests.rs` — 25 absent
@@ -2072,17 +2096,26 @@ pin 89 · fork 77 · source `crates/warp_tui/src/input/view.rs` · fork ships so
 
 - **DECLINED?** — Voice input (#389, #352)
   - `listening_voice_input_suppresses_shell_gutter`  _(named in fork prose)_
-- **PORTABLE?**
-  - `completion_can_append_a_space_at_buffer_end`  _(named in fork prose)_
-  - `completion_replaces_utf8_byte_span_and_preserves_following_text`  _(named in fork prose)_
-  - `enter_and_escape_stop_listening_while_escape_cancels_transcribing`  _(named in fork prose)_
-  - `move_left_from_shortcuts_replaces_it_with_conversation_menu`  _(named in fork prose)_
-  - `question_mark_at_empty_shell_input_toggles_shortcuts`  _(named in fork prose; near-name fork test `question_mark_at_empty_agent_input_toggles_shortcuts`)_
-  - `tab_cycles_open_completion_menu_and_enter_applies_selection`  _(named in fork prose)_
-  - `tab_is_consumed_by_an_existing_non_completion_menu`  _(named in fork prose)_
+- **DIVERGENT** — adjudicated at `input/view.rs:903`: this fork's Tab completion is deliberately not shell-gated
   - `tab_requests_completion_for_detected_shell_input`  _(named in fork prose)_
+- **DIVERGENT** — adjudicated at `terminal_session_view/completions.rs:3-9`; the pin's assertion is the inverse of the fork's deliberate behaviour
   - `tab_requests_completion_only_in_shell_mode_without_submitting`  _(named in fork prose)_
+- **DIVERGENT** — no `TuiInputAction::Complete` to dispatch
+  - `tab_is_consumed_by_an_existing_non_completion_menu`  _(named in fork prose)_
+- **DIVERGENT** — the fork's `TuiInputAction` has no `Complete` variant and `TuiInputViewEvent` no `RequestShellCompletion`; completion is owned by the session view (`TRIGGER_COMPLETIONS_BINDING_NAME`)
+  - `tab_cycles_open_completion_menu_and_enter_applies_selection`  _(named in fork prose)_
+- **PORTABLE** — needs one rename: pin `TuiCompletionAcceptance { replacement_range }` -> fork `TuiAcceptedCompletion { span }` (`completions_menu.rs:57`). Guards the multi-byte byte-offset conversion in `apply_shell_completion`, which has no coverage at all today -- worth doing next.
+  - `completion_replaces_utf8_byte_span_and_preserves_following_text`  _(named in fork prose)_
+- **PORTABLE** — same one-struct rename as the test above
+  - `completion_can_append_a_space_at_buffer_end`  _(named in fork prose)_
+- **PORTABLE** — verified: `view.rs` opens `ConversationMenu` on MoveLeft from an empty cursor-at-start non-shell buffer, and `build_view_with_conversation_menu` (`view_tests.rs:543`) returns the pin's 3-tuple. Not ported here only for batch size.
+  - `move_left_from_shortcuts_replaces_it_with_conversation_menu`  _(named in fork prose)_
+- **PORTABLE?**
+  - `enter_and_escape_stop_listening_while_escape_cancels_transcribing`  _(named in fork prose)_
+- **PORTED**
+  - `question_mark_at_empty_shell_input_toggles_shortcuts`  _(named in fork prose; near-name fork test `question_mark_at_empty_agent_input_toggles_shortcuts`)_
   - `typing_into_an_open_shortcuts_surface_closes_it_and_inserts`  _(named in fork prose)_
+- **PORTED** — the comment declaring it unportable had gone stale -- #389's shortcuts sheet landed; removed as part of the port
   - `up_from_shortcuts_replaces_it_with_prompt_and_command_history`  _(named in fork prose)_
 
 ### `app/src/ai/agent_sdk/driver/attachments_tests.rs` — 11 absent
@@ -2718,7 +2751,9 @@ pin 6 · fork 0 · source `app/src/workspaces/workspace.rs` · fork ships source
 
 pin 29 · fork 23 · source `crates/ai/src/project_context/model.rs` · fork ships source: yes
 
-- **PORTABLE?**
+**DIVERGENT (hand-traced).** All six are named individually in that file's own per-test ledger against the pin (`model_tests.rs:5-68`): two blocked on `reconcile_project_rules` / `ProjectRules::rule_paths` (#150 item 2, #201), three blocked on remote (`LocalOrRemotePath`) project rules -- `path_to_rules` is keyed by `PathBuf` and `find_applicable_project_rules` returns `None` for every remote path -- and one split, with its global-rules half already ported as `test_remote_project_rules_layers_local_global_ahead_of_remote_global`. Note this is a `remote_server`-shaped gap, NOT cloud.
+
+- **DIVERGENT**
   - `test_missing_rule_content_preserves_cached_content_while_path_is_standing`  _(named in fork prose)_
   - `test_reconcile_project_rules_hydrates_local_and_remote_paths`  _(named in fork prose)_
   - `test_remote_global_rules_only_layer_for_matching_remote_host`  _(named in fork prose)_
@@ -3303,8 +3338,9 @@ pin 6 · fork 3 · source `app/src/ai/blocklist/controller.rs` · fork ships sou
 
 pin 42 · fork 39 · source `app/src/ai/blocklist/queued_query.rs` · fork ships source: yes
 
-- **PORTABLE?**
+- **DIVERGENT** — already ported as `clear_conversations_in_terminal_view_drops_every_listed_conversation`, matching the fork's method name
   - `clear_conversations_for_terminal_surface_drops_every_listed_conversation`  _(near-name fork test `clear_conversations_in_terminal_view_drops_every_listed_conversation`)_
+- **PORTABLE?**
   - `initial_cloud_mode_head_rejects_user_mutations_and_autofire`  _(near-name fork test `locked_head_rejects_user_mutations_and_autofire`)_
   - `remove_initial_cloud_mode_row_only_removes_the_locked_head`
 
@@ -3339,8 +3375,9 @@ pin 3 · fork 0 · source `app/src/ai/execution_profiles/config.rs` · fork ship
 
 pin 12 · fork 9 · source `app/src/ai/mcp/file_based_manager.rs` · fork ships source: yes
 
-- **PORTABLE?**
+- **DIVERGENT** — the fork's `FileBasedMCPManagerEvent` has no `ServersChanged` variant -- the sole thing the test counts (`file_based_manager.rs:453-465`)
   - `servers_changed_only_emits_for_effective_source_set_changes`
+- **PORTABLE?**
   - `test_auto_started_cloud_scan_uuids_are_in_wait_set`
   - `test_project_scoped_cloud_scan_has_detected_servers_but_empty_wait_set`
 
@@ -3385,9 +3422,11 @@ pin 3 · fork 0 · source `app/src/settings_view/billing_and_usage_dispatch.rs` 
 
 pin 21 · fork 18 · source `app/src/terminal/cli_agent_sessions/listener/mod.rs` · fork ships source: yes
 
-- **PORTABLE?**
+- **DIVERGENT** — WOULD COMPILE AND FAIL: the fork does not gate structured Codex event parsing on `FeatureFlag::CodexPlugin` (`listener/mod_tests.rs:78-85`), so `try_parse` returns `Some` where the pin expects `None`
   - `codex_try_parse_ignores_structured_event_without_codex_plugin`  _(named in fork prose)_
+- **DIVERGENT** — already ported as `omp_end_to_end_parsing_and_handling`
   - `oh_my_pi_end_to_end_parsing_and_handling`  _(named in fork prose)_
+- **DIVERGENT** — already ported as `omp_is_supported`; the fork calls the variant `CLIAgent::Omp` (#273)
   - `oh_my_pi_is_supported`  _(named in fork prose; near-name fork test `pi_is_supported`)_
 
 ### `app/src/terminal/shared_session/viewer/network_tests.rs` — 3 absent
@@ -3513,7 +3552,9 @@ pin 10 · fork 7 · source `crates/warp_cli/src/mcp.rs` · fork ships source: ye
 
 pin 3 · fork 0 · source `crates/warp_core/src/channel/state.rs` · fork ships source: yes
 
-- **PORTABLE?**
+**CLOUD (hand-traced).** Already adjudicated in-tree at `channel/state_tests.rs:3`: `derive_http_origin_from_ws_url` and its three wss/ws tests were removed with `ChannelState::rtc_http_url()`. The fixtures are literally `wss://rtc.app.warp.dev/graphql/v2`.
+
+- **CLOUD**
   - `unparseable_input_returns_none`
   - `ws_becomes_http_and_preserves_port`
   - `wss_becomes_https_and_strips_path`
@@ -3625,9 +3666,10 @@ pin 2 · fork 0 · source `app/src/ai/blocklist/action_model/execute/send_messag
 
 pin 14 · fork 12 · source `app/src/ai/blocklist/input_model.rs` · fork ships source: yes
 
-- **PORTABLE?**
-  - `conversation_events_apply_policy_updates`  _(named in fork prose)_
+- **DIVERGENT** — named in `input_model_tests.rs:25-33`: needs `BlocklistAIInputModel` to subscribe to `ConversationSelectionEvent`, which the GUI has no implementation for
   - `conversation_events_with_inert_policy_leave_config_unchanged`  _(named in fork prose)_
+- **DIVERGENT** — same comment, named verbatim
+  - `conversation_events_apply_policy_updates`  _(named in fork prose)_
 
 ### `app/src/ai/blocklist/permissions_tests.rs` — 2 absent
 
