@@ -41,6 +41,35 @@ define_settings_group!(CodeSettings, settings: [
         toml_path: "code.editor.show_global_search",
         description: "Whether global file search is shown in the tools panel.",
     },
+    // Whether the AI agent may use the codebase embedding index as context.
+    //
+    // Restored from the pin (`02b53fcd8:app/src/settings/code.rs`) along with the
+    // index itself, minus one thing: the pin also consulted an organization-level
+    // `AdminEnablementSetting` that could force this on or off for a whole team.
+    // That override arrived from Warp's server and has no local equivalent, so
+    // `UserWorkspaces::is_codebase_context_enabled` reduces to this setting plus
+    // the global AI toggle.
+    codebase_context_enabled: CodebaseContextEnabled {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "code.indexing.agent_mode_codebase_context",
+        description: "Whether codebase context is provided to the AI agent.",
+    },
+    // Whether repositories are indexed automatically as they are opened, rather
+    // than only on explicit request. Restored from the pin; default off there
+    // too, because indexing spends the user's embedding provider quota.
+    auto_indexing_enabled: AutoIndexingEnabled {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "code.indexing.agent_mode_codebase_context_auto_indexing",
+        description: "Whether automatic codebase indexing is enabled.",
+    },
     // Controls whether hidden files (dotfiles) are shown in the project explorer.
     show_hidden_files: ShowHiddenFiles {
         type: bool,

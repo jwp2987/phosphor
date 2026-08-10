@@ -10,22 +10,26 @@
 //!
 //! # What is not restored, and why
 //!
-//! Two legs of the pin's version are cut. Neither is cut because it is cloud —
-//! there is nothing cloud in either — and neither is cut on principle. Both are
-//! cut because the code they call does not exist in this fork, and standing
-//! them back up is a larger, separate port.
-//!
-//! ## The codebase-indexing leg
+//! ## The codebase-indexing leg — restored (Delta D2c)
 //!
 //! The pin drives `ai::index::full_source_code_embedding::manager::
-//! CodebaseIndexManager` from this model. This fork's `crates/ai/src/index/`
-//! contains only `file_outline`, `locations.rs` and `mod.rs`; the
-//! `full_source_code_embedding` subtree (32 files, ~12.3k lines at the pin) is
-//! absent. Every place this model would call into it is marked
-//! `INDEXING SEAM` below, with the exact pin API the call needs. Nothing is
-//! designed away: the surrounding structure, the persistence events and the
-//! metadata types are all present, so restoring indexing is a matter of filling
-//! in the marked call sites.
+//! CodebaseIndexManager` from this model, and it does again: the subsystem is
+//! back under `crates/ai/src/index/full_source_code_embedding/`, and every place
+//! marked `INDEXING SEAM` below is wired. Three differences from the pin, each
+//! noted at its call site:
+//!
+//! * The settings subscription listens to `CodeSettings` rather than
+//!   `UserWorkspacesEvent::CodebaseContextEnablementChanged`, because that event
+//!   announced a server-pushed organization policy that has no local meaning.
+//! * `UserWorkspaces::is_codebase_context_enabled` drops the same organization
+//!   override, keeping only the pin's own user-setting branch.
+//! * `all_working_directories` is called from
+//!   `crate::ai::terminal_working_directories`, its one canonical home, not
+//!   re-introduced as the pin's free function at the bottom of this file.
+//!
+//! The remaining cut leg is LSP's driver half, below. It is not cut because it
+//! is cloud — there is nothing cloud in it — but because the code it calls does
+//! not exist in this fork.
 //!
 //! ## The LSP leg — the state half is restored, the driver half is not
 //!
@@ -65,6 +69,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 
+use ai::index::full_source_code_embedding::manager::{
+    CodebaseIndexManager, CodebaseIndexManagerEvent,
+};
 use ai::project_context::model::ProjectContextModel;
 use ai::workspace::{WorkspaceMetadata, WorkspaceMetadataEvent};
 use anyhow::Context;
@@ -74,13 +81,28 @@ use lsp::LanguageId;
 use lsp::supported_servers::LSPServerType;
 #[cfg(feature = "local_fs")]
 use repo_metadata::RepoMetadataModel;
+#[cfg(feature = "local_fs")]
+use repo_metadata::repositories::DetectedRepositories;
 use serde::{Deserialize, Serialize};
+use settings::Setting;
+use warp_core::features::FeatureFlag;
 #[cfg(feature = "local_fs")]
 use warp_util::standardized_path::StandardizedPath;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
+use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
+#[cfg(feature = "local_fs")]
+use crate::ai::codebase_auto_indexing::{
+    CodebaseAutoIndexingSurface, auto_index_candidate_roots, should_auto_index_codebase,
+};
+use crate::ai::request_usage_model::AIRequestUsageModel;
+#[cfg(feature = "local_fs")]
+use crate::ai::terminal_working_directories::all_working_directories;
 use crate::persistence::ModelEvent;
 use crate::report_if_error;
+use crate::settings::CodeSettings;
+use crate::terminal::view::TerminalView;
+use crate::workspaces::user_workspaces::UserWorkspaces;
 
 /// Whether the user has enabled a given language server for a given workspace.
 ///
@@ -210,42 +232,57 @@ impl PersistedWorkspace {
             })
             .collect();
 
-        // INDEXING SEAM (subscriptions). The pin wraps the following four
-        // subscriptions in `if FeatureFlag::FullSourceCodeEmbedding.is_enabled()`:
+        // INDEXING SEAM — wired (D2c). Three of the pin's four subscriptions are
+        // registered below, behind the pin's own
+        // `FeatureFlag::FullSourceCodeEmbedding` gate.
         //
-        //   1. `CodebaseIndexManager` →
-        //        `CodebaseIndexManagerEvent::IndexMetadataUpdated { root_path, event }`
-        //          → `me.handle_index_metadata_event(root_path, *event)`
-        //        `CodebaseIndexManagerEvent::RemoveExpiredIndexMetadata { expired_metadata }`
-        //          → `me.clean_up_expired_metadata(expired_metadata.clone(), ctx)`
-        //      Requires: `ai::index::full_source_code_embedding::manager::{
-        //        CodebaseIndexManager, CodebaseIndexManagerEvent}` (absent),
-        //      and `warp_features::FeatureFlag::FullSourceCodeEmbedding` (absent).
-        //      Both handler methods below are already restored and ready to call.
-        //
-        //   2. `BlocklistAIHistoryModel` →
-        //        `BlocklistAIHistoryEvent::StartedNewConversation { terminal_surface_id, .. }`
-        //          → `me.clean_up_deleted_indices(ctx)` (local_fs only)
-        //          → `me.trigger_incremental_sync_for_conversation(*terminal_surface_id, ctx)`
-        //      Requires: `CodebaseIndexManager::{clean_up_deleted_indices,
-        //        trigger_incremental_sync_for_path}` (absent). The model
-        //      `BlocklistAIHistoryModel` and its event *do* exist in this fork.
-        //
-        //   3. `UserWorkspaces` →
-        //        `UserWorkspacesEvent::CodebaseContextEnablementChanged`
-        //          → `me.on_settings_changed(ctx)`
-        //      Requires: that `UserWorkspacesEvent` variant, plus
-        //      `UserWorkspaces::is_codebase_context_enabled` — both absent from
-        //      this fork's `app/src/workspaces/user_workspaces.rs`.
-        //
-        //   4. `ProjectContextModel` → `KnownRulesChanged(delta)`
-        //          → `ModelEvent::{UpsertProjectRules, DeleteProjectRules}`
-        //      This one is NOT a seam and is NOT re-registered here: this fork
-        //      already owns it in `crate::ai::project_rules_persister::
-        //      ProjectRulesPersister`, unconditionally rather than behind the
-        //      indexing feature flag. Re-adding it here would double every
-        //      project-rules write. If indexing is restored, leave rule
-        //      persistence where it is.
+        // The pin's fourth — `ProjectContextModel` → `KnownRulesChanged(delta)`
+        // → `ModelEvent::{UpsertProjectRules, DeleteProjectRules}` — is
+        // deliberately NOT registered here. This fork already owns it in
+        // `crate::ai::project_rules_persister::ProjectRulesPersister`,
+        // unconditionally rather than behind the indexing flag, so re-adding it
+        // would double every project-rules write.
+        if FeatureFlag::FullSourceCodeEmbedding.is_enabled() {
+            ctx.subscribe_to_model(
+                &CodebaseIndexManager::handle(ctx),
+                |me, event, ctx| match event {
+                    CodebaseIndexManagerEvent::IndexMetadataUpdated { root_path, event } => {
+                        me.handle_index_metadata_event(root_path, *event);
+                    }
+                    CodebaseIndexManagerEvent::RemoveExpiredIndexMetadata { expired_metadata } => {
+                        me.clean_up_expired_metadata(expired_metadata.clone(), ctx);
+                    }
+                    _ => {}
+                },
+            );
+
+            // Bring the index up to date when a conversation starts.
+            ctx.subscribe_to_model(&BlocklistAIHistoryModel::handle(ctx), |me, event, ctx| {
+                if let BlocklistAIHistoryEvent::StartedNewConversation {
+                    terminal_surface_id,
+                    ..
+                } = event
+                {
+                    #[cfg(feature = "local_fs")]
+                    me.clean_up_deleted_indices(ctx);
+
+                    me.trigger_incremental_sync_for_conversation(*terminal_surface_id, ctx);
+                }
+            });
+
+            // React to the codebase-context setting being turned on or off.
+            //
+            // The pin subscribes to `UserWorkspacesEvent::CodebaseContextEnablementChanged`
+            // instead. That event announced an organization-level policy pushed
+            // from Warp's server; with no server there is no such policy and no
+            // such event, so the local trigger is the settings group that now
+            // owns the flag. `on_settings_changed` re-reads the setting rather
+            // than trusting the event payload, so a change from any source is
+            // handled identically.
+            ctx.subscribe_to_model(&CodeSettings::handle(ctx), |me, _event, ctx| {
+                me.on_settings_changed(ctx);
+            });
+        }
 
         // `DetectedRepositories` → `DetectedGitRepo` is likewise owned by
         // `ProjectRulesPersister` in this fork (it calls
@@ -418,35 +455,11 @@ impl PersistedWorkspace {
         })
     }
 
-    /// Discovers project rules (WARP.md / AGENTS.md) under `directory_path`.
+    /// Discovers project rules (WARP.md / AGENTS.md) under `directory_path`, and
+    /// starts codebase indexing for it.
     ///
-    /// INDEXING SEAM. The pin's body is:
-    ///
-    /// ```ignore
-    /// ProjectContextModel::handle(ctx).update(ctx, |model, ctx| {
-    ///     let _ = model.index_and_store_rules(
-    ///         directory_path.clone(),
-    ///         read_project_rule_contents,
-    ///         ctx,
-    ///     );
-    /// });
-    /// if FeatureFlag::FullSourceCodeEmbedding.is_enabled()
-    ///     && UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx)
-    ///     && *CodeSettings::as_ref(ctx).auto_indexing_enabled
-    /// {
-    ///     CodebaseIndexManager::handle(ctx).update(ctx, |manager, ctx| {
-    ///         manager.index_directory(directory_path, ctx);
-    ///     });
-    /// }
-    /// ```
-    ///
-    /// The rules half is kept. The embedding half needs three things this fork
-    /// does not have: `FeatureFlag::FullSourceCodeEmbedding`,
-    /// `UserWorkspaces::is_codebase_context_enabled(&AppContext) -> bool`, and
-    /// `CodeSettings::auto_indexing_enabled` (a `SettingsValue<bool>`), plus
-    /// `CodebaseIndexManager::index_directory(PathBuf, &mut ModelContext<..>)`.
-    ///
-    /// The rules call also differs from the pin by arity: this fork's
+    /// INDEXING SEAM — wired (D2c). Both halves are the pin's. The rules call
+    /// differs from the pin by arity: this fork's
     /// `ProjectContextModel::index_and_store_rules` takes `(root_path, ctx)`,
     /// having inlined the pin's `project_rule_content_reader` parameter (the pin
     /// passes `crate::ai::metadata_project_rules::read_project_rule_contents`,
@@ -454,8 +467,17 @@ impl PersistedWorkspace {
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     fn index_repo(&self, directory_path: PathBuf, ctx: &mut ModelContext<Self>) {
         ProjectContextModel::handle(ctx).update(ctx, |model, ctx| {
-            let _ = model.index_and_store_rules(directory_path, ctx);
+            let _ = model.index_and_store_rules(directory_path.clone(), ctx);
         });
+
+        if FeatureFlag::FullSourceCodeEmbedding.is_enabled()
+            && UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx)
+            && *CodeSettings::as_ref(ctx).auto_indexing_enabled.value()
+        {
+            CodebaseIndexManager::handle(ctx).update(ctx, |manager, ctx| {
+                manager.index_directory(directory_path, ctx);
+            });
+        }
     }
 
     /// Explicitly registers a directory as a workspace, as if the user had navigated there.
@@ -697,53 +719,147 @@ impl PersistedWorkspace {
         }
     }
 
-    // INDEXING SEAM (methods not restored, because their bodies cannot be
-    // written against types this fork lacks). Restoring indexing means adding
-    // these back from `02b53fcd8:app/src/ai/persisted_workspace.rs`:
-    //
-    // * `fn on_settings_changed(&mut self, ctx)` and
-    //   `pub fn on_user_changed(&self, ctx)` — both just call
-    //   `Self::maybe_enable_codebase_indexing(ctx)`. `on_user_changed` is called
-    //   from `AuthManager` after the signed-in user changes
-    //   (`app/src/auth/auth_manager.rs`, in the branch that updates
-    //   `LLMPreferences`); that call site is likewise absent here.
-    //
-    // * `fn maybe_enable_codebase_indexing(ctx: &mut ModelContext<Self>)` —
-    //   reads `CodebaseIndexManager::is_indexing_enabled()` and
-    //   `UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx)`, then
-    //   either `Self::enable_codebase_indexing(manager, ctx)` or
-    //   `manager.reset_codebase_indexing(ctx)`.
-    //
-    // * `fn enable_codebase_indexing(manager: &mut CodebaseIndexManager,
-    //   ctx: &mut ModelContext<CodebaseIndexManager>)` — pushes the account's
-    //   limits into the manager via
-    //   `AIRequestUsageModel::as_ref(ctx).codebase_context_limits()`
-    //   (`max_indices_allowed`, `max_files_per_repo`,
-    //   `embedding_generation_batch_size`; `codebase_context_limits` is absent
-    //   from this fork's `AIRequestUsageModel`), then, when
-    //   `should_auto_index_codebase(CodebaseAutoIndexingSurface::Local, ctx)`,
-    //   walks `all_working_directories(ctx)` through
-    //   `DetectedRepositories::get_root_for_path` and `auto_index_candidate_roots`
-    //   to pick roots for `manager.index_directory(root, ctx)`.
-    //   `crate::ai::codebase_auto_indexing` does not exist here.
-    //
-    // * `fn trigger_incremental_sync_for_conversation(&mut self,
-    //   terminal_view_id: warpui::EntityId, ctx)` — finds the `TerminalView`
-    //   whose `view_id()` matches, skips it unless
-    //   `active_session_is_local(ctx) == Some(true)`, and calls
-    //   `CodebaseIndexManager::trigger_incremental_sync_for_path(&PathBuf, ctx)`
-    //   with that view's `pwd()`. Every `TerminalView` accessor it uses
-    //   (`view_id`, `active_session_is_local`, `pwd`) still exists in this fork;
-    //   only the manager is missing.
-    //
-    // * `fn clean_up_deleted_indices(&self, ctx)` — one call to
-    //   `CodebaseIndexManager::clean_up_deleted_indices(ctx)`.
-    //
-    // * `pub fn all_working_directories(app: &AppContext) -> HashSet<PathBuf>` —
-    //   a free function at the bottom of the pin's file. This fork already has a
-    //   byte-identical private copy in `app/src/ai/outline/native.rs`, written
-    //   when `RepoOutlines` lost its dependency on this module. Restoring
-    //   indexing should reunify those two rather than add a third.
+    // INDEXING SEAM — the methods below were the "not restored" list; they are
+    // restored now (D2c). One thing on that list is deliberately NOT restored:
+    // the pin's `pub fn all_working_directories(app) -> HashSet<PathBuf>`, a
+    // free function at the bottom of the pin's file. It lives in
+    // `crate::ai::terminal_working_directories` in this fork, which is its one
+    // canonical home; `enable_codebase_indexing` below calls it there. Do not
+    // add a second copy — see that module's docs.
+
+    /// Re-evaluates indexing after the codebase-context setting changes.
+    ///
+    /// At the pin this is driven by `UserWorkspacesEvent::CodebaseContextEnablementChanged`.
+    /// That event does not exist in this fork, because the setting it announced
+    /// was an organization-level policy pushed from the server. The local
+    /// equivalent is a `CodeSettings` change; see the subscription in
+    /// [`Self::new`].
+    fn on_settings_changed(&mut self, ctx: &mut ModelContext<Self>) {
+        Self::maybe_enable_codebase_indexing(ctx);
+    }
+
+    /// Re-evaluates indexing after the signed-in user changes.
+    ///
+    /// Restored from the pin, and deliberately left without a caller here: the
+    /// pin calls it from `AuthManager` in the branch that updates
+    /// `LLMPreferences`, and this fork has no signed-in user for that branch to
+    /// react to. It is kept because it is one line, and because a future
+    /// account-shaped concept (a BYOP profile switch, say) has an obvious place
+    /// to hook.
+    #[allow(dead_code)]
+    pub fn on_user_changed(&self, ctx: &mut ModelContext<Self>) {
+        Self::maybe_enable_codebase_indexing(ctx);
+    }
+
+    /// Enables or disables codebase indexing according to the setting.
+    ///
+    /// Restored verbatim from the pin.
+    fn maybe_enable_codebase_indexing(ctx: &mut ModelContext<Self>) {
+        CodebaseIndexManager::handle(ctx).update(ctx, |manager, ctx| {
+            if !manager.is_indexing_enabled() {
+                return;
+            }
+            let codebase_context_enabled =
+                UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx);
+            if codebase_context_enabled {
+                Self::enable_codebase_indexing(manager, ctx);
+            } else {
+                manager.reset_codebase_indexing(ctx);
+            }
+        });
+    }
+
+    /// Pushes the current limits into the manager and, if auto-indexing is on,
+    /// queues every open repository root.
+    ///
+    /// Restored from the pin. `all_working_directories` comes from
+    /// `crate::ai::terminal_working_directories`, not from a local copy — see
+    /// the seam note above.
+    fn enable_codebase_indexing(
+        manager: &mut CodebaseIndexManager,
+        ctx: &mut ModelContext<CodebaseIndexManager>,
+    ) {
+        let request_model = AIRequestUsageModel::handle(ctx);
+        let codebase_limits = request_model.as_ref(ctx).codebase_context_limits();
+        manager.update_max_limits(
+            codebase_limits.max_indices_allowed,
+            codebase_limits.max_files_per_repo,
+            codebase_limits.embedding_generation_batch_size,
+            ctx,
+        );
+
+        // Fork drift: the pin's `DetectedRepositories::get_root_for_path` takes
+        // and returns a `LocalOrRemotePath`, so it needed unwrapping back to a
+        // local path. This fork's takes `&Path` and returns `Option<PathBuf>`
+        // directly (`crates/repo_metadata/src/repositories.rs:174`), which is
+        // the same thing with the remote arm — irrelevant here, since this
+        // surface is `Local` — already resolved away.
+        #[cfg(feature = "local_fs")]
+        if should_auto_index_codebase(CodebaseAutoIndexingSurface::Local, ctx) {
+            let roots = all_working_directories(ctx)
+                .into_iter()
+                .filter_map(|dir| DetectedRepositories::as_ref(ctx).get_root_for_path(&dir));
+            for root in auto_index_candidate_roots(roots, |_| true) {
+                manager.index_directory(root, ctx);
+            }
+        }
+    }
+
+    /// Brings the index up to date before a new conversation starts.
+    ///
+    /// Restored verbatim from the pin.
+    fn trigger_incremental_sync_for_conversation(
+        &mut self,
+        terminal_view_id: warpui::EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx) {
+            return;
+        }
+
+        // Collect window IDs first to avoid borrowing conflicts.
+        let window_ids: Vec<_> = ctx.window_ids().collect();
+
+        for window_id in window_ids {
+            let terminal_views = ctx.views_of_type::<TerminalView>(window_id);
+
+            for terminal_view in terminal_views.into_iter().flatten() {
+                let terminal_view_ref = terminal_view.as_ref(ctx);
+                if terminal_view_ref.view_id() == terminal_view_id {
+                    if terminal_view_ref.active_session_is_local(ctx) != Some(true) {
+                        log::info!(
+                            "Skipping local codebase incremental sync for non-local agent conversation"
+                        );
+                        return;
+                    }
+
+                    let pwd = terminal_view_ref.pwd();
+                    if let Some(pwd) = pwd {
+                        let directory_path = PathBuf::from(pwd);
+
+                        CodebaseIndexManager::handle(ctx).update(ctx, |codebase_manager, ctx| {
+                            if let Err(e) = codebase_manager
+                                .trigger_incremental_sync_for_path(&directory_path, ctx)
+                            {
+                                log::warn!("Failed to trigger incremental sync {e}");
+                            }
+                        });
+                    }
+                    return; // Found the terminal view, exit both loops
+                }
+            }
+        }
+    }
+
+    /// Drops indices whose repository no longer exists on disk.
+    ///
+    /// Restored verbatim from the pin.
+    #[cfg(feature = "local_fs")]
+    fn clean_up_deleted_indices(&self, ctx: &mut ModelContext<Self>) {
+        CodebaseIndexManager::handle(ctx).update(ctx, |codebase_manager, ctx| {
+            codebase_manager.clean_up_deleted_indices(ctx);
+        });
+    }
 
     // LSP SEAM (driver half — still not restored). From the same pin file:
     // `LspTask`, `LspRepoStatus`, `LSPInstallationStatus`, the

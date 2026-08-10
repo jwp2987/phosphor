@@ -163,6 +163,12 @@ use ai::blocklist::{BlocklistAIHistoryModel, BlocklistAIPermissions};
 use ai::execution_profiles::editor::ExecutionProfileEditorManager;
 use ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use ai::persisted_workspace::PersistedWorkspace;
+// The codebase embedding index (Delta D2c). `::ai` is the crate; `ai` here is
+// this crate's own `app/src/ai` module, hence the leading `::`.
+#[cfg(feature = "local_fs")]
+use ::ai::index::full_source_code_embedding::manager::{
+    CodebaseIndexManager, CodebaseIndexManagerConfig,
+};
 use auth::AuthStateProvider;
 use auth::{AuthManager, AuthState};
 use code::editor_management::CodeManager;
@@ -2018,6 +2024,54 @@ fn initialize_app(
     ctx.add_singleton_model(|ctx| AIExecutionProfilesModel::new(launch_mode, ctx));
 
     ctx.add_singleton_model(DefaultTerminal::new);
+
+    // The index manager and `PersistedWorkspace` both restore from the same rows,
+    // and `add_singleton_model` takes ownership of what its closure captures, so
+    // the manager gets its own copy.
+    #[cfg(feature = "local_fs")]
+    let persisted_workspaces_for_index = persisted_workspaces.clone();
+
+    // Codebase embedding index. Restored with the subsystem (Delta D2c);
+    // registered before `PersistedWorkspace`, which subscribes to it.
+    //
+    // Differences from the pin's registration
+    // (`02b53fcd8:app/src/lib.rs:2380`), all forced by things this fork does not
+    // have:
+    //
+    // * The store client is `crate::ai::codebase_embeddings::build_store_client`
+    //   — a local vector store plus the user's own embedding provider — where
+    //   the pin passed `server_api_provider.as_ref(ctx).get()`.
+    // * `launch_mode.supports_indexing()` does not exist here, and neither does
+    //   `daemon_codebase_index_snapshot_storage` / the `RemoteServerDaemon`
+    //   deferral, because remote-daemon indexing is a separate port
+    //   (`FeatureFlag::RemoteCodebaseIndexing`). The flag itself stands in for
+    //   the launch-mode check, so a build with indexing off registers a manager
+    //   that no-ops rather than no manager at all — `PersistedWorkspace` and the
+    //   settings page both call `CodebaseIndexManager::handle(ctx)`
+    //   unconditionally.
+    #[cfg(feature = "local_fs")]
+    ctx.add_singleton_model(|ctx| {
+        let indexing_enabled = FeatureFlag::FullSourceCodeEmbedding.is_enabled();
+        let should_restore_indices = indexing_enabled
+            && UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx);
+        let indices_to_restore = if should_restore_indices {
+            persisted_workspaces_for_index.clone()
+        } else {
+            vec![]
+        };
+
+        let codebase_limits = AIRequestUsageModel::as_ref(ctx).codebase_context_limits();
+        let codebase_index_config = CodebaseIndexManagerConfig::new(
+            indices_to_restore,
+            codebase_limits.max_indices_allowed,
+            codebase_limits.max_files_per_repo,
+            codebase_limits.embedding_generation_batch_size,
+            crate::ai::codebase_embeddings::build_store_client(ctx),
+            indexing_enabled,
+        );
+
+        CodebaseIndexManager::new_with_config(codebase_index_config, ctx)
+    });
 
     ctx.add_singleton_model(|ctx| {
         ProjectContextModel::new_from_persisted(persisted_project_rules, ctx)

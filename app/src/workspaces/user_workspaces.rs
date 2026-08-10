@@ -249,6 +249,25 @@ impl UserWorkspaces {
         &self.workspaces
     }
 
+    /// Whether the AI agent may use the codebase embedding index as context.
+    ///
+    /// Restored from the pin (`02b53fcd8:app/src/workspaces/user_workspaces.rs:1637`)
+    /// with the codebase index, minus one term. The pin first consulted
+    /// `team_allows_codebase_context()`, an `AdminEnablementSetting` that an
+    /// organization could set to force this on or off for everyone; that value
+    /// arrived from Warp's server inside `workspace.settings`, so it has no local
+    /// meaning here and the pin's `RespectUserSetting` branch is the only one
+    /// that survives. What remains is the pin's own user-setting branch,
+    /// unchanged: the global AI toggle AND the user's codebase-context setting.
+    pub fn is_codebase_context_enabled(&self, app: &AppContext) -> bool {
+        use settings::Setting;
+
+        crate::settings::AISettings::as_ref(app).is_any_ai_enabled(app)
+            && *crate::settings::CodeSettings::as_ref(app)
+                .codebase_context_enabled
+                .value()
+    }
+
     pub fn set_current_workspace_uid(
         &mut self,
         workspace_uid: WorkspaceUid,
