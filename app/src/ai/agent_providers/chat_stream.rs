@@ -805,6 +805,486 @@ fn cap_tool_response_content(content: String) -> String {
     )
 }
 
+// ---------------------------------------------------------------------------
+// Computer-use screenshot attachments
+// ---------------------------------------------------------------------------
+//
+// ## Why the image does not travel in the tool result
+//
+// `use_computer` / `request_computer_use` capture a screenshot, but a BYOP tool result is a
+// `genai::chat::ToolResponse { content: String }` — a plain string with no parts — and
+// `cap_tool_response_content` truncates it at 40 000 characters, two orders of magnitude under
+// a base64 PNG. Truncating would produce a corrupt data URI, not a degraded image. Without a
+// fix the agent clicks and cannot see what happened.
+//
+// Three routes were considered:
+//
+//  1. **Widen `ToolResponse` to carry parts.** Rejected. It changes a serde-derived type that
+//     every one of genai's ~20 adapters and the whole *response*-parsing path touch; each
+//     adapter that did not learn about the new field would silently drop the image, which is
+//     the failure mode hardest to notice. And it buys nothing on the OpenAI family, whose
+//     `role: "tool"` message takes text only — so a second route would be needed anyway.
+//  2. **Put the image inside Anthropic's `tool_result.content` block list.** Native and
+//     correct for Anthropic, but same problem: OpenAI cannot express it, so it cannot be the
+//     portable route, and it would still need (1) to plumb the bytes through.
+//  3. **Attach the bytes as `ContentPart::Binary` on a *user* message placed after the tool
+//     results.** Chosen. `ContentPart::Binary` on a user message is the one carrier every
+//     adapter already auto-adapts (OpenAI `image_url`, Anthropic `image`, Gemini
+//     `inline_data`), and it is already exercised by `build_user_message_with_binaries`.
+//     Critically, **`ToolResponse` is not touched at all**, so tool_call/tool_response pairing
+//     — the thing `strict_chat_completions_ordering_errors` and
+//     `repair_tool_call_pairs_for_accepted_history_gaps` police — is unchanged by
+//     construction: no response is moved, split, or re-keyed.
+//
+// The one place route 3 is not enough on its own is Anthropic, which requires strict
+// user/assistant alternation (see `push_environment_context_message` for the measurement) — a
+// standalone user message straight after the tool-result turn would be two user turns in a
+// row. There the parts are appended to the trailing `ChatRole::Tool` message instead, and the
+// vendored Anthropic adapter emits them after the `tool_result` blocks inside the same user
+// turn, which is exactly the shape Anthropic documents. That is a match-arm change in
+// `lib/rust-genai/src/adapter/adapters/anthropic/adapter_impl.rs`; no type changed.
+//
+// ## Bounds
+//
+// Screenshots are big and there can be one per action, so two limits apply. Only the most
+// recent [`MAX_ATTACHED_SCREENSHOTS`] captures in the conversation are attached — the same
+// pruning Anthropic's own computer-use reference does with `only_n_most_recent_images` — and
+// each is re-encoded to at most [`ATTACHED_SCREENSHOT_MAX_LONG_EDGE_PX`] on the long edge and
+// [`MAX_ATTACHED_SCREENSHOT_BYTES`] of PNG. Older captures keep their metadata-only result and
+// are told, in that result, that they were superseded.
+//
+// ## Persistence and replay
+//
+// The plan is a pure function of the message list, so replaying the same conversation produces
+// the same attachments: there is no "already injected" flag to get out of sync, and therefore
+// no way to double-inject. The bytes themselves survive a restart — the controller persists the
+// structured `ToolCallResult` oneof, including `RawImage.data`, and it round-trips through
+// prost (`app/src/persistence/agent.rs`) — so a restored conversation attaches exactly what a
+// live one would.
+
+/// How many of the most recent computer-use screenshots travel with a request.
+///
+/// One is not enough: "did my click land?" is a comparison between the screen before and after,
+/// and a model given only the current frame re-derives the previous one from its own prose.
+/// Much more than that is unaffordable — a 1568 px screenshot costs roughly 1.5 k tokens, and
+/// they accumulate one per `use_computer` call.
+const MAX_ATTACHED_SCREENSHOTS: usize = 2;
+
+/// Long-edge cap applied to an attached screenshot, in pixels.
+///
+/// The tool schema already defaults `max_long_edge_px` to the same 1568 at *capture* time, but
+/// the model may pass `0` there, which `convert_screenshot_params` reads as "no constraint" —
+/// so a full-resolution capture can reach this layer. This bound is not negotiable by the
+/// model.
+const ATTACHED_SCREENSHOT_MAX_LONG_EDGE_PX: u32 = 1568;
+
+/// Hard ceiling on the encoded bytes of one attached screenshot.
+///
+/// Anthropic rejects images above 5 MB of base64; base64 inflates by 4/3, so 3.5 MB of PNG is
+/// ~4.7 MB encoded and clears every provider in use. In practice a downscaled UI screenshot is
+/// far below this — the bound exists so a pathological capture degrades explicitly instead of
+/// producing a request the provider refuses.
+const MAX_ATTACHED_SCREENSHOT_BYTES: usize = 3_500_000;
+
+/// Long edge below which shrinking further is pointless — a screenshot this small cannot be
+/// read anyway, so we report it undeliverable rather than attach something useless.
+const MIN_ATTACHED_SCREENSHOT_LONG_EDGE_PX: u32 = 400;
+
+/// How many times to shrink-and-retry before giving up on the byte bound.
+const MAX_SCREENSHOT_DOWNSCALE_ATTEMPTS: usize = 4;
+
+/// Where a screenshot-bearing tool result sits in this request.
+///
+/// Identity is positional rather than by message id because the current turn's results arrive
+/// through `params.input` and have no message id yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ScreenshotSlot {
+    /// Index into the linearized `all_msgs` history slice.
+    History(usize),
+    /// Index into `params.input`.
+    Input(usize),
+}
+
+/// Which captures may travel this turn, decided before any message is assembled.
+///
+/// Two passes are needed because "the most recent N" is only knowable after the whole
+/// conversation has been walked, while the annotation has to be written as each result is
+/// serialized.
+#[derive(Debug, Default)]
+struct ScreenshotPlan {
+    /// Slots whose bytes are allowed to travel.
+    attached: HashSet<ScreenshotSlot>,
+    /// Whether the model accepts image input at all.
+    images_supported: bool,
+    /// Screen size in physical pixels, from the most recent approved `request_computer_use`.
+    /// Used to tell the model how to scale coordinates read off a downscaled full-screen
+    /// capture, which has no dimensions of its own in the result.
+    screen_px: Option<(i32, i32)>,
+}
+
+impl ScreenshotPlan {
+    /// The disposition to write into the result JSON for a screenshot-bearing slot.
+    fn delivery_for(&self, slot: ScreenshotSlot) -> tools::computer::ScreenshotDelivery {
+        use tools::computer::ScreenshotDelivery as D;
+        if !self.images_supported {
+            return D::ModelCannotSeeImages;
+        }
+        if self.attached.contains(&slot) {
+            D::Attached
+        } else {
+            D::Superseded
+        }
+    }
+}
+
+/// True when this freshly-executed action carries a screenshot.
+///
+/// Deliberately reads the internal `AIAgentActionResult` rather than converting it to the
+/// message-side proto: `action_result_to_msg_result` clones the whole result, image bytes
+/// included, and this runs during a pass that only needs to count.
+fn action_result_has_screenshot(result: &AIAgentActionResult) -> bool {
+    use crate::ai::agent::{AIAgentActionResultType, RequestComputerUseResult, UseComputerResult};
+    match &result.result {
+        AIAgentActionResultType::UseComputer(UseComputerResult::Success(success)) => {
+            success.screenshot.is_some()
+        }
+        AIAgentActionResultType::RequestComputerUse(RequestComputerUseResult::Approved {
+            ..
+        }) => true,
+        _ => false,
+    }
+}
+
+/// The screen size an approved `request_computer_use` reported, if this result is one.
+fn action_result_screen_px(result: &AIAgentActionResult) -> Option<(i32, i32)> {
+    use crate::ai::agent::{AIAgentActionResultType, RequestComputerUseResult};
+    match &result.result {
+        AIAgentActionResultType::RequestComputerUse(RequestComputerUseResult::Approved {
+            screenshot,
+            ..
+        }) => Some((
+            screenshot.original_width as i32,
+            screenshot.original_height as i32,
+        )),
+        _ => None,
+    }
+}
+
+/// Walks the conversation once and decides which screenshots travel.
+///
+/// Applies the same skip rules as the assembly loop — summarization head cut, compaction
+/// hiding, pruned tool output — so a capture that is not going to be sent at all never
+/// consumes a slot in the budget.
+fn plan_screenshot_attachments(
+    all_msgs: &[&api::Message],
+    input: &[AIAgentInput],
+    caps: attachment_caps::AttachmentCaps,
+    summarize_head_end: Option<usize>,
+    hidden_msg_ids: &std::collections::HashSet<String>,
+    compacted_tool_msg_ids: &std::collections::HashSet<String>,
+) -> ScreenshotPlan {
+    let mut plan = ScreenshotPlan {
+        images_supported: caps.images,
+        ..ScreenshotPlan::default()
+    };
+    // Slot plus the tool call it answers, so the same capture reaching this pass twice — as a
+    // persisted history result *and* as this turn's `AIAgentInput::ActionResult` — resolves to
+    // one attachment rather than two copies of the same screen.
+    let mut ordered: Vec<(ScreenshotSlot, String)> = Vec::new();
+
+    for (idx, msg) in all_msgs.iter().enumerate() {
+        if summarize_head_end.is_some_and(|head_end| idx >= head_end) {
+            continue;
+        }
+        if hidden_msg_ids.contains(&msg.id) || compacted_tool_msg_ids.contains(&msg.id) {
+            continue;
+        }
+        let Some(api::message::Message::ToolCallResult(tcr)) = &msg.message else {
+            continue;
+        };
+        let Some(inner) = tcr.result.as_ref() else {
+            continue;
+        };
+        if let Some((w, h)) = tools::computer::captured_surface_px(inner) {
+            // Only an approval carries the *screen* size; a captured window's size is
+            // per-result and must not overwrite it.
+            if matches!(
+                inner,
+                api::message::tool_call_result::Result::RequestComputerUseResult(_)
+            ) {
+                plan.screen_px = Some((w, h));
+            }
+        }
+        if tools::computer::screenshot_of(inner).is_some() {
+            ordered.push((ScreenshotSlot::History(idx), tcr.tool_call_id.clone()));
+        }
+    }
+
+    for (idx, item) in input.iter().enumerate() {
+        let AIAgentInput::ActionResult { result, .. } = item else {
+            continue;
+        };
+        if let Some(screen) = action_result_screen_px(result) {
+            plan.screen_px = Some(screen);
+        }
+        if action_result_has_screenshot(result) {
+            ordered.push((ScreenshotSlot::Input(idx), result.id.to_string()));
+        }
+    }
+
+    // Keep the *last* occurrence of each tool call: when a result exists in both history and
+    // the live input, the live one is the authoritative copy.
+    let mut deduped: Vec<(ScreenshotSlot, String)> = Vec::with_capacity(ordered.len());
+    for (slot, call_id) in ordered {
+        if let Some(existing) = deduped.iter_mut().find(|(_, id)| *id == call_id) {
+            existing.0 = slot;
+        } else {
+            deduped.push((slot, call_id));
+        }
+    }
+
+    let keep_from = deduped.len().saturating_sub(MAX_ATTACHED_SCREENSHOTS);
+    plan.attached = deduped
+        .into_iter()
+        .skip(keep_from)
+        .map(|(slot, _)| slot)
+        .collect();
+    plan
+}
+
+/// One screenshot, encoded and ready to become a `ContentPart::Binary`.
+#[derive(Debug, Clone)]
+struct PreparedScreenshot {
+    mime: String,
+    base64: String,
+    width: u32,
+    height: u32,
+}
+
+/// Decodes, bounds and base64-encodes a captured screenshot.
+///
+/// Returns `None` when the bytes cannot be made to fit — the caller then reports
+/// `Undeliverable` in the tool result rather than sending nothing and letting the model assume
+/// a blank screen.
+fn prepare_screenshot_attachment(image: &api::RawImage) -> Option<PreparedScreenshot> {
+    use ::image::GenericImageView as _;
+    use base64::Engine as _;
+
+    if image.data.is_empty() {
+        return None;
+    }
+    let declared_mime = image.mime_type.trim();
+    let mime = if declared_mime.is_empty() {
+        // `process_screenshot` always writes PNG; an empty mime means an older or synthetic
+        // result, not a different format.
+        "image/png"
+    } else {
+        declared_mime
+    };
+    if !mime.to_ascii_lowercase().starts_with("image/") {
+        return None;
+    }
+
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+
+    // Fast path: the capture already honoured `max_long_edge_px` (the schema default) and is
+    // small enough, so re-encoding would only lose fidelity and burn CPU.
+    if image.width > 0
+        && image.height > 0
+        && image.width.max(image.height) as u32 <= ATTACHED_SCREENSHOT_MAX_LONG_EDGE_PX
+        && image.data.len() <= MAX_ATTACHED_SCREENSHOT_BYTES
+    {
+        return Some(PreparedScreenshot {
+            mime: mime.to_owned(),
+            base64: encode(&image.data),
+            width: image.width as u32,
+            height: image.height as u32,
+        });
+    }
+
+    let decoded = ::image::load_from_memory(&image.data).ok()?;
+    let mut long_edge = ATTACHED_SCREENSHOT_MAX_LONG_EDGE_PX;
+    for _ in 0..MAX_SCREENSHOT_DOWNSCALE_ATTEMPTS {
+        let (w, h) = decoded.dimensions();
+        if w == 0 || h == 0 {
+            return None;
+        }
+        // `resize` preserves aspect ratio and never upscales past the given box, so passing
+        // the long edge for both dimensions caps the long edge exactly.
+        let resized = if w.max(h) > long_edge {
+            decoded.resize(long_edge, long_edge, ::image::imageops::FilterType::Lanczos3)
+        } else {
+            decoded.clone()
+        };
+        let (out_w, out_h) = resized.dimensions();
+        let mut bytes: Vec<u8> = Vec::new();
+        resized
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                ::image::ImageFormat::Png,
+            )
+            .ok()?;
+        if bytes.len() <= MAX_ATTACHED_SCREENSHOT_BYTES {
+            return Some(PreparedScreenshot {
+                mime: "image/png".to_owned(),
+                base64: encode(&bytes),
+                width: out_w,
+                height: out_h,
+            });
+        }
+        long_edge = ((long_edge as f64) * 0.7).round() as u32;
+        if long_edge < MIN_ATTACHED_SCREENSHOT_LONG_EDGE_PX {
+            break;
+        }
+    }
+    None
+}
+
+/// A screenshot together with everything the model needs to use it.
+#[derive(Debug, Clone)]
+struct PendingScreenshot {
+    /// The tool call this capture belongs to, so the image is never ambiguous when two are
+    /// attached at once.
+    call_id: String,
+    prepared: PreparedScreenshot,
+    /// Size of the captured surface in physical pixels — the window for a targeted capture,
+    /// the screen otherwise. `None` when neither is known.
+    surface_px: Option<(i32, i32)>,
+}
+
+impl PendingScreenshot {
+    /// The text part that precedes the image.
+    ///
+    /// The scale factor is the load-bearing part: `use_computer` takes physical pixels of the
+    /// surface, the image is downscaled, and a model that reads a coordinate straight off the
+    /// image clicks in the wrong place by exactly that ratio.
+    fn caption(&self) -> String {
+        let (width, height) = (self.prepared.width, self.prepared.height);
+        match self.surface_px {
+            Some((surface_w, surface_h)) if width > 0 && surface_w > 0 => {
+                let scale = surface_w as f64 / width as f64;
+                format!(
+                    "Screenshot for tool_call_id={} — image {}x{} px, captured surface {}x{} \
+                     physical px. Multiply any (x, y) you read off this image by {scale:.4} to \
+                     get the coordinate to pass to use_computer.",
+                    self.call_id, width, height, surface_w, surface_h,
+                )
+            }
+            _ => format!(
+                "Screenshot for tool_call_id={} — image {}x{} px. The capture may be downscaled \
+                 relative to the surface; compare it against the screen dimensions from \
+                 request_computer_use before using any coordinate you read off it.",
+                self.call_id, width, height,
+            ),
+        }
+    }
+}
+
+/// Decides one screenshot's fate, records it in the result JSON, and queues the bytes.
+///
+/// Called for every tool result that goes out, so it must be cheap and inert for the ones that
+/// carry no capture — `screenshot_of` returning `None` is the "not a computer-use result" test,
+/// and `annotate_screenshot_delivery` is itself a no-op unless the payload says
+/// `screenshot.captured == true`.
+///
+/// The annotation is written for *every* capture, including the pruned ones: a result that
+/// merely omitted the image would read to the model as a screen with nothing on it.
+fn collect_screenshot_attachment(
+    inner: &api::message::tool_call_result::Result,
+    tool_call_id: &str,
+    slot: ScreenshotSlot,
+    plan: &ScreenshotPlan,
+    value: &mut Value,
+    pending: &mut Vec<PendingScreenshot>,
+) {
+    use tools::computer::ScreenshotDelivery;
+
+    let Some(image) = tools::computer::screenshot_of(inner) else {
+        return;
+    };
+    let mut delivery = plan.delivery_for(slot);
+    if delivery == ScreenshotDelivery::Attached {
+        match prepare_screenshot_attachment(image) {
+            Some(prepared) => pending.push(PendingScreenshot {
+                call_id: tool_call_id.to_owned(),
+                prepared,
+                // A window capture reports its own size; a full-screen one has none, so fall
+                // back to the screen size remembered from the approval.
+                surface_px: tools::computer::captured_surface_px(inner).or(plan.screen_px),
+            }),
+            None => {
+                log::warn!(
+                    "[byop] computer-use: screenshot for tool_call_id={tool_call_id} could not \
+                     be prepared ({}x{} {}, {} bytes); reporting it undeliverable",
+                    image.width,
+                    image.height,
+                    image.mime_type,
+                    image.data.len(),
+                );
+                delivery = ScreenshotDelivery::Undeliverable;
+            }
+        }
+    }
+    tools::computer::annotate_screenshot_delivery(value, delivery);
+}
+
+/// Header text for the screenshot message, so the model knows why a user turn suddenly carries
+/// images it did not send.
+const SCREENSHOT_MESSAGE_HEADER: &str =
+    "Automatically attached by the client, not sent by the user: the screenshot(s) captured by \
+     the computer-use tool call(s) above. This is the current state of the screen.";
+
+/// Appends the prepared screenshots to the request.
+///
+/// Placement is provider-shaped, and both shapes leave tool_call/tool_response pairing alone:
+///
+/// - **Anthropic** requires strict user/assistant alternation, so a standalone user message
+///   right after a tool-result turn would be two user turns in a row. The parts are appended to
+///   the trailing `ChatRole::Tool` (or `ChatRole::User`) message instead; the vendored
+///   Anthropic adapter emits them after the `tool_result` blocks of the same user turn.
+/// - **Everything else** gets a standalone user message, which is what the OpenAI, Gemini and
+///   Ollama adapters can carry an image on (their `tool` role is text-only).
+fn push_screenshot_attachments(
+    messages: &mut Vec<ChatMessage>,
+    pending: Vec<PendingScreenshot>,
+    api_type: AgentProviderApiType,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let mut parts: Vec<ContentPart> = Vec::with_capacity(pending.len() * 2 + 1);
+    parts.push(ContentPart::Text(SCREENSHOT_MESSAGE_HEADER.to_owned()));
+    let mut total_base64 = 0usize;
+    for shot in pending {
+        parts.push(ContentPart::Text(shot.caption()));
+        total_base64 += shot.prepared.base64.len();
+        parts.push(ContentPart::Binary(Binary::from_base64(
+            shot.prepared.mime,
+            shot.prepared.base64,
+            Some(format!("screenshot-{}.png", shot.call_id)),
+        )));
+    }
+    log::info!(
+        "[byop] computer-use: attaching {} screenshot part(s), {total_base64} base64 chars, \
+         api_type={api_type:?}",
+        (parts.len() - 1) / 2,
+    );
+
+    if matches!(api_type, AgentProviderApiType::Anthropic) {
+        if let Some(last) = messages.last_mut() {
+            if matches!(last.role, ChatRole::Tool | ChatRole::User) {
+                last.content.extend(parts);
+                return;
+            }
+        }
+    }
+    messages.push(ChatMessage {
+        role: ChatRole::User,
+        content: MessageContent::from_parts(parts),
+        options: None,
+    });
+}
+
 fn current_input_result_kind(result: &AIAgentActionResult) -> TerminalResultKind {
     if result.result.is_cancelled() {
         TerminalResultKind::Cancellation
@@ -1507,6 +1987,20 @@ fn build_chat_request(
         &compacted_tool_msg_ids,
     )?;
 
+    // Decide up front which computer-use screenshots may travel this turn: "the most recent N"
+    // is only knowable after the whole conversation has been walked, but the disposition has to
+    // be written into each tool result as it is serialized, so the two cannot share a pass.
+    // See the `Computer-use screenshot attachments` section above.
+    let screenshot_plan = plan_screenshot_attachments(
+        &all_msgs,
+        &params.input,
+        attachment_caps,
+        summarize_head_end,
+        &hidden_msg_ids,
+        &compacted_tool_msg_ids,
+    );
+    let mut pending_screenshots: Vec<PendingScreenshot> = Vec::new();
+
     let mut buf = AssistantBuffer::new(force_echo_reasoning);
     // Zap: call_ids of subagent ToolCalls that were skipped in history — their
     // ToolCallResults must also be skipped, or they become orphan tool_responses and
@@ -1734,8 +2228,21 @@ fn build_chat_request(
                     // placeholder, the real content isn't sent upstream
                     r#"{"status":"compacted","note":"tool output was pruned by local compaction"}"#
                         .to_string()
-                } else if tcr.result.is_some() {
-                    tools::serialize_result(tcr)
+                } else if let Some(inner) = tcr.result.as_ref() {
+                    // Computer-use results are the one case where the serialized text alone is
+                    // not the whole result: the capture is annotated with what happened to its
+                    // bytes, and the bytes themselves are collected for the attachment message
+                    // pushed after the whole conversation is assembled.
+                    let mut value = tools::serialize_result_value(inner);
+                    collect_screenshot_attachment(
+                        inner,
+                        &tcr.tool_call_id,
+                        ScreenshotSlot::History(idx),
+                        &screenshot_plan,
+                        &mut value,
+                        &mut pending_screenshots,
+                    );
+                    tools::stringify_result_value(&value)
                 } else if !msg.server_message_data.is_empty() {
                     msg.server_message_data.clone()
                 } else {
@@ -1755,7 +2262,7 @@ fn build_chat_request(
     flush_assistant_buffer(&mut buf, &mut messages, &mut outbound_tool_groups);
 
     // Current turn's new input → append it.
-    for input in &params.input {
+    for (input_idx, input) in params.input.iter().enumerate() {
         match input {
             AIAgentInput::UserQuery {
                 query,
@@ -1864,7 +2371,28 @@ fn build_chat_request(
                 // `params.tasks` history. It must be serialized to a ToolResponse here, or
                 // genai/upstream will 400 due to a tool_call_id pairing failure.
                 let tool_call_id = result.id.to_string();
-                let content = tools::serialize_action_result(result).unwrap_or_else(|| {
+                // Same two-part handling as the history branch: annotate the screenshot's fate
+                // in the text the model reads, and hand the bytes to the attachment pass. The
+                // structured message-side result is produced once and reused for both, because
+                // `action_result_to_msg_result` clones the image bytes.
+                let msg_side = tools::action_result_to_msg_result(result);
+                let serialized = msg_side.as_ref().and_then(|inner| {
+                    // `try_serialize_result_value` returning None keeps the pre-existing
+                    // Display fallback below: an unrecognized variant must not silently become
+                    // `{"status":"unsupported_tool_result"}` here, which would drop the only
+                    // information the model was going to get.
+                    let mut value = tools::try_serialize_result_value(inner)?;
+                    collect_screenshot_attachment(
+                        inner,
+                        &tool_call_id,
+                        ScreenshotSlot::Input(input_idx),
+                        &screenshot_plan,
+                        &mut value,
+                        &mut pending_screenshots,
+                    );
+                    Some(tools::stringify_result_value(&value))
+                });
+                let content = serialized.unwrap_or_else(|| {
                     serde_json::json!({ "result": result.result.to_string() }).to_string()
                 });
                 messages.push(ChatMessage::from(ToolResponse::new(
@@ -1954,6 +2482,13 @@ fn build_chat_request(
         )?;
     }
 
+    // Computer-use screenshots go in here, after every tool response has been emitted and after
+    // the repair pass has finished rewriting the message vector. Appending (never inserting)
+    // keeps the `outbound_tool_groups` message indices the repair pass used valid, and putting
+    // it past the last tool response is what keeps `strict_chat_completions_ordering_errors`
+    // and Anthropic's "tool_result blocks come first" rule satisfied.
+    push_screenshot_attachments(&mut messages, pending_screenshots, api_type);
+
     // `<environment_context>` tail block: cwd / git branch / date.
     //
     // These fields used to live in the system prompt's <env> section, where a single `cd`
@@ -2020,7 +2555,7 @@ fn build_chat_request(
     }
 
 
-    let mut tools_array = build_tools_array(params);
+    let mut tools_array = build_tools_array(params, attachment_caps.images);
 
     // Anthropic path: tags the **last tool** in the tools array with a 1h cache_control
     // breakpoint, making the whole tools section a long-TTL static prefix (aligned with
@@ -2169,6 +2704,51 @@ fn json_value_for_log(value: &Value) -> (usize, String) {
     let json = serde_json::to_string(value)
         .unwrap_or_else(|_| "<failed-to-serialize-json-value>".to_owned());
     (json.len(), snippet_for_log(&json, BYOP_DIAG_SNIPPET_CHARS))
+}
+
+/// A view of one message safe to dump, with binary payloads replaced by a one-line summary.
+///
+/// Borrows when there is nothing to redact, so a text-only turn costs nothing; the owned branch
+/// is cheap too, because `BinarySource::Base64` holds an `Arc<str>` and cloning it is a
+/// refcount bump rather than a copy of the megabyte.
+fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Cow<'_, ChatMessage> {
+    if !message.content.contains_binary() {
+        return std::borrow::Cow::Borrowed(message);
+    }
+    let mut redacted = message.clone();
+    let parts: Vec<ContentPart> = std::mem::take(&mut redacted.content)
+        .into_iter()
+        .map(|part| match part {
+            ContentPart::Binary(binary) => {
+                ContentPart::Text(format!("<binary redacted: {}>", binary_for_log(&binary)))
+            }
+            other => other,
+        })
+        .collect();
+    redacted.content = MessageContent::from_parts(parts);
+    std::borrow::Cow::Owned(redacted)
+}
+
+/// A copy of the request safe to dump into the log, with binary payloads replaced.
+///
+/// The escape scan and the on-error dump that consume this only care about text the caller
+/// authored; base64 is neither readable nor a source of the illegal escapes they hunt for, and
+/// a computer-use loop would otherwise put a megabyte of it in the log on every turn.
+fn diag_request_with_redacted_binaries(chat_req: &ChatRequest) -> std::borrow::Cow<'_, ChatRequest> {
+    if !chat_req
+        .messages
+        .iter()
+        .any(|message| message.content.contains_binary())
+    {
+        return std::borrow::Cow::Borrowed(chat_req);
+    }
+    let mut redacted = chat_req.clone();
+    let original = std::mem::take(&mut redacted.messages);
+    redacted.messages = original
+        .iter()
+        .map(|message| diag_message_with_redacted_binaries(message).into_owned())
+        .collect();
+    std::borrow::Cow::Owned(redacted)
 }
 
 fn binary_for_log(binary: &Binary) -> String {
@@ -3057,6 +3637,18 @@ fn serialize_outgoing_tool_call(
             }
             ("read_shell_command_output".to_owned(), args.to_string())
         }
+        // Computer use replays through its own inverse, or the catch-all below would show the
+        // model a prior call named `warp_internal_UseComputer` with `{}` arguments — leaving it
+        // unable to tell which of its actions produced the screenshot it is looking at, which
+        // defeats the point of sending the screenshot at all.
+        Some(Tool::UseComputer(uc)) => (
+            tools::computer::USE_COMPUTER_TOOL_NAME.to_owned(),
+            tools::computer::serialize_outgoing_use_computer(uc).to_string(),
+        ),
+        Some(Tool::RequestComputerUse(rc)) => (
+            tools::computer::REQUEST_COMPUTER_USE_TOOL_NAME.to_owned(),
+            tools::computer::serialize_outgoing_request_computer_use(rc).to_string(),
+        ),
         Some(other) => {
             let variant_name = format!("{other:?}")
                 .split('(')
@@ -3191,7 +3783,11 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     names
 }
 
-fn build_tools_array(params: &RequestParams) -> Vec<GenaiTool> {
+/// `images_supported` is `AttachmentCaps::images` for the model this request is going to.
+/// It only affects the two computer-use descriptors, whose baked-in description tells the model
+/// it cannot see the screen — true for a text-only model, actively harmful for one that is
+/// about to be handed the screenshot (see `tools::computer::image_capable_description`).
+fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<GenaiTool> {
     // Zap A2: strips `run_shell_command` in the LRC tag-in scenario, forcing the model to
     // choose a PTY-operation-class tool instead.
     //
@@ -3276,7 +3872,14 @@ fn build_tools_array(params: &RequestParams) -> Vec<GenaiTool> {
             // Zap: when template hot-reloading is enabled, the override version at
             // `tool_descriptions/{name}.md` takes priority. When it's off (the default), we
             // borrow the &'static str from the registry directly, at zero extra cost.
-            let raw = prompt_renderer::tool_description(t.name, t.description);
+            // The image-capable wording is the *default* fed to the override lookup, not a
+            // replacement for it: a user-supplied `tool_descriptions/{name}.md` still wins.
+            let default_description = if images_supported {
+                tools::computer::image_capable_description(t.name).unwrap_or(t.description)
+            } else {
+                t.description
+            };
+            let raw = prompt_renderer::tool_description(t.name, default_description);
             let description = if raw.contains("{{year}}") {
                 raw.replace("{{year}}", &current_year)
             } else {
@@ -4278,9 +4881,14 @@ pub async fn generate_byop_output(
     // through another layer by the genai adapter, but this already covers every raw string
     // fed into BYOP, which is enough to pin down whether an illegal escape came from the
     // prompt, a tool description, a schema, or a tool result.
+    // Binary parts are redacted first. This dump goes to `log::info!` on *every* turn, and a
+    // computer-use loop attaches a base64 screenshot to most of them — dumping those verbatim
+    // would write megabytes per turn to the log for content the escape scan below cannot say
+    // anything useful about anyway (base64 has no backslashes).
+    let diag_request = diag_request_with_redacted_binaries(&chat_req);
     let diag_body_json = serde_json::to_string(&json!({
         "model": &model_id,
-        "chat_request": &chat_req,
+        "chat_request": diag_request.as_ref(),
     }))
     .unwrap_or_default();
     log::info!("[byop] diag_body_approx_len={}", diag_body_json.len());
@@ -4349,7 +4957,13 @@ pub async fn generate_byop_output(
     // Outbound capture: this turn's delta, before the stream opens. Gated on the
     // inspector being open AND a defined context window.
     if super::wire_log::should_capture(context_window) {
-        let delta = wire_outbound_delta(&chat_req.messages);
+        // Redacted for the same reason as `diag_body_json`, plus one of its own: this payload
+        // is a string held in a ring buffer and rendered in a text view, so a megabyte of
+        // base64 per entry is a UI problem, not just a log-size one.
+        let delta: Vec<std::borrow::Cow<'_, ChatMessage>> = wire_outbound_delta(&chat_req.messages)
+            .into_iter()
+            .map(diag_message_with_redacted_binaries)
+            .collect();
         let payload = match serde_json::to_string_pretty(&delta) {
             Ok(s) => super::wire_log::Payload::Json(s),
             Err(e) => super::wire_log::Payload::Flagged(format!("serialize failed: {e}")),
@@ -8621,6 +9235,424 @@ mod serializer_readiness_tests {
             build_result.is_err(),
             "serializer must not send while tool is still running"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Computer-use screenshot attachments
+    // -----------------------------------------------------------------------
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        // A flat fill compresses to almost nothing and would never exercise the size bound; a
+        // gradient keeps the encoded size in the same order of magnitude as a real screenshot.
+        let mut img = ::image::RgbaImage::new(width, height);
+        for (x, y, pixel) in img.enumerate_pixels_mut() {
+            *pixel = ::image::Rgba([
+                (x % 256) as u8,
+                (y % 256) as u8,
+                ((x + y) % 256) as u8,
+                255,
+            ]);
+        }
+        let mut out = Vec::new();
+        ::image::DynamicImage::ImageRgba8(img)
+            .write_to(
+                &mut std::io::Cursor::new(&mut out),
+                ::image::ImageFormat::Png,
+            )
+            .expect("test fixture must encode");
+        out
+    }
+
+    fn screenshot(width: u32, height: u32) -> api::RawImage {
+        api::RawImage {
+            data: png_bytes(width, height),
+            mime_type: "image/png".to_owned(),
+            width: width as i32,
+            height: height as i32,
+        }
+    }
+
+    fn use_computer_tool_call() -> api::message::tool_call::Tool {
+        api::message::tool_call::Tool::UseComputer(api::message::tool_call::UseComputer {
+            actions: vec![],
+            post_actions_screenshot_params: None,
+            action_summary: "click save".to_owned(),
+        })
+    }
+
+    /// A persisted `use_computer` success, with the structured `result` oneof the controller
+    /// writes (`byop_action_result_message`) — that is the shape that carries the image bytes
+    /// across a restart, so it is the shape the tests must use.
+    fn use_computer_result_message(
+        task_id: &str,
+        request_id: &str,
+        tool_call_id: &str,
+        image: Option<api::RawImage>,
+    ) -> api::Message {
+        api::Message {
+            id: Uuid::new_v4().to_string(),
+            task_id: task_id.to_owned(),
+            server_message_data: String::new(),
+            citations: vec![],
+            fetched_memories: vec![],
+            message: Some(api::message::Message::ToolCallResult(
+                api::message::ToolCallResult {
+                    tool_call_id: tool_call_id.to_owned(),
+                    context: None,
+                    result: Some(api::message::tool_call_result::Result::UseComputer(
+                        api::UseComputerResult {
+                            result: Some(api::use_computer_result::Result::Success(
+                                api::use_computer_result::Success {
+                                    screenshot: image,
+                                    cursor_position: None,
+                                    captured_window: None,
+                                    windows: vec![],
+                                },
+                            )),
+                        },
+                    )),
+                },
+            )),
+            request_id: request_id.to_owned(),
+            timestamp: None,
+        }
+    }
+
+    fn caps(images: bool) -> attachment_caps::AttachmentCaps {
+        attachment_caps::AttachmentCaps {
+            images,
+            pdf: false,
+            audio: false,
+        }
+    }
+
+    fn build_request(
+        params: &RequestParams,
+        api_type: AgentProviderApiType,
+        images: bool,
+    ) -> ChatRequest {
+        build_chat_request(params, false, api_type, caps(images))
+            .expect("request should serialize")
+    }
+
+    fn attached_binaries(request: &ChatRequest) -> Vec<&Binary> {
+        request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.binaries())
+            .collect()
+    }
+
+    fn screenshot_field(request: &ChatRequest, call_id: &str, field: &str) -> String {
+        let contents = tool_response_contents(request, call_id);
+        assert_eq!(contents.len(), 1, "expected one result for {call_id}");
+        let value: Value = serde_json::from_str(&contents[0])
+            .unwrap_or_else(|e| panic!("result for {call_id} must be JSON: {e} / {}", contents[0]));
+        value["screenshot"][field]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value["screenshot"][field].to_string())
+    }
+
+    /// One `use_computer` call and result in history, plus a follow-up user turn.
+    fn params_with_screenshots(images: Vec<api::RawImage>) -> RequestParams {
+        let mut messages = vec![make_user_query_message(
+            "task-1",
+            "req-1",
+            "drive the ui".to_owned(),
+            &[],
+        )];
+        for (idx, image) in images.into_iter().enumerate() {
+            let call_id = format!("call-{}", idx + 1);
+            messages.push(make_tool_call_message(
+                "task-1",
+                "req-1",
+                &call_id,
+                use_computer_tool_call(),
+            ));
+            messages.push(use_computer_result_message(
+                "task-1",
+                "req-1",
+                &call_id,
+                Some(image),
+            ));
+        }
+        request_params(messages, vec![user_query_input("what happened?")])
+    }
+
+    /// The whole point of the feature: with a vision-capable model the bytes must actually be
+    /// in the assembled request, and the text the model reads must agree that they are.
+    #[test]
+    fn computer_use_screenshot_reaches_the_request_when_the_model_takes_images() {
+        let params = params_with_screenshots(vec![screenshot(1200, 800)]);
+        let request = build_request(&params, AgentProviderApiType::OpenAi, true);
+
+        let binaries = attached_binaries(&request);
+        assert_eq!(binaries.len(), 1, "the screenshot must reach the request");
+        assert!(binaries[0].is_image(), "must be sent as an image part");
+        assert!(
+            matches!(&binaries[0].source, BinarySource::Base64(data) if !data.is_empty()),
+            "the image must carry base64 bytes, not a URL the provider cannot fetch"
+        );
+
+        assert_eq!(screenshot_field(&request, "call-1", "attached"), "true");
+        assert_eq!(
+            screenshot_field(&request, "call-1", "delivery"),
+            "attached_to_following_user_message"
+        );
+
+        // The image rides on a user message that comes after every tool response, so pairing is
+        // untouched.
+        let errors = strict_chat_completions_ordering_errors(&request.messages);
+        assert!(errors.is_empty(), "pairing broken by the attachment: {errors:?}");
+
+        // The replayed assistant turn must name the tool the model actually called, or it
+        // cannot correlate the image with the action that produced it.
+        let replayed: Vec<String> = request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.tool_calls())
+            .map(|call| call.fn_name.clone())
+            .collect();
+        assert_eq!(replayed, vec![tools::computer::USE_COMPUTER_TOOL_NAME]);
+    }
+
+    /// A text-only model must be told it is blind, explicitly. Sending nothing and saying
+    /// nothing would leave it inferring that the screen was empty.
+    #[test]
+    fn computer_use_screenshot_degrades_explicitly_for_a_text_only_model() {
+        let params = params_with_screenshots(vec![screenshot(1200, 800)]);
+        let request = build_request(&params, AgentProviderApiType::OpenAi, false);
+
+        assert!(
+            attached_binaries(&request).is_empty(),
+            "a model without image support must not be sent image bytes"
+        );
+        assert_eq!(screenshot_field(&request, "call-1", "attached"), "false");
+        assert_eq!(
+            screenshot_field(&request, "call-1", "delivery"),
+            "model_cannot_see_images"
+        );
+        assert_eq!(
+            screenshot_field(&request, "call-1", "captured"),
+            "true",
+            "the capture still happened; only the model's copy is missing"
+        );
+        let note = screenshot_field(&request, "call-1", "note");
+        assert!(
+            note.contains("cannot see the screen"),
+            "the degrade must be stated, not implied: {note}"
+        );
+    }
+
+    /// Screenshots accumulate one per action; without a cap a long session would push the
+    /// conversation out of its context window.
+    #[test]
+    fn only_the_most_recent_computer_use_screenshots_are_attached() {
+        let params = params_with_screenshots(vec![
+            screenshot(400, 300),
+            screenshot(400, 300),
+            screenshot(400, 300),
+            screenshot(400, 300),
+        ]);
+        let request = build_request(&params, AgentProviderApiType::OpenAi, true);
+
+        assert_eq!(
+            attached_binaries(&request).len(),
+            MAX_ATTACHED_SCREENSHOTS,
+            "the attachment budget must be enforced"
+        );
+        for stale in ["call-1", "call-2"] {
+            assert_eq!(screenshot_field(&request, stale, "attached"), "false");
+            assert_eq!(
+                screenshot_field(&request, stale, "delivery"),
+                "superseded_by_newer_screenshot",
+                "a pruned capture must say so rather than look like a blank screen"
+            );
+        }
+        for fresh in ["call-3", "call-4"] {
+            assert_eq!(screenshot_field(&request, fresh, "attached"), "true");
+        }
+        let errors = strict_chat_completions_ordering_errors(&request.messages);
+        assert!(errors.is_empty(), "pairing broken by pruning: {errors:?}");
+    }
+
+    /// The model can ask for `max_long_edge_px: 0` ("no constraint") at capture time, so a
+    /// full-resolution image can reach this layer. The bound here is not negotiable.
+    #[test]
+    fn oversized_computer_use_screenshot_is_downscaled_before_attaching() {
+        let oversized = screenshot(2400, 1500);
+        let params = params_with_screenshots(vec![oversized]);
+        let request = build_request(&params, AgentProviderApiType::OpenAi, true);
+
+        let binaries = attached_binaries(&request);
+        assert_eq!(binaries.len(), 1);
+        let BinarySource::Base64(encoded) = &binaries[0].source else {
+            panic!("expected base64 bytes");
+        };
+        use base64::Engine as _;
+        let decoded_bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded.as_bytes())
+            .expect("attachment must be valid base64");
+        assert!(
+            decoded_bytes.len() <= MAX_ATTACHED_SCREENSHOT_BYTES,
+            "attachment must respect the byte bound, got {} bytes",
+            decoded_bytes.len()
+        );
+
+        use ::image::GenericImageView as _;
+        let (width, height) =
+            ::image::load_from_memory(&decoded_bytes)
+                .expect("attachment must still be a decodable image")
+                .dimensions();
+        assert!(
+            width.max(height) <= ATTACHED_SCREENSHOT_MAX_LONG_EDGE_PX,
+            "long edge {} exceeds the cap",
+            width.max(height)
+        );
+        // Aspect ratio must survive, or every coordinate the model reads off the image is
+        // skewed on one axis and the scale factor in the caption is a lie.
+        let ratio = width as f64 / height as f64;
+        assert!(
+            (ratio - 2400.0 / 1500.0).abs() < 0.01,
+            "aspect ratio must be preserved, got {width}x{height}"
+        );
+    }
+
+    /// Anthropic requires strict user/assistant alternation, so the attachment is folded into
+    /// the trailing tool-result turn instead of becoming a second user turn in a row. The
+    /// vendored Anthropic adapter emits those parts after the `tool_result` blocks.
+    #[test]
+    fn anthropic_attaches_the_screenshot_without_two_user_turns_in_a_row() {
+        let mut params = params_with_screenshots(vec![screenshot(800, 600)]);
+        // Drop the trailing user query so the last message is the tool result.
+        params.input = vec![];
+        let request = build_request(&params, AgentProviderApiType::Anthropic, true);
+
+        assert_eq!(
+            attached_binaries(&request).len(),
+            1,
+            "the screenshot must still reach an Anthropic request"
+        );
+        let carrier = request
+            .messages
+            .iter()
+            .find(|message| message.content.contains_binary())
+            .expect("some message must carry the image");
+        assert_eq!(
+            carrier.role,
+            ChatRole::Tool,
+            "on Anthropic the image rides the tool-result turn, not a new user turn"
+        );
+        assert!(
+            carrier.content.contains_tool_response(),
+            "the tool_result blocks must stay in the same turn as the image"
+        );
+
+        for pair in request.messages.windows(2) {
+            assert!(
+                !(pair[0].role == ChatRole::User && pair[1].role == ChatRole::User),
+                "two consecutive user turns are what Anthropic rejects"
+            );
+        }
+    }
+
+    /// Replay is a pure function of the message list: no "already injected" flag exists, so
+    /// rebuilding the same conversation cannot double-inject or drop the image.
+    #[test]
+    fn replaying_the_same_history_attaches_the_same_screenshots() {
+        let params = params_with_screenshots(vec![screenshot(600, 400), screenshot(600, 400)]);
+        let first = build_request(&params, AgentProviderApiType::OpenAi, true);
+        let second = build_request(&params, AgentProviderApiType::OpenAi, true);
+
+        let sources = |request: &ChatRequest| -> Vec<String> {
+            attached_binaries(request)
+                .iter()
+                .map(|binary| match &binary.source {
+                    BinarySource::Base64(data) => data.to_string(),
+                    BinarySource::Url(url) => url.clone(),
+                })
+                .collect()
+        };
+        assert_eq!(sources(&first).len(), 2);
+        assert_eq!(
+            sources(&first),
+            sources(&second),
+            "a replayed conversation must produce byte-identical attachments"
+        );
+    }
+
+    /// The same tool call showing up in both persisted history and the live input must collapse
+    /// to one attachment — otherwise the model sees the same screen twice and pays for it twice.
+    #[test]
+    fn a_result_present_in_both_history_and_input_is_attached_once() {
+        let history = vec![
+            use_computer_result_message("task-1", "req-1", "call-1", Some(screenshot(400, 300))),
+            use_computer_result_message("task-1", "req-1", "call-1", Some(screenshot(400, 300))),
+        ];
+        let refs: Vec<&api::Message> = history.iter().collect();
+        let plan = plan_screenshot_attachments(
+            &refs,
+            &[],
+            caps(true),
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            plan.attached.len(),
+            1,
+            "one tool call means one attachment, however many copies of its result exist"
+        );
+        assert!(
+            plan.attached.contains(&ScreenshotSlot::History(1)),
+            "the later copy is the authoritative one"
+        );
+    }
+
+    /// Bytes that cannot be made to fit must be reported, not silently omitted.
+    #[test]
+    fn an_undecodable_capture_is_reported_undeliverable() {
+        let corrupt = api::RawImage {
+            data: vec![0xDE, 0xAD, 0xBE, 0xEF],
+            mime_type: "image/png".to_owned(),
+            // Claims a size that forces the decode path, which then fails.
+            width: 4000,
+            height: 3000,
+        };
+        assert!(
+            prepare_screenshot_attachment(&corrupt).is_none(),
+            "undecodable bytes must not be attached"
+        );
+
+        let params = params_with_screenshots(vec![corrupt]);
+        let request = build_request(&params, AgentProviderApiType::OpenAi, true);
+        assert!(attached_binaries(&request).is_empty());
+        assert_eq!(
+            screenshot_field(&request, "call-1", "delivery"),
+            "undeliverable"
+        );
+    }
+
+    /// A sighted model must not be handed the tool description that tells it it is blind.
+    #[test]
+    fn computer_use_tool_description_follows_image_capability() {
+        let mut params = request_params(vec![], vec![]);
+        params.computer_use_enabled = true;
+
+        let description = |images: bool| -> String {
+            build_tools_array(&params, images)
+                .into_iter()
+                .find(|tool| tool.name.as_str() == tools::computer::USE_COMPUTER_TOOL_NAME)
+                .expect("use_computer must be advertised when computer use is enabled")
+                .description
+                .expect("use_computer must carry a description")
+        };
+
+        assert!(description(false).contains("never see the screen"));
+        assert!(!description(true).contains("never see the screen"));
+        assert!(description(true).contains("attached"));
     }
 }
 

@@ -24,22 +24,31 @@
 //!   first.
 //! - `use_computer` — performs a batch of pointer / keyboard actions.
 //!
-//! ## Screenshots do not reach the model
+//! ## Screenshots reach the model, but not through the tool result
 //!
-//! Both results can carry a `RawImage`. The BYOP tool-result channel cannot: a tool result is
-//! delivered as `genai::chat::ToolResponse { content: String }` (see `chat_stream.rs`, and
-//! `lib/rust-genai/src/chat/tool/tool_response.rs` where `content` is a plain `String`), and
-//! `chat_stream::cap_tool_response_content` truncates it at 40 000 characters — two orders of
-//! magnitude below a base64 screenshot. There is no per-provider fallback to choose between:
-//! **no** provider can receive an image through a tool result here, however capable the model
-//! is (`attachment_caps::AttachmentCaps` only governs *user-message* attachments, and is not
-//! reachable from `result_to_json`, which takes no request context).
+//! Both results can carry a `RawImage`. The BYOP tool-result channel cannot carry it: a tool
+//! result is delivered as `genai::chat::ToolResponse { content: String }` (see
+//! `lib/rust-genai/src/chat/tool/tool_response.rs`, where `content` is a plain `String` with no
+//! parts), and `chat_stream::cap_tool_response_content` truncates it at 40 000 characters — two
+//! orders of magnitude below a base64 screenshot, so truncation would yield a corrupt data URI
+//! rather than a degraded image.
 //!
-//! So `result_to_json` never embeds image bytes. It reports the capture explicitly —
-//! `screenshot.captured` / `screenshot.attached` plus dimensions and a `note` — so the model
-//! is told, in the result it is reading, that it is acting blind. Silently returning an empty
-//! object would leave it inferring that the screen was blank. The screenshot is still captured,
-//! persisted, and rendered in the block for the *user*; only the model's copy is missing.
+//! So `result_to_json` still never embeds image bytes. Instead
+//! `chat_stream::push_screenshot_attachments` appends the most recent captures to the request
+//! as `ContentPart::Binary` parts on a **user** message placed after the tool results — the one
+//! carrier every genai adapter auto-adapts (OpenAI `image_url`, Anthropic `image`, Gemini
+//! `inline_data`). See the `screenshot attachments` section of `chat_stream.rs` for why that
+//! route was chosen over widening `ToolResponse`.
+//!
+//! `result_to_json` has no request context (it is a bare `fn` pointer in the registry), so it
+//! emits the *undecided* shape — `screenshot.captured` / `screenshot.attached` plus dimensions
+//! and a `note` — and `chat_stream` overwrites `attached` / `note` through
+//! [`annotate_screenshot_delivery`] once it knows what actually happened. The model is
+//! therefore always told, in the result it is reading, whether it can see this capture;
+//! silently returning bare metadata would leave it inferring that the screen was blank.
+//!
+//! The screenshot is captured, persisted and rendered in the block for the *user* regardless
+//! of any of the above; the delivery decision only governs the model's copy.
 //!
 //! ## Keys
 //!
@@ -866,8 +875,9 @@ fn use_computer_parameters() -> Value {
             },
             "screenshot": screenshot_schema(
                 "Constraints for the screenshot captured after the actions run. A screenshot is \
-                 always captured; this only shapes it. Note that the image itself is NOT \
-                 returned to you — see the tool description."
+                 always captured; this only shapes it. Whether a copy of the image is sent back \
+                 to you depends on the model — the result's `screenshot.delivery` field says \
+                 which happened."
             )
         },
         "required": ["action_summary", "actions"],
@@ -901,6 +911,181 @@ fn use_computer_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
     ))
 }
 
+// ---------------------------------------------------------------------------
+// History replay: tool_call → args JSON
+// ---------------------------------------------------------------------------
+//
+// `chat_stream::serialize_outgoing_tool_call` replays every persisted `ToolCall` back to the
+// model as its own past assistant turn. Its catch-all arm renames anything it does not know to
+// `warp_internal_<Variant>` with `{}` arguments, so without the two functions below a
+// multi-turn computer-use session shows the model a prior call named
+// `warp_internal_UseComputer` that it never made and cannot correlate with the result it is
+// looking at. Sightedness is worthless if the agent cannot tell which click produced the
+// screen it is being shown.
+//
+// The inverse is deliberately *primitive*: `click` and `key_press` are convenience shapes that
+// expanded into `MouseDown`/`MouseUp` and `KeyDown`/`KeyUp` pairs on the way in, and there is
+// no way to tell a collapsed `click` from two hand-written halves after the fact. Emitting the
+// halves is faithful to what was actually performed and still parses back through `from_args`,
+// which accepts both forms.
+
+fn button_name(button: api::message::tool_call::use_computer::action::MouseButton) -> &'static str {
+    use api::message::tool_call::use_computer::action::MouseButton as B;
+    match button {
+        B::Left => "left",
+        B::Right => "right",
+        B::Middle => "middle",
+        B::Back => "back",
+        B::Forward => "forward",
+    }
+}
+
+fn direction_name(
+    direction: api::message::tool_call::use_computer::action::mouse_wheel::Direction,
+) -> &'static str {
+    use api::message::tool_call::use_computer::action::mouse_wheel::Direction as D;
+    match direction {
+        D::Up => "up",
+        D::Down => "down",
+        D::Left => "left",
+        D::Right => "right",
+    }
+}
+
+/// Renders a `Key` back into the spec string [`parse_key`] accepts.
+///
+/// A keycode always comes back as the `0x` escape hatch rather than a name: the name tables
+/// are one-way (several names can share a code across platforms), and the escape hatch
+/// round-trips exactly.
+fn key_spec(key: &api::message::tool_call::use_computer::action::Key) -> String {
+    use api::message::tool_call::use_computer::action::key;
+    match key.data.as_ref() {
+        Some(key::Data::Char(c)) => c.clone(),
+        // Platform keycodes (macOS virtual keycodes, Windows VKs, X11 keysyms) are all
+        // non-negative, so the hex form always parses back through `i32::from_str_radix`.
+        Some(key::Data::Keycode(code)) => format!("0x{code:x}"),
+        None => String::new(),
+    }
+}
+
+fn coord_json(c: Option<&api::Coordinates>) -> Value {
+    match c {
+        Some(c) => json!({"x": c.x, "y": c.y}),
+        None => json!({"x": 0, "y": 0}),
+    }
+}
+
+/// Inverse of [`to_api_target`]. `Screen` and an absent target are the same thing to the
+/// schema, so both come back as no `target` key at all.
+fn target_json(target: Option<&api::message::tool_call::ComputerUseTarget>) -> Option<Value> {
+    use api::message::tool_call::computer_use_target::Target;
+    match target?.target.as_ref()? {
+        Target::Window(w) => Some(json!({"window_id": w.window_id, "pid": w.pid})),
+        Target::Screen(_) => None,
+    }
+}
+
+fn screenshot_params_json(params: &api::message::tool_call::ScreenshotParams) -> Value {
+    let mut out = json!({
+        "max_long_edge_px": params.max_long_edge_px,
+        "max_total_px": params.max_total_px,
+    });
+    if let Some(region) = params.region.as_ref() {
+        out["region"] = json!({
+            "top_left": coord_json(region.top_left.as_ref()),
+            "bottom_right": coord_json(region.bottom_right.as_ref()),
+        });
+    }
+    if let Some(target) = target_json(params.target.as_ref()) {
+        out["target"] = target;
+    }
+    out
+}
+
+/// Replays a persisted `use_computer` call as the args JSON the model originally sent.
+pub fn serialize_outgoing_use_computer(uc: &api::message::tool_call::UseComputer) -> Value {
+    use api::message::tool_call::use_computer::action::{self as act, mouse_wheel};
+
+    let actions: Vec<Value> = uc
+        .actions
+        .iter()
+        .filter_map(|action| {
+            let mut value = match action.r#type.as_ref()? {
+                act::Type::MouseMove(m) => json!({
+                    "action": "mouse_move",
+                    "to": coord_json(m.to.as_ref()),
+                }),
+                act::Type::MouseDown(m) => json!({
+                    "action": "mouse_down",
+                    "at": coord_json(m.at.as_ref()),
+                    "button": button_name(m.button()),
+                }),
+                act::Type::MouseUp(m) => json!({
+                    "action": "mouse_up",
+                    "button": button_name(m.button()),
+                }),
+                act::Type::MouseWheel(m) => {
+                    let mut wheel = json!({
+                        "action": "mouse_wheel",
+                        "at": coord_json(m.at.as_ref()),
+                        "direction": direction_name(m.direction()),
+                    });
+                    match m.distance.as_ref() {
+                        Some(mouse_wheel::Distance::Pixels(p)) => wheel["pixels"] = json!(p),
+                        Some(mouse_wheel::Distance::Clicks(c)) => wheel["clicks"] = json!(c),
+                        // `from_args` rejects a wheel action with neither; a persisted one
+                        // that has neither was never executable, so replay it as zero pixels
+                        // rather than emit a shape the schema forbids.
+                        None => wheel["pixels"] = json!(0),
+                    }
+                    wheel
+                }
+                act::Type::Wait(w) => {
+                    let seconds = w
+                        .duration
+                        .as_ref()
+                        .map(|d| d.seconds as f64 + d.nanos as f64 / 1e9)
+                        .unwrap_or(0.0);
+                    json!({"action": "wait", "seconds": seconds})
+                }
+                act::Type::TypeText(t) => json!({"action": "type_text", "text": t.text}),
+                act::Type::KeyDown(k) => json!({
+                    "action": "key_down",
+                    "key": k.key.as_ref().map(key_spec).unwrap_or_default(),
+                }),
+                act::Type::KeyUp(k) => json!({
+                    "action": "key_up",
+                    "key": k.key.as_ref().map(key_spec).unwrap_or_default(),
+                }),
+            };
+            if let Some(target) = target_json(action.target.as_ref()) {
+                value["target"] = target;
+            }
+            Some(value)
+        })
+        .collect();
+
+    let mut out = json!({
+        "action_summary": uc.action_summary,
+        "actions": actions,
+    });
+    if let Some(params) = uc.post_actions_screenshot_params.as_ref() {
+        out["screenshot"] = screenshot_params_json(params);
+    }
+    out
+}
+
+/// Replays a persisted `request_computer_use` call as the args JSON the model originally sent.
+pub fn serialize_outgoing_request_computer_use(
+    rc: &api::message::tool_call::RequestComputerUse,
+) -> Value {
+    let mut out = json!({ "task_summary": rc.task_summary });
+    if let Some(params) = rc.screenshot_params.as_ref() {
+        out["screenshot"] = screenshot_params_json(params);
+    }
+    out
+}
+
 /// Shared by both tools: a `windows` array the model can copy `window_id` / `pid` out of.
 fn windows_to_json(windows: &[api::WindowInfo]) -> Value {
     Value::Array(
@@ -919,25 +1104,163 @@ fn windows_to_json(windows: &[api::WindowInfo]) -> Value {
     )
 }
 
-/// Explicit degradation for a captured-but-undeliverable screenshot.
+/// The `note` `result_to_json` emits before `chat_stream` decides what to do with the bytes.
 ///
-/// See the module doc: the BYOP tool-result channel is a plain string, so the bytes cannot
-/// travel. Saying so in the payload is the difference between a model that knows it is blind
-/// and one that concludes the screen was empty.
-const SCREENSHOT_NOT_ATTACHED_NOTE: &str = "The screenshot was captured and is shown to the user, but it cannot be attached to this \
-     tool result: this client delivers tool results as text only. You cannot see the screen. \
-     Work from the window list, the coordinates you asked for, and what the user tells you, \
-     and ask the user to describe or attach a screenshot when you need to look at something.";
+/// `result_to_json` is a bare `fn` pointer in the registry — it has no request context, so it
+/// cannot know whether the model can take images or whether this particular capture is the one
+/// being attached. It therefore emits the conservative shape (`attached: false`) plus this
+/// note, and [`annotate_screenshot_delivery`] overwrites both once the answer is known. This
+/// string is what survives if a future caller serializes a result *without* annotating it.
+const SCREENSHOT_UNDECIDED_NOTE: &str = "The screenshot was captured and is shown to the user. Whether a copy reaches you is decided \
+     when the request is assembled: it is never embedded in this tool result, only ever \
+     attached to a separate user message that follows it. If no such message is present, you \
+     cannot see this capture.";
+
+/// `note` when the image travels with the request.
+const SCREENSHOT_ATTACHED_NOTE: &str = "The image is attached to the user message that follows these tool results. Coordinates you \
+     read off it are in the *image's* pixel space; that message states the scale factor to \
+     apply before passing them to use_computer.";
+
+/// `note` when the model is text-only.
+const SCREENSHOT_MODEL_BLIND_NOTE: &str = "The screenshot cannot be sent to you: the model configured for this conversation does not \
+     accept image input. You cannot see the screen. Work from the window list, the coordinates \
+     you asked for, and what the user tells you, and ask the user to describe what is on \
+     screen when you need to look at something.";
+
+/// `note` when a newer capture won the attachment budget.
+const SCREENSHOT_SUPERSEDED_NOTE: &str = "This capture is stale: a newer screenshot is attached instead, and only the most recent few \
+     are sent to keep the conversation inside its context window. Read the current state off \
+     the newest attached image, not off this result.";
+
+/// `note` when preparing the bytes for the request failed or blew the size bound.
+const SCREENSHOT_UNDELIVERABLE_NOTE: &str = "The screenshot was captured but could not be prepared for sending (it failed to decode, or \
+     stayed over the size limit after downscaling), so you cannot see this one. Take another \
+     screenshot with a smaller max_long_edge_px, or narrow it with a region.";
+
+/// What happened to a captured screenshot, from the model's point of view.
+///
+/// Decided in `chat_stream` (which knows the model's `AttachmentCaps` and the per-request
+/// attachment budget) and written back into the already-serialized result JSON by
+/// [`annotate_screenshot_delivery`], so the text the model reads and the images it receives
+/// can never disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenshotDelivery {
+    /// The bytes travel with this request, on the user message that follows the tool results.
+    Attached,
+    /// The model cannot consume images at all (`AttachmentCaps::images == false`).
+    ModelCannotSeeImages,
+    /// The model can see images, but a newer capture took the budget.
+    Superseded,
+    /// Decoding / re-encoding / the size bound rejected these particular bytes.
+    Undeliverable,
+}
+
+impl ScreenshotDelivery {
+    fn attached(self) -> bool {
+        matches!(self, ScreenshotDelivery::Attached)
+    }
+
+    fn note(self) -> &'static str {
+        match self {
+            ScreenshotDelivery::Attached => SCREENSHOT_ATTACHED_NOTE,
+            ScreenshotDelivery::ModelCannotSeeImages => SCREENSHOT_MODEL_BLIND_NOTE,
+            ScreenshotDelivery::Superseded => SCREENSHOT_SUPERSEDED_NOTE,
+            ScreenshotDelivery::Undeliverable => SCREENSHOT_UNDELIVERABLE_NOTE,
+        }
+    }
+
+    /// The machine-readable form, so a model does not have to parse English to branch on it.
+    fn as_str(self) -> &'static str {
+        match self {
+            ScreenshotDelivery::Attached => "attached_to_following_user_message",
+            ScreenshotDelivery::ModelCannotSeeImages => "model_cannot_see_images",
+            ScreenshotDelivery::Superseded => "superseded_by_newer_screenshot",
+            ScreenshotDelivery::Undeliverable => "undeliverable",
+        }
+    }
+}
+
+/// Rewrites the `screenshot` object of an already-serialized computer-use result so it states
+/// what actually happened to the bytes.
+///
+/// A no-op unless `value.screenshot.captured` is `true`, so it is safe to call on any result
+/// (including `rejected` / `error` / `cancelled` shapes, and on other tools' payloads).
+pub fn annotate_screenshot_delivery(value: &mut Value, delivery: ScreenshotDelivery) {
+    let Some(shot) = value.get_mut("screenshot").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if shot.get("captured").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    shot.insert("attached".to_owned(), Value::Bool(delivery.attached()));
+    shot.insert(
+        "delivery".to_owned(),
+        Value::String(delivery.as_str().to_owned()),
+    );
+    shot.insert("note".to_owned(), Value::String(delivery.note().to_owned()));
+}
+
+/// The screenshot a computer-use result carries, if any.
+///
+/// Covers both descriptors: `use_computer`'s post-action capture and `request_computer_use`'s
+/// initial capture. Returns `None` for every other tool's result, which is what lets
+/// `chat_stream` use it as the "is this a computer-use result with an image?" test.
+pub fn screenshot_of(result: &api::message::tool_call_result::Result) -> Option<&api::RawImage> {
+    use api::message::tool_call_result::Result as R;
+    match result {
+        R::UseComputer(r) => match r.result.as_ref()? {
+            api::use_computer_result::Result::Success(s) => s.screenshot.as_ref(),
+            _ => None,
+        },
+        R::RequestComputerUseResult(r) => match r.result.as_ref()? {
+            api::request_computer_use_result::Result::Approved(a) => a.initial_screenshot.as_ref(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The size, in physical pixels, of the surface a computer-use screenshot depicts.
+///
+/// This is what makes an attached image *usable*: the capture is downscaled (see
+/// `DEFAULT_MAX_LONG_EDGE_PX`) but `use_computer` coordinates are physical pixels of the
+/// surface, so the model needs both numbers to map one to the other.
+///
+/// - `request_computer_use` approval carries `screen_dimensions` directly.
+/// - `use_computer` success carries `captured_window` when a window was targeted; a
+///   full-screen capture has no dimensions of its own, and the caller supplies the screen size
+///   remembered from the approval.
+pub fn captured_surface_px(result: &api::message::tool_call_result::Result) -> Option<(i32, i32)> {
+    use api::message::tool_call_result::Result as R;
+    match result {
+        R::UseComputer(r) => match r.result.as_ref()? {
+            api::use_computer_result::Result::Success(s) => s
+                .captured_window
+                .as_ref()
+                .map(|w| (w.width_px, w.height_px)),
+            _ => None,
+        },
+        R::RequestComputerUseResult(r) => match r.result.as_ref()? {
+            api::request_computer_use_result::Result::Approved(a) => a
+                .screen_dimensions
+                .as_ref()
+                .map(|d| (d.width_px, d.height_px)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 fn screenshot_to_json(image: Option<&api::RawImage>) -> Value {
     match image {
         Some(img) => json!({
             "captured": true,
             "attached": false,
+            "delivery": "undecided",
             "width_px": img.width,
             "height_px": img.height,
             "mime_type": img.mime_type,
-            "note": SCREENSHOT_NOT_ATTACHED_NOTE,
+            "note": SCREENSHOT_UNDECIDED_NOTE,
         }),
         None => json!({ "captured": false, "attached": false }),
     }
@@ -977,16 +1300,59 @@ pub static USE_COMPUTER: OpenAiTool = OpenAiTool {
                   may target. Actions run in order, so batch a whole interaction (click a \
                   field, type into it, press enter) into one call and add short waits where the \
                   UI needs to settle. IMPORTANT: a screenshot is captured after the batch and \
-                  shown to the user, but this client cannot send images back to you, so you \
-                  never see the screen. Do not guess at coordinates you were not given: work \
-                  from what the user told you and from the window list in the result, and ask \
-                  the user when you need to know what is on screen. Prefer keyboard navigation \
-                  over pointer aiming for the same reason. This is a real, irreversible \
-                  interaction with the user's desktop — stay inside what they asked for.",
+                  shown to the user, but this model cannot accept image input, so you never see \
+                  the screen. Do not guess at coordinates you were not given: work from what \
+                  the user told you and from the window list in the result, and ask the user \
+                  when you need to know what is on screen. Prefer keyboard navigation over \
+                  pointer aiming for the same reason. This is a real, irreversible interaction \
+                  with the user's desktop — stay inside what they asked for.",
     parameters: use_computer_parameters,
     from_args: use_computer_from_args,
     result_to_json: use_computer_result_to_json,
 };
+
+/// `use_computer`'s description for a model that *can* see the attached screenshot.
+///
+/// The static above is the blind wording, kept as the default because `AttachmentCaps` are a
+/// per-request property the registry cannot see. `chat_stream::build_tools_array` swaps in this
+/// text when `AttachmentCaps::images` is set — a tool description that tells a sighted model it
+/// is blind is worse than no description at all: it stops the model looking at an image that is
+/// right there.
+const USE_COMPUTER_DESCRIPTION_SIGHTED: &str =
+    "Drive the user's mouse and keyboard: move, click, scroll, type, and press keys, optionally \
+     against one specific window. Only usable after request_computer_use has been approved in \
+     this conversation — that call is also how you learn the screen dimensions and the \
+     window_id / pid values you may target. Actions run in order, so batch a whole interaction \
+     (click a field, type into it, press enter) into one call and add short waits where the UI \
+     needs to settle. A screenshot is captured after the batch and attached to the user message \
+     that follows the tool results, so you can see the effect of what you did — check it before \
+     the next batch instead of assuming an action landed. That image is downscaled: the message \
+     it arrives on states the scale factor to apply to any coordinate you read off it before \
+     passing it to this tool. Only the most recent captures are kept, so read the current state \
+     off the newest image. This is a real, irreversible interaction with the user's desktop — \
+     stay inside what they asked for.";
+
+/// `request_computer_use`'s description for a model that *can* see the attached screenshot.
+const REQUEST_COMPUTER_USE_DESCRIPTION_SIGHTED: &str =
+    "Ask the user for permission to control their computer, and on approval learn the screen \
+     dimensions, the platform, and the list of on-screen windows you may target. Call this once \
+     before any use_computer call in the conversation; use_computer runs without a further \
+     prompt because the user already approved here. Only use it when the task genuinely needs \
+     the desktop GUI — anything reachable from the shell or the filesystem should go through \
+     those tools instead. If the result is `rejected`, do not ask again. On approval an initial \
+     screenshot is attached to the user message that follows the tool results, so look at it \
+     before deciding where to click.";
+
+/// The description to advertise for `name` when the model accepts image input.
+///
+/// `None` for every tool whose description does not depend on that capability.
+pub fn image_capable_description(name: &str) -> Option<&'static str> {
+    match name {
+        USE_COMPUTER_TOOL_NAME => Some(USE_COMPUTER_DESCRIPTION_SIGHTED),
+        REQUEST_COMPUTER_USE_TOOL_NAME => Some(REQUEST_COMPUTER_USE_DESCRIPTION_SIGHTED),
+        _ => None,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // request_computer_use
@@ -1008,8 +1374,9 @@ fn request_computer_use_parameters() -> Value {
                 "description": "One short sentence shown to the user describing what you want to do on their computer, so they can decide whether to approve it. Write it in the same language as the user's messages."
             },
             "screenshot": screenshot_schema(
-                "Constraints for the initial screen capture taken on approval. The image itself \
-                 is NOT returned to you — see the tool description."
+                "Constraints for the initial screen capture taken on approval. Whether a copy of \
+                 the image is sent back to you depends on the model — the result's \
+                 `screenshot.delivery` field says which happened."
             )
         },
         "required": ["task_summary"],
@@ -1072,8 +1439,8 @@ pub static REQUEST_COMPUTER_USE: OpenAiTool = OpenAiTool {
                   here. Only use it when the task genuinely needs the desktop GUI — anything \
                   reachable from the shell or the filesystem should go through those tools \
                   instead. If the result is `rejected`, do not ask again. IMPORTANT: the \
-                  initial screenshot is shown to the user but cannot be sent back to you, so \
-                  you will be working without sight of the screen.",
+                  initial screenshot is shown to the user, but this model cannot accept image \
+                  input, so you will be working without sight of the screen.",
     parameters: request_computer_use_parameters,
     from_args: request_computer_use_from_args,
     result_to_json: request_computer_use_result_to_json,

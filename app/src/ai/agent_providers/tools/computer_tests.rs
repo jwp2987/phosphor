@@ -536,12 +536,18 @@ fn use_computer_success_serializes_metadata_without_image_bytes() {
         (USE_COMPUTER.result_to_json)(&result).expect("use_computer must claim its own result");
     assert_eq!(json["status"], "ok");
     assert_eq!(json["screenshot"]["captured"], true);
+    // `result_to_json` is a context-free `fn` pointer: it cannot know the model's
+    // AttachmentCaps or the per-request attachment budget, so it emits the undecided shape and
+    // `chat_stream` overwrites it through `annotate_screenshot_delivery`. Anything that
+    // serializes a result *without* annotating it must still leave the model correctly
+    // pessimistic, which is what these two assertions pin.
     assert_eq!(json["screenshot"]["attached"], false);
+    assert_eq!(json["screenshot"]["delivery"], "undecided");
     assert_eq!(json["screenshot"]["width_px"], 800);
     assert!(
         json["screenshot"]["note"]
             .as_str()
-            .is_some_and(|n| n.contains("text only")),
+            .is_some_and(|n| n.contains("never embedded in this tool result")),
         "the payload must say why the image is missing"
     );
     assert_eq!(
@@ -625,6 +631,240 @@ fn request_computer_use_rejection_tells_the_model_not_to_retry() {
             .as_str()
             .is_some_and(|m| m.contains("Do not retry")),
         "a rejection must not read as a transient failure"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// History replay
+// ---------------------------------------------------------------------------
+
+/// `chat_stream::serialize_outgoing_tool_call` replays a persisted call back to the model as
+/// its own past turn. If the replay is not the inverse of `from_args`, the model is shown a
+/// call it did not make — and with computer use it then cannot tell which action produced the
+/// screenshot it is looking at.
+#[test]
+fn outgoing_use_computer_replay_round_trips_through_from_args() {
+    let args = r#"{
+        "action_summary": "Save the file",
+        "actions": [
+            {"action": "click", "at": {"x": 10, "y": 20}, "button": "right", "count": 2},
+            {"action": "key_press", "key": "enter", "modifiers": ["control"]},
+            {"action": "type_text", "text": "hello", "target": {"window_id": "4711", "pid": 99}},
+            {"action": "mouse_wheel", "at": {"x": 1, "y": 2}, "direction": "down", "clicks": 3},
+            {"action": "mouse_wheel", "at": {"x": 3, "y": 4}, "direction": "up", "pixels": 120},
+            {"action": "wait", "seconds": 1.5},
+            {"action": "mouse_move", "to": {"x": 5, "y": 6}},
+            {"action": "key_down", "key": "a"},
+            {"action": "key_up", "key": "a"}
+        ],
+        "screenshot": {
+            "max_long_edge_px": 800,
+            "region": {"top_left": {"x": 0, "y": 0}, "bottom_right": {"x": 100, "y": 50}},
+            "target": {"window_id": "4711", "pid": 99}
+        }
+    }"#;
+    let first = use_computer_tool(args);
+    let replayed = serialize_outgoing_use_computer(&first).to_string();
+    let second = use_computer_tool(&replayed);
+    assert_eq!(
+        first, second,
+        "replayed args must rebuild the identical call; replay was {replayed}"
+    );
+}
+
+#[test]
+fn outgoing_request_computer_use_replay_round_trips_through_from_args() {
+    let args = r#"{
+        "task_summary": "Open the settings dialog",
+        "screenshot": {"max_long_edge_px": 1024, "max_total_px": 400000}
+    }"#;
+    let first = match (REQUEST_COMPUTER_USE.from_args)(args).expect("from_args accepts this") {
+        api::message::tool_call::Tool::RequestComputerUse(r) => r,
+        other => panic!("expected Tool::RequestComputerUse, got {other:?}"),
+    };
+    let replayed = serialize_outgoing_request_computer_use(&first).to_string();
+    let second = match (REQUEST_COMPUTER_USE.from_args)(&replayed).expect("replay must reparse") {
+        api::message::tool_call::Tool::RequestComputerUse(r) => r,
+        other => panic!("expected Tool::RequestComputerUse, got {other:?}"),
+    };
+    assert_eq!(
+        first, second,
+        "replayed args must rebuild the identical call; replay was {replayed}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot delivery
+// ---------------------------------------------------------------------------
+
+fn use_computer_success(screenshot: Option<api::RawImage>) -> api::message::tool_call_result::Result
+{
+    api::message::tool_call_result::Result::UseComputer(api::UseComputerResult {
+        result: Some(api::use_computer_result::Result::Success(
+            api::use_computer_result::Success {
+                screenshot,
+                cursor_position: None,
+                captured_window: None,
+                windows: vec![],
+            },
+        )),
+    })
+}
+
+fn approved(screenshot: Option<api::RawImage>) -> api::message::tool_call_result::Result {
+    api::message::tool_call_result::Result::RequestComputerUseResult(api::RequestComputerUseResult {
+        result: Some(api::request_computer_use_result::Result::Approved(
+            api::request_computer_use_result::Approved {
+                screen_dimensions: Some(api::ScreenDimensions {
+                    width_px: 2560,
+                    height_px: 1440,
+                }),
+                initial_screenshot: screenshot,
+                platform: api::request_computer_use_result::approved::Platform::LinuxX11.into(),
+                windows: vec![],
+            },
+        )),
+    })
+}
+
+/// Every delivery outcome must be legible both to a parser (`delivery`) and to the model
+/// reading prose (`note`), and `attached` must agree with both.
+#[test]
+fn annotate_screenshot_delivery_rewrites_attached_delivery_and_note() {
+    let result = use_computer_success(Some(raw_image()));
+    let cases = [
+        (ScreenshotDelivery::Attached, true, "attached_to_following_user_message"),
+        (
+            ScreenshotDelivery::ModelCannotSeeImages,
+            false,
+            "model_cannot_see_images",
+        ),
+        (
+            ScreenshotDelivery::Superseded,
+            false,
+            "superseded_by_newer_screenshot",
+        ),
+        (ScreenshotDelivery::Undeliverable, false, "undeliverable"),
+    ];
+    let mut notes: Vec<String> = Vec::new();
+    for (delivery, attached, tag) in cases {
+        let mut json = (USE_COMPUTER.result_to_json)(&result).expect("use_computer result");
+        annotate_screenshot_delivery(&mut json, delivery);
+        assert_eq!(json["screenshot"]["attached"], attached, "{tag}");
+        assert_eq!(json["screenshot"]["delivery"], tag);
+        let note = json["screenshot"]["note"]
+            .as_str()
+            .expect("every delivery must carry a note")
+            .to_owned();
+        assert!(!note.is_empty(), "{tag} must explain itself");
+        // The metadata is never dropped by the rewrite — the model still needs the dimensions
+        // to reason about coordinates even when it cannot see the image.
+        assert_eq!(json["screenshot"]["width_px"], 800);
+        notes.push(note);
+    }
+    notes.sort();
+    notes.dedup();
+    assert_eq!(
+        notes.len(),
+        4,
+        "each outcome needs its own wording; a shared note tells the model nothing"
+    );
+}
+
+/// The annotation runs on every outgoing tool result, so it must be inert for results that
+/// carry no capture (rejections, errors, other tools' payloads).
+#[test]
+fn annotate_screenshot_delivery_is_inert_without_a_capture() {
+    let mut json = (USE_COMPUTER.result_to_json)(&use_computer_success(None))
+        .expect("use_computer result without a screenshot");
+    let before = json.clone();
+    annotate_screenshot_delivery(&mut json, ScreenshotDelivery::Attached);
+    assert_eq!(json, before, "a result with no capture must not be rewritten");
+
+    let mut unrelated = serde_json::json!({"status": "ok", "stdout": "hi"});
+    let before = unrelated.clone();
+    annotate_screenshot_delivery(&mut unrelated, ScreenshotDelivery::Attached);
+    assert_eq!(unrelated, before, "another tool's payload must be untouched");
+}
+
+/// `screenshot_of` doubles as the "is this a computer-use result carrying an image?" test in
+/// `chat_stream`, so a false positive would attach bytes for an unrelated tool.
+#[test]
+fn screenshot_of_covers_both_descriptors_and_nothing_else() {
+    assert!(screenshot_of(&use_computer_success(Some(raw_image()))).is_some());
+    assert!(screenshot_of(&approved(Some(raw_image()))).is_some());
+    assert!(screenshot_of(&use_computer_success(None)).is_none());
+    assert!(screenshot_of(&approved(None)).is_none());
+    assert!(
+        screenshot_of(&api::message::tool_call_result::Result::RunShellCommand(
+            api::RunShellCommandResult {
+                command: "ls".to_owned(),
+                output: String::new(),
+                exit_code: 0,
+                result: None,
+            }
+        ))
+        .is_none(),
+        "another tool's result must never look like a screenshot"
+    );
+}
+
+/// The surface size is what lets the model scale a coordinate read off a downscaled image back
+/// into the physical pixels `use_computer` takes; getting it from the wrong field would move
+/// every click by that ratio.
+#[test]
+fn captured_surface_px_reads_window_then_screen() {
+    assert_eq!(captured_surface_px(&approved(Some(raw_image()))), Some((2560, 1440)));
+
+    let windowed = api::message::tool_call_result::Result::UseComputer(api::UseComputerResult {
+        result: Some(api::use_computer_result::Result::Success(
+            api::use_computer_result::Success {
+                screenshot: Some(raw_image()),
+                cursor_position: None,
+                captured_window: Some(api::use_computer_result::success::CapturedWindow {
+                    window_id: "4711".to_owned(),
+                    width_px: 1600,
+                    height_px: 1200,
+                }),
+                windows: vec![],
+            },
+        )),
+    });
+    assert_eq!(captured_surface_px(&windowed), Some((1600, 1200)));
+
+    // A full-screen capture has no surface size of its own; the caller substitutes the screen
+    // size remembered from the approval.
+    assert_eq!(captured_surface_px(&use_computer_success(Some(raw_image()))), None);
+}
+
+/// A sighted model must not be told it is blind — that stops it looking at an image it was
+/// just handed.
+#[test]
+fn image_capable_descriptions_replace_the_blind_wording() {
+    for name in [USE_COMPUTER_TOOL_NAME, REQUEST_COMPUTER_USE_TOOL_NAME] {
+        let sighted = image_capable_description(name)
+            .unwrap_or_else(|| panic!("{name} needs an image-capable description"));
+        assert!(
+            !sighted.contains("never see the screen")
+                && !sighted.contains("without sight of the screen"),
+            "{name}'s image-capable description still claims blindness"
+        );
+        assert!(
+            sighted.contains("attached"),
+            "{name}'s image-capable description must say the screenshot arrives"
+        );
+    }
+    assert!(
+        image_capable_description("run_shell_command").is_none(),
+        "only the computer-use descriptors depend on image capability"
+    );
+
+    // The blind defaults must keep saying so, or a text-only model silently assumes it can see.
+    assert!(USE_COMPUTER.description.contains("never see the screen"));
+    assert!(
+        REQUEST_COMPUTER_USE
+            .description
+            .contains("without sight of the screen")
     );
 }
 
