@@ -700,7 +700,49 @@ feature.
       once the trait carries them. Unported upstream parity debt, previously
       untracked.
 
-## UNRECORDED SUBSYSTEM REMOVALS — a pattern, needs a rule not four entries
+## INHERITED SUBSYSTEM REMOVALS (from the Zap/OpenWarp lineage, NOT this fork)
+
+**Provenance correction 2026-08-10.** All four removals below are authored by
+`zero <1603852@qq.com>` — the upstream Zap/OpenWarp author — between 2026-04-30
+and 2026-05-10. **This fork's own history starts 2026-07-18.** They are
+*inherited* decisions, not undocumented decisions of this project.
+
+That corrects how they were first written up here. `DECLINED.md` and `TODO.md`
+document *this* project's calls, so they were never going to contain zero's, and
+describing these as "recorded nowhere" implied a bookkeeping failure that did
+not happen. The real situation is narrower and more useful: **we inherited four
+large local-subsystem removals whose rationales we have not audited**, and three
+of the four turned out to be worth reversing.
+
+| commit | date | author | scale | subsystem | status |
+|---|---|---|---|---|---|
+| `efcaa42b8` | 05-10 | zero | −14,891 / 92 files | **LSP** | restored 2026-08-10 through the document lifecycle |
+| `d84dd8e4d` | 05-10 | zero | −2,858 / 39 files | PersistedWorkspace + indexing | restored (D1 + D2) |
+| `b0b1faef9` | 05-05 | zero | −2,794 / 41 files | InitProject wizard | **under review** — rationale never verified |
+| `9765692e1` | 04-30 | zero | −936 / 17 files | computer-use dispatch | **being restored** |
+
+- [>] **Computer-use dispatch** — agent assigned 2026-08-10. `crates/computer_use`
+      is fully restored and green, but `create_actor()` has exactly one caller
+      (the dev CLI) because the dispatch path is gone, so no agent can drive it.
+      **Also resolving a live contradiction**: `execute.rs:377` says *"Computer
+      Use is out of scope for this fork (see `DECLINED.md`)"* while
+      `DECLINED.md:137` lists `crates/computer_use` as **not** declined and
+      `:125` says **"#349 is NOT covered"**. The `DECLINED.md` rows are right;
+      the code comment is wrong. Recording *is* declined (#350/#367) and stays so.
+- [>] **InitProject** — review agent assigned 2026-08-10, read-only.
+      The "cloud agent mode's first-run onboarding" rationale came from zero's
+      commit message and **has been repeated through several handovers without
+      anyone reading the code**. `/init` is a local flow, so the framing is
+      suspect. The review will answer what it does, whether it is cloud or local,
+      its relationship to `/init`, and whether to restore, partly restore, or
+      formally decline it. `lsp_server_selector.rs` went with it.
+
+- [ ] **Still worth a guard, but scoped honestly.** A CI check flagging large
+      non-cloud deletions without a `DECLINED.md` row or issue would not have
+      caught any of the four — they predate this fork. It would prevent *future*
+      ones, and it is cheap. Lower priority than first framed.
+
+
 
 Four deliberate removals of **local** subsystems surfaced on 2026-08-10, every
 one found by an agent doing unrelated work, and **every one recorded in neither
