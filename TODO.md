@@ -84,7 +84,7 @@ measurement.**
   **false** for `global_buffer_model.rs`.
 
 ### NEW — an untracked product decision this surfaced, needs a maintainer entry
-- [ ] **`lsp_server_selector.rs` is NOT an LSP-track item.** It was not removed
+- [x] **`lsp_server_selector.rs` is NOT an LSP-track item.** **[RECORDED IN `DECLINED.md` 2026-08-10 — the removal is documented with its inherited rationale, the correction that the selector is an InitProject leaf rather than LSP debt, and an explicit note that the "cloud onboarding" framing is recorded but NOT endorsed and deserves a §5.10 re-look. No code change: reversing it means restoring the 1,901-line wizard first, which is a separate maintainer call.]** It was not removed
       by `efcaa42b8`. `app/src/terminal/view/init_project/` was deleted five days
       earlier by **`b0b1faef9`** — a separate decision, rationale *"the
       InitProject wizard is Warp cloud agent mode's first-run onboarding; openWarp
