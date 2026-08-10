@@ -194,13 +194,24 @@ Treat all of this as staged, not validated.
   twice"). Grep for behaviour before filing.
 
 ### New, from doing the work — not previously tracked
-- [ ] **`warpctrl` wrapper is never bundled.** `cli_install::warpctrl_bundle_source_path()`
+- [x] **`warpctrl` wrapper is never bundled.** **[DONE 2026-08-10 — ported the pin's script/macos/create_warpctrl_wrapper into the .app assembly (before codesign) and the local dev bundle. Windows/Linux correctly need nothing: cli_install is macOS-gated. Ported bash test passes; all 5 channels simulated against a fake .app.]** `cli_install::warpctrl_bundle_source_path()`
       expects `Contents/Resources/bin/<warpctrl_command_name>`, and
       `grep -rn warpctrl script/` returns **nothing**. So the macOS install button
       errors with "does not contain the expected wrapper" on a locally-built
       Phosphor, and `{{warpctrl_wrapper_path}}` in the skill points at a missing
       file. `warpctrl` mode itself still works via the app binary's `--warpctrl`
       flag. Bundling scripts were off-limits to the agent.
+- [ ] **Guard the shell-to-Rust name agreement.** The warpctrl defect was a
+      silent mismatch between a bundle script's channel map and
+      `crates/warp_core/src/channel/mod.rs:50`, caught only because the install
+      button failed at runtime. There is now a **second** pair of the same shape
+      (`oz`/`zap-oss`). A grep-based CI gate comparing the bundle scripts' maps
+      against `channel/mod.rs` would prevent recurrence. Deliberately not added
+      during the fix: gate wiring overlaps the `ci/clearer-test-gate` work.
+- [ ] **`script/test_warpctrl_early_dispatch` not ported.** The pin has it; it
+      needs a built binary. This is the missing half of the coverage — the new
+      bash test proves the wrapper forwards `--warpctrl`, but nothing proves the
+      binary still honours it.
 - [ ] **`tui-migrate-setup` skill — NEEDS MAINTAINER SIGN-OFF (AGENTS §5.10).**
       Not merely unported: two *existing* DECLINED decisions make it
       unshippable. It resolves `gui_settings_file_path` against
