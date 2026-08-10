@@ -210,7 +210,7 @@ Treat all of this as staged, not validated.
       `gui_config_local_dir`/`tui_config_local_dir` at all. It also treats the
       schema's `x-warp-surfaces` annotation as authoritative, and this fork
       dropped `SettingSurfaces`, so the generator emits no such annotation.
-- [>] **Localized `Display` + English-literal `FromStr` on `SettingsSection`** **[IN FLIGHT 2026-08-10]**
+- [x] **Localized `Display` + English-literal `FromStr` on `SettingsSection`** **[DONE 35baf6e4a — issue #578. persistence_key() returns the variant name; Display stays localized. Legacy values upgrade on READ, not by migration, because the localized vocabulary is unbounded, save_app_state rewrites settings_panes wholesale so the legacy path drains itself, and an older build can still write legacy rows post-migration. Two residual cases stated not hidden: cross-locale first read still falls back to default (no regression), and zh-CN renders MCPServers and AgentMCPServers identically. surface.settings.open now takes stable keys + English names but NOT localized ones -- an agent-facing contract that only resolves in the caller's UI language is not a contract.]** **[IN FLIGHT 2026-08-10]**
       breaks settings-pane persistence round-trips if any `settings-section-*`
       key is ever translated (`persistence/sqlite.rs:2667`). Pre-existing for
       every section; the `"Network" | "网络"` arm in `FromStr` suggests someone
