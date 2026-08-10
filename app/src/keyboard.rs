@@ -93,7 +93,10 @@ where
     save_custom_keybindings(map);
 }
 
-#[cfg(not(test))]
+/// Ungated, matching the pinned oracle (`02b53fcd8`): only the *disk-touching*
+/// helpers below are replaced with no-ops under `cfg(test)`. This one is pure
+/// path computation, and the bundled `change-keybinding` skill renders it into
+/// its content in every build, including test builds.
 pub fn keybinding_file_path() -> std::path::PathBuf {
     warp_core::paths::config_local_dir().join(KEYBINDINGS_FILE_NAME)
 }

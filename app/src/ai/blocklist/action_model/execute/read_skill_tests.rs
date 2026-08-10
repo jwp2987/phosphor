@@ -507,19 +507,18 @@ fn test_read_skill_executor_rejects_tui_only_skill_in_gui() {
 /// (`02b53fcd8`): a `RequiresFeature`-gated bundled skill is not readable while
 /// its feature is disabled.
 ///
-/// Pin deviation: the pin drives this through its `warpctrl` bundled skill,
-/// whose directory this fork does not ship (`resources/bundled/skills/warpctrl`
-/// is absent — see `activation_for_bundled_skill`, and issue #370). The gating
-/// flag itself is real here, so the test registers a synthetic bundled skill
-/// behind the same `FeatureFlag::WarpControlCli` the pin uses; only the skill
-/// content is stood in for, not the mechanism or the flag.
+/// This used to stand a synthetic skill id in for `warpctrl`, because the fork
+/// shipped no `resources/bundled/skills/warpctrl` directory. That directory now
+/// exists (#370), so the test uses the pin's id and name again. Like the pin, it
+/// registers the skill through `add_bundled_skill_for_testing` rather than
+/// reading the bundle off disk.
 #[test]
-fn test_read_skill_executor_rejects_gated_bundled_skill_when_feature_disabled() {
+fn test_read_skill_executor_rejects_warp_control_bundled_skills_when_disabled() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         let _bundled_skills = FeatureFlag::BundledSkills.override_enabled(true);
-        let _gate = FeatureFlag::WarpControlCli.override_enabled(false);
-        let skill_id = "feature-gated-skill";
+        let _warp_control_cli = FeatureFlag::WarpControlCli.override_enabled(false);
+        let skill_id = "warpctrl";
         SkillManager::handle(&app).update(&mut app, |manager, _ctx| {
             manager.add_bundled_skill_for_testing(
                 skill_id,
