@@ -161,12 +161,22 @@ $AdditionalLicenses = @(
     # so `cargo about` never reaches it.
     @{ Name = 'genai (rust-genai)'; License = 'MIT OR Apache-2.0'; Path = 'lib\rust-genai\LICENSE-MIT' },
     @{ Name = 'winit (vendored keyboard/keycode types)'; License = 'Apache-2.0'; Path = 'crates\warpui_core\src\platform\LICENSE-WINIT' },
-    @{ Name = 'Chromium / Blink (dashed-border stroke geometry)'; License = 'BSD-3-Clause'; Path = 'crates\warpui\src\rendering\LICENSE-CHROMIUM' }
+    @{ Name = 'Chromium / Blink (dashed-border stroke geometry)'; License = 'BSD-3-Clause'; Path = 'crates\warpui\src\rendering\LICENSE-CHROMIUM' },
+    @{ Name = 'base16 syntax theme'; License = 'MIT'; Path = 'app\assets\bundled\syntax_theme\LICENSE-BASE16' },
+    # Attribution only -- the per-icon licence is NOT established. See the file
+    # and docs/licensing-open-questions.md. Listed here so the unresolved
+    # question travels with the build instead of being invisible in it.
+    @{ Name = 'File-type icons (SVG Repo)'; License = 'see file -- licence not determined'; Path = 'app\assets\bundled\svg\file_type\ATTRIBUTION.md' }
 )
 # Windows-only components:
 $AdditionalLicenses += @(
     @{ Name = 'OpenConsole / ConPTY (Windows Terminal)'; License = 'MIT'; Path = 'app\assets\windows\LICENSE-WINDOWS-TERMINAL' },
-    @{ Name = 'DirectX Shader Compiler'; License = 'NCSA'; Path = 'app\assets\windows\LICENSE-DXC' }
+    @{ Name = 'DirectX Shader Compiler'; License = 'NCSA'; Path = 'app\assets\windows\LICENSE-DXC' },
+    # msvcp140.dll / vcruntime140.dll / vcruntime140_1.dll under
+    # app\assets\windows\{x64,arm64}\. Covered by NEITHER of the two entries
+    # above. The referenced file is a terms REFERENCE, not a copy of
+    # Microsoft's licence -- see its own header.
+    @{ Name = 'Microsoft Visual C++ Runtime Redistributable'; License = 'Microsoft Software Licence Terms (see file)'; Path = 'app\assets\windows\LICENSE-MSVC-REDIST' }
 )
 
 $LicensesOutput = Join-Path $DestinationDir 'THIRD_PARTY_LICENSES.txt'

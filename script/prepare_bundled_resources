@@ -122,6 +122,11 @@ ADDITIONAL_LICENSES=(
     "genai (rust-genai)|MIT OR Apache-2.0|lib/rust-genai/LICENSE-MIT"
     "winit (vendored keyboard/keycode types)|Apache-2.0|crates/warpui_core/src/platform/LICENSE-WINIT"
     "Chromium / Blink (dashed-border stroke geometry)|BSD-3-Clause|crates/warpui/src/rendering/LICENSE-CHROMIUM"
+    "base16 syntax theme|MIT|app/assets/bundled/syntax_theme/LICENSE-BASE16"
+    # Attribution only -- the per-icon licence is NOT established. See the file
+    # and docs/licensing-open-questions.md. Listed here so the unresolved
+    # question travels with the build instead of being invisible in it.
+    "File-type icons (SVG Repo)|see file -- licence not determined|app/assets/bundled/svg/file_type/ATTRIBUTION.md"
 )
 
 # Build the third-party licenses file unless the NO_LICENSES envvar is set.

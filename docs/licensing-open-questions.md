@@ -66,3 +66,68 @@ affected filenames. It deliberately does **not** assert a licence.
 
 **What would resolve it:** looking each icon up on svgrepo.com and recording the
 licence it is published under there.
+
+## 4. `resources/bundled/mcp_skills/figma/` — no licence, origin unknown
+
+**Status:** unresolved. Bundled into every build.
+
+Eight Figma skills (~35 files of `SKILL.md`, `references/`, `scripts/`) ship
+with no licence file and no `license:` frontmatter key. Compare the Anthropic
+skills at `resources/bundled/skills/claude-api/` and `.../create-skill/`, which
+ship `LICENSE.txt` and cite it from `SKILL.md` frontmatter
+(`license: Complete terms in LICENSE.txt`).
+
+The gap is **inherited, not introduced by this fork**: at the pinned upstream
+`02b53fcd8`, `git ls-tree -r 02b53fcd8 resources/bundled/` shows the same files
+with the same absence, and the only `LICENSE.txt` files under `resources/bundled/`
+are the two Anthropic ones. The fork's own history shows the directory arriving
+whole in `0dbd3d567` ("Initial public release of Warp").
+
+Whether these were authored by Warp, by Figma, or adapted from a published
+Figma skills repository cannot be told from the content.
+
+**What would resolve it:** upstream Warp stating the origin, or a match against
+a published Figma skills repository.
+
+## 5. `themes/one_dark.yaml` — source known, licence not
+
+**Status:** unresolved. **Not** bundled — `themes/` is not copied by either
+`prepare_bundled_resources` script; these files are installed by hand.
+
+The header records the colour source as `zed-industries/zed`,
+`assets/themes/one/one.json`. The zed repository carries several licences at
+its root (Apache-2.0, GPL-3.0, AGPL-3.0) applying to different directories, and
+which one governs `assets/themes/` has not been verified here. Zed's One theme
+itself descends from Atom's One Dark (MIT, GitHub Inc.).
+
+`tokyo_night.yaml` (folke/tokyonight.nvim, MIT) and `vscode_2026_dark.yaml`
+(microsoft/vscode source repo, MIT) are recorded in their own headers and are
+**not** open questions.
+
+## 6. `app/assets/windows/{x64,arm64}/msvc*.dll` — terms referenced, not reproduced
+
+**Status:** partially resolved.
+
+`app/assets/windows/LICENSE-MSVC-REDIST` identifies the three MSVC
+redistributables and points at Microsoft's licence terms and redistribution
+list. It does **not** reproduce Microsoft's terms — those are versioned per
+Visual Studio release, are not offered under terms permitting verbatim
+inclusion in a third-party notice file, and the release these particular
+binaries were built from is recorded nowhere in this repository.
+
+**What would resolve it:** recording which Visual Studio release these DLLs
+came from, then confirming against Microsoft's redistribution list for that
+release that all three are still permitted.
+
+## 7. `crates/warpui/src/rendering/LICENSE-CHROMIUM` — not verbatim
+
+**Status:** placeholder, flagged in the file itself.
+
+Chromium's `LICENSE` could not be fetched offline. The file carries the
+canonical SPDX BSD-3-Clause template plus Chromium's copyright line, with a
+header saying so. Chromium's actual third clause names Google rather than "the
+copyright holder". Replace with the verbatim upstream text.
+
+The same caveat, in milder form, applies to
+`app/assets/bundled/syntax_theme/LICENSE-BASE16`: MIT's body text is fixed, but
+the copyright line and year were not read from the base16 repository.

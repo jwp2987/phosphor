@@ -1,0 +1,43 @@
+Microsoft Visual C++ Runtime Redistributable files
+==================================================
+
+The following files bundled under app/assets/windows/x64/ and
+app/assets/windows/arm64/ are Microsoft Visual C++ runtime redistributables:
+
+    msvcp140.dll
+    vcruntime140.dll
+    vcruntime140_1.dll
+
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+These are NOT covered by either of the other licence files in this directory:
+LICENSE-WINDOWS-TERMINAL (MIT) covers OpenConsole.exe / conpty.dll, and
+LICENSE-DXC (NCSA) covers dxcompiler.dll / dxil.*.
+
+Applicable terms
+----------------
+
+These files are "Distributable Code" under the Microsoft Software Licence
+Terms for the Microsoft Visual Studio release they were built from.
+Redistribution is permitted only as part of an application, subject to those
+terms; they may not be modified, and they are not open-source software.
+
+  Microsoft Visual Studio licence terms:
+    https://visualstudio.microsoft.com/license-terms/
+
+  Redistributable list (which files may be shipped with an application):
+    https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+
+  Latest supported Visual C++ downloads:
+    https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist
+
+This is a REFERENCE, not a copy of the licence
+----------------------------------------------
+
+Microsoft's licence terms are not reproduced here. They are versioned per
+Visual Studio release, Microsoft does not distribute them under terms that
+permit verbatim redistribution in third-party notice files, and the exact
+release these binaries were built from is not recorded anywhere in this
+repository. Anyone shipping this application on Windows should confirm against
+the redistribution list above that these three files are still permitted for
+the Visual Studio version in use.
