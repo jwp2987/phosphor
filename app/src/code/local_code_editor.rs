@@ -33,6 +33,16 @@
 //       Pulling these in would mean porting the remote-conflict and auto-save
 //       subsystems wholesale, neither of which LSP touches.
 //
+// Adjudicated separately, same discriminator: the `Hoverable` +
+// `on_right_click` wrapper around `base_with_handler` in `render`. `efcaa42b8`
+// replaced it with a bare `let base_with_handler = base;`. `git log -S
+// on_right_click` on this file returns `0dbd3d567` + `efcaa42b8`, and the
+// removal diff shows the wrapper going out in that same commit. Its ONLY job is
+// dispatching `LocalCodeEditorAction::OpenContextMenu`, and the context menu is
+// wholly LSP (its two items are Go to Definition and Find References), so the
+// wrapper is LSP fallout, not a deliberate fork simplification. Category (a):
+// restored.
+//
 // The same rule governs the method restore below: what comes back is what
 // `efcaa42b8` removed, not everything the pin now has.
 use std::{
