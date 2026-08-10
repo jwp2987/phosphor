@@ -12,11 +12,13 @@
 //!   module), 2 skill-loading tests need `crate::ai::cloud_environments`
 //!   (Warp Environments, DECLINED.md), and the artifact-upload test needs
 //!   `AIAgentActionResultType::UploadArtifact` (cloud artifact upload).
-//! - 1 is a genuine **feature gap**, non-cloud, BYOP-relevant:
-//!   `openai_api_key_exports_only_api_key_not_base_url` only needs a 5th
+//! - 1 was a genuine **feature gap**, non-cloud, BYOP-relevant:
+//!   `openai_api_key_exports_only_api_key_not_base_url` only needed a 5th
 //!   `ManagedSecretValue` variant (`OpenaiApiKey`) alongside the 4 this fork
-//!   already has; `build_secret_env_vars` (the function it calls) is already
-//!   ported (#247).
+//!   already had; `build_secret_env_vars` (the function it calls) was already
+//!   ported (#247). **Closed in #323**: the Codex harness driver needs the same
+//!   variant to read `base_url` off the typed secret, so it was added to
+//!   `warp_managed_secrets` and this test is now ported verbatim below.
 //!
 //! No further porting opportunity in this file.
 
@@ -528,6 +530,36 @@ fn bedrock_access_key_writes_all_aws_env_vars() {
     assert_eq!(
         env_vars.get(&OsString::from("AWS_REGION")),
         Some(&OsString::from("ap-southeast-1"))
+    );
+}
+
+/// Ported verbatim from the pin (`02b53fcd8`) now that the `OpenaiApiKey` variant
+/// this test needed exists here — see the note in this file's header (#323).
+#[test]
+#[serial_test::serial]
+fn openai_api_key_exports_only_api_key_not_base_url() {
+    // The OpenAI typed secret should only export OPENAI_API_KEY as an env var.
+    // base_url is piped through the structured secret to the harness instead.
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("OPENAI_API_KEY") };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var("OPENAI_BASE_URL") };
+    let secrets = HashMap::from([(
+        "openai-key".to_string(),
+        ManagedSecretValue::openai_api_key(
+            "sk-test-key",
+            Some("https://us.api.openai.com/v1".to_string()),
+        ),
+    )]);
+    let env_vars = build_secret_env_vars(&secrets);
+    assert_eq!(
+        env_vars.get(&OsString::from("OPENAI_API_KEY")),
+        Some(&OsString::from("sk-test-key")),
+        "OPENAI_API_KEY should be exported from the typed secret"
+    );
+    assert!(
+        !env_vars.contains_key(&OsString::from("OPENAI_BASE_URL")),
+        "OPENAI_BASE_URL should NOT be exported as an env var"
     );
 }
 

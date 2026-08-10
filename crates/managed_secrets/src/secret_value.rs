@@ -13,6 +13,7 @@ pub(crate) const ENV_VAR_AWS_REGION: &str = "AWS_REGION";
 pub(crate) const ENV_VAR_AWS_ACCESS_KEY_ID: &str = "AWS_ACCESS_KEY_ID";
 pub(crate) const ENV_VAR_AWS_SECRET_ACCESS_KEY: &str = "AWS_SECRET_ACCESS_KEY";
 pub(crate) const ENV_VAR_AWS_SESSION_TOKEN: &str = "AWS_SESSION_TOKEN";
+pub(crate) const ENV_VAR_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum ManagedSecretType {
@@ -20,6 +21,7 @@ pub enum ManagedSecretType {
     AnthropicBedrockAccessKey,
     AnthropicBedrockApiKey,
     Dotenvx,
+    OpenaiApiKey,
     RawValue,
 }
 
@@ -31,6 +33,7 @@ impl ManagedSecretType {
             ManagedSecretType::AnthropicBedrockAccessKey => "anthropic_bedrock_access_key",
             ManagedSecretType::AnthropicBedrockApiKey => "anthropic_bedrock_api_key",
             ManagedSecretType::Dotenvx => "dotenvx",
+            ManagedSecretType::OpenaiApiKey => "openai_api_key",
             ManagedSecretType::RawValue => "raw_value",
         }
     }
@@ -58,6 +61,17 @@ pub enum ManagedSecretValue {
     AnthropicBedrockApiKey {
         aws_bearer_token_bedrock: String,
         aws_region: String,
+    },
+    /// Ported from the pinned oracle (`02b53fcd8`) for #323: the Codex harness reads
+    /// `base_url` off this typed secret so a custom OpenAI endpoint never has to be
+    /// leaked into the child process environment — it is written to
+    /// `~/.codex/config.toml`'s `openai_base_url` key instead. Local/BYOP, not cloud.
+    OpenaiApiKey {
+        api_key: String,
+        /// Optional base URL for the OpenAI API (e.g. regional endpoints).
+        /// When absent, the harness uses the provider's default endpoint.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
     },
 }
 
@@ -93,6 +107,14 @@ impl ManagedSecretValue {
         Self::AnthropicBedrockApiKey {
             aws_bearer_token_bedrock: token.into(),
             aws_region: region.into(),
+        }
+    }
+
+    /// Construct an OpenAI API key secret value with an optional base URL.
+    pub fn openai_api_key(api_key: impl Into<String>, base_url: Option<String>) -> Self {
+        Self::OpenaiApiKey {
+            api_key: api_key.into(),
+            base_url,
         }
     }
 
@@ -144,6 +166,10 @@ impl ManagedSecretValue {
                 }
                 check(ENV_VAR_AWS_REGION, aws_region)
             }
+            ManagedSecretValue::OpenaiApiKey { api_key, .. } => {
+                // base_url goes to a config file, not an env var argument.
+                check(ENV_VAR_OPENAI_API_KEY, api_key)
+            }
         }
     }
 
@@ -157,6 +183,7 @@ impl ManagedSecretValue {
             ManagedSecretValue::AnthropicBedrockApiKey { .. } => {
                 ManagedSecretType::AnthropicBedrockApiKey
             }
+            ManagedSecretValue::OpenaiApiKey { .. } => ManagedSecretType::OpenaiApiKey,
         }
     }
 }
@@ -175,6 +202,9 @@ impl fmt::Debug for ManagedSecretValue {
                 .finish_non_exhaustive(),
             ManagedSecretValue::AnthropicBedrockApiKey { .. } => f
                 .debug_struct("ManagedSecret::AnthropicBedrockApiKey")
+                .finish_non_exhaustive(),
+            ManagedSecretValue::OpenaiApiKey { .. } => f
+                .debug_struct("ManagedSecret::OpenaiApiKey")
                 .finish_non_exhaustive(),
         }
     }
