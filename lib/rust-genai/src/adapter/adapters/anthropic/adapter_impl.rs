@@ -852,9 +852,30 @@ impl AnthropicAdapter {
 						}
 					}
 					if !values.is_empty() {
+						// PHOSPHOR: cache_control is applied to the tool_result blocks *before*
+						// the trailing parts are appended, so the breakpoint lands on the last
+						// `tool_result` and never on a trailing image.
+						//
+						// `apply_cache_control_to_parts` marks the last block, and a cache
+						// breakpoint caches the prefix ending at that block. A screenshot
+						// differs every turn, so a breakpoint sitting on one can never be hit
+						// again: every turn pays the cache-write premium and reads nothing back.
+						// Anthropic accepts `cache_control` on an image block, so this failed
+						// silently as a cost regression rather than an API error.
+						let mut values = apply_cache_control_to_parts(cache_control.as_ref(), values);
 						values.extend(trailing);
-						let values = apply_cache_control_to_parts(cache_control.as_ref(), values);
 						messages.push(json!({"role": "user", "content": values}));
+					} else if !trailing.is_empty() {
+						// PHOSPHOR: parts with no `tool_result` to accompany. Anthropic requires
+						// tool_result blocks first in the turn answering a tool_use, so there is
+						// no valid shape for these here and upstream drops them. Dropping an
+						// image the caller believed it had attached is worth a warning: it is
+						// the difference between "the model ignored the screenshot" and "the
+						// model never received one".
+						warn!(
+							"Anthropic: dropping {} content part(s) in a tool-result turn that carried no tool_result",
+							trailing.len()
+						);
 					}
 				}
 			}
@@ -1072,8 +1093,67 @@ mod tests {
 	use super::*;
 	use crate::ServiceTarget;
 	use crate::adapter::{Adapter, ServiceType};
-	use crate::chat::{ChatOptions, ChatRequest, JsonSpec};
+	use crate::chat::{ChatMessage, ChatOptions, ChatRequest, JsonSpec, ToolResponse};
 	use crate::resolver::AuthData;
+
+	/// PHOSPHOR regression guard: a screenshot attached to a tool-result turn must not
+	/// take the prompt-cache breakpoint.
+	///
+	/// `apply_cache_control_to_parts` marks the last block, and a breakpoint caches the
+	/// prefix ending there. A screenshot differs every turn, so a breakpoint on one can
+	/// never be hit again — every turn pays the cache-write premium and reads nothing
+	/// back. Anthropic accepts `cache_control` on an image block, so this fails silently
+	/// as a cost regression rather than an API error, which is why it needs a test.
+	#[test]
+	fn test_screenshot_does_not_steal_the_cache_breakpoint() {
+		let tool_msg = ChatMessage::tool(MessageContent::from_parts(vec![
+			ContentPart::ToolResponse(ToolResponse {
+				call_id: "call_1".to_string(),
+				content: "{\"ok\":true}".to_string(),
+			}),
+			ContentPart::Text("Screenshot after the batch:".to_string()),
+			ContentPart::Binary(Binary::from_base64("image/png", "AAAA", None)),
+		]))
+		.with_options(CacheControl::Ephemeral5m);
+
+		let target = ServiceTarget {
+			endpoint: AnthropicAdapter::default_endpoint(),
+			auth: AuthData::from_single("test-key"),
+			model: ModelIden::new(AdapterKind::Anthropic, "claude-sonnet-4-6"),
+		};
+
+		let web_req = AnthropicAdapter::to_web_request_data(
+			target,
+			ServiceType::Chat,
+			ChatRequest::new(vec![tool_msg]),
+			ChatOptionsSet::default(),
+		)
+		.expect("to_web_request_data should succeed");
+
+		let messages = web_req.payload.get("messages").and_then(|m| m.as_array()).expect("messages array");
+		let content = messages
+			.iter()
+			.find_map(|m| m.get("content").and_then(|c| c.as_array()))
+			.expect("a content block array");
+
+		// Anthropic requires tool_result blocks first in the turn answering a tool_use.
+		assert_eq!(content[0].get("type").and_then(|t| t.as_str()), Some("tool_result"));
+		let image_idx = content
+			.iter()
+			.position(|b| b.get("type").and_then(|t| t.as_str()) == Some("image"))
+			.expect("the image must survive to the request");
+		assert!(image_idx > 0, "image must come after the tool_result blocks");
+
+		// The breakpoint belongs on the stable tool_result, never on the volatile image.
+		assert!(
+			content[0].get("cache_control").is_some(),
+			"the last tool_result must carry the cache breakpoint: {content:?}"
+		);
+		assert!(
+			content[image_idx].get("cache_control").is_none(),
+			"the image must NOT carry the cache breakpoint: {content:?}"
+		);
+	}
 
 	/// Regression guard: when both `reasoning_effort` and `JsonSpec` response format are set
 	/// on a model that uses the `output_config` effort API (e.g. `claude-sonnet-4-6`), both

@@ -329,6 +329,27 @@ else
     fail "workspace suite changed against known_test_failures.txt (see above)"
 fi
 
+# The vendored `lib/rust-genai` declares its own `[workspace]`, so it is invisible
+# to every `-p` list above -- `cargo test -p genai` from the root fails outright
+# with "package `genai` cannot be tested because it requires dev-dependencies and
+# is not a member of the workspace". Its tests therefore never ran anywhere:
+# not here, not in pr-check.
+#
+# That matters more than for an ordinary vendored dep, because this fork *modifies*
+# it (see `lib/rust-genai/CHANGES-PHOSPHOR.md`), and those modifications sit on the
+# path every Anthropic request takes. The regression guard for one of them
+# (`test_screenshot_does_not_steal_the_cache_breakpoint`) would have been
+# decorative without this step.
+#
+# Same lesson as the `persistence` note above: unrun is not the same as broken;
+# it just means nobody would know.
+step "vendored genai (separate workspace)"
+if "${CARGO_RUN[@]}" test --manifest-path lib/rust-genai/Cargo.toml --lib --quiet; then
+    ok "genai lib tests pass"
+else
+    fail "genai lib tests failed"
+fi
+
 rm -f /tmp/precheck-check.$$ /tmp/precheck-unified.$$
 
 printf '\n'
