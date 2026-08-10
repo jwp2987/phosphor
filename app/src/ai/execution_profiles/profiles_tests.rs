@@ -1,8 +1,10 @@
+use warp_core::features::FeatureFlag;
 use warpui::{App, SingletonEntity};
 
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::execution_profiles::{
     AIExecutionProfile, AIExecutionProfileObject, AIExecutionProfileObjectModel, ActionPermission,
+    ComputerUsePermission,
 };
 use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::auth::AuthStateProvider;
@@ -169,4 +171,41 @@ fn reconciles_unsynced_default_profile_with_cloud_after_initial_load() {
             );
         });
     })
+}
+
+/// Consumer coverage for `FeatureFlag::LocalComputerUse` -- the flag the whole
+/// computer-use settings surface is gated on (the permission dropdown, the
+/// computer-use model picker and the computer-use prompt-override slot in the
+/// execution profile editor), and the flag that decides whether an explicitly
+/// requested computer-use override is honoured for a non-sandboxed CLI agent.
+///
+/// `AgentModeComputerUse` used to be hard-disabled in `warp_features`, which
+/// made all of this unreachable no matter what this flag said. These assertions
+/// fail if the local half is ever switched off again.
+#[test]
+fn cli_profile_honours_computer_use_override_when_local_computer_use_is_on() {
+    let _flag = FeatureFlag::LocalComputerUse.override_enabled(true);
+
+    assert_eq!(
+        AIExecutionProfile::create_default_cli_profile(false, Some(true)).computer_use,
+        ComputerUsePermission::AlwaysAllow,
+        "an explicit computer-use opt-in on an unsandboxed CLI agent should be honoured"
+    );
+    assert_eq!(
+        AIExecutionProfile::create_default_cli_profile(false, Some(false)).computer_use,
+        ComputerUsePermission::Never,
+        "an explicit opt-out must still win"
+    );
+}
+
+#[test]
+fn cli_profile_refuses_computer_use_override_when_local_computer_use_is_off() {
+    let _flag = FeatureFlag::LocalComputerUse.override_enabled(false);
+
+    assert_eq!(
+        AIExecutionProfile::create_default_cli_profile(false, Some(true)).computer_use,
+        ComputerUsePermission::Never,
+        "without the local flag there is no settings surface to opt in with, so the \
+         override must not silently grant computer use"
+    );
 }
