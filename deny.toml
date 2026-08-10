@@ -35,6 +35,28 @@ allow = [
     "Zlib",
 ]
 
+# NOT an exceptions entry -- read this before adding one for libgit2.
+#
+# app/Cargo.toml enables git2's `vendored-libgit2`, so libgit2's C source is
+# compiled and statically linked into the binary. libgit2 itself is
+# GPL-2.0-only WITH a bespoke linking exception (the exception is what makes
+# static linking into an AGPL program fine; this is a notice gap, not a licence
+# conflict).
+#
+# cargo-deny cannot see any of that. It reads the `libgit2-sys` crate's own
+# declared `license = "MIT"` field, which is already on the allow list above,
+# so `check licenses` passes without any exception -- and it did upstream too,
+# with this exact allow list and the same vendored dependency. An
+# `[[licenses.exceptions]]` entry here would be inert at best: SPDX has no
+# registered identifier for libgit2's linking exception, so any expression
+# written for it would be either wrong or unparseable, and cargo-deny rejects
+# unparseable expressions outright.
+#
+# The obligation is therefore discharged where it actually can be: the
+# ADDITIONAL_LICENSES manifests in script/prepare_bundled_resources and
+# script/windows/prepare_bundled_resources.ps1 ship libgit2's COPYING verbatim
+# into THIRD_PARTY_LICENSES.txt.
+
 [bans]
 # We allow dependencies on multiple versions of crates.
 multiple-versions = "allow"
@@ -48,6 +70,13 @@ allow-git = [
     # Allow git reference to Core Foundation crates until they publish an updated
     # version to crates.io.
     "https://github.com/servo/core-foundation-rs",
+    # winit fork pinned by rev in Cargo.toml. This is a PERSONAL fork, not an
+    # organisation this project can vouch for, and it is the only dependency
+    # source outside `allow-org` below -- so `cargo deny check sources` fails
+    # without this entry. Upstreaming the change (or moving the fork under an
+    # org this project controls) would let this line be deleted; until then the
+    # rev pin is the only thing keeping the source reproducible.
+    "https://github.com/chenx-dust/winit",
 ]
 # Allow git references to all GitHub repositories in the warpdotdev organization.
 allow-org = { github = ["warpdotdev"] }
