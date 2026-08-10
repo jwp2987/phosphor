@@ -740,7 +740,7 @@ of the four turned out to be worth reversing.
 | `9765692e1` | 04-30 | zero | −936 / 17 files | computer-use dispatch | **being restored** |
 
       **[DONE 2026-08-10 — both flow through `prepare_environment_config`. Found two REAL bugs beyond scope: `--harness codex --model X` was REJECTED as an unknown Zap model, and `--harness claude --model X` silently ignored the model because `harness_model_env_vars` was never called. Both fixed. `context` not ported (would be permanently None here). Claude MCP staging NOT wired — needs `--mcp-config` + `serialize_claude_mcp_config`, a capability port; see below.]**
-- [>] **Computer-use dispatch** — agent assigned 2026-08-10. `crates/computer_use`
+- [~] **Computer-use dispatch — RESTORED 2026-08-10, still not reachable.** 1,332 lines across 22 files merged; `check_cloud_boundary` green. The `DECLINED.md` contradiction is resolved (recording stays declined; targeting and dispatch are not). **But an agent still cannot drive it — two blockers OUTSIDE `9765692e1`, both found during the restore:** (see the two rows below). Originally: `crates/computer_use`
       is fully restored and green, but `create_actor()` has exactly one caller
       (the dev CLI) because the dispatch path is gone, so no agent can drive it.
       **Also resolving a live contradiction**: `execute.rs:377` says *"Computer
@@ -748,6 +748,23 @@ of the four turned out to be worth reversing.
       `DECLINED.md:137` lists `crates/computer_use` as **not** declined and
       `:125` says **"#349 is NOT covered"**. The `DECLINED.md` rows are right;
       the code comment is wrong. Recording *is* declined (#350/#367) and stays so.
+- [ ] **BLOCKER 1 — `FeatureFlag::AgentModeComputerUse` is hard-coded `false`**
+      (`crates/warp_features/src/lib.rs:865`, short-circuited alongside
+      `ForceLogin`, `AvatarInTabBar`, `HOARemoteControl`). Added by `5013248be`
+      (zero, 2026-04-29) **one day before** the dispatch removal — same inherited
+      family, and it means `app/src/ai/agent/api.rs:424` computes
+      `computer_use_enabled` as always false. **It is not a cloud flag** — it
+      gates a client capability. **One-line change, but it also controls
+      settings-page visibility, so it is a maintainer call.**
+- [ ] **BLOCKER 2 — the BYOP tool registry has no computer-use tool.**
+      `app/src/ai/agent_providers/tools/REGISTRY` lists ~20 `OpenAiTool`
+      descriptors with no `use_computer` / `request_computer_use` entry, so no
+      model is ever offered the tool. Relatedly `AIRequestInput::computer_use_enabled`
+      is **set and never read** — at the pin it travels to Warp's server, which
+      owns tool selection; BYOP builds the tool list locally instead. Closing this
+      means writing JSON schemas for the full action set plus `result_to_json`.
+      **Genuinely new work with no pin reference** (the pin's schema is
+      server-side), not a restore. This is the larger of the two.
 - [>] **InitProject** — review agent assigned 2026-08-10, read-only.
       The "cloud agent mode's first-run onboarding" rationale came from zero's
       commit message and **has been repeated through several handovers without
