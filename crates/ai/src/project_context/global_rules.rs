@@ -22,7 +22,7 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use warp_core::safe_warn;
 use warp_util::standardized_path::StandardizedPath;
-use warpui::{ModelContext, ModelHandle};
+use warpui::{ModelContext, ModelHandle, SingletonEntity};
 use watcher::{HomeDirectoryWatcher, HomeDirectoryWatcherEvent};
 
 use super::model::{GlobalRulesDelta, ProjectContextModel, ProjectContextModelEvent, ProjectRule};
