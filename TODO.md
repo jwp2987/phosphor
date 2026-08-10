@@ -990,11 +990,11 @@ Re-verify any SCOPE row before acting on it.
 Order: **#440**, then **#381 → #382 → #236**. One sonnet agent per batch, coordinator
 builds once per batch and merges on green. `TODO.md` updated at each landing.
 
-- [ ] **#440** remote_server bundled resources — unblocks the #487/#353 chain from
+- [x] **#440** remote_server bundled resources — unblocks the #487/#353 chain from  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
       shipping degraded. Rust side small; the PACKAGING half (artifact must ship
       `bundled_resources/`) touches the release pipeline — coordinator to report
       rather than change packaging unilaterally.
-- [ ] **#381 — TIER 4** (maintainer, 2026-08-09). Its code rode along with the #440 batch; the ISSUE is tracked in tier 4. Scoped against `working` 2026-08-09:
+- [x] **#381 — TIER 4** (maintainer, 2026-08-09). Its code rode along with the #440 batch; the ISSUE is tracked in tier 4. Scoped against `working` 2026-08-09:  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
       real remaining work is **2 modules / 9 tests**, not six modules / 81.
       `remote_agent_context.rs` (4) is DONE (built under #438/#487);
       `orchestration/` (39) moved to #310/#304 when local orchestration was
@@ -1014,7 +1014,7 @@ builds once per batch and merges on green. `TODO.md` updated at each landing.
       SKILLS; `remote_context_files` makes GLOBAL RULES arrive. Same files, same
       feature, one batch. Together they take remote agent context from degraded to
       complete.
-- [ ] **#382** — scoped against `working` 2026-08-09: **~19 real tests**, four
+- [x] **#382** — scoped against `working` 2026-08-09: **~19 real tests**, four  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
       unrelated items. `prune_unreachable_subtasks` is ALREADY LANDED (`8d3f9d9ba`).
       Remaining:
       - `exchange_by_id` indexed lookup (~6 tests). Fork has only `exchange_mut`
@@ -1026,7 +1026,7 @@ builds once per batch and merges on green. `TODO.md` updated at each landing.
         alone says "already done"; it is not.
       - `file_mcp_watcher` diagnostics — zero `diagnostic` refs in the fork's file.
       - `skills/file_watchers/utils` — pin 23 tests, fork 20. Only 3 missing.
-- [ ] **#236** — scoped against `working` 2026-08-09: **~14 real tests**, 74% already
+- [x] **#236** — scoped against `working` 2026-08-09: **~14 real tests**, 74% already  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
       ported (pin `local_model_tests.rs` 54, fork `local_model_test.rs` 40 — note the
       fork's rename drops the plural, which has caused false "absent" readings).
       Remaining: `load_directory_with_completion` coalescing (5 pin tests, and
@@ -1534,13 +1534,13 @@ apparent debt.
       `TuiStatuslineItem::ALL` order against what is now 12 entries.
 
 ### Tier 4 — large (a week+)
-- [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #324 · #405
+- [x] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #324 · #405  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
 - [x] **#349 PARKED 2026-08-09 (maintainer).** `computer_use` per-window activation
       (`mac/activation.rs`, `mac/window.rs`, `mac/post.rs`, `linux/x11/seat.rs`,
       `linux/x11/windows.rs`). Parked, not declined: the macOS half cannot be built or
       verified on this host, so porting it would ship code no one here can test.
       Revisit only if a macOS build host becomes available.
-- [ ] #575 `RemoteAgentContextSnapshot.global_rules` is always empty. Split out of the
+- [x] #575 `RemoteAgentContextSnapshot.global_rules` is always empty. Split out of the  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
       #440 batch after a scope correction: I had assumed `remote_context_files.rs`
       supplied it — **it does not.** `global_rules` arrives pre-serialized in the
       snapshot from daemon-side `ProjectContextModel::global_rules()`;
@@ -1558,7 +1558,7 @@ apparent debt.
       accessor exists at all, and `app/src/remote_server/server_model.rs:262` hardcodes
       `global_rules: Vec::new()`. The protocol half is already correct —
       `protocol_tests.rs` round-trips the field.
-- [ ] #312 NLD prompt-history match — **moved here from the maintainer-decision bucket
+- [x] #312 NLD prompt-history match — **moved here from the maintainer-decision bucket  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
       2026-08-09; it was never a decision, it is ordinary local work.** Warp's
       natural-language detection consults TWO history sources (shell command history +
       agent prompt history) and breaks ties by recency, so retyping a previous agent
@@ -1574,7 +1574,7 @@ apparent debt.
       is its prompt-side source. Once #256 lands this is `resolve_history_match` plus
       porting 9 tests.
       (#252, #289, #142 CLOSED 2026-08-08/09)
-- [ ] #381 — **work DONE, issue still open.** Its two real modules
+- [x] #381 — **work DONE, issue still open.** Its two real modules  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
       (`local_harness_setup.rs` 5 tests, `remote_context_files.rs` 4 tests) are
       committed on `working` awaiting the tier-3 merge; the other four modules it
       named are either done (`remote_agent_context.rs`), moved to tier 3.5
@@ -1590,7 +1590,7 @@ own rules warned against; two rows were already closed (#142, #252); and
 `pane_group/mod_tests.rs` is majority-cloud (21 marker lines: `CodebaseIndexManager`,
 `IapManager`, `CloudConversationData`), not clean debt.
 **~521 claimed -> ~214 genuinely portable non-cloud tests.**
-- [ ] #405 Jupyter (`.ipynb`) rendering. **STAYS IN TIER 4** (maintainer, 2026-08-09).
+- [x] #405 Jupyter (`.ipynb`) rendering. **STAYS IN TIER 4** (maintainer, 2026-08-09).  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
       Scoped 2026-08-09: verdict REAL, zero cloud,
       but **~3-4x smaller than the tier-4 framing**: ~500-700 net-new lines across
       ~12 files, ~30 tests, 1-3 days. The only genuinely new code is
@@ -1630,7 +1630,7 @@ Audit landed 2026-08-08 late. Results below.
   verdict.
 
 ### Needs a maintainer decision, not code
-- [ ] #149 · #150 · #203 (design decision) · #206 · #207 · #279 · #312
+- [x] #149 · #150 · #203 (design decision) · #206 · #207 · #279 · #312  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
 
 ### Landed 2026-08-08
 #191, #251, #253, #570, #437, #438, #439, #399, #418, #423, #208, #537 — plus
@@ -1889,7 +1889,7 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   verified 2026-08-06 with `git merge-base --is-ancestor 3150a17b9 main`; issue #98 is closed.
   All 3 green in isolation, no assertions changed. NOTE: the same class likely
   still affects #4's `slash_commands` tests; a test-binary-global i18n init would close those too.
-- [ ] **get_relevant_files live smoke** — now **#206**. Unit + lib green (4 tests in
+- [x] **get_relevant_files live smoke** — now **#206**. Unit + lib green (4 tests in  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
   `get_relevant_files_tests.rs`, 4 in `get_relevant_files_runtime_tests.rs`), but never
   run against a real BYOP provider. Matters because the tool is intercepted by name and
   bypasses the protobuf executor, so no other integration coverage touches its path.
@@ -2237,7 +2237,7 @@ across agents have been merged.
   **Recommend:** do plan properly with a running-TUI check + a streaming snapshot
   test; shell-only is low value.
 
-- [ ] **[HIGH] Full-document rebuild on every layout pass, not viewport-gated** — now **#203**. — NEEDS REFACTOR (deferred)
+- [x] **[HIGH] Full-document rebuild on every layout pass, not viewport-gated** — now **#203**. — NEEDS REFACTOR (deferred)  **[STALE — issue(s) CLOSED on GitHub; reconciled 2026-08-10]**
   — `crates/warp_tui/src/editor_element.rs:351-401` (`build`) +
   `crates/editor/src/render/model/char_cell_display.rs:257-334` (`display_rows`)
   `layout()` unconditionally rebuilds: `text.chars().collect()` + a full-buffer
