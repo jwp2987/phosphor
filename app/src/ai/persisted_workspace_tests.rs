@@ -27,6 +27,8 @@ fn empty_persisted_workspace() -> PersistedWorkspace {
     PersistedWorkspace {
         workspaces: HashMap::new(),
         model_event_sender: None,
+        #[cfg(feature = "local_fs")]
+        lsp_installation_status: Default::default(),
     }
 }
 
@@ -36,6 +38,7 @@ fn insert_workspace(pw: &mut PersistedWorkspace, path: &Path) {
     pw.workspaces.insert(
         path.to_path_buf(),
         Workspace {
+            language_servers: Default::default(),
             metadata: WorkspaceMetadata {
                 path: path.to_path_buf(),
                 navigated_ts: None,
@@ -98,6 +101,7 @@ fn workspaces_orders_by_most_recently_touched() {
     pw.workspaces.insert(
         older.clone(),
         Workspace {
+            language_servers: Default::default(),
             metadata: WorkspaceMetadata {
                 path: older.clone(),
                 navigated_ts: Some(Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap()),
@@ -109,6 +113,7 @@ fn workspaces_orders_by_most_recently_touched() {
     pw.workspaces.insert(
         newer.clone(),
         Workspace {
+            language_servers: Default::default(),
             metadata: WorkspaceMetadata {
                 path: newer.clone(),
                 navigated_ts: Some(Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap()),

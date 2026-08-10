@@ -4,6 +4,7 @@ use repo_metadata::RepoMetadataModel;
 use std::sync::Arc;
 use warp_core::ui::appearance::Appearance;
 
+use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::ambient_agents::github_auth_notifier::GitHubAuthNotifier;
 use crate::ai::document::ai_document_model::AIDocumentModel;
@@ -62,6 +63,15 @@ pub fn initialize_app_for_terminal_view(app: &mut App) {
     app.add_singleton_model(|_| ChangelogModel::new(Arc::new(http_client::Client::new())));
     app.add_singleton_model(|_| NetworkStatus::new());
     app.add_singleton_model(|_| SystemStats::new());
+    // Restored with D1: `terminal/view.rs`'s cd path now calls
+    // `navigated_to_path`, so any test that builds a terminal view reaches this
+    // singleton. Guarded because several tests register it themselves --
+    // `add_singleton_model` PANICS on a duplicate.
+    app.update(|ctx| {
+        if !ctx.has_singleton_model::<PersistedWorkspace>() {
+            ctx.add_singleton_model(PersistedWorkspace::new_for_test);
+        }
+    });
     app.add_singleton_model(|_| Prompt::mock());
     app.add_singleton_model(ObjectStoreModel::mock);
     app.add_singleton_model(UserWorkspaces::default_mock);

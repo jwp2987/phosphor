@@ -349,14 +349,14 @@ impl PersistedWorkspace {
             // Bring the index up to date when a conversation starts.
             ctx.subscribe_to_model(&BlocklistAIHistoryModel::handle(ctx), |me, event, ctx| {
                 if let BlocklistAIHistoryEvent::StartedNewConversation {
-                    terminal_surface_id,
+                    terminal_view_id,
                     ..
                 } = event
                 {
                     #[cfg(feature = "local_fs")]
                     me.clean_up_deleted_indices(ctx);
 
-                    me.trigger_incremental_sync_for_conversation(*terminal_surface_id, ctx);
+                    me.trigger_incremental_sync_for_conversation(*terminal_view_id, ctx);
                 }
             });
 

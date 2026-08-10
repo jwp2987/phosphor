@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use super::*;
+use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::agent::DriveObjectPayload;
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::{AIQueryHistory, BlocklistAIPermissions};
@@ -238,6 +239,15 @@ pub fn initialize_app(app: &mut App) {
     });
     app.add_singleton_model(|_| NetworkStatus::new());
     app.add_singleton_model(|_| SystemStats::new());
+    // Restored with D1: `terminal/view.rs`'s cd path now calls
+    // `navigated_to_path`, so any test that builds a terminal view reaches this
+    // singleton. Guarded because several tests register it themselves --
+    // `add_singleton_model` PANICS on a duplicate.
+    app.update(|ctx| {
+        if !ctx.has_singleton_model::<PersistedWorkspace>() {
+            ctx.add_singleton_model(PersistedWorkspace::new_for_test);
+        }
+    });
     app.add_singleton_model(|_| Prompt::mock());
     app.add_singleton_model(ObjectStoreModel::mock);
     app.add_singleton_model(

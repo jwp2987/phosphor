@@ -22,6 +22,19 @@ define_settings_group!(CodeSettings, settings: [
         private: true,
     },
     // Controls whether the project explorer / file tree appears in the tools panel.
+    // Controls whether the language server reformats the file on save.
+    // Restored with LSP: format-on-save is an LSP request, so it went out with
+    // `efcaa42b8` and comes back with it. The pin's `surface:` key is omitted --
+    // this fork dropped `SettingSurfaces`.
+    format_on_save: FormatOnSave {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "code.editor.format_on_save",
+        description: "Whether the language server automatically formats the file on save. Other LSP features (hover, go-to-definition, references, diagnostics) are unaffected.",
+    },
     show_project_explorer: ShowProjectExplorer {
         type: bool,
         default: true,

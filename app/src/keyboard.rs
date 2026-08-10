@@ -30,7 +30,8 @@ impl UserDefinedKeybinding {
     }
 }
 
-#[cfg(not(test))]
+// Ungated alongside `keybinding_file_path`, which is pure path computation and
+// is rendered into the bundled `change-keybinding` skill in every build.
 const KEYBINDINGS_FILE_NAME: &str = "keybindings.yaml";
 
 /// Load all stored custom keybindings into the UI framework so that they are used

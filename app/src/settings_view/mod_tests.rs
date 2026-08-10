@@ -236,7 +236,8 @@ fn all_lists_every_settings_section() {
             | SettingsSection::Network
             | SettingsSection::Privacy
             | SettingsSection::Code
-            | SettingsSection::EditorAndCodeReview => {}
+            | SettingsSection::EditorAndCodeReview
+            | SettingsSection::Scripting => {}
         }
     }
 
@@ -294,6 +295,7 @@ fn from_persistence_key_upgrades_legacy_english_labels() {
     // variant has to declare its legacy label here.
     fn legacy_english_label(section: SettingsSection) -> &'static str {
         match section {
+            SettingsSection::Scripting => "Scripting",
             SettingsSection::About => "About",
             SettingsSection::MCPServers => "MCP Servers",
             SettingsSection::Appearance => "Appearance",

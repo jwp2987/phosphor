@@ -15273,7 +15273,9 @@ impl Workspace {
 
         let Some(terminal_view_handle) = active_pane_group.as_ref(ctx).active_session_view(ctx)
         else {
-            report_error!("Could not get terminal view handle when attempting to open LSP logs.");
+            warp_core::report_error!(
+                "Could not get terminal view handle when attempting to open LSP logs."
+            );
             return;
         };
 

@@ -818,7 +818,9 @@ impl CodeView {
                 };
 
                 me.open_or_focus_existing(
-                    Some(LocalOrRemotePath::Local(path.to_path_buf())),
+                    Some(crate::code::buffer_location::BufferLocation::Local(
+                        path.to_path_buf(),
+                    )),
                     Some(line_col),
                     ctx,
                 );
