@@ -896,7 +896,10 @@ fn test_sqlite_upgrades_legacy_settings_page_values() {
         ),
         // Pre-rebrand names.
         ("Oz", SettingsSection::WarpAgent),
-        ("Zap Drive", SettingsSection::ZapDrive),
+        // 2026-08-10: the `("Zap Drive", SettingsSection::ZapDrive)` row was removed
+        // along with the Phosphor Drive settings page (see DECLINED.md). A row still
+        // holding it now falls back to the default section, which
+        // `test_sqlite_falls_back_for_the_removed_drive_settings_page` covers.
         // The zh-CN label for the Network page, which a real user already had
         // stored -- it is why `FromStr` grew a Chinese arm in the first place.
         ("网络", SettingsSection::Network),
@@ -925,6 +928,40 @@ fn test_sqlite_upgrades_legacy_settings_page_values() {
             restored_settings_page(&mut conn),
             expected,
             "a settings pane stored as {stored_value:?} was lost"
+        );
+    }
+}
+
+/// The Phosphor Drive settings page was removed on 2026-08-10 (see `DECLINED.md`), so
+/// every name it was ever stored under is now unresolvable. Existing users still have
+/// those rows; restoring must fall back to the default section rather than fail the
+/// whole snapshot restore.
+#[test]
+fn test_sqlite_falls_back_for_the_removed_drive_settings_page() {
+    use diesel::connection::SimpleConnection;
+
+    for stored_value in ["ZapDrive", "Zap Drive", "Phosphor Drive"] {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let database_path = tempdir.path().join("warp.sqlite");
+        let mut conn = setup_database(&database_path).expect("database should initialize");
+
+        let app_state = AppState {
+            windows: vec![settings_window_snapshot(SettingsSection::Appearance)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        };
+        save_app_state(&mut conn, &app_state).expect("app state should save");
+        conn.batch_execute(&format!(
+            "UPDATE settings_panes SET current_page = '{stored_value}';"
+        ))
+        .expect("legacy value should be written");
+
+        assert_eq!(
+            restored_settings_page(&mut conn),
+            SettingsSection::default(),
+            "a settings pane stored as {stored_value:?} should fall back to the default \
+             section now that the Phosphor Drive page is gone"
         );
     }
 }

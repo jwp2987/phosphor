@@ -1,6 +1,5 @@
 use crate::appearance::Appearance;
 use crate::debounce::debounce;
-use crate::drive::settings::WarpDriveSettings;
 #[cfg(not(target_family = "wasm"))]
 use crate::search::ai_context_menu::blocks::data_source::BlockDataSource;
 #[cfg(not(target_family = "wasm"))]
@@ -390,7 +389,9 @@ impl AIContextMenu {
         is_cli_agent_input: bool,
         app: &AppContext,
     ) -> Vec<AIContextMenuCategory> {
-        let show_warp_drive = WarpDriveSettings::is_warp_drive_enabled(app);
+        // 2026-08-10: the `show_warp_drive` gate was removed along with the
+        // `warp_drive.enabled` setting (see DECLINED.md); the Drive-backed categories are
+        // now gated only by their own feature flags.
 
         // Compute once — used by CLI agent, AI-mode, and terminal-mode branches.
         let is_active_dir_in_git_repo = {
@@ -439,14 +440,12 @@ impl AIContextMenu {
         // For ambient agent sessions, only show limited categories
         if is_in_ambient_agent {
             let mut categories = vec![];
-            if show_warp_drive {
-                if FeatureFlag::DriveObjectsAsContext.is_enabled() {
-                    categories.push(AIContextMenuCategory::Workflows);
-                    categories.push(AIContextMenuCategory::Notebooks);
-                    categories.push(AIContextMenuCategory::Plans);
-                }
-                categories.push(AIContextMenuCategory::Rules);
+            if FeatureFlag::DriveObjectsAsContext.is_enabled() {
+                categories.push(AIContextMenuCategory::Workflows);
+                categories.push(AIContextMenuCategory::Notebooks);
+                categories.push(AIContextMenuCategory::Plans);
             }
+            categories.push(AIContextMenuCategory::Rules);
             return categories;
         }
 
@@ -475,7 +474,7 @@ impl AIContextMenu {
             {
                 categories.push(AIContextMenuCategory::Code);
             }
-            if show_warp_drive && FeatureFlag::DriveObjectsAsContext.is_enabled() {
+            if FeatureFlag::DriveObjectsAsContext.is_enabled() {
                 categories.push(AIContextMenuCategory::Workflows);
                 categories.push(AIContextMenuCategory::Notebooks);
                 categories.push(AIContextMenuCategory::Plans);
@@ -489,9 +488,7 @@ impl AIContextMenu {
             if FeatureFlag::ConversationsAsContext.is_enabled() {
                 categories.push(AIContextMenuCategory::Conversations);
             }
-            if show_warp_drive {
-                categories.push(AIContextMenuCategory::Rules);
-            }
+            categories.push(AIContextMenuCategory::Rules);
             categories.push(AIContextMenuCategory::Skills);
             categories
         } else if !is_shared_session_viewer {

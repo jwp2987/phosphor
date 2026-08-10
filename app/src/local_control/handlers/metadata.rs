@@ -15,7 +15,6 @@ use settings::Setting as _;
 use warp_core::channel::ChannelState;
 use warpui::{AppContext, ModelContext, SingletonEntity, ViewHandle, WindowId};
 
-use crate::drive::settings::WarpDriveSettings;
 use crate::features::FeatureFlag;
 use crate::local_control::LocalControlBridge;
 use crate::local_control::resolver::{reject_target_families, require_active_window_id_for_action};
@@ -312,9 +311,8 @@ pub(crate) fn surface_unavailable_reason(
         | SurfaceDestination::ThemePicker
         | SurfaceDestination::Keybindings
         | SurfaceDestination::ResourceCenter => None,
-        SurfaceDestination::WarpDrive if !WarpDriveSettings::is_warp_drive_enabled(ctx) => {
-            Some("Warp Drive is disabled")
-        }
+        // 2026-08-10: the `warp_drive.enabled` gate was removed along with the setting
+        // (see DECLINED.md), so the Drive panel is always available.
         SurfaceDestination::WarpDrive => None,
         SurfaceDestination::AiAssistant if !AISettings::as_ref(ctx).is_any_ai_enabled(ctx) => {
             Some("AI features are disabled")
@@ -349,15 +347,10 @@ pub(crate) fn surface_unavailable_reason(
             Some("agent conversation history is unavailable or disabled")
         }
         SurfaceDestination::ConversationList => None,
-        SurfaceDestination::LeftPanel
-            if surface_unavailable_reason(SurfaceDestination::ProjectExplorer, ctx).is_some()
-                && surface_unavailable_reason(SurfaceDestination::GlobalSearch, ctx).is_some()
-                && surface_unavailable_reason(SurfaceDestination::ConversationList, ctx)
-                    .is_some()
-                && surface_unavailable_reason(SurfaceDestination::WarpDrive, ctx).is_some() =>
-        {
-            Some("the left panel has no available views")
-        }
+        // 2026-08-10: the "no available views" guard was removed along with the
+        // `warp_drive.enabled` setting. `WorkspaceView::compute_left_panel_views` now
+        // pushes `ToolPanelView::ZapDrive` unconditionally, so the left panel always has
+        // at least one view and the guard could never fire again.
         SurfaceDestination::LeftPanel => None,
         SurfaceDestination::VerticalTabs
             if !FeatureFlag::VerticalTabs.is_enabled()

@@ -597,7 +597,7 @@ pub fn init(app: &mut AppContext) {
         )
         .with_group(bindings::BindingGroup::Notebooks.as_str())
         .with_custom_action(CustomAction::NewPersonalNotebook)
-        .with_context_predicate(id!("Workspace") & id!(flags::ENABLE_WARP_DRIVE)),
+        .with_context_predicate(id!("Workspace")),
         EditableBinding::new(
             "workspace:create_personal_workflow",
             BindingDescription::new(crate::t!(
@@ -611,7 +611,7 @@ pub fn init(app: &mut AppContext) {
         )
         .with_group(bindings::BindingGroup::Workflow.as_str())
         .with_custom_action(CustomAction::NewPersonalWorkflow)
-        .with_context_predicate(id!("Workspace") & id!(flags::ENABLE_WARP_DRIVE)),
+        .with_context_predicate(id!("Workspace")),
         EditableBinding::new(
             "workspace:create_personal_folder",
             BindingDescription::new(crate::t!(
@@ -624,7 +624,7 @@ pub fn init(app: &mut AppContext) {
             WorkspaceAction::CreatePersonalFolder,
         )
         .with_group(bindings::BindingGroup::Folders.as_str())
-        .with_context_predicate(id!("Workspace") & id!(flags::ENABLE_WARP_DRIVE) & id!("IsOnline")),
+        .with_context_predicate(id!("Workspace") & id!("IsOnline")),
         EditableBinding::new(
             NEW_TAB_BINDING_NAME,
             BindingDescription::new(crate::t!("keybinding-desc-workspace-new-tab")),
@@ -744,7 +744,7 @@ pub fn init(app: &mut AppContext) {
             WorkspaceAction::ToggleWarpDrive,
         )
         .with_group(bindings::BindingGroup::Navigation.as_str())
-        .with_context_predicate(id!("Workspace") & id!(flags::ENABLE_WARP_DRIVE))
+        .with_context_predicate(id!("Workspace"))
         .with_mac_key_binding("ctrl-4")
         .with_linux_or_windows_key_binding("alt-4"),
         EditableBinding::new(
@@ -792,7 +792,7 @@ pub fn init(app: &mut AppContext) {
                 ),
             WorkspaceAction::ToggleWarpDrive,
         )
-        .with_context_predicate(id!("Workspace") & id!(flags::ENABLE_WARP_DRIVE)),
+        .with_context_predicate(id!("Workspace")),
         EditableBinding::new(
             TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME,
             BindingDescription::new(crate::t!(
@@ -1203,7 +1203,7 @@ pub fn init(app: &mut AppContext) {
             WorkspaceAction::ExportAllWarpDriveObjects,
         )
         .with_group(bindings::BindingGroup::Settings.as_str())
-        .with_context_predicate(id!("Workspace") & id!(flags::ENABLE_WARP_DRIVE))]);
+        .with_context_predicate(id!("Workspace"))]);
     }
 
     // CLI install/uninstall actions (macOS only)
@@ -1318,7 +1318,7 @@ pub fn init(app: &mut AppContext) {
         )
         .with_group(bindings::BindingGroup::EnvVarCollection.as_str())
         .with_custom_action(CustomAction::NewPersonalEnvVars)
-        .with_context_predicate(id!("Workspace") & id!(flags::ENABLE_WARP_DRIVE)),
+        .with_context_predicate(id!("Workspace")),
         EditableBinding::new(
             "workspace:create_personal_ai_prompt",
             BindingDescription::new(crate::t!(
@@ -1332,9 +1332,7 @@ pub fn init(app: &mut AppContext) {
         )
         .with_group(bindings::BindingGroup::WarpAi.as_str())
         .with_custom_action(CustomAction::NewPersonalAIPrompt)
-        .with_context_predicate(
-            id!("Workspace") & id!(flags::ENABLE_WARP_DRIVE) & id!(flags::IS_ANY_AI_ENABLED),
-        ),
+        .with_context_predicate(id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED)),
     ]);
 
     app.register_editable_bindings([
@@ -1359,7 +1357,7 @@ pub fn init(app: &mut AppContext) {
         crate::t!("keybinding-desc-workspace-import-to-personal-drive"),
         WorkspaceAction::ImportToPersonalDrive,
     )
-    .with_context_predicate(id!("Workspace") & id!(flags::ENABLE_WARP_DRIVE))]);
+    .with_context_predicate(id!("Workspace"))]);
 
     // Register a debug-only action for writing the user's access token to the system clipboard
     // to aid debugging and development.
