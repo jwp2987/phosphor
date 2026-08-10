@@ -826,8 +826,12 @@ fn find_skill_files_in_tree_returns_remote_skill_paths_for_remote_repos() {
             let skill_files = find_project_skill_files_in_tree(&repo_id, model, ctx);
             assert_eq!(
                 skill_files,
+                // The identifiers above take `warp_core::HostId`; `RemotePath` takes the
+                // `warp_util` one. Bridge here so the expectation matches what
+                // `find_project_skill_files_in_tree` actually builds.
                 vec![LocalOrRemotePath::Remote(RemotePath::new(
-                    host_id, skill_path
+                    crate::code::buffer_location::core_host_id_to_util(&host_id),
+                    skill_path
                 ))]
             );
         });
