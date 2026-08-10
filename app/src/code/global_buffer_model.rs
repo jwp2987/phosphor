@@ -7,10 +7,15 @@ use std::time::Duration;
 use bimap::BiMap;
 
 use futures_util::stream::AbortHandle;
+use lsp::types::TextDocumentContentChangeEvent;
+use lsp::{LspManagerModel, LspServerLogLevel, LspServerModel};
 use string_offset::{ByteOffset, CharOffset};
+use vec1::vec1;
 use warp_core::features::FeatureFlag;
 use warp_editor::content::buffer::{Buffer, ToBufferCharOffset};
 use warp_editor::content::diff::{text_diff, TextDiff};
+use warp_editor::content::edit::PreciseDelta;
+use warp_editor::content::version::BufferVersion;
 use warp_util::content_version::ContentVersion;
 use warp_util::file::{FileId, FileLoadError, FileSaveError};
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity, WeakModelHandle};
@@ -19,7 +24,9 @@ use super::buffer_location::{BufferLocation, SyncClock};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
+        use lsp::LspManagerModelEvent;
         use warp_files::{FileModelEvent, FileModel};
+        use warp_editor::content::buffer::EditOrigin;
         use warp_editor::content::text::IndentBehavior;
         use warp_editor::content::text::IndentUnit;
     }
@@ -118,6 +125,9 @@ enum BufferSource {
     /// Backed by the local filesystem (existing behavior).
     Local {
         base_content_version: Option<ContentVersion>,
+        /// The first ever content version when the file was loaded.
+        /// Used to avoid sending a spurious didChange to LSP on initial load.
+        initial_content_version: Option<ContentVersion>,
     },
     /// Backed by a remote filesystem over the remote server protocol.
     Remote {
@@ -134,11 +144,15 @@ enum BufferSource {
     ServerLocal {
         sync_clock: SyncClock,
         base_content_version: Option<ContentVersion>,
+        initial_content_version: Option<ContentVersion>,
     },
 }
 
 struct InternalBufferState {
     buffer: WeakModelHandle<Buffer>,
+    /// Tracks the latest buffer version we've attempted to sync with LSP.
+    /// Used to detect if previous versions were synced successfully.
+    latest_buffer_version: Option<usize>,
     /// Tracks any active background diff parsing for auto-reload.
     pending_diff_parse: Option<PendingDiffParse>,
     source: BufferSource,
@@ -155,6 +169,7 @@ impl InternalBufferState {
         match &self.source {
             BufferSource::Local {
                 base_content_version,
+                ..
             }
             | BufferSource::ServerLocal {
                 base_content_version,
@@ -169,6 +184,7 @@ impl InternalBufferState {
         match &mut self.source {
             BufferSource::Local {
                 base_content_version,
+                ..
             }
             | BufferSource::ServerLocal {
                 base_content_version,
@@ -180,11 +196,50 @@ impl InternalBufferState {
         }
     }
 
+    /// Returns the initial content version for local/server-local buffers,
+    /// `None` for remote.
+    ///
+    /// Remote buffers return `None` because the initial-version guard is only
+    /// needed to avoid a spurious LSP `didChange` on first load. Remote
+    /// buffers don't interact with the local LSP (it runs on the server side),
+    /// so no guard is necessary.
+    fn initial_content_version(&self) -> Option<ContentVersion> {
+        match &self.source {
+            BufferSource::Local {
+                initial_content_version,
+                ..
+            }
+            | BufferSource::ServerLocal {
+                initial_content_version,
+                ..
+            } => *initial_content_version,
+            BufferSource::Remote { .. } => None,
+        }
+    }
+
+    /// Sets the initial content version. Applicable to Local and ServerLocal buffers.
+    fn set_initial_content_version(&mut self, version: ContentVersion) {
+        match &mut self.source {
+            BufferSource::Local {
+                initial_content_version,
+                ..
+            }
+            | BufferSource::ServerLocal {
+                initial_content_version,
+                ..
+            } => {
+                *initial_content_version = Some(version);
+            }
+            BufferSource::Remote { .. } => {}
+        }
+    }
+
     /// Whether this buffer has been loaded (has content).
     fn is_loaded(&self) -> bool {
         match &self.source {
             BufferSource::Local {
                 base_content_version,
+                ..
             }
             | BufferSource::ServerLocal {
                 base_content_version,
@@ -278,6 +333,26 @@ impl GlobalBufferModel {
         #[cfg(feature = "local_fs")]
         _ctx.subscribe_to_model(&FileModel::handle(_ctx), Self::handle_file_model_events);
 
+        // When an LSP server finishes starting, open every already-loaded buffer
+        // under its workspace, so a server that came up after the file did still
+        // receives the document.
+        //
+        // The registration check is not optional. `LspManagerModel` is registered
+        // by `lsp::init` on the client app's `workspace::init` path only; the
+        // remote-server daemon registers `GlobalBufferModel` too (see
+        // `app/src/remote_server/mod.rs`) but never calls `lsp::init`, and the
+        // model test harnesses register neither. `LspManagerModel::handle` panics
+        // on an unregistered singleton, so an unguarded subscription here would
+        // crash the daemon at startup — the same hazard already documented on
+        // `subscribe_to_remote_server_manager` below.
+        #[cfg(feature = "local_fs")]
+        if _ctx.has_singleton_model::<LspManagerModel>() {
+            _ctx.subscribe_to_model(
+                &LspManagerModel::handle(_ctx),
+                Self::handle_lsp_manager_events,
+            );
+        }
+
         Self {
             location_to_id: BiMap::new(),
             buffers: HashMap::new(),
@@ -354,6 +429,19 @@ impl GlobalBufferModel {
             return;
         }
 
+        // Collect paths for didClose before removing entries.
+        let paths_to_close: Vec<PathBuf> = ids_to_remove
+            .iter()
+            .filter_map(|id| match self.location_to_id.get_by_right(id) {
+                Some(BufferLocation::Local(path)) => Some(path.clone()),
+                Some(BufferLocation::Remote(_)) | None => None,
+            })
+            .collect();
+
+        for path in &paths_to_close {
+            self.close_document_with_lsp(path, ctx);
+        }
+
         for id in &ids_to_remove {
             self.location_to_id.remove_by_right(id);
         }
@@ -380,7 +468,12 @@ impl GlobalBufferModel {
     }
 
     fn cleanup_file_id(&mut self, file_id: FileId, _ctx: &mut ModelContext<Self>) {
-        self.location_to_id.remove_by_right(&file_id);
+        // Send didClose before removing the entry.
+        if let Some((BufferLocation::Local(path), _)) =
+            self.location_to_id.remove_by_right(&file_id)
+        {
+            self.close_document_with_lsp(&path, _ctx);
+        }
 
         self.buffers.remove(&file_id);
 
@@ -650,6 +743,11 @@ impl GlobalBufferModel {
                 id,
                 version,
             } => {
+                // Only set the initial_content_version on first file load.
+                if let Some(state) = self.buffers.get_mut(id) {
+                    state.set_initial_content_version(*version);
+                }
+
                 // For initial load, base_version and new_version are the same
                 self.populate_buffer_with_read_content(*id, content, *version, *version, true, ctx);
             }
@@ -872,7 +970,15 @@ impl GlobalBufferModel {
         let old_state = self.buffers.remove(&old_file_id)?;
         let buffer = old_state.buffer.upgrade(ctx)?;
 
-        self.location_to_id.remove_by_right(&old_file_id);
+        // Send didClose for the old path and remove the mapping.
+        // Internal state cleanup is synchronous; only the LSP didClose notification
+        // is dispatched asynchronously (with a no-op callback), so there is no race
+        // between state removal and the close completing.
+        if let Some((BufferLocation::Local(old_path), _)) =
+            self.location_to_id.remove_by_right(&old_file_id)
+        {
+            self.close_document_with_lsp(&old_path, ctx);
+        }
 
         // Cancel + unsubscribe old FileId from FileModel.
         let file_model = FileModel::handle(ctx);
@@ -881,7 +987,13 @@ impl GlobalBufferModel {
             file_model.unsubscribe(old_file_id, ctx);
         });
 
-        Some(self.register_buffer_for_path(new_path, buffer, old_state.base_content_version(), ctx))
+        Some(self.register_buffer_for_path(
+            new_path,
+            buffer,
+            old_state.base_content_version(),
+            old_state.initial_content_version(),
+            ctx,
+        ))
     }
 
     /// Adopt an existing buffer under a new path without reading from disk.
@@ -894,17 +1006,24 @@ impl GlobalBufferModel {
         ctx: &mut ModelContext<Self>,
     ) -> BufferState {
         let buffer_version = buffer.as_ref(ctx).version();
-        self.register_buffer_for_path(path, buffer, Some(buffer_version), ctx)
+        self.register_buffer_for_path(
+            path,
+            buffer,
+            Some(buffer_version),
+            Some(buffer_version),
+            ctx,
+        )
     }
 
-    /// Shared helper: register `buffer` under `path` with FileModel and store internal state.
-    /// Since LSP was removed, this no longer tries to sync buffer changes with LSP.
+    /// Shared helper: register `buffer` under `path` with FileModel, subscribe to
+    /// buffer events for LSP sync, store internal state, and open the document with LSP.
     #[cfg(feature = "local_fs")]
     fn register_buffer_for_path(
         &mut self,
         path: PathBuf,
         buffer: ModelHandle<Buffer>,
         base_content_version: Option<ContentVersion>,
+        initial_content_version: Option<ContentVersion>,
         ctx: &mut ModelContext<Self>,
     ) -> BufferState {
         // If a buffer is already registered for this path, clean up the old entry
@@ -930,12 +1049,75 @@ impl GlobalBufferModel {
             file_id,
             InternalBufferState {
                 buffer: buffer.downgrade(),
+                latest_buffer_version: None,
                 pending_diff_parse: None,
                 source: BufferSource::Local {
                     base_content_version,
+                    initial_content_version,
                 },
             },
         );
+
+        // Unsubscribe any existing buffer subscription (e.g. from a previous path)
+        // before subscribing with the new path.
+        ctx.unsubscribe_from_model(&buffer);
+
+        // Subscribe to buffer events for LSP sync.
+        let path_clone = path.clone();
+        ctx.subscribe_to_model(&buffer, move |me, event, ctx| {
+            use warp_editor::content::buffer::BufferEvent;
+
+            let Some(state) = me.buffers.get(&file_id) else {
+                return;
+            };
+            let Some(initial_version) = state.initial_content_version() else {
+                return;
+            };
+            let Some(buffer) = state.buffer.upgrade(ctx) else {
+                return;
+            };
+
+            if let BufferEvent::ContentChanged {
+                delta,
+                buffer_version,
+                origin,
+                ..
+            } = event
+            {
+                let version_matches_initial = buffer.as_ref(ctx).version_match(&initial_version);
+                let fid = me
+                    .location_to_id
+                    .get_by_left(&BufferLocation::Local(path_clone.clone()))
+                    .cloned();
+                let previous_version = fid
+                    .and_then(|id| me.buffers.get(&id))
+                    .and_then(|state| state.latest_buffer_version);
+
+                if let Some(id) = fid
+                    && let Some(state) = me.buffers.get_mut(&id)
+                {
+                    state.latest_buffer_version = Some(buffer_version.as_usize());
+                }
+
+                if matches!(origin, EditOrigin::SystemEdit) && version_matches_initial {
+                    me.open_or_sync_document_with_lsp(buffer, &path_clone, *buffer_version, ctx);
+                    return;
+                }
+
+                me.notify_lsp_of_content_change(
+                    buffer,
+                    &delta.precise_deltas,
+                    &path_clone,
+                    *buffer_version,
+                    previous_version,
+                    ctx,
+                );
+            }
+        });
+
+        // Open the document with LSP.
+        let buffer_ver = buffer.as_ref(ctx).buffer_version();
+        self.open_or_sync_document_with_lsp(buffer.clone(), &path, buffer_ver, ctx);
 
         BufferState::new(file_id, buffer)
     }
@@ -1016,28 +1198,148 @@ impl GlobalBufferModel {
             }))
         });
 
+        let path_clone = path.to_path_buf();
+        ctx.subscribe_to_model(&buffer, move |me, event, ctx| {
+            use warp_editor::content::buffer::BufferEvent;
+
+            let Some(state) = me.buffers.get(&file_id) else {
+                me.log_lsp_sync_debug(
+                    &path_clone,
+                    format!(
+                        "lsp-sync: ContentChanged SKIPPED file={} reason=buffer_state_missing",
+                        path_clone.display()
+                    ),
+                    ctx,
+                );
+                return;
+            };
+
+            let Some(initial_version) = state.initial_content_version() else {
+                me.log_lsp_sync_debug(
+                    &path_clone,
+                    format!(
+                        "lsp-sync: ContentChanged SKIPPED file={} reason=initial_version_not_set",
+                        path_clone.display()
+                    ),
+                    ctx,
+                );
+                return;
+            };
+
+            let Some(buffer) = state.buffer.upgrade(ctx) else {
+                me.log_lsp_sync_debug(
+                    &path_clone,
+                    format!(
+                        "lsp-sync: ContentChanged SKIPPED file={} reason=buffer_handle_deallocated",
+                        path_clone.display()
+                    ),
+                    ctx,
+                );
+                return;
+            };
+
+            if let BufferEvent::ContentChanged {
+                delta,
+                buffer_version,
+                origin,
+                ..
+            } = event
+            {
+                let version_matches_initial = buffer.as_ref(ctx).version_match(&initial_version);
+
+                // Read the previous latest_buffer_version before updating it.
+                // This is needed to determine if we need a full sync later.
+                let file_id = me
+                    .location_to_id
+                    .get_by_left(&BufferLocation::Local(path_clone.clone()))
+                    .cloned();
+                let previous_version = file_id
+                    .and_then(|id| me.buffers.get(&id))
+                    .and_then(|state| state.latest_buffer_version);
+
+                // Always update the latest buffer version when we receive a ContentUpdated event,
+                // even if we early return. This ensures we track versioning correctly.
+                if let Some(id) = file_id
+                    && let Some(state) = me.buffers.get_mut(&id)
+                {
+                    state.latest_buffer_version = Some(buffer_version.as_usize());
+                }
+
+                // If this is a system edit AND the current buffer version matches the initial version
+                // that came from file loading, this is the initial buffer population. Instead of
+                // relying on the editor view to send didOpen, we handle it here to ensure the LSP
+                // document lifecycle stays in sync with the buffer lifecycle.
+                if matches!(origin, EditOrigin::SystemEdit) && version_matches_initial {
+                    me.open_or_sync_document_with_lsp(buffer, &path_clone, *buffer_version, ctx);
+                    return;
+                }
+
+                me.notify_lsp_of_content_change(
+                    buffer,
+                    &delta.precise_deltas,
+                    &path_clone,
+                    *buffer_version,
+                    previous_version,
+                    ctx,
+                );
+            }
+        });
+
         self.location_to_id
             .insert(BufferLocation::Local(path.to_path_buf()), file_id);
         let source = if is_server_local {
             BufferSource::ServerLocal {
                 sync_clock: SyncClock::new(),
                 base_content_version: None,
+                initial_content_version: None,
             }
         } else {
             BufferSource::Local {
                 base_content_version: None,
+                initial_content_version: None,
             }
         };
         self.buffers.insert(
             file_id,
             InternalBufferState {
                 buffer: buffer.downgrade(),
+                latest_buffer_version: None,
                 pending_diff_parse: None,
                 source,
             },
         );
 
         BufferState::new(file_id, buffer)
+    }
+
+    /// Resolves the language server that owns `path`, if one is running.
+    ///
+    /// Returns `None` when `LspManagerModel` was never registered. That is not a
+    /// defensive nicety: `GlobalBufferModel` is also registered by the
+    /// remote-server daemon and by the model test harnesses, neither of which
+    /// calls `lsp::init`, and `LspManagerModel::as_ref` panics on an
+    /// unregistered singleton. Every LSP entry point in this file funnels
+    /// through here, so this single guard makes the whole document-lifecycle
+    /// path a no-op wherever the manager is absent.
+    fn lsp_server_for_path(
+        &self,
+        path: &Path,
+        ctx: &mut ModelContext<Self>,
+    ) -> Option<ModelHandle<LspServerModel>> {
+        if !ctx.has_singleton_model::<LspManagerModel>() {
+            return None;
+        }
+        LspManagerModel::as_ref(ctx).server_for_path(path, ctx)
+    }
+
+    fn log_lsp_sync_debug(&self, path: &Path, message: String, ctx: &mut ModelContext<Self>) {
+        if cfg!(debug_assertions)
+            && let Some(server) = self.lsp_server_for_path(path, ctx)
+        {
+            server
+                .as_ref(ctx)
+                .log_to_server_log(LspServerLogLevel::Info, message);
+        }
     }
 
     /// Attempts to retrieve specific lines from an in-memory buffer for the given file path.
@@ -1088,6 +1390,251 @@ impl GlobalBufferModel {
         Some(lines)
     }
 
+    /// Opens or resyncs a document with the LSP server.
+    /// - If the LSP doesn't have the document open yet: sends `didOpen`
+    /// - If the LSP already has the document open (buffer recreation): sends a full-content `didChange`
+    fn open_or_sync_document_with_lsp(
+        &mut self,
+        buffer: ModelHandle<Buffer>,
+        path: &Path,
+        buffer_version: BufferVersion,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let path_buf = path.to_path_buf();
+        let current_version = buffer_version.as_usize();
+
+        let Some(lsp_server) = &self.lsp_server_for_path(path, ctx) else {
+            return;
+        };
+
+        if !lsp_server.as_ref(ctx).is_ready_for_requests() {
+            return;
+        };
+
+        let content = buffer.as_ref(ctx).text_with_line_ending().into_string();
+
+        let lsp_already_has_document = lsp_server
+            .as_ref(ctx)
+            .last_synced_version(&path_buf)
+            .ok()
+            .flatten()
+            .is_some();
+
+        if lsp_already_has_document {
+            // Buffer was recreated but LSP still has the document open.
+            // Send a full-content didChange to resync.
+            lsp_server.as_ref(ctx).log_to_server_log(
+                LspServerLogLevel::Info,
+                format!(
+                    "didChange -> server: RESYNC full-content file={} send_version={current_version}",
+                    path.display()
+                ),
+            );
+
+            let content_changed_events = vec![TextDocumentContentChangeEvent {
+                range: None,
+                text: content,
+            }];
+
+            let Ok(sync_future) = lsp_server.as_ref(ctx).did_change_document(
+                path_buf,
+                current_version.into(),
+                content_changed_events,
+            ) else {
+                log::warn!("Failed to resync document with LSP server");
+                return;
+            };
+
+            ctx.spawn(sync_future, |_, _, _| {});
+        } else {
+            // First time opening this document with the LSP.
+            self.log_lsp_sync_debug(
+                path,
+                format!(
+                    "lsp-sync: didOpen from GlobalBufferModel file={} version={current_version}",
+                    path.display()
+                ),
+                ctx,
+            );
+
+            let Ok(open_future) =
+                lsp_server
+                    .as_ref(ctx)
+                    .did_open_document(path_buf, content, current_version)
+            else {
+                log::warn!("Failed to open document with LSP server");
+                return;
+            };
+
+            ctx.spawn(open_future, |_, _, _| {});
+        }
+    }
+
+    /// Sends `didClose` to the LSP server for the given path, if the document is open.
+    fn close_document_with_lsp(&mut self, path: &Path, ctx: &mut ModelContext<Self>) {
+        let Some(lsp_server) = self.lsp_server_for_path(path, ctx) else {
+            return;
+        };
+
+        let path_buf = path.to_path_buf();
+        if !lsp_server
+            .as_ref(ctx)
+            .document_is_open(&path_buf)
+            .is_ok_and(|is_open| is_open)
+        {
+            return;
+        };
+
+        self.log_lsp_sync_debug(
+            path,
+            format!(
+                "lsp-sync: didClose from GlobalBufferModel file={}",
+                path.display()
+            ),
+            ctx,
+        );
+
+        let Ok(close_future) = lsp_server.as_ref(ctx).did_close_document(path_buf) else {
+            log::warn!("Failed to close document with LSP server");
+            return;
+        };
+
+        ctx.spawn(close_future, |_, _, _| {});
+    }
+
+    /// When an LSP server starts, open all loaded buffers that match its workspace path.
+    #[cfg(feature = "local_fs")]
+    fn handle_lsp_manager_events(
+        &mut self,
+        event: &LspManagerModelEvent,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let LspManagerModelEvent::ServerStarted(workspace_path) = event else {
+            return;
+        };
+
+        // Collect (path, buffer_handle, version) for all loaded buffers under this workspace.
+        let buffers_to_open: Vec<_> = self
+            .location_to_id
+            .iter()
+            .filter_map(|(location, id)| {
+                let BufferLocation::Local(path) = location else {
+                    return None;
+                };
+                if !path.starts_with(workspace_path) {
+                    return None;
+                }
+                let state = self.buffers.get(id)?;
+                if !state.is_loaded() {
+                    return None;
+                }
+                let buffer = state.buffer.upgrade(ctx)?;
+                let version = buffer.as_ref(ctx).buffer_version();
+                Some((path.clone(), buffer, version))
+            })
+            .collect();
+
+        for (path, buffer, version) in buffers_to_open {
+            self.open_or_sync_document_with_lsp(buffer, &path, version, ctx);
+        }
+    }
+
+    fn notify_lsp_of_content_change(
+        &mut self,
+        buffer: ModelHandle<Buffer>,
+        deltas: &[PreciseDelta],
+        path: &Path,
+        buffer_version: BufferVersion,
+        previous_version: Option<usize>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let path_buf = path.to_path_buf();
+        let current_version = buffer_version.as_usize();
+
+        let Some(lsp_server) = &self.lsp_server_for_path(path, ctx) else {
+            return;
+        };
+
+        if !lsp_server.as_ref(ctx).is_ready_for_requests() {
+            return;
+        };
+
+        // Check if the previous version was successfully synced.
+        // If not, we need to fallback to syncing the full buffer content.
+        let last_synced = lsp_server
+            .as_ref(ctx)
+            .last_synced_version(&path_buf)
+            .ok()
+            .flatten();
+
+        // If we have a previous version that wasn't synced, we need to do a full sync.
+        let needs_full_sync = previous_version.is_some_and(|prev| {
+            last_synced.is_none() || last_synced.is_some_and(|synced| synced < prev)
+        });
+
+        let deltas_len = deltas.len();
+
+        if needs_full_sync {
+            lsp_server.as_ref(ctx).log_to_server_log(
+                LspServerLogLevel::Info,
+                format!(
+                    "didChange -> server: FALLBACK full-sync file={} send_version={current_version} prev_version={previous_version:?} last_synced={last_synced:?} deltas={deltas_len}",
+                    path.display()
+                ),
+            );
+        } else {
+            lsp_server.as_ref(ctx).log_to_server_log(
+                LspServerLogLevel::Debug,
+                format!(
+                    "didChange -> server: file={} send_version={current_version} prev_version={previous_version:?} last_synced={last_synced:?} deltas={deltas_len}",
+                    path.display()
+                ),
+            );
+        }
+
+        let line_ending_mode = buffer.as_ref(ctx).line_ending_mode();
+        let content_changed_events = if needs_full_sync {
+            // Send the full buffer content without a range.
+            vec![TextDocumentContentChangeEvent {
+                range: None,
+                text: buffer.as_ref(ctx).text_with_line_ending().into_string(),
+            }]
+        } else {
+            deltas
+                .iter()
+                .map(|delta| {
+                    let start = lsp::types::Location {
+                        line: delta.replaced_points.start.row.saturating_sub(1) as usize,
+                        column: delta.replaced_points.start.column as usize,
+                    };
+                    let end = lsp::types::Location {
+                        line: delta.replaced_points.end.row.saturating_sub(1) as usize,
+                        column: delta.replaced_points.end.column as usize,
+                    };
+
+                    TextDocumentContentChangeEvent {
+                        range: Some(lsp::types::Range { start, end }),
+                        text: buffer
+                            .as_ref(ctx)
+                            .text_in_ranges(vec1![delta.resolved_range.clone()], line_ending_mode)
+                            .into_string(),
+                    }
+                })
+                .collect()
+        };
+
+        let Ok(sync_future) = lsp_server.as_ref(ctx).did_change_document(
+            path_buf,
+            current_version.into(),
+            content_changed_events,
+        ) else {
+            log::warn!("Failed to sync document with LSP server");
+            return;
+        };
+
+        ctx.spawn(sync_future, |_, _, _| {});
+    }
+
     // ── Remote buffer operations (client side) ────────────────────────
 
     /// Open a remote buffer identified by a `RemotePath`.
@@ -1133,6 +1680,7 @@ impl GlobalBufferModel {
             file_id,
             InternalBufferState {
                 buffer: buffer.downgrade(),
+                latest_buffer_version: None,
                 pending_diff_parse: None,
                 source: BufferSource::Remote {
                     remote_path: remote_path.clone(),
@@ -1824,6 +2372,7 @@ impl GlobalBufferModel {
             file_id,
             InternalBufferState {
                 buffer: buffer.downgrade(),
+                latest_buffer_version: None,
                 pending_diff_parse: None,
                 source: BufferSource::Remote {
                     remote_path,
