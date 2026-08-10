@@ -2112,7 +2112,11 @@ fn initialize_app(
     //
     // * The store client is `crate::ai::codebase_embeddings::build_store_client`
     //   — a local vector store plus the user's own embedding provider — where
-    //   the pin passed `server_api_provider.as_ref(ctx).get()`.
+    //   the pin passed `server_api_provider.as_ref(ctx).get()`. Because that
+    //   store writes through the app's persistence channel, it takes
+    //   `persistence_writer.sender()` here: `PersistenceWriter` is not
+    //   registered as a singleton until further down, so a client that looked
+    //   it up in the context panicked on every startup.
     // * `daemon_codebase_index_snapshot_storage` has no counterpart here: this
     //   fork's `LaunchMode::RemoteServerDaemon` never reaches `initialize_app`
     //   (see `LaunchMode::supports_indexing`). The daemon registers its own
@@ -2141,7 +2145,7 @@ fn initialize_app(
             codebase_limits.max_indices_allowed,
             codebase_limits.max_files_per_repo,
             codebase_limits.embedding_generation_batch_size,
-            crate::ai::codebase_embeddings::build_store_client(ctx),
+            crate::ai::codebase_embeddings::build_store_client(ctx, persistence_writer.sender()),
             indexing_enabled,
         );
 

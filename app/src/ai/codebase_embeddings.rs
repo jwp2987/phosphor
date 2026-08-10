@@ -47,8 +47,8 @@ use crate::ai::agent_providers::embeddings::{
     HttpEmbeddingProvider, resolve_configured_embedding_model,
 };
 use crate::persistence::{
-    ModelEvent, PersistenceWriter, codebase_index_children, codebase_index_vectors,
-    database_file_path, establish_ro_connection, known_codebase_index_hashes,
+    ModelEvent, codebase_index_children, codebase_index_vectors, database_file_path,
+    establish_ro_connection, known_codebase_index_hashes,
 };
 
 /// Hard cap on how many nodes one `leaves_under` walk will visit.
@@ -103,9 +103,16 @@ impl SqliteVectorStore {
         Self { writer, reader }
     }
 
-    /// Builds one from the app's persistence singleton.
-    pub fn from_app(app: &AppContext) -> Self {
-        let writer = PersistenceWriter::as_ref(app).sender();
+    /// Builds one from an already-obtained persistence writer.
+    ///
+    /// The writer is passed in rather than looked up in the context because
+    /// this store is built partway through `initialize_app`, while
+    /// `PersistenceWriter` is registered at the very end of it — the pin does
+    /// the same (`02b53fcd8:app/src/lib.rs:2438`), and the pin's store client
+    /// got away with it because it took a `server_api_provider` instead. Asking
+    /// the context for the singleton here panicked on every startup, before any
+    /// window opened.
+    pub fn with_writer(writer: Option<SyncSender<ModelEvent>>) -> Self {
         let reader = database_file_path().to_str().and_then(|db_url| {
             establish_ro_connection(db_url)
                 .inspect_err(|error| {
@@ -296,7 +303,14 @@ impl VectorStore for SqliteVectorStore {
 /// do need one fail with `Error::NoEmbeddingProvider`. That is deliberate — a
 /// `None` here would have to be handled by every caller, and the natural
 /// handling would be to skip indexing silently.
-pub fn build_store_client(app: &AppContext) -> Arc<dyn StoreClient> {
+///
+/// `persistence_writer` is threaded in from the caller because the app's
+/// `PersistenceWriter` singleton is not registered yet at the point the
+/// codebase index is built. See [`SqliteVectorStore::with_writer`].
+pub fn build_store_client(
+    app: &AppContext,
+    persistence_writer: Option<SyncSender<ModelEvent>>,
+) -> Arc<dyn StoreClient> {
     // Whatever the user actually configured, falling back to the pin's default
     // so the index has a well-defined storage space even before setup.
     let embedding_config = resolve_configured_embedding_model(app).unwrap_or_default();
@@ -309,7 +323,7 @@ pub fn build_store_client(app: &AppContext) -> Arc<dyn StoreClient> {
     }
 
     let provider = Arc::new(HttpEmbeddingProvider::from_app(app, embedding_config));
-    let store = Arc::new(SqliteVectorStore::from_app(app));
+    let store = Arc::new(SqliteVectorStore::with_writer(persistence_writer));
 
     Arc::new(LocalStoreClient::new(
         provider,
