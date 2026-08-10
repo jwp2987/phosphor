@@ -142,6 +142,85 @@ background process group. Fix: launch detached (`nohup setsid ... & disown`) and
 the log with an `until` loop. A killed run can also report "exit code 0" — **read the
 log, never trust the exit code.**
 
+## DELTA TRACK (opened 2026-08-10, maintainer) — workspace + indexing
+
+One named track for the two bodies of work that were scoped out of other tasks
+because they kept turning into "a different task wearing the same name". Both
+are **local, not cloud**, and therefore parity-legit under the drop-only-cloud
+principle. Neither is in DECLINED.md and neither belonged in a tier before now.
+
+**Why they are one track.** `PersistedWorkspace` is the pin's integration point
+for codebase indexing — it owns the workspace metadata that indexing keys off,
+and its `CodebaseIndexManager` seams are where indexing attaches. Porting one
+without the other leaves either dangling seams or an indexer with nothing to
+hang it on.
+
+### D1 — PersistedWorkspace (IN FLIGHT, branch `feat/restore-persisted-workspace`)
+~1,289 lines (`git show 02b53fcd8:app/src/ai/persisted_workspace.rs`).
+Local content: recent repositories / workspace metadata, per-workspace LSP
+enable-disable state, project-context and project-rules wiring,
+`DetectedRepositories` integration, persistence via `crate::persistence::ModelEvent`.
+- It was NOT removed for being cloud. It went out attached to the indexing
+  retirement (`d84dd8e4d`), taking local features with it.
+- Acceptance: the **6 tests** in `app/src/workspace/view_test.rs` whose bodies
+  are `unimplemented!("PersistedWorkspace retired; ...")` behind
+  `#[ignore = "depends on the retired PersistedWorkspace"]` are restored from
+  the pin and pass, with the `#[ignore]` removed. Do not weaken them (§5.6/§5.11).
+- Its LSP-state half is coupled to **the LSP verdict** in the parity-audit
+  section above. If LSP stays out, that half is stubbed; if LSP comes back, this
+  is where its per-workspace state lives.
+- Note: the pin's command-palette recent-repos data source (audit finding 9) is
+  backed by `PersistedWorkspace`, so it lands naturally with this.
+
+### D2 — Codebase indexing subsystem
+32 files / **12,316 lines** at `crates/ai/src/index/full_source_code_embedding/`,
+plus `app/src/ai/codebase_auto_indexing.rs` (82). The fork's
+`crates/ai/src/index/` now holds only `file_outline`, `locations.rs`, `mod.rs`.
+
+**This subsystem is MIXED, and the split is the whole design problem.** Verified
+against the pin, not assumed:
+- **Local core — port as-is.** `chunker/{naive,semantic}.rs`, `changed_files.rs`,
+  `codebase_index.rs`, `fragment_metadata.rs`, merkle-tree logic, `manager.rs`.
+  Zero cloud markers: `grep -E 'server_api|ServerApiProvider|warp_graphql|warp_server_client|crate::server'`
+  over `manager.rs` and `codebase_index.rs` returns nothing.
+- **Cloud seam — needs a BYOP substitute, do NOT port as-is.**
+  `store_client.rs:14` defines `trait StoreClient` with `generate_embeddings`,
+  `rerank_fragments`, `get_relevant_fragments`, `sync_merkle_tree`,
+  `populate_merkle_tree_cache`, `update_intermediate_nodes`,
+  `codebase_context_config`. Its **only non-mock impl at the pin is
+  `impl StoreClient for ServerApi`** (`app/src/server/server_api/ai.rs:3332`).
+  `mod.rs:25,134-166` also carries `warp_graphql` type conversions for embedding
+  configs (OpenAI text-small-3-256, Voyage code-3-512, Voyage-3.5, Voyage-4).
+
+**Correcting the 2026-08-10 audit on this point.** The audit classified semantic
+codebase search as "genuinely cloud-bound rather than merely unported" and
+recommended a DECLINED.md row. That is right about the code as written and wrong
+about the conclusion: the cloud boundary is a **single-implementation trait**,
+which is exactly the seam BYOP exists to replace — the same shape already solved
+for LLM providers. And the embedding configs the pin enumerates (OpenAI, Voyage)
+are ordinary third-party provider APIs a user can bring themselves. Do not file
+the DECLINED.md row; the work is a local `StoreClient`, not an omission.
+
+- D2a: port the local core (chunking, merkle, changed-file detection, index).
+- D2b: implement a BYOP `StoreClient` — embeddings through the user's configured
+      provider, vector storage local (sqlite, alongside existing persistence),
+      rerank local or provider-side. **The fork today has no embeddings plumbing
+      at all** (`grep -rli embedding app/src/ai crates/ai/src` matches only
+      `persisted_workspace.rs`, `request_usage_model.rs`, `orchestration_events.rs`,
+      `telemetry.rs` — none of them an embeddings client), so this is new
+      construction, not a port.
+- D2c: re-wire `codebase_auto_indexing` + the `CodebaseIndexManager` seams that
+      D1 is leaving live and documented.
+- Unblocks: **#11 code-symbol source** and **SearchCodebase** (see the
+  fork-retired-outline-indexing note), plus ~90 indexing tests and
+  `app/src/remote_server/codebase_index_model_tests.rs` (39).
+
+### Sequencing
+D1 → D2a → D2b → D2c. D2b is the only piece with no pin to copy from and is the
+one to design before building. **D2 is ~12.4k lines and must not be handed to a
+single agent in one pass** — it is a subsystem port across two crates, not a
+feature.
+
 ## LANDED 2026-08-10 — test gate + #577
 
 - [x] **Test gate was reporting green on a failed test BUILD** (`dc4853aa8`).
