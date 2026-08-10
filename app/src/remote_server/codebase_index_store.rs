@@ -44,6 +44,7 @@ use ai::index::full_source_code_embedding::local_store_client::{
     EmbeddingProvider, LocalCodebaseContextConfig, LocalStoreClient, VectorStore,
 };
 use ai::index::full_source_code_embedding::store_client::{IntermediateNode, StoreClient};
+use ai::index::full_source_code_embedding::vector_index::NodeSummary;
 use ai::index::full_source_code_embedding::{
     CodebaseContextConfig, ContentHash, EmbeddingConfig, Error as IndexError, Fragment, NodeHash,
     RepoMetadata,
@@ -56,14 +57,10 @@ use std::collections::HashMap;
 
 use crate::ai::agent_providers::embeddings::{EmbeddingEndpoint, HttpEmbeddingProvider};
 use crate::persistence::{
-    codebase_index_children, codebase_index_vectors, establish_codebase_index_connection,
-    known_codebase_index_hashes, save_codebase_index_embeddings, save_codebase_index_nodes,
+    codebase_index_children, codebase_index_node_summaries, codebase_index_vectors,
+    establish_codebase_index_connection, known_codebase_index_hashes,
+    save_codebase_index_embeddings, save_codebase_index_node_summaries, save_codebase_index_nodes,
 };
-
-/// Hard cap on how many nodes one `leaves_under` walk will visit. Same reason
-/// as the app-side store: a merkle tree cannot cycle, but a corrupt table
-/// could, and a query is not the place to discover that by hanging.
-const MAX_WALKED_NODES: usize = 2_000_000;
 
 /// The daemon's store client, once `run_daemon_app` has built it.
 ///
@@ -222,48 +219,99 @@ impl VectorStore for DaemonVectorStore {
         })
     }
 
-    fn leaves_under(&self, space: &str, root: &NodeHash) -> anyhow::Result<Vec<ContentHash>> {
+    fn children_of(
+        &self,
+        space: &str,
+        hashes: &[NodeHash],
+    ) -> anyhow::Result<HashMap<NodeHash, Vec<NodeHash>>> {
+        if hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let as_strings: Vec<String> = hashes.iter().map(ToString::to_string).collect();
+        let rows = self.with_conn(|conn| {
+            codebase_index_children(conn, space, &as_strings)
+                .context("failed to read codebase index nodes")
+        })?;
+
+        let mut out = HashMap::with_capacity(rows.len());
+        for (hash, json) in rows {
+            let Ok(node_hash) = hash.parse::<NodeHash>() else {
+                log::warn!("Skipping unparseable node hash in the daemon codebase index: {hash}");
+                continue;
+            };
+            let children: Vec<String> =
+                serde_json::from_str(&json).context("failed to decode merkle node children")?;
+            out.insert(
+                node_hash,
+                children
+                    .into_iter()
+                    .filter_map(|child| child.parse::<NodeHash>().ok())
+                    .collect(),
+            );
+        }
+        Ok(out)
+    }
+
+    fn record_node_summaries(
+        &self,
+        space: &str,
+        summaries: &[(NodeHash, NodeSummary)],
+    ) -> anyhow::Result<()> {
+        if summaries.is_empty() {
+            return Ok(());
+        }
+        let rows = summaries
+            .iter()
+            .map(|(hash, summary)| {
+                (
+                    hash.to_string(),
+                    i32::try_from(summary.leaf_count).unwrap_or(i32::MAX),
+                    summary.radius,
+                    i32::try_from(summary.mean.len()).unwrap_or(i32::MAX),
+                    encode_vector(&summary.mean),
+                )
+            })
+            .collect();
+
         self.with_conn(|conn| {
-            let mut frontier = vec![root.to_string()];
-            let mut seen: HashSet<String> = frontier.iter().cloned().collect();
-            let mut leaves = Vec::new();
-            let mut walked = 0usize;
-
-            while !frontier.is_empty() {
-                walked += frontier.len();
-                if walked > MAX_WALKED_NODES {
-                    return Err(anyhow!(
-                        "codebase index tree walk exceeded {MAX_WALKED_NODES} nodes; the node table is likely corrupt"
-                    ));
-                }
-
-                let rows = codebase_index_children(conn, space, &frontier)
-                    .context("failed to read codebase index nodes")?;
-                let with_children: HashSet<&String> = rows.iter().map(|(hash, _)| hash).collect();
-
-                for hash in &frontier {
-                    if !with_children.contains(hash)
-                        && let Ok(content_hash) = hash.parse::<ContentHash>()
-                    {
-                        leaves.push(content_hash);
-                    }
-                }
-
-                let mut next = Vec::new();
-                for (_, json) in rows {
-                    let children: Vec<String> = serde_json::from_str(&json)
-                        .context("failed to decode merkle node children")?;
-                    for child in children {
-                        if seen.insert(child.clone()) {
-                            next.push(child);
-                        }
-                    }
-                }
-                frontier = next;
-            }
-
-            Ok(leaves)
+            save_codebase_index_node_summaries(conn, space.to_owned(), rows)
+                .context("failed to record codebase index node summaries")
         })
+    }
+
+    fn node_summaries_for(
+        &self,
+        space: &str,
+        hashes: &[NodeHash],
+    ) -> anyhow::Result<Vec<(NodeHash, NodeSummary)>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let as_strings: Vec<String> = hashes.iter().map(ToString::to_string).collect();
+        let rows = self.with_conn(|conn| {
+            codebase_index_node_summaries(conn, space, &as_strings)
+                .context("failed to read codebase index node summaries")
+        })?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (hash, leaf_count, radius, dimensions, bytes) in rows {
+            let Ok(node_hash) = hash.parse::<NodeHash>() else {
+                log::warn!("Skipping unparseable node hash in the daemon codebase index: {hash}");
+                continue;
+            };
+            match decode_vector(&bytes, dimensions) {
+                Err(error) => log::warn!("Skipping corrupt node summary for {hash}: {error:#}"),
+                Ok(mean) => out.push((
+                    node_hash,
+                    NodeSummary {
+                        mean,
+                        leaf_count: u32::try_from(leaf_count).unwrap_or(0),
+                        radius,
+                    },
+                )),
+            }
+        }
+        Ok(out)
     }
 
     fn vectors_for(

@@ -18,7 +18,7 @@
 //! **The consequence, stated because it is a real behavioural difference from
 //! the pin:** a write is not visible to a read until the writer thread drains
 //! it. The pin's `StoreClient` calls were synchronous round-trips, so
-//! write-then-read was ordered. Here it is not. Two places could notice:
+//! write-then-read was ordered. Here it is not. Three places could notice:
 //!
 //! * A merkle sync writes nodes, then a *later* sync asks which nodes are
 //!   known. If the write has not landed, the node is reported unknown and its
@@ -26,37 +26,38 @@
 //! * A query issued in the seconds after an index finishes may see fewer
 //!   vectors than were just written, so it returns fewer candidates. It never
 //!   returns a *wrong* candidate, because scoping is structural.
+//! * The search index (`codebase_index_node_summaries`) is written at the end of
+//!   a sync and read by the next query. If it has not landed, the query sees no
+//!   summaries and falls back to opening every subtree — which is the
+//!   pre-index behaviour, so it is slow rather than wrong.
+//!   `LocalStoreClient::build_search_index` returns the summaries it computed so
+//!   that the query which triggers a build never has to wait for its own write.
 //!
-//! Neither can corrupt the index, because both tables are keyed by content hash
-//! and every write is an idempotent upsert.
+//! None of them can corrupt the index: every table here is keyed by a hash that
+//! covers the thing it describes, and every write is an idempotent upsert.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
 use ai::index::full_source_code_embedding::local_store_client::{
-    LocalCodebaseContextConfig, LocalStoreClient, VectorStore,
+    LocalCodebaseContextConfig, LocalStoreClient, RerankProvider, VectorStore,
 };
 use ai::index::full_source_code_embedding::store_client::{IntermediateNode, StoreClient};
+use ai::index::full_source_code_embedding::vector_index::NodeSummary;
 use ai::index::full_source_code_embedding::{ContentHash, EmbeddingConfig, NodeHash};
 use anyhow::{Context, anyhow};
 use diesel::SqliteConnection;
 use warpui::{AppContext, SingletonEntity};
 
 use crate::ai::agent_providers::embeddings::{
-    HttpEmbeddingProvider, resolve_configured_embedding_model,
+    HttpEmbeddingProvider, HttpRerankProvider, resolve_configured_embedding_model,
 };
 use crate::persistence::{
-    ModelEvent, PersistenceWriter, codebase_index_children, codebase_index_vectors,
-    database_file_path, establish_ro_connection, known_codebase_index_hashes,
+    ModelEvent, PersistenceWriter, codebase_index_children, codebase_index_node_summaries,
+    codebase_index_vectors, database_file_path, establish_ro_connection,
+    known_codebase_index_hashes,
 };
-
-/// Hard cap on how many nodes one `leaves_under` walk will visit.
-///
-/// A merkle tree cannot cycle, but a half-written or hand-edited table could,
-/// and a query is not the place to discover that by hanging. The cap is far
-/// above any real repository's node count.
-const MAX_WALKED_NODES: usize = 2_000_000;
 
 /// Encodes a vector as little-endian `f32` bytes.
 fn encode_vector(vector: &[f32]) -> Vec<u8> {
@@ -207,53 +208,105 @@ impl VectorStore for SqliteVectorStore {
         })
     }
 
-    fn leaves_under(&self, space: &str, root: &NodeHash) -> anyhow::Result<Vec<ContentHash>> {
-        self.read(|conn| {
-            let mut frontier = vec![root.to_string()];
-            let mut seen: HashSet<String> = frontier.iter().cloned().collect();
-            let mut leaves = Vec::new();
-            let mut walked = 0usize;
+    fn children_of(
+        &self,
+        space: &str,
+        hashes: &[NodeHash],
+    ) -> anyhow::Result<HashMap<NodeHash, Vec<NodeHash>>> {
+        if hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
 
-            while !frontier.is_empty() {
-                walked += frontier.len();
-                if walked > MAX_WALKED_NODES {
-                    return Err(anyhow!(
-                        "codebase index tree walk exceeded {MAX_WALKED_NODES} nodes; the node table is likely corrupt"
-                    ));
-                }
+        let as_strings: Vec<String> = hashes.iter().map(ToString::to_string).collect();
+        let rows = self.read(|conn| {
+            codebase_index_children(conn, space, &as_strings)
+                .context("failed to read codebase index nodes")
+        })?;
 
-                let rows = codebase_index_children(conn, space, &frontier)
-                    .context("failed to read codebase index nodes")?;
+        let mut out = HashMap::with_capacity(rows.len());
+        for (hash, json) in rows {
+            let Ok(node_hash) = hash.parse::<NodeHash>() else {
+                log::warn!("Skipping unparseable node hash in the codebase index: {hash}");
+                continue;
+            };
+            let children: Vec<String> =
+                serde_json::from_str(&json).context("failed to decode merkle node children")?;
+            out.insert(
+                node_hash,
+                children
+                    .into_iter()
+                    .filter_map(|child| child.parse::<NodeHash>().ok())
+                    .collect(),
+            );
+        }
+        Ok(out)
+    }
 
-                let with_children: HashSet<&String> =
-                    rows.iter().map(|(hash, _)| hash).collect();
+    fn record_node_summaries(
+        &self,
+        space: &str,
+        summaries: &[(NodeHash, NodeSummary)],
+    ) -> anyhow::Result<()> {
+        if summaries.is_empty() {
+            return Ok(());
+        }
 
-                // Anything in this frontier that has no child list is a leaf.
-                // Whether it is actually embedded is decided later, by
-                // `vectors_for` -- a leaf mid-sync legitimately has no vector.
-                for hash in &frontier {
-                    if !with_children.contains(hash)
-                        && let Ok(content_hash) = hash.parse::<ContentHash>()
-                    {
-                        leaves.push(content_hash);
-                    }
-                }
+        let rows = summaries
+            .iter()
+            .map(|(hash, summary)| {
+                (
+                    hash.to_string(),
+                    i32::try_from(summary.leaf_count).unwrap_or(i32::MAX),
+                    summary.radius,
+                    i32::try_from(summary.mean.len()).unwrap_or(i32::MAX),
+                    encode_vector(&summary.mean),
+                )
+            })
+            .collect();
 
-                let mut next = Vec::new();
-                for (_, json) in rows {
-                    let children: Vec<String> = serde_json::from_str(&json)
-                        .context("failed to decode merkle node children")?;
-                    for child in children {
-                        if seen.insert(child.clone()) {
-                            next.push(child);
-                        }
-                    }
-                }
-                frontier = next;
-            }
-
-            Ok(leaves)
+        self.send(ModelEvent::UpsertCodebaseIndexNodeSummaries {
+            embedding_space: space.to_owned(),
+            summaries: rows,
         })
+    }
+
+    fn node_summaries_for(
+        &self,
+        space: &str,
+        hashes: &[NodeHash],
+    ) -> anyhow::Result<Vec<(NodeHash, NodeSummary)>> {
+        if hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let as_strings: Vec<String> = hashes.iter().map(ToString::to_string).collect();
+        let rows = self.read(|conn| {
+            codebase_index_node_summaries(conn, space, &as_strings)
+                .context("failed to read codebase index node summaries")
+        })?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (hash, leaf_count, radius, dimensions, bytes) in rows {
+            let Ok(node_hash) = hash.parse::<NodeHash>() else {
+                log::warn!("Skipping unparseable node hash in the codebase index: {hash}");
+                continue;
+            };
+            match decode_vector(&bytes, dimensions) {
+                // A corrupt summary is skipped rather than fatal: the subtree is
+                // then unbounded, so it gets opened. Slower, never wrong, and
+                // the next index build overwrites the row.
+                Err(error) => log::warn!("Skipping corrupt node summary for {hash}: {error:#}"),
+                Ok(mean) => out.push((
+                    node_hash,
+                    NodeSummary {
+                        mean,
+                        leaf_count: u32::try_from(leaf_count).unwrap_or(0),
+                        radius,
+                    },
+                )),
+            }
+        }
+        Ok(out)
     }
 
     fn vectors_for(
@@ -311,14 +364,34 @@ pub fn build_store_client(app: &AppContext) -> Arc<dyn StoreClient> {
     let provider = Arc::new(HttpEmbeddingProvider::from_app(app, embedding_config));
     let store = Arc::new(SqliteVectorStore::from_app(app));
 
-    Arc::new(LocalStoreClient::new(
-        provider,
-        store,
-        LocalCodebaseContextConfig {
-            embedding_config,
-            ..LocalCodebaseContextConfig::default()
-        },
-    ))
+    // The pin reranked with a server-side cross-encoder. Where the user's own
+    // provider sells one, use it; where it does not, `LocalStoreClient` falls
+    // back to hybrid vector + lexical scoring rather than requiring a model
+    // nobody configured.
+    let reranker = HttpRerankProvider::from_app(app).map(|reranker| {
+        log::info!("Codebase index reranking will use {}", reranker.model_id());
+        Arc::new(reranker) as Arc<dyn RerankProvider>
+    });
+    if reranker.is_none() {
+        log::info!(
+            "No reranking model is configured; codebase search will rerank with \
+             hybrid vector + lexical scoring. Adding a rerank model (e.g. \
+             rerank-2.5) to a provider under Settings > AI enables cross-encoder \
+             reranking instead."
+        );
+    }
+
+    Arc::new(
+        LocalStoreClient::new(
+            provider,
+            store,
+            LocalCodebaseContextConfig {
+                embedding_config,
+                ..LocalCodebaseContextConfig::default()
+            },
+        )
+        .with_rerank_provider(reranker),
+    )
 }
 
 /// The embedding model the index will use, for callers that need to know before
