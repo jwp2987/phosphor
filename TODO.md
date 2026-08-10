@@ -1961,7 +1961,25 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   are now PORTED to `terminal/view_test.rs` (2/0; the resumes case needed a
   `GlobalResourceHandlesProvider` mock for the subagent-sidecar persist path; the fork's
   teardown method is `set_user_control_with_stop_reason`, Warp's is `set_user_control_for_teardown`).
-  Broader 379-module sweep still ongoing. (Anchor Stop/auto-resume regression already code-fixed.)
+  Broader sweep: **inventoried 2026-08-10, see `docs/SWEEP-INVENTORY.md`** — the
+  mechanical diff against the pin, per file, with the specific absent test names and a
+  bucket for each. The real number is **2,357 absent** (down from `ORACLE.md`'s 3,902 on
+  08-06; the fork went 7,884 → 9,716 tests in between), across 269 files, **not 379
+  modules**. 17 ported in that pass (task-store subtask pruning ×4, `agent run` flag
+  parsing ×4, project-skill tree discovery ×3, remote skill resolution ×5, PR-info proto
+  round trip). **Three things the inventory establishes, worth not re-deriving:**
+  (a) name-diffing over-reports by roughly a quarter — 566 of the 2,357 absent names
+  already appear verbatim in fork prose that adjudicates them, and three separate
+  mechanisms produce false "missing" verdicts (renamed-with-the-code, replaced-by-a-
+  documented-analogue, same-basename-different-module); (b) `SCOPE-*.md` verdict A is
+  overstated in a second way nobody had written down — it only asks whether the fork
+  ships a file of that name, not whether it is the same module, whether the API under
+  test still exists, or whether the fork deliberately inverted the behaviour;
+  (c) four **feature** gaps fell out of it, all non-cloud and user-visible — MCP tool
+  results render as a JSON text blob rather than a tree, there is no `/index` slash
+  command so indexing is auto-only, TUI selection cannot trim trailing whitespace or
+  select a styled word, and `languages::language_by_filename` has no `StandardizedPath`
+  overload. (Anchor Stop/auto-resume regression already code-fixed.)
 - [x] **#5 deferred low-sev** — **STALE-WRONG, corrected: #5 is CLOSED (2026-08-05),
   not "all still present."** All 5 findings were dispositioned: mouse-wheel scroll
   reuse was FIXED (#78); the other 4 (multi-cursor selection span, footer statusline

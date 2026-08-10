@@ -1,10 +1,20 @@
 use super::*;
 use ai::skills::{ParsedSkill, SkillProvider, SkillScope};
 use std::path::PathBuf;
+use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
+use warp_util::standardized_path::StandardizedPath;
 
 fn local(path: PathBuf) -> LocalOrRemotePath {
     LocalOrRemotePath::Local(path)
+}
+
+fn remote_location(path: &str) -> LocalOrRemotePath {
+    LocalOrRemotePath::Remote(RemotePath::new(
+        HostId::new("remote-host".to_string()),
+        StandardizedPath::try_new(path).unwrap(),
+    ))
 }
 
 #[test]
@@ -203,5 +213,35 @@ fn test_unique_skills_name_dedup_same_name_different_providers() {
         result[0].provider,
         SkillProvider::Agents,
         "name-dedup should keep the higher-priority provider (Agents > Claude)"
+    );
+}
+
+// ── Ported from the pinned oracle (02b53fcd8),
+// `app/src/ai/skills/skill_utils_tests.rs` ──
+//
+// `skill_path_from_location` walks ancestors to find the SKILL.md that owns an
+// arbitrary file inside a skill directory; it is what turns a tool call touching
+// `.../skills/deploy/scripts/run.sh` into a clickable skill button. Only the
+// local `PathBuf` form was covered here. These two pin the remote form, which is
+// the one that can silently break: the walk must keep the location's host and
+// respect the path's own encoding rather than the build host's.
+
+#[test]
+fn skill_path_from_unix_encoded_remote_location() {
+    let location = remote_location("/repo/.agents/skills/deploy/scripts/run.sh");
+
+    assert_eq!(
+        skill_path_from_location(&location),
+        Some(remote_location("/repo/.agents/skills/deploy/SKILL.md"))
+    );
+}
+
+#[test]
+fn skill_path_from_windows_encoded_remote_location() {
+    let location = remote_location(r"C:\repo\.agents\skills\deploy\scripts\run.ps1");
+
+    assert_eq!(
+        skill_path_from_location(&location),
+        Some(remote_location(r"C:\repo\.agents\skills\deploy\SKILL.md"))
     );
 }

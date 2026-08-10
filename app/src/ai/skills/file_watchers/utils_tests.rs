@@ -954,3 +954,335 @@ fn find_skill_files_in_tree_includes_ignored_skill_files() {
         });
     });
 }
+
+// ── Ported from the pinned oracle (02b53fcd8),
+// `app/src/ai/skills/file_watchers/utils_tests.rs` ──
+//
+// Existing coverage of `find_project_skill_files_in_tree` here is the remote-repo
+// case, the ignored-file case and the "don't rescan provider directories" case.
+// The plain local ones -- an empty repo, root-level providers, and a provider
+// nested in a monorepo package -- were not covered, and they are the paths a user
+// hits every time project skills are discovered. Their failure mode is silent:
+// skills simply do not appear in the picker.
+
+#[test]
+fn find_skill_files_in_tree_empty_repo() {
+    VirtualFS::test("find_skills_empty", |dirs, mut vfs| {
+        let repo = dirs.tests().join("repo");
+        vfs.mkdir("repo/src");
+
+        let src = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join("src")).unwrap(),
+            children: vec![],
+            ignored: false,
+            loaded: true,
+        });
+        let root = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo).unwrap(),
+            children: vec![src],
+            ignored: false,
+            loaded: true,
+        });
+
+        App::test((), |mut app| async move {
+            let watcher = app.add_singleton_model(DirectoryWatcher::new);
+            app.add_singleton_model(|_| DetectedRepositories::default());
+            let repo_handle = watcher.update(&mut app, |w, ctx| {
+                w.add_directory(
+                    StandardizedPath::from_local_canonicalized(&repo).unwrap(),
+                    ctx,
+                )
+                .unwrap()
+            });
+            let state = FileTreeState::new(root, vec![], Some(repo_handle));
+
+            let model_handle = app.add_singleton_model(RepoMetadataModel::new);
+            model_handle.update(&mut app, |model, ctx| {
+                let key = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                model.insert_test_state(key, state, ctx);
+            });
+
+            model_handle.read(&app, |model, ctx| {
+                let repo_id = RepositoryIdentifier::try_local(&repo).unwrap();
+                let skill_files = find_project_skill_files_in_tree(&repo_id, model, ctx);
+                assert!(skill_files.is_empty());
+            });
+        });
+    });
+}
+
+#[test]
+fn find_skill_files_in_tree_finds_root_skills() {
+    VirtualFS::test("find_root_skills", |dirs, mut vfs| {
+        let repo = dirs.tests().join("repo");
+
+        vfs.mkdir("repo/.agents/skills/root-skill-1")
+            .mkdir("repo/.claude/skills/root-skill-2")
+            .with_files(vec![
+                Stub::FileWithContent(
+                    "repo/.agents/skills/root-skill-1/SKILL.md",
+                    "---\nname: root-skill-1\ndescription: test\n---\n# root-skill-1",
+                ),
+                Stub::FileWithContent(
+                    "repo/.claude/skills/root-skill-2/SKILL.md",
+                    "---\nname: root-skill-2\ndescription: test\n---\n# root-skill-2",
+                ),
+            ]);
+
+        let skill1_file = Entry::File(FileMetadata::new(
+            repo.join(".agents/skills/root-skill-1/SKILL.md"),
+            false,
+        ));
+        let skill1_dir = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join(".agents/skills/root-skill-1"))
+                .unwrap(),
+            children: vec![skill1_file],
+            ignored: false,
+            loaded: true,
+        });
+        let agents_skills = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join(".agents/skills")).unwrap(),
+            children: vec![skill1_dir],
+            ignored: false,
+            loaded: true,
+        });
+        let agents_dir = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join(".agents")).unwrap(),
+            children: vec![agents_skills],
+            ignored: false,
+            loaded: true,
+        });
+
+        let skill2_file = Entry::File(FileMetadata::new(
+            repo.join(".claude/skills/root-skill-2/SKILL.md"),
+            false,
+        ));
+        let skill2_dir = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join(".claude/skills/root-skill-2"))
+                .unwrap(),
+            children: vec![skill2_file],
+            ignored: false,
+            loaded: true,
+        });
+        let claude_skills = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join(".claude/skills")).unwrap(),
+            children: vec![skill2_dir],
+            ignored: false,
+            loaded: true,
+        });
+        let claude_dir = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join(".claude")).unwrap(),
+            children: vec![claude_skills],
+            ignored: false,
+            loaded: true,
+        });
+
+        let root = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo).unwrap(),
+            children: vec![agents_dir, claude_dir],
+            ignored: false,
+            loaded: true,
+        });
+
+        App::test((), |mut app| async move {
+            let watcher = app.add_singleton_model(DirectoryWatcher::new);
+            app.add_singleton_model(|_| DetectedRepositories::default());
+            let repo_handle = watcher.update(&mut app, |w, ctx| {
+                w.add_directory(
+                    StandardizedPath::from_local_canonicalized(&repo).unwrap(),
+                    ctx,
+                )
+                .unwrap()
+            });
+            let state = FileTreeState::new(root, vec![], Some(repo_handle));
+
+            let model_handle = app.add_singleton_model(RepoMetadataModel::new);
+            model_handle.update(&mut app, |model, ctx| {
+                let key = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                model.insert_test_state(key.clone(), state, ctx);
+                model.insert_test_standing_results(
+                    key,
+                    project_standing_results([
+                        StandardizedPath::try_from_local(
+                            &repo.join(".agents/skills/root-skill-1/SKILL.md"),
+                        )
+                        .unwrap(),
+                        StandardizedPath::try_from_local(
+                            &repo.join(".claude/skills/root-skill-2/SKILL.md"),
+                        )
+                        .unwrap(),
+                    ]),
+                    ctx,
+                );
+            });
+
+            model_handle.read(&app, |model, ctx| {
+                let repo_id = RepositoryIdentifier::try_local(&repo).unwrap();
+                let skill_files = find_project_skill_files_in_tree(&repo_id, model, ctx);
+                assert_eq!(skill_files.len(), 2);
+                assert!(skill_files.contains(&LocalOrRemotePath::Local(
+                    repo.join(".agents/skills/root-skill-1/SKILL.md")
+                )));
+                assert!(skill_files.contains(&LocalOrRemotePath::Local(
+                    repo.join(".claude/skills/root-skill-2/SKILL.md")
+                )));
+
+                let local_skill_files = skill_files
+                    .into_iter()
+                    .filter_map(|path| path.to_local_path().map(|path| path.to_path_buf()))
+                    .collect::<Vec<_>>();
+                let skills = read_skills_from_files(local_skill_files);
+                assert_eq!(skills.len(), 2);
+                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+                assert!(names.contains(&"root-skill-1"));
+                assert!(names.contains(&"root-skill-2"));
+            });
+        });
+    });
+}
+
+#[test]
+fn find_skill_files_in_tree_finds_subdirectory_skills() {
+    VirtualFS::test("find_subdir_skills", |dirs, mut vfs| {
+        let repo = dirs.tests().join("repo");
+
+        vfs.mkdir("repo/.agents/skills/root-skill")
+            .mkdir("repo/packages/frontend/.agents/skills/frontend-skill")
+            .with_files(vec![
+                Stub::FileWithContent(
+                    "repo/.agents/skills/root-skill/SKILL.md",
+                    "---\nname: root-skill\ndescription: test\n---\n# root-skill",
+                ),
+                Stub::FileWithContent(
+                    "repo/packages/frontend/.agents/skills/frontend-skill/SKILL.md",
+                    "---\nname: frontend-skill\ndescription: test\n---\n# frontend-skill",
+                ),
+            ]);
+
+        let root_skill_file = Entry::File(FileMetadata::new(
+            repo.join(".agents/skills/root-skill/SKILL.md"),
+            false,
+        ));
+        let root_skill_dir = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join(".agents/skills/root-skill"))
+                .unwrap(),
+            children: vec![root_skill_file],
+            ignored: false,
+            loaded: true,
+        });
+        let root_agents_skills = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join(".agents/skills")).unwrap(),
+            children: vec![root_skill_dir],
+            ignored: false,
+            loaded: true,
+        });
+        let root_agents = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join(".agents")).unwrap(),
+            children: vec![root_agents_skills],
+            ignored: false,
+            loaded: true,
+        });
+
+        let frontend_skill_file = Entry::File(FileMetadata::new(
+            repo.join("packages/frontend/.agents/skills/frontend-skill/SKILL.md"),
+            false,
+        ));
+        let frontend_skill_dir = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(
+                &repo.join("packages/frontend/.agents/skills/frontend-skill"),
+            )
+            .unwrap(),
+            children: vec![frontend_skill_file],
+            ignored: false,
+            loaded: true,
+        });
+        let frontend_agents_skills = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join("packages/frontend/.agents/skills"))
+                .unwrap(),
+            children: vec![frontend_skill_dir],
+            ignored: false,
+            loaded: true,
+        });
+        let frontend_agents = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join("packages/frontend/.agents"))
+                .unwrap(),
+            children: vec![frontend_agents_skills],
+            ignored: false,
+            loaded: true,
+        });
+        let frontend = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join("packages/frontend")).unwrap(),
+            children: vec![frontend_agents],
+            ignored: false,
+            loaded: true,
+        });
+        let packages = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo.join("packages")).unwrap(),
+            children: vec![frontend],
+            ignored: false,
+            loaded: true,
+        });
+
+        let root = Entry::Directory(DirectoryEntry {
+            path: StandardizedPath::try_from_local(&repo).unwrap(),
+            children: vec![root_agents, packages],
+            ignored: false,
+            loaded: true,
+        });
+
+        App::test((), |mut app| async move {
+            let watcher = app.add_singleton_model(DirectoryWatcher::new);
+            app.add_singleton_model(|_| DetectedRepositories::default());
+            let repo_handle = watcher.update(&mut app, |w, ctx| {
+                w.add_directory(
+                    StandardizedPath::from_local_canonicalized(&repo).unwrap(),
+                    ctx,
+                )
+                .unwrap()
+            });
+            let state = FileTreeState::new(root, vec![], Some(repo_handle));
+
+            let model_handle = app.add_singleton_model(RepoMetadataModel::new);
+            model_handle.update(&mut app, |model, ctx| {
+                let key = StandardizedPath::from_local_canonicalized(&repo).unwrap();
+                model.insert_test_state(key.clone(), state, ctx);
+                model.insert_test_standing_results(
+                    key,
+                    project_standing_results([
+                        StandardizedPath::try_from_local(
+                            &repo.join(".agents/skills/root-skill/SKILL.md"),
+                        )
+                        .unwrap(),
+                        StandardizedPath::try_from_local(
+                            &repo.join("packages/frontend/.agents/skills/frontend-skill/SKILL.md"),
+                        )
+                        .unwrap(),
+                    ]),
+                    ctx,
+                );
+            });
+
+            model_handle.read(&app, |model, ctx| {
+                let repo_id = RepositoryIdentifier::try_local(&repo).unwrap();
+                let skill_files = find_project_skill_files_in_tree(&repo_id, model, ctx);
+                assert_eq!(skill_files.len(), 2);
+                assert!(skill_files.contains(&LocalOrRemotePath::Local(
+                    repo.join(".agents/skills/root-skill/SKILL.md")
+                )));
+                assert!(skill_files.contains(&LocalOrRemotePath::Local(
+                    repo.join("packages/frontend/.agents/skills/frontend-skill/SKILL.md")
+                )));
+
+                let local_skill_files = skill_files
+                    .into_iter()
+                    .filter_map(|path| path.to_local_path().map(|path| path.to_path_buf()))
+                    .collect::<Vec<_>>();
+                let skills = read_skills_from_files(local_skill_files);
+                assert_eq!(skills.len(), 2);
+                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+                assert!(names.contains(&"root-skill"));
+                assert!(names.contains(&"frontend-skill"));
+            });
+        });
+    });
+}

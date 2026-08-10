@@ -742,3 +742,29 @@ fn diff_metadata_against_base_requires_stats() {
 
     assert!(DiffMetadataAgainstBase::try_from(&against_base).is_err());
 }
+
+// ── Ported from the pinned oracle (02b53fcd8),
+// `app/src/remote_server/diff_state_proto_tests.rs::pr_info_round_trips_through_proto` ──
+//
+// The PR banner over SSH (number, state, draft flag, base branch) is rendered
+// straight from what crosses this boundary, so a dropped field shows up as a
+// wrong or missing banner rather than an error. Nothing else pins it.
+//
+// Adaptation: the pin converts through `From<&PrInfo> for proto::PrInfo` /
+// `From<&proto::PrInfo> for PrInfo`; this fork uses the free functions
+// `pr_info_to_proto` / `proto_to_pr_info` in the module under test.
+#[test]
+fn pr_info_round_trips_through_proto() {
+    let pr_info = PrInfo {
+        number: 42,
+        url: "https://example.com/owner/repo/pull/42".into(),
+        state: "OPEN".into(),
+        draft: true,
+        base_branch: "develop".into(),
+    };
+
+    let proto_info = pr_info_to_proto(&pr_info);
+    let decoded = proto_to_pr_info(&proto_info);
+
+    assert_eq!(decoded, pr_info);
+}
