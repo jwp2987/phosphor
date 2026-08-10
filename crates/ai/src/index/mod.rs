@@ -1,4 +1,5 @@
 mod file_outline;
+pub mod full_source_code_embedding;
 pub mod locations;
 pub const DEFAULT_SYNC_REQUESTS_PER_MIN: u32 = 600;
 
@@ -10,6 +11,7 @@ pub use repo_metadata::{BuildTreeError, DirectoryEntry, Entry, FileId, FileMetad
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
+        pub use repo_metadata::entry::is_git_internal_path;
         pub use repo_metadata::{
             matches_gitignores, path_passes_filters,
         };

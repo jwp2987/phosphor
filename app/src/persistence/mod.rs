@@ -64,6 +64,10 @@ use self::model::{AgentConversation, AgentConversationData, Project};
 pub use sqlite::database_file_path;
 #[cfg(any(feature = "local_fs", feature = "integration_tests"))]
 pub use sqlite::establish_ro_connection;
+/// Read paths for the codebase embedding index. New in this fork — at the pin
+/// this data was on the server, so nothing local read it.
+#[cfg(any(feature = "local_fs", feature = "integration_tests"))]
+pub use sqlite::{codebase_index_children, codebase_index_vectors, known_codebase_index_hashes};
 
 /// Initializes the persistence "subsystem".
 ///
@@ -377,6 +381,28 @@ pub enum ModelEvent {
     },
     DeleteCodebaseIndexMetadata {
         repo_path: PathBuf,
+    },
+    /// Records intermediate merkle nodes of a codebase index.
+    ///
+    /// New in this fork. At the pin these went to Warp's server through
+    /// `StoreClient::update_intermediate_nodes`; with no server, the local
+    /// `StoreClient` writes them here. `embedding_space` is
+    /// `EmbeddingConfig::storage_key()` and each entry is
+    /// `(node_hash, child_hashes_json)`.
+    UpsertCodebaseIndexNodes {
+        embedding_space: String,
+        nodes: Vec<(String, String)>,
+    },
+    /// Records embedding vectors for code fragments.
+    ///
+    /// New in this fork, for the same reason as `UpsertCodebaseIndexNodes`. Each
+    /// entry is `(content_hash, dimensions, little_endian_f32_bytes)`. Batches
+    /// arrive one embedding request at a time (`embedding_generation_batch_size`,
+    /// default 100), not one row at a time, so this does not flood the writer
+    /// channel.
+    UpsertCodebaseIndexEmbeddings {
+        embedding_space: String,
+        embeddings: Vec<(String, i32, Vec<u8>)>,
     },
     /// Writes one `workspace_language_server` row (insert-or-update on the
     /// (workspace, server) pair). The workspace must already have a

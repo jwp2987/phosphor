@@ -140,6 +140,27 @@ diesel::table! {
 }
 
 diesel::table! {
+    codebase_index_embeddings (id) {
+        id -> Integer,
+        embedding_space -> Text,
+        content_hash -> Text,
+        dimensions -> Integer,
+        vector -> Binary,
+        last_modified_at -> Timestamp,
+    }
+}
+
+diesel::table! {
+    codebase_index_nodes (id) {
+        id -> Integer,
+        embedding_space -> Text,
+        node_hash -> Text,
+        child_hashes -> Text,
+        last_modified_at -> Timestamp,
+    }
+}
+
+diesel::table! {
     commands (id) {
         id -> Integer,
         command -> Text,

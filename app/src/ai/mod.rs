@@ -19,6 +19,14 @@ pub(crate) mod block_context;
 pub(crate) mod blocklist;
 pub(crate) mod byop_compaction;
 pub(crate) mod byop_readiness;
+/// The gates that decide whether a repository gets indexed, and when.
+pub(crate) mod codebase_auto_indexing;
+/// Local storage and provider wiring for the codebase embedding index.
+///
+/// `local_fs` only: it opens the app's SQLite database, and the whole indexing
+/// subsystem is filesystem-bound.
+#[cfg(feature = "local_fs")]
+pub(crate) mod codebase_embeddings;
 pub mod control_code_parser;
 pub(crate) mod conversation_export;
 pub(crate) mod conversation_entry;
@@ -51,6 +59,17 @@ pub(crate) mod skills;
 // the revision file is plain filesystem IO.
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod tui_api_keys;
+// The canonical home of `all_working_directories` -- read its module docs
+// before adding a second copy of it anywhere. Its callers are
+// `ai::outline::native` and `ai::persisted_workspace`'s indexing seam;
+// `wasm` swaps `outline::native` out for `outline::wasm`, so the whole module
+// is callerless there.
+//
+// This declaration was added by `5368ef2c0` and lost again in `a2a10c0f1`
+// (the D1 rebuild onto main), which left `ai/outline/native.rs:19` importing a
+// module that was not declared. Restored here.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub(crate) mod terminal_working_directories;
 pub mod usage_cost;
 pub(crate) mod voice;
 pub use agent_tips::*;

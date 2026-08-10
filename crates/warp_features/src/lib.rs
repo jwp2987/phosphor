@@ -236,6 +236,16 @@ pub enum FeatureFlag {
     /// Enables prediction of Agent Mode queries.
     PredictAMQueries,
 
+    /// Enables full source code embedding of repos when using codebase context.
+    FullSourceCodeEmbedding,
+
+    /// Enables codebase indexing inside remote server daemon processes.
+    RemoteCodebaseIndexing,
+
+    /// Persists the codebase index merkle-tree snapshot across restarts, so a
+    /// re-index after a restart is a diff rather than a full rebuild.
+    CodebaseIndexPersistence,
+
     /// If enabled, command palette searches will use Tantivy search instead of the default fuzzy search.
     UseTantivySearch,
 
@@ -791,6 +801,11 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::PendingUserQueryIndicator,
     FeatureFlag::QueueSlashCommand,
     FeatureFlag::QueuedPromptsV2,
+    // Codebase indexing. At the pin these two were enabled by a 100% server-side
+    // experiment and listed here only so dogfood builds matched; this fork has no
+    // server, so this list is the only thing that turns them on.
+    FeatureFlag::FullSourceCodeEmbedding,
+    FeatureFlag::CodebaseIndexPersistence,
     // End manually enabled Code features.
     FeatureFlag::DirectoryTabColors,
     FeatureFlag::EditableMarkdownMermaid,

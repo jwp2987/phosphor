@@ -131,6 +131,17 @@ impl RequestLimitInfo {
     }
 }
 
+/// The limits `CodebaseIndexManager` sizes itself against.
+///
+/// Restored verbatim from the pin
+/// (`02b53fcd8:app/src/ai/request_usage_model.rs:124`) with the codebase index.
+/// `max_indices_allowed: None` means unlimited, which is the pin's own encoding.
+pub struct CodebaseContextUsageLimit {
+    pub max_files_per_repo: usize,
+    pub max_indices_allowed: Option<usize>,
+    pub embedding_generation_batch_size: usize,
+}
+
 /// History: the aggregate struct returned by the server's `getRequestLimitInfo`.
 /// Zap: kept only as a type shell (`ai_assistant/requests.rs` still constructs
 /// this type). `AIRequestUsageModel` no longer consumes it.
@@ -201,6 +212,32 @@ impl AIRequestUsageModel {
     /// Zap (localization): no cloud limit, fixed at returning `usize::MAX`.
     pub fn request_limit(&self) -> usize {
         usize::MAX
+    }
+
+    /// The limits the codebase index sizes itself against.
+    ///
+    /// Restored with the index from the pin
+    /// (`02b53fcd8:app/src/ai/request_usage_model.rs:497`), where all three came
+    /// from the signed-in user's subscription tier. There is no tier here, so
+    /// the two quota-shaped values become "unlimited": `max_indices_allowed` is
+    /// `None` (the pin's own encoding for unlimited) and `max_files_per_repo`
+    /// keeps the fork's `RequestLimitInfo::default()` value of `usize::MAX`.
+    ///
+    /// `embedding_generation_batch_size` is *not* a quota — it is how many
+    /// fragments go into one embedding request — so it keeps its real value.
+    ///
+    /// The pin read all three off `self.request_limit_info`, a cached copy of
+    /// the server's `getRequestLimitInfo` response. This fork's
+    /// `AIRequestUsageModel` is a unit struct that holds no state at all, so the
+    /// values come from `RequestLimitInfo::default()`, which is where the fork
+    /// already keeps its "no cloud quota" answers.
+    pub fn codebase_context_limits(&self) -> CodebaseContextUsageLimit {
+        let defaults = RequestLimitInfo::default();
+        CodebaseContextUsageLimit {
+            max_files_per_repo: defaults.max_files_per_repo,
+            max_indices_allowed: None,
+            embedding_generation_batch_size: defaults.embedding_generation_batch_size,
+        }
     }
 
     /// Zap (localization): a far-future placeholder time.

@@ -10,13 +10,14 @@ use warp_multi_agent_api::{self as api, response_event::stream_finished};
 use super::schema::{
     active_mcp_servers, agent_conversations, agent_tasks, ai_document_panes, ai_memory_panes,
     ambient_agent_panes, app, blocks, cloud_objects_refreshes, code_pane_tabs, code_panes,
-    code_review_panes, commands, current_user_information, env_var_collection_panes, folders,
-    generic_string_objects, ignored_suggestions, mcp_environment_variables,
-    mcp_server_installations, mcp_server_panes, notebook_panes, notebooks, object_actions,
-    object_metadata, object_permissions, pane_branches, pane_leaves, pane_nodes, panels,
-    project_rules, projects, server_experiments, settings_panes, tab_groups, tabs, team_members,
-    team_settings, teams, terminal_panes, user_profiles, welcome_panes, windows, workflow_panes,
-    workflows, workspace_language_server, workspace_metadata, workspace_teams, workspaces,
+    code_review_panes, codebase_index_embeddings, codebase_index_nodes, commands,
+    current_user_information, env_var_collection_panes, folders, generic_string_objects,
+    ignored_suggestions, mcp_environment_variables, mcp_server_installations, mcp_server_panes,
+    notebook_panes, notebooks, object_actions, object_metadata, object_permissions, pane_branches,
+    pane_leaves, pane_nodes, panels, project_rules, projects, server_experiments, settings_panes,
+    tab_groups, tabs, team_members, team_settings, teams, terminal_panes, user_profiles,
+    welcome_panes, windows, workflow_panes, workflows, workspace_language_server,
+    workspace_metadata, workspace_teams, workspaces,
 };
 
 #[derive(Insertable)]
@@ -204,6 +205,55 @@ pub struct NewWorkspaceMetadata {
     pub navigated_ts: Option<NaiveDateTime>,
     pub modified_ts: Option<NaiveDateTime>,
     pub queried_ts: Option<NaiveDateTime>,
+}
+
+/// One intermediate merkle node of a codebase index, with its child list.
+///
+/// New in this fork: at the pin the node registry lived on Warp's server and
+/// arrived over GraphQL, so there was no local table. `embedding_space` is
+/// `EmbeddingConfig::storage_key()`; `child_hashes` is a JSON array of hex
+/// hashes.
+#[derive(Clone, Debug, Identifiable, Queryable, AsChangeset)]
+#[diesel(table_name = codebase_index_nodes)]
+pub struct CodebaseIndexNode {
+    pub id: i32,
+    pub embedding_space: String,
+    pub node_hash: String,
+    pub child_hashes: String,
+    pub last_modified_at: NaiveDateTime,
+}
+
+#[derive(Clone, Debug, Insertable, AsChangeset)]
+#[diesel(table_name = codebase_index_nodes)]
+pub struct NewCodebaseIndexNode {
+    pub embedding_space: String,
+    pub node_hash: String,
+    pub child_hashes: String,
+}
+
+/// One code fragment's embedding vector.
+///
+/// `vector` is the raw little-endian `f32` sequence and `dimensions` is its
+/// length, kept separately so a truncated blob is detectable rather than
+/// silently scored as a shorter vector.
+#[derive(Clone, Debug, Identifiable, Queryable, AsChangeset)]
+#[diesel(table_name = codebase_index_embeddings)]
+pub struct CodebaseIndexEmbedding {
+    pub id: i32,
+    pub embedding_space: String,
+    pub content_hash: String,
+    pub dimensions: i32,
+    pub vector: Vec<u8>,
+    pub last_modified_at: NaiveDateTime,
+}
+
+#[derive(Clone, Debug, Insertable, AsChangeset)]
+#[diesel(table_name = codebase_index_embeddings)]
+pub struct NewCodebaseIndexEmbedding {
+    pub embedding_space: String,
+    pub content_hash: String,
+    pub dimensions: i32,
+    pub vector: Vec<u8>,
 }
 
 /// A row of the `workspace_language_server` table: one per (workspace, language
@@ -2118,4 +2168,3 @@ pub struct Panel {
     pub left_panel: Option<String>,
     pub right_panel: Option<String>,
 }
-
