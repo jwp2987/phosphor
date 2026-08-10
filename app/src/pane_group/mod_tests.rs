@@ -26,10 +26,20 @@
 //! present in this fork's `PaneGroup` by reading the source, not just
 //! grepping a name match. See individual test doc comments for per-test
 //! notes on API drift from the pin.
+//!
+//! Three more (`test_initial_widths_are_computed_correctly`,
+//! `test_pane_focus_does_not_have_an_infinite_event_loop`,
+//! `test_focused_pane_is_synchronized_with_application_focus`) needed a
+//! purpose-built harness rather than the plain `mock_pane_group` above --
+//! see `MockOptions`/`mock_pane_group_with_options` and `FocusDetectionView`
+//! further down.
 
 use std::collections::HashMap;
 
+use pathfinder_geometry::rect::RectF;
+use pathfinder_geometry::vector::Vector2F;
 use warpui::App;
+use warpui::platform::{WindowBounds, WindowStyle};
 
 use crate::notebooks::notebook::NotebookView;
 use crate::terminal::shared_session::SharedSessionStatus;
@@ -707,5 +717,455 @@ fn test_update_session_visibility() {
             // Assert that both of the panes are now visible.
             visibility_matches(panes, true, ctx);
         })
+    });
+}
+
+/// Mirrors the pin's `MockOptions`/`mock_pane_group(app, options)` pair. The
+/// plain `mock_pane_group(app)` above (this file's harness for the first 12
+/// ported tests) always builds a single default terminal pane via the
+/// `Workspace`-level test harness (`mock_workspace`); the three tests below
+/// each need a specific split-tree layout and/or exact window bounds instead,
+/// so they build the `PaneGroup` directly.
+///
+/// This still goes through `PaneGroup::new_with_panes_layout` -- the same
+/// constructor `Workspace::add_tab_with_pane_layout`
+/// (`workspace/view.rs`) and `terminal_view_for_viewer`
+/// (`terminal/view/shared_session/test_utils.rs`) use -- so
+/// `workspace::view::tests::initialize_app`, which already registers every
+/// singleton a `Workspace`-built `PaneGroup` needs, is sufficient here too,
+/// without going through `Workspace` itself. `GlobalResourceHandles::mock`
+/// (used the same way in `terminal_view_for_viewer`) supplies the
+/// `tips_completed`/banner/`model_event_sender` handles the pin's version
+/// sourced from its own ad hoc `app.add_model` calls plus
+/// `ServerApiProvider` -- the fork's `new_with_panes_layout` has no
+/// `ServerApiProvider` parameter to begin with (cloud dropped).
+struct MockOptions {
+    layout: PanesLayout,
+    window_bounds: WindowBounds,
+}
+
+impl Default for MockOptions {
+    fn default() -> Self {
+        Self {
+            layout: Default::default(),
+            window_bounds: WindowBounds::ExactPosition(RectF::new(
+                Vector2F::zero(),
+                Vector2F::new(1024., 768.),
+            )),
+        }
+    }
+}
+
+fn mock_pane_group_with_options(app: &mut App, options: MockOptions) -> ViewHandle<PaneGroup> {
+    crate::workspace::view::tests::initialize_app(app);
+    let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+    let (_, pane_group) =
+        app.add_window_with_bounds(WindowStyle::NotStealFocus, options.window_bounds, |ctx| {
+            PaneGroup::new_with_panes_layout(
+                global_resource_handles.tips_completed.clone(),
+                global_resource_handles
+                    .user_default_shell_unsupported_banner_model_handle
+                    .clone(),
+                options.layout,
+                Arc::new(HashMap::new()),
+                global_resource_handles.model_event_sender.clone(),
+                ctx,
+            )
+        });
+    pane_group
+}
+
+#[test]
+fn test_initial_widths_are_computed_correctly() {
+    use launch_config::PaneTemplateType::*;
+
+    App::test((), |mut app| async move {
+        // Define a simple macro to help us create new leaf panes.
+        macro_rules! leaf_pane {
+            () => {
+                PaneTemplate {
+                    is_focused: None,
+                    cwd: "".into(),
+                    commands: vec![],
+                    pane_mode: PaneMode::Terminal,
+                    shell: None,
+                }
+            };
+        }
+
+        // Pick an arbitrary initial window that isn't the same as the
+        // fallback value.
+        let window_width = 864.;
+        let window_height = 636.;
+        assert_ne!(window_width, FALLBACK_INITIAL_WINDOW_SIZE.x());
+        assert_ne!(window_height, FALLBACK_INITIAL_WINDOW_SIZE.y());
+
+        // Create a template that looks like the following, with each pane
+        // numbered by its index in the pane group:
+        //
+        //  ---------------------
+        //  |         0         |
+        //  | __________________|
+        //  |     1   |____2____|
+        //  | ________|____3____|
+        //  |   4  |   5  |  6  |
+        //  |      |      |     |
+        //  ---------------------
+        let template = PaneBranchTemplate {
+            split_direction: launch_config::SplitDirection::Vertical,
+            panes: vec![
+                leaf_pane!(),
+                PaneBranchTemplate {
+                    split_direction: launch_config::SplitDirection::Horizontal,
+                    panes: vec![
+                        leaf_pane!(),
+                        PaneBranchTemplate {
+                            split_direction: launch_config::SplitDirection::Vertical,
+                            panes: vec![leaf_pane!(), leaf_pane!()],
+                        },
+                    ],
+                },
+                PaneBranchTemplate {
+                    split_direction: launch_config::SplitDirection::Horizontal,
+                    panes: vec![leaf_pane!(), leaf_pane!(), leaf_pane!()],
+                },
+            ],
+        };
+
+        let window_size = Vector2F::new(window_width, window_height);
+        let pane_group = mock_pane_group_with_options(
+            &mut app,
+            MockOptions {
+                layout: PanesLayout::Template(template),
+                window_bounds: WindowBounds::ExactPosition(RectF::new(
+                    Vector2F::zero(),
+                    window_size,
+                )),
+            },
+        );
+
+        // Assert that the window created by the call to
+        // `mock_pane_group_with_options` has the expected bounds.
+        let window_id = app.read(|ctx| pane_group.window_id(ctx));
+        app.update(|ctx| {
+            assert_eq!(
+                Some(window_size),
+                ctx.window_bounds(&window_id).map(|rect| rect.size())
+            );
+        });
+
+        let pane_group_width = window_width - 2.0 * workspace::WORKSPACE_PADDING;
+        let pane_group_height =
+            window_height - workspace::TOTAL_TAB_BAR_HEIGHT - 2.0 * workspace::WORKSPACE_PADDING;
+
+        pane_group.read(&app, |pane_group, ctx| {
+            // Make assertions about the expected widths of the various
+            // panes.
+            assert_eq!(
+                pane_group
+                    .terminal_view_at_pane_index(0, ctx)
+                    .unwrap()
+                    .as_ref(ctx)
+                    .size_info()
+                    .pane_width_px()
+                    .as_f32(),
+                pane_group_width,
+                "Pane with index 0 had unexpected width!"
+            );
+            let half_width = (pane_group_width - tree::get_divider_thickness()) / 2.;
+            for i in 1..=3 {
+                assert_eq!(
+                    pane_group
+                        .terminal_view_at_pane_index(i, ctx)
+                        .unwrap()
+                        .as_ref(ctx)
+                        .size_info()
+                        .pane_width_px()
+                        .as_f32(),
+                    half_width,
+                    "Pane with index {i} had unexpected width!"
+                );
+            }
+            let one_third_width = (pane_group_width - (2. * tree::get_divider_thickness())) / 3.;
+            for i in 4..=6 {
+                assert_eq!(
+                    pane_group
+                        .terminal_view_at_pane_index(i, ctx)
+                        .unwrap()
+                        .as_ref(ctx)
+                        .size_info()
+                        .pane_width_px()
+                        .as_f32(),
+                    one_third_width,
+                    "Pane with index {i} had unexpected width!"
+                );
+            }
+
+            // Make assertions about the expected heights of the various
+            // panes.
+            let one_third_height = (pane_group_height - (2. * tree::get_divider_thickness())) / 3.;
+            for i in (0..=1).chain(4..=6) {
+                assert_eq!(
+                    pane_group
+                        .terminal_view_at_pane_index(i, ctx)
+                        .unwrap()
+                        .as_ref(ctx)
+                        .size_info()
+                        .pane_height_px()
+                        .as_f32(),
+                    one_third_height,
+                    "Pane with index {i} had unexpected height!"
+                );
+            }
+            let one_sixth_height = (pane_group_height - (5. * tree::get_divider_thickness())) / 6.;
+            for i in 2..=3 {
+                assert_eq!(
+                    pane_group
+                        .terminal_view_at_pane_index(i, ctx)
+                        .unwrap()
+                        .as_ref(ctx)
+                        .size_info()
+                        .pane_height_px()
+                        .as_f32(),
+                    one_sixth_height,
+                    "Pane with index {i} had unexpected height!"
+                );
+            }
+        });
+    });
+}
+
+/// Tests that focusing two different panes in quick succession does not cause
+/// an infinite loop of focus changes, as outlined in this PR's description:
+/// https://github.com/warpdotdev/warp-internal/pull/8990
+#[cfg_attr(windows, ignore = "TODO(CORE-3626)")]
+#[test]
+fn test_pane_focus_does_not_have_an_infinite_event_loop() {
+    App::test((), |mut app| async move {
+        // Create a pane group with two terminal panes that will fight for
+        // focus.
+        let mock_options = MockOptions {
+            layout: PanesLayout::Template(PaneTemplateType::PaneBranchTemplate {
+                split_direction: crate::launch_configs::launch_config::SplitDirection::Horizontal,
+                panes: vec![
+                    PaneTemplateType::PaneTemplate {
+                        is_focused: Some(true),
+                        cwd: "/".into(),
+                        commands: vec![],
+                        pane_mode: PaneMode::Terminal,
+                        shell: None,
+                    },
+                    PaneTemplateType::PaneTemplate {
+                        is_focused: None,
+                        cwd: "/".into(),
+                        commands: vec![],
+                        pane_mode: PaneMode::Terminal,
+                        shell: None,
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let pane_group = mock_pane_group_with_options(&mut app, mock_options);
+
+        // The cycle requires that we are constantly trying to focus the input.
+        // An active and long-running block causes focus to move to the
+        // terminal instead of the input, so we need to wait until we've
+        // finished bootstrapping to ensure no such block will exist.
+        loop {
+            let mut all_terminals_bootstrapped = true;
+            pane_group.update(&mut app, |pane_group, ctx| {
+                pane_group.for_all_terminal_panes(
+                    |terminal_view, _ctx| {
+                        let model = terminal_view.model.lock();
+                        let active_block = model.block_list().active_block();
+                        if active_block.bootstrap_stage()
+                            != crate::terminal::model::bootstrap::BootstrapStage::PostBootstrapPrecmd
+                            || active_block.is_active_and_long_running()
+                        {
+                            all_terminals_bootstrapped = false;
+                        }
+                    },
+                    ctx,
+                );
+            });
+            if all_terminals_bootstrapped {
+                break;
+            }
+            // Return control back to the executor briefly so we can make
+            // progress.
+            futures_lite::future::yield_now().await;
+        }
+
+        pane_group.update(&mut app, |pane_group, ctx| {
+            // Switch panes twice in quick succession.  We want to make
+            // sure the test terminates and doesn't get into an infinite
+            // loop.
+            pane_group.navigate_next_pane(ctx);
+            pane_group.navigate_next_pane(ctx);
+        });
+    });
+}
+
+/// A view to help us react to focus changes and know that they were processed
+/// synchronously, not asynchronously (via an Effect::Event).
+struct FocusDetectionView {
+    pane_group: ViewHandle<PaneGroup>,
+    new_focused_pane_id: Option<PaneId>,
+}
+
+impl FocusDetectionView {
+    fn new(pane_group: ViewHandle<PaneGroup>, ctx: &mut ViewContext<Self>) -> Self {
+        ctx.subscribe_to_view(&pane_group, |me, pane_group, event, ctx| {
+            let Event::OpenPromptEditor = event else {
+                return;
+            };
+            // This event is enqueued by us after the `Focus` effect, and so
+            // by the time we receive it, application focus will have been
+            // moved to the second pane, and (crucially) the pane group should
+            // have updated its internal state accordingly (which is what we're
+            // asserting here).
+
+            let new_focused_pane_id = me
+                .new_focused_pane_id
+                .expect("should have set this already");
+            pane_group.read(ctx, |pane_group, ctx| {
+                assert_eq!(pane_group.focused_pane_id(ctx), new_focused_pane_id);
+                assert_eq!(
+                    pane_group.active_session_id(ctx),
+                    new_focused_pane_id.as_terminal_pane_id()
+                );
+            });
+        });
+        Self {
+            pane_group,
+            new_focused_pane_id: None,
+        }
+    }
+}
+
+impl Entity for FocusDetectionView {
+    type Event = ();
+}
+
+impl View for FocusDetectionView {
+    fn ui_name() -> &'static str {
+        "FocusDetectionView"
+    }
+
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+        ChildView::new(&self.pane_group).finish()
+    }
+}
+
+impl TypedActionView for FocusDetectionView {
+    type Action = ();
+}
+
+/// This test ensures that a change in application focus causes the pane group
+/// focused pane to update synchronously, without needing to wait for effect
+/// flushing to occur.
+///
+/// The goal is to avoid situations where a delayed response to application
+/// focus changes leads to an infinite loop of focusing and re-focusing two
+/// different panes.
+#[test]
+fn test_focused_pane_is_synchronized_with_application_focus() {
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+
+        // Create a pane group with two terminal panes, so that we can move
+        // focus and observe the effects.
+        let panes_layout = PanesLayout::Template(PaneTemplateType::PaneBranchTemplate {
+            split_direction: crate::launch_configs::launch_config::SplitDirection::Horizontal,
+            panes: vec![
+                PaneTemplateType::PaneTemplate {
+                    is_focused: Some(true),
+                    cwd: "/".into(),
+                    commands: vec![],
+                    pane_mode: PaneMode::Terminal,
+                    shell: None,
+                },
+                PaneTemplateType::PaneTemplate {
+                    is_focused: None,
+                    cwd: "/".into(),
+                    commands: vec![],
+                    pane_mode: PaneMode::Terminal,
+                    shell: None,
+                },
+            ],
+        });
+
+        let (_, root_view) = app.add_window_with_bounds(
+            WindowStyle::NotStealFocus,
+            WindowBounds::Default,
+            move |ctx| {
+                let pane_group = ctx.add_typed_action_view(|ctx| {
+                    PaneGroup::new_with_panes_layout(
+                        global_resource_handles.tips_completed.clone(),
+                        global_resource_handles
+                            .user_default_shell_unsupported_banner_model_handle
+                            .clone(),
+                        panes_layout,
+                        Arc::new(HashMap::new()),
+                        global_resource_handles.model_event_sender.clone(),
+                        ctx,
+                    )
+                });
+
+                FocusDetectionView::new(pane_group, ctx)
+            },
+        );
+        let pane_group = root_view.read(&app, |root_view, _ctx| root_view.pane_group.clone());
+
+        let (focused_pane_id, active_session_id) = pane_group.read(&app, |pane_group, ctx| {
+            (
+                pane_group.focused_pane_id(ctx),
+                pane_group.active_session_id(ctx),
+            )
+        });
+
+        let second_pane_id = pane_group.read(&app, |pane_group, _ctx| {
+            pane_group
+                .pane_ids()
+                .find(|pane_id| *pane_id != focused_pane_id)
+                .expect("should have more than one pane")
+        });
+
+        // Verify that the "second" pane is not focused or active.
+        assert_ne!(focused_pane_id, second_pane_id);
+        assert_ne!(active_session_id, second_pane_id.as_terminal_pane_id());
+
+        root_view.update(&mut app, |root_view, _ctx| {
+            root_view.new_focused_pane_id = Some(second_pane_id);
+        });
+
+        pane_group.update(&mut app, |pane_group, ctx| {
+            // First, request a change of application focus to the second
+            // pane's terminal view.
+            pane_group
+                .terminal_view_from_pane_id(second_pane_id, ctx)
+                .expect("second pane is a terminal pane")
+                .update(ctx, |_terminal_view, ctx| {
+                    ctx.focus_self();
+                });
+
+            // Second, emit an event on the pane group to trigger assertion
+            // logic in the FocusDetectionView.  This event effect is enqueued after
+            // the focus effect but before the focus effect is processed, meaning
+            // it will observe any changes that occurred synchronously as part
+            // of the focus effect but will _not_ observe any changes that result
+            // from events dispatched during focus handling.
+            //
+            // We use `OpenPromptEditor` because we can be confident that
+            // nothing else above may have emitted this event.
+            //
+            // IMPORTANT: This MUST be emitted in the same pane group update
+            // during which we focus the terminal view, to ensure that the
+            // effect queue doesn't get processed or further modified before we
+            // enqueue this event on the effect queue.
+            ctx.emit(Event::OpenPromptEditor);
+        });
     });
 }
