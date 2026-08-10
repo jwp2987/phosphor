@@ -5,8 +5,8 @@ use std::{
 };
 
 use ai::skills::{
-    home_skills_path, parse_skill, read_skills, ParsedSkill, SkillProvider,
-    SKILL_PROVIDER_DEFINITIONS,
+    ParsedSkill, SKILL_PROVIDER_DEFINITIONS, SkillProvider, home_skills_path, parse_skill,
+    read_skills,
 };
 use anyhow::Error;
 use regex::Regex;
@@ -28,7 +28,13 @@ fn local_or_remote_path_for_repo_path(
     match repo_id {
         RepositoryIdentifier::Local(_) => LocalOrRemotePath::Local(path.to_local_path_lossy()),
         RepositoryIdentifier::Remote(remote) => {
-            LocalOrRemotePath::Remote(RemotePath::new(remote.host_id.clone(), path.clone()))
+            // `RepositoryIdentifier::Remote` carries a `warp_core::HostId`, but
+            // `warp_util::remote_path::RemotePath` takes a `warp_util::host_id::HostId` --
+            // distinct types in this fork though unified in the pin. Bridge rather than clone.
+            LocalOrRemotePath::Remote(RemotePath::new(
+                crate::code::buffer_location::core_host_id_to_util(&remote.host_id),
+                path.clone(),
+            ))
         }
     }
 }
@@ -212,7 +218,9 @@ static SKILL_FILE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 /// already covered by `utils_tests.rs`); remote paths use structural parent-walking
 /// instead, since [`SKILL_FILE_PATTERN`] is platform-separator-specific and a remote
 /// path's separator does not depend on the local OS.
-pub fn extract_skill_parent_directory(path: &LocalOrRemotePath) -> Result<LocalOrRemotePath, Error> {
+pub fn extract_skill_parent_directory(
+    path: &LocalOrRemotePath,
+) -> Result<LocalOrRemotePath, Error> {
     match path {
         LocalOrRemotePath::Local(local_path) => {
             extract_local_skill_parent_directory(local_path).map(LocalOrRemotePath::Local)
@@ -249,7 +257,9 @@ fn extract_local_skill_parent_directory(path: &Path) -> Result<PathBuf, Error> {
     Err(anyhow::anyhow!("Not a skill path: {}", path.display()))
 }
 
-fn extract_remote_skill_parent_directory(path: &LocalOrRemotePath) -> Result<LocalOrRemotePath, Error> {
+fn extract_remote_skill_parent_directory(
+    path: &LocalOrRemotePath,
+) -> Result<LocalOrRemotePath, Error> {
     if path.file_name() != Some("SKILL.md") {
         return Err(anyhow::anyhow!("Not a skill path: {}", path.display_path()));
     }

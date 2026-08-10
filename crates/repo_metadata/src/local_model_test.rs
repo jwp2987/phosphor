@@ -14,8 +14,8 @@ mod tests {
         LocalRepoMetadataModel, RepoUpdate, RepositoryMetadataEvent, RootWatchMode,
     };
     use crate::repositories::DetectedRepositories;
-    use crate::watcher::DirectoryWatcher;
     use crate::standing_queries::StandingQueryResultsDelta;
+    use crate::watcher::DirectoryWatcher;
     use crate::{RepoMetadataError, StandingQueryContent, StandingQueryDefinitions};
     use futures::channel::oneshot;
     use futures::executor::block_on;
@@ -55,7 +55,10 @@ mod tests {
         }
     }
 
-    fn build_task_key(owner_repo_path: &StandardizedPath, target_path: &StandardizedPath) -> BuildTaskKey {
+    fn build_task_key(
+        owner_repo_path: &StandardizedPath,
+        target_path: &StandardizedPath,
+    ) -> BuildTaskKey {
         BuildTaskKey::new(owner_repo_path.clone(), target_path.clone())
     }
 
@@ -301,12 +304,16 @@ mod tests {
                     ) else {
                         panic!("expected indexed lazy-loaded path");
                     };
-                    assert!(state
-                        .entry
-                        .contains(&StandardizedPath::try_from_local(&src_dir).unwrap()));
-                    assert!(!state
-                        .entry
-                        .contains(&StandardizedPath::try_from_local(&source_file).unwrap()));
+                    assert!(
+                        state
+                            .entry
+                            .contains(&StandardizedPath::try_from_local(&src_dir).unwrap())
+                    );
+                    assert!(
+                        !state
+                            .entry
+                            .contains(&StandardizedPath::try_from_local(&source_file).unwrap())
+                    );
                 });
 
                 let (tx, rx) = oneshot::channel();
@@ -344,9 +351,11 @@ mod tests {
                     ) else {
                         panic!("expected indexed repo after upgrade");
                     };
-                    assert!(state
-                        .entry
-                        .contains(&StandardizedPath::try_from_local(&source_file).unwrap()));
+                    assert!(
+                        state
+                            .entry
+                            .contains(&StandardizedPath::try_from_local(&source_file).unwrap())
+                    );
                 });
             });
         });
@@ -367,14 +376,15 @@ mod tests {
         VirtualFS::test("standing_query_new_project_skill", |dirs, mut vfs| {
             vfs.mkdir("repo/.git/objects").with_files(vec![
                 Stub::FileWithContent("repo/.git/HEAD", "ref: refs/heads/main"),
-                Stub::FileWithContent(
-                    "repo/.git/config",
-                    "[core]\n\trepositoryformatversion = 0",
-                ),
+                Stub::FileWithContent("repo/.git/config", "[core]\n\trepositoryformatversion = 0"),
             ]);
 
             let repo_root = dirs.tests().join("repo");
-            let skill_file = repo_root.join(".agents").join("skills").join("my-skill").join("SKILL.md");
+            let skill_file = repo_root
+                .join(".agents")
+                .join("skills")
+                .join("my-skill")
+                .join("SKILL.md");
 
             App::test((), |mut app| async move {
                 let directory_watcher = app.add_singleton_model(DirectoryWatcher::new);
@@ -435,8 +445,9 @@ mod tests {
                 let delta_tx_for_event = delta_tx.clone();
                 app.update(|ctx| {
                     ctx.subscribe_to_model(&model_handle, move |_, event, _ctx| {
-                        if let RepositoryMetadataEvent::StandingQueryResultsUpdated { delta, .. } =
-                            event
+                        if let RepositoryMetadataEvent::StandingQueryResultsUpdated {
+                            delta, ..
+                        } = event
                             && let Some(tx) = delta_tx_for_event.borrow_mut().take()
                         {
                             let _ = tx.send(delta.clone());
@@ -768,20 +779,24 @@ mod tests {
             assert!(all_paths.contains(&target_std));
 
             // Make sure that the ignored files and folders are marked as ignored.
-            assert!(root
-                .get(&StandardizedPath::try_from_local(&log_file).unwrap())
-                .unwrap()
-                .ignored());
-            assert!(root
-                .get(&StandardizedPath::try_from_local(&target_dir).unwrap())
-                .unwrap()
-                .ignored());
+            assert!(
+                root.get(&StandardizedPath::try_from_local(&log_file).unwrap())
+                    .unwrap()
+                    .ignored()
+            );
+            assert!(
+                root.get(&StandardizedPath::try_from_local(&target_dir).unwrap())
+                    .unwrap()
+                    .ignored()
+            );
 
             // Make sure that the ignored folder is not eagerly loaded.
-            assert!(!root
-                .get(&StandardizedPath::try_from_local(&target_dir).unwrap())
-                .unwrap()
-                .loaded());
+            assert!(
+                !root
+                    .get(&StandardizedPath::try_from_local(&target_dir).unwrap())
+                    .unwrap()
+                    .loaded()
+            );
         });
     }
 
@@ -1011,8 +1026,11 @@ Thumbs.db
         assert!(
             all_paths.contains(&StandardizedPath::try_new("/test_repo/src/components/ui").unwrap())
         );
-        assert!(all_paths
-            .contains(&StandardizedPath::try_new("/test_repo/src/components/ui/forms").unwrap()));
+        assert!(
+            all_paths.contains(
+                &StandardizedPath::try_new("/test_repo/src/components/ui/forms").unwrap()
+            )
+        );
 
         // Test case 2: Existing directories should not be recreated
         let initial_count = all_paths.len();
@@ -1059,11 +1077,16 @@ Thumbs.db
         // any nested directories beyond the conflicting file.
 
         // Should still have the original file
-        assert!(conflict_paths
-            .contains(&StandardizedPath::try_new("/test_repo/conflicting_path").unwrap()));
+        assert!(
+            conflict_paths
+                .contains(&StandardizedPath::try_new("/test_repo/conflicting_path").unwrap())
+        );
         // Should NOT have created nested directories beyond the conflict
-        assert!(!conflict_paths
-            .contains(&StandardizedPath::try_new("/test_repo/conflicting_path/nested").unwrap()));
+        assert!(
+            !conflict_paths.contains(
+                &StandardizedPath::try_new("/test_repo/conflicting_path/nested").unwrap()
+            )
+        );
         assert!(!conflict_paths.contains(
             &StandardizedPath::try_new("/test_repo/conflicting_path/nested/deep").unwrap()
         ));
@@ -1113,12 +1136,16 @@ Thumbs.db
             );
 
             // Should still have the original file at components level
-            assert!(intermediate_conflict_paths
-                .contains(&StandardizedPath::try_new("/test_repo/src/components").unwrap()));
+            assert!(
+                intermediate_conflict_paths
+                    .contains(&StandardizedPath::try_new("/test_repo/src/components").unwrap())
+            );
 
             // Should NOT have created deeper nested directories beyond the conflict
-            assert!(!intermediate_conflict_paths
-                .contains(&StandardizedPath::try_new("/test_repo/src/components/ui").unwrap()));
+            assert!(
+                !intermediate_conflict_paths
+                    .contains(&StandardizedPath::try_new("/test_repo/src/components/ui").unwrap())
+            );
             assert!(!intermediate_conflict_paths.contains(
                 &StandardizedPath::try_new("/test_repo/src/components/ui/forms").unwrap()
             ));
@@ -1486,7 +1513,11 @@ Thumbs.db
 
         let temp_dir = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(temp_dir.path()).unwrap();
-        std::fs::write(root.join(".gitignore"), "node_modules/\ntarget/\n.agents/\n").unwrap();
+        std::fs::write(
+            root.join(".gitignore"),
+            "node_modules/\ntarget/\n.agents/\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         std::fs::create_dir(root.join("target")).unwrap();
         std::fs::create_dir(root.join("src")).unwrap();
@@ -1676,13 +1707,12 @@ Thumbs.db
                 deleted: vec![provider.join("removed-skill")],
                 ..Default::default()
             };
-            let (_, discovered, _) =
-                block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
-                    &update,
-                    &[],
-                    &[],
-                    &definitions,
-                ));
+            let (_, discovered, _) = block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                &update,
+                &[],
+                &[],
+                &definitions,
+            ));
 
             assert!(discovered.project_skills().any(|content| {
                 content
@@ -1710,13 +1740,12 @@ Thumbs.db
                 added: vec![support_file],
                 ..Default::default()
             };
-            let (_, discovered, _) =
-                block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
-                    &update,
-                    &[],
-                    &[],
-                    &definitions,
-                ));
+            let (_, discovered, _) = block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                &update,
+                &[],
+                &[],
+                &definitions,
+            ));
 
             assert!(discovered.project_skills().next().is_none());
         });
@@ -1984,7 +2013,7 @@ Thumbs.db
                         model.handle_watcher_event(
                             &BulkFilesystemWatcherEvent {
                                 deleted: std::collections::HashSet::from([
-                                    target_skill_path.clone(),
+                                    target_skill_path.clone()
                                 ]),
                                 ..Default::default()
                             },
@@ -2474,7 +2503,8 @@ Thumbs.db
                     model.set_project_skill_provider_paths([PathBuf::from(".agents/skills")]);
                     model
                 });
-                let workspace_path = StandardizedPath::from_local_canonicalized(&workspace).unwrap();
+                let workspace_path =
+                    StandardizedPath::from_local_canonicalized(&workspace).unwrap();
                 let skill_path = StandardizedPath::try_from_local(&skill_path).unwrap();
                 let src_path = StandardizedPath::try_from_local(&src_path).unwrap();
                 let rule_path = StandardizedPath::try_from_local(&rule_path).unwrap();
@@ -2499,12 +2529,16 @@ Thumbs.db
                     let results = model
                         .standing_query_results(&workspace_path)
                         .expect("lazy indexed paths should retain standing results");
-                    assert!(results
-                        .project_skills()
-                        .any(|content| content.path == skill_path && !content.is_directory));
-                    assert!(!results
-                        .project_rules()
-                        .any(|content| content.path == rule_path));
+                    assert!(
+                        results
+                            .project_skills()
+                            .any(|content| content.path == skill_path && !content.is_directory)
+                    );
+                    assert!(
+                        !results
+                            .project_rules()
+                            .any(|content| content.path == rule_path)
+                    );
                 });
 
                 let (tx, rx) = oneshot::channel();
@@ -2565,7 +2599,8 @@ Thumbs.db
             let workspace = dirs.tests().join("workspace");
             App::test((), |mut app| async move {
                 let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
-                let workspace_path = StandardizedPath::from_local_canonicalized(&workspace).unwrap();
+                let workspace_path =
+                    StandardizedPath::from_local_canonicalized(&workspace).unwrap();
                 let rule_path =
                     StandardizedPath::try_from_local(&workspace.join("src/deep/WARP.md")).unwrap();
 
@@ -2577,9 +2612,11 @@ Thumbs.db
                     let results = model
                         .standing_query_results(&workspace_path)
                         .expect("lazy indexed paths should retain standing results");
-                    assert!(!results
-                        .project_rules()
-                        .any(|content| content.path == rule_path));
+                    assert!(
+                        !results
+                            .project_rules()
+                            .any(|content| content.path == rule_path)
+                    );
                 });
             });
         });
@@ -2861,32 +2898,33 @@ Thumbs.db
             let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
             let (_first_release_tx, first_release_rx) = oneshot::channel::<()>();
             let (_second_release_tx, second_release_rx) = oneshot::channel::<()>();
-            let (first_future_id, second_future_id) = model_handle.update(&mut app, |model, ctx| {
-                model.repositories.insert(
-                    repo_path.clone(),
-                    IndexedRepoState::Indexed(empty_repo_state(&repo_path)),
-                );
+            let (first_future_id, second_future_id) =
+                model_handle.update(&mut app, |model, ctx| {
+                    model.repositories.insert(
+                        repo_path.clone(),
+                        IndexedRepoState::Indexed(empty_repo_state(&repo_path)),
+                    );
 
-                let first_handle = ctx.spawn(
-                    async move {
-                        let _ = first_release_rx.await;
-                    },
-                    |_, _, _| {},
-                );
-                let first_future_id = first_handle.future_id();
-                model.track_watcher_update_task(repo_path.clone(), first_handle);
+                    let first_handle = ctx.spawn(
+                        async move {
+                            let _ = first_release_rx.await;
+                        },
+                        |_, _, _| {},
+                    );
+                    let first_future_id = first_handle.future_id();
+                    model.track_watcher_update_task(repo_path.clone(), first_handle);
 
-                let second_handle = ctx.spawn(
-                    async move {
-                        let _ = second_release_rx.await;
-                    },
-                    |_, _, _| {},
-                );
-                let second_future_id = second_handle.future_id();
-                model.track_watcher_update_task(repo_path.clone(), second_handle);
+                    let second_handle = ctx.spawn(
+                        async move {
+                            let _ = second_release_rx.await;
+                        },
+                        |_, _, _| {},
+                    );
+                    let second_future_id = second_handle.future_id();
+                    model.track_watcher_update_task(repo_path.clone(), second_handle);
 
-                (first_future_id, second_future_id)
-            });
+                    (first_future_id, second_future_id)
+                });
 
             model_handle.read(&app, |model, _ctx| {
                 assert_eq!(
@@ -2924,7 +2962,8 @@ Thumbs.db
     #[test]
     fn remove_repository_keeps_nested_repo_watcher_update_tasks() {
         let parent_repo_path = StandardizedPath::try_new("/parent_watcher_repo").unwrap();
-        let nested_repo_path = StandardizedPath::try_new("/parent_watcher_repo/nested_repo").unwrap();
+        let nested_repo_path =
+            StandardizedPath::try_new("/parent_watcher_repo/nested_repo").unwrap();
 
         App::test((), |mut app| async move {
             let model_handle = app.add_model(|_| LocalRepoMetadataModel::new_for_test());
@@ -3273,9 +3312,7 @@ Thumbs.db
                     // The stale lazy build's task was aborted and superseded by
                     // index_directory's own build task, tracked under the same key.
                     model_handle
-                        .update(&mut app, |_, ctx| {
-                            ctx.await_spawned_future(lazy_future_id)
-                        })
+                        .update(&mut app, |_, ctx| ctx.await_spawned_future(lazy_future_id))
                         .await;
                     await_build_tasks_for_repo(&mut app, &model_handle, &repo_root_for_index).await;
 

@@ -7075,6 +7075,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
+name = "ipynb_parser"
+version = "0.1.0"
+dependencies = [
+ "markdown_parser",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "is-docker"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15383,9 +15393,11 @@ dependencies = [
  "humantime",
  "jaq-all",
  "local_control",
+ "log",
  "serde",
  "serde_json",
  "serial_test",
+ "tempfile",
  "url",
  "uuid",
  "warp_core",
@@ -15504,6 +15516,7 @@ dependencies = [
  "html5ever 0.35.0",
  "imara-diff",
  "instant",
+ "ipynb_parser",
  "itertools 0.14.0",
  "lazy_static",
  "line-ending",
@@ -15739,6 +15752,7 @@ dependencies = [
  "base64 0.22.1",
  "blocking",
  "channel_versions",
+ "chrono",
  "clap",
  "command",
  "ctor",
@@ -15772,6 +15786,7 @@ dependencies = [
  "vec1",
  "vim",
  "warp",
+ "warp_completer",
  "warp_core",
  "warp_editor",
  "warp_files",

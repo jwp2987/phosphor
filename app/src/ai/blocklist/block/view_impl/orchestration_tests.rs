@@ -2,12 +2,12 @@ use warp_cli::agent::Harness;
 use warpui::{App, EntityId};
 
 use super::{
-    agent_display_name_from_id, participant_for_agent_id, transcript_metadata,
-    OrchestrationAvatar, OrchestrationParticipant,
+    OrchestrationAvatar, OrchestrationParticipant, agent_display_name_from_id,
+    participant_for_agent_id, transcript_metadata,
 };
+use crate::BlocklistAIHistoryModel;
 use crate::ai::agent::conversation::AIConversationId;
 use crate::test_util::settings::initialize_history_persistence_for_tests;
-use crate::BlocklistAIHistoryModel;
 
 #[test]
 fn agent_display_name_from_id_returns_child_agent_name() {
@@ -239,7 +239,7 @@ fn participant_for_restored_child_run_id_resolves_to_agent_name() {
             }],
         };
 
-        app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], &[child, parent]));
+        app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[child, parent]));
 
         // Before Fix C the child would not be loaded into
         // `conversations_by_id`, so `participant_for_agent_id` would return

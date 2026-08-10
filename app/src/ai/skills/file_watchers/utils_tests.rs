@@ -9,7 +9,10 @@ use repo_metadata::{
     repositories::DetectedRepositories,
 };
 use virtual_fs::{Stub, VirtualFS};
-use warp_util::host_id::HostId;
+// `RemoteRepositoryIdentifier::new` and `insert_remote_snapshot` both take
+// `warp_core::HostId`; this fork keeps that distinct from `warp_util::host_id::HostId`
+// (they are the same type in the pin). Build the core one here rather than bridging twice.
+use warp_core::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::remote_path::RemotePath;
 use warp_util::standardized_path::StandardizedPath;
@@ -164,7 +167,10 @@ fn extract_skill_parent_directory_from_repo_root() {
         .join("my-skill")
         .join("SKILL.md");
     let result = extract_skill_parent_directory(&LocalOrRemotePath::Local(skill_path.clone()));
-    assert_eq!(result.ok(), Some(LocalOrRemotePath::Local(parent_directory)));
+    assert_eq!(
+        result.ok(),
+        Some(LocalOrRemotePath::Local(parent_directory))
+    );
 }
 
 #[test]
@@ -180,7 +186,10 @@ fn extract_skill_parent_directory_from_subdirectory() {
         .join("build")
         .join("SKILL.md");
     let result = extract_skill_parent_directory(&LocalOrRemotePath::Local(skill_path.clone()));
-    assert_eq!(result.ok(), Some(LocalOrRemotePath::Local(parent_directory)));
+    assert_eq!(
+        result.ok(),
+        Some(LocalOrRemotePath::Local(parent_directory))
+    );
 }
 
 #[test]

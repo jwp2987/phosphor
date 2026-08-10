@@ -11,7 +11,7 @@
 //! See `DECLINED.md`'s `#325` row.
 use futures::{FutureExt as _, future::BoxFuture};
 use warp_core::send_telemetry_from_ctx;
-use warpui::{AppContext, Entity, ModelContext};
+use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
 use super::{ActionExecution, ExecuteActionInput, PreprocessActionInput};
 use crate::BlocklistAIHistoryModel;
