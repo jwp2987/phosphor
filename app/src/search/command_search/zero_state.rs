@@ -13,7 +13,6 @@ use warpui::{
 };
 
 use crate::appearance::Appearance;
-use crate::drive::settings::{WarpDriveSettings, WarpDriveSettingsChangedEvent};
 use crate::search::FilterChipRenderer;
 use crate::search::QueryFilter;
 use crate::settings::{AISettings, AISettingsChangedEvent};
@@ -60,11 +59,9 @@ impl CommandSearchZeroStateView {
             }
         });
 
-        ctx.subscribe_to_model(&WarpDriveSettings::handle(ctx), |_, _, event, ctx| {
-            if let WarpDriveSettingsChangedEvent::EnableWarpDrive { .. } = event {
-                ctx.notify();
-            }
-        });
+        // 2026-08-10: the `WarpDriveSettings` subscription was removed along with the
+        // `warp_drive.enabled` setting -- the filter chips it re-rendered no longer
+        // depend on it. See DECLINED.md.
 
         Self {
             filter_chip_to_mouse_state_handle: QueryFilter::all()
@@ -299,11 +296,10 @@ fn valid_query_filters(app: &AppContext) -> Vec<QueryFilter> {
         filters.push(QueryFilter::PromptHistory);
     }
 
-    if WarpDriveSettings::is_warp_drive_enabled(app) {
-        filters.extend([QueryFilter::Workflows, QueryFilter::Notebooks]);
-
-        filters.push(QueryFilter::EnvironmentVariables);
-    }
+    // 2026-08-10: the `warp_drive.enabled` gate was removed along with the setting
+    // (see DECLINED.md), so these filters are always offered.
+    filters.extend([QueryFilter::Workflows, QueryFilter::Notebooks]);
+    filters.push(QueryFilter::EnvironmentVariables);
 
     filters
 }

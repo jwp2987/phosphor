@@ -224,7 +224,6 @@ fn all_lists_every_settings_section() {
             | SettingsSection::Appearance
             | SettingsSection::Features
             | SettingsSection::Keybindings
-            | SettingsSection::ZapDrive
             | SettingsSection::Warpify
             | SettingsSection::AI
             | SettingsSection::WarpAgent
@@ -301,7 +300,6 @@ fn from_persistence_key_upgrades_legacy_english_labels() {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Features => "Features",
             SettingsSection::Keybindings => "Keyboard shortcuts",
-            SettingsSection::ZapDrive => "Phosphor Drive",
             SettingsSection::Warpify => "Warpify",
             SettingsSection::AI => "AI",
             SettingsSection::WarpAgent => "Phosphor Agent",
@@ -336,10 +334,19 @@ fn from_persistence_key_upgrades_legacy_english_labels() {
         SettingsSection::from_persistence_key("Zap Agent"),
         Some(SettingsSection::WarpAgent)
     );
-    assert_eq!(
-        SettingsSection::from_persistence_key("Zap Drive"),
-        Some(SettingsSection::ZapDrive)
-    );
+    // 2026-08-10: the Phosphor Drive settings page was removed (see DECLINED.md), so
+    // none of its stored keys resolve any more. A pane snapshot still holding one
+    // falls back to the default section via `unwrap_or_default` in
+    // `persistence/sqlite.rs`; asserting `None` here keeps that deliberate, so the
+    // page cannot be resurrected by accident and a reader is not left wondering
+    // whether the arm was dropped by mistake.
+    for stored in ["ZapDrive", "Zap Drive", "Phosphor Drive"] {
+        assert_eq!(
+            SettingsSection::from_persistence_key(stored),
+            None,
+            "the removed Phosphor Drive page must not resolve from {stored:?}"
+        );
+    }
 }
 
 #[test]

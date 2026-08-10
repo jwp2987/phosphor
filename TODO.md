@@ -1067,8 +1067,29 @@ tested with zero production callers.
       here) — remote files have no `file_path()`, so without it the banner's
       Discard button is dead.
 
-- [ ] **#3 Settings > "Phosphor Drive" page — MAINTAINER DECISION 2026-08-10:
-      REMOVE IT.** The audit's recommendation was to restore the missing sidebar
+- [x] **#3 Settings > "Phosphor Drive" page — MAINTAINER DECISION 2026-08-10:
+      REMOVE IT. DONE (see the commit that ticked this box).** The page, the
+      `warp_drive.enabled` setting, `is_warp_drive_enabled`, `SettingsSection::ZapDrive`,
+      the `EnableWarpDrive` keybinding-context flag and its 9 binding predicates, and the
+      onboarding "Phosphor Drive" chip are all gone; the i18n keys were dropped from all
+      three locales and the four orphaned onboarding PNGs deleted. Decision recorded in
+      `DECLINED.md`.
+      **The gated surfaces were made unconditional rather than deleted, deliberately.**
+      "The local surfaces it gates" in the original instruction resolve to the Drive
+      *panel* — and deleting the panel would take **folder management and the trash**
+      with it (neither has any other UI: a user's foldered objects and everything already
+      trashed would become unreachable while still sitting in SQLite), plus `drive/mod.rs`
+      types that ~41 files outside `app/src/drive/` depend on (`ObjectTypeAndId` alone has
+      38 consumers, including `persistence/sqlite.rs` and URI routing). "Block toolbelt
+      save actions" is "Save as workflow", a workflows feature, not a Drive one.
+      **Deleting the Drive panel is therefore still open and needs a folders/trash answer
+      first** — it is a separate decision, not residue of this one.
+      Existing users: a leftover `warp_drive.enabled` in `settings.toml` is inert (only
+      registered settings are read or validated), and a settings pane persisted as
+      `"ZapDrive"` falls back to the default section — covered by
+      `test_sqlite_falls_back_for_the_removed_drive_settings_page`.
+      Original instruction and finding follow.
+      The audit's recommendation was to restore the missing sidebar
       row; the maintainer's call is the opposite — **Drive should have been removed
       with the rest of the dropped surface, so the settings page and the feature go,
       rather than becoming reachable.** Do not add the `nav_items` row. Remove the

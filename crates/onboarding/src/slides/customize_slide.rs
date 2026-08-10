@@ -36,7 +36,8 @@ pub enum ToolsPanelSubSetting {
     ConversationHistory,
     ProjectExplorer,
     GlobalSearch,
-    ZapDrive,
+    // 2026-08-10: the `ZapDrive` chip was removed along with the `warp_drive.enabled`
+    // setting it wrote. See DECLINED.md.
 }
 
 #[derive(Debug, Clone)]
@@ -72,7 +73,6 @@ pub struct CustomizeUISlide {
     chip_conversation_mouse: MouseStateHandle,
     chip_file_explorer_mouse: MouseStateHandle,
     chip_global_search_mouse: MouseStateHandle,
-    chip_warp_drive_mouse: MouseStateHandle,
     // Buttons
     back_button: button::Button,
     next_button: button::Button,
@@ -108,7 +108,6 @@ impl CustomizeUISlide {
             chip_conversation_mouse: MouseStateHandle::default(),
             chip_file_explorer_mouse: MouseStateHandle::default(),
             chip_global_search_mouse: MouseStateHandle::default(),
-            chip_warp_drive_mouse: MouseStateHandle::default(),
             back_button: button::Button::default(),
             next_button: button::Button::default(),
             scroll_state: ClippedScrollStateHandle::new(),
@@ -325,23 +324,8 @@ impl CustomizeUISlide {
                 })),
             });
 
-            chips.push(ChipSpec {
-                label: localized("onboarding-customize-warp-drive", "Phosphor Drive"),
-                is_enabled: ui.show_warp_drive,
-                mouse_state: self.chip_warp_drive_mouse.clone(),
-                on_click: Box::new(|ctx, _, _| {
-                    ctx.dispatch_typed_action(CustomizeSlideAction::ToggleToolsSubSetting {
-                        setting: ToolsPanelSubSetting::ZapDrive,
-                    });
-                }),
-                on_hover: Some(Box::new(|is_hovered, ctx, _, _| {
-                    if is_hovered {
-                        ctx.dispatch_typed_action(CustomizeSlideAction::HoverToolsChip {
-                            setting: ToolsPanelSubSetting::ZapDrive,
-                        });
-                    }
-                })),
-            });
+            // 2026-08-10: the "Phosphor Drive" chip was removed along with the
+            // `warp_drive.enabled` setting it wrote. See DECLINED.md.
         }
 
         render_toggle_card(
@@ -480,8 +464,6 @@ impl CustomizeUISlide {
         "async/png/onboarding/agent_intention/customize_fileexplorer_horizontal.png",
         "async/png/onboarding/agent_intention/customize_filesearch_vertical.png",
         "async/png/onboarding/agent_intention/customize_filesearch_horizontal.png",
-        "async/png/onboarding/agent_intention/customize_warpdrive_vertical.png",
-        "async/png/onboarding/agent_intention/customize_warpdrive_horizontal.png",
         "async/png/onboarding/agent_intention/customize_codereview_enabled_vertical.png",
         "async/png/onboarding/agent_intention/customize_codereview_enabled_horizontal.png",
         "async/png/onboarding/agent_intention/customize_codereview_disabled_vertical.png",
@@ -493,8 +475,6 @@ impl CustomizeUISlide {
         "async/png/onboarding/terminal_intention/terminal_customize_fileexplorer_horizontal.png",
         "async/png/onboarding/terminal_intention/terminal_customize_filesearch_vertical.png",
         "async/png/onboarding/terminal_intention/terminal_customize_filesearch_horizontal.png",
-        "async/png/onboarding/terminal_intention/terminal_customize_warpdrive_vertical.png",
-        "async/png/onboarding/terminal_intention/terminal_customize_warpdrive_horizontal.png",
         "async/png/onboarding/terminal_intention/terminal_codereview_enabled.png",
         "async/png/onboarding/terminal_intention/terminal_codereview_disabled.png",
     ];
@@ -565,8 +545,6 @@ impl CustomizeUISlide {
                             (ToolsPanelSubSetting::ProjectExplorer, false) => "async/png/onboarding/agent_intention/customize_fileexplorer_horizontal.png",
                             (ToolsPanelSubSetting::GlobalSearch, true) => "async/png/onboarding/agent_intention/customize_filesearch_vertical.png",
                             (ToolsPanelSubSetting::GlobalSearch, false) => "async/png/onboarding/agent_intention/customize_filesearch_horizontal.png",
-                            (ToolsPanelSubSetting::ZapDrive, true) => "async/png/onboarding/agent_intention/customize_warpdrive_vertical.png",
-                            (ToolsPanelSubSetting::ZapDrive, false) => "async/png/onboarding/agent_intention/customize_warpdrive_horizontal.png",
                         }
                     } else {
                         // Terminal: no conversation chip; ConversationHistory falls through to file explorer.
@@ -575,8 +553,6 @@ impl CustomizeUISlide {
                             (ToolsPanelSubSetting::ConversationHistory | ToolsPanelSubSetting::ProjectExplorer, false) => "async/png/onboarding/terminal_intention/terminal_customize_fileexplorer_horizontal.png",
                             (ToolsPanelSubSetting::GlobalSearch, true) => "async/png/onboarding/terminal_intention/terminal_customize_filesearch_vertical.png",
                             (ToolsPanelSubSetting::GlobalSearch, false) => "async/png/onboarding/terminal_intention/terminal_customize_filesearch_horizontal.png",
-                            (ToolsPanelSubSetting::ZapDrive, true) => "async/png/onboarding/terminal_intention/terminal_customize_warpdrive_vertical.png",
-                            (ToolsPanelSubSetting::ZapDrive, false) => "async/png/onboarding/terminal_intention/terminal_customize_warpdrive_horizontal.png",
                         }
                     }
                 }
@@ -804,10 +780,6 @@ impl TypedActionView for CustomizeUISlide {
                         ToolsPanelSubSetting::GlobalSearch => {
                             let current = model.ui_customization().show_global_search;
                             model.set_show_global_search(!current, ctx);
-                        }
-                        ToolsPanelSubSetting::ZapDrive => {
-                            let current = model.ui_customization().show_warp_drive;
-                            model.set_show_warp_drive(!current, ctx);
                         }
                     });
                 ctx.notify();
