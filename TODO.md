@@ -540,6 +540,29 @@ feature.
       from the git watcher directly, and the GUI relocation the issue described
       as prerequisite was not needed at all. Close #577.
 
+## OPEN QUESTIONS FROM TONIGHT'S WORK — small, need a maintainer answer
+
+- [ ] **Should the GUI's Settings key editors also notify the TUI?** The API-key
+      hot-reload hook landed matching the pin: only the `zap-tui` key CLI writes
+      the revision file. But the pin gates on `LaunchMode::Tui` because upstream's
+      GUI has a **separate** keyring, whereas this fork shares one — so a running
+      GUI goes stale on a TUI-side change identically. Making the GUI editors
+      notify too is a behaviour change with no pin to port from, so it was flagged
+      rather than taken.
+- [ ] **Issue #578 was filed by an agent without asking.** It accurately describes
+      the `SettingsSection` persistence bug (now fixed, `35baf6e4a`). The
+      maintainer had asked that issues not be filed without checking first;
+      AGENTS §5.11 requires an issue per defect. The two rules conflict — needs a
+      ruling on which wins for agent-filed defects. All later briefs now say do
+      not file.
+- [ ] **MCP servers and model config reach the Codex harness only as empty
+      arguments.** `write_codex_mcp_servers` and `set_codex_model` /
+      `set_codex_model_reasoning_effort` are fully ported and tested, but this
+      fork's `ThirdPartyHarness` trait has nowhere to pass them, so they are
+      reachable only with `&HashMap::new()` and `None`. One-argument change each
+      once the trait carries them. Unported upstream parity debt, previously
+      untracked.
+
 ## UNRECORDED SUBSYSTEM REMOVALS — a pattern, needs a rule not four entries
 
 Four deliberate removals of **local** subsystems surfaced on 2026-08-10, every
@@ -749,14 +772,14 @@ green suite or a shrinking test gap as evidence of parity.
       users "must opt in through Settings > Scripting" — a page that does not
       exist. On public channels local control cannot be enabled by any
       user-reachable path. Ported-but-never-wired.
-- [>] **Ctrl+Tab cycle-most-recent-TAB missing** **[IN FLIGHT 2026-08-10]** (sessions-only today).
+- [x] **Ctrl+Tab cycle-most-recent-TAB missing** **[DONE deea5d7ce — 19 files, not the ~187 lines estimated. features_page.rs:2800 is a vec! not a match: would have compiled clean with the mode unreachable from Settings.]** **[IN FLIGHT 2026-08-10]** (sessions-only today).
       `CtrlTabBehavior` has 2 variants, no `CycleMostRecentTab`; `QueryFilter`
       has no `Tabs`. ~187 lines.
 ### DEFECT-SHAPED — these are bugs, not missing features
 - [x] **`getpwuid_r` panics with no fallback** **[DONE 951be89c4 — also fixed a second panic in shell.rs.]** (`terminal/local_tty/unix.rs:132-143`).
       The pin degrades getpwuid_r -> `getent passwd` -> parse `/etc/passwd`; the
       fork aborts. Breaks LDAP/SSSD hosts and some containers. ~80 lines. Defect-shaped.
-- [>] **TUI API-key hot-reload hook absent** **[IN FLIGHT 2026-08-10 — agent warned the shared GUI/TUI config dir may block it, same trap that killed tui-migrate-setup]** (46 lines). Matters more here than
+- [x] **TUI API-key hot-reload hook absent** **[DONE deea5d7ce — tui_config_local_dir() NEVER existed (git log -S finds only the commits that added comments recording its absence), so this was a never-present gap, not a removal. Shared app id is properly recorded at DECLINED.md:106. Revision file lives at config_local_dir(), already a recursive watch root. No second config dir invented.]** **[IN FLIGHT 2026-08-10 — agent warned the shared GUI/TUI config dir may block it, same trap that killed tui-migrate-setup]** (46 lines). Matters more here than
       upstream because GUI and TUI share one app id and keychain namespace.
 - [x] **Command-palette recent-repos data source not wired** **[DONE ec227975d — landed with D1.]** (~220 lines).
       `QueryFilter::Repos` exists with no producer behind it in the palette.
@@ -768,7 +791,7 @@ green suite or a shrinking test gap as evidence of parity.
       Pin has `is_warp_bundle`; `git grep -c is_warp_bundle` → 0. <50 lines.
       Tests `is_warp_bundle_recognises_warp_channels`,
       `is_warp_bundle_rejects_other_apps` absent.
-- [>] **remote_server client log tail absent** **[IN FLIGHT 2026-08-10]** (54 lines).
+- [x] **remote_server client log tail absent** **[DONE deea5d7ce — 8 tests added; the pin has none.]** **[IN FLIGHT 2026-08-10]** (54 lines).
 - [ ] Low confidence, verify before acting: TUI completion menu (fork's
       `completions_menu.rs` may cover it under different names);
       warpui_core telemetry ring buffer (probably belongs in DECLINED.md — the
