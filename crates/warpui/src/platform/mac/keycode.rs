@@ -81,7 +81,9 @@ pub fn modifier_code(keystroke: &Keystroke) -> u16 {
     code
 }
 
-// The following types and functions are taken from winit's appkit implementation.
+// The following types and functions are taken from winit's appkit implementation,
+// which is under the Apache license; see:
+// crates/warpui_core/src/platform/LICENSE-WINIT.
 // We redefine them here to avoid needing to include the entirety of winit as a dependency for MacOS.
 // --------------------------------------------------------------------------------------------------------
 

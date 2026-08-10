@@ -575,6 +575,12 @@ tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", re
 # official thinking_mode docs.
 # Upstream also plans to send a PR (deepseek-reasoning-effort branch); once
 # merged, this patch can be reverted.
+#
+# NOTE: the paragraph above describes ONE of the fork's changes, not all of
+# them. At least 16 files under lib/rust-genai/src/ differ from upstream
+# (Anthropic mixed-TTL caching, gzip default, extra_body, Vertex support, …).
+# Each carries an Apache-2.0 section 4(b) change notice; the full list is in
+# lib/rust-genai/CHANGES-PHOSPHOR.md.
 genai = { path = "lib/rust-genai" }
 
 # The multi-agent proto API is pinned directly to upstream `warpdotdev` (see the

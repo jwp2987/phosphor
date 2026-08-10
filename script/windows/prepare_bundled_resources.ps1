@@ -151,7 +151,17 @@ $AdditionalLicenses = @(
     @{ Name = 'bash-preexec'; License = 'MIT'; Path = 'app\assets\bundled\bootstrap\bash-preexec-LICENSE.md' },
     @{ Name = 'Claude API Skill'; License = 'Apache-2.0'; Path = 'resources\bundled\skills\claude-api\LICENSE.txt' },
     @{ Name = 'Windows Terminal'; License = 'MIT'; Path = 'app\assets\windows\LICENSE-WINDOWS-TERMINAL' },
-    @{ Name = 'GitHub Desktop'; License = 'MIT'; Path = 'app\src\code_review\GITHUB-DESKTOP-LICENSE' }
+    @{ Name = 'GitHub Desktop'; License = 'MIT'; Path = 'app\src\code_review\GITHUB-DESKTOP-LICENSE' },
+    # libgit2 is statically linked via git2's `vendored-libgit2` feature
+    # (app/Cargo.toml). `cargo about` only ever sees the libgit2-sys crate's
+    # declared MIT and never libgit2's own terms, so the GPL text has to be
+    # appended by hand here.
+    @{ Name = 'libgit2 (statically linked via git2 vendored-libgit2)'; License = 'GPL-2.0-only WITH linking exception'; Path = 'app\LICENSE-LIBGIT2' },
+    # Vendored path dependency: skipped by about.toml/deny.toml as a path dep,
+    # so `cargo about` never reaches it.
+    @{ Name = 'genai (rust-genai)'; License = 'MIT OR Apache-2.0'; Path = 'lib\rust-genai\LICENSE-MIT' },
+    @{ Name = 'winit (vendored keyboard/keycode types)'; License = 'Apache-2.0'; Path = 'crates\warpui_core\src\platform\LICENSE-WINIT' },
+    @{ Name = 'Chromium / Blink (dashed-border stroke geometry)'; License = 'BSD-3-Clause'; Path = 'crates\warpui\src\rendering\LICENSE-CHROMIUM' }
 )
 # Windows-only components:
 $AdditionalLicenses += @(

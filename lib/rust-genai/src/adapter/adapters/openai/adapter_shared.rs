@@ -1,3 +1,7 @@
+// MODIFIED by the Phosphor fork relative to upstream genai.
+// Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
+// for what changed here and why. Original: https://github.com/jeremychone/rust-genai
+
 //! This is support implementation of the OpenAI Adapter which can also be called by other OpenAI Adapter Variants
 
 use crate::adapter::adapters::support::get_api_key;

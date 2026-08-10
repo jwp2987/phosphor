@@ -1,3 +1,7 @@
+// MODIFIED by the Phosphor fork relative to upstream genai.
+// Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
+// for what changed here and why. Original: https://github.com/jeremychone/rust-genai
+
 //! Convert JSON Schema to OpenAPI 3.0.3 Schema Object subset.
 //!
 //! Gemini uses the OpenAPI 3.0.3 Schema Object subset and rejects standard
