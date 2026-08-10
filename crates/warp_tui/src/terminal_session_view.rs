@@ -971,7 +971,11 @@ impl TuiTerminalSessionView {
     fn focus_blocking_child(blocker: TuiBlockingChild, ctx: &mut ViewContext<Self>) {
         match blocker {
             TuiBlockingChild::AskQuestion(view) => {
-                view.update(ctx, |view, ctx| view.focus(ctx));
+                // `TuiAskQuestionView` has no public `focus`; it routes focus to its
+                // option selector from `on_focus` (tui_ask_question_view.rs:621), and
+                // only when it is still awaiting answers. Focus the view and let that
+                // handler run, rather than reaching past it into the selector.
+                ctx.focus(&view);
             }
             TuiBlockingChild::Permission(view) => {
                 view.update(ctx, |view, ctx| view.focus(ctx));
