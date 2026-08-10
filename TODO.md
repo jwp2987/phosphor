@@ -1216,11 +1216,16 @@ tested with zero production callers.
       the path is unreachable anyway** — `refresh_aws_credentials_oidc` requires an
       ambient `task_id` (always `None` here) and mints its token through Warp's
       cloud `ManagedSecretManager`. The honest fix may be to drop both flags.
-- [ ] **`SshWarpifyBlockEvent::{WarpifySession, Cancel}`**
+- [x] **`SshWarpifyBlockEvent::{WarpifySession, Cancel}`**
       (`app/src/terminal/ssh/warpify.rs:22`) have no emitters; the handler arms at
       `view.rs:8956/8965` are unreachable. Fork-original, so no pin counterpart to
       diff against. Not a hang: `add_ssh_warpifying_block` has a live second caller
-      at `view.rs:25092`.
+      at `view.rs:25092`. **RESOLVED 2026-08-10: removed as dead code, not wired.**
+      `git log -S` on `WarpifySession` across every fetched branch finds only the
+      initial import and the pin's own later removal commit (`57062bd92`, never
+      merged into this fork) — no commit ever added an emitter, upstream or here.
+      The pin's pre-removal version of this exact block has the same no-button
+      render. See `DECLINED.md`'s `SshWarpifyBlockEvent` row for the full trail.
 - [ ] **`crates/remote_server/src/client/mod.rs::resolve_conflict`** — zero callers
       while the daemon fully handles `ResolveConflict`, but **the pin has no client
       sender either.** Becomes live only as part of #2's client half.

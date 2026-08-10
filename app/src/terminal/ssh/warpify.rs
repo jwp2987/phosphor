@@ -19,8 +19,6 @@ use warpui::{
 
 #[derive(Debug, Clone)]
 pub enum SshWarpifyBlockEvent {
-    WarpifySession,
-    Cancel,
     Interrupt,
 }
 
