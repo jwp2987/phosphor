@@ -198,6 +198,14 @@ pub fn run() -> Result<()> {
                 // A failure here means only that other processes keep stale
                 // keys until they restart; the key itself is already saved, so
                 // it must not turn a successful save into an error exit.
+                //
+                // The setters now stamp the revision themselves (the write
+                // choke point in `ApiKeyManager::write_keys_to_secure_storage`,
+                // so that the GUI's key editors notify too). This second stamp
+                // is kept anyway: it is the only path that reports a failed
+                // stamp to the user, on a CLI whose whole output is one line.
+                // Two stamps in a row cost one extra file write and are
+                // coalesced by the watcher's debounce.
                 if let Err(error) = warp::tui_export::notify_tui_api_keys_changed() {
                     log::warn!(
                         "API key was saved, but signalling running Zap processes to \

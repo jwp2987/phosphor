@@ -12,6 +12,7 @@ pub mod gfm_table;
 pub mod index;
 pub mod paths;
 pub mod project_context;
+pub mod secret_revision;
 pub mod skills;
 mod telemetry;
 pub mod workspace;
