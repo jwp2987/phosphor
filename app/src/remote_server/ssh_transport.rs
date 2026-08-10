@@ -797,13 +797,14 @@ impl RemoteTransport for SshTransport {
                 .take()
                 .ok_or_else(|| anyhow::anyhow!("Failed to capture child stderr"))?;
 
-            let (client, event_rx, host_response_rx) =
+            let (client, event_rx, host_response_rx, stderr_tail) =
                 RemoteServerClient::from_child_streams(stdin, stdout, stderr, &executor);
             Ok(Connection {
                 client,
                 event_rx,
                 host_response_rx,
                 child,
+                stderr_tail,
                 // Only tag the socket for teardown when we own the master;
                 // a reused user-owned master maps to `None` so teardown
                 // leaves it running (GitHub issue #37).

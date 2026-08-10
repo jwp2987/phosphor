@@ -32,6 +32,10 @@ use crate::protocol::{self, ProtocolError, RequestId};
 use warp_core::SessionId;
 use warpui::r#async::TransportStream;
 
+mod remote_server_log;
+
+pub use remote_server_log::RemoteServerLog;
+
 /// Default request timeout (2 minutes).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -180,9 +184,11 @@ impl RemoteServerClient {
     /// protocol reader/writer setup.
     ///
     /// Returns the client, an event receiver that delivers push events and a
-    /// final `Disconnected` event when the connection drops, and a
+    /// final `Disconnected` event when the connection drops, a
     /// host-response receiver carrying responses to host-scoped requests
-    /// (see [`Self::send_host_scoped`]) for `RemoteServerManager` to drain.
+    /// (see [`Self::send_host_scoped`]) for `RemoteServerManager` to drain,
+    /// and the [`RemoteServerLog`] tail of the subprocess's stderr, which the
+    /// manager drains into its failure diagnostics.
     pub fn from_child_streams(
         stdin: async_process::ChildStdin,
         stdout: async_process::ChildStdout,
@@ -192,9 +198,11 @@ impl RemoteServerClient {
         Self,
         async_channel::Receiver<ClientEvent>,
         async_channel::Receiver<ServerMessage>,
+        RemoteServerLog,
     ) {
-        spawn_stderr_forwarder(stderr, executor);
-        Self::new(stdout, stdin, executor)
+        let stderr_tail = spawn_stderr_forwarder(stderr, executor);
+        let (client, event_rx, host_response_rx) = Self::new(stdout, stdin, executor);
+        (client, event_rx, host_response_rx, stderr_tail)
     }
 }
 
@@ -1167,15 +1175,19 @@ impl RemoteServerClient {
     }
 }
 
-/// Spawns a background task that reads lines from the server's stderr and
-/// forwards them to the client's logging.
+/// Spawns a background task that reads lines from the server's stderr,
+/// forwards them to the client's logging, and retains the last few lines
+/// in a shared buffer for failure diagnostics.
 #[cfg(not(target_family = "wasm"))]
 pub fn spawn_stderr_forwarder(
     stderr: impl AsyncRead + TransportStream,
     executor: &executor::Background,
-) {
+) -> RemoteServerLog {
     use futures::StreamExt;
     use futures::io::AsyncBufReadExt;
+
+    let tail = RemoteServerLog::new();
+    let tail_writer = tail.clone();
 
     executor
         .spawn(async move {
@@ -1183,9 +1195,12 @@ pub fn spawn_stderr_forwarder(
             let mut lines = reader.lines();
             while let Some(Ok(line)) = lines.next().await {
                 log::info!("[remote_server] {line}");
+                tail_writer.push(line);
             }
         })
         .detach();
+
+    tail
 }
 
 #[cfg(test)]
