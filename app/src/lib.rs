@@ -1553,6 +1553,18 @@ fn initialize_app(
     ctx.add_singleton_model(|_ctx| SyncedInputState::new());
 
     ctx.add_singleton_model(remote_server::manager::RemoteServerManager::new);
+    // Client-side mirror of every remote host's codebase-index state, and the
+    // thing that requests indexing when the user navigates into a remote git
+    // repo. Registered right after the manager, as the pin does
+    // (`02b53fcd8:app/src/lib.rs:1758`), because its constructor subscribes to
+    // it; `CodeSettings`, its other subscription, is registered with the
+    // settings groups well before this point.
+    //
+    // Without this registration the daemon leg is inert on the client: nothing
+    // consumes `CodebaseIndexStatusesSnapshot` and nothing ever asks a daemon
+    // to index.
+    #[cfg(not(target_family = "wasm"))]
+    ctx.add_singleton_model(remote_server::codebase_index_model::RemoteCodebaseIndexModel::new);
     // Zap Wave 6-1: the `remote_server::wire_auth_token_rotation(ctx)` call was physically
     // removed along with the server API token rotation event and the
     // `wire_auth_token_rotation` function itself.
