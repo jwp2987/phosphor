@@ -27,6 +27,12 @@ pub(crate) mod codebase_auto_indexing;
 /// subsystem is filesystem-bound.
 #[cfg(feature = "local_fs")]
 pub(crate) mod codebase_embeddings;
+/// The consumer that actually queries the codebase embedding index.
+///
+/// Not `local_fs`-gated: the handle type is carried on every `RequestParams`, so it
+/// has to exist in every build. Without `local_fs` there is no index to query and it
+/// reports so.
+pub(crate) mod codebase_retrieval;
 pub mod control_code_parser;
 pub(crate) mod conversation_export;
 pub(crate) mod conversation_entry;

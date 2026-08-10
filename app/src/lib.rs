@@ -2162,6 +2162,12 @@ fn initialize_app(
         CodebaseIndexManager::new_with_config(codebase_index_config, ctx)
     });
 
+    // The consumer for that index. Registered unconditionally -- every build carries
+    // the handle type on `RequestParams`, and an unregistered singleton panics on
+    // access -- but it must come *after* the manager above, because on `local_fs` it
+    // subscribes to it during construction.
+    ctx.add_singleton_model(crate::ai::codebase_retrieval::CodebaseRetrievalController::new);
+
     // Hand the remote-server manager what a daemon needs to index on its own
     // host, and refresh it whenever the user edits their providers. Registered
     // here, after `AISettings` and `AIRequestUsageModel`, because

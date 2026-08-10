@@ -81,6 +81,10 @@ pub enum CodebaseIndexManagerEvent {
     RetrievalRequestCompleted {
         retrieval_id: RetrievalID,
         fragments: Arc<HashSet<CodeContextLocation>>,
+        /// The retrieved files in rank order, best first. Forwarded verbatim from
+        /// [`CodebaseIndexEvent::RetrievalRequestCompleted`]; see the note there for
+        /// why `fragments` alone is not enough.
+        ranked_paths: Arc<Vec<PathBuf>>,
         out_of_sync_delay: Option<Duration>,
     },
     RetrievalRequestFailed {
@@ -1076,10 +1080,12 @@ impl CodebaseIndexManager {
             CodebaseIndexEvent::RetrievalRequestCompleted {
                 retrieval_id,
                 fragments,
+                ranked_paths,
                 out_of_sync_delay,
             } => ctx.emit(CodebaseIndexManagerEvent::RetrievalRequestCompleted {
                 retrieval_id: retrieval_id.clone(),
                 fragments: fragments.clone(),
+                ranked_paths: ranked_paths.clone(),
                 out_of_sync_delay: *out_of_sync_delay,
             }),
             CodebaseIndexEvent::SyncStateUpdated { root_path } => {
