@@ -643,6 +643,53 @@ the next starts.** Coordinator builds and merges; agents never merge.
 changed an agreed order twice on 2026-08-09 (#381 folded into the #440 batch against
 "after 440"; #405 re-tiered unasked) and both were wrong.
 
+### Landed 2026-08-09 — untracked features (no issue filed, maintainer directed)
+
+These shipped to `main` on 2026-08-09 without GitHub issues, by explicit maintainer
+decision. Recorded here so the next port sweep finds a decision rather than
+apparent debt.
+
+- [x] **Remote file-viewer routing.** Every file opened from the remote (SSH) file
+      tree used to land in the code editor: the remote branch asked one question
+      (`is_supported_image_file`) and its own comment said "everything else opens via
+      the buffer-sync protocol". `FileTreeEvent::OpenRemoteFile` carried no
+      `FileTarget`, so no viewer choice could be expressed. **Remote markdown never
+      rendered.** Fixed by threading `target` through `OpenRemoteFile` ->
+      `LeftPanelEvent` -> `Workspace`, adding `SourceFile::Remote`,
+      `FileNotebookView::open_remote` (over the existing `ReadFileContextRequest` RPC)
+      and `RemoteServerManager::host_request_handle`. Root cause of the class:
+      the pin unified local/remote behind one `LocalOrRemotePath`; this fork split
+      them into two events over two `RemotePath` families.
+- [x] **Remote notebook Raw-mode toggle.** `open_as_code`/`ToggleMarkdownDisplayMode(Raw)`
+      were gated on `local_path()`, always `None` for remote, so Raw was a silent
+      no-op. `PaneEvent::ReplaceWithCodePane.path` widened `PathBuf` ->
+      `BufferLocation`. Only 4 reference sites across 3 files. Deliberately used the
+      fork-native `BufferLocation` rather than renaming to the pin's
+      `LocalOrRemotePath`; `ReplaceWithFilePane` left as `PathBuf` (its callers are
+      local-only by design — remote panes toggle rendered/raw inline in `CodeView`).
+- [x] **TUI orchestration tab bar.** The pin's TUI imported `crate::orchestration_tab_bar`,
+      absent fork-wide, blocking 9 tests. Ported the module plus a **local-only**
+      `TuiOrchestrationModel` fed by `orchestration_topology.rs`, dropping the pin's
+      `StartAgentExecutionMode::Remote` branch (cloud-runner, declined under #290).
+      `crate::tab_bar` turned out to be already ported byte-identical — the generic
+      tab machinery was never the gap. All 9 tests ported unweakened.
+- [x] **Per-host skills and global rules reaching agent context.** This fork had built
+      per-host storage TWICE (`BundledSkills::remote_by_host` under #487/#353,
+      `remote_global_rules` under #575) and wired consumption NEITHER time.
+      `SkillManager` was already remote-aware and tested; the bug was call sites
+      hardcoding `LocalOrRemotePath::Local(...)` regardless of session type — four of
+      them. Upstream cause: `ActiveSession::current_working_directory_location`
+      carried a doc comment claiming "BYOP sessions are local, so this is always a
+      Local path", false since this fork tracks `SessionType::WarpifiedRemote`.
+      A wrong comment propagated a wrong assumption into every consumer.
+- [x] **`format_todo_progress` + statusline wiring.** Previously declined as
+      "not small" because the bare function would be dead without the
+      `TuiStatuslineItem`/`FooterSegment` plumbing. Ported whole. No settings
+      migration needed — new items append disabled via `TuiStatuslineConfig::normalized()`,
+      same as #397's Date/Time variants. **Also fixed two tests #397 left stale on
+      `main`**: `ai_tests.rs` and `statusline_config_view_tests.rs` hardcoded a 7-item
+      `TuiStatuslineItem::ALL` order against what is now 12 entries.
+
 ### Tier 4 — large (a week+)
 - [ ] #576 (replaces **#210**, closed 2026-08-09) · #382 · #236 · #324 · #405
 - [x] **#349 PARKED 2026-08-09 (maintainer).** `computer_use` per-window activation
