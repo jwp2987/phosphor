@@ -700,6 +700,10 @@ pub enum Event {
         path: PathBuf,
     },
     #[cfg(not(target_family = "wasm"))]
+    OpenLspLogs {
+        log_path: PathBuf,
+    },
+    #[cfg(not(target_family = "wasm"))]
     OpenPluginInstructionsPane(crate::terminal::CLIAgent, PluginModalKind),
 }
 

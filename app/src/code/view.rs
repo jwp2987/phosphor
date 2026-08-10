@@ -201,6 +201,9 @@ pub enum CodeViewEvent {
     RunTabConfigSkill {
         path: PathBuf,
     },
+    OpenLspLogs {
+        log_path: PathBuf,
+    },
 }
 
 #[derive(Default, Clone)]
@@ -798,6 +801,11 @@ impl CodeView {
             }
             LocalCodeEditorEvent::RunTabConfigSkill { path } => {
                 ctx.emit(CodeViewEvent::RunTabConfigSkill { path: path.clone() });
+            }
+            LocalCodeEditorEvent::OpenLspLogs { log_path } => {
+                ctx.emit(CodeViewEvent::OpenLspLogs {
+                    log_path: log_path.clone(),
+                });
             }
             LocalCodeEditorEvent::DelayedRenderingFlushed => (),
         });
