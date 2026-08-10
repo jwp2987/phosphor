@@ -489,8 +489,18 @@ pub(crate) async fn read_bundled_skills(skills_dir: &Path) -> HashMap<String, Pa
 /// - `{{warp_server_url}}` - Empty in this fork; retained for bundled skill compatibility.
 /// - `{{warp_cli_binary_name}}` - The CLI binary name (e.g., `warp` or `warp-cli`)
 /// - `{{warp_url_scheme}}` - The URL scheme (e.g., `warp`, `warpdev`, `warppreview`)
+/// - `{{warpctrl_binary_name}}` - The channel-specific local-control command name
+/// - `{{warpctrl_wrapper_path}}` - Path to the bundled local-control wrapper
 /// - `{{settings_schema_path}}` - Path to the bundled JSON settings schema
 /// - `{{settings_file_path}}` - Path to the user's settings TOML file
+/// - `{{keybindings_file_path}}` - Path to the user's `keybindings.yaml`
+///
+/// The pin's GUI/TUI-split variables (`gui_settings_file_path`,
+/// `tui_settings_file_path`, `gui_mcp_config_file_path`,
+/// `tui_mcp_config_file_path`) are deliberately absent: this fork shares one
+/// app id, and therefore one config directory, between the GUI and the TUI
+/// (`DECLINED.md`, "TUI/GUI shared app id"), so there is no second location to
+/// name. `{{skill_dir}}` is likewise absent — no bundled skill here needs it.
 pub(crate) fn build_bundled_skill_context() -> HashMap<String, String> {
     let mut context: HashMap<String, String> = [
         ("warp_server_url".to_owned(), String::new()),
@@ -499,12 +509,40 @@ pub(crate) fn build_bundled_skill_context() -> HashMap<String, String> {
             ChannelState::channel().cli_command_name().to_owned(),
         ),
         (
+            "warpctrl_binary_name".to_owned(),
+            ChannelState::channel().warpctrl_command_name().to_owned(),
+        ),
+        // The pin renders this from the `resources_dir` it threads through
+        // `read_bundled_skills`; this fork's reader takes no such argument, so
+        // resolve the same directory from `bundled_resources_dir()` — the very
+        // path `warpctrl_bundle_source_path()` in `workspace/cli_install.rs`
+        // installs from. An unresolvable bundle renders as an empty string
+        // rather than leaving `{{warpctrl_wrapper_path}}` in the skill text;
+        // the skill instructs the agent to stop when the path is missing.
+        (
+            "warpctrl_wrapper_path".to_owned(),
+            warp_core::paths::bundled_resources_dir()
+                .map(|dir| {
+                    dir.join("bin")
+                        .join(ChannelState::channel().warpctrl_command_name())
+                })
+                .unwrap_or_default()
+                .display()
+                .to_string(),
+        ),
+        (
             "warp_url_scheme".to_owned(),
             ChannelState::url_scheme().to_owned(),
         ),
         (
             "settings_file_path".to_owned(),
             user_preferences_toml_file_path().display().to_string(),
+        ),
+        (
+            "keybindings_file_path".to_owned(),
+            crate::keyboard::keybinding_file_path()
+                .display()
+                .to_string(),
         ),
     ]
     .into_iter()
@@ -537,14 +575,21 @@ pub(crate) fn icon_for_bundled_skill(skill_id: &str) -> Icon {
 /// Most skills are always active. Skills that depend on a bundled resource
 /// file use `RequiresFile` so they only appear when the resource is present.
 ///
-/// The pin also gates two bundled skills here that this fork has no directory
-/// for: `tui-migrate-setup` (on `AppExecutionMode::is_tui`) and `warpctrl` (on
-/// `FeatureFlag::WarpControlCli`). Both arms are omitted because
-/// `resources/bundled/skills/` ships neither skill — an activation arm with no
-/// skill to drive it is unreachable, untested code. The flag and the underlying
-/// `RequiresFeature` mechanism both exist and are exercised by
-/// `read_skill_tests.rs`; only the skill content is missing. Porting the skill
-/// directories is #370.
+/// The pin gates one further bundled skill here that this fork does not ship:
+/// `tui-migrate-setup` (on `AppExecutionMode::is_tui`). That skill migrates a
+/// Warp GUI setup into a *separately configured* TUI, and it is not portable to
+/// this fork — it resolves `gui_settings_file_path` against
+/// `tui_settings_file_path` (and the two `.mcp.json` paths likewise), but this
+/// fork deliberately shares one app id and one config directory between GUI and
+/// TUI (`DECLINED.md`, "TUI/GUI shared app id"), so both sides of every pair
+/// would render to the same file. It also treats the schema's `x-warp-surfaces`
+/// annotation as its source of truth for which settings are migratable, and this
+/// fork dropped `SettingSurfaces` / `SettingsMode` (`DECLINED.md`), so
+/// `generate_settings_schema` emits no such annotation. Shipping it would point
+/// an agent at a migration that cannot be performed. The `TuiOnly` arm is
+/// therefore omitted along with it — an activation with no skill to drive it is
+/// unreachable code — but `TuiOnly` itself is exercised by
+/// `tui_only_bundled_skill_is_listed_and_resolved_only_in_tui`. See #370.
 pub(crate) fn activation_for_bundled_skill(
     skill_id: &str,
     resources_dir: &Path,
@@ -553,6 +598,7 @@ pub(crate) fn activation_for_bundled_skill(
         "modify-settings" => {
             BundledSkillActivation::RequiresFile(resources_dir.join("settings_schema.json"))
         }
+        "warpctrl" => BundledSkillActivation::RequiresFeature(FeatureFlag::WarpControlCli),
         _ => BundledSkillActivation::Always,
     }
 }

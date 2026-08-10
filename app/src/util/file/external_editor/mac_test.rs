@@ -5,7 +5,11 @@ fn is_zap_bundle_recognises_zap_channels() {
     // OSS (Zap) itself.
     assert!(is_zap_bundle("dev.zap.Zap"));
     // Upstream Warp's various channels — also considered part of this app family, allowing default-app redirection.
-    assert!(is_zap_bundle("dev.warp.Zap"));
+    // `dev.warp.Warp` is upstream stable; it is the one id the pin's
+    // `is_warp_bundle_recognises_warp_channels` asserts first, and it was
+    // dropped when this test was adapted (`dev.warp.Zap` is not a real
+    // upstream bundle id, so it covered nothing the others did not).
+    assert!(is_zap_bundle("dev.warp.Warp"));
     assert!(is_zap_bundle("dev.warp.WarpDev"));
     assert!(is_zap_bundle("dev.warp.WarpPreview"));
     assert!(is_zap_bundle("dev.warp.WarpOss"));

@@ -583,6 +583,7 @@ settings-section-warp-drive = Phosphor Drive
 settings-section-warpify = Phosphorize
 settings-section-network = Network
 settings-section-privacy = Privacy
+settings-section-scripting = Scripting
 settings-section-ai = AI
 settings-section-warp-agent = Phosphor Agent
 settings-section-agent-profiles = Profiles

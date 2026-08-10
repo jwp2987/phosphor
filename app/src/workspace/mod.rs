@@ -1,8 +1,10 @@
 mod action;
 mod active_session;
 pub mod bonus_grant_notification_model;
+// `pub(crate)` to match the oracle: `settings_view::scripting_page` drives the
+// warpctrl install button from outside this module.
 #[cfg(target_os = "macos")]
-mod cli_install;
+pub(crate) mod cli_install;
 mod close_session_confirmation_dialog;
 pub(crate) mod cross_window_tab_drag;
 pub mod delete_conversation_confirmation_dialog;
