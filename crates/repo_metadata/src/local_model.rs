@@ -57,7 +57,7 @@ cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
         use std::collections::HashSet;
         use notify_debouncer_full::notify::RecursiveMode;
-        use crate::entry::{repo_watch_filter, should_ignore_git_path};
+        use crate::entry::{repo_watch_filter, should_ignore_git_path, LAZY_LOAD_FILE_LIMIT};
         use crate::repositories::{DetectedRepositories, DetectedRepositoriesEvent};
         use crate::watcher::DirectoryWatcher;
         use watcher::{BulkFilesystemWatcher, BulkFilesystemWatcherEvent};
@@ -73,8 +73,8 @@ use crate::file_tree_store::{
     FileTreeState,
 };
 use crate::file_tree_update::{
-    flatten_entry_metadata, DirectoryNodeMetadata, FileNodeMetadata, FileTreeEntryUpdate,
-    RepoMetadataUpdate, RepoNodeMetadata,
+    DirectoryNodeMetadata, FileNodeMetadata, FileTreeEntryUpdate, RepoMetadataUpdate,
+    RepoNodeMetadata, flatten_entry_metadata,
 };
 use ignore::gitignore::Gitignore;
 use warpui::ModelContext;
@@ -510,7 +510,10 @@ impl LocalRepoMetadataModel {
     }
 
     /// Drop the indexing state for `repo_path`, notifying any waiters.
-    fn remove_repository_state(&mut self, repo_path: &StandardizedPath) -> Option<IndexedRepoState> {
+    fn remove_repository_state(
+        &mut self,
+        repo_path: &StandardizedPath,
+    ) -> Option<IndexedRepoState> {
         let previous = self.repositories.remove(repo_path);
         if let Some(previous) = &previous {
             previous.complete_if_pending();
@@ -546,7 +549,12 @@ impl LocalRepoMetadataModel {
 
     /// Registers a spawned build task, aborting and notifying the waiters of
     /// any task it supersedes at the same key.
-    fn track_build_task(&mut self, key: BuildTaskKey, kind: BuildTaskKind, handle: SpawnedFutureHandle) {
+    fn track_build_task(
+        &mut self,
+        key: BuildTaskKey,
+        kind: BuildTaskKind,
+        handle: SpawnedFutureHandle,
+    ) {
         debug_assert!(
             !self.build_tasks.contains_key(&key),
             "duplicate build tasks should abort the existing task first"
@@ -571,7 +579,11 @@ impl LocalRepoMetadataModel {
     /// handle's future ID still matches `future_id` — guards against a stale
     /// completion callback (from a task that was aborted and replaced)
     /// finishing a newer task that happens to share the same key.
-    fn finish_build_task(&mut self, key: &BuildTaskKey, future_id: Option<FutureId>) -> Option<BuildTask> {
+    fn finish_build_task(
+        &mut self,
+        key: &BuildTaskKey,
+        future_id: Option<FutureId>,
+    ) -> Option<BuildTask> {
         match (future_id, self.build_tasks.get(key)) {
             (Some(future_id), Some(task)) if task.handle.future_id() == future_id => {
                 self.build_tasks.remove(key)
@@ -580,7 +592,10 @@ impl LocalRepoMetadataModel {
         }
     }
 
-    fn notify_completion_waiters(waiters: Vec<oneshot::Sender<Result<(), String>>>, result: Result<(), String>) {
+    fn notify_completion_waiters(
+        waiters: Vec<oneshot::Sender<Result<(), String>>>,
+        result: Result<(), String>,
+    ) {
         for waiter in waiters {
             let _ = waiter.send(result.clone());
         }
@@ -645,7 +660,11 @@ impl LocalRepoMetadataModel {
     /// task tracked under the same future ID (defensive; future IDs are
     /// process-unique so this should not normally fire).
     #[cfg(feature = "local_fs")]
-    fn track_watcher_update_task(&mut self, repo_path: StandardizedPath, handle: SpawnedFutureHandle) {
+    fn track_watcher_update_task(
+        &mut self,
+        repo_path: StandardizedPath,
+        handle: SpawnedFutureHandle,
+    ) {
         let future_id = handle.future_id();
         if let Some(existing) = self
             .watcher_update_tasks
@@ -917,10 +936,13 @@ impl LocalRepoMetadataModel {
                         )
                     },
                     move |model,
-                     (mutations, discovered_results, removed_roots, repo_path, lazy_load),
-                     ctx| {
+                          (mutations, discovered_results, removed_roots, repo_path, lazy_load),
+                          ctx| {
                         if model
-                            .finish_watcher_update_task(&repo_path, task_future_id_for_completion.get())
+                            .finish_watcher_update_task(
+                                &repo_path,
+                                task_future_id_for_completion.get(),
+                            )
                             .is_none()
                         {
                             // The repository was removed (or this task was
@@ -1988,7 +2010,9 @@ impl LocalRepoMetadataModel {
                 log::info!("Upgrading lazy-loaded path to git repo: {repo_path_str}");
                 self.lazy_loaded_paths.remove(&std_path);
             }
-            Some(IndexedRepoState::Pending(_)) if self.lazy_loaded_paths.contains_key(&std_path) => {
+            Some(IndexedRepoState::Pending(_))
+                if self.lazy_loaded_paths.contains_key(&std_path) =>
+            {
                 // A lazy first-level build is still in flight. A real repository
                 // index should supersede it, so continue below and abort the lazy
                 // build before scheduling the full tree walk.
@@ -2215,7 +2239,10 @@ impl LocalRepoMetadataModel {
             &mut contents,
             &args,
         );
-        Ok(RepoContents { contents, truncated })
+        Ok(RepoContents {
+            contents,
+            truncated,
+        })
     }
 }
 
