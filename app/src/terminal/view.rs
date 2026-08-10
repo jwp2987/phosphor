@@ -112,6 +112,8 @@ use crate::ai::agent::{
 };
 use crate::ai::blocklist::block::{AIBlockAction, FinishReason};
 use crate::ai::blocklist::model::AIBlockOutputStatus;
+#[cfg(feature = "local_fs")]
+use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::code_review::comments::{
     convert_insert_review_comments, AttachedReviewComment, PendingImportedReviewComment,
 };
@@ -11669,6 +11671,15 @@ impl TerminalView {
                                 if !is_ancestor {
                                     return;
                                 }
+
+                                // Bump the workspace's `navigated_ts` so the
+                                // "recent repositories" list is ordered by
+                                // actual use. Only updates roots that are
+                                // already known — see
+                                // `PersistedWorkspace::navigated_to_path`.
+                                PersistedWorkspace::handle(ctx).update(ctx, |manager, _| {
+                                    manager.navigated_to_path(active_directory.as_path_buf());
+                                });
 
                                 // Subscribe to GitRepoStatusModel if the repo changed
                                 // and git status updates are needed.

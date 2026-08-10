@@ -50,6 +50,10 @@ use crate::terminal::model::session::SessionId;
 use crate::workflows::WorkflowObject;
 use crate::workspaces::user_profiles::UserProfileWithUID;
 use crate::workspaces::workspace::{Workspace as WorkspaceMetadata, WorkspaceUid};
+// Aliased because `crate::workspaces::workspace::Workspace` is already imported
+// above as `WorkspaceMetadata`. That one is a (cloud) team workspace; this one is
+// a local repository root tracked by `PersistedWorkspace`.
+use ai::workspace::WorkspaceMetadata as CodeWorkspaceMetadata;
 
 use self::model::{AgentConversation, AgentConversationData, Project};
 
@@ -223,6 +227,15 @@ pub struct PersistedData {
     pub object_actions: Vec<ObjectAction>,
     pub experiments: Vec<ServerExperiment>,
     pub ai_queries: Vec<PersistedAIInput>,
+    /// Recently-used repository roots, restored into `PersistedWorkspace` at
+    /// startup. Named `codebase_indices` at the pin, where codebase indexing was
+    /// the primary consumer; kept under that name so the diff against
+    /// `02b53fcd8` stays readable.
+    ///
+    /// The pin also carries a `workspace_language_servers` field beside this
+    /// one. It is not restored: it is keyed by `lsp::supported_servers::
+    /// LSPServerType` and this fork has no `lsp` crate.
+    pub codebase_indices: Vec<CodeWorkspaceMetadata>,
     pub multi_agent_conversations: Vec<AgentConversation>,
     pub projects: Vec<Project>,
     pub project_rules: Vec<ProjectRulePath>,
@@ -348,6 +361,18 @@ pub enum ModelEvent {
 
     UpsertCurrentUserInformation {
         user_information: PersistedCurrentUserInformation,
+    },
+    /// Writes one `workspace_metadata` row (insert-or-update on `repo_path`).
+    ///
+    /// Keeps the pin's `…CodebaseIndexMetadata` name even though this fork has
+    /// no codebase indexing: the table it writes is still `workspace_metadata`,
+    /// and renaming it would make the diff against `02b53fcd8` harder to read
+    /// for whoever restores indexing.
+    UpsertCodebaseIndexMetadata {
+        index_metadata: Box<CodeWorkspaceMetadata>,
+    },
+    DeleteCodebaseIndexMetadata {
+        repo_path: PathBuf,
     },
     UpsertProject {
         project: Project,

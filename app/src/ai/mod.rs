@@ -31,6 +31,7 @@ pub(crate) mod llms;
 pub(crate) mod local_harness_setup;
 pub mod onboarding;
 pub(crate) mod option_snapshot;
+pub(crate) mod persisted_workspace;
 pub(crate) mod predict;
 pub(crate) mod project_rules_persister;
 // Client-side `RemoteAgentContextSnapshot` reconciliation (#487): needs `SkillManager`'s
@@ -44,12 +45,6 @@ pub(crate) mod remote_context_files;
 pub mod request_usage_model;
 pub(crate) mod restored_conversations;
 pub(crate) mod skills;
-// The canonical home of `all_working_directories` -- read its module docs
-// before adding a second copy of it anywhere. Its only caller today is
-// `ai::outline::native`, which `wasm` swaps out for `ai::outline::wasm`, so the
-// whole module is callerless there.
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
-pub(crate) mod terminal_working_directories;
 pub mod usage_cost;
 pub(crate) mod voice;
 pub use agent_tips::*;

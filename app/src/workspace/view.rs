@@ -44,6 +44,7 @@ use crate::ai::blocklist::suggested_rule_modal::{
 use crate::ai::conversation_utils;
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel};
 use crate::ai::llms::LLMPreferences;
+use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::{
     agent::{api::ServerConversationToken, conversation::AIConversationId, EntrypointType},
     blocklist::{
@@ -8725,7 +8726,10 @@ impl Workspace {
         repository.as_ref(ctx).external_git_directory().is_none()
     }
 
-    fn build_worktree_sidecar_items(&self) -> Vec<MenuItem<NewSessionSidecarSelection>> {
+    fn build_worktree_sidecar_items(
+        &self,
+        ctx: &AppContext,
+    ) -> Vec<MenuItem<NewSessionSidecarSelection>> {
         let search_editor = self.worktree_sidecar_search_editor.clone();
         let search_item = MenuItemFields::new_with_custom_label(
             Arc::new(move |_, _, appearance, _| {
@@ -8767,11 +8771,33 @@ impl Workspace {
         .with_padding_override(0., 0.)
         .into_item();
         let query = self.worktree_sidecar_search_query.trim().to_lowercase();
-        // PersistedWorkspace has been removed, so we no longer pull a list
-        // from "recent repositories"; `_query` here is only to keep the
-        // variable's usage semantics, the actual items are always empty.
-        let _ = query;
-        let items = vec![search_item];
+        let mut items = vec![search_item];
+        items.extend(
+            PersistedWorkspace::as_ref(ctx)
+                .workspaces()
+                .filter(|ws| ws.path.exists())
+                .filter(|ws| Self::should_include_worktree_sidecar_repo(&ws.path, ctx))
+                .filter(|ws| {
+                    if query.is_empty() {
+                        true
+                    } else {
+                        ws.path
+                            .to_string_lossy()
+                            .to_lowercase()
+                            .contains(query.as_str())
+                    }
+                })
+                .map(|ws| {
+                    let path_str = ws.path.to_string_lossy().into_owned();
+                    MenuItemFields::new(path_str.clone())
+                        .with_on_select_action(NewSessionSidecarSelection::OpenWorktreeRepo {
+                            repo_path: path_str,
+                        })
+                        .with_icon(icons::Icon::Folder)
+                        .into_item()
+                })
+                .collect::<Vec<_>>(),
+        );
         items
     }
 
@@ -8781,7 +8807,7 @@ impl Workspace {
         auto_select_first_repo: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        let items = self.build_worktree_sidecar_items();
+        let items = self.build_worktree_sidecar_items(ctx);
         let repo_count = items.len().saturating_sub(1);
         log::info!(
             "Configuring worktree sidecar: hovered_index={hovered_index}, query={:?}, repo_count={repo_count}",
@@ -9218,7 +9244,12 @@ impl Workspace {
                     return;
                 };
                 let path_buf: PathBuf = path.clone().into();
-                // PersistedWorkspace has been removed, so we no longer write to the "recent repositories" list.
+                // Register the chosen directory as a workspace so it appears in
+                // PersistedWorkspace (which is the data source for the repo picker
+                // and also triggers project-rules scanning).
+                PersistedWorkspace::handle(ctx).update(ctx, |persisted, ctx| {
+                    persisted.user_added_workspace(path_buf.clone(), ctx);
+                });
                 // Refresh the repo picker and pre-select the new path.
                 modal_view.update(ctx, |modal, ctx| {
                     modal.body().update(ctx, |body, ctx| {
@@ -9417,7 +9448,9 @@ impl Workspace {
                     return;
                 };
                 let path_buf: PathBuf = path.clone().into();
-                // PersistedWorkspace has been removed, so we no longer write to the "recent repositories" list.
+                PersistedWorkspace::handle(ctx).update(ctx, |persisted, ctx| {
+                    persisted.user_added_workspace(path_buf.clone(), ctx);
+                });
                 modal_view.update(ctx, |modal, ctx| {
                     modal.body().update(ctx, |body, ctx| {
                         body.on_new_repo_selected(path_buf, ctx);
