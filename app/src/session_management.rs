@@ -8,6 +8,7 @@ use crate::context_chips::prompt_snapshot::PromptSnapshot;
 use crate::pane_group::PaneGroup;
 use crate::terminal::model::blockgrid::BlockGrid;
 use crate::terminal::shared_session::SharedSessionStatus;
+use crate::themes::theme::AnsiColorIdentifier;
 use crate::{
     pane_group::PaneId,
     workspace::{PaneViewLocator, Workspace},
@@ -233,4 +234,22 @@ pub fn num_shared_sessions(ctx: &AppContext) -> usize {
         }
     }
     num_shared_sessions
+}
+
+/// Metadata for a single tab, used by the Ctrl+Tab MRU switcher.
+///
+/// Ported from the pinned oracle (`02b53fcd8`,
+/// `app/src/session_management.rs`). Snapshotted rather than referenced,
+/// because the Ctrl+Tab query runs synchronously while the workspace view is
+/// already borrowed -- see `search::command_palette::tabs::DataSource`.
+#[derive(Clone)]
+pub struct TabNavigationData {
+    pub pane_group_id: EntityId,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub window_id: WindowId,
+    /// 1-based left-to-right tab index for display disambiguation.
+    pub tab_index: usize,
+    /// The tab's color, if one has been set by the user.
+    pub color: Option<AnsiColorIdentifier>,
 }

@@ -8,7 +8,7 @@ use crate::search::command_palette::files;
 use crate::search::command_palette::launch_config;
 use crate::search::command_palette::mixer::{CommandPaletteItemAction, ItemSummary};
 use crate::search::command_palette::new_session::NewSessionDataSource;
-use crate::search::command_palette::{navigation, CommandPaletteMixer};
+use crate::search::command_palette::{navigation, tabs, CommandPaletteMixer};
 use crate::search::data_source::QueryResult;
 use crate::search::files::model::FileSearchModel;
 use crate::search::mixer::AddAsyncSourceOptions;
@@ -32,6 +32,10 @@ pub struct DataSourceStore {
     new_session_data_source: Option<ModelHandle<NewSessionDataSource>>,
     historical_conversation_data_source: ModelHandle<conversations::DataSource>,
     all_conversation_data_source: ModelHandle<conversations::DataSource>,
+    /// Only ever populated for the Ctrl+Tab palette under
+    /// `CtrlTabBehavior::CycleMostRecentTab`, so it is created lazily by
+    /// [`Self::reset_ctrl_tab_mixer`] rather than in [`Self::new`].
+    tabs_data_source: Option<ModelHandle<tabs::DataSource>>,
 }
 
 impl DataSourceStore {
@@ -68,6 +72,7 @@ impl DataSourceStore {
             new_session_data_source,
             historical_conversation_data_source,
             all_conversation_data_source,
+            tabs_data_source: None,
         }
     }
 
@@ -156,6 +161,45 @@ impl DataSourceStore {
                 );
             }
 
+            ctx.notify();
+        });
+    }
+
+    /// Resets the [`CommandPaletteMixer`] to the set of data sources relevant for the Ctrl+Tab
+    /// palette, which shows tabs sorted by MRU order.
+    pub fn reset_ctrl_tab_mixer(
+        &mut self,
+        mixer: ModelHandle<CommandPaletteMixer>,
+        tabs: Vec<crate::session_management::TabNavigationData>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self.tabs_data_source.is_none() {
+            self.tabs_data_source = Some(ctx.add_model(|_| tabs::DataSource::new()));
+        }
+
+        if let Some(tabs_data_source) = &self.tabs_data_source {
+            tabs_data_source.update(ctx, |ds, _| ds.set_tabs(tabs));
+            mixer.update(ctx, |mixer, ctx| {
+                mixer.reset(ctx);
+                mixer.add_sync_source(tabs_data_source.clone(), HashSet::from([QueryFilter::Tabs]));
+                ctx.notify();
+            });
+        }
+    }
+
+    /// Restores the [`CommandPaletteMixer`] to the sessions-only source for Ctrl+Tab,
+    /// undoing any previous `reset_ctrl_tab_mixer` call.
+    pub fn restore_ctrl_tab_session_mixer(
+        &self,
+        mixer: ModelHandle<CommandPaletteMixer>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        mixer.update(ctx, |mixer, ctx| {
+            mixer.reset(ctx);
+            mixer.add_sync_source(
+                self.sessions_data_source.clone(),
+                HashSet::from([QueryFilter::Sessions]),
+            );
             ctx.notify();
         });
     }
@@ -255,6 +299,11 @@ impl DataSourceStore {
             ItemSummary::ForkConversation => {
                 // The forked conversation item should not show up in the recent command list,
                 // as its use is specific to the conversation filter.
+                None
+            }
+
+            ItemSummary::Tab { .. } => {
+                // Tabs are only shown in the ctrl_tab palette, not in recent commands.
                 None
             }
 
