@@ -13,6 +13,9 @@
 #                           `app/src/workspace/cli_install.rs` looks the wrapper
 #                           up by that exact name under
 #                           `<App>.app/Contents/Resources/bin/`.
+#                           `script/check_channel_command_names` enforces that
+#                           agreement; nothing else can, because the two
+#                           strings live in different languages.
 #   binary-relative-path:   Path of the shared executable, relative to the
 #                           directory containing the wrapper (for an app bundle:
 #                           `../../MacOS/<WARP_BIN>`).

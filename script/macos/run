@@ -128,7 +128,8 @@ fi
 # file rather than at the executable, so a local bundle without it makes the
 # "Install warpctrl CLI" button fail with "bundled wrapper not found". WARP_CHANNEL
 # is only ever "local" or "oss" here, both of which take the suffixed form of
-# `Channel::warpctrl_command_name` (only `stable` is bare `warpctrl`).
+# `Channel::warpctrl_command_name` (only `stable` is bare `warpctrl`).  That
+# agreement is gated by `script/check_channel_command_names`.
 #
 # The pin guards this on the `warp_control_cli` cargo feature; this fork has no
 # such feature and gates local control at runtime via `FeatureFlag::WarpControlCli`,

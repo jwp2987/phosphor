@@ -41,6 +41,15 @@ jobs:
   #      of production's settings registration list. A group added to
   #      production and missed in the test harness compiles fine and only
   #      panics at runtime, in whichever test is first to touch it (PR #480).
+  #   4. Shell-to-Rust string drift. The packaging scripts write the per-channel
+  #      `oz` / `warpctrl` command names into the bundle, and the app looks them
+  #      up BY NAME at runtime. Rename either side and everything still
+  #      compiles; the failure only appears on a real bundle, as "bundled
+  #      wrapper not found".
+  #
+  # This job also runs the packaging scripts' own shell tests. They are bash,
+  # need no toolchain, and had no runner at all before -- an unrun test is not
+  # coverage.
   guards:
     name: fork boundary guards
     runs-on: ubuntu-22.04
@@ -73,6 +82,24 @@ jobs:
       - name: Settings registry (test harness matches production registration)
         shell: bash
         run: ./script/check_settings_registry
+
+      - name: Channel command names (packaging scripts match channel/mod.rs)
+        shell: bash
+        run: ./script/check_channel_command_names
+
+      # Pure bash; the wrapper's shell logic has nothing macOS-specific in it,
+      # so it runs on the ubuntu runner.
+      - name: warpctrl wrapper generation
+        shell: bash
+        run: ./script/macos/test_create_warpctrl_wrapper
+
+      # Needs a built `zap-oss`, which this job deliberately does not produce.
+      # It exits 0 with a "SKIPPED" diagnostic in that case; the step is here
+      # so it runs the moment a binary IS available (locally, or if this job
+      # ever gains one), rather than existing unreferenced.
+      - name: warpctrl early dispatch (skips without a built binary)
+        shell: bash
+        run: ./script/test_warpctrl_early_dispatch
 
   # Dependency licence gate.
   #

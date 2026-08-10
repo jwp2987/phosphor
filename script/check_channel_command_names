@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+#
+# Guards the shell/PowerShell/Inno packaging scripts against drifting away from
+# `Channel::cli_command_name()` / `Channel::warpctrl_command_name()` in
+# crates/warp_core/src/channel/mod.rs.
+#
+# THE DEFECT CLASS
+# ----------------
+# The packaging scripts write two per-channel command names into the bundle:
+#
+#   * the Oz CLI wrapper      -> `Channel::cli_command_name()`
+#     (`oz`, `oz-dev`, ..., and `zap-oss` for the OSS channel)
+#   * the Warp Control wrapper -> `Channel::warpctrl_command_name()`
+#     (`warpctrl`, `warpctrl-dev`, ..., `warpctrl-oss`)
+#
+# Both are looked up BY NAME at runtime -- `warpctrl_bundle_source_path()` in
+# app/src/workspace/cli_install.rs joins
+# `<App>.app/Contents/Resources/bin/` with `warpctrl_command_name()`.  Nothing
+# in the type system connects that Rust string to the shell string that created
+# the file.  Rename one side and everything still compiles, every test stays
+# green, and the failure surfaces only when a user clicks "Install CLI" on a
+# real bundle and gets "bundled wrapper not found".  That has already happened
+# once for the warpctrl pair; the `oz` / `zap-oss` pair has the identical shape
+# and was unguarded.
+#
+# WHAT IS CHECKED
+# ---------------
+# Two directions, so neither side can move alone:
+#
+#   1. SHAPE OF THE RUST MAPS.  The scripts do not enumerate every channel --
+#      they special-case `stable` (and, for the CLI name, `oss`) and build
+#      everything else as `<prefix>-$CHANNEL`.  So the Rust maps must obey that
+#      shape: `stable` is the bare prefix, and every other variant is
+#      `<prefix>-<lowercased variant name>`.  A future `Channel::Oss =>
+#      "zapctrl"` would leave the scripts silently writing `warpctrl-oss`; this
+#      is the rule that catches it.  Every enum variant must appear in both
+#      maps, so a newly added channel cannot slip through unnamed.
+#
+#   2. THE SCRIPTS STILL SPELL IT THAT WAY.  The exact name fragments the
+#      scripts must contain are DERIVED from the Rust maps, so renaming in Rust
+#      changes what is required here and the grep stops matching.  And every
+#      name-producing assignment in those scripts is read back and checked for
+#      membership in the Rust map, so an added or edited branch cannot
+#      introduce a name Rust has never heard of.
+#
+# WHAT IS DELIBERATELY NOT CHECKED
+# --------------------------------
+#   * `impl Display for Channel`.  It is a THIRD, independent string
+#     (`Channel::Oss` displays as `zap-oss`, not `oss`) used for discovery
+#     records, not for file names.  Locking it to the other two would be wrong.
+#   * script/linux/bundle's per-channel `BINARY_NAME` values (`warp`,
+#     `warp-dev`, ...).  Those are BUILD artifact names, not CLI command names;
+#     only the `warp`->`oz` substitution and the OSS literal are name-producing,
+#     and those two are checked.
+#   * script/windows/bundle.ps1.  It sets an Inno installer app id, not a
+#     command name; the Windows command names live in windows-installer.iss,
+#     which IS checked.
+#   * Whether the wrapper is generated at all, or forwards correctly.  That is
+#     script/macos/test_create_warpctrl_wrapper and
+#     script/test_warpctrl_early_dispatch.
+#
+# Usage:  script/check_channel_command_names
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+CHANNEL_RS="crates/warp_core/src/channel/mod.rs"
+MACOS_BUNDLE="script/macos/bundle"
+MACOS_RUN="script/macos/run"
+LINUX_BUNDLE="script/linux/bundle"
+WINDOWS_ISS="script/windows/windows-installer.iss"
+
+status=0
+fail() {
+  printf 'check_channel_command_names: FAIL %s\n' "$1" >&2
+  status=1
+}
+
+for f in "$CHANNEL_RS" "$MACOS_BUNDLE" "$MACOS_RUN" "$LINUX_BUNDLE" "$WINDOWS_ISS"; do
+  [[ -f "$f" ]] || {
+    fail "missing $f -- this check needs updating for the move"
+    exit 1
+  }
+done
+
+# ------------------------------------------------------- read the Rust source
+#
+# Portable sed rather than gawk's `match(..., arr)`: this also runs from a
+# macOS host, where awk is BSD awk and bash is 3.2.
+
+# Enum variants, in declaration order.
+variants="$(
+  sed -n '/^pub enum Channel {/,/^}/p' "$CHANNEL_RS" |
+    sed -n 's/^[[:space:]]*\([A-Z][A-Za-z]*\),$/\1/p'
+)"
+
+# "<Variant> <name>" lines for one `fn`. The 4-space `    }` is the fn's own
+# closing brace; the inner match closes at 8 spaces.
+read_map() {
+  sed -n "/fn $1(/,/^    }\$/p" "$CHANNEL_RS" |
+    sed -n 's/^[[:space:]]*Channel::\([A-Za-z]*\)[[:space:]]*=>[[:space:]]*"\([^"]*\)".*/\1 \2/p'
+}
+
+lookup() { # <map text> <Variant>
+  printf '%s\n' "$1" | awk -v k="$2" '$1 == k { print $2; found = 1 } END { exit !found }'
+}
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+cli_map="$(read_map cli_command_name)"
+ctl_map="$(read_map warpctrl_command_name)"
+
+if [[ -z "$variants" || -z "$cli_map" || -z "$ctl_map" ]]; then
+  fail "could not parse $CHANNEL_RS (enum variants or one of the two name fns)"
+  exit 1
+fi
+
+# Every variant must be named in both maps.
+for v in $variants; do
+  lookup "$cli_map" "$v" >/dev/null || fail "Channel::$v has no arm in cli_command_name()"
+  lookup "$ctl_map" "$v" >/dev/null || fail "Channel::$v has no arm in warpctrl_command_name()"
+done
+((status == 0)) || exit $status
+
+# ------------------------------------------------------------ 1. shape rules
+#
+# The prefix is derived from the Dev arm rather than hard-coded, so a
+# deliberate rename (`oz` -> something else) is a one-place change in Rust and
+# this check simply starts requiring the new spelling in the scripts.
+derive_prefix() { # <map text> <what>
+  local dev
+  dev="$(lookup "$1" Dev)"
+  case "$dev" in
+    *-dev) printf '%s' "${dev%-dev}" ;;
+    *)
+      fail "$2: Channel::Dev is \"$dev\", which is not <prefix>-dev; the packaging scripts build every non-stable channel as <prefix>-\$CHANNEL and cannot express this"
+      return 1
+      ;;
+  esac
+}
+
+cli_prefix="$(derive_prefix "$cli_map" cli_command_name)" || exit 1
+ctl_prefix="$(derive_prefix "$ctl_map" warpctrl_command_name)" || exit 1
+
+cli_stable="$(lookup "$cli_map" Stable)"
+cli_oss="$(lookup "$cli_map" Oss)"
+ctl_stable="$(lookup "$ctl_map" Stable)"
+
+[[ "$cli_stable" == "$cli_prefix" ]] ||
+  fail "cli_command_name(): Stable is \"$cli_stable\" but the scripts write the bare prefix \"$cli_prefix\""
+[[ "$ctl_stable" == "$ctl_prefix" ]] ||
+  fail "warpctrl_command_name(): Stable is \"$ctl_stable\" but the scripts write the bare prefix \"$ctl_prefix\""
+
+for v in $variants; do
+  key="$(lower "$v")"
+  # The CLI name special-cases Stable (bare) and Oss (its own literal); every
+  # other channel goes through the `<prefix>-$RELEASE_CHANNEL` branch.
+  if [[ "$v" != "Stable" && "$v" != "Oss" ]]; then
+    got="$(lookup "$cli_map" "$v")"
+    [[ "$got" == "$cli_prefix-$key" ]] ||
+      fail "cli_command_name(): Channel::$v is \"$got\" but the packaging scripts produce \"$cli_prefix-$key\""
+  fi
+  # The warpctrl name special-cases ONLY Stable -- Oss included, both
+  # script/macos/bundle and script/macos/run build it by suffix.
+  if [[ "$v" != "Stable" ]]; then
+    got="$(lookup "$ctl_map" "$v")"
+    [[ "$got" == "$ctl_prefix-$key" ]] ||
+      fail "warpctrl_command_name(): Channel::$v is \"$got\" but the packaging scripts produce \"$ctl_prefix-$key\""
+  fi
+done
+
+# ------------------------------------- 2a. the scripts still spell it that way
+require() { # <file> <literal fragment> <why>
+  grep -qF -- "$2" "$1" ||
+    fail "$1 no longer contains \`$2\` ($3) -- update it together with $CHANNEL_RS"
+}
+
+require "$MACOS_BUNDLE" "bin/$cli_stable\"" "the stable Oz CLI wrapper name"
+require "$MACOS_BUNDLE" "bin/$cli_oss\"" "the OSS Oz CLI wrapper name"
+require "$MACOS_BUNDLE" "bin/$cli_prefix-\$RELEASE_CHANNEL\"" "the per-channel Oz CLI wrapper name"
+require "$MACOS_BUNDLE" "WARPCTRL_COMMAND_NAME=\"$ctl_stable\"" "the stable Warp Control wrapper name"
+require "$MACOS_BUNDLE" "WARPCTRL_COMMAND_NAME=\"$ctl_prefix-\$RELEASE_CHANNEL\"" "the per-channel Warp Control wrapper name"
+require "$MACOS_RUN" "bin/$ctl_prefix-\$WARP_CHANNEL\"" "the local-bundle Warp Control wrapper name"
+require "$LINUX_BUNDLE" "BINARY_NAME=\"$cli_oss\"" "the OSS CLI binary name"
+require "$LINUX_BUNDLE" "\${BINARY_NAME/warp/$cli_prefix}" "the warp->Oz CLI binary rename"
+require "$WINDOWS_ISS" "'$cli_stable.cmd'" "the stable Windows CLI shim name"
+require "$WINDOWS_ISS" "'$cli_oss.cmd'" "the OSS Windows CLI shim name"
+require "$WINDOWS_ISS" "'$cli_prefix-{#ReleaseChannel}.cmd'" "the per-channel Windows CLI shim name"
+
+# ----------------------------- 2b. and they spell nothing Rust has never heard
+#
+# Read every name-producing assignment back out and check it. This is what
+# catches an ADDED branch (a new channel wired into the shell but not into
+# Rust), which the fragment requirements above cannot see.
+#
+# A value containing `$` or `{` is a template; it must be exactly the template
+# the shape rule assumes. Anything else must be a literal the Rust map knows.
+in_map() { # <map text> <name>
+  printf '%s\n' "$1" | awk -v n="$2" '$2 == n { found = 1 } END { exit !found }'
+}
+
+check_values() { # <file> <label> <map text> <allowed template> <extracted values...>
+  local file="$1" label="$2" map="$3" template="$4"
+  shift 4
+  local value
+  if (($# == 0)); then
+    fail "$file: found no $label assignments to check -- the extraction pattern has rotted"
+    return
+  fi
+  for value in "$@"; do
+    case "$value" in
+      *'$'* | *'{'*)
+        [[ "$value" == "$template" ]] ||
+          fail "$file: $label template \`$value\` is not the \`$template\` the packaging shape assumes"
+        ;;
+      *)
+        in_map "$map" "$value" ||
+          fail "$file: $label \`$value\` is not a value of the matching fn in $CHANNEL_RS"
+        ;;
+    esac
+  done
+}
+
+# Command names never contain whitespace or glob metacharacters, so plain word
+# splitting of the substitution is safe -- and it keeps this bash-3.2 clean
+# (no `mapfile`), because the macOS packaging host is where these scripts run.
+
+# `CLI_SCRIPT_PATH="…/bin/<name>"` -> <name>
+check_values "$MACOS_BUNDLE" "Oz CLI wrapper name" "$cli_map" \
+  "$cli_prefix-\$RELEASE_CHANNEL" \
+  $(grep -oE 'CLI_SCRIPT_PATH="[^"]*"' "$MACOS_BUNDLE" | sed -e 's/.*\///' -e 's/"$//')
+
+check_values "$MACOS_BUNDLE" "Warp Control wrapper name" "$ctl_map" \
+  "$ctl_prefix-\$RELEASE_CHANNEL" \
+  $(grep -oE 'WARPCTRL_COMMAND_NAME="[^"]*"' "$MACOS_BUNDLE" | sed -e 's/.*="//' -e 's/"$//')
+
+check_values "$MACOS_RUN" "Warp Control wrapper name" "$ctl_map" \
+  "$ctl_prefix-\$WARP_CHANNEL" \
+  $(grep -oE 'WARPCTRL_SCRIPT_PATH="[^"]*"' "$MACOS_RUN" | sed -e 's/.*\///' -e 's/"$//')
+
+# `CmdScriptName := '<name>.cmd'` -> <name>
+check_values "$WINDOWS_ISS" "Windows CLI shim name" "$cli_map" \
+  "$cli_prefix-{#ReleaseChannel}" \
+  $(grep -oE "CmdScriptName := '[^']*'" "$WINDOWS_ISS" | sed -e "s/.*'\(.*\)'/\1/" -e 's/\.cmd$//')
+
+if ((status == 0)); then
+  echo "check_channel_command_names: ok -- packaging scripts agree with $CHANNEL_RS"
+fi
+exit $status

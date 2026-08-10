@@ -238,9 +238,10 @@ begin
       CreateDir(BinDir);
 
     { Determine the channel-specific script name.  These values must match
-      `Channel::cli_command_name` in the Rust source. }
+      `Channel::cli_command_name` in the Rust source; that agreement is gated
+      by `script/check_channel_command_names`. }
 #if ReleaseChannel == "stable"
-    CmdScriptName := 'oz.cmd'
+    CmdScriptName := 'oz.cmd';
 #elif ReleaseChannel == "oss"
     CmdScriptName := 'zap-oss.cmd';
 #else

@@ -186,6 +186,36 @@ if [[ -x ./script/check_settings_registry ]]; then
     ./script/check_settings_registry >/dev/null 2>&1 && ok "settings registry" \
         || fail "settings registry -- run ./script/check_settings_registry for detail"
 fi
+if [[ -x ./script/check_channel_command_names ]]; then
+    ./script/check_channel_command_names >/dev/null 2>&1 && ok "channel command names" \
+        || fail "channel command names -- run ./script/check_channel_command_names for detail"
+fi
+
+# ------------------------------------------------------------- shell tests
+# The packaging scripts are shell, so their tests are shell too -- no cargo,
+# no compile, so they belong with the cheap gates rather than in the suite.
+#
+# script/test_warpctrl_early_dispatch needs a BUILT binary and SKIPS (exit 0,
+# with a diagnostic) when there is none. That is deliberate: nothing in this
+# gate builds `zap-oss`, and a test that hard-fails in every environment
+# without a build would just get switched off. It reports "SKIPPED" here so a
+# skip is visible rather than silent.
+step "shell tests (packaging scripts)"
+for shell_test in ./script/macos/test_create_warpctrl_wrapper ./script/test_warpctrl_early_dispatch; do
+    [[ -x "$shell_test" ]] || continue
+    _shell_rc=0
+    _shell_out="$("$shell_test" 2>&1)" || _shell_rc=$?
+    if ((_shell_rc == 0)); then
+        if [[ "$_shell_out" == *SKIPPED* ]]; then
+            warn "$shell_test -- SKIPPED (no built binary)"
+        else
+            ok "$shell_test"
+        fi
+    else
+        fail "$shell_test"
+        printf '%s\n' "$_shell_out" | sed 's/^/      /' >&2
+    fi
+done
 
 if ((FAST == 1)); then
     printf '\n\033[33mprecheck --fast: gates only.\033[0m Nothing was compiled and no test ran.\n'
