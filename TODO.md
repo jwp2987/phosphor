@@ -1105,8 +1105,29 @@ tested with zero production callers.
       here) — remote files have no `file_path()`, so without it the banner's
       Discard button is dead.
 
-- [ ] **#3 Settings > "Phosphor Drive" page — MAINTAINER DECISION 2026-08-10:
-      REMOVE IT.** The audit's recommendation was to restore the missing sidebar
+- [x] **#3 Settings > "Phosphor Drive" page — RESOLVED 2026-08-10: KEEP DRIVE,
+      restore the missing sidebar row.** The decision reversed twice; this is the
+      final one, with the reasoning, so it is not re-litigated.
+
+      First call was "remove it" — Drive was believed to be the dropped cloud
+      product. It is not. The toggle's own text says *"a local workspace in your
+      terminal ... on this device"*, and `is_anonymous_or_logged_out()` is
+      hard-coded `false` here, so the feature is purely local.
+
+      **Why it was remembered as cloud, which is the useful part:** in real Warp
+      it *was*. Drive objects synced to Warp's servers through
+      `app/src/server/sync_queue.rs` + `cloud_objects`. That sync layer was
+      **physically deleted before this fork existed** — commit `834909cb9`
+      (2026-05-12, `zero`, "Wave4-2 physically delete sync_queue.rs"), part of the
+      inherited Zap/OpenWarp lineage. What survived is the local browser over the
+      local object store, wearing the name of a feature that used to sync. Drive
+      *Spaces* and `warp.dev/drive/...` links remain genuinely cloud
+      (`DECLINED.md` #267) — that distinction is the whole story.
+
+      The removal (`6041ffe7c`) was reverted whole. What remains open is the
+      original finding: the page is constructed and pushed into `settings_pages`
+      but absent from `nav_items`, so it is unreachable — **add the row.**
+      Original finding: The audit's recommendation was to restore the missing sidebar
       row; the maintainer's call is the opposite — **Drive should have been removed
       with the rest of the dropped surface, so the settings page and the feature go,
       rather than becoming reachable.** Do not add the `nav_items` row. Remove the
