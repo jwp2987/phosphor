@@ -31,8 +31,11 @@ use warp_core::features::FeatureFlag;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::icons::ICON_DIMENSIONS;
 use warp_editor::render::element::VerticalExpansionBehavior;
+use lsp::LspManagerModel;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::path::LineAndColumnArg;
 use warpui::elements::Rect;
+use warpui::text::point::Point;
 use warpui::fonts::Style;
 use warpui::text_layout::ClipConfig;
 
@@ -793,6 +796,38 @@ impl CodeView {
                 GlobalBufferModel::handle(ctx).update(ctx, |global_buffer, ctx| {
                     global_buffer.discard_unsaved_changes(path, ctx);
                 });
+            }
+            LocalCodeEditorEvent::GotoDefinition {
+                path,
+                line,
+                column,
+                source_server_id,
+            } => {
+                // Register the external file so it can use LSP features.
+                // The manager will skip registration if the path is under an existing workspace.
+                let lsp_manager = LspManagerModel::handle(ctx);
+                lsp_manager.update(ctx, |mgr, _| {
+                    mgr.maybe_register_external_file(path, *source_server_id);
+                });
+
+                // LSP uses 0-based line numbers, convert to 1-based for LineAndColumnArg
+                let line_1based = *line + 1;
+                let line_col = LineAndColumnArg {
+                    line_num: line_1based,
+                    column_num: Some(*column),
+                };
+
+                me.open_or_focus_existing(
+                    Some(LocalOrRemotePath::Local(path.to_path_buf())),
+                    Some(line_col),
+                    ctx,
+                );
+                if let Some(editor) = me.tab_at(me.active_tab_index()).map(|tab| &tab.editor_view) {
+                    editor.update(ctx, |editor, ctx| {
+                        editor.cursor_at(Point::new(line_1based as u32, *column as u32), ctx);
+                    });
+                }
+                me.focus_contents(ctx);
             }
             LocalCodeEditorEvent::CommentSaved { .. }
             | LocalCodeEditorEvent::RequestOpenComment(_)
