@@ -1,7 +1,9 @@
 use super::{
-    default_collapsible_state_for_orchestration_message, CollapsibleElementState,
-    CollapsibleExpansionState,
+    CollapsibleElementState, CollapsibleExpansionState,
+    default_collapsible_state_for_orchestration_action,
+    default_collapsible_state_for_orchestration_message,
 };
+use crate::ai::agent::AIAgentActionType;
 use crate::settings::{AISettings, OrchestrationMessageDisplayMode};
 use crate::test_util::settings::initialize_settings_for_tests;
 use settings::Setting;
@@ -102,14 +104,76 @@ fn collapsed_initializer_starts_collapsed() {
     ));
 }
 
-// The pin also has orchestration_send_message_starts_collapsed,
-// non_orchestration_actions_do_not_get_collapsible_state_defaults,
-// orchestration_show_and_collapse_starts_sent_messages_expanded, and
-// orchestration_always_show_starts_sent_messages_expanded, all exercising
-// default_collapsible_state_for_orchestration_action against
-// AIAgentActionType::SendMessageToAgent. Not ported: that variant does not
-// exist in this fork (see default_collapsible_state_for_orchestration_action's
-// doc comment in block.rs), so these 4 tests cannot compile here.
+#[test]
+fn orchestration_send_message_starts_collapsed() {
+    let state = default_collapsible_state_for_orchestration_action(
+        &AIAgentActionType::SendMessageToAgent {
+            addresses: vec!["child-agent".to_string()],
+            subject: "Status".to_string(),
+            message: "Body".to_string(),
+        },
+        OrchestrationMessageDisplayMode::AlwaysCollapse,
+    )
+    .expect("send-message actions should get a collapsible state");
+
+    assert!(matches!(
+        state.expansion_state,
+        CollapsibleExpansionState::Collapsed
+    ));
+}
+
+#[test]
+fn non_orchestration_actions_do_not_get_collapsible_state_defaults() {
+    assert!(
+        default_collapsible_state_for_orchestration_action(
+            &AIAgentActionType::OpenCodeReview,
+            OrchestrationMessageDisplayMode::AlwaysCollapse,
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn orchestration_show_and_collapse_starts_sent_messages_expanded() {
+    let state = default_collapsible_state_for_orchestration_action(
+        &AIAgentActionType::SendMessageToAgent {
+            addresses: vec!["child-agent".to_string()],
+            subject: "Status".to_string(),
+            message: "Body".to_string(),
+        },
+        OrchestrationMessageDisplayMode::ShowAndCollapse,
+    )
+    .expect("send-message actions should get a collapsible state");
+
+    assert!(matches!(
+        state.expansion_state,
+        CollapsibleExpansionState::Expanded {
+            is_finished: false,
+            scroll_pinned_to_bottom: true
+        }
+    ));
+}
+
+#[test]
+fn orchestration_always_show_starts_sent_messages_expanded() {
+    let state = default_collapsible_state_for_orchestration_action(
+        &AIAgentActionType::SendMessageToAgent {
+            addresses: vec!["child-agent".to_string()],
+            subject: "Status".to_string(),
+            message: "Body".to_string(),
+        },
+        OrchestrationMessageDisplayMode::AlwaysShow,
+    )
+    .expect("send-message actions should get a collapsible state");
+
+    assert!(matches!(
+        state.expansion_state,
+        CollapsibleExpansionState::Expanded {
+            is_finished: false,
+            scroll_pinned_to_bottom: true
+        }
+    ));
+}
 
 #[test]
 fn orchestration_show_and_collapse_collapses_after_finish() {
