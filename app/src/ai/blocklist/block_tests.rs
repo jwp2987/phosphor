@@ -296,3 +296,59 @@ fn open_code_action_routes_links_to_configured_editor_and_non_links_to_warp() {
         } if source == skill_source
     ));
 }
+
+// ── Ask-User-Question autonomy speedbump (#11) ──
+//
+// The `should_show_agent_mode_ask_user_question_speedbump` setting existed with
+// zero consumers because `AutonomySettingSpeedbump` had no matching variant.
+// These tests pin the variant's contract: it is keyed by action id, and its
+// `shown` latch is what gates consuming the one-shot setting.
+
+#[test]
+fn ask_user_question_speedbump_is_keyed_by_action_id() {
+    use crate::ai::agent::AIAgentActionId;
+    use crate::ai::blocklist::block::AutonomySettingSpeedbump;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+
+    let action_id = AIAgentActionId::from("action-1".to_string());
+    let other_id = AIAgentActionId::from("action-2".to_string());
+    let speedbump = AutonomySettingSpeedbump::ShouldShowForAskUserQuestion {
+        action_id: action_id.clone(),
+        shown: Arc::new(Mutex::new(false)),
+    };
+
+    assert!(matches!(
+        &speedbump,
+        AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { action_id: id, .. }
+            if *id == action_id
+    ));
+    assert!(!matches!(
+        &speedbump,
+        AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { action_id: id, .. }
+            if *id == other_id
+    ));
+}
+
+#[test]
+fn ask_user_question_speedbump_shown_latch_starts_unset() {
+    use crate::ai::agent::AIAgentActionId;
+    use crate::ai::blocklist::block::AutonomySettingSpeedbump;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+
+    let shown = Arc::new(Mutex::new(false));
+    let speedbump = AutonomySettingSpeedbump::ShouldShowForAskUserQuestion {
+        action_id: AIAgentActionId::from("action-1".to_string()),
+        shown: shown.clone(),
+    };
+
+    // The one-shot setting is only consumed once the footer actually renders,
+    // so a seeded-but-never-shown speedbump must leave the latch clear.
+    assert!(!*shown.lock());
+
+    if let AutonomySettingSpeedbump::ShouldShowForAskUserQuestion { shown: latch, .. } = &speedbump {
+        *latch.lock() = true;
+    }
+    assert!(*shown.lock());
+}

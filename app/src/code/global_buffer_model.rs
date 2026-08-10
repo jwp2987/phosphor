@@ -1808,7 +1808,7 @@ impl GlobalBufferModel {
             ctx.spawn(
                 async move {
                     client
-                        .open_buffer(path_str)
+                        .open_buffer(path_str, false)
                         .await
                         .map_err(|e| format!("{e}"))
                 },
@@ -1857,6 +1857,94 @@ impl GlobalBufferModel {
         }
 
         BufferState::new(file_id, buffer)
+    }
+
+    /// Re-open an existing remote buffer by sending `OpenBuffer` with
+    /// `force_reload = true` to the server.
+    ///
+    /// The server re-reads the file from disk into the existing buffer and
+    /// broadcasts a `BufferUpdatedPush` to the other connections. The requesting
+    /// connection receives the fresh content in the `OpenBufferResponse`, which
+    /// replaces the local buffer and resets the sync clock -- i.e. this is
+    /// "discard my local edits and take the server's copy".
+    ///
+    /// On failure, emits `FailedToLoad`; the caller keeps the current buffer
+    /// state (and its conflict banner) so the user can retry.
+    ///
+    /// `local_tty`-gated for the same reason as `close_buffer`'s remote arm:
+    /// `remote_server::manager` is only reachable on platforms that have one.
+    #[cfg(feature = "local_tty")]
+    pub fn reopen_remote_buffer(&mut self, file_id: FileId, ctx: &mut ModelContext<Self>) {
+        let Some(state) = self.buffers.get(&file_id) else {
+            return;
+        };
+        let BufferSource::Remote { remote_path, .. } = &state.source else {
+            return;
+        };
+        let path_str = remote_path.path.as_str().to_string();
+        let host_id = remote_path.host_id.clone();
+
+        log::debug!("[remote-buffer] Re-opening buffer with force_reload: path={path_str}");
+        let manager = remote_server::manager::RemoteServerManager::handle(ctx);
+        let Some(client) = manager.as_ref(ctx).client_for_host(&host_id).cloned() else {
+            log::warn!("No remote server client for host {host_id:?}");
+            ctx.emit(GlobalBufferModelEvent::FailedToLoad {
+                file_id,
+                error: Rc::new(FileLoadError::DoesNotExist),
+            });
+            return;
+        };
+
+        ctx.spawn(
+            async move {
+                client
+                    .open_buffer(path_str, true)
+                    .await
+                    .map_err(|e| format!("{e}"))
+            },
+            move |me, result, ctx| match result {
+                Ok(response) => {
+                    let Some(state) = me.buffers.get_mut(&file_id) else {
+                        return;
+                    };
+                    if let BufferSource::Remote {
+                        sync_clock,
+                        pending_batch,
+                        ..
+                    } = &mut state.source
+                    {
+                        *sync_clock = Some(SyncClock::from_wire(response.server_version, 0));
+                        // Any in-flight edits are exactly the ones being discarded.
+                        if let Some(batch) = pending_batch.take() {
+                            batch.discard();
+                        }
+                    }
+                    let Some(buffer) = state.buffer.upgrade(ctx) else {
+                        return;
+                    };
+                    let version = ContentVersion::new();
+                    buffer.update(ctx, |buffer, ctx| {
+                        buffer.replace_all(&response.content, ctx);
+                        buffer.set_version(version);
+                    });
+                    ctx.emit(GlobalBufferModelEvent::BufferLoaded {
+                        file_id,
+                        content_version: version,
+                    });
+                }
+                Err(error) => {
+                    // Deliberately does NOT clean up the file_id: unlike the
+                    // initial open, the buffer is still live and the user is
+                    // still looking at it. Leave it so the banner stays and the
+                    // Discard button can be pressed again.
+                    log::warn!("Failed to re-open remote buffer: {error}");
+                    ctx.emit(GlobalBufferModelEvent::FailedToLoad {
+                        file_id,
+                        error: Rc::new(FileLoadError::DoesNotExist),
+                    });
+                }
+            },
+        );
     }
 
     /// Handle a `BufferConflictDetected` push from the remote server: the file
@@ -2142,6 +2230,123 @@ impl GlobalBufferModel {
         });
 
         true
+    }
+
+    /// Force-reload a server-local buffer from disk, discarding any in-memory
+    /// edits.
+    ///
+    /// Reads the file, replaces the buffer content, bumps the server version in
+    /// the `SyncClock`, and emits both `BufferLoaded` (so the requesting
+    /// connection gets the new content) and `ServerLocalBufferUpdated` (so the
+    /// other connections receive a `BufferUpdatedPush` with the fresh content).
+    #[cfg(feature = "local_fs")]
+    pub fn force_reload_server_local(
+        &mut self,
+        file_id: FileId,
+        ctx: &mut ModelContext<Self>,
+    ) -> Result<(), String> {
+        let Some(state) = self.buffers.get(&file_id) else {
+            return Err(format!("force_reload: unknown file_id={file_id:?}"));
+        };
+        let Some(file_path) = self
+            .location_to_id
+            .get_by_right(&file_id)
+            .and_then(|loc| loc.local_path().map(|p| p.to_path_buf()))
+        else {
+            return Err(format!("force_reload: no local path for file_id={file_id:?}"));
+        };
+        // Capture the current client version before the reload so it can go in
+        // the `ServerLocalBufferUpdated` event.
+        let BufferSource::ServerLocal { sync_clock, .. } = &state.source else {
+            return Err(format!(
+                "force_reload called on non-ServerLocal buffer {file_id:?}"
+            ));
+        };
+        let expected_client_version = sync_clock.client_version;
+
+        ctx.spawn(
+            async move { FileModel::read_content_for_file(&file_path).await },
+            move |me, content, ctx| match content {
+                Ok(content) => {
+                    let Some(state) = me.buffers.get_mut(&file_id) else {
+                        ctx.emit(GlobalBufferModelEvent::FailedToLoad {
+                            file_id,
+                            error: Rc::new(FileLoadError::DoesNotExist),
+                        });
+                        return;
+                    };
+                    let Some(buffer) = state.buffer.upgrade(ctx) else {
+                        ctx.emit(GlobalBufferModelEvent::FailedToLoad {
+                            file_id,
+                            error: Rc::new(FileLoadError::DoesNotExist),
+                        });
+                        return;
+                    };
+
+                    // Capture the end of the old buffer for the replacement range
+                    // BEFORE replacing the content.
+                    let old_end = buffer.as_ref(ctx).max_charoffset();
+
+                    let new_version = ContentVersion::new();
+                    buffer.update(ctx, |buffer, ctx| {
+                        buffer.replace_all(&content, ctx);
+                        buffer.set_version(new_version);
+                    });
+
+                    state.set_base_content_version(new_version);
+                    FileModel::handle(ctx).update(ctx, |file_model, _ctx| {
+                        file_model.set_version(file_id, new_version);
+                    });
+
+                    // Bump the server version in the sync clock.
+                    let new_server_version =
+                        if let BufferSource::ServerLocal { sync_clock, .. } = &mut state.source {
+                            let sv = sync_clock.bump_server();
+                            // Reset the client version to 0 ("no client edits").
+                            // `server_version` tracks disk state, `client_version`
+                            // tracks user edits; after a force-reload both sides
+                            // agree on CV=0 (the client also resets, via
+                            // `SyncClock::from_wire` on the OpenBufferResponse).
+                            sync_clock.client_version = ContentVersion::from_raw(0);
+                            sv
+                        } else {
+                            return;
+                        };
+
+                    // Build a single full-replacement edit so the other
+                    // connections can apply it via BufferUpdatedPush.
+                    let char_offset_edits = vec![CharOffsetEdit {
+                        start: CharOffset::from(1usize),
+                        end: old_end,
+                        text: content,
+                    }];
+
+                    // Emit ServerLocalBufferUpdated BEFORE BufferLoaded so that
+                    // `ServerModel`'s handler can peek at the pending OpenBuffer
+                    // requests to exclude the requesting connection from the
+                    // broadcast -- BufferLoaded consumes those pending requests.
+                    ctx.emit(GlobalBufferModelEvent::ServerLocalBufferUpdated {
+                        file_id,
+                        edits: char_offset_edits,
+                        new_server_version,
+                        expected_client_version,
+                    });
+                    ctx.emit(GlobalBufferModelEvent::BufferLoaded {
+                        file_id,
+                        content_version: new_version,
+                    });
+                }
+                Err(e) => {
+                    log::warn!("[server-local] force_reload failed: {e}");
+                    ctx.emit(GlobalBufferModelEvent::FailedToLoad {
+                        file_id,
+                        error: e.into(),
+                    });
+                }
+            },
+        );
+
+        Ok(())
     }
 
     /// Save a server-local buffer to disk.

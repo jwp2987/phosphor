@@ -957,3 +957,59 @@ fn register_connection_sends_the_current_remote_agent_context_snapshot() {
         assert!(rx2.try_recv().is_ok());
     });
 }
+
+// ── OpenBuffer force-reload exclusion (#2, remote buffer conflicts) ──
+//
+// A force_reload OpenBuffer makes the daemon re-read the file and emit
+// ServerLocalBufferUpdated. That broadcast must skip the connection whose
+// OpenBuffer is still pending: it receives the same content in its
+// OpenBufferResponse, and applying both would double-apply the edit.
+#[cfg(feature = "local_fs")]
+#[test]
+fn pending_open_buffer_connections_are_excluded_from_the_update_broadcast() {
+    use super::super::server_buffer_tracker::PendingBufferRequestKind;
+    use warp_util::file::FileId;
+
+    let mut tracker = ServerBufferTracker::new();
+    let file_id = FileId::new();
+    let requester: ConnectionId = uuid::Uuid::new_v4();
+    let observer: ConnectionId = uuid::Uuid::new_v4();
+
+    tracker.add_connection(file_id, requester);
+    tracker.add_connection(file_id, observer);
+
+    // Nothing pending yet: neither connection is excluded.
+    assert!(
+        tracker
+            .pending_connections_for_open_buffer(&file_id)
+            .is_empty()
+    );
+
+    tracker.insert_pending(
+        file_id,
+        RequestId::new(),
+        requester,
+        PendingBufferRequestKind::OpenBuffer,
+    );
+    let excluded = tracker.pending_connections_for_open_buffer(&file_id);
+    assert!(excluded.contains(&requester));
+    assert!(!excluded.contains(&observer));
+
+    // A pending request of a different kind must not exclude anyone.
+    let mut other = ServerBufferTracker::new();
+    other.insert_pending(
+        file_id,
+        RequestId::new(),
+        requester,
+        PendingBufferRequestKind::SaveBuffer,
+    );
+    assert!(other.pending_connections_for_open_buffer(&file_id).is_empty());
+
+    // Once the response is sent the exclusion lifts.
+    tracker.take_pending_by_kind(&file_id, PendingBufferRequestKind::OpenBuffer);
+    assert!(
+        tracker
+            .pending_connections_for_open_buffer(&file_id)
+            .is_empty()
+    );
+}

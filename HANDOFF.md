@@ -352,8 +352,13 @@ passing **for the wrong reason**: with nothing detected, everything queues, whic
 is exactly what it asserted. A green sibling test is not evidence the mechanism
 works.
 
-Still missing and unfiled: the fork also lacks the pin's `PrivacySettings` and
-`UserWorkspaces` recompute subscriptions — same latching class, no test covers it.
+~~Still missing and unfiled: the fork also lacks the pin's `PrivacySettings` and
+`UserWorkspaces` recompute subscriptions — same latching class, no test covers
+it.~~ **Struck 2026-08-10 (unwired-code audit): this was a false alarm.** Both pin
+subscriptions fire only on cloud-only events, and the fork's `session_context()`
+(`crates/warp_tui/src/terminal_session_view/data_source/mod.rs:215-277`) reads
+none of them, so there is nothing to recompute. The missing `AIAutoDetectionEnabled`
+arm is the same story. Nothing to file.
 
 ## The oracle is PINNED — read `ORACLE.md` before any parity work
 

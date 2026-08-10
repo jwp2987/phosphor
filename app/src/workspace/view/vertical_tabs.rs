@@ -27,6 +27,7 @@ use crate::context_chips::display_chip::GitLineChanges;
 use crate::context_chips::github_pr_display_text_from_url;
 use crate::drive::{cloud_object_styling::warp_drive_icon_color, DriveObjectType};
 use crate::editor::EditorView;
+use crate::notifications::model::NotificationsModel;
 use crate::pane_group::pane::IPaneType;
 use crate::pane_group::TerminalPane;
 use crate::pane_group::{
@@ -596,6 +597,13 @@ pub(super) struct VerticalTabsPanelState {
     show_pr_link_info_tooltip_mouse_state: MouseStateHandle,
     show_diff_stats_mouse_state: MouseStateHandle,
     show_details_on_hover_mouse_state: MouseStateHandle,
+    /// Dedicated handle for the panel-wide `Hoverable` that turns a right-click
+    /// on empty panel space into the new-session menu.
+    ///
+    /// It must not be shared with any other `Hoverable` -- see the note at the
+    /// settings-popup site in `render_panel`: two `Hoverable` trees sharing one
+    /// handle race on `click_count.take()` and silently swallow clicks.
+    panel_right_click_mouse_state: MouseStateHandle,
     pub(super) show_settings_popup: bool,
 }
 
@@ -631,6 +639,7 @@ impl Default for VerticalTabsPanelState {
             show_pr_link_info_tooltip_mouse_state: Default::default(),
             show_diff_stats_mouse_state: Default::default(),
             show_details_on_hover_mouse_state: Default::default(),
+            panel_right_click_mouse_state: Default::default(),
             show_settings_popup: false,
         }
     }
@@ -1560,9 +1569,28 @@ fn render_vertical_tabs_panel(
         super::PanelPosition::Left => DragBarSide::Right,
         super::PanelPosition::Right => DragBarSide::Left,
     };
-    let inner = Container::new(panel_with_popup)
-        .with_background(internal_colors::fg_overlay_1(theme))
-        .finish();
+    // Wrap the panel in a `Hoverable` so right-clicking the empty area of the
+    // vertical tabs panel opens the new-session menu, and double-clicking it
+    // opens a new tab.
+    //
+    // `with_defer_events_to_children()` is required: every row, badge and button
+    // inside the panel has its own `Hoverable`, and without deferring, this outer
+    // one would consume their clicks. It also uses its own dedicated
+    // `MouseStateHandle` -- reusing an existing one would reproduce the
+    // shared-handle bug documented at the settings-popup site above.
+    let inner = Hoverable::new(state.panel_right_click_mouse_state.clone(), |_| {
+        Container::new(panel_with_popup)
+            .with_background(internal_colors::fg_overlay_1(theme))
+            .finish()
+    })
+    .on_right_click(|ctx, _, position| {
+        ctx.dispatch_typed_action(WorkspaceAction::OpenNewSessionMenu { position });
+    })
+    .on_double_click(|ctx, _, _| {
+        ctx.dispatch_typed_action(WorkspaceAction::AddDefaultTab);
+    })
+    .with_defer_events_to_children()
+    .finish();
 
     Resizable::new(state.resizable_state.clone(), inner)
         .with_dragbar_side(drag_side)
@@ -2503,8 +2531,25 @@ fn resolve_icon_with_status_variant(
     }
 }
 
-fn has_unread_activity(_typed: &TypedPane<'_>, _app: &AppContext) -> bool {
-    false
+/// Whether this pane has notifications the user has not read yet, which drives
+/// the unread indicator dot on the tab row.
+///
+/// Only terminal panes can carry notifications: `NotificationsModel` files them
+/// against a `TerminalView` id (see `NotificationItem::terminal_view_id`), and
+/// `WorkspaceView::notify_terminal_focus_change` clears them when that terminal
+/// gains focus in the active window.
+fn has_unread_activity(typed: &TypedPane<'_>, app: &AppContext) -> bool {
+    let TypedPane::Terminal(terminal_pane) = typed else {
+        return false;
+    };
+    let terminal_view = terminal_pane.terminal_view(app);
+    has_unread_activity_for_terminal_view(terminal_view.as_ref(app).id(), app)
+}
+
+fn has_unread_activity_for_terminal_view(terminal_view_id: EntityId, app: &AppContext) -> bool {
+    NotificationsModel::as_ref(app)
+        .notifications()
+        .has_unread_for_terminal_view(terminal_view_id)
 }
 
 const INDICATOR_DOT_SIZE: f32 = 8.;

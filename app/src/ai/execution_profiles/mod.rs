@@ -146,6 +146,18 @@ pub enum AskUserQuestionPermission {
 }
 
 impl AskUserQuestionPermission {
+    /// Short label used in pickers (the execution-profile editor row and the
+    /// Ask-User-Question speedbump dropdown).
+    pub fn label(&self) -> &'static str {
+        match self {
+            AskUserQuestionPermission::Never => "Never ask",
+            AskUserQuestionPermission::AskExceptInAutoApprove => "Ask unless auto-approve",
+            AskUserQuestionPermission::AlwaysAsk | AskUserQuestionPermission::Unknown => {
+                "Always ask"
+            }
+        }
+    }
+
     pub fn description(&self) -> &'static str {
         match self {
             AskUserQuestionPermission::AskExceptInAutoApprove

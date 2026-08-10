@@ -7862,3 +7862,57 @@ fn test_vim_paragraph_visual_inner_single_paragraph() {
         });
     });
 }
+
+// ── Vim goto-line in the terminal command input (#9) ──
+//
+// `jump_to_line` was a no-op stub here, so `42G`, `5gg` and `:42<CR>` silently
+// did nothing in the command input while working in the code editor and the TUI.
+#[test]
+fn test_vim_goto_line_number() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let editor = add_editor_vim_normal_mode(
+            "aaa
+            bbb
+            ccc
+            ddd"
+                .unindent()
+                .as_str(),
+            &mut app,
+        );
+
+        // 3G -> third line (vim line numbers are 1-based).
+        editor.update(&mut app, |view, ctx| {
+            view.vim_user_insert("3G", ctx);
+        });
+        editor.read(&app, |view, ctx| {
+            assert_eq!(
+                view.selected_ranges(ctx),
+                vec![DisplayPoint::new(2, 0)..DisplayPoint::new(2, 0)]
+            );
+        });
+
+        // 1gg -> first line.
+        editor.update(&mut app, |view, ctx| {
+            view.vim_user_insert("1gg", ctx);
+        });
+        editor.read(&app, |view, ctx| {
+            assert_eq!(
+                view.selected_ranges(ctx),
+                vec![DisplayPoint::new(0, 0)..DisplayPoint::new(0, 0)]
+            );
+        });
+
+        // A line past the end clamps to the last line rather than doing nothing.
+        editor.update(&mut app, |view, ctx| {
+            view.vim_user_insert("99G", ctx);
+        });
+        editor.read(&app, |view, ctx| {
+            assert_eq!(
+                view.selected_ranges(ctx),
+                vec![DisplayPoint::new(3, 0)..DisplayPoint::new(3, 0)]
+            );
+        });
+    });
+}

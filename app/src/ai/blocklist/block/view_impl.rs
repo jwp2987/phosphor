@@ -38,9 +38,9 @@ use std::collections::{HashMap, HashSet};
 use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 use warpui::elements::{
-    Align, ConstrainedBox, CornerRadius, CrossAxisAlignment, Empty, Expanded, FormattedTextElement,
-    Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, Radius, SavePosition,
-    SelectableArea,
+    Align, Clipped, ConstrainedBox, CornerRadius, CrossAxisAlignment, Empty, Expanded,
+    FormattedTextElement, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, Radius,
+    SavePosition, SelectableArea,
 };
 use warpui::{
     elements::{Border, Container, Flex, ParentElement},
@@ -726,6 +726,76 @@ pub fn render_citation(
             .with_cursor(Cursor::PointingHand)
             .finish(),
     )
+}
+
+/// Renders the Ask-User-Question speedbump footer: a short description label, a
+/// dropdown for the `ask_user_question` permission, and a right-aligned
+/// "Manage AI Autonomy permissions" link. Matches the visual rhythm of
+/// [`render_autonomy_checkbox_setting_speedbump_footer`].
+pub fn render_autonomy_dropdown_setting_speedbump_footer<A>(
+    description: &'static str,
+    dropdown: &warpui::ViewHandle<crate::view_components::dropdown::Dropdown<A>>,
+    settings_link_handle: MouseStateHandle,
+    app: &AppContext,
+) -> Box<dyn Element>
+where
+    A: warpui::Action + Clone,
+{
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    Clipped::new(
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_child(
+                Container::new(
+                    Text::new(
+                        description,
+                        appearance.ui_font_family(),
+                        appearance.monospace_font_size() - 1.,
+                    )
+                    .with_color(blended_colors::text_sub(theme, theme.surface_1()))
+                    .with_selectable(false)
+                    .finish(),
+                )
+                .with_margin_right(8.)
+                .finish(),
+            )
+            .with_child(
+                Container::new(warpui::elements::ChildView::new(dropdown).finish())
+                    .with_margin_right(8.)
+                    .finish(),
+            )
+            .with_child(
+                Expanded::new(
+                    1.,
+                    Align::new(
+                        appearance
+                            .ui_builder()
+                            .link(
+                                "Manage AI Autonomy permissions".into(),
+                                None,
+                                Some(Box::new(move |ctx| {
+                                    ctx.dispatch_typed_action(
+                                        WorkspaceAction::ShowSettingsPageWithSearch {
+                                            search_query: "Autonomy".to_string(),
+                                            section: Some(SettingsSection::WarpAgent),
+                                        },
+                                    );
+                                })),
+                                settings_link_handle,
+                            )
+                            .build()
+                            .finish(),
+                    )
+                    .right()
+                    .finish(),
+                )
+                .finish(),
+            )
+            .finish(),
+    )
+    .finish()
 }
 
 /// TODO: All AIBlock footer-related rendering logic should probably be put into its own View.

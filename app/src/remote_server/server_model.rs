@@ -757,10 +757,14 @@ impl ServerModel {
                     new_server_version,
                     expected_client_version,
                 } => {
-                    // Push incremental edits to all connections that have this buffer open.
+                    // Push incremental edits to all connections that have this buffer
+                    // open, except connections with a pending OpenBuffer request --
+                    // they get the same content via OpenBufferResponse instead, and
+                    // applying both would double-apply the edit.
                     let Some(conns) = me.buffers.connections_for_buffer(file_id) else {
                         return;
                     };
+                    let excluded = me.buffers.pending_connections_for_open_buffer(file_id);
                     // Find the path for this file_id; abort the push if tracker
                     // state is inconsistent (a missing path would break the
                     // path↔buffer contract).
@@ -782,6 +786,9 @@ impl ServerModel {
 
                     let conns: Vec<_> = conns.iter().copied().collect();
                     for conn_id in conns {
+                        if excluded.contains(&conn_id) {
+                            continue;
+                        }
                         me.send_server_message(
                             Some(conn_id),
                             None,
@@ -877,8 +884,31 @@ impl ServerModel {
                         );
                     }
                 }
-                GlobalBufferModelEvent::BufferUpdatedFromFileEvent { .. }
-                | GlobalBufferModelEvent::RemoteBufferConflict { .. } => {
+                GlobalBufferModelEvent::BufferUpdatedFromFileEvent {
+                    file_id, success, ..
+                } => {
+                    // When a file-watcher update couldn't be applied because the
+                    // buffer has unsaved client edits, forward the conflict to the
+                    // connected clients so they can show a resolution banner.
+                    if !success
+                        && let Some(conns) = me.buffers.connections_for_buffer(file_id)
+                    {
+                        // Collect to break the immutable borrow on `me.buffers`
+                        // before calling `me.send_server_message(&mut self)`.
+                        let conns: Vec<_> = conns.iter().copied().collect();
+                        let path = me.buffers.path_for_file_id(*file_id).unwrap_or_default();
+                        for conn_id in conns {
+                            me.send_server_message(
+                                Some(conn_id),
+                                None,
+                                server_message::Message::BufferConflictDetected(
+                                    super::proto::BufferConflictDetected { path: path.clone() },
+                                ),
+                            );
+                        }
+                    }
+                }
+                GlobalBufferModelEvent::RemoteBufferConflict { .. } => {
                     // Not relevant for server-local buffers.
                 }
             });
@@ -3812,6 +3842,11 @@ impl ServerModel {
 
     /// Handles `OpenBuffer` by opening the file via `GlobalBufferModel`.
     /// The response is sent asynchronously when `BufferLoaded` fires.
+    ///
+    /// When `force_reload` is set, the server re-reads the file from disk even
+    /// if the buffer is already loaded. This broadcasts a `BufferUpdatedPush` to
+    /// the other connections and responds with the fresh content via
+    /// `OpenBufferResponse`.
     #[cfg(feature = "local_fs")]
     fn handle_open_buffer(
         &mut self,
@@ -3821,9 +3856,37 @@ impl ServerModel {
         ctx: &mut ModelContext<Self>,
     ) -> HandlerOutcome {
         log::info!(
-            "Handling OpenBuffer path={path} (request_id={request_id})",
-            path = msg.path
+            "Handling OpenBuffer path={path} force_reload={force_reload} (request_id={request_id})",
+            path = msg.path,
+            force_reload = msg.force_reload,
         );
+
+        // For force_reload on an already-tracked buffer, skip open_server_local
+        // to avoid a spurious BufferLoaded event that would consume the pending
+        // request before ServerLocalBufferUpdated can use it for exclusion.
+        if msg.force_reload
+            && let Some(file_id) = self.buffers.file_id_for_path(&msg.path)
+        {
+            self.buffers.add_connection(file_id, conn_id);
+            let gbm = GlobalBufferModel::handle(ctx);
+            self.buffers.insert_pending(
+                file_id,
+                request_id.clone(),
+                conn_id,
+                PendingBufferRequestKind::OpenBuffer,
+            );
+            if let Err(e) = gbm.update(ctx, |gbm, ctx| gbm.force_reload_server_local(file_id, ctx))
+            {
+                self.buffers
+                    .take_pending_by_kind(&file_id, PendingBufferRequestKind::OpenBuffer);
+                return HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                    code: ErrorCode::Internal.into(),
+                    message: e,
+                }));
+            }
+            return HandlerOutcome::Async(None);
+        }
+        // Buffer not yet tracked -- fall through to open_server_local below.
 
         let path = PathBuf::from(&msg.path);
         let gbm = GlobalBufferModel::handle(ctx);

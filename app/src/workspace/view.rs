@@ -4624,14 +4624,31 @@ impl Workspace {
         });
     }
 
-    /// Notifies the agent views model and notifications model that a terminal view gained focus.
+    /// Notifies the notifications model that a terminal view gained focus, so
+    /// its notifications stop counting as unread.
+    ///
+    /// The pin also notifies `ActiveAgentViewsModel` here; that model is
+    /// permanently removed in this fork, so `ambient_agent_task_id` has no
+    /// consumer left.
     fn notify_terminal_focus_change(
         &self,
         focused_terminal_view_id: Option<EntityId>,
         ambient_agent_task_id: Option<AmbientAgentTaskId>,
         ctx: &mut ViewContext<Self>,
     ) {
-        let _ = (focused_terminal_view_id, ambient_agent_task_id, ctx);
+        let _ = ambient_agent_task_id;
+        let Some(terminal_view_id) = focused_terminal_view_id else {
+            return;
+        };
+        // Only the active window's focus counts as the user having looked at the
+        // session -- a background window refocusing its pane must not silently
+        // clear the tab's unread dot.
+        if ctx.windows().active_window() != Some(ctx.window_id()) {
+            return;
+        }
+        NotificationsModel::handle(ctx).update(ctx, |model, ctx| {
+            model.mark_items_from_terminal_view_read(terminal_view_id, ctx);
+        });
     }
 
     /// Change the active tab index. This must be used instead of setting `self.active_tab_index`

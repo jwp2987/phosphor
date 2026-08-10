@@ -384,8 +384,16 @@ impl AITip for AgentTip {
     fn is_tip_applicable(
         &self,
         _current_working_directory: Option<&str>,
-        _app: &AppContext,
+        app: &AppContext,
     ) -> bool {
+        // Tips whose description references a keybinding placeholder should only
+        // be shown when the keybinding is actually configured, so we never
+        // display the raw "<keybinding>" string to users. `to_formatted_text`
+        // substitutes it only when `keystroke()` resolves, and a binding the user
+        // has cleared -- or the voice-input toggle key when unset -- does not.
+        if self.description.contains("<keybinding>") && self.keystroke(app).is_none() {
+            return false;
+        }
         true
     }
 }
@@ -557,5 +565,57 @@ impl AITipModel<crate::terminal::view::ambient_agent::AmbientAgentTip> {
             },
         );
         self.cooldown_handle = Some(handle);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AITip, AgentTip, AgentTipKind};
+    use warpui::App;
+
+    fn tip(description: &str, binding_name: Option<&'static str>) -> AgentTip {
+        AgentTip {
+            description: description.to_string(),
+            link: None,
+            binding_name,
+            action: None,
+            kind: AgentTipKind::General,
+        }
+    }
+
+    // `to_formatted_text` only substitutes `<keybinding>` when `keystroke()`
+    // resolves, so a tip whose binding is unset used to render the literal
+    // string "<keybinding>" to the user.
+    #[test]
+    fn tip_with_unresolvable_keybinding_placeholder_is_not_applicable() {
+        App::test((), |app| async move {
+            app.read(|ctx| {
+                let unbound = tip("Press <keybinding> to do the thing.", None);
+                assert!(unbound.keystroke(ctx).is_none());
+                assert!(!unbound.is_tip_applicable(None, ctx));
+            });
+        })
+    }
+
+    #[test]
+    fn tip_without_keybinding_placeholder_stays_applicable() {
+        App::test((), |app| async move {
+            app.read(|ctx| {
+                let plain = tip("Attach files with @ mentions.", None);
+                assert!(plain.is_tip_applicable(None, ctx));
+            });
+        })
+    }
+
+    #[test]
+    fn tip_placeholder_check_is_case_and_substring_exact() {
+        App::test((), |app| async move {
+            app.read(|ctx| {
+                // Only the exact `<keybinding>` token is substituted, so only it
+                // gates applicability.
+                let other_token = tip("Press <keystroke> to do the thing.", None);
+                assert!(other_token.is_tip_applicable(None, ctx));
+            });
+        })
     }
 }

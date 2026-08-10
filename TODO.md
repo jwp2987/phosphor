@@ -1006,6 +1006,12 @@ nothing happens.
 findings only. Fixes the agent had staged were reverted off `main` and sit on
 `worktree-agent-a14fb158cda58e369` if any are wanted later.
 
+**FOLLOW-UP 2026-08-10, branch `fix/unwired-audit-2026-08-10`:** #2, #4, #6, #7,
+#8, #9, #11, #13 and both documentation corrections are now fixed and ticked
+below. #3 is owned by the Drive-removal agent, #1/#5/#10/#12 still await a
+maintainer decision. Every fixed finding was re-verified against the tree first;
+none of them had gone stale.
+
 Calibration for anyone continuing: two live examples found the same day were the
 Claude harness accepting `resolved_mcp_servers` and dropping it (fixed,
 `28d21e520`), and `global_skills::filter_skills_by_spec` being exported and
@@ -1013,7 +1019,9 @@ tested with zero production callers.
 
 ### Confirmed unwired — ranked by user impact
 
-- [ ] **#1 The codebase embedding index is built, maintained, and never queried.**
+- [ ] **[NOT STARTED 2026-08-10 — still awaiting the maintainer's wire-vs-gate-off
+      call; deliberately left alone by the follow-up branch.]
+      #1 The codebase embedding index is built, maintained, and never queried.**
       `CodebaseIndexManager::retrieve_relevant_files`
       (`crates/ai/src/index/full_source_code_embedding/manager.rs:1224`) is the only
       retrieval API, and a tree-wide grep returns exactly three lines: the
@@ -1042,7 +1050,15 @@ tested with zero production callers.
       synchronous call. **Needs a maintainer call: wire it, or gate the two
       settings off until it is wired.** Shipping a paid no-op is the worst option.
 
-- [ ] **#2 Remote (SSH) buffer conflicts are invisible in both directions.**
+- [x] **#2 Remote (SSH) buffer conflicts are invisible in both directions.**
+      **[FIXED 2026-08-10, both halves. Daemon: the `BufferUpdatedFromFileEvent`
+      arm now sends `BufferConflictDetected`. Client: `has_remote_conflict` on
+      `LocalCodeEditorView` + `reopen_remote_buffer`, which needed a bigger chain
+      than the audit's "~40 lines" — a new `force_reload` field on the
+      `OpenBuffer` proto, `RemoteServerClient::open_buffer(path, force_reload)`,
+      a daemon force-reload branch, `GlobalBufferModel::force_reload_server_local`,
+      and `ServerBufferTracker::pending_connections_for_open_buffer` so the
+      re-opening connection is excluded from its own `BufferUpdatedPush`.]**
       Daemon half: the `GlobalBufferModelEvent::BufferUpdatedFromFileEvent` arm in
       `app/src/remote_server/server_model.rs` is a no-op stub
       (`/* Not relevant for server-local buffers. */`), so the daemon never sends
@@ -1094,7 +1110,11 @@ tested with zero production callers.
       User impact: a user who turns the Drive panel off cannot turn it back on
       outside `settings.toml`.
 
-- [ ] **#4 The vertical-tab unread-activity dot can never light up.**
+- [x] **#4 The vertical-tab unread-activity dot can never light up.**
+      **[FIXED 2026-08-10. Also had to implement `WorkspaceView::notify_terminal_focus_change`,
+      a second no-op stub the audit did not list: `mark_items_from_terminal_view_read`
+      had zero callers too, so lighting the dot without it would have produced a
+      dot that never clears.]**
       `has_unread_activity(_typed, _app) -> false`
       (`app/src/workspace/view/vertical_tabs.rs:2506`), consumed at `:2552`,
       `:3470`, `:5987`. This also leaves
@@ -1104,7 +1124,8 @@ tested with zero production callers.
       User impact: a background agent session that finished and filed a
       notification shows no tab indicator.
 
-- [ ] **#5 The remote codebase-index *search* leg has no caller** (same root cause
+- [ ] **[NOT STARTED 2026-08-10 — blocked on the same #1 decision.]
+      #5 The remote codebase-index *search* leg has no caller** (same root cause
       as #1). `RemoteCodebaseIndexModel` is registered (`app/src/lib.rs:1572`) and
       auto-indexes, but `active_repo_availability`
       (`app/src/remote_server/codebase_index_model.rs:315`), `active_repo_path:331`
@@ -1117,7 +1138,12 @@ tested with zero production callers.
       says it *"resolves which remote repo a session's search should target"* —
       nothing asks.
 
-- [ ] **#6 Right-clicking the vertical-tabs panel does nothing.**
+- [x] **#6 Right-clicking the vertical-tabs panel does nothing.**
+      **[FIXED 2026-08-10 with `.with_defer_events_to_children()` and a dedicated
+      `panel_right_click_mouse_state` shared with nothing — the documented prior
+      bug was two `Hoverable` trees sharing ONE handle, not the wrapping itself.
+      `.on_click` -> `CancelActiveRename` was NOT ported: that action does not
+      exist in this fork. `.on_double_click` -> `AddDefaultTab` was.]**
       `WorkspaceAction::OpenNewSessionMenu` exists
       (`app/src/workspace/action.rs:234`) and is handled
       (`app/src/workspace/view.rs:20130`) with **zero dispatchers** anywhere in
@@ -1135,7 +1161,13 @@ tested with zero production callers.
       puts a new `Hoverable` around the panel's entire event tree, and the comment
       three lines above documents a prior bug from exactly that pattern.
 
-- [ ] **#7 Password-prompt polling arms on warpify-compatible subshells.**
+- [x] **#7 Password-prompt polling arms on warpify-compatible subshells.**
+      **[FIXED 2026-08-10. Ported both pin helpers; the "missing `&AppContext`
+      shell-family accessor" was solved by adding `shell_family_from_app` and
+      making the existing `shell_family` delegate to it. NB the audit's examples
+      were partly wrong: `python` and a bare `docker run` do NOT match
+      `is_compatible_subshell_command`; `bash`, `/bin/zsh`,
+      `docker run … bash` and `aws-vault exec` do.]**
       `should_start_password_prompt_polling(&self, _command: &str, ctx)`
       (`app/src/terminal/view.rs:24256`) drops the command. The pin
       (`02b53fcd8:view.rs:25854`) opens with a
@@ -1149,14 +1181,21 @@ tested with zero production callers.
       `view.rs:10643`. Missing piece: an `&AppContext` shell-family accessor (the
       fork's `shell_family` takes `&mut ViewContext`).
 
-- [ ] **#8 Agent tips can render the literal string `<keybinding>`.**
+- [x] **#8 Agent tips can render the literal string `<keybinding>`.**
+      **[FIXED 2026-08-10. Only the keybinding guard was portable — the pin's
+      other two arms key off `AgentTipKind::CodebaseContext` / `::Handoff`, and
+      neither variant exists in this fork.]**
       `is_tip_applicable(&self, _cwd, _app) -> true`
       (`app/src/ai/agent_tips.rs:384`). `to_formatted_text` substitutes only when
       `keystroke()` resolves; seven `agent-tip-*` strings in
       `app/i18n/en/warp.ftl` contain the token, and one keys off
       `voice_input_toggle_key`, which can be unset. The pin has a non-cloud guard.
 
-- [ ] **#9 Vim goto-line is a no-op in the terminal command input.**
+- [x] **#9 Vim goto-line is a no-op in the terminal command input.**
+      **[FIXED 2026-08-10 with the pin's body verbatim. The audit's warning that
+      `reset_selections_to_point` "is on `EditorView`, not `EditorModel`" is
+      WRONG — it exists on both (`editor/view/model/mod.rs:2045` and
+      `editor/view/mod.rs:5910`), so no adaptation was needed.]**
       `app/src/editor/view/mod.rs:2543` stubs `jump_to_line`, while dispatch is
       live (`crates/vim/src/vim.rs:2024`, six parser sites). So `42G`, `:42<CR>`,
       `5gg` and `d5G` silently do nothing there, while the code editor
@@ -1164,7 +1203,9 @@ tested with zero production callers.
       Pin impl at `02b53fcd8:editor/view/mod.rs:2480` needs adapting — the fork's
       `reset_selections_to_point` is on `EditorView`, not `EditorModel`.
 
-- [ ] **#10 The model picker lost its ordering. NEEDS A JUDGEMENT CALL.**
+- [ ] **[NOT STARTED 2026-08-10 — report-only; needs a maintainer call on whether
+      the "auto first" fragment alone is worth porting.]
+      #10 The model picker lost its ordering. NEEDS A JUDGEMENT CALL.**
       `query_model_picker_choices(_llm_preferences, …)`
       (`app/src/terminal/input/models/data_source.rs:179`); the pin's first
       statement is `order_model_choices` (`02b53fcd8:data_source.rs:159`, helper
@@ -1172,7 +1213,15 @@ tested with zero production callers.
       (`is_custom_router_id`, `custom_llm_info_for_id`) belong to the surface
       `DECLINED.md` declines under #142/#347, so **only "auto first" is portable.**
 
-- [ ] **#11 `should_show_agent_mode_ask_user_question_speedbump` has zero
+- [x] **#11 [FIXED 2026-08-10 — a real port, not a wire-up: added the
+      `ShouldShowForAskUserQuestion` variant, `AskUserQuestionPermission::label()`,
+      `render_autonomy_dropdown_setting_speedbump_footer`, the dropdown +
+      footer + `SetPermission` action on `AskUserQuestionView`, and the seeding /
+      `sync_ask_user_question_speedbump_footer` /
+      `mark_ask_user_question_speedbump_as_shown` chain on `AIBlock`. The pin's
+      `TelemetryEvent::ChangedAgentModeAskUserQuestionPermission` was NOT ported —
+      that variant does not exist here and adding one is a cloud-telemetry change.]
+      `should_show_agent_mode_ask_user_question_speedbump` has zero
       consumers.** `app/src/settings/ai.rs:2134`, covered by two tests, referenced
       nowhere else; the pin reads it at three sites in `block.rs`. Root cause is a
       feature gap: the fork's `AutonomySettingSpeedbump`
@@ -1180,7 +1229,9 @@ tested with zero production callers.
       variant. `private: true`, so nothing lies in the UI — the nudge simply never
       appears.
 
-- [ ] **#12 CLI surface that parses and discards.** `oz agent run --share`
+- [ ] **[NOT STARTED 2026-08-10 — report-only; `hide = true` vs a hard error is a
+      `--help`-visible interface change and needs a maintainer call.]
+      #12 CLI surface that parses and discards.** `oz agent run --share`
       (`crates/warp_cli/src/share.rs:13`) is **not** hidden: it appears in `--help`
       with a full recipient grammar and validates typos helpfully, then does
       nothing — `agent_sdk/mod.rs:500` hardcodes `let should_share = false;` and
@@ -1192,7 +1243,8 @@ tested with zero production callers.
       `config_file.rs:94`'s help text) all land in an `AgentConfigSnapshot` this
       fork never builds a task from.
 
-- [ ] **#13 `OZ_HARNESS` documents a consumer that does not exist.** The claim at
+- [x] **#13 [FIXED 2026-08-10 — comment corrected, export kept.]
+      `OZ_HARNESS` documents a consumer that does not exist.** The claim at
       `app/src/ai/agent_sdk/driver/harness/mod.rs:238` that child-agent telemetry
       reads it on `agent message *` is false; only `OZ_AGENT_MAILBOX_ROOT` is read.
       Comment-only correction; the export itself is still useful to the child
@@ -1269,13 +1321,14 @@ Recorded so this ground is not re-swept:
 
 ### Two documentation corrections this audit produced
 
-- [ ] **Strike the HANDOFF.md slash-command false alarm.** Its open note that the
+- [x] **[DONE 2026-08-10 — struck in place in `HANDOFF.md`.] Strike the HANDOFF.md slash-command false alarm.** Its open note that the
       fork "lacks the pin's `PrivacySettings` and `UserWorkspaces` recompute
       subscriptions" is wrong: both pin subscriptions fire only on cloud-only
       events, and `session_context()`
       (`crates/warp_tui/src/.../data_source/mod.rs:215-277`) reads none of them.
       Same for the missing `AIAutoDetectionEnabled` arm.
-- [ ] **Stale comment in `remote_server.proto:164`** claims no daemon sends
+- [x] **[DONE 2026-08-10 — comment rewritten to name the two senders.] Stale
+      comment in `remote_server.proto:164`** claims no daemon sends
       `RemoteAgentContextSnapshot`. False — `server_model.rs:978` and `:996` both do.
 
 ## PARITY AUDIT 2026-08-10 — gaps NOT in any tier (needs tiering)
