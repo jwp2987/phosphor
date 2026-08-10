@@ -31,6 +31,8 @@ use std::collections::HashMap;
 
 use warpui::App;
 
+use crate::notebooks::notebook::NotebookView;
+
 use super::*;
 
 /// Builds a real, single-terminal-pane `PaneGroup` using the fork's
@@ -53,6 +55,21 @@ fn get_newly_created_pane_id(panes: &PaneGroup, existing_ids: &[PaneId]) -> Pane
         .pane_ids()
         .find(|id| !existing_ids.contains(id))
         .unwrap()
+}
+
+fn split_pane_state(panes: &PaneGroup, pane_id: PaneId, ctx: &AppContext) -> SplitPaneState {
+    panes
+        .focus_state_handle()
+        .as_ref(ctx)
+        .split_pane_state_for(pane_id)
+}
+
+fn is_active_session(panes: &PaneGroup, pane_id: PaneId, ctx: &AppContext) -> bool {
+    panes.active_session_id(ctx).map(Into::into) == Some(pane_id)
+}
+
+fn new_notebook(ctx: &mut ViewContext<PaneGroup>) -> ViewHandle<NotebookView> {
+    ctx.add_typed_action_view(NotebookView::new)
 }
 
 #[test]
@@ -139,5 +156,207 @@ fn test_insert_hidden_child_agent_pane_keeps_focus_and_active_session() {
             assert_eq!(panes.focused_pane_id(ctx), parent_pane_id);
             assert_eq!(panes.active_session_id(ctx), initial_active_session);
         });
+    });
+}
+
+#[test]
+fn test_active_session_id_reset_on_last_pane_close() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let terminal_id = get_newly_created_pane_id(panes, &[]);
+            assert_eq!(
+                panes.active_session_id(ctx),
+                terminal_id.as_terminal_pane_id()
+            );
+
+            // Add a non-terminal pane (Notebook) so the pane group remains alive when terminal is closed.
+            panes.add_pane_with_direction(
+                Direction::Right,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                false, /* focus_new_pane */
+                ctx,
+            );
+
+            // Close the terminal.
+            panes.close_pane(terminal_id, ctx);
+
+            // active_session_id should be None after closing the last terminal pane.
+            assert_eq!(
+                panes.active_session_id(ctx),
+                None,
+                "active_session_id should be None after closing the last pane"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_group_without_terminals() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let terminal_id = get_newly_created_pane_id(panes, &[]);
+
+            // Add a notebook to the left.
+            panes.add_pane_with_direction(
+                Direction::Left,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+            let notebook_id = get_newly_created_pane_id(panes, &[terminal_id]);
+
+            // Close the terminal, which should leave the group without an active session.
+            panes.close_pane(terminal_id, ctx);
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(panes.active_session_id(ctx), None);
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::NotInSplitPane
+            );
+        });
+    });
+}
+
+#[test]
+fn test_close_active_session() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            // Add two terminal sessions.
+            let first_terminal_id = get_newly_created_pane_id(panes, &[]);
+            panes.add_terminal_pane(Direction::Up, None, ctx);
+            let second_terminal_id = get_newly_created_pane_id(panes, &[first_terminal_id]);
+
+            // Add a notebook to the left.
+            panes.add_pane_with_direction(
+                Direction::Left,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+            let notebook_id =
+                get_newly_created_pane_id(panes, &[first_terminal_id, second_terminal_id]);
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(second_terminal_id)
+            );
+
+            // Close the active session, which should leave the notebook focused and activate the
+            // remaining session.
+            panes.close_pane(second_terminal_id, ctx);
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(first_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert!(is_active_session(panes, first_terminal_id, ctx));
+
+            // Now, focus the remaining session, which should keep it activated.
+            panes.focus_pane_by_id(first_terminal_id, ctx);
+            assert_eq!(panes.focused_pane_id(ctx), first_terminal_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(first_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Focused)
+            );
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert!(is_active_session(panes, first_terminal_id, ctx));
+        });
+    });
+}
+
+#[test]
+fn test_focus_notebook() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let first_terminal_id = get_newly_created_pane_id(panes, &[]);
+
+            // Add a notebook to the left.
+            panes.add_pane_with_direction(
+                Direction::Left,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+            let notebook_id = get_newly_created_pane_id(panes, &[first_terminal_id]);
+
+            // The new pane should be focused, but the terminal is still the active session.
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(first_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert!(is_active_session(panes, first_terminal_id, ctx));
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Focused)
+            );
+
+            // Add a terminal below.
+            panes.add_terminal_pane(Direction::Down, None, ctx);
+            let second_terminal_id =
+                get_newly_created_pane_id(panes, &[first_terminal_id, notebook_id]);
+
+            // The new terminal should be both focused and the active session.
+            assert_eq!(panes.focused_pane_id(ctx), second_terminal_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(second_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert!(!is_active_session(panes, first_terminal_id, ctx));
+            assert_eq!(
+                split_pane_state(panes, second_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Focused)
+            );
+            assert!(is_active_session(panes, second_terminal_id, ctx));
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+
+            // Close the new terminal. Focus should switch to the notebook, and the first terminal
+            // session will activate.
+            panes.close_pane(second_terminal_id, ctx);
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(first_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Focused)
+            );
+            assert!(is_active_session(panes, first_terminal_id, ctx));
+        })
     });
 }
