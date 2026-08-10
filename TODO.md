@@ -481,7 +481,7 @@ the very mechanism the test is named after.
       and indexing is absent — so the list grows without bound until D2c lands.
 - [x] **`all_working_directories` already exists as a private copy** **[DONE 9fb1900fd — now ai/terminal_working_directories.rs.]** in
       `app/src/ai/outline/native.rs`. Reunify when indexing returns; do not add a third.
-- [ ] **LSP-restoration trap** (documented at the `clean_up_expired_metadata` seam):
+- [x] **LSP-restoration trap** **[DONE 5f2f5d103 — verified: CASCADE in the migration AND the guard arm in clean_up_expired_metadata. Both halves covered.]** (documented at the `clean_up_expired_metadata` seam):
       `workspace_language_server` foreign-keys `workspace_metadata` **without
       `ON DELETE CASCADE`**, and the startup `inner_join` silently drops orphans —
       making enabled servers look disabled. Restoring that table without the guard
@@ -686,7 +686,7 @@ feature.
       GUI goes stale on a TUI-side change identically. Making the GUI editors
       notify too is a behaviour change with no pin to port from, so it was flagged
       rather than taken.
-- [ ] **Issue #578 was filed by an agent without asking.** It accurately describes
+- [x] **Issue #578 — CLOSED 2026-08-10** with the fix referenced. The rule conflict it exposed is settled going forward: every agent brief now says do not file issues; the operator routes findings. Original text: It accurately describes
       the `SettingsSection` persistence bug (now fixed, `35baf6e4a`). The
       maintainer had asked that issues not be filed without checking first;
       AGENTS §5.11 requires an issue per defect. The two rules conflict — needs a
@@ -749,7 +749,7 @@ one found by an agent doing unrelated work, and **every one recorded in neither
 `DECLINED.md` nor `TODO.md`**. The audit did not catch them because it keys on
 pin tests, and these carry few or none.
 
-- [ ] **`9765692e1` (2026-04-30) — client-side computer-use dispatch, 17 files,
+- [x] **SUPERSEDED — see the in-flight entry above.** `9765692e1` (2026-04-30) — client-side computer-use dispatch, 17 files,
       −936 lines. VERIFIED, and it carries an active documentation
       contradiction.** Removed both executors
       (`execute/{use_computer,request_computer_use}.rs`), the `crates/ai` action
@@ -771,16 +771,16 @@ pin tests, and these carry few or none.
       explicitly contradicts. **Maintainer ruling needed:** either record the
       dispatch removal as declined and fix `DECLINED.md`, or file it as debt and
       fix the comment. It cannot stay as-is.
-- [ ] **`b0b1faef9` — InitProject wizard, 1,901 lines.** Rationale given was
+- [x] **SUPERSEDED — under review, see the in-flight entry above.** `b0b1faef9` — InitProject wizard, 1,901 lines. Rationale given was
       "cloud agent mode's first-run onboarding", but `/init` is a **local** flow,
       so per §5.10 the framing deserves a second look. Takes
       `lsp_server_selector.rs` with it.
-- [ ] **`efcaa42b8` — LSP, 14,611 lines.** Now being restored (maintainer verdict
+- [x] **`efcaa42b8` — LSP, 14,611 lines. RESTORED 2026-08-10** through the document lifecycle; builds and passes. (maintainer verdict
       2026-08-10), but the removal itself was never recorded.
-- [ ] **`d84dd8e4d` — PersistedWorkspace + codebase indexing.** D1 restored the
+- [x] **`d84dd8e4d` — PersistedWorkspace + codebase indexing. RESTORED 2026-08-10** (D1 + D2, both merged and green). D1 restored the
       workspace half; D2 is restoring indexing.
 
-- [ ] **THE RULE THIS NEEDS.** Four in one day is not four oversights. Nothing in
+- [x] **SUPERSEDED by the scoped guard entry above** (it would not have caught these — they predate the fork). Original: Four in one day is not four oversights. Nothing in
       this project forces a removal to be recorded, and the parity audit cannot
       see them (no pin tests). Proposal: a CI guard in the spirit of
       `check_cloud_boundary` that flags a commit deleting more than N lines of
