@@ -232,7 +232,56 @@ Treat all of this as staged, not validated.
    `install_warpctrl` widget, and `app_menus.rs` in D1 (macOS-gated, will not
    compile on this host or in Linux CI).
 
-## LSP TRACK (opened 2026-08-10, maintainer verdict: RESTORE) — **[>] IN FLIGHT**
+## LSP TRACK (opened 2026-08-10, maintainer verdict: RESTORE) — **[~] PARTIAL, agent stopped at a checkpoint**
+
+### NEW — an untracked product decision this surfaced, needs a maintainer entry
+- [ ] **`lsp_server_selector.rs` is NOT an LSP-track item.** It was not removed
+      by `efcaa42b8`. `app/src/terminal/view/init_project/` was deleted five days
+      earlier by **`b0b1faef9`** — a separate decision, rationale *"the
+      InitProject wizard is Warp cloud agent mode's first-run onboarding; openWarp
+      BYOP has no cloud onboarding need"*. The selector is a leaf of a 1,901-line
+      wizard (`mod.rs` 1,303 + `model.rs` 598) that would have to be reversed
+      first. **That decision is in neither `DECLINED.md` nor `TODO.md`** — a third
+      deliberate removal recorded nowhere, after LSP itself and the
+      PersistedWorkspace/indexing retirement. Per §5.10 the rationale also
+      deserves a second look: `/init` is a **local** flow, so "cloud onboarding"
+      may be the wrong frame. Needs a maintainer verdict either way.
+
+### Done
+- [x] `crates/lsp` restored verbatim, 22 tests unweakened (`f4e99118a`)
+- [x] initial app wiring — deps, `lsp::init`, `FeatureFlag::LSPAsATool`,
+      terminate hook, `lsp_logs.rs`, `lsp_telemetry.rs` catalog, 3 editor helpers
+- [x] `workspace_language_server` migration, re-applied onto current main (`5f2f5d103`)
+- [x] PersistedWorkspace LSP **state** layer — `EnablementState`,
+      `language_servers`, the seven enable/disable/query methods, `ModelEvent`
+      dispatch, both sqlite functions
+- [x] **the `ON DELETE CASCADE` guard arm** — both halves of the hazard now
+      covered, with the reason they are not interchangeable recorded in code
+
+### Remaining — ~2,500 lines of surgery into a diverged host, NOT started
+`language_server_extension.rs`, `find_references_view.rs` and
+`language_server_shutdown_manager.rs` all gate on the same blocker:
+`LocalCodeEditorView` state the fork does not have. The agent stopped here
+deliberately rather than shipping a large blind edit, and it was right to.
+
+**The host is the problem, not the three files.** Pin `LocalCodeEditorView` has
+~25 fields, the fork has 15 — and **the absences are NOT all LSP-caused**. The
+file diverged in both directions, so every field needs individual adjudication
+rather than a bulk restore. On top of that: ~20 methods / ~800 lines in
+`local_code_editor.rs`, new `LocalCodeEditorAction` variants and dispatch, the
+`CodeEditorEvent::MouseHovered` arm (an explicit no-op today at
+`local_code_editor.rs:227`), render changes for the hover tooltip and
+find-references card, `editor/element.rs` (+88 LSP lines), and `code/mod.rs`'s
+`ShowFindReferencesCardProvider` trait. Then the two 600-700 line files land on
+top of that.
+
+Also absent and needed by the shutdown manager:
+`TerminalView::canonical_session_pwd_if_local`. Restorable — its inputs
+(`active_session_path_if_local`, `repo_metadata::CanonicalizedPath`) both exist
+— but it needs a new `canonical_session_pwd_cache` field on `TerminalView`.
+
+**Do not assign this as one unit.** Adjudicating the diverged host is its own
+piece of work and should land before any of the three files are attempted.
 
 **Status 2026-08-10:** step 1 + part of step 2 MERGED (`f4e99118a`). The original
 agent was **resumed** and is continuing with `language_server_extension.rs`,
