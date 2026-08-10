@@ -7,7 +7,7 @@ pub mod text {
 
     const CANCELLED_MESSAGE: &str = "<cancelled>";
 
-    use ai::agent::action_result::ReadSkillResult;
+    use ai::agent::action_result::{ReadSkillResult, UseComputerResult};
     use itertools::Itertools;
 
     use crate::{
@@ -250,6 +250,14 @@ pub mod text {
                 | AIAgentActionResultType::CreateDocuments(_) => Ok(()),
                 AIAgentActionResultType::ReadShellCommandOutput { .. } => Ok(()),
                 AIAgentActionResultType::TransferShellCommandControlToUser { .. } => Ok(()),
+                AIAgentActionResultType::UseComputer(result) => match result {
+                    // TODO(AGENT-2281): implement
+                    UseComputerResult::Success(_result) => Ok(()),
+                    UseComputerResult::Error(error) => writeln!(w, "Use computer error: {error}"),
+                    UseComputerResult::Cancelled => writeln!(w, "{CANCELLED_MESSAGE}"),
+                },
+                // TODO(AGENT-2281): implement
+                AIAgentActionResultType::RequestComputerUse(_result) => Ok(()),
                 // SendMessageToAgent is a client-side orchestration action, not used in SDK
                 AIAgentActionResultType::SendMessageToAgent(_) => Ok(()),
                 AIAgentActionResultType::AskUserQuestion(_) => Ok(()),
@@ -340,6 +348,12 @@ pub mod text {
                     | AIAgentActionType::CreateDocuments(_)
                     | AIAgentActionType::ReadShellCommandOutput { .. }
                     | AIAgentActionType::TransferShellCommandControlToUser { .. } => (),
+                    AIAgentActionType::UseComputer(request) => {
+                        writeln!(w, "Computer use action: {}", request.action_summary)?;
+                    }
+                    AIAgentActionType::RequestComputerUse(request) => {
+                        writeln!(w, "Requesting computer use: {}", request.task_summary)?;
+                    }
                     AIAgentActionType::ReadSkill(request) => {
                         writeln!(w, "Reading skill: {}", request.skill)?;
                     }
@@ -975,6 +989,10 @@ pub mod json {
                         name,
                         input,
                     })),
+                    // TODO(AGENT-2281): implement
+                    AIAgentActionType::UseComputer(_use_computer_request) => None,
+                    // TODO(AGENT-2281): implement
+                    AIAgentActionType::RequestComputerUse(_) => None,
                     // Internal or non-CLI tool calls: skip them
                     AIAgentActionType::SuggestNewConversation { .. }
                     | AIAgentActionType::SuggestPrompt { .. }

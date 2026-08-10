@@ -1590,9 +1590,23 @@ impl AIConversation {
         })
     }
 
-    /// Computer Use has been removed; keeps an empty iterator for call-site compatibility.
+    /// Returns an iterator over the IDs of all UseComputer actions across all exchanges
+    /// in this conversation.
     pub fn use_computer_action_ids(&self) -> impl Iterator<Item = AIAgentActionId> + '_ {
-        std::iter::empty()
+        self.all_exchanges().into_iter().flat_map(|exchange| {
+            exchange
+                .output_status
+                .output()
+                .into_iter()
+                .flat_map(|output| {
+                    output
+                        .get()
+                        .actions()
+                        .filter(|a| matches!(a.action, super::AIAgentActionType::UseComputer(_)))
+                        .map(|a| a.id.clone())
+                        .collect::<Vec<_>>()
+                })
+        })
     }
 
     pub fn contains_action(&self, action_id: &AIAgentActionId) -> bool {

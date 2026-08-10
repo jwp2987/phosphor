@@ -901,6 +901,143 @@ impl From<ReadSkillResult> for AIAgentActionResultType {
     }
 }
 
+impl TryFrom<RequestComputerUseResult> for api::request::input::tool_call_result::Result {
+    type Error = ConvertToAPITypeError;
+
+    fn try_from(result: RequestComputerUseResult) -> Result<Self, Self::Error> {
+        match result {
+            RequestComputerUseResult::Approved {
+                screenshot,
+                platform,
+                windows,
+            } => Ok(
+                api::request::input::tool_call_result::Result::RequestComputerUse(
+                    api::RequestComputerUseResult {
+                        result: Some(api::request_computer_use_result::Result::Approved(
+                            api::request_computer_use_result::Approved {
+                                screen_dimensions: Some(api::ScreenDimensions {
+                                    width_px: screenshot.original_width as i32,
+                                    height_px: screenshot.original_height as i32,
+                                }),
+                                initial_screenshot: Some(api::RawImage {
+                                    data: screenshot.data,
+                                    mime_type: screenshot.mime_type.to_string(),
+                                    width: screenshot.width as i32,
+                                    height: screenshot.height as i32,
+                                }),
+                                platform: convert_platform(platform).into(),
+                                windows: windows.into_iter().map(convert_window_info).collect(),
+                            },
+                        )),
+                    },
+                ),
+            ),
+            RequestComputerUseResult::Cancelled => Ok(
+                api::request::input::tool_call_result::Result::RequestComputerUse(
+                    api::RequestComputerUseResult {
+                        result: Some(api::request_computer_use_result::Result::Rejected(
+                            api::request_computer_use_result::Rejected {},
+                        )),
+                    },
+                ),
+            ),
+            RequestComputerUseResult::Error(error) => Ok(
+                api::request::input::tool_call_result::Result::RequestComputerUse(
+                    api::RequestComputerUseResult {
+                        result: Some(api::request_computer_use_result::Result::Error(
+                            api::request_computer_use_result::Error { message: error },
+                        )),
+                    },
+                ),
+            ),
+        }
+    }
+}
+
+impl TryFrom<UseComputerResult> for api::request::input::tool_call_result::Result {
+    type Error = ConvertToAPITypeError;
+
+    fn try_from(result: UseComputerResult) -> Result<Self, Self::Error> {
+        match result {
+            UseComputerResult::Success(result) => {
+                // Copy out the captured-window metadata (if any) before the owned fields of
+                // `result` are moved into the message below.
+                let captured = result.captured_window;
+                Ok(api::request::input::tool_call_result::Result::UseComputer(
+                    api::UseComputerResult {
+                        result: Some(api::use_computer_result::Result::Success(
+                            api::use_computer_result::Success {
+                                screenshot: result.screenshot.map(|s| api::RawImage {
+                                    data: s.data,
+                                    mime_type: s.mime_type.to_string(),
+                                    width: s.width as i32,
+                                    height: s.height as i32,
+                                }),
+                                cursor_position: result.cursor_position.map(vec_to_coordinates),
+                                windows: result
+                                    .windows
+                                    .into_iter()
+                                    .map(convert_window_info)
+                                    .collect(),
+                                // The window id is an opaque string on the wire; on macOS it is a
+                                // CGWindowID, so format the u32 back to a string at the boundary.
+                                captured_window: captured.map(|c| {
+                                    api::use_computer_result::success::CapturedWindow {
+                                        window_id: c.window_id.to_string(),
+                                        width_px: c.width_px,
+                                        height_px: c.height_px,
+                                    }
+                                }),
+                            },
+                        )),
+                    },
+                ))
+            }
+            UseComputerResult::Error(error) => {
+                Ok(api::request::input::tool_call_result::Result::UseComputer(
+                    api::UseComputerResult {
+                        result: Some(api::use_computer_result::Result::Error(
+                            api::use_computer_result::Error { message: error },
+                        )),
+                    },
+                ))
+            }
+            UseComputerResult::Cancelled => Err(ConvertToAPITypeError::Ignore),
+        }
+    }
+}
+
+fn vec_to_coordinates(vec: computer_use::Vector2I) -> api::Coordinates {
+    api::Coordinates {
+        x: vec.x(),
+        y: vec.y(),
+    }
+}
+
+/// Converts a computer_use window record into the API `WindowInfo` message.
+fn convert_window_info(window: computer_use::WindowInfo) -> api::WindowInfo {
+    api::WindowInfo {
+        // The window id travels as an opaque string; on macOS it is a CGWindowID (u32).
+        window_id: window.window_id.to_string(),
+        pid: window.pid,
+        app_name: window.app_name,
+        title: window.title,
+        layer: window.layer,
+    }
+}
+
+fn convert_platform(
+    platform: computer_use::Platform,
+) -> api::request_computer_use_result::approved::Platform {
+    use api::request_computer_use_result::approved::Platform;
+    match platform {
+        computer_use::Platform::Mac => Platform::Macos,
+        computer_use::Platform::Windows => Platform::Windows,
+        computer_use::Platform::LinuxX11 => Platform::LinuxX11,
+        computer_use::Platform::LinuxWayland => Platform::LinuxWayland,
+    }
+}
+
 fn convert_mcp_tool_call_result(
     val: rmcp::model::CallToolResult,
 ) -> api::call_mcp_tool_result::Result {

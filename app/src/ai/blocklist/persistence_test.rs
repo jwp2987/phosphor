@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use warpui::{App, EntityId};
 
-use super::{maybe_build_ai_query_upsert_event, PersistedAIInputType};
+use super::{maybe_build_ai_query_upsert_event, PersistedAIAgentActionType, PersistedAIInputType};
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
+use crate::ai::agent::{AIAgentActionType, UseComputerRequest};
 use crate::ai::blocklist::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
 use crate::persistence::ModelEvent;
 
@@ -84,4 +85,63 @@ fn query_exchange_event_builds_persistence_upsert() {
             }]
         );
     });
+}
+
+/// Conversations persisted before `UseComputerRequest::actions` became
+/// `Vec<TargetedAction>` stored each element as a bare `computer_use::Action`.
+/// Those rows must still restore, targeting the whole screen.
+#[test]
+fn persisted_use_computer_accepts_legacy_bare_actions() {
+    let json = r#"{
+        "UseComputer": {
+            "action_summary": "Click button",
+            "actions": [{ "MouseUp": { "button": "Left" } }],
+            "screenshot_params": null
+        }
+    }"#;
+
+    let persisted: PersistedAIAgentActionType =
+        serde_json::from_str(json).expect("legacy bare-action shape must deserialize");
+
+    let PersistedAIAgentActionType::UseComputer { actions, .. } = &persisted else {
+        panic!("expected a UseComputer action, got {persisted:?}");
+    };
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].target, computer_use::Target::Screen);
+    assert_eq!(
+        actions[0].action,
+        computer_use::Action::MouseUp {
+            button: computer_use::MouseButton::Left
+        }
+    );
+}
+
+/// The current `{ action, target }` shape round-trips through persistence with
+/// the window target intact.
+#[test]
+fn persisted_use_computer_round_trips_window_target() {
+    let request = UseComputerRequest {
+        action_summary: "Click button".to_owned(),
+        actions: vec![computer_use::TargetedAction {
+            action: computer_use::Action::MouseUp {
+                button: computer_use::MouseButton::Left,
+            },
+            target: computer_use::Target::Window {
+                window_id: 42,
+                pid: 7,
+            },
+        }],
+        screenshot_params: None,
+    };
+    let action = AIAgentActionType::UseComputer(request);
+
+    let persisted = PersistedAIAgentActionType::from(&action);
+    let json = serde_json::to_string(&persisted).expect("persisted action must serialize");
+    let restored: PersistedAIAgentActionType =
+        serde_json::from_str(&json).expect("persisted action must deserialize");
+    assert_eq!(restored, persisted);
+
+    let restored_action =
+        AIAgentActionType::try_from(restored).expect("persisted action must convert back");
+    assert_eq!(restored_action, action);
 }
