@@ -105,7 +105,13 @@ enum HandlerOutcome {
     /// a separate event subscription and is not currently cancellable via
     /// `Abort` (e.g. `FileModel` events for file writes and deletes, which
     /// are tracked by `FileId` in `pending_file_ops` rather than by
-    /// `RequestId` in `in_progress`).
+    /// `RequestId` in `in_progress`). `handle_get_diff_state` (#324) is a
+    /// second, cancellable case: a request that joins an already in-flight
+    /// computation for the same `DiffModelKey` returns `None` here too (the
+    /// caller must not double-insert the leading request's own handle,
+    /// which `handle_get_diff_state` already tracks in `in_progress`
+    /// itself), but it stays abortable via `diff_state_pending_responses`
+    /// — see `handle_abort`'s `abort_diff_state_pending_response` fallback.
     Async(Option<SpawnedFutureHandle>),
 }
 
@@ -198,16 +204,36 @@ const MAX_BRANCH_COUNT_CAP: usize = 500;
 /// Receives `ClientMessage`s from connected proxy sessions and routes
 /// `ServerMessage` responses and push notifications back through each
 /// connection's dedicated sender channel.
-/// A single active diff-state subscription. `canonical_path` (canonicalized on
-/// this host) is matched against repository-change events; `wire_repo_path` is
-/// the exact string the client sent, echoed back in pushed snapshots so the
-/// client's `RemoteDiffStateModel` can key on it.
+/// Composite key identifying one server-side diff-state subscription target:
+/// a `(repo, mode)` pair. `repo_path` is canonicalized on this host and
+/// matched against repository-change events. Ported from the pin's
+/// `DiffModelKey` (`app/src/remote_server/diff_state_tracker.rs`, issue #324).
 #[cfg(feature = "local_fs")]
-#[derive(Clone)]
-struct DiffStateSubscription {
-    canonical_path: StandardizedPath,
-    wire_repo_path: String,
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct DiffModelKey {
+    repo_path: StandardizedPath,
     mode: crate::code_review::diff_state::DiffMode,
+}
+
+/// A `GetDiffState` request queued because a computation for the same
+/// [`DiffModelKey`] was already in flight when it arrived (#324): joins the
+/// in-flight computation instead of triggering a redundant one. Resolved
+/// together with it on completion, or failed together with it on abort of
+/// the leading request — see `resolve_diff_state_pending_responses` and
+/// `handle_get_diff_state`.
+///
+/// Carries its own `wire_repo_path` rather than the pin's plain
+/// `(request_id, conn_id)` pair, because this fork echoes each connection's
+/// exact `repo_path` string back in responses (see the field doc on
+/// `diff_state_subscribers`) — capturing it here at request time means
+/// resolution never has to re-derive it from subscriber state that may
+/// already be gone (e.g. the connection unsubscribed while this request's
+/// computation was in flight).
+#[cfg(feature = "local_fs")]
+struct PendingDiffStateResponse {
+    request_id: RequestId,
+    conn_id: ConnectionId,
+    wire_repo_path: String,
 }
 
 /// Resolves the global bundled resources directory populated by the install
@@ -296,13 +322,45 @@ pub struct ServerModel {
     /// Used to avoid sending duplicate snapshots on repeated
     /// `NavigatedToDirectory` calls while the user `cd`s within the same repo.
     snapshot_sent_roots_by_connection: HashMap<ConnectionId, HashSet<StandardizedPath>>,
-    /// Active diff-state subscriptions, keyed by connection. Each entry is a
-    /// `(repo, mode)` the client subscribed to via `GetDiffState`; on a
-    /// repository change the daemon recomputes and pushes a fresh snapshot to
-    /// the subscribing connection. Cleared per-entry on `UnsubscribeDiffState`
-    /// and wholesale on connection teardown.
+    /// Connections subscribed to each diff-state [`DiffModelKey`], each with
+    /// the exact `repo_path` string it sent in `GetDiffState` — echoed back
+    /// verbatim in pushed snapshots so the client's `RemoteDiffStateModel`
+    /// (which matches pushes by that exact string) sees them.
+    ///
+    /// Key -> conns indexing (#324; mirrors `git_status_subscribers`, added
+    /// by #330) replaces an earlier conn -> keys design that could not
+    /// express "push to every connection watching this repo" without a full
+    /// scan, and left every future subscription type free to disagree with
+    /// git-status about which direction to index in.
     #[cfg(feature = "local_fs")]
-    diff_state_subscriptions: HashMap<ConnectionId, Vec<DiffStateSubscription>>,
+    diff_state_subscribers: HashMap<DiffModelKey, HashMap<ConnectionId, String>>,
+    /// Reverse index of `diff_state_subscribers`, so a connection's teardown
+    /// clears its subscriptions in O(subscriptions for that connection)
+    /// instead of scanning every key. The pin's own
+    /// `RemoteDiffStateManager::remove_connection` scans all keys; this
+    /// keeps the property the fork's previous conn -> keys design had
+    /// instead of regressing it (see the field doc on `diff_state_subscribers`).
+    #[cfg(feature = "local_fs")]
+    diff_state_keys_by_conn: HashMap<ConnectionId, HashSet<DiffModelKey>>,
+    /// Keys with a `GetDiffState` computation currently in flight. Gates
+    /// `handle_get_diff_state`: a request for a key already in this set
+    /// joins `diff_state_pending_responses` instead of spawning a redundant
+    /// recomputation (#324's "pending-response queueing" gap — the fork
+    /// previously recomputed once per *request*, even when several arrived
+    /// concurrently for the same repo/mode).
+    #[cfg(feature = "local_fs")]
+    diff_state_in_flight: HashSet<DiffModelKey>,
+    /// Queued `GetDiffState` responses waiting for the in-flight computation
+    /// for their key to finish. Resolved together when it completes
+    /// (`resolve_diff_state_pending_responses`); drained with an error if
+    /// the leading request is aborted, since this fork (unlike the pin) has
+    /// no persistent per-key model to fall back to for a last-known-good
+    /// snapshot. Also the target of `handle_abort`'s
+    /// `abort_diff_state_pending_response` fallback, so aborting a *queued*
+    /// (not yet in-flight) request removes it without cancelling the shared
+    /// computation other subscribers are still waiting on.
+    #[cfg(feature = "local_fs")]
+    diff_state_pending_responses: HashMap<DiffModelKey, Vec<PendingDiffStateResponse>>,
     /// Per-repo local git-status models tracked on the daemon, keyed by repo
     /// path. Ported from the pin's `git_status_models` field. Only the
     /// subscription bookkeeping is ported here (issue #330); the daemon-side
@@ -322,10 +380,11 @@ pub struct ServerModel {
     /// Connections subscribed (via navigation) to each repo's git status,
     /// keyed by repo path. A repo's git-status *and* GitHub-info models live
     /// while this set is non-empty and are evicted once the last connection
-    /// unsubscribes (navigates away or disconnects). Mirrors
-    /// `diff_state_subscriptions`'s per-connection tracking, but keyed by
-    /// repo since git-status subscription is exclusive (one repo per
-    /// connection) rather than a list of `(repo, mode)` pairs.
+    /// unsubscribes (navigates away or disconnects). Same key -> conns shape
+    /// as `diff_state_subscribers`, but git-status subscription is exclusive
+    /// (one repo per connection) rather than a set of `(repo, mode)` keys, so
+    /// its reverse index (`git_status_repo_by_conn`) stores a single value
+    /// instead of a set.
     #[cfg(feature = "local_fs")]
     git_status_subscribers: HashMap<StandardizedPath, HashSet<ConnectionId>>,
     /// Each connection's current git repo (a connection is in at most one
@@ -418,7 +477,13 @@ impl ServerModel {
             connection_senders: HashMap::new(),
             snapshot_sent_roots_by_connection: HashMap::new(),
             #[cfg(feature = "local_fs")]
-            diff_state_subscriptions: HashMap::new(),
+            diff_state_subscribers: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            diff_state_keys_by_conn: HashMap::new(),
+            #[cfg(feature = "local_fs")]
+            diff_state_in_flight: HashSet::new(),
+            #[cfg(feature = "local_fs")]
+            diff_state_pending_responses: HashMap::new(),
             #[cfg(feature = "local_fs")]
             git_status_models: HashMap::new(),
             #[cfg(feature = "local_fs")]
@@ -857,7 +922,7 @@ impl ServerModel {
     pub fn deregister_connection(&mut self, conn_id: ConnectionId, ctx: &mut ModelContext<Self>) {
         self.snapshot_sent_roots_by_connection.remove(&conn_id);
         #[cfg(feature = "local_fs")]
-        self.diff_state_subscriptions.remove(&conn_id);
+        self.remove_diff_state_connection(conn_id);
         #[cfg(feature = "local_fs")]
         self.remote_agent_context_snapshot_sent.remove(&conn_id);
         // A connection is in at most one git-status repo, so `unsubscribe_git_status`
@@ -1303,7 +1368,10 @@ impl ServerModel {
         self.auth_token.as_deref()
     }
 
-    /// Handles `Abort` by cancelling the in-progress request it targets.
+    /// Handles `Abort` by cancelling the in-progress request it targets, or
+    /// (#324) removing a still-queued diff-state response that joined
+    /// another request's in-flight computation and so was never given its
+    /// own `in_progress` entry — see `abort_diff_state_pending_response`.
     /// This is a notification — no response is sent.
     fn handle_abort(&mut self, abort: Abort, request_id: &RequestId) {
         let target_id = RequestId::from(abort.request_id_to_abort);
@@ -1313,12 +1381,20 @@ impl ServerModel {
                  abort_request_id={request_id})"
             );
             handle.abort();
-        } else {
+            return;
+        }
+        #[cfg(feature = "local_fs")]
+        if self.abort_diff_state_pending_response(&target_id) {
             log::info!(
-                "Abort for unknown/completed request (request_id={target_id}, \
+                "Aborting queued diff-state response (request_id={target_id}, \
                  abort_request_id={request_id})"
             );
+            return;
         }
+        log::info!(
+            "Abort for unknown/completed request (request_id={target_id}, \
+             abort_request_id={request_id})"
+        );
     }
 
     /// Handles `SessionBootstrapped` by creating a `LocalCommandExecutor` for
@@ -1741,6 +1817,11 @@ impl ServerModel {
     /// (repo, mode) pair on the remote filesystem and replies with it, then
     /// registers a subscription so subsequent repository changes push a fresh
     /// snapshot to this connection (see `push_diff_state_for_repo`).
+    ///
+    /// A request for a key that already has a computation in flight joins it
+    /// instead of triggering a redundant one (#324) — see
+    /// `diff_state_in_flight` / `diff_state_pending_responses` and
+    /// `resolve_diff_state_pending_responses`.
     #[cfg(feature = "local_fs")]
     fn handle_get_diff_state(
         &mut self,
@@ -1767,7 +1848,10 @@ impl ServerModel {
         // Echoed verbatim in the snapshot so the client's RemoteDiffStateModel
         // (which keys on the string it sent) matches pushes.
         let wire_repo_path = msg.repo_path.clone();
-        let repo_pathbuf = std::path::PathBuf::from(canonical_path.to_local_path_lossy());
+        let key = DiffModelKey {
+            repo_path: canonical_path,
+            mode: mode.clone(),
+        };
 
         log::info!(
             "Handling GetDiffState repo={} mode={mode:?} (request_id={request_id})",
@@ -1775,17 +1859,30 @@ impl ServerModel {
         );
 
         // Register the subscription for live pushes on repository change.
-        self.register_diff_state_subscription(
-            conn_id,
-            canonical_path,
-            wire_repo_path.clone(),
-            mode.clone(),
-        );
+        self.register_diff_state_subscription(conn_id, key.clone(), wire_repo_path.clone());
 
-        let request_id_for_response = request_id.clone();
+        // Queue this request; if a computation for `key` is already in
+        // flight (another connection watching the same repo/mode, or a fast
+        // retry), join it instead of spawning a redundant one (#324).
+        self.diff_state_pending_responses
+            .entry(key.clone())
+            .or_default()
+            .push(PendingDiffStateResponse {
+                request_id: request_id.clone(),
+                conn_id,
+                wire_repo_path,
+            });
+        if !self.diff_state_in_flight.insert(key.clone()) {
+            return HandlerOutcome::Async(None);
+        }
+
+        let repo_pathbuf = std::path::PathBuf::from(key.repo_path.to_local_path_lossy());
         let mode_for_compute = mode.clone();
-        let handle = self.spawn_request_handler(
-            request_id.clone(),
+        let key_for_resolve = key.clone();
+        let key_for_abort = key;
+        let resolve_id = request_id.clone();
+        let abort_id = request_id.clone();
+        let handle = ctx.spawn_abortable(
             async move {
                 let metadata = LocalDiffStateModel::load_metadata_for_repo(
                     repo_pathbuf.clone(),
@@ -1803,90 +1900,218 @@ impl ServerModel {
                 (metadata, diff_data)
             },
             move |me, (metadata_result, diff_data), _ctx| {
-                let snapshot = super::diff_state_proto::snapshot_from_parts_with_base_content(
-                    wire_repo_path,
+                me.in_progress.remove(&resolve_id);
+                me.resolve_diff_state_pending_responses(
+                    &key_for_resolve,
                     &mode,
                     metadata_result.ok(),
                     diff_data,
                 );
-                me.send_server_message(
-                    Some(conn_id),
-                    Some(&request_id_for_response),
-                    server_message::Message::GetDiffStateResponse(
-                        super::diff_state_proto::snapshot_response(snapshot),
-                    ),
-                );
             },
-            ctx,
+            move |me, _ctx| {
+                log::info!("Request cancelled (request_id={abort_id})");
+                me.in_progress.remove(&abort_id);
+                // This fork keeps no persistent per-key model (unlike the
+                // pin's `RemoteDiffStateManager`), so an aborted leading
+                // computation has no last-known-good snapshot to hand the
+                // requests that joined it — fail them together instead of
+                // leaving them queued for a resolution that will never come.
+                me.fail_diff_state_pending_responses(&key_for_abort);
+            },
         );
-        HandlerOutcome::Async(Some(handle))
+        self.in_progress.insert(request_id.clone(), handle);
+        HandlerOutcome::Async(None)
     }
 
     /// Records a `(repo, mode)` diff-state subscription for `conn_id`,
-    /// deduplicating against an existing identical entry.
+    /// storing the exact `repo_path` string the client sent (overwriting any
+    /// previous string for the same `(key, conn_id)` — see the field doc on
+    /// `diff_state_subscribers`).
     #[cfg(feature = "local_fs")]
     fn register_diff_state_subscription(
         &mut self,
         conn_id: ConnectionId,
-        canonical_path: StandardizedPath,
+        key: DiffModelKey,
         wire_repo_path: String,
-        mode: crate::code_review::diff_state::DiffMode,
     ) {
-        let subs = self.diff_state_subscriptions.entry(conn_id).or_default();
-        if !subs
-            .iter()
-            .any(|s| s.canonical_path == canonical_path && s.mode == mode)
-        {
-            subs.push(DiffStateSubscription {
-                canonical_path,
-                wire_repo_path,
-                mode,
-            });
+        self.diff_state_subscribers
+            .entry(key.clone())
+            .or_default()
+            .insert(conn_id, wire_repo_path);
+        self.diff_state_keys_by_conn
+            .entry(conn_id)
+            .or_default()
+            .insert(key);
+    }
+
+    /// Removes one `(key, conn_id)` diff-state subscription, evicting the
+    /// key's entry from both `diff_state_subscribers` and
+    /// `diff_state_keys_by_conn` once its subscriber set is empty.
+    #[cfg(feature = "local_fs")]
+    fn drop_diff_state_subscription(&mut self, key: &DiffModelKey, conn_id: ConnectionId) {
+        if let Some(subs) = self.diff_state_subscribers.get_mut(key) {
+            subs.remove(&conn_id);
+            if subs.is_empty() {
+                self.diff_state_subscribers.remove(key);
+            }
+        }
+        if let Some(keys) = self.diff_state_keys_by_conn.get_mut(&conn_id) {
+            keys.remove(key);
+            if keys.is_empty() {
+                self.diff_state_keys_by_conn.remove(&conn_id);
+            }
         }
     }
 
+    /// Removes all of `conn_id`'s diff-state subscriptions (disconnect
+    /// sweep), in O(subscriptions for this connection) via
+    /// `diff_state_keys_by_conn` rather than a scan over every key. Also
+    /// drops any of its queued pending responses, since a disconnected
+    /// connection can no longer receive one.
+    #[cfg(feature = "local_fs")]
+    fn remove_diff_state_connection(&mut self, conn_id: ConnectionId) {
+        if let Some(keys) = self.diff_state_keys_by_conn.remove(&conn_id) {
+            for key in keys {
+                if let Some(subs) = self.diff_state_subscribers.get_mut(&key) {
+                    subs.remove(&conn_id);
+                    if subs.is_empty() {
+                        self.diff_state_subscribers.remove(&key);
+                    }
+                }
+            }
+        }
+        for pending in self.diff_state_pending_responses.values_mut() {
+            pending.retain(|p| p.conn_id != conn_id);
+        }
+    }
+
+    /// Resolves every response queued for `key` — the leading request plus
+    /// any that joined it while its computation was in flight — with the
+    /// same computed snapshot, each addressed with its own connection's
+    /// exact `repo_path` string. The proto snapshot is built once (with a
+    /// placeholder path) and cloned per response, since `DiffMetadata` /
+    /// `GitDiffWithBaseContent` are not `Clone` but the generated proto type
+    /// is.
+    #[cfg(feature = "local_fs")]
+    fn resolve_diff_state_pending_responses(
+        &mut self,
+        key: &DiffModelKey,
+        mode: &crate::code_review::diff_state::DiffMode,
+        metadata: Option<crate::code_review::diff_state::DiffMetadata>,
+        diff_data: Option<crate::code_review::diff_state::GitDiffWithBaseContent>,
+    ) {
+        self.diff_state_in_flight.remove(key);
+        let pending = self
+            .diff_state_pending_responses
+            .remove(key)
+            .unwrap_or_default();
+        if pending.is_empty() {
+            return;
+        }
+        let snapshot = super::diff_state_proto::snapshot_from_parts_with_base_content(
+            String::new(),
+            mode,
+            metadata,
+            diff_data,
+        );
+        for pending_response in pending {
+            let mut snap = snapshot.clone();
+            snap.repo_path = pending_response.wire_repo_path;
+            self.send_server_message(
+                Some(pending_response.conn_id),
+                Some(&pending_response.request_id),
+                server_message::Message::GetDiffStateResponse(
+                    super::diff_state_proto::snapshot_response(snap),
+                ),
+            );
+        }
+    }
+
+    /// Fails every response queued for `key` when its leading computation is
+    /// aborted — see `handle_get_diff_state`'s `on_abort` closure.
+    #[cfg(feature = "local_fs")]
+    fn fail_diff_state_pending_responses(&mut self, key: &DiffModelKey) {
+        self.diff_state_in_flight.remove(key);
+        let pending = self
+            .diff_state_pending_responses
+            .remove(key)
+            .unwrap_or_default();
+        for pending_response in pending {
+            self.send_server_message(
+                Some(pending_response.conn_id),
+                Some(&pending_response.request_id),
+                server_message::Message::GetDiffStateResponse(
+                    super::diff_state_proto::error_response(
+                        "GetDiffState request was aborted".to_string(),
+                    ),
+                ),
+            );
+        }
+    }
+
+    /// Removes a queued (not yet in-flight) diff-state response matching
+    /// `request_id`, across every key. Fallback used by `handle_abort` once
+    /// the generic `in_progress` lookup misses: a request that joined an
+    /// already-in-flight computation (see `handle_get_diff_state`) was never
+    /// given its own `in_progress` entry, since cancelling it must not
+    /// cancel the shared computation the other joiners are still waiting on.
+    /// Returns `true` if a pending response was found and removed.
+    #[cfg(feature = "local_fs")]
+    fn abort_diff_state_pending_response(&mut self, request_id: &RequestId) -> bool {
+        for pending in self.diff_state_pending_responses.values_mut() {
+            if let Some(pos) = pending.iter().position(|p| &p.request_id == request_id) {
+                pending.remove(pos);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Pushes a fresh diff-state snapshot to every connection subscribed to
-    /// `changed_repo`. Called when a repository's contents change.
+    /// `changed_repo`, across every mode it has active subscriptions for.
+    /// Called when a repository's contents change.
     #[cfg(feature = "local_fs")]
     fn push_diff_state_for_repo(
         &mut self,
         changed_repo: &StandardizedPath,
         ctx: &mut ModelContext<Self>,
     ) {
-        // Snapshot the matching subscriptions first so the async spawns don't
-        // hold a borrow of `self.diff_state_subscriptions`.
-        let matches: Vec<(ConnectionId, DiffStateSubscription)> = self
-            .diff_state_subscriptions
-            .iter()
-            .flat_map(|(conn_id, subs)| {
-                let conn_id = *conn_id;
-                subs.iter()
-                    .filter(|s| &s.canonical_path == changed_repo)
-                    .cloned()
-                    .map(move |s| (conn_id, s))
-            })
+        // Snapshot the matching keys first so the loop below doesn't hold a
+        // borrow of `self.diff_state_subscribers` across
+        // `spawn_push_diff_state_snapshot`.
+        let matching_keys: Vec<DiffModelKey> = self
+            .diff_state_subscribers
+            .keys()
+            .filter(|key| &key.repo_path == changed_repo)
+            .cloned()
             .collect();
-        for (conn_id, sub) in matches {
-            self.spawn_push_diff_state_snapshot(conn_id, sub, ctx);
+        for key in matching_keys {
+            let Some(subs) = self.diff_state_subscribers.get(&key).cloned() else {
+                continue;
+            };
+            self.spawn_push_diff_state_snapshot(key, subs, ctx);
         }
     }
 
-    /// Recomputes the snapshot for one subscription and pushes it (unsolicited,
-    /// no request_id) to `conn_id`.
+    /// Recomputes the snapshot for `key` once and pushes it (unsolicited, no
+    /// request_id) to every connection in `subs`, each addressed with its
+    /// own wire `repo_path` string. Computed once per key rather than once
+    /// per connection (#324) — several connections watching the same
+    /// (repo, mode) previously triggered independent, redundant recomputes
+    /// on every push.
     #[cfg(feature = "local_fs")]
     fn spawn_push_diff_state_snapshot(
         &mut self,
-        conn_id: ConnectionId,
-        sub: DiffStateSubscription,
+        key: DiffModelKey,
+        subs: HashMap<ConnectionId, String>,
         ctx: &mut ModelContext<Self>,
     ) {
         use crate::code_review::diff_state::{DiffMode, LocalDiffStateModel};
 
-        let include_base_branch = !matches!(sub.mode, DiffMode::Head);
-        let repo_pathbuf = std::path::PathBuf::from(sub.canonical_path.to_local_path_lossy());
-        let mode = sub.mode.clone();
-        let mode_for_compute = sub.mode;
-        let wire_repo_path = sub.wire_repo_path;
+        let include_base_branch = !matches!(key.mode, DiffMode::Head);
+        let repo_pathbuf = std::path::PathBuf::from(key.repo_path.to_local_path_lossy());
+        let mode = key.mode.clone();
+        let mode_for_compute = key.mode;
         ctx.spawn_abortable(
             async move {
                 let metadata = LocalDiffStateModel::load_metadata_for_repo(
@@ -1906,16 +2131,20 @@ impl ServerModel {
             },
             move |me, (metadata_result, diff_data), _ctx| {
                 let snapshot = super::diff_state_proto::snapshot_from_parts_with_base_content(
-                    wire_repo_path,
+                    String::new(),
                     &mode,
                     metadata_result.ok(),
                     diff_data,
                 );
-                me.send_server_message(
-                    Some(conn_id),
-                    None,
-                    server_message::Message::DiffStateSnapshot(snapshot),
-                );
+                for (conn_id, wire_repo_path) in subs {
+                    let mut snap = snapshot.clone();
+                    snap.repo_path = wire_repo_path;
+                    me.send_server_message(
+                        Some(conn_id),
+                        None,
+                        server_message::Message::DiffStateSnapshot(snap),
+                    );
+                }
             },
             |_me, _ctx| {},
         );
@@ -2079,12 +2308,11 @@ impl ServerModel {
             return;
         };
         let mode = super::diff_state_proto::proto_to_diff_mode(&msg.mode.unwrap_or_default());
-        if let Some(subs) = self.diff_state_subscriptions.get_mut(&conn_id) {
-            subs.retain(|s| !(s.canonical_path == canonical_path && s.mode == mode));
-            if subs.is_empty() {
-                self.diff_state_subscriptions.remove(&conn_id);
-            }
-        }
+        let key = DiffModelKey {
+            repo_path: canonical_path,
+            mode,
+        };
+        self.drop_diff_state_subscription(&key, conn_id);
     }
 
     #[cfg(not(feature = "local_fs"))]
