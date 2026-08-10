@@ -126,6 +126,33 @@ fn show_with_no_rows_does_not_open() {
 }
 
 #[test]
+fn show_does_not_replace_an_already_visible_menu() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let suggestions_mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
+            suggestions_mode.update(ctx, |mode, ctx| {
+                mode.set_mode(TuiInputSuggestionsMode::SlashCommands, ctx);
+            });
+            let menu = ctx.add_model(|_| TuiCompletionsMenuModel::new(suggestions_mode.clone()));
+
+            let opened = menu.update(ctx, |m, ctx| {
+                m.show(rows(&[("checkout", "checkout")]), 0..1, false, ctx)
+            });
+
+            // Another mode owns the input, so the popup must stay closed and
+            // must not evict the mode that is already visible.
+            assert!(!opened);
+            assert!(!menu.as_ref(ctx).is_open(ctx));
+            assert_eq!(
+                suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::SlashCommands
+            );
+            assert!(menu.as_ref(ctx).snapshot(ctx).is_none());
+        });
+    });
+}
+
+#[test]
 fn select_next_cycles_selection() {
     App::test((), |mut app| async move {
         app.update(|ctx| {
