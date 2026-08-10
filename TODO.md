@@ -215,7 +215,7 @@ Treat all of this as staged, not validated.
       key is ever translated (`persistence/sqlite.rs:2667`). Pre-existing for
       every section; the `"Network" | "网络"` arm in `FromStr` suggests someone
       already hit this once.
-- [>] **LSP: the `ON DELETE CASCADE` guard arm is still outstanding.** **[IN FLIGHT 2026-08-10 — LSP agent resumed and carrying it]** The LSP
+- [x] **LSP: the `ON DELETE CASCADE` guard arm.** **[DONE 5f2f5d103 — verified: CASCADE in the migration AND clean_up_expired_metadata's third arm restored. Both halves covered; they are not interchangeable.]** The LSP
       agent chose CASCADE (verified `PRAGMA foreign_keys = ON` is per-connection)
       but argued correctly that **CASCADE does not close the guard out** — they
       fix different halves. CASCADE makes the orphan state unrepresentable;
@@ -477,7 +477,7 @@ the very mechanism the test is named after.
   `CLAUDE.local.md`).
 
 ### Two findings worth acting on independently
-- [>] **Nothing prunes the recent-repos list.** **[IN FLIGHT 2026-08-10 — D2 agent told to verify pruning returns with the index manager]** Expiry is the index manager's job,
+- [x] **Nothing prunes the recent-repos list.** **[DONE fca2bedb2 — verified: RemoveExpiredIndexMetadata present in both persisted_workspace.rs and the index manager. Pruning returned with the index manager, as predicted.]** Expiry is the index manager's job,
       and indexing is absent — so the list grows without bound until D2c lands.
 - [x] **`all_working_directories` already exists as a private copy** **[DONE 9fb1900fd — now ai/terminal_working_directories.rs.]** in
       `app/src/ai/outline/native.rs`. Reunify when indexing returns; do not add a third.
