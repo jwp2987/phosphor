@@ -13760,6 +13760,10 @@ impl Workspace {
             pane_group::Event::RunTabConfigSkill { path } => {
                 self.run_tab_config_skill(path, ctx);
             }
+            #[cfg(not(target_family = "wasm"))]
+            pane_group::Event::OpenLspLogs { log_path } => {
+                self.open_lsp_logs(log_path, ctx);
+            }
             pane_group::Event::OpenCodeReviewPane(arg) => {
                 self.open_code_review_panel_from_arg(arg, pane_group.clone(), ctx);
             }
@@ -15252,6 +15256,32 @@ impl Workspace {
         }
 
         active_pane_group.as_ref(ctx).active_session_view(ctx)
+    }
+
+    /// Opens an LSP server's log file by splitting a terminal pane to the right
+    /// and running the shell's `tail -f` equivalent on it.
+    #[cfg(not(target_family = "wasm"))]
+    fn open_lsp_logs(&mut self, log_path: &PathBuf, ctx: &mut ViewContext<Self>) {
+        use crate::workflows::local_workflows::tail_command_for_shell;
+
+        let active_pane_group = self.active_tab_pane_group();
+
+        // Add a terminal pane to the right
+        active_pane_group.update(ctx, |pane_group, ctx| {
+            pane_group.add_terminal_pane(PaneGroupDirection::Right, None, ctx);
+        });
+
+        let Some(terminal_view_handle) = active_pane_group.as_ref(ctx).active_session_view(ctx)
+        else {
+            report_error!("Could not get terminal view handle when attempting to open LSP logs.");
+            return;
+        };
+
+        terminal_view_handle.update(ctx, |terminal, ctx| {
+            let shell_family = terminal.shell_family(ctx);
+            let tail_command = tail_command_for_shell(shell_family, log_path);
+            terminal.set_pending_command(&tail_command, ctx);
+        });
     }
 
     fn run_tab_config_skill(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {

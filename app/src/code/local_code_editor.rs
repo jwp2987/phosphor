@@ -41,7 +41,10 @@ use std::{
     rc::Rc,
 };
 
+use lsp::{LanguageId, LspManagerModel, LspServerModel};
 use pathfinder_geometry::vector::Vector2F;
+#[cfg(feature = "local_fs")]
+use repo_metadata::repositories::DetectedRepositories;
 use warp_core::{features::FeatureFlag, ui::appearance::Appearance};
 use warp_editor::{content::buffer::InitialBufferState, render::model::LineCount};
 use warp_util::{
@@ -49,7 +52,9 @@ use warp_util::{
     file::{FileId, FileLoadError, FileSaveError},
     path::to_relative_path,
 };
+use warpui::ModelHandle;
 use warpui::platform::SaveFilePickerConfiguration;
+
 use warpui::{
     elements::{
         Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius,
@@ -67,6 +72,9 @@ use warpui::{
     WindowId,
 };
 
+use crate::ai::persisted_workspace::PersistedWorkspace;
+#[cfg(feature = "local_fs")]
+use crate::ai::persisted_workspace::PersistedWorkspaceEvent;
 use crate::{
     code::{editor::EditorReviewComment, global_buffer_model::GlobalBufferModelEvent},
     code_review::comments::CommentId,
@@ -153,6 +161,11 @@ pub enum LocalCodeEditorEvent {
     ViewportUpdated,
     /// Emitted when the render state layout has been updated.
     LayoutInvalidated,
+    /// Request to open LSP logs for the given file path.
+    /// The workspace will handle opening a terminal with `tail -f` on the log file.
+    OpenLspLogs {
+        log_path: PathBuf,
+    },
     /// Passed up to the parent for handling after clicking "/update-tab-config" on the TabConfig footer.
     RunTabConfigSkill {
         path: PathBuf,
@@ -214,6 +227,7 @@ pub struct LocalCodeEditorView {
     /// Default directory to use for save dialogs when creating new files
     default_directory: Option<PathBuf>,
     /// Footer for displaying TabConfig actions. Only created for tab config TOML files.
+    pub(super) lsp_server: Option<ModelHandle<LspServerModel>>,
     footer: Option<ViewHandle<CodeFooterView>>,
     /// Pending scroll position to apply after the file is loaded. This is used when
     /// `set_pending_scroll` is called before the file content has finished loading
@@ -305,6 +319,7 @@ impl LocalCodeEditorView {
             base_content_version: None,
             conflict_banner_mouse_states: Default::default(),
             default_directory: None,
+            lsp_server: None,
             footer: None,
             pending_scroll_on_load: None,
         };
@@ -561,21 +576,210 @@ impl LocalCodeEditorView {
 
     /// Adds the TabConfig footer to the editor view if the file is a tab config TOML.
     /// Since LSP was removed, normal source files no longer render a footer.
+    /// Adds the LSP status footer to the editor view.
     pub(crate) fn add_footer(&mut self, ctx: &mut ViewContext<Self>) {
-        let Some(path) = self.file_path() else {
+        if let Some(path) = self.file_path() {
+            let footer =
+                ctx.add_typed_action_view(|ctx| CodeFooterView::new(path.to_path_buf(), ctx));
+            ctx.subscribe_to_view(&footer, |_, _, event, ctx| match event {
+                CodeFooterViewEvent::RunTabConfigSkill { path } => {
+                    ctx.emit(LocalCodeEditorEvent::RunTabConfigSkill { path: path.clone() });
+                }
+                CodeFooterViewEvent::EnableLSP { path, .. } => {
+                    Self::enable_lsp_for_path(path, ctx);
+                }
+                CodeFooterViewEvent::InstallAndEnableLSP { path, .. } => {
+                    Self::install_and_enable_lsp_for_path(path, ctx);
+                }
+                CodeFooterViewEvent::OpenLogs { path } => {
+                    Self::open_lsp_logs_for_path(path, ctx);
+                }
+                CodeFooterViewEvent::RestartServer { server } => {
+                    server.update(ctx, |server, ctx| {
+                        server.restart(ctx);
+                    });
+                }
+                CodeFooterViewEvent::StopServer { server } => {
+                    server.update(ctx, |server, ctx| {
+                        let _ = server.stop(true, ctx);
+                    });
+                }
+                CodeFooterViewEvent::StartServer { server } => {
+                    server.update(ctx, |server, ctx| {
+                        let _ = server.manual_start(ctx);
+                    });
+                }
+                CodeFooterViewEvent::RestartAllServers { .. }
+                | CodeFooterViewEvent::StopAllServers { .. }
+                | CodeFooterViewEvent::StartAllServers { .. }
+                | CodeFooterViewEvent::ManageServers => {}
+            });
+
+            // Subscribe to PersistedWorkspace events for LSP installation completion
+            #[cfg(feature = "local_fs")]
+            {
+                ctx.subscribe_to_model(
+                    &PersistedWorkspace::handle(ctx),
+                    move |me, _, event, ctx| {
+                        Self::handle_persisted_workspace_event(me, event, ctx);
+                    },
+                );
+            }
+
+            self.footer = Some(footer);
+        }
+    }
+
+    /// Handles PersistedWorkspaceEvent for LSP installation completion.
+    /// Note: Toast notifications are handled directly by PersistedWorkspace.
+    #[cfg(feature = "local_fs")]
+    fn handle_persisted_workspace_event(
+        me: &mut Self,
+        event: &PersistedWorkspaceEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            PersistedWorkspaceEvent::InstallationSucceeded
+            | PersistedWorkspaceEvent::InstallationFailed => {
+                // PersistedWorkspace handles spawning the server after install;
+                // we only need to refresh the footer UI here.
+                if let Some(footer) = &me.footer {
+                    footer.update(ctx, |_, ctx| {
+                        ctx.notify();
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Enables LSP for the given file path by:
+    /// 1. Determining the language from the file extension
+    /// 2. Finding the appropriate LSP server type
+    /// 3. Getting the repository root from DetectedRepositories
+    /// 4. Enabling the LSP server in PersistedWorkspace
+    /// 5. Starting the LSP server via PersistedWorkspace
+    #[cfg(feature = "local_fs")]
+    fn enable_lsp_for_path(path: &Path, ctx: &mut ViewContext<Self>) {
+        use crate::ai::persisted_workspace::LspTask;
+
+        // Get the language ID from the file path
+        let Some(language_id) = LanguageId::from_path(path) else {
+            log::warn!("Enable lsp for path should only work for supported file paths");
             return;
         };
-        if !CodeFooterView::is_tab_config_path(path) {
-            return;
-        }
-        let path_buf = path.to_path_buf();
-        let footer = ctx.add_typed_action_view(|ctx| CodeFooterView::new(path_buf, ctx));
-        ctx.subscribe_to_view(&footer, |_, _, event, ctx| match event {
-            CodeFooterViewEvent::RunTabConfigSkill { path } => {
-                ctx.emit(LocalCodeEditorEvent::RunTabConfigSkill { path: path.clone() });
+
+        // Find the appropriate LSP server type for this language
+        let lsp_server_type = language_id.server_type();
+
+        // Get the repository root from PersistedWorkspace.
+        // If it doesn't exist, try to get it from DetectedRepositories.
+        // If it also doesn't exist in DetectedRepositories, use the parent path.
+        let repo_root = if let Some(workspace_root) =
+            PersistedWorkspace::as_ref(ctx).root_for_workspace(path)
+        {
+            Some(workspace_root.to_path_buf())
+        } else {
+            // Seam: the pin's `get_root_for_path` takes a `&LocalOrRemotePath` and
+            // returns a remote-capable path; this fork's takes `&Path` and returns
+            // `Option<PathBuf>` directly, so no conversion is needed.
+            match DetectedRepositories::as_ref(ctx).get_root_for_path(path) {
+                Some(root) => Some(root),
+                None => path.parent().map(|s| s.to_path_buf()), // If we can't find root, treat the parent as the root.
             }
+        };
+
+        let Some(repo_root) = repo_root else {
+            return;
+        };
+
+        // Enable and start the LSP server via PersistedWorkspace
+        let path = path.to_path_buf();
+        PersistedWorkspace::handle(ctx).update(ctx, |workspace, ctx| {
+            workspace.enable_lsp_server_for_path(&repo_root, lsp_server_type);
+            workspace.execute_lsp_task(LspTask::Spawn { file_path: path }, ctx);
         });
-        self.footer = Some(footer);
+    }
+
+    /// Installs the LSP server and then enables it for the given file path.
+    /// This delegates to PersistedWorkspace which handles the async installation
+    /// and emits events that are handled by handle_persisted_workspace_event.
+    #[cfg(feature = "local_fs")]
+    fn install_and_enable_lsp_for_path(path: &Path, ctx: &mut ViewContext<Self>) {
+        use crate::ai::persisted_workspace::LspTask;
+
+        let Some(language_id) = LanguageId::from_path(path) else {
+            log::warn!("Install and enable lsp for path should only work for supported file paths");
+            return;
+        };
+
+        let lsp_server_type = language_id.server_type();
+        let path = path.to_path_buf();
+
+        let repo_root = if let Some(workspace_root) =
+            PersistedWorkspace::as_ref(ctx).root_for_workspace(&path)
+        {
+            Some(workspace_root.to_path_buf())
+        } else {
+            match DetectedRepositories::as_ref(ctx).get_root_for_path(&path) {
+                Some(root) => Some(root),
+                None => path.parent().map(|s| s.to_path_buf()),
+            }
+        };
+
+        let Some(repo_root) = repo_root else {
+            return;
+        };
+
+        // Delegate to PersistedWorkspace which uses interactive PATH and emits events
+        PersistedWorkspace::handle(ctx).update(ctx, |workspace, ctx| {
+            workspace.execute_lsp_task(
+                LspTask::Install {
+                    file_path: path,
+                    repo_root,
+                    server_type: lsp_server_type,
+                },
+                ctx,
+            );
+        });
+    }
+
+    /// Opens the LSP log file in a terminal pane using `tail -f`.
+    /// Emits an event that bubbles up to Workspace which handles opening the terminal.
+    #[cfg(feature = "local_fs")]
+    fn open_lsp_logs_for_path(path: &Path, ctx: &mut ViewContext<Self>) {
+        // Get the language ID from the file path
+        let Some(language_id) = LanguageId::from_path(path) else {
+            log::warn!(
+                "Could not determine language ID for path: {}",
+                path.display()
+            );
+            return;
+        };
+
+        // Get the workspace root from LspManagerModel (canonical source for running servers)
+        let lsp_manager = LspManagerModel::handle(ctx);
+        let lsp_manager_ref = lsp_manager.as_ref(ctx);
+
+        // Find the LSP server for this path and get its workspace root
+        let repo_root = lsp_manager_ref
+            .server_for_path(path, ctx)
+            .map(|server| server.as_ref(ctx).initial_workspace().to_path_buf());
+
+        let Some(repo_root) = repo_root else {
+            log::warn!(
+                "Could not determine workspace root for path: {}",
+                path.display()
+            );
+            return;
+        };
+
+        // Compute the log file path (the log file is created by LspLogger when the server starts)
+        let lsp_server_type = language_id.server_type();
+        let log_path = crate::code::lsp_logs::log_file_path(lsp_server_type, &repo_root);
+
+        // Emit event to bubble up to Workspace
+        ctx.emit(LocalCodeEditorEvent::OpenLspLogs { log_path });
     }
 
     /// Unsubscribes from any existing GlobalBufferModel subscription and sets up a
@@ -770,6 +974,11 @@ impl LocalCodeEditorView {
             // Remote files have no local path.
             LoadedFileMetadata::RemoteFile { .. } => None,
         }
+    }
+
+    /// Whether the local editor has a corresponding enabled LSP.
+    pub fn language_server_enabled(&self) -> bool {
+        self.lsp_server.is_some()
     }
 
     /// Update this editor's file identity after a `GlobalBufferModel::rename`.
