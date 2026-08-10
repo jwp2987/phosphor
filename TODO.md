@@ -540,6 +540,51 @@ feature.
       from the git watcher directly, and the GUI relocation the issue described
       as prerequisite was not needed at all. Close #577.
 
+## UNRECORDED SUBSYSTEM REMOVALS — a pattern, needs a rule not four entries
+
+Four deliberate removals of **local** subsystems surfaced on 2026-08-10, every
+one found by an agent doing unrelated work, and **every one recorded in neither
+`DECLINED.md` nor `TODO.md`**. The audit did not catch them because it keys on
+pin tests, and these carry few or none.
+
+- [ ] **`9765692e1` (2026-04-30) — client-side computer-use dispatch, 17 files,
+      −936 lines. VERIFIED, and it carries an active documentation
+      contradiction.** Removed both executors
+      (`execute/{use_computer,request_computer_use}.rs`), the `crates/ai` action
+      and action_result variants (`UseComputer`, `RequestComputerUse`,
+      `UseComputerResult`, `RequestComputerUseResult`, `ScreenDimensions`), their
+      protobuf conversions, the `block.rs` ViewScreenshot lightbox, the render
+      and persistence paths, and gutted `conversation.use_computer_action_ids()`
+      to `std::iter::empty()`. Inbound `Tool::UseComputer` now returns
+      `UnexpectedTool`.
+      **Not cloud** — the executors call `computer_use::create_actor()` locally
+      and the pin's versions run entirely client-side.
+      **Consequence:** #349's port is complete and the feature still cannot work.
+      `create_actor()` has exactly one caller, the `use_computer` dev CLI.
+      **The contradiction:** `app/src/ai/blocklist/action_model/execute.rs:377`
+      says *"Computer Use is out of scope for this fork (see `DECLINED.md`)"* —
+      but `DECLINED.md:137` lists `crates/computer_use` under **"Not declined —
+      common false positives"**, and `DECLINED.md:125` states outright
+      **"#349 is NOT covered"**. The code cites a decision the decision file
+      explicitly contradicts. **Maintainer ruling needed:** either record the
+      dispatch removal as declined and fix `DECLINED.md`, or file it as debt and
+      fix the comment. It cannot stay as-is.
+- [ ] **`b0b1faef9` — InitProject wizard, 1,901 lines.** Rationale given was
+      "cloud agent mode's first-run onboarding", but `/init` is a **local** flow,
+      so per §5.10 the framing deserves a second look. Takes
+      `lsp_server_selector.rs` with it.
+- [ ] **`efcaa42b8` — LSP, 14,611 lines.** Now being restored (maintainer verdict
+      2026-08-10), but the removal itself was never recorded.
+- [ ] **`d84dd8e4d` — PersistedWorkspace + codebase indexing.** D1 restored the
+      workspace half; D2 is restoring indexing.
+
+- [ ] **THE RULE THIS NEEDS.** Four in one day is not four oversights. Nothing in
+      this project forces a removal to be recorded, and the parity audit cannot
+      see them (no pin tests). Proposal: a CI guard in the spirit of
+      `check_cloud_boundary` that flags a commit deleting more than N lines of
+      non-cloud source unless it cites a `DECLINED.md` row or a `TODO.md` issue.
+      Cheaper than any of the four restorations it would have prevented.
+
 ## LICENCE COMPLIANCE 2026-08-10 — one BLOCKING item
 
 Read-only review against pin `02b53fcd8`. Reviewer is not a lawyer; these are
@@ -682,7 +727,7 @@ green suite or a shrinking test gap as evidence of parity.
 - [x] ~~LSP needs a maintainer verdict~~ — **VERDICT 2026-08-10: RESTORE.**
       Promoted out of this section into its own track below.
 ### MIS-TICKED / MIS-SCOPED — existing entries that misstate reality
-- [>] **#323 is ticked LANDED but the Codex SDK harness driver is absent.** **[IN FLIGHT 2026-08-10 — agent porting codex.rs + codex_transcript.rs + 47 tests]**
+- [x] **#323 is ticked LANDED but the Codex SDK harness driver is absent.** **[DONE 75e5dc30c — harness_kind returns ThirdParty(CodexHarness); 46 tests. Audit said 7 tests needed adapting; real number was 3.]** **[IN FLIGHT 2026-08-10 — agent porting codex.rs + codex_transcript.rs + 47 tests]**
       TODO.md:524 marks it done. What actually landed is the *local child-pane
       launch* (`app/src/pane_group/pane/local_harness_launch.rs:148
       build_local_codex_child_command`). The SDK driver was explicitly excluded
@@ -694,7 +739,7 @@ green suite or a shrinking test gap as evidence of parity.
       `codex_transcript_tests.rs` (9), all absent. Templates already exist in
       the fork: `claude_code.rs`, `gemini.rs`. **Untick #323 or split out the
       remainder as its own issue — do not leave it reading as complete.**
-- [>] **#349's parking rationale is mis-scoped.** **[IN FLIGHT 2026-08-10 — agent doing platform-neutral API, then Linux X11, then macOS; will return a corrected scope]** Parked as "macOS-only, cannot
+- [x] **#349's parking rationale is mis-scoped.** **[PORTED 64b6e03c6 — ~3,100 lines, not ~1,430. BLOCKED from working, see below.]** **[IN FLIGHT 2026-08-10 — agent doing platform-neutral API, then Linux X11, then macOS; will return a corrected scope]** Parked as "macOS-only, cannot
       verify on this host", but that covers neither `linux/x11/{seat,windows}.rs`
       (buildable here) nor the platform-neutral `Target`/`TargetedAction`/
       `enumerate_windows` API every caller must thread.
