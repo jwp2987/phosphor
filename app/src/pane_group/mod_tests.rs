@@ -26,10 +26,20 @@
 //! present in this fork's `PaneGroup` by reading the source, not just
 //! grepping a name match. See individual test doc comments for per-test
 //! notes on API drift from the pin.
+//!
+//! Three more (`test_initial_widths_are_computed_correctly`,
+//! `test_pane_focus_does_not_have_an_infinite_event_loop`,
+//! `test_focused_pane_is_synchronized_with_application_focus`) needed a
+//! purpose-built harness rather than the plain `mock_pane_group` above --
+//! see `MockOptions`/`mock_pane_group_with_options` and `FocusDetectionView`
+//! further down.
 
 use std::collections::HashMap;
 
+use pathfinder_geometry::rect::RectF;
+use pathfinder_geometry::vector::Vector2F;
 use warpui::App;
+use warpui::platform::{WindowBounds, WindowStyle};
 
 use crate::notebooks::notebook::NotebookView;
 use crate::terminal::shared_session::SharedSessionStatus;
@@ -707,5 +717,220 @@ fn test_update_session_visibility() {
             // Assert that both of the panes are now visible.
             visibility_matches(panes, true, ctx);
         })
+    });
+}
+
+/// Mirrors the pin's `MockOptions`/`mock_pane_group(app, options)` pair. The
+/// plain `mock_pane_group(app)` above (this file's harness for the first 12
+/// ported tests) always builds a single default terminal pane via the
+/// `Workspace`-level test harness (`mock_workspace`); the three tests below
+/// each need a specific split-tree layout and/or exact window bounds instead,
+/// so they build the `PaneGroup` directly.
+///
+/// This still goes through `PaneGroup::new_with_panes_layout` -- the same
+/// constructor `Workspace::add_tab_with_pane_layout`
+/// (`workspace/view.rs`) and `terminal_view_for_viewer`
+/// (`terminal/view/shared_session/test_utils.rs`) use -- so
+/// `workspace::view::tests::initialize_app`, which already registers every
+/// singleton a `Workspace`-built `PaneGroup` needs, is sufficient here too,
+/// without going through `Workspace` itself. `GlobalResourceHandles::mock`
+/// (used the same way in `terminal_view_for_viewer`) supplies the
+/// `tips_completed`/banner/`model_event_sender` handles the pin's version
+/// sourced from its own ad hoc `app.add_model` calls plus
+/// `ServerApiProvider` -- the fork's `new_with_panes_layout` has no
+/// `ServerApiProvider` parameter to begin with (cloud dropped).
+struct MockOptions {
+    layout: PanesLayout,
+    window_bounds: WindowBounds,
+}
+
+impl Default for MockOptions {
+    fn default() -> Self {
+        Self {
+            layout: Default::default(),
+            window_bounds: WindowBounds::ExactPosition(RectF::new(
+                Vector2F::zero(),
+                Vector2F::new(1024., 768.),
+            )),
+        }
+    }
+}
+
+fn mock_pane_group_with_options(app: &mut App, options: MockOptions) -> ViewHandle<PaneGroup> {
+    crate::workspace::view::tests::initialize_app(app);
+    let global_resource_handles = crate::GlobalResourceHandles::mock(app);
+    let (_, pane_group) =
+        app.add_window_with_bounds(WindowStyle::NotStealFocus, options.window_bounds, |ctx| {
+            PaneGroup::new_with_panes_layout(
+                global_resource_handles.tips_completed.clone(),
+                global_resource_handles
+                    .user_default_shell_unsupported_banner_model_handle
+                    .clone(),
+                options.layout,
+                Arc::new(HashMap::new()),
+                global_resource_handles.model_event_sender.clone(),
+                ctx,
+            )
+        });
+    pane_group
+}
+
+#[test]
+fn test_initial_widths_are_computed_correctly() {
+    use launch_config::PaneTemplateType::*;
+
+    App::test((), |mut app| async move {
+        // Define a simple macro to help us create new leaf panes.
+        macro_rules! leaf_pane {
+            () => {
+                PaneTemplate {
+                    is_focused: None,
+                    cwd: "".into(),
+                    commands: vec![],
+                    pane_mode: PaneMode::Terminal,
+                    shell: None,
+                }
+            };
+        }
+
+        // Pick an arbitrary initial window that isn't the same as the
+        // fallback value.
+        let window_width = 864.;
+        let window_height = 636.;
+        assert_ne!(window_width, FALLBACK_INITIAL_WINDOW_SIZE.x());
+        assert_ne!(window_height, FALLBACK_INITIAL_WINDOW_SIZE.y());
+
+        // Create a template that looks like the following, with each pane
+        // numbered by its index in the pane group:
+        //
+        //  ---------------------
+        //  |         0         |
+        //  | __________________|
+        //  |     1   |____2____|
+        //  | ________|____3____|
+        //  |   4  |   5  |  6  |
+        //  |      |      |     |
+        //  ---------------------
+        let template = PaneBranchTemplate {
+            split_direction: launch_config::SplitDirection::Vertical,
+            panes: vec![
+                leaf_pane!(),
+                PaneBranchTemplate {
+                    split_direction: launch_config::SplitDirection::Horizontal,
+                    panes: vec![
+                        leaf_pane!(),
+                        PaneBranchTemplate {
+                            split_direction: launch_config::SplitDirection::Vertical,
+                            panes: vec![leaf_pane!(), leaf_pane!()],
+                        },
+                    ],
+                },
+                PaneBranchTemplate {
+                    split_direction: launch_config::SplitDirection::Horizontal,
+                    panes: vec![leaf_pane!(), leaf_pane!(), leaf_pane!()],
+                },
+            ],
+        };
+
+        let window_size = Vector2F::new(window_width, window_height);
+        let pane_group = mock_pane_group_with_options(
+            &mut app,
+            MockOptions {
+                layout: PanesLayout::Template(template),
+                window_bounds: WindowBounds::ExactPosition(RectF::new(
+                    Vector2F::zero(),
+                    window_size,
+                )),
+            },
+        );
+
+        // Assert that the window created by the call to
+        // `mock_pane_group_with_options` has the expected bounds.
+        let window_id = app.read(|ctx| pane_group.window_id(ctx));
+        app.update(|ctx| {
+            assert_eq!(
+                Some(window_size),
+                ctx.window_bounds(&window_id).map(|rect| rect.size())
+            );
+        });
+
+        let pane_group_width = window_width - 2.0 * workspace::WORKSPACE_PADDING;
+        let pane_group_height =
+            window_height - workspace::TOTAL_TAB_BAR_HEIGHT - 2.0 * workspace::WORKSPACE_PADDING;
+
+        pane_group.read(&app, |pane_group, ctx| {
+            // Make assertions about the expected widths of the various
+            // panes.
+            assert_eq!(
+                pane_group
+                    .terminal_view_at_pane_index(0, ctx)
+                    .unwrap()
+                    .as_ref(ctx)
+                    .size_info()
+                    .pane_width_px()
+                    .as_f32(),
+                pane_group_width,
+                "Pane with index 0 had unexpected width!"
+            );
+            let half_width = (pane_group_width - tree::get_divider_thickness()) / 2.;
+            for i in 1..=3 {
+                assert_eq!(
+                    pane_group
+                        .terminal_view_at_pane_index(i, ctx)
+                        .unwrap()
+                        .as_ref(ctx)
+                        .size_info()
+                        .pane_width_px()
+                        .as_f32(),
+                    half_width,
+                    "Pane with index {i} had unexpected width!"
+                );
+            }
+            let one_third_width = (pane_group_width - (2. * tree::get_divider_thickness())) / 3.;
+            for i in 4..=6 {
+                assert_eq!(
+                    pane_group
+                        .terminal_view_at_pane_index(i, ctx)
+                        .unwrap()
+                        .as_ref(ctx)
+                        .size_info()
+                        .pane_width_px()
+                        .as_f32(),
+                    one_third_width,
+                    "Pane with index {i} had unexpected width!"
+                );
+            }
+
+            // Make assertions about the expected heights of the various
+            // panes.
+            let one_third_height = (pane_group_height - (2. * tree::get_divider_thickness())) / 3.;
+            for i in (0..=1).chain(4..=6) {
+                assert_eq!(
+                    pane_group
+                        .terminal_view_at_pane_index(i, ctx)
+                        .unwrap()
+                        .as_ref(ctx)
+                        .size_info()
+                        .pane_height_px()
+                        .as_f32(),
+                    one_third_height,
+                    "Pane with index {i} had unexpected height!"
+                );
+            }
+            let one_sixth_height = (pane_group_height - (5. * tree::get_divider_thickness())) / 6.;
+            for i in 2..=3 {
+                assert_eq!(
+                    pane_group
+                        .terminal_view_at_pane_index(i, ctx)
+                        .unwrap()
+                        .as_ref(ctx)
+                        .size_info()
+                        .pane_height_px()
+                        .as_f32(),
+                    one_sixth_height,
+                    "Pane with index {i} had unexpected height!"
+                );
+            }
+        });
     });
 }
