@@ -99,19 +99,15 @@ impl Workspace {
                 };
                 self.handle_open_repository(path_str, ctx);
 
-                // Subscribe to the terminal view to wait for init completion
-                if let Some(terminal_view_handle) = self.active_session_view(ctx) {
-                    ctx.subscribe_to_view(
-                        &terminal_view_handle,
-                        move |me, terminal_view, event, ctx| {
-                            if let terminal::Event::OnboardingInitCompleted = event {
-                                // Init flow is complete, now start the tutorial
-                                me.dispatch_agent_onboarding_tutorial(true, intention, ctx);
-                                ctx.unsubscribe_to_view(&terminal_view);
-                            }
-                        },
-                    );
-                }
+                // Start the tutorial directly. This used to subscribe and wait for
+                // `terminal::Event::OnboardingInitCompleted`, which the InitProject
+                // wizard emitted when its five steps finished. That wizard was removed
+                // by `b0b1faef9` and the event has had ZERO emitters since, so this
+                // branch opened the repository and then waited forever -- the tutorial
+                // never started. `/init` replaced the wizard and is a plain slash
+                // command with no completion signal to wait on, so there is nothing to
+                // subscribe to; dispatch immediately.
+                self.dispatch_agent_onboarding_tutorial(true, intention, ctx);
             }
             OnboardingTutorial::Project {
                 ref path,
