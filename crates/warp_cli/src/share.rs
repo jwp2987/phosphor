@@ -10,7 +10,19 @@ use clap::{Arg, Args, Command, ValueEnum};
 #[derive(Debug, Clone, Args)]
 pub struct ShareArgs {
     /// Share the agent's session
-    #[arg(long = "share", value_name = "RECIPIENTS", num_args=0..=1)]
+    ///
+    /// Hidden: sharing is a cloud capability this fork does not have.
+    /// `build_merged_config_and_task` hardcodes `should_share = false`
+    /// (`app/src/ai/agent_sdk/mod.rs:500`) and `ShareArgs::is_shared` has no
+    /// callers, so this flag parses, validates its recipient grammar helpfully,
+    /// and then does nothing.
+    ///
+    /// `hide` rather than removal is deliberate: an existing script passing
+    /// `--share` keeps parsing instead of failing at the argument parser. The
+    /// flag stays inert either way, but a silent no-op the user never sees
+    /// advertised is better than a documented promise that is not kept, and
+    /// better than breaking a command line that works today.
+    #[arg(long = "share", value_name = "RECIPIENTS", num_args=0..=1, hide = true)]
     pub share: Option<Vec<ShareRequest>>,
 }
 
