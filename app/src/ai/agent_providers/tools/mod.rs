@@ -26,6 +26,7 @@ pub mod codebase_runtime;
 pub mod get_relevant_files;
 pub mod get_relevant_files_runtime;
 pub mod coerce;
+pub mod computer;
 pub mod documents;
 pub mod edit;
 pub mod exa;
@@ -124,6 +125,20 @@ pub const REGISTRY: &[&OpenAiTool] = &[
     // chat_stream intercepts it by name and runs get_relevant_files_runtime directly.
     // Gating: shares codebase_context_enabled with search_codebase; filtered out when off.
     &get_relevant_files::GET_RELEVANT_FILES,
+    // Computer use: drives the user's real mouse/keyboard through `crates/computer_use`.
+    // Unlike every other entry, these two schemas have no pin to mirror — Warp's server owns
+    // tool selection and holds the schema server-side, so `computer.rs` authors them from the
+    // Rust types. `request_computer_use` must precede `use_computer`: it is where the user
+    // approves, and `UseComputerExecutor::should_autoexecute` returns true on the strength of
+    // that approval.
+    // Gating: `build_tools_array` / `available_tool_names` filter both out unless
+    // `RequestParams::computer_use_enabled` is set, which already folds together
+    // `FeatureFlag::AgentModeComputerUse`, the profile's computer-use permission,
+    // `computer_use::is_supported_on_current_platform()` and
+    // `FeatureFlag::LocalComputerUse`/ambient-agent (see `ai/agent/api.rs`). Both are also in
+    // `PLAN_MODE_BLOCKED_TOOLS`.
+    &computer::REQUEST_COMPUTER_USE,
+    &computer::USE_COMPUTER,
 ];
 
 /// Looks up the registry by OpenAI function name.
@@ -231,6 +246,11 @@ pub fn action_result_to_msg_result(
         ReqR::SuggestPrompt(r) => MsgR::SuggestPrompt(r),
         ReqR::OpenCodeReview(r) => MsgR::OpenCodeReview(r),
         ReqR::TransferShellCommandControlToUser(r) => MsgR::TransferShellCommandControlToUser(r),
+        // Note the asymmetric field names: the request-side oneof field is
+        // `request_computer_use`, the message-side one is `request_computer_use_result`, so
+        // the generated variant names differ on the two sides of this mapping.
+        ReqR::UseComputer(r) => MsgR::UseComputer(r),
+        ReqR::RequestComputerUse(r) => MsgR::RequestComputerUseResult(r),
         _ => return None,
     };
     Some(msg_side)

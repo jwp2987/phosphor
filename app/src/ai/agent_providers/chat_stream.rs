@@ -3122,7 +3122,25 @@ const PLAN_MODE_BLOCKED_TOOLS: &[&str] = &[
     "open_code_review",
     "transfer_shell_command_control_to_user",
     "suggest_prompt",
+    // Computer use drives the user's real mouse and keyboard — the least read-only thing the
+    // agent can do. `request_computer_use` is blocked alongside it rather than left dangling:
+    // it exists only to unlock `use_computer`.
+    tools::computer::REQUEST_COMPUTER_USE_TOOL_NAME,
+    tools::computer::USE_COMPUTER_TOOL_NAME,
 ];
+
+/// Whether `name` is one of the two computer-use descriptors.
+///
+/// Both are gated on `RequestParams::computer_use_enabled`, which `ai/agent/api.rs` already
+/// computes as `FeatureFlag::AgentModeComputerUse` AND the profile's computer-use permission
+/// AND `computer_use::is_supported_on_current_platform()` AND
+/// (`FeatureFlag::LocalComputerUse` OR the conversation being an ambient-agent task). Until
+/// this file, that field was set and never read — BYOP builds its own tool list, so nothing
+/// downstream consumed the flag Warp's server used to act on.
+fn is_computer_use_tool(name: &str) -> bool {
+    name == tools::computer::USE_COMPUTER_TOOL_NAME
+        || name == tools::computer::REQUEST_COMPUTER_USE_TOOL_NAME
+}
 
 /// Lists the tool names that will actually be fed to the upstream model this turn (built-in
 /// REGISTRY + current MCP tools), sharing the same gating as `build_tools_array` (LRC /
@@ -3133,11 +3151,15 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     let is_lrc = params.lrc_command_id.is_some();
     let web_enabled = params.web_search_enabled;
     let codebase_enabled = params.codebase_context_enabled;
+    let computer_use_enabled = params.computer_use_enabled;
     let plan_mode = is_plan_mode_turn(&params.input);
     let mut names: Vec<String> = tools::REGISTRY
         .iter()
         .filter(|t| {
             if is_lrc && t.name == "run_shell_command" {
+                return false;
+            }
+            if !computer_use_enabled && is_computer_use_tool(t.name) {
                 return false;
             }
             if !web_enabled
@@ -3190,6 +3212,7 @@ fn build_tools_array(params: &RequestParams) -> Vec<GenaiTool> {
     let is_lrc = params.lrc_command_id.is_some();
     let web_enabled = params.web_search_enabled;
     let codebase_enabled = params.codebase_context_enabled;
+    let computer_use_enabled = params.computer_use_enabled;
     let plan_mode = is_plan_mode_turn(&params.input);
     // Zap BYOP: the `suggest_prompt` chip UI has been restored via the view layer
     // subscribing to PromptSuggestionExecutorEvent (see `terminal/view.rs::
@@ -3207,6 +3230,13 @@ fn build_tools_array(params: &RequestParams) -> Vec<GenaiTool> {
         .iter()
         .filter(|t| {
             if is_lrc && t.name == "run_shell_command" {
+                return false;
+            }
+            // Computer use is gated by `RequestParams::computer_use_enabled` — the flag Warp's
+            // server used to act on. Never advertise a tool that drives the user's real mouse
+            // and keyboard when the feature flag, the profile permission, or the platform says
+            // no; the executor would reach `computer_use::create_actor()` regardless.
+            if !computer_use_enabled && is_computer_use_tool(t.name) {
                 return false;
             }
             // BYOP web tools are gated by profile.web_search_enabled (not exposed to the
@@ -5429,6 +5459,51 @@ pub async fn generate_byop_output(
                     &request_id,
                     call.call_id.clone(),
                     result_content,
+                ));
+                continue;
+            }
+
+            // Zap BYOP computer-use gate, re-checked at the dispatch site.
+            //
+            // The tools-array gate only controls what the model is *told* it can call, and
+            // unlike the web / codebase tools these two DO map to protobuf executor variants:
+            // a replayed or hallucinated call that got past `parse_incoming_tool_call` would
+            // reach `computer_use::create_actor()` and drive the user's real mouse and
+            // keyboard with the feature switched off. Same reasoning as
+            // `dispatch_byop_codebase_tool`, with a much worse failure mode.
+            if !params.computer_use_enabled && is_computer_use_tool(&call.fn_name) {
+                let args_str = if call.fn_arguments.is_string() {
+                    call.fn_arguments.as_str().unwrap_or("").to_owned()
+                } else {
+                    call.fn_arguments.to_string()
+                };
+                log::warn!(
+                    "[byop] computer-use tool call rejected: tool={} call_id={} \
+                     computer_use_enabled=false",
+                    call.fn_name,
+                    call.call_id
+                );
+                let error_payload = serde_json::json!({
+                    "status": "error",
+                    "error": "computer_use_disabled",
+                    "message": "Computer use is not available in this session — it is off by \
+                                feature flag, profile permission, or platform support. Do not \
+                                retry; solve the task another way.",
+                });
+                let error_content = serde_json::to_string(&error_payload)
+                    .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
+                final_messages.push(make_tool_call_carrier_message(
+                    &current_task_id,
+                    &request_id,
+                    &call.call_id,
+                    &call.fn_name,
+                    &args_str,
+                ));
+                final_messages.push(make_tool_call_result_message(
+                    &current_task_id,
+                    &request_id,
+                    call.call_id.clone(),
+                    error_content,
                 ));
                 continue;
             }
