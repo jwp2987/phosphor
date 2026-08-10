@@ -1,5 +1,6 @@
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::execution_profiles::{ActionPermission, WriteToPtyPermission};
+use crate::drive::settings::WarpDriveSettings;
 use crate::report_if_error;
 use crate::settings::ai::DefaultSessionMode;
 use crate::settings::{AISettings, CodeSettings};
@@ -66,8 +67,11 @@ fn apply_ui_customization_settings(
             .set_value(ui.show_code_review_button, ctx));
     });
 
-    // 2026-08-10: the `WarpDriveSettings` apply was removed along with the
-    // `warp_drive.enabled` setting and the onboarding chip that fed it. See DECLINED.md.
+    WarpDriveSettings::handle(app).update(app, |settings, ctx| {
+        report_if_error!(settings
+            .enable_warp_drive
+            .set_value(ui.show_warp_drive, ctx));
+    });
 
     CodeSettings::handle(app).update(app, |settings, ctx| {
         report_if_error!(settings

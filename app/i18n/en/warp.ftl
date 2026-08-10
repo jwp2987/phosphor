@@ -580,6 +580,7 @@ settings-section-features = Features
 settings-section-keybindings = Keyboard shortcuts
 settings-section-referrals = Referrals
 settings-section-shared-blocks = Shared blocks
+settings-section-warp-drive = Phosphor Drive
 settings-section-warpify = Phosphorize
 settings-section-network = Network
 settings-section-privacy = Privacy
@@ -3351,6 +3352,7 @@ onboarding-customize-horizontal = Horizontal
 onboarding-customize-conversation-history = Conversation history
 onboarding-customize-file-explorer = File explorer
 onboarding-customize-global-file-search = Global file search
+onboarding-customize-warp-drive = Phosphor Drive
 onboarding-customize-tools-panel = Tools panel
 onboarding-customize-code-review = Code review
 

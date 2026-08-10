@@ -16,6 +16,7 @@ use super::{
     network_page::NetworkPageView,
     privacy_page::PrivacyPageView,
     scripting_page::ScriptingSettingsPageView,
+    warp_drive_page::WarpDriveSettingsPageView,
     warpify_page::WarpifyPageView,
     SettingsSection,
 };
@@ -110,8 +111,7 @@ pub enum SettingsPageViewHandle {
     Warpify(ViewHandle<WarpifyPageView>),
     AI(ViewHandle<AISettingsPageView>),
     MCPServers(ViewHandle<MCPServersSettingsPageView>),
-    // 2026-08-10: the `ZapDrive` variant was removed along with
-    // `WarpDriveSettingsPageView` and the `warp_drive.enabled` setting.
+    ZapDrive(ViewHandle<WarpDriveSettingsPageView>),
     /// The global HTTP proxy settings page.
     Network(ViewHandle<NetworkPageView>),
     /// Secret redaction / crash reporting / app analytics.
@@ -138,7 +138,7 @@ impl SettingsPageViewHandle {
             Warpify(view_handle) => ChildView::new(view_handle).finish(),
             AI(view_handle) => ChildView::new(view_handle).finish(),
             MCPServers(view_handle) => ChildView::new(view_handle).finish(),
-            // 2026-08-10: the `ZapDrive` arm was removed along with the variant.
+            ZapDrive(view_handle) => ChildView::new(view_handle).finish(),
             Network(view_handle) => ChildView::new(view_handle).finish(),
             Privacy(view_handle) => ChildView::new(view_handle).finish(),
             Scripting(view_handle) => ChildView::new(view_handle).finish(),

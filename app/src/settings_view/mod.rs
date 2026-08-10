@@ -97,8 +97,7 @@ pub(crate) mod settings_page;
 // Zap Wave 7-2: `update_environment_form` was removed along with the cloud ambient agent body --
 // `terminal::view::ambient_agent::first_time_setup` was retired together with
 // `cloud_environments`.
-// 2026-08-10: `warp_drive_page` was removed along with the Phosphor Drive settings
-// page and the `warp_drive.enabled` setting it toggled. See DECLINED.md.
+mod warp_drive_page;
 mod warpify_page;
 
 #[cfg(not(target_family = "wasm"))]
@@ -202,8 +201,7 @@ pub enum SettingsSection {
     Appearance,
     Features,
     Keybindings,
-    // 2026-08-10: the `ZapDrive` variant was removed along with the Phosphor Drive
-    // settings page. See DECLINED.md.
+    ZapDrive,
     Warpify,
     /// Internal backing-page identifier for AISettingsPageView. Multiple subpages
     /// (WarpAgent, AgentProfiles, Knowledge, ThirdPartyCLIAgents) share this single
@@ -248,6 +246,7 @@ impl Display for SettingsSection {
             SettingsSection::Appearance => crate::t!("settings-section-appearance"),
             SettingsSection::Features => crate::t!("settings-section-features"),
             SettingsSection::Keybindings => crate::t!("settings-section-keybindings"),
+            SettingsSection::ZapDrive => crate::t!("settings-section-warp-drive"),
             SettingsSection::Warpify => crate::t!("settings-section-warpify"),
             SettingsSection::AI => crate::t!("settings-section-ai"),
             SettingsSection::WarpAgent => crate::t!("settings-section-warp-agent"),
@@ -337,6 +336,7 @@ impl SettingsSection {
             Self::Appearance,
             Self::Features,
             Self::Keybindings,
+            Self::ZapDrive,
             Self::Warpify,
             Self::AI,
             Self::WarpAgent,
@@ -367,8 +367,8 @@ impl SettingsSection {
     /// fixes one section in one language.
     ///
     /// The key is the Rust variant name and is **frozen**: it must not follow
-    /// display renames (`WarpAgent` stays `"WarpAgent"` even though the page is
-    /// shown as "Phosphor Agent"), because changing a key orphans every row
+    /// display renames (`ZapDrive` stays `"ZapDrive"` even though the page is
+    /// shown as "Phosphor Drive"), because changing a key orphans every row
     /// already written with the old one. The match is exhaustive on purpose --
     /// a new variant fails to compile until it declares a key.
     pub fn persistence_key(&self) -> &'static str {
@@ -378,6 +378,7 @@ impl SettingsSection {
             Self::Appearance => "Appearance",
             Self::Features => "Features",
             Self::Keybindings => "Keybindings",
+            Self::ZapDrive => "ZapDrive",
             Self::Warpify => "Warpify",
             Self::AI => "AI",
             Self::WarpAgent => "WarpAgent",
@@ -491,11 +492,8 @@ impl FromStr for SettingsSection {
         match s {
             "MCP Servers" => Ok(Self::MCPServers),
             "Keyboard shortcuts" => Ok(Self::Keybindings),
-            // 2026-08-10: the `"ZapDrive"` / `"Zap Drive"` / `"Phosphor Drive"` arms were
-            // removed along with the variant. A stored `current_page` of `"ZapDrive"`, or a
-            // `surface.settings.open --page "Phosphor Drive"` call, now falls through to
-            // `Err(())`; the caller falls back to the default section, which is what
-            // `local_control` already did for this page (it refused it outright).
+            // "Zap Drive" was this page's name before the Phosphor rebrand, keep for backward compatibility.
+            "Zap Drive" | "Phosphor Drive" => Ok(Self::ZapDrive),
             // This page was called "Oz", then "Zap Agent", before the Phosphor
             // rebrand; "Phosphor Agent" is the current English label. All three
             // are kept for backward compatibility.
@@ -646,8 +644,7 @@ pub mod flags {
     pub const CLI_AGENT_RICH_INPUT_OPEN: &str = "CLIAgentRichInputOpen";
     pub const CLI_AGENT_FOOTER_ENABLED: &str = "CLIAgentFooterEnabled";
     pub const CLI_AGENT_RICH_INPUT_CHIP_ENABLED: &str = "CLIAgentRichInputChipEnabled";
-    // 2026-08-10: `ENABLE_WARP_DRIVE` was removed along with the `warp_drive.enabled`
-    // setting that set it. See DECLINED.md.
+    pub const ENABLE_WARP_DRIVE: &str = "EnableWarpDrive";
     // Tools panel settings
     pub const SHOW_CONVERSATION_HISTORY: &str = "ShowConversationHistory";
     pub const SHOW_PROJECT_EXPLORER: &str = "ShowProjectExplorer";
@@ -974,8 +971,7 @@ pub enum SettingsAction {
     PrivacyPageToggle(PrivacyPageAction),
     AI(AISettingsPageAction),
     Code(CodeSettingsPageAction),
-    // 2026-08-10: the `ZapDrive` variant was removed along with the Phosphor Drive
-    // settings page.
+    ZapDrive(warp_drive_page::WarpDriveSettingsPageAction),
     WarpifyPageToggle(WarpifyPageAction),
     Tab,
     Split(Direction),
@@ -1132,7 +1128,7 @@ macro_rules! update_page {
             SettingsPageViewHandle::About(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::Code(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::MCPServers(handle) => $ctx.update_view(handle, $update),
-            // 2026-08-10: the `ZapDrive` arm was removed along with the variant.
+            SettingsPageViewHandle::ZapDrive(handle) => $ctx.update_view(handle, $update),
             // Issue #72: the global HTTP proxy settings page.
             SettingsPageViewHandle::Network(handle) => $ctx.update_view(handle, $update),
             SettingsPageViewHandle::Privacy(handle) => $ctx.update_view(handle, $update),
@@ -1237,8 +1233,9 @@ impl SettingsView {
         // `ReferralsPageView` / `ReferralsClient`; the handle / event subscription were removed
         // together with it.
 
-        // 2026-08-10: `warp_drive_page_handle` was removed along with the Phosphor Drive
-        // settings page.
+        // Zap Drive page
+        let warp_drive_page_handle =
+            ctx.add_typed_action_view(warp_drive_page::WarpDriveSettingsPageView::new);
 
         // Zap Wave 3-1: `platform_page_handle` was removed along with `platform_page`.
 
@@ -1302,6 +1299,7 @@ impl SettingsView {
             SettingsPage::new(keybindings_handle),
             // Zap Wave 3-1: `platform_page_handle` was removed along with the UI.
             SettingsPage::new(warpify_page_handle),
+            SettingsPage::new(warp_drive_page_handle),
         ];
 
         if let Some(scripting_page_handle) = scripting_page_handle {
@@ -2070,7 +2068,7 @@ impl SettingsView {
             SettingsPageViewHandle::AI(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::MCPServers(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::Code(v) => v.as_ref(app).should_render(app),
-            // 2026-08-10: the `ZapDrive` arm was removed along with the variant.
+            SettingsPageViewHandle::ZapDrive(v) => v.as_ref(app).should_render(app),
             // Issue #72: the global HTTP proxy settings page.
             SettingsPageViewHandle::Network(v) => v.as_ref(app).should_render(app),
             SettingsPageViewHandle::Privacy(v) => v.as_ref(app).should_render(app),
@@ -2642,7 +2640,15 @@ impl TypedActionView for SettingsView {
                     }
                 }
             }
-            // 2026-08-10: the `ZapDrive` arm was removed along with the variant.
+            SettingsAction::ZapDrive(warp_drive_action) => {
+                if let Some(warp_drive_page) = self.settings_page(SettingsSection::ZapDrive) {
+                    if let SettingsPageViewHandle::ZapDrive(view) = &warp_drive_page.view_handle {
+                        view.update(ctx, |view, ctx| {
+                            view.handle_action(warp_drive_action, ctx);
+                        })
+                    }
+                }
+            }
             SettingsAction::WarpifyPageToggle(warpify_action) => {
                 if let Some(warpify_page) = self.settings_page(SettingsSection::Warpify) {
                     if let SettingsPageViewHandle::Warpify(view) = &warpify_page.view_handle {

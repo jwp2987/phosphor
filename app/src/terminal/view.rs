@@ -233,6 +233,7 @@ use crate::code::editor_management::CodeSource;
 use crate::context_chips::prompt::Prompt;
 use crate::context_chips::prompt_type::PromptType;
 use crate::context_chips::ContextChipKind;
+use crate::drive::settings::WarpDriveSettings;
 use crate::drive::ObjectTypeAndId;
 use crate::env_vars::{
     env_var_collection_block::{EnvVarCollectionBlock, EnvVarCollectionBlockEvent},
@@ -15270,20 +15271,20 @@ impl TerminalView {
                         .into_item(),
                 ];
 
-                // 2026-08-10: the `warp_drive.enabled` gate was removed along with the
-                // setting (see DECLINED.md), so "Save as workflow" is always offered.
-                items.push(MenuItem::Separator);
-                items.push(
-                    MenuItemFields::new(crate::t!("menu-block-save-as-workflow"))
-                        .with_on_select_action(TerminalAction::ContextMenu(
-                            ContextMenuAction::OpenWorkflowModal,
-                        ))
-                        .with_key_shortcut_label(keybinding_name_to_display_string(
-                            "terminal:toggle_workflows_modal",
-                            ctx,
-                        ))
-                        .into_item(),
-                );
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    items.push(MenuItem::Separator);
+                    items.push(
+                        MenuItemFields::new(crate::t!("menu-block-save-as-workflow"))
+                            .with_on_select_action(TerminalAction::ContextMenu(
+                                ContextMenuAction::OpenWorkflowModal,
+                            ))
+                            .with_key_shortcut_label(keybinding_name_to_display_string(
+                                "terminal:toggle_workflows_modal",
+                                ctx,
+                            ))
+                            .into_item(),
+                    );
+                }
 
                 if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
                     if FeatureFlag::AgentMode.is_enabled() {
@@ -15907,9 +15908,7 @@ impl TerminalView {
         }
 
         // Section 3: Teams related
-        // 2026-08-10: the `warp_drive.enabled` half of this gate was removed along with
-        // the setting (see DECLINED.md).
-        if !all_current_input_text.is_empty() {
+        if !all_current_input_text.is_empty() && WarpDriveSettings::is_warp_drive_enabled(ctx) {
             items.extend([
                 MenuItem::Separator,
                 MenuItemFields::new(crate::t!("menu-input-save-as-workflow"))

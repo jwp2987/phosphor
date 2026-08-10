@@ -145,6 +145,7 @@ use crate::code::editor_management::CodeManager;
 use crate::code::editor_management::CodeSource;
 use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
 use crate::drive::export::ExportManager;
+use crate::drive::settings::WarpDriveSettings;
 use crate::launch_configs::launch_config::WindowTemplate;
 use crate::pane_group::{
     AIFactPane, CodeReviewPanelArg, Direction as PaneGroupDirection, ExecutionProfileEditorPane,
@@ -191,6 +192,7 @@ use url::Url;
 use crate::wasm_nux_dialog::WasmNUXDialog;
 
 use crate::drive::items::WarpDriveItemId;
+use crate::drive::settings::WarpDriveSettingsChangedEvent;
 use crate::env_vars::{
     manager::{EnvVarCollectionManager, EnvVarCollectionSource},
     EnvVarCollectionObject,
@@ -2786,9 +2788,12 @@ impl Workspace {
             }
         });
 
-        // 2026-08-10: the `WarpDriveSettings` subscription was removed along with the
-        // `warp_drive.enabled` setting -- the Drive tool-panel view is no longer
-        // conditional, so nothing has to recompute when it changes. See DECLINED.md.
+        ctx.subscribe_to_model(&WarpDriveSettings::handle(ctx), |me, _, event, ctx| {
+            if let WarpDriveSettingsChangedEvent::EnableWarpDrive { .. } = event {
+                me.update_left_panel_available_views(ctx);
+                ctx.notify();
+            }
+        });
 
         let toast_stack =
             ctx.add_typed_action_view(|_| DismissibleToastStack::new(Duration::from_secs(4)));
@@ -19880,9 +19885,9 @@ impl Workspace {
                 entry_focus: GlobalSearchEntryFocus::Results,
             });
         }
-        // 2026-08-10: the `warp_drive.enabled` gate was removed along with the setting
-        // (see DECLINED.md), so the Drive view is always in the tool panel.
-        views.push(ToolPanelView::ZapDrive);
+        if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+            views.push(ToolPanelView::ZapDrive);
+        }
         if FeatureFlag::ServerFileBrowser.is_enabled() && FeatureFlag::SshRemoteServer.is_enabled() {
             views.push(ToolPanelView::ServerFileBrowser);
         }
@@ -20482,7 +20487,9 @@ impl TypedActionView for Workspace {
                 self.current_workspace_state.is_tab_being_dragged = true;
             }
             ZapDrive => {
-                self.open_left_panel_view(&LeftPanelAction::ZapDrive, ctx);
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    self.open_left_panel_view(&LeftPanelAction::ZapDrive, ctx);
+                }
             }
             ToggleLeftPanel => {
                 let active_pane_group = self.active_tab_pane_group().clone();
@@ -21546,9 +21553,11 @@ impl TypedActionView for Workspace {
                 }
             }
             ToggleWarpDrive => {
-                let is_showing =
-                    self.left_panel_view.as_ref(ctx).active_view() == ToolPanelView::ZapDrive;
-                self.toggle_left_panel_view(&LeftPanelAction::ZapDrive, is_showing, ctx);
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    let is_showing =
+                        self.left_panel_view.as_ref(ctx).active_view() == ToolPanelView::ZapDrive;
+                    self.toggle_left_panel_view(&LeftPanelAction::ZapDrive, is_showing, ctx);
+                }
             }
             ToggleSkillManager => {
                 let is_showing =
@@ -21896,9 +21905,9 @@ impl View for Workspace {
             context.set.insert("Workspace_ActiveOrSelectedTabsInGroup");
         }
 
-        // 2026-08-10: the `ENABLE_WARP_DRIVE` keybinding context flag was removed along
-        // with the `warp_drive.enabled` setting -- every binding that predicated on it now
-        // predicates on `Workspace` alone. See DECLINED.md.
+        if WarpDriveSettings::is_warp_drive_enabled(app) {
+            context.set.insert(flags::ENABLE_WARP_DRIVE);
+        }
 
         if AISettings::as_ref(app).is_any_ai_enabled(app)
             && *AISettings::as_ref(app).show_conversation_history

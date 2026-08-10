@@ -23,14 +23,27 @@ define_settings_group!(WarpDriveSettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: true,
     },
-    // 2026-08-10: `enable_warp_drive` / `warp_drive.enabled` was removed, together with
-    // its settings page and `is_warp_drive_enabled`. It was a toggle whose only "off"
-    // switch lived on a settings page that was never in `nav_items` -- so a user who
-    // turned Drive off could not turn it back on outside `settings.toml`. Every surface
-    // it gated is now unconditional. See DECLINED.md.
-    //
-    // A stale `warp_drive.enabled = false` left in an existing `settings.toml` is inert:
-    // `SettingsManager::validate_all_public_settings` only walks *registered* settings,
-    // so an unregistered key is never read and never reported as invalid. No migration
-    // is needed and startup is unaffected.
+    // Controls whether Zap Drive appears in the tools panel, command palette, and command search.
+    enable_warp_drive: EnableWarpDrive {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "warp_drive.enabled",
+        description: "Whether Phosphor Drive is enabled.",
+    },
 ]);
+
+impl WarpDriveSettings {
+    /// Returns whether Zap Drive should be considered enabled.
+    /// Returns `false` when the user is anonymous or fully logged out,
+    /// regardless of the user setting.
+    pub fn is_warp_drive_enabled(app: &warpui::AppContext) -> bool {
+        use warpui::SingletonEntity as _;
+        let is_anonymous_or_logged_out = crate::auth::AuthStateProvider::as_ref(app)
+            .get()
+            .is_anonymous_or_logged_out();
+        *Self::as_ref(app).enable_warp_drive && !is_anonymous_or_logged_out
+    }
+}

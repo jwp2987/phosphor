@@ -715,17 +715,21 @@ fn surface_settings_open(
 }
 
 fn settings_section(page: String) -> Result<SettingsSection, ControlError> {
-    // 2026-08-10: the explicit `SettingsSection::ZapDrive` refusal was removed along
-    // with the Phosphor Drive settings page itself. `FromStr` no longer knows the
-    // page's names, so `"Phosphor Drive"` / `"Zap Drive"` / `"ZapDrive"` now fail the
-    // `InvalidParams` arm below instead of the `UnsupportedAction` arm -- the call
-    // still fails, with the same message every other unknown page gets.
-    SettingsSection::from_str(&page).map_err(|_| {
+    let section = SettingsSection::from_str(&page).map_err(|_| {
         ControlError::new(
             ErrorCode::InvalidParams,
             format!("surface.settings.open cannot resolve settings page {page:?}"),
         )
-    })
+    })?;
+    // `SettingsSection::ZapDrive` in this fork (`SettingsSection::WarpDrive` at the
+    // pin) -- same page, renamed with the rest of the Phosphor rebrand.
+    if section == SettingsSection::ZapDrive {
+        return Err(ControlError::new(
+            ErrorCode::UnsupportedAction,
+            "surface.settings.open does not open Warp Drive settings",
+        ));
+    }
+    Ok(section)
 }
 
 fn surface_palette_open(

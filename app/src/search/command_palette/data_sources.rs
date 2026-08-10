@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::drive::settings::WarpDriveSettings;
 use crate::search::action::CommandBindingDataSource;
 use crate::search::binding_source::BindingSource;
 use crate::search::command_palette::files;
@@ -102,21 +103,21 @@ impl DataSourceStore {
                 HashSet::from([QueryFilter::Sessions]),
             );
 
-            // 2026-08-10: the `warp_drive.enabled` gate was removed along with the setting
-            // (see DECLINED.md), so the Drive data source is always registered.
-            let mut warp_drive_filters = HashSet::from([
-                QueryFilter::Notebooks,
-                QueryFilter::Plans,
-                QueryFilter::Drive,
-                QueryFilter::Workflows,
-            ]);
+            if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                let mut warp_drive_filters = HashSet::from([
+                    QueryFilter::Notebooks,
+                    QueryFilter::Plans,
+                    QueryFilter::Drive,
+                    QueryFilter::Workflows,
+                ]);
 
-            warp_drive_filters.insert(QueryFilter::EnvironmentVariables);
+                warp_drive_filters.insert(QueryFilter::EnvironmentVariables);
 
-            if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
-                warp_drive_filters.insert(QueryFilter::AgentModeWorkflows);
+                if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
+                    warp_drive_filters.insert(QueryFilter::AgentModeWorkflows);
+                }
+                mixer.add_sync_source(self.warp_drive_data_source.clone(), warp_drive_filters);
             }
-            mixer.add_sync_source(self.warp_drive_data_source.clone(), warp_drive_filters);
 
             mixer.add_sync_source(
                 self.actions_data_source.clone(),
