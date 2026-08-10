@@ -1228,6 +1228,22 @@ settings-code-global-search = Global file search
 settings-code-global-search-desc = Adds global file search to the left side tools panel.
 settings-code-show-hidden-files = Show hidden files in project explorer
 settings-code-show-hidden-files-desc = Show dotfiles and hidden files (starting with .) in the project explorer.
+# ---- language servers (LSP), restored with the LSP subpage ----
+settings-code-format-on-save = Format on save
+settings-code-format-on-save-desc = Ask the language server to reformat a file when it is saved. Other language features (hover, go to definition, references, diagnostics) are unaffected.
+settings-code-language-servers = Language servers
+settings-code-language-servers-desc = Language servers add hover documentation, go to definition, find references and diagnostics to the code editor. They run locally, one per repository and language.
+settings-code-language-servers-empty = No language servers yet. Open a repository in a terminal tab and any servers that suit it will be suggested here.
+settings-code-lsp-installed = Installed
+settings-code-lsp-installing = Installing...
+settings-code-lsp-checking = Checking...
+settings-code-lsp-available-download = Available for download
+settings-code-lsp-restart-server = Restart server
+settings-code-lsp-status-available = Available
+settings-code-lsp-status-busy = Busy
+settings-code-lsp-status-failed = Failed
+settings-code-lsp-status-stopped = Stopped
+settings-code-lsp-status-not-running = Not running
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----
