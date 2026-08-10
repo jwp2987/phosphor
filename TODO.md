@@ -1068,7 +1068,7 @@ tested with zero production callers.
       Discard button is dead.
 
 - [x] **#3 Settings > "Phosphor Drive" page — MAINTAINER DECISION 2026-08-10:
-      REMOVE IT. DONE (see the commit that ticked this box).** The page, the
+      REMOVE IT. DONE in `9cac7ce5c`.** The page, the
       `warp_drive.enabled` setting, `is_warp_drive_enabled`, `SettingsSection::ZapDrive`,
       the `EnableWarpDrive` keybinding-context flag and its 9 binding predicates, and the
       onboarding "Phosphor Drive" chip are all gone; the i18n keys were dropped from all
