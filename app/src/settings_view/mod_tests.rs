@@ -201,6 +201,196 @@ fn subpage_from_str_parses_display_names() {
     );
 }
 
+// ── Stable persistence keys ─────────────────────────────────────────────────
+//
+// Regression guard for issue #578. `Display` is localized in this fork, so the
+// settings pane used to persist a translated string that `FromStr` (English
+// literals) could not read back: the user silently landed on the default
+// section instead of the pane they left open. Persistence now stores
+// `persistence_key()` and reads it with `from_persistence_key()`, which also
+// upgrades every legacy value.
+
+#[test]
+fn all_lists_every_settings_section() {
+    // Exhaustive match, no wildcard arm: adding a `SettingsSection` variant
+    // stops this test compiling until the variant is also added to `all()`,
+    // so a new section can never quietly miss persistence coverage. (The
+    // matching guard for the key itself is `persistence_key`, which is an
+    // exhaustive match too.)
+    fn is_a_known_section(section: SettingsSection) {
+        match section {
+            SettingsSection::About
+            | SettingsSection::MCPServers
+            | SettingsSection::Appearance
+            | SettingsSection::Features
+            | SettingsSection::Keybindings
+            | SettingsSection::ZapDrive
+            | SettingsSection::Warpify
+            | SettingsSection::AI
+            | SettingsSection::WarpAgent
+            | SettingsSection::AgentProfiles
+            | SettingsSection::AgentMCPServers
+            | SettingsSection::AgentProviders
+            | SettingsSection::Knowledge
+            | SettingsSection::ThirdPartyCLIAgents
+            | SettingsSection::Network
+            | SettingsSection::Privacy
+            | SettingsSection::Code
+            | SettingsSection::EditorAndCodeReview => {}
+        }
+    }
+
+    for section in SettingsSection::all() {
+        is_a_known_section(*section);
+    }
+
+    // The default section must be persistable like any other.
+    assert!(SettingsSection::all().contains(&SettingsSection::default()));
+}
+
+#[test]
+fn persistence_keys_are_unique_and_not_localized() {
+    let mut seen: Vec<&'static str> = Vec::new();
+    for section in SettingsSection::all() {
+        let key = section.persistence_key();
+        assert!(
+            key.is_ascii() && !key.is_empty(),
+            "{section:?} has a non-ASCII or empty persistence key {key:?}; \
+             stored identifiers must never be translated"
+        );
+        assert!(
+            !seen.contains(&key),
+            "persistence key {key:?} is used by more than one section, so one \
+             of them would restore as the other"
+        );
+        seen.push(key);
+    }
+}
+
+#[test]
+fn persistence_key_round_trips_for_every_section() {
+    for section in SettingsSection::all() {
+        assert_eq!(
+            SettingsSection::from_persistence_key(section.persistence_key()),
+            Some(*section),
+            "{section:?} does not survive persist -> read"
+        );
+        // `FromStr` is the locale-independent parser behind
+        // `surface.settings.open`, so it must accept the stable key too.
+        assert_eq!(
+            SettingsSection::from_str(section.persistence_key()),
+            Ok(*section),
+            "surface.settings.open cannot resolve the stable key for {section:?}"
+        );
+    }
+}
+
+#[test]
+fn from_persistence_key_upgrades_legacy_english_labels() {
+    // Every row written before stable keys existed holds the section's English
+    // label, because that is what `Display` produced on an English UI. The
+    // table is spelled out rather than read from `Display` so this test does
+    // not depend on the process-wide locale; the exhaustive match means a new
+    // variant has to declare its legacy label here.
+    fn legacy_english_label(section: SettingsSection) -> &'static str {
+        match section {
+            SettingsSection::About => "About",
+            SettingsSection::MCPServers => "MCP Servers",
+            SettingsSection::Appearance => "Appearance",
+            SettingsSection::Features => "Features",
+            SettingsSection::Keybindings => "Keyboard shortcuts",
+            SettingsSection::ZapDrive => "Phosphor Drive",
+            SettingsSection::Warpify => "Warpify",
+            SettingsSection::AI => "AI",
+            SettingsSection::WarpAgent => "Phosphor Agent",
+            SettingsSection::AgentProfiles => "Profiles",
+            SettingsSection::AgentMCPServers => "MCP servers",
+            SettingsSection::AgentProviders => "Providers",
+            SettingsSection::Knowledge => "Knowledge",
+            SettingsSection::ThirdPartyCLIAgents => "Third party CLI agents",
+            SettingsSection::Network => "Network",
+            SettingsSection::Privacy => "Privacy",
+            SettingsSection::Code => "Code",
+            SettingsSection::EditorAndCodeReview => "Editor and Code Review",
+        }
+    }
+
+    for section in SettingsSection::all() {
+        let legacy_value = legacy_english_label(*section);
+        assert_eq!(
+            SettingsSection::from_persistence_key(legacy_value),
+            Some(*section),
+            "a settings pane persisted as {legacy_value:?} would be lost"
+        );
+    }
+
+    // Renames the pages went through before the Phosphor rebrand, which may
+    // still be sitting in a long-lived database.
+    assert_eq!(
+        SettingsSection::from_persistence_key("Oz"),
+        Some(SettingsSection::WarpAgent)
+    );
+    assert_eq!(
+        SettingsSection::from_persistence_key("Zap Agent"),
+        Some(SettingsSection::WarpAgent)
+    );
+    assert_eq!(
+        SettingsSection::from_persistence_key("Zap Drive"),
+        Some(SettingsSection::ZapDrive)
+    );
+}
+
+#[test]
+fn every_display_label_is_readable_back() {
+    // Guards the other half of the same bug: the English label persisted by an
+    // older build has to remain parseable as the label is reworded. This is
+    // how `settings-section-warp-agent = Phosphor Agent` came to be
+    // unparseable -- `FromStr` still only knew the older "Oz" / "Zap Agent".
+    crate::i18n::init(Some("en"));
+
+    for section in SettingsSection::all() {
+        let label = section.to_string();
+        // Compared by label rather than by identity: in some locales two
+        // sections share one label (zh-CN renders both MCP server pages the
+        // same), and no parser can tell those apart. Under English -- where the
+        // labels are distinct -- this is exactly an identity check.
+        assert_eq!(
+            SettingsSection::from_persistence_key(&label).map(|parsed| parsed.to_string()),
+            Some(label.clone()),
+            "the displayed label {label:?} cannot be read back as {section:?}"
+        );
+    }
+}
+
+#[test]
+fn from_persistence_key_upgrades_the_legacy_network_labels() {
+    // Both spellings the Network page was ever stored as: the English label,
+    // and the zh-CN one that an earlier point patch had to teach `FromStr`
+    // because a real user already had it in their database.
+    assert_eq!(
+        SettingsSection::from_persistence_key("Network"),
+        Some(SettingsSection::Network)
+    );
+    assert_eq!(
+        SettingsSection::from_persistence_key("网络"),
+        Some(SettingsSection::Network)
+    );
+}
+
+#[test]
+fn from_str_does_not_accept_localized_labels() {
+    // `surface.settings.open --page <name>` must resolve the same page
+    // whatever language the UI is in, so the localized alternatives live in
+    // the persistence-only upgrade path, not in `FromStr`.
+    assert_eq!(SettingsSection::from_str("网络"), Err(()));
+}
+
+#[test]
+fn from_persistence_key_rejects_unknown_values() {
+    assert_eq!(SettingsSection::from_persistence_key("NotASection"), None);
+    assert_eq!(SettingsSection::from_persistence_key(""), None);
+}
+
 // ── Privacy page registration ───────────────────────────────────────────────
 // Regression guard for issue #2: this fork defined and read `SafeModeEnabled`,
 // `SecretDisplayModeSetting`, `IsCrashReportingEnabled` and `IsTelemetryEnabled`
