@@ -232,7 +232,59 @@ Treat all of this as staged, not validated.
    `install_warpctrl` widget, and `app_menus.rs` in D1 (macOS-gated, will not
    compile on this host or in Linux CI).
 
-## LSP TRACK (opened 2026-08-10, maintainer verdict: RESTORE) — **[~] PARTIAL, agent stopped at a checkpoint**
+## LSP TRACK — **[>] ONE GAP LEFT, precisely named** (verdict 2026-08-10: RESTORE)
+
+**Status: NOT functional, and the reason is exactly one thing.** Everything above
+the document lifecycle is merged and wired — the crate, the driver
+(install/spawn/detect), the shutdown scan, the real `footer.rs`,
+`try_connect_lsp_server` on buffer load, `format_and_save` on save, hover,
+goto-definition, find-references, the context menu, vim `gd`/`gr`/`K`,
+diagnostics *rendering*, and log routing to a terminal.
+
+**Nothing ever sends `didOpen` or `didChange`.** The server starts, the editor
+connects, `refresh_diagnostics` runs, and the server holds no document so it
+publishes nothing. Hover / goto-def / find-refs also return empty — they are
+position queries against a document the server was never given. This is the
+"looks finished, silently dead" failure mode, and closing it is the entire
+remaining functional gap.
+
+- [>] **Step 5 — `global_buffer_model.rs`, hand-integrated.** Fresh agent
+      assigned 2026-08-10 (the previous one exhausted its budget and stopped
+      rather than half-editing this file, correctly). **Must NOT be
+      wholesale-replaced**: the fork's 1,868 lines are not a subset of the pin's
+      2,477 — five fork-only functions (`is_remote`, `save_remote_buffer`,
+      `subscribe_to_remote_server_manager`, `populate_buffer_with_read_content`,
+      `close_buffer`) are this fork's diff-state-over-SSH remote-buffer layer,
+      built over PRs #61-71. Replacing the file deletes SSH buffer support.
+      Work required, verified: `BufferState` needs two more fields
+      (`initial_content_version`, `latest_buffer_version`) that the sync logic
+      reads to choose incremental-vs-full resync; the **local-buffer
+      `ContentChanged` subscription does not exist here at all** (the fork's only
+      one, ~line 1161, is the *remote* one) and must be reconstructed; then 12
+      pin-only functions (~81 LSP lines) and 5 call sites. **Additive, not a
+      trade-off** — the remote path has its own subscription and edit batching,
+      so no LSP function contends with a remote-buffer function.
+- [ ] **Step 6 — `code_page.rs`, `code/wasm.rs`, `local_code_editor_wasm.rs`**
+      (~1,100). Settings UI plus a wasm-only build break; not function.
+
+### Adjudication verdicts (evidence-based, do not re-derive)
+- 8 `LocalCodeEditorView` fields LSP-caused → restored; 3 explicitly NOT
+  (`has_remote_conflict`, `auto_save_debounce_tx`, `auto_save_in_flight` — real
+  parity gaps, but a general pin-sync, not this track); 0 unclear.
+- The `Hoverable` + `on_right_click` render wrapper: **category (a), LSP
+  fallout** — restore was correct. **Method worth reusing:**
+  `git log -S base_with_handler` was *useless*, because `efcaa42b8` kept the
+  binding and only changed its value, so the string count never moved. Probing
+  the wrapper's *contents* (`-S on_right_click`) gave the answer. Generalisable:
+  `-S` on a binding NAME proves nothing when a commit rebinds rather than
+  removes.
+- **Source rule:** `persisted_workspace.rs` follows the **pin**;
+  `local_code_editor.rs` call sites adapt to the pin's shape. The fork base has
+  `LspTask::Spawn { file_path, server_type }`, the pin has `{ file_path }` —
+  pasting from the `efcaa42b8` removal diff compiles nowhere.
+- **Subset rule:** wholesale replacement is only safe when the fork's file is a
+  strict subset of the pin's. True for `footer.rs` (verified before copying),
+  **false** for `global_buffer_model.rs`.
 
 ### NEW — an untracked product decision this surfaced, needs a maintainer entry
 - [ ] **`lsp_server_selector.rs` is NOT an LSP-track item.** It was not removed
