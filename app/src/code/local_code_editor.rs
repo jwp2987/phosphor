@@ -3,11 +3,38 @@
 /// It also handles applying an optional diff to the file content that will be applied
 /// when the file is loaded.
 //
-// Now that the full LSP stack has been removed, this file no longer carries
-// any LSP / hover / goto-definition / find-references / diagnostic-decoration
-// logic; it only retains local capabilities such as file load/save, diff
-// accept/reject, selection context tooltip, version-conflict banner, and the
-// TabConfig footer.
+// FIELD ADJUDICATION vs the pinned oracle `02b53fcd8` (2026-08-10).
+// ----------------------------------------------------------------
+// `efcaa42b8` stripped this file's LSP layer, and the file has independently
+// drifted from the pin since. The pin's `LocalCodeEditorView` has 24 fields and
+// this one has 13, but the 11 absences do NOT all come from the LSP removal —
+// some are simply newer-Warp features this fork's base predates. Restoring
+// "everything the pin has" would therefore smuggle in unrelated subsystems.
+//
+// Each absence was adjudicated with `git log -S<field> -- <this file>`, which
+// distinguishes the two cases exactly: a field present at `0dbd3d567` (the fork
+// base, Warp's initial public release) and removed by `efcaa42b8` is LSP debt;
+// a field with NO history in this file never existed here and is a later Warp
+// addition.
+//
+//   LSP-CAUSED — restored:
+//     lsp_server, lsp_hover_state, processed_diagnostics,
+//     diagnostic_decorations, find_references_view, hover_debounce_tx,
+//     context_menu, context_menu_state
+//       All show `0dbd3d567` + `efcaa42b8`. `context_menu` is included on
+//       evidence, not by name: its only two entries are "Go to Definition" and
+//       "Find References" (`context_menu_items`), so it is wholly LSP UI.
+//
+//   NOT LSP — deliberately left out (no history in this file; newer than the
+//   fork base, so they belong to a general pin-sync, not to this track):
+//     has_remote_conflict      — remote-buffer conflict banner state
+//     auto_save_debounce_tx    — debounced auto-save channel
+//     auto_save_in_flight      — suppresses the toast for auto-saves
+//       Pulling these in would mean porting the remote-conflict and auto-save
+//       subsystems wholesale, neither of which LSP touches.
+//
+// The same rule governs the method restore below: what comes back is what
+// `efcaa42b8` removed, not everything the pin now has.
 use std::{
     ops::Range,
     path::{Path, PathBuf},
