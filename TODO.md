@@ -573,7 +573,7 @@ restored recent-repos pruning. Configuration reuses `AISettings::agent_providers
   `Error::NoEmbeddingProvider` naming the model, because an empty result set is
   indistinguishable from an empty store and would re-embed the repo every sync.
 
-- [ ] **Not done, carried forward:** remote-daemon indexing (the pin's
+- [x] **DONE 2026-08-10** (`623937230`) — remote-daemon indexing, settings UI and all 39 daemon tests landed; `LaunchMode::supports_indexing()` ported properly and `daemon_codebase_index_data_dir` lives next to the daemon (this fork's `RemoteServerDaemon` never reaches `initialize_app`). Originally: remote-daemon indexing (the pin's
       `LaunchMode::supports_indexing()` gate has no fork equivalent;
       `FeatureFlag::RemoteCodebaseIndexing` stands in), settings-page UI for the
       two new `CodeSettings` toggles and for picking an embedding provider (both
@@ -763,7 +763,7 @@ of the four turned out to be worth reversing.
       *offerable*; the per-profile `ComputerUsePermission` still defaults to
       `Never`, so the user must opt in under Settings > Agents > Profiles.
       Nothing is user-visible until BLOCKER 2 lands.
-- [ ] **BLOCKER 2 — the BYOP tool registry has no computer-use tool.**
+- [x] **BLOCKER 2 — RESOLVED 2026-08-10.** `tools/computer.rs` adds `request_computer_use` + `use_computer` descriptors with a schema derived from the Rust types and deliberately narrower than `convert.rs` in seven places, plus a dispatch-site refusal (a leaked call maps to a real executor here, unlike the web tools). **The tool is BLIND, and that is now the open item** — see the row below. Originally:
       `app/src/ai/agent_providers/tools/REGISTRY` lists ~20 `OpenAiTool`
       descriptors with no `use_computer` / `request_computer_use` entry, so no
       model is ever offered the tool. Relatedly `AIRequestInput::computer_use_enabled`
@@ -780,6 +780,21 @@ of the four turned out to be worth reversing.
       its relationship to `/init`, and whether to restore, partly restore, or
       formally decline it. `lsp_server_selector.rs` went with it.
 
+- [ ] **Computer use is BLIND — the model never sees the screenshot.** A BYOP
+      tool result is delivered as `genai::chat::ToolResponse { content: String }`
+      — a plain string with no parts — and `cap_tool_response_content` truncates
+      at 40,000 chars, two orders of magnitude under a base64 PNG (truncation
+      would yield a corrupt data URI, not a degraded image). `AttachmentCaps`
+      governs only *user-message* attachments and is unreachable from
+      `result_to_json`. So results carry metadata only, with
+      `screenshot.captured: true, attached: false` and a note saying why —
+      deliberately not `{}`, which would let the model infer a blank screen. The
+      user still sees the screenshot in the block render.
+      **Fix proposed, not built:** after a `use_computer` result, inject a
+      follow-up `ChatMessage::user` carrying `ContentPart::Binary` gated on
+      `AttachmentCaps::images`, since genai's `ToolResponse` has nowhere to put
+      one. That is a change to `chat_stream`'s message assembly and to
+      tool_call/tool_response pairing validation.
 - [ ] **Still worth a guard, but scoped honestly.** A CI check flagging large
       non-cloud deletions without a `DECLINED.md` row or issue would not have
       caught any of the four — they predate this fork. It would prevent *future*
@@ -966,7 +981,7 @@ green suite or a shrinking test gap as evidence of parity.
       Tests `is_warp_bundle_recognises_warp_channels`,
       `is_warp_bundle_rejects_other_apps` absent.
 - [x] **remote_server client log tail absent** **[DONE deea5d7ce — 8 tests added; the pin has none.]** **[IN FLIGHT 2026-08-10]** (54 lines).
-- [ ] Low confidence, verify before acting: TUI completion menu (fork's
+- [x] **VERIFIED FALSE POSITIVE 2026-08-10** — the fork's `completions_menu.rs` IS the pin's `completion_menu.rs`, renamed and extended (same list state, gating, inline-menu wiring, completer engine). Annotated in `SCOPE-TERMINAL.md`; -2 from the debt count. One genuinely untested guard got a test. Originally: TUI completion menu (fork's
       `completions_menu.rs` may cover it under different names);
       warpui_core telemetry ring buffer (probably belongs in DECLINED.md — the
       fork removed the telemetry channel, so an event store has no consumer).
