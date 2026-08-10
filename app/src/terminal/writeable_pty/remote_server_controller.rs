@@ -151,6 +151,9 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. }
             | RemoteServerManagerEvent::SetupStateChanged { .. }
             | RemoteServerManagerEvent::ClientRequestFailed { .. }
+            | RemoteServerManagerEvent::CodebaseIndexStatusesSnapshot { .. }
+            | RemoteServerManagerEvent::CodebaseIndexStatusUpdated { .. }
+            | RemoteServerManagerEvent::CodebaseIndexMutationFailed { .. }
             | RemoteServerManagerEvent::ServerMessageDecodingError { .. } => {}
         });
 

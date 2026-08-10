@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 use warp_core::{
     features::FeatureFlag,
     report_if_error,
-    settings::ToggleableSetting as _,
+    settings::{Setting as _, ToggleableSetting as _},
     ui::theme::{AnsiColorIdentifier, WarpTheme},
 };
 use warp_util::path::user_friendly_path;
@@ -1427,6 +1427,32 @@ impl CodeSettingsPageView {
     }
 }
 
+/// Whether the codebase-indexing controls can do anything on this build.
+///
+/// Mirrors `crate::ai::codebase_auto_indexing::codebase_indexing_enabled`: without
+/// `FullSourceCodeEmbedding` nothing indexes whatever the settings say, and both settings are
+/// desktop-only, so on other platforms the rows would write values nothing reads.
+fn codebase_indexing_settings_supported(app: &AppContext) -> bool {
+    FeatureFlag::FullSourceCodeEmbedding.is_enabled()
+        && CodeSettings::as_ref(app)
+            .codebase_context_enabled
+            .is_supported_on_current_platform()
+}
+
+/// A provider's display name, falling back to its id.
+///
+/// A provider is usable as soon as it lists a model, which can happen before the user has
+/// named it; an empty label in the readout would be worse than the raw id.
+fn provider_display_name(name: &str, id: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        id.to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+#[derive(Default)]
 struct CodebaseContextToggleWidget {
     switch_state: SwitchStateHandle,
 }

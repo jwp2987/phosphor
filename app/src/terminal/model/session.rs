@@ -207,6 +207,9 @@ impl Sessions {
                 | RemoteServerManagerEvent::BinaryCheckComplete { .. }
                 | RemoteServerManagerEvent::BinaryInstallComplete { .. }
                 | RemoteServerManagerEvent::ClientRequestFailed { .. }
+                | RemoteServerManagerEvent::CodebaseIndexStatusesSnapshot { .. }
+                | RemoteServerManagerEvent::CodebaseIndexStatusUpdated { .. }
+                | RemoteServerManagerEvent::CodebaseIndexMutationFailed { .. }
                 | RemoteServerManagerEvent::ServerMessageDecodingError { .. } => {}
                 RemoteServerManagerEvent::SessionReconnected {
                     session_id: sid,

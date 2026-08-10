@@ -39,6 +39,17 @@ use crate::settings::CodeSettings;
 use crate::settings_view::settings_page::SettingsPageMeta as _;
 use crate::settings_view::SettingsSection;
 
+fn add_code_page(app: &mut App) -> warpui::ViewHandle<CodeSettingsPageView> {
+    crate::test_util::settings::initialize_settings_for_tests(app);
+    app.add_singleton_model(|_| Appearance::mock());
+    // `CodeSettingsPageView::new` subscribes to it, and an unregistered
+    // singleton panics rather than being created on demand.
+    app.add_singleton_model(|_| ai::project_context::model::ProjectContextModel::default());
+
+    let (_window_id, page) = app.add_window(WindowStyle::NotStealFocus, CodeSettingsPageView::new);
+    page
+}
+
 const WORKSPACE: &str = "/tmp/zap-code-page-tests/repo";
 
 /// Registers the singletons `CodeSettingsPageView::new` reads, minus

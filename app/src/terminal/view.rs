@@ -4313,6 +4313,9 @@ impl TerminalView {
                     | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
                     | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
                     | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. }
+                    | RemoteServerManagerEvent::CodebaseIndexStatusesSnapshot { .. }
+                    | RemoteServerManagerEvent::CodebaseIndexStatusUpdated { .. }
+                    | RemoteServerManagerEvent::CodebaseIndexMutationFailed { .. }
                     | RemoteServerManagerEvent::RepoMetadataDirectoryLoaded { .. } => {}
                 }
             });
