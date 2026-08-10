@@ -1,38 +1,40 @@
 //! Rendering functions for orchestration-related output items (messaging & agent management).
 //!
-//! `render_send_message` (SendMessageToAgent action rendering, from the pin) is not
-//! ported here: it depends on `AIAgentActionType::SendMessageToAgent` and
-//! `SendMessageToAgentResult`, neither of which exist in this fork. Adding them is
-//! out-of-scope surgery of the same shape as Step 3's `AIAgentActionType::RunAgents`
-//! (a new action variant walked by the compiler across every exhaustive match on the
-//! enum), not something this file can carry on its own. `render_collapse_chevron` and
-//! `render_collapsible_text_body` were used only by `render_send_message`, so they were
-//! dropped with it rather than ported dead. Everything kept here (the transcript-row
-//! renderer and `render_messages_received_from_agents`) is wired into `output.rs`'s
-//! `MessagesReceivedFromAgents` match arm, which the fork's message model already
-//! supports.
+//! `render_send_message` (`SendMessageToAgent` action rendering, from the pin) is wired
+//! into `output.rs`'s action-rendering match arm alongside the transcript-row renderer
+//! and `render_messages_received_from_agents`.
 
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use pathfinder_color::ColorU;
 use warpui::elements::{
-    ConstrainedBox, Container, CrossAxisAlignment, Empty, Flex, FormattedTextElement, Hoverable,
-    ParentElement, Shrinkable, Text,
+    ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty, Flex,
+    FormattedTextElement, Hoverable, ParentElement, Radius, Shrinkable, Text,
 };
 use warpui::platform::Cursor;
 use warpui::{AppContext, Element, SingletonEntity};
 
 use super::common::render_scrollable_collapsible_content;
-use super::output::Props;
+use super::output::{action_icon, Props};
 use super::WithContentItemSpacing;
-use crate::ai::agent::conversation::AIConversationId;
-use crate::ai::agent::{MessageId, ReceivedMessageDisplay};
+use crate::ai::agent::conversation::{AIConversation, AIConversationId};
+use crate::ai::agent::{
+    AIAgentActionId, AIAgentActionResultType, MessageId, ReceivedMessageDisplay,
+    SendMessageToAgentResult,
+};
+use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::orchestration_avatar::OrchestrationAvatar;
 use crate::ai::blocklist::agent_view::orchestration_conversation_links::dispatch_focus_or_open_child_agent_pane;
 use crate::ai::blocklist::block::model::AIBlockModelHelper;
 use crate::ai::blocklist::block::{
     received_message_collapsible_id, AIBlockAction, CollapsibleExpansionState,
 };
-use crate::ai::blocklist::inline_action::inline_action_icons::icon_size;
+use crate::ai::blocklist::inline_action::inline_action_header::{
+    ICON_MARGIN, INLINE_ACTION_HEADER_VERTICAL_PADDING, INLINE_ACTION_HORIZONTAL_PADDING,
+};
+use crate::ai::blocklist::inline_action::inline_action_icons::{self, icon_size};
+use crate::ai::blocklist::inline_action::requested_action::{
+    render_requested_action_row, render_requested_action_row_for_text,
+};
 use crate::ai::blocklist::orchestration_topology::{
     orchestrator_agent_id_for_conversation, resolve_orchestration_participant,
     OrchestrationParticipantKind,
@@ -103,6 +105,48 @@ fn participant_for_agent_id(
             OrchestrationParticipantKind::Agent { .. } => participant.conversation_id,
         },
     }
+}
+
+fn participant_for_conversation(
+    conversation: &AIConversation,
+    orchestrator_agent_id: Option<&str>,
+    agent_id: Option<&str>,
+) -> OrchestrationParticipant {
+    let is_orchestrator = agent_id
+        .map(|id| {
+            orchestrator_agent_id.is_some_and(|orchestrator_id| id == orchestrator_id)
+                || (orchestrator_agent_id.is_none()
+                    && conversation.parent_conversation_id().is_none())
+        })
+        .unwrap_or_else(|| conversation.parent_conversation_id().is_none());
+    if is_orchestrator {
+        return OrchestrationParticipant::orchestrator();
+    }
+
+    let display_name = conversation.agent_name().unwrap_or("Agent").to_string();
+    OrchestrationParticipant {
+        display_name: display_name.clone(),
+        avatar: OrchestrationAvatar::agent(display_name),
+        conversation_id: Some(conversation.id()),
+    }
+}
+
+fn participant_for_current_conversation(
+    props: Props,
+    orchestrator_agent_id: Option<&str>,
+    app: &AppContext,
+) -> OrchestrationParticipant {
+    props
+        .model
+        .conversation(app)
+        .map(|conversation| {
+            participant_for_conversation(
+                conversation,
+                orchestrator_agent_id,
+                conversation.orchestration_agent_id().as_deref(),
+            )
+        })
+        .unwrap_or_else(OrchestrationParticipant::orchestrator)
 }
 
 fn transcript_metadata(recipients: &[OrchestrationParticipant], subject: &str) -> Option<String> {
@@ -322,6 +366,251 @@ pub(super) fn render_messages_received_from_agents(
     }
 
     column.finish().with_agent_output_item_spacing(app).finish()
+}
+
+fn participant_display_names(participants: &[OrchestrationParticipant]) -> String {
+    participants
+        .iter()
+        .map(|participant| participant.display_name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn participant_for_agent_ids(
+    agent_ids: &[String],
+    orchestrator_agent_id: Option<&str>,
+    app: &AppContext,
+) -> Vec<OrchestrationParticipant> {
+    agent_ids
+        .iter()
+        .map(|agent_id| participant_for_agent_id(agent_id, orchestrator_agent_id, app))
+        .collect()
+}
+
+fn render_transcript_row_with_spacing(
+    data: TranscriptRowData<'_>,
+    props: Props,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    render_transcript_row(data, props, app)
+        .with_agent_output_item_spacing(app)
+        .finish()
+}
+
+pub(super) fn render_send_message(
+    props: Props,
+    action_id: &AIAgentActionId,
+    address: &[String],
+    subject: &str,
+    message: &str,
+    message_id: &MessageId,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    let status = props.action_model.as_ref(app).get_action_status(action_id);
+    let orchestrator_agent_id = props.model.conversation(app).and_then(|conversation| {
+        orchestrator_agent_id_for_conversation(BlocklistAIHistoryModel::as_ref(app), conversation)
+    });
+    let recipient_participants =
+        participant_for_agent_ids(address, orchestrator_agent_id.as_deref(), app);
+    let recipients = participant_display_names(&recipient_participants);
+
+    if let Some(AIActionStatus::Finished(result)) = &status {
+        let AIAgentActionResultType::SendMessageToAgent(result) = &result.result else {
+            report_error!(
+                "Unexpected action result type for send message action",
+                extra: { "result_type" => ?result.result }
+            );
+            return Empty::new().finish();
+        };
+        match result {
+            SendMessageToAgentResult::Success { .. } => {
+                let sender = participant_for_current_conversation(
+                    props,
+                    orchestrator_agent_id.as_deref(),
+                    app,
+                );
+                return render_transcript_row_with_spacing(
+                    TranscriptRowData {
+                        participant: &sender,
+                        recipients: &recipient_participants,
+                        subject,
+                        body: message,
+                        message_id,
+                        is_streaming: false,
+                    },
+                    props,
+                    app,
+                );
+            }
+            SendMessageToAgentResult::Error(error) => {
+                let label = format!("Failed to send message to {recipients}: {error}");
+                let status_icon = inline_action_icons::red_x_icon(appearance).finish();
+                return render_requested_action_row_for_text(
+                    label.into(),
+                    appearance.ui_font_family(),
+                    Some(status_icon),
+                    None,
+                    false,
+                    false,
+                    app,
+                )
+                .with_agent_output_item_spacing(app)
+                .with_background_color(blended_colors::neutral_2(theme))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
+                .finish();
+            }
+            SendMessageToAgentResult::Cancelled => {
+                let label = format!("Send message to {recipients} cancelled.");
+                let status_icon = inline_action_icons::cancelled_icon(appearance).finish();
+                return render_requested_action_row_for_text(
+                    label.into(),
+                    appearance.ui_font_family(),
+                    Some(status_icon),
+                    None,
+                    false,
+                    false,
+                    app,
+                )
+                .with_agent_output_item_spacing(app)
+                .with_background_color(blended_colors::neutral_2(theme))
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
+                .finish();
+            }
+        };
+    }
+
+    // Non-finished (streaming/queued) state.
+    let dimmed_text_color = blended_colors::text_disabled(theme, theme.surface_2());
+    let should_dim_text = (props.model.status(app).is_streaming()
+        && !props.model.is_first_action_in_output(action_id, app))
+        || status.as_ref().is_some_and(|s| s.is_queued());
+
+    let label_fragments = vec![
+        FormattedTextFragment::plain_text("Sending message to "),
+        FormattedTextFragment::bold(&recipients),
+        FormattedTextFragment::plain_text(format!(": {subject}")),
+    ];
+    let mut header_text = render_formatted_text_element(label_fragments, app);
+    if should_dim_text {
+        header_text = header_text.with_color(dimmed_text_color);
+    }
+
+    let has_message = !message.is_empty();
+    let chevron = if has_message {
+        render_collapse_chevron(message_id, props, app)
+    } else {
+        None
+    };
+
+    let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+    column.add_child(render_requested_action_row(
+        header_text.into(),
+        Some(action_icon(action_id, props.action_model, props.model, app).finish()),
+        chevron,
+        false,
+        false,
+        app,
+    ));
+
+    // Collapsible body: message text with max height
+    if has_message {
+        let message_color = if should_dim_text {
+            dimmed_text_color
+        } else {
+            blended_colors::text_disabled(theme, theme.surface_2())
+        };
+        let message_element = render_collapsible_text_body(message, message_color, true, app);
+        if let Some(body) = render_collapsible_body(
+            message_id,
+            message_element,
+            props.model.status(app).is_streaming(),
+            props,
+        ) {
+            column.add_child(body);
+        }
+    }
+
+    column
+        .finish()
+        .with_agent_output_item_spacing(app)
+        .with_background_color(blended_colors::neutral_2(theme))
+        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.)))
+        .finish()
+}
+
+/// Renders a selectable text block below an orchestration action header, using a muted color.
+/// Used for both StartAgent prompts and SendMessageToAgent message bodies.
+fn render_collapsible_text_body(
+    text: &str,
+    text_color: ColorU,
+    align_with_status_row_text: bool,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let mut container = Container::new(
+        Text::new(
+            text.to_string(),
+            appearance.ui_font_family(),
+            appearance.monospace_font_size(),
+        )
+        .with_color(text_color)
+        .with_selectable(true)
+        .finish(),
+    )
+    .with_margin_top(4.);
+
+    if align_with_status_row_text {
+        container = container
+            .with_margin_left(INLINE_ACTION_HORIZONTAL_PADDING + icon_size(app) + ICON_MARGIN)
+            .with_margin_right(INLINE_ACTION_HORIZONTAL_PADDING)
+            .with_margin_bottom(INLINE_ACTION_HEADER_VERTICAL_PADDING);
+    }
+
+    container.finish()
+}
+
+/// Renders a chevron toggle for collapsing/expanding orchestration block bodies.
+fn render_collapse_chevron(
+    message_id: &MessageId,
+    props: Props,
+    app: &AppContext,
+) -> Option<Box<dyn Element>> {
+    let state = props.collapsible_block_states.get(message_id)?;
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    let text_color = theme.foreground();
+    let icon_sz = icon_size(app);
+
+    let is_expanded = matches!(
+        state.expansion_state,
+        CollapsibleExpansionState::Expanded { .. }
+    );
+    let chevron_icon = if is_expanded {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    };
+
+    let toggle_mouse_state = state.expansion_toggle_mouse_state.clone();
+    let message_id_clone = message_id.clone();
+
+    Some(
+        Hoverable::new(toggle_mouse_state, move |_| {
+            ConstrainedBox::new(chevron_icon.to_warpui_icon(text_color).finish())
+                .with_width(icon_sz)
+                .with_height(icon_sz)
+                .finish()
+        })
+        .with_cursor(Cursor::PointingHand)
+        .on_click(move |ctx, _, _| {
+            ctx.dispatch_typed_action(AIBlockAction::ToggleCollapsibleBlockExpanded(
+                message_id_clone.clone(),
+            ));
+        })
+        .finish(),
+    )
 }
 
 /// Renders the collapsible body content with max height and scroll, or None if collapsed.
