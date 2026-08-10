@@ -491,3 +491,92 @@ fn test_navigation_skips_hidden_closed_panes() {
         })
     });
 }
+
+/// A minimal `PaneContent` whose `pre_attach` hook always refuses attachment,
+/// used to exercise `add_pane_with_direction`'s abort path.
+struct PreAttachReturnsFalsePane {
+    pane_id: PaneId,
+    pane_configuration: ModelHandle<PaneConfiguration>,
+}
+
+impl PreAttachReturnsFalsePane {
+    fn new(ctx: &mut ViewContext<PaneGroup>) -> Self {
+        Self {
+            pane_id: PaneId::dummy_pane_id(),
+            pane_configuration: ctx.add_model(|_ctx| PaneConfiguration::new("")),
+        }
+    }
+}
+
+impl PaneContent for PreAttachReturnsFalsePane {
+    fn id(&self) -> PaneId {
+        self.pane_id
+    }
+
+    fn pre_attach(&self, _group: &PaneGroup, _ctx: &mut ViewContext<PaneGroup>) -> bool {
+        false
+    }
+
+    fn attach(
+        &self,
+        _group: &PaneGroup,
+        _focus_handle: focus_state::PaneFocusHandle,
+        _ctx: &mut ViewContext<PaneGroup>,
+    ) {
+    }
+
+    fn detach(
+        &self,
+        _group: &PaneGroup,
+        _detach_type: pane::DetachType,
+        _ctx: &mut ViewContext<PaneGroup>,
+    ) {
+    }
+
+    fn snapshot(&self, _app: &AppContext) -> LeafContents {
+        LeafContents::GetStarted
+    }
+
+    fn has_application_focus(&self, _ctx: &mut ViewContext<PaneGroup>) -> bool {
+        false
+    }
+
+    fn focus(&self, _ctx: &mut ViewContext<PaneGroup>) {}
+
+    fn shareable_link(
+        &self,
+        _ctx: &mut ViewContext<PaneGroup>,
+    ) -> Result<pane::ShareableLink, pane::ShareableLinkError> {
+        Ok(pane::ShareableLink::Base)
+    }
+
+    fn pane_configuration(&self) -> ModelHandle<PaneConfiguration> {
+        self.pane_configuration.clone()
+    }
+
+    fn is_pane_being_dragged(&self, _ctx: &AppContext) -> bool {
+        false
+    }
+}
+
+#[test]
+fn test_add_pane_aborts_cleanly_when_pre_attach_returns_false() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let before_snapshot = panes.snapshot(ctx);
+            let before_count = panes.pane_count();
+
+            panes.add_pane_with_direction(
+                Direction::Right,
+                PreAttachReturnsFalsePane::new(ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+
+            assert_eq!(panes.pane_count(), before_count);
+            assert_eq!(panes.snapshot(ctx), before_snapshot);
+        });
+    });
+}
