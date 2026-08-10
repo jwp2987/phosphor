@@ -856,6 +856,16 @@ fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> a
             delete_codebase_index_metadata(connection, &repo_path)
                 .context("error deleting codebase index metadata")
         }
+        ModelEvent::UpsertCodebaseIndexNodes {
+            embedding_space,
+            nodes,
+        } => save_codebase_index_nodes(connection, embedding_space, nodes)
+            .context("error upserting codebase index nodes"),
+        ModelEvent::UpsertCodebaseIndexEmbeddings {
+            embedding_space,
+            embeddings,
+        } => save_codebase_index_embeddings(connection, embedding_space, embeddings)
+            .context("error upserting codebase index embeddings"),
         ModelEvent::UpsertProject { project } => {
             save_project(connection, project).context("error upserting project")
         }
@@ -1720,6 +1730,162 @@ fn delete_codebase_index_metadata(conn: &mut SqliteConnection, index_path: &Path
     diesel::delete(workspace_metadata.filter(repo_path.eq(target_path))).execute(conn)?;
 
     Ok(())
+}
+
+/// SQLite's default `SQLITE_MAX_VARIABLE_NUMBER`, minus room for the columns
+/// bound alongside an `IN (...)` list.
+const SQLITE_MAX_BOUND_PARAMETERS: usize = 900;
+
+/// Insert-or-update intermediate merkle nodes of a codebase index.
+///
+/// New in this fork — see `ModelEvent::UpsertCodebaseIndexNodes`. Written as one
+/// transaction per batch so a partially-written batch cannot leave a parent
+/// recorded without its children, which would make the tree walk in
+/// `SqliteVectorStore::leaves_under` silently skip a subtree.
+fn save_codebase_index_nodes(
+    conn: &mut SqliteConnection,
+    space: String,
+    nodes: Vec<(String, String)>,
+) -> Result<()> {
+    use schema::codebase_index_nodes::dsl::*;
+
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        for (hash, children) in nodes {
+            let row = model::NewCodebaseIndexNode {
+                embedding_space: space.clone(),
+                node_hash: hash,
+                child_hashes: children,
+            };
+            diesel::insert_into(codebase_index_nodes)
+                .values(row.clone())
+                .on_conflict((embedding_space, node_hash))
+                .do_update()
+                .set(&row)
+                .execute(conn)?;
+        }
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+/// Insert-or-update embedding vectors for code fragments.
+///
+/// New in this fork — see `ModelEvent::UpsertCodebaseIndexEmbeddings`.
+fn save_codebase_index_embeddings(
+    conn: &mut SqliteConnection,
+    space: String,
+    embeddings: Vec<(String, i32, Vec<u8>)>,
+) -> Result<()> {
+    use schema::codebase_index_embeddings::dsl::*;
+
+    conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        for (hash, dims, bytes) in embeddings {
+            let row = model::NewCodebaseIndexEmbedding {
+                embedding_space: space.clone(),
+                content_hash: hash,
+                dimensions: dims,
+                vector: bytes,
+            };
+            diesel::insert_into(codebase_index_embeddings)
+                .values(row.clone())
+                .on_conflict((embedding_space, content_hash))
+                .do_update()
+                .set(&row)
+                .execute(conn)?;
+        }
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+/// Which of `hashes` the codebase index already holds, as an intermediate node
+/// or as an embedded leaf.
+///
+/// This is the local answer to the pin's `syncMerkleTree` query: a hash the
+/// store knows is clean, so its whole subtree can be skipped.
+pub fn known_codebase_index_hashes(
+    conn: &mut SqliteConnection,
+    space: &str,
+    hashes: &[String],
+) -> Result<HashSet<String>, diesel::result::Error> {
+    let mut known = HashSet::new();
+
+    // Chunked because SQLite caps the number of bound parameters in one
+    // statement, and a merkle sync checks nodes in batches that can exceed it.
+    for chunk in hashes.chunks(SQLITE_MAX_BOUND_PARAMETERS) {
+        {
+            use schema::codebase_index_nodes::dsl::*;
+            known.extend(
+                codebase_index_nodes
+                    .filter(embedding_space.eq(space))
+                    .filter(node_hash.eq_any(chunk))
+                    .select(node_hash)
+                    .load::<String>(conn)?,
+            );
+        }
+        {
+            use schema::codebase_index_embeddings::dsl::*;
+            known.extend(
+                codebase_index_embeddings
+                    .filter(embedding_space.eq(space))
+                    .filter(content_hash.eq_any(chunk))
+                    .select(content_hash)
+                    .load::<String>(conn)?,
+            );
+        }
+    }
+
+    Ok(known)
+}
+
+/// The child lists of `hashes`, as `(node_hash, child_hashes_json)`.
+///
+/// Used to walk down from a root hash; a hash with no row is a leaf, or an
+/// un-indexed subtree.
+pub fn codebase_index_children(
+    conn: &mut SqliteConnection,
+    space: &str,
+    hashes: &[String],
+) -> Result<Vec<(String, String)>, diesel::result::Error> {
+    use schema::codebase_index_nodes::dsl::*;
+
+    let mut out = Vec::new();
+    for chunk in hashes.chunks(SQLITE_MAX_BOUND_PARAMETERS) {
+        out.extend(
+            codebase_index_nodes
+                .filter(embedding_space.eq(space))
+                .filter(node_hash.eq_any(chunk))
+                .select((node_hash, child_hashes))
+                .load::<(String, String)>(conn)?,
+        );
+    }
+    Ok(out)
+}
+
+/// The stored vectors for `hashes`, as `(content_hash, dimensions, bytes)`.
+///
+/// Hashes with no stored vector are simply absent from the result: during a sync
+/// it is normal for a leaf to be known but not yet embedded.
+pub fn codebase_index_vectors(
+    conn: &mut SqliteConnection,
+    space: &str,
+    hashes: &[String],
+) -> Result<Vec<(String, i32, Vec<u8>)>, diesel::result::Error> {
+    use schema::codebase_index_embeddings::dsl::*;
+
+    let mut out = Vec::new();
+    for chunk in hashes.chunks(SQLITE_MAX_BOUND_PARAMETERS) {
+        out.extend(
+            codebase_index_embeddings
+                .filter(embedding_space.eq(space))
+                .filter(content_hash.eq_any(chunk))
+                .select((content_hash, dimensions, vector))
+                .load::<(String, i32, Vec<u8>)>(conn)?,
+        );
+    }
+    Ok(out)
 }
 
 fn save_project(conn: &mut SqliteConnection, project: Project) -> Result<()> {

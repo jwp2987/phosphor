@@ -14,6 +14,9 @@ pub mod active_ai;
 pub mod attachment_caps;
 pub mod chat_stream;
 pub mod content_tool_calls;
+/// BYOP embeddings, for the codebase index. New in this fork: the pin produced
+/// embeddings server-side and had no client for them.
+pub mod embeddings;
 pub mod llm_id;
 pub mod models_dev;
 pub mod oneshot;

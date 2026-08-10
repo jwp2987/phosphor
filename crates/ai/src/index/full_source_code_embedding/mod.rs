@@ -2,6 +2,7 @@ mod changed_files;
 mod chunker;
 mod codebase_index;
 mod fragment_metadata;
+pub mod local_store_client;
 pub mod manager;
 mod merkle_tree;
 mod priority_queue;
@@ -56,6 +57,20 @@ pub enum Error {
     Other(#[from] anyhow::Error),
     #[error("Failed to parse snapshot")]
     SnapshotParsingFailed,
+    /// No embedding provider is configured, so nothing can be embedded.
+    ///
+    /// Not present at the pin, where embeddings were produced by the server and
+    /// the only way to have none was to be signed out. Here the user brings the
+    /// provider, so "not configured yet" is an ordinary, expected state that has
+    /// to be *said* rather than silently treated as an empty result — otherwise
+    /// codebase search returns nothing and looks like a broken index.
+    #[error(
+        "no embedding provider is configured for {model}: add a provider under Settings > AI whose model list includes `{model}`, and give it an API key"
+    )]
+    NoEmbeddingProvider { model: &'static str },
+    /// The vector store could not be read or written.
+    #[error("codebase vector store error: {0:#}")]
+    VectorStore(#[source] anyhow::Error),
 }
 
 impl ErrorExt for Error {
@@ -82,7 +97,11 @@ impl ErrorExt for Error {
             | Self::DiffMerkleTreeError(
                 DiffMerkleTreeError::CurrentNodeMismatch(_) | DiffMerkleTreeError::Fragment(_),
             )
-            | Self::SnapshotParsingFailed => true,
+            | Self::SnapshotParsingFailed
+            | Self::VectorStore(_) => true,
+            // A missing provider is the user's configuration to fix, not a
+            // defect for us to act on.
+            Self::NoEmbeddingProvider { .. } => false,
             Self::Other(error) => error.is_actionable(),
         }
     }

@@ -615,6 +615,13 @@ impl CodebaseIndexManager {
             added_or_updated.insert(new_path.to_path_buf());
         }
 
+        // Not at the pin: there the watcher's emit filter dropped these before
+        // delivery, and this fork's `WatchFilter` has no emit filter (see
+        // `Self::watch_path`). `.git` internals change on every git command, so
+        // without this every `git status` would queue an index diff.
+        deleted.retain(|path| !is_git_internal_path(path));
+        added_or_updated.retain(|path| !is_git_internal_path(path));
+
         let mut updates_by_root: HashMap<PathBuf, ChangedFiles> = HashMap::new();
 
         for path in deleted {
@@ -675,9 +682,11 @@ impl CodebaseIndexManager {
     }
 
     #[cfg(feature = "local_fs")]
+    // Fork drift: `ModelContext::subscribe_to_model` takes a 3-argument closure
+    // here, where the pin's took 4 (it passed the emitter's `ModelHandle`). The
+    // pin ignored that parameter, so dropping it changes nothing.
     fn handle_watcher_event(
         &mut self,
-        _: ModelHandle<BulkFilesystemWatcher>,
         event: &BulkFilesystemWatcherEvent,
         ctx: &mut ModelContext<Self>,
     ) {
@@ -867,7 +876,23 @@ impl CodebaseIndexManager {
                 )
         });
 
-        let watch_filter = WatchFilter::with_filter(filter.clone(), filter);
+        // Fork drift: this fork's `notify` rev gives `WatchFilter` a single
+        // predicate, where the pin's took a descend filter and an emit filter
+        // (see `crates/repo_metadata/src/entry.rs:1069`). The pin passed the
+        // same closure twice, so the surviving predicate is exactly the pin's —
+        // but it now gates descent only, and a change to an ignored file inside
+        // an already-watched directory is still delivered.
+        //
+        // Consequences, and why this is not papered over:
+        // * `.git` internals churn constantly, so those are filtered back out on
+        //   the way in by `Self::group_file_events`.
+        // * A gitignored file would need this root's `Gitignore` set to filter,
+        //   which the manager does not hold. It is left to the tree diff, which
+        //   already rejects such a path with `DiffMerkleTreeError::Ignored` (a
+        //   non-actionable error, skipped rather than reported). So the index
+        //   contents are the pin's; the cost is a debounced no-op diff per
+        //   ignored write, where the pin did no work at all.
+        let watch_filter = WatchFilter::with_filter(filter);
         self.watcher.update(ctx, |watcher, _ctx| {
             std::mem::drop(watcher.register_path(
                 root_path,
@@ -1033,9 +1058,10 @@ impl CodebaseIndexManager {
         codebase_index
     }
 
+    // Fork drift: 3-argument `ModelContext::subscribe_to_model` closure, as in
+    // `handle_watcher_event` above.
     fn handle_codebase_index_event(
         &mut self,
-        _: ModelHandle<CodebaseIndex>,
         event: &CodebaseIndexEvent,
         ctx: &mut ModelContext<Self>,
     ) {

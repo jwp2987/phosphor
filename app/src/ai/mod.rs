@@ -19,6 +19,12 @@ pub(crate) mod block_context;
 pub(crate) mod blocklist;
 pub(crate) mod byop_compaction;
 pub(crate) mod byop_readiness;
+/// Local storage and provider wiring for the codebase embedding index.
+///
+/// `local_fs` only: it opens the app's SQLite database, and the whole indexing
+/// subsystem is filesystem-bound.
+#[cfg(feature = "local_fs")]
+pub(crate) mod codebase_embeddings;
 pub mod control_code_parser;
 pub(crate) mod conversation_export;
 pub(crate) mod conversation_entry;
