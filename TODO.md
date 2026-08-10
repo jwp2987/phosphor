@@ -995,6 +995,289 @@ xdotool's licence for the ported logic; and whether 2 further upstream files
 carrying the Alacritty header were deleted or renamed — if renamed, the
 stripped-header count rises from 16 to 18.
 
+## UNWIRED-CODE AUDIT 2026-08-10 — code that exists but nothing reaches
+
+Agent audit for the recurring failure mode in this fork: **code that is present,
+compiles, is often unit-tested, but is never reached at runtime.** A user cannot
+tell "feature missing" from "feature present but not connected" — both look like
+nothing happens.
+
+**No code changes were taken from this audit.** The maintainer asked for an audit;
+findings only. Fixes the agent had staged were reverted off `main` and sit on
+`worktree-agent-a14fb158cda58e369` if any are wanted later.
+
+Calibration for anyone continuing: two live examples found the same day were the
+Claude harness accepting `resolved_mcp_servers` and dropping it (fixed,
+`28d21e520`), and `global_skills::filter_skills_by_spec` being exported and
+tested with zero production callers.
+
+### Confirmed unwired — ranked by user impact
+
+- [ ] **#1 The codebase embedding index is built, maintained, and never queried.**
+      `CodebaseIndexManager::retrieve_relevant_files`
+      (`crates/ai/src/index/full_source_code_embedding/manager.rs:1224`) is the only
+      retrieval API, and a tree-wide grep returns exactly three lines: the
+      definition, its one-line delegation, and the inner `codebase_index.rs:1435`
+      definition. **Zero callers, including tests.** Same for
+      `abort_retrieval_request`. The pin's caller is
+      `02b53fcd8:app/src/ai/get_relevant_files/controller.rs:248` — a directory
+      that does not exist here, retired with the inherited outline removal.
+      **User impact: real money.** Enabling Settings > Code > codebase context
+      (`code.indexing.agent_mode_codebase_context`, described as *"Whether codebase
+      context is provided to the AI agent"*) embeds the whole repo against the
+      user's own `/embeddings` endpoint — paid calls plus DB growth — and **no
+      agent answer is ever influenced by it.** The agent's `search_codebase` /
+      `get_relevant_files` tools are a *different* mechanism over `RepoOutlines`,
+      gated on the same-named but separate per-profile
+      `AIExecutionProfile::codebase_context_enabled`.
+      **This also means all D2d retrieval work is unreachable** — the ball-tree
+      descent, RRF reranking and MRR 1.0 from `c7b8d779d` optimize a path nothing
+      calls. Know that before spending more there.
+      Plan: build the missing consumer. Smallest useful shape is
+      `RequestParams::new` (`app/src/ai/agent/api.rs:408`, which already collects
+      the outline snapshot and holds an `AppContext`) also calling
+      `retrieve_relevant_files` for the active repo root, carrying results on
+      `RelevantFilesSnapshot` so `get_relevant_files_runtime` ranks over both.
+      Risk: retrieval is retrieval-id/abort-lifecycle shaped at the pin, not a
+      synchronous call. **Needs a maintainer call: wire it, or gate the two
+      settings off until it is wired.** Shipping a paid no-op is the worst option.
+
+- [ ] **#2 Remote (SSH) buffer conflicts are invisible in both directions.**
+      Daemon half: the `GlobalBufferModelEvent::BufferUpdatedFromFileEvent` arm in
+      `app/src/remote_server/server_model.rs` is a no-op stub
+      (`/* Not relevant for server-local buffers. */`), so the daemon never sends
+      `BufferConflictDetected` — despite a fully wired five-layer client receive
+      path (`crates/remote_server/src/client/mod.rs:934` → `manager.rs:1633` →
+      `global_buffer_model.rs:407` → `:1867`). The pin pushes from exactly this arm
+      (`02b53fcd8:server_model.rs:667`).
+      Client half: `RemoteBufferConflict` has three live emitters
+      (`global_buffer_model.rs:1777` edit-flush failure on a dead SSH connection,
+      `:1899` daemon push, `:1992` version divergence) and its only subscriber,
+      `app/src/code/local_code_editor.rs:1679`, **discards it** — commented *"the
+      local editor view doesn't care about them."* The doc at
+      `global_buffer_model.rs:1864` claims *"so the UI shows the conflict
+      resolution banner"*; no UI does.
+      User impact: a remote file changed on the host keeps showing stale content
+      and **the next save silently overwrites it.**
+      Plan (~40 lines): the banner already exists (`local_code_editor.rs:2246`).
+      Add `has_remote_conflict: bool`, set on the event, clear on
+      `BufferLoaded`/`FileSaved`, return it early from `has_version_conflicts` for
+      `BufferFileLocation::Remote` (pin `:1724`). **Must ship together with**
+      `reopen_remote_buffer` (`02b53fcd8:global_buffer_model.rs:2201`, absent
+      here) — remote files have no `file_path()`, so without it the banner's
+      Discard button is dead.
+
+- [ ] **#3 Settings > "Phosphor Drive" page — MAINTAINER DECISION 2026-08-10:
+      REMOVE IT.** The audit's recommendation was to restore the missing sidebar
+      row; the maintainer's call is the opposite — **Drive should have been removed
+      with the rest of the dropped surface, so the settings page and the feature go,
+      rather than becoming reachable.** Do not add the `nav_items` row. Remove the
+      page, the `warp_drive.enabled` setting, and the local surfaces it gates
+      (Drive toolbelt tab, command-search zero state, block toolbelt save actions,
+      `local_control` surface routing), and record the decision in `DECLINED.md`.
+      The original finding is kept below as the evidence of what has to come out.
+      Original finding:
+      `WarpDriveSettingsPageView` is constructed
+      (`app/src/settings_view/mod.rs:1237`) and pushed into `settings_pages`
+      (`:1302`), but `SettingsSection::ZapDrive` is absent from `nav_items`
+      (`:1322-1358`) — the sole source of the sidebar (`:2376`) and arrow-key nav
+      stops (`:2168`). `local_control/handlers/app_state.rs:726` refuses to open it
+      deliberately. So: no row, no keyboard stop, no settings-search hit. Pin lists
+      it at `02b53fcd8:mod.rs:1362`.
+      **Not the dropped cloud product** — the page's one toggle is
+      `warp_drive.enabled`, and `WarpDriveSettings::is_warp_drive_enabled` gates
+      purely local surfaces (Drive toolbelt tab, command-search zero state, block
+      toolbelt save actions, `local_control` surface routing), with
+      `is_anonymous_or_logged_out()` hard-coded `false`. Renders under
+      `FeatureFlag::ZapNewSettingsModes`, which **is** in `app/Cargo.toml`'s default
+      features.
+      User impact: a user who turns the Drive panel off cannot turn it back on
+      outside `settings.toml`.
+
+- [ ] **#4 The vertical-tab unread-activity dot can never light up.**
+      `has_unread_activity(_typed, _app) -> false`
+      (`app/src/workspace/view/vertical_tabs.rs:2506`), consumed at `:2552`,
+      `:3470`, `:5987`. This also leaves
+      `NotificationItems::has_unread_for_terminal_view`
+      (`app/src/notifications/item.rs:197`) with zero callers. Pin implements it at
+      `02b53fcd8:vertical_tabs.rs:3368`.
+      User impact: a background agent session that finished and filed a
+      notification shows no tab indicator.
+
+- [ ] **#5 The remote codebase-index *search* leg has no caller** (same root cause
+      as #1). `RemoteCodebaseIndexModel` is registered (`app/src/lib.rs:1572`) and
+      auto-indexes, but `active_repo_availability`
+      (`app/src/remote_server/codebase_index_model.rs:315`), `active_repo_path:331`
+      and `request_active_repo_index:341` have zero callers outside the module, and
+      `RemoteCodebaseSearchContext::is_stale` is computed at `:1068` and never read.
+      Consequently `RemoteServerManager::trigger_codebase_incremental_sync`
+      (`crates/remote_server/src/manager.rs:2187`) has zero production callers, and
+      `CodebaseResyncMode::Incremental` is fully handled by the daemon
+      (`server_model.rs:1846`) **for a message no client can send.** The module doc
+      says it *"resolves which remote repo a session's search should target"* —
+      nothing asks.
+
+- [ ] **#6 Right-clicking the vertical-tabs panel does nothing.**
+      `WorkspaceAction::OpenNewSessionMenu` exists
+      (`app/src/workspace/action.rs:234`) and is handled
+      (`app/src/workspace/view.rs:20130`) with **zero dispatchers** anywhere in
+      `app/src` or `crates/`, tests included. The pin dispatches it from a
+      `Hoverable` wrapping the whole panel
+      (`02b53fcd8:vertical_tabs.rs:1725`); the fork replaced that with a bare
+      `Container` (`vertical_tabs.rs:1564`), also losing `.on_click` →
+      `CancelActiveRename` and `.on_double_click` → `AddDefaultTab`.
+      Plan (~20 lines, two spots): add a `MouseStateHandle` field to the panel state
+      struct (`vertical_tabs.rs:572`, init at `:607` — the pin's
+      `panel_right_click_mouse_state` does not exist here), wrap `inner` in
+      `Hoverable` with the three handlers plus `.with_defer_events_to_children()`,
+      dispatching the fork's `OpenNewSessionMenu { position }` shape (the pin's
+      `NewSessionMenuAnchor` does not exist here). **Deliberately not shipped:** it
+      puts a new `Hoverable` around the panel's entire event tree, and the comment
+      three lines above documents a prior bug from exactly that pattern.
+
+- [ ] **#7 Password-prompt polling arms on warpify-compatible subshells.**
+      `should_start_password_prompt_polling(&self, _command: &str, ctx)`
+      (`app/src/terminal/view.rs:24256`) drops the command. The pin
+      (`02b53fcd8:view.rs:25854`) opens with a
+      `would_emit_block_started_for_password_prompt_polling` gate (`:25658`)
+      returning `false` for anything matching `is_compatible_subshell_command`.
+      User impact: `ssh`, `python`, `docker run` etc. arm the poller the pin
+      suppresses, so navigating away can produce a spurious "needs attention"
+      notification. Plan (~35 lines): port both pin helpers; the fork already has
+      `is_compatible_subshell_command`, `session.alias_value`,
+      `command_first_word_and_suffix`, and the identical alias-expansion block at
+      `view.rs:10643`. Missing piece: an `&AppContext` shell-family accessor (the
+      fork's `shell_family` takes `&mut ViewContext`).
+
+- [ ] **#8 Agent tips can render the literal string `<keybinding>`.**
+      `is_tip_applicable(&self, _cwd, _app) -> true`
+      (`app/src/ai/agent_tips.rs:384`). `to_formatted_text` substitutes only when
+      `keystroke()` resolves; seven `agent-tip-*` strings in
+      `app/i18n/en/warp.ftl` contain the token, and one keys off
+      `voice_input_toggle_key`, which can be unset. The pin has a non-cloud guard.
+
+- [ ] **#9 Vim goto-line is a no-op in the terminal command input.**
+      `app/src/editor/view/mod.rs:2543` stubs `jump_to_line`, while dispatch is
+      live (`crates/vim/src/vim.rs:2024`, six parser sites). So `42G`, `:42<CR>`,
+      `5gg` and `d5G` silently do nothing there, while the code editor
+      (`app/src/code/editor/view/vim_handler.rs:728`) and the TUI both implement it.
+      Pin impl at `02b53fcd8:editor/view/mod.rs:2480` needs adapting — the fork's
+      `reset_selections_to_point` is on `EditorView`, not `EditorModel`.
+
+- [ ] **#10 The model picker lost its ordering. NEEDS A JUDGEMENT CALL.**
+      `query_model_picker_choices(_llm_preferences, …)`
+      (`app/src/terminal/input/models/data_source.rs:179`); the pin's first
+      statement is `order_model_choices` (`02b53fcd8:data_source.rs:159`, helper
+      `:251`), absent here. Two of its three bucket predicates
+      (`is_custom_router_id`, `custom_llm_info_for_id`) belong to the surface
+      `DECLINED.md` declines under #142/#347, so **only "auto first" is portable.**
+
+- [ ] **#11 `should_show_agent_mode_ask_user_question_speedbump` has zero
+      consumers.** `app/src/settings/ai.rs:2134`, covered by two tests, referenced
+      nowhere else; the pin reads it at three sites in `block.rs`. Root cause is a
+      feature gap: the fork's `AutonomySettingSpeedbump`
+      (`app/src/ai/blocklist/block.rs:439`) has no `ShouldShowForAskUserQuestion`
+      variant. `private: true`, so nothing lies in the UI — the nudge simply never
+      appears.
+
+- [ ] **#12 CLI surface that parses and discards.** `oz agent run --share`
+      (`crates/warp_cli/src/share.rs:13`) is **not** hidden: it appears in `--help`
+      with a full recipient grammar and validates typos helpfully, then does
+      nothing — `agent_sdk/mod.rs:500` hardcodes `let should_share = false;` and
+      `driver/terminal.rs:85` does `let _ = options.should_share;`. It is cloud, so
+      not parity debt, but a documented flag that silently no-ops is the same class
+      of lie. Recommend `hide = true` or a hard error — a `--help`-visible interface
+      change, so it needs a maintainer call. Same family, lower impact: `--name/-n`
+      and config-file keys `host` / `computer_use_enabled` (advertised in
+      `config_file.rs:94`'s help text) all land in an `AgentConfigSnapshot` this
+      fork never builds a task from.
+
+- [ ] **#13 `OZ_HARNESS` documents a consumer that does not exist.** The claim at
+      `app/src/ai/agent_sdk/driver/harness/mod.rs:238` that child-agent telemetry
+      reads it on `agent message *` is false; only `OZ_AGENT_MAILBOX_ROOT` is read.
+      Comment-only correction; the export itself is still useful to the child
+      process and to user hooks, so do not remove it.
+
+### Suspicious — needs a judgement call, do NOT act as-is
+
+- [ ] **Two code-review keybindings dropped** (`app/src/code_review/mod.rs:66-93`):
+      the pin also registers `code_review:toggle_file_navigation` →
+      `ToggleFileSidebar` and `CODE_REVIEW_SUBMIT_KEYSTROKE` →
+      `SubmitReviewComments` (`02b53fcd8:code_review/mod.rs:81,98`). Both features
+      stay mouse-reachable, so the loss is the keybinding row and the
+      command-palette entry. **Not a one-line wire-up:** the fork has no
+      `CodeReviewView_NotEditing` keymap context and no
+      `CODE_REVIEW_SUBMIT_KEYSTROKE`, and its `SubmitReviewComments` is a
+      `CodeReviewViewEvent` variant with fields (`code_review_view.rs:513`), not a
+      plain action. This is a port.
+- [ ] **`--bedrock-role-region`** (`crates/warp_cli/src/agent.rs:378`) is
+      `requires`-mandatory and never read; the pin threads it into
+      `OidcManaged { region }` and the fork's variant has no `region` field. **But
+      the path is unreachable anyway** — `refresh_aws_credentials_oidc` requires an
+      ambient `task_id` (always `None` here) and mints its token through Warp's
+      cloud `ManagedSecretManager`. The honest fix may be to drop both flags.
+- [ ] **`SshWarpifyBlockEvent::{WarpifySession, Cancel}`**
+      (`app/src/terminal/ssh/warpify.rs:22`) have no emitters; the handler arms at
+      `view.rs:8956/8965` are unreachable. Fork-original, so no pin counterpart to
+      diff against. Not a hang: `add_ssh_warpifying_block` has a live second caller
+      at `view.rs:25092`.
+- [ ] **`crates/remote_server/src/client/mod.rs::resolve_conflict`** — zero callers
+      while the daemon fully handles `ResolveConflict`, but **the pin has no client
+      sender either.** Becomes live only as part of #2's client half.
+- [ ] `crates/remote_server/src/host_response.rs` — four `pub fn`s with only test
+      callers, self-documented as intentional at `:4-8`. Listed so the next audit
+      does not re-raise it.
+
+### Audit coverage — checked and found correctly wired
+
+Recorded so this ground is not re-swept:
+
+- **Every setting.** All 221 settings across 57 non-test `define_settings_group!`
+  sites, counted by type name and field name, then re-run filtering for settings
+  referenced only from `settings_view/`. Exactly one dead non-cloud setting (#11).
+  Every other first-pass hit was a false positive from helper methods living in the
+  defining file, each verified individually. Remaining zero-reference settings are
+  all cloud.
+- **Events, both directions.** 2,284 variants across every `*Event`/`*Events` enum
+  in `app/src` and `crates`, classified emit-like vs match-arm-like and diffed
+  against the pin. All resolved: `MCPGalleryManagerEvent::ItemsRefreshed` is
+  orphaned by the documented cloud-gallery removal;
+  `PaneConfigurationEvent::RenderElementFnUpdated`, `Event::ClearSelectedBlock`,
+  `EnvVarCollectionEvent::UpdatedEnvVarCollection` and
+  `CodeManagerEvent::EditCompleted` are equally dead **at the pin**; the rest are
+  cloud.
+- **Typed actions and keybindings.** All 1,663 variants of the 257 action enums
+  diffed per-variant against the pin. 13 candidates, all 13 false positives or
+  dead-upstream-too — including `TuiTerminalSessionAction::NavigateOrchestrationTabs`
+  (registered `terminal_session_view.rs:789-794`, handled `:5193`; the pin's extra
+  references belong to `TuiCloudRunAction` on the excluded cloud-runner surface) and
+  `AttachAgentToRunningCommand` (registered `:838-846`, handled `:5123`; the pin's
+  extra references are test-only, so the gap is test coverage, not dispatch).
+- **Slash commands.** All 49 `StaticCommand` statics reach `all_commands()`; the
+  unproduced `SlashCommandKind` variants (`Logout`, `RenameConversation`) are
+  documented deliberate.
+- **`remote_server` protocol.** All 21 `HostScopedRequest`, 6
+  `SessionScopedRequest`, 7 `Notification` and every `ServerMessage` variant are
+  two-sided except those listed above. `GetBranches` (#137) is wired end-to-end.
+- **AI tool registry.** All 23 `OpenAiTool` descriptors are in `REGISTRY` — no
+  advertised-but-unexecutable tool, and no executor the model cannot see.
+  Web/codebase/computer-use gating is present in **both** `chat_stream.rs` filter
+  paths and again at dispatch.
+- **Settings sections, left-panel tool rail, command-palette modes.** Every
+  remaining `SettingsSection` is reachable; all six `ToolPanelView` variants have a
+  toolbelt entry; all six `PaletteMode` variants have a producer and a consumer.
+
+### Two documentation corrections this audit produced
+
+- [ ] **Strike the HANDOFF.md slash-command false alarm.** Its open note that the
+      fork "lacks the pin's `PrivacySettings` and `UserWorkspaces` recompute
+      subscriptions" is wrong: both pin subscriptions fire only on cloud-only
+      events, and `session_context()`
+      (`crates/warp_tui/src/.../data_source/mod.rs:215-277`) reads none of them.
+      Same for the missing `AIAutoDetectionEnabled` arm.
+- [ ] **Stale comment in `remote_server.proto:164`** claims no daemon sends
+      `RemoteAgentContextSnapshot`. False — `server_model.rs:978` and `:996` both do.
+
 ## PARITY AUDIT 2026-08-10 — gaps NOT in any tier (needs tiering)
 
 Audit compared the fork against pin `02b53fcd8` using test coverage as the
