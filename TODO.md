@@ -780,7 +780,7 @@ tested with zero production callers.
       context, so neither can fire mid-edit. Two new fluent keys added to
       `app/i18n/en/warp.ftl` only (not zh-CN/ja, matching the ~125-350 keys already
       English-only there). Tests in `code_review_view_tests.rs`.
-- [ ] **`--bedrock-role-region`** (`crates/warp_cli/src/agent.rs:378`) is
+- [x] **`--bedrock-role-region`** **[DECLINED 2026-08-10 (maintainer) — "not right now". Recorded in `DECLINED.md`; left in place rather than removed or hidden, because dropping a `requires`-mandatory flag is a breaking CLI change and the path is unreachable either way.]** (`crates/warp_cli/src/agent.rs:378`) is
       `requires`-mandatory and never read; the pin threads it into
       `OidcManaged { region }` and the fork's variant has no `region` field. **But
       the path is unreachable anyway** — `refresh_aws_credentials_oidc` requires an
