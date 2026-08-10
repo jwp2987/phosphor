@@ -12,6 +12,9 @@ pub mod editor;
 pub mod editor_management;
 pub mod global_buffer_model;
 pub mod inline_diff;
+#[cfg(not(target_family = "wasm"))]
+pub mod lsp_logs;
+pub mod lsp_telemetry;
 #[cfg_attr(not(target_family = "wasm"), path = "local_code_editor.rs")]
 #[cfg_attr(target_family = "wasm", path = "local_code_editor_wasm.rs")]
 pub mod local_code_editor;

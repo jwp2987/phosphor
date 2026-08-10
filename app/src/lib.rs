@@ -2125,6 +2125,11 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
                 writer.terminate();
             });
 
+            // Shutdown all LSP servers gracefully before app termination.
+            lsp::LspManagerModel::handle(ctx).update(ctx, |manager, ctx| {
+                manager.terminate(ctx);
+            });
+
             // We want to tear down the terminal server before relaunching for
             // autoupdate, to ensure we're not running any extra Zap processes
             // when we bring up the new process.  Additionally, this must occur
@@ -2923,6 +2928,8 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::ListSkills,
         #[cfg(feature = "ask_user_question")]
         FeatureFlag::AskUserQuestion,
+        #[cfg(feature = "lsp_as_a_tool")]
+        FeatureFlag::LSPAsATool,
         #[cfg(feature = "inline_profile_selector")]
         FeatureFlag::InlineProfileSelector,
         #[cfg(feature = "oz_platform_skills")]

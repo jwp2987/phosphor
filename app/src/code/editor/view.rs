@@ -1594,6 +1594,41 @@ impl CodeEditorView {
         render_state_ref.line_number_to_offset_range(line_number)
     }
 
+    pub fn offset_to_lsp_position(
+        &self,
+        offset: CharOffset,
+        ctx: &AppContext,
+    ) -> lsp::types::Location {
+        let buffer = self.model.as_ref(ctx).content().as_ref(ctx);
+
+        let point = offset.to_buffer_point(buffer);
+        let line = point.row.saturating_sub(1);
+
+        lsp::types::Location {
+            line: line as usize,
+            column: point.column as usize,
+        }
+    }
+
+    pub fn lsp_location_to_offset(
+        &self,
+        location: &lsp::types::Location,
+        ctx: &AppContext,
+    ) -> CharOffset {
+        let buffer = self.model.as_ref(ctx).content().as_ref(ctx);
+
+        let line = location.line + 1;
+        let column = location.column;
+        let point = Point::new(line as u32, column as u32);
+        point.to_buffer_char_offset(buffer)
+    }
+
+    /// Returns the current cursor position as an LSP location.
+    pub fn cursor_lsp_position(&self, ctx: &AppContext) -> lsp::types::Location {
+        let selection = *self.model.as_ref(ctx).selections(ctx).first();
+        self.offset_to_lsp_position(selection.head, ctx)
+    }
+
     /// Returns the buffer offset at the current cursor head.
     pub fn cursor_head_offset(&self, ctx: &AppContext) -> CharOffset {
         self.model.as_ref(ctx).selections(ctx).first().head

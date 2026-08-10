@@ -128,6 +128,7 @@ pub fn init(app: &mut AppContext) {
     notebooks::init(app);
     code::init(app);
     sync_inputs::init(app);
+    lsp::init(app);
 
     app.register_fixed_bindings([FixedBinding::empty(
         "Dump debug info",
