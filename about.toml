@@ -33,17 +33,35 @@ workarounds = [
     "rustls",
 ]
 
-# These are Warp's own private crates, sourced via git from the warpdotdev
-# organization. They are not part of this workspace and do not have explicit
-# licenses yet (they will be open-sourced soon). cargo-about will skip them
-# during generation. Once they are open-sourced and have license fields, they
-# will be included automatically and we can add --fail back to the generate
-# invocation.
+# Warp's own crates, pulled in via git from the warpdotdev organization. They
+# are not workspace members.
 #
-# Excluded crates (same as deny.toml exceptions):
-#   - command-corrections
-#   - session-sharing-protocol
-#   - warp-command-signatures
-#   - warp-completion-metadata
-#   - warp-workflows
-#   - warp-workflows-types
+# They ARE licensed -- the previous version of this comment said they "do not
+# have explicit licenses yet (they will be open-sourced soon)", which stopped
+# being true. Each one's declared `license` field, read from the checkout in
+# ~/.cargo/git at the pinned rev:
+#
+#   - command-corrections        AGPL-3.0-only   (see the discrepancy note below)
+#   - warp-command-signatures    MIT             (workspace: command-signatures)
+#   - warp-completion-metadata   MIT             (same workspace)
+#   - warp-workflows             Apache-2.0      (workspace: workflows)
+#   - warp-workflows-types       Apache-2.0      (same workspace)
+#   - warp_multi_agent_api       AGPL-3.0-only   (workspace: warp-proto-apis)
+#   - mermaid_to_svg             MIT
+#   - dagre_rust                 Apache-2.0      (same workspace as mermaid_to_svg)
+#
+# DISCREPANCY, unresolved: command-corrections declares
+# `license = "AGPL-3.0-only"` in its Cargo.toml, but ships a LICENSE.md whose
+# text is the MIT License (Copyright (C) 2026 Denver Technologies, Inc.). The
+# two disagree. Nothing here depends on resolving it -- the crate is skipped
+# either way, see below -- but it should be raised upstream rather than
+# silently picked one way or the other.
+#
+# `session-sharing-protocol` was in this list and is NOT in Cargo.lock; it is
+# no longer a dependency and has been removed from the list.
+#
+# All of these carry `publish = false`, so `private = { ignore = true }` above
+# makes cargo-about skip them during generation. That is why `--fail` is not
+# passed to the generate invocation. Note that two of them are AGPL-3.0-only,
+# which is NOT on the accepted list -- if `private.ignore` were ever turned
+# off, generation would fail on those two, not on a missing license field.

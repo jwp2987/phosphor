@@ -1,5 +1,10 @@
 # VS Code 2026 Dark (migrated from the vscode source)
 # Color source: vscode/extensions/theme-defaults/themes/2026-dark.json
+# Licence: MIT — the microsoft/vscode SOURCE repository is MIT, and that is
+#   what these colour values come from. Note this is not the same thing as the
+#   shipped "Visual Studio Code" product, which Microsoft distributes under
+#   proprietary terms; the name and logo are Microsoft trademarks and are not
+#   licensed by the MIT grant.
 # Installation (Windows / openWarp OSS):
 #   Copy this file to %APPDATA%\zap\Zap\data\themes\vscode_2026_dark.yaml
 #   After restarting openWarp, select "VS Code 2026 Dark" under Settings → Appearance → Themes

@@ -105,12 +105,28 @@ fi
 # When adding a new third-party component to the bundle, add its license file
 # to the repo alongside the component and add an entry here.
 ADDITIONAL_LICENSES=(
+    "Alacritty (alacritty_terminal)|Apache-2.0|crates/warp_terminal/src/model/LICENSE-ALACRITTY"
     "Hack Font|MIT|app/assets/bundled/fonts/hack/LICENSE.md"
     "Roboto Font|SIL Open Font License|app/assets/bundled/fonts/roboto/LICENSE.txt"
     "bash-preexec|MIT|app/assets/bundled/bootstrap/bash-preexec-LICENSE.md"
     "Claude API Skill|Apache-2.0|resources/bundled/skills/claude-api/LICENSE.txt"
     "Windows Terminal|MIT|app/assets/windows/LICENSE-WINDOWS-TERMINAL"
     "GitHub Desktop|MIT|app/src/code_review/GITHUB-DESKTOP-LICENSE"
+    # libgit2 is statically linked via git2's `vendored-libgit2` feature
+    # (app/Cargo.toml). `cargo about` only ever sees the libgit2-sys crate's
+    # declared MIT and never libgit2's own terms, so the GPL text has to be
+    # appended by hand here.
+    "libgit2 (statically linked via git2 vendored-libgit2)|GPL-2.0-only WITH linking exception|app/LICENSE-LIBGIT2"
+    # Vendored path dependency: skipped by about.toml/deny.toml as a path dep,
+    # so `cargo about` never reaches it.
+    "genai (rust-genai)|MIT OR Apache-2.0|lib/rust-genai/LICENSE-MIT"
+    "winit (vendored keyboard/keycode types)|Apache-2.0|crates/warpui_core/src/platform/LICENSE-WINIT"
+    "Chromium / Blink (dashed-border stroke geometry)|BSD-3-Clause|crates/warpui/src/rendering/LICENSE-CHROMIUM"
+    "base16 syntax theme|MIT|app/assets/bundled/syntax_theme/LICENSE-BASE16"
+    # Attribution only -- the per-icon licence is NOT established. See the file
+    # and docs/licensing-open-questions.md. Listed here so the unresolved
+    # question travels with the build instead of being invisible in it.
+    "File-type icons (SVG Repo)|see file -- licence not determined|app/assets/bundled/svg/file_type/ATTRIBUTION.md"
 )
 
 # Build the third-party licenses file unless the NO_LICENSES envvar is set.

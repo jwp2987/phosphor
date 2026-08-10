@@ -74,6 +74,53 @@ jobs:
         shell: bash
         run: ./script/check_settings_registry
 
+  # Dependency licence gate.
+  #
+  # deny.toml and about.toml have both claimed "CI enforces this via
+  # script/check_license_config_sync" since the fork was created, and nothing
+  # did: `grep -rn 'check_license_config_sync\|cargo deny' .github/ script/`
+  # matched only those two comments. Upstream ran both checks; the fork dropped
+  # the workflow that ran them and kept the comments asserting they ran.
+  #
+  # Separate job, not a step in `guards`: `guards` is deliberately pure
+  # grep/git and finishes in under a minute, and cargo-deny needs a Rust
+  # toolchain and a full dependency-graph resolve. Keeping them apart preserves
+  # the fast-feedback property `guards` was built for.
+  #
+  # Deliberately NOT in script/precheck: precheck's whole point is that it runs
+  # in seconds without cargo, and this needs cargo plus a network fetch of the
+  # advisory/crates metadata.
+  #
+  # `check sources` is wider than upstream ran (upstream ran `check licenses`
+  # only). It is included because the fork introduced a dependency source
+  # upstream never had -- the personal chenx-dust/winit fork -- and nothing
+  # else would notice another one appearing. See the allow-git entry in
+  # deny.toml.
+  licenses:
+    name: dependency licences
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # Only cache on main; caches from feature branches are not reusable.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@dc19f1e48450eefe5a29b8da6c6b00a87d730b37 # v1.18.1
+
+      - name: Check licences and sources for dependencies
+        shell: bash
+        run: |
+          cargo binstall --force -y cargo-deny
+          cargo deny -L error check licenses sources
+
+      - name: Check deny.toml / about.toml licence-list sync
+        shell: bash
+        run: ./script/check_license_config_sync
+
   check-linux:
     name: cargo check (Linux)
     # ubuntu-22.04 (glibc 2.35) matches the release Linux job.

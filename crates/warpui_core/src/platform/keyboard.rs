@@ -1,3 +1,6 @@
+// Parts of this file are vendored from the winit crate under the Apache
+// license; see: crates/warpui_core/src/platform/LICENSE-WINIT.
+
 //! This module defines types used in the context of keyboard events across platforms. The types
 //! are based on winit types, however, we include them in this module to avoid needing to include
 //! the entirety of winit as a dependency for MacOS.

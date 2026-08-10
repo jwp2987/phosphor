@@ -145,17 +145,38 @@ if ($Channel -and (Test-Path $GatedSource -PathType Container)) {
 # to the repo alongside the component and add an entry here.
 # Cross-platform components:
 $AdditionalLicenses = @(
+    @{ Name = 'Alacritty (alacritty_terminal)'; License = 'Apache-2.0'; Path = 'crates\warp_terminal\src\model\LICENSE-ALACRITTY' },
     @{ Name = 'Hack Font'; License = 'MIT'; Path = 'app\assets\bundled\fonts\hack\LICENSE.md' },
     @{ Name = 'Roboto Font'; License = 'SIL Open Font License'; Path = 'app\assets\bundled\fonts\roboto\LICENSE.txt' },
     @{ Name = 'bash-preexec'; License = 'MIT'; Path = 'app\assets\bundled\bootstrap\bash-preexec-LICENSE.md' },
     @{ Name = 'Claude API Skill'; License = 'Apache-2.0'; Path = 'resources\bundled\skills\claude-api\LICENSE.txt' },
     @{ Name = 'Windows Terminal'; License = 'MIT'; Path = 'app\assets\windows\LICENSE-WINDOWS-TERMINAL' },
-    @{ Name = 'GitHub Desktop'; License = 'MIT'; Path = 'app\src\code_review\GITHUB-DESKTOP-LICENSE' }
+    @{ Name = 'GitHub Desktop'; License = 'MIT'; Path = 'app\src\code_review\GITHUB-DESKTOP-LICENSE' },
+    # libgit2 is statically linked via git2's `vendored-libgit2` feature
+    # (app/Cargo.toml). `cargo about` only ever sees the libgit2-sys crate's
+    # declared MIT and never libgit2's own terms, so the GPL text has to be
+    # appended by hand here.
+    @{ Name = 'libgit2 (statically linked via git2 vendored-libgit2)'; License = 'GPL-2.0-only WITH linking exception'; Path = 'app\LICENSE-LIBGIT2' },
+    # Vendored path dependency: skipped by about.toml/deny.toml as a path dep,
+    # so `cargo about` never reaches it.
+    @{ Name = 'genai (rust-genai)'; License = 'MIT OR Apache-2.0'; Path = 'lib\rust-genai\LICENSE-MIT' },
+    @{ Name = 'winit (vendored keyboard/keycode types)'; License = 'Apache-2.0'; Path = 'crates\warpui_core\src\platform\LICENSE-WINIT' },
+    @{ Name = 'Chromium / Blink (dashed-border stroke geometry)'; License = 'BSD-3-Clause'; Path = 'crates\warpui\src\rendering\LICENSE-CHROMIUM' },
+    @{ Name = 'base16 syntax theme'; License = 'MIT'; Path = 'app\assets\bundled\syntax_theme\LICENSE-BASE16' },
+    # Attribution only -- the per-icon licence is NOT established. See the file
+    # and docs/licensing-open-questions.md. Listed here so the unresolved
+    # question travels with the build instead of being invisible in it.
+    @{ Name = 'File-type icons (SVG Repo)'; License = 'see file -- licence not determined'; Path = 'app\assets\bundled\svg\file_type\ATTRIBUTION.md' }
 )
 # Windows-only components:
 $AdditionalLicenses += @(
     @{ Name = 'OpenConsole / ConPTY (Windows Terminal)'; License = 'MIT'; Path = 'app\assets\windows\LICENSE-WINDOWS-TERMINAL' },
-    @{ Name = 'DirectX Shader Compiler'; License = 'NCSA'; Path = 'app\assets\windows\LICENSE-DXC' }
+    @{ Name = 'DirectX Shader Compiler'; License = 'NCSA'; Path = 'app\assets\windows\LICENSE-DXC' },
+    # msvcp140.dll / vcruntime140.dll / vcruntime140_1.dll under
+    # app\assets\windows\{x64,arm64}\. Covered by NEITHER of the two entries
+    # above. The referenced file is a terms REFERENCE, not a copy of
+    # Microsoft's licence -- see its own header.
+    @{ Name = 'Microsoft Visual C++ Runtime Redistributable'; License = 'Microsoft Software Licence Terms (see file)'; Path = 'app\assets\windows\LICENSE-MSVC-REDIST' }
 )
 
 $LicensesOutput = Join-Path $DestinationDir 'THIRD_PARTY_LICENSES.txt'

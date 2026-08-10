@@ -1,3 +1,7 @@
+// MODIFIED by the Phosphor fork relative to upstream genai.
+// Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
+// for what changed here and why. Original: https://github.com/jeremychone/rust-genai
+
 //! ChatOptions configures a chat request.
 //! - It can be passed to `client::exec_chat(...)`, or
 //! - set as a default on the client via `client_config.with_chat_options(...)`.

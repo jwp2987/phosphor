@@ -31,7 +31,8 @@ pub fn is_low_power_gpu_available() -> bool {
 
 /// Returns the gap length between each dash to ensure that the stroke begins and ends with a full dash,
 /// minimizing deviation from the target gap length.
-// adapted from Blink dashed border rendering code:
+// adapted from Blink dashed border rendering code, which is BSD-3-Clause;
+// see: crates/warpui/src/rendering/LICENSE-CHROMIUM.
 // https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:third_party/blink/renderer/platform/graphics/stroke_data.cc;l=130-147;drc=51e1b713f6da38219910bf8fb93a81262340bf97
 pub(crate) fn get_best_dash_gap(
     stroke_length: f32,

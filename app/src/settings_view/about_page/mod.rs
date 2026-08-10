@@ -135,11 +135,21 @@ impl View for AboutPageView {
     }
 }
 
+/// Where the Corresponding Source for this build is published.
+///
+/// AGPL-3.0 §13 requires a modified version that users interact with over a
+/// network to prominently offer them the Corresponding Source. Phosphor is a
+/// modified AGPL program with a network-reachable session daemon, so this offer
+/// has to be visible in the UI, not only in the repository README.
+const SOURCE_CODE_URL: &str = "https://github.com/jwp2987/phosphor";
+
 #[derive(Default)]
 struct AboutPageWidget {
     copy_version_button_mouse_state: MouseStateHandle,
     automatic_updates_switch_state: SwitchStateHandle,
     update_action_link_mouse_state: MouseStateHandle,
+    /// Hover / pressed state for the AGPL §13 source-code link.
+    source_code_link_mouse_state: MouseStateHandle,
     /// Hover / pressed state for the "Export logs" link.
     #[cfg(not(target_family = "wasm"))]
     export_logs_link_mouse_state: MouseStateHandle,
@@ -151,7 +161,7 @@ impl SettingsWidget for AboutPageWidget {
     fn search_terms(&self) -> &str {
         // Autoupdate terms omitted while SHOW_AUTOUPDATE_UI is false — searching
         // for them shouldn't surface a page that no longer has those controls.
-        "about version copyright export logs"
+        "about version copyright license licence agpl mit source code export logs"
     }
 
     fn render(
@@ -240,6 +250,62 @@ impl SettingsWidget for AboutPageWidget {
                 .build()
                 .with_margin_top(16.)
                 .finish(),
+        );
+
+        // Licensing + AGPL §13 Corresponding Source offer.
+        //
+        // The licence line states the split (MIT UI framework, AGPL for the rest)
+        // and the fact that the linked whole is AGPL; the link below it is the
+        // §13 source offer and must stay visible to anyone using this build,
+        // including over the network.
+        content.add_child(
+            Container::new(
+                ConstrainedBox::new(
+                    ui_builder
+                        .span(crate::t!("settings-about-license"))
+                        .with_soft_wrap()
+                        .build()
+                        .finish(),
+                )
+                .with_max_width(520.)
+                .finish(),
+            )
+            .with_margin_top(12.)
+            .finish(),
+        );
+
+        let source_code_section = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                ui_builder
+                    .link(
+                        crate::t!("settings-about-source-code"),
+                        Some(SOURCE_CODE_URL.to_string()),
+                        None,
+                        self.source_code_link_mouse_state.clone(),
+                    )
+                    .soft_wrap(false)
+                    .build()
+                    .finish(),
+            )
+            .with_child(
+                ui_builder
+                    .span(crate::t!("settings-about-source-code-description"))
+                    .with_soft_wrap()
+                    .build()
+                    .with_margin_top(4.)
+                    .finish(),
+            )
+            .finish();
+
+        content.add_child(
+            Container::new(
+                ConstrainedBox::new(source_code_section)
+                    .with_max_width(520.)
+                    .finish(),
+            )
+            .with_margin_top(8.)
+            .finish(),
         );
 
         // "Export logs" link: platform-native export of a zip to share with support staff.
