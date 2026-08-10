@@ -711,6 +711,14 @@ impl FileNotebookView {
         self.file_state.local_path().map(Path::to_path_buf)
     }
 
+    /// The local-or-remote identity of the currently-open file, if any. Unlike
+    /// [`Self::local_path`], this is populated for remote sources too, so
+    /// it's what session-restore snapshotting (`FilePane::snapshot`) uses to
+    /// tell local and remote notebook panes apart.
+    pub fn buffer_location(&self) -> Option<BufferLocation> {
+        self.file_state.buffer_location()
+    }
+
     pub fn pane_configuration(&self) -> ModelHandle<PaneConfiguration> {
         self.pane_configuration.clone()
     }
