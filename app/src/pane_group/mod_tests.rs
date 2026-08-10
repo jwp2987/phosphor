@@ -360,3 +360,134 @@ fn test_focus_notebook() {
         })
     });
 }
+
+// Ensures that we always show the pane header for terminal panes, regardless of split state.
+#[test]
+fn test_terminal_pane_headers() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        // There should be a single terminal pane to start and the pane header should be shown.
+        pane_group.read(&app, |pane_group, ctx| {
+            assert_eq!(pane_group.pane_contents.len(), 1);
+
+            let terminal_panes = pane_group.panes_of::<TerminalPane>().collect_vec();
+            assert_eq!(terminal_panes.len(), 1);
+
+            let pane_view = terminal_panes[0].pane_view();
+            let header_visible = pane_view
+                .as_ref(ctx)
+                .header()
+                .as_ref(ctx)
+                .is_visible_in_pane_group();
+            assert!(header_visible);
+        });
+
+        // Create a terminal split pane.
+        pane_group.update(&mut app, |pane_group, ctx| {
+            pane_group.add_terminal_pane(Direction::Left, None, ctx);
+        });
+
+        // There should be two terminal panes and they should both have the pane header.
+        pane_group.read(&app, |pane_group, ctx| {
+            assert_eq!(pane_group.pane_contents.len(), 2);
+
+            let terminal_panes = pane_group.panes_of::<TerminalPane>().collect_vec();
+            assert_eq!(terminal_panes.len(), 2);
+
+            for terminal_pane in terminal_panes {
+                let pane_view = terminal_pane.pane_view();
+                assert!(
+                    pane_view
+                        .as_ref(ctx)
+                        .header()
+                        .as_ref(ctx)
+                        .is_visible_in_pane_group()
+                );
+            }
+        });
+
+        // Close one of the panes; the remaining pane should still have a header.
+        pane_group.update(&mut app, |pane_group, ctx| {
+            pane_group.close_pane(pane_group.focused_pane_id(ctx), ctx);
+        });
+
+        pane_group.read(&app, |pane_group, ctx| {
+            assert_eq!(pane_group.pane_contents.len(), 1);
+
+            let terminal_panes = pane_group.panes_of::<TerminalPane>().collect_vec();
+            assert_eq!(terminal_panes.len(), 1);
+
+            let pane_view = terminal_panes[0].pane_view();
+            assert!(
+                pane_view
+                    .as_ref(ctx)
+                    .header()
+                    .as_ref(ctx)
+                    .is_visible_in_pane_group()
+            );
+        });
+
+        // Create a non-terminal split pane. Terminal pane header remains visible.
+        pane_group.update(&mut app, |pane_group, ctx| {
+            pane_group.add_pane_with_direction(
+                Direction::Left,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+        });
+
+        pane_group.read(&app, |pane_group, ctx| {
+            assert_eq!(pane_group.pane_contents.len(), 2);
+
+            let terminal_panes = pane_group.panes_of::<TerminalPane>().collect_vec();
+            assert_eq!(terminal_panes.len(), 1);
+
+            let pane_view = terminal_panes[0].pane_view();
+            assert!(
+                pane_view
+                    .as_ref(ctx)
+                    .header()
+                    .as_ref(ctx)
+                    .is_visible_in_pane_group()
+            );
+        });
+    });
+}
+
+/// Uses `prev_pane_id_navigation`/`next_pane_id` -- the navigation helpers that
+/// skip panes hidden for undo-close, distinct from `prev_pane_id` (raw split order).
+#[test]
+fn test_navigation_skips_hidden_closed_panes() {
+    let _guard = FeatureFlag::UndoClosedPanes.override_enabled(true);
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            // Add second terminal to the right to create a horizontal pair
+            panes.add_terminal_pane(Direction::Right, None, ctx);
+
+            // Add third terminal; place it to the right of current focus
+            panes.add_terminal_pane(Direction::Right, None, ctx);
+
+            // Determine ordered visible panes by index 0..2
+            let a = panes.pane_id_by_index(0).expect("pane 0 exists");
+            let b = panes.pane_id_by_index(1).expect("pane 1 exists");
+            let c = panes.pane_id_by_index(2).expect("pane 2 exists");
+
+            // Focus C and confirm prev would be B when all are visible
+            panes.focus_pane_by_id(c, ctx);
+            assert_eq!(panes.prev_pane_id_navigation(c), Some(b));
+
+            // Close B (it will be hidden for undo and excluded from visible navigation)
+            panes.close_pane(b, ctx);
+
+            // Now prev from C should skip B and go to A
+            assert_eq!(panes.prev_pane_id_navigation(c), Some(a));
+
+            // And next from A should skip B and go to C
+            assert_eq!(panes.next_pane_id(a), Some(c));
+        })
+    });
+}
