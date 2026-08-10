@@ -1146,9 +1146,13 @@ fn removing_remote_home_skills_preserves_project_skills_below_home() {
 // `tui_migration_skill_has_tui_only_activation` is NOT ported: it asserts on
 // `activation_for_bundled_skill("tui-migrate-setup", ..)`, and this fork does
 // not ship that skill -- see the reasoning on `activation_for_bundled_skill`
-// in `bundled.rs`. `TuiOnly` itself is still covered, by
+// in `bundled.rs`. Its replacement, `tui-settings`, is deliberately `Always`
+// rather than `TuiOnly`, and is covered by
+// `tui_settings_bundled_skill_is_active_in_both_frontends` in
+// `bundled_tests.rs`. `TuiOnly` itself is still covered, by
 // `tui_only_bundled_skill_is_listed_and_resolved_only_in_tui` below, which
-// drives the variant directly rather than through a shipped skill.
+// drives the variant directly rather than through a shipped skill -- no
+// bundled skill in this fork uses it.
 // ============================================================================
 
 #[test]
@@ -1218,12 +1222,12 @@ fn tui_only_bundled_skill_is_listed_and_resolved_only_in_tui() {
             app.add_singleton_model(WarpManagedPathsWatcher::new_for_testing);
             let handle = app.add_singleton_model(SkillManager::new);
             let _bundled_skills = FeatureFlag::BundledSkills.override_enabled(true);
-            let reference = SkillReference::BundledSkillId("tui-migrate-setup".to_owned());
+            let reference = SkillReference::BundledSkillId("tui-only-fixture".to_owned());
 
             handle.update(&mut app, |manager, _| {
                 manager.add_bundled_skill_for_testing(
-                    "tui-migrate-setup",
-                    bundled_test_skill("tui-migrate-setup", "Migrate GUI setup"),
+                    "tui-only-fixture",
+                    bundled_test_skill("tui-only-fixture", "TuiOnly activation fixture"),
                     BundledSkillActivation::TuiOnly,
                 );
             });
@@ -1232,7 +1236,7 @@ fn tui_only_bundled_skill_is_listed_and_resolved_only_in_tui() {
                 manager
                     .get_skills_for_working_directory(None, ctx)
                     .iter()
-                    .any(|skill| skill.name == "tui-migrate-setup")
+                    .any(|skill| skill.name == "tui-only-fixture")
             });
             let resolved = handle.read(&app, |manager, ctx| {
                 manager.active_skill_by_reference(&reference, ctx).is_some()

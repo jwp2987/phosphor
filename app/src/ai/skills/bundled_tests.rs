@@ -1,4 +1,5 @@
 use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope};
+use warp_core::execution_mode::ExecutionMode;
 use warp_util::host_id::HostId;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::App;
@@ -121,6 +122,76 @@ fn iter_yields_every_definition_regardless_of_activation() {
     let mut ids: Vec<&str> = bundled.iter().map(|(id, _)| id).collect();
     ids.sort_unstable();
     assert_eq!(ids, vec!["one", "two"]);
+}
+
+// ============================================================================
+// The shipped `tui-settings` bundled skill
+//
+// Replaces the pin's `tui_migration_skill_has_tui_only_activation`, which
+// asserted `TuiOnly` for `tui-migrate-setup`. That skill is not portable here
+// and `tui-settings` answers the same question for this fork's one-config
+// architecture -- see `activation_for_bundled_skill` in `bundled.rs` for why its
+// activation is `Always` rather than `TuiOnly`. These tests pin that decision
+// and the skill's rendering.
+// ============================================================================
+
+/// The directory the app ships its bundled skills from.
+fn bundled_skills_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the app crate directory has a parent")
+        .join("resources")
+        .join("bundled")
+        .join("skills")
+}
+
+#[test]
+fn tui_settings_bundled_skill_is_active_in_both_frontends() {
+    for execution_mode in [ExecutionMode::App, ExecutionMode::Tui] {
+        App::test((), |app| async move {
+            app.add_singleton_model(|ctx| AppExecutionMode::new(execution_mode, false, ctx));
+
+            let activation = activation_for_bundled_skill("tui-settings", Path::new("/resources"));
+            assert!(
+                matches!(activation, BundledSkillActivation::Always),
+                "tui-settings explains a settings file both frontends share, so it must not be gated on the frontend"
+            );
+            assert!(app.read(|ctx| activation.is_enabled(ctx)));
+        });
+    }
+}
+
+/// `handlebars::render_template` leaves an unknown `{{name}}` verbatim rather
+/// than erroring, so a variable missing from `build_bundled_skill_context`
+/// ships as visibly broken skill text instead of failing the build.
+#[test]
+fn tui_settings_bundled_skill_renders_every_template_variable() {
+    let skills = futures::executor::block_on(read_bundled_skills(&bundled_skills_dir()));
+    let skill = skills
+        .get("tui-settings")
+        .expect("the tui-settings skill is bundled with the app");
+
+    assert!(
+        skill.content.contains(
+            &crate::settings::user_preferences_toml_file_path()
+                .display()
+                .to_string()
+        ),
+        "the shared settings file path should be rendered into the skill"
+    );
+    assert!(
+        skill.content.contains(
+            &crate::keyboard::keybinding_file_path()
+                .display()
+                .to_string()
+        ),
+        "the keybindings file path should be rendered into the skill"
+    );
+    assert!(
+        !skill.content.contains("{{"),
+        "tui-settings still contains an unrendered template variable: {}",
+        skill.content
+    );
 }
 
 fn bundled_skill_with_content(content: &str) -> BundledSkill {
