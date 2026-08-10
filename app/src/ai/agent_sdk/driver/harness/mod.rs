@@ -30,10 +30,13 @@ use super::{
 
 mod claude_code;
 pub(crate) mod claude_transcript;
+mod codex;
+pub(crate) mod codex_transcript;
 mod gemini;
 mod json_utils;
 
 pub(crate) use claude_code::ClaudeHarness;
+use codex::CodexHarness;
 use gemini::GeminiHarness;
 
 /// Trait for third-party agent harnesses that execute prompts via their own CLIs.
@@ -131,11 +134,7 @@ pub(crate) fn harness_kind(harness: Harness) -> Result<HarnessKind, AgentDriverE
         Harness::Claude => Ok(HarnessKind::ThirdParty(Box::new(ClaudeHarness))),
         Harness::OpenCode => Ok(HarnessKind::Unsupported(Harness::OpenCode)),
         Harness::Gemini => Ok(HarnessKind::ThirdParty(Box::new(GeminiHarness))),
-        // No `CodexHarness` driver exists yet (that's a distinct, larger port --
-        // see issue #323 for local child-harness Codex support specifically).
-        // `Codex` is recognized here the same way `OpenCode` is: the variant
-        // exists and is detectable, but there's no runnable driver behind it yet.
-        Harness::Codex => Ok(HarnessKind::Unsupported(Harness::Codex)),
+        Harness::Codex => Ok(HarnessKind::ThirdParty(Box::new(CodexHarness))),
         Harness::Unknown => Err(AgentDriverError::InvalidRuntimeState),
     }
 }
@@ -282,6 +281,10 @@ pub(crate) fn harness_model_env_vars(
         Harness::Claude => {
             env_vars.insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model_id));
         }
+        // Codex belongs in the no-op arm at the pin too, and still does after the
+        // Codex driver landed (#323): Codex takes its model from the `model` /
+        // `model_reasoning_effort` keys that `codex.rs::set_codex_model` writes into
+        // `~/.codex/config.toml`, not from an environment variable.
         Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Unknown => {}
     }
 
