@@ -17,7 +17,8 @@ use crate::code::editor::{
     scroll::{ScrollPosition, ScrollTrigger, ScrollWheelBehavior},
 };
 use crate::code::{
-    editor::EditorReviewComment, DiffResult, NoopCommentEditorProvider, ShowCommentEditorProvider,
+    editor::EditorReviewComment, DiffResult, NoopCommentEditorProvider,
+    NoopFindReferencesCardProvider, ShowCommentEditorProvider, ShowFindReferencesCardProvider,
 };
 use crate::{
     appearance::Appearance,
@@ -149,6 +150,9 @@ pub enum CodeEditorEvent {
     DeleteComment {
         id: CommentId,
     },
+    VimGotoDefinition,
+    VimFindReferences,
+    VimShowHover,
 }
 
 /// Store all states related to displaying the editor content.
@@ -212,6 +216,7 @@ pub struct CodeEditorRenderOptions {
     line_height_override: Option<f32>,
     lazy_layout: bool,
     show_comment_editor_provider: Box<dyn ShowCommentEditorProvider>,
+    show_find_references_provider: Box<dyn ShowFindReferencesCardProvider>,
 }
 
 impl CodeEditorRenderOptions {
@@ -221,6 +226,7 @@ impl CodeEditorRenderOptions {
             line_height_override: None,
             lazy_layout: false,
             show_comment_editor_provider: Box::new(NoopCommentEditorProvider),
+            show_find_references_provider: Box::new(NoopFindReferencesCardProvider),
         }
     }
 
@@ -239,6 +245,14 @@ impl CodeEditorRenderOptions {
         comment_editor_provider: impl ShowCommentEditorProvider,
     ) -> Self {
         self.show_comment_editor_provider = Box::new(comment_editor_provider);
+        self
+    }
+
+    pub fn with_show_find_references_provider(
+        mut self,
+        find_references_provider: impl ShowFindReferencesCardProvider,
+    ) -> Self {
+        self.show_find_references_provider = Box::new(find_references_provider);
         self
     }
 }
@@ -264,6 +278,11 @@ pub struct CodeEditorView {
     /// Save position of the comment button rendered within this code editor view.
     comment_save_position_id: String,
     show_comment_editor_provider: Box<dyn ShowCommentEditorProvider>,
+    /// Save position of the anchor point for find references card.
+    find_references_save_position_id: String,
+    show_find_references_provider: Box<dyn ShowFindReferencesCardProvider>,
+    /// The offset where find references card is anchored (if showing).
+    find_references_anchor_offset: Option<CharOffset>,
     window_id: WindowId,
 }
 
@@ -401,8 +420,26 @@ impl CodeEditorView {
             active_comment_editor: comment_editor,
             comment_save_position_id: format!("code_editor_comment_{}", ctx.view_id()),
             show_comment_editor_provider: render_options.show_comment_editor_provider,
+            find_references_save_position_id: format!(
+                "code_editor_find_references_{}",
+                ctx.view_id()
+            ),
+            show_find_references_provider: render_options.show_find_references_provider,
+            find_references_anchor_offset: None,
             window_id: ctx.window_id(),
         }
+    }
+
+    pub fn set_find_references_anchor_offset(&mut self, offset: Option<CharOffset>) {
+        self.find_references_anchor_offset = offset;
+    }
+
+    pub fn find_references_save_position_id(&self) -> &str {
+        &self.find_references_save_position_id
+    }
+
+    pub fn show_find_references_provider(&self) -> &dyn ShowFindReferencesCardProvider {
+        self.show_find_references_provider.as_ref()
     }
 
     pub fn window_id(&self) -> WindowId {
@@ -587,6 +624,7 @@ impl CodeEditorView {
             false,
             self.display_options.gutter_hover_target,
             self.comment_save_position_id.clone(),
+            self.find_references_save_position_id.clone(),
         )
         .finish()
     }
@@ -743,6 +781,13 @@ impl CodeEditorView {
 
     pub fn set_horizontal_scrollbar_appearance(&mut self, appearance: ScrollableAppearance) {
         self.display_options.horizontal_scrollbar_appearance = appearance;
+    }
+
+    pub fn set_show_find_references_provider(
+        &mut self,
+        provider: impl ShowFindReferencesCardProvider,
+    ) {
+        self.show_find_references_provider = Box::new(provider);
     }
 
     pub fn set_find_highlights(
@@ -2191,6 +2236,7 @@ impl View for CodeEditorView {
             self.display_options.expand_diff_indicator_width_on_hover,
             self.display_options.gutter_hover_target,
             self.comment_save_position_id.clone(),
+            self.find_references_save_position_id.clone(),
         );
 
         let pending_comment = &self
@@ -2202,6 +2248,20 @@ impl View for CodeEditorView {
         // Check if there's an open comment in the model and set the comment box
         if let PendingComment::Open { line, .. } = pending_comment {
             code_editor.set_comment_box(line.clone(), app);
+        }
+
+        // Set find references anchor if there's an active request
+        if let Some(offset) = &self.find_references_anchor_offset {
+            let render_state_ref = render_state.as_ref(app);
+            let softwrap_point = render_state_ref.offset_to_softwrap_point(*offset);
+            let line_number = LineCount::from(softwrap_point.row() as usize + 1); // Convert 0-indexed to 1-indexed
+            // Create a simple EditorLineLocation::Current with the line number
+            // We don't have hunk range info here, so use a single-line range
+            let anchor_line = EditorLineLocation::Current {
+                line_number,
+                line_range: line_number..line_number + LineCount::from(1),
+            };
+            code_editor.set_find_references_anchor(Some(anchor_line));
         }
 
         let config = DualAxisConfig::Manual {

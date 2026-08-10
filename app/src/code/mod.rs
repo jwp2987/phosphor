@@ -48,6 +48,32 @@ impl ShowCommentEditorProvider for NoopCommentEditorProvider {
     }
 }
 
+/// Trait to determine whether we should show the find references card based on state held
+/// by the parent of the [`CodeEditorView`].
+pub trait ShowFindReferencesCardProvider: Debug + 'static {
+    /// Returns whether the find references card should be shown given the location of the anchor
+    /// point where the card would be positioned.
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    fn should_show_find_references_card(
+        &self,
+        card_anchor_location: RectF,
+        app: &AppContext,
+    ) -> bool;
+}
+
+#[derive(Debug)]
+pub struct NoopFindReferencesCardProvider;
+
+impl ShowFindReferencesCardProvider for NoopFindReferencesCardProvider {
+    fn should_show_find_references_card(
+        &self,
+        _card_anchor_location: RectF,
+        _app: &AppContext,
+    ) -> bool {
+        false
+    }
+}
+
 #[cfg_attr(target_family = "wasm", expect(dead_code))]
 #[derive(Debug)]
 pub enum SaveStatus {

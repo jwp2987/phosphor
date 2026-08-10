@@ -282,6 +282,11 @@ impl LocalCodeEditorView {
             | CodeEditorEvent::DiffHunkContextAdded { .. }
             | CodeEditorEvent::DiffReverted
             | CodeEditorEvent::HiddenSectionExpanded => {}
+            // Emitted by the vim handler; wired to the LSP request paths in the
+            // following commit, once `LocalCodeEditorView` holds an LSP server.
+            CodeEditorEvent::VimGotoDefinition
+            | CodeEditorEvent::VimFindReferences
+            | CodeEditorEvent::VimShowHover => {}
             #[cfg(windows)]
             CodeEditorEvent::WindowsCtrlC { .. } => {}
         });
