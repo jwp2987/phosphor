@@ -25,6 +25,7 @@ use crate::NotebookKeybindings;
 use ai::agent::action::InsertReviewComment;
 use chrono::Local;
 use repo_metadata::repositories::DetectedRepositories;
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use warp_core::features::FeatureFlag;
@@ -55,6 +56,49 @@ impl warpui::View for TestView {
 
 impl warpui::TypedActionView for TestView {
     type Action = ();
+}
+
+/// Stands in for the diff editor (`crate::code::editor::view::CodeEditorView`,
+/// nested inside `LocalCodeEditorView`) in `keymap_context` guard tests below.
+/// `CodeReviewView::keymap_context` matches purely on the focused view's
+/// `ui_name()` string, so a lightweight fake reporting the same name exercises
+/// the same code path without needing a real, privately-scoped nested editor.
+#[derive(Default)]
+struct FakeDiffEditorView;
+
+impl warpui::Entity for FakeDiffEditorView {
+    type Event = ();
+}
+
+impl warpui::View for FakeDiffEditorView {
+    fn render(&self, _: &warpui::AppContext) -> Box<dyn warpui::Element> {
+        Empty::new().finish()
+    }
+
+    fn ui_name() -> &'static str {
+        "CodeEditorView"
+    }
+}
+
+/// Stands in for the comment composer's inner editor
+/// (`crate::notebooks::editor::view::RichTextEditorView`, nested inside
+/// `CommentEditor`). See `FakeDiffEditorView` for why a name-alike fake is
+/// used instead of the real, privately-scoped view.
+#[derive(Default)]
+struct FakeCommentComposerView;
+
+impl warpui::Entity for FakeCommentComposerView {
+    type Event = ();
+}
+
+impl warpui::View for FakeCommentComposerView {
+    fn render(&self, _: &warpui::AppContext) -> Box<dyn warpui::Element> {
+        Empty::new().finish()
+    }
+
+    fn ui_name() -> &'static str {
+        "RichTextEditorView"
+    }
 }
 
 /// Initialize required singletons for testing
@@ -1139,5 +1183,155 @@ fn test_native_indented_context_comment_not_outdated() {
                 "Should have no fallbacks when the indented content matches"
             );
         });
+    });
+}
+
+// ── Ported code-review keybindings (TODO.md "UNWIRED-CODE AUDIT 2026-08-10")
+//
+// `code_review:toggle_file_navigation` and `CODE_REVIEW_SUBMIT_KEYSTROKE` are
+// gated on the `CodeReviewView_NotEditing` keymap context, which must be absent
+// whenever a descendant text-input view (diff editor, comment composer, find
+// bar) has focus — otherwise the binding would steal the keystroke from the
+// text the user is typing. These tests cover that guard directly, plus the
+// `SubmitReviewComments` action's wiring into the existing (mouse-path)
+// `handle_submit_review_with_comments` state-driven submit.
+
+#[test]
+fn test_keymap_context_includes_not_editing_when_no_text_editor_focused() {
+    App::test((), |mut app| async move {
+        let ctx = TestContext::new(
+            &mut app,
+            PathBuf::from("test.txt"),
+            "line 1\nline 2\nline 3",
+        );
+
+        let context = ctx
+            .code_review_view
+            .read(&app, |view, app_ctx| view.keymap_context(app_ctx));
+
+        assert!(
+            context.set.contains("CodeReviewView_NotEditing"),
+            "CodeReviewView_NotEditing must be present when no descendant text \
+             editor is focused, so the toggle-sidebar/submit keybindings can fire"
+        );
+    });
+}
+
+#[test]
+fn test_keymap_context_excludes_not_editing_when_diff_editor_focused() {
+    App::test((), |mut app| async move {
+        let ctx = TestContext::new(
+            &mut app,
+            PathBuf::from("test.txt"),
+            "line 1\nline 2\nline 3",
+        );
+
+        let fake_diff_editor = app.add_view(ctx.window_id, |_| FakeDiffEditorView);
+        fake_diff_editor.update(&mut app, |_, view_ctx| {
+            view_ctx.focus_self();
+        });
+
+        let context = ctx
+            .code_review_view
+            .read(&app, |view, app_ctx| view.keymap_context(app_ctx));
+
+        assert!(
+            !context.set.contains("CodeReviewView_NotEditing"),
+            "CodeReviewView_NotEditing must be absent while the diff editor \
+             (CodeEditorView) is focused, so `f` / cmd-enter reach the editor as \
+             text input instead of firing the sidebar-toggle / submit bindings"
+        );
+    });
+}
+
+#[test]
+fn test_keymap_context_excludes_not_editing_when_comment_composer_focused() {
+    App::test((), |mut app| async move {
+        let ctx = TestContext::new(
+            &mut app,
+            PathBuf::from("test.txt"),
+            "line 1\nline 2\nline 3",
+        );
+
+        let fake_composer = app.add_view(ctx.window_id, |_| FakeCommentComposerView);
+        fake_composer.update(&mut app, |_, view_ctx| {
+            view_ctx.focus_self();
+        });
+
+        let context = ctx
+            .code_review_view
+            .read(&app, |view, app_ctx| view.keymap_context(app_ctx));
+
+        assert!(
+            !context.set.contains("CodeReviewView_NotEditing"),
+            "CodeReviewView_NotEditing must be absent while a comment composer \
+             (RichTextEditorView) is focused — this is the guard that stops \
+             cmd-enter from firing SubmitReviewComments instead of being typed \
+             into the comment the user is composing"
+        );
+    });
+}
+
+#[test]
+fn test_submit_review_comments_action_emits_pending_comments_for_active_repo() {
+    App::test((), |mut app| async move {
+        let ctx = TestContext::new(
+            &mut app,
+            PathBuf::from("test.txt"),
+            "line 1\nline 2\nline 3",
+        );
+
+        // A Line-target comment is self-sufficient for collect_diff_set (unlike
+        // File/General targets, it doesn't need Loaded state), so this only
+        // needs the comment attached to the active batch, not a full LoadedState.
+        let line_comment = create_line_comment("/repo/test.txt", 1, "line 2", "Looks off");
+        ctx.code_review_view.update(&mut app, |view, view_ctx| {
+            if let Some(model) = view.active_comment_model.clone() {
+                model.update(view_ctx, |batch, model_ctx| {
+                    batch.upsert_comment(line_comment, model_ctx);
+                });
+            }
+        });
+
+        let submitted: Rc<RefCell<Option<(usize, PathBuf)>>> = Rc::new(RefCell::new(None));
+        let submitted_for_subscription = submitted.clone();
+        app.update(|app_ctx| {
+            app_ctx.subscribe_to_view(
+                &ctx.code_review_view,
+                move |_, event: &CodeReviewViewEvent, _| {
+                    if let CodeReviewViewEvent::SubmitReviewComments {
+                        comments,
+                        repo_path,
+                    } = event
+                    {
+                        *submitted_for_subscription.borrow_mut() =
+                            Some((comments.comments.len(), repo_path.clone()));
+                    }
+                },
+            );
+        });
+
+        // This is exactly what CODE_REVIEW_SUBMIT_KEYSTROKE dispatches — a plain
+        // unit action, with no fields of its own. `handle_submit_review_with_comments`
+        // (the same method the mouse path, `CommentListEvent::Submitted`, calls)
+        // reads the pending comment batch and repo path from view state and builds
+        // the field-carrying `CodeReviewViewEvent::SubmitReviewComments` itself.
+        ctx.code_review_view.update(&mut app, |view, view_ctx| {
+            view.handle_action(&CodeReviewAction::SubmitReviewComments, view_ctx);
+        });
+
+        let submitted = submitted.borrow();
+        let (comment_count, repo_path) = submitted.as_ref().expect(
+            "CodeReviewAction::SubmitReviewComments should emit \
+             CodeReviewViewEvent::SubmitReviewComments",
+        );
+        assert_eq!(
+            *comment_count, 1,
+            "the pending (non-outdated) comment should be included in the submitted batch"
+        );
+        assert_eq!(
+            repo_path, &ctx.repo_path,
+            "the emitted event should carry the active repo path"
+        );
     });
 }
