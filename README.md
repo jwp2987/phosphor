@@ -141,6 +141,40 @@ intentionally deferred (only the branding has changed so far).
 
 See [docs/roadmap.md](docs/roadmap.md).
 
+## Licensing
+
+Phosphor inherits Warp's split licensing:
+
+- The UI framework crates — `crates/warpui` and `crates/warpui_core` — are
+  licensed under the [MIT license](LICENSE-MIT).
+- **Everything else** in this repository is licensed under
+  [AGPL-3.0-only](LICENSE-AGPL).
+
+Note that the split is narrower in practice than it looks: both MIT crates
+depend on `markdown_parser` and `sum_tree`, which are AGPL-3.0-only, so a build
+that links them is AGPL. **The distributed binary as a whole is AGPL-3.0-only.**
+
+Copyright on the inherited code remains with Denver Technologies, Inc. (Warp).
+Phosphor is a modified version, not the original — see
+[Acknowledgements](#acknowledgements).
+
+### Corresponding source (AGPL §13)
+
+Phosphor is a modified version of an AGPL program, and it can be interacted
+with remotely over a network (the agent/CLI session daemon). AGPL-3.0 §13
+therefore requires that users interacting with it that way be offered the
+Corresponding Source of *this* modified version. That offer is this repository:
+
+**https://github.com/jwp2987/phosphor**
+
+The complete corresponding source for any distributed build is the commit that
+build was made from, in that repository, under the terms above.
+
+Third-party components bundled with a release are listed in
+`THIRD_PARTY_LICENSES.txt`, generated at package time by
+`script/prepare_bundled_resources`. Known-unresolved attribution questions are
+tracked in [docs/licensing-open-questions.md](docs/licensing-open-questions.md).
+
 ## Acknowledgements
 
 - [Warp](https://github.com/warpdotdev/warp) — the upstream terminal Phosphor is built on.

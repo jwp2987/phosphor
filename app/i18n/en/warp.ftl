@@ -615,6 +615,9 @@ settings-debug-hide-inband-blocks = Hide in-band command blocks
 
 # about_page.rs
 settings-about-copyright = Copyright 2026 Phosphor
+settings-about-license = Licensed under AGPL-3.0-only, except the warpui and warpui_core UI framework crates, which are MIT. Because the shipped binary links the AGPL code, the program as a whole is AGPL-3.0-only.
+settings-about-source-code = Source code (github.com/jwp2987/phosphor)
+settings-about-source-code-description = Phosphor is a modified version of Warp. The complete corresponding source for this build is published at the link above, as required by AGPL-3.0 section 13.
 settings-about-automatic-updates-label = Automatic updates
 settings-about-automatic-updates-description = When enabled, Phosphor checks for new versions in the background and downloads the installer to a local cache. The currently running Phosphor is not touched until you click "Install now" to launch the installer yourself.
 settings-about-update-checking = Checking for updates…
