@@ -32,7 +32,9 @@ use crate::ai::llms::LLMId;
 use crate::ai_assistant::execution_context::{WarpAiExecutionContext, WarpAiOsContext};
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::terminal_model::BlockIndex;
-use ai::agent::action_result::{AskUserQuestionAnswerItem, AskUserQuestionResult, ReadSkillResult};
+use ai::agent::action_result::{
+    AskUserQuestionAnswerItem, AskUserQuestionResult, ReadSkillResult, SendMessageToAgentResult,
+};
 use ai::skills::{ParsedSkill, SkillPathOrigin};
 use chrono::{DateTime, Local, TimeZone};
 use std::collections::{HashMap, HashSet};
@@ -1291,9 +1293,32 @@ pub(crate) fn convert_tool_call_result_to_input(
                 context,
             })
         }
-        Some(ToolCallResultType::SendMessageToAgent(_)) => {
-            // Cloud tool has been physically removed
-            None
+        Some(ToolCallResultType::SendMessageToAgent(result)) => {
+            // Reconstructs the local result so history hydration round-trips
+            // through the same wire format `convert_to.rs` produces for a
+            // real send (`SendMessageToAgentExecutor`, local BYOP mailbox --
+            // see `DECLINED.md`'s `#325` row). This is not the cloud tool;
+            // it is this fork's own local executor's result being restored.
+            let send_result = match &result.result {
+                Some(api::send_message_to_agent_result::Result::Success(success)) => {
+                    SendMessageToAgentResult::Success {
+                        message_id: success.message_id.clone(),
+                    }
+                }
+                Some(api::send_message_to_agent_result::Result::Error(err)) => {
+                    SendMessageToAgentResult::Error(err.message.clone())
+                }
+                None => SendMessageToAgentResult::Cancelled,
+            };
+
+            Some(AIAgentInput::ActionResult {
+                result: AIAgentActionResult {
+                    id: tool_call_id.into(),
+                    task_id: task_id.clone(),
+                    result: AIAgentActionResultType::SendMessageToAgent(send_result),
+                },
+                context,
+            })
         }
         // Deprecated/unused result types.
         Some(ToolCallResultType::SuggestCreatePlan(..))
@@ -1386,7 +1411,13 @@ fn create_cancelled_result_for_tool_call(
         ToolType::AskUserQuestion(_) => {
             AIAgentActionResultType::AskUserQuestion(AskUserQuestionResult::Cancelled)
         }
-        ToolType::SendMessageToAgent(_) => return None,
+        // Executed locally by `SendMessageToAgentExecutor` (the local BYOP
+        // mailbox executor -- see `DECLINED.md`'s `#325` row), so a
+        // cancellation here means a real local send never completed and
+        // should report `Cancelled`, matching `AskUserQuestion` above.
+        ToolType::SendMessageToAgent(_) => {
+            AIAgentActionResultType::SendMessageToAgent(SendMessageToAgentResult::Cancelled)
+        }
         // Not executable by this fork, so a cancellation has nothing to report; see #11.
         ToolType::SearchCodebase(_)
         | ToolType::RunAgents(_)

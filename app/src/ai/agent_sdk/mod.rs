@@ -18,7 +18,7 @@ use crate::workflows::workflow::Workflow;
 use ai::api_keys::{ApiKeyManager, AwsCredentialsRefreshStrategy};
 use anyhow::Context;
 use warp_cli::{
-    agent::{AgentCommand, AgentProfileCommand, OutputFormat},
+    agent::{AgentCommand, AgentMessageCommand, AgentProfileCommand, OutputFormat},
     mcp::MCPCommand,
     model::ModelCommand,
     CliCommand, GlobalOptions,
@@ -47,6 +47,7 @@ pub use driver::AgentDriver;
 use warp_cli::agent::{Harness, Prompt, RunAgentArgs};
 
 mod admin;
+mod agent_message;
 mod common;
 mod config_file;
 pub(crate) mod driver;
@@ -181,6 +182,7 @@ fn run_agent(
         AgentCommand::List(_) => Err(anyhow::anyhow!(
             "Agent skill listing is disabled in Zap"
         )),
+        AgentCommand::Message(sub) => agent_message::run(global_options.output_format, sub),
     }
 }
 
@@ -550,6 +552,10 @@ fn command_requires_auth(command: &CliCommand) -> bool {
                 AgentProfileCommand::List => true,
             },
             AgentCommand::List(_) => true,
+            // The local mailbox is plain filesystem I/O with no BYOP/provider
+            // dependency, and local children invoke it unattended -- it must
+            // work regardless of auth state.
+            AgentCommand::Message(_) => false,
         },
         CliCommand::MCP(mcp_cmd) => match mcp_cmd {
             MCPCommand::List => true,

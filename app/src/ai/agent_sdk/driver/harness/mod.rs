@@ -219,7 +219,7 @@ fn task_env_vars_for_harness_name(
         ),
     );
     // `OZ_HARNESS` is consumed by child-agent telemetry when the child CLI emits
-    // `run message *` events.
+    // `agent message *` events.
     env_vars.insert(
         OsString::from(OZ_HARNESS_ENV),
         OsString::from(selected_harness.to_string()),

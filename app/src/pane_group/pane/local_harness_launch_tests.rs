@@ -8,8 +8,13 @@ use super::{
 };
 use crate::terminal::shell::ShellType;
 
-/// Ported from the pin (`app/src/pane_group/pane/local_harness_launch_tests.rs:26-38`,
-/// `02b53fcd8`) verbatim, for #323.
+/// Adapted from the pin (`app/src/pane_group/pane/local_harness_launch_tests.rs:26-38`,
+/// `02b53fcd8`) for #323. The pin asserts `oz run message *`, a client for
+/// Warp's cloud-hosted-CLI-task mailbox that this fork physically removed
+/// (`crates/warp_cli/src/lib_tests.rs`'s `run_command_is_removed`); this
+/// fork's children instead use `oz agent message send`/`list`, the local
+/// on-disk mailbox in `crates/warp_cli/src/agent_mailbox.rs`. This test
+/// exists so the prompt never again teaches a child a command that errors.
 #[test]
 fn local_claude_child_prompt_includes_oz_cli_messaging_instructions() {
     let prompt = local_claude_child_prompt("List files");
@@ -17,12 +22,12 @@ fn local_claude_child_prompt_includes_oz_cli_messaging_instructions() {
     assert!(prompt.contains("OZ_CLI"));
     assert!(prompt.contains("OZ_RUN_ID"));
     assert!(prompt.contains("OZ_PARENT_RUN_ID"));
-    assert!(prompt.contains("run message send --sender-run-id"));
+    assert!(prompt.contains("agent message send --sender-run-id"));
+    assert!(!prompt.contains("run message send"));
     assert!(prompt.contains("All four send arguments are required"));
     assert!(prompt.contains("Do not pass \"$OZ_PARENT_RUN_ID\" as a positional argument to send"));
-    assert!(prompt.contains("run message list \"$OZ_RUN_ID\" --limit 25"));
-    assert!(prompt.contains("do not rely on --unread"));
-    assert!(!prompt.contains("--unread --limit"));
+    assert!(prompt.contains("agent message list \"$OZ_RUN_ID\" --limit 25"));
+    assert!(!prompt.contains("run message list"));
     assert!(prompt.contains("Do not use Claude Code Agent or SendMessage tools"));
     assert!(prompt.ends_with("Task:\nList files"));
 }

@@ -9,13 +9,12 @@ pub(super) mod read_files;
 pub(super) mod read_mcp_resource;
 pub(super) mod read_skill;
 pub(super) mod request_file_edits;
+pub(super) mod send_message;
 pub(super) mod shell_command;
 pub(super) mod suggest_new_conversation;
 pub(super) mod suggest_prompt;
 
-use ai::agent::action_result::{
-    InsertReviewCommentsResult, RequestCommandOutputResult, SendMessageToAgentResult,
-};
+use ai::agent::action_result::{InsertReviewCommentsResult, RequestCommandOutputResult};
 pub use ask_user_question::AskUserQuestionExecutor;
 pub(crate) use call_mcp_tool::coerce_integer_args;
 use call_mcp_tool::CallMCPToolExecutor;
@@ -36,6 +35,7 @@ pub use request_file_edits::{
     EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent, EditResolvedEvent, EditStats,
     RequestFileEditsExecutor, RequestFileEditsFormatKind, RequestFileEditsTelemetryEvent,
 };
+pub use send_message::SendMessageToAgentExecutor;
 use serde::{Deserialize, Serialize};
 pub use shell_command::{ShellCommandExecutor, ShellCommandExecutorEvent};
 pub use suggest_new_conversation::NewConversationDecision;
@@ -243,6 +243,7 @@ pub struct BlocklistAIActionExecutor {
     create_documents_executor: ModelHandle<CreateDocumentsExecutor>,
     read_skill_executor: ModelHandle<ReadSkillExecutor>,
     ask_user_question_executor: ModelHandle<AskUserQuestionExecutor>,
+    send_message_executor: ModelHandle<SendMessageToAgentExecutor>,
     /// The actions currently executing asynchronously, keyed by action ID.
     /// We track them per action rather than as a single slot so multiple actions from the same
     /// parallel phase can complete independently.
@@ -292,6 +293,7 @@ impl BlocklistAIActionExecutor {
         let read_skill_executor = ctx.add_model(|_| ReadSkillExecutor::new());
         let ask_user_question_executor =
             ctx.add_model(|_| AskUserQuestionExecutor::new(terminal_view_id));
+        let send_message_executor = ctx.add_model(|_| SendMessageToAgentExecutor::new());
         Self {
             shell_command_executor,
             read_files_executor,
@@ -309,6 +311,7 @@ impl BlocklistAIActionExecutor {
             terminal_model,
             read_skill_executor,
             ask_user_question_executor,
+            send_message_executor,
         }
     }
 
@@ -362,12 +365,22 @@ impl BlocklistAIActionExecutor {
         &self.ask_user_question_executor
     }
 
+    pub fn send_message_executor(&self) -> &ModelHandle<SendMessageToAgentExecutor> {
+        &self.send_message_executor
+    }
+
     pub fn set_ambient_agent_task_id(
         &self,
-        _id: Option<AmbientAgentTaskId>,
-        _ctx: &mut ModelContext<Self>,
+        id: Option<AmbientAgentTaskId>,
+        ctx: &mut ModelContext<Self>,
     ) {
-        // Computer Use has been removed; this stays as an empty impl for call-site compatibility.
+        // The pin also propagates this into a `request_computer_use_executor`;
+        // Computer Use is out of scope for this fork (see `DECLINED.md`), so
+        // `SendMessageToAgentExecutor` is the only remaining consumer of the
+        // ambient task ID as a sender-run-id fallback.
+        self.send_message_executor.update(ctx, |executor, _| {
+            executor.set_ambient_agent_task_id(id);
+        });
     }
 
     pub fn preprocess_action(
@@ -438,11 +451,9 @@ impl BlocklistAIActionExecutor {
             AIAgentActionType::AskUserQuestion { .. } => self
                 .ask_user_question_executor
                 .update(ctx, |executor, ctx| executor.preprocess_action(input, ctx)),
-            // No dedicated executor: `/orchestrate` (the user-invoked route this fork
-            // ships instead of agent-initiated `RunAgents`) doesn't issue this action,
-            // and nothing yet constructs it from model tool calls either -- see
-            // DECLINED.md's #325 row.
-            AIAgentActionType::SendMessageToAgent { .. } => futures::future::ready(()).boxed(),
+            AIAgentActionType::SendMessageToAgent { .. } => self
+                .send_message_executor
+                .update(ctx, |executor, ctx| executor.preprocess_action(input, ctx)),
         }
     }
 
@@ -612,13 +623,10 @@ impl BlocklistAIActionExecutor {
                 .ask_user_question_executor
                 .update(ctx, |executor, ctx| executor.execute(input, ctx))
                 .into(),
-            // No dedicated executor exists yet (see the `preprocess_action` comment
-            // above); if this action ever reaches execution, treat it the same as a
-            // cancelled action rather than pretending it was sent.
-            AIAgentActionType::SendMessageToAgent { .. } => ActionExecution::<()>::Sync(
-                AIAgentActionResultType::SendMessageToAgent(SendMessageToAgentResult::Cancelled),
-            )
-            .into(),
+            AIAgentActionType::SendMessageToAgent { .. } => self
+                .send_message_executor
+                .update(ctx, |executor, ctx| executor.execute(input, ctx))
+                .into(),
         };
 
         let action_id = action_clone.id.clone();
@@ -827,10 +835,9 @@ impl BlocklistAIActionExecutor {
             AIAgentActionType::AskUserQuestion { .. } => self
                 .ask_user_question_executor
                 .update(ctx, |executor, ctx| executor.should_autoexecute(input, ctx)),
-            // No dedicated executor exists yet (see the `preprocess_action` comment
-            // above), so this is unreachable in practice; default to requiring
-            // confirmation rather than silently auto-sending a message.
-            AIAgentActionType::SendMessageToAgent { .. } => false,
+            AIAgentActionType::SendMessageToAgent { .. } => self
+                .send_message_executor
+                .update(ctx, |executor, ctx| executor.should_autoexecute(input, ctx)),
         }
     }
 

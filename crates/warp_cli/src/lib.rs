@@ -17,6 +17,7 @@ pub mod scope;
 pub mod skill;
 
 pub mod agent;
+pub mod agent_mailbox;
 pub mod completions;
 pub mod config_file;
 // Zap Wave 7-2: the `environment` CLI was physically removed along with the cloud ambient agent subsystem.
