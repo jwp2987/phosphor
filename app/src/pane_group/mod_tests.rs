@@ -33,6 +33,7 @@ use warpui::App;
 
 use crate::notebooks::notebook::NotebookView;
 use crate::terminal::shared_session::SharedSessionStatus;
+use warpui::windowing::state::ApplicationStage;
 
 use super::*;
 
@@ -656,5 +657,55 @@ fn test_number_of_shared_panes() {
             panes.close_pane(first_pane_id, ctx);
             assert_eq!(panes.number_of_shared_sessions(ctx), 1);
         });
+    });
+}
+
+#[test]
+fn test_update_session_visibility() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        pane_group.update(&mut app, |panes, ctx| {
+            // Assert that there is no active window.
+            WindowManager::handle(ctx).read(ctx, |state, _| {
+                assert_eq!(state.stage(), ApplicationStage::Starting);
+                assert!(state.active_window().is_none());
+            });
+
+            fn visibility_matches(panes: &PaneGroup, expected: bool, ctx: &ViewContext<PaneGroup>) {
+                for data in panes.panes_of::<TerminalPane>() {
+                    let view = data.terminal_view(ctx).as_ref(ctx);
+                    assert_eq!(
+                        view.was_ever_visible(),
+                        expected,
+                        "View {} visibility was {}, expected {}",
+                        data.terminal_view(ctx).id(),
+                        view.was_ever_visible(),
+                        expected
+                    );
+                }
+            }
+
+            // Add pane Left.
+            panes.add_terminal_pane(Direction::Left, None, ctx);
+
+            // Assert that neither of the panes are marked as visible (due
+            // to the fact that the window is not active).
+            visibility_matches(panes, false, ctx);
+
+            let window_id = ctx.window_id();
+            WindowManager::handle(ctx).update(ctx, |state, ctx| {
+                state.overwrite_for_test(ApplicationStage::Active, Some(window_id));
+                ctx.notify();
+            });
+
+            // Assert that both of the panes are still not marked as
+            // visible, given the fact that the pane group is not focused.
+            visibility_matches(panes, false, ctx);
+
+            panes.focus(ctx);
+
+            // Assert that both of the panes are now visible.
+            visibility_matches(panes, true, ctx);
+        })
     });
 }
