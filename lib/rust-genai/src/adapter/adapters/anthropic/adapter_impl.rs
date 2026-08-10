@@ -779,18 +779,80 @@ impl AnthropicAdapter {
 				}
 
 				// Tool responses are represented as user tool_result items in Anthropic.
+				//
+				// PHOSPHOR: `Text` and `Binary` parts sitting alongside the tool responses are
+				// emitted too, after every `tool_result` block. Anthropic requires the
+				// tool_result blocks to come first in the user turn that answers a tool_use, but
+				// permits further blocks after them — that is how an image can accompany a tool
+				// result at all, since `ToolResponse.content` is a plain string. Upstream drops
+				// these parts silently. The two-pass split is what guarantees the ordering
+				// regardless of the order the caller appended them in.
 				ChatRole::Tool => {
 					let mut values: Vec<Value> = Vec::new();
+					let mut trailing: Vec<Value> = Vec::new();
 					for part in msg.content {
-						if let ContentPart::ToolResponse(tool_response) = part {
-							values.push(json!({
-								"type": "tool_result",
-								"content": tool_response.content,
-								"tool_use_id": tool_response.call_id,
-							}));
+						match part {
+							ContentPart::ToolResponse(tool_response) => {
+								values.push(json!({
+									"type": "tool_result",
+									"content": tool_response.content,
+									"tool_use_id": tool_response.call_id,
+								}));
+							}
+							ContentPart::Text(text) => {
+								trailing.push(json!({"type": "text", "text": text}));
+							}
+							ContentPart::Binary(binary) => {
+								let is_image = binary.is_image();
+								let Binary {
+									content_type, source, ..
+								} = binary;
+								match (&source, is_image) {
+									(BinarySource::Base64(content), true) => {
+										trailing.push(json!({
+											"type": "image",
+											"source": {
+												"type": "base64",
+												"media_type": content_type,
+												"data": content,
+											}
+										}));
+									}
+									(BinarySource::Base64(b64), false) => {
+										trailing.push(json!({
+											"type": "document",
+											"source": {
+												"type": "base64",
+												"media_type": content_type,
+												"data": b64,
+											}
+										}));
+									}
+									(BinarySource::Url(url), true) => {
+										// Same limitation as the user-role branch above.
+										let _ = url;
+										warn!("Anthropic doesn't support images from URL, need to handle it gracefully");
+									}
+									(BinarySource::Url(url), false) => {
+										trailing.push(json!({
+											"type": "document",
+											"source": {
+												"type": "url",
+												"url": url,
+											}
+										}));
+									}
+								}
+							}
+							// Not valid inside a tool-result turn for Anthropic; skip gracefully.
+							ContentPart::ToolCall(_) => {}
+							ContentPart::ThoughtSignature(_) => {}
+							ContentPart::ReasoningContent(_) => {}
+							ContentPart::Custom(_) => {}
 						}
 					}
 					if !values.is_empty() {
+						values.extend(trailing);
 						let values = apply_cache_control_to_parts(cache_control.as_ref(), values);
 						messages.push(json!({"role": "user", "content": values}));
 					}

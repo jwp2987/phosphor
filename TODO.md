@@ -780,7 +780,35 @@ of the four turned out to be worth reversing.
       its relationship to `/init`, and whether to restore, partly restore, or
       formally decline it. `lsp_server_selector.rs` went with it.
 
-- [ ] **Computer use is BLIND — the model never sees the screenshot.** A BYOP
+- [x] **Computer use is SIGHTED — DONE 2026-08-10.** The screenshot now travels
+      as a `ContentPart::Binary` on a user message appended after the tool
+      results, gated on `AttachmentCaps::images`. `ToolResponse` is untouched,
+      so tool_call/tool_response pairing is unchanged by construction — the
+      proposed route below was taken, with one correction: on **Anthropic** a
+      standalone user message straight after a tool-result turn is two user
+      turns in a row, which it rejects, so the parts are folded into the
+      trailing `ChatRole::Tool` message and the vendored Anthropic adapter emits
+      them after that turn's `tool_result` blocks (a match-arm change; no type
+      changed; recorded in `lib/rust-genai/CHANGES-PHOSPHOR.md`). Widening
+      `ToolResponse` was rejected — ~20 adapters would each silently drop the
+      image until taught the new field, and OpenAI's `role: "tool"` message is
+      text-only regardless, so a second route would still have been needed.
+      Bounds: the two most recent captures only, re-encoded to ≤1568 px on the
+      long edge and ≤3.5 MB of PNG; nothing goes through
+      `cap_tool_response_content`. Degradation is explicit — the result carries
+      `screenshot.delivery` ∈ {`attached_to_following_user_message`,
+      `model_cannot_see_images`, `superseded_by_newer_screenshot`,
+      `undeliverable`} with matching prose, and the tool descriptions swap to
+      image-capable wording only when caps allow. Replay is a pure function of
+      the message list, so a restored conversation cannot double-inject.
+      **Two adjacent defects fixed in passing:**
+      `serialize_outgoing_tool_call` had no computer-use arm, so every replayed
+      call was renamed `warp_internal_UseComputer` with `{}` args — the model
+      could not tell which action produced the screen it was shown; and the
+      per-turn `[byop-diag] full_request_json` log plus the wire inspector
+      dumped binary parts verbatim, a megabyte of base64 per turn once
+      screenshots existed. Original text:
+      A BYOP
       tool result is delivered as `genai::chat::ToolResponse { content: String }`
       — a plain string with no parts — and `cap_tool_response_content` truncates
       at 40,000 chars, two orders of magnitude under a base64 PNG (truncation

@@ -31,7 +31,7 @@ Changes since the vendoring commit, largest first:
 
 | file | what changed |
 |---|---|
-| `adapter/adapters/anthropic/adapter_impl.rs` | Mixed-TTL Anthropic prompt caching; 1M-context beta header sent by default |
+| `adapter/adapters/anthropic/adapter_impl.rs` | Mixed-TTL Anthropic prompt caching; 1M-context beta header sent by default; `ChatRole::Tool` also emits `Text`/`Binary` parts, after the `tool_result` blocks of the same user turn (upstream drops them) — this is how a computer-use screenshot reaches the model on the Anthropic path without breaking its strict user/assistant alternation |
 | `client/web_config.rs` | `gzip` default flipped to `false` (upstream defaults it on); proxy-mode configuration |
 | `adapter/adapters/openai_resp/adapter_impl.rs` | OpenAI Responses reasoning-parameter fixes (502 on unsupported params) |
 | `chat/tool/tool_base.rs` | Tool-schema handling for providers that reject `const` (Gemini) |

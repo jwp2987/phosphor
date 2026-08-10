@@ -154,17 +154,42 @@ pub fn serialize_result(result: &api::message::ToolCallResult) -> String {
         Some(r) => r,
         None => return r#"{"status":"cancelled"}"#.to_owned(),
     };
-    for t in REGISTRY {
-        if let Some(json) = (t.result_to_json)(inner) {
-            return serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_owned());
-        }
-    }
-    if let Some(json) = mcp::serialize_result(inner) {
-        return serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_owned());
-    }
+    stringify_result_value(&serialize_result_value(inner))
+}
+
+/// The structured form of [`serialize_result`], before it is flattened to a string.
+///
+/// Callers that need to *amend* a result before sending it — `chat_stream` rewriting
+/// `screenshot.attached` / `screenshot.note` once it knows whether the image travels with the
+/// request, see [`computer::annotate_screenshot_delivery`] — must go through this rather than
+/// re-parsing the string, which would silently swallow a serialization change.
+pub fn serialize_result_value(inner: &api::message::tool_call_result::Result) -> Value {
     // Fallback: unrecognized variant (tools not yet registered in later user rounds also land
     // here).
-    r#"{"status":"unsupported_tool_result"}"#.to_owned()
+    try_serialize_result_value(inner)
+        .unwrap_or_else(|| serde_json::json!({ "status": "unsupported_tool_result" }))
+}
+
+/// Renders a result value the way the tool-result channel expects it.
+///
+/// `to_string` on a `Value` built from owned data cannot realistically fail; `{}` is the
+/// inert fallback rather than a panic, matching the pre-existing behaviour.
+pub fn stringify_result_value(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "{}".to_owned())
+}
+
+/// Shared lookup: the first registry descriptor that claims this result, else MCP.
+///
+/// `None` means *nothing* recognized the variant — the callers that have a better fallback
+/// than `{"status":"unsupported_tool_result"}` (the current-turn `ActionResult` path, which
+/// can still render the result's `Display`) depend on being able to tell the two apart.
+pub fn try_serialize_result_value(inner: &api::message::tool_call_result::Result) -> Option<Value> {
+    for t in REGISTRY {
+        if let Some(json) = (t.result_to_json)(inner) {
+            return Some(json);
+        }
+    }
+    mcp::serialize_result(inner)
 }
 
 /// Serializes an `AIAgentActionResult` that just finished *client-side execution this round*
@@ -199,15 +224,9 @@ pub fn serialize_result(result: &api::message::ToolCallResult) -> String {
 /// structured fields.
 pub fn serialize_action_result(action: &AIAgentActionResult) -> Option<String> {
     let msg_side = action_result_to_msg_result(action)?;
-    for t in REGISTRY {
-        if let Some(json) = (t.result_to_json)(&msg_side) {
-            return Some(serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_owned()));
-        }
-    }
-    if let Some(json) = mcp::serialize_result(&msg_side) {
-        return Some(serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_owned()));
-    }
-    None
+    Some(stringify_result_value(&try_serialize_result_value(
+        &msg_side,
+    )?))
 }
 
 /// Converts an `AIAgentActionResult` that finished client-side execution this round into an
