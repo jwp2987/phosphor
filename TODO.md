@@ -772,7 +772,7 @@ of the four turned out to be worth reversing.
       means writing JSON schemas for the full action set plus `result_to_json`.
       **Genuinely new work with no pin reference** (the pin's schema is
       server-side), not a restore. This is the larger of the two.
-- [>] **InitProject** — review agent assigned 2026-08-10, read-only.
+- [x] **InitProject — REVIEWED and DECLINED 2026-08-10.** Recorded in `DECLINED.md` with the true reason: the removal commit's 'cloud agent mode's first-run onboarding' rationale is false on both clauses (it is per-repo setup, and a full grep finds no auth/sign-in/subscription/Warp API call — ~17% cloud-coupled). The removal was nonetheless CORRECT: three commits earlier the same day had already moved its one durable local capability into the `/init` prompt template. Residue tracked separately below.
       The "cloud agent mode's first-run onboarding" rationale came from zero's
       commit message and **has been repeated through several handovers without
       anyone reading the code**. `/init` is a local flow, so the framing is
