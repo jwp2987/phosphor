@@ -142,6 +142,49 @@ background process group. Fix: launch detached (`nohup setsid ... & disown`) and
 the log with an `until` loop. A killed run can also report "exit code 0" — **read the
 log, never trust the exit code.**
 
+## LSP TRACK (opened 2026-08-10, maintainer verdict: RESTORE)
+
+Was the largest item with no home — removed deliberately by `efcaa42b8` and
+recorded in neither `DECLINED.md` nor this file. Maintainer decided 2026-08-10
+to restore it, so it is tracked work now, not an open question.
+
+**What it is.** Language Server Protocol support: the standard that lets the
+editor talk to per-language backends and get code intelligence back. Without it
+this fork ships a code editor and file tree with **no** diagnostics,
+go-to-definition, hover docs, find-references or formatting —
+`git grep -l 'language_server\|lsp_types\|LSPServerType'` matches nothing but
+yarn cache zips and the migration that dropped it.
+
+**Scope, measured at the pin (~6,600 lines).**
+- `crates/lsp/` — 20 files / 4,891 lines. `service.rs` exposes `definition`,
+  `hover`, `references`, `format`, `did_open`, `did_change`.
+  `supported_servers.rs:40` lists 5 servers: rust-analyzer, gopls, pyright,
+  tsserver, clangd. Tests: `config_tests.rs`, 22 test names, all absent here.
+- `app/src/code/language_server_extension.rs` (625)
+- `app/src/code/find_references_view.rs` (696)
+- `app/src/code/language_server_shutdown_manager.rs` (152)
+- `app/src/code/lsp_telemetry.rs` (203), `lsp_logs.rs` (33)
+- `app/src/terminal/view/init_project/lsp_server_selector.rs`
+- the `code_page.rs` settings section
+- two persistence tables, dropped by
+  `crates/persistence/migrations/2026-05-11-000000_drop_lsp_workspace_tables/up.sql`
+
+**Known couplings — do not discover these late.**
+- **`node_runtime` dependency.** pyright and tsserver are node-based; the pin
+  installs and runs them through it. Confirm whether this fork still has
+  `node_runtime` before assuming the install path works.
+- **Persistence.** The tables were dropped by migration. Restoring needs a NEW
+  forward migration — do not edit or revert the existing one.
+- **Delta D1.** `PersistedWorkspace` owns per-workspace LSP enable/disable
+  state. With this verdict, D1's LSP half is now real work rather than a stub.
+- **Telemetry.** `lsp_telemetry.rs` targets a telemetry channel this fork
+  disabled (`ChannelState::is_telemetry_available()` is hard-`false`). Port the
+  call sites, not the transport.
+
+**Sequencing.** `crates/lsp/` first (self-contained, has the only tests), then
+the app-side wiring, then settings + persistence, then the D1 join. Not a
+single-agent single-pass job.
+
 ## DELTA TRACK (opened 2026-08-10, maintainer) — workspace + indexing
 
 One named track for the two bodies of work that were scoped out of other tasks
@@ -349,10 +392,8 @@ each and are invisible to a test-count burndown** — they were found by diffing
 source basenames, enum variants and crate lists, not test names. Do not treat a
 green suite or a shrinking test gap as evidence of parity.
 
-- [ ] **LSP — the entire subsystem.** ~6,600 lines (`crates/lsp/` 4,891 +
-      app-side modules). Removed deliberately by `efcaa42b8`, but recorded in
-      NEITHER `DECLINED.md` NOR here. **Needs a maintainer verdict**: either it
-      becomes the largest open parity item, or it gets a DECLINED.md row.
+- [x] ~~LSP needs a maintainer verdict~~ — **VERDICT 2026-08-10: RESTORE.**
+      Promoted out of this section into its own track below.
 ### MIS-TICKED / MIS-SCOPED — existing entries that misstate reality
 - [ ] **#323 is ticked LANDED but the Codex SDK harness driver is absent.**
       TODO.md:524 marks it done. What actually landed is the *local child-pane
