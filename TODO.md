@@ -456,7 +456,39 @@ enable-disable state, project-context and project-rules wiring,
 - Note: the pin's command-palette recent-repos data source (audit finding 9) is
   backed by `PersistedWorkspace`, so it lands naturally with this.
 
-### D2 — Codebase indexing subsystem — **[>] IN FLIGHT (full scope, one agent, maintainer's call 2026-08-10)**
+### D2 — Codebase indexing subsystem — **[x] ALL THREE STAGES LANDED `fca2bedb2`, UNBUILT**
+
+~15.4k lines in one pass. D2a restored all 31 files with 96 pin tests
+unweakened; D2b is new construction (`LocalStoreClient` over an
+`EmbeddingProvider` + `VectorStore` pair, an `HttpEmbeddingProvider` posting to
+the user's `/embeddings`, a `SqliteVectorStore` on the app DB via a new forward
+migration); D2c registered the manager, filled every `INDEXING SEAM`, and
+restored recent-repos pruning. Configuration reuses `AISettings::agent_providers`
+— no new settings mechanism. `all_working_directories` is CALLED, not duplicated.
+
+**Honest quality delta vs the pin, stated not buried:**
+- **Reranking is worse.** Pin used a cross-encoder (query + fragment scored
+  together); this is a bi-encoder cosine over independently-encoded vectors.
+  Recall unchanged, top-few ordering measurably worse. Biggest regression.
+- Search is **exact rather than approximate** — more accurate, but latency grows
+  linearly with repo size where the pin's was roughly flat.
+- `populate_merkle_tree_cache` is the one genuine no-op (it warmed a *remote*
+  cache for other clients; writing nodes locally already did that work).
+  Documented, and its caller treats the result as advisory.
+- **Nothing degrades to a silent empty answer** — a missing provider raises
+  `Error::NoEmbeddingProvider` naming the model, because an empty result set is
+  indistinguishable from an empty store and would re-embed the repo every sync.
+
+- [ ] **Not done, carried forward:** remote-daemon indexing (the pin's
+      `LaunchMode::supports_indexing()` gate has no fork equivalent;
+      `FeatureFlag::RemoteCodebaseIndexing` stands in), settings-page UI for the
+      two new `CodeSettings` toggles and for picking an embedding provider (both
+      reachable via `settings.toml` today), and
+      `app/src/remote_server/codebase_index_model_tests.rs` (39 tests).
+- [ ] **Open question for the maintainer:** reranking quality. If the bi-encoder
+      ordering proves too weak in practice, the options are a local cross-encoder
+      model or a provider-side rerank endpoint. Worth deciding only after someone
+      uses it.
 
 **Status:** a single agent is building all three stages. I advised against one
 pass for ~12.4k lines across two crates plus a subsystem with no pin to copy;
@@ -539,6 +571,24 @@ feature.
       per-key model manager. That was unnecessary — the granularity was available
       from the git watcher directly, and the GUI relocation the issue described
       as prerequisite was not needed at all. Close #577.
+
+## A BREAK I INTRODUCED, AND HOW IT WAS CAUGHT
+
+- [x] **`main` did not compile for several hours and no one knew.** The D1
+      rebuild (`a2a10c0f1`) took `app/src/ai/mod.rs` **wholesale** from a branch
+      that predated `terminal_working_directories`, silently deleting the module
+      declaration while leaving the file and `ai/outline/native.rs:19`'s import
+      of it in place. Restored in D2c, verified in `fca2bedb2`.
+      **Cause:** rebuilding a branch by `git checkout <branch> -- <files>` takes
+      whole files, so any line added to those files *on main since the branch
+      point* is reverted without a conflict. Merging would have conflicted;
+      checkout does not.
+      **Rule:** when reconstructing a branch onto a moved `main`, treat shared
+      module-declaration files (`mod.rs`, `lib.rs`) as merge targets, never as
+      checkout targets — or diff them against `main` afterwards.
+      **Only found because an agent read the tree rather than trusting it.** With
+      building frozen there was no other signal; it would have surfaced as a
+      confusing error in a 66-commit build.
 
 ## OPEN QUESTIONS FROM TONIGHT'S WORK — small, need a maintainer answer
 
