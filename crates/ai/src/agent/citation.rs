@@ -14,7 +14,7 @@ impl Display for AIAgentCitation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AIAgentCitation::WarpDriveObject { uid } => {
-                write!(f, "Phosphor Drive Object: {uid}")
+                write!(f, "Library Object: {uid}")
             }
             AIAgentCitation::WarpDocumentation { path } => {
                 write!(f, "Phosphor Documentation: {path}")

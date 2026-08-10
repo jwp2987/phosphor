@@ -104,7 +104,7 @@ impl SettingsWidget for WarpDriveToggleWidget {
     type View = WarpDriveSettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "phosphor drive tools panel command palette search workflows prompts notebooks environment variables"
+        "library phosphor drive tools panel command palette search workflows prompts notebooks environment variables"
     }
 
     fn render(
@@ -116,7 +116,7 @@ impl SettingsWidget for WarpDriveToggleWidget {
         let settings = WarpDriveSettings::as_ref(app);
 
         render_body_item::<WarpDriveSettingsPageAction>(
-            "Phosphor Drive".into(),
+            "Library".into(),
             Some(AdditionalInfo {
                 mouse_state: self.info_icon_mouse_state.clone(),
                 on_click_action: Some(WarpDriveSettingsPageAction::OpenUrl(
@@ -137,7 +137,7 @@ impl SettingsWidget for WarpDriveToggleWidget {
                     ctx.dispatch_typed_action(WarpDriveSettingsPageAction::ToggleShowWarpDrive);
                 })
                 .finish(),
-            Some("Phosphor Drive is a local workspace in your terminal where you can save Workflows, Notebooks, Prompts, and Environment Variables on this device.".into()),
+            Some("Library is a local workspace in your terminal where you can save Workflows, Notebooks, Prompts, and Environment Variables on this device.".into()),
         )
     }
 }

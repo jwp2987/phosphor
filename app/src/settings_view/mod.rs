@@ -368,7 +368,7 @@ impl SettingsSection {
     ///
     /// The key is the Rust variant name and is **frozen**: it must not follow
     /// display renames (`ZapDrive` stays `"ZapDrive"` even though the page is
-    /// shown as "Phosphor Drive"), because changing a key orphans every row
+    /// shown as "Library"), because changing a key orphans every row
     /// already written with the old one. The match is exhaustive on purpose --
     /// a new variant fails to compile until it declares a key.
     pub fn persistence_key(&self) -> &'static str {
@@ -492,8 +492,10 @@ impl FromStr for SettingsSection {
         match s {
             "MCP Servers" => Ok(Self::MCPServers),
             "Keyboard shortcuts" => Ok(Self::Keybindings),
-            // "Zap Drive" was this page's name before the Phosphor rebrand, keep for backward compatibility.
-            "Zap Drive" | "Phosphor Drive" => Ok(Self::ZapDrive),
+            // This page was called "Zap Drive", then "Phosphor Drive", before
+            // the Library rename; "Library" is the current English label. All
+            // three are kept for backward compatibility.
+            "Zap Drive" | "Phosphor Drive" | "Library" => Ok(Self::ZapDrive),
             // This page was called "Oz", then "Zap Agent", before the Phosphor
             // rebrand; "Phosphor Agent" is the current English label. All three
             // are kept for backward compatibility.

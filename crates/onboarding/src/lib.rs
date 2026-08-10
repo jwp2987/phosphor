@@ -42,7 +42,7 @@ pub const AI_FEATURES: &[&str] = &[
 /// intention is selected with Zap Drive turned on. Shared by the login slide's
 /// skip-login confirmation dialog so the list stays in sync with any future
 /// surfaces that need it.
-pub const WARP_DRIVE_FEATURES: &[&str] = &["Phosphor Drive", "Session Sharing"];
+pub const WARP_DRIVE_FEATURES: &[&str] = &["Library", "Session Sharing"];
 
 pub mod components;
 mod visuals;

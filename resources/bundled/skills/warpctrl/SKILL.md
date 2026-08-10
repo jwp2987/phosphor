@@ -48,7 +48,7 @@ Validate that each result corresponds to the command that was invoked. If output
 
 Before discovering commands, route the request to the narrowest matching top-level group:
 
-1. Requests to open, show, view, or toggle a named Phosphor UI destination, panel, picker, or settings page use `surface`. Convert natural-language names to kebab case, such as "Phosphor Drive" to `warp-drive` and "code review" to `code-review`. Note that a few subcommand names still carry their original spelling even where the UI label was renamed, so confirm the exact name with `surface list` or `surface help` rather than deriving it from the visible label. Prefer `surface <name> open` when the requested final state is open. Do not infer an internal action name for a UI destination.
+1. Requests to open, show, view, or toggle a named Phosphor UI destination, panel, picker, or settings page use `surface`. Convert natural-language names to kebab case, such as "Library" to `warp-drive` and "code review" to `code-review`. Note that a few subcommand names still carry their original spelling even where the UI label was renamed, so confirm the exact name with `surface list` or `surface help` rather than deriving it from the visible label. Prefer `surface <name> open` when the requested final state is open. Do not infer an internal action name for a UI destination.
 2. Requests about windows, tabs, panes, or sessions use the matching `window`, `tab`, `pane`, or `session` group.
 3. Requests to stage or inspect editor input use `input`.
 4. Requests to open a file in Phosphor use `file`.

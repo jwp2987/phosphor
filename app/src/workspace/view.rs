@@ -13736,7 +13736,7 @@ impl Workspace {
                         ctx,
                     ),
                     _ => {
-                        log::warn!("Attempted to open an unsupported Phosphor Drive link")
+                        log::warn!("Attempted to open an unsupported Library link")
                     }
                 }
             }

@@ -897,6 +897,7 @@ fn test_sqlite_upgrades_legacy_settings_page_values() {
         // Pre-rebrand names.
         ("Oz", SettingsSection::WarpAgent),
         ("Zap Drive", SettingsSection::ZapDrive),
+        ("Phosphor Drive", SettingsSection::ZapDrive),
         // The zh-CN label for the Network page, which a real user already had
         // stored -- it is why `FromStr` grew a Chinese arm in the first place.
         ("网络", SettingsSection::Network),
