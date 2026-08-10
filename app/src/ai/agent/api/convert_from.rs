@@ -698,6 +698,18 @@ impl ConvertAPIToolCallToAIAgentAction for api::message::ToolCall {
                     .collect();
                 create_standard_action(AIAgentActionType::AskUserQuestion { questions })
             }
+            // Constructs the action so `SendMessageToAgentExecutor` (a local
+            // BYOP executor, not a port of the pin's `ServerApiProvider`-backed
+            // one) can route it through the on-disk agent mailbox. See
+            // `DECLINED.md`'s `#325` row for why this variant exists without
+            // agent-initiated spawning (`RunAgents`).
+            api::message::tool_call::Tool::SendMessageToAgent(send_message_to_agent) => {
+                create_standard_action(AIAgentActionType::SendMessageToAgent {
+                    addresses: send_message_to_agent.addresses,
+                    subject: send_message_to_agent.subject,
+                    message: send_message_to_agent.message,
+                })
+            }
             // Clients do not need to know how to parse server tool-calls but receiving
             // them is not an error.
             api::message::tool_call::Tool::Server(_) => {
