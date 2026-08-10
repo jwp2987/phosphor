@@ -17,18 +17,26 @@
 //! here.) What's left is just the plain data types the pill bar constructs
 //! and hands to `send_telemetry_from_ctx!`.
 //!
-//! Only `PillBarInteraction` is ported. The pin's other five variants
-//! (`TeamAgentCommunicationFailed`, `PlanConfigApprovalToggled`,
+//! `PillBarInteraction` and `TeamAgentCommunicationFailed` are ported. The
+//! pin's other four variants (`PlanConfigApprovalToggled`,
 //! `RunAgentsCardDecision`, `OrchestrationEntered`, `AgentProposedConfig`)
 //! and their support types (`OrchestrationExecutionModeKind`,
 //! `OrchestrationHarnessKind`, `orchestration_modified_field`, ...) are used
 //! exclusively by `controller.rs` / `inline_action/run_agents_card_view.rs` /
-//! `document/orchestration_config_block.rs` /
-//! `action_model/execute/send_message.rs` -- none of which are in Step 2's
-//! scope. One of them doesn't even compile in this fork as-is:
+//! `document/orchestration_config_block.rs` -- none of which are in scope
+//! here. One of them doesn't even compile in this fork as-is:
 //! `OrchestrationExecutionModeKind::from_run_agents` takes
 //! `ai::agent::action::RunAgentsExecutionMode`, a Step 3 (`RunAgents`) type
 //! that does not exist here yet.
+//!
+//! `TeamAgentCommunicationFailed` is a plain data type (no dependency on
+//! `RunAgents`), so it's ported here alongside
+//! `AIAgentActionType::SendMessageToAgent`. Its only consumer in the pin,
+//! `action_model/execute/send_message.rs`, is genuinely cloud-backed
+//! (`crate::server::server_api::ServerApiProvider`,
+//! `crate::server::server_api::ai::{SendAgentMessageRequest,
+//! SendAgentMessageResponse}` -- both cloud markers) and stays unported;
+//! nothing here constructs `TeamAgentCommunicationFailedEvent` yet.
 
 use serde::Serialize;
 
@@ -37,6 +45,60 @@ use crate::ai::agent::conversation::AIConversationId;
 #[derive(Debug)]
 pub(crate) enum BlocklistOrchestrationTelemetryEvent {
     PillBarInteraction(PillBarInteractionEvent),
+    TeamAgentCommunicationFailed(TeamAgentCommunicationFailedEvent),
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub(crate) enum TeamAgentCommunicationKind {
+    Message,
+    LifecycleEvent,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub(crate) enum TeamAgentCommunicationTransport {
+    Local,
+    ServerApi,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub(crate) enum TeamAgentOrchestrationVersion {
+    V1,
+    V2,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub(crate) enum TeamAgentCommunicationFailureReason {
+    InvalidLifecycleEventType,
+    MissingSourceConversation,
+    MissingSourceIdentifier,
+    UnknownAgent,
+    NoTargets,
+    RequestFailed,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TeamAgentCommunicationFailedEvent {
+    pub communication_kind: TeamAgentCommunicationKind,
+    pub transport: TeamAgentCommunicationTransport,
+    pub orchestration_version: TeamAgentOrchestrationVersion,
+    pub failure_reason: TeamAgentCommunicationFailureReason,
+    pub source_conversation_id: AIConversationId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_event_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
