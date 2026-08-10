@@ -158,7 +158,7 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
             assert_eq!(
                 render_element(row, ctx, 160).to_lines(),
                 vec![
-                    "Auto-approve • Auto-queue | model /tmp/warp ↬ main | +31 -12 | 43% context | July 20, 2026 • 1:08pm | ❒ 1/10"
+                    "Auto-approve • Auto-queue | model | /tmp/warp ↬ main | +31 -12 | 43% context | July 20, 2026 • 1:08pm | ❒ 1/10"
                         .to_owned()
                 ],
             );
@@ -2889,7 +2889,7 @@ fn footer_renders_shell_mode_sections_without_model_or_usage() {
 
             assert_eq!(
                 lines,
-                vec![format!("{SHELL_MODE_HINT} /home/user/warp ⊢ main | +3 -1")],
+                vec![format!("{SHELL_MODE_HINT} /home/user/warp ↬ main | +3 -1")],
                 "shell footer leads with the shell-mode indicator and hides model/usage"
             );
             assert!(

@@ -5,7 +5,7 @@ use std::time::Duration;
 use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentPtyWriteMode, AIConversationId,
     BlockId, BlocklistAIActionEvent, CancellationReason, LongRunningCommandControlState, TaskId,
-    UserTakeOverReason, queue_tui_permission_action,
+    UserTakeOverReason, queue_tui_permission_action, register_tui_action_execution_test_singletons,
 };
 use warpui_core::App;
 
@@ -96,6 +96,9 @@ fn test_action(id: &str) -> AIAgentAction {
 fn allow_executes_the_exact_displayed_action() {
     App::test((), |mut app| async move {
         let action_model = add_test_action_model(&mut app);
+        // These tests drive actions without a full session view, so the
+        // execution-pipeline singletons are not otherwise registered.
+        register_tui_action_execution_test_singletons(&mut app);
         let conversation_id = AIConversationId::new();
         let first = test_action("first");
         let displayed = test_action("displayed");
@@ -123,6 +126,8 @@ fn allow_executes_the_exact_displayed_action() {
 fn reject_cancels_only_the_exact_displayed_action() {
     App::test((), |mut app| async move {
         let action_model = add_test_action_model(&mut app);
+        // See the note in allow_executes_the_exact_displayed_action.
+        register_tui_action_execution_test_singletons(&mut app);
         let conversation_id = AIConversationId::new();
         let first = test_action("first");
         let displayed = test_action("displayed");

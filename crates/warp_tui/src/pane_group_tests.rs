@@ -21,6 +21,14 @@ struct PaneGroupTestFixture {
 
 fn pane_group_test_fixture(app: &mut App) -> PaneGroupTestFixture {
     register_tui_session_view_test_singletons(app);
+    // That helper registers the autoupdater's SETTINGS but not the model itself
+    // (see its comment on `register_all_settings`); the session view reads
+    // `TuiAutoupdater::as_ref` while rendering, so register it the same way
+    // zero_state_tests.rs and usage_smoke_tests.rs do.
+    app.update(crate::autoupdate::TuiAutoupdater::register);
+    // Registered in production by session.rs:233; the session view reads it while
+    // reconciling child panes.
+    app.update(crate::tui_revert_registry::TuiFileEditRevertRegistry::register);
     let (window_id, _) = app.update(|ctx| {
         ctx.add_tui_window(
             AddWindowOptions {

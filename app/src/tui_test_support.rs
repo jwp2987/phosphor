@@ -89,6 +89,19 @@ pub fn queue_tui_permission_action(
     action_model.queue_confirmation_action(action, conversation_id, ctx);
 }
 
+/// Registers the singletons the action-execution pipeline reads, for tests that
+/// drive actions without standing up a full session view.
+///
+/// `should_autoexecute` reaches `BlocklistAIPermissions`, which in turn reads the
+/// execution-profile settings backed by the user preferences. Deliberately NOT
+/// folded into `add_test_action_model`: `register_tui_session_view_test_singletons`
+/// registers both of these unguarded, and `add_singleton_model` panics on a
+/// duplicate -- doing it there breaks every test that uses the full harness.
+pub fn register_tui_action_execution_test_singletons(app: &mut warpui::App) {
+    app.update(init_and_register_user_preferences);
+    app.add_singleton_model(BlocklistAIPermissions::new);
+}
+
 /// Registers the app models required to construct full TUI session views in tests.
 ///
 /// Registration order mirrors model subscription dependencies. Cloud/orchestration
