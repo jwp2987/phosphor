@@ -142,6 +142,90 @@ background process group. Fix: launch detached (`nohup setsid ... & disown`) and
 the log with an `until` loop. A killed run can also report "exit code 0" — **read the
 log, never trust the exit code.**
 
+## LANDED 2026-08-10 — test gate + #577
+
+- [x] **Test gate was reporting green on a failed test BUILD** (`dc4853aa8`).
+      `script/check_test_failures` piped nextest through `tee`, discarding the
+      exit status, then judged the run purely by counting `FAIL` lines. A build
+      failure emits none, so "the test binary did not compile" and "everything
+      passed" were byte-identical inputs. `warp_tui` stopped compiling, ~5,700
+      tests never ran, and the gate printed `ok  no change`. Now checks the
+      nextest exit code (0 / 100 only) AND requires a `Summary [...]` line as
+      proof a suite ran.
+- [x] **The 20 test failures that gate was hiding** (`26b04309f` and four
+      predecessors). 11 were code defects, 9 were wrong tests. Notable code
+      defects: the TUI's `?`/`/status` sheet could not be closed with Escape
+      from a real keypress (the keymap flag was never set, so the binding never
+      matched); an agent-controlled alternate screen took the whole pane, leaving
+      no way to reach the agent mid-command; `pane_count()` counted hidden child
+      agent panes, so closing your last visible pane left an empty tab alive; two
+      CLI-agent sites used `listener.is_some()` where the pin uses
+      `supports_rich_status()`, so Codex status changes stole the keyboard.
+- [x] **#577 remote_server granular diff-state deltas** (`8a76a0807`). The daemon
+      pushed a full repo snapshot on every change; it now pushes one
+      `DiffStateFileDelta` per changed file. `classify_repository_update` is
+      extracted from `LocalDiffStateModel` and shared so the daemon cannot drift
+      from the GUI's rules. Whole-snapshot push is retained as the fallback for
+      repos with no watchable `Repository`. **Note the issue's sizing was wrong**:
+      it called for replacing ~400 lines of `server_model.rs` with a persistent
+      per-key model manager. That was unnecessary — the granularity was available
+      from the git watcher directly, and the GUI relocation the issue described
+      as prerequisite was not needed at all. Close #577.
+
+## PARITY AUDIT 2026-08-10 — gaps NOT in any tier (needs tiering)
+
+Audit compared the fork against pin `02b53fcd8` using test coverage as the
+signal. **Headline methodological result: the largest gaps carry 0-3 pin tests
+each and are invisible to a test-count burndown** — they were found by diffing
+source basenames, enum variants and crate lists, not test names. Do not treat a
+green suite or a shrinking test gap as evidence of parity.
+
+- [ ] **LSP — the entire subsystem.** ~6,600 lines (`crates/lsp/` 4,891 +
+      app-side modules). Removed deliberately by `efcaa42b8`, but recorded in
+      NEITHER `DECLINED.md` NOR here. **Needs a maintainer verdict**: either it
+      becomes the largest open parity item, or it gets a DECLINED.md row.
+- [ ] **#323 is ticked as landed but the Codex SDK harness driver is not.**
+      What landed was local child-pane launch. `harness/mod.rs:134` still returns
+      `HarnessKind::Unsupported(Harness::Codex)`. 1,190 lines / 47 tests.
+- [ ] **#349's parking rationale is mis-scoped.** Parked as "macOS-only, cannot
+      verify on this host", but that covers neither `linux/x11/{seat,windows}.rs`
+      (buildable here) nor the platform-neutral `Target`/`TargetedAction`/
+      `enumerate_windows` API every caller must thread.
+- [ ] **Settings > Scripting page absent** (302 lines). The fork ships the whole
+      `local_control` stack, and `app/src/settings/local_control.rs:53` says
+      users "must opt in through Settings > Scripting" — a page that does not
+      exist. On public channels local control cannot be enabled by any
+      user-reachable path. Ported-but-never-wired.
+- [ ] **Ctrl+Tab cycle-most-recent-TAB missing** (sessions-only today).
+      `CtrlTabBehavior` has 2 variants, no `CycleMostRecentTab`; `QueryFilter`
+      has no `Tabs`. ~187 lines.
+- [ ] **`getpwuid_r` panics with no fallback** (`terminal/local_tty/unix.rs:132-143`).
+      The pin degrades getpwuid_r -> `getent passwd` -> parse `/etc/passwd`; the
+      fork aborts. Breaks LDAP/SSSD hosts and some containers. ~80 lines. Defect-shaped.
+- [ ] **TUI API-key hot-reload hook absent** (46 lines). Matters more here than
+      upstream because GUI and TUI share one app id and keychain namespace.
+- [ ] **Command-palette recent-repos data source not wired** (~220 lines).
+      `QueryFilter::Repos` exists with no producer behind it in the palette.
+- [ ] **Bundled skills `warpctrl` / `change-keybinding` / `tui-migrate-setup`**
+      (#370 — cited in fork source, absent from this file). The fork has the
+      entire local_control stack and no skill telling the agent it exists.
+- [ ] **External-editor Warp-bundle guard absent** — "open in external editor"
+      can resolve back to the app itself. <50 lines.
+- [ ] **remote_server client log tail absent** (54 lines).
+- [ ] Low confidence, verify before acting: TUI completion menu (fork's
+      `completions_menu.rs` may cover it under different names);
+      warpui_core telemetry ring buffer (probably belongs in DECLINED.md — the
+      fork removed the telemetry channel, so an event store has no consumer).
+
+**Also needs a DECLINED.md row rather than TODO prose:** semantic codebase
+search. Verified genuinely cloud-bound, not merely unported — `StoreClient`'s
+only non-mock impl at the pin is `impl StoreClient for ServerApi`, and
+`full_source_code_embedding/mod.rs` imports `warp_graphql::queries::rerank_fragments`.
+
+**SCOPE-*.md is stale**: measured against fork `4f33fcf9c`, now 560 commits
+behind. 9 AI-slice and 12 REST-slice verdict-D rows have since landed.
+Re-verify any SCOPE row before acting on it.
+
 ## AGREED QUEUE 2026-08-09 (maintainer)
 
 Order: **#440**, then **#381 → #382 → #236**. One sonnet agent per batch, coordinator
