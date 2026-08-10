@@ -1,5 +1,10 @@
 # TODO — Phosphor: Warp parity ledger (#11) + code-review debt
 
+**Checkbox key:** `- [ ]` open · `- [>]` **IN FLIGHT, agent assigned** · `- [~]` partial · `- [x]` done.
+Added 2026-08-10 after a status report listed four in-flight items as unstarted:
+the assignment lived in the operator's head and not in this file. **Record the
+assignment here when you start work, not when you finish it.**
+
 ## ACTIVE WORK QUEUE (2026-08-08) — read this first
 
 **Process, agreed with the maintainer:**
@@ -205,12 +210,12 @@ Treat all of this as staged, not validated.
       `gui_config_local_dir`/`tui_config_local_dir` at all. It also treats the
       schema's `x-warp-surfaces` annotation as authoritative, and this fork
       dropped `SettingSurfaces`, so the generator emits no such annotation.
-- [ ] **Localized `Display` + English-literal `FromStr` on `SettingsSection`**
+- [x] **Localized `Display` + English-literal `FromStr` on `SettingsSection`** **[DONE 35baf6e4a — issue #578. persistence_key() returns the variant name; Display stays localized. Legacy values upgrade on READ, not by migration, because the localized vocabulary is unbounded, save_app_state rewrites settings_panes wholesale so the legacy path drains itself, and an older build can still write legacy rows post-migration. Two residual cases stated not hidden: cross-locale first read still falls back to default (no regression), and zh-CN renders MCPServers and AgentMCPServers identically. surface.settings.open now takes stable keys + English names but NOT localized ones -- an agent-facing contract that only resolves in the caller's UI language is not a contract.]** **[IN FLIGHT 2026-08-10]**
       breaks settings-pane persistence round-trips if any `settings-section-*`
       key is ever translated (`persistence/sqlite.rs:2667`). Pre-existing for
       every section; the `"Network" | "网络"` arm in `FromStr` suggests someone
       already hit this once.
-- [ ] **LSP: the `ON DELETE CASCADE` guard arm is still outstanding.** The LSP
+- [>] **LSP: the `ON DELETE CASCADE` guard arm is still outstanding.** **[IN FLIGHT 2026-08-10 — LSP agent resumed and carrying it]** The LSP
       agent chose CASCADE (verified `PRAGMA foreign_keys = ON` is per-connection)
       but argued correctly that **CASCADE does not close the guard out** — they
       fix different halves. CASCADE makes the orphan state unrepresentable;
@@ -227,7 +232,62 @@ Treat all of this as staged, not validated.
    `install_warpctrl` widget, and `app_menus.rs` in D1 (macOS-gated, will not
    compile on this host or in Linux CI).
 
-## LSP TRACK (opened 2026-08-10, maintainer verdict: RESTORE)
+## LSP TRACK (opened 2026-08-10, maintainer verdict: RESTORE) — **[~] PARTIAL, agent stopped at a checkpoint**
+
+### NEW — an untracked product decision this surfaced, needs a maintainer entry
+- [ ] **`lsp_server_selector.rs` is NOT an LSP-track item.** It was not removed
+      by `efcaa42b8`. `app/src/terminal/view/init_project/` was deleted five days
+      earlier by **`b0b1faef9`** — a separate decision, rationale *"the
+      InitProject wizard is Warp cloud agent mode's first-run onboarding; openWarp
+      BYOP has no cloud onboarding need"*. The selector is a leaf of a 1,901-line
+      wizard (`mod.rs` 1,303 + `model.rs` 598) that would have to be reversed
+      first. **That decision is in neither `DECLINED.md` nor `TODO.md`** — a third
+      deliberate removal recorded nowhere, after LSP itself and the
+      PersistedWorkspace/indexing retirement. Per §5.10 the rationale also
+      deserves a second look: `/init` is a **local** flow, so "cloud onboarding"
+      may be the wrong frame. Needs a maintainer verdict either way.
+
+### Done
+- [x] `crates/lsp` restored verbatim, 22 tests unweakened (`f4e99118a`)
+- [x] initial app wiring — deps, `lsp::init`, `FeatureFlag::LSPAsATool`,
+      terminate hook, `lsp_logs.rs`, `lsp_telemetry.rs` catalog, 3 editor helpers
+- [x] `workspace_language_server` migration, re-applied onto current main (`5f2f5d103`)
+- [x] PersistedWorkspace LSP **state** layer — `EnablementState`,
+      `language_servers`, the seven enable/disable/query methods, `ModelEvent`
+      dispatch, both sqlite functions
+- [x] **the `ON DELETE CASCADE` guard arm** — both halves of the hazard now
+      covered, with the reason they are not interchangeable recorded in code
+
+### Remaining — ~2,500 lines of surgery into a diverged host, NOT started
+`language_server_extension.rs`, `find_references_view.rs` and
+`language_server_shutdown_manager.rs` all gate on the same blocker:
+`LocalCodeEditorView` state the fork does not have. The agent stopped here
+deliberately rather than shipping a large blind edit, and it was right to.
+
+**The host is the problem, not the three files.** Pin `LocalCodeEditorView` has
+~25 fields, the fork has 15 — and **the absences are NOT all LSP-caused**. The
+file diverged in both directions, so every field needs individual adjudication
+rather than a bulk restore. On top of that: ~20 methods / ~800 lines in
+`local_code_editor.rs`, new `LocalCodeEditorAction` variants and dispatch, the
+`CodeEditorEvent::MouseHovered` arm (an explicit no-op today at
+`local_code_editor.rs:227`), render changes for the hover tooltip and
+find-references card, `editor/element.rs` (+88 LSP lines), and `code/mod.rs`'s
+`ShowFindReferencesCardProvider` trait. Then the two 600-700 line files land on
+top of that.
+
+Also absent and needed by the shutdown manager:
+`TerminalView::canonical_session_pwd_if_local`. Restorable — its inputs
+(`active_session_path_if_local`, `repo_metadata::CanonicalizedPath`) both exist
+— but it needs a new `canonical_session_pwd_cache` field on `TerminalView`.
+
+**Do not assign this as one unit.** Adjudicating the diverged host is its own
+piece of work and should land before any of the three files are attempted.
+
+**Status 2026-08-10:** step 1 + part of step 2 MERGED (`f4e99118a`). The original
+agent was **resumed** and is continuing with `language_server_extension.rs`,
+`find_references_view.rs`, the shutdown manager, the server selector, the
+`code_page.rs` section, the persistence half (unblocked now D1 landed), and the
+`ON DELETE CASCADE` guard arm. **This is not working LSP yet.**
 
 Was the largest item with no home — removed deliberately by `efcaa42b8` and
 recorded in neither `DECLINED.md` nor this file. Maintainer decided 2026-08-10
@@ -330,9 +390,9 @@ the very mechanism the test is named after.
   `CLAUDE.local.md`).
 
 ### Two findings worth acting on independently
-- [ ] **Nothing prunes the recent-repos list.** Expiry is the index manager's job,
+- [>] **Nothing prunes the recent-repos list.** **[IN FLIGHT 2026-08-10 — D2 agent told to verify pruning returns with the index manager]** Expiry is the index manager's job,
       and indexing is absent — so the list grows without bound until D2c lands.
-- [ ] **`all_working_directories` already exists as a private copy** in
+- [x] **`all_working_directories` already exists as a private copy** **[DONE 9fb1900fd — now ai/terminal_working_directories.rs.]** in
       `app/src/ai/outline/native.rs`. Reunify when indexing returns; do not add a third.
 - [ ] **LSP-restoration trap** (documented at the `clean_up_expired_metadata` seam):
       `workspace_language_server` foreign-keys `workspace_metadata` **without
@@ -375,7 +435,11 @@ and its `CodebaseIndexManager` seams are where indexing attaches. Porting one
 without the other leaves either dangling seams or an indexer with nothing to
 hang it on.
 
-### D1 — PersistedWorkspace (CODE COMPLETE 2026-08-10, UNBUILT — branch `feat/restore-persisted-workspace`)
+### D1 — PersistedWorkspace (**MERGED 2026-08-10** `ec227975d`, UNBUILT)
+
+Rebuilt onto current `main` rather than merged from its branch: the original
+carried the polluted #577 commit and would have duplicated work `main` already
+had. Unblocks the LSP persistence half, which foreign-keys `workspace_metadata`.
 ~1,289 lines (`git show 02b53fcd8:app/src/ai/persisted_workspace.rs`).
 Local content: recent repositories / workspace metadata, per-workspace LSP
 enable-disable state, project-context and project-rules wiring,
@@ -392,7 +456,12 @@ enable-disable state, project-context and project-rules wiring,
 - Note: the pin's command-palette recent-repos data source (audit finding 9) is
   backed by `PersistedWorkspace`, so it lands naturally with this.
 
-### D2 — Codebase indexing subsystem
+### D2 — Codebase indexing subsystem — **[>] IN FLIGHT (full scope, one agent, maintainer's call 2026-08-10)**
+
+**Status:** a single agent is building all three stages. I advised against one
+pass for ~12.4k lines across two crates plus a subsystem with no pin to copy;
+the maintainer reaffirmed, so it is running with instructions to commit per
+stage and report honestly rather than bluff completion.
 32 files / **12,316 lines** at `crates/ai/src/index/full_source_code_embedding/`,
 plus `app/src/ai/codebase_auto_indexing.rs` (82). The fork's
 `crates/ai/src/index/` now holds only `file_outline`, `locations.rs`, `mod.rs`.
@@ -471,6 +540,51 @@ feature.
       from the git watcher directly, and the GUI relocation the issue described
       as prerequisite was not needed at all. Close #577.
 
+## UNRECORDED SUBSYSTEM REMOVALS — a pattern, needs a rule not four entries
+
+Four deliberate removals of **local** subsystems surfaced on 2026-08-10, every
+one found by an agent doing unrelated work, and **every one recorded in neither
+`DECLINED.md` nor `TODO.md`**. The audit did not catch them because it keys on
+pin tests, and these carry few or none.
+
+- [ ] **`9765692e1` (2026-04-30) — client-side computer-use dispatch, 17 files,
+      −936 lines. VERIFIED, and it carries an active documentation
+      contradiction.** Removed both executors
+      (`execute/{use_computer,request_computer_use}.rs`), the `crates/ai` action
+      and action_result variants (`UseComputer`, `RequestComputerUse`,
+      `UseComputerResult`, `RequestComputerUseResult`, `ScreenDimensions`), their
+      protobuf conversions, the `block.rs` ViewScreenshot lightbox, the render
+      and persistence paths, and gutted `conversation.use_computer_action_ids()`
+      to `std::iter::empty()`. Inbound `Tool::UseComputer` now returns
+      `UnexpectedTool`.
+      **Not cloud** — the executors call `computer_use::create_actor()` locally
+      and the pin's versions run entirely client-side.
+      **Consequence:** #349's port is complete and the feature still cannot work.
+      `create_actor()` has exactly one caller, the `use_computer` dev CLI.
+      **The contradiction:** `app/src/ai/blocklist/action_model/execute.rs:377`
+      says *"Computer Use is out of scope for this fork (see `DECLINED.md`)"* —
+      but `DECLINED.md:137` lists `crates/computer_use` under **"Not declined —
+      common false positives"**, and `DECLINED.md:125` states outright
+      **"#349 is NOT covered"**. The code cites a decision the decision file
+      explicitly contradicts. **Maintainer ruling needed:** either record the
+      dispatch removal as declined and fix `DECLINED.md`, or file it as debt and
+      fix the comment. It cannot stay as-is.
+- [ ] **`b0b1faef9` — InitProject wizard, 1,901 lines.** Rationale given was
+      "cloud agent mode's first-run onboarding", but `/init` is a **local** flow,
+      so per §5.10 the framing deserves a second look. Takes
+      `lsp_server_selector.rs` with it.
+- [ ] **`efcaa42b8` — LSP, 14,611 lines.** Now being restored (maintainer verdict
+      2026-08-10), but the removal itself was never recorded.
+- [ ] **`d84dd8e4d` — PersistedWorkspace + codebase indexing.** D1 restored the
+      workspace half; D2 is restoring indexing.
+
+- [ ] **THE RULE THIS NEEDS.** Four in one day is not four oversights. Nothing in
+      this project forces a removal to be recorded, and the parity audit cannot
+      see them (no pin tests). Proposal: a CI guard in the spirit of
+      `check_cloud_boundary` that flags a commit deleting more than N lines of
+      non-cloud source unless it cites a `DECLINED.md` row or a `TODO.md` issue.
+      Cheaper than any of the four restorations it would have prevented.
+
 ## LICENCE COMPLIANCE 2026-08-10 — one BLOCKING item
 
 Read-only review against pin `02b53fcd8`. Reviewer is not a lawyer; these are
@@ -485,7 +599,7 @@ declared `AGPL-3.0-only`, public repo, all 65 workspace members inherit it, and
 the single AGPL dependency (`warp_multi_agent_api`) is compatible. No GPL-3.0 /
 LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
 
-- [ ] **BLOCKING — restore Alacritty's Apache-2.0 attribution.** The licence
+- [x] **BLOCKING — restore Alacritty's Apache-2.0 attribution.** **[DONE b5fea7a86 — 18 files, not 16.]** The licence
       file `crates/warp_terminal/src/model/LICENSE-ALACRITTY` exists upstream and
       is absent from this repo *and its entire history* (stripped in the
       Zap/OpenWarp ancestor, before our history begins). The 2-line attribution
@@ -499,7 +613,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       artifacts. Our own `docs/DESIGN-PHOSPHOR-FORK.md:127` states the rule the
       code breaks. Mechanical fix: restore the licence file, restore 16 headers,
       re-add 2 manifest entries.
-- [ ] **AGPL §13 — no source offer in the shipped product.** We ship a daemon
+- [x] **AGPL §13 — no source offer in the shipped product.** **[DONE b5fea7a86 — README + About page. Third-party-licences VIEWER still outstanding.]** We ship a daemon
       users interact with over a network (`app/src/remote_server/`,
       `crates/remote_server/`, reached over SSH) and neither it nor the About
       page offers Corresponding Source. `README.md` has **zero** hits for
@@ -508,7 +622,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       `Copyright 2026 Phosphor`. One fix discharges both this and the
       MIT-notice-communication problem: restore the README licensing section and
       add a source URL + third-party-licence link to the About page.
-- [ ] **Licence CI was dropped; the allowlists enforce nothing.** `deny.toml:18`
+- [x] **Licence CI was dropped; the allowlists enforce nothing.** **[DONE b5fea7a86 — licenses job added; has never run, expect first-run surprises.]** `deny.toml:18`
       and `about.toml:3` both claim "CI enforces this via
       `script/check_license_config_sync`" — that script is referenced nowhere in
       `.github/` or `script/precheck`. Upstream ran `cargo deny -L error check
@@ -516,7 +630,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       Nothing now stops a GPL/BUSL/SSPL/unknown crate entering on a dep bump.
       This is why the next two items exist. Needs a cargo invocation → belongs in
       CI, not `precheck`.
-- [ ] **`libgit2` vendored statically, GPL-2.0 notice not emitted.**
+- [x] **`libgit2` vendored statically, GPL-2.0 notice not emitted.** **[DONE b5fea7a86 — LICENSE-LIBGIT2 committed. The deny.toml exception was correctly REFUSED; see the merge note.]**
       `app/Cargo.toml:273-275` uses `vendored-libgit2`. Not a conflict — the
       linking exception resolves compatibility with AGPL — but `cargo about`
       reads `libgit2-sys`'s declared MIT and never emits the GPL-2.0 text that
@@ -567,7 +681,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       without instantly failing. That is a CI stopgap and does NOT address
       availability. If option 1 or 2 is chosen, that entry should name the new
       source instead.
-- [ ] **Trademark — "Warp" branding retained across the user-facing surface.**
+- [x] **Trademark — "Warp" branding retained across the user-facing surface.** **[DONE b5fea7a86 commit F (separable). Warpify -> Phosphorize. warpctrl BINARY rename still open; stale Zap/Zapping branding now inconsistent.]**
       AGPL §7 explicitly declines to license trademarks, so this is not covered
       by either licence. 46 occurrences in `app/i18n/en/warp.ftl` (45 ja, 47
       zh-CN): "Install the **Warp plugin**", `settings-warpify-page-title =
@@ -577,7 +691,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       Warp-branded marketing PNGs under `app/assets/async/png/`.
       `docs/DESIGN-PHOSPHOR-FORK.md:126-127` already forbids exactly this.
       Nominative use ("a fork of Warp") is fine and should stay.
-- [ ] **Bundled assets with no attribution or licence.**
+- [x] **Bundled assets with no attribution or licence.** **[DONE b5fea7a86 where determinable; password.ttf / ~356-icon set / Figma recorded in docs/licensing-open-questions.md.]**
       `app/assets/bundled/fonts/password.ttf` (no licence, no provenance, present
       since Warp's first public commit); 17 file-type SVGs marked "Uploaded to:
       SVG Repo" (per-icon terms vary, several are trademarked vendor logos);
@@ -613,7 +727,7 @@ green suite or a shrinking test gap as evidence of parity.
 - [x] ~~LSP needs a maintainer verdict~~ — **VERDICT 2026-08-10: RESTORE.**
       Promoted out of this section into its own track below.
 ### MIS-TICKED / MIS-SCOPED — existing entries that misstate reality
-- [ ] **#323 is ticked LANDED but the Codex SDK harness driver is absent.**
+- [x] **#323 is ticked LANDED but the Codex SDK harness driver is absent.** **[DONE 75e5dc30c — harness_kind returns ThirdParty(CodexHarness); 46 tests. Audit said 7 tests needed adapting; real number was 3.]** **[IN FLIGHT 2026-08-10 — agent porting codex.rs + codex_transcript.rs + 47 tests]**
       TODO.md:524 marks it done. What actually landed is the *local child-pane
       launch* (`app/src/pane_group/pane/local_harness_launch.rs:148
       build_local_codex_child_command`). The SDK driver was explicitly excluded
@@ -625,36 +739,36 @@ green suite or a shrinking test gap as evidence of parity.
       `codex_transcript_tests.rs` (9), all absent. Templates already exist in
       the fork: `claude_code.rs`, `gemini.rs`. **Untick #323 or split out the
       remainder as its own issue — do not leave it reading as complete.**
-- [ ] **#349's parking rationale is mis-scoped.** Parked as "macOS-only, cannot
+- [x] **#349's parking rationale is mis-scoped.** **[PORTED 64b6e03c6 — ~3,100 lines, not ~1,430. BLOCKED from working, see below.]** **[IN FLIGHT 2026-08-10 — agent doing platform-neutral API, then Linux X11, then macOS; will return a corrected scope]** Parked as "macOS-only, cannot
       verify on this host", but that covers neither `linux/x11/{seat,windows}.rs`
       (buildable here) nor the platform-neutral `Target`/`TargetedAction`/
       `enumerate_windows` API every caller must thread.
 ### PORTED BUT NEVER WIRED — the class this file's own rules call a defect
-- [ ] **Settings > Scripting page absent** (302 lines). The fork ships the whole
+- [x] **Settings > Scripting page absent** **[DONE 242e84af6 — wired to the existing LocalControlSettings group.]** (302 lines). The fork ships the whole
       `local_control` stack, and `app/src/settings/local_control.rs:53` says
       users "must opt in through Settings > Scripting" — a page that does not
       exist. On public channels local control cannot be enabled by any
       user-reachable path. Ported-but-never-wired.
-- [ ] **Ctrl+Tab cycle-most-recent-TAB missing** (sessions-only today).
+- [>] **Ctrl+Tab cycle-most-recent-TAB missing** **[IN FLIGHT 2026-08-10]** (sessions-only today).
       `CtrlTabBehavior` has 2 variants, no `CycleMostRecentTab`; `QueryFilter`
       has no `Tabs`. ~187 lines.
 ### DEFECT-SHAPED — these are bugs, not missing features
-- [ ] **`getpwuid_r` panics with no fallback** (`terminal/local_tty/unix.rs:132-143`).
+- [x] **`getpwuid_r` panics with no fallback** **[DONE 951be89c4 — also fixed a second panic in shell.rs.]** (`terminal/local_tty/unix.rs:132-143`).
       The pin degrades getpwuid_r -> `getent passwd` -> parse `/etc/passwd`; the
       fork aborts. Breaks LDAP/SSSD hosts and some containers. ~80 lines. Defect-shaped.
-- [ ] **TUI API-key hot-reload hook absent** (46 lines). Matters more here than
+- [>] **TUI API-key hot-reload hook absent** **[IN FLIGHT 2026-08-10 — agent warned the shared GUI/TUI config dir may block it, same trap that killed tui-migrate-setup]** (46 lines). Matters more here than
       upstream because GUI and TUI share one app id and keychain namespace.
-- [ ] **Command-palette recent-repos data source not wired** (~220 lines).
+- [x] **Command-palette recent-repos data source not wired** **[DONE ec227975d — landed with D1.]** (~220 lines).
       `QueryFilter::Repos` exists with no producer behind it in the palette.
-- [ ] **Bundled skills `warpctrl` / `change-keybinding` / `tui-migrate-setup`**
+- [~] **Bundled skills `warpctrl` / `change-keybinding` / `tui-migrate-setup`** **[PARTIAL 242e84af6 — warpctrl + change-keybinding landed; tui-migrate-setup needs maintainer sign-off, see the 2026-08-10 landing section]**
       (#370 — cited in fork source, absent from this file). The fork has the
       entire local_control stack and no skill telling the agent it exists.
-- [ ] **External-editor Warp-bundle guard absent** — "open in external editor"
+- [x] **External-editor Warp-bundle guard absent** **[FALSE POSITIVE — the guard exists as is_zap_bundle; the port renamed it. Fixed a real bug there instead (dev.warp.Zap is not a real bundle id).]** — "open in external editor"
       can resolve back to the app itself, so the user's editor never opens.
       Pin has `is_warp_bundle`; `git grep -c is_warp_bundle` → 0. <50 lines.
       Tests `is_warp_bundle_recognises_warp_channels`,
       `is_warp_bundle_rejects_other_apps` absent.
-- [ ] **remote_server client log tail absent** (54 lines).
+- [>] **remote_server client log tail absent** **[IN FLIGHT 2026-08-10]** (54 lines).
 - [ ] Low confidence, verify before acting: TUI completion menu (fork's
       `completions_menu.rs` may cover it under different names);
       warpui_core telemetry ring buffer (probably belongs in DECLINED.md — the
@@ -1099,12 +1213,12 @@ Sizing: ~72 of ~305 orchestration-adjacent pin tests are import-clean of cloud.
 - [x] #376 `AgentConversationData` fields the view reads. **Verify each field
       individually**: the issue's claim that `is_remote_child` is missing is
       FALSE, it is already present.
-- [ ] #304 the orchestrator/child-agent view (pill bar, avatar, conversation
+- [x] #304 the orchestrator/child-agent view **[DONE — issue CLOSED; orchestration_pill_bar.rs + _model.rs + avatar + conversation_links all present with tests]** (pill bar, avatar, conversation
       links, block view-impl, inline controls). Folds in **#410's second half**
       (`cycle_next/previous_orchestration_child_agent` bindings) — #410 was
       closed citing the orchestration decline, and that citation is now stale.
-- [ ] #325 run-agents child prompt composition — **LOCAL arm only.**
-- [ ] #329 collapsible defaults — LAST, it configures presentation of the above.
+- [x] #325 run-agents child prompt composition **[DONE — issue CLOSED]** — **LOCAL arm only.**
+- [x] #329 collapsible defaults **[DONE — issue CLOSED]** — LAST, it configures presentation of the above.
 - [x] #309 topology half only. **The credit-rollup half stays declined** — Warp
       credits are a billing concept with no BYOP equivalent.
 
@@ -1127,7 +1241,7 @@ deleted orchestration storage deliberately; this is not a revert.
 **ONE agent at a time. ONE build at a time. Each step lands green and merges before
 the next starts.** Coordinator builds and merges; agents never merge.
 
-- [ ] **Step 1a** — extract the avatar helpers into a new shared module
+- [x] **Step 1a** **[DONE — orchestration avatar helpers extracted]** — extract the avatar helpers into a new shared module
       `agent_view/avatar_disc.rs`. Six items, ALL pure rendering with **zero**
       pill-bar state (verified: `render_avatar_disc` has 0 references to telemetry,
       `self`, or `PillBarModel`):
@@ -1136,11 +1250,11 @@ the next starts.** Coordinator builds and merges; agents never merge.
       `pill_initial` (:117), `AvatarGlyph` (:196), `render_avatar_disc` (:2125).
       ~60-90 lines total. The pin already exposes them `pub(crate)`, so Step 2's
       pill bar imports them from here instead of defining them.
-- [ ] **Step 1b** — `orchestration_avatar.rs` (41 lines) + `block/view_impl/orchestration.rs`
+- [x] **Step 1b** **[DONE — orchestration_avatar.rs present with tests]** — `orchestration_avatar.rs` (41 lines) + `block/view_impl/orchestration.rs`
       (656). The latter uses `OrchestrationAvatar` 7x, so these go together.
       `CollapsibleExpansionState` already exists generically in `block.rs` — not
       gated on #329.
-- [ ] **Step 1c** — `orchestration_conversation_links.rs` (299). **Independent of
+- [x] **Step 1c** **[DONE — orchestration_conversation_links.rs present]** — `orchestration_conversation_links.rs` (299). **Independent of
       1a/1b** — uses `OrchestrationAvatar` 0 times. Needs
       `TerminalAction::OpenChildAgentInNewPane` (0 in fork; note
       `RevealChildAgent` already exists and is wired, so #410's second half is
@@ -1151,15 +1265,15 @@ the next starts.** Coordinator builds and merges; agents never merge.
       cannot land alone" and had Step 1 reach into Step 2's 2,539-line file. That
       was wrong — the six helpers are self-contained, so 1a makes the split clean
       and no structural deviation from the pin is needed.
-- [ ] **Step 2** — `orchestration_pill_bar.rs` (2,539). Port the
+- [x] **Step 2** **[DONE — orchestration_pill_bar.rs present with tests]** — `orchestration_pill_bar.rs` (2,539). Port the
       `blocklist::telemetry` module FIRST (`BlocklistOrchestrationTelemetryEvent`:
       6 pin files, **0 in fork**), then the pill bar, then the new variants on
       `PaneHeaderAction`/`MenuEvent`/`WorkspaceAction`/`TerminalAction`. Own session.
-- [ ] **Step 3** — #325. Add `AIAgentActionType::RunAgents` (16 pin sites) and let the
+- [x] **Step 3** **[DONE — #325 CLOSED]** — #325. Add `AIAgentActionType::RunAgents` (16 pin sites) and let the
       compiler walk the **59 files** matching that enum. Also needs
       `StartAgentExecutionMode`/`RunAgentsExecutionMode`/`RunAgentsAgentRunConfig`
       (all 0 in fork). LOCAL arm only. One deliberate compiler-checked pass.
-- [ ] **Step 4** — #329, collapsible defaults in `block.rs`. Small, and genuinely last:
+- [x] **Step 4** **[DONE — #329 CLOSED]** — #329, collapsible defaults in `block.rs`. Small, and genuinely last:
       it configures presentation of steps 1-2.
 - [x] **NOT IN THIS TIER** — `inline_action/orchestration_controls.rs` (~1,336) is
       **cloud**: `orchestration_controls.rs:48` imports `crate::server::experiments`.

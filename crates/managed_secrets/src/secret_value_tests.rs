@@ -173,8 +173,8 @@ fn test_debug_representation_no_secrets_anthropic_bedrock_api_key() {
 mod validate_field_sizes {
     use crate::secret_value::{
         ENV_VAR_ANTHROPIC_API_KEY, ENV_VAR_AWS_ACCESS_KEY_ID, ENV_VAR_AWS_BEARER_TOKEN_BEDROCK,
-        ENV_VAR_AWS_SECRET_ACCESS_KEY, ENV_VAR_AWS_SESSION_TOKEN, MAX_SECRET_FIELD_BYTES,
-        ManagedSecretValue,
+        ENV_VAR_AWS_SECRET_ACCESS_KEY, ENV_VAR_AWS_SESSION_TOKEN, ENV_VAR_OPENAI_API_KEY,
+        MAX_SECRET_FIELD_BYTES, ManagedSecretValue,
     };
 
     const NAME: &str = "my-secret";
@@ -281,6 +281,19 @@ mod validate_field_sizes {
         assert!(
             err.to_string()
                 .contains(&format!("'{ENV_VAR_AWS_SESSION_TOKEN}'"))
+        );
+    }
+
+    /// Ported verbatim from the pin (`02b53fcd8`) together with the `OpenaiApiKey`
+    /// variant it exercises (#323).
+    #[test]
+    fn openai_api_key_over_limit_is_rejected() {
+        let secret =
+            ManagedSecretValue::openai_api_key(oversized_for_key(ENV_VAR_OPENAI_API_KEY), None);
+        let err = secret.validate_field_sizes(NAME).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(&format!("'{ENV_VAR_OPENAI_API_KEY}'"))
         );
     }
 

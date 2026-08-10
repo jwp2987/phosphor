@@ -1339,6 +1339,7 @@ fn initialize_app(
         experiments,
         ai_queries,
         persisted_workspaces,
+        workspace_language_servers,
         multi_agent_conversations,
         persisted_projects,
         persisted_project_rules,
@@ -1359,6 +1360,7 @@ fn initialize_app(
                 sqlite_data.experiments,
                 sqlite_data.ai_queries,
                 sqlite_data.codebase_indices,
+                sqlite_data.workspace_language_servers,
                 sqlite_data.multi_agent_conversations,
                 sqlite_data.projects,
                 sqlite_data.project_rules,
@@ -1369,6 +1371,7 @@ fn initialize_app(
         })
         .unwrap_or_else(|| {
             (
+                Default::default(),
                 Default::default(),
                 Default::default(),
                 Default::default(),
@@ -2032,7 +2035,12 @@ fn initialize_app(
     // because `user_added_workspace` drives a project-rules scan through it, and
     // after `RepoMetadataModel` for the same reason.
     ctx.add_singleton_model(|ctx| {
-        PersistedWorkspace::new(persisted_workspaces, persistence_writer.sender(), ctx)
+        PersistedWorkspace::new(
+            persisted_workspaces,
+            workspace_language_servers,
+            persistence_writer.sender(),
+            ctx,
+        )
     });
     ctx.add_singleton_model(move |_| persistence_writer);
 

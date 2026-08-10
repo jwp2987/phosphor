@@ -16,8 +16,8 @@ use super::schema::{
     notebook_panes, notebooks, object_actions, object_metadata, object_permissions, pane_branches,
     pane_leaves, pane_nodes, panels, project_rules, projects, server_experiments, settings_panes,
     tab_groups, tabs, team_members, team_settings, teams, terminal_panes, user_profiles,
-    welcome_panes, windows, workflow_panes, workflows, workspace_metadata, workspace_teams,
-    workspaces,
+    welcome_panes, windows, workflow_panes, workflows, workspace_language_server,
+    workspace_metadata, workspace_teams, workspaces,
 };
 
 #[derive(Insertable)]
@@ -188,11 +188,6 @@ pub struct NewProjectRules {
 
 /// A row of the `workspace_metadata` table: one recently-used repository root
 /// plus the timestamps that order the "recent repositories" list.
-///
-/// The sibling `WorkspaceLanguageServer` / `NewWorkspaceLanguageServer` models
-/// that the pin defines alongside these are deliberately not restored — their
-/// table is keyed by `lsp::supported_servers::LSPServerType` and the `lsp` crate
-/// does not exist in this fork.
 #[derive(Clone, Identifiable, Queryable, AsChangeset)]
 #[diesel(table_name = workspace_metadata)]
 pub struct WorkspaceMetadata {
@@ -259,6 +254,32 @@ pub struct NewCodebaseIndexEmbedding {
     pub content_hash: String,
     pub dimensions: i32,
     pub vector: Vec<u8>,
+}
+
+/// A row of the `workspace_language_server` table: one per (workspace, language
+/// server) pair, recording whether the user enabled that server for that
+/// workspace.
+///
+/// `language_server_name` stores `lsp::supported_servers::LSPServerType`'s
+/// variant name; `enabled` stores the `EnablementState` enum as TEXT (it was a
+/// BOOLEAN until `2025-11-11-230915_change_workspace_language_server_enabled_to_text`).
+/// Neither is parsed here — `crates/persistence` stays free of an `lsp`
+/// dependency, exactly as upstream does.
+#[derive(Clone, Identifiable, Insertable, Queryable, AsChangeset)]
+#[diesel(table_name = workspace_language_server)]
+pub struct WorkspaceLanguageServer {
+    pub id: i32,
+    pub workspace_id: i32,
+    pub language_server_name: String,
+    pub enabled: String,
+}
+
+#[derive(Clone, Insertable, AsChangeset)]
+#[diesel(table_name = workspace_language_server)]
+pub struct NewWorkspaceLanguageServer {
+    pub workspace_id: i32,
+    pub language_server_name: String,
+    pub enabled: String,
 }
 
 #[derive(Default, Clone, Debug, Insertable, Queryable, AsChangeset)]

@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use pathfinder_geometry::vector::Vector2I;
 use warpui::r#async::Timer;
 
-use crate::{Action, ActionResult, Options};
+use crate::{Action, ActionResult, Options, TargetedAction};
 
 use keyboard::Keyboard;
 use mouse::Mouse;
@@ -58,7 +58,7 @@ impl crate::Actor for Actor {
 
     async fn perform_actions(
         &mut self,
-        actions: &[Action],
+        actions: &[TargetedAction],
         options: Options,
     ) -> Result<ActionResult, String> {
         // Ensure we have an active session before processing actions.
@@ -67,7 +67,10 @@ impl crate::Actor for Actor {
 
         let mut last_mouse_position: Option<Vector2I> = None;
 
-        for action in actions {
+        for targeted in actions {
+            // Per-window targeting is not supported on Wayland; act on the screen / focused
+            // surface regardless of the requested target.
+            let action: &Action = &targeted.action;
             // Re-acquire session reference each iteration (borrow checker workaround).
             let session = self
                 .session
@@ -153,9 +156,6 @@ impl crate::Actor for Actor {
             self.mouse.last_position()
         };
 
-        Ok(ActionResult {
-            screenshot,
-            cursor_position,
-        })
+        Ok(ActionResult::legacy(screenshot, cursor_position))
     }
 }

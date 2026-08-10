@@ -9,16 +9,17 @@ use warp_util::standardized_path::StandardizedPath;
 use crate::{
     app_state::{
         AppState, CodePaneSnapShot, CodePaneTabSnapshot, LeafContents, LeafSnapshot,
-        NotebookPaneSnapshot, PaneNodeSnapshot, TabGroupSnapshot, TabSnapshot, TerminalPaneSnapshot,
-        WindowSnapshot,
+        NotebookPaneSnapshot, PaneNodeSnapshot, SettingsPaneSnapshot, TabGroupSnapshot,
+        TabSnapshot, TerminalPaneSnapshot, WindowSnapshot,
     },
     cloud_object::{Owner, StoredObjectPermissions},
     code::buffer_location::RemotePath,
     code::editor_management::CodeSource,
     notebooks::{NotebookObject, NotebookObjectModel},
-    persistence::{model::ObjectPermissions, BlockCompleted, ModelEvent},
+    persistence::{model, model::ObjectPermissions, schema, BlockCompleted, ModelEvent},
     server::ids::ClientId,
     server_time::ServerTimestamp,
+    settings_view::SettingsSection,
     tab::SelectedTabColor,
     terminal::model::block::SerializedBlock,
     terminal::ShellLaunchData,
@@ -751,6 +752,181 @@ fn test_sqlite_round_trips_pinned_state() {
         .expect("unpinned group should restore");
     assert!(restored_pinned_group.pinned);
     assert!(!restored_loose_group.pinned);
+}
+
+// ── Settings pane persistence ───────────────────────────────────────────────
+//
+// Regression guard for issue #578. The settings pane used to persist
+// `SettingsSection`'s `Display`, which is localized in this fork, and read it
+// back with `FromStr`, which matched English literals. Any translated UI wrote
+// a value that could not be parsed, so the user silently landed on the default
+// section instead of the pane they left open. Persistence now round-trips the
+// stable `persistence_key`, and still upgrades the legacy values.
+
+fn settings_window_snapshot(current_page: SettingsSection) -> WindowSnapshot {
+    WindowSnapshot {
+        tabs: vec![TabSnapshot {
+            custom_title: None,
+            root: PaneNodeSnapshot::Leaf(LeafSnapshot {
+                is_focused: true,
+                custom_vertical_tabs_title: None,
+                contents: LeafContents::Settings(SettingsPaneSnapshot::Local {
+                    current_page,
+                    search_query: None,
+                }),
+            }),
+            default_directory_color: None,
+            selected_color: SelectedTabColor::default(),
+            left_panel: None,
+            right_panel: None,
+            group_id: None,
+            pinned: false,
+        }],
+        active_tab_index: 0,
+        bounds: None,
+        fullscreen_state: Default::default(),
+        quake_mode: false,
+        universal_search_width: None,
+        warp_ai_width: None,
+        voltron_width: None,
+        warp_drive_index_width: None,
+        left_panel_open: false,
+        vertical_tabs_panel_open: false,
+        left_panel_width: None,
+        right_panel_width: None,
+        cli_subagent_width: None,
+        cli_subagent_height: None,
+        agent_management_filters: None,
+        theme_override: None,
+        tab_groups: vec![],
+    }
+}
+
+fn restored_settings_page(conn: &mut diesel::sqlite::SqliteConnection) -> SettingsSection {
+    let restored = read_sqlite_data(conn, None)
+        .expect("app state should load")
+        .app_state;
+    let PaneNodeSnapshot::Leaf(LeafSnapshot {
+        contents: LeafContents::Settings(SettingsPaneSnapshot::Local { current_page, .. }),
+        ..
+    }) = &restored.windows[0].tabs[0].root
+    else {
+        panic!("Expected settings pane leaf");
+    };
+    *current_page
+}
+
+#[test]
+fn test_sqlite_round_trips_every_settings_section() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    // Exhaustive on purpose: `SettingsSection::all()` is compile-time checked
+    // in `settings_view/mod_tests.rs`, so a newly added section that forgets a
+    // persistence key fails here instead of silently losing someone's pane.
+    for section in SettingsSection::all() {
+        let app_state = AppState {
+            windows: vec![settings_window_snapshot(*section)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        };
+
+        save_app_state(&mut conn, &app_state).expect("app state should save");
+
+        assert_eq!(
+            restored_settings_page(&mut conn),
+            *section,
+            "{section:?} did not survive persist -> read"
+        );
+    }
+}
+
+#[test]
+fn test_sqlite_stores_the_stable_key_not_the_display_label() {
+    use diesel::{QueryDsl, RunQueryDsl, SelectableHelper};
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    // Every section, so a variant whose key drifts back towards `Display` is
+    // caught at the point it is written rather than only when it is read.
+    for section in SettingsSection::all() {
+        let app_state = AppState {
+            windows: vec![settings_window_snapshot(*section)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        };
+        save_app_state(&mut conn, &app_state).expect("app state should save");
+
+        let stored: Vec<model::SettingsPane> = schema::settings_panes::dsl::settings_panes
+            .select(model::SettingsPane::as_select())
+            .load(&mut conn)
+            .expect("settings panes should load");
+
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].current_page,
+            section.persistence_key(),
+            "{section:?} was stored as something other than its stable key; a \
+             translated section name must never reach the database"
+        );
+    }
+}
+
+#[test]
+fn test_sqlite_upgrades_legacy_settings_page_values() {
+    use diesel::connection::SimpleConnection;
+
+    // Rows written before stable keys existed hold whatever `Display`
+    // produced: the English label on an English UI, and the translated label
+    // otherwise. Both must still restore the right pane -- these users are the
+    // reason the read path keeps a legacy fallback.
+    let legacy_values = [
+        // English labels, including one that `FromStr` never knew.
+        ("Network", SettingsSection::Network),
+        ("Keyboard shortcuts", SettingsSection::Keybindings),
+        ("Phosphor Agent", SettingsSection::WarpAgent),
+        (
+            "Editor and Code Review",
+            SettingsSection::EditorAndCodeReview,
+        ),
+        // Pre-rebrand names.
+        ("Oz", SettingsSection::WarpAgent),
+        ("Zap Drive", SettingsSection::ZapDrive),
+        // The zh-CN label for the Network page, which a real user already had
+        // stored -- it is why `FromStr` grew a Chinese arm in the first place.
+        ("网络", SettingsSection::Network),
+    ];
+
+    for (stored_value, expected) in legacy_values {
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let database_path = tempdir.path().join("warp.sqlite");
+        let mut conn = setup_database(&database_path).expect("database should initialize");
+
+        // Write a normal snapshot, then rewrite the stored page as an older
+        // build would have left it.
+        let app_state = AppState {
+            windows: vec![settings_window_snapshot(SettingsSection::Appearance)],
+            active_window_index: Some(0),
+            block_lists: Default::default(),
+            running_mcp_servers: Default::default(),
+        };
+        save_app_state(&mut conn, &app_state).expect("app state should save");
+        conn.batch_execute(&format!(
+            "UPDATE settings_panes SET current_page = '{stored_value}';"
+        ))
+        .expect("legacy value should be written");
+
+        assert_eq!(
+            restored_settings_page(&mut conn),
+            expected,
+            "a settings pane stored as {stored_value:?} was lost"
+        );
+    }
 }
 
 fn assert_encode_then_decode_preserves_original_path(original_path: PathBuf) {

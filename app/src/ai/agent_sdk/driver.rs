@@ -1725,6 +1725,12 @@ fn typed_secret_entries(secret: &ManagedSecretValue) -> Vec<(&'static str, &str)
             }
             entries
         }
+        // `base_url` is deliberately not an env var: the Codex harness reads it off
+        // the typed secret and writes it to `~/.codex/config.toml` instead, so a
+        // custom endpoint is never exposed to the whole child process (#323).
+        ManagedSecretValue::OpenaiApiKey { api_key, .. } => {
+            vec![("OPENAI_API_KEY", api_key.as_str())]
+        }
     }
 }
 

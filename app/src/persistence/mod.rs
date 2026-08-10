@@ -31,8 +31,11 @@ use warp_core::command::ExitCode;
 use warp_multi_agent_api as api;
 use warpui::{AppContext, Entity, SingletonEntity};
 
+use lsp::supported_servers::LSPServerType;
+
 use crate::ai::blocklist::PersistedAIInput;
 use crate::ai::mcp::TemplatableMCPServerInstallation;
+use crate::ai::persisted_workspace::EnablementState;
 use crate::app_state::AppState;
 use crate::auth::PersistedCurrentUserInformation;
 use crate::cloud_object::model::actions::ObjectAction;
@@ -236,10 +239,11 @@ pub struct PersistedData {
     /// the primary consumer; kept under that name so the diff against
     /// `02b53fcd8` stays readable.
     ///
-    /// The pin also carries a `workspace_language_servers` field beside this
-    /// one. It is not restored: it is keyed by `lsp::supported_servers::
-    /// LSPServerType` and this fork has no `lsp` crate.
     pub codebase_indices: Vec<CodeWorkspaceMetadata>,
+    /// Per-workspace language-server enablement, restored into
+    /// `PersistedWorkspace` alongside `codebase_indices`. Keyed by workspace
+    /// root, then by server type.
+    pub workspace_language_servers: HashMap<PathBuf, HashMap<LSPServerType, EnablementState>>,
     pub multi_agent_conversations: Vec<AgentConversation>,
     pub projects: Vec<Project>,
     pub project_rules: Vec<ProjectRulePath>,
@@ -399,6 +403,14 @@ pub enum ModelEvent {
     UpsertCodebaseIndexEmbeddings {
         embedding_space: String,
         embeddings: Vec<(String, i32, Vec<u8>)>,
+    },
+    /// Writes one `workspace_language_server` row (insert-or-update on the
+    /// (workspace, server) pair). The workspace must already have a
+    /// `workspace_metadata` row — the FK is enforced.
+    UpsertWorkspaceLanguageServer {
+        workspace_path: PathBuf,
+        lsp_type: LSPServerType,
+        enabled: EnablementState,
     },
     UpsertProject {
         project: Project,

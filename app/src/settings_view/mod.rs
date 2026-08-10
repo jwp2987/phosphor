@@ -321,34 +321,188 @@ impl SettingsSection {
             Self::ThirdPartyCLIAgents,
         ]
     }
+
+    /// Every section, in declaration order.
+    ///
+    /// This is the list `from_stable_key` scans and the list the persistence
+    /// round-trip tests iterate, so a variant missing from it is a variant
+    /// whose persistence is untested. `mod_tests.rs` keeps that honest with an
+    /// exhaustive `match` that stops compiling when a variant is added here
+    /// but not to the list.
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::About,
+            Self::MCPServers,
+            Self::Appearance,
+            Self::Features,
+            Self::Keybindings,
+            Self::ZapDrive,
+            Self::Warpify,
+            Self::AI,
+            Self::WarpAgent,
+            Self::AgentProfiles,
+            Self::AgentMCPServers,
+            Self::AgentProviders,
+            Self::Knowledge,
+            Self::ThirdPartyCLIAgents,
+            Self::Network,
+            Self::Privacy,
+            Self::Scripting,
+            Self::Code,
+            Self::EditorAndCodeReview,
+        ]
+    }
+
+    /// A stable, ASCII, never-translated identifier for this section.
+    ///
+    /// This -- not `Display` -- is what gets **stored** (the settings pane's
+    /// `current_page` column) and what external callers may pass to the
+    /// `surface.settings.open` local-control action.
+    ///
+    /// `Display` is localized in this fork (a deliberate divergence from the
+    /// pin, where it is English literals), so it must never be persisted: a
+    /// value written while the UI was in zh-CN cannot be parsed back when the
+    /// UI is in English, and the user silently loses the settings page they
+    /// left open. Teaching the parser one translated label at a time only
+    /// fixes one section in one language.
+    ///
+    /// The key is the Rust variant name and is **frozen**: it must not follow
+    /// display renames (`ZapDrive` stays `"ZapDrive"` even though the page is
+    /// shown as "Phosphor Drive"), because changing a key orphans every row
+    /// already written with the old one. The match is exhaustive on purpose --
+    /// a new variant fails to compile until it declares a key.
+    pub fn persistence_key(&self) -> &'static str {
+        match self {
+            Self::About => "About",
+            Self::MCPServers => "MCPServers",
+            Self::Appearance => "Appearance",
+            Self::Features => "Features",
+            Self::Keybindings => "Keybindings",
+            Self::ZapDrive => "ZapDrive",
+            Self::Warpify => "Warpify",
+            Self::AI => "AI",
+            Self::WarpAgent => "WarpAgent",
+            Self::AgentProfiles => "AgentProfiles",
+            Self::AgentMCPServers => "AgentMCPServers",
+            Self::AgentProviders => "AgentProviders",
+            Self::Knowledge => "Knowledge",
+            Self::ThirdPartyCLIAgents => "ThirdPartyCLIAgents",
+            Self::Network => "Network",
+            Self::Privacy => "Privacy",
+            Self::Scripting => "Scripting",
+            Self::Code => "Code",
+            Self::EditorAndCodeReview => "EditorAndCodeReview",
+        }
+    }
+
+    /// Resolves a stable key previously produced by `persistence_key`.
+    pub fn from_stable_key(key: &str) -> Option<Self> {
+        Self::all()
+            .iter()
+            .copied()
+            .find(|section| section.persistence_key() == key)
+    }
+
+    /// Reads a stored `current_page` value, upgrading anything written before
+    /// stable keys existed.
+    ///
+    /// Accepted, in order:
+    /// 1. a stable key (`persistence_key`) -- what every new write produces;
+    /// 2. a canonical English label or historical alias (`FromStr`) -- what
+    ///    rows written by an older build on an English UI contain;
+    /// 3. a localized label (`from_localized_label`) -- what rows written by an
+    ///    older build on a translated UI contain.
+    ///
+    /// **Legacy rows are upgraded on read rather than by a SQL data
+    /// migration.** Three reasons:
+    /// - the step-3 vocabulary is unbounded -- one label per section per
+    ///   locale, changing whenever a translation is revised -- so it cannot be
+    ///   enumerated in a fixed `up.sql`;
+    /// - `save_app_state` deletes and rewrites `settings_panes` wholesale on
+    ///   every snapshot, so a legacy row that is read once is immediately
+    ///   rewritten with its stable key: the legacy path drains by itself and a
+    ///   one-shot migration would buy nothing a read-time fallback does not;
+    /// - a migration runs exactly once at a fixed schema version, but these
+    ///   rows are also written by *older builds of the app* against an
+    ///   already-migrated database (a downgrade, or a second install sharing
+    ///   the sqlite file), which a migration cannot catch and a read-time
+    ///   fallback handles for free.
+    pub fn from_persistence_key(stored: &str) -> Option<Self> {
+        if let Ok(section) = Self::from_str(stored) {
+            return Some(section);
+        }
+        Self::from_localized_label(stored)
+    }
+
+    /// Best-effort reverse lookup of a **localized** section label.
+    ///
+    /// Only ever used to upgrade a legacy stored value. It is deliberately not
+    /// reachable from `FromStr`, because `FromStr` also backs the
+    /// `surface.settings.open` scripting contract, which must resolve the same
+    /// page whatever language the UI happens to be in.
+    ///
+    /// Two caveats, both acceptable for a one-shot upgrade of a value that is
+    /// otherwise lost outright:
+    /// - only the *currently active* locale is matched (plus the hard-coded
+    ///   value below), so a row written in one language and read in another
+    ///   still falls back to the default section -- no worse than before;
+    /// - some locales give two sections the same label (zh-CN renders both
+    ///   `MCPServers` and `AgentMCPServers` as the same string), so the first
+    ///   match in `all()` order wins. Nothing can disambiguate those rows;
+    ///   it is exactly the ambiguity the stable key exists to prevent.
+    fn from_localized_label(label: &str) -> Option<Self> {
+        // Hard-coded legacy value. An earlier point patch taught `FromStr` the
+        // zh-CN label for the Network page because a user already had that
+        // string stored; it is kept here -- and only here -- so those rows
+        // still upgrade even when the app is read back under another locale.
+        // This literal is persisted *data*, not authored prose, so it stays in
+        // its original language.
+        if label == "网络" {
+            return Some(Self::Network);
+        }
+        Self::all()
+            .iter()
+            .copied()
+            .find(|section| section.to_string() == label)
+    }
 }
 
+/// Parses a section from a **locale-independent** name: the stable
+/// `persistence_key`, or a canonical English label / historical English alias
+/// kept so existing deep links and `surface.settings.open --page <name>`
+/// callers keep working.
+///
+/// It deliberately does **not** accept localized labels. This parser backs the
+/// `surface.settings.open` local-control action, whose page names are a
+/// scripting contract shared with agents and external tools; a contract that
+/// only resolves when the UI happens to be in the caller's language is not a
+/// contract. Localized values that an older build *stored* are handled by
+/// [`SettingsSection::from_persistence_key`] instead.
 impl FromStr for SettingsSection {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(section) = Self::from_stable_key(s) {
+            return Ok(section);
+        }
+        // English labels and historical aliases that differ from the stable
+        // key. Labels identical to the key ("About", "AI", "Appearance",
+        // "Code", "Features", "Warpify", "Knowledge", "Network", "Privacy")
+        // are already handled above.
         match s {
-            "About" => Ok(Self::About),
-            "AI" => Ok(Self::AI),
             "MCP Servers" => Ok(Self::MCPServers),
-            "Appearance" => Ok(Self::Appearance),
-            "Code" => Ok(Self::Code),
-            "Features" => Ok(Self::Features),
             "Keyboard shortcuts" => Ok(Self::Keybindings),
-            "Warpify" => Ok(Self::Warpify),
             // "Zap Drive" was this page's name before the Phosphor rebrand, keep for backward compatibility.
-            "ZapDrive" | "Zap Drive" | "Phosphor Drive" => Ok(Self::ZapDrive),
-            // This page was called "Oz" at one point, keep for backward compatibility.
-            "Oz" | "Zap Agent" => Ok(Self::WarpAgent),
-            "Profiles" | "AgentProfiles" => Ok(Self::AgentProfiles),
-            "MCP servers" | "AgentMCPServers" => Ok(Self::AgentMCPServers),
-            "Providers" | "AgentProviders" => Ok(Self::AgentProviders),
-            "Knowledge" => Ok(Self::Knowledge),
-            "Third party CLI agents" | "ThirdPartyCLIAgents" => Ok(Self::ThirdPartyCLIAgents),
-            "Editor and Code Review" | "EditorAndCodeReview" => Ok(Self::EditorAndCodeReview),
-            "Network" | "网络" => Ok(Self::Network),
-            "Privacy" => Ok(Self::Privacy),
-            "Scripting" => Ok(Self::Scripting),
+            "Zap Drive" | "Phosphor Drive" => Ok(Self::ZapDrive),
+            // This page was called "Oz", then "Zap Agent", before the Phosphor
+            // rebrand; "Phosphor Agent" is the current English label. All three
+            // are kept for backward compatibility.
+            "Oz" | "Zap Agent" | "Phosphor Agent" => Ok(Self::WarpAgent),
+            "Profiles" => Ok(Self::AgentProfiles),
+            "MCP servers" => Ok(Self::AgentMCPServers),
+            "Providers" => Ok(Self::AgentProviders),
+            "Third party CLI agents" => Ok(Self::ThirdPartyCLIAgents),
+            "Editor and Code Review" => Ok(Self::EditorAndCodeReview),
             // Zap Wave 3-1: `OzCloudAPIKeys` was removed along with the UI.
             // Zap Wave 7-3: the `CloudEnvironments` FromStr arm was removed along with the
             // variant.
