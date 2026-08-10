@@ -31,6 +31,8 @@ use num_traits::FromPrimitive;
 use pathfinder_geometry::{rect::RectF, vector::Vector2F};
 use persistence::model::AMBIENT_AGENT_PANE_KIND;
 use uuid::Uuid;
+use warp_core::HostId;
+use warp_util::standardized_path::StandardizedPath;
 use warpui::platform::FullscreenState;
 use warpui::windowing::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 use warpui::{AppContext, SingletonEntity};
@@ -78,6 +80,7 @@ use crate::cloud_object::{
     JsonObjectType, ObjectIdType, ObjectType, Owner, StoredObject, GENERIC_STRING_OBJECT_PREFIX,
     JSON_OBJECT_PREFIX,
 };
+use crate::code::buffer_location::RemotePath;
 use crate::code::editor_management::CodeSource;
 use crate::drive::folders::{FolderId, FolderObject, FolderObjectModel};
 use crate::drive::ZapDriveObjectSettings;
@@ -1411,23 +1414,33 @@ fn save_pane_state(
                 .execute(conn)?;
         }
         LeafContents::Notebook(notebook_snapshot) => {
-            let (notebook_id, local_path) = match notebook_snapshot {
+            let (notebook_id, local_path, remote_host_id, remote_path) = match notebook_snapshot {
                 NotebookPaneSnapshot::NotebookObject {
                     notebook_id,
                     settings: _,
                 } => (
                     notebook_id.map(|id| id.sqlite_uid_hash(ObjectIdType::Notebook)),
                     None,
+                    None,
+                    None,
                 ),
                 NotebookPaneSnapshot::LocalFileNotebook { path } => {
-                    (None, path.clone().map(encode_path))
+                    (None, path.clone().map(encode_path), None, None)
                 }
+                NotebookPaneSnapshot::Remote { remote_path } => (
+                    None,
+                    None,
+                    Some(remote_path.host_id.as_str().to_string()),
+                    Some(remote_path.path.as_str().to_string()),
+                ),
             };
 
             let notebook = model::NewNotebookPane {
                 id,
                 notebook_id,
                 local_path,
+                remote_host_id,
+                remote_path,
             };
 
             diesel::insert_into(schema::notebook_panes::dsl::notebook_panes)
@@ -2542,14 +2555,32 @@ fn read_node(conn: &mut SqliteConnection, node: model::PaneNode) -> Result<PaneN
 
                     let local_path = notebook_pane.local_path.map(decode_path);
 
-                    // In the database schema, both the `notebook_id` and `local_path` are
-                    // nullable. It's possible for either a file pane or a notebook pane to be open
-                    // to an uneditable notebook. In that case, bias towards cloud notebooks. If
-                    // both are null, it's more likely that the pane was a new, empty cloud
-                    // notebook than an unreadable local file.
-                    LeafContents::Notebook(match local_path {
-                        Some(path) => NotebookPaneSnapshot::LocalFileNotebook { path: Some(path) },
-                        None => NotebookPaneSnapshot::NotebookObject {
+                    // `remote_host_id` and `remote_path` are only both populated together (see
+                    // the write side above); if `StandardizedPath::try_new` rejects the stored
+                    // path (which shouldn't happen — it was validated before being written),
+                    // fall through to the local/cloud bias below rather than failing the whole
+                    // row.
+                    let remote_path = notebook_pane
+                        .remote_host_id
+                        .zip(notebook_pane.remote_path)
+                        .and_then(|(host_id, path)| {
+                            StandardizedPath::try_new(&path)
+                                .ok()
+                                .map(|path| RemotePath::new(HostId::new(host_id), path))
+                        });
+
+                    // In the database schema, `notebook_id`, `local_path`, and `remote_path`
+                    // (paired with `remote_host_id`) are all nullable, and a pane is never more
+                    // than one of remote / local / cloud at once. Bias order: remote first (most
+                    // specific), then local, then fall back to a cloud notebook pane if all are
+                    // null — it's more likely that the pane was a new, empty cloud notebook than
+                    // an unreadable local file.
+                    LeafContents::Notebook(match (remote_path, local_path) {
+                        (Some(remote_path), _) => NotebookPaneSnapshot::Remote { remote_path },
+                        (None, Some(path)) => {
+                            NotebookPaneSnapshot::LocalFileNotebook { path: Some(path) }
+                        }
+                        (None, None) => NotebookPaneSnapshot::NotebookObject {
                             notebook_id,
                             settings: ZapDriveObjectSettings::default(),
                         },
