@@ -857,18 +857,48 @@ pub const RELEASE_FLAGS: &[FeatureFlag] = &[
 /// Flags that we want to allow to switch at runtime (assuming RuntimeFeatureFlags is set)
 pub const RUNTIME_FEATURE_FLAGS: &[FeatureFlag] = &[FeatureFlag::LocalClaudeCodexChildHarnesses];
 
+/// Flags this fork forces off no matter what the channel, the compile-time
+/// cargo features or a user preference say. `is_enabled` short-circuits on
+/// these before it consults any other source.
+///
+/// This is a *hard* disable, not a default. It is only the right tool for a
+/// flag whose subsystem genuinely cannot exist in a BYOP build -- an account
+/// this fork has no server to authenticate against, or a surface driven by
+/// that account. Anything that is merely off-by-default belongs in the
+/// channel lists above (or nowhere, which already means off) so it stays
+/// reachable.
+///
+/// `AgentModeComputerUse` used to be in this list. It was added by `5013248be`
+/// ("hide Cloud Oz / Cloud Agent Computer Use / Privacy pages"), in the same
+/// sweep as the `CloudMode*` flags, on the assumption that computer use was a
+/// Warp cloud-agent capability. It is not: computer use drives the local
+/// machine's own mouse and keyboard through `crates/computer_use` and never
+/// touches a server -- see the "common false positives" section of
+/// `DECLINED.md`. Hard-disabling it made the restored client-side dispatch
+/// path unreachable, so it has been removed from the list. What keeps computer
+/// use off for a user who has not asked for it is the per-profile
+/// `ComputerUsePermission`, which defaults to `Never`.
+pub const FORCE_DISABLED_FLAGS: &[FeatureFlag] = &[
+    // Forces a Warp account sign-in before the app is usable. There is no
+    // account and no server to sign in to.
+    FeatureFlag::ForceLogin,
+    // Renders the signed-in user's avatar in the tab bar. No account, no avatar.
+    FeatureFlag::AvatarInTabBar,
+    // The `/remote-control` chip and slash command, i.e. driving this agent
+    // from another device. Disabled by `1289d311c`; left as-is here.
+    FeatureFlag::HOARemoteControl,
+];
+
 impl FeatureFlag {
+    /// Whether this flag is one of [`FORCE_DISABLED_FLAGS`], i.e. off
+    /// regardless of channel, cargo features, user preference or test override.
+    pub fn is_force_disabled(&self) -> bool {
+        // `contains` over a 3-element slice; `FeatureFlag` is `PartialEq`.
+        FORCE_DISABLED_FLAGS.contains(self)
+    }
+
     pub fn is_enabled(&self) -> bool {
-        // Decentralization branch: in local mode, the following account /
-        // login / cloud-agent-related flags are always disabled, and are no
-        // longer affected by channel / preview configuration.
-        if matches!(
-            self,
-            FeatureFlag::ForceLogin
-                | FeatureFlag::AvatarInTabBar
-                | FeatureFlag::AgentModeComputerUse
-                | FeatureFlag::HOARemoteControl
-        ) {
+        if self.is_force_disabled() {
             return false;
         }
 

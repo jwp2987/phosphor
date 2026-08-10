@@ -542,6 +542,14 @@ default = [
     "ask_user_question",
     "bundled_skills",
     "agent_mode_computer_use",
+    # Computer use in *local* (non-ambient) sessions. At the pin this rode on
+    # DOGFOOD_FLAGS, because Warp shipped computer use to ordinary users only
+    # through hosted ambient agents. This fork has no ambient/cloud agents, so
+    # dogfood-only would leave the whole capability -- and its settings UI, which
+    # is gated on this same flag -- permanently unreachable. Enabling the flag
+    # only makes the capability *offerable*; the per-profile ComputerUsePermission
+    # still defaults to Never, so the user must opt in under Settings > Agents.
+    "local_computer_use",
     "oz_platform_skills",
     "sync_ambient_plans",
     "conversation_artifacts",

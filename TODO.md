@@ -737,14 +737,32 @@ of the four turned out to be worth reversing.
       `DECLINED.md:137` lists `crates/computer_use` as **not** declined and
       `:125` says **"#349 is NOT covered"**. The `DECLINED.md` rows are right;
       the code comment is wrong. Recording *is* declined (#350/#367) and stays so.
-- [ ] **BLOCKER 1 — `FeatureFlag::AgentModeComputerUse` is hard-coded `false`**
-      (`crates/warp_features/src/lib.rs:865`, short-circuited alongside
-      `ForceLogin`, `AvatarInTabBar`, `HOARemoteControl`). Added by `5013248be`
-      (zero, 2026-04-29) **one day before** the dispatch removal — same inherited
-      family, and it means `app/src/ai/agent/api.rs:424` computes
-      `computer_use_enabled` as always false. **It is not a cloud flag** — it
-      gates a client capability. **One-line change, but it also controls
-      settings-page visibility, so it is a maintainer call.**
+- [x] **BLOCKER 1 — `FeatureFlag::AgentModeComputerUse` was hard-coded `false`.
+      DONE 2026-08-10.** It was short-circuited in `is_enabled` alongside
+      `ForceLogin`, `AvatarInTabBar`, `HOARemoteControl` by `5013248be` (zero,
+      2026-04-29) **one day before** the dispatch removal — same inherited
+      family. The grouping was **not** principled: `5013248be` added it in the
+      same `matches!` arm as the six `CloudMode*` flags, under the commit
+      message "hide Cloud Oz / **Cloud Agent** Computer Use / Privacy pages", so
+      it was swept in on the belief that computer use was a Warp cloud-agent
+      capability. It is not (`DECLINED.md`, "common false positives"). The list
+      is now the named `FORCE_DISABLED_FLAGS` const with the other three
+      unchanged, and `warp_features` pins its membership so nothing can be swept
+      back in silently.
+      **The "it also controls settings-page visibility" note above was wrong** —
+      `AgentModeComputerUse` has exactly three consumers (flag registration in
+      `app/src/lib.rs`, `app/src/ai/agent/api.rs:424`, and
+      `ambient_agent/model.rs:340`) and gates no UI. The computer-use settings
+      surface (permission dropdown, computer-use model picker, computer-use
+      prompt-override slot) keys off **`LocalComputerUse`**, which rode on
+      `DOGFOOD_FLAGS` — never applied to any shipping binary here — so it was
+      also enabled, via `"local_computer_use"` in `app/Cargo.toml`'s `default`
+      features (symmetric with `"agent_mode_computer_use"`, which was already
+      there and matches the pin). No settings page needed restoring.
+      **Default stays conservative**: the flags only make the capability
+      *offerable*; the per-profile `ComputerUsePermission` still defaults to
+      `Never`, so the user must opt in under Settings > Agents > Profiles.
+      Nothing is user-visible until BLOCKER 2 lands.
 - [ ] **BLOCKER 2 — the BYOP tool registry has no computer-use tool.**
       `app/src/ai/agent_providers/tools/REGISTRY` lists ~20 `OpenAiTool`
       descriptors with no `use_computer` / `request_computer_use` entry, so no
