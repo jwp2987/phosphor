@@ -1198,7 +1198,10 @@ impl SettingsView {
                 .iter()
                 .position(|i| matches!(i, SettingsNavItem::Page(SettingsSection::Privacy)))
                 .unwrap_or(nav_items.len());
-            nav_items.insert(privacy_pos, SettingsNavItem::Page(SettingsSection::Scripting));
+            nav_items.insert(
+                privacy_pos,
+                SettingsNavItem::Page(SettingsSection::Scripting),
+            );
         }
 
         // Resolve the initial page: map internal backing-page sections to their default subpage.
