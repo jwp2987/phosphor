@@ -186,7 +186,7 @@ functions exist anywhere in the fork's counterpart. `missing` = the difference.
 | `crates/warp_tui/src/autoupdate_tests.rs` | B | 15 | 15 | 0 | same path; all names present |
 | `crates/warp_tui/src/clipboard_tests.rs` | B | 4 | 4 | 0 | same path; all names present |
 | `crates/warp_tui/src/cloud_run_view_tests.rs` | C | 2 | 0 | 2 | src `cloud_run_view.rs`: `use crate::cloud_run::{TuiCloudRunStartup, TuiCloudRunState};` `use crate::orchestration_model::{…};` |
-| `crates/warp_tui/src/completion_menu_tests.rs` | D | 2 | 0 | 2 | Missing source `crates/warp_tui/src/completion_menu.rs` (`use warp_completer::completer::{EngineFileType, MatchedSuggestion};` — local completion engine, non-cloud). Fork ships a divergent `completions_menu.rs` with no overlapping test names. |
+| `crates/warp_tui/src/completion_menu_tests.rs` | D | 2 | 0 | 2 | Missing source `crates/warp_tui/src/completion_menu.rs` (`use warp_completer::completer::{EngineFileType, MatchedSuggestion};` — local completion engine, non-cloud). Fork ships a divergent `completions_menu.rs` with no overlapping test names. |  **[FALSE POSITIVE — verified 2026-08-10: the fork's `completions_menu.rs` IS this component, renamed. Same list state, same try_open/close gating, same inline-menu wiring, same completer engine. Zero test-name overlap was renaming, not absence. Do not port; -2 from the debt count.]**
 | `crates/warp_tui/src/conversation_menu_tests.rs` | B | 1 | 1 | 0 | same path; all names present |
 | `crates/warp_tui/src/conversation_selection_tests.rs` | B | 8 | 8 | 0 | same path; all names present |
 | `crates/warp_tui/src/editor_element_tests.rs` | B | 24 | 24 | 0 | same path; all names present |
@@ -892,7 +892,7 @@ This is the burndown list. Verify any row above by grepping these names on both 
 - `lightweight_cloud_view_renders_startup_and_blocker_without_terminal_state`
 - `spawned_cloud_view_matches_figma_in_progress_and_succeeded_states`
 
-### `crates/warp_tui/src/completion_menu_tests.rs` — D, 2 missing
+### `crates/warp_tui/src/completion_menu_tests.rs` — D, 2 missing  **[FALSE POSITIVE — verified 2026-08-10: the fork's `completions_menu.rs` IS this component, renamed. Same list state, same try_open/close gating, same inline-menu wiring, same completer engine. Zero test-name overlap was renaming, not absence. Do not port; -2 from the debt count.]**
 
 - `show_reuses_inline_menu_rows_and_accepts_the_selected_span`
 - `show_does_not_replace_an_existing_inline_menu`
