@@ -67,16 +67,11 @@ allow-wildcard-paths = true
 
 [sources]
 allow-git = [
+    # Our own fork of warpdotdev/winit, +1 commit (rust-windowing/winit#4453).
+    "https://github.com/jwp2987/winit",
     # Allow git reference to Core Foundation crates until they publish an updated
     # version to crates.io.
     "https://github.com/servo/core-foundation-rs",
-    # winit fork pinned by rev in Cargo.toml. This is a PERSONAL fork, not an
-    # organisation this project can vouch for, and it is the only dependency
-    # source outside `allow-org` below -- so `cargo deny check sources` fails
-    # without this entry. Upstreaming the change (or moving the fork under an
-    # org this project controls) would let this line be deleted; until then the
-    # rev pin is the only thing keeping the source reproducible.
-    "https://github.com/chenx-dust/winit",
 ]
 # Allow git references to all GitHub repositories in the warpdotdev organization.
 allow-org = { github = ["warpdotdev"] }

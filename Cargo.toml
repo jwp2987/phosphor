@@ -403,7 +403,13 @@ sha2 = "0.10"
 shell-escape = "0.1.5"
 shellexpand = "3.1.1"
 warp-command-signatures = { git = "https://github.com/warpdotdev/command-signatures.git", rev = "00a032b8ea0ee5711e2077e39a92dc9ca2051cd3", default-features = false }
-winit = { git = "https://github.com/chenx-dust/winit.git", rev = "7ef914a440ad203da05355e6c3f8c482766987ec" }
+# Fork of warpdotdev/winit (which upstream Warp itself pins) carrying ONE extra
+# commit: rust-windowing/winit#4453, "fix(windows): use registry value to detect
+# dark mode". That PR has been open and unreviewed since 2025-12-27, so waiting
+# for upstream is not a strategy, and dropping it ships a known Windows
+# dark-mode bug. Previously pointed at a third party's personal fork, which
+# deny.toml's allow-git did not permit and which could vanish without notice.
+winit = { git = "https://github.com/jwp2987/winit.git", rev = "9a0788c3ae696a214fe026570e26701b78fb8b01" }
 x11rb = "0.13.0"
 mockito = "1.7.0"
 sysinfo = { version = "0.37.0", default-features = false, features = [
