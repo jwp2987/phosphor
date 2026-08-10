@@ -405,7 +405,7 @@ pub enum SurfaceCommand {
     #[command(subcommand)]
     Keybindings(SurfaceOpenCommand),
 
-    /// Open or toggle Warp Drive.
+    /// Open or toggle Library.
     #[command(subcommand)]
     WarpDrive(SurfaceOpenToggleCommand),
 

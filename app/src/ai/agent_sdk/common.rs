@@ -91,7 +91,7 @@ pub fn refresh_warp_drive(
     ObjectStoreModel::as_ref(ctx)
         .initial_load_complete()
         .with_timeout(WARP_DRIVE_SYNC_TIMEOUT)
-        .map_err(|_| anyhow::anyhow!("Timed out waiting for Phosphor Drive to sync"))
+        .map_err(|_| anyhow::anyhow!("Timed out waiting for Library to load"))
 }
 
 /// Format an object owner for display in the CLI.

@@ -726,7 +726,7 @@ fn settings_section(page: String) -> Result<SettingsSection, ControlError> {
     if section == SettingsSection::ZapDrive {
         return Err(ControlError::new(
             ErrorCode::UnsupportedAction,
-            "surface.settings.open does not open Warp Drive settings",
+            "surface.settings.open does not open Library settings",
         ));
     }
     Ok(section)

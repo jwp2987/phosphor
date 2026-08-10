@@ -301,7 +301,7 @@ fn from_persistence_key_upgrades_legacy_english_labels() {
             SettingsSection::Appearance => "Appearance",
             SettingsSection::Features => "Features",
             SettingsSection::Keybindings => "Keyboard shortcuts",
-            SettingsSection::ZapDrive => "Phosphor Drive",
+            SettingsSection::ZapDrive => "Library",
             SettingsSection::Warpify => "Warpify",
             SettingsSection::AI => "AI",
             SettingsSection::WarpAgent => "Phosphor Agent",
@@ -338,6 +338,12 @@ fn from_persistence_key_upgrades_legacy_english_labels() {
     );
     assert_eq!(
         SettingsSection::from_persistence_key("Zap Drive"),
+        Some(SettingsSection::ZapDrive)
+    );
+    // "Phosphor Drive" was this page's label between the Phosphor rebrand and
+    // the Library rename; a row written in that window still holds it.
+    assert_eq!(
+        SettingsSection::from_persistence_key("Phosphor Drive"),
         Some(SettingsSection::ZapDrive)
     );
 }

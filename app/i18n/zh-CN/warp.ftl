@@ -1,6 +1,6 @@
 # Zap 桌面端 — 简体中文
 # 缺失的 key 会自动 fallback 到 en/warp.ftl，所以可以分批补译。
-# 术语统一：Agent → 智能体 / Block → 命令块 / Drive → 云盘 / Workflow → 工作流 / Profile → 配置
+# 术语统一：Agent → 智能体 / Block → 命令块 / Library (formerly Drive) → 库 / Workflow → 工作流 / Profile → 配置
 
 # =============================================================================
 # SECTION: common (Owner: foundation)
@@ -189,7 +189,7 @@ app-menu-compact-mode = 紧凑模式
 app-menu-tab = 标签页
 app-menu-ai = AI
 app-menu-blocks = 命令块
-app-menu-drive = Drive
+app-menu-drive = 库
 app-menu-show-in-band-command-blocks = 显示内嵌命令块
 app-menu-hide-in-band-command-blocks = 隐藏内嵌命令块
 app-menu-show-warpified-ssh-blocks = 显示 Zap 化 SSH 块
@@ -245,8 +245,8 @@ ssh-remote-choice-continue-without-installing-desc = 你仍可获得 Zap 化体�
 ssh-remote-choice-manage-warpify-settings = 管理 Phosphorize 设置
 ai-document-show-version-history = 显示版本历史
 ai-document-update-agent = 更新智能体
-ai-document-save-and-sync-tooltip = 保存并将此计划自动同步到你的 Zap Drive
-ai-document-show-in-warp-drive = 在 Zap Drive 中查看
+ai-document-save-and-sync-tooltip = 将此计划保存到你的库
+ai-document-show-in-warp-drive = 在库中查看
 ai-document-save-as-markdown-file = 另存为 markdown 文件
 ai-document-attach-to-active-session = 附加到当前会话
 ai-document-copy-plan-id = 复制计划 ID
@@ -562,7 +562,7 @@ settings-section-features = 功能
 settings-section-keybindings = 快捷键
 settings-section-referrals = 推荐
 settings-section-shared-blocks = 共享命令块
-settings-section-warp-drive = Zap Drive
+settings-section-warp-drive = 库
 settings-section-warpify = Phosphorize
 settings-section-network = 网络
 settings-section-ai = AI
@@ -1582,7 +1582,7 @@ quit-warning-unsaved-editor-tab = 是否保存对 { $file } 所做的更改？�
 quit-warning-unsaved-editor-tab-fallback-name = 此文件
 
 # --- ANCHOR-SUB-RULES-PAGE (agent-rules-page) ---
-# Manage Rules 页面（Zap Drive 中的 AI Fact Collection）。
+# Manage Rules 页面（库中的 AI Fact Collection）。
 rules-collection-name = 规则
 
 # --- ANCHOR-SUB-KEYBINDING-DESC (agent-keybinding-descriptions) ---
@@ -1667,12 +1667,12 @@ keybinding-desc-workspace-toggle-vertical-tabs-menu = 切换垂直标签页面�
 keybinding-desc-workspace-left-panel-agent-conversations = 左侧面板：Agent 对话
 keybinding-desc-workspace-left-panel-project-explorer = 左侧面板：项目浏览器
 keybinding-desc-workspace-left-panel-global-search = 左侧面板：全局搜索
-keybinding-desc-workspace-left-panel-warp-drive = 左侧面板：Zap Drive
+keybinding-desc-workspace-left-panel-warp-drive = 左侧面板：库
 keybinding-desc-workspace-left-panel-skill-manager = 左侧面板：Skill 管理器
 keybinding-desc-workspace-open-global-search = 打开全局搜索
 keybinding-desc-workspace-open-global-search-menu = 全局搜索
-keybinding-desc-workspace-toggle-warp-drive = 切换 Zap Drive
-keybinding-desc-workspace-toggle-warp-drive-menu = Zap Drive
+keybinding-desc-workspace-toggle-warp-drive = 切换库
+keybinding-desc-workspace-toggle-warp-drive-menu = 库
 keybinding-desc-workspace-toggle-conversation-list-view = 切换 Agent 对话列表视图
 keybinding-desc-workspace-toggle-conversation-list-view-menu = Agent 对话列表视图
 keybinding-desc-workspace-close-panel = 关闭聚焦面板
@@ -1684,7 +1684,7 @@ keybinding-desc-workspace-toggle-navigation-palette = 切换导航面板
 keybinding-desc-workspace-toggle-navigation-palette-menu = 导航面板
 keybinding-desc-workspace-toggle-launch-config-palette = 启动配置面板
 keybinding-desc-workspace-toggle-files-palette = 切换文件面板
-keybinding-desc-workspace-search-drive = 搜索 Zap Drive
+keybinding-desc-workspace-search-drive = 搜索库
 keybinding-desc-workspace-move-tab-left = 标签页左移
 keybinding-desc-workspace-move-tab-up = 标签页上移
 keybinding-desc-workspace-move-tab-right = 标签页右移
@@ -1715,7 +1715,7 @@ keybinding-desc-workspace-view-changelog = 查看最新更新日志
 
 # 资源中心 / Drive 导出 / CLI
 keybinding-desc-workspace-toggle-resource-center = 切换资源中心
-keybinding-desc-workspace-export-all-warp-drive-objects = 导出所有 Zap Drive 对象
+keybinding-desc-workspace-export-all-warp-drive-objects = 导出所有库对象
 keybinding-desc-workspace-install-cli = 安装 Oz CLI 命令
 keybinding-desc-workspace-uninstall-cli = 卸载 Oz CLI 命令
 
@@ -1731,7 +1731,7 @@ keybinding-desc-workspace-create-personal-ai-prompt-menu = 新建个人 Prompt
 # 焦点 / 导入
 keybinding-desc-workspace-shift-focus-left = 切换焦点到左侧面板
 keybinding-desc-workspace-shift-focus-right = 切换焦点到右侧面板
-keybinding-desc-workspace-import-to-personal-drive = 导入到个人 Drive
+keybinding-desc-workspace-import-to-personal-drive = 导入到个人库
 
 # Drive / 仓库 / AI Rules / MCP
 keybinding-desc-workspace-open-repository = 打开仓库
@@ -2484,7 +2484,7 @@ search-filter-display-sessions = 会话
 search-filter-display-tabs = 标签页
 search-filter-display-conversations = 对话
 search-filter-display-launch-configurations = 启动配置
-search-filter-display-drive = Zap Drive
+search-filter-display-drive = 库
 search-filter-display-environment-variables = 环境变量
 search-filter-display-prompt-history = 提示词历史
 search-filter-display-files = 文件
@@ -2538,7 +2538,7 @@ drive-import-file-upload-error = 文件上传到服务器失败
 drive-import-folder-upload-error = 文件夹上传到服务器失败
 
 # Drive 主面板和 workflow 编辑器（app/src/drive/index.rs, app/src/drive/workflows/*）
-drive-title = Drive
+drive-title = 库
 drive-environment-variables = 环境变量
 drive-folder = 文件夹
 drive-notebook = 笔记本
@@ -2560,7 +2560,7 @@ drive-trash-title = 废纸篓
 drive-trash-deletion-warning = 废纸篓中的项目将在 30 天后永久删除。
 drive-team-space-zero-state = 本地版不提供团队空间。请在个人空间管理 workflow 和笔记本。
 drive-sign-up-storage-limit = 本地存储上限会在此设备上生效。
-drive-local-storage-limit-description = 本地存储上限会在此设备上生效。请移除不再需要的项目，为新的 Zap Drive 对象腾出空间。
+drive-local-storage-limit-description = 本地存储上限会在此设备上生效。请移除不再需要的项目，为新的库对象腾出空间。
 drive-sign-up = 本地管理
 drive-copy-link = 复制链接
 drive-collapse-all = 全部折叠
@@ -2667,7 +2667,7 @@ project-explorer-unavailable-disabled-description = 项目浏览器需要访问�
 project-explorer-unavailable-remote-description = 项目浏览器需要访问本地工作区,远程会话暂不支持。
 project-explorer-unavailable-wsl-description = 项目浏览器当前不支持 WSL。
 workspace-left-panel-global-search = 全局搜索
-workspace-left-panel-warp-drive = Zap Drive
+workspace-left-panel-warp-drive = 库
 workspace-left-panel-agent-conversations = 智能体对话
 workspace-left-panel-server-file-browser = 服务器文件
 workspace-left-panel-skill-manager = Skill 管理器
@@ -2834,7 +2834,7 @@ wasm-nux-download-title = 下载 Zap 桌面版？
 wasm-nux-download-description = Zap 是一款内置 AI 和团队知识的智能终端。
 wasm-nux-learn-more = 了解更多
 wasm-nux-download-confirm = 下载
-wasm-nux-object-kind-drive-objects = Zap Drive 对象
+wasm-nux-object-kind-drive-objects = 库对象
 wasm-nux-object-kind-warp-links = Zap 链接
 wasm-nux-always-open-on-web-title = 始终在网页中打开 { $object_kind } 吗？
 wasm-nux-always-open-on-web-detail = 你可以随时在设置中更改此项。
@@ -2842,8 +2842,8 @@ wasm-nux-yes = 是
 
 # Auth override warning (app/src/auth/auth_override_warning_body.rs)
 auth-override-warning-title = 检测到新的登录
-auth-override-warning-confirm-title = 要删除个人 Zap Drive 对象和偏好吗？
-auth-override-warning-description = 看起来你刚刚通过网页浏览器登录了一个 Zap 账号。如果继续，当前匿名会话中的所有个人 Zap Drive 对象和偏好都将被永久删除。
+auth-override-warning-confirm-title = 要删除个人库对象和偏好吗？
+auth-override-warning-description = 看起来你刚刚通过网页浏览器登录了一个 Zap 账号。如果继续，当前匿名会话中的所有个人库对象和偏好都将被永久删除。
 auth-override-warning-cannot-undo = 此操作无法撤销。
 auth-override-warning-export = 导出你的数据
 auth-override-warning-export-description = ，稍后可再导入。
@@ -2888,7 +2888,7 @@ auth-logout-cancel = 取消
 auth-logout-title = 要退出登录吗？
 auth-logout-running-processes-warning = 你有 { $count } 个正在运行的进程。
 auth-logout-shared-sessions-warning = 你有 { $count } 个远端会话。
-auth-logout-unsynced-drive-objects-warning = 你有 { $count } 个未同步的 Zap Drive 对象。退出登录后将失去这些对象。
+auth-logout-unsynced-drive-objects-warning = 你有 { $count } 个未同步的库对象。退出登录后将失去这些对象。
 auth-logout-unsaved-files-warning = 你有 { $count } 个未保存的文件。退出登录后将失去这些文件。
 
 # CLI agent plugin instructions
@@ -2950,7 +2950,7 @@ agent-tip-plan = 输入 `/plan` <prompt>，先为智能体创建计划再执行�
 agent-tip-command-palette = 按 <keybinding> 打开命令面板，访问 Zap 操作和快捷方式。
 agent-tip-warp-drive = 将可复用的工作流、Notebook 和提示词存入你的
 agent-tip-redirect-running-agent = 输入新的提示词即可在智能体运行时重定向它。
-agent-tip-add-context = 输入 `@` 将文件、块或 Zap Drive 对象作为上下文添加到提示词。
+agent-tip-add-context = 输入 `@` 将文件、块或库对象作为上下文添加到提示词。
 agent-tip-attach-prior-output = 按 <keybinding> 将上一条命令输出作为智能体上下文附加。
 agent-tip-init-index = 输入 `/init` 索引仓库，让智能体理解你的代码库。
 agent-tip-agent-profiles = 添加智能体配置，按会话自定义权限和模型。
@@ -2980,7 +2980,7 @@ agent-tip-auto-approve = 按 <keybinding> 可在本会话剩余时间内自动�
 agent-tip-desktop-notifications = 启用桌面通知，当智能体需要你处理时收到提醒。
 agent-tip-cancel-task = 按 <keybinding> 取消当前智能体任务。
 agent-tip-action-open-palette = 打开命令面板
-agent-tip-action-warp-drive = Zap Drive。
+agent-tip-action-warp-drive = 库。
 agent-tip-action-show-diff-view = 显示 diff 视图
 agent-tip-voice-input = 按住 <keybinding>，直接用语音向智能体输入提示词。
 hoa-welcome-banner-title = 引入通用智能体支持：用 Zap 增强任何编码智能体
@@ -3107,7 +3107,7 @@ onboarding-customize-horizontal = 水平
 onboarding-customize-conversation-history = 对话历史
 onboarding-customize-file-explorer = 文件浏览器
 onboarding-customize-global-file-search = 全局文件搜索
-onboarding-customize-warp-drive = Zap Drive
+onboarding-customize-warp-drive = 库
 onboarding-customize-tools-panel = 工具面板
 onboarding-customize-code-review = 代码评审
 onboarding-free-user-title = 开始使用吧。
@@ -3135,20 +3135,20 @@ auth-terms-prefix = 继续后，此设置仍保留在本机。{" "}
 auth-terms-of-service = 本地设置
 auth-log-in = 登录
 auth-paste-token-from-browser = 点击这里粘贴浏览器中的 token
-auth-login-slide-title-warp-drive = 开始使用 Zap Drive
+auth-login-slide-title-warp-drive = 开始使用库
 auth-login-slide-title-ai = 开始使用 AI
-auth-login-slide-subtitle-warp-drive = 连接你的账号，以便跨设备保存和分享笔记、工作流等内容。
+auth-login-slide-subtitle-warp-drive = 在本机保存和整理笔记本、工作流等内容。
 auth-login-slide-subtitle-ai = 连接你的账号，以启用 AI 驱动的规划、编码和自动化。
-auth-disable-warp-drive = 停用 Zap Drive
+auth-disable-warp-drive = 停用库
 auth-disable-ai-features = 停用 AI 功能
-auth-enable-warp-drive = 启用 Zap Drive
+auth-enable-warp-drive = 启用库
 auth-enable-ai-features = 启用 AI 功能
 auth-browser-sign-in-one-line-title = 在浏览器中登录以继续
 auth-open-page-manually-line-prefix = {" "}并打开
 auth-open-page-manually-line-suffix = 手动打开页面。
-auth-disable-warp-drive-confirm-title = 确定要停用 Zap Drive 吗？
+auth-disable-warp-drive-confirm-title = 确定要停用库吗？
 auth-disable-ai-features-confirm-title = 确定要停用 AI 功能吗？
-auth-disable-warp-drive-confirm-body = Zap Drive 可让你跨设备保存工作流和知识，并与团队分享。继续后，你将无法使用以下功能：
+auth-disable-warp-drive-confirm-body = 库可让你在本机保存工作流和知识。继续后，你将无法使用以下功能：
 auth-disable-ai-features-confirm-body = 开启 AI 后 Zap 会更强大。继续后，你将无法使用以下功能：
 auth-feature-session-sharing = 会话分享
 auth-sign-up = 继续本地使用
@@ -3161,7 +3161,7 @@ auth-skip-login-confirm-line-1 = 你可以稍后注册，但部分功能（例�
 auth-skip-login-confirm-line-2-prefix = 仅登录用户可用。{" "}
 auth-yes-skip-login = 是，跳过登录
 auth-require-login-ai-collaboration = 本地 AI 功能不需要 Zap 账户。
-auth-require-login-drive-limit = Zap 会将 Zap Drive 对象保存在本机。
+auth-require-login-drive-limit = Zap 会将库对象保存在本机。
 auth-require-login-share = 本地 Zap 构建不提供分享功能。
 auth-welcome-title = 欢迎使用 Zap！
 auth-sign-up-for-warp = 继续使用 Zap
@@ -3385,7 +3385,7 @@ workspace-auto-reload = 自动重载
 workspace-add-new-repo = {" "}+ 添加新仓库
 workspace-notification-permission-denied-toast = Zap 没有发送桌面通知的权限。
 workspace-troubleshoot-notifications-link = 排查通知问题
-workspace-plan-synced-to-warp-drive-toast = 计划已同步到你的 Zap Drive
+workspace-plan-synced-to-warp-drive-toast = 计划已保存到你的库
 workspace-remote-control-link-copied-toast = 远程控制链接已复制。
 workspace-update-now = 立即更新
 workspace-update-warp = 更新 Zap

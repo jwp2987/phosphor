@@ -304,7 +304,7 @@ pub enum AgentDriverError {
     AIWorkflowNotFound(String),
     #[error("Terminal bootstrap failed")]
     BootstrapFailed,
-    #[error("Error syncing Phosphor Drive")]
+    #[error("Error loading Library")]
     WarpDriveSyncFailed,
     #[error("Requested environment not found: {0}")]
     EnvironmentNotFound(String),
