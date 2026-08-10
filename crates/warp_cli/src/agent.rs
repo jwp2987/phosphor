@@ -234,6 +234,58 @@ pub enum AgentCommand {
     Profile(AgentProfileCommand),
     /// List all available agents.
     List(ListAgentConfigsArgs),
+    /// Send or list messages in a local agent's on-disk mailbox.
+    ///
+    /// This is a local, filesystem-backed replacement for the pin's
+    /// server-backed `oz run message *` mailbox -- see
+    /// `crates/warp_cli/src/agent_mailbox.rs` for why `oz run` itself could
+    /// not be ported. Local child agents spawned by `/orchestrate` use this
+    /// to report to and poll their parent conversation.
+    #[command(subcommand)]
+    Message(AgentMessageCommand),
+}
+
+/// Message-related subcommands operating on a run's local mailbox.
+#[derive(Debug, Clone, Subcommand)]
+pub enum AgentMessageCommand {
+    /// Send a message to another run's local mailbox.
+    Send(AgentMessageSendArgs),
+    /// List messages delivered to a run's local mailbox.
+    List(AgentMessageListArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AgentMessageSendArgs {
+    /// The sending run's ID.
+    #[arg(long = "sender-run-id")]
+    pub sender_run_id: String,
+
+    /// Recipient run ID. Repeat the flag or comma-delimit to send to multiple recipients.
+    #[arg(long = "to", required = true, num_args = 1.., value_delimiter = ',')]
+    pub to: Vec<String>,
+
+    /// Message subject.
+    #[arg(long = "subject")]
+    pub subject: String,
+
+    /// Message body.
+    #[arg(long = "body")]
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct AgentMessageListArgs {
+    /// The run ID whose mailbox should be listed.
+    pub run_id: String,
+
+    /// Maximum number of messages to return (default: 25), most recent kept.
+    #[arg(
+        short = 'L',
+        long = "limit",
+        default_value = "25",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    pub limit: u32,
 }
 
 #[derive(Debug, Clone, Args)]

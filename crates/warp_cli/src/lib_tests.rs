@@ -1,7 +1,7 @@
 use super::*;
 use clap::Parser;
 
-use crate::agent::{AgentCommand, Harness};
+use crate::agent::{AgentCommand, AgentMessageCommand, Harness};
 // Zap Wave 7-2: the `environment` CLI was physically removed along with the cloud ambient agent subsystem.
 
 // Port audit against the pinned oracle (02b53fcd8, ORACLE.md), issue #210: the pin's
@@ -415,6 +415,147 @@ fn agent_run_rejects_prompt_and_saved_prompt() {
 #[test]
 fn run_command_is_removed() {
     let result = Args::try_parse_from(["warp", "run", "message"]);
+    assert!(result.is_err());
+}
+
+// `oz agent message *` is the local, filesystem-backed replacement for the
+// removed `oz run message *` mailbox -- see `crate::agent_mailbox`'s doc
+// comment for why `oz run` (a client for Warp's server-side hosted-CLI-task
+// registry) could not be ported, and why this is a new command under the
+// existing `agent` surface instead.
+#[test]
+fn agent_message_send_parses() {
+    let args = Args::try_parse_from([
+        "warp",
+        "agent",
+        "message",
+        "send",
+        "--sender-run-id",
+        "run-child-1",
+        "--to",
+        "run-parent-1",
+        "--subject",
+        "status",
+        "--body",
+        "starting up",
+    ])
+    .unwrap();
+
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `warp agent message send` command");
+    };
+    let CliCommand::Agent(AgentCommand::Message(AgentMessageCommand::Send(send_args))) =
+        boxed_cmd.as_ref()
+    else {
+        panic!("Expected `warp agent message send` command");
+    };
+
+    assert_eq!(send_args.sender_run_id, "run-child-1");
+    assert_eq!(send_args.to, vec!["run-parent-1".to_string()]);
+    assert_eq!(send_args.subject, "status");
+    assert_eq!(send_args.body, "starting up");
+}
+
+#[test]
+fn agent_message_send_accepts_multiple_recipients() {
+    let args = Args::try_parse_from([
+        "warp",
+        "agent",
+        "message",
+        "send",
+        "--sender-run-id",
+        "run-child-1",
+        "--to",
+        "run-a,run-b",
+        "--subject",
+        "status",
+        "--body",
+        "body",
+    ])
+    .unwrap();
+
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `warp agent message send` command");
+    };
+    let CliCommand::Agent(AgentCommand::Message(AgentMessageCommand::Send(send_args))) =
+        boxed_cmd.as_ref()
+    else {
+        panic!("Expected `warp agent message send` command");
+    };
+
+    assert_eq!(send_args.to, vec!["run-a".to_string(), "run-b".to_string()]);
+}
+
+#[test]
+fn agent_message_send_rejects_missing_to() {
+    let result = Args::try_parse_from([
+        "warp",
+        "agent",
+        "message",
+        "send",
+        "--sender-run-id",
+        "run-child-1",
+        "--subject",
+        "status",
+        "--body",
+        "body",
+    ]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn agent_message_list_parses() {
+    let args = Args::try_parse_from(["warp", "agent", "message", "list", "run-parent-1"]).unwrap();
+
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `warp agent message list` command");
+    };
+    let CliCommand::Agent(AgentCommand::Message(AgentMessageCommand::List(list_args))) =
+        boxed_cmd.as_ref()
+    else {
+        panic!("Expected `warp agent message list` command");
+    };
+
+    assert_eq!(list_args.run_id, "run-parent-1");
+    assert_eq!(list_args.limit, 25);
+}
+
+#[test]
+fn agent_message_list_accepts_limit() {
+    let args = Args::try_parse_from([
+        "warp",
+        "agent",
+        "message",
+        "list",
+        "run-parent-1",
+        "--limit",
+        "5",
+    ])
+    .unwrap();
+
+    let Some(Command::CommandLine(boxed_cmd)) = args.command else {
+        panic!("Expected `warp agent message list` command");
+    };
+    let CliCommand::Agent(AgentCommand::Message(AgentMessageCommand::List(list_args))) =
+        boxed_cmd.as_ref()
+    else {
+        panic!("Expected `warp agent message list` command");
+    };
+
+    assert_eq!(list_args.limit, 5);
+}
+
+#[test]
+fn agent_message_list_rejects_non_positive_limit() {
+    let result = Args::try_parse_from([
+        "warp",
+        "agent",
+        "message",
+        "list",
+        "run-parent-1",
+        "--limit",
+        "0",
+    ]);
     assert!(result.is_err());
 }
 

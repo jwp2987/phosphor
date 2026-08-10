@@ -20,6 +20,7 @@ warp_util = { path = "../warp_util" }
 clap_complete = "4.5.58"
 anyhow.workspace = true
 local_control.workspace = true
+log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
@@ -38,3 +39,4 @@ api_key_authentication = []
 
 [dev-dependencies]
 serial_test = "0.8.0"
+tempfile.workspace = true
