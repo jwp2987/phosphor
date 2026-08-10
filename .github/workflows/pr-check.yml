@@ -113,8 +113,9 @@ jobs:
       # (#230): `cargo check -p warp --features gui` above stayed green while
       # `llm_judge/mod.rs` didn't compile, because nothing in this workflow
       # ever checked `warp` and `integration` together. This is the same
-      # multi-package command `script/precheck` runs locally -- keep it here
-      # as CI's copy of that same regression test, not just for the one break.
+      # multi-package command from #230 that first caught it, and the one
+      # `script/precheck` already runs locally -- keep it here too as the
+      # regression test for the gap, not just for the one break.
       - name: cargo check (feature-unified, multi-package)
         shell: bash
         run: cargo check -p warp -p warp_completer -p integration -p app-installation-detection -p warp_ripgrep --features gui

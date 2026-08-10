@@ -135,3 +135,52 @@ fn discard_files_empty_result_is_err() {
     ));
     assert!(discard_files_result(&empty).is_err());
 }
+
+/// Guard: every host-scoped request variant must have an explicit, intentional
+/// response disposition. This match is exhaustive, so adding a new
+/// `host_scoped_request::Message` variant fails to compile until it is
+/// classified here — a prompt to add a `host_response` parser (or document why
+/// the response is parsed elsewhere).
+///
+/// Unlike the pinned oracle, this fork has no `manager` module for
+/// interpreting the richer per-op responses (`GetBranches`, `GitPush`, etc.):
+/// `RemoteServerClient` methods in `client/mod.rs` unwrap the response
+/// envelope themselves and return the typed payload directly to the caller,
+/// so most variants are classified as `client::<method>` rather than
+/// `manager::<fn>`. `SaveBuffer` is the one case where even the client
+/// forwards the raw `SaveBufferResponse` unconditionally — the
+/// success/error split happens at the caller
+/// (`app::code::global_buffer_model`) — even though a `host_response`
+/// helper mirroring that split exists for isolated testing.
+#[test]
+fn every_host_scoped_request_has_a_response_disposition() {
+    use crate::proto::host_scoped_request::Message as M;
+
+    fn disposition(m: &M) -> &'static str {
+        match m {
+            // Parsed via the helpers in this module (and mirrored inline at
+            // the matching `client::` call site).
+            M::WriteFile(_) => "host_response::write_file_result",
+            M::DeleteFile(_) => "host_response::delete_file_result",
+            M::DiscardFiles(_) => "host_response::discard_files_result",
+            // Full response returned to the caller for richer interpretation.
+            M::ReadFileContext(_) => "client::read_file_context",
+            M::SaveBuffer(_) => "client::save_buffer (caller parses result)",
+            M::ResolveConflict(_) => "client::resolve_conflict",
+            M::GetBranches(_) => "client::get_branches",
+            M::GitCommitChain(_) => "client::git_commit_chain",
+            M::GitPush(_) => "client::git_push",
+            M::GitCreatePr(_) => "client::git_create_pr",
+            M::GetCommittedBranchFiles(_) => "client::get_committed_branch_files",
+            M::RipgrepSearch(_) => "client::ripgrep_search",
+            M::ListDirectory(_) => "client::list_directory",
+            M::ResolvePath(_) => "client::resolve_path",
+            M::CreateDirectory(_) => "client::create_directory",
+            M::ReadFileChunk(_) => "client::read_file_chunk",
+            M::WriteFileChunk(_) => "client::write_file_chunk",
+        }
+    }
+
+    // Referenced so the exhaustive match is compiled and checked.
+    let _ = disposition;
+}

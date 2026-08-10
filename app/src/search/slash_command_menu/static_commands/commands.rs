@@ -776,6 +776,50 @@ mod tests {
         }
     }
 
+    /// Ported from Warp's `command_names_and_kinds_are_unique_per_surface` (name uniqueness is
+    /// already covered by `command_names_are_unique` above; this covers the `kind()` half). Zap
+    /// derives `kind()` from the command name rather than storing it, and multiple Zap-native
+    /// commands (e.g. `/pr-comments`) intentionally share `SlashCommandKind::Other` -- see the
+    /// doc comment on `SlashCommandKind::Other` -- so those are excluded from the uniqueness check.
+    #[test]
+    fn command_kinds_are_unique_excluding_other() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        let mut kinds = HashSet::new();
+        for command in COMMAND_REGISTRY.all_commands() {
+            let kind = command.kind();
+            if kind == SlashCommandKind::Other {
+                continue;
+            }
+            assert!(
+                kinds.insert(kind),
+                "duplicate slash command kind for {}: {kind:?}",
+                command.name
+            );
+        }
+    }
+
+    /// Ported from Warp's `api_keys_command_is_tui_only_and_has_no_arguments`. Unlike Warp,
+    /// `/api-keys` is Zap-native (see the doc comment on `API_KEYS`) and is not restricted to
+    /// the TUI surface, so this only checks what still applies: registration, metadata, and TUI
+    /// support.
+    #[test]
+    fn api_keys_command_has_no_arguments_and_supports_tui() {
+        crate::i18n::init(Some("en"));
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(API_KEYS.name)
+            .expect("expected /api-keys to be registered");
+        assert_eq!(command, &*API_KEYS);
+        assert_eq!(command.availability, Availability::AI_ENABLED);
+        assert!(command.argument.is_none());
+        assert_eq!(
+            command.description,
+            "Add, view, or clear a provider's API key"
+        );
+        assert!(command.supports_tui());
+    }
+
     /// Ported from Warp OSS `commands_tests.rs::version_command_is_not_registered`.
     #[test]
     fn version_command_is_not_registered() {
@@ -1083,5 +1127,13 @@ mod tests {
         // "/planning" should not match "/plan"
         let result = strip_command_prefix("/planning something", "/plan");
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn strip_command_prefix_matches_orchestrate() {
+        // `strip_command_prefix` is a plain string helper; exercise it against
+        // `/orchestrate`'s argument text same as any other command with an argument.
+        let result = strip_command_prefix("/orchestrate deploy services", "/orchestrate");
+        assert_eq!(result, Some("deploy services".to_string()));
     }
 }
