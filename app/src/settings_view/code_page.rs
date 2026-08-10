@@ -1,17 +1,12 @@
 //! The Code settings page: a flat list of local toggles for the editor and code review,
 //! plus the language-server (LSP) management section.
 //!
-//! `Code` is a single-layer Page with no subpages hanging off it in the sidebar,
-//! so two things the pin renders as separate subpages are rendered here as
-//! sections in one flat list:
-//!
-//! * **Language servers.** Zap retired the LSP subpage wholesale (`efcaa42b8`);
-//!   LSP is back, so the content is back with it. The controls themselves
-//!   (per-server enable/disable, install status, restart, remove) and the actions
-//!   they dispatch are the pin's.
-//! * **Codebase indexing.** Back minus the pin's per-repository index list: the
-//!   two `code.indexing.*` settings plus a read-only readout of the embedding
-//!   provider they depend on.
+//! Zap once retired the LSP subpage wholesale (`efcaa42b8`). LSP is back, so the subpage's
+//! content is back with it -- but not its shape: `Code` is still a single-layer Page with no
+//! subpages hanging off it in the sidebar, so what the pin renders as a "Codebase Indexing"
+//! subpage of per-workspace rows is rendered here as one more section in the flat list. The
+//! controls themselves (per-server enable/disable, install status, restart, remove) and the
+//! actions they dispatch are the pin's.
 
 #[cfg(feature = "local_fs")]
 use super::features::external_editor::ExternalEditorView;
@@ -29,7 +24,9 @@ use crate::{
     appearance::Appearance,
     code::lsp_telemetry::{LspControlActionType, LspEnablementSource, LspTelemetryEvent},
     send_telemetry_from_ctx,
-    settings::CodeSettings,
+    ai::agent_providers::embeddings,
+    settings::{AISettings, CodeSettings},
+    workspaces::user_workspaces::UserWorkspaces,
     terminal::general_settings::GeneralSettings,
     ui_components::{
         avatar::{Avatar, AvatarContent, StatusElementTypes},
@@ -37,13 +34,6 @@ use crate::{
         icons::Icon,
     },
     workspace::tab_settings::TabSettings,
-    ai::agent_providers::embeddings,
-    appearance::Appearance,
-    send_telemetry_from_ctx,
-    settings::{AISettings, CodeSettings},
-    terminal::general_settings::GeneralSettings,
-    workspace::tab_settings::TabSettings,
-    workspaces::user_workspaces::UserWorkspaces,
     TelemetryEvent,
 };
 use ai::project_context::model::{ProjectContextModel, ProjectContextModelEvent};
@@ -59,17 +49,6 @@ use warp_core::{
     report_if_error,
     settings::ToggleableSetting as _,
     ui::theme::{AnsiColorIdentifier, WarpTheme},
-use settings::Setting as _;
-use std::path::PathBuf;
-use warp_core::{features::FeatureFlag, report_if_error, settings::ToggleableSetting as _};
-use warpui::{
-    elements::{ChildView, Container, Element, Empty, Flex, ParentElement},
-    keymap::ContextPredicate,
-    ui_components::{
-        components::{UiComponent, UiComponentStyles},
-        switch::SwitchStateHandle,
-    },
-    Action, AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 use warp_util::path::user_friendly_path;
 use warpui::{
@@ -272,9 +251,8 @@ impl CodeSettingsPageView {
         )
     }
 
-    /// There is no ExternalEditorView in wasm builds; only the non-external-editor widgets are
-    /// rendered. The codebase-indexing widgets are listed here too, but hide themselves --
-    /// their settings are desktop-only (see `codebase_indexing_settings_supported`).
+    /// There is no ExternalEditorView in wasm builds; only the 4 non-external-editor toggles
+    /// are rendered.
     #[cfg(not(feature = "local_fs"))]
     fn build_page(
         _ctx: &mut ViewContext<Self>,
@@ -519,6 +497,9 @@ impl TypedActionView for CodeSettingsPageView {
                         },
                         _ctx,
                     );
+                });
+                ctx.notify();
+            }
             CodeSettingsPageAction::ToggleCodebaseContext => {
                 CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.codebase_context_enabled.toggle_and_save_value(ctx));
@@ -874,111 +855,6 @@ impl SettingsWidget for FormatOnSaveToggleWidget {
 
     fn search_terms(&self) -> &str {
         "format on save lsp language server formatting autoformat"
-// -- Codebase indexing --------------------------------------------------------
-//
-// Restored from the pin (`02b53fcd8:app/src/settings_view/code_page.rs`,
-// `CodebaseIndexingCategorizedWidget`) down to the two toggles it owns. The pin's
-// per-repository index list, its "index limit reached" banner and its team-admin override
-// are not ported: the first two belong to a manager this fork wires up elsewhere, and the
-// third arrived from Warp's server. What replaces the admin override is the embedding
-// readout below, because the fork's equivalent question -- "will this actually index
-// anything?" -- is answered locally, by whether a provider serves an embedding model.
-
-/// Whether the codebase-indexing controls can do anything on this build.
-///
-/// Mirrors `crate::ai::codebase_auto_indexing::codebase_indexing_enabled`: without
-/// `FullSourceCodeEmbedding` nothing indexes whatever the settings say, and both settings are
-/// desktop-only, so on other platforms the rows would write values nothing reads.
-fn codebase_indexing_settings_supported(app: &AppContext) -> bool {
-    FeatureFlag::FullSourceCodeEmbedding.is_enabled()
-        && CodeSettings::as_ref(app)
-            .codebase_context_enabled
-            .is_supported_on_current_platform()
-}
-
-/// A provider's display name, falling back to its id.
-///
-/// A provider is usable as soon as it lists a model, which can happen before the user has
-/// named it; an empty label in the readout would be worse than the raw id.
-fn provider_display_name(name: &str, id: &str) -> String {
-    let name = name.trim();
-    if name.is_empty() {
-        id.to_string()
-    } else {
-        name.to_string()
-    }
-}
-
-#[derive(Default)]
-struct CodebaseContextToggleWidget {
-    switch_state: SwitchStateHandle,
-}
-
-impl SettingsWidget for CodebaseContextToggleWidget {
-    type View = CodeSettingsPageView;
-
-    fn search_terms(&self) -> &str {
-        "codebase context indexing index repository embeddings agent code search"
-    }
-
-    fn should_render(&self, app: &AppContext) -> bool {
-        codebase_indexing_settings_supported(app)
-    }
-
-    fn render(
-        &self,
-        _view: &Self::View,
-        appearance: &Appearance,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        // The switch shows `is_codebase_context_enabled`, i.e. the value the agent actually
-        // reads, not the raw setting: it is ANDed with the global AI toggle, so with AI off
-        // the setting is inert. The pin disabled the control in that case for the same
-        // reason, and a switch the user can flip with no effect is worse than a dead one.
-        let ai_enabled = AISettings::as_ref(app).is_any_ai_enabled(app);
-        let enabled = UserWorkspaces::as_ref(app).is_codebase_context_enabled(app);
-
-        render_body_item::<CodeSettingsPageAction>(
-            crate::t!("settings-code-codebase-context"),
-            None,
-            LocalOnlyIconState::Hidden,
-            ToggleState::from(ai_enabled),
-            appearance,
-            appearance
-                .ui_builder()
-                .switch(self.switch_state.clone())
-                .check(enabled)
-                .with_disabled(!ai_enabled)
-                .build()
-                .on_click(move |ctx, _, _| {
-                    if !ai_enabled {
-                        return;
-                    }
-                    ctx.dispatch_typed_action(CodeSettingsPageAction::ToggleCodebaseContext);
-                })
-                .finish(),
-            Some(crate::t!("settings-code-codebase-context-desc")),
-        )
-    }
-}
-
-#[derive(Default)]
-struct AutoIndexingToggleWidget {
-    switch_state: SwitchStateHandle,
-}
-
-impl SettingsWidget for AutoIndexingToggleWidget {
-    type View = CodeSettingsPageView;
-
-    fn search_terms(&self) -> &str {
-        "auto indexing automatic index new folders repositories codebase context"
-    }
-
-    /// Hidden rather than greyed when codebase context is off, which is what the pin does:
-    /// it renders this row only inside `global_ai_enabled && codebase_context_enabled`.
-    fn should_render(&self, app: &AppContext) -> bool {
-        codebase_indexing_settings_supported(app)
-            && UserWorkspaces::as_ref(app).is_codebase_context_enabled(app)
     }
 
     fn render(
@@ -991,7 +867,6 @@ impl SettingsWidget for AutoIndexingToggleWidget {
 
         render_body_item::<CodeSettingsPageAction>(
             crate::t!("settings-code-format-on-save"),
-            crate::t!("settings-code-auto-indexing"),
             None,
             LocalOnlyIconState::Hidden,
             ToggleState::Enabled,
@@ -1006,13 +881,6 @@ impl SettingsWidget for AutoIndexingToggleWidget {
                 })
                 .finish(),
             Some(crate::t!("settings-code-format-on-save-desc")),
-                .check(*code_settings.auto_indexing_enabled)
-                .build()
-                .on_click(move |ctx, _, _| {
-                    ctx.dispatch_typed_action(CodeSettingsPageAction::ToggleAutoIndexing);
-                })
-                .finish(),
-            Some(crate::t!("settings-code-auto-indexing-desc")),
         )
     }
 }
@@ -1046,29 +914,6 @@ impl SettingsWidget for LanguageServersWidget {
 
     fn search_terms(&self) -> &str {
         "lsp language server servers rust-analyzer gopls pyright typescript install enable disable restart stop remove diagnostics hover goto definition"
-/// Reports which embedding model and provider the codebase index resolves to.
-///
-/// Read-only on purpose. There is no "embedding model" setting to expose: a model is chosen
-/// by listing its id on a provider under Settings > AI, and
-/// `embeddings::resolve_configured_embedding_model` takes the first entry of
-/// `SUPPORTED_EMBEDDING_MODELS` that a usable provider serves. Adding a persisted preference
-/// here would be a second source of truth that could name a model no provider serves, which
-/// is exactly the split `app/src/ai/agent_providers/embeddings.rs` was written to avoid.
-///
-/// What it must not do is stay quiet: an unconfigured index fails with
-/// `Error::NoEmbeddingProvider` rather than silently defaulting, so the unconfigured state is
-/// spelled out here and points at the page that fixes it.
-struct CodebaseEmbeddingModelWidget;
-
-impl SettingsWidget for CodebaseEmbeddingModelWidget {
-    type View = CodeSettingsPageView;
-
-    fn search_terms(&self) -> &str {
-        "embedding model provider codebase index vectors voyage openai"
-    }
-
-    fn should_render(&self, app: &AppContext) -> bool {
-        codebase_indexing_settings_supported(app)
     }
 
     fn render(
@@ -1579,6 +1424,135 @@ impl CodeSettingsPageView {
                 crate::t!("settings-code-lsp-status-not-running"),
             ),
         }
+    }
+}
+
+struct CodebaseContextToggleWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for CodebaseContextToggleWidget {
+    type View = CodeSettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "codebase context indexing index repository embeddings agent code search"
+    }
+
+    fn should_render(&self, app: &AppContext) -> bool {
+        codebase_indexing_settings_supported(app)
+    }
+
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        // The switch shows `is_codebase_context_enabled`, i.e. the value the agent actually
+        // reads, not the raw setting: it is ANDed with the global AI toggle, so with AI off
+        // the setting is inert. The pin disabled the control in that case for the same
+        // reason, and a switch the user can flip with no effect is worse than a dead one.
+        let ai_enabled = AISettings::as_ref(app).is_any_ai_enabled(app);
+        let enabled = UserWorkspaces::as_ref(app).is_codebase_context_enabled(app);
+
+        render_body_item::<CodeSettingsPageAction>(
+            crate::t!("settings-code-codebase-context"),
+            None,
+            LocalOnlyIconState::Hidden,
+            ToggleState::from(ai_enabled),
+            appearance,
+            appearance
+                .ui_builder()
+                .switch(self.switch_state.clone())
+                .check(enabled)
+                .with_disabled(!ai_enabled)
+                .build()
+                .on_click(move |ctx, _, _| {
+                    if !ai_enabled {
+                        return;
+                    }
+                    ctx.dispatch_typed_action(CodeSettingsPageAction::ToggleCodebaseContext);
+                })
+                .finish(),
+            Some(crate::t!("settings-code-codebase-context-desc")),
+        )
+    }
+}
+
+#[derive(Default)]
+struct AutoIndexingToggleWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for AutoIndexingToggleWidget {
+    type View = CodeSettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "auto indexing automatic index new folders repositories codebase context"
+    }
+
+    /// Hidden rather than greyed when codebase context is off, which is what the pin does:
+    /// it renders this row only inside `global_ai_enabled && codebase_context_enabled`.
+    fn should_render(&self, app: &AppContext) -> bool {
+        codebase_indexing_settings_supported(app)
+            && UserWorkspaces::as_ref(app).is_codebase_context_enabled(app)
+    }
+
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let code_settings = CodeSettings::as_ref(app);
+
+        render_body_item::<CodeSettingsPageAction>(
+            crate::t!("settings-code-auto-indexing"),
+            None,
+            LocalOnlyIconState::Hidden,
+            ToggleState::Enabled,
+            appearance,
+            appearance
+                .ui_builder()
+                .switch(self.switch_state.clone())
+                .check(*code_settings.auto_indexing_enabled)
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(CodeSettingsPageAction::ToggleAutoIndexing);
+                })
+                .finish(),
+            Some(crate::t!("settings-code-auto-indexing-desc")),
+        )
+    }
+}
+
+/// Reports which embedding model and provider the codebase index resolves to.
+///
+/// Read-only on purpose. There is no "embedding model" setting to expose: a model is chosen
+/// by listing its id on a provider under Settings > AI, and
+/// `embeddings::resolve_configured_embedding_model` takes the first entry of
+/// `SUPPORTED_EMBEDDING_MODELS` that a usable provider serves. Adding a persisted preference
+/// here would be a second source of truth that could name a model no provider serves, which
+/// is exactly the split `app/src/ai/agent_providers/embeddings.rs` was written to avoid.
+///
+/// What it must not do is stay quiet: an unconfigured index fails with
+/// `Error::NoEmbeddingProvider` rather than silently defaulting, so the unconfigured state is
+/// spelled out here and points at the page that fixes it.
+struct CodebaseEmbeddingModelWidget;
+
+impl SettingsWidget for CodebaseEmbeddingModelWidget {
+    type View = CodeSettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "embedding model provider codebase index vectors voyage openai"
+    }
+
+    fn should_render(&self, app: &AppContext) -> bool {
+        codebase_indexing_settings_supported(app)
+    }
+
+    fn render(
+        &self,
         _view: &Self::View,
         appearance: &Appearance,
         app: &AppContext,
