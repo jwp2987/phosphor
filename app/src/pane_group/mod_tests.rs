@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use warpui::App;
 
 use crate::notebooks::notebook::NotebookView;
+use crate::terminal::shared_session::SharedSessionStatus;
 
 use super::*;
 
@@ -577,6 +578,83 @@ fn test_add_pane_aborts_cleanly_when_pre_attach_returns_false() {
 
             assert_eq!(panes.pane_count(), before_count);
             assert_eq!(panes.snapshot(ctx), before_snapshot);
+        });
+    });
+}
+
+/// The pin's counterparts (`test_start_shared_session_from_modal`,
+/// `test_stop_shared_session`) drive sharing through
+/// `TerminalView::attempt_to_share_session`, which this fork has turned into
+/// a declared no-op ("Zap: the Shared Session network entry point has been
+/// cut" -- `terminal/view/shared_session/view_impl.rs`) now that the
+/// session-sharing websocket transport is gone. This test instead sets
+/// `SharedSessionStatus` directly on the `TerminalModel`, bypassing that
+/// no-op entirely, so it exercises real, non-stub `PaneGroup` bookkeeping
+/// (`is_terminal_pane_being_shared`/`number_of_shared_sessions`) rather than
+/// the removed transport.
+#[test]
+fn test_is_terminal_pane_being_shared() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            assert!(!panes.is_terminal_pane_being_shared(ctx));
+
+            // Add another pane; the pane group should still be "unshared".
+            panes.add_terminal_pane(Direction::Left, None, ctx);
+            assert!(!panes.is_terminal_pane_being_shared(ctx));
+
+            // Make one of the terminal panes shared. There is now at least one terminal pane being shared.
+            panes
+                .terminal_session_by_pane_index(0)
+                .expect("terminal pane exists")
+                .terminal_manager(ctx)
+                .as_ref(ctx)
+                .model()
+                .lock()
+                .set_shared_session_status(SharedSessionStatus::ActiveSharer);
+            assert!(panes.is_terminal_pane_being_shared(ctx));
+        });
+    });
+}
+
+/// See `test_is_terminal_pane_being_shared`'s doc comment for why this sets
+/// `SharedSessionStatus` directly instead of going through the now-no-op
+/// `attempt_to_share_session`.
+#[test]
+fn test_number_of_shared_panes() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            // We have two terminal sessions. Neither is shared
+            let first_pane_id = get_newly_created_pane_id(panes, &[]);
+            panes.add_terminal_pane(Direction::Up, None, ctx);
+            assert_eq!(panes.number_of_shared_sessions(ctx), 0);
+
+            // Make one pane shared
+            panes
+                .terminal_manager(0, ctx)
+                .unwrap()
+                .as_ref(ctx)
+                .model()
+                .lock()
+                .set_shared_session_status(SharedSessionStatus::ActiveSharer);
+            assert_eq!(panes.number_of_shared_sessions(ctx), 1);
+
+            // Make both panes shared
+            panes
+                .terminal_manager(1, ctx)
+                .unwrap()
+                .as_ref(ctx)
+                .model()
+                .lock()
+                .set_shared_session_status(SharedSessionStatus::ActiveSharer);
+            assert_eq!(panes.number_of_shared_sessions(ctx), 2);
+
+            // Close a pane
+            panes.close_pane(first_pane_id, ctx);
+            assert_eq!(panes.number_of_shared_sessions(ctx), 1);
         });
     });
 }
