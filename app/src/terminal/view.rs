@@ -173,6 +173,7 @@ pub use init::{
 };
 pub use inline_banner::{NotificationsDiscoveryBannerAction, NotificationsErrorBannerAction};
 #[cfg(feature = "local_fs")]
+use repo_metadata::CanonicalizedPath;
 use repo_metadata::repositories::{DetectedRepositories, RepoDetectionSource};
 use ssh_file_upload::{FileUpload, FileUploadEvent};
 use uuid::Uuid;
@@ -2297,6 +2298,12 @@ impl DropTargetData for TerminalDropTargetData {
     }
 }
 
+struct LocalSessionCanonicalPwdCache {
+    /// Non-canonical path
+    path: PathBuf,
+    canonical: CanonicalizedPath,
+}
+
 pub struct TerminalView {
     pub model: Arc<FairMutex<TerminalModel>>,
     view_handle: WeakViewHandle<Self>,
@@ -2564,6 +2571,11 @@ pub struct TerminalView {
 
     /// Whether we've already inserted the conversation-ended tombstone for this view.
     has_inserted_conversation_ended_tombstone: bool,
+
+    /// Memoizes `canonical_session_pwd_if_local`, keyed by the non-canonical
+    /// path it was derived from. Canonicalization touches the filesystem, and
+    /// the LSP idle-shutdown scan calls this for every terminal on every pass.
+    canonical_session_pwd_cache: RefCell<Option<LocalSessionCanonicalPwdCache>>,
 
     /// The ID of the containing window.
     window_id: WindowId,
@@ -3999,6 +4011,7 @@ impl TerminalView {
             pending_share_source: None,
             auto_stop_sharing_on_cli_end: false,
             has_inserted_conversation_ended_tombstone: false,
+            canonical_session_pwd_cache: RefCell::new(None),
             ai_input_model,
             ai_context_model,
             window_id,
@@ -7024,6 +7037,37 @@ impl TerminalView {
         } else {
             None
         }
+    }
+
+    /// The active local session's working directory, canonicalized.
+    ///
+    /// Returns `None` for remote sessions, for a session with no known pwd, and
+    /// when canonicalization fails. The result is memoized against the
+    /// non-canonical path so that repeated calls (notably the LSP idle-shutdown
+    /// scan, which walks every terminal every 10s) do not re-hit the filesystem.
+    pub fn canonical_session_pwd_if_local<C: ModelAsRef>(
+        &self,
+        ctx: &C,
+    ) -> Option<CanonicalizedPath> {
+        let path = self.active_session_path_if_local(ctx)?;
+
+        // Return the cached value when the non-canonical path has not changed.
+        if let Some(cached) = self.canonical_session_pwd_cache.borrow().as_ref()
+            && cached.path == path
+        {
+            return Some(cached.canonical.clone());
+        }
+
+        let canonical = CanonicalizedPath::try_from(&path).ok()?;
+
+        if let Ok(mut cache) = self.canonical_session_pwd_cache.try_borrow_mut() {
+            *cache = Some(LocalSessionCanonicalPwdCache {
+                path,
+                canonical: canonical.clone(),
+            });
+        }
+
+        Some(canonical)
     }
 
     pub fn input(&self) -> &ViewHandle<Input> {
