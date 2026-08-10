@@ -167,6 +167,11 @@ pub enum QueryFilter {
     /// Filter results for open sessions.
     Sessions,
 
+    /// Filter results for open tabs, ordered most-recently-used first. Only
+    /// ever active in the Ctrl+Tab palette (see `CtrlTabBehavior`), never in
+    /// the main command palette, so it has no filter atom of its own.
+    Tabs,
+
     /// Filter results for all conversations.
     Conversations,
 
@@ -241,6 +246,7 @@ impl QueryFilter {
             QueryFilter::NaturalLanguage => crate::t!("search-filter-placeholder-natural-language"),
             QueryFilter::Actions => crate::t!("search-filter-placeholder-actions"),
             QueryFilter::Sessions => crate::t!("search-filter-placeholder-sessions"),
+            QueryFilter::Tabs => crate::t!("search-filter-placeholder-tabs"),
             QueryFilter::Conversations => crate::t!("search-filter-placeholder-conversations"),
             QueryFilter::HistoricalConversations => {
                 crate::t!("search-filter-placeholder-historical-conversations")
@@ -285,6 +291,8 @@ impl QueryFilter {
             QueryFilter::NaturalLanguage => &NATURAL_LANGUAGE_FILTER_ATOM,
             QueryFilter::Actions => &ACTIONS_FILTER_ATOM,
             QueryFilter::Sessions => &SESSIONS_FILTER_ATOM,
+            // Ctrl+Tab-only, so it is never typed as a `tabs:` atom.
+            QueryFilter::Tabs => &NO_FILTER_ATOM,
             QueryFilter::Conversations => &CONVERSATIONS_FILTER_ATOM,
             QueryFilter::LaunchConfigurations => &LAUNCH_CONFIG_FILTER_ATOM,
             QueryFilter::Drive => &DRIVE_FILTER_ATOM,
@@ -319,6 +327,7 @@ impl QueryFilter {
             QueryFilter::NaturalLanguage => crate::t!("search-filter-display-natural-language"),
             QueryFilter::Actions => crate::t!("search-filter-display-actions"),
             QueryFilter::Sessions => crate::t!("search-filter-display-sessions"),
+            QueryFilter::Tabs => crate::t!("search-filter-display-tabs"),
             QueryFilter::Conversations => crate::t!("search-filter-display-conversations"),
             QueryFilter::LaunchConfigurations => {
                 crate::t!("search-filter-display-launch-configurations")
@@ -367,7 +376,7 @@ impl QueryFilter {
                 }
             }
             QueryFilter::Actions => None,
-            QueryFilter::Sessions => Some("bundled/svg/terminal-input.svg"),
+            QueryFilter::Sessions | QueryFilter::Tabs => Some("bundled/svg/terminal-input.svg"),
             QueryFilter::Conversations | QueryFilter::HistoricalConversations => {
                 Some("bundled/svg/conversation.svg")
             }

@@ -93,7 +93,7 @@ use warpui::{id, AddWindowOptions, DisplayId, SingletonEntity};
 use warpui::{
     platform::{WindowBounds, WindowStyle},
     presenter::ChildView,
-    AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle, WindowId,
+    AppContext, Element, Entity, EntityId, TypedActionView, View, ViewContext, ViewHandle, WindowId,
 };
 use warpui::{FocusContext, NextNewWindowsHasThisWindowsBoundsUponClose};
 
@@ -277,6 +277,10 @@ pub fn init(app: &mut AppContext) {
     app.add_action(
         "root_view:handle_pane_navigation_event",
         RootView::focus_pane,
+    );
+    app.add_action(
+        "root_view:activate_tab_by_pane_group_id",
+        RootView::activate_tab_by_pane_group_id,
     );
     app.add_action("root_view:close_window", RootView::close_window);
     app.add_action("root_view:minimize_window", RootView::minimize_window);
@@ -1920,6 +1924,25 @@ impl RootView {
         if let AuthOnboardingState::Terminal(workspace) = &self.auth_onboarding_state {
             workspace.update(ctx, |view, ctx| {
                 view.focus_pane(*pane_view_locator, ctx);
+            });
+        }
+        true
+    }
+
+    /// Activates a tab by its pane group's id. Dispatched by the Ctrl+Tab
+    /// palette's `NavigateToTab` action (see
+    /// `search::command_palette::tabs`), which addresses tabs by pane-group id
+    /// rather than index because the index can shift between the palette
+    /// opening and the selection being accepted.
+    fn activate_tab_by_pane_group_id(
+        &mut self,
+        pane_group_id: &EntityId,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        ctx.windows().show_window_and_focus_app(ctx.window_id());
+        if let AuthOnboardingState::Terminal(workspace) = &self.auth_onboarding_state {
+            workspace.update(ctx, |view, ctx| {
+                view.activate_tab_by_pane_group_id(*pane_group_id, ctx);
             });
         }
         true

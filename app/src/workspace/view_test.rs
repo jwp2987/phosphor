@@ -4588,3 +4588,155 @@ fn test_copy_current_path_is_a_noop_without_a_focused_path() {
         });
     });
 }
+
+// ---------------------------------------------------------------------------
+// Ctrl+Tab MRU order (`CtrlTabBehavior::CycleMostRecentTab`).
+//
+// `test_tab_mru_order` is ported verbatim from the pinned oracle
+// (`02b53fcd8`, `app/src/workspace/view_tests.rs`); it is the only pinned
+// coverage of `tab_mru_order`. The rest are added here because the MRU list is
+// maintained from several separate call sites in `view.rs` -- activate, close,
+// insert, restore, transferred-tab adoption -- and a change that misses one of
+// them would leave a stale or missing entry that no pinned test would catch.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_tab_mru_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+
+            let id_a = workspace.tabs[0].pane_group.id();
+            let id_b = workspace.tabs[1].pane_group.id();
+            let id_c = workspace.tabs[2].pane_group.id();
+
+            workspace.handle_action(&WorkspaceAction::ActivateTab(0), ctx);
+            workspace.handle_action(&WorkspaceAction::ActivateTab(1), ctx);
+            workspace.handle_action(&WorkspaceAction::ActivateTab(2), ctx);
+            workspace.handle_action(&WorkspaceAction::ActivateTab(0), ctx);
+
+            assert_eq!(workspace.tab_mru_order(), &[id_a, id_c, id_b]);
+        });
+    });
+}
+
+#[test]
+fn tab_mru_order_holds_every_open_tab_exactly_once() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+
+            let mut expected: Vec<_> = workspace.tabs.iter().map(|t| t.pane_group.id()).collect();
+            expected.sort();
+
+            let mut actual = workspace.tab_mru_order().to_vec();
+            actual.sort();
+
+            assert_eq!(
+                actual, expected,
+                "the MRU list must contain each open tab exactly once"
+            );
+        });
+    });
+}
+
+#[test]
+fn a_newly_added_tab_becomes_the_most_recent() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+
+            // Adding a tab activates it, so it must have been promoted to the
+            // front -- not left at the back where it was first appended.
+            let newest = workspace.tabs[workspace.active_tab_index].pane_group.id();
+            assert_eq!(
+                workspace.tab_mru_order().first(),
+                Some(&newest),
+                "a new tab is activated on creation, so it is the most recent"
+            );
+        });
+    });
+}
+
+#[test]
+fn re_activating_the_active_tab_does_not_duplicate_it() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+
+            workspace.handle_action(&WorkspaceAction::ActivateTab(0), ctx);
+            let after_first = workspace.tab_mru_order().to_vec();
+            workspace.handle_action(&WorkspaceAction::ActivateTab(0), ctx);
+
+            assert_eq!(
+                workspace.tab_mru_order(),
+                after_first.as_slice(),
+                "re-activating the same tab must be idempotent, not push a duplicate"
+            );
+        });
+    });
+}
+
+#[test]
+fn closing_a_tab_drops_it_from_the_mru_order() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+
+            let closed_id = workspace.tabs[1].pane_group.id();
+            workspace.handle_action(&WorkspaceAction::CloseTab(1), ctx);
+
+            assert!(
+                !workspace.tab_mru_order().contains(&closed_id),
+                "a closed tab must not linger in the MRU order -- \
+                 `tab_navigation_data` would silently drop it and the list \
+                 would grow without bound"
+            );
+            assert_eq!(
+                workspace.tab_mru_order().len(),
+                workspace.tabs.len(),
+                "the MRU list and the tab list must stay the same length"
+            );
+        });
+    });
+}
+
+#[test]
+fn closing_down_to_one_tab_leaves_the_mru_order_consistent() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.handle_action(&WorkspaceAction::CloseTab(1), ctx);
+
+            let remaining = workspace.tabs[0].pane_group.id();
+            assert_eq!(workspace.tab_mru_order(), &[remaining]);
+        });
+    });
+}

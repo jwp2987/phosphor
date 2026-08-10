@@ -9,6 +9,9 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-channel.workspace = true
+# Backs the bounded stderr tail buffer in `client/remote_server_log.rs`.
+# Not a workspace dependency: `app` and `warpui_core` also pin it directly.
+bounded-vec-deque = "0.1"
 command.workspace = true
 dashmap.workspace = true
 dirs.workspace = true

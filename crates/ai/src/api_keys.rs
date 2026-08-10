@@ -180,6 +180,22 @@ impl ApiKeyManager {
         }
     }
 
+    /// Re-reads the keys from secure storage, discarding the in-memory copy.
+    ///
+    /// [`Self::new`] reads secure storage once, at construction. That is
+    /// enough while a process is the only writer, but a key can also be
+    /// written by a *different* process sharing the same keyring namespace --
+    /// notably `zap-tui --set-provider-api-key`, which persists a key and
+    /// exits. Without this, an already-running app keeps serving the keys it
+    /// read at startup and the newly-saved key appears to have been ignored.
+    ///
+    /// Emits [`ApiKeyManagerEvent::KeysUpdated`] unconditionally, matching the
+    /// setters above: subscribers re-derive from `keys()` rather than diffing.
+    pub fn reload_keys_from_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
+        self.keys = Self::load_keys_from_secure_storage(ctx);
+        ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+    }
+
     fn load_keys_from_secure_storage(ctx: &mut ModelContext<Self>) -> ApiKeys {
         let key_json = match ctx.secure_storage().read_value(SECURE_STORAGE_KEY) {
             Ok(json) => json,

@@ -70,6 +70,24 @@ impl ConnectAndHandshakeError {
             Self::Initialize(_) => RemoteServerInitPhase::Initialize,
         }
     }
+
+    /// Appends the proxy subprocess's stderr tail to the error, so a failure
+    /// whose real cause was printed on the remote side ("command not found",
+    /// a permission error, an OOM kill) reports that cause instead of only
+    /// the client-side symptom.
+    ///
+    /// Draining is destructive by design: the tail is reported once, at the
+    /// point the connection is declared failed.
+    fn with_proxy_stderr(self, stderr_tail: &crate::client::RemoteServerLog) -> Self {
+        let Some(stderr) = stderr_tail.drain() else {
+            return self;
+        };
+        let annotate = |error: anyhow::Error| anyhow::anyhow!("{error:#} (proxy stderr: {stderr})");
+        match self {
+            Self::Connect(error) => Self::Connect(annotate(error)),
+            Self::Initialize(error) => Self::Initialize(annotate(error)),
+        }
+    }
 }
 
 /// Which phase of the remote server connection flow failed.
@@ -986,6 +1004,7 @@ impl RemoteServerManager {
             host_response_rx,
             child,
             control_path,
+            stderr_tail,
         } = transport
             .connect(executor.clone())
             .await
@@ -1039,7 +1058,8 @@ impl RemoteServerManager {
         if !was_inserted {
             return Err(ConnectAndHandshakeError::Connect(anyhow::anyhow!(
                 "Session {session_id:?} was deregistered during connect"
-            )));
+            ))
+            .with_proxy_stderr(&stderr_tail));
         }
 
         // Phase 2: Initialize handshake.
@@ -1047,7 +1067,13 @@ impl RemoteServerManager {
         let resp = client
             .initialize(auth_token.as_deref())
             .await
-            .map_err(|e| ConnectAndHandshakeError::Initialize(anyhow::anyhow!("{e:#}")))?;
+            .map_err(|e| {
+                // The client-side error here is often opaque ("Connection was
+                // dropped", "Response channel closed") while the real cause was
+                // printed by the proxy on stderr, so attach that tail.
+                ConnectAndHandshakeError::Initialize(anyhow::anyhow!("{e:#}"))
+                    .with_proxy_stderr(&stderr_tail)
+            })?;
 
         // Version compatibility check. If the server reports a different release
         // tag than the client expects, the binary on disk is stale. Remove it so
@@ -1080,7 +1106,8 @@ impl RemoteServerManager {
                 "remote server version mismatch (client: {client_version:?}, \
                  server: {:?}); reconnect to reinstall",
                 resp.server_version
-            )));
+            ))
+            .with_proxy_stderr(&stderr_tail));
         }
 
         Ok(HostId::new(resp.host_id))

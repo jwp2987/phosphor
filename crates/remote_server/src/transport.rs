@@ -17,6 +17,8 @@ use std::pin::Pin;
 use async_channel::Receiver;
 use warpui::r#async::executor;
 
+#[cfg(not(target_family = "wasm"))]
+use crate::client::RemoteServerLog;
 use crate::client::{ClientEvent, RemoteServerClient};
 use crate::proto::ServerMessage;
 use crate::setup::{PreinstallCheckResult, RemotePlatform};
@@ -61,6 +63,12 @@ pub struct Connection {
     /// See [`crate::ssh::stop_control_master`] for the exact command.
     #[cfg(not(target_family = "wasm"))]
     pub control_path: Option<PathBuf>,
+    /// Tail buffer of the last few stderr lines from the subprocess backing
+    /// this connection. Drained on connection failure and attached to the
+    /// failure diagnostics, so a proxy that died with a message on stderr
+    /// reports *why* instead of only that it died.
+    #[cfg(not(target_family = "wasm"))]
+    pub stderr_tail: RemoteServerLog,
 }
 
 /// Transport abstraction for remote server connections.
