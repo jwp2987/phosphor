@@ -14,11 +14,13 @@ use std::{
 };
 
 use crate::ai::llms::{LLMId, LLMPreferences};
-use crate::ai::mcp::MCPServerState;
+use crate::ai::mcp::{JSONMCPServer, MCPServerState};
 
 use crate::ai::agent_sdk::driver::harness::{
-    task_env_vars, HarnessKind, HarnessRunner, SavePoint, ThirdPartyHarness,
+    harness_model_env_vars, task_env_vars, HarnessKind, HarnessRunner, SavePoint,
+    ThirdPartyHarness,
 };
+use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::terminal::cli_agent_sessions::plugin_manager::{
     plugin_manager_for, CliAgentPluginManager,
 };
@@ -42,7 +44,7 @@ use crate::{
         },
         execution_profiles::profiles::AIExecutionProfilesModel,
         mcp::{
-            parsing::{normalize_mcp_json, ParsedTemplatableMCPServerResult},
+            parsing::{normalize_mcp_json, resolve_json, ParsedTemplatableMCPServerResult},
             templatable_manager::TemplatableMCPServerManagerEvent,
             TemplatableMCPServerInstallation, TemplatableMCPServerManager,
         },
@@ -197,6 +199,8 @@ pub struct AgentDriverOptions {
     pub idle_on_complete: Option<Duration>,
     /// Selected execution harness for this run.
     pub selected_harness: Harness,
+    /// Model config for the selected harness. Only used for non-Oz harnesses.
+    pub third_party_harness_model_config: Option<HarnessModelConfig>,
 }
 
 /// `AgentDriver` is a model for driving an ambient Zap agent to completion.
@@ -225,6 +229,11 @@ pub struct AgentDriver {
     // Optional idle timeout after completion. If set, the process will stay alive for follow-ups
     // and exit after this period of inactivity.
     idle_on_complete: Option<Duration>,
+
+    /// Model config for the selected third-party harness, if the run selected one.
+    /// Handed to `ThirdPartyHarness::prepare_environment_config` when preparing the
+    /// harness; also merged into the terminal session env vars in [`Self::new`].
+    third_party_harness_model_config: Option<HarnessModelConfig>,
 }
 
 pub(crate) enum SDKConversationOutputStatus {
@@ -361,6 +370,7 @@ impl AgentDriver {
             idle_on_complete,
             secrets,
             selected_harness,
+            third_party_harness_model_config,
         } = options;
 
         safe_info!(
@@ -383,6 +393,10 @@ impl AgentDriver {
             task_id.as_ref(),
             parent_run_id.as_deref(),
             selected_harness,
+        ));
+        env_vars.extend(harness_model_env_vars(
+            selected_harness,
+            third_party_harness_model_config.as_ref(),
         ));
 
         // Signal to third-party harnesses (e.g. Claude Code) that we're in a sandbox
@@ -414,6 +428,7 @@ impl AgentDriver {
             task_id,
             harness: None,
             idle_on_complete,
+            third_party_harness_model_config,
         })
     }
 
@@ -533,6 +548,63 @@ impl AgentDriver {
         }
 
         Ok((existing_uuids, ephemeral_installations))
+    }
+
+    /// Resolve MCP specs into the harness-native JSON shape third-party CLIs consume.
+    ///
+    /// Third-party harnesses spawn their own MCP servers from their own config, so unlike
+    /// the Oz path (which starts the servers in-process, see [`Self::start_mcp_servers`])
+    /// this only materializes the configuration.
+    ///
+    /// Ported from the pin (`app/src/ai/agent_sdk/driver.rs:1133-1176`, `02b53fcd8`). The
+    /// pin's version also takes a `ManagedMcpClient` so a UUID that isn't installed locally
+    /// can be fetched from the managed-MCP GraphQL API; that is dropped cloud, so this fork
+    /// resolves against locally-installed servers only — exactly what [`Self::resolve_mcp_specs`]
+    /// already does for the Oz path.
+    async fn resolve_mcp_specs_to_json(
+        specs: &[MCPSpec],
+        secrets: Arc<HashMap<String, ManagedSecretValue>>,
+        foreground: &ModelSpawner<Self>,
+    ) -> Result<HashMap<String, JSONMCPServer>, AgentDriverError> {
+        let specs = specs.to_vec();
+        let (local_uuids, ephemeral_installations) = foreground
+            .spawn(move |_, _| Self::resolve_mcp_specs(&specs))
+            .await??;
+
+        let mut installations = foreground
+            .spawn(move |_, ctx| -> Result<Vec<_>, AgentDriverError> {
+                let manager = TemplatableMCPServerManager::as_ref(ctx);
+                local_uuids
+                    .iter()
+                    .map(|uuid| {
+                        manager
+                            .get_installed_server(uuid)
+                            .cloned()
+                            .ok_or(AgentDriverError::MCPServerNotFound(*uuid))
+                    })
+                    .collect()
+            })
+            .await??;
+        installations.extend(ephemeral_installations);
+
+        Self::mcp_installations_to_json(installations, secrets.as_ref())
+    }
+
+    fn mcp_installations_to_json(
+        mut installations: Vec<TemplatableMCPServerInstallation>,
+        secrets: &HashMap<String, ManagedSecretValue>,
+    ) -> Result<HashMap<String, JSONMCPServer>, AgentDriverError> {
+        let mut result = HashMap::new();
+
+        for installation in installations.iter_mut() {
+            installation.apply_secrets(secrets);
+            let resolved = resolve_json(installation);
+            let servers: HashMap<String, JSONMCPServer> = serde_json::from_str(&resolved)
+                .map_err(|e| AgentDriverError::MCPJsonParseError(e.to_string()))?;
+            result.extend(servers);
+        }
+
+        Ok(result)
     }
 
     /// Start MCP servers from profile allowlist for the terminal.
@@ -945,8 +1017,13 @@ impl AgentDriver {
             HarnessKind::ThirdParty(harness) => {
                 let harness_name = harness.harness().to_string();
                 let harness_exit_rx = Self::setup_harness(harness.as_ref(), &foreground).await?;
-                let runner =
-                    Self::prepare_harness(&task.prompt, harness.as_ref(), &foreground).await?;
+                let runner = Self::prepare_harness(
+                    &task.prompt,
+                    &task.mcp_specs,
+                    harness.as_ref(),
+                    &foreground,
+                )
+                .await?;
                 let runtime_error_patterns = harness.runtime_error_patterns();
                 Self::run_harness(
                     runner,
@@ -1000,6 +1077,7 @@ impl AgentDriver {
     /// return a handle to the harness runner.
     async fn prepare_harness(
         prompt: &AgentRunPrompt,
+        mcp_specs: &[MCPSpec],
         harness: &dyn ThirdPartyHarness,
         foreground: &ModelSpawner<Self>,
     ) -> Result<Arc<dyn harness::HarnessRunner>, AgentDriverError> {
@@ -1028,11 +1106,34 @@ impl AgentDriver {
         let resumption_prompt: Option<String> = None;
 
         // Prepare harness config files (onboarding, trust dialog, API-key approval, etc.).
-        let secrets = foreground
-            .spawn(|me, _| Arc::clone(&me.secrets))
+        let (secrets, third_party_harness_model_config) = foreground
+            .spawn(|me, _| {
+                (
+                    Arc::clone(&me.secrets),
+                    me.third_party_harness_model_config.clone(),
+                )
+            })
             .await
             .map_err(|_| AgentDriverError::InvalidRuntimeState)?;
-        harness.prepare_environment_config(&working_dir, system_prompt.as_deref(), &secrets)?;
+
+        // Resolve MCP specs into harness-native JSON format. Third-party harnesses declare
+        // their MCP servers in their own config, so nothing is started here.
+        let resolved_mcp_servers =
+            Self::resolve_mcp_specs_to_json(mcp_specs, Arc::clone(&secrets), foreground).await?;
+        if !resolved_mcp_servers.is_empty() {
+            log::info!(
+                "Resolved {} MCP server(s) for third-party harness",
+                resolved_mcp_servers.len()
+            );
+        }
+
+        harness.prepare_environment_config(
+            &working_dir,
+            system_prompt.as_deref(),
+            &secrets,
+            &resolved_mcp_servers,
+            third_party_harness_model_config.as_ref(),
+        )?;
 
         let runner: Arc<dyn HarnessRunner> = harness
             .build_runner(

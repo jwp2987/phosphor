@@ -15,6 +15,7 @@ use warpui::{ModelHandle, ModelSpawner, SingletonEntity};
 use crate::ai::agent_events::AgentEventStreamClient;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::ambient_agents::task::HarnessModelConfig;
+use crate::ai::mcp::JSONMCPServer;
 use crate::terminal::cli_agent_sessions::{CLIAgentSessionStatus, CLIAgentSessionsModel};
 use crate::terminal::CLIAgent;
 use crate::util::path::resolve_executable;
@@ -73,11 +74,27 @@ pub(crate) trait ThirdPartyHarness: Send + Sync {
     }
 
     /// Prepare CLI-specific config files before launching the harness command.
+    ///
+    /// `resolved_mcp_servers` are the run's MCP servers already resolved into the
+    /// harness-native JSON shape (see `AgentDriver::resolve_mcp_specs_to_json`), for
+    /// harnesses that declare MCP servers in a config file.
+    ///
+    /// `third_party_harness_model_config` is the user's model selection for this run,
+    /// for harnesses that pin their model in a config file rather than through an
+    /// environment variable (see [`harness_model_env_vars`]).
+    ///
+    /// The pin carries both of these on `build_runner` instead, because it has no
+    /// separate config-preparation hook — its `build_runner` is the union of this
+    /// method and this fork's. They are declared here because config files are what
+    /// both values are written into; `build_runner` keeps the pin's parameter list
+    /// minus the ones this fork has no source for.
     fn prepare_environment_config(
         &self,
         _working_dir: &Path,
         _system_prompt: Option<&str>,
         _secrets: &HashMap<String, ManagedSecretValue>,
+        _resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
+        _third_party_harness_model_config: Option<&HarnessModelConfig>,
     ) -> Result<(), AgentDriverError> {
         Ok(())
     }

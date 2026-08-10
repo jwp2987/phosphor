@@ -14,7 +14,9 @@ use warpui::{ModelHandle, ModelSpawner};
 
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent_events::AgentEventStreamClient;
+use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
+use crate::ai::mcp::JSONMCPServer;
 use crate::terminal::model::block::BlockId;
 use crate::terminal::CLIAgent;
 
@@ -43,11 +45,15 @@ impl ThirdPartyHarness for GeminiHarness {
         Some("https://geminicli.com/")
     }
 
+    /// The MCP servers and model config are unused, matching the pin: Gemini's harness
+    /// ignores both there too, so wiring either one here would be inventing behaviour.
     fn prepare_environment_config(
         &self,
         working_dir: &Path,
         system_prompt: Option<&str>,
         _secrets: &HashMap<String, ManagedSecretValue>,
+        _resolved_mcp_servers: &HashMap<String, JSONMCPServer>,
+        _third_party_harness_model_config: Option<&HarnessModelConfig>,
     ) -> Result<(), AgentDriverError> {
         prepare_gemini_environment_config(working_dir, system_prompt).map_err(|error| {
             AgentDriverError::HarnessConfigSetupFailed {

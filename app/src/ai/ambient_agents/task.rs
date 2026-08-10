@@ -70,18 +70,41 @@ pub struct HarnessConfig {
         deserialize_with = "deserialize_harness"
     )]
     pub harness_type: Harness,
+    /// The model to use with this harness. None means use the harness default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    /// Optional reasoning level for harnesses that support it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_level: Option<String>,
 }
 
 impl HarnessConfig {
     /// Builds a harness config from just the harness type.
     pub fn from_harness_type(harness_type: Harness) -> Self {
-        Self { harness_type }
+        Self {
+            harness_type,
+            model_id: None,
+            reasoning_level: None,
+        }
+    }
+
+    /// The user-selected model override for this harness, if any.
+    pub fn model_config(&self) -> Option<HarnessModelConfig> {
+        self.model_id
+            .as_ref()
+            .filter(|id| !id.is_empty())
+            .map(|model_id| HarnessModelConfig {
+                model_id: model_id.clone(),
+                reasoning_level: self.reasoning_level.clone(),
+            })
     }
 }
 
 /// A user-selected model override for a third-party harness run, merged into the harness's
 /// launch environment (e.g. `ANTHROPIC_MODEL` for Claude) by
-/// `agent_sdk::driver::harness::harness_model_env_vars`.
+/// `agent_sdk::driver::harness::harness_model_env_vars`, and handed to
+/// `ThirdPartyHarness::prepare_environment_config` for harnesses that take their model from a
+/// config file instead (e.g. the `model` key Codex reads from `~/.codex/config.toml`).
 ///
 /// Ported from the pin (`crates/cloud_object_models/src/scheduled_ambient_agent.rs:87-91`,
 /// `02b53fcd8`) for #323. The pin's copy lives in a cloud-object-model crate this fork doesn't

@@ -28,18 +28,20 @@ use std::time::Duration;
 
 use futures::channel::oneshot;
 use warp_cli::agent::Harness;
+use warp_cli::mcp::MCPSpec;
 use warp_cli::{OZ_CLI_ENV, OZ_HARNESS_ENV, OZ_PARENT_RUN_ID_ENV, OZ_RUN_ID_ENV};
 use warp_managed_secrets::ManagedSecretValue;
 
 use super::{
-    build_secret_env_vars, IdleTimeoutSender, LEGACY_OZ_PARENT_LISTENER_MANAGED_EXTERNALLY_ENV,
-    LEGACY_OZ_PARENT_STATE_ROOT_ENV, OZ_MESSAGE_LISTENER_MANAGED_EXTERNALLY_ENV,
-    OZ_MESSAGE_LISTENER_STATE_ROOT_ENV,
+    build_secret_env_vars, AgentDriver, IdleTimeoutSender,
+    LEGACY_OZ_PARENT_LISTENER_MANAGED_EXTERNALLY_ENV, LEGACY_OZ_PARENT_STATE_ROOT_ENV,
+    OZ_MESSAGE_LISTENER_MANAGED_EXTERNALLY_ENV, OZ_MESSAGE_LISTENER_STATE_ROOT_ENV,
 };
 use crate::ai::agent::{AIAgentOutput, AIAgentOutputMessage, ArtifactCreatedData, MessageId};
 use crate::ai::agent_sdk::driver::harness::task_env_vars;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::mcp::parsing::normalize_mcp_json;
+use crate::ai::mcp::JSONTransportType;
 
 #[test]
 fn test_normalize_single_cli_server() {
@@ -621,4 +623,57 @@ fn worker_injected_env_skips_entire_bedrock_secret() {
     assert!(!env_vars.contains_key(&OsString::from("AWS_REGION")));
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe { std::env::remove_var("AWS_REGION") };
+}
+
+/// The fork-local half of the pin's managed-MCP rendering tests
+/// (`driver_tests.rs:301-420`, `02b53fcd8`): those all start from
+/// `installations_from_managed_client_config_json`, which is the dropped managed-MCP
+/// (cloud) source. An inline `--mcp '<json>'` spec is the local source that reaches the
+/// same `mcp_installations_to_json` rendering, so it is what these exercise instead.
+///
+/// This is the resolution third-party harnesses now consume: `AgentDriver::prepare_harness`
+/// feeds the result to `ThirdPartyHarness::prepare_environment_config`.
+#[test]
+fn inline_mcp_spec_renders_to_harness_native_json() {
+    let (uuids, installations) = AgentDriver::resolve_mcp_specs(&[MCPSpec::Json(
+        r#"{"mcpServers":{"docs":{"command":"npx","args":["-y","docs-mcp"]}}}"#.to_string(),
+    )])
+    .unwrap();
+    assert!(uuids.is_empty());
+
+    let rendered = AgentDriver::mcp_installations_to_json(installations, &HashMap::new()).unwrap();
+
+    match &rendered["docs"].transport_type {
+        JSONTransportType::CLIServer { command, args, .. } => {
+            assert_eq!(command.as_str(), "npx");
+            assert_eq!(args, &vec!["-y".to_string(), "docs-mcp".to_string()]);
+        }
+        other => panic!("expected CLI server, got {other:?}"),
+    }
+}
+
+/// Secret placeholders in an inline spec are resolved before the servers reach a harness,
+/// so a harness config file never receives an unsubstituted `{{VAR}}`.
+#[test]
+fn inline_mcp_spec_resolves_secret_placeholders_before_rendering() {
+    let (_uuids, installations) = AgentDriver::resolve_mcp_specs(&[MCPSpec::Json(
+        r#"{"mcpServers":{"github":{"command":"npx","env":{"API_TOKEN":"{{API_TOKEN}}"}}}}"#
+            .to_string(),
+    )])
+    .unwrap();
+
+    let secrets = HashMap::from([(
+        "API_TOKEN".to_string(),
+        ManagedSecretValue::RawValue {
+            value: "real-token".to_string(),
+        },
+    )]);
+    let rendered = AgentDriver::mcp_installations_to_json(installations, &secrets).unwrap();
+
+    match &rendered["github"].transport_type {
+        JSONTransportType::CLIServer { env, .. } => {
+            assert_eq!(env.get("API_TOKEN").map(String::as_str), Some("real-token"));
+        }
+        other => panic!("expected CLI server, got {other:?}"),
+    }
 }
