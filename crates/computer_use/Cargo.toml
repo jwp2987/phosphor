@@ -40,9 +40,15 @@ warpui.workspace = true
 ashpd.workspace = true
 futures.workspace = true
 image.workspace = true
+instant.workspace = true
+# `kill(pid, None)` liveness-checks the process that owns a leaked X11 agent seat, so a crashed
+# process's server-global master devices can be reaped.
+nix = { workspace = true, features = ["signal"] }
 url.workspace = true
 warpui.workspace = true
-x11rb = { workspace = true, features = ["xtest"] }
+# `xinput` provides the XI2 (MPX) device hierarchy used for background per-window control,
+# `composite` provides off-screen window capture for background window screenshots.
+x11rb = { workspace = true, features = ["composite", "xinput", "xtest"] }
 zbus.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
