@@ -963,8 +963,18 @@ impl AIConversation {
     }
 
     /// Sets the task ID by parsing a run_id string.
+    ///
+    /// A run ID that does not parse leaves the conversation with no task ID at all,
+    /// which downstream reads as "this conversation has no run" -- so say so rather
+    /// than dropping it silently.
     pub fn set_run_id(&mut self, id: String) {
-        self.task_id = id.parse().ok();
+        self.task_id = match id.parse() {
+            Ok(task_id) => Some(task_id),
+            Err(error) => {
+                log::warn!("Ignoring unparseable run ID {id:?}: {error}");
+                None
+            }
+        };
     }
 
     /// Returns the server-assigned task ID, if available.

@@ -585,7 +585,20 @@ impl TuiView for TuiInputView {
         let vim_mode_enabled = self.vim_mode_enabled(ctx);
         let vim_state = self.vim_model.as_ref(ctx).state();
         input_keymap_context(
-            self.active_inline_menu(ctx).is_some()
+            // An open read-only sheet (`?` shortcuts, `/status`) is the FIRST branch
+            // `handle_escape` takes, but it is not an `active_inline_menu` -- those sheets
+            // have no selection model and so are not registered in `inline_menus`. Without
+            // this term the flag stays unset, the `escape` binding's context predicate does
+            // not match, `HandleEscape` is never dispatched, and that top-priority branch is
+            // unreachable from a real keypress: `?` then Escape leaves the sheet open and
+            // fires a session-level Escape binding instead. The existing coverage all
+            // dispatches `HandleEscape` directly, which bypasses the keymap and hides this.
+            self.suggestions_mode
+                .as_ref(ctx)
+                .mode()
+                .read_only_menu()
+                .is_some()
+                || self.active_inline_menu(ctx).is_some()
                 || self.is_shell_mode(ctx)
                 || (vim_mode_enabled
                     && (!matches!(vim_state.mode, VimMode::Normal)

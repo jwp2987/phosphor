@@ -54,12 +54,17 @@ fn execute_delivers_to_the_target_mailbox_and_reports_success() {
             let history = initialize_history(&mut app);
             let executor = app.add_model(|_| SendMessageToAgentExecutor::new());
 
+            // A run ID is an `AmbientAgentTaskId`, i.e. a UUID -- `Conversation` stores
+            // it parsed (`set_run_id` -> `task_id`), so an arbitrary label like
+            // "sender-run-1" parses to `None` and the conversation reports no run ID at
+            // all. Use a real one, as the ambient-task test below already does.
+            let sender_run_id = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
             let conversation_id = history.update(&mut app, |history, ctx| {
                 let conversation_id =
                     history.start_new_conversation(terminal_view_id, false, false, ctx);
                 history.assign_run_id_for_conversation(
                     conversation_id,
-                    "sender-run-1".to_string(),
+                    sender_run_id.to_string(),
                     None,
                     terminal_view_id,
                     ctx,
@@ -89,7 +94,7 @@ fn execute_delivers_to_the_target_mailbox_and_reports_success() {
             let delivered =
                 warp_cli::agent_mailbox::list_messages(&mailbox_root, "target-run-1", 10).unwrap();
             assert_eq!(delivered.len(), 1);
-            assert_eq!(delivered[0].from, "sender-run-1");
+            assert_eq!(delivered[0].from, sender_run_id);
             assert_eq!(delivered[0].to, "target-run-1");
             assert_eq!(delivered[0].subject, "status");
             assert_eq!(delivered[0].body, "starting up");

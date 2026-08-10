@@ -12218,9 +12218,14 @@ impl TerminalView {
             && *ai_settings.should_render_cli_agent_footer
             && is_rich_input_chip_in_cli_toolbar(ctx)
         {
+            // `supports_rich_status()`, not merely "has a listener": every CLI agent
+            // session gets a listener, including ones whose status arrives through the
+            // OSC-9 fallback (Codex). Those carry no rich payload, so auto-opening the
+            // rich input on their status changes steals the keyboard from whatever
+            // option menu the agent is showing in the terminal.
             let should_auto_toggle_input = CLIAgentSessionsModel::as_ref(ctx)
                 .session(self.view_id)
-                .is_some_and(|s| s.listener.is_some() && s.should_auto_toggle_input);
+                .is_some_and(|s| s.supports_rich_status() && s.should_auto_toggle_input);
             if should_auto_toggle_input {
                 match status {
                     CLIAgentSessionStatus::Blocked { .. } => {

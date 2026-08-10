@@ -615,14 +615,14 @@ impl TerminalView {
     }
 
     /// Conditionally closes CLI agent rich input after a prompt submission.
-    /// When auto-toggle is active with a plugin listener, rich input stays
-    /// open (status-change events manage visibility instead).
+    /// When auto-toggle is active on a session that reports rich status, rich
+    /// input stays open (status-change events manage visibility instead).
     /// Otherwise, respects the auto-dismiss-after-submit setting.
     fn maybe_close_rich_input_after_submit(&mut self, ctx: &mut ViewContext<Self>) {
         let session = CLIAgentSessionsModel::as_ref(ctx).session(self.view_id);
         let has_plugin = session
             .as_ref()
-            .is_some_and(|s| s.listener.is_some() && s.should_auto_toggle_input);
+            .is_some_and(|s| s.supports_rich_status() && s.should_auto_toggle_input);
         let ai_settings = AISettings::as_ref(ctx);
 
         let should_close = if has_plugin && *ai_settings.auto_toggle_rich_input {
@@ -680,8 +680,11 @@ impl TerminalView {
                     ..Default::default()
                 },
                 // Locally synthesized PromptSubmit mirroring what the rich plugin
-                // reports for a submitted prompt.
-                source: CLIAgentEventSource::RichPlugin,
+                // reports for a submitted prompt -- but the user pressing Enter in
+                // Zap's own composer is not evidence the agent has a rich plugin, so
+                // it must not be labelled `RichPlugin` (that flips
+                // `received_rich_notification`).
+                source: CLIAgentEventSource::LocalUserAction,
             };
             CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions_model, ctx| {
                 sessions_model.update_from_event(view_id, &event, ctx);

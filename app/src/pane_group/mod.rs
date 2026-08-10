@@ -5631,8 +5631,19 @@ impl PaneGroup {
         )
     }
 
+    /// The number of panes in the layout tree, excluding hidden child agent panes.
+    ///
+    /// The exclusion matters beyond bookkeeping: `pane_count() == 1` is what tells a
+    /// pane group it has become empty and should emit `Event::Exited` (see
+    /// `remove_pane_for_move` and `close_pane`). Counting an invisible child agent pane
+    /// there leaves the tab alive with nothing the user can see in it after they close
+    /// their last real pane. `toggle_maximize_pane`'s `> 1` guard has the same problem in
+    /// reverse. The pin cannot hit either case because its child agent panes live off the
+    /// tree entirely -- see `PaneData::num_child_agent_hidden_panes`.
     pub fn pane_count(&self) -> usize {
-        self.panes.len()
+        self.panes
+            .len()
+            .saturating_sub(self.panes.num_child_agent_hidden_panes())
     }
 
     pub fn has_horizontal_split(&self) -> bool {

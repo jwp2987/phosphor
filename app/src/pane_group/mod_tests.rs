@@ -673,7 +673,14 @@ fn test_number_of_shared_panes() {
 #[test]
 fn test_update_session_visibility() {
     App::test((), |mut app| async move {
-        let pane_group = mock_pane_group(&mut app);
+        // The options harness, not the plain `mock_pane_group` the other ported
+        // tests use: this is the one test that turns on `PaneGroup::focus`, and
+        // `update_session_visibility` bails unless `ctx.is_self_or_child_focused()`.
+        // A `Workspace`-built pane group is not its window's root, so it is not
+        // focused at that point and every session stays invisible. The pin's only
+        // harness builds the pane group directly as the window's view, which is what
+        // this harness does -- so use it here, exactly as the pin's version does.
+        let pane_group = mock_pane_group_with_options(&mut app, Default::default());
         pane_group.update(&mut app, |panes, ctx| {
             // Assert that there is no active window.
             WindowManager::handle(ctx).read(ctx, |state, _| {

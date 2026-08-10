@@ -230,6 +230,22 @@ impl PaneData {
         self.hidden_panes.len()
     }
 
+    /// Panes hidden because they belong to a child agent.
+    ///
+    /// The pin never puts these in the split tree at all -- it attaches them via
+    /// `PaneGroup::attach_child_pane_off_tree` and the orchestration pill bar inserts
+    /// them later. This fork reaches the same visible result by splitting normally and
+    /// then hiding, which means `len` counts them. Every index-based accessor here
+    /// (`visible_pane_ids`, and so `pane_id_by_index` / `pane_by_index`) already skips
+    /// them, so `PaneGroup::pane_count` subtracts this to stay consistent with both
+    /// those accessors and the pin's contract.
+    pub fn num_child_agent_hidden_panes(&self) -> usize {
+        self.hidden_panes
+            .iter()
+            .filter(|hidden| hidden.reason == HiddenPaneReason::ChildAgent)
+            .count()
+    }
+
     pub fn remove_hidden_pane(&mut self, pane_id: PaneId) {
         self.hidden_panes.retain(|pane| pane.pane_id != pane_id);
     }

@@ -4744,8 +4744,8 @@ impl TuiView for TuiTerminalSessionView {
             ConversationRestoreState::Idle => {}
         }
         let builder = TuiUiBuilder::from_app(ctx);
-        // While a full-screen (alt-screen) app is active, hand the whole pane to
-        // it: render its grid and forward input, instead of the block UI.
+        // While a full-screen (alt-screen) app is active, hand the pane to it:
+        // render its grid instead of the block UI.
         let (alt_screen_active, input_target, user_owns_running_command) = {
             let terminal_model = self.terminal_model.lock();
             (
@@ -4755,12 +4755,35 @@ impl TuiView for TuiTerminalSessionView {
             )
         };
         if alt_screen_active {
-            return TuiTerminalContentElement::new(
+            let terminal_content = TuiTerminalContentElement::new(
                 self.terminal_resize_tx.clone(),
                 AltScreenElement::new(self.terminal_model.clone()).finish(),
-            )
-            .with_pty_input(self.terminal_model.clone())
-            .finish();
+            );
+            // Only a full-screen app the USER is driving gets keystrokes forwarded.
+            // Under agent control the composer owns input, so wiring the PTY here
+            // would race the agent for every key.
+            let terminal_content = if input_target.pty_owns_input() {
+                terminal_content.with_pty_input(self.terminal_model.clone())
+            } else {
+                terminal_content
+            };
+            let mut content = TuiFlex::column().flex_child(terminal_content.finish());
+            // ...and only a user-driven app gets the WHOLE pane. When the agent is
+            // driving the full-screen command the user still has to be able to talk
+            // to it, so the alternate screen takes the output region and the normal
+            // composer chrome renders beneath it -- as the pin's alt-screen branch
+            // in this same function does. Handing the pane over unconditionally, as
+            // this fork did, left no way to reach the agent until the app exited.
+            if input_target.agent_editor_owns_input() {
+                let agent_area = self.append_composer_and_footer(TuiFlex::column(), &builder, ctx);
+                content = content.child(
+                    TuiContainer::new(agent_area.finish())
+                        .with_padding_x(2)
+                        .with_padding_bottom(1)
+                        .finish(),
+                );
+            }
+            return content.finish();
         }
 
         let inline_menu = input_target
@@ -4968,34 +4991,7 @@ impl TuiView for TuiTerminalSessionView {
                     );
                 }
             }
-            let border_style = if self.is_shell_mode(ctx) {
-                builder.shell_mode_accent_style()
-            } else {
-                builder.accent_border_style()
-            };
-            if self.attachment_bar.as_ref(ctx).should_render(ctx) {
-                content = content.child(
-                    TuiConstrainedBox::new(
-                        TuiContainer::new(TuiChildView::new(&self.attachment_bar).finish())
-                            .with_padding_x(1)
-                            .finish(),
-                    )
-                    .with_max_rows(1)
-                    .finish(),
-                );
-            }
-            content = content.child(
-                TuiConstrainedBox::new(
-                    TuiContainer::new(TuiChildView::new(&self.input_view).finish())
-                        .with_padding_x(1)
-                        .with_border_style(border_style)
-                        .finish(),
-                )
-                .with_max_rows(MAX_INPUT_TEXT_ROWS + 2)
-                .finish(),
-            );
-            let footer = self.render_footer(ctx).finish();
-            content = content.child(TuiConstrainedBox::new(footer).with_max_rows(1).finish());
+            content = self.append_composer_and_footer(content, &builder, ctx);
         }
         let content = content.finish();
         let terminal_content =
@@ -5019,6 +5015,48 @@ impl TuiView for TuiTerminalSessionView {
 }
 
 impl TuiTerminalSessionView {
+    /// Appends the agent composer's chrome -- attachment bar, input box, footer --
+    /// to `content`.
+    ///
+    /// Shared by the normal block UI and the agent-controlled alternate-screen path
+    /// so the two cannot drift: the composer a user sees under a full-screen agent
+    /// command is the same composer, not an approximation of it.
+    fn append_composer_and_footer(
+        &self,
+        mut content: TuiFlex,
+        builder: &TuiUiBuilder,
+        ctx: &AppContext,
+    ) -> TuiFlex {
+        let border_style = if self.is_shell_mode(ctx) {
+            builder.shell_mode_accent_style()
+        } else {
+            builder.accent_border_style()
+        };
+        if self.attachment_bar.as_ref(ctx).should_render(ctx) {
+            content = content.child(
+                TuiConstrainedBox::new(
+                    TuiContainer::new(TuiChildView::new(&self.attachment_bar).finish())
+                        .with_padding_x(1)
+                        .finish(),
+                )
+                .with_max_rows(1)
+                .finish(),
+            );
+        }
+        content = content.child(
+            TuiConstrainedBox::new(
+                TuiContainer::new(TuiChildView::new(&self.input_view).finish())
+                    .with_padding_x(1)
+                    .with_border_style(border_style)
+                    .finish(),
+            )
+            .with_max_rows(MAX_INPUT_TEXT_ROWS + 2)
+            .finish(),
+        );
+        let footer = self.render_footer(ctx).finish();
+        content.child(TuiConstrainedBox::new(footer).with_max_rows(1).finish())
+    }
+
     fn handle_typeahead_event(&mut self, ctx: &mut ViewContext<Self>) {
         let typeahead = self.terminal_model.lock().take_typeahead_for_input();
         if let Some((text, previously_inserted)) = typeahead {

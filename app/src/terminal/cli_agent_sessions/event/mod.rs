@@ -37,6 +37,15 @@ pub enum CLIAgentEventSource {
     RichPlugin,
     /// Native Codex OSC 9 fallback notification.
     CodexOsc9Fallback,
+    /// Synthesized by Zap itself for something the user did in Zap's UI (today:
+    /// submitting the rich input), with no notification from the agent behind it.
+    ///
+    /// Distinct from [`Self::RichPlugin`] because `received_rich_notification` --
+    /// and so `CLIAgentSession::supports_rich_status` -- must only be set by
+    /// evidence that the agent really is plugin-backed. Labelling a locally
+    /// synthesized event `RichPlugin` makes every session look plugin-backed the
+    /// moment the user hits Enter once.
+    LocalUserAction,
 }
 
 /// Event-specific fields that vary by event type.

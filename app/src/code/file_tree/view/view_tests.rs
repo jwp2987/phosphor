@@ -24,6 +24,30 @@ fn std_path(path: &std::path::Path) -> warp_util::standardized_path::Standardize
     warp_util::standardized_path::StandardizedPath::try_from_local(path).unwrap()
 }
 
+/// Pumps the executor until `done` holds, panicking on a generous bound.
+///
+/// Directory materialization is asynchronous by design: `FileTreeView::ensure_loaded_path`
+/// (which `toggle_folder_expansion` also goes through) reaches
+/// `RepoMetadataModel::load_directory`, and that builds the subtree in a `ctx.spawn`ed
+/// future and applies it on a later tick. A read taken immediately after the call always
+/// observes the pre-load tree, so tests that assert on materialized children have to wait
+/// for the load rather than assume it already happened.
+///
+/// The sleep matters: the tree build runs on the background executor, and a tight
+/// foreground yield-loop starves it. Mirrors `warp_tui`'s `settle_until`.
+async fn settle_until(app: &mut App, mut done: impl FnMut(&mut App) -> bool) {
+    for _ in 0..600 {
+        for _ in 0..8 {
+            futures_lite::future::yield_now().await;
+        }
+        if done(app) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    panic!("settle_until: the awaited directory load never landed");
+}
+
 fn initialize_app(
     app: &mut App,
 ) -> (
@@ -295,20 +319,15 @@ fn repo_backed_unloaded_directory_loads_through_model() {
                 );
             });
 
-            file_tree_view.read(&app, |view, _ctx| {
-                assert!(view
-                    .root_directories
-                    .get(
-                        &warp_util::standardized_path::StandardizedPath::try_from_local(&repo_root)
-                            .unwrap()
-                    )
-                    .is_some_and(|root_dir| root_dir.entry.contains(
-                        &warp_util::standardized_path::StandardizedPath::try_from_local(
-                            &nested_dir
-                        )
-                        .unwrap()
-                    )));
-            });
+            let contains = |view: &FileTreeView, path: &std::path::Path| {
+                view.root_directories
+                    .get(&std_path(&repo_root))
+                    .is_some_and(|root_dir| root_dir.entry.contains(&std_path(path)))
+            };
+            settle_until(&mut app, |app| {
+                file_tree_view.read(app, |view, _| contains(view, &nested_dir))
+            })
+            .await;
 
             file_tree_view.update(&mut app, |view, ctx| {
                 view.ensure_loaded_path(
@@ -320,20 +339,10 @@ fn repo_backed_unloaded_directory_loads_through_model() {
                 );
             });
 
-            file_tree_view.read(&app, |view, _ctx| {
-                assert!(view
-                    .root_directories
-                    .get(
-                        &warp_util::standardized_path::StandardizedPath::try_from_local(&repo_root)
-                            .unwrap()
-                    )
-                    .is_some_and(|root_dir| root_dir.entry.contains(
-                        &warp_util::standardized_path::StandardizedPath::try_from_local(
-                            &source_file
-                        )
-                        .unwrap()
-                    )));
-            });
+            settle_until(&mut app, |app| {
+                file_tree_view.read(app, |view, _| contains(view, &source_file))
+            })
+            .await;
             repository_metadata_model.read(&app, |model, ctx| {
                 assert!(!model.is_lazy_loaded_path(
                     &warp_util::standardized_path::StandardizedPath::try_from_local(&repo_root)
@@ -645,6 +654,23 @@ fn click_on_file_under_absorbed_descendant_keeps_file_selected() {
                     view.set_root_directories(vec![code.clone()], ctx);
                     view.toggle_folder_expansion(&std_path(&code), &std_path(&warp_server), ctx);
                 });
+
+                // `toggle_folder_expansion` loads warp-server's children through the
+                // model, which lands on a later tick -- wait for main.rs to appear in
+                // the flattened items before clicking it.
+                settle_until(&mut app, |app| {
+                    file_tree_view.read(app, |view, _| {
+                        view.root_directories
+                            .get(&std_path(&code))
+                            .is_some_and(|root_dir| {
+                                root_dir
+                                    .items
+                                    .iter()
+                                    .any(|item| item.path() == &std_path(&main_rs))
+                            })
+                    })
+                })
+                .await;
 
                 // Simulate a click on main.rs (select_id is what the click
                 // action and the active-file scroll both go through).

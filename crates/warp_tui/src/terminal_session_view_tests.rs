@@ -13,7 +13,8 @@ use warp::settings::{
 use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
-    AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryModel,
+    AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryEvent,
+    BlocklistAIHistoryModel,
     ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo,
     SizeUpdate, TaskId, TuiUpArrowHistoryItemKind, export_conversation_markdown,
     register_tui_session_view_test_singletons, slash_commands,
@@ -2800,11 +2801,22 @@ fn agent_controlled_alt_screen_keeps_output_and_composer_visible() {
             "alternate-screen output should render above the composer:\n{}",
             lines.join("\n")
         );
+        // The footer's model segment proves the *normal* agent footer rendered, not
+        // some alt-screen-specific stand-in. The pin hard-codes its cloud default
+        // ("auto (cost-efficient)") here; BYOP has no built-in model list, so the
+        // active model is whatever the user configured -- nothing, in a test app,
+        // which yields the grayed-out placeholder from `placeholder_llm_info`. Read
+        // the name the same way `model_label_position`'s caller does instead of
+        // naming a model this fork cannot select.
+        let model_name = view.read(&app, |view, ctx| {
+            LLMPreferences::as_ref(ctx)
+                .get_active_base_model(ctx, Some(view.terminal_surface_id))
+                .display_name
+                .clone()
+        });
         assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("auto (cost-efficient)")),
-            "the normal agent footer should remain visible:\n{}",
+            lines.iter().any(|line| line.contains(&model_name)),
+            "the normal agent footer should remain visible (model {model_name:?}):\n{}",
             lines.join("\n")
         );
     });
@@ -3218,8 +3230,42 @@ fn orchestrate_slash_command_requires_active_conversation() {
 
         let fixture = focus_test_fixture(&mut app);
         app.update(TuiPaneGroup::register);
-        // No conversation registered on this session.
-        let (view, _session_id) = add_focus_test_session(&mut app, &fixture, true);
+        // Removing a conversation below runs the session view's history-event
+        // subscriptions, which reach the revert registry.
+        app.update(crate::tui_revert_registry::TuiFileEditRevertRegistry::register);
+        let (view, session_id) = add_focus_test_session(&mut app, &fixture, true);
+
+        // A TUI session is never conversation-less at rest: `TuiConversationSelection::new`
+        // eagerly starts one and `select_new_conversation` immediately replaces it, so
+        // `selected_conversation_id` is `Some` for the whole normal lifetime of a session.
+        // The single window in which it is `None` is the one `defer_replacement_conversation`
+        // opens -- the selected conversation is removed and the replacement is only created on
+        // a later tick via `ctx.spawn`. That is the state this guard exists for, so reproduce
+        // it the same way `conversation_selection_tests.rs` does and run `/orchestrate` inside
+        // it, before the deferred replacement lands.
+        let conversation_id = view.read(&app, |view, ctx| {
+            view.conversation_selection
+                .as_ref(ctx)
+                .selected_conversation_id(ctx)
+                .expect("a TUI session starts with a conversation selected")
+        });
+        app.update(|ctx| {
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |_, ctx| {
+                ctx.emit(BlocklistAIHistoryEvent::RemoveConversation {
+                    terminal_view_id: session_id.surface_id(),
+                    conversation_id,
+                });
+            });
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx),
+                None,
+                "removing the selected conversation should open the replacement window"
+            );
+        });
 
         let task = "write tests".to_owned();
         view.update(&mut app, |view, ctx| {
