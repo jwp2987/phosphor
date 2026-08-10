@@ -436,11 +436,52 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       linking exception resolves compatibility with AGPL — but `cargo about`
       reads `libgit2-sys`'s declared MIT and never emits the GPL-2.0 text that
       governs the bundled C source.
-- [ ] **`winit` from a personal fork our own policy forbids.** `Cargo.toml:405`
-      pins `github.com/chenx-dust/winit`; `deny.toml:52-58` allows git sources
-      only from `servo/core-foundation-rs` and the `warpdotdev` org. Licence is
-      fine (Apache-2.0); this is supply-chain + policy drift. A personal fork can
-      be force-pushed or deleted.
+- [ ] **`winit` from a personal fork our own policy forbids — DECISION OPEN.**
+      `Cargo.toml:405` pins `github.com/chenx-dust/winit` rev `7ef914a4`;
+      `deny.toml:52-58` allows git sources only from `servo/core-foundation-rs`
+      and the `warpdotdev` org. Licence is fine (Apache-2.0); this is
+      supply-chain + policy drift. A personal fork can be force-pushed or
+      deleted. `cargo deny check sources` would fail on it — except licence CI
+      was silently dropped, so nothing checks. The allowlist was not wrong; the
+      dependency drifted out of it unnoticed.
+
+      **Investigated 2026-08-10 — the delta is exactly one commit.**
+      `chenx-dust/winit`'s parent IS `warpdotdev/winit` (its default branch is
+      literally `warpdotdev/v0.30.x`). Comparing Warp's pinned rev to ours,
+      `a4e0ecb5...7ef914a4` = **ahead_by 1, behind_by 0**. That commit is
+      `fix(windows): use registry value to detect dark mode`, touching only
+      `Cargo.toml` and `src/platform_impl/windows/dark_mode.rs`. Nothing else
+      differs. Upstream Warp pins `warpdotdev/winit@a4e0ecb5`.
+
+      **Upstream has NOT fixed it.** The same change is
+      `rust-windowing/winit#4453` (author `Slinetrac`, identical title), **open
+      since 2025-12-27**, last touched 2026-05-30, 1 comment / 0 review comments,
+      not draft, not rejected — simply unreviewed for ~7.5 months. So "wait for
+      upstream" is not a strategy, and dropping the fix means shipping a known
+      Windows dark-mode bug with no upstream fix to inherit later. **We do ship
+      Windows builds** (`script/windows/prepare_bundled_resources.ps1`, MSVC
+      redistributables in the bundle), so this is user-visible.
+
+      Options: (1) fork to an org we control carrying that one commit — keeps the
+      fix, kills the availability risk, lets `deny.toml` name an org we own;
+      (2) vendor the one-file patch via `[patch]` against `warpdotdev/winit` — no
+      third-party account in the graph at all, slightly more work per winit bump;
+      (3) move to `warpdotdev/winit@a4e0ecb5` and drop the fix — simplest,
+      policy-clean immediately, ships the bug. Helping review #4453 retires the
+      question permanently.
+
+      **Stray artifact to clean up:** a `jwp2987/winit` repo was created
+      2026-08-10 while exploring option 1, then abandoned on maintainer
+      instruction. It is a fork of `chenx-dust/winit` with **contents unchanged**
+      and **nothing pushed to it**. Delete it, or keep it if option 1 is chosen.
+      Deleting needs a gh scope not currently granted
+      (`gh auth refresh -h github.com -s delete_repo`).
+
+      **Interaction with the licence work:** the in-flight licence agent is adding
+      `chenx-dust` to `deny.toml`'s `allow-git` so licence CI can be re-enabled
+      without instantly failing. That is a CI stopgap and does NOT address
+      availability. If option 1 or 2 is chosen, that entry should name the new
+      source instead.
 - [ ] **Trademark — "Warp" branding retained across the user-facing surface.**
       AGPL §7 explicitly declines to license trademarks, so this is not covered
       by either licence. 46 occurrences in `app/i18n/en/warp.ftl` (45 ja, 47
