@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,11 +13,11 @@ use repo_metadata::repository::{
 };
 use repo_metadata::{CanonicalizedPath, DirectoryWatcher, Repository, RepositoryUpdate};
 use settings::Setting as _;
-use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
+use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use super::OutlineStatus;
+use crate::ai::terminal_working_directories::all_working_directories;
 use crate::settings::{AISettings, AISettingsChangedEvent, InputSettings, InputSettingsChangedEvent};
-use crate::terminal::view::TerminalView;
 use crate::{TelemetryEvent, report_error, safe_info, safe_warn, send_telemetry_from_ctx};
 
 /// State for a repository outline, containing both the repository handle and the outline status.
@@ -50,28 +50,6 @@ pub struct RepoOutlines {
 }
 
 const REPO_WATCHER_DEBOUNCE_DURATION: Duration = Duration::from_secs(10);
-
-/// Collect the working directories of all open terminal views across all windows.
-///
-/// Zap: the upstream `RepoOutlines` obtained these from
-/// `ai::persisted_workspace::all_working_directories`. That module has been
-/// removed in this fork, so the equivalent logic lives here.
-fn all_working_directories(app: &AppContext) -> HashSet<PathBuf> {
-    let mut working_directories = HashSet::new();
-    for window_id in app.window_ids() {
-        for terminal_view in app
-            .views_of_type::<TerminalView>(window_id)
-            .into_iter()
-            .flatten()
-            .map(|handle| handle.as_ref(app))
-        {
-            if let Some(dir) = terminal_view.pwd() {
-                working_directories.insert(dir.into());
-            }
-        }
-    }
-    working_directories
-}
 
 impl RepoOutlines {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
