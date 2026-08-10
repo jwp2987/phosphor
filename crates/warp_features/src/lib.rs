@@ -548,6 +548,9 @@ pub enum FeatureFlag {
     /// If disabled, the server will send None as the SkillsContext.
     ListSkills,
 
+    /// When enabled, we expose LSP as a tool to the agent.
+    LSPAsATool,
+
     /// Enables conversation artifacts.
     ConversationArtifacts,
 
