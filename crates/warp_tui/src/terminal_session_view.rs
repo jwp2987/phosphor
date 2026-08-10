@@ -4965,6 +4965,25 @@ impl TuiTerminalSessionView {
             bytes.to_vec(),
         )));
     }
+
+    /// Types a prepared local child-agent harness command into this session's
+    /// PTY and presses Enter, as though the user had typed it. Mirrors the
+    /// GUI's `TerminalView::start_local_child_harness_process`
+    /// (`app/src/terminal/view/agent_view.rs`); driven by
+    /// [`crate::pane_group::TuiPaneGroup`] for a session created hidden
+    /// (unfocused) specifically to run the command in the background.
+    pub(crate) fn write_child_harness_command(
+        &mut self,
+        command: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.emit(TuiTerminalSessionEvent::WriteUserInput(Cow::Owned(
+            command.as_bytes().to_vec(),
+        )));
+        ctx.emit(TuiTerminalSessionEvent::WriteUserInput(Cow::Owned(vec![
+            b'\r',
+        ])));
+    }
 }
 
 impl TypedActionView for TuiTerminalSessionView {

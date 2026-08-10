@@ -157,6 +157,18 @@ pub use crate::terminal::input::skills::{
 pub use crate::terminal::input::slash_command_model::{
     DetectedCommand, DetectedSkillCommand, ParsedSlashCommandInput,
 };
+// TUI child-agent launch seam (`#325`/`/orchestrate`'s local-harness machinery,
+// reached through `pane_group::pane`'s narrow wrappers -- see the module doc
+// comment above `TuiPreparedChildAgentLaunch` in `pane_group/pane/mod.rs` for
+// why this indirection exists instead of a direct re-export of
+// `local_harness_launch`, which stays `pub(super)`-private to that module).
+#[cfg(not(target_family = "wasm"))]
+pub use crate::ai::ambient_agents::AmbientAgentTaskId;
+#[cfg(not(target_family = "wasm"))]
+pub use crate::pane_group::pane::{
+    TuiPreparedChildAgentLaunch, prepare_tui_child_agent_launch, tui_compose_child_agent_prompt,
+    tui_split_orchestrate_tasks,
+};
 pub use crate::terminal::input::slash_commands::{
     AcceptSlashCommandOrSavedPrompt, SlashCommandDataSource, SlashCommandMixer,
     SlashCommandSelectionBehavior, TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs,
