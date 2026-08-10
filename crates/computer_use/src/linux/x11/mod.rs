@@ -12,7 +12,7 @@ use x11rb::protocol::xproto::{self, ConnectionExt as _};
 use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 
-use crate::{Action, ActionResult, Options};
+use crate::{Action, ActionResult, Options, TargetedAction};
 
 /// An actor that performs computer use actions on X11.
 pub struct Actor {
@@ -63,6 +63,25 @@ impl Actor {
     }
 }
 
+/// Probes whether the display supports the XInput2 device hierarchy required for background,
+/// per-window control.
+///
+/// TODO(#349): the X11 agent seat is not ported yet, so this reports `false`.
+pub fn probe_background_support() -> bool {
+    false
+}
+
+/// Enumerates the on-screen windows. Empty until X11 window enumeration is ported (#349).
+pub fn enumerate_windows() -> Vec<crate::WindowInfo> {
+    Vec::new()
+}
+
+/// Lists the on-screen windows as a human-readable table. Unsupported until X11 window
+/// enumeration is ported (#349).
+pub fn list_windows() -> Result<String, String> {
+    Err("Window listing is not available on this build.".to_string())
+}
+
 #[async_trait]
 impl crate::Actor for Actor {
     fn platform(&self) -> Option<crate::Platform> {
@@ -71,14 +90,17 @@ impl crate::Actor for Actor {
 
     async fn perform_actions(
         &mut self,
-        actions: &[Action],
+        actions: &[TargetedAction],
         options: Options,
     ) -> Result<ActionResult, String> {
         let mut mouse = mouse::Mouse::new(&self.conn, self.root_window());
         let mut keyboard = keyboard::Keyboard::new(&self.conn, &self.keyboard_mapping);
         let mut last_mouse_position: Option<Vector2I> = None;
 
-        for action in actions {
+        for targeted in actions {
+            // Per-window targeting is not ported on X11 yet (#349); act on the screen
+            // regardless of the requested target.
+            let action: &Action = &targeted.action;
             match action {
                 Action::Wait(duration) => {
                     Timer::after(*duration).await;
@@ -135,9 +157,6 @@ impl crate::Actor for Actor {
             Some(mouse.current_position()?)
         };
 
-        Ok(ActionResult {
-            screenshot,
-            cursor_position,
-        })
+        Ok(ActionResult::legacy(screenshot, cursor_position))
     }
 }
