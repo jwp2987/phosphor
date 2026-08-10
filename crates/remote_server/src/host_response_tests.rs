@@ -178,6 +178,18 @@ fn every_host_scoped_request_has_a_response_disposition() {
             M::CreateDirectory(_) => "client::create_directory",
             M::ReadFileChunk(_) => "client::read_file_chunk",
             M::WriteFileChunk(_) => "client::write_file_chunk",
+            // Codebase indexing (Delta D2, remote-daemon leg). The three
+            // mutations are deliberately fire-and-forget: the daemon reports
+            // what happened with `CodebaseIndexStatusUpdated` /
+            // `CodebaseIndexStatusesSnapshot` pushes, which
+            // `RemoteCodebaseIndexModel` consumes, rather than answering the
+            // request. So there is no `host_response` parser to add for them —
+            // an index run outlives any one request/response pair.
+            M::IndexCodebase(_) => "manager::mutate_codebase_index (status via push)",
+            M::ResyncCodebase(_) => "manager::resync_codebase (status via push)",
+            M::DropCodebaseIndex(_) => "manager::drop_codebase_index (status via push)",
+            // The one codebase-index request that does answer directly.
+            M::GetFragmentMetadataFromHash(_) => "manager::get_fragment_metadata_from_hash",
         }
     }
 
