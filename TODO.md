@@ -155,6 +155,15 @@ go-to-definition, hover docs, find-references or formatting —
 `git grep -l 'language_server\|lsp_types\|LSPServerType'` matches nothing but
 yarn cache zips and the migration that dropped it.
 
+**SCOPE CORRECTION 2026-08-10.** The figure below (~6,600) counts what the pin
+*has*. What `efcaa42b8` *deleted* is **14,611 lines** — it took `code/footer.rs`
+(1,910), `local_code_editor.rs` (1,365) and `settings_view/code_page.rs` (1,055)
+with it. Restoring LSP means restoring those too, or establishing that the fork's
+current editor works without them. Scope this before committing to an estimate.
+**Also honour the `ON DELETE CASCADE` trap recorded in the D1 section** — the
+`workspace_language_server` FK has no cascade and the startup join silently drops
+orphans, so enabled servers read as disabled.
+
 **Scope, measured at the pin (~6,600 lines).**
 - `crates/lsp/` — 20 files / 4,891 lines. `service.rs` exposes `definition`,
   `hover`, `references`, `format`, `did_open`, `did_change`.
@@ -185,6 +194,89 @@ yarn cache zips and the migration that dropped it.
 the app-side wiring, then settings + persistence, then the D1 join. Not a
 single-agent single-pass job.
 
+## D1 WORKSPACE LANDING 2026-08-10 — code complete, NOT YET BUILT
+
+Branch `feat/restore-persisted-workspace`. **Nothing here has been compiled** —
+the agent was correctly barred from running cargo, so every claim below is
+read-verified, not build-verified. Treat as unproven until the operator builds.
+
+**Branch needs rebuilding before merge.** The operator's `git add -A` for #577
+ran while the shared tree was on this branch and swept ~19 of its files into
+`8a76a0807`. `main` has since been rebuilt with #577 as only its own 6 files
+(`2c9e23a61`), so this branch's history now duplicates that work. Rebuild the
+branch onto current `main` — take its 19 files plus `7e4fab4f7`, drop the rest.
+Root cause: the agent was not worktree-isolated. All later agents are.
+
+### Landed
+`app/src/ai/persisted_workspace.rs` (517) + tests · `crates/ai/src/workspace.rs`
+(`WorkspaceMetadata`/`WorkspaceMetadataEvent`, restored verbatim) ·
+`workspace_metadata` table + migration `2026-08-09-000100_restore_workspace_metadata` ·
+`app/src/persistence/{mod,sqlite}.rs` (`PersistedData.codebase_indices`, two new
+`ModelEvent` variants, save/get/delete, startup read) · `app/src/lib.rs` wiring ·
+`repo_metadata::index_local_directory_path` · `workspace/view.rs` sidecar repo list ·
+`terminal/view.rs:11680` `navigated_to_path` on cd (**this is what makes the list
+grow**) · un-stubbed `repo_picker.rs`, `directory_color_add_picker.rs`,
+`new_worktree_modal.rs`, `terminal/input/repos/data_source.rs` ·
+`search/command_palette/repos/` restored and wired to `QueryFilter::Repos`, which
+was **dead** (audit finding 9, fixed here) · `app_menus.rs` File ▸ Open Recent.
+
+**All 6 acceptance tests restored and un-ignored.** Zero `unimplemented!()` and
+zero "retired PersistedWorkspace" strings remain. Three adaptations, none
+weakening an assertion — notably `MenuAction::HoverSubmenuLeafNode` gained a
+`select: bool`; passing `select: false` reproduces the pin (the pin's variant
+only recorded the hover and let the workspace's `ItemHovered` handler move the
+selection), whereas `select: true` would reach the same assertion by bypassing
+the very mechanism the test is named after.
+
+### Briefing corrections (my scoping was wrong on three counts)
+- **The LSP leg is untenable, not merely stubbed.** I briefed "port per-workspace
+  LSP state". `crates/lsp` does not exist: `efcaa42b8` deleted **14,611 lines** —
+  the crate (24 files), five `app/src/code/` LSP files, `code/footer.rs` (1,910),
+  `local_code_editor.rs` (1,365), `find_references_view.rs` (699),
+  `settings_view/code_page.rs` (1,055), plus the SQLite table. There is no partial
+  LSP restoration that type-checks. Cut and documented as `LSP SEAM`. **None of
+  the 6 acceptance tests need LSP.**
+- `WorkspaceMetadata`/`WorkspaceMetadataEvent` are gone from `crates/ai` — I
+  assumed they survived. Restored verbatim from the pin.
+- `read_project_rule_contents` does not exist here; this fork inlined it into
+  `index_and_store_rules(root_path, ctx)`.
+- The pin's `persisted_workspace_tests.rs` is a **zero-byte file**. The fork's own
+  pre-removal tests were recovered instead (translated to English per
+  `CLAUDE.local.md`).
+
+### Two findings worth acting on independently
+- [ ] **Nothing prunes the recent-repos list.** Expiry is the index manager's job,
+      and indexing is absent — so the list grows without bound until D2c lands.
+- [ ] **`all_working_directories` already exists as a private copy** in
+      `app/src/ai/outline/native.rs`. Reunify when indexing returns; do not add a third.
+- [ ] **LSP-restoration trap** (documented at the `clean_up_expired_metadata` seam):
+      `workspace_language_server` foreign-keys `workspace_metadata` **without
+      `ON DELETE CASCADE`**, and the startup `inner_join` silently drops orphans —
+      making enabled servers look disabled. Restoring that table without the guard
+      arm is a live data bug. **The LSP track must honour this.**
+
+### Cloud boundary
+Only three cloud contacts, all `ServerApiProvider::get_http_client()`, **all inside
+the LSP leg** (server download / install / availability probing). No cloud call
+survives into the restored file. `script/check_cloud_boundary` and
+`script/check_stub_coverage` both pass.
+
+### Unverified — ranked by the agent's own confidence (it could not build)
+1. **`app_menus.rs` is `#[cfg(target_os = "macos")]`** — the Open Recent
+   restoration will not compile on this Linux host or in Linux CI, only the macOS
+   job. **Highest risk; drop this hunk first if the branch needs de-risking.**
+2. `RepoDataSource::top_n` returns `impl Iterator<..> + use<>` (pin's edition-2024
+   form). The reasoning that no borrow escapes is the agent's, unverified.
+3. `ModelEvent` gained two variants — only one `handle_model_event` match was
+   found; a second exhaustive match anywhere would now be non-exhaustive.
+4. The `lib.rs` 17-tuple destructuring (counted three times, but a mismatch here
+   produces a confusing error).
+5. `use ai::workspace::...` resolution against the `mod ai;` shadow in lib.rs.
+6. Diesel derives on the restored types — copied from `efcaa42b8^`, so diesel
+   version drift since would surface here.
+7. `index_local_directory_path` delegates to a method never seen called through
+   the wrapper.
+
 ## DELTA TRACK (opened 2026-08-10, maintainer) — workspace + indexing
 
 One named track for the two bodies of work that were scoped out of other tasks
@@ -198,7 +290,7 @@ and its `CodebaseIndexManager` seams are where indexing attaches. Porting one
 without the other leaves either dangling seams or an indexer with nothing to
 hang it on.
 
-### D1 — PersistedWorkspace (IN FLIGHT, branch `feat/restore-persisted-workspace`)
+### D1 — PersistedWorkspace (CODE COMPLETE 2026-08-10, UNBUILT — branch `feat/restore-persisted-workspace`)
 ~1,289 lines (`git show 02b53fcd8:app/src/ai/persisted_workspace.rs`).
 Local content: recent repositories / workspace metadata, per-workspace LSP
 enable-disable state, project-context and project-rules wiring,
