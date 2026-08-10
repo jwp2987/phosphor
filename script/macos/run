@@ -124,6 +124,21 @@ if [[ ",$FEATURES," =~ ",heap_usage_tracking," ]]; then
   "${REPO_ROOT}/script/prepare_bundled_pprof" "$HELPERS_DIR"
 fi
 
+# The Warp Control wrapper. `install_warpctrl()` symlinks /usr/local/bin at this
+# file rather than at the executable, so a local bundle without it makes the
+# "Install warpctrl CLI" button fail with "bundled wrapper not found". WARP_CHANNEL
+# is only ever "local" or "oss" here, both of which take the suffixed form of
+# `Channel::warpctrl_command_name` (only `stable` is bare `warpctrl`).
+#
+# The pin guards this on the `warp_control_cli` cargo feature; this fork has no
+# such feature and gates local control at runtime via `FeatureFlag::WarpControlCli`,
+# so the wrapper is always written.
+WARPCTRL_SCRIPT_PATH="$WARP_APP_PATH/Contents/Resources/bin/warpctrl-$WARP_CHANNEL"
+echo "Creating warpctrl wrapper script at $WARPCTRL_SCRIPT_PATH..."
+"${REPO_ROOT}/script/macos/create_warpctrl_wrapper" \
+  "$WARPCTRL_SCRIPT_PATH" \
+  "../../MacOS/$WARP_BIN_NAME"
+
 echo "Codesigning app..."
 SIGNING_CERT="$(security find-identity -p codesigning -v | grep "Apple Development" | awk '{print $2}' | head -1)"
 codesign --force --deep --options runtime --sign "${SIGNING_CERT:--}" "$WARP_APP_PATH" --entitlements script/Debug-Entitlements.plist

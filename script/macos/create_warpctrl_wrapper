@@ -1,0 +1,64 @@
+#!/bin/bash
+#
+# Generates the bundled `warpctrl` wrapper script.
+#
+# Usage:
+#   create_warpctrl_wrapper <wrapper-path> <binary-relative-path>
+#
+# Arguments:
+#   wrapper-path:           Absolute path of the wrapper to write. Its basename
+#                           MUST equal `Channel::warpctrl_command_name()` for
+#                           the channel being bundled, because
+#                           `warpctrl_bundle_source_path()` in
+#                           `app/src/workspace/cli_install.rs` looks the wrapper
+#                           up by that exact name under
+#                           `<App>.app/Contents/Resources/bin/`.
+#   binary-relative-path:   Path of the shared executable, relative to the
+#                           directory containing the wrapper (for an app bundle:
+#                           `../../MacOS/<WARP_BIN>`).
+#
+# WHY A WRAPPER AND NOT A SYMLINK
+# -------------------------------
+# The `oz` CLI is part of the shared executable's normal argument parser, so
+# `install_cli()` can symlink /usr/local/bin/oz straight at the executable.
+# Warp Control has a SEPARATE parser, selected by the hidden `--warpctrl` flag
+# that `run()` checks before normal CLI parsing or GUI startup. A bare symlink
+# would reach the normal parser, and subcommands such as `tab` would be
+# rejected as unknown. This wrapper exists only to inject that flag.
+#
+# Ported from the pin (02b53fcd8) `script/macos/create_warpctrl_wrapper`. The
+# pin gates the call site on the `warp_control_cli` CARGO feature; this fork has
+# no such cargo feature -- local control is gated at runtime by
+# `FeatureFlag::WarpControlCli` -- so the wrapper is bundled unconditionally.
+
+set -e
+
+if [[ $# -ne 2 ]]; then
+  echo "Usage: $0 <wrapper-path> <binary-relative-path>" >&2
+  exit 1
+fi
+
+WRAPPER_PATH="$1"
+BINARY_RELATIVE_PATH="$2"
+
+mkdir -p "$(dirname "$WRAPPER_PATH")"
+cat > "$WRAPPER_PATH" << EOF
+#!/bin/bash
+# This wrapper may be installed through a symlink in /usr/local/bin. Resolve
+# symlinks before locating the app executable relative to the bundled wrapper.
+wrapper_path="\${BASH_SOURCE[0]}"
+while [[ -L "\$wrapper_path" ]]; do
+  wrapper_dir="\$(cd -P "\$(dirname "\$wrapper_path")" && pwd)"
+  wrapper_path="\$(readlink "\$wrapper_path")"
+  if [[ "\$wrapper_path" != /* ]]; then
+    wrapper_path="\$wrapper_dir/\$wrapper_path"
+  fi
+done
+script_dir="\$(cd -P "\$(dirname "\$wrapper_path")" && pwd)"
+
+# Warp Control has a separate argument parser from the normal Oz parser. The
+# hidden flag selects it before normal CLI parsing or GUI startup.
+# Replace the wrapper process while preserving its invocation name as argv[0].
+exec -a "\$0" "\$script_dir/$BINARY_RELATIVE_PATH" --warpctrl "\$@"
+EOF
+chmod +x "$WRAPPER_PATH"
