@@ -953,7 +953,7 @@ impl LocalRepoMetadataModel {
                         if let Some(IndexedRepoState::Indexed(state)) =
                             model.repositories.get_mut(&repo_path)
                         {
-                            let update = Self::apply_file_tree_mutations(
+                            let mut update = Self::apply_file_tree_mutations(
                                 &mut state.entry,
                                 mutations,
                                 lazy_load,
@@ -965,6 +965,16 @@ impl LocalRepoMetadataModel {
                                 .or_default()
                                 .replace_subtrees(&removed_roots, discovered_results);
                             model.refresh_symlink_targets(&repo_path, ctx);
+                            // `apply_file_tree_mutations` always returns a default
+                            // (empty) `standing_results_delta` since it only sees
+                            // file-tree mutations, not the standing-query delta
+                            // computed above from `discovered_results`. Fold it in
+                            // here so `IncrementalUpdateReady` carries the same
+                            // standing-query changes as the separately emitted
+                            // `StandingQueryResultsUpdated` event below.
+                            if let Some(update) = update.as_mut() {
+                                update.standing_results_delta = standing_delta.clone();
+                            }
                             ctx.emit(RepositoryMetadataEvent::FileTreeEntryUpdated {
                                 path: repo_path.clone(),
                             });
