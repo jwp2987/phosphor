@@ -177,7 +177,7 @@ pub(crate) fn initialize_app(app: &mut App) {
     app.add_singleton_model(|_| ProjectContextModel::default());
     // Registered after `ProjectContextModel`, `DetectedRepositories` and
     // `RepoMetadataModel`, all of which `user_added_workspace` reaches into.
-    app.add_singleton_model(|ctx| PersistedWorkspace::new(vec![], None, ctx));
+    app.add_singleton_model(|ctx| PersistedWorkspace::new(vec![], Default::default(), None, ctx));
     app.add_singleton_model(|_| PricingInfoModel::new());
     app.add_singleton_model(AIDocumentModel::new);
     app.add_singleton_model(|_| History::new(vec![]));

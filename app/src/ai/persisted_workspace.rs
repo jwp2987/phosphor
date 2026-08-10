@@ -27,23 +27,38 @@
 //! metadata types are all present, so restoring indexing is a matter of filling
 //! in the marked call sites.
 //!
-//! ## The LSP leg
+//! ## The LSP leg — the state half is restored, the driver half is not
 //!
-//! The pin also stores, per workspace, which language servers the user has
-//! enabled, and drives install/spawn/shutdown of those servers. All of it is
-//! typed on `lsp::supported_servers::LSPServerType` and `lsp::LspManagerModel`,
-//! from the `crates/lsp` crate that `efcaa42b8` deleted outright (24 files). The
-//! SQLite table behind it (`workspace_language_server`) was dropped in the same
-//! commit. Restoring this leg means restoring that crate first; there is no
-//! partial version of it that type-checks, so no stub is invented here. The
-//! specific cut points are marked `LSP SEAM`.
+//! The pin stores, per workspace, which language servers the user has enabled,
+//! AND drives install/spawn/detect of those servers. `crates/lsp` is back, so
+//! the **state** half is restored here: `EnablementState`,
+//! `Workspace::language_servers`, and the query/mutate methods over it
+//! (`enable_lsp_server_for_path`, `disable_lsp_server_for_path`,
+//! `has_enabled_lsp_server_for_file_path`, `set_lsp_server_for_path`,
+//! `enabled_lsp_servers`, `all_lsp_servers`, `total_lsp_server_count`), plus
+//! the `clean_up_expired_metadata` guard that depends on it. These persist
+//! through `ModelEvent::UpsertWorkspaceLanguageServer` into the
+//! `workspace_language_server` table, restored by
+//! `2026-08-10-000000_restore_workspace_language_server`.
+//!
+//! The **driver** half is still absent and its cut points remain marked
+//! `LSP SEAM`: `LspTask`, `LspRepoStatus`, `LSPInstallationStatus`, the
+//! `lsp_installation_status` field, `detect_available_servers_for_workspaces`,
+//! `handle_install_lsp`, `handle_spawn_lsp`, `execute_lsp_task`,
+//! `detect_lsp_workspace_status` and the three install/detect
+//! `PersistedWorkspaceEvent` variants. Those need an interactive-PATH capture
+//! and the code/footer UI that consumes their events, neither of which is
+//! restored yet.
 //!
 //! ## Cloud
 //!
 //! The pin obtains an HTTP client from `crate::server::server_api::
-//! ServerApiProvider` in three places. All three are inside the LSP leg (server
-//! download / install / availability probing), so no cloud call survives into
-//! this file at all.
+//! ServerApiProvider` in four places. All four are inside the LSP **driver**
+//! half (server download / install / availability probing), which is not
+//! restored, so no cloud call survives into this file at all. When that half
+//! lands it must use `Arc::new(http_client::Client::new())` — the fork's
+//! standard non-cloud client, as used by `autoupdate`, `changelog_model` and
+//! `settings_view::network_page` — not `ServerApiProvider`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -55,8 +70,11 @@ use ai::workspace::{WorkspaceMetadata, WorkspaceMetadataEvent};
 use anyhow::Context;
 use chrono::Utc;
 use itertools::Itertools;
+use lsp::LanguageId;
+use lsp::supported_servers::LSPServerType;
 #[cfg(feature = "local_fs")]
 use repo_metadata::RepoMetadataModel;
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "local_fs")]
 use warp_util::standardized_path::StandardizedPath;
 use warpui::{Entity, ModelContext, SingletonEntity};
@@ -64,14 +82,35 @@ use warpui::{Entity, ModelContext, SingletonEntity};
 use crate::persistence::ModelEvent;
 use crate::report_if_error;
 
-/// One repository root the app knows about.
+/// Whether the user has enabled a given language server for a given workspace.
 ///
-/// At the pin this also carries `language_servers: HashMap<LSPServerType,
-/// EnablementState>`. That field is part of the LSP seam (see module docs) and
-/// is not restored; the wrapper struct is kept rather than collapsing this to a
-/// bare `WorkspaceMetadata` so that restoring the field is a one-line change.
+/// This is also used in underlying sqlite type persistence. We should be careful
+/// not to rename an existing variant, as it will break persistence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnablementState {
+    Yes,
+    No,
+    /// Server was detected as available for a repo but not yet explicitly
+    /// enabled/disabled by the user. Entries with this state live only in
+    /// memory and are never persisted to SQLite.
+    Suggested,
+}
+
+/// The result of asking whether any enabled language server covers a file.
+pub enum LSPEnablementResultForFile {
+    Enabled,
+    UnsupportedLanguage,
+    LSPNotEnabled { root_name: Option<String> },
+}
+
+/// One repository root the app knows about.
 struct Workspace {
     metadata: WorkspaceMetadata,
+    /// Which language servers the user has enabled for this root.
+    ///
+    /// `Yes`/`No` entries are persisted to `workspace_language_server`;
+    /// `Suggested` entries are in-memory only (see [`EnablementState`]).
+    language_servers: HashMap<LSPServerType, EnablementState>,
 }
 
 impl Workspace {
@@ -79,14 +118,21 @@ impl Workspace {
     ///
     /// A workspace created solely from available-server detection will have
     /// all metadata timestamps set to `None` and is considered non-persisted.
-    ///
-    /// LSP SEAM: the pin additionally `debug_assert!`s that a non-persisted
-    /// workspace holds only `EnablementState::Suggested` language servers. That
-    /// assertion needs the `language_servers` field; it comes back with it.
     fn is_persisted(&self) -> bool {
-        self.metadata.navigated_ts.is_some()
+        let persisted = self.metadata.navigated_ts.is_some()
             || self.metadata.modified_ts.is_some()
-            || self.metadata.queried_ts.is_some()
+            || self.metadata.queried_ts.is_some();
+
+        if !persisted {
+            debug_assert!(
+                self.language_servers
+                    .values()
+                    .all(|s| *s == EnablementState::Suggested),
+                "non-persisted workspace has Yes/No server state; persist metadata first"
+            );
+        }
+
+        persisted
     }
 }
 
@@ -106,10 +152,13 @@ pub enum PersistedWorkspaceEvent {
     //
     // LSP SEAM: the pin also defines `InstallStatusUpdate { server_type,
     // status }`, `InstallationSucceeded`, `InstallationFailed` and
-    // `AvailableServersDetected { workspace_path, servers }`. All four carry
-    // `lsp::supported_servers::LSPServerType` in their payloads and are emitted
-    // only from the LSP install/detect paths, so they come back with the `lsp`
-    // crate.
+    // `AvailableServersDetected { workspace_path, servers }`. All four are
+    // emitted only from the LSP install/detect *driver* paths
+    // (`handle_install_lsp`, `handle_spawn_lsp`,
+    // `detect_available_servers_for_workspaces`), which are not restored yet —
+    // see the module docs. `LSPServerType` itself is available now, so these
+    // land with their emitters, not before: an event nothing emits and nothing
+    // consumes is dead weight.
 }
 
 impl Entity for PersistedWorkspace {
@@ -122,9 +171,10 @@ impl PersistedWorkspace {
     /// Test-only constructor: no restored metadata, no persistence channel.
     ///
     /// Kept from the pin. `app/src/workspace/view_test.rs` registers the
-    /// singleton with `new(vec![], None, ctx)` (as the pin's harness does), so
-    /// this has no in-tree caller today; it stays because it is the documented
-    /// way for a future test harness to build one without a writer thread.
+    /// singleton with `new(vec![], Default::default(), None, ctx)` (as the
+    /// pin's harness does), so this has no in-tree caller today; it stays
+    /// because it is the documented way for a future test harness to build one
+    /// without a writer thread.
     #[cfg(test)]
     #[allow(dead_code)]
     pub fn new_for_test(_ctx: &mut ModelContext<Self>) -> Self {
@@ -135,19 +185,29 @@ impl PersistedWorkspace {
     }
 
     /// Builds the model from the rows read out of SQLite at startup.
-    ///
-    /// The pin's signature is
-    /// `new(metadata, workspace_language_servers, model_event_sender, ctx)`.
-    /// The second parameter is dropped here — see the LSP seam in the module
-    /// docs.
     pub fn new(
         metadata: Vec<WorkspaceMetadata>,
+        workspace_language_servers: HashMap<PathBuf, HashMap<LSPServerType, EnablementState>>,
         model_event_sender: Option<SyncSender<ModelEvent>>,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         let workspaces: HashMap<PathBuf, Workspace> = metadata
             .into_iter()
-            .map(|metadata| (metadata.path.clone(), Workspace { metadata }))
+            .map(|metadata| {
+                let path = metadata.path.clone();
+                let language_servers = workspace_language_servers
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_default();
+
+                (
+                    path,
+                    Workspace {
+                        metadata,
+                        language_servers,
+                    },
+                )
+            })
             .collect();
 
         // INDEXING SEAM (subscriptions). The pin wraps the following four
@@ -209,6 +269,153 @@ impl PersistedWorkspace {
     pub fn root_for_workspace<'a>(&self, path: &'a Path) -> Option<&'a Path> {
         path.ancestors()
             .find(|&path| self.workspaces.contains_key(path))
+    }
+
+    /// Given a repo path, enables the specified LSP server. If the workspace doesn't exist, it will be created.
+    pub fn enable_lsp_server_for_path(&mut self, path: &Path, server_type: LSPServerType) {
+        self.set_lsp_server_for_path(path, server_type, EnablementState::Yes);
+    }
+
+    /// Given a repo path, disables the specified LSP server.
+    pub fn disable_lsp_server_for_path(&mut self, path: &Path, server_type: LSPServerType) {
+        self.set_lsp_server_for_path(path, server_type, EnablementState::No);
+    }
+
+    /// Returns the enabled LSP server type (if any) for this file path.
+    pub fn has_enabled_lsp_server_for_file_path(&self, path: &Path) -> LSPEnablementResultForFile {
+        let Some(language_id) = LanguageId::from_path(path) else {
+            return LSPEnablementResultForFile::UnsupportedLanguage;
+        };
+        let Some(root) = self.root_for_workspace(path) else {
+            return LSPEnablementResultForFile::LSPNotEnabled { root_name: None };
+        };
+        let Some(workspace) = self.workspaces.get(root) else {
+            return LSPEnablementResultForFile::LSPNotEnabled {
+                root_name: root
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string()),
+            };
+        };
+
+        for (language_server, enablement) in &workspace.language_servers {
+            if *enablement == EnablementState::Yes
+                && language_server.languages().contains(&language_id)
+            {
+                return LSPEnablementResultForFile::Enabled;
+            }
+        }
+
+        LSPEnablementResultForFile::LSPNotEnabled {
+            root_name: root
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string()),
+        }
+    }
+
+    /// Internal method to set LSP server state for a path.
+    fn set_lsp_server_for_path(
+        &mut self,
+        path: &Path,
+        server_type: LSPServerType,
+        state: EnablementState,
+    ) {
+        // Check if the workspace needs to be persisted before we take a
+        // mutable borrow, so we can call save_to_db without conflicting borrows.
+        let needs_persist = self
+            .workspaces
+            .get(path)
+            .is_some_and(|ws| !ws.is_persisted());
+
+        if needs_persist {
+            // Materialize the workspace: set a timestamp and persist metadata
+            // so the FK-dependent workspace_language_server row can be written.
+            let workspace = self.workspaces.get_mut(path).unwrap();
+            workspace.metadata.modified_ts = Some(Utc::now());
+            let metadata = workspace.metadata.clone();
+            self.save_to_db(vec![ModelEvent::UpsertCodebaseIndexMetadata {
+                index_metadata: Box::new(metadata),
+            }]);
+        }
+
+        match self.workspaces.get_mut(path) {
+            Some(workspace) => {
+                workspace.language_servers.insert(server_type, state);
+            }
+            None => {
+                let metadata = WorkspaceMetadata {
+                    path: path.to_path_buf(),
+                    navigated_ts: None,
+                    // Consider creation as a modification event.
+                    modified_ts: Some(Utc::now()),
+                    queried_ts: None,
+                };
+
+                self.save_to_db(vec![ModelEvent::UpsertCodebaseIndexMetadata {
+                    index_metadata: Box::new(metadata.clone()),
+                }]);
+
+                self.workspaces.insert(
+                    path.to_path_buf(),
+                    Workspace {
+                        metadata,
+                        language_servers: HashMap::from([(server_type, state)]),
+                    },
+                );
+            }
+        }
+
+        // Persist the language server setting to database
+        self.save_to_db(vec![ModelEvent::UpsertWorkspaceLanguageServer {
+            workspace_path: path.to_path_buf(),
+            lsp_type: server_type,
+            enabled: state,
+        }]);
+    }
+
+    /// Returns the enabled lsp servers for a given repo path.
+    pub fn enabled_lsp_servers(
+        &self,
+        path: &Path,
+    ) -> Option<impl Iterator<Item = LSPServerType> + use<'_>> {
+        let root = self.root_for_workspace(path)?;
+
+        self.workspaces.get(root).map(|workspace| {
+            workspace
+                .language_servers
+                .iter()
+                .filter_map(|(server_type, state)| {
+                    if *state == EnablementState::Yes {
+                        Some(*server_type)
+                    } else {
+                        None
+                    }
+                })
+        })
+    }
+
+    /// Returns LSP servers for a given workspace path.
+    ///
+    /// When `include_suggested` is `false`, only persisted entries (`Yes`/`No`)
+    /// are returned.  When `true`, in-memory `Suggested` entries are included as
+    /// well (useful for showing available-for-download servers in the UI).
+    pub fn all_lsp_servers(
+        &self,
+        path: &Path,
+        include_suggested: bool,
+    ) -> Option<impl Iterator<Item = (LSPServerType, EnablementState)> + use<'_>> {
+        let root = self.root_for_workspace(path)?;
+
+        self.workspaces.get(root).map(move |workspace| {
+            workspace
+                .language_servers
+                .iter()
+                .filter(move |(_, state)| {
+                    include_suggested || **state != EnablementState::Suggested
+                })
+                .map(|(server_type, state)| (*server_type, *state))
+        })
     }
 
     /// Discovers project rules (WARP.md / AGENTS.md) under `directory_path`.
@@ -274,6 +481,7 @@ impl PersistedWorkspace {
                             modified_ts: None,
                             queried_ts: None,
                         },
+                        language_servers: HashMap::new(),
                     },
                 );
             }
@@ -367,6 +575,7 @@ impl PersistedWorkspace {
                         root_path.clone(),
                         Workspace {
                             metadata: new_metadata,
+                            language_servers: HashMap::new(),
                         },
                     );
                 }
@@ -429,10 +638,50 @@ impl PersistedWorkspace {
                 return None;
             }
 
+            // Don't delete workspace metadata rows for workspaces that have
+            // persisted LSP server settings (Yes/No).
+            //
+            // Deleting workspace_metadata rows would orphan corresponding
+            // workspace_language_server rows (FK'd without ON DELETE CASCADE).
+            // On next app load, the inner_join used to load workspace language
+            // servers will silently drop orphaned rows, making enabled
+            // language servers appear disabled.
+            //
+            // This fork's FK does declare ON DELETE CASCADE
+            // (`2026-08-10-000000_restore_workspace_language_server`), so the
+            // orphan state is unrepresentable here. That is a different fix,
+            // not a replacement: CASCADE would delete the user's per-workspace
+            // LSP choice along with the workspace, whereas this arm preserves
+            // the choice by keeping the workspace row alive. Both are needed.
+            let has_persisted_servers = ws
+                .language_servers
+                .values()
+                .any(|s| *s != EnablementState::Suggested);
+            if has_persisted_servers {
+                return None;
+            }
+
             Some(ModelEvent::DeleteCodebaseIndexMetadata {
                 repo_path: path.to_path_buf(),
             })
         }));
+    }
+
+    /// Returns the total count of LSP servers across all workspaces.
+    ///
+    /// When `include_suggested` is `false`, only persisted entries (`Yes`/`No`)
+    /// are counted.  When `true`, in-memory `Suggested` entries are counted too.
+    pub fn total_lsp_server_count(&self, include_suggested: bool) -> usize {
+        self.workspaces
+            .values()
+            .map(|workspace| {
+                workspace
+                    .language_servers
+                    .values()
+                    .filter(|state| include_suggested || **state != EnablementState::Suggested)
+                    .count()
+            })
+            .sum()
     }
 
     fn save_to_db(&self, events: impl IntoIterator<Item = ModelEvent>) {
@@ -496,20 +745,36 @@ impl PersistedWorkspace {
     //   when `RepoOutlines` lost its dependency on this module. Restoring
     //   indexing should reunify those two rather than add a third.
 
-    // LSP SEAM (types and methods not restored). From the same pin file:
-    // `EnablementState`, `LspTask`, `LSPEnablementResultForFile`,
-    // `LspRepoStatus`, `LSPInstallationStatus`, the `lsp_installation_status`
-    // field, `enable_lsp_server_for_path`, `disable_lsp_server_for_path`,
-    // `has_enabled_lsp_server_for_file_path`, `set_lsp_server_for_path`,
-    // `enabled_lsp_servers`, `all_lsp_servers`,
-    // `detect_available_servers_for_workspaces`, `total_lsp_server_count`,
+    // LSP SEAM (driver half — still not restored). From the same pin file:
+    // `LspTask`, `LspRepoStatus`, `LSPInstallationStatus`, the
+    // `lsp_installation_status` field, `detect_available_servers_for_workspaces`,
     // `handle_install_lsp`, `handle_spawn_lsp`, `execute_lsp_task` and
-    // `detect_lsp_workspace_status`. All are typed on `lsp::*`, and their
-    // consumers (`app/src/code/footer.rs`, `app/src/code/local_code_editor.rs`,
-    // `app/src/settings_view/code_page.rs`,
-    // `app/src/code/language_server_shutdown_manager.rs`,
-    // `TerminalView::start_lsp_server_in_active_pwd`) were deleted in the same
-    // commit. This is a `crates/lsp` port, not a `PersistedWorkspace` change.
+    // `detect_lsp_workspace_status`, plus the `InstallStatusUpdate` /
+    // `InstallationSucceeded` / `InstallationFailed` /
+    // `AvailableServersDetected` events they emit.
+    //
+    // These are NOT blocked on `crates/lsp` any more — that crate is back. They
+    // are blocked on two other things:
+    //
+    //  1. An interactive-shell PATH capture. Every one of them runs
+    //     `LSPServerType::candidate(..)` probes through a `CommandBuilder` built
+    //     from the user's login PATH, which the pin captures via
+    //     `TerminalView`'s interactive shell before dispatching an `LspTask`.
+    //     `TerminalView::start_lsp_server_in_active_pwd` — the entry point that
+    //     performs that capture — was deleted by `efcaa42b8` and is not back.
+    //  2. Their consumers. The events exist to drive `app/src/code/footer.rs`'s
+    //     status indicator / install CTA and `app/src/settings_view/code_page.rs`'s
+    //     LSP management subpage. Both files were rewritten to LSP-free versions
+    //     (footer: 1986 -> 242 lines; code_page: 1055 -> 513), so there is
+    //     currently nothing to notify. Landing the emitters first would just add
+    //     events nothing listens to.
+    //
+    // The pin sources their HTTP client from
+    // `crate::server::server_api::ServerApiProvider`. Do NOT restore that: use
+    // `Arc::new(http_client::Client::new())`, the fork's standard non-cloud
+    // client (see `autoupdate`, `changelog_model`, `settings_view::network_page`).
+    // Reintroducing `crate::server::` here would also trip
+    // `script/check_cloud_boundary`.
 }
 
 #[cfg(test)]
