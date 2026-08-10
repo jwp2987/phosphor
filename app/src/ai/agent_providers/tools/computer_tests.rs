@@ -114,12 +114,17 @@ fn window_target_schema_points_at_the_windows_list() {
 
 /// Both descriptions must state that the model does not get the screenshot, since the schema
 /// alone would suggest otherwise.
+///
+/// These statics are the *blind* wording, which is the default because `AttachmentCaps` are a
+/// per-request property the tool registry cannot see. The sighted swap is asserted by
+/// [`image_capable_descriptions_replace_the_blind_wording`]; the two tests are a pair, so a
+/// change to one wording should be checked against the other.
 #[test]
 fn descriptions_admit_that_screenshots_are_not_returned() {
     for tool in [&USE_COMPUTER, &REQUEST_COMPUTER_USE] {
         let d = tool.description.to_lowercase();
         assert!(
-            d.contains("cannot send images") || d.contains("cannot be sent back"),
+            d.contains("cannot accept image input"),
             "{} must say the screenshot does not reach the model: {d}",
             tool.name
         );
