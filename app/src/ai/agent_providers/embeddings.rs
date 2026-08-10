@@ -65,6 +65,29 @@ pub struct EmbeddingEndpoint {
     pub api_key: String,
 }
 
+/// The provider that serves `embedding_config`, if the user has configured one.
+///
+/// This is the single definition of "a usable provider that lists this model
+/// id"; [`resolve_embedding_endpoint`] is the same lookup plus the endpoint and
+/// key. It is separate because the settings UI needs the provider itself — it
+/// reports *which* provider serves the index, and a name is the only thing a
+/// user recognizes.
+pub fn resolve_embedding_provider(
+    app: &AppContext,
+    embedding_config: EmbeddingConfig,
+) -> Option<AgentProvider> {
+    let model_id = embedding_config.model_id();
+    let providers = AISettings::as_ref(app).agent_providers.value().clone();
+
+    providers.into_iter().find(|provider| {
+        provider.is_usable()
+            && provider
+                .models
+                .iter()
+                .any(|model| model.id == model_id && !model.disabled)
+    })
+}
+
 /// Finds the provider the user has configured for `embedding_config`.
 ///
 /// Returns `None` when no usable provider lists that model, which is the state a
@@ -74,16 +97,7 @@ pub fn resolve_embedding_endpoint(
     app: &AppContext,
     embedding_config: EmbeddingConfig,
 ) -> Option<EmbeddingEndpoint> {
-    let model_id = embedding_config.model_id();
-    let providers = AISettings::as_ref(app).agent_providers.value().clone();
-
-    let provider: AgentProvider = providers.into_iter().find(|provider| {
-        provider.is_usable()
-            && provider
-                .models
-                .iter()
-                .any(|model| model.id == model_id && !model.disabled)
-    })?;
+    let provider = resolve_embedding_provider(app, embedding_config)?;
 
     let base_url = normalize_base_url(&provider.resolved_base_url()).ok()?;
     let api_key = AgentProviderSecrets::as_ref(app)

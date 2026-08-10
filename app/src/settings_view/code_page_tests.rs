@@ -28,6 +28,20 @@ use ai::project_context::model::ProjectContextModel;
 use ai::workspace::WorkspaceMetadata;
 use chrono::Utc;
 use lsp::supported_servers::LSPServerType;
+//! Tests for the Code settings page.
+//!
+//! The pinned oracle (`02b53fcd8`) ships no tests for `code_page.rs`. These are
+//! fork-added, and they exist for one reason: `code.indexing.*` was reachable
+//! only by hand-editing `settings.toml`, so the page's job is to be the path
+//! that writes it. A widget that renders but never reaches the settings model
+//! is the "ported but never wired" defect, and only an assertion on
+//! `CodeSettings` catches it.
+//!
+//! The page is built with `ZapNewSettingsModes` off on purpose: the action
+//! handler is independent of the flag, while building the flag-on page pulls in
+//! the external-editor subview and its dropdowns, which is not what these tests
+//! are about.
+
 use warp_core::features::FeatureFlag;
 use warpui::platform::WindowStyle;
 use warpui::{App, SingletonEntity as _, TypedActionView as _};
@@ -80,6 +94,15 @@ fn lsp_state(app: &App, server_type: LSPServerType) -> Option<EnablementState> {
             .find(|(server, _)| *server == server_type)
             .map(|(_, state)| state)
     })
+fn add_code_page(app: &mut App) -> warpui::ViewHandle<CodeSettingsPageView> {
+    crate::test_util::settings::initialize_settings_for_tests(app);
+    app.add_singleton_model(|_| Appearance::mock());
+    // `CodeSettingsPageView::new` subscribes to it, and an unregistered
+    // singleton panics rather than being created on demand.
+    app.add_singleton_model(|_| ai::project_context::model::ProjectContextModel::default());
+
+    let (_window_id, page) = app.add_window(WindowStyle::NotStealFocus, CodeSettingsPageView::new);
+    page
 }
 
 #[test]
@@ -112,6 +135,26 @@ fn the_page_contains_the_language_server_and_format_on_save_widgets() {
             // Restore the unfiltered page so the view is left as found.
             view.update_filter("", ctx);
         });
+fn code_page_action_writes_through_to_codebase_context_setting() {
+    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(false);
+    App::test((), |mut app| async move {
+        let page = add_code_page(&mut app);
+
+        // Defaults off: indexing spends the user's embedding quota, so it is
+        // opt-in (see `app/src/settings/code.rs`).
+        assert!(!app.read(|ctx| *CodeSettings::as_ref(ctx).codebase_context_enabled));
+
+        page.update(&mut app, |page, ctx| {
+            page.handle_action(&CodeSettingsPageAction::ToggleCodebaseContext, ctx);
+        });
+        assert!(app.read(|ctx| *CodeSettings::as_ref(ctx).codebase_context_enabled));
+
+        // The opt-out has to reach the setting as effectively as the opt-in:
+        // `UserWorkspaces::is_codebase_context_enabled` reads exactly this value.
+        page.update(&mut app, |page, ctx| {
+            page.handle_action(&CodeSettingsPageAction::ToggleCodebaseContext, ctx);
+        });
+        assert!(!app.read(|ctx| *CodeSettings::as_ref(ctx).codebase_context_enabled));
     });
 }
 
@@ -150,6 +193,22 @@ fn disabling_a_server_from_the_page_writes_through_to_persisted_workspace() {
             Some(EnablementState::No),
             "turning the switch off did not reach PersistedWorkspace"
         );
+fn code_page_action_writes_through_to_auto_indexing_setting() {
+    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(false);
+    App::test((), |mut app| async move {
+        let page = add_code_page(&mut app);
+
+        assert!(!app.read(|ctx| *CodeSettings::as_ref(ctx).auto_indexing_enabled));
+
+        page.update(&mut app, |page, ctx| {
+            page.handle_action(&CodeSettingsPageAction::ToggleAutoIndexing, ctx);
+        });
+        assert!(app.read(|ctx| *CodeSettings::as_ref(ctx).auto_indexing_enabled));
+
+        page.update(&mut app, |page, ctx| {
+            page.handle_action(&CodeSettingsPageAction::ToggleAutoIndexing, ctx);
+        });
+        assert!(!app.read(|ctx| *CodeSettings::as_ref(ctx).auto_indexing_enabled));
     });
 }
 
@@ -203,5 +262,11 @@ fn the_page_is_constructible_without_the_lsp_singletons() {
             // Rendering must not reach for the missing singletons either.
             let _ = view.render_language_servers(Appearance::as_ref(ctx), ctx);
         });
+fn code_page_is_hidden_when_the_feature_flag_is_off() {
+    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(false);
+    App::test((), |mut app| async move {
+        let page = add_code_page(&mut app);
+
+        assert!(!page.read(&app, |view, ctx| view.should_render(ctx)));
     });
 }

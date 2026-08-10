@@ -52,7 +52,7 @@ pub fn run_daemon(identity_key: String) -> anyhow::Result<()> {
 
     std::fs::write(&pid_path, std::process::id().to_string())?;
 
-    super::run_daemon_app(move |ctx| {
+    super::run_daemon_app(identity_key, move |ctx| {
         // Spawn the Unix socket accept loop.  The listener and connection
         // handling are entirely Unix-specific; ServerModel itself is
         // platform-agnostic and only sees register_connection /

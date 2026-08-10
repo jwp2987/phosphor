@@ -13,6 +13,8 @@ async fn round_trip_client_message() {
         "test-123".to_string(),
         session_scoped_request::Message::Initialize(Initialize {
             auth_token: String::new(),
+            codebase_index_limits: None,
+            embedding_provider: None,
         }),
     );
 
@@ -228,6 +230,8 @@ fn try_extract_request_id_from_valid_message() {
         "abc-123".to_string(),
         session_scoped_request::Message::Initialize(Initialize {
             auth_token: String::new(),
+            codebase_index_limits: None,
+            embedding_provider: None,
         }),
     );
     let buf = msg.encode_to_vec();

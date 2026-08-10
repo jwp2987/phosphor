@@ -401,6 +401,51 @@ fn establish_connection(database_url: &str, read_only: bool) -> Result<SqliteCon
     Ok(conn)
 }
 
+/// Opens a standalone read-write SQLite database that holds only the
+/// codebase-index tables, creating the file and the tables if they do not
+/// exist.
+///
+/// This exists for the remote-server daemon, which indexes repositories on its
+/// own host but has none of the app's persistence: no `PersistenceWriter`, no
+/// migrations, no `warp.sqlite`. Running the app's full migration set on the
+/// daemon would give it every table in the product for the sake of two, so the
+/// two are created directly here. The DDL is copied verbatim from
+/// `crates/persistence/migrations/2026-08-10-000000_add_codebase_index_vectors/up.sql`
+/// with `IF NOT EXISTS` added; if that migration ever changes shape, this must
+/// change with it.
+///
+/// Unlike the app's store, this connection is used for both reads and writes:
+/// the daemon has exactly one writer (itself), so the app's single-writer rule
+/// (see the module docs on `SqliteVectorStore`) has nothing to protect here.
+pub fn establish_codebase_index_connection(database_url: &str) -> Result<SqliteConnection> {
+    let mut conn = establish_connection(database_url, false)?;
+    conn.batch_execute(
+        r#"
+        CREATE TABLE IF NOT EXISTS codebase_index_nodes (
+            id INTEGER PRIMARY KEY NOT NULL,
+            embedding_space TEXT NOT NULL,
+            node_hash TEXT NOT NULL,
+            child_hashes TEXT NOT NULL,
+            last_modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_codebase_index_nodes_space_hash
+            ON codebase_index_nodes (embedding_space, node_hash);
+        CREATE TABLE IF NOT EXISTS codebase_index_embeddings (
+            id INTEGER PRIMARY KEY NOT NULL,
+            embedding_space TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            vector BLOB NOT NULL,
+            last_modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_codebase_index_embeddings_space_hash
+            ON codebase_index_embeddings (embedding_space, content_hash);
+    "#,
+    )
+    .context("Failed to create the daemon's codebase index tables")?;
+    Ok(conn)
+}
+
 /// Set up SQLite [error logging](https://www.sqlite.org/errlog.html)
 ///
 /// ## Safety
@@ -1844,7 +1889,7 @@ const SQLITE_MAX_BOUND_PARAMETERS: usize = 900;
 /// transaction per batch so a partially-written batch cannot leave a parent
 /// recorded without its children, which would make the tree walk in
 /// `SqliteVectorStore::leaves_under` silently skip a subtree.
-fn save_codebase_index_nodes(
+pub fn save_codebase_index_nodes(
     conn: &mut SqliteConnection,
     space: String,
     nodes: Vec<(String, String)>,
@@ -1874,7 +1919,7 @@ fn save_codebase_index_nodes(
 /// Insert-or-update embedding vectors for code fragments.
 ///
 /// New in this fork — see `ModelEvent::UpsertCodebaseIndexEmbeddings`.
-fn save_codebase_index_embeddings(
+pub fn save_codebase_index_embeddings(
     conn: &mut SqliteConnection,
     space: String,
     embeddings: Vec<(String, i32, Vec<u8>)>,

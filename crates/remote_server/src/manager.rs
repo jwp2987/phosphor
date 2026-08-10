@@ -106,6 +106,59 @@ pub enum RemoteServerInitPhase {
 pub enum RemoteServerOperation {
     NavigateToDirectory,
     LoadRepoMetadataDirectory,
+    IndexCodebase,
+    ResyncCodebase,
+    DropCodebaseIndex,
+    GetFragmentMetadataFromHash,
+}
+
+/// Which codebase-index mutation a request represents.
+///
+/// Ported from the pin. `is_auto_index` / `is_full_sync` are carried purely so
+/// the caller can tell a user-initiated action from a background one when it
+/// reports the outcome; neither changes the wire message beyond the resync
+/// mode.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteCodebaseIndexUpdateOperation {
+    IndexNewRepo { is_auto_index: bool },
+    Sync { is_full_sync: bool },
+    Drop,
+}
+
+impl RemoteCodebaseIndexUpdateOperation {
+    pub fn operation(self) -> RemoteServerOperation {
+        match self {
+            Self::IndexNewRepo { .. } => RemoteServerOperation::IndexCodebase,
+            Self::Sync { .. } => RemoteServerOperation::ResyncCodebase,
+            Self::Drop => RemoteServerOperation::DropCodebaseIndex,
+        }
+    }
+
+    /// Deviation from the pin: the pin's messages carried an `auth_token` for
+    /// Warp's shared embedding store. This fork's daemon is configured once,
+    /// on `Initialize` / `UpdatePreferences`, with the user's own embedding
+    /// endpoint, so per-request credentials do not exist here.
+    fn to_proto_message(self, repo_path: String) -> crate::proto::host_scoped_request::Message {
+        use crate::proto::host_scoped_request::Message;
+        match self {
+            Self::IndexNewRepo { .. } => {
+                Message::IndexCodebase(crate::proto::IndexCodebase { repo_path })
+            }
+            Self::Sync { is_full_sync } => {
+                let mode = if is_full_sync {
+                    crate::proto::CodebaseResyncMode::Full
+                } else {
+                    crate::proto::CodebaseResyncMode::Incremental
+                };
+                Message::ResyncCodebase(crate::proto::ResyncCodebase {
+                    repo_path,
+                    mode: mode.into(),
+                })
+            }
+            Self::Drop => Message::DropCodebaseIndex(crate::proto::DropCodebaseIndex { repo_path }),
+        }
+    }
 }
 
 /// Classification of a remote server client error for telemetry.
@@ -377,6 +430,42 @@ pub enum RemoteServerManagerEvent {
         delta: crate::proto::DiffStateFileDelta,
     },
 
+    // --- Remote codebase indexing (Delta D2, remote-daemon leg) ---
+    //
+    // Deviation from the pin, stated here because it is load-bearing for every
+    // consumer: the pin's variants carry a `warp_util::remote_path::RemotePath`,
+    // built inside the manager. This fork has two non-converting `HostId`
+    // families — `warp_core::HostId` (what this manager speaks) and
+    // `warp_util::host_id::HostId` (what `RemotePath` speaks) — bridged by
+    // `app::code::buffer_location::core_host_id_to_util`. Building a
+    // `RemotePath` here would mean either importing the bridge into this crate
+    // or duplicating it, so these events carry `host_id` plus the raw
+    // `repo_path` string and the app-side `RemoteCodebaseIndexModel` does the
+    // conversion once, where the bridge already lives.
+    /// The daemon pushed its full set of codebase-index statuses, once per
+    /// connection right after the handshake.
+    CodebaseIndexStatusesSnapshot {
+        session_id: SessionId,
+        host_id: HostId,
+        statuses: Vec<crate::codebase_index_proto::RemoteCodebaseIndexStatus>,
+    },
+    /// One codebase-index status changed — either pushed by the daemon or
+    /// returned as the direct response to a mutation this client requested.
+    /// `mutation_kind` is `Some` only in the latter case.
+    CodebaseIndexStatusUpdated {
+        session_id: Option<SessionId>,
+        host_id: HostId,
+        status: crate::codebase_index_proto::RemoteCodebaseIndexStatus,
+        mutation_kind: Option<RemoteCodebaseIndexUpdateOperation>,
+    },
+    /// A codebase-index mutation failed before yielding a status update, so no
+    /// `CodebaseIndexStatusUpdated` will follow for it.
+    CodebaseIndexMutationFailed {
+        session_id: SessionId,
+        mutation_kind: RemoteCodebaseIndexUpdateOperation,
+        error_kind: RemoteServerErrorKind,
+    },
+
     // --- Setup events ---
     /// Intermediate state change during the binary check/install flow.
     SetupStateChanged {
@@ -443,9 +532,14 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::BinaryCheckComplete { session_id, .. }
             | RemoteServerManagerEvent::BinaryInstallComplete { session_id, .. }
             | RemoteServerManagerEvent::ClientRequestFailed { session_id, .. }
+            | RemoteServerManagerEvent::CodebaseIndexStatusesSnapshot { session_id, .. }
+            | RemoteServerManagerEvent::CodebaseIndexMutationFailed { session_id, .. }
             | RemoteServerManagerEvent::ServerMessageDecodingError { session_id } => {
                 Some(*session_id)
             }
+            // Carries a session only when it is the response to a mutation this
+            // client sent; a daemon-initiated push has none.
+            RemoteServerManagerEvent::CodebaseIndexStatusUpdated { session_id, .. } => *session_id,
             RemoteServerManagerEvent::HostConnected { .. }
             | RemoteServerManagerEvent::HostDisconnected { .. }
             | RemoteServerManagerEvent::RepoMetadataSnapshot { .. }
@@ -638,6 +732,11 @@ pub struct RemoteServerManager {
     /// duplicate pushes and queried via `remote_agent_context_snapshot()`.
     /// #438 dependent feature 1.
     remote_agent_context_snapshots: HashMap<HostId, crate::proto::RemoteAgentContextSnapshot>,
+    /// Last client-resolved preferences sent to remote daemons: codebase index
+    /// limits and the user's embedding endpoint. Sent on every `Initialize`
+    /// (including reconnects) and pushed to already-connected daemons by
+    /// [`RemoteServerManager::update_client_preferences`].
+    client_preferences: crate::client::ClientPreferences,
 }
 
 impl Entity for RemoteServerManager {
@@ -659,7 +758,41 @@ impl RemoteServerManager {
             session_labels: HashMap::new(),
             pending_host_requests: HashMap::new(),
             remote_agent_context_snapshots: HashMap::new(),
+            client_preferences: crate::client::ClientPreferences::default(),
         }
+    }
+
+    /// The preferences handed to a daemon on `Initialize`.
+    pub fn client_preferences(&self) -> &crate::client::ClientPreferences {
+        &self.client_preferences
+    }
+
+    /// Records new client preferences and pushes them to every connected
+    /// daemon.
+    ///
+    /// No-ops when nothing changed, so a settings observer can call this on
+    /// every settings event without generating traffic.
+    pub fn update_client_preferences(&mut self, preferences: crate::client::ClientPreferences) {
+        if self.client_preferences == preferences {
+            return;
+        }
+        self.client_preferences = preferences.clone();
+        #[cfg(not(target_family = "wasm"))]
+        for client in self.connected_clients() {
+            client.update_preferences(preferences.clone());
+        }
+    }
+
+    /// Every connected session's client.
+    #[cfg(not(target_family = "wasm"))]
+    fn connected_clients(&self) -> Vec<Arc<RemoteServerClient>> {
+        self.sessions
+            .values()
+            .filter_map(|state| match state {
+                RemoteSessionState::Connected { client, .. } => Some(Arc::clone(client)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Returns the user-facing connection label for a connected host, if one
@@ -1064,8 +1197,16 @@ impl RemoteServerManager {
 
         // Phase 2: Initialize handshake.
         let auth_token = auth_context.get_auth_token().await;
+        // The daemon is configured for codebase indexing here, on every
+        // (re)connect, rather than by a later notification: a daemon that
+        // restarted has forgotten everything, and the handshake is the only
+        // point guaranteed to happen before it can be asked to index anything.
+        let preferences = spawner
+            .spawn(|me, _ctx| me.client_preferences.clone())
+            .await
+            .unwrap_or_default();
         let resp = client
-            .initialize(auth_token.as_deref())
+            .initialize(auth_token.as_deref(), preferences)
             .await
             .map_err(|e| {
                 // The client-side error here is often opaque ("Connection was
@@ -1516,6 +1657,21 @@ impl RemoteServerManager {
                         snapshot,
                     });
                 }
+            }
+            ClientEvent::CodebaseIndexStatusesSnapshotReceived { statuses } => {
+                ctx.emit(RemoteServerManagerEvent::CodebaseIndexStatusesSnapshot {
+                    session_id,
+                    host_id,
+                    statuses,
+                });
+            }
+            ClientEvent::CodebaseIndexStatusUpdated { status } => {
+                ctx.emit(RemoteServerManagerEvent::CodebaseIndexStatusUpdated {
+                    session_id: Some(session_id),
+                    host_id,
+                    status,
+                    mutation_kind: None,
+                });
             }
             ClientEvent::HostScopedDecodeFailed { request_id } => {
                 // #438 dependent feature 3/4: the response for a host-scoped
@@ -1997,6 +2153,200 @@ impl RemoteServerManager {
         result_rx
     }
 
+    /// Ensures a codebase index exists on `host_id` for `repo_path`, without
+    /// resyncing one that already exists.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn ensure_codebase_indexed(
+        &mut self,
+        host_id: HostId,
+        repo_path: String,
+        mutation_kind: RemoteCodebaseIndexUpdateOperation,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        self.mutate_codebase_index(host_id, repo_path, mutation_kind, ctx)
+    }
+
+    /// Sends a full `ResyncCodebase` to the daemon owning `repo_path`.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn resync_codebase(
+        &mut self,
+        host_id: HostId,
+        repo_path: String,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        self.mutate_codebase_index(
+            host_id,
+            repo_path,
+            RemoteCodebaseIndexUpdateOperation::Sync { is_full_sync: true },
+            ctx,
+        )
+    }
+
+    /// Sends an incremental `ResyncCodebase` to the daemon owning `repo_path`.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn trigger_codebase_incremental_sync(
+        &mut self,
+        host_id: HostId,
+        repo_path: String,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        self.mutate_codebase_index(
+            host_id,
+            repo_path,
+            RemoteCodebaseIndexUpdateOperation::Sync {
+                is_full_sync: false,
+            },
+            ctx,
+        )
+    }
+
+    /// Drops the daemon's index for `repo_path`.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn drop_codebase_index(
+        &mut self,
+        host_id: HostId,
+        repo_path: String,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        self.mutate_codebase_index(
+            host_id,
+            repo_path,
+            RemoteCodebaseIndexUpdateOperation::Drop,
+            ctx,
+        )
+    }
+
+    /// Dispatches one codebase-index mutation and reports its outcome as an
+    /// event.
+    ///
+    /// Returns `false` (and emits nothing) when there is no connected session
+    /// for the host — the caller has not started an operation, so there is
+    /// nothing to report the failure of. Every other outcome, including
+    /// transport failure, arrives as either `CodebaseIndexStatusUpdated` or
+    /// `CodebaseIndexMutationFailed`; a caller that showed a spinner will
+    /// always be told to stop.
+    #[cfg(not(target_family = "wasm"))]
+    fn mutate_codebase_index(
+        &mut self,
+        host_id: HostId,
+        repo_path: String,
+        mutation_kind: RemoteCodebaseIndexUpdateOperation,
+        ctx: &mut ModelContext<Self>,
+    ) -> bool {
+        let operation = mutation_kind.operation();
+        let Some(session_id) = self.connected_session_for_host(&host_id) else {
+            log::warn!(
+                "Remote server codebase index mutation: no connected session \
+                 operation={operation:?} host={host_id} repo_path={repo_path}"
+            );
+            return false;
+        };
+        log::info!(
+            "[Remote codebase indexing] Manager requesting codebase index mutation: \
+             operation={operation:?} host={host_id} session={session_id:?} repo_path={repo_path}"
+        );
+
+        let handle = self.host_request_handle(&host_id);
+        let spawner = self.spawner.clone();
+        let proto_msg = mutation_kind.to_proto_message(repo_path.clone());
+        ctx.background_executor()
+            .spawn(async move {
+                match handle.send(proto_msg).await {
+                    Ok(msg) => {
+                        let status = match msg.message {
+                            Some(
+                                crate::proto::server_message::Message::CodebaseIndexStatusUpdated(
+                                    update,
+                                ),
+                            ) => {
+                                crate::codebase_index_proto::proto_to_codebase_index_status_updated(
+                                    &update,
+                                )
+                            }
+                            _ => None,
+                        };
+                        let Some(status) = status else {
+                            log::warn!(
+                                "Remote server codebase index mutation: unexpected response \
+                                 operation={operation:?} host={host_id} session={session_id:?} \
+                                 repo_path={repo_path}"
+                            );
+                            let _ = spawner
+                                .spawn(move |_me, ctx| {
+                                    ctx.emit(
+                                        RemoteServerManagerEvent::CodebaseIndexMutationFailed {
+                                            session_id,
+                                            mutation_kind,
+                                            error_kind: RemoteServerErrorKind::Other,
+                                        },
+                                    );
+                                })
+                                .await;
+                            return;
+                        };
+                        log::info!(
+                            "[Remote codebase indexing] Manager received codebase index mutation \
+                             response: operation={operation:?} host={host_id} \
+                             session={session_id:?} repo_path={} state={:?} failure_message={:?}",
+                            status.repo_path,
+                            status.state,
+                            status.failure_message
+                        );
+                        let _ = spawner
+                            .spawn(move |_me, ctx| {
+                                ctx.emit(RemoteServerManagerEvent::CodebaseIndexStatusUpdated {
+                                    session_id: Some(session_id),
+                                    host_id,
+                                    status,
+                                    mutation_kind: Some(mutation_kind),
+                                });
+                            })
+                            .await;
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Remote server codebase index mutation failed: \
+                             operation={operation:?} host={host_id} session={session_id:?} \
+                             repo_path={repo_path} error={error}"
+                        );
+                        let error_kind = match &error {
+                            HostRequestError::AllSessionsDisconnected => {
+                                RemoteServerErrorKind::Disconnected
+                            }
+                            HostRequestError::ServerError { .. }
+                            | HostRequestError::OperationFailed(_) => {
+                                RemoteServerErrorKind::ServerError
+                            }
+                            HostRequestError::UnexpectedResponse | HostRequestError::Aborted => {
+                                RemoteServerErrorKind::Other
+                            }
+                        };
+                        let _ = spawner
+                            .spawn(move |_me, ctx| {
+                                ctx.emit(RemoteServerManagerEvent::CodebaseIndexMutationFailed {
+                                    session_id,
+                                    mutation_kind,
+                                    error_kind,
+                                });
+                            })
+                            .await;
+                    }
+                }
+            })
+            .detach();
+        true
+    }
+
+    /// The first connected session for a host, if any.
+    #[cfg(not(target_family = "wasm"))]
+    fn connected_session_for_host(&self, host_id: &HostId) -> Option<SessionId> {
+        let sessions = self.host_to_sessions.get(host_id)?;
+        sessions
+            .iter()
+            .copied()
+            .find(|session_id| self.client_for_session(*session_id).is_some())
+    }
+
     /// Creates a [`HostRequestHandle`] for dispatching host-scoped requests
     /// from async contexts that don't have `&mut self` access.
     pub fn host_request_handle(&self, host_id: &HostId) -> HostRequestHandle {
@@ -2227,6 +2577,31 @@ impl HostRequestHandle {
             .map_err(|_| HostRequestError::AllSessionsDisconnected)?;
         rx.await
             .map_err(|_| HostRequestError::AllSessionsDisconnected)?
+    }
+
+    /// Resolves content hashes returned by a codebase-index query back to file
+    /// paths and line ranges on the remote host.
+    ///
+    /// Only the daemon can answer this: the hashes identify fragments of files
+    /// the client cannot read.
+    pub async fn get_fragment_metadata_from_hash(
+        &self,
+        request: crate::proto::GetFragmentMetadataFromHash,
+    ) -> Result<crate::proto::GetFragmentMetadataFromHashResponse, HostRequestError> {
+        let msg = self
+            .send(crate::proto::host_scoped_request::Message::GetFragmentMetadataFromHash(request))
+            .await?;
+        match msg.message {
+            Some(crate::proto::server_message::Message::GetFragmentMetadataFromHashResponse(
+                resp,
+            )) => Ok(resp),
+            other => {
+                log::error!(
+                    "Unexpected response variant for GetFragmentMetadataFromHash: {other:?}"
+                );
+                Err(HostRequestError::UnexpectedResponse)
+            }
+        }
     }
 
     /// Batch-reads one or more files from the remote host with full context

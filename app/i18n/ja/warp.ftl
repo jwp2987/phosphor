@@ -1111,6 +1111,17 @@ settings-code-project-explorer = プロジェクトエクスプローラー
 settings-code-project-explorer-desc = 左側ツールパネルに IDE スタイルのプロジェクトエクスプローラー / ファイルツリーを追加します。
 settings-code-global-search = グローバルファイル検索
 settings-code-global-search-desc = 左側ツールパネルにグローバルファイル検索を追加します。
+settings-code-codebase-context = コードベースのインデックス
+settings-code-codebase-context-desc = 開いているリポジトリの埋め込みインデックスをエージェントが検索できるようにし、grep に頼らず関連コードを見つけられるようにします。インデックス作成はローカルで実行され、コード断片は設定した埋め込みプロバイダーにのみ送信されます。
+settings-code-auto-indexing = 新しいフォルダーを既定でインデックス
+settings-code-auto-indexing-desc = 明示的に要求したときだけでなく、リポジトリを開いた時点で自動的にインデックスを作成します。インデックス作成は埋め込みプロバイダーの利用量を消費します。
+settings-code-embedding-model = 埋め込みモデル
+settings-code-embedding-model-value = {$model} · {$provider}
+settings-code-embedding-model-desc = インデックスはこのモデルで構築されます。モデルは「設定 > AI」でプロバイダーにそのモデル id を登録することで選択されます。モデルを切り替えるとインデックスは作り直しになり、別モデルのベクトルは再利用されません。
+settings-code-embedding-model-none = 未設定
+settings-code-embedding-model-none-desc = 埋め込みモデルを登録したプロバイダーがないため、既定値にフォールバックせずインデックス作成はエラーになります。「設定 > AI」でいずれかのプロバイダーに下記のモデルを追加してください。
+settings-code-embedding-candidate-available = {$model} — {$provider} が提供
+settings-code-embedding-candidate-unavailable = {$model} — このモデルを登録したプロバイダーがありません
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----

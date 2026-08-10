@@ -82,7 +82,10 @@ async fn initialize_round_trip() {
         })
     });
 
-    let resp = client.initialize(None).await.unwrap();
+    let resp = client
+        .initialize(None, ClientPreferences::default())
+        .await
+        .unwrap();
     assert_eq!(resp.server_version, "test-0.1.0");
     assert_eq!(resp.host_id, "test-host-id");
 }
@@ -104,7 +107,10 @@ async fn initialize_sends_empty_auth_token_when_none() {
         })
     });
 
-    client.initialize(None).await.unwrap();
+    client
+        .initialize(None, ClientPreferences::default())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -124,7 +130,10 @@ async fn initialize_sends_auth_token_when_provided() {
         })
     });
 
-    client.initialize(Some("secret-token")).await.unwrap();
+    client
+        .initialize(Some("secret-token"), ClientPreferences::default())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -163,7 +172,7 @@ async fn disconnected_on_closed_stream() {
         RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
 
     // An initialize call on a dead stream must complete with an error rather than hang.
-    let result = client.initialize(None).await;
+    let result = client.initialize(None, ClientPreferences::default()).await;
     assert!(result.is_err());
 
     // The reader task should detect EOF and emit a Disconnected event.
@@ -466,7 +475,7 @@ async fn concurrent_in_flight_requests() {
     for _ in 0..10 {
         let c = std::sync::Arc::clone(&client);
         handles.push(tokio::spawn(async move {
-            c.initialize(None)
+            c.initialize(None, ClientPreferences::default())
                 .await
                 .expect("concurrent initialize failed")
         }));

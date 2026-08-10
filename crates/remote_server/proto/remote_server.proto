@@ -75,6 +75,17 @@ message HostScopedRequest {
     ReadFileChunk read_file_chunk = 15;
     WriteFileChunk write_file_chunk = 16;
     DiscardFilesRequest discard_files = 17;
+    // Remote codebase indexing (Delta D2, remote-daemon leg). The pin numbers
+    // these 9, 10, 11 and 13; those slots are already taken in this fork by
+    // git_create_pr, get_committed_branch_files, ripgrep_search and
+    // resolve_path, which the pin does not have here. Renumbered to the next
+    // free slots rather than renumbering this fork's existing fields, which
+    // would break every deployed daemon. Host-scoped for the pin's reason: an
+    // index belongs to the host, not to one SSH connection.
+    IndexCodebase index_codebase = 18;
+    DropCodebaseIndex drop_codebase_index = 19;
+    GetFragmentMetadataFromHash get_fragment_metadata_from_hash = 20;
+    ResyncCodebase resync_codebase = 21;
   }
 }
 
@@ -104,6 +115,8 @@ message Notification {
     BufferEdit buffer_edit = 4;
     CloseBuffer close_buffer = 5;
     UnsubscribeDiffState unsubscribe_diff_state = 6;
+    // The pin numbers this 3; taken here by session_bootstrapped.
+    UpdatePreferences update_preferences = 7;
   }
 }
 // Top-level envelope for all server → client messages.
@@ -150,6 +163,12 @@ message ServerMessage {
     // (skill/rule discovery + broadcast) is issue #353, not implemented here,
     // so no daemon in this fork currently sends this message.
     RemoteAgentContextSnapshot remote_agent_context_snapshot = 35;
+    // Remote codebase indexing (Delta D2). 12 and 13 are the pin's own numbers
+    // for these two, and they are free here precisely because these were the
+    // messages the indexing retirement removed.
+    CodebaseIndexStatusesSnapshot codebase_index_statuses_snapshot = 12;
+    CodebaseIndexStatusUpdated codebase_index_status_updated = 13;
+    GetFragmentMetadataFromHashResponse get_fragment_metadata_from_hash_response = 36;
   }
 }
 
@@ -161,6 +180,16 @@ message Initialize {
   // Empty means no credential was available and does not clear an existing
   // daemon credential.
   string auth_token = 1;
+  // 2-4 are the pin's user_id / user_email / crash_reporting_enabled, which
+  // this fork dropped with the cloud. Reserved so a future re-pin can restore
+  // them at their original numbers.
+  reserved 2, 3, 4;
+  // Client-resolved codebase index limits, for parity with local indexing.
+  // Field 5 matches the pin.
+  optional CodebaseIndexLimits codebase_index_limits = 5;
+  // Fork-original: the user's own embedding endpoint. See
+  // `EmbeddingProviderConfig`.
+  optional EmbeddingProviderConfig embedding_provider = 6;
 }
 
 // Sent by the client when its bearer credential rotates after initialization.
@@ -1192,4 +1221,155 @@ message DiscardFilesSuccess {}
 
 message DiscardFilesError {
   string message = 1;
+}
+
+// ── Remote codebase indexing ──────────────────────────────────────
+//
+// Ported from the pinned oracle (02b53fcd8) for the Delta D2 remote-daemon
+// leg. The daemon owns the index for repositories on its own host: it walks
+// the tree, chunks and embeds the files, and stores merkle nodes and vectors
+// in its own data dir. The client drives it and mirrors its status.
+//
+// ONE DELIBERATE DEVIATION FROM THE PIN, and the reason for it. At the pin
+// every one of these requests carried `auth_token`, a Warp bearer credential
+// the daemon used to reach Warp's *shared* embedding store. This fork has no
+// such store: `StoreClient` is implemented locally over the user's own
+// embedding provider (`app/src/ai/codebase_embeddings.rs`). A daemon on a
+// remote host has neither the user's settings nor their keychain, so the
+// credential it needs is not a Warp token but the user's own embedding
+// endpoint. `EmbeddingProviderConfig` below carries it, and it replaces
+// `auth_token` rather than joining it — carrying a field this fork can never
+// populate would be dead wire shape.
+
+// The user's embedding provider, resolved on the client and handed to the
+// daemon so it can produce embeddings on the remote host.
+//
+// Sent on `Initialize` and refreshed by `UpdatePreferences` whenever the user
+// edits their providers. Absent means "no provider configured"; the daemon
+// then reports `CODEBASE_INDEX_STATUS_STATE_UNAVAILABLE` rather than
+// producing an empty index, for the reason stated in
+// `crates/ai/src/index/full_source_code_embedding/local_store_client.rs`: an
+// empty result is indistinguishable from an empty store and would re-embed
+// the repository on every sync.
+message EmbeddingProviderConfig {
+  // Base URL with no trailing slash; the daemon appends `/embeddings`.
+  string base_url = 1;
+  // Empty means "send no Authorization header", which is how a local runtime
+  // with no auth is supported — the same tolerance the chat path has.
+  string api_key = 2;
+  // `EmbeddingConfig::storage_key()`, e.g. `voyage:voyage-3.5:512`. The daemon
+  // parses it back with `EmbeddingConfig::from_storage_key`; an unrecognized
+  // key is treated as "no provider" rather than silently defaulted, because a
+  // mismatched model would produce vectors that cannot be compared.
+  string embedding_storage_key = 3;
+}
+
+message CodebaseIndexLimits {
+  // Empty means unlimited.
+  optional uint64 max_indices_allowed = 1;
+  uint64 max_files_per_repo = 2;
+  uint64 embedding_generation_batch_size = 3;
+}
+
+// Sent by the client when the user's preferences change (provider edits,
+// limit changes). Fire-and-forget.
+message UpdatePreferences {
+  optional CodebaseIndexLimits codebase_index_limits = 1;
+  optional EmbeddingProviderConfig embedding_provider = 2;
+}
+
+message IndexCodebase {
+  string repo_path = 1;
+}
+
+enum CodebaseResyncMode {
+  CODEBASE_RESYNC_MODE_FULL = 0;
+  CODEBASE_RESYNC_MODE_INCREMENTAL = 1;
+}
+
+message ResyncCodebase {
+  string repo_path = 1;
+  CodebaseResyncMode mode = 2;
+}
+
+message DropCodebaseIndex {
+  string repo_path = 1;
+}
+
+message GetFragmentMetadataFromHash {
+  string repo_path = 1;
+  string root_hash = 2;
+  repeated string content_hashes = 3;
+}
+
+message FragmentMetadata {
+  string content_hash = 1;
+  string path = 2;
+  uint32 start_line = 3;
+  uint32 end_line = 4;
+  uint64 byte_start = 5;
+  uint64 byte_end = 6;
+}
+
+message MissingFragmentMetadata {
+  string content_hash = 1;
+  FileOperationError error = 2;
+}
+
+enum FragmentMetadataLookupErrorCode {
+  FRAGMENT_METADATA_LOOKUP_ERROR_CODE_UNSPECIFIED = 0;
+  REMOTE_CODEBASE_INDEXING_NOT_ENABLED = 1;
+  INVALID_REPO_PATH = 2;
+  INVALID_ROOT_HASH = 3;
+  INDEX_NOT_FOUND = 4;
+  INDEX_NOT_SYNCED = 5;
+  ROOT_HASH_MISMATCH = 6;
+}
+
+message FragmentMetadataLookupError {
+  FragmentMetadataLookupErrorCode code = 1;
+  string message = 2;
+  optional string current_root_hash = 3;
+}
+
+message GetFragmentMetadataFromHashSuccess {
+  repeated FragmentMetadata fragments = 1;
+  repeated MissingFragmentMetadata missing_hashes = 2;
+}
+
+message GetFragmentMetadataFromHashResponse {
+  oneof result {
+    GetFragmentMetadataFromHashSuccess success = 1;
+    FragmentMetadataLookupError error = 2;
+  }
+}
+
+enum CodebaseIndexStatusState {
+  CODEBASE_INDEX_STATUS_STATE_UNSPECIFIED = 0;
+  CODEBASE_INDEX_STATUS_STATE_NOT_ENABLED = 1;
+  CODEBASE_INDEX_STATUS_STATE_UNAVAILABLE = 2;
+  CODEBASE_INDEX_STATUS_STATE_DISABLED = 3;
+  CODEBASE_INDEX_STATUS_STATE_QUEUED = 4;
+  CODEBASE_INDEX_STATUS_STATE_INDEXING = 5;
+  CODEBASE_INDEX_STATUS_STATE_READY = 6;
+  CODEBASE_INDEX_STATUS_STATE_STALE = 7;
+  CODEBASE_INDEX_STATUS_STATE_FAILED = 8;
+}
+
+message CodebaseIndexStatus {
+  string repo_path = 1;
+  CodebaseIndexStatusState state = 2;
+  optional uint64 last_updated_epoch_millis = 3;
+  optional uint64 progress_completed = 4;
+  optional uint64 progress_total = 5;
+  optional string failure_message = 6;
+  optional string root_hash = 7;
+}
+
+message CodebaseIndexStatusesSnapshot {
+  repeated CodebaseIndexStatus statuses = 1;
+}
+
+message CodebaseIndexStatusUpdated {
+  CodebaseIndexStatus status = 1;
 }
