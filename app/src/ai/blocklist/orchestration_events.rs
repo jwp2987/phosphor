@@ -19,7 +19,9 @@ use std::collections::{HashMap, HashSet};
 use warp_multi_agent_api as api;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
-use super::history_model::{BlocklistAIHistoryEvent, BlocklistAIHistoryModel};
+use super::history_model::{
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatusUpdate,
+};
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
@@ -115,9 +117,12 @@ impl OrchestrationEventService {
         match event {
             BlocklistAIHistoryEvent::UpdatedConversationStatus {
                 conversation_id,
-                is_restored,
+                update,
                 ..
-            } => self.on_conversation_status_updated(*conversation_id, *is_restored, ctx),
+            } => {
+                let is_restored = matches!(update, ConversationStatusUpdate::Restored);
+                self.on_conversation_status_updated(*conversation_id, is_restored, ctx)
+            }
             BlocklistAIHistoryEvent::UpdatedStreamingExchange {
                 conversation_id,
                 exchange_id,

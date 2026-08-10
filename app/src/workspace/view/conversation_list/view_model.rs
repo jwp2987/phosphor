@@ -1,8 +1,8 @@
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent_conversations_model::{
     AgentConversationsModel, AgentConversationsModelEvent, AgentManagementFilters, ArtifactFilter,
-    ConversationOrTask, CreatedOnFilter, CreatorFilter, OwnerFilter, SessionStatus, SourceFilter,
-    StatusFilter,
+    ConversationOrTask, ConversationUpdateKind, CreatedOnFilter, CreatorFilter, OwnerFilter,
+    SessionStatus, SourceFilter, StatusFilter,
 };
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use fuzzy_match::match_indices_case_insensitive;
@@ -64,8 +64,19 @@ impl ConversationListViewModel {
                 }
                 // Status changes don't affect the set of IDs (status is read
                 // at render time via get_item_by_id); just signal a re-render.
-                AgentConversationsModelEvent::ConversationUpdated => {
-                    ctx.emit(ConversationListViewModelEvent);
+                // MetadataChanged/TitleChanged can change what the search-filter cache should
+                // contain (e.g. a rename can change fuzzy-match results), so those need a full
+                // rebuild rather than a bare re-render.
+                AgentConversationsModelEvent::ConversationUpdated { kind } => {
+                    if matches!(
+                        kind,
+                        ConversationUpdateKind::MetadataChanged
+                            | ConversationUpdateKind::TitleChanged
+                    ) {
+                        me.refresh_cached_items(ctx);
+                    } else {
+                        ctx.emit(ConversationListViewModelEvent);
+                    }
                 }
                 // Artifact updates don't affect the conversation list
                 AgentConversationsModelEvent::ConversationArtifactsUpdated { .. } => {}
