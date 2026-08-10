@@ -1200,16 +1200,25 @@ tested with zero production callers.
 
 ### Suspicious — needs a judgement call, do NOT act as-is
 
-- [ ] **Two code-review keybindings dropped** (`app/src/code_review/mod.rs:66-93`):
-      the pin also registers `code_review:toggle_file_navigation` →
-      `ToggleFileSidebar` and `CODE_REVIEW_SUBMIT_KEYSTROKE` →
-      `SubmitReviewComments` (`02b53fcd8:code_review/mod.rs:81,98`). Both features
-      stay mouse-reachable, so the loss is the keybinding row and the
-      command-palette entry. **Not a one-line wire-up:** the fork has no
-      `CodeReviewView_NotEditing` keymap context and no
-      `CODE_REVIEW_SUBMIT_KEYSTROKE`, and its `SubmitReviewComments` is a
-      `CodeReviewViewEvent` variant with fields (`code_review_view.rs:513`), not a
-      plain action. This is a port.
+- [x] **Two code-review keybindings dropped** (`app/src/code_review/mod.rs:66-93`) —
+      **PORTED.** Both bindings are now registered: `code_review:toggle_file_navigation`
+      (key `f`) → `CodeReviewAction::ToggleFileSidebar`, and the new
+      `CODE_REVIEW_SUBMIT_KEYSTROKE` (`cmdorctrl-enter`) → the new
+      `CodeReviewAction::SubmitReviewComments` unit variant, whose handler calls the
+      existing `handle_submit_review_with_comments` (the same method the mouse path —
+      `CommentListEvent::Submitted` — already calls; it reads the pending comment batch
+      and repo path from view state, so no fields need to travel on the action). This
+      resolved the field-carrying-action obstacle: `CodeReviewViewEvent::SubmitReviewComments`
+      (with `comments`/`repo_path` fields) is unrelated — it is emitted *from inside*
+      the handler after it recomputes those fields from state, not received by it.
+      `CodeReviewView` gained a `keymap_context` override (ported near-verbatim from
+      `02b53fcd8:code_review_view.rs:7153`) that inserts `CodeReviewView_NotEditing`
+      into the context only when the focused view is not one of the pane's three
+      text-input surfaces (`EditorView`/find bar, `RichTextEditorView`/comment
+      composer, `CodeEditorView`/diff editor) — both new bindings are gated on that
+      context, so neither can fire mid-edit. Two new fluent keys added to
+      `app/i18n/en/warp.ftl` only (not zh-CN/ja, matching the ~125-350 keys already
+      English-only there). Tests in `code_review_view_tests.rs`.
 - [ ] **`--bedrock-role-region`** (`crates/warp_cli/src/agent.rs:378`) is
       `requires`-mandatory and never read; the pin threads it into
       `OidcManaged { region }` and the fork's variant has no `region` field. **But

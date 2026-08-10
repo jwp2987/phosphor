@@ -63,6 +63,10 @@ pub enum DiffSetScope {
     File(PathBuf),
 }
 
+/// The keystroke that submits in the code review panel. Meant to mirror the
+/// keystroke for `EditorViewEvent::CmdEnter`.
+pub const CODE_REVIEW_SUBMIT_KEYSTROKE: &str = "cmdorctrl-enter";
+
 /// Register keybindings for code review functionality.
 pub fn init(app: &mut AppContext) {
     app.register_editable_bindings([
@@ -81,14 +85,35 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(id!("CodeReviewView"))
         .with_key_binding("cmdorctrl-f")
         .with_enabled(|| crate::features::FeatureFlag::CodeReviewFind.is_enabled()),
+        // `CodeReviewView_NotEditing` (see `CodeReviewView::keymap_context`) is only
+        // present when no descendant text-input view (diff editor, comment composer,
+        // find bar) is focused, so this cannot fire while the user is typing.
+        EditableBinding::new(
+            "code_review:toggle_file_navigation",
+            crate::t!("keybinding-desc-code-review-toggle-file-navigation"),
+            CodeReviewAction::ToggleFileSidebar,
+        )
+        .with_context_predicate(id!("CodeReviewView_NotEditing"))
+        .with_key_binding("f")
+        .with_enabled(|| crate::features::FeatureFlag::GitOperationsInCodeReview.is_enabled()),
     ]);
 
-    app.register_fixed_bindings([FixedBinding::custom(
-        CustomAction::Undo,
-        CodeReviewAction::UndoRevert,
-        crate::t!("keybinding-desc-editor-undo"),
-        id!("CodeReviewView") & !id!("IMEOpen"),
-    )]);
+    app.register_fixed_bindings([
+        FixedBinding::custom(
+            CustomAction::Undo,
+            CodeReviewAction::UndoRevert,
+            crate::t!("keybinding-desc-editor-undo"),
+            id!("CodeReviewView") & !id!("IMEOpen"),
+        ),
+        // Same "not editing" guard as the sidebar toggle above — this must not
+        // fire while a comment composer, diff editor, or find bar has focus.
+        FixedBinding::new(
+            CODE_REVIEW_SUBMIT_KEYSTROKE,
+            CodeReviewAction::SubmitReviewComments,
+            id!("CodeReviewView_NotEditing"),
+        )
+        .with_command_description(crate::t!("keybinding-desc-code-review-submit-comments")),
+    ]);
 
     diff_menu::init(app);
     diff_selector::init(app);

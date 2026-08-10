@@ -2174,6 +2174,8 @@ keybinding-desc-ai-assistant-restart = Restart Phosphor AI
 # Code review binding desc
 keybinding-desc-code-review-save-all = Save all unsaved files in code review
 keybinding-desc-code-review-show-find = Show find bar in code review
+keybinding-desc-code-review-toggle-file-navigation = Toggle file navigation in code review
+keybinding-desc-code-review-submit-comments = Send code review comments to agent
 
 # Project buttons binding desc
 keybinding-desc-project-buttons-open-repository = Open repository

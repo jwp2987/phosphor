@@ -132,7 +132,7 @@ use warpui::{
         Resizable, ResizableStateHandle, ScrollOffset, ScrollStateHandle, ScrollbarWidth, Stack,
         Text, DEFAULT_UI_LINE_HEIGHT_RATIO,
     },
-    keymap::Keystroke,
+    keymap::{Context, Keystroke},
     ui_components::{
         button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
         components::{Coords, UiComponentStyles},
@@ -388,6 +388,11 @@ pub enum CodeReviewAction {
     OpenCreatePrDialog,
     ViewPr(String),
     PublishBranch,
+    /// Keyboard-initiated submit of the pending review comments. Fields are
+    /// not carried on the action itself — `handle_submit_review_with_comments`
+    /// reads the pending comment batch and repo path from view state, the same
+    /// way the mouse path (`CommentListEvent::Submitted`) does.
+    SubmitReviewComments,
 }
 
 pub struct FileState {
@@ -7126,6 +7131,31 @@ impl View for CodeReviewView {
     fn ui_name() -> &'static str {
         "CodeReviewView"
     }
+
+    fn keymap_context(&self, ctx: &AppContext) -> Context {
+        let mut context = Self::default_keymap_context();
+
+        // Suppress pane-level shortcuts (e.g. `f` to toggle the file sidebar,
+        // cmd/ctrl-Enter to submit review comments) when a descendant text
+        // editor is focused; otherwise the binding would fire before the
+        // editor receives the keystroke as text input. Covers the three
+        // text-input surfaces in this pane: diff editor (`CodeEditorView`,
+        // nested inside `CodeReviewEditorState::editor: LocalCodeEditorView`),
+        // comment composers (`RichTextEditorView`, nested inside
+        // `CommentEditor::editor`), and the find bar (`EditorView`, nested
+        // inside `Find::editor`).
+        let editor_focused = ctx
+            .focused_view_id(self.window_id)
+            .and_then(|view_id| ctx.view_name(self.window_id, view_id))
+            .is_some_and(|name| {
+                matches!(name, "EditorView" | "RichTextEditorView" | "CodeEditorView")
+            });
+        if !editor_focused {
+            context.set.insert("CodeReviewView_NotEditing");
+        }
+
+        context
+    }
 }
 
 impl TypedActionView for CodeReviewView {
@@ -7478,6 +7508,12 @@ impl TypedActionView for CodeReviewView {
                 self.git_operations_chevron.update(ctx, |button, ctx| {
                     button.set_active(self.git_operations_menu_open, ctx);
                 });
+                ctx.notify();
+            }
+            CodeReviewAction::SubmitReviewComments => {
+                // Mirrors the mouse path (`CommentListEvent::Submitted` in
+                // `handle_comment_list_event`), which also notifies after the call.
+                self.handle_submit_review_with_comments(ctx);
                 ctx.notify();
             }
         }
