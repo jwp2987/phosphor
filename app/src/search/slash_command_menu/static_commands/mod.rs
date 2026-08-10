@@ -104,7 +104,7 @@ pub struct StaticCommand {
 /// from the command name via [`StaticCommand::kind`] instead, so GUI command definitions do
 /// not need to carry a TUI-only field. `Other` covers Zap commands with no upstream kind
 /// (e.g. `/pr-comments`); such commands are not TUI-executable so their kind is never consumed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SlashCommandKind {
     Agent,
     CloudAgent,
