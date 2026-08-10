@@ -8,6 +8,7 @@ use warpui::{
 };
 
 use crate::{
+    ai::persisted_workspace::{PersistedWorkspace, PersistedWorkspaceEvent},
     appearance::Appearance,
     tab_configs::PickerStyle,
     view_components::{DropdownItem, FilterableDropdown},
@@ -57,9 +58,15 @@ impl RepoPicker {
         style: Option<PickerStyle>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
-        // PersistedWorkspace has been retired; no longer subscribes to the
-        // "WorkspaceAdded" event. The dropdown list is always empty, leaving
-        // only the `+ Add new repo...` fallback button at the bottom.
+        // Subscribe to PersistedWorkspace so the list refreshes when the user
+        // adds a repo via the folder picker.
+        ctx.subscribe_to_model(&PersistedWorkspace::handle(ctx), |me, _, event, ctx| {
+            if let PersistedWorkspaceEvent::WorkspaceAdded { path } = event {
+                let path_str = path.to_string_lossy().to_string();
+                me.refresh_items(Some(&path_str), ctx);
+            }
+        });
+
         let width = style.as_ref().map_or(DEFAULT_DROPDOWN_WIDTH, |s| s.width);
         let bg = style.and_then(|s| s.background);
         let dropdown = ctx.add_typed_action_view(|ctx| {
@@ -137,10 +144,17 @@ impl RepoPicker {
     }
 
     fn refresh_items(&mut self, select_path: Option<&str>, ctx: &mut ViewContext<Self>) {
-        // PersistedWorkspace has been retired; there's no longer a "previously
-        // opened git repo" candidate source, so the dropdown list is always
-        // empty, with `+ Add new repo...` existing as a sticky footer.
-        let items: Vec<DropdownItem<RepoPickerAction>> = Vec::new();
+        // workspaces() already returns entries sorted by most-recently-touched.
+        // "+ Add new repo..." is a sticky footer (not a list item) so it is
+        // not included here.
+        let items: Vec<DropdownItem<RepoPickerAction>> = PersistedWorkspace::as_ref(ctx)
+            .workspaces()
+            .filter(|ws| ws.path.exists())
+            .map(|ws| {
+                let path_str = ws.path.to_string_lossy().into_owned();
+                DropdownItem::new(path_str.clone(), RepoPickerAction::Select(path_str))
+            })
+            .collect();
 
         let path_to_select = select_path
             .or(self.selected.as_deref())

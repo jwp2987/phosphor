@@ -296,6 +296,23 @@ impl RepoMetadataModel {
             .update(ctx, |local, ctx| local.index_directory(repository, ctx))
     }
 
+    /// Indexes a local directory given only its path, registering it with the
+    /// [`DirectoryWatcher`](crate::watcher::DirectoryWatcher) first.
+    ///
+    /// Restores the pin's `RepoMetadataModel::index_local_directory_path`
+    /// (`02b53fcd8:crates/repo_metadata/src/wrapper_model.rs`), dropped along
+    /// with its only caller, `PersistedWorkspace::user_added_workspace`.
+    #[cfg(feature = "local_fs")]
+    pub fn index_local_directory_path(
+        &self,
+        path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) -> Result<(), RepoMetadataError> {
+        let path = path.clone();
+        self.local
+            .update(ctx, |local, ctx| local.index_directory_path(&path, ctx))
+    }
+
     /// Lazily indexes a local standalone path with only the first level of children.
     #[cfg(feature = "local_fs")]
     pub fn index_lazy_loaded_path(

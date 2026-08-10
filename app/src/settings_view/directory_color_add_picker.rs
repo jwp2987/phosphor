@@ -13,6 +13,7 @@ use warpui::{
 };
 
 use crate::{
+    ai::persisted_workspace::{PersistedWorkspace, PersistedWorkspaceEvent},
     appearance::Appearance,
     ui_components::icons,
     view_components::action_button::{ActionButton, SecondaryTheme},
@@ -70,6 +71,12 @@ pub(super) enum DirectoryColorAddPickerEvent {
 
 impl DirectoryColorAddPicker {
     pub(super) fn new(ctx: &mut ViewContext<Self>) -> Self {
+        ctx.subscribe_to_model(&PersistedWorkspace::handle(ctx), |me, _, event, ctx| {
+            if let PersistedWorkspaceEvent::WorkspaceAdded { .. } = event {
+                me.refresh_items(ctx);
+            }
+        });
+
         ctx.subscribe_to_model(&TabSettings::handle(ctx), |me, _, event, ctx| {
             if let TabSettingsChangedEvent::DirectoryTabColors { .. } = event {
                 me.refresh_items(ctx);
@@ -163,10 +170,10 @@ impl DirectoryColorAddPicker {
     }
 
     fn refresh_items(&mut self, ctx: &mut ViewContext<Self>) {
-        // PersistedWorkspace has been retired, so there's no longer a "previously opened git
-        // repo" candidate source; give the picker an empty set here so the dropdown always
-        // falls back to just the `+ Add directory...` button.
-        let persisted_paths: HashSet<PathBuf> = HashSet::new();
+        let persisted_paths: HashSet<PathBuf> = PersistedWorkspace::as_ref(ctx)
+            .workspaces()
+            .map(|ws| ws.path)
+            .collect();
         let existing = TabSettings::as_ref(ctx)
             .directory_tab_colors
             .value()

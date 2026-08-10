@@ -45,8 +45,9 @@ use super::block_list::{
 use super::model::{
     self, ActiveMCPServer, CurrentUserInformation, MCPEnvironmentVariables, NewActiveMCPServer,
     NewApp, NewCommand, NewFolder, NewNotebook, NewServerExperiment, NewTab, NewTabGroup, NewTeam,
-    NewWindow, NewWorkspace, NewWorkspaceTeam, ObjectMetadata, ObjectPermissions, Project, Tab,
-    TabGroup, Window,
+    NewWindow, NewWorkspace, NewWorkspaceMetadata, NewWorkspaceTeam, ObjectMetadata,
+    ObjectPermissions, Project, Tab, TabGroup, Window,
+    WorkspaceMetadata as WorkspaceMetadataModel,
     AI_DOCUMENT_PANE_KIND, AI_FACT_PANE_KIND, CODE_PANE_KIND, ENV_VAR_COLLECTION_PANE_KIND,
     EXECUTION_PROFILE_EDITOR_PANE_KIND, MCP_SERVER_PANE_KIND, NOTEBOOK_PANE_KIND,
     SETTINGS_PANE_KIND, TERMINAL_PANE_KIND, WELCOME_PANE_KIND, WORKFLOW_PANE_KIND,
@@ -846,6 +847,14 @@ fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> a
         }
         ModelEvent::DeleteObjects { ids } => {
             delete_objects(connection, ids).context("error deleting objects")
+        }
+        ModelEvent::UpsertCodebaseIndexMetadata { index_metadata } => {
+            save_codebase_index_metadata(connection, *index_metadata)
+                .context("error upserting codebase index metadata")
+        }
+        ModelEvent::DeleteCodebaseIndexMetadata { repo_path } => {
+            delete_codebase_index_metadata(connection, &repo_path)
+                .context("error deleting codebase index metadata")
         }
         ModelEvent::UpsertProject { project } => {
             save_project(connection, project).context("error upserting project")
@@ -1664,6 +1673,53 @@ fn decode_path(bytes: Vec<u8>) -> PathBuf {
             OsString::from_wide(wide_char_sequence).into()
         }
     }
+}
+
+/// Insert-or-update one `workspace_metadata` row, keyed on `repo_path`.
+///
+/// Restored from the pin (`02b53fcd8:app/src/persistence/sqlite.rs`) unchanged.
+fn save_codebase_index_metadata(
+    conn: &mut SqliteConnection,
+    index_metadata: ai::workspace::WorkspaceMetadata,
+) -> Result<()> {
+    use schema::workspace_metadata::dsl::*;
+
+    let new_metadata: NewWorkspaceMetadata = index_metadata.into();
+
+    diesel::insert_into(workspace_metadata)
+        .values(new_metadata.clone())
+        .on_conflict(repo_path)
+        .do_update()
+        .set(&new_metadata)
+        .execute(conn)?;
+
+    Ok(())
+}
+
+/// Reads every known workspace back at startup, for `PersistedWorkspace::new`.
+fn get_all_codebase_index_metadata(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<ai::workspace::WorkspaceMetadata>, diesel::result::Error> {
+    use schema::workspace_metadata::dsl::*;
+
+    Ok(workspace_metadata
+        .load_iter::<WorkspaceMetadataModel, DefaultLoadingMode>(conn)?
+        .filter_map(|item| item.ok().map(ai::workspace::WorkspaceMetadata::from))
+        .collect_vec())
+}
+
+// The pin defines `get_all_workspace_language_servers_by_workspace` and
+// `upsert_workspace_language_server` next to these. Neither is restored: both
+// are keyed by `lsp::supported_servers::LSPServerType`, and the `lsp` crate does
+// not exist in this fork. See `app/src/ai/persisted_workspace.rs` (LSP seam).
+
+fn delete_codebase_index_metadata(conn: &mut SqliteConnection, index_path: &Path) -> Result<()> {
+    use schema::workspace_metadata::dsl::*;
+
+    let target_path = index_path.to_string_lossy().to_string();
+    diesel::delete(workspace_metadata.filter(repo_path.eq(target_path))).execute(conn)?;
+
+    Ok(())
 }
 
 fn save_project(conn: &mut SqliteConnection, project: Project) -> Result<()> {
@@ -3383,6 +3439,7 @@ fn read_sqlite_data(
     if !conversation_summary_backfills.is_empty() {
         backfill_conversation_summaries(conn, conversation_summary_backfills)?;
     }
+    let codebase_indices = get_all_codebase_index_metadata(conn)?;
     let projects = get_all_projects(conn)?;
     let project_rules = get_all_project_rules(conn)?;
     let ignored_suggestions = get_all_ignored_suggestions(conn)?;
@@ -3400,6 +3457,7 @@ fn read_sqlite_data(
         object_actions,
         experiments: server_experiments,
         ai_queries,
+        codebase_indices,
         multi_agent_conversations,
         projects,
         project_rules,

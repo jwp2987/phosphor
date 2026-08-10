@@ -162,6 +162,7 @@ use ai::blocklist::agent_view::orchestration_pill_bar_model::OrchestrationPillBa
 use ai::blocklist::{BlocklistAIHistoryModel, BlocklistAIPermissions};
 use ai::execution_profiles::editor::ExecutionProfileEditorManager;
 use ai::execution_profiles::profiles::AIExecutionProfilesModel;
+use ai::persisted_workspace::PersistedWorkspace;
 use auth::AuthStateProvider;
 use auth::{AuthManager, AuthState};
 use code::editor_management::CodeManager;
@@ -1337,6 +1338,7 @@ fn initialize_app(
         object_actions,
         experiments,
         ai_queries,
+        persisted_workspaces,
         multi_agent_conversations,
         persisted_projects,
         persisted_project_rules,
@@ -1356,6 +1358,7 @@ fn initialize_app(
                 sqlite_data.object_actions,
                 sqlite_data.experiments,
                 sqlite_data.ai_queries,
+                sqlite_data.codebase_indices,
                 sqlite_data.multi_agent_conversations,
                 sqlite_data.projects,
                 sqlite_data.project_rules,
@@ -1366,6 +1369,7 @@ fn initialize_app(
         })
         .unwrap_or_else(|| {
             (
+                Default::default(),
                 Default::default(),
                 Default::default(),
                 Default::default(),
@@ -2024,6 +2028,12 @@ fn initialize_app(
             ctx,
         )
     });
+    // Recently-used repository roots. Registered after `ProjectContextModel`
+    // because `user_added_workspace` drives a project-rules scan through it, and
+    // after `RepoMetadataModel` for the same reason.
+    ctx.add_singleton_model(|ctx| {
+        PersistedWorkspace::new(persisted_workspaces, persistence_writer.sender(), ctx)
+    });
     ctx.add_singleton_model(move |_| persistence_writer);
 
     ctx.add_singleton_model(input_classifier::InputClassifierModel::new);
@@ -2123,11 +2133,6 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
 
             PersistenceWriter::handle(ctx).update(ctx, |writer, _ctx| {
                 writer.terminate();
-            });
-
-            // Shutdown all LSP servers gracefully before app termination.
-            lsp::LspManagerModel::handle(ctx).update(ctx, |manager, ctx| {
-                manager.terminate(ctx);
             });
 
             // We want to tear down the terminal server before relaunching for
@@ -2928,8 +2933,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::ListSkills,
         #[cfg(feature = "ask_user_question")]
         FeatureFlag::AskUserQuestion,
-        #[cfg(feature = "lsp_as_a_tool")]
-        FeatureFlag::LSPAsATool,
         #[cfg(feature = "inline_profile_selector")]
         FeatureFlag::InlineProfileSelector,
         #[cfg(feature = "oz_platform_skills")]

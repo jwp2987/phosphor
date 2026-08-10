@@ -185,6 +185,7 @@ app-menu-privacy-policy = Privacy Policy...
 app-menu-debug = Debug
 app-menu-set-default-terminal = Set Phosphor as Default Terminal
 app-menu-file = File
+app-menu-open-recent = Open Recent
 app-menu-edit = Edit
 app-menu-use-warp-prompt = Use Phosphor's Prompt
 app-menu-copy-on-select-terminal = Copy on Select within the Terminal

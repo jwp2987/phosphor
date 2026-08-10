@@ -485,6 +485,16 @@ diesel::table! {
 }
 
 diesel::table! {
+    workspace_metadata (id) {
+        id -> Integer,
+        repo_path -> Text,
+        navigated_ts -> Nullable<Timestamp>,
+        modified_ts -> Nullable<Timestamp>,
+        queried_ts -> Nullable<Timestamp>,
+    }
+}
+
+diesel::table! {
     workspace_teams (id) {
         id -> Integer,
         workspace_server_uid -> Text,
