@@ -126,10 +126,15 @@ pub use resolve_skill_spec::{
     clone_repo_for_skill, resolve_skill_spec, ResolveSkillError, ResolvedSkill,
 };
 
-#[cfg(not(target_family = "wasm"))]
-mod global_skills;
-#[cfg(not(target_family = "wasm"))]
-pub use global_skills::filter_skills_by_spec;
+// `global_skills.rs` (pin's `filter_skills_by_spec`) was removed 2026-08-10 (#487):
+// it had no production caller in this fork and none is reachable. Its only pinned
+// call site (`AgentDriver::load_global_skills`, fed by `resolve_global_skills` reading
+// `AuthStateProvider::get().global_skills()` behind `FeatureFlag::OzPlatformSkills`) is
+// Warp Team/workspace-policy delivery over the cloud auth channel, and this fork's
+// `driver.rs` never grew that call chain — `resolve_skill`/`resolve_skill_spec` are the
+// only skill-resolution path here, and they resolve a single `SkillSpec`, never a `Vec`
+// filtered against on-disk matches. See `DECLINED.md` ("AI skills — global-spec
+// filtering") for the full trace.
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {

@@ -475,7 +475,13 @@ none of them had gone stale.
 Calibration for anyone continuing: two live examples found the same day were the
 Claude harness accepting `resolved_mcp_servers` and dropping it (fixed,
 `28d21e520`), and `global_skills::filter_skills_by_spec` being exported and
-tested with zero production callers.
+tested with zero production callers. **The `filter_skills_by_spec` example
+was resolved 2026-08-10 (#487) as delete, not wire** — its only pinned caller
+is cloud Team-policy delivery this fork never grew, and its "global skills"
+job is already covered by `SkillManager`'s own directory-scan path. See the
+"AI global skills" correction below for the full trace. Kept here as
+calibration: it is proof the "tested-but-uncalled ⇒ forgot to wire" prior
+is not universal — check the caller chain each time.
 
 ### Confirmed unwired — ranked by user impact
 
@@ -1550,7 +1556,7 @@ the old "3 decisions/holds + 7 buildable" framing:
 | CDPATH-aware `cd` completion | #483 (closed — done) |
 | Launch-at-login | #484 (closed — done, see "Requires macOS/Windows" below) |
 | NLD heuristic feature flags | #485 (closed — done) |
-| AI bundled + global skills | #487 (open — this ledger's old "AI global skills" entry below was **wrong**; see correction) |
+| AI bundled + global skills | #487 (**CLOSED 2026-08-10** — resolved as delete, not a gap; see correction below) |
 
 (The 13 unchecked `[ ]` items are all keep-dropped/cloud — OTEL, VoiceInputLifecycle,
 semantic-search, RunAgents orchestration, computer-use recording, cloud-mode-v2,
@@ -1611,6 +1617,42 @@ exercised here at all. They need a macOS or Windows machine (or CI) to progress.
   `global_skills_tests.rs`, but nothing outside the module calls it. So it is
   either dead code to delete or an unwired helper to connect. Resolve that one
   question rather than re-porting a subsystem that is already here.
+
+  **RESOLVED 2026-08-10 — DELETE, and #487 is now closed.** Traced the pin's
+  only call site: `AgentDriver::load_global_skills`
+  (`app/src/ai/agent_sdk/driver.rs:2073` at the pin) is fed by
+  `resolve_global_skills` (`:1885`), which is gated on
+  `FeatureFlag::OzPlatformSkills` and reads
+  `AuthStateProvider::as_ref(ctx).get().global_skills()` — a Warp
+  Team/workspace-policy value delivered over the cloud auth channel, the same
+  shape as the already-declined `UserWorkspaces::current_team()` class
+  (`DECLINED.md`, #445). `resolve_skill_repos`, the other half of the pin's
+  `global_skills.rs`, was already cut for exactly this reason during the #493
+  port (`GithubRepo` comes from the deleted `cloud_object_models`). This
+  fork's `driver.rs` never grew `load_global_skills`/`resolve_global_skills`
+  at all — confirmed by grep, and by the fact that `crate::ai::cloud_environments`
+  (the pin's `GithubRepo` source) has no `mod` declaration anywhere in this
+  tree. `RunAgentArgs.skill` (`crates/warp_cli/src/agent.rs:323`) is a single
+  `Option<SkillSpec>`, not a `Vec`, so there is no local, non-cloud concept of
+  "multiple global skill specs to filter by" for a new caller to feed —
+  wiring one would be new feature work, not a parity port. The per-user
+  "global skills outside a workspace" reading of #487's own title is already
+  covered by a different mechanism: `SkillManager`'s `directory_skills` /
+  `home_directory_for_origin` and `resolve_skill_spec.rs`'s
+  `resolve_unqualified` resolve home/global skill directories directly,
+  without going through `SkillSpec`-list filtering at all. Two mechanisms
+  covering the same ground would be worse than one, so `filter_skills_by_spec`
+  is redundant even setting the cloud question aside. **Deleted**
+  `global_skills.rs` and `global_skills_tests.rs`, dropped the `mod.rs`
+  export; recorded as "AI skills — global-spec filtering" in `DECLINED.md`
+  so the next audit does not re-file it as a gap.
+
+  Separately, confirmed `remote.rs`/`remote_tests.rs` being present is
+  correct and not a leftover: the 2026-08-08 late "SSH half of
+  `ai/skills/remote.rs` is UN-DROPPED" decision earlier in this file already
+  established that `bundled_skill_snapshot_protos` is Phosphor's own SSH
+  daemon (`remote_server::proto`), not Warp's cloud sync, and is a hard
+  dependency of #353. Nothing further to do there.
 
 ### Not started — true gaps
 - [x] **Skill remote-path** — now **#205**. Promoted out of this ledger after finding a
