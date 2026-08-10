@@ -1,0 +1,711 @@
+//! Ported from Warp's `app/src/pane_group/mod_tests.rs` at the pin recorded
+//! in `ORACLE.md` (`02b53fcd8`). The pin carries 49 tests here (48 active,
+//! 1 already commented out upstream as flaky); the fork had none.
+//!
+//! Most of the pin's suite is out of scope for this fork:
+//! - ~36 tests exercise cloud/remote orchestration (`decide_remote_child_hydration_*`,
+//!   `test_*_shared_session*`, `test_ambient_transcript_restore_*_cloud_mode*`,
+//!   `test_entering_remote_parent_agent_view_*`) or the ambient-agent UI
+//!   subsystem that was physically removed (see the `Zap Wave 7-3` comments
+//!   in `mod.rs`).
+//! - A handful more depend on a *lazy* hidden-child-agent-pane restoration
+//!   mechanism (`restore_missing_child_agent_panes_for_parent`,
+//!   `ensure_hidden_child_agent_pane_for_conversation`, the pin's
+//!   `enter_agent_view_for_conversation` test helper) that this fork does not
+//!   have -- it only restores child panes *eagerly*, once, at
+//!   `PaneGroup::new_internal`/`reattach_panes` time
+//!   (`create_missing_child_agent_panes`).
+//! - `test_start_shared_session_from_modal` / `test_stop_shared_session` call
+//!   `TerminalView::attempt_to_share_session`, which is a declared no-op here
+//!   ("Zap: the Shared Session network entry point has been cut" --
+//!   `terminal/view/shared_session/view_impl.rs`); testing it would be a test
+//!   against a gutted stub, which `script/check_stub_coverage` exists to
+//!   forbid.
+//!
+//! This file ports the tests whose full dependency chain was confirmed
+//! present in this fork's `PaneGroup` by reading the source, not just
+//! grepping a name match. See individual test doc comments for per-test
+//! notes on API drift from the pin.
+
+use std::collections::HashMap;
+
+use warpui::App;
+
+use crate::notebooks::notebook::NotebookView;
+use crate::terminal::shared_session::SharedSessionStatus;
+use warpui::windowing::state::ApplicationStage;
+
+use super::*;
+
+/// Builds a real, single-terminal-pane `PaneGroup` using the fork's
+/// `workspace`-level test harness (`workspace::view::tests::initialize_app` +
+/// `mock_workspace`), the same harness `pane/terminal_pane_tests.rs` already
+/// uses successfully. The pin's own `mod_tests.rs` has its own
+/// `initialize_app`/`mock_pane_group` pair, but those pull in cloud
+/// singletons (`ServerApiProvider`, `IapManager`, `CodebaseIndexManager`,
+/// `CloudModel`, ...) that don't exist in this fork.
+fn mock_pane_group(app: &mut App) -> ViewHandle<PaneGroup> {
+    crate::workspace::view::tests::initialize_app(app);
+    let workspace = crate::workspace::view::tests::mock_workspace(app);
+    workspace
+        .read(app, |workspace, _| workspace.tab_views().next().cloned())
+        .expect("mock_workspace has an initial tab")
+}
+
+fn get_newly_created_pane_id(panes: &PaneGroup, existing_ids: &[PaneId]) -> PaneId {
+    panes
+        .pane_ids()
+        .find(|id| !existing_ids.contains(id))
+        .unwrap()
+}
+
+fn split_pane_state(panes: &PaneGroup, pane_id: PaneId, ctx: &AppContext) -> SplitPaneState {
+    panes
+        .focus_state_handle()
+        .as_ref(ctx)
+        .split_pane_state_for(pane_id)
+}
+
+fn is_active_session(panes: &PaneGroup, pane_id: PaneId, ctx: &AppContext) -> bool {
+    panes.active_session_id(ctx).map(Into::into) == Some(pane_id)
+}
+
+fn new_notebook(ctx: &mut ViewContext<PaneGroup>) -> ViewHandle<NotebookView> {
+    ctx.add_typed_action_view(NotebookView::new)
+}
+
+#[test]
+#[allow(clippy::clone_on_copy)]
+fn test_pane_focus_on_close() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let first_pane_id = get_newly_created_pane_id(panes, &[]);
+
+            // Add pane Left.
+            panes.add_terminal_pane(Direction::Left, None, ctx);
+            let second_pane_id = get_newly_created_pane_id(panes, &[first_pane_id]);
+
+            assert!(panes.prev_pane_id(second_pane_id).unwrap() == first_pane_id);
+
+            // Add pane Up.
+            panes.add_terminal_pane(Direction::Up, None, ctx);
+            let third_pane_id = get_newly_created_pane_id(panes, &[first_pane_id, second_pane_id]);
+
+            // Close the third pane and check that the second pane opened is now focused.
+            panes.close_pane(third_pane_id, ctx);
+            assert_eq!(second_pane_id, panes.focused_pane_id(ctx));
+        })
+    });
+}
+
+/// Fork drift: the fork's `insert_terminal_pane_hidden_for_child_agent` has
+/// no `IsSharedSessionCreator` parameter -- the pin's version takes one to
+/// decide transitive sharing, and `transitively_shared_child_panes` (what
+/// that decision feeds) does not exist in this fork at all.
+#[test]
+fn test_insert_hidden_child_agent_pane_keeps_focus_and_active_session() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let parent_pane_id = get_newly_created_pane_id(panes, &[]);
+            let initial_tree_pane_count = panes.pane_count();
+            let initial_content_pane_count = panes.pane_ids().count();
+            let initial_visible_count = panes.visible_pane_count();
+            let initial_active_session = panes.active_session_id(ctx);
+
+            let child_pane_id = panes.insert_terminal_pane_hidden_for_child_agent(
+                parent_pane_id,
+                HashMap::new(),
+                ctx,
+            );
+
+            // NOTE -- kept exactly as the pin has it, not weakened: the pin's
+            // `insert_terminal_pane_hidden_for_child_agent` attaches the child
+            // pane fully off the split tree via a dedicated
+            // `attach_child_pane_off_tree`, so `PaneData::len` (what
+            // `pane_count()` returns) is untouched by it, and the pin exposes
+            // `PaneData::is_pane_in_tree` to assert that directly.
+            //
+            // This fork instead routes hidden-child-agent panes through the
+            // ordinary `add_pane_with_options` -> `PaneData::split` path
+            // (`NewPaneVisibility::HiddenForChildAgent`, mod.rs ~5535-5546),
+            // the same as any other split pane -- and `PaneData::split`
+            // unconditionally increments `len` (tree.rs ~456-462). Visibility
+            // is handled separately via `hide_pane_for_child_agent`, so the
+            // pane is correctly excluded from `visible_pane_count()` /
+            // `pane_id_by_index()`, but `pane_count()` is NOT held constant
+            // the way the pin's contract expects. `PaneData::is_pane_in_tree`
+            // does not exist in this fork's tree.rs at all, so that pin
+            // assertion has no fork equivalent and is omitted below rather
+            // than approximated with something else.
+            //
+            // If the `pane_count()` assertion below goes red, that is this
+            // divergence surfacing, not a bad port -- see the pane_count()
+            // note in this test's module doc / the porting report for detail.
+            assert_eq!(panes.pane_count(), initial_tree_pane_count);
+            assert_eq!(panes.pane_ids().count(), initial_content_pane_count + 1);
+            assert_eq!(panes.visible_pane_count(), initial_visible_count);
+            assert!(panes.has_pane_id(child_pane_id.into()));
+
+            // The new child pane should remain hidden and not affect visible ordering.
+            assert_eq!(panes.pane_id_by_index(0), Some(parent_pane_id));
+            assert_eq!(panes.pane_id_by_index(1), None);
+
+            // Creating a hidden child pane should not steal focus or active session.
+            assert_eq!(panes.focused_pane_id(ctx), parent_pane_id);
+            assert_eq!(panes.active_session_id(ctx), initial_active_session);
+        });
+    });
+}
+
+#[test]
+fn test_active_session_id_reset_on_last_pane_close() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let terminal_id = get_newly_created_pane_id(panes, &[]);
+            assert_eq!(
+                panes.active_session_id(ctx),
+                terminal_id.as_terminal_pane_id()
+            );
+
+            // Add a non-terminal pane (Notebook) so the pane group remains alive when terminal is closed.
+            panes.add_pane_with_direction(
+                Direction::Right,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                false, /* focus_new_pane */
+                ctx,
+            );
+
+            // Close the terminal.
+            panes.close_pane(terminal_id, ctx);
+
+            // active_session_id should be None after closing the last terminal pane.
+            assert_eq!(
+                panes.active_session_id(ctx),
+                None,
+                "active_session_id should be None after closing the last pane"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_group_without_terminals() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let terminal_id = get_newly_created_pane_id(panes, &[]);
+
+            // Add a notebook to the left.
+            panes.add_pane_with_direction(
+                Direction::Left,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+            let notebook_id = get_newly_created_pane_id(panes, &[terminal_id]);
+
+            // Close the terminal, which should leave the group without an active session.
+            panes.close_pane(terminal_id, ctx);
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(panes.active_session_id(ctx), None);
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::NotInSplitPane
+            );
+        });
+    });
+}
+
+#[test]
+fn test_close_active_session() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            // Add two terminal sessions.
+            let first_terminal_id = get_newly_created_pane_id(panes, &[]);
+            panes.add_terminal_pane(Direction::Up, None, ctx);
+            let second_terminal_id = get_newly_created_pane_id(panes, &[first_terminal_id]);
+
+            // Add a notebook to the left.
+            panes.add_pane_with_direction(
+                Direction::Left,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+            let notebook_id =
+                get_newly_created_pane_id(panes, &[first_terminal_id, second_terminal_id]);
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(second_terminal_id)
+            );
+
+            // Close the active session, which should leave the notebook focused and activate the
+            // remaining session.
+            panes.close_pane(second_terminal_id, ctx);
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(first_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert!(is_active_session(panes, first_terminal_id, ctx));
+
+            // Now, focus the remaining session, which should keep it activated.
+            panes.focus_pane_by_id(first_terminal_id, ctx);
+            assert_eq!(panes.focused_pane_id(ctx), first_terminal_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(first_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Focused)
+            );
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert!(is_active_session(panes, first_terminal_id, ctx));
+        });
+    });
+}
+
+#[test]
+fn test_focus_notebook() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let first_terminal_id = get_newly_created_pane_id(panes, &[]);
+
+            // Add a notebook to the left.
+            panes.add_pane_with_direction(
+                Direction::Left,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+            let notebook_id = get_newly_created_pane_id(panes, &[first_terminal_id]);
+
+            // The new pane should be focused, but the terminal is still the active session.
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(first_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert!(is_active_session(panes, first_terminal_id, ctx));
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Focused)
+            );
+
+            // Add a terminal below.
+            panes.add_terminal_pane(Direction::Down, None, ctx);
+            let second_terminal_id =
+                get_newly_created_pane_id(panes, &[first_terminal_id, notebook_id]);
+
+            // The new terminal should be both focused and the active session.
+            assert_eq!(panes.focused_pane_id(ctx), second_terminal_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(second_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert!(!is_active_session(panes, first_terminal_id, ctx));
+            assert_eq!(
+                split_pane_state(panes, second_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Focused)
+            );
+            assert!(is_active_session(panes, second_terminal_id, ctx));
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+
+            // Close the new terminal. Focus should switch to the notebook, and the first terminal
+            // session will activate.
+            panes.close_pane(second_terminal_id, ctx);
+            assert_eq!(panes.focused_pane_id(ctx), notebook_id);
+            assert_eq!(
+                panes.active_session_id(ctx).map(Into::into),
+                Some(first_terminal_id)
+            );
+            assert_eq!(
+                split_pane_state(panes, first_terminal_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Unfocused)
+            );
+            assert_eq!(
+                split_pane_state(panes, notebook_id, ctx),
+                SplitPaneState::InSplitPane(PaneState::Focused)
+            );
+            assert!(is_active_session(panes, first_terminal_id, ctx));
+        })
+    });
+}
+
+// Ensures that we always show the pane header for terminal panes, regardless of split state.
+#[test]
+fn test_terminal_pane_headers() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        // There should be a single terminal pane to start and the pane header should be shown.
+        pane_group.read(&app, |pane_group, ctx| {
+            assert_eq!(pane_group.pane_contents.len(), 1);
+
+            let terminal_panes = pane_group.panes_of::<TerminalPane>().collect_vec();
+            assert_eq!(terminal_panes.len(), 1);
+
+            let pane_view = terminal_panes[0].pane_view();
+            let header_visible = pane_view
+                .as_ref(ctx)
+                .header()
+                .as_ref(ctx)
+                .is_visible_in_pane_group();
+            assert!(header_visible);
+        });
+
+        // Create a terminal split pane.
+        pane_group.update(&mut app, |pane_group, ctx| {
+            pane_group.add_terminal_pane(Direction::Left, None, ctx);
+        });
+
+        // There should be two terminal panes and they should both have the pane header.
+        pane_group.read(&app, |pane_group, ctx| {
+            assert_eq!(pane_group.pane_contents.len(), 2);
+
+            let terminal_panes = pane_group.panes_of::<TerminalPane>().collect_vec();
+            assert_eq!(terminal_panes.len(), 2);
+
+            for terminal_pane in terminal_panes {
+                let pane_view = terminal_pane.pane_view();
+                assert!(
+                    pane_view
+                        .as_ref(ctx)
+                        .header()
+                        .as_ref(ctx)
+                        .is_visible_in_pane_group()
+                );
+            }
+        });
+
+        // Close one of the panes; the remaining pane should still have a header.
+        pane_group.update(&mut app, |pane_group, ctx| {
+            pane_group.close_pane(pane_group.focused_pane_id(ctx), ctx);
+        });
+
+        pane_group.read(&app, |pane_group, ctx| {
+            assert_eq!(pane_group.pane_contents.len(), 1);
+
+            let terminal_panes = pane_group.panes_of::<TerminalPane>().collect_vec();
+            assert_eq!(terminal_panes.len(), 1);
+
+            let pane_view = terminal_panes[0].pane_view();
+            assert!(
+                pane_view
+                    .as_ref(ctx)
+                    .header()
+                    .as_ref(ctx)
+                    .is_visible_in_pane_group()
+            );
+        });
+
+        // Create a non-terminal split pane. Terminal pane header remains visible.
+        pane_group.update(&mut app, |pane_group, ctx| {
+            pane_group.add_pane_with_direction(
+                Direction::Left,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+        });
+
+        pane_group.read(&app, |pane_group, ctx| {
+            assert_eq!(pane_group.pane_contents.len(), 2);
+
+            let terminal_panes = pane_group.panes_of::<TerminalPane>().collect_vec();
+            assert_eq!(terminal_panes.len(), 1);
+
+            let pane_view = terminal_panes[0].pane_view();
+            assert!(
+                pane_view
+                    .as_ref(ctx)
+                    .header()
+                    .as_ref(ctx)
+                    .is_visible_in_pane_group()
+            );
+        });
+    });
+}
+
+/// Uses `prev_pane_id_navigation`/`next_pane_id` -- the navigation helpers that
+/// skip panes hidden for undo-close, distinct from `prev_pane_id` (raw split order).
+#[test]
+fn test_navigation_skips_hidden_closed_panes() {
+    let _guard = FeatureFlag::UndoClosedPanes.override_enabled(true);
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            // Add second terminal to the right to create a horizontal pair
+            panes.add_terminal_pane(Direction::Right, None, ctx);
+
+            // Add third terminal; place it to the right of current focus
+            panes.add_terminal_pane(Direction::Right, None, ctx);
+
+            // Determine ordered visible panes by index 0..2
+            let a = panes.pane_id_by_index(0).expect("pane 0 exists");
+            let b = panes.pane_id_by_index(1).expect("pane 1 exists");
+            let c = panes.pane_id_by_index(2).expect("pane 2 exists");
+
+            // Focus C and confirm prev would be B when all are visible
+            panes.focus_pane_by_id(c, ctx);
+            assert_eq!(panes.prev_pane_id_navigation(c), Some(b));
+
+            // Close B (it will be hidden for undo and excluded from visible navigation)
+            panes.close_pane(b, ctx);
+
+            // Now prev from C should skip B and go to A
+            assert_eq!(panes.prev_pane_id_navigation(c), Some(a));
+
+            // And next from A should skip B and go to C
+            assert_eq!(panes.next_pane_id(a), Some(c));
+        })
+    });
+}
+
+/// A minimal `PaneContent` whose `pre_attach` hook always refuses attachment,
+/// used to exercise `add_pane_with_direction`'s abort path.
+struct PreAttachReturnsFalsePane {
+    pane_id: PaneId,
+    pane_configuration: ModelHandle<PaneConfiguration>,
+}
+
+impl PreAttachReturnsFalsePane {
+    fn new(ctx: &mut ViewContext<PaneGroup>) -> Self {
+        Self {
+            pane_id: PaneId::dummy_pane_id(),
+            pane_configuration: ctx.add_model(|_ctx| PaneConfiguration::new("")),
+        }
+    }
+}
+
+impl PaneContent for PreAttachReturnsFalsePane {
+    fn id(&self) -> PaneId {
+        self.pane_id
+    }
+
+    fn pre_attach(&self, _group: &PaneGroup, _ctx: &mut ViewContext<PaneGroup>) -> bool {
+        false
+    }
+
+    fn attach(
+        &self,
+        _group: &PaneGroup,
+        _focus_handle: focus_state::PaneFocusHandle,
+        _ctx: &mut ViewContext<PaneGroup>,
+    ) {
+    }
+
+    fn detach(
+        &self,
+        _group: &PaneGroup,
+        _detach_type: pane::DetachType,
+        _ctx: &mut ViewContext<PaneGroup>,
+    ) {
+    }
+
+    fn snapshot(&self, _app: &AppContext) -> LeafContents {
+        LeafContents::GetStarted
+    }
+
+    fn has_application_focus(&self, _ctx: &mut ViewContext<PaneGroup>) -> bool {
+        false
+    }
+
+    fn focus(&self, _ctx: &mut ViewContext<PaneGroup>) {}
+
+    fn shareable_link(
+        &self,
+        _ctx: &mut ViewContext<PaneGroup>,
+    ) -> Result<pane::ShareableLink, pane::ShareableLinkError> {
+        Ok(pane::ShareableLink::Base)
+    }
+
+    fn pane_configuration(&self) -> ModelHandle<PaneConfiguration> {
+        self.pane_configuration.clone()
+    }
+
+    fn is_pane_being_dragged(&self, _ctx: &AppContext) -> bool {
+        false
+    }
+}
+
+#[test]
+fn test_add_pane_aborts_cleanly_when_pre_attach_returns_false() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let before_snapshot = panes.snapshot(ctx);
+            let before_count = panes.pane_count();
+
+            panes.add_pane_with_direction(
+                Direction::Right,
+                PreAttachReturnsFalsePane::new(ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+
+            assert_eq!(panes.pane_count(), before_count);
+            assert_eq!(panes.snapshot(ctx), before_snapshot);
+        });
+    });
+}
+
+/// The pin's counterparts (`test_start_shared_session_from_modal`,
+/// `test_stop_shared_session`) drive sharing through
+/// `TerminalView::attempt_to_share_session`, which this fork has turned into
+/// a declared no-op ("Zap: the Shared Session network entry point has been
+/// cut" -- `terminal/view/shared_session/view_impl.rs`) now that the
+/// session-sharing websocket transport is gone. This test instead sets
+/// `SharedSessionStatus` directly on the `TerminalModel`, bypassing that
+/// no-op entirely, so it exercises real, non-stub `PaneGroup` bookkeeping
+/// (`is_terminal_pane_being_shared`/`number_of_shared_sessions`) rather than
+/// the removed transport.
+#[test]
+fn test_is_terminal_pane_being_shared() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            assert!(!panes.is_terminal_pane_being_shared(ctx));
+
+            // Add another pane; the pane group should still be "unshared".
+            panes.add_terminal_pane(Direction::Left, None, ctx);
+            assert!(!panes.is_terminal_pane_being_shared(ctx));
+
+            // Make one of the terminal panes shared. There is now at least one terminal pane being shared.
+            panes
+                .terminal_session_by_pane_index(0)
+                .expect("terminal pane exists")
+                .terminal_manager(ctx)
+                .as_ref(ctx)
+                .model()
+                .lock()
+                .set_shared_session_status(SharedSessionStatus::ActiveSharer);
+            assert!(panes.is_terminal_pane_being_shared(ctx));
+        });
+    });
+}
+
+/// See `test_is_terminal_pane_being_shared`'s doc comment for why this sets
+/// `SharedSessionStatus` directly instead of going through the now-no-op
+/// `attempt_to_share_session`.
+#[test]
+fn test_number_of_shared_panes() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            // We have two terminal sessions. Neither is shared
+            let first_pane_id = get_newly_created_pane_id(panes, &[]);
+            panes.add_terminal_pane(Direction::Up, None, ctx);
+            assert_eq!(panes.number_of_shared_sessions(ctx), 0);
+
+            // Make one pane shared
+            panes
+                .terminal_manager(0, ctx)
+                .unwrap()
+                .as_ref(ctx)
+                .model()
+                .lock()
+                .set_shared_session_status(SharedSessionStatus::ActiveSharer);
+            assert_eq!(panes.number_of_shared_sessions(ctx), 1);
+
+            // Make both panes shared
+            panes
+                .terminal_manager(1, ctx)
+                .unwrap()
+                .as_ref(ctx)
+                .model()
+                .lock()
+                .set_shared_session_status(SharedSessionStatus::ActiveSharer);
+            assert_eq!(panes.number_of_shared_sessions(ctx), 2);
+
+            // Close a pane
+            panes.close_pane(first_pane_id, ctx);
+            assert_eq!(panes.number_of_shared_sessions(ctx), 1);
+        });
+    });
+}
+
+#[test]
+fn test_update_session_visibility() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+        pane_group.update(&mut app, |panes, ctx| {
+            // Assert that there is no active window.
+            WindowManager::handle(ctx).read(ctx, |state, _| {
+                assert_eq!(state.stage(), ApplicationStage::Starting);
+                assert!(state.active_window().is_none());
+            });
+
+            fn visibility_matches(panes: &PaneGroup, expected: bool, ctx: &ViewContext<PaneGroup>) {
+                for data in panes.panes_of::<TerminalPane>() {
+                    let view = data.terminal_view(ctx).as_ref(ctx);
+                    assert_eq!(
+                        view.was_ever_visible(),
+                        expected,
+                        "View {} visibility was {}, expected {}",
+                        data.terminal_view(ctx).id(),
+                        view.was_ever_visible(),
+                        expected
+                    );
+                }
+            }
+
+            // Add pane Left.
+            panes.add_terminal_pane(Direction::Left, None, ctx);
+
+            // Assert that neither of the panes are marked as visible (due
+            // to the fact that the window is not active).
+            visibility_matches(panes, false, ctx);
+
+            let window_id = ctx.window_id();
+            WindowManager::handle(ctx).update(ctx, |state, ctx| {
+                state.overwrite_for_test(ApplicationStage::Active, Some(window_id));
+                ctx.notify();
+            });
+
+            // Assert that both of the panes are still not marked as
+            // visible, given the fact that the pane group is not focused.
+            visibility_matches(panes, false, ctx);
+
+            panes.focus(ctx);
+
+            // Assert that both of the panes are now visible.
+            visibility_matches(panes, true, ctx);
+        })
+    });
+}
