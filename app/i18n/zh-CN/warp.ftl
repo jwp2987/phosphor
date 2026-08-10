@@ -1154,6 +1154,17 @@ settings-code-project-explorer = 项目浏览器
 settings-code-project-explorer-desc = 在左侧工具面板添加 IDE 风格的项目浏览器 / 文件树。
 settings-code-global-search = 全局文件搜索
 settings-code-global-search-desc = 在左侧工具面板添加全局文件搜索。
+settings-code-codebase-context = 代码库索引
+settings-code-codebase-context-desc = 允许 Agent 检索已打开仓库的嵌入索引，从而直接定位相关代码，而不必逐个 grep。索引在本地构建，代码片段仅发送给你所配置的嵌入服务商。
+settings-code-auto-indexing = 默认索引新文件夹
+settings-code-auto-indexing-desc = 在你浏览代码仓库时自动建立索引，而不是仅在手动请求时建立。索引会消耗你的嵌入服务商配额。
+settings-code-embedding-model = 嵌入模型
+settings-code-embedding-model-value = {$model} · {$provider}
+settings-code-embedding-model-desc = 索引使用该模型构建；模型是通过在“设置 > AI”中的某个服务商上列出其模型 id 来选定的。更换模型会重建索引，不同模型生成的向量无法复用。
+settings-code-embedding-model-none = 未配置
+settings-code-embedding-model-none-desc = 没有任何服务商列出嵌入模型，因此索引会直接报错，而不会回退到默认模型。请在“设置 > AI”中为某个服务商添加下列模型之一。
+settings-code-embedding-candidate-available = {$model} — 由 {$provider} 提供
+settings-code-embedding-candidate-unavailable = {$model} — 没有服务商列出该模型
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----

@@ -1228,6 +1228,17 @@ settings-code-global-search = Global file search
 settings-code-global-search-desc = Adds global file search to the left side tools panel.
 settings-code-show-hidden-files = Show hidden files in project explorer
 settings-code-show-hidden-files-desc = Show dotfiles and hidden files (starting with .) in the project explorer.
+settings-code-codebase-context = Codebase indexing
+settings-code-codebase-context-desc = Let the agent search an embedding index of the repositories you open, so it can find relevant code instead of grepping for it. Indexing runs locally, and code fragments go only to the embedding provider you configure.
+settings-code-auto-indexing = Index new folders by default
+settings-code-auto-indexing-desc = Index code repositories automatically as you navigate them, rather than only on request. Indexing spends your embedding provider's quota.
+settings-code-embedding-model = Embedding model
+settings-code-embedding-model-value = {$model} · {$provider}
+settings-code-embedding-model-desc = The index is built with this model, chosen by listing its id on a provider under Settings > AI. Switching models starts a new index; vectors from a different model are not reused.
+settings-code-embedding-model-none = Not configured
+settings-code-embedding-model-none-desc = No provider lists an embedding model, so indexing reports an error rather than falling back to a default. Add one of the models below to a provider under Settings > AI.
+settings-code-embedding-candidate-available = {$model} — served by {$provider}
+settings-code-embedding-candidate-unavailable = {$model} — no provider lists this model
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----
