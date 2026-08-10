@@ -414,6 +414,7 @@ fn label_for_action(
             State::Failed => "Failed to read command output".to_owned(),
             State::Cancelled => "Read command output cancelled".to_owned(),
         },
+        AIAgentActionType::UseComputer(request) => summary_label(&request.action_summary, state),
         AIAgentActionType::InsertCodeReviewComments { comments, .. } => {
             let comments = count_label(comments.len(), "review comment", "review comments");
             match state {
@@ -424,6 +425,9 @@ fn label_for_action(
                 State::Failed => "Failed to insert review comments".to_owned(),
                 State::Cancelled => "Insert review comments cancelled".to_owned(),
             }
+        }
+        AIAgentActionType::RequestComputerUse(request) => {
+            summary_label(&request.task_summary, state)
         }
         AIAgentActionType::ReadSkill(request) => {
             let skill = single_line(&request.skill.display_label());

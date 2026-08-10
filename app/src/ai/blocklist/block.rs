@@ -135,8 +135,10 @@ use warp_editor::{
     content::buffer::InitialBufferState, render::element::VerticalExpansionBehavior,
 };
 use warpui::{
+    assets::asset_cache::AssetCache,
     clipboard::ClipboardContent,
     elements::{MouseStateHandle, SelectionBound, SelectionHandle},
+    image_cache::ImageType,
     keymap::FixedBinding,
     r#async::{SpawnedFutureHandle, Timer},
     text::SelectionType,
@@ -955,6 +957,9 @@ pub struct AIBlock {
     /// Rewind button to revert to before this block.
     rewind_button: ViewHandle<ActionButton>,
 
+    /// Per-action button components for "View screenshot" buttons on UseComputer actions.
+    view_screenshot_buttons: HashMap<AIAgentActionId, ui_components::button::Button>,
+
     /// Stores the last command that was right-clicked by a child component.
     /// When set, CopyCommand will copy this specific command instead of all commands.
     last_right_clicked_command: Option<String>,
@@ -1351,6 +1356,7 @@ impl AIBlock {
             dismiss_suggestion_button,
             disable_rule_suggestions_button,
             rewind_button,
+            view_screenshot_buttons: Default::default(),
             last_right_clicked_command: None,
             is_usage_footer_expanded: false,
             agent_view_controller,
@@ -1845,6 +1851,14 @@ impl AIBlock {
                     },
                 );
             }
+
+            // Ensure a button component exists for UseComputer actions.
+            if matches!(&action.action, AIAgentActionType::UseComputer(_)) {
+                self.view_screenshot_buttons
+                    .entry(action.id.clone())
+                    .or_default();
+            }
+
             match action {
                 AIAgentAction {
                     id: action_id,
@@ -6094,8 +6108,74 @@ impl TypedActionView for AIBlock {
             AIBlockAction::OpenCommentInGitHub { url } => {
                 ctx.open_url(url);
             }
-            AIBlockAction::ViewScreenshot { action_id: _ } => {
-                // Computer Use has been removed; the screenshot lightbox is no longer available.
+            AIBlockAction::ViewScreenshot { action_id } => {
+                // Collect all UseComputer action IDs across the entire conversation
+                // so the lightbox can navigate between their screenshots.
+                let conversation_id = self.client_ids.conversation_id;
+
+                let use_computer_action_ids: Vec<AIAgentActionId> =
+                    BlocklistAIHistoryModel::as_ref(ctx)
+                        .conversation(&conversation_id)
+                        .into_iter()
+                        .flat_map(|c| c.use_computer_action_ids())
+                        .collect();
+
+                // Build lightbox images for each action that has a screenshot result.
+                // We Arc::clone the result each iteration to release the immutable
+                // borrow on ctx, allowing the mutable AssetCache update in the same
+                // loop body. Arc::clone is just a refcount bump (no data copied).
+                let mut screenshot_action_ids: Vec<&AIAgentActionId> = Vec::new();
+                let mut images: Vec<ui_components::lightbox::LightboxImage> = Vec::new();
+                for action_id in &use_computer_action_ids {
+                    let Some(result) = self
+                        .action_model
+                        .as_ref(ctx)
+                        .get_action_result(action_id)
+                        .map(Arc::clone)
+                    else {
+                        continue;
+                    };
+                    let AIAgentActionResultType::UseComputer(
+                        crate::ai::agent::UseComputerResult::Success(computer_use::ActionResult {
+                            screenshot: Some(screenshot),
+                            ..
+                        }),
+                    ) = &result.result
+                    else {
+                        continue;
+                    };
+                    let asset_id = format!("screenshot-{action_id}");
+                    AssetCache::handle(ctx).update(ctx, |asset_cache, ctx| {
+                        asset_cache.insert_raw_asset_bytes::<ImageType>(
+                            asset_id.clone(),
+                            &screenshot.data,
+                            ctx,
+                        );
+                    });
+                    images.push(ui_components::lightbox::LightboxImage {
+                        source: ui_components::lightbox::LightboxImageSource::Resolved {
+                            asset_source: warpui::assets::asset_cache::AssetSource::Raw {
+                                id: asset_id,
+                            },
+                        },
+                        description: None,
+                    });
+                    screenshot_action_ids.push(action_id);
+                }
+
+                if images.is_empty() {
+                    return;
+                }
+
+                let initial_index = screenshot_action_ids
+                    .iter()
+                    .position(|id| *id == action_id)
+                    .unwrap_or(0);
+
+                ctx.dispatch_typed_action(&WorkspaceAction::OpenLightbox {
+                    images,
+                    initial_index,
+                });
             }
         }
         ctx.notify();

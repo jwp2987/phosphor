@@ -67,8 +67,14 @@ pub enum AIAgentActionResultType {
     /// The output of reading shell command output.
     ReadShellCommandOutput(ReadShellCommandOutputResult),
 
+    /// The output of using computer.
+    UseComputer(UseComputerResult),
+
     /// The result of inserting code review comments.
     InsertReviewComments(InsertReviewCommentsResult),
+
+    /// The output of requesting computer use.
+    RequestComputerUse(RequestComputerUseResult),
 
     /// The output of transferring shell command control to the user.
     TransferShellCommandControlToUser(TransferShellCommandControlToUserResult),
@@ -144,7 +150,9 @@ impl Display for AIAgentActionResultType {
             AIAgentActionResultType::EditDocuments(result) => result.fmt(f),
             AIAgentActionResultType::CreateDocuments(result) => result.fmt(f),
             AIAgentActionResultType::ReadShellCommandOutput(result) => result.fmt(f),
+            AIAgentActionResultType::UseComputer(result) => result.fmt(f),
             AIAgentActionResultType::InsertReviewComments(result) => result.fmt(f),
+            AIAgentActionResultType::RequestComputerUse(result) => result.fmt(f),
             AIAgentActionResultType::TransferShellCommandControlToUser(result) => result.fmt(f),
             AIAgentActionResultType::AskUserQuestion(result) => result.fmt(f),
             AIAgentActionResultType::SendMessageToAgent(result) => result.fmt(f),
@@ -670,6 +678,8 @@ impl AIAgentActionResultType {
             AIAgentActionResultType::EditDocuments(_) => "The edited document content",
             AIAgentActionResultType::CreateDocuments(_) => "The newly created documents",
             AIAgentActionResultType::ReadShellCommandOutput(_) => "The shell command output",
+            AIAgentActionResultType::UseComputer(_) => "The computer use result",
+            AIAgentActionResultType::RequestComputerUse(_) => "The computer use request result",
             AIAgentActionResultType::TransferShellCommandControlToUser(_) => {
                 "The result of transferring shell command control to user"
             }
@@ -699,7 +709,9 @@ impl AIAgentActionResultType {
                 ReadShellCommandOutputResult::CommandFinished { .. }
                 | ReadShellCommandOutputResult::LongRunningCommandSnapshot { .. },
             )
+            | Self::UseComputer(UseComputerResult::Success(_))
             | Self::InsertReviewComments(InsertReviewCommentsResult::Success { .. })
+            | Self::RequestComputerUse(RequestComputerUseResult::Approved { .. })
             | Self::OpenCodeReview
             | Self::ReadSkill(ReadSkillResult::Success { .. })
             | Self::TransferShellCommandControlToUser(
@@ -725,7 +737,9 @@ impl AIAgentActionResultType {
             | Self::ReadDocuments(ReadDocumentsResult::Error(_))
             | Self::EditDocuments(EditDocumentsResult::Error(_))
             | Self::CreateDocuments(CreateDocumentsResult::Error(_))
+            | Self::UseComputer(UseComputerResult::Error(_))
             | Self::InsertReviewComments(InsertReviewCommentsResult::Error { .. })
+            | Self::RequestComputerUse(RequestComputerUseResult::Error(_))
             | Self::AskUserQuestion(AskUserQuestionResult::Error(_))
             | Self::SendMessageToAgent(SendMessageToAgentResult::Error(_))
             | Self::TransferShellCommandControlToUser(
@@ -756,7 +770,9 @@ impl AIAgentActionResultType {
             | Self::EditDocuments(EditDocumentsResult::Cancelled)
             | Self::CreateDocuments(CreateDocumentsResult::Cancelled)
             | Self::ReadShellCommandOutput(ReadShellCommandOutputResult::Cancelled)
+            | Self::UseComputer(UseComputerResult::Cancelled)
             | Self::InsertReviewComments(InsertReviewCommentsResult::Cancelled)
+            | Self::RequestComputerUse(RequestComputerUseResult::Cancelled)
             | Self::TransferShellCommandControlToUser(
                 TransferShellCommandControlToUserResult::Cancelled,
             )
@@ -991,6 +1007,24 @@ impl Display for ReadSkillResult {
         }
     }
 }
+#[derive(Debug, Clone, PartialEq)]
+pub enum UseComputerResult {
+    /// Computer use succeeded, with one result per requested action.
+    Success(computer_use::ActionResult),
+    Error(String),
+    Cancelled,
+}
+
+impl Display for UseComputerResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UseComputerResult::Success(_) => write!(f, "Use computer completed"),
+            UseComputerResult::Error(error) => write!(f, "Use computer error: {error}"),
+            UseComputerResult::Cancelled => write!(f, "Use computer cancelled"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InsertReviewCommentsResult {
     Success { repo_path: String },
@@ -1013,6 +1047,46 @@ impl Display for InsertReviewCommentsResult {
             InsertReviewCommentsResult::Cancelled => {
                 write!(f, "Cancelled inserting code review comments")
             }
+        }
+    }
+}
+
+/// Screen dimensions for computer use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenDimensions {
+    pub width_px: i32,
+    pub height_px: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestComputerUseResult {
+    /// Request was accepted, with the screen dimensions.
+    Approved {
+        screenshot: computer_use::Screenshot,
+        platform: computer_use::Platform,
+        /// The on-screen windows the agent may target.
+        windows: Vec<computer_use::WindowInfo>,
+    },
+    /// Request errored.
+    Error(String),
+    /// Request was cancelled or rejected by the user.
+    Cancelled,
+}
+
+impl Display for RequestComputerUseResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestComputerUseResult::Approved { screenshot, .. } => {
+                write!(
+                    f,
+                    "Request computer use accepted ({}x{})",
+                    screenshot.original_width, screenshot.original_height
+                )
+            }
+            RequestComputerUseResult::Error(error) => {
+                write!(f, "Request computer use error: {error}")
+            }
+            RequestComputerUseResult::Cancelled => write!(f, "Request computer use cancelled"),
         }
     }
 }

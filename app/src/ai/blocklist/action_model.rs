@@ -52,7 +52,9 @@ use parking_lot::FairMutex;
 use warpui::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::{
+    TelemetryEvent,
     ai::agent::{AIAgentAction, AIAgentActionId, AIAgentActionResult},
+    send_telemetry_from_ctx,
     terminal::{
         TerminalModel, model::session::active_session::ActiveSession,
         model_events::ModelEventDispatcher,
@@ -1175,6 +1177,19 @@ impl BlocklistAIActionModel {
         reason: Option<CancellationReason>,
         ctx: &mut ModelContext<Self>,
     ) {
+        if matches!(
+            pending_action.action,
+            AIAgentActionType::RequestComputerUse(_)
+        ) {
+            send_telemetry_from_ctx!(
+                TelemetryEvent::ComputerUseCancelled {
+                    conversation_id,
+                    ambient_agent_task_id: self.ambient_agent_task_id,
+                },
+                ctx
+            );
+        }
+
         let result = Arc::new(AIAgentActionResult {
             id: pending_action.id,
             task_id: pending_action.task_id,
