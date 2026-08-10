@@ -10,6 +10,12 @@ pub mod auth_context;
 pub mod codebase_index_status;
 #[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
 pub mod codebase_index_store;
+/// Client-side model of the remote codebase index. Unlike the daemon-side
+/// status/store modules above it never touches the host filesystem, so it is
+/// not `local_fs`-gated; it is `wasm`-gated only because every
+/// `RemoteServerManager` mutation it calls is.
+#[cfg(not(target_family = "wasm"))]
+pub mod codebase_index_model;
 #[cfg(not(target_family = "wasm"))]
 pub mod server_buffer_tracker;
 #[cfg(not(target_family = "wasm"))]
