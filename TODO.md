@@ -1,5 +1,10 @@
 # TODO — Phosphor: Warp parity ledger (#11) + code-review debt
 
+**Checkbox key:** `- [ ]` open · `- [>]` **IN FLIGHT, agent assigned** · `- [~]` partial · `- [x]` done.
+Added 2026-08-10 after a status report listed four in-flight items as unstarted:
+the assignment lived in the operator's head and not in this file. **Record the
+assignment here when you start work, not when you finish it.**
+
 ## ACTIVE WORK QUEUE (2026-08-08) — read this first
 
 **Process, agreed with the maintainer:**
@@ -205,12 +210,12 @@ Treat all of this as staged, not validated.
       `gui_config_local_dir`/`tui_config_local_dir` at all. It also treats the
       schema's `x-warp-surfaces` annotation as authoritative, and this fork
       dropped `SettingSurfaces`, so the generator emits no such annotation.
-- [ ] **Localized `Display` + English-literal `FromStr` on `SettingsSection`**
+- [>] **Localized `Display` + English-literal `FromStr` on `SettingsSection`** **[IN FLIGHT 2026-08-10]**
       breaks settings-pane persistence round-trips if any `settings-section-*`
       key is ever translated (`persistence/sqlite.rs:2667`). Pre-existing for
       every section; the `"Network" | "网络"` arm in `FromStr` suggests someone
       already hit this once.
-- [ ] **LSP: the `ON DELETE CASCADE` guard arm is still outstanding.** The LSP
+- [>] **LSP: the `ON DELETE CASCADE` guard arm is still outstanding.** **[IN FLIGHT 2026-08-10 — LSP agent resumed and carrying it]** The LSP
       agent chose CASCADE (verified `PRAGMA foreign_keys = ON` is per-connection)
       but argued correctly that **CASCADE does not close the guard out** — they
       fix different halves. CASCADE makes the orphan state unrepresentable;
@@ -330,7 +335,7 @@ the very mechanism the test is named after.
   `CLAUDE.local.md`).
 
 ### Two findings worth acting on independently
-- [ ] **Nothing prunes the recent-repos list.** Expiry is the index manager's job,
+- [>] **Nothing prunes the recent-repos list.** **[IN FLIGHT 2026-08-10 — D2 agent told to verify pruning returns with the index manager]** Expiry is the index manager's job,
       and indexing is absent — so the list grows without bound until D2c lands.
 - [x] **`all_working_directories` already exists as a private copy** **[DONE 9fb1900fd — now ai/terminal_working_directories.rs.]** in
       `app/src/ai/outline/native.rs`. Reunify when indexing returns; do not add a third.
@@ -613,7 +618,7 @@ green suite or a shrinking test gap as evidence of parity.
 - [x] ~~LSP needs a maintainer verdict~~ — **VERDICT 2026-08-10: RESTORE.**
       Promoted out of this section into its own track below.
 ### MIS-TICKED / MIS-SCOPED — existing entries that misstate reality
-- [ ] **#323 is ticked LANDED but the Codex SDK harness driver is absent.**
+- [>] **#323 is ticked LANDED but the Codex SDK harness driver is absent.** **[IN FLIGHT 2026-08-10 — agent porting codex.rs + codex_transcript.rs + 47 tests]**
       TODO.md:524 marks it done. What actually landed is the *local child-pane
       launch* (`app/src/pane_group/pane/local_harness_launch.rs:148
       build_local_codex_child_command`). The SDK driver was explicitly excluded
@@ -625,7 +630,7 @@ green suite or a shrinking test gap as evidence of parity.
       `codex_transcript_tests.rs` (9), all absent. Templates already exist in
       the fork: `claude_code.rs`, `gemini.rs`. **Untick #323 or split out the
       remainder as its own issue — do not leave it reading as complete.**
-- [ ] **#349's parking rationale is mis-scoped.** Parked as "macOS-only, cannot
+- [>] **#349's parking rationale is mis-scoped.** **[IN FLIGHT 2026-08-10 — agent doing platform-neutral API, then Linux X11, then macOS; will return a corrected scope]** Parked as "macOS-only, cannot
       verify on this host", but that covers neither `linux/x11/{seat,windows}.rs`
       (buildable here) nor the platform-neutral `Target`/`TargetedAction`/
       `enumerate_windows` API every caller must thread.
@@ -635,14 +640,14 @@ green suite or a shrinking test gap as evidence of parity.
       users "must opt in through Settings > Scripting" — a page that does not
       exist. On public channels local control cannot be enabled by any
       user-reachable path. Ported-but-never-wired.
-- [ ] **Ctrl+Tab cycle-most-recent-TAB missing** (sessions-only today).
+- [>] **Ctrl+Tab cycle-most-recent-TAB missing** **[IN FLIGHT 2026-08-10]** (sessions-only today).
       `CtrlTabBehavior` has 2 variants, no `CycleMostRecentTab`; `QueryFilter`
       has no `Tabs`. ~187 lines.
 ### DEFECT-SHAPED — these are bugs, not missing features
 - [x] **`getpwuid_r` panics with no fallback** **[DONE 951be89c4 — also fixed a second panic in shell.rs.]** (`terminal/local_tty/unix.rs:132-143`).
       The pin degrades getpwuid_r -> `getent passwd` -> parse `/etc/passwd`; the
       fork aborts. Breaks LDAP/SSSD hosts and some containers. ~80 lines. Defect-shaped.
-- [ ] **TUI API-key hot-reload hook absent** (46 lines). Matters more here than
+- [>] **TUI API-key hot-reload hook absent** **[IN FLIGHT 2026-08-10 — agent warned the shared GUI/TUI config dir may block it, same trap that killed tui-migrate-setup]** (46 lines). Matters more here than
       upstream because GUI and TUI share one app id and keychain namespace.
 - [x] **Command-palette recent-repos data source not wired** **[DONE ec227975d — landed with D1.]** (~220 lines).
       `QueryFilter::Repos` exists with no producer behind it in the palette.
@@ -654,7 +659,7 @@ green suite or a shrinking test gap as evidence of parity.
       Pin has `is_warp_bundle`; `git grep -c is_warp_bundle` → 0. <50 lines.
       Tests `is_warp_bundle_recognises_warp_channels`,
       `is_warp_bundle_rejects_other_apps` absent.
-- [ ] **remote_server client log tail absent** (54 lines).
+- [>] **remote_server client log tail absent** **[IN FLIGHT 2026-08-10]** (54 lines).
 - [ ] Low confidence, verify before acting: TUI completion menu (fork's
       `completions_menu.rs` may cover it under different names);
       warpui_core telemetry ring buffer (probably belongs in DECLINED.md — the
