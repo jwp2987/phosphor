@@ -251,6 +251,96 @@ feature.
       from the git watcher directly, and the GUI relocation the issue described
       as prerequisite was not needed at all. Close #577.
 
+## LICENCE COMPLIANCE 2026-08-10 — one BLOCKING item
+
+Read-only review against pin `02b53fcd8`. Reviewer is not a lawyer; these are
+located concerns with evidence, not a legal opinion.
+
+**Headline: the MIT question, asked about Warp, is a PASS. The failure is
+against Alacritty under Apache-2.0.** `LICENSE-MIT` is byte-identical to the
+pin, and upstream Warp uses no per-file copyright or SPDX headers at all
+(`git grep -l 'SPDX-License-Identifier' 02b53fcd8` → 0), so nothing could have
+been stripped from Warp's own code. AGPL is substantially compliant: correctly
+declared `AGPL-3.0-only`, public repo, all 65 workspace members inherit it, and
+the single AGPL dependency (`warp_multi_agent_api`) is compatible. No GPL-3.0 /
+LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
+
+- [ ] **BLOCKING — restore Alacritty's Apache-2.0 attribution.** The licence
+      file `crates/warp_terminal/src/model/LICENSE-ALACRITTY` exists upstream and
+      is absent from this repo *and its entire history* (stripped in the
+      Zap/OpenWarp ancestor, before our history begins). The 2-line attribution
+      header is gone from **16 shipping source files**; for
+      `crates/warp_terminal/src/model/mode.rs` the header removal is the ONLY
+      difference from the pin. Both bundling scripts had the entry deleted
+      (`script/prepare_bundled_resources:107-114`, `script/windows/prepare_bundled_resources.ps1:147-154`),
+      so the `THIRD_PARTY_LICENSES.txt` in every shipped release never mentions
+      Alacritty. Apache-2.0 §4(a) (licence copy), §4(b) (change notices) and
+      §4(c) (retain attribution) are all live and all unmet, in distributed
+      artifacts. Our own `docs/DESIGN-PHOSPHOR-FORK.md:127` states the rule the
+      code breaks. Mechanical fix: restore the licence file, restore 16 headers,
+      re-add 2 manifest entries.
+- [ ] **AGPL §13 — no source offer in the shipped product.** We ship a daemon
+      users interact with over a network (`app/src/remote_server/`,
+      `crates/remote_server/`, reached over SSH) and neither it nor the About
+      page offers Corresponding Source. `README.md` has **zero** hits for
+      "licen"/"AGPL"/"MIT" across 148 lines — upstream's `## Licensing` section
+      (`02b53fcd8:README.md:54-58`) was dropped. About page shows only
+      `Copyright 2026 Phosphor`. One fix discharges both this and the
+      MIT-notice-communication problem: restore the README licensing section and
+      add a source URL + third-party-licence link to the About page.
+- [ ] **Licence CI was dropped; the allowlists enforce nothing.** `deny.toml:18`
+      and `about.toml:3` both claim "CI enforces this via
+      `script/check_license_config_sync`" — that script is referenced nowhere in
+      `.github/` or `script/precheck`. Upstream ran `cargo deny -L error check
+      licenses` AND the sync check (`02b53fcd8:.github/workflows/ci.yml:665-671`).
+      Nothing now stops a GPL/BUSL/SSPL/unknown crate entering on a dep bump.
+      This is why the next two items exist. Needs a cargo invocation → belongs in
+      CI, not `precheck`.
+- [ ] **`libgit2` vendored statically, GPL-2.0 notice not emitted.**
+      `app/Cargo.toml:273-275` uses `vendored-libgit2`. Not a conflict — the
+      linking exception resolves compatibility with AGPL — but `cargo about`
+      reads `libgit2-sys`'s declared MIT and never emits the GPL-2.0 text that
+      governs the bundled C source.
+- [ ] **`winit` from a personal fork our own policy forbids.** `Cargo.toml:405`
+      pins `github.com/chenx-dust/winit`; `deny.toml:52-58` allows git sources
+      only from `servo/core-foundation-rs` and the `warpdotdev` org. Licence is
+      fine (Apache-2.0); this is supply-chain + policy drift. A personal fork can
+      be force-pushed or deleted.
+- [ ] **Trademark — "Warp" branding retained across the user-facing surface.**
+      AGPL §7 explicitly declines to license trademarks, so this is not covered
+      by either licence. 46 occurrences in `app/i18n/en/warp.ftl` (45 ja, 47
+      zh-CN): "Install the **Warp plugin**", `settings-warpify-page-title =
+      Warpify`, "Install **Warp Control** CLI". Worse, `script/update_plist:261-266`
+      ships macOS permission dialogs reading *"A program in Warp wants to use
+      your camera / microphone / contacts / calendar / location."* Also
+      Warp-branded marketing PNGs under `app/assets/async/png/`.
+      `docs/DESIGN-PHOSPHOR-FORK.md:126-127` already forbids exactly this.
+      Nominative use ("a fork of Warp") is fine and should stay.
+- [ ] **Bundled assets with no attribution or licence.**
+      `app/assets/bundled/fonts/password.ttf` (no licence, no provenance, present
+      since Warp's first public commit); 17 file-type SVGs marked "Uploaded to:
+      SVG Repo" (per-icon terms vary, several are trademarked vendor logos);
+      ~29 vendor product logos; MSVC redistributable DLLs
+      (`app/assets/windows/*/`) covered by neither `LICENSE-DXC` nor
+      `LICENSE-WINDOWS-TERMINAL`; `resources/bundled/mcp_skills/figma/` (contrast
+      the Anthropic skills, which do ship `LICENSE.txt`).
+- [ ] Informational, no action forced: `lib/rust-genai` is vendored correctly with
+      both licence files but is skipped by `about.toml` as a path dep, so its
+      attribution never reaches the generated notice; `warpui`/`warpui_core`
+      declare MIT while depending on AGPL `markdown_parser`/`sum_tree`
+      (inherited from upstream, verified identical at the pin).
+
+**Reviewer could not determine (8 items) — do not read the above as exhaustive:**
+provenance of `password.ttf`; identity/licence of the ~359-icon set (naming
+suggests Untitled UI, no marker in any file); per-icon SVG Repo licences;
+whether the ~29 vendor logos were redistributed with permission; whether the
+generated `THIRD_PARTY_LICENSES.txt` is correct in practice (could not run
+cargo, so all claims about its output are derived from config, not observed);
+`warpdotdev/jemallocator` + `warpdotdev/rmcp` (GitHub reports NOASSERTION);
+xdotool's licence for the ported logic; and whether 2 further upstream files
+carrying the Alacritty header were deleted or renamed — if renamed, the
+stripped-header count rises from 16 to 18.
+
 ## PARITY AUDIT 2026-08-10 — gaps NOT in any tier (needs tiering)
 
 Audit compared the fork against pin `02b53fcd8` using test coverage as the
@@ -263,13 +353,24 @@ green suite or a shrinking test gap as evidence of parity.
       app-side modules). Removed deliberately by `efcaa42b8`, but recorded in
       NEITHER `DECLINED.md` NOR here. **Needs a maintainer verdict**: either it
       becomes the largest open parity item, or it gets a DECLINED.md row.
-- [ ] **#323 is ticked as landed but the Codex SDK harness driver is not.**
-      What landed was local child-pane launch. `harness/mod.rs:134` still returns
-      `HarnessKind::Unsupported(Harness::Codex)`. 1,190 lines / 47 tests.
+### MIS-TICKED / MIS-SCOPED — existing entries that misstate reality
+- [ ] **#323 is ticked LANDED but the Codex SDK harness driver is absent.**
+      TODO.md:524 marks it done. What actually landed is the *local child-pane
+      launch* (`app/src/pane_group/pane/local_harness_launch.rs:148
+      build_local_codex_child_command`). The SDK driver was explicitly excluded
+      from that work and nothing tracks the remainder, so the ledger reads
+      "Codex done" while `app/src/ai/agent_sdk/driver/harness/mod.rs:134` still
+      returns `HarnessKind::Unsupported(Harness::Codex)` — i.e. `oz agent run
+      --harness codex` does not work. Pin: `harness/codex.rs` (943) +
+      `codex_transcript.rs` (247); tests `codex_tests.rs` (38) +
+      `codex_transcript_tests.rs` (9), all absent. Templates already exist in
+      the fork: `claude_code.rs`, `gemini.rs`. **Untick #323 or split out the
+      remainder as its own issue — do not leave it reading as complete.**
 - [ ] **#349's parking rationale is mis-scoped.** Parked as "macOS-only, cannot
       verify on this host", but that covers neither `linux/x11/{seat,windows}.rs`
       (buildable here) nor the platform-neutral `Target`/`TargetedAction`/
       `enumerate_windows` API every caller must thread.
+### PORTED BUT NEVER WIRED — the class this file's own rules call a defect
 - [ ] **Settings > Scripting page absent** (302 lines). The fork ships the whole
       `local_control` stack, and `app/src/settings/local_control.rs:53` says
       users "must opt in through Settings > Scripting" — a page that does not
@@ -278,6 +379,7 @@ green suite or a shrinking test gap as evidence of parity.
 - [ ] **Ctrl+Tab cycle-most-recent-TAB missing** (sessions-only today).
       `CtrlTabBehavior` has 2 variants, no `CycleMostRecentTab`; `QueryFilter`
       has no `Tabs`. ~187 lines.
+### DEFECT-SHAPED — these are bugs, not missing features
 - [ ] **`getpwuid_r` panics with no fallback** (`terminal/local_tty/unix.rs:132-143`).
       The pin degrades getpwuid_r -> `getent passwd` -> parse `/etc/passwd`; the
       fork aborts. Breaks LDAP/SSSD hosts and some containers. ~80 lines. Defect-shaped.
@@ -289,7 +391,10 @@ green suite or a shrinking test gap as evidence of parity.
       (#370 — cited in fork source, absent from this file). The fork has the
       entire local_control stack and no skill telling the agent it exists.
 - [ ] **External-editor Warp-bundle guard absent** — "open in external editor"
-      can resolve back to the app itself. <50 lines.
+      can resolve back to the app itself, so the user's editor never opens.
+      Pin has `is_warp_bundle`; `git grep -c is_warp_bundle` → 0. <50 lines.
+      Tests `is_warp_bundle_recognises_warp_channels`,
+      `is_warp_bundle_rejects_other_apps` absent.
 - [ ] **remote_server client log tail absent** (54 lines).
 - [ ] Low confidence, verify before acting: TUI completion menu (fork's
       `completions_menu.rs` may cover it under different names);
