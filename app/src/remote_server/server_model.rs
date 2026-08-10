@@ -1234,7 +1234,19 @@ impl ServerModel {
             Some(client_message::Message::SessionScoped(SessionScopedRequest { message })) => {
                 match message {
                     Some(session_scoped_request::Message::Initialize(msg)) => {
-                        self.handle_initialize(msg, &request_id, ctx)
+                        // Configure indexing before answering: the client may
+                        // send an `IndexCodebase` immediately after the
+                        // handshake, and it must not race an unconfigured
+                        // store client.
+                        #[cfg(feature = "local_fs")]
+                        {
+                            Self::apply_embedding_provider(msg.embedding_provider.as_ref());
+                            self.apply_codebase_index_limits(
+                                msg.codebase_index_limits.as_ref(),
+                                ctx,
+                            );
+                        }
+                        self.handle_initialize(msg, &request_id)
                     }
                     Some(session_scoped_request::Message::NavigatedToDirectory(msg)) => {
                         self.handle_navigated_to_directory(msg, &request_id, conn_id, ctx)
@@ -1499,25 +1511,16 @@ impl ServerModel {
     /// deployed builds. The client treats an empty version as "unknown" and
     /// skips strict version enforcement, which keeps the
     /// `script/deploy_remote_server` developer workflow functional.
-    fn handle_initialize(
-        &mut self,
-        msg: Initialize,
-        request_id: &RequestId,
-        #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))] ctx: &mut ModelContext<
-            Self,
-        >,
-    ) -> HandlerOutcome {
+    /// Handles `Initialize`.
+    ///
+    /// Deliberately does NOT take a `ModelContext`: `server_model_tests.rs`
+    /// drives this directly against a hand-built `ServerModel` with no app
+    /// behind it. The codebase-index half of the handshake needs a context, so
+    /// it is applied by the caller in `handle_message`, which has one.
+    fn handle_initialize(&mut self, msg: Initialize, request_id: &RequestId) -> HandlerOutcome {
         log::info!("Handling Initialize (request_id={request_id})");
         if !msg.auth_token.is_empty() {
             self.auth_token = Some(msg.auth_token);
-        }
-        // Configure indexing before answering: the client may send an
-        // `IndexCodebase` immediately after the handshake, and it must not
-        // race an unconfigured store client.
-        #[cfg(feature = "local_fs")]
-        {
-            Self::apply_embedding_provider(msg.embedding_provider.as_ref());
-            self.apply_codebase_index_limits(msg.codebase_index_limits.as_ref(), ctx);
         }
         let server_version = ChannelState::app_version().unwrap_or("").to_string();
         HandlerOutcome::Sync(server_message::Message::InitializeResponse(

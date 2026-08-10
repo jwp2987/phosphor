@@ -1948,7 +1948,14 @@ fn initialize_app(
     // and CLIAgentSessionsModel, because its constructor subscribes to both models.
     ctx.add_singleton_model(crate::notifications::model::NotificationsModel::new);
 
-    ctx.add_singleton_model(RepoOutlines::new);
+    // Gated the way the pin gates it (`02b53fcd8:app/src/lib.rs:2134`): a launch
+    // mode that cannot index still gets the singleton — several callers reach
+    // for it unconditionally — but with indexing off.
+    if launch_mode.supports_indexing() {
+        ctx.add_singleton_model(RepoOutlines::new);
+    } else {
+        ctx.add_singleton_model(|ctx| RepoOutlines::new_with_indexing_enabled(false, ctx));
+    }
 
     ctx.add_singleton_model(|_| UserProfiles::new(restored_user_profiles));
 
@@ -2139,7 +2146,7 @@ fn initialize_app(
         RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
             manager.update_client_preferences(preferences);
         });
-        ctx.subscribe_to_model(&AISettings::handle(ctx), |_, _, ctx| {
+        ctx.subscribe_to_model(&crate::settings::AISettings::handle(ctx), |_, _, ctx| {
             let preferences = remote_client_preferences(ctx);
             RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
                 // `update_client_preferences` no-ops when nothing changed, so

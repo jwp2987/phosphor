@@ -376,7 +376,8 @@ impl StoreClient for DaemonStoreClient {
         embedding_config: EmbeddingConfig,
         nodes: Vec<IntermediateNode>,
     ) -> Result<HashMap<NodeHash, bool>, IndexError> {
-        self.client()?
+        let client = self.client()?;
+        client
             .update_intermediate_nodes(embedding_config, nodes)
             .await
     }
@@ -388,7 +389,8 @@ impl StoreClient for DaemonStoreClient {
         root_hash: NodeHash,
         repo_metadata: RepoMetadata,
     ) -> Result<HashMap<ContentHash, bool>, IndexError> {
-        self.client()?
+        let client = self.client()?;
+        client
             .generate_embeddings(embedding_config, fragments, root_hash, repo_metadata)
             .await
     }
@@ -399,7 +401,8 @@ impl StoreClient for DaemonStoreClient {
         root_hash: NodeHash,
         repo_metadata: RepoMetadata,
     ) -> Result<bool, IndexError> {
-        self.client()?
+        let client = self.client()?;
+        client
             .populate_merkle_tree_cache(embedding_config, root_hash, repo_metadata)
             .await
     }
@@ -409,9 +412,8 @@ impl StoreClient for DaemonStoreClient {
         nodes: Vec<NodeHash>,
         embedding_config: EmbeddingConfig,
     ) -> Result<HashSet<NodeHash>, IndexError> {
-        self.client()?
-            .sync_merkle_tree(nodes, embedding_config)
-            .await
+        let client = self.client()?;
+        client.sync_merkle_tree(nodes, embedding_config).await
     }
 
     async fn rerank_fragments(
@@ -419,7 +421,8 @@ impl StoreClient for DaemonStoreClient {
         query: String,
         fragments: Vec<Fragment>,
     ) -> Result<Vec<Fragment>, IndexError> {
-        self.client()?.rerank_fragments(query, fragments).await
+        let client = self.client()?;
+        client.rerank_fragments(query, fragments).await
     }
 
     async fn get_relevant_fragments(
@@ -429,13 +432,15 @@ impl StoreClient for DaemonStoreClient {
         root_hash: NodeHash,
         repo_metadata: RepoMetadata,
     ) -> Result<Vec<ContentHash>, IndexError> {
-        self.client()?
+        let client = self.client()?;
+        client
             .get_relevant_fragments(embedding_config, query, root_hash, repo_metadata)
             .await
     }
 
     async fn codebase_context_config(&self) -> Result<CodebaseContextConfig, IndexError> {
-        self.client()?.codebase_context_config().await
+        let client = self.client()?;
+        client.codebase_context_config().await
     }
 }
 

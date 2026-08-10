@@ -50,6 +50,11 @@ fn test_model() -> ServerModel {
         #[cfg(feature = "local_fs")]
         remote_agent_context_snapshot_sent: std::collections::HashSet::new(),
         auth_token: None,
+        // No app behind these tests, so no `CodebaseIndexManager` singleton:
+        // every codebase-index path in `ServerModel` checks this first,
+        // which is what keeps it from panicking here.
+        #[cfg(feature = "local_fs")]
+        codebase_indexing_available: false,
         #[cfg(feature = "local_fs")]
         diff_state_watches: HashMap::new(),
         // These tests exercise bookkeeping only, never a real watch; the
@@ -77,6 +82,8 @@ fn initialize_with_auth_token_stores_token() {
     model.handle_initialize(
         Initialize {
             auth_token: "initial-token".to_string(),
+            codebase_index_limits: None,
+            embedding_provider: None,
         },
         &request_id(),
     );
@@ -90,6 +97,8 @@ fn empty_initialize_preserves_existing_auth_token() {
     model.handle_initialize(
         Initialize {
             auth_token: "initial-token".to_string(),
+            codebase_index_limits: None,
+            embedding_provider: None,
         },
         &request_id(),
     );
@@ -97,6 +106,8 @@ fn empty_initialize_preserves_existing_auth_token() {
     model.handle_initialize(
         Initialize {
             auth_token: String::new(),
+            codebase_index_limits: None,
+            embedding_provider: None,
         },
         &request_id(),
     );
@@ -110,6 +121,8 @@ fn authenticate_with_auth_token_replaces_auth_token() {
     model.handle_initialize(
         Initialize {
             auth_token: "initial-token".to_string(),
+            codebase_index_limits: None,
+            embedding_provider: None,
         },
         &request_id(),
     );
@@ -127,6 +140,8 @@ fn empty_authenticate_preserves_existing_auth_token() {
     model.handle_initialize(
         Initialize {
             auth_token: "initial-token".to_string(),
+            codebase_index_limits: None,
+            embedding_provider: None,
         },
         &request_id(),
     );
