@@ -332,7 +332,7 @@ the very mechanism the test is named after.
 ### Two findings worth acting on independently
 - [ ] **Nothing prunes the recent-repos list.** Expiry is the index manager's job,
       and indexing is absent — so the list grows without bound until D2c lands.
-- [ ] **`all_working_directories` already exists as a private copy** in
+- [x] **`all_working_directories` already exists as a private copy** **[DONE 9fb1900fd — now ai/terminal_working_directories.rs.]** in
       `app/src/ai/outline/native.rs`. Reunify when indexing returns; do not add a third.
 - [ ] **LSP-restoration trap** (documented at the `clean_up_expired_metadata` seam):
       `workspace_language_server` foreign-keys `workspace_metadata` **without
@@ -485,7 +485,7 @@ declared `AGPL-3.0-only`, public repo, all 65 workspace members inherit it, and
 the single AGPL dependency (`warp_multi_agent_api`) is compatible. No GPL-3.0 /
 LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
 
-- [ ] **BLOCKING — restore Alacritty's Apache-2.0 attribution.** The licence
+- [x] **BLOCKING — restore Alacritty's Apache-2.0 attribution.** **[DONE b5fea7a86 — 18 files, not 16.]** The licence
       file `crates/warp_terminal/src/model/LICENSE-ALACRITTY` exists upstream and
       is absent from this repo *and its entire history* (stripped in the
       Zap/OpenWarp ancestor, before our history begins). The 2-line attribution
@@ -499,7 +499,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       artifacts. Our own `docs/DESIGN-PHOSPHOR-FORK.md:127` states the rule the
       code breaks. Mechanical fix: restore the licence file, restore 16 headers,
       re-add 2 manifest entries.
-- [ ] **AGPL §13 — no source offer in the shipped product.** We ship a daemon
+- [x] **AGPL §13 — no source offer in the shipped product.** **[DONE b5fea7a86 — README + About page. Third-party-licences VIEWER still outstanding.]** We ship a daemon
       users interact with over a network (`app/src/remote_server/`,
       `crates/remote_server/`, reached over SSH) and neither it nor the About
       page offers Corresponding Source. `README.md` has **zero** hits for
@@ -508,7 +508,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       `Copyright 2026 Phosphor`. One fix discharges both this and the
       MIT-notice-communication problem: restore the README licensing section and
       add a source URL + third-party-licence link to the About page.
-- [ ] **Licence CI was dropped; the allowlists enforce nothing.** `deny.toml:18`
+- [x] **Licence CI was dropped; the allowlists enforce nothing.** **[DONE b5fea7a86 — licenses job added; has never run, expect first-run surprises.]** `deny.toml:18`
       and `about.toml:3` both claim "CI enforces this via
       `script/check_license_config_sync`" — that script is referenced nowhere in
       `.github/` or `script/precheck`. Upstream ran `cargo deny -L error check
@@ -516,7 +516,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       Nothing now stops a GPL/BUSL/SSPL/unknown crate entering on a dep bump.
       This is why the next two items exist. Needs a cargo invocation → belongs in
       CI, not `precheck`.
-- [ ] **`libgit2` vendored statically, GPL-2.0 notice not emitted.**
+- [x] **`libgit2` vendored statically, GPL-2.0 notice not emitted.** **[DONE b5fea7a86 — LICENSE-LIBGIT2 committed. The deny.toml exception was correctly REFUSED; see the merge note.]**
       `app/Cargo.toml:273-275` uses `vendored-libgit2`. Not a conflict — the
       linking exception resolves compatibility with AGPL — but `cargo about`
       reads `libgit2-sys`'s declared MIT and never emits the GPL-2.0 text that
@@ -567,7 +567,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       without instantly failing. That is a CI stopgap and does NOT address
       availability. If option 1 or 2 is chosen, that entry should name the new
       source instead.
-- [ ] **Trademark — "Warp" branding retained across the user-facing surface.**
+- [x] **Trademark — "Warp" branding retained across the user-facing surface.** **[DONE b5fea7a86 commit F (separable). Warpify -> Phosphorize. warpctrl BINARY rename still open; stale Zap/Zapping branding now inconsistent.]**
       AGPL §7 explicitly declines to license trademarks, so this is not covered
       by either licence. 46 occurrences in `app/i18n/en/warp.ftl` (45 ja, 47
       zh-CN): "Install the **Warp plugin**", `settings-warpify-page-title =
@@ -577,7 +577,7 @@ LGPL / BUSL / SSPL / Elastic / Commons Clause / CC-BY-NC anywhere in the graph.
       Warp-branded marketing PNGs under `app/assets/async/png/`.
       `docs/DESIGN-PHOSPHOR-FORK.md:126-127` already forbids exactly this.
       Nominative use ("a fork of Warp") is fine and should stay.
-- [ ] **Bundled assets with no attribution or licence.**
+- [x] **Bundled assets with no attribution or licence.** **[DONE b5fea7a86 where determinable; password.ttf / ~356-icon set / Figma recorded in docs/licensing-open-questions.md.]**
       `app/assets/bundled/fonts/password.ttf` (no licence, no provenance, present
       since Warp's first public commit); 17 file-type SVGs marked "Uploaded to:
       SVG Repo" (per-icon terms vary, several are trademarked vendor logos);
@@ -630,7 +630,7 @@ green suite or a shrinking test gap as evidence of parity.
       (buildable here) nor the platform-neutral `Target`/`TargetedAction`/
       `enumerate_windows` API every caller must thread.
 ### PORTED BUT NEVER WIRED — the class this file's own rules call a defect
-- [ ] **Settings > Scripting page absent** (302 lines). The fork ships the whole
+- [x] **Settings > Scripting page absent** **[DONE 242e84af6 — wired to the existing LocalControlSettings group.]** (302 lines). The fork ships the whole
       `local_control` stack, and `app/src/settings/local_control.rs:53` says
       users "must opt in through Settings > Scripting" — a page that does not
       exist. On public channels local control cannot be enabled by any
@@ -639,17 +639,17 @@ green suite or a shrinking test gap as evidence of parity.
       `CtrlTabBehavior` has 2 variants, no `CycleMostRecentTab`; `QueryFilter`
       has no `Tabs`. ~187 lines.
 ### DEFECT-SHAPED — these are bugs, not missing features
-- [ ] **`getpwuid_r` panics with no fallback** (`terminal/local_tty/unix.rs:132-143`).
+- [x] **`getpwuid_r` panics with no fallback** **[DONE 951be89c4 — also fixed a second panic in shell.rs.]** (`terminal/local_tty/unix.rs:132-143`).
       The pin degrades getpwuid_r -> `getent passwd` -> parse `/etc/passwd`; the
       fork aborts. Breaks LDAP/SSSD hosts and some containers. ~80 lines. Defect-shaped.
 - [ ] **TUI API-key hot-reload hook absent** (46 lines). Matters more here than
       upstream because GUI and TUI share one app id and keychain namespace.
-- [ ] **Command-palette recent-repos data source not wired** (~220 lines).
+- [x] **Command-palette recent-repos data source not wired** **[DONE ec227975d — landed with D1.]** (~220 lines).
       `QueryFilter::Repos` exists with no producer behind it in the palette.
-- [ ] **Bundled skills `warpctrl` / `change-keybinding` / `tui-migrate-setup`**
+- [~] **Bundled skills `warpctrl` / `change-keybinding` / `tui-migrate-setup`** **[PARTIAL 242e84af6 — warpctrl + change-keybinding landed; tui-migrate-setup needs maintainer sign-off, see the 2026-08-10 landing section]**
       (#370 — cited in fork source, absent from this file). The fork has the
       entire local_control stack and no skill telling the agent it exists.
-- [ ] **External-editor Warp-bundle guard absent** — "open in external editor"
+- [x] **External-editor Warp-bundle guard absent** **[FALSE POSITIVE — the guard exists as is_zap_bundle; the port renamed it. Fixed a real bug there instead (dev.warp.Zap is not a real bundle id).]** — "open in external editor"
       can resolve back to the app itself, so the user's editor never opens.
       Pin has `is_warp_bundle`; `git grep -c is_warp_bundle` → 0. <50 lines.
       Tests `is_warp_bundle_recognises_warp_channels`,
