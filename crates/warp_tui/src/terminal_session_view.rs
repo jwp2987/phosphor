@@ -102,6 +102,7 @@ use ai::agent::action_result::RequestFileEditsResult;
 use crate::api_keys_menu::{TuiApiKeysMenuEvent, TuiApiKeysMenuModel};
 use crate::exchange_menu::{TuiExchangeMenuAction, TuiExchangeMenuEvent, TuiExchangeMenuModel};
 use crate::model_menu::{TuiModelMenuEvent, TuiModelMenuModel};
+use crate::pane_group::TuiPaneGroup;
 use crate::platform::reveal_path_in_file_manager;
 use crate::profile_menu::{TuiProfileMenuEvent, TuiProfileMenuModel};
 use crate::prompt_and_command_history_menu::{
@@ -258,6 +259,9 @@ const QUEUE_QUEUED_HINT: &str = "Queued — will send when the current turn fini
 const FORK_REQUIRES_CONVERSATION_HINT: &str = "/fork requires an active conversation";
 const FORK_FAILED_HINT: &str = "Failed to fork the conversation";
 const FORKED_HINT: &str = "Forked conversation";
+const ORCHESTRATE_REQUIRES_CONVERSATION_HINT: &str = "/orchestrate requires an active conversation";
+const ORCHESTRATE_REQUIRES_TASK_HINT: &str =
+    "Please describe at least one task after /orchestrate (separate multiple tasks with ';')";
 const EXCHANGE_MENU_REQUIRES_CONVERSATION_HINT: &str = "No active conversation to choose from";
 const REWIND_FAILED_HINT: &str = "Failed to rewind the conversation";
 // A rewind truncates the conversation, reverts file edits made this session
@@ -4296,6 +4300,51 @@ impl TuiTerminalSessionView {
                 } else {
                     self.send_prompt(prompt.to_owned(), ctx);
                 }
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            // `/orchestrate` deliberately keeps `kind() == Other` rather than getting a
+            // dedicated `SlashCommandKind` (see `commands::ORCHESTRATE`'s doc comment), so
+            // it is name-guarded here instead of being its own match pattern -- mirroring
+            // the GUI's `orchestrate if command.name == commands::ORCHESTRATE.name` arm in
+            // `execute_slash_command` (`app/src/terminal/input/slash_commands/mod.rs`).
+            // TUI counterpart of the GUI's `pane_group::pane::terminal_pane::spawn_local_child_agents`:
+            // spawns one hidden local child agent per `;`-separated task through
+            // `TuiPaneGroup::spawn_local_child_agents` so children reach the orchestration
+            // tab bar (`TuiOrchestrationModel::snapshot`) the same way the GUI's spawned
+            // children reach the pill bar.
+            SlashCommandKind::Other
+                if command.name == warp::tui_export::slash_commands::ORCHESTRATE.name =>
+            {
+                let Some(parent_conversation_id) = self
+                    .conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+                else {
+                    self.show_transient_hint(
+                        ORCHESTRATE_REQUIRES_CONVERSATION_HINT.to_owned(),
+                        ctx,
+                    );
+                    return;
+                };
+                let Some(argument) = argument
+                    .map(|argument| argument.trim())
+                    .filter(|argument| !argument.is_empty())
+                else {
+                    self.show_transient_hint(ORCHESTRATE_REQUIRES_TASK_HINT.to_owned(), ctx);
+                    return;
+                };
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                let window_id = ctx.window_id();
+                let sessions = TuiSessions::handle(ctx);
+                TuiPaneGroup::handle(ctx).update(ctx, |pane_group, ctx| {
+                    pane_group.spawn_local_child_agents(
+                        &sessions,
+                        window_id,
+                        parent_conversation_id,
+                        argument,
+                        ctx,
+                    );
+                });
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
             SlashCommandKind::NaturalLanguageDetection => {
