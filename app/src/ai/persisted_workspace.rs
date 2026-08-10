@@ -90,9 +90,9 @@ use repo_metadata::RepoMetadataModel;
 use repo_metadata::repositories::DetectedRepositories;
 use serde::{Deserialize, Serialize};
 use settings::Setting;
-use warp_core::features::FeatureFlag;
 #[cfg(feature = "local_fs")]
 use warp_core::channel::ChannelState;
+use warp_core::features::FeatureFlag;
 #[cfg(feature = "local_fs")]
 use warp_util::standardized_path::StandardizedPath;
 #[cfg(feature = "local_fs")]

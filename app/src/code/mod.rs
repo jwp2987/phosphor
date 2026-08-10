@@ -12,6 +12,10 @@ pub mod editor;
 pub mod editor_management;
 pub mod global_buffer_model;
 pub mod inline_diff;
+#[cfg(not(target_family = "wasm"))]
+pub mod find_references_view;
+#[cfg(not(target_family = "wasm"))]
+pub mod language_server_extension;
 #[cfg(feature = "local_fs")]
 pub mod language_server_shutdown_manager;
 #[cfg(not(target_family = "wasm"))]
@@ -110,6 +114,8 @@ pub mod view;
 pub fn init(app: &mut AppContext) {
     self::view::init(app);
     self::file_tree::init(app);
+    #[cfg(not(target_family = "wasm"))]
+    self::find_references_view::init(app);
 }
 
 /// The diff that results from editing a file.
