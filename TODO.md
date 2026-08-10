@@ -282,18 +282,7 @@ measurement.**
       from the pin including its `#[cfg(target_family = "wasm")]`
       `CodeViewEvent::OpenLspLogs` no-op arm, but `code/wasm.rs` never declared
       the variant. Declared it, matching the pin.
-- [ ] **Step 6b — the `code_page.rs` LSP settings subpage. Re-scope before
-      assigning.** The handover estimated ~1,100 lines for all of step 6; the
-      real figure for this file alone is much larger — the pin's `code_page.rs`
-      is **3,012 lines against the fork's 513**, and the fork's is a deliberate
-      rewrite whose own doc comment records retiring the LSP subpage. This is a
-      2,500-line hand-integration into a diverged host, not a "section".
-      **It is not on the functional path**: enable / install-and-enable /
-      restart / stop / remove all reach `PersistedWorkspace` through
-      `footer.rs` → `CodeFooterViewEvent` → `local_code_editor.rs`, verified
-      wired end to end. The settings page is a second, redundant entry point.
-
-### Corrections to the step-5 handover (verified against the pin, do not re-derive)
+- [x] **Step 6b — the `code_page.rs` LSP settings subpage.** **[DONE 2026-08-10 — hand-integrated (+931), 207 lines of tests, 16 i18n keys. Subset property confirmed FALSE as predicted. Used the pin's per-workspace shape, NOT efcaa42b8's own pre-removal version, whose global `enabled_lsp_servers` model no longer has a state layer. Also restored FormatOnSaveToggleWidget — the setting came back with LSP during the build repair but its only UI control did not, leaving code.editor.format_on_save unreachable. Deliberate divergences: no 'View logs' button (footer covers it), and rows are SORTED where the pin walks a HashMap and shuffles between frames.]**
 - **`BufferState` was never divergent.** Both fork and pin carry exactly
   `file_id` + `buffer`. The two extra fields live on `InternalBufferState`
   (`latest_buffer_version`) and on `BufferSource::{Local,ServerLocal}`
