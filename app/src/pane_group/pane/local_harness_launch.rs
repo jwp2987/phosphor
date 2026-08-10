@@ -95,8 +95,15 @@ pub(super) fn validate_local_harness_shell(shell_type: Option<ShellType>) -> Res
 /// the lead agent via the Oz CLI messaging environment (`OZ_CLI`/`OZ_RUN_ID`/`OZ_PARENT_RUN_ID`,
 /// set as env vars by `task_env_vars` below).
 ///
-/// Ported from the pin (`app/src/pane_group/pane/local_harness_launch.rs:85-113`, `02b53fcd8`)
-/// for #323, with "Warp" replaced by "Zap" to match this fork's product-name convention.
+/// The pin's version of this prompt (`app/src/pane_group/pane/local_harness_launch.rs:85-113`,
+/// `02b53fcd8`) points children at `oz run message *`, a client for Warp's
+/// server-side hosted-CLI-task mailbox -- cloud, and physically removed from
+/// this fork's `CliCommand` (`crates/warp_cli/src/lib_tests.rs`'s
+/// `run_command_is_removed`). This fork's local child agents instead use `oz
+/// agent message send`/`list`, a plain on-disk mailbox
+/// (`crates/warp_cli/src/agent_mailbox.rs`) keyed by `OZ_RUN_ID`; see that
+/// module's doc comment for why `oz run` could not be ported and this is a
+/// new command under the existing `agent` surface instead.
 const LOCAL_CLAUDE_CHILD_ORCHESTRATION_INSTRUCTIONS: &str = r#"You are a local Claude Code child agent launched by a lead agent in Zap.
 
 Coordinate with the lead agent through the Oz CLI messaging environment:
@@ -109,19 +116,14 @@ Do not use Claude Code Agent or SendMessage tools to contact the lead agent; use
 Do not ask to inspect help before messaging. The command shapes below are complete.
 
 Send a message to the lead agent at start, when blocked, and when complete:
-"$OZ_CLI" run message send --sender-run-id "$OZ_RUN_ID" --to "$OZ_PARENT_RUN_ID" --subject "<subject>" --body "<body>"
+"$OZ_CLI" agent message send --sender-run-id "$OZ_RUN_ID" --to "$OZ_PARENT_RUN_ID" --subject "<subject>" --body "<body>"
 All four send arguments are required: --sender-run-id "$OZ_RUN_ID", --to "$OZ_PARENT_RUN_ID", --subject, and --body.
 Do not pass "$OZ_PARENT_RUN_ID" as a positional argument to send.
 
 After sending a message, and before ending or standing by, check recent inbox messages:
-"$OZ_CLI" run message list "$OZ_RUN_ID" --limit 25
+"$OZ_CLI" agent message list "$OZ_RUN_ID" --limit 25
 
-The plugin may already have read incoming messages while staging them, so do not rely on --unread.
-If recent messages from "$OZ_PARENT_RUN_ID" are present and you have not handled them, read them and use the latest lead-agent mailbox message as task context:
-"$OZ_CLI" run message read "$MESSAGE_ID"
-
-If a surfaced message requires acknowledgement, mark it delivered:
-"$OZ_CLI" run message mark-delivered "$MESSAGE_ID"
+Each listed message includes its full subject and body, so no separate read step is needed. If recent messages from "$OZ_PARENT_RUN_ID" are present and you have not handled them, use the latest one as task context.
 "#;
 
 pub(super) fn local_claude_child_prompt(task_prompt: &str) -> String {
