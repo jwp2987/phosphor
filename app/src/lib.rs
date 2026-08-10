@@ -224,6 +224,8 @@ use crate::cloud_object::model::actions::ObjectActions;
 use crate::cloud_object::model::view::ObjectStoreViewModel;
 use crate::cloud_object::update_manager::UpdateManager;
 use crate::code::global_buffer_model::GlobalBufferModel;
+#[cfg(feature = "local_fs")]
+use crate::code::language_server_shutdown_manager::LanguageServerShutdownManager;
 use crate::context_chips::prompt::Prompt;
 use crate::default_terminal::DefaultTerminal;
 use crate::drive::export::ExportManager;
@@ -1800,6 +1802,8 @@ fn initialize_app(
     });
     #[cfg(windows)]
     ctx.add_singleton_model(util::traffic_lights::windows::RendererState::new);
+    #[cfg(feature = "local_fs")]
+    ctx.add_singleton_model(|_| LanguageServerShutdownManager::new());
 
     #[cfg(feature = "voice_input")]
     ctx.add_singleton_model(voice_input::VoiceInput::new);

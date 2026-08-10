@@ -49,6 +49,8 @@ use warp_util::{
     file::{FileId, FileLoadError, FileSaveError},
     path::to_relative_path,
 };
+use lsp::LspServerModel;
+use warpui::ModelHandle;
 use warpui::platform::SaveFilePickerConfiguration;
 use warpui::{
     elements::{
@@ -214,6 +216,7 @@ pub struct LocalCodeEditorView {
     /// Default directory to use for save dialogs when creating new files
     default_directory: Option<PathBuf>,
     /// Footer for displaying TabConfig actions. Only created for tab config TOML files.
+    pub(super) lsp_server: Option<ModelHandle<LspServerModel>>,
     footer: Option<ViewHandle<CodeFooterView>>,
     /// Pending scroll position to apply after the file is loaded. This is used when
     /// `set_pending_scroll` is called before the file content has finished loading
@@ -305,6 +308,7 @@ impl LocalCodeEditorView {
             base_content_version: None,
             conflict_banner_mouse_states: Default::default(),
             default_directory: None,
+            lsp_server: None,
             footer: None,
             pending_scroll_on_load: None,
         };
@@ -770,6 +774,11 @@ impl LocalCodeEditorView {
             // Remote files have no local path.
             LoadedFileMetadata::RemoteFile { .. } => None,
         }
+    }
+
+    /// Whether the local editor has a corresponding enabled LSP.
+    pub fn language_server_enabled(&self) -> bool {
+        self.lsp_server.is_some()
     }
 
     /// Update this editor's file identity after a `GlobalBufferModel::rename`.
