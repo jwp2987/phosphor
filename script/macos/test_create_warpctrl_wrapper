@@ -15,6 +15,12 @@
 # It only needs bash, so it runs on any host -- there is nothing macOS-specific
 # about the wrapper's shell logic.
 #
+# THIS COVERS ONE HALF. The binary here is a two-line stand-in, so this test
+# says nothing about whether the real executable still HONOURS `--warpctrl`.
+# That is `script/test_warpctrl_early_dispatch`. And neither of them checks
+# that the wrapper gets the right per-channel NAME -- that is
+# `script/check_channel_command_names`.
+#
 # Usage:
 #   script/macos/test_create_warpctrl_wrapper
 

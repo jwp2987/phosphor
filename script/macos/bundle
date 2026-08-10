@@ -540,7 +540,8 @@ if [[ "$ARTIFACT" == "app" ]]; then
   fi
 
   # Determine CLI wrapper script path based on release channel.  Each channel's
-  # value here must match `Channel::cli_command_name` in the Rust source.
+  # value here must match `Channel::cli_command_name` in the Rust source --
+  # enforced by `script/check_channel_command_names`.
   if [[ $RELEASE_CHANNEL = "stable" ]]; then
     CLI_SCRIPT_PATH="$BUNDLED_RESOURCES_DIR/bin/oz"
   elif [[ $RELEASE_CHANNEL = "oss" ]]; then
@@ -568,7 +569,8 @@ EOF
   # match `Channel::warpctrl_command_name` in the Rust source, because
   # `warpctrl_bundle_source_path()` (app/src/workspace/cli_install.rs) looks the
   # wrapper up by that exact name -- a mismatch makes "install CLI" fail with
-  # "bundled wrapper not found".
+  # "bundled wrapper not found".  `script/check_channel_command_names` is the
+  # gate that catches such a mismatch before it ships.
   #
   # Unlike the pin, this is NOT gated on a cargo feature: the pin guards the
   # equivalent block with `warp_control_cli`, which this fork does not have.

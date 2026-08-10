@@ -207,7 +207,8 @@ fi
 if [[ "$ARTIFACT" == "cli" ]]; then
   # For CLI artifacts, use oz instead of warp as the binary name.  The OSS
   # channel is an exception: its CLI command name is `zap-oss`, matching
-  # `Channel::cli_command_name` in the Rust source.
+  # `Channel::cli_command_name` in the Rust source (gated by
+  # `script/check_channel_command_names`).
   if [[ $RELEASE_CHANNEL != "oss" ]]; then
     BINARY_NAME="${BINARY_NAME/warp/oz}"
   fi
