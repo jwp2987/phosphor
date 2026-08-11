@@ -1088,12 +1088,23 @@ more look at *why* it is absent.
 - [ ] `FileMCPWatcher::parse_abort_handles`, `abort_config_parse`. `FileMCPWatcher`
       **exists** (`lib.rs`); it cannot cancel an in-flight config parse.
 
-### Confirmed absent — TUI CLI surface
-- [ ] `tui_commands`, `tui_cli_shell_command`, `tui_resume_shell_command`,
-      `provider_api_key_shell_command`, `ProviderApiKeyOperation`, `phosphor_tui`.
-      Needs a look at whether these are pin-side naming this fork deliberately
-      renamed — `phosphor_tui` in particular smells like a rename artefact rather
-      than a gap.
+### TUI CLI surface — DISSOLVED ENTIRELY 2026-08-11, all six
+- [x] All six accounted for; **remove from the debt list.**
+      * `phosphor_tui` — **renamed.** It is `CLIAgent::PhosphorTui`
+        (`app/src/terminal/cli_agent.rs`), the pin's `CLIAgent::WarpTui`, per the
+        naming call in #394: "`display_name()` must not surface 'Warp' branding to
+        users." Fully tested. The lowercase string never existed.
+      * `tui_commands` — **present, restructured.** `StaticCommand::kind()` plus
+        `supports_tui()` / `is_tui_only()` / `supports_gui()` cover the same typed
+        identity and explicit TUI-surface behaviour, spread across many tests in
+        `static_commands/commands.rs`. The single combined pin test cannot port
+        verbatim only because it calls `supports_surface(SettingsMode::Tui)`, and
+        `SettingsMode`/`SettingSurfaces` are already declined.
+      * `tui_resume_shell_command` + `tui_cli_shell_command` — **cloud, already
+        neutered.** Declined; see `DECLINED.md`.
+      * `provider_api_key_shell_command` + `ProviderApiKeyOperation` —
+        **superseded** by this fork's two better in-process mechanisms. Declined.
+      **22 real-debt symbols → 16.**
 
 ### Confirmed absent — computer use
 - [ ] `use_computer_decoration`. Block decoration for computer-use actions.
