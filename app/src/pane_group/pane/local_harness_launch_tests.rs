@@ -2,10 +2,11 @@ use warp_cli::agent::Harness;
 
 use super::{
     build_local_claude_child_command, build_local_codex_child_command,
-    build_local_opencode_child_command, compose_child_agent_prompt, local_claude_child_prompt,
-    normalize_local_child_harness, prepare_local_harness_child_launch, split_orchestrate_tasks,
-    validate_local_harness_shell,
+    build_local_opencode_child_command, codex_launch_precondition, compose_child_agent_prompt,
+    local_claude_child_prompt, normalize_local_child_harness, prepare_local_harness_child_launch,
+    split_orchestrate_tasks, validate_local_harness_shell,
 };
+use crate::ai::local_harness_setup::LocalHarnessSetupState;
 use crate::terminal::shell::ShellType;
 
 /// Adapted from the pin (`app/src/pane_group/pane/local_harness_launch_tests.rs:26-38`,
@@ -74,6 +75,52 @@ fn normalize_local_child_harness_accepts_codex() {
     // `prepare_local_harness_child_launch`'s `Harness::Codex` arm), so parsing and
     // launching are both supported now.
     assert_eq!(normalize_local_child_harness("codex"), Some(Harness::Codex));
+}
+
+/// #323: the `Harness::Codex` arm of `prepare_local_harness_child_launch`
+/// gates on `local_harness_setup_state` (`crate::ai::local_harness_setup`)
+/// before launching. That module already has its own unit tests for how it
+/// *computes* each `LocalHarnessSetupState`; these three cover the piece it
+/// couldn't -- that this call site actually maps each state to the launch
+/// decision (refuse and surface a message, or proceed) it's supposed to. A
+/// tested module with no caller exercising it was exactly the gap #323
+/// exists to close, so a test that only re-exercised the module would repeat
+/// the same mistake.
+#[test]
+fn codex_launch_precondition_allows_launch_when_ready() {
+    assert!(codex_launch_precondition(LocalHarnessSetupState::Ready).is_ok());
+}
+
+#[test]
+fn codex_launch_precondition_refuses_launch_when_product_disabled() {
+    let error = codex_launch_precondition(LocalHarnessSetupState::ProductDisabled {
+        message: "Local Codex child agents are temporarily disabled.",
+    })
+    .expect_err("a disabled product state must refuse the launch");
+
+    // Surfaced to the user, not swallowed into a generic/silent failure.
+    assert!(
+        error
+            .to_string()
+            .contains("Local Codex child agents are temporarily disabled.")
+    );
+}
+
+#[test]
+fn codex_launch_precondition_refuses_launch_when_cli_missing() {
+    let error = codex_launch_precondition(LocalHarnessSetupState::MissingHarness {
+        tooltip: "Install Codex to use this local harness.",
+    })
+    .expect_err("a missing CLI must refuse the launch with the install tooltip");
+
+    // Same install-tooltip text the Claude/OpenCode arms surface for a
+    // missing CLI via `validate_cli_installed`, not a second, differently
+    // worded mechanism.
+    assert!(
+        error
+            .to_string()
+            .contains("Install Codex to use this local harness.")
+    );
 }
 
 #[test]

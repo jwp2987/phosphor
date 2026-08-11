@@ -14,6 +14,7 @@ use crate::ai::{
         task::{HarnessConfig, HarnessModelConfig},
         AgentConfigSnapshot, AmbientAgentTaskId,
     },
+    local_harness_setup::{LocalHarnessSetupState, local_harness_setup_state},
 };
 use crate::terminal::cli_agent_sessions::plugin_manager::plugin_manager_for;
 use crate::terminal::shell::ShellType;
@@ -150,6 +151,34 @@ pub(super) fn build_local_codex_child_command(prompt: &str) -> String {
     format!("codex --dangerously-bypass-approvals-and-sandbox {quoted_prompt}")
 }
 
+/// Maps a Codex [`LocalHarnessSetupState`] to the launch-time check the
+/// `Harness::Codex` arm of [`prepare_local_harness_child_launch`] runs before
+/// building the child command.
+///
+/// Pulled out as its own pure function (rather than inlined in the match arm)
+/// so the three states are unit-testable without needing a real `codex`
+/// binary on `PATH` or mutating the process-global feature flag from a test
+/// -- the caller already did the (flag-dependent, filesystem-dependent) work
+/// of computing the `LocalHarnessSetupState`; this function only maps that
+/// value to the `Result` shape the arm needs.
+fn codex_launch_precondition(state: LocalHarnessSetupState) -> Result<(), AgentDriverError> {
+    match state {
+        LocalHarnessSetupState::Ready => Ok(()),
+        LocalHarnessSetupState::ProductDisabled { message } => {
+            Err(AgentDriverError::HarnessSetupFailed {
+                harness: Harness::Codex.to_string(),
+                reason: message.to_string(),
+            })
+        }
+        LocalHarnessSetupState::MissingHarness { tooltip } => {
+            Err(AgentDriverError::HarnessSetupFailed {
+                harness: Harness::Codex.to_string(),
+                reason: tooltip.to_string(),
+            })
+        }
+    }
+}
+
 fn local_child_task_config(harness: Harness) -> Option<AgentConfigSnapshot> {
     match harness {
         Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Unknown => {
@@ -236,14 +265,27 @@ pub(super) async fn prepare_local_harness_child_launch(
             // Local Codex child panes must rely on the user's existing local
             // auth/session state, same as Claude above. Unlike Claude, there is
             // no per-child environment-config prep to run here -- the fork has
-            // no `CodexHarness`/`ThirdPartyHarness` impl (only `validate()` +
-            // `prepare_environment_config()` on `ClaudeHarness`/`GeminiHarness`),
-            // and the pin's own Codex branch deliberately skips that shared prep
-            // too ("it can seed OPENAI_API_KEY into ~/.codex/auth.json and
-            // rewrite ~/.codex/config.toml for the whole machine"). A plain
-            // CLI-presence check, matching the OpenCode arm above, is what's
-            // actually needed before claiming success.
-            validate_cli_installed("codex", Some("https://developers.openai.com/codex/cli"))
+            // no `CodexHarness`/`ThirdPartyHarness` impl wired into this path
+            // (only `validate()` + `prepare_environment_config()` on
+            // `ClaudeHarness`/`GeminiHarness`), and the pin's own Codex branch
+            // deliberately skips that shared prep too ("it can seed
+            // OPENAI_API_KEY into ~/.codex/auth.json and rewrite
+            // ~/.codex/config.toml for the whole machine").
+            //
+            // This is #323's gate: `local_harness_setup_state` folds together
+            // the product-level disabled check (`FeatureFlag::
+            // LocalClaudeCodexChildHarnesses`, off by default -- see that
+            // module's doc comment) and the CLI-presence check into one call,
+            // so this arm only needs a single lookup instead of pairing
+            // `local_harness_product_disabled_message` with a second,
+            // independent `validate_cli_installed` probe of the same
+            // executable. Both failure branches are surfaced through the same
+            // `AgentDriverError::HarnessSetupFailed` shape the Claude/OpenCode
+            // arms use via `validate_cli_installed`/`ThirdPartyHarness::
+            // validate`, so callers of `prepare_local_harness_child_launch`
+            // see one consistent error shape regardless of which check
+            // rejected the harness.
+            codex_launch_precondition(local_harness_setup_state(harness))
                 .map_err(|error: AgentDriverError| error.to_string())?;
             build_local_codex_child_command(&prompt)
         }
