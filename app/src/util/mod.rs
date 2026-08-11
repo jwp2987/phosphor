@@ -12,6 +12,7 @@ pub mod openable_file_type;
 #[cfg(feature = "local_tty")]
 pub mod path;
 pub mod repo_detection;
+pub mod retry_strategies;
 pub mod sync;
 pub mod time_format;
 pub mod tooltips;

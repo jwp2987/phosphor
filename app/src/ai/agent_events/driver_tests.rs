@@ -11,7 +11,7 @@ use warp_core::errors::AnyhowErrorExt as _;
 use super::*;
 use crate::ai::agent_events::driver::agent_event_failure_should_log_error;
 use crate::ai::agent_events::AgentRunEvent;
-use crate::server::retry_strategies::HttpStatusError;
+use crate::util::retry_strategies::HttpStatusError;
 
 const ZERO_BACKOFF_STEPS: &[u64] = &[0];
 

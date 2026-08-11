@@ -11,7 +11,7 @@ use warpui::r#async::Timer;
 
 use crate::ai::agent_events::{AgentEventStreamClient, AgentRunEvent};
 use crate::report_error;
-use crate::server::retry_strategies::{is_auth_error, is_transient_http_error, HttpStatusError};
+use crate::util::retry_strategies::{is_auth_error, is_transient_http_error, HttpStatusError};
 
 pub(crate) const DEFAULT_AGENT_EVENT_RECONNECT_BACKOFF_STEPS: &[u64] = &[1, 2, 5, 10];
 pub(crate) const DEFAULT_PERMANENT_ERROR_BACKOFF_STEPS: &[u64] = &[30];

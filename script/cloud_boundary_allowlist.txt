@@ -83,7 +83,6 @@ app/src/ai/mcp/templatable_manager/wasm.rs use crate::cloud_object::Space;
 app/src/ai/mcp/templatable_manager/wasm.rs use crate::cloud_object::update_manager::InitiatedBy;
 app/src/ai/mcp/templatable_manager/wasm.rs use crate::server::ids::ServerId;
 app/src/ai/predict/next_command_model.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/skills/file_watchers/skill_watcher.rs use crate::server::datetime_ext::DateTimeExt;
 app/src/ai_assistant/panel.rs use crate::server::telemetry::{TelemetryEvent, WarpAIActionType};
 app/src/app_menus.rs use crate::server::telemetry::LaunchConfigUiLocation;
 app/src/app_state.rs use crate::server::ids::SyncId;
