@@ -84,6 +84,68 @@ last percent.
   and a declined decision can no longer be silently reversed thanks to
   `script/check_declined_collisions`.
 
+### Position as of 2026-08-10 — the 195 re-adjudicated
+
+**Superseded the "23 symbols resolved but 195 tests still open" position
+above.** Every one of the 195 `MISSING-SUBSYSTEM` rows was individually
+re-checked against the pin and the current fork tree (not just the 23 blocking
+symbols) — several of the "established corrections" going into this pass
+turned out to be wrong themselves on verification (`ActiveAgentViewsModel` is
+**not** relocated, it is permanently deleted — DECLINED.md #418; the
+orchestration config-picker layer is **not** open local work, it is `CLOUD` —
+DECLINED.md's picker-layer row), which is exactly why "verify before trusting
+a correction" stayed the rule for this pass too.
+
+| | tests | resolved? |
+|---|---:|---|
+| CLOUD | 1,130 | outside the definition |
+| DECLINED | 417 | yes |
+| DIVERGENT (BYOP) | 65 | yes |
+| PORTABLE | 59 | not yet — fixtures/APIs exist, no fork test |
+| COVERED-ELSEWHERE | 58 | yes, cited by fork test name |
+| PORTED | 41 | yes |
+| PORTABLE-OUT-OF-AREA | 15 | yes |
+| **MISSING-SUBSYSTEM** | **50** | no — genuinely open |
+| UNPARSED | 5 | no |
+| DEFECT-FIXED | 2 | yes |
+| MIXED | 1 | — |
+
+Non-cloud universe: **713** of 1,843 (1,130 are CLOUD). **658 of 713 resolved
+— 92%.** Of the 195 re-adjudicated: 145 changed verdict (39 → CLOUD, 12 →
+DECLINED, 4 → DIVERGENT, 59 → PORTABLE, 58 → COVERED-ELSEWHERE, 8 → PORTED —
+2 already existed under an identical test name and were simply mislabeled
+(`abort_config_parse_cancels_and_removes_inflight_task`,
+`manual_attach_and_detach_switch_running_command_input_ownership`), 3 were
+genuinely ported this pass: `claude_runtime_error_patterns_returns_slice` /
+`codex_runtime_error_patterns_returns_slice` /
+`gemini_runtime_error_patterns_is_empty_by_default`,
+`app/src/ai/agent_sdk/driver/harness/mod_test.rs`), 50 stayed
+`MISSING-SUBSYSTEM` with refreshed, re-verified evidence. Full per-test detail
+is in `docs/sweep-verdict-ledger.tsv`.
+
+**The 50 that are still genuinely open**, by file (see the ledger for exact
+test names and cited symbols):
+
+| file | tests | what's missing |
+|---|---:|---|
+| `app/src/ai/agent_events/driver_tests.rs` | 11 | `AgentEventDriverConfig::{auth_error_give_up_failures,max_retry_duration,permanent_error_backoff_steps}`, `HttpStatusError::is_actionable()`, `agent_event_failure_should_log_error()` |
+| `crates/ai/src/project_context/model_tests.rs` | 6 | `path_to_rules`/`ProjectRule::path` have no `HostId` dimension (pattern exists in `global_rules.rs` #575, unapplied) |
+| `app/src/ai/agent_sdk/driver/harness/claude_code_tests.rs` | 5 | `--resume` flag, `MessageBridgeCleanupDisposition`, parent-bridge event cursor persistence |
+| `crates/warp_tui/src/terminal_session_view_tests.rs` | 3 | `InputTypeAutoDetectionSource::AgentTerminalControl` + the "attach" hint string (mirrors `RUNNING_COMMAND_DETACH_HINT`) |
+| `app/src/ai/execution_profiles/config_tests.rs` | 3 | `ExecutionProfilesConfig`/`ExecutionProfileFile` — fork persists profiles via `GenericStoredObject`, not a file collection |
+| `app/src/ai/agent_sdk/driver/harness/mod_test.rs` | 4 | `auth_check_command`/`auth_check_command_for` — tracked #289, deliberately deferred |
+| `app/src/terminal/model/terminal_model_tests.rs` | 2 | `should_validate_dcs_hook_session_id` is hardcoded `false`, not role-conditional (#419) |
+| `app/src/pane_group/pane/local_harness_launch_tests.rs` | 1 | shell-validation/codex-precondition ordering is reversed vs. the pin |
+| `crates/warp_tui/src/orchestration_model_tests.rs` | 2 | `cleanup_failed_child`/`begin_local_oz_child_launch` — explicitly deferred per the module's own doc comment |
+| `app/src/terminal/view/ambient_agent/block/setup_command_text_tests.rs` | 2 | `setup_command_text.rs` doesn't exist |
+| `app/src/terminal/shared_session/network/heartbeat_tests.rs` | 2 | no `network/` dir under `shared_session/` |
+| `app/src/ai/conversation_details_panel_tests.rs` | 2 | `conversation_details_panel` doesn't exist |
+| everything else | 7 | one row each — see the ledger |
+
+None of these need a new blocking symbol resolved first (unlike the 22-symbol
+list above) — each is either a small, well-scoped addition or a genuine
+product-scope question (the ordering reversal, the DCS-hook role gate).
+
 ## LSP TRACK — **[>] document lifecycle CODE-COMPLETE, UNBUILT** (verdict 2026-08-10: RESTORE)
 
 **Status: the functional gap is closed in code and has never been compiled.**
