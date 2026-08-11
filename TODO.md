@@ -1147,9 +1147,32 @@ more look at *why* it is absent.
       `SkillWatcher` itself **exists** (`remote_server/mod.rs`) — the remote
       refresh/fallback layer on top of it does not. 13 tests.
 
-### Confirmed absent — MCP config-parse cancellation
+### MCP config-parse cancellation — IMPLEMENTED 2026-08-11 (audit cluster 6)
+- [x] **Real, genuinely absent, and it was a data-corruption bug — not just a
+      missing helper.** `FileMCPWatcher` existed but every call to
+      `update_servers_from_config_file` spawned a detached `ctx.spawn` parse with
+      no tracking. Verified that `ctx.spawn`'s handle has **no `Drop` impl** — the
+      future is owned by `AppContext.spawned_futures` — so `let _ = ctx.spawn(..)`
+      genuinely detaches rather than cancelling.
+      Two concrete failures it allowed, both confirmed against
+      `file_based_manager.rs::apply_parsed_servers`, which applies whichever
+      `ConfigParsed` arrives last, unconditionally, with no versioning:
+      * **Two rapid edits to one MCP config race two parses.** A slow parse of the
+        *old* content can resolve after a fast parse of the *new* one and silently
+        clobber it with stale servers.
+      * **A parse still in flight when its file is deleted** can land after
+        `ConfigRemoved` and **resurrect MCP servers that no longer exist on disk.**
+      Ported the pin's `parse_abort_handles` + `abort_config_parse`, with abort
+      also called at the two other points a config is confirmed gone. Initial-scan
+      parses are now tracked too — the old `spawn_config_parse` duplicate was
+      collapsed into the same path. Deliberately did not port the pin's unrelated
+      `is_tui`/`cloud_env_pending` bookkeeping.
+      **4 real-debt symbols → 2.**
+
+<details><summary>Original entry</summary>
 - [ ] `FileMCPWatcher::parse_abort_handles`, `abort_config_parse`. `FileMCPWatcher`
       **exists** (`lib.rs`); it cannot cancel an in-flight config parse.
+</details>
 
 ### TUI CLI surface — DISSOLVED ENTIRELY 2026-08-11, all six
 - [x] All six accounted for; **remove from the debt list.**
