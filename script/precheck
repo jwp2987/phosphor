@@ -40,6 +40,26 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# Anything unrecognised STOPS rather than silently running the full compile and
+# suite. That default has now caught two agents: one ran the bare command and
+# one ran `--help`, and both got a full build they did not ask for -- during a
+# maintainer build freeze. An unknown flag meaning "do the most expensive thing"
+# is a trap, not a default.
+case "${1:-}" in
+    ""|--fast|--with-tests) ;;
+    -h|--help)
+        sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0
+        ;;
+    *)
+        printf 'precheck: unknown option %s\n\n' "$1" >&2
+        printf 'Usage:\n  script/precheck          # everything: gates + compile + full suite\n' >&2
+        printf '  script/precheck --fast   # gates only -- does NOT authorise a push\n' >&2
+        printf '  script/precheck --help\n' >&2
+        exit 2
+        ;;
+esac
+
 FAST=0
 [[ "${1:-}" == "--fast" ]] && FAST=1
 # --with-tests used to be how you opted IN to testing. Tests are now the

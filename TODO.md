@@ -1371,6 +1371,23 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       Comment corrected 2026-08-11. Only `with_semantic_selection_by_style` is
       genuinely absent. **Eleventh in-tree document found contradicting the code.**
 
+## LATENT BREAK — the wasm target does not compile (found 2026-08-11)
+
+- [ ] **`app/src/workspace/view.rs:179` and `wasm_view.rs` import a module that
+      does not exist.** `crate::ai::conversation_details_panel::ConversationDetailsPanel`
+      has no file and no `mod` declaration anywhere in the tree — it was deleted
+      and these references were left behind.
+      **Verified**: both sites are `#[cfg(target_family = "wasm")]`, which is the
+      only reason `main` compiles. Nothing in `script/precheck` or CI targets
+      wasm, so the break is invisible.
+      So the honest statement is: **the wasm target is already broken and has
+      been for some time.** It will fail the instant anyone builds it.
+      Decide which: (a) fix the references and keep wasm building, or (b) declare
+      wasm unsupported in `DECLINED.md` and strip the `target_family = "wasm"`
+      code paths — carrying dead cfg-gated code that cannot compile is the worst
+      of the three options, because it looks supported.
+      Found by the tail-block sweep while adjudicating unrelated tests.
+
 ## UPSTREAM ZAP ISSUES — triaged against this fork 2026-08-10
 
 Read-only triage of open issues on `zerx-lab/zap` (this fork's lineage: Phosphor

@@ -27,27 +27,27 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 10026 |
-| Fork tests | 9495 |
-| Shared | 7727 |
-| Absent from fork | 2299 |
+| Fork tests | 9498 |
+| Shared | 7730 |
+| Absent from fork | 2296 |
 
-Of the absent, **1843 are adjudicated** in the ledger and 456 are not.
-Cloud accounts for 1091 of the adjudicated; the unadjudicated remainder is
-*projected* at the same ratio (~186 non-cloud), so the figures below
+Of the absent, **1843 are adjudicated** in the ledger and 453 are not.
+Cloud accounts for 1130 of the adjudicated; the unadjudicated remainder is
+*projected* at the same ratio (~175 non-cloud), so the figures below
 carry that estimate.
 
-- **~89.1% of the pin's non-cloud tests exist here** (7727 of ~8665)
-- **~94.8% are present or deliberately resolved** (adding 405 declined, 61 divergent, 26 covered-elsewhere)
+- **~89.6% of the pin's non-cloud tests exist here** (7730 of ~8618)
+- **~95.9% are present or deliberately resolved** (adding 417 declined, 65 divergent, 58 covered-elsewhere)
 
 ## Ledger
 
 | verdict | tests |
 |---|---:|
-| CLOUD | 1091 |
-| DECLINED | 405 |
-| MISSING-SUBSYSTEM | 195 |
-| DIVERGENT | 61 |
-| COVERED-ELSEWHERE | 26 |
+| CLOUD | 1130 |
+| DECLINED | 417 |
+| MISSING-SUBSYSTEM | 50 |
+| DIVERGENT | 65 |
+| COVERED-ELSEWHERE | 58 |
 | UNPARSED | 5 |
 
 Per `TODO.md`'s definition of done, a test is resolved when it is ported,
@@ -56,4 +56,4 @@ declined, covered elsewhere, or divergent *because* this fork is BYOP.
 
 ## Open work
 
-- `TODO.md`: **29 open**, 0 in flight
+- `TODO.md`: **30 open**, 0 in flight
