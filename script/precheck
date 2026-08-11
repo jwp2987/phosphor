@@ -194,6 +194,10 @@ if [[ -x ./script/check_channel_command_names ]]; then
     ./script/check_channel_command_names >/dev/null 2>&1 && ok "channel command names" \
         || fail "channel command names -- run ./script/check_channel_command_names for detail"
 fi
+if [[ -x ./script/check_sweep_ledger ]]; then
+    ./script/check_sweep_ledger >/dev/null 2>&1 && ok "sweep verdict ledger" \
+        || fail "sweep verdict ledger -- run ./script/check_sweep_ledger for detail"
+fi
 
 # ------------------------------------------------------------- shell tests
 # The packaging scripts are shell, so their tests are shell too -- no cargo,

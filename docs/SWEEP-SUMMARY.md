@@ -8,6 +8,69 @@ reading the pin source and the fork source.
 Oracle: Warp `02b53fcd8`. Read it with `git show 02b53fcd8:<path>`. Never
 `warp/master` — see [`../ORACLE.md`](../ORACLE.md).
 
+## The ledger — read this before re-deriving anything below
+
+The six prose files below are the **narrative record**: read them to
+understand *why* a verdict was reached. They are not what a re-pin consumes.
+
+[`../docs/sweep-verdict-ledger.tsv`](sweep-verdict-ledger.tsv) is the
+**machine-readable** extraction of every row in those six files — one line
+per pin test, TSV, greppable, diffable, matching the convention of
+[`PIN-IDENTITY-MANIFEST-files.tsv`](PIN-IDENTITY-MANIFEST-files.tsv). Columns:
+`test`, `pin_file`, `area`, `verdict`, `evidence`, `declined_ref`,
+`pin_commit`, `sweep_date`, `confidence`, `source_doc`.
+
+**1,843 rows** — two more than "1,841" above, because settings-workspace.md's
+own per-file section headers sum to 290, not the 288 its own totals table
+states; the ledger trusts the per-file sections, the same call that doc's own
+per-file evidence makes about itself. Extraction fidelity: **1,661 rows
+(90%) `clean`** — the source doc named this exact test under this exact
+bucket; **177 (10%) `judgement`** — resolved by a documented, verified
+inference (a stated bucket count with the remainder unnamed, a `grok_*`/
+`geap_*`-style family, a fork-renamed test cross-matched by hand); **5
+(0.3%) `unparsed`** — genuinely left unresolved, all five
+`app/src/pane_group/mod_tests.rs` tests the sweep's own text called "needs a
+second look, not re-verified this pass." No row was dropped to make a number
+round. See [`script/extract_sweep_ledger.py`](../script/extract_sweep_ledger.py)'s
+header for the full extraction method and every per-file special case.
+
+### Re-pin procedure
+
+1. Fetch the new pin, then run
+   `script/generate_repin_queue <new-pin> <old-pin>`. It now cross-references
+   the ledger and splits its output into three kinds of work instead of one:
+   - **carried forward** — a ledger verdict whose pin file is untouched in
+     the diff, whose cited `DECLINED.md` row (if any) is not struck, and
+     whose named missing symbol (if checkable) still doesn't exist. Printed
+     as a single count. This is the entire payoff: nothing to do.
+   - **RE-EXAMINE, with a reason** — split into the three checkable
+     invalidation rules below, each in its own section with the specific
+     evidence that triggered it.
+   - **genuinely new** — a test-bearing file with no ledger row and no
+     `SCOPE-*.md` row either. Nobody has looked at it, full stop.
+2. Read `script/generate_repin_queue`'s own header comment for the exact
+   bucket list (it now includes `LEDGER RE-EXAMINE` sections alongside the
+   pre-existing `DECLINED COLLISIONS`/`UNCLASSIFIED`/`ACTIONABLE` ones).
+3. `script/check_sweep_ledger` runs continuously (wired into
+   `script/precheck` and `pr-check.yml`), not just at re-pin — a
+   `DECLINED.md` row can be struck at any time, and a ledger row still
+   citing it is wrong from that moment, not from the next re-pin.
+
+### The invalidation rules — when a carried-forward verdict must be re-examined
+
+| # | rule | applies to | machine-checked? |
+|---|---|---|---|
+| 1 | The pin's test file changed between pin N and N+1. | every verdict | **Yes** — `generate_repin_queue`'s existing pin-to-pin diff; any changed file's ledger rows are flagged wholesale. The evidence was read against the OLD content, so it cannot be trusted against the new content sight unseen. |
+| 2 | The cited `DECLINED.md` row is reversed or struck. | `DECLINED` verdicts | **Yes, conservatively** — `DECLINED.md` marks a reversed row `~~struck~~` rather than deleting it (2 rows do today: #440, and #304/#309/#310/#325/#329). An issue number counts as struck only when **every** row citing it is struck — #325 sits on both a struck row and a still-active one, and the ledger's `declined_ref` column can't tell which was meant, so a shared number is left alone rather than risk a false positive. This under-reports by construction; see `script/check_sweep_ledger`'s header for the full #325 case. |
+| 3 | The fork gains the named subsystem. | `MISSING-SUBSYSTEM` verdicts | **Partially** — only when the evidence names a symbol immediately adjacent to "does not exist" / "needs `X`" / "lacks `X`" (23 of 195 rows qualify; the rest need a human). Tightened after the naive "first backtick token in the evidence" version produced real false positives in testing — see `generate_repin_queue`'s rule-3 comment for the two caught before ship. Any hit still says "VERIFY it is the same symbol, not a same-named unrelated one" — name collisions across files are the documented failure mode `check_declined_collisions` warns about for the identical `sym:` technique. |
+| 4 | The fork test that covers it is deleted or renamed. | `COVERED-ELSEWHERE` verdicts | **No** — human-only. The covering fork test name lives in free-text evidence with no consistent syntax to extract; a wrong extraction here (silently trusting a deleted test) is worse than no check. Read the row. |
+| 5 | The cloud backend is restored. | `CLOUD` verdicts | **No, and it shouldn't be per-test** — the most durable bucket by design (Phosphor dropping the cloud backend is not coming back), but if it ever changed it would be a repo-wide architecture decision invalidating potentially all 1,091 `CLOUD` rows at once. There is no cheaper per-test signal than that decision itself; don't build one. |
+
+Rules 1 and 2 are enforced by script (`generate_repin_queue` for 1 live at
+re-pin time and continuously via `check_sweep_ledger` for 2). Rule 3 is
+enforced narrowly, on purpose. Rules 4 and 5 are stated, not automated —
+an unenforceable rule presented as enforced is worse than none.
+
 ## Per-area detail
 
 | area | tests | file |
