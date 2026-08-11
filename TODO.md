@@ -1039,12 +1039,41 @@ Confirmed-absent non-cloud symbols, grouped below. Each needs either
 implementation or a `DECLINED.md` row — none should be actioned without one
 more look at *why* it is absent.
 
-### Confirmed absent — TUI agent-control cluster (issue #456, cluster 1)
+### TUI agent-control — RESOLVED 2026-08-11 (#456 cluster 1)
+- [x] **Mixed, and it corrected my premise.** I had recorded that
+      `ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME` exists while its mechanism
+      does not — "a binding with nothing behind it". **Wrong.** Commit
+      `a67c9ad32` (2026-08-09, `fix(#390)`) already wired the full manual
+      attach/detach mechanism. What was missing was narrower and worse: the
+      *release* half.
+      * `lock_for_agent_control` — **renamed.** It is
+        `TuiInputView::exit_shell_mode` (`input/view.rs:1060`), same
+        `AI_LOCKED_CONFIG` lock, already documented by `a67c9ad32`.
+      * `reset_after_agent_control` — **absent, and a real user-facing bug.**
+        Attaching the agent to a running command locked the composer to AI mode.
+        If the command then finished *on its own* rather than being manually
+        detached, the composer stayed **permanently AI-locked** — the user could
+        not type ordinary shell commands again without a manual mode toggle.
+        Neither `ModelEvent::BlockCompleted` nor
+        `CLISubagentEvent::FinishedSubagent` restored it. Fixed.
+      * `RUNNING_COMMAND_DETACH_HINT` — absent; footer now shows
+        "ctrl-c to return to command" while attached, and ctrl-c detaches with
+        priority instead of falling through to exit-confirmation arming.
+      * `InputTypeAutoDetectionSource::AgentTerminalControl` — absent, and its
+        **full** port stays out of scope: the fork's shared
+        `BlocklistAIInputModel` deliberately carries one autodetection-source
+        variant, and threading a second end-to-end is ~76 call sites across 12
+        files, separately tracked as #399/#254 item d. The observable behaviour
+        it gates is implemented with a per-view bool, recorded as a divergence.
+      **9 real-debt symbols → 4.**
+
+<details><summary>Original entry</summary>
 - [ ] `AgentTerminalControl` / `InputTypeAutoDetectionSource::AgentTerminalControl`,
       `RUNNING_COMMAND_DETACH_HINT`, `lock_for_agent_control`,
       `reset_after_agent_control`. **`ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME`
       IS present** — so "attach agent to running command" landed its binding and
       not its mechanism. 15 tests.
+</details>
 
 ### TUI agent-message rendering — IMPLEMENTED 2026-08-11 (#456 cluster 2)
 - [x] **Real, and now built.** New `crates/warp_tui/src/agent_message.rs` plus the
