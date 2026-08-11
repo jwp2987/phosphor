@@ -10,10 +10,10 @@ use string_offset::CharOffset;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::search::data_source::QueryResult;
 use warp::search::mixer::SearchMixerEvent;
-use warp::settings::{AISettings, AppEditorSettings};
+use warp::settings::{AISettings, AppEditorSettings, TuiTheme, TuiThemeSettings};
 use warp::tui_export::{
-    AcceptSlashCommandOrSavedPrompt, ConversationSelectionHandle, ParsedSlashCommandInput,
-    SlashCommandMixer, TuiSlashCommandDataSource, UpdatedActiveCommands,
+    AcceptSlashCommandOrSavedPrompt, Appearance, ConversationSelectionHandle,
+    ParsedSlashCommandInput, SlashCommandMixer, TuiSlashCommandDataSource, UpdatedActiveCommands,
     should_close_slash_command_menu_for_exact_match, slash_command_query, slash_commands,
 };
 use warp_editor::model::CoreEditorModel;
@@ -305,9 +305,21 @@ impl TuiSlashCommandModel {
     }
 
     /// The `(currently on/off)` trailer a toggle command's row carries, so the menu shows
-    /// the state the command is about to flip. `/vim-mode` is fork-native; the other two
-    /// mirror the oracle's `state_suffix`.
+    /// the state the command is about to flip. `/vim-mode` is fork-native; `/theme` and the
+    /// other two mirror the oracle's `state_suffix`.
     fn state_suffix(&self, title: &str, ctx: &AppContext) -> Option<String> {
+        if title == slash_commands::THEME.name {
+            let selected_theme = TuiThemeSettings::as_ref(ctx).selected_theme();
+            return Some(match selected_theme {
+                TuiTheme::Auto => format!(
+                    "(currently auto: {})",
+                    TuiTheme::from(Appearance::as_ref(ctx).theme()).display_name()
+                ),
+                TuiTheme::Light | TuiTheme::Dark => {
+                    format!("(currently {})", selected_theme.display_name())
+                }
+            });
+        }
         let enabled = if title == slash_commands::AUTO_APPROVE.name {
             self.auto_approve_enabled(ctx)
         } else if title == slash_commands::NATURAL_LANGUAGE_DETECTION.name {
