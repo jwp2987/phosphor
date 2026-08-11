@@ -6,6 +6,8 @@ use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{AIAgentAction, AIAgentActionId, AIAgentActionType};
 use crate::ai::blocklist::action_model::AIConversationId;
 use crate::ai::skills::{BundledSkillActivation, SkillManager};
+use crate::terminal::model::session::{BootstrapSessionType, SessionInfo, Sessions};
+use crate::terminal::model_events::ModelEventDispatcher;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use ai::agent::action_result::AnyFileContent;
 use ai::skills::{ParsedSkill, SkillProvider, SkillReference, SkillScope, parse_skill};
@@ -15,6 +17,7 @@ use repo_metadata::{
 use std::fs;
 use std::io::Write;
 use tempfile::TempDir;
+use warp_core::SessionId;
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warp_core::features::FeatureFlag;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
@@ -31,16 +34,67 @@ fn initialize_app(app: &mut App) {
     app.add_singleton_model(SkillManager::new);
 }
 
+/// Builds a minimal local `ActiveSession` for tests that don't care about
+/// session/host wiring — the vast majority of `ReadSkillExecutor` coverage.
+fn build_local_active_session(app: &mut App) -> ModelHandle<ActiveSession> {
+    let sessions = app.add_model(|_| Sessions::new_for_test());
+    let (_events_tx, events_rx) = async_channel::unbounded();
+    let model_events =
+        app.add_model(|ctx| ModelEventDispatcher::new(events_rx, sessions.clone(), ctx));
+    app.add_model(|ctx| ActiveSession::new(sessions, model_events, ctx))
+}
+
+/// Builds an `ActiveSession` whose active session is a `WarpifiedRemote`
+/// session connected to `host_id` (the remote-server handshake has already
+/// resolved a host id, mirroring what `RemoteServerManager` does once
+/// connected). Used by the defect-fix regression test below: before the fix,
+/// `ReadSkillExecutor` ignored this entirely and always resolved bundled
+/// skills against the local catalog.
+fn build_remote_active_session(
+    app: &mut App,
+    host_id: warp_core::HostId,
+) -> ModelHandle<ActiveSession> {
+    let session_id = SessionId::from(1);
+    let sessions = app.add_model(|_| Sessions::new_for_test());
+    sessions.update(app, |sessions, _| {
+        sessions.register_session_for_test(
+            SessionInfo::new_for_test()
+                .with_id(session_id)
+                .with_session_type(BootstrapSessionType::WarpifiedRemote),
+        );
+        sessions
+            .get(session_id)
+            .expect("just registered")
+            .set_remote_host_id(Some(host_id));
+    });
+
+    let (_events_tx, events_rx) = async_channel::unbounded();
+    let model_events =
+        app.add_model(|ctx| ModelEventDispatcher::new(events_rx, sessions.clone(), ctx));
+    model_events.update(app, |dispatcher, _| {
+        dispatcher.set_active_session_id(session_id);
+    });
+
+    app.add_model(|ctx| ActiveSession::new(sessions, model_events, ctx))
+}
+
 /// A synthetic bundled skill for activation tests, matching the pin's
 /// `read_skill_tests.rs::bundled_skill` helper (`02b53fcd8`).
 fn bundled_skill(name: &str) -> ParsedSkill {
+    bundled_skill_with_content(name, &format!("# {name}"))
+}
+
+/// Like [`bundled_skill`], but with caller-controlled content — used to tell
+/// apart which catalog (local vs. a specific remote host) a lookup actually
+/// resolved against.
+fn bundled_skill_with_content(name: &str, content: &str) -> ParsedSkill {
     ParsedSkill {
         name: name.to_string(),
         description: format!("{name} bundled skill"),
         path: LocalOrRemotePath::Local(std::path::PathBuf::from(format!(
             "/bundled/skills/{name}/SKILL.md"
         ))),
-        content: format!("# {name}"),
+        content: content.to_string(),
         line_range: None,
         provider: SkillProvider::Zap,
         scope: SkillScope::Bundled,
@@ -89,7 +143,8 @@ fn test_read_skill_executor_success() {
             manager.add_skill_for_testing(parsed_skill);
         });
 
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         let action = AIAgentAction {
             id: AIAgentActionId::from("test-action-id".to_string()),
@@ -128,7 +183,8 @@ fn test_read_skill_executor_file_not_found() {
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         let action = AIAgentAction {
             id: AIAgentActionId::from("test-action-id".to_string()),
@@ -173,7 +229,8 @@ fn test_read_skill_executor_fallback_reads_disk_on_cache_miss() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         // Note: intentionally not calling add_skill_for_testing, to simulate a cache miss.
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         let action = AIAgentAction {
             id: AIAgentActionId::from("fallback-action".to_string()),
@@ -235,7 +292,8 @@ fn test_read_skill_executor_fallback_returns_error_when_file_missing() {
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         let action = AIAgentAction {
             id: AIAgentActionId::from("missing-action".to_string()),
@@ -295,7 +353,8 @@ fn test_read_skill_executor_resolves_by_name() {
             manager.add_skill_for_testing(parsed_skill);
         });
 
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         // Simulates BYOP from_args: passing the name in as if it were a path.
         let action = AIAgentAction {
@@ -336,7 +395,8 @@ fn test_read_skill_executor_resolves_by_name() {
 fn test_read_skill_executor_rejects_unknown_name() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         let action = AIAgentAction {
             id: AIAgentActionId::from("unknown-name-action".to_string()),
@@ -382,7 +442,8 @@ fn test_read_skill_executor_rejects_non_skill_path_on_cache_miss() {
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         let action = AIAgentAction {
             id: AIAgentActionId::from("non-skill-action".to_string()),
@@ -429,7 +490,8 @@ fn test_read_skill_executor_reads_enabled_bundled_skill() {
                 BundledSkillActivation::Always,
             );
         });
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         let action = AIAgentAction {
             id: AIAgentActionId::from("test-action-id".to_string()),
@@ -476,7 +538,8 @@ fn test_read_skill_executor_rejects_tui_only_skill_in_gui() {
                 BundledSkillActivation::TuiOnly,
             );
         });
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
         let action = AIAgentAction {
             id: AIAgentActionId::from(format!("test-action-id-{skill_id}")),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
@@ -526,7 +589,8 @@ fn test_read_skill_executor_rejects_warp_control_bundled_skills_when_disabled() 
                 BundledSkillActivation::RequiresFeature(FeatureFlag::WarpControlCli),
             );
         });
-        let executor_handle = app.add_model(|_| ReadSkillExecutor::new());
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
         let action = AIAgentAction {
             id: AIAgentActionId::from(format!("test-action-id-{skill_id}")),
             action: AIAgentActionType::ReadSkill(ReadSkillRequest {
@@ -549,6 +613,88 @@ fn test_read_skill_executor_rejects_warp_control_bundled_skills_when_disabled() 
                     ReadSkillResult::Error(_)
                 ))
             ));
+        });
+    });
+}
+
+/// Defect-fix regression test (found by the app/ai pin-test sweep,
+/// `docs/sweep/app-ai.md`): `ReadSkillExecutor` used to hard-code
+/// `SkillPathOrigin::Local` regardless of the active session, so a
+/// `BundledSkillId` read from a warpified-remote (SSH) session silently
+/// resolved against the *client's* local bundled-skill catalog instead of the
+/// connected host's.
+///
+/// Registers the same skill id with different content in the local catalog
+/// and in a specific remote host's catalog, then reads it from a session
+/// connected to that remote host. If the session/host_id plumbing regresses
+/// back to always-Local, this fails by returning the local content (or a
+/// "not found" error, since the pre-fix code never even looked at the remote
+/// catalog) instead of the remote host's.
+#[test]
+fn test_read_skill_executor_resolves_bundled_skill_from_remote_session_host() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let _bundled_skills = FeatureFlag::BundledSkills.override_enabled(true);
+
+        let core_host_id = warp_core::HostId::new("remote-host-1".to_owned());
+        let util_host_id = crate::code::buffer_location::core_host_id_to_util(&core_host_id);
+
+        SkillManager::handle(&app).update(&mut app, |manager, _ctx| {
+            // Decoy: same skill id in the LOCAL catalog, with different content.
+            // A regression back to hard-coded `SkillPathOrigin::Local` would read
+            // this instead of the remote catalog below.
+            manager.add_bundled_skill_for_testing(
+                "shared-skill-id",
+                bundled_skill_with_content("shared-skill-id", "local catalog content"),
+                BundledSkillActivation::Always,
+            );
+            manager.add_remote_bundled_skill_for_testing(
+                util_host_id,
+                "shared-skill-id",
+                bundled_skill_with_content("shared-skill-id", "remote host catalog content"),
+                BundledSkillActivation::Always,
+            );
+        });
+
+        let active_session = build_remote_active_session(&mut app, core_host_id);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
+
+        let action = AIAgentAction {
+            id: AIAgentActionId::from("remote-skill-action".to_string()),
+            action: AIAgentActionType::ReadSkill(ReadSkillRequest {
+                skill: SkillReference::BundledSkillId("shared-skill-id".to_string()),
+            }),
+            task_id: TaskId::new("remote-skill-task".to_string()),
+            requires_result: false,
+        };
+
+        let input = ExecuteActionInput {
+            action: &action,
+            conversation_id: AIConversationId::new(),
+        };
+
+        executor_handle.update(&mut app, |executor, ctx| {
+            let result: AnyActionExecution = executor.execute(input, ctx).into();
+            match result {
+                AnyActionExecution::Sync(AIAgentActionResultType::ReadSkill(
+                    ReadSkillResult::Success { content },
+                )) => {
+                    let body = match &content.content {
+                        AnyFileContent::StringContent(s) => s.clone(),
+                        AnyFileContent::BinaryContent(_) => {
+                            panic!("bundled skill content should be text")
+                        }
+                    };
+                    assert!(
+                        body.contains("remote host catalog content"),
+                        "expected the remote host's catalog content, got: {body}"
+                    );
+                }
+                other => panic!(
+                    "Remote session should resolve the skill via the remote host's catalog, \
+                     got: {other:?}"
+                ),
+            }
         });
     });
 }

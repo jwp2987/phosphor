@@ -84,7 +84,7 @@ use crate::ai::blocklist::block::cli_controller::{
 };
 use crate::ai::blocklist::block::status_bar::BlocklistAIStatusBarEvent;
 use crate::ai::blocklist::usage::conversation_usage_view::{
-    ConversationUsageInfo, ConversationUsageView, DisplayMode, TimingInfo,
+    ConversationUsageInfo, ConversationUsageView, TimingInfo,
 };
 use crate::ai::blocklist::{
     block_context_from_terminal_model, AutofireAction, QueuedQuery, QueuedQueryId,
@@ -6184,13 +6184,18 @@ impl TerminalView {
             wall_to_wall_response_time_ms,
         };
 
-        // View to hold the usage footer.
-        let usage_view = ctx.add_view(|_| {
-            ConversationUsageView::new(
+        // View to hold the usage footer. Registered via `add_typed_action_view`,
+        // not `add_view`: only `add_typed_action_view` calls `add_typed_action::<V>()`,
+        // which is what makes `ctx.dispatch_typed_action` (from the "View details" /
+        // "Show N more" click handlers below) find `ConversationUsageView::handle_action`
+        // at all. A plain `add_view` view has no entry in `typed_actions`, so a
+        // dispatch would silently no-op with a `log::warn!("...no handlers...")`.
+        let usage_view = ctx.add_typed_action_view(|_| {
+            ConversationUsageView::new_footer_with_rollup(
                 conversation_usage_info,
-                DisplayMode::Footer,
                 Some(timing_info),
                 MouseStateHandle::default(),
+                conversation_id,
             )
         });
         self.usage_footer_view_ids

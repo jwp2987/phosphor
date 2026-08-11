@@ -24,10 +24,17 @@
 //! - `has_open_action` (pin: `agent_conversations_model/entry.rs:273`, via
 //!   `AgentConversationsModel::resolve_open_action`) doesn't exist here -- that whole
 //!   navigation-resolution subsystem is part of the richer cloud/ambient `agent_conversations_model`
-//!   this fork's `ai/conversation_entry.rs` deliberately does not carry. Availability here is
-//!   simply "not open elsewhere": every conversation in this fork's BYOP-local list is always
-//!   locally openable once it isn't already open in another pane.
+//!   this fork's `ai/conversation_entry.rs` deliberately does not carry. `classify_gui_list_entry`
+//!   substitutes the one piece of it that has a local meaning: a non-Oz-harness entry (a
+//!   CLI-subagent conversation) is `Unavailable` for "enter Agent View", mirroring the TUI's
+//!   `classify_conversation_list_entry`. Every entry `AgentConversationsModel::get_entries`
+//!   currently emits is Oz-harness, so this rarely triggers today (see that fn's own doc comment)
+//!   -- but it is not purely decorative, either: `AIConversation::orchestration_harness` already
+//!   lets a local orchestration child carry a different harness. Previously this file's doc said
+//!   availability was simply "not open elsewhere" and `Unavailable` was unreachable; that was
+//!   wrong -- the variant existed but nothing ever threaded a predicate that could produce it.
 
+use warp_cli::agent::Harness;
 use warp_core::report_error;
 use warpui::{AppContext, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
@@ -96,17 +103,39 @@ impl AgentViewConversationSelection {
 }
 
 /// Applies GUI list-state precedence without consulting frontend models.
+///
+/// `harness` is the entry's resolved execution harness. Agent View's "select
+/// existing conversation" flow (`select_existing_conversation` below) only
+/// makes sense for the native Oz-harness conversation loop: entering Agent
+/// View on a CLI-subagent conversation (Claude Code, Codex, ...) isn't
+/// something the user can continue querying the same way. A non-Oz harness
+/// therefore makes the entry `Unavailable` rather than `Available`, mirroring
+/// the TUI's identical rule
+/// (`crates/warp_tui/src/conversation_selection.rs::classify_conversation_list_entry`,
+/// its `harness != Some(Harness::Oz)` check). Unlike that function's other two
+/// conditions (`is_cloud_agent_run`, `has_server_token`), which are
+/// permanently false/`None` for every BYOP-local entry and were dropped as
+/// genuinely cloud-only, harness is not: `AIConversation::orchestration_harness`
+/// already lets a local orchestration child use a non-Oz harness (see
+/// `start_new_child_conversation`), so this can become reachable once
+/// `AgentConversationsModel::get_entries`'s harness resolution (currently
+/// hard-coded to `Some(Harness::Oz)` for every conversation, unrelated to
+/// this fix) threads that through.
 fn classify_gui_list_entry(
     selected_entry_id: Option<AgentConversationEntryId>,
     entry_id: AgentConversationEntryId,
     open_terminal_view_id: Option<EntityId>,
     terminal_view_id: EntityId,
+    harness: Option<Harness>,
 ) -> AgentConversationListEntryState {
     if selected_entry_id == Some(entry_id) {
         return AgentConversationListEntryState::Selected;
     }
     if open_terminal_view_id.is_some_and(|open_id| open_id != terminal_view_id) {
         return AgentConversationListEntryState::OpenElsewhere;
+    }
+    if harness != Some(Harness::Oz) {
+        return AgentConversationListEntryState::Unavailable;
     }
     AgentConversationListEntryState::Available
 }
@@ -135,6 +164,7 @@ impl AgentConversationListPolicy for AgentViewConversationSelection {
             entry.id,
             open_terminal_view_id,
             self.terminal_view_id,
+            entry.display.harness,
         )
     }
 }
