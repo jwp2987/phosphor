@@ -97,7 +97,15 @@ required-features = ["otel"]
 schemars = "1.2.1"
 simple-fs = "0.12"
 tracing-subscriber = {version = "0.3", features = ["env-filter"]}
-serial_test = "4"
+# MODIFIED by the Phosphor fork: upstream asks for "4", but the only
+# non-yanked 4.x (4.0.1) declares rust-version 1.93.1, above this repo's
+# pinned toolchain (rust-toolchain.toml = 1.92.0), so `cargo test` here fails
+# at *resolution* — before compiling anything. 3.x has no such floor (3.5.0
+# is MSRV 1.68) and is API-compatible with the only form these tests use,
+# `#[serial(name)]`, which has been stable across both majors. Test-only
+# dev-dependency; nothing shipped depends on it. Restore to "4" when the
+# toolchain pin reaches 1.93.1.
+serial_test = "3"
 base64 = "0.23.0"
 bitflags = "2.8"
 gcp_auth = "0.12"

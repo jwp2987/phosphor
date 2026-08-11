@@ -188,6 +188,37 @@ unrelated to voice and is not declined — see the issue for its state.
 
 ---
 
+## SSH connection management — the system owns it, not the app
+
+**Maintainer decision, reaffirmed 2026-08-11.** SSH hosts, keys and config are
+managed **on the system**, by `~/.ssh/config` and `ssh-agent`. Phosphor does not
+become a second source of truth for them, and does not write to a user's ssh
+config. Full removal scope: `specs/remove-ssh-manager/SCOPE.md` (fork-original
+code, so no Warp parity constraint — removal is a free call).
+
+The reasoning, in the maintainer's terms: *"that should just be done on the
+system itself, and the ssh manager in Zap only was read only. I don't like an
+app changing my ssh config."*
+
+**Verified, not assumed:** nothing in the tree writes `~/.ssh/config` — a grep
+for `ssh_config` / `.ssh/config` / `write_ssh` across `*.rs` returns zero
+write paths. The manager's parser is read-only, so the objection is to the
+*direction of travel* (an app that owns your ssh identity), not to a bug that
+exists today.
+
+This decision **declines two upstream Zap feature requests**, recorded here so
+neither is re-triaged as debt:
+
+| upstream request | why declined |
+|---|---|
+| **Zap #330** — SSH split-pane in the current tab; name tabs from the SSH manager; pick a connection from the SSH manager instead of a raw `ssh` command | Every part is built *on* the SSH manager. The split-pane half is separable and may be worth doing on its own terms — but as a **pane_group** feature, not an SSH-manager one. Do not implement the manager-coupled parts. |
+| **Zap #301** — let a new SSH config paste **private-key text** instead of a path | Directly contrary to the decision: it makes the app the custodian of key *material*, not merely a reader of config. This is the strongest form of the thing being declined. `~/.ssh/config` + `ssh-agent` already serve this. |
+
+**No `sym:`/`path:` markers yet, deliberately.** The removal has not landed —
+the code still exists — so a `path:` marker would fail
+`script/check_declined_collisions` immediately. Add the markers in the same PR
+that performs the removal, not before.
+
 ## Not declined — common false positives
 
 Filed as cloud or as decisions, but actually in scope. Do not add these here.

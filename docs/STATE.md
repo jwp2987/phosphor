@@ -27,16 +27,16 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 10026 |
-| Fork tests | 9680 |
-| Shared | 7744 |
-| Absent from fork | 2282 |
+| Fork tests | 9691 |
+| Shared | 7755 |
+| Absent from fork | 2271 |
 
-Of the absent, **1843 are adjudicated** in the ledger and 439 are not.
+Of the absent, **1843 are adjudicated** in the ledger and 428 are not.
 Cloud accounts for 1130 of the adjudicated; the unadjudicated remainder is
-*projected* at the same ratio (~169 non-cloud), so the figures below
+*projected* at the same ratio (~165 non-cloud), so the figures below
 carry that estimate.
 
-- **~89.7% of the pin's non-cloud tests exist here** (7744 of ~8626)
+- **~89.8% of the pin's non-cloud tests exist here** (7755 of ~8633)
 - **~96.0% are present or deliberately resolved** (adding 417 declined, 65 divergent, 58 covered-elsewhere)
 
 ## Ledger
@@ -64,6 +64,6 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 | source | open work | authority |
 |---|---:|---|
 | `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **50 tests** | primary; a test is open until ported/declined/covered/divergent |
-| `TODO.md` checkboxes | **34 open**, 1 in flight | secondary; counts formatting, so it under-reports silently |
+| `TODO.md` checkboxes | **39 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
 
-> **Check the gap:** the ledger has 50 open tests; `TODO.md` tracks 35 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**
+> Ledger open bucket is represented in `TODO.md`'s tracked items.
