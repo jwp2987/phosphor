@@ -763,6 +763,9 @@ async fn open_buffer_round_trips_as_session_scoped() {
         match unwrap_session_scoped(msg) {
             session_scoped_request::Message::OpenBuffer(req) => {
                 assert_eq!(req.path, "/tmp/f.txt");
+                // The plain open path must not ask the server to discard its
+                // in-memory buffer state; only conflict resolution does.
+                assert!(!req.force_reload);
             }
             other => panic!("Expected OpenBuffer, got {other:?}"),
         }
@@ -773,10 +776,36 @@ async fn open_buffer_round_trips_as_session_scoped() {
     });
 
     let resp = client
-        .open_buffer("/tmp/f.txt".to_string())
+        .open_buffer("/tmp/f.txt".to_string(), false)
         .await
         .expect("open_buffer should succeed");
     assert_eq!(resp.content, "");
+}
+
+/// `force_reload` is what makes the client's "accept the server's copy"
+/// conflict resolution work, so it must survive the trip over the wire.
+#[tokio::test]
+async fn open_buffer_forwards_force_reload() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
+        match unwrap_session_scoped(msg) {
+            session_scoped_request::Message::OpenBuffer(req) => {
+                assert_eq!(req.path, "/tmp/f.txt");
+                assert!(req.force_reload);
+            }
+            other => panic!("Expected OpenBuffer, got {other:?}"),
+        }
+        server_message::Message::OpenBufferResponse(OpenBufferResponse {
+            content: "from disk".to_string(),
+            server_version: 7,
+        })
+    });
+
+    let resp = client
+        .open_buffer("/tmp/f.txt".to_string(), true)
+        .await
+        .expect("open_buffer should succeed");
+    assert_eq!(resp.content, "from disk");
+    assert_eq!(resp.server_version, 7);
 }
 
 /// A session-scoped request on a connection that has already dropped resolves
