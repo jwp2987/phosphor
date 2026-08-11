@@ -157,6 +157,50 @@ pub struct DiffHunk {
     pub unified_diff_end: usize,
 }
 
+/// Reconstructs a minimal, self-contained unified diff for a single [`DiffHunk`],
+/// suitable for `git apply --cached` — the primitive behind hunk-level staging.
+///
+/// Whole-file staging elsewhere in this module uses
+/// `git restore --staged --worktree`, which cannot express "part of this file".
+/// Reconstructing a one-hunk patch is how git itself implements `add -p`.
+///
+/// **Line numbers are those of the diff this hunk came from.** Staging hunk N
+/// after already staging hunk N-1 shifts the file, so the caller must re-diff
+/// between operations rather than applying a batch of hunks from one snapshot.
+/// `run_apply_patch_cached` deliberately does not pass `--unidiff-zero`, so git
+/// verifies context and rejects a stale patch instead of corrupting the index.
+///
+/// `no_trailing_newline` emits git's `\ No newline at end of file` marker;
+/// omitting it makes git apply a patch that silently appends a newline.
+pub fn hunk_to_patch(file_path: &Path, hunk: &DiffHunk) -> String {
+    let path = file_path.to_string_lossy();
+    let mut out = String::new();
+    out.push_str(&format!("diff --git a/{path} b/{path}\n"));
+    out.push_str(&format!("--- a/{path}\n"));
+    out.push_str(&format!("+++ b/{path}\n"));
+    out.push_str(&format!(
+        "@@ -{},{} +{},{} @@\n",
+        hunk.old_start_line, hunk.old_line_count, hunk.new_start_line, hunk.new_line_count
+    ));
+    for line in &hunk.lines {
+        let prefix = match line.line_type {
+            DiffLineType::Context => " ",
+            DiffLineType::Add => "+",
+            DiffLineType::Delete => "-",
+            // The `@@` header is rebuilt above from the hunk's own counts; a
+            // parsed header line is not part of the body.
+            DiffLineType::HunkHeader => continue,
+        };
+        out.push_str(prefix);
+        out.push_str(&line.text);
+        out.push('\n');
+        if line.no_trailing_newline {
+            out.push_str("\\ No newline at end of file\n");
+        }
+    }
+    out
+}
+
 /// Represents the diff for a single file, as rendered by `git diff`.
 /// This matches Git Desktop's FileDiff structure.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
