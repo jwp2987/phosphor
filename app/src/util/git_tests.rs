@@ -95,7 +95,14 @@ async fn detached_tag_display_returns_short_sha() {
 /// handle (kept alive by the caller). Fully offline (local file remote).
 async fn add_bare_origin(repo: &Path) -> TempDir {
     let bare = tempfile::tempdir().expect("failed to create bare temp dir");
-    git(&bare.path().to_path_buf(), &["init", "--bare"]).await;
+    // `-b main` is load-bearing, not tidiness. Plain `git init --bare` leaves
+    // HEAD at refs/heads/master, so after pushing `main` a later `git clone`
+    // of this bare repo warns "remote HEAD refers to nonexistent ref, unable
+    // to checkout" and produces a repo with NO checked-out branch and NO
+    // files. A "second contributor" fixture built on that clone then commits
+    // onto an unborn master and its push never reaches origin/main -- which
+    // silently turns any pull test into a no-op.
+    git(&bare.path().to_path_buf(), &["init", "--bare", "-b", "main"]).await;
     let bare_url = bare.path().to_string_lossy().to_string();
     git(repo, &["remote", "add", "origin", &bare_url]).await;
     // `-u` sets the upstream tracking ref (origin/<branch>).
