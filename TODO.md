@@ -1142,10 +1142,31 @@ more look at *why* it is absent.
       as `ORCHESTRATION_WARP_WORKER_HOST`. Decide before building, not after.
 </details>
 
-### Confirmed absent — remote project skills
+### Remote project skills — IMPLEMENTED 2026-08-11 (audit cluster 5) — LAST OF THE 23
+- [x] **Real, and the gap was already named in-tree.**
+      `app/src/ai/remote_context_files.rs:22` explicitly listed
+      `skill_watcher.rs`'s `read_project_skill_contents` as one of two unwired pin
+      call sites — so the fork knew, and nobody had connected it.
+      **User-visible effect:** `SKILL.md` files in a project on an SSH-remote host
+      were **invisible to the agent**, even though remote *bundled* and *home*
+      skills already worked. Project skills were the one origin still going
+      through a local-filesystem-only watcher.
+      This was finishing the last file, not building machinery:
+      `find_project_skill_files_in_tree`, `read_remote_text_file_contents`,
+      `parse_skill_content_at_location`, `SkillPathOrigin` and a
+      `LocalOrRemotePath`-accepting `SkillManager` all already existed. The fork's
+      `skill_watcher.rs` was simply a pre-remote version still doing directory
+      scanning, never updated to the pin's `RepoMetadataModel` standing-query
+      design that works identically for local and remote.
+      Ported with a generation guard, a local-only fallback when repo-metadata
+      indexing fails, and two new remote-origin tests the pin did not have.
+      **2 real-debt symbols → 0. All 23 resolved.**
+
+<details><summary>Original entry</summary>
 - [ ] `parse_project_skill_contents`, `refresh_project_skills_for_repo`.
       `SkillWatcher` itself **exists** (`remote_server/mod.rs`) — the remote
       refresh/fallback layer on top of it does not. 13 tests.
+</details>
 
 ### MCP config-parse cancellation — IMPLEMENTED 2026-08-11 (audit cluster 6)
 - [x] **Real, genuinely absent, and it was a data-corruption bug — not just a
