@@ -208,3 +208,65 @@ wiring), the singleton graph, and the Anthropic request path.
 > That is an argument, not evidence. **Nobody has launched the app since the
 > freeze lifted.** A green suite does not discharge this item — the startup
 > crash it describes passed 6,000 tests. Manual launch remains the open task.
+
+---
+
+## Round 2 — the genai 0.7 bump (2026-08-11)
+
+A second batch of unverified code landed on top of the batch above: the
+vendored `lib/rust-genai` was re-ported `0.6.0-beta.18` → `0.7.0-beta.18` and
+merged before the first batch had finished verifying. Four app-side
+adaptations were applied by hand and never compiled.
+
+**The prediction carried into this round was that it would produce more of the
+same class — fork APIs called through the pin's signature. It did not.**
+
+| | |
+|---|---:|
+| Hand-applied adaptations, uncompiled | 4 |
+| That were correct as written | **4** |
+| Additional compile errors found | **0** |
+| Test failures found | 2 |
+| Test failures attributable to the genai bump | **0** |
+
+`cargo check --workspace --all-targets --features warp/gui` returned 0 errors
+on the first attempt. All four adaptations — the `=0.7.0-beta.18` pin,
+`ReasoningEffort::None` → `Zero` in the settings conversion and its test, and
+`ChatStreamEvent::Heartbeat` added to the oneshot match — were right. The two
+further 0.7 changes flagged as risk (`Tool::custom_format`, opt-in prompt
+caching) touched nothing: the app builds its genai `Tool` through
+`Tool::new(..)`, which fills the new field, and it never constructs the struct
+literally.
+
+One near-miss worth recording, because it went the opposite way to Round 1's
+lesson. The other exhaustive `ChatStreamEvent` match — the real streaming path
+in `chat_stream.rs`, far more load-bearing than the oneshot one — was *not*
+updated and did not need to be: it ends in `_ => {}`. The compiler would never
+have raised it, and a new variant it silently swallows is exactly the shape
+that a catch-all hides. Here ignoring a keepalive is correct, so the catch-all
+happened to be right. It would not have announced itself if it were wrong.
+
+### What actually broke: a rename applied to one of its two call sites
+
+Both failures came from a different unverified commit in the same window
+(`a4ebf6876`, the SSH-install fix), and neither was a compile error:
+
+- `download_tarball_url` still formatted a literal `zap-` prefix after the
+  commit introduced `RELEASE_ASSET_PREFIX` and threaded it through the install
+  script. The constant and the literal type-check identically, so only a test
+  comparing the built URL could see the disagreement — and that path,
+  `ssh_transport.rs`, is the one a real user goes through.
+- The install-script test asserted the old asset name, i.e. the behaviour the
+  commit deliberately changed.
+
+**The generalised lesson, now twice-confirmed in different forms.** Round 1:
+the danger was not the code agents wrote but the API they assumed. Round 2: the
+adaptations to a genuinely-changed API were all correct, and the defect was a
+rename that reached the template but not the function beside it. Both rounds
+failed at the *unexamined second call site*, not at the hard change. The
+compiler caught Round 1's version of that and could not catch Round 2's.
+
+Rounds 1 and 2 together: **20 predictions, 0 fired.** Predicting which written
+code will fail to compile has now returned nothing twice. Enumerating every
+call site of a symbol being renamed would have caught the only real defect in
+this round, in seconds.
