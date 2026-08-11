@@ -32,18 +32,34 @@ MISSING-SUBSYSTEM bucket, and nothing else.
 Of 1,841 absent pin tests, **1,204 are cloud** — outside the definition by
 construction. That leaves a **non-cloud universe of 637**:
 
+**Superseded 2026-08-11 by `docs/sweep-verdict-ledger.tsv`.** The figures first
+published here came from the six sweep docs' own summary tables. Four of those
+six do not sum to their own per-file sections, so the ledger re-derives every
+count from per-file evidence and is the authority. Counts below are the
+ledger's.
+
 | | tests | resolved? |
 |---|---:|---|
-| DECLINED | 284 | yes |
-| DIVERGENT (BYOP) | ~60 | yes |
-| COVERED-ELSEWHERE | ~26 | yes, where cited |
-| PORTED | 19 | yes |
-| **MISSING-SUBSYSTEM** | **209** | **NO — the open work** |
+| DECLINED | 405 | yes |
+| DIVERGENT (BYOP) | 61 | yes |
+| PORTED / PORTABLE / OUT-OF-AREA / DEFECT-FIXED | 59 | yes |
+| COVERED-ELSEWHERE | 26 | yes, where cited |
+| **MISSING-SUBSYSTEM** | **195** | see below |
+| UNPARSED | 5 | no — the source docs never committed to a verdict |
 
-**≈ 389 of 637 resolved — roughly 61%**, and the entire remainder is the
-MISSING-SUBSYSTEM bucket, which hand validation reduced from 209 tests to
-**22 symbols** (see "MISSING SUBSYSTEMS" below; one of the original 23 dissolved
-as a rename).
+Non-cloud universe: **752** of 1,843 (1,091 are CLOUD).
+**551 of 752 resolved — roughly 73%.**
+
+### What resolving the 23 symbols did, and did not, do
+
+All 23 MISSING-SUBSYSTEM *symbols* are resolved (8 renames, 3 cloud, 1 declined,
+11 implemented). **That is not the same as those 195 tests being resolved.** The
+subsystems those tests needed now exist; the tests themselves are still unported.
+
+So the honest statement is: **the MISSING-SUBSYSTEM bucket is no longer blocked.**
+Its 195 tests moved from "cannot be ported" to "portable, not yet ported". Under
+the definition above they are not yet resolved — but nothing structural stands in
+the way of resolving them, which was not true this morning.
 
 ### The two honest caveats on that 61%
 
