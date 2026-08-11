@@ -13,7 +13,7 @@ Last fully green `script/precheck`: **never** — no green `script/precheck` has
 
 | guard | |
 |---|---|
-| `check_cloud_boundary` | **FAIL** |
+| `check_cloud_boundary` | ok |
 | `check_stub_coverage` | ok |
 | `check_declined_collisions` | ok |
 | `check_sweep_ledger` | ok |
@@ -27,17 +27,17 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 10026 |
-| Fork tests | 9691 |
-| Shared | 7755 |
-| Absent from fork | 2271 |
+| Fork tests | 9710 |
+| Shared | 7773 |
+| Absent from fork | 2253 |
 
-Of the absent, **1843 are adjudicated** in the ledger and 428 are not.
+Of the absent, **1843 are adjudicated** in the ledger and 410 are not.
 Cloud accounts for 1130 of the adjudicated; the unadjudicated remainder is
-*projected* at the same ratio (~165 non-cloud), so the figures below
+*projected* at the same ratio (~158 non-cloud), so the figures below
 carry that estimate.
 
-- **~89.8% of the pin's non-cloud tests exist here** (7755 of ~8633)
-- **~96.0% are present or deliberately resolved** (adding 417 declined, 65 divergent, 58 covered-elsewhere)
+- **~89.9% of the pin's non-cloud tests exist here** (7773 of ~8644)
+- **~96.1% are present or deliberately resolved** (adding 417 declined, 65 divergent, 58 covered-elsewhere)
 
 ## Ledger
 

@@ -255,20 +255,38 @@ test names and cited symbols):
 > `[>]`). Converted to checkboxes below. **Never record open work as a table
 > row in this file.**
 
-**ASSIGNED 2026-08-11 — six Sonnet agents, all 50 tests covered.** Branched from
-local `main` `17025cd66`. None may run `cargo`/`nextest`/`precheck` — the build
-agent owns compilation. Each writes `docs/sweep/outcome-<pkg>.md` and does
-**not** touch the ledger or this file; the coordinator reconciles centrally so
-six branches cannot fight over one TSV.
+**STATUS 2026-08-11 06:xx — all work recovered onto branch `working`, 37 of 50
+resolved, 13 open.** The six parallel agents were killed after the
+shared-checkout collision (see the hazard entry above); their work was recovered
+commit-by-commit onto `working` and reviewed individually. **Nothing is built** —
+the freeze is in force; correctness below is review-verified, not compiler-verified.
 
-| package | tests | files |
-|---|---:|---|
-| `outcome-agent-events` | 11 | `agent_events/driver_tests.rs` |
-| `outcome-project-context` | 6 | `project_context/model_tests.rs` |
-| `outcome-agent-sdk-harness` | 10 | `claude_code_tests` + `wake_driver_tests` + `mod_tests` |
-| `outcome-warp-tui` | 5 | `terminal_session_view_tests` + `orchestration_model_tests` |
-| `outcome-verdicts` | 8 | `execution_profiles` + `conversation_details_panel` + `terminal_model` + `local_harness_launch` |
-| `outcome-tail` | 10 | heartbeat, setup_command_text, remote_search, artifact_download, bundled, history_model, handoff, conversation |
+| package | tests | status | branch commit |
+|---|---:|---|---|
+| `outcome-verdicts` | 8 | ✅ **done** — 1 ported (real codex/shell ordering bug), 7 re-adjudicated | `64d8eef60` |
+| `outcome-agent-sdk-harness` | 10 | ✅ **done** — 5 ported, 5 re-adjudicated | `8ba03f47a` |
+| `outcome-tail` | 10 | ✅ **done** — 4 ported, 4 re-adjudicated, **2 REJECTED** | `6f7e9461f` |
+| `outcome-project-context` | 6 | ✅ **done** — all 6 ported (HostId dimension) | `721e4869d` |
+| `outcome-warp-tui` | 3 of 5 | ⚠️ **partial** — 3 ported + 1 bonus; the 2 `orchestration_model` tests were **never reached** | `edd9b31b6` |
+| `outcome-agent-events` | 0 of 11 | ⚠️ **WIP, incomplete** — agent killed mid-flight, work rescued but unfinished | `9b8307ec4` |
+
+**Two review decisions worth knowing about:**
+
+1. **Rejected the `shared_session/network/heartbeat.rs` port (2 tests).** Nothing
+   in the fork consumes `Heartbeat`, and **both pin tests carry
+   `#[ignore = "Flakes in CI"]`** so they can never run. `SCOPE-TERMINAL.md:154`
+   had already adjudicated it: *"its only consumer is the dropped session-sharing
+   websocket layer."* 202 lines of unreachable code guarded by tests that never
+   execute is the shape `check_stub_coverage` exists to prevent. **Needs a
+   `DECLINED.md` row.**
+2. **`check_cloud_boundary` failed on the rescued agent_events work** and was
+   fixed at the root rather than allowlisted — `app/src/server/retry_strategies.rs`
+   has zero cloud dependencies and zero importers, so it was moved to
+   `app/src/util/`. Allowlisting would have recorded a dependency that does not
+   exist. See `5f7c96883`.
+
+**Still open (13 tests):** `agent_events/driver_tests.rs` (11) and
+`orchestration_model_tests.rs` (2).
 
 Three packages are **verdict-first, not port-first** — `execution_profiles`
 (likely DIVERGENT), `mod_tests` `auth_check_command` (#289 deferral), and
