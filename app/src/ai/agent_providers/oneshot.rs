@@ -211,7 +211,11 @@ pub async fn byop_oneshot_streaming_completion(
             ChatStreamEvent::Chunk(chunk) => {
                 text.push_str(&chunk.content);
             }
+            // `Heartbeat` is new in genai 0.7 — Anthropic emits it to keep a
+            // long stream alive. It carries no content, so a oneshot capture
+            // ignores it exactly like the other non-chunk events.
             ChatStreamEvent::Start
+            | ChatStreamEvent::Heartbeat
             | ChatStreamEvent::ReasoningChunk(_)
             | ChatStreamEvent::ThoughtSignatureChunk(_)
             | ChatStreamEvent::ToolCallChunk(_)

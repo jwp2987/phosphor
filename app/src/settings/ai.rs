@@ -1081,7 +1081,7 @@ impl ReasoningEffortSetting {
         use genai::chat::ReasoningEffort as GE;
         Some(match self {
             Self::Auto => return None,
-            Self::Off => GE::None,
+            Self::Off => GE::Zero,
             Self::Minimal => GE::Minimal,
             Self::Low => GE::Low,
             Self::Medium => GE::Medium,

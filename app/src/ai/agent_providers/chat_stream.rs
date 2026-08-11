@@ -7628,7 +7628,7 @@ mod build_chat_options_off_tests {
     fn openai_gpt5_off_uses_reasoning_effort_none() {
         let o = opts(AgentProviderApiType::OpenAi, "gpt-5", R::Off);
         assert!(
-            matches!(o.reasoning_effort, Some(GE::None)),
+            matches!(o.reasoning_effort, Some(GE::Zero)),
             "OpenAI+GPT-5+Off should send reasoning_effort=none"
         );
     }
