@@ -482,3 +482,29 @@ jobs:
       - name: cargo check -p warp_tui
         shell: bash
         run: cargo check -p warp_tui
+
+      # RUN them, don't just compile them. Several `cfg(windows)` tests exist
+      # and have never once executed, because this job only ever ran
+      # `cargo check` -- which is exactly why TODO.md carried "compile-only
+      # port, still not runtime-verified" for WSLENV passthrough (#117), pwsh
+      # -EncodedCommand, and launch-at-login (#118/#484).
+      #
+      # These are real runtime checks, not compile checks:
+      #   login_item::windows_tests  - writes and reads ACTUAL registry values
+      #                                under a scratch key, then cleans up
+      #   windows::environment_tests - WSLENV allowlist construction
+      #   util::encode_pwsh_command  - the PS 7.6 quoting-crash workaround
+      #
+      # Filtered rather than a full suite run: the Linux job already covers
+      # everything portable, and a whole Windows suite would dominate this
+      # workflow's wall clock for no added signal.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@9ba3ac3fd006a70c6e186a683577abc1ccf0ff3a # v2
+        with:
+          tool: nextest
+
+      - name: Run Windows-specific tests (not just compile them)
+        shell: bash
+        run: |
+          cargo nextest run -p warp --features gui --no-fail-fast \
+            -E 'test(/login_item/) or test(/environment_tests/) or test(/encode_pwsh_command/) or test(/wsl_env/) or test(/pwsh/)'
