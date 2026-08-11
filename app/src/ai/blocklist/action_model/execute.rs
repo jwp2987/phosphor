@@ -164,6 +164,21 @@ enum AnyActionExecution {
     InvalidAction,
 }
 
+// Hand-written because the `Async` variant holds a boxed future and a boxed
+// `FnOnce`, neither of which is `Debug`. Tests that match on an executor's
+// result need to be able to name the variant they got instead in a failure
+// message; without this they can only report "the match arm did not fire".
+impl std::fmt::Debug for AnyActionExecution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Async { .. } => f.write_str("Async { .. }"),
+            Self::Sync(result) => f.debug_tuple("Sync").field(result).finish(),
+            Self::NotReady => f.write_str("NotReady"),
+            Self::InvalidAction => f.write_str("InvalidAction"),
+        }
+    }
+}
+
 impl<T> From<ActionExecution<T>> for AnyActionExecution
 where
     T: Send + 'static,
