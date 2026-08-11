@@ -1046,10 +1046,29 @@ more look at *why* it is absent.
       IS present** — so "attach agent to running command" landed its binding and
       not its mechanism. 15 tests.
 
-### Confirmed absent — TUI agent-message rendering (issue #456, cluster 2)
+### TUI agent-message rendering — IMPLEMENTED 2026-08-11 (#456 cluster 2)
+- [x] **Real, and now built.** New `crates/warp_tui/src/agent_message.rs` plus the
+      `TuiAIBlockSection::AgentMessage(ReceivedMessageDisplay)` variant wired
+      through `sections()` / `measurable_section_element()` / `render_element()` /
+      `section_logical_text()`. Ported near-verbatim from the pin.
+      **This was a wire-up, not a build:** the identity/colour infrastructure
+      (`orchestrated_agent_identity_styling.rs`, 9 tests) was already in the fork,
+      byte-identical to the pin, and unused.
+      **The blocker was a wrong comment.** `agent_block.rs:1307` matched
+      `MessagesReceivedFromAgents`/`EventsFromAgents` to `{}` saying "Inter-agent
+      messages/events are orchestration (cloud) surfaces Zap does not render."
+      They are not cloud — the dependencies are this fork's own LOCAL
+      `orchestration_topology.rs` ("Local only... no remote-worker execution
+      path"), already used by the shipped GUI renderer. **Twelfth in-tree document
+      found contradicting the code.** `SCOPE-TERMINAL.md` had inherited the same
+      false positive; both its rows are now annotated.
+      **13 real-debt symbols → 10.**
+
+<details><summary>Original entry</summary>
 - [ ] `TuiAIBlockSection::AgentMessage`, `agent_message_section_id`, `AgentMessage`.
       **The GUI half is built** (`blocklist/orchestration_events.rs` emits at
       `:331`, renders at `:407`). TUI only. 9 tests.
+</details>
 
 ### Blocked-action acceptance — DISSOLVED 2026-08-11, it was a rename
 - [x] `AcceptBlockedTerminalUseAction` **is present as `AllowBlockedLrcAction`**
