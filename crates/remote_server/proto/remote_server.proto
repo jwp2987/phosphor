@@ -86,6 +86,21 @@ message HostScopedRequest {
     DropCodebaseIndex drop_codebase_index = 19;
     GetFragmentMetadataFromHash get_fragment_metadata_from_hash = 20;
     ResyncCodebase resync_codebase = 21;
+    // Remote codebase-index *search* (TODO.md "UNWIRED-CODE AUDIT 2026-08-10"
+    // finding #5). Fork-original — the pin has **no** equivalent RPC at all,
+    // field 22 is not a pin number renumbered around a collision like 18-21
+    // above. At the pin, the daemon and the client share one vector store, so
+    // the client resolves a search entirely on its own side by reading that
+    // shared store directly; the daemon is only ever asked to map the
+    // resulting content hashes back to files (GetFragmentMetadataFromHash).
+    // This fork's daemon has no shared store — `codebase_index_store.rs`'s
+    // module doc explains why: its vectors live in a private per-daemon
+    // SQLite file the client cannot reach. So the search itself has to run
+    // on the daemon, and the ranked result travels back over the wire
+    // instead of being read out of local storage. Host-scoped for the same
+    // reason as the mutations above: the index belongs to the host, not to
+    // one SSH connection.
+    SearchRemoteCodebase search_remote_codebase = 22;
   }
 }
 
@@ -169,6 +184,7 @@ message ServerMessage {
     CodebaseIndexStatusesSnapshot codebase_index_statuses_snapshot = 12;
     CodebaseIndexStatusUpdated codebase_index_status_updated = 13;
     GetFragmentMetadataFromHashResponse get_fragment_metadata_from_hash_response = 36;
+    SearchRemoteCodebaseResponse search_remote_codebase_response = 37;
   }
 }
 
@@ -1346,6 +1362,56 @@ message GetFragmentMetadataFromHashResponse {
   oneof result {
     GetFragmentMetadataFromHashSuccess success = 1;
     FragmentMetadataLookupError error = 2;
+  }
+}
+
+// Fork-original (see the field comment on
+// `HostScopedRequest.search_remote_codebase` for why the pin has no
+// equivalent). Asks the daemon to answer `get_relevant_files` against its
+// own private codebase index for `repo_path`.
+message SearchRemoteCodebase {
+  string repo_path = 1;
+  string query = 2;
+}
+
+enum RemoteCodebaseSearchErrorCode {
+  REMOTE_CODEBASE_SEARCH_ERROR_CODE_UNSPECIFIED = 0;
+  // Mirrors `ServerModel::codebase_indexing_ready()`'s failure: the feature
+  // is off, or this host has no embedding provider configured.
+  REMOTE_CODEBASE_SEARCH_ERROR_CODE_NOT_ENABLED = 1;
+  // `repo_path` did not parse as an absolute path on the host.
+  REMOTE_CODEBASE_SEARCH_ERROR_CODE_INVALID_REPO_PATH = 2;
+  // Mirrors `RetrieveFileError::IndexNotFound`: no index is tracked for
+  // this repository yet.
+  REMOTE_CODEBASE_SEARCH_ERROR_CODE_INDEX_NOT_FOUND = 3;
+  // Mirrors `RetrieveFileError::IndexSyncing`: an index is tracked but has
+  // not finished its first sync.
+  REMOTE_CODEBASE_SEARCH_ERROR_CODE_INDEX_SYNCING = 4;
+  // Mirrors `RetrieveFileError::IndexFailed`: the index exists but its last
+  // sync failed, so there is nothing synced to search.
+  REMOTE_CODEBASE_SEARCH_ERROR_CODE_INDEX_FAILED = 5;
+  // The request was accepted (the index was ready) but the retrieval itself
+  // failed after starting — a `CodebaseIndexManagerEvent::
+  // RetrievalRequestFailed` arrived instead of `RetrievalRequestCompleted`.
+  REMOTE_CODEBASE_SEARCH_ERROR_CODE_RETRIEVAL_FAILED = 6;
+}
+
+message RemoteCodebaseSearchError {
+  RemoteCodebaseSearchErrorCode code = 1;
+  string message = 2;
+}
+
+message SearchRemoteCodebaseSuccess {
+  // Absolute paths on the remote host, ranked best first — the same shape
+  // `CodebaseIndexManagerEvent::RetrievalRequestCompleted::ranked_paths`
+  // uses for the local leg.
+  repeated string ranked_paths = 1;
+}
+
+message SearchRemoteCodebaseResponse {
+  oneof result {
+    SearchRemoteCodebaseSuccess success = 1;
+    RemoteCodebaseSearchError error = 2;
   }
 }
 

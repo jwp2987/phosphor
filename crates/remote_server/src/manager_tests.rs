@@ -255,6 +255,36 @@ fn host_request_handle_without_connected_host_resolves_immediately() {
 }
 
 #[test]
+fn search_remote_codebase_without_connected_host_resolves_immediately() {
+    // Same shape as `host_request_handle_without_connected_host_resolves_immediately`,
+    // for the codebase-search RPC (TODO.md "UNWIRED-CODE AUDIT 2026-08-10" finding #5):
+    // exercises `host_request_handle` → `HostRequestHandle::send` →
+    // `HostRequestHandle::search_remote_codebase` end to end, with no daemon on the
+    // other end to answer. This is the transport-failure path
+    // `app::ai::codebase_retrieval::RetrievalFailure::HostUnreachable` is built on: a
+    // caller must get a fast, typed error here, never a hang.
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let host_id = HostId::new("missing-host".to_string());
+        let handle = manager.update(&mut app, |manager, _ctx| {
+            manager.host_request_handle(&host_id)
+        });
+
+        let result = handle
+            .search_remote_codebase(crate::proto::SearchRemoteCodebase {
+                repo_path: "/repo".to_string(),
+                query: "where is the parser".to_string(),
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(HostRequestError::AllSessionsDisconnected)
+        ));
+    });
+}
+
+#[test]
 fn handle_host_disconnected_fails_pending_host_requests_for_that_host_only() {
     App::test((), |mut app| async move {
         let manager = app.add_model(RemoteServerManager::new);

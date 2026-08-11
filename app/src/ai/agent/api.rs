@@ -141,10 +141,12 @@ pub struct RequestParams {
     ///
     /// Those two snapshot the local `RepoOutlines` symbol index and are gated on the
     /// per-profile `AIExecutionProfile::codebase_context_enabled`. This one reaches the
-    /// vector index built by `CodebaseIndexManager`, and is gated on the *settings*
-    /// `code.indexing.agent_mode_codebase_context` — the setting that pays for the
-    /// index. `Some` only when that setting is on and an index covers this session's
-    /// working directory; see `codebase_retrieval::handle_for_directory`.
+    /// vector index built by `CodebaseIndexManager` (for a local session) or its
+    /// daemon-side equivalent over `SearchRemoteCodebase` (for a remote one), and is
+    /// gated on the *settings* `code.indexing.agent_mode_codebase_context` — the
+    /// setting that pays for the index. `Some` only when that setting is on and an
+    /// index covers this session's active repository, local or remote; see
+    /// `codebase_retrieval::handle_for_session`.
     ///
     /// Materialized in `new()` because it needs an `AppContext`; the `chat_stream`
     /// interceptor has none, and the handle is exactly what lets it query anyway.
@@ -429,15 +431,13 @@ impl RequestParams {
         };
         // The embedding index is a separate mechanism on a separate setting, so it is
         // resolved independently of `codebase_context_enabled` above -- see the field
-        // doc on `RequestParams::codebase_retrieval`. `handle_for_directory` checks the
+        // doc on `RequestParams::codebase_retrieval`. `handle_for_session` checks the
         // settings gate itself and returns `None` cheaply when there is no index,
-        // which is the default configuration.
-        let codebase_retrieval = session_context
-            .current_working_directory()
-            .as_ref()
-            .and_then(|cwd| {
-                crate::ai::codebase_retrieval::handle_for_directory(app, Path::new(cwd.as_str()))
-            });
+        // which is the default configuration. It also picks the local or remote
+        // backend from `session_context` itself (TODO.md "UNWIRED-CODE AUDIT
+        // 2026-08-10" finding #5), so callers never branch on that separately.
+        let codebase_retrieval =
+            crate::ai::codebase_retrieval::handle_for_session(app, &session_context);
         let research_agent_enabled = app
             .private_user_preferences()
             .read_value("ResearchAgentEnabled")

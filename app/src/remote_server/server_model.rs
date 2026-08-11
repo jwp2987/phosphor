@@ -45,24 +45,27 @@ use super::codebase_index_status::{
 use super::codebase_index_store::daemon_store_client;
 #[cfg(feature = "local_fs")]
 use super::proto::{
-    get_fragment_metadata_from_hash_response, CodebaseIndexLimits, CodebaseIndexStatus,
-    CodebaseIndexStatusUpdated, CodebaseIndexStatusesSnapshot, CodebaseResyncMode,
-    DropCodebaseIndex, FragmentMetadata as ProtoFragmentMetadata,
+    CodebaseIndexLimits, CodebaseIndexStatus, CodebaseIndexStatusUpdated,
+    CodebaseIndexStatusesSnapshot, CodebaseResyncMode, DropCodebaseIndex,
+    FragmentMetadata as ProtoFragmentMetadata,
     FragmentMetadataLookupError as ProtoFragmentMetadataLookupError,
     FragmentMetadataLookupErrorCode, GetFragmentMetadataFromHash,
     GetFragmentMetadataFromHashResponse, GetFragmentMetadataFromHashSuccess, IndexCodebase,
-    MissingFragmentMetadata, ResyncCodebase, UpdatePreferences,
+    MissingFragmentMetadata, RemoteCodebaseSearchError, RemoteCodebaseSearchErrorCode,
+    ResyncCodebase, SearchRemoteCodebase, SearchRemoteCodebaseResponse,
+    SearchRemoteCodebaseSuccess, UpdatePreferences, get_fragment_metadata_from_hash_response,
+    search_remote_codebase_response,
 };
 #[cfg(feature = "local_fs")]
 use crate::ai::agent_providers::embeddings::EmbeddingEndpoint;
 #[cfg(feature = "local_fs")]
 use ::ai::index::full_source_code_embedding::manager::{
     CodebaseIndexManager, CodebaseIndexManagerEvent,
-    FragmentMetadataLookupError as LocalFragmentMetadataLookupError,
+    FragmentMetadataLookupError as LocalFragmentMetadataLookupError, RetrieveFileError,
 };
 #[cfg(feature = "local_fs")]
 use ::ai::index::full_source_code_embedding::{
-    ContentHash, EmbeddingConfig, FragmentMetadata as LocalFragmentMetadata, NodeHash,
+    ContentHash, EmbeddingConfig, FragmentMetadata as LocalFragmentMetadata, NodeHash, RetrievalID,
 };
 #[cfg(feature = "local_fs")]
 use warp_core::features::FeatureFlag;
@@ -171,6 +174,21 @@ struct PendingFileOp {
     request_id: RequestId,
     conn_id: ConnectionId,
     kind: FileOpKind,
+}
+
+/// A `SearchRemoteCodebase` request awaiting its retrieval-completion event.
+///
+/// `CodebaseIndexManager::retrieve_relevant_files` only registers the
+/// request and returns a `RetrievalID`; the answer arrives later as a
+/// `CodebaseIndexManagerEvent::RetrievalRequestCompleted`/
+/// `RetrievalRequestFailed`, which carries only the `RetrievalID` — so this
+/// is the only place the originating request can be recovered. Mirrors
+/// `PendingFileOp` above and `app::ai::codebase_retrieval::PendingRetrieval`,
+/// which bridges the same lifecycle for the local (in-process) consumer.
+#[cfg(feature = "local_fs")]
+struct PendingCodebaseRetrieval {
+    request_id: RequestId,
+    conn_id: ConnectionId,
 }
 
 /// Manages pending file operations and ensures that the corresponding
@@ -499,6 +517,12 @@ pub struct ServerModel {
     /// fixed by then and cannot change underneath us.
     #[cfg(feature = "local_fs")]
     codebase_indexing_available: bool,
+    /// `SearchRemoteCodebase` requests awaiting their retrieval-completion
+    /// event, keyed by the `RetrievalID` the event carries. See
+    /// `handle_search_remote_codebase` and
+    /// `handle_codebase_index_manager_event`.
+    #[cfg(feature = "local_fs")]
+    pending_codebase_retrievals: HashMap<RetrievalID, PendingCodebaseRetrieval>,
     /// Live git watches backing granular per-file diff-state pushes (#577),
     /// keyed by repository root — one watch per repo, shared by every
     /// `(repo, mode)` subscription on it, since the filesystem events do not
@@ -576,6 +600,8 @@ impl ServerModel {
             auth_token: None,
             #[cfg(feature = "local_fs")]
             codebase_indexing_available: ctx.has_singleton_model::<CodebaseIndexManager>(),
+            #[cfg(feature = "local_fs")]
+            pending_codebase_retrievals: HashMap::new(),
             #[cfg(feature = "local_fs")]
             diff_state_watches: HashMap::new(),
             #[cfg(feature = "local_fs")]
@@ -1226,6 +1252,10 @@ impl ServerModel {
                     Some(host_scoped_request::Message::GetFragmentMetadataFromHash(msg)) => {
                         self.handle_get_fragment_metadata_from_hash(msg, &request_id, conn_id, ctx)
                     }
+                    #[cfg(feature = "local_fs")]
+                    Some(host_scoped_request::Message::SearchRemoteCodebase(msg)) => {
+                        self.handle_search_remote_codebase(msg, &request_id, conn_id, ctx)
+                    }
                     #[cfg(not(feature = "local_fs"))]
                     Some(
                         host_scoped_request::Message::SaveBuffer(_)
@@ -1244,7 +1274,8 @@ impl ServerModel {
                         host_scoped_request::Message::IndexCodebase(_)
                         | host_scoped_request::Message::ResyncCodebase(_)
                         | host_scoped_request::Message::DropCodebaseIndex(_)
-                        | host_scoped_request::Message::GetFragmentMetadataFromHash(_),
+                        | host_scoped_request::Message::GetFragmentMetadataFromHash(_)
+                        | host_scoped_request::Message::SearchRemoteCodebase(_),
                     ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
                         code: ErrorCode::InvalidRequest.into(),
                         message: "Codebase indexing requires the local_fs feature".to_string(),
@@ -1662,9 +1693,24 @@ impl ServerModel {
                     ));
                 }
             }
-            CodebaseIndexManagerEvent::RetrievalRequestCompleted { .. }
-            | CodebaseIndexManagerEvent::RetrievalRequestFailed { .. }
-            | CodebaseIndexManagerEvent::IndexMetadataUpdated { .. } => {}
+            // TODO.md "UNWIRED-CODE AUDIT 2026-08-10" finding #5: these two
+            // used to be dropped unconditionally, which is exactly why the
+            // daemon had no way to answer a `SearchRemoteCodebase` request —
+            // nothing ever resolved the retrieval it started.
+            CodebaseIndexManagerEvent::RetrievalRequestCompleted {
+                retrieval_id,
+                ranked_paths,
+                ..
+            } => {
+                self.resolve_pending_codebase_retrieval(retrieval_id, Ok(ranked_paths.as_slice()));
+            }
+            CodebaseIndexManagerEvent::RetrievalRequestFailed {
+                retrieval_id,
+                error_message,
+            } => {
+                self.resolve_pending_codebase_retrieval(retrieval_id, Err(error_message.as_str()));
+            }
+            CodebaseIndexManagerEvent::IndexMetadataUpdated { .. } => {}
         }
     }
 
@@ -2022,6 +2068,101 @@ impl ServerModel {
                 },
             ),
         )
+    }
+
+    /// Handles `SearchRemoteCodebase`: asks this host's `CodebaseIndexManager`
+    /// to answer `query` against its own private index for `repo_path`.
+    ///
+    /// Unlike `GetFragmentMetadataFromHash`, this cannot be answered
+    /// synchronously. `CodebaseIndexManager::retrieve_relevant_files` only
+    /// registers the request and returns a `RetrievalID`; the real answer
+    /// arrives later as a `CodebaseIndexManagerEvent::
+    /// RetrievalRequestCompleted`/`RetrievalRequestFailed` — the same
+    /// lifecycle `app::ai::codebase_retrieval::CodebaseRetrievalController`
+    /// bridges for the local (in-process) consumer.
+    /// `pending_codebase_retrievals` plus
+    /// `handle_codebase_index_manager_event` are this handler's half of that
+    /// bridge, so the outcome here is `HandlerOutcome::Async(None)` — not
+    /// abortable via `in_progress`/`Abort`, matching `pending_file_ops`'s
+    /// justification for the same shape: the retrieval outlives any one
+    /// request/response pair and is tracked by its own domain id
+    /// (`RetrievalID`), not by `RequestId`.
+    #[cfg(feature = "local_fs")]
+    fn handle_search_remote_codebase(
+        &mut self,
+        msg: SearchRemoteCodebase,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        log::info!(
+            "[Remote codebase indexing] Daemon handling SearchRemoteCodebase: \
+             request_id={request_id} conn_id={conn_id} repo_path={} query_len={}",
+            msg.repo_path,
+            msg.query.len()
+        );
+
+        if let Err(message) = self.codebase_indexing_ready() {
+            return search_remote_codebase_error_response(
+                RemoteCodebaseSearchErrorCode::NotEnabled,
+                message,
+            );
+        }
+
+        let repo_path = match canonicalize_index_repo_path(&msg.repo_path) {
+            Ok(repo_path) => repo_path,
+            Err(error) => {
+                return search_remote_codebase_error_response(
+                    RemoteCodebaseSearchErrorCode::InvalidRepoPath,
+                    error,
+                );
+            }
+        };
+
+        let retrieval_id = CodebaseIndexManager::handle(ctx).update(ctx, |manager, ctx| {
+            manager.retrieve_relevant_files(msg.query, &repo_path, ctx)
+        });
+        let retrieval_id = match retrieval_id {
+            Ok(retrieval_id) => retrieval_id,
+            Err(error) => return search_remote_codebase_error_response_from_error(error),
+        };
+
+        self.pending_codebase_retrievals.insert(
+            retrieval_id,
+            PendingCodebaseRetrieval {
+                request_id: request_id.clone(),
+                conn_id,
+            },
+        );
+        HandlerOutcome::Async(None)
+    }
+
+    /// Resolves a pending `SearchRemoteCodebase` request from the
+    /// `CodebaseIndexManagerEvent` that answers it, and sends the response.
+    /// No-op if `retrieval_id` is not one of ours — e.g. a retrieval this
+    /// same daemon process started for a different reason, if one is ever
+    /// added.
+    #[cfg(feature = "local_fs")]
+    fn resolve_pending_codebase_retrieval(
+        &mut self,
+        retrieval_id: &RetrievalID,
+        result: Result<&[PathBuf], &str>,
+    ) {
+        let Some(pending) = self.pending_codebase_retrievals.remove(retrieval_id) else {
+            return;
+        };
+        let response_message = match result {
+            Ok(ranked_paths) => search_remote_codebase_success_message(ranked_paths),
+            Err(error_message) => search_remote_codebase_error_message(
+                RemoteCodebaseSearchErrorCode::RetrievalFailed,
+                error_message.to_string(),
+            ),
+        };
+        self.send_server_message(
+            Some(pending.conn_id),
+            Some(&pending.request_id),
+            response_message,
+        );
     }
 
     #[cfg(feature = "local_fs")]
@@ -4502,6 +4643,73 @@ fn fragment_metadata_to_proto(
         byte_start: metadata.location.byte_range.start.as_usize() as u64,
         byte_end: metadata.location.byte_range.end.as_usize() as u64,
     }
+}
+
+// ── SearchRemoteCodebase helpers (TODO.md "UNWIRED-CODE AUDIT 2026-08-10"
+// finding #5) ───────────────────────────────────────────────────────────
+//
+// Fork-original: the pin has no equivalent RPC. See the field comment on
+// `HostScopedRequest.search_remote_codebase` in the proto file.
+
+#[cfg(feature = "local_fs")]
+fn search_remote_codebase_success_message(ranked_paths: &[PathBuf]) -> server_message::Message {
+    server_message::Message::SearchRemoteCodebaseResponse(SearchRemoteCodebaseResponse {
+        result: Some(search_remote_codebase_response::Result::Success(
+            SearchRemoteCodebaseSuccess {
+                ranked_paths: ranked_paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
+            },
+        )),
+    })
+}
+
+#[cfg(feature = "local_fs")]
+fn search_remote_codebase_error_message(
+    code: RemoteCodebaseSearchErrorCode,
+    message: String,
+) -> server_message::Message {
+    server_message::Message::SearchRemoteCodebaseResponse(SearchRemoteCodebaseResponse {
+        result: Some(search_remote_codebase_response::Result::Error(
+            RemoteCodebaseSearchError {
+                code: code.into(),
+                message,
+            },
+        )),
+    })
+}
+
+#[cfg(feature = "local_fs")]
+fn search_remote_codebase_error_response(
+    code: RemoteCodebaseSearchErrorCode,
+    message: String,
+) -> HandlerOutcome {
+    HandlerOutcome::Sync(search_remote_codebase_error_message(code, message))
+}
+
+/// Maps `retrieve_relevant_files`'s synchronous rejection (the index isn't in
+/// a state where a retrieval could even be started) onto the wire error
+/// code. Mirrors `app::ai::codebase_retrieval`'s `From<RetrieveFileError> for
+/// RetrievalFailure` — the two are meant to produce the same classification
+/// for the same underlying condition, one leg local, one remote.
+#[cfg(feature = "local_fs")]
+fn search_remote_codebase_error_response_from_error(error: RetrieveFileError) -> HandlerOutcome {
+    let (code, message) = match error {
+        RetrieveFileError::IndexNotFound => (
+            RemoteCodebaseSearchErrorCode::IndexNotFound,
+            "Codebase index not found".to_string(),
+        ),
+        RetrieveFileError::IndexSyncing => (
+            RemoteCodebaseSearchErrorCode::IndexSyncing,
+            "Codebase index still syncing".to_string(),
+        ),
+        RetrieveFileError::IndexFailed(error) => (
+            RemoteCodebaseSearchErrorCode::IndexFailed,
+            format!("Codebase index failed: {error:#}"),
+        ),
+    };
+    search_remote_codebase_error_response(code, message)
 }
 
 #[cfg(test)]
