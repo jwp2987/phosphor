@@ -1,20 +1,21 @@
 //! Ported from the pinned oracle's `orchestration_model_tests.rs` (`02b53fcd8`).
 //!
-//! Only `snapshot_is_shared_across_tree_and_filters_conversations_without_sessions`
-//! made the trip. The other four pin tests in this file
-//! (`local_harness_children_fail_cleanly`, `failed_launch_cleanup_preserves_other_sessions`,
-//! `github_auth_blocker_keeps_the_remote_session_and_actionable_url`,
-//! `remote_child_session_is_navigable_and_projects_lifecycle`) all exercise child-session
-//! *materialization* (`StartAgentExecutor`, `StartAgentRequest`, remote/cloud-runner launch),
-//! which [`super::TuiOrchestrationModel`]'s module doc explains was deliberately cut, not
-//! stubbed -- see that comment for the full rationale (local half: future work; remote half:
-//! cloud-runner orchestration, out of scope pending #290). This test exercises exactly the
-//! read-only navigation surface the fork kept: `snapshot`, `focus_conversation_session`, and
-//! `set_explicit_page`, fed by conversations created directly through
-//! `BlocklistAIHistoryModel::start_new_child_conversation` rather than through the cut executor.
+//! Three of the pin's five tests made the trip:
+//! `snapshot_is_shared_across_tree_and_filters_conversations_without_sessions` (read-only
+//! navigation, fed by conversations created directly through
+//! `BlocklistAIHistoryModel::start_new_child_conversation`) and, new in this port,
+//! `local_harness_children_fail_cleanly` / `failed_launch_cleanup_preserves_other_sessions` --
+//! both exercise the now-built [`StartAgentExecutor`] / [`super::TuiOrchestrationModel::
+//! dispatch_create_agent`] failure path. The remaining two
+//! (`github_auth_blocker_keeps_the_remote_session_and_actionable_url`,
+//! `remote_child_session_is_navigable_and_projects_lifecycle`) exercise the *remote*
+//! child-session path -- declined cloud-runner orchestration, `DECLINED.md` #290 -- and are not
+//! ported: this fork's `StartAgentExecutionMode` has no `Remote` variant to dispatch.
 
 use warp::tui_export::{
-    AIConversationId, BlocklistAIHistoryModel, Harness, register_tui_session_view_test_singletons,
+    AIConversationId, BlocklistAIHistoryModel, Harness, StartAgentExecutionMode,
+    StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome, StartAgentRequest,
+    register_tui_session_view_test_singletons,
 };
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, ModelHandle, ReadModel, SingletonEntity as _, UpdateModel};
@@ -195,5 +196,151 @@ fn snapshot_is_shared_across_tree_and_filters_conversations_without_sessions() {
             assert_eq!(snapshot.page_anchor, Some(first_child_id));
             assert!(snapshot.reveal_selected);
         });
+    });
+}
+
+/// Creates a standalone executor and relays its frontend materialization
+/// events into the coordinator, mirroring how a real caller (once one
+/// exists -- see [`super::TuiOrchestrationModel`]'s module doc) would wire
+/// both `StartAgentExecutorEvent` variants to `dispatch_create_agent` /
+/// `cleanup_failed_child`.
+fn add_relayed_executor(
+    app: &mut App,
+    parent_session_id: TuiSessionId,
+) -> ModelHandle<StartAgentExecutor> {
+    let executor = app.add_model(StartAgentExecutor::new);
+    let executor_for_relay = executor.clone();
+    app.update(|ctx| {
+        let orchestration = TuiOrchestrationModel::handle(ctx);
+        ctx.subscribe_to_model(&executor, move |_, event, ctx| {
+            orchestration.update(ctx, |orchestration, ctx| match event {
+                StartAgentExecutorEvent::CreateAgent(request) => {
+                    orchestration.dispatch_create_agent(
+                        parent_session_id,
+                        (**request).clone(),
+                        &executor_for_relay,
+                        ctx,
+                    );
+                }
+                StartAgentExecutorEvent::CleanupFailedChildLaunch { conversation_id } => {
+                    orchestration.cleanup_failed_child(conversation_id, ctx);
+                }
+            });
+        });
+    });
+    executor
+}
+
+/// Dispatches a StartAgent request through the session's executor and
+/// returns the resolved outcome. Every `Local` mode currently resolves
+/// synchronously (within the same effect flush `dispatch` triggers), so the
+/// receiver already has an answer by the time `update_model` returns.
+fn dispatch_and_recv(
+    app: &mut App,
+    session_id: TuiSessionId,
+    executor: &ModelHandle<StartAgentExecutor>,
+    execution_mode: StartAgentExecutionMode,
+) -> (AIConversationId, StartAgentOutcome) {
+    let parent_conversation_id = app.read(|ctx| {
+        BlocklistAIHistoryModel::as_ref(ctx)
+            .active_conversation(session_id.surface_id())
+            .expect("fixture registered an active conversation")
+            .id()
+    });
+    let receiver = app.update_model(executor, |executor, ctx| {
+        executor.dispatch(
+            "researcher".to_string(),
+            "research the codebase".to_string(),
+            execution_mode,
+            None,
+            parent_conversation_id,
+            Some("parent-run-1".to_string()),
+            ctx,
+        )
+    });
+    (
+        parent_conversation_id,
+        receiver
+            .try_recv()
+            .expect("unsupported-mode dispatches resolve before the update returns"),
+    )
+}
+
+fn assert_error_containing(outcome: StartAgentOutcome, needle: &str) {
+    match outcome {
+        StartAgentOutcome::Error(message) => {
+            assert!(message.contains(needle), "unexpected error: {message}");
+        }
+        StartAgentOutcome::Started { agent_id } => {
+            panic!("expected an error outcome, got Started({agent_id})");
+        }
+    }
+}
+
+fn assert_failed_launch_cleaned_up(
+    app: &App,
+    fixture: &OrchestrationFixture,
+    parent_conversation_id: AIConversationId,
+    expected_session_count: usize,
+) {
+    app.read(|ctx| {
+        let history = BlocklistAIHistoryModel::as_ref(ctx);
+        assert!(
+            history
+                .child_conversation_ids_of(&parent_conversation_id)
+                .is_empty()
+        );
+        assert!(
+            TuiOrchestrationModel::as_ref(ctx)
+                .event_consumers_by_session
+                .is_empty()
+        );
+    });
+    assert_eq!(
+        app.read_model(&fixture.sessions, |sessions, _| sessions.len()),
+        expected_session_count,
+    );
+}
+
+#[test]
+fn local_harness_children_fail_cleanly() {
+    App::test((), |mut app| async move {
+        let fixture = orchestration_fixture(&mut app);
+        let session_id = add_dispatching_session(&mut app, &fixture, true);
+        let executor = add_relayed_executor(&mut app, session_id);
+
+        let (parent_conversation_id, outcome) = dispatch_and_recv(
+            &mut app,
+            session_id,
+            &executor,
+            StartAgentExecutionMode::Local {
+                harness_type: Some("claude".to_string()),
+                model_id: None,
+            },
+        );
+        assert_error_containing(outcome, "aren't supported in Warp Agent CLI yet");
+        assert_failed_launch_cleaned_up(&app, &fixture, parent_conversation_id, 1);
+    });
+}
+
+#[test]
+fn failed_launch_cleanup_preserves_other_sessions() {
+    App::test((), |mut app| async move {
+        let fixture = orchestration_fixture(&mut app);
+        let _ = add_dispatching_session(&mut app, &fixture, true);
+        let background_session_id = add_dispatching_session(&mut app, &fixture, false);
+        let executor = add_relayed_executor(&mut app, background_session_id);
+
+        let (parent_conversation_id, outcome) = dispatch_and_recv(
+            &mut app,
+            background_session_id,
+            &executor,
+            StartAgentExecutionMode::Local {
+                harness_type: Some("codex".to_string()),
+                model_id: None,
+            },
+        );
+        assert_error_containing(outcome, "aren't supported in Warp Agent CLI yet");
+        assert_failed_launch_cleaned_up(&app, &fixture, parent_conversation_id, 2);
     });
 }

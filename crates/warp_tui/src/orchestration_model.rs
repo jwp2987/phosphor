@@ -1,44 +1,55 @@
 //! [`TuiOrchestrationModel`]: TUI orchestration navigation state -- local only.
 //!
 //! Ported from the pin's `orchestration_model.rs` (679 lines), trimmed to what
-//! is genuinely local and reachable in this fork. Two things were cut, not
-//! stubbed:
+//! is genuinely local and reachable in this fork.
 //!
-//! - **`dispatch_create_agent` and everything that materializes a new child
-//!   session** (`begin_local_oz_child_launch`, `begin_remote_child_launch`,
-//!   `register_local_oz_child_session`, `register_remote_child_session`,
-//!   `finish_remote_child_launch`, `handle_streamer_event`,
-//!   `cleanup_failed_child`, `fail_child_request`, `register_event_consumer`,
-//!   `handle_session_removed`, and the `TuiOrchestrationEvent` enum that
-//!   carries their requests). The pin drives all of this from a shared
-//!   `StartAgentExecutor` singleton (`StartAgentRequest`,
-//!   `prepare_local_oz_child_launch`) that **does not exist anywhere in this
-//!   fork, not even for the GUI** -- this fork's local child-harness launch
-//!   (`app/src/pane_group/pane/local_harness_launch.rs`) is a different,
-//!   `pub(super)`-private mechanism scoped to `PaneGroup`'s hidden panes, not
-//!   a shared executor a TUI session registry could subscribe to. Its
-//!   *remote* half additionally calls `ServerApiProvider`/`ai_client` --
-//!   cloud-runner orchestration, out of scope pending #290. Building a TUI
-//!   equivalent of child materialization is future work, not a mechanical
-//!   trim of this file.
-//! - `OrchestrationEventStreamer`/`handle_streamer_event`: exists in the pin
-//!   only to reflect a *remote* run's server-pushed status back onto its
-//!   local conversation. With no remote children, there is nothing to
-//!   stream.
+//! **Update, this port:** the shared `StartAgentExecutor` now exists
+//! (`app/src/ai/blocklist/action_model/execute/start_agent.rs`, re-exported
+//! via `warp::tui_export`) -- the claim below that it "does not exist
+//! anywhere in this fork" is stale. [`dispatch_create_agent`],
+//! [`fail_child_request`] and [`cleanup_failed_child`] are built and wired to
+//! it, so a TUI-dispatched
+//! `StartAgentExecutionMode::Local` request now resolves as a clean failure
+//! (matching the pin's own "not supported outside of dogfood" behaviour for
+//! named-harness children) instead of never being handled at all. What is
+//! **still** cut, not stubbed:
 //!
-//! What remains is exactly what the orchestration tab bar's 9 pinned tests
+//! - **Native local-Oz child materialization** (`begin_local_oz_child_launch`,
+//!   `register_local_oz_child_session`, and the session-side half of
+//!   `TuiOrchestrationEvent`/`register_event_consumer`/
+//!   `handle_session_removed`). The pin's only implementation routes through
+//!   `prepare_local_oz_child_launch`, which -- despite its name -- creates the
+//!   child's task via `ServerApiProvider::as_ref(ctx).get_ai_client()
+//!   .create_agent_task(..)`, i.e. it is cloud-coupled even in "local" mode.
+//!   `start_agent.rs`'s module doc records this seam in detail. Building a
+//!   genuinely local replacement (materializing a real TUI session the way
+//!   `app/src/pane_group/pane/local_harness_launch.rs` already does for the
+//!   GUI's hidden panes) is future work, not a mechanical trim of this file.
+//! - **Everything remote**: `begin_remote_child_launch`,
+//!   `register_remote_child_session`, `finish_remote_child_launch`,
+//!   `OrchestrationEventStreamer`/`handle_streamer_event`. Declined
+//!   cloud-runner orchestration (`DECLINED.md` #290); `is_remote_child` is
+//!   permanently false here, so `StartAgentExecutionMode` in this fork has no
+//!   `Remote` variant to route at all.
+//!
+//! What remains is exactly what the orchestration tab bar's pinned tests
 //! exercise: registering the singleton, noticing when the conversation
-//! topology changes, and computing a read-only navigation snapshot. The
-//! snapshot is fed by `app::ai::blocklist::orchestration_topology`'s
-//! already-local-only helpers (re-exported via `warp::tui_export`) rather
-//! than reimplementing traversal -- that module's own doc comment already
-//! states there is no remote-worker execution path in this fork.
+//! topology changes, computing a read-only navigation snapshot, and (new in
+//! this port) resolving an unsupported local-harness dispatch as a clean,
+//! fully-cleaned-up failure. The snapshot is fed by
+//! `app::ai::blocklist::orchestration_topology`'s already-local-only helpers
+//! (re-exported via `warp::tui_export`) rather than reimplementing traversal
+//! -- that module's own doc comment already states there is no remote-worker
+//! execution path in this fork.
+use std::collections::{HashMap, HashSet};
+
 use warp::tui_export::{
-    AIConversationId, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
+    AIConversationId, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatus,
+    StartAgentExecutionMode, StartAgentExecutor, StartAgentRequest,
     descendant_conversations_in_pill_order, orchestration_root_conversation_id,
 };
 use warpui::SingletonEntity;
-use warpui_core::{AppContext, Entity, ModelContext, ModelHandle};
+use warpui_core::{AppContext, Entity, EntityId, ModelContext, ModelHandle};
 
 use crate::orchestration_tab_bar::{TuiOrchestrationChild, TuiOrchestrationSnapshot};
 use crate::session_registry::{TuiSessionId, TuiSessions};
@@ -49,6 +60,15 @@ use crate::tab_bar::TuiTabBarPagingState;
 pub(crate) struct TuiOrchestrationModel {
     /// Paging intent shared by the per-session tab-bar views.
     tab_bar_paging: TuiTabBarPagingState<AIConversationId>,
+    /// Session ids subscribed to a conversation's agent-event stream, keyed
+    /// by the session consuming them. Always empty in this port: nothing
+    /// yet materializes a session for a dispatched child (see the module
+    /// doc), so nothing ever calls `register_event_consumer`. Kept so
+    /// [`cleanup_failed_child`]'s contract matches the pin's, and so a
+    /// failed dispatch can be asserted not to have registered one.
+    ///
+    /// [`cleanup_failed_child`]: Self::cleanup_failed_child
+    event_consumers_by_session: HashMap<TuiSessionId, HashSet<AIConversationId>>,
 }
 
 impl Entity for TuiOrchestrationModel {
@@ -64,6 +84,7 @@ impl TuiOrchestrationModel {
         let history = BlocklistAIHistoryModel::handle(ctx);
         let model = ctx.add_singleton_model(|_| Self {
             tab_bar_paging: TuiTabBarPagingState::default(),
+            event_consumers_by_session: HashMap::new(),
         });
         let model_for_history = model.clone();
         ctx.subscribe_to_model(&history, move |_, event, ctx| {
@@ -185,6 +206,97 @@ impl TuiOrchestrationModel {
             sessions.focus_session(session_id, ctx);
         });
         Some(session_id)
+    }
+
+    /// Routes a `CreateAgent` request from a [`StartAgentExecutor`] the
+    /// caller dispatched through. `executor` is that same handle, passed
+    /// through so a resolved outcome can be reported straight back to it --
+    /// see the module doc and `start_agent.rs`'s doc comment for why this
+    /// fork resolves directly instead of via a history-event broadcast.
+    ///
+    /// Every `Local` request currently resolves as a clean failure:
+    /// named-harness children (`harness_type: Some(_)`) because the pin
+    /// itself does not support them in the TUI ("Local non-oz children are
+    /// not supported outside of dogfood in the GUI, and would be odd in the
+    /// TUI"), and native local-Oz children (`harness_type: None`) because
+    /// this fork has not yet built a non-cloud replacement for the pin's
+    /// `prepare_local_oz_child_launch` (see the module doc). `parent_session_id`
+    /// is unused until that replacement exists to hand a materialized
+    /// session back to.
+    pub(crate) fn dispatch_create_agent(
+        &mut self,
+        _parent_session_id: TuiSessionId,
+        request: StartAgentRequest,
+        executor: &ModelHandle<StartAgentExecutor>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let message = match &request.execution_mode {
+            StartAgentExecutionMode::Local {
+                harness_type: Some(harness_type),
+                ..
+            } => {
+                format!("Local {harness_type} child agents aren't supported in Warp Agent CLI yet.")
+            }
+            StartAgentExecutionMode::Local {
+                harness_type: None, ..
+            } => "Native local child agents are not yet available in this fork.".to_string(),
+        };
+        self.fail_child_request(&request, message, executor, ctx);
+    }
+
+    /// Resolves a child request as failed without creating a TUI session.
+    /// Ported from the pin, adapted to resolve the executor directly (see
+    /// the module doc's seam note) instead of through a
+    /// `NewConversationRequestComplete` history-event broadcast, which needs
+    /// server-assigned conversation state this fork does not have.
+    fn fail_child_request(
+        &mut self,
+        request: &StartAgentRequest,
+        message: String,
+        executor: &ModelHandle<StartAgentExecutor>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let request_id = request.id;
+        log::warn!("Failing TUI child agent request: request_id={request_id:?}");
+        let surface_id = EntityId::new();
+        let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation_id = history.start_new_child_conversation(
+                surface_id,
+                request.name.trim().to_owned(),
+                request.parent_conversation_id,
+                None,
+                ctx,
+            );
+            history.update_conversation_status_with_error_message(
+                surface_id,
+                conversation_id,
+                ConversationStatus::Error,
+                Some(message.clone()),
+                ctx,
+            );
+            conversation_id
+        });
+        executor.update(ctx, |executor, ctx| {
+            executor.resolve_error(request_id, conversation_id, message, ctx);
+        });
+    }
+
+    /// Tears down the ephemeral conversation of a child that failed at the
+    /// launch stage (the executor's `CleanupFailedChildLaunch`). Nothing in
+    /// this port materializes a session for a `Local` request (see the
+    /// module doc), so unlike the pin there is no session-side half to tear
+    /// down here yet -- only the failed-child conversation itself.
+    pub(crate) fn cleanup_failed_child(
+        &mut self,
+        conversation_id: &AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let terminal_view_id =
+            BlocklistAIHistoryModel::as_ref(ctx).terminal_view_id_for_conversation(conversation_id);
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            history.delete_conversation(*conversation_id, terminal_view_id, ctx);
+        });
+        ctx.notify();
     }
 }
 
