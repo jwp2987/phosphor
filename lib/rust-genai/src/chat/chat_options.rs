@@ -1,21 +1,14 @@
-// MODIFIED by the Phosphor fork relative to upstream genai.
-// Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
-// for what changed here and why. Original: https://github.com/jeremychone/rust-genai
-
-//! ChatOptions configures a chat request.
-//! - It can be passed to `client::exec_chat(...)`, or
-//! - set as a default on the client via `client_config.with_chat_options(...)`.
-//!
-//! Note 1: Additional client-level defaults may be added over time.
-//! Note 2: Kept separate from `ChatRequest` for easier reuse and composition.
-
 use crate::Headers;
 use crate::chat::CacheControl;
 use crate::chat::chat_req_response_format::ChatResponseFormat;
+use crate::chat::chat_req_tool_choice::ToolChoice;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ops::Deref;
+
+// Some model names have those keywors
+const PROTECTED_MODEL_NAMES: &[&str] = &["deepseek-r1-zero", "qwen3.8-max"];
 
 /// Options considered by all `Client::exec_*` chat calls.
 ///
@@ -56,8 +49,11 @@ pub struct ChatOptions {
 	/// Note: Additional formats may be added in the future.
 	pub response_format: Option<ChatResponseFormat>,
 
+	/// Tool selection preference, when the provider supports function/tool calling.
+	pub tool_choice: Option<ToolChoice>,
+
 	// -- Reasoning options
-	/// Extract -style reasoning blocks into `ChatResponse.reasoning_content` when present.
+	/// Extract reasoning blocks such as `<think>...</think>` into the response reasoning content.
 	pub normalize_reasoning_content: Option<bool>,
 
 	/// Preferred reasoning effort, when supported by the provider.
@@ -82,13 +78,10 @@ pub struct ChatOptions {
 	/// OpenAI prompt cache key.
 	pub prompt_cache_key: Option<String>,
 
-	/// Zap fork extension — extra JSON object merged shallowly into the request body
-	/// at the top level (only for keys not already set by the adapter).
+	/// Provider-specific extra request payload merged by the adapter.
 	///
-	/// Designed for provider-specific fields the typed API doesn't expose, e.g. DeepSeek's
-	/// `{"thinking": {"type": "disabled"}}` to opt out of thinking_mode.
-	///
-	/// Currently honored by OpenAI-shared adapters (OpenAI / DeepSeek). Other adapters ignore.
+	/// This is primarily useful for OpenAI-compatible providers that expose
+	/// non-standard request fields.
 	pub extra_body: Option<Value>,
 }
 
@@ -166,6 +159,12 @@ impl ChatOptions {
 		self
 	}
 
+	/// Sets the tool selection preference.
+	pub fn with_tool_choice(mut self, tool_choice: ToolChoice) -> Self {
+		self.tool_choice = Some(tool_choice);
+		self
+	}
+
 	/// Sets the reasoning effort hint.
 	pub fn with_reasoning_effort(mut self, value: ReasoningEffort) -> Self {
 		self.reasoning_effort = Some(value);
@@ -208,8 +207,7 @@ impl ChatOptions {
 		self
 	}
 
-	/// Zap fork — see `extra_body` field doc. Pass a JSON object;
-	/// non-object values are accepted but only `Object` shape is merged.
+	/// Sets provider-specific extra body fields.
 	pub fn with_extra_body(mut self, value: Value) -> Self {
 		self.extra_body = Some(value);
 		self
@@ -235,15 +233,24 @@ impl ChatOptions {
 /// Provider-specific hint for reasoning intensity/budget.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ReasoningEffort {
-	None,
+	/// Explicitly request no reasoning.
+	///
+	/// This differs from leaving `ChatOptions::reasoning_effort` unset, which expresses no
+	/// preference. `"none"` is accepted as a backward-compatible alias for `"zero"`.
+	#[serde(alias = "None")]
+	Zero,
 	Low,
 	Medium,
 	High,
+	/// Extra-high effort. Adapters may treat this as an alias for [`Self::Max`].
 	XHigh,
+	/// Maximum effort. Adapters may treat this as an alias for [`Self::XHigh`].
 	Max,
+	/// Provider-specific reasoning token budget.
 	Budget(u32),
 
 	// Legacy reasoning for <= gpt-5
+	/// Legacy minimal effort used by older GPT-5 models.
 	Minimal,
 }
 
@@ -251,7 +258,7 @@ impl ReasoningEffort {
 	/// Returns the lowercase variant name.
 	pub fn variant_name(&self) -> &'static str {
 		match self {
-			ReasoningEffort::None => "none",
+			ReasoningEffort::Zero => "zero",
 			ReasoningEffort::Low => "low",
 			ReasoningEffort::Medium => "medium",
 			ReasoningEffort::High => "high",
@@ -266,7 +273,7 @@ impl ReasoningEffort {
 	/// Returns a keyword for non-`Budget` variants; `None` for `Budget(_)`.
 	pub fn as_keyword(&self) -> Option<&'static str> {
 		match self {
-			ReasoningEffort::None => Some("none"),
+			ReasoningEffort::Zero => Some("zero"),
 			ReasoningEffort::Low => Some("low"),
 			ReasoningEffort::Medium => Some("medium"),
 			ReasoningEffort::High => Some("high"),
@@ -278,27 +285,29 @@ impl ReasoningEffort {
 		}
 	}
 
-	/// Parses a verbosity keyword.
+	/// Parses a reasoning effort keyword.
 	pub fn from_keyword(name: &str) -> Option<Self> {
 		match name {
-			"none" => Some(ReasoningEffort::None),
+			"zero" => Some(ReasoningEffort::Zero),
+			"none" => Some(ReasoningEffort::Zero), // backward-compat alias (this is openai name as well)
 			"low" => Some(ReasoningEffort::Low),
 			"medium" => Some(ReasoningEffort::Medium),
 			"high" => Some(ReasoningEffort::High),
 			"xhigh" => Some(ReasoningEffort::XHigh),
 			"max" => Some(ReasoningEffort::Max),
-			// legacy
+			// openai legacy
 			"minimal" => Some(ReasoningEffort::Minimal),
 			_ => None,
 		}
 	}
 
-	/// If `model_name` ends with `-reasoning_effort`, returns the parsed verbosity and the trimmed name.
+	/// Parses a trailing effort keyword from a model name and returns the trimmed name.
 	///
-	/// Returns `(reasosing_effort?, trimmed_model_name)`.
+	/// Known model names whose suffix is part of the actual name are left unchanged.
 	pub fn from_model_name(model_name: &str) -> (Option<Self>, &str) {
 		if let Some((prefix, last)) = model_name.rsplit_once('-')
 			&& let Some(effort) = ReasoningEffort::from_keyword(last)
+			&& !PROTECTED_MODEL_NAMES.contains(&model_name)
 		{
 			return (Some(effort), prefix);
 		}
@@ -309,7 +318,7 @@ impl ReasoningEffort {
 impl std::fmt::Display for ReasoningEffort {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
-			ReasoningEffort::None => write!(f, "none"),
+			ReasoningEffort::Zero => write!(f, "zero"),
 			ReasoningEffort::Low => write!(f, "low"),
 			ReasoningEffort::Medium => write!(f, "medium"),
 			ReasoningEffort::High => write!(f, "high"),
@@ -325,7 +334,7 @@ impl std::fmt::Display for ReasoningEffort {
 impl std::str::FromStr for ReasoningEffort {
 	type Err = Error;
 
-	/// Parses a verbosity keyword.
+	/// Parses a reasoning effort keyword or numeric token budget.
 	fn from_str(s: &str) -> Result<Self> {
 		Self::from_keyword(s)
 			.or_else(|| s.parse::<u32>().ok().map(Self::Budget))
@@ -346,7 +355,7 @@ pub enum Verbosity {
 }
 
 impl Verbosity {
-	/// Returns the lowercase variant name; `Budget(_)` returns `"budget"`.
+	/// Returns the lowercase variant name.
 	pub fn variant_name(&self) -> &'static str {
 		match self {
 			Verbosity::Low => "low",
@@ -374,10 +383,7 @@ impl Verbosity {
 		}
 	}
 
-	/// If `model_name` ends with `-<effort>`, returns the parsed effort and the trimmed name.
-	///
-	/// Only keyword variants are produced; `Budget` is never created here.
-	/// Returns `(effort, trimmed_model_name)`.
+	/// Parses a trailing verbosity keyword from a model name and returns the trimmed name.
 	pub fn from_model_name(model_name: &str) -> (Option<Self>, &str) {
 		if let Some((prefix, last)) = model_name.rsplit_once('-')
 			&& let Some(effort) = Verbosity::from_keyword(last)
@@ -401,7 +407,7 @@ impl std::fmt::Display for Verbosity {
 impl std::str::FromStr for Verbosity {
 	type Err = Error;
 
-	/// Parses a keyword effort or a numeric budget.
+	/// Parses a verbosity keyword.
 	fn from_str(s: &str) -> Result<Self> {
 		Self::from_keyword(s).ok_or(Error::VerbosityParsing { actual: s.to_string() })
 	}
@@ -557,6 +563,12 @@ impl ChatOptionsSet<'_, '_> {
 			.or_else(|| self.client.and_then(|client| client.response_format.as_ref()))
 	}
 
+	pub fn tool_choice(&self) -> Option<&ToolChoice> {
+		self.chat
+			.and_then(|chat| chat.tool_choice.as_ref())
+			.or_else(|| self.client.and_then(|client| client.tool_choice.as_ref()))
+	}
+
 	pub fn normalize_reasoning_content(&self) -> Option<bool> {
 		self.chat
 			.and_then(|chat| chat.normalize_reasoning_content)
@@ -600,17 +612,16 @@ impl ChatOptionsSet<'_, '_> {
 			.or_else(|| self.client.and_then(|client| client.prompt_cache_key.as_deref()))
 	}
 
-	pub fn cache_control(&self) -> Option<&CacheControl> {
-		self.chat
-			.and_then(|chat| chat.cache_control.as_ref())
-			.or_else(|| self.client.and_then(|client| client.cache_control.as_ref()))
-	}
-
-	/// Zap fork — extra JSON body fields. See `ChatOptions::extra_body` doc.
 	pub fn extra_body(&self) -> Option<&Value> {
 		self.chat
 			.and_then(|chat| chat.extra_body.as_ref())
 			.or_else(|| self.client.and_then(|client| client.extra_body.as_ref()))
+	}
+
+	pub fn cache_control(&self) -> Option<&CacheControl> {
+		self.chat
+			.and_then(|chat| chat.cache_control.as_ref())
+			.or_else(|| self.client.and_then(|client| client.cache_control.as_ref()))
 	}
 
 	/// Returns true only if there is a ChatResponseFormat::JsonMode
@@ -626,3 +637,130 @@ impl ChatOptionsSet<'_, '_> {
 }
 
 // endregion: --- ChatOptionsSet
+
+// region:    --- Tests
+
+#[cfg(test)]
+mod tests {
+	type Result<T> = core::result::Result<T, Box<dyn std::error::Error>>; // For tests.
+
+	use super::*;
+
+	// -- Keyword surface tests
+
+	#[test]
+	fn test_chat_options_reasoning_effort_as_keyword_zero() -> Result<()> {
+		// -- Setup & Fixtures
+		let effort = ReasoningEffort::Zero;
+		// -- Exec
+		let keyword = effort.as_keyword();
+		// -- Check
+		assert_eq!(keyword, Some("zero"));
+		Ok(())
+	}
+
+	#[test]
+	fn test_chat_options_reasoning_effort_display_zero() -> Result<()> {
+		// -- Setup & Fixtures
+		let effort = ReasoningEffort::Zero;
+		// -- Exec
+		let displayed = format!("{effort}");
+		// -- Check
+		assert_eq!(displayed, "zero");
+		Ok(())
+	}
+
+	#[test]
+	fn test_chat_options_reasoning_effort_from_keyword_zero() -> Result<()> {
+		// -- Exec
+		let parsed = ReasoningEffort::from_keyword("zero");
+		// -- Check
+		assert!(matches!(parsed, Some(ReasoningEffort::Zero)));
+		Ok(())
+	}
+
+	#[test]
+	fn test_chat_options_reasoning_effort_from_keyword_none_alias() -> Result<()> {
+		// -- Exec
+		let parsed = ReasoningEffort::from_keyword("none");
+		// -- Check
+		assert!(matches!(parsed, Some(ReasoningEffort::Zero)));
+		Ok(())
+	}
+
+	// -- Model-name suffix tests
+
+	#[test]
+	fn test_chat_options_from_model_name_protected_zero() -> Result<()> {
+		// -- Setup & Fixtures
+		let protected_name = "deepseek-r1-zero";
+		// -- Exec
+		let (effort, trimmed) = ReasoningEffort::from_model_name(protected_name);
+		// -- Check
+		assert!(effort.is_none(), "protected model should not strip suffix");
+		assert_eq!(trimmed, protected_name);
+		Ok(())
+	}
+
+	#[test]
+	fn test_chat_options_from_model_name_protected_qwen_max() -> Result<()> {
+		// -- Setup & Fixtures
+		let protected_name = "qwen3.8-max";
+		// -- Exec
+		let (effort, trimmed) = ReasoningEffort::from_model_name(protected_name);
+		// -- Check
+		assert!(effort.is_none(), "protected model should not strip max suffix");
+		assert_eq!(trimmed, protected_name);
+		Ok(())
+	}
+
+	#[test]
+	fn test_chat_options_from_model_name_qwen_max_low_suffix() -> Result<()> {
+		// -- Setup & Fixtures
+		let model_with_low = "qwen3.8-max-low";
+		// -- Exec
+		let (effort, trimmed) = ReasoningEffort::from_model_name(model_with_low);
+		// -- Check
+		assert!(matches!(effort, Some(ReasoningEffort::Low)));
+		assert_eq!(trimmed, "qwen3.8-max");
+		Ok(())
+	}
+
+	#[test]
+	fn test_chat_options_from_model_name_qwen_max_zero_suffix() -> Result<()> {
+		// -- Setup & Fixtures
+		let model_with_zero = "qwen3.8-max-zero";
+		// -- Exec
+		let (effort, trimmed) = ReasoningEffort::from_model_name(model_with_zero);
+		// -- Check
+		assert!(matches!(effort, Some(ReasoningEffort::Zero)));
+		assert_eq!(trimmed, "qwen3.8-max");
+		Ok(())
+	}
+
+	#[test]
+	fn test_chat_options_from_model_name_zero_suffix() -> Result<()> {
+		// -- Setup & Fixtures
+		let model_with_zero = "some-model-zero";
+		// -- Exec
+		let (effort, trimmed) = ReasoningEffort::from_model_name(model_with_zero);
+		// -- Check
+		assert!(matches!(effort, Some(ReasoningEffort::Zero)));
+		assert_eq!(trimmed, "some-model");
+		Ok(())
+	}
+
+	#[test]
+	fn test_chat_options_from_model_name_none_suffix_alias() -> Result<()> {
+		// -- Setup & Fixtures
+		let model_with_none = "some-model-none";
+		// -- Exec
+		let (effort, trimmed) = ReasoningEffort::from_model_name(model_with_none);
+		// -- Check
+		assert!(matches!(effort, Some(ReasoningEffort::Zero)));
+		assert_eq!(trimmed, "some-model");
+		Ok(())
+	}
+}
+
+// endregion: --- Tests

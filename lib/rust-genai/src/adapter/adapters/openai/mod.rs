@@ -6,7 +6,9 @@
 
 mod adapter_impl;
 mod adapter_shared;
+pub(crate) mod cache_policy;
 mod embed;
+pub(crate) mod schema;
 mod streamer;
 
 pub use adapter_impl::*;

@@ -1,16 +1,15 @@
 //! API DOC: <https://github.com/ollama/ollama/blob/main/docs/api.md>
 
-use super::adapter_shared::OllamaRequestParts;
+use super::{OllamaRequestParts, OllamaStreamer};
 use crate::Headers;
 use crate::Result;
-use crate::adapter::ollama::OllamaStreamer;
 use crate::adapter::{Adapter, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{
 	ChatOptionsSet, ChatRequest, ChatResponse, ChatStream, ChatStreamResponse, MessageContent, StopReason, ToolCall,
 };
 use crate::embed::{EmbedResponse, Embedding};
 use crate::resolver::{AuthData, Endpoint};
-use crate::webc::WebResponse;
+use crate::webc::{WebClient, WebResponse};
 use crate::{ModelIden, ServiceTarget};
 use reqwest::RequestBuilder;
 use serde_json::{Value, json};
@@ -23,20 +22,25 @@ pub struct OllamaAdapter;
 impl Adapter for OllamaAdapter {
 	const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = None;
 
-	fn default_endpoint() -> Endpoint {
+	fn default_endpoint(_kind: AdapterKind) -> Endpoint {
 		const BASE_URL: &str = "http://localhost:11434/";
 		Endpoint::from_static(BASE_URL)
 	}
 
-	fn default_auth() -> AuthData {
+	fn default_auth(_kind: AdapterKind) -> AuthData {
 		match Self::DEFAULT_API_KEY_ENV_NAME {
 			Some(env_name) => AuthData::from_env(env_name),
 			None => AuthData::from_single("ollama"),
 		}
 	}
 
-	async fn all_model_names(adapter_kind: AdapterKind, endpoint: Endpoint, _auth: AuthData) -> Result<Vec<String>> {
-		Self::list_model_names(adapter_kind, endpoint, Headers::default()).await
+	async fn all_model_names(
+		adapter_kind: AdapterKind,
+		endpoint: Endpoint,
+		_auth: AuthData,
+		web_client: &WebClient,
+	) -> Result<Vec<String>> {
+		Self::list_model_names(adapter_kind, endpoint, Headers::default(), web_client).await
 	}
 
 	fn get_service_url(_model_iden: &ModelIden, service_type: ServiceType, endpoint: Endpoint) -> Result<String> {
@@ -85,7 +89,6 @@ impl Adapter for OllamaAdapter {
 
 		let mut payload = json!({
 			"model": model_name,
-			"messages": messages,
 			"stream": stream,
 		});
 
@@ -93,9 +96,13 @@ impl Adapter for OllamaAdapter {
 			payload.x_insert("options", options)?;
 		}
 
+		// -- Tools (before messages)
 		if let Some(tools) = tools {
 			payload.x_insert("tools", tools)?;
 		}
+
+		// -- Messages (after tools)
+		payload.x_insert("messages", messages)?;
 
 		if let Some(format) = chat_options.response_format() {
 			// Note: Ollama's API uses "format": "json" for its JSON mode, so we set that if the chat options specify json mode.

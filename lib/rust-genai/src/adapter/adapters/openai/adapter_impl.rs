@@ -1,10 +1,10 @@
-use crate::adapter::openai::OpenAIStreamer;
+use super::OpenAIStreamer;
 use crate::adapter::{Adapter, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{
 	ChatOptionsSet, ChatRequest, ChatResponse, ChatStream, ChatStreamResponse, MessageContent, StopReason, ToolCall,
 };
 use crate::resolver::{AuthData, Endpoint};
-use crate::webc::{EventSourceStream, WebResponse};
+use crate::webc::{EventSourceStream, WebClient, WebResponse};
 use crate::{Error, Result};
 use crate::{ModelIden, ServiceTarget};
 use reqwest::RequestBuilder;
@@ -21,21 +21,26 @@ impl OpenAIAdapter {
 impl Adapter for OpenAIAdapter {
 	const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
 
-	fn default_auth() -> AuthData {
+	fn default_auth(_kind: AdapterKind) -> AuthData {
 		match Self::DEFAULT_API_KEY_ENV_NAME {
 			Some(env_name) => AuthData::from_env(env_name),
 			None => AuthData::None,
 		}
 	}
 
-	fn default_endpoint() -> Endpoint {
+	fn default_endpoint(_kind: AdapterKind) -> Endpoint {
 		const BASE_URL: &str = "https://api.openai.com/v1/";
 		Endpoint::from_static(BASE_URL)
 	}
 
 	/// Note: Currently returns the common models (see above)
-	async fn all_model_names(kind: AdapterKind, endpoint: Endpoint, auth: AuthData) -> Result<Vec<String>> {
-		OpenAIAdapter::list_model_names_for_end_target(kind, endpoint, auth).await
+	async fn all_model_names(
+		kind: AdapterKind,
+		endpoint: Endpoint,
+		auth: AuthData,
+		web_client: &WebClient,
+	) -> Result<Vec<String>> {
+		OpenAIAdapter::list_model_names_for_end_target(kind, endpoint, auth, web_client).await
 	}
 
 	fn get_service_url(model: &ModelIden, service_type: ServiceType, endpoint: Endpoint) -> Result<String> {

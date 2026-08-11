@@ -5,16 +5,23 @@ use genai::adapter::AdapterKind;
 use genai::resolver::AuthData;
 
 // This will use the OpenAIRes adapter
-const MODEL: &str = "gpt-5-codex";
+const MODEL: &str = "gpt-5.6-luna";
 // Also used for the verbosity (codex only supported medium)
-const MODEL_NS: &str = "openai_resp::gpt-5-mini";
+const MODEL_NS: &str = "openai_resp::gpt-5.6-luna";
 
 // region:    --- Provider Specific
 
 // openai specific
+// NOTE: `minimal` has been deprecated, does not work with 5.6-... family
 #[tokio::test]
 async fn test_chat_reasoning_minimal_ok() -> TestResult<()> {
 	common_tests::common_test_chat_simple_ok("gpt-5-minimal", None).await
+}
+
+// NOTE: `none` is the new for the 5.6. (this is same as `-zero`)
+#[tokio::test]
+async fn test_chat_reasoning_none_ok() -> TestResult<()> {
+	common_tests::common_test_chat_simple_ok("gpt-5.6-none", None).await
 }
 
 // endregion: --- Provider Specific
@@ -70,15 +77,20 @@ async fn test_chat_json_structured_ok() -> TestResult<()> {
 
 // endregion: --- Chat
 
-// region:    --- Chat Implicit Cache
+// region:    --- Chat Cache
 
-// NOTE - It seems `gpt-5-codex` does not cache often. gpt-5.. with same adapter cache better.
 #[tokio::test]
-async fn test_chat_cache_implicit_simple_ok() -> TestResult<()> {
-	common_tests::common_test_chat_cache_implicit_simple_ok(MODEL_NS).await
+async fn test_chat_cache_explicit_user_ok() -> TestResult<()> {
+	common_tests::common_test_chat_cache_explicit_user_ok(MODEL).await
 }
 
-// endregion: --- Chat Implicit Cache
+// NOTE - For `gpt-5.6..`, since cache is not charged, explicit only is supported.
+// #[tokio::test]
+// async fn test_chat_cache_implicit_simple_ok() -> TestResult<()> {
+// 	common_tests::common_test_chat_cache_implicit_simple_ok(MODEL_NS).await
+// }
+
+// endregion: --- Chat Cache
 
 // region:    --- Chat Stream Tests
 
@@ -120,6 +132,18 @@ async fn test_chat_binary_pdf_b64_ok() -> TestResult<()> {
 async fn test_chat_binary_multi_b64_ok() -> TestResult<()> {
 	common_tests::common_test_chat_multi_binary_b64_ok(MODEL).await
 }
+
+// No video model setup yet.
+// #[tokio::test]
+// async fn test_chat_binary_audio_b64_ok() -> TestResult<()> {
+// 	common_tests::common_test_chat_audio_b64_ok(MODEL).await
+// }
+
+// No video model setup yet.
+// #[tokio::test]
+// async fn test_chat_binary_video_b64_ok() -> TestResult<()> {
+// 	common_tests::common_test_chat_video_b64_ok(MODEL).await
+// }
 
 // endregion: --- Binary Tests
 

@@ -1,9 +1,9 @@
 use crate::ModelIden;
-use crate::adapter::openai::OpenAIAdapter;
+use crate::adapter::adapters::openai::OpenAIAdapter;
 use crate::adapter::{Adapter, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{ChatOptionsSet, ChatRequest, ChatResponse, ChatStreamResponse};
 use crate::resolver::{AuthData, Endpoint};
-use crate::webc::WebResponse;
+use crate::webc::{WebClient, WebResponse};
 use crate::{Headers, Result, ServiceTarget};
 use reqwest::RequestBuilder;
 
@@ -23,20 +23,25 @@ impl GithubCopilotAdapter {
 impl Adapter for GithubCopilotAdapter {
 	const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
 
-	fn default_auth() -> AuthData {
+	fn default_auth(_kind: AdapterKind) -> AuthData {
 		match Self::DEFAULT_API_KEY_ENV_NAME {
 			Some(env_name) => AuthData::from_env(env_name),
 			None => AuthData::None,
 		}
 	}
 
-	fn default_endpoint() -> Endpoint {
+	fn default_endpoint(_kind: AdapterKind) -> Endpoint {
 		const BASE_URL: &str = "https://models.github.ai/inference/";
 		Endpoint::from_static(BASE_URL)
 	}
 
-	async fn all_model_names(kind: AdapterKind, endpoint: Endpoint, auth: AuthData) -> Result<Vec<String>> {
-		OpenAIAdapter::list_model_names_for_end_target(kind, endpoint, auth).await
+	async fn all_model_names(
+		kind: AdapterKind,
+		endpoint: Endpoint,
+		auth: AuthData,
+		web_client: &WebClient,
+	) -> Result<Vec<String>> {
+		OpenAIAdapter::list_model_names_for_end_target(kind, endpoint, auth, web_client).await
 	}
 
 	fn get_service_url(model: &ModelIden, service_type: ServiceType, endpoint: Endpoint) -> Result<String> {
@@ -103,7 +108,7 @@ mod tests {
 
 	fn test_target() -> ServiceTarget {
 		ServiceTarget {
-			endpoint: GithubCopilotAdapter::default_endpoint(),
+			endpoint: GithubCopilotAdapter::default_endpoint(AdapterKind::GithubCopilot),
 			auth: AuthData::from_single("test-key"),
 			model: ModelIden::new(AdapterKind::GithubCopilot, "openai/gpt-4.1-mini"),
 		}

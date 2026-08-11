@@ -39,5 +39,6 @@ pub enum InterStreamEvent {
 	ReasoningChunk(String),
 	ThoughtSignatureChunk(String),
 	ToolCallChunk(crate::chat::ToolCall),
+	Heartbeat,
 	End(InterStreamEnd),
 }

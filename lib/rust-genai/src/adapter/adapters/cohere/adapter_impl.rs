@@ -2,15 +2,15 @@
 // Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
 // for what changed here and why. Original: https://github.com/jeremychone/rust-genai
 
+use crate::adapter::adapters::cohere::CohereStreamer;
 use crate::adapter::adapters::support::get_api_key;
-use crate::adapter::cohere::CohereStreamer;
 use crate::adapter::{Adapter, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{
 	ChatOptionsSet, ChatRequest, ChatResponse, ChatRole, ChatStream, ChatStreamResponse, MessageContent, StopReason,
 	Usage,
 };
 use crate::resolver::{AuthData, Endpoint};
-use crate::webc::{WebResponse, WebStream};
+use crate::webc::{WebClient, WebResponse, WebStream};
 use crate::{Error, Headers, Result};
 use crate::{ModelIden, ServiceTarget};
 use reqwest::RequestBuilder;
@@ -35,12 +35,12 @@ impl CohereAdapter {
 impl Adapter for CohereAdapter {
 	const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
 
-	fn default_endpoint() -> Endpoint {
+	fn default_endpoint(_kind: AdapterKind) -> Endpoint {
 		const BASE_URL: &str = "https://api.cohere.com/v1/";
 		Endpoint::from_static(BASE_URL)
 	}
 
-	fn default_auth() -> AuthData {
+	fn default_auth(_kind: AdapterKind) -> AuthData {
 		match Self::DEFAULT_API_KEY_ENV_NAME {
 			Some(env_name) => AuthData::from_env(env_name),
 			None => AuthData::None,
@@ -48,7 +48,12 @@ impl Adapter for CohereAdapter {
 	}
 
 	/// Note: For now, it returns the common ones (see above)
-	async fn all_model_names(_kind: AdapterKind, _endpoint: Endpoint, _auth: AuthData) -> Result<Vec<String>> {
+	async fn all_model_names(
+		_kind: AdapterKind,
+		_endpoint: Endpoint,
+		_auth: AuthData,
+		_web_client: &WebClient,
+	) -> Result<Vec<String>> {
 		Ok(MODELS.iter().map(|s| s.to_string()).collect())
 	}
 
