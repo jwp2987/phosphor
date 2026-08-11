@@ -172,6 +172,9 @@ jobs:
           RELEASE_BODY_TEXT: ${{ steps.get-config.outputs.release_body_text }}
           PREV_TAG: ${{ steps.prev_tag.outputs.prev }}
           THIS_TAG: ${{ steps.compute_tag.outputs.tag }}
+          # Needed by the truncation branch's compare URL below. Set here as
+          # well as on the git-cliff step; env is per-step, not per-job.
+          GITHUB_REPO: ${{ github.repository }}
         run: |
           {
             echo "$RELEASE_BODY_TEXT"
@@ -184,7 +187,36 @@ jobs:
             echo
             cat release-notes.md
           } > release-body.md
-          echo "---- release-body.md ----"
+
+          # GitHub rejects a release body over 125000 characters with a 422
+          # "body is too long", and the publish job fails AFTER every platform
+          # has built -- on 2026-08-11 that was ~4 hours of macOS build time
+          # thrown away by a validation error. git-cliff includes full commit
+          # BODIES, so a release spanning many commits (that one spanned 162)
+          # blows the limit easily.
+          #
+          # Truncate at a line boundary, well under the cap, and point at the
+          # compare view so nothing is actually lost.
+          MAX_BODY=120000
+          if [[ $(wc -c < release-body.md) -gt $MAX_BODY ]]; then
+            COMPARE_URL="https://github.com/${GITHUB_REPO}/compare/${PREV_TAG}...${THIS_TAG}"
+            head -c "$MAX_BODY" release-body.md | head -n -1 > release-body.trimmed.md
+            {
+              echo
+              echo "---"
+              echo
+              echo "_Release notes truncated: the full changelog exceeded GitHub's"
+              echo "125,000-character limit for a release body._"
+              echo
+              if [[ -n "$PREV_TAG" ]]; then
+                echo "**[Full changelog: \`$PREV_TAG...$THIS_TAG\`]($COMPARE_URL)**"
+              fi
+            } >> release-body.trimmed.md
+            mv release-body.trimmed.md release-body.md
+            echo "::notice::Release body exceeded ${MAX_BODY} chars and was truncated."
+          fi
+
+          echo "---- release-body.md ($(wc -c < release-body.md) bytes) ----"
           cat release-body.md
 
       - name: Upload release body artifact
