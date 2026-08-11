@@ -93,7 +93,10 @@ fn update_servers_from_config_file_aborts_previous_inflight_parse() {
         let (tx, rx) = async_channel::unbounded::<usize>();
         let watcher_for_subscribe = watcher_handle.clone();
         let expected_config_path = config_path.clone();
-        app.add_model(|ctx| {
+        // Bind the handle: `ModelHandle` is refcounted, so discarding it drops the probe at the
+        // next effect flush, taking the subscription and `tx` with it. `rx.recv()` then fails with
+        // `RecvError` (every sender gone) rather than waiting for the parse.
+        let _probe = app.add_model(|ctx| {
             ctx.subscribe_to_model(&watcher_for_subscribe, move |_, event, _| {
                 if let FileMCPWatcherEvent::ConfigParsed {
                     config_path: parsed_path,
