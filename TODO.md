@@ -878,6 +878,61 @@ Recorded so this ground is not re-swept:
       comment in `remote_server.proto:164`** claims no daemon sends
       `RemoteAgentContextSnapshot`. False — `server_model.rs:978` and `:996` both do.
 
+## UPSTREAM ZAP ISSUES — triaged against this fork 2026-08-10
+
+Read-only triage of open issues on `zerx-lab/zap` (this fork's lineage: Phosphor
+forked from Zap, which forked from Warp). The question asked was narrow — **is
+the reported defect present *here*?** — not whether Zap should fix it.
+
+Useful asymmetry this surfaced: several Zap issues are already fixed here as a
+side effect of unrelated decisions. That is the inherited-lineage relationship
+running in our favour for once, after four inherited subsystem removals ran the
+other way.
+
+### Already fixed here — no action, recorded so it is not re-investigated
+
+- [x] **Zap #297 — English/multilingual tool descriptions and agent prompts.**
+      Non-Chinese LLMs fail function-calling when tool descriptions arrive in
+      Chinese. **Solved here by policy:** every prompt partial in
+      `app/src/ai/agent_providers/prompts/partials/*.j2` greps to **zero** Chinese
+      characters, and `CLAUDE.local.md` mandates English for comments, doc
+      comments, log/error messages and test assertions, with conversion on touch.
+      Arguably this fork's most valuable divergence from Zap.
+- [x] **Zap #333 — PowerShell 7.6 will not open, "Shell process exited
+      prematurely".** The PS 7.6 `-Command` quoting-parser crash. Fixed here by
+      `encode_pwsh_command` at four sites including `local_tty/shell.rs`, the
+      interactive session launch that is exactly the path the issue describes.
+      **Caveat: fixed in code, unproven on hardware** — see the open
+      "NEEDS WINDOWS VERIFICATION" item in this file. Do not close that on the
+      strength of this row.
+
+### Assigned 2026-08-10 — agent investigating whether these reproduce here
+
+- [ ] **Zap #314 — SSH remote Warpify should not use `$SHELL` to pick the shell.**
+      Likely present: `app/assets/bundled/bootstrap/fish.sh:618` does exactly what
+      the issue objects to — *"We check the SHELL env var and use shell string
+      manipulation to get the contents after the last slash"*. The bootstrap is
+      inherited, so if the reasoning holds upstream it holds here. The fork does at
+      least name the failure (`WarpificationUnavailableReason::UnsupportedShell`)
+      rather than failing silently.
+- [ ] **Zap #328 — BYOP agent: approving an async tool action immediately triggers
+      `OrphanToolResult`.** The most interesting of the three, because BYOP is this
+      fork's core case and Zap's BYOP is the same lineage. The fork has a whole
+      `app/src/ai/byop_readiness/` subsystem that *detects* the condition and has a
+      repair pass — but whether it still *produces* it on async approval needs a
+      real trace of the approval path. Unresolved by reading.
+- [ ] **Zap #275 — ctrl-c does not stop `python`.** Runtime behaviour; not
+      settleable by reading. Distinct from the TUI ctrl-c sheet-dismiss defect
+      fixed tonight (`30dce9d5a`), which was about an open shortcuts sheet, not
+      signal delivery to a child process.
+
+### Checked, not settleable by reading — no owner
+
+- [ ] **Zap #310** (tmux Warpify breaks `cd` + Tab completion), **#294**
+      (`cat <<EOF` hangs), **#316** (Arabic renders incorrectly). All runtime or
+      visual claims needing the app running. Text-layout code exists across three
+      platform backends, so #316 is not a missing-feature question.
+
 ## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
 
 Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is
