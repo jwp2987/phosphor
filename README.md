@@ -139,7 +139,13 @@ intentionally deferred (only the branding has changed so far).
 
 ## Roadmap
 
-See [docs/roadmap.md](docs/roadmap.md).
+See [`specs/ROADMAP.md`](specs/ROADMAP.md) — Phosphor's post-parity-sweep plan.
+
+(There used to be a second `docs/roadmap.md`. It was Zap's roadmap with the name
+find-replaced during the 2026-07-25 rebrand, and it described a direction this
+fork has not taken — a hosted agent runtime, shared identity across surfaces and
+shareable session links, much of which this fork has since explicitly declined.
+Removed 2026-08-11 rather than left to mislead.)
 
 ## Repository map — what each document is for
 
