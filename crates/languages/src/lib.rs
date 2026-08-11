@@ -10,6 +10,7 @@ use lazy_static::lazy_static;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use warp_editor::content::text::IndentUnit;
+use warp_util::standardized_path::StandardizedPath;
 
 #[derive(RustEmbed)]
 #[folder = "grammars"]
@@ -135,10 +136,34 @@ pub fn language_by_name(name: &str) -> Option<Arc<Language>> {
     LANGUAGE_REGISTRY.language_by_name(normalized)
 }
 
-/// Find the corresponding language entry by the filename.
-pub fn language_by_filename(path: &Path) -> Option<Arc<Language>> {
+/// Find the corresponding language entry by a standardized filename.
+///
+/// Prefer this over [`language_by_local_filename`] whenever the path may be
+/// remote-qualified (e.g. an SSH session's working directory) — a bare
+/// `&Path` silently mishandles those paths, since `std::path::Path` assumes
+/// local-OS path semantics.
+pub fn language_by_filename(path: &StandardizedPath) -> Option<Arc<Language>> {
+    language_by_filename_parts(path.file_name(), path.extension())
+}
+
+/// Find the corresponding language entry by a local filesystem filename.
+///
+/// Use this only when the path is known to originate from the local
+/// filesystem (no remote/SSH component). Prefer [`language_by_filename`]
+/// otherwise.
+pub fn language_by_local_filename(path: &Path) -> Option<Arc<Language>> {
+    language_by_filename_parts(
+        path.file_name().and_then(|name| name.to_str()),
+        path.extension().and_then(|extension| extension.to_str()),
+    )
+}
+
+fn language_by_filename_parts(
+    filename: Option<&str>,
+    extension: Option<&str>,
+) -> Option<Arc<Language>> {
     // First check for specific filenames that don't use extensions.
-    if let Some(filename) = path.file_name().and_then(|name| name.to_str()) {
+    if let Some(filename) = filename {
         match filename {
             // Bash config files
             ".bashrc" | ".bash_profile" => {
@@ -169,7 +194,7 @@ pub fn language_by_filename(path: &Path) -> Option<Arc<Language>> {
         }
     }
 
-    let extension = path.extension()?.to_str()?;
+    let extension = extension?;
     match extension {
         "rs" => language_by_name("rust"),
         "go" => language_by_name("golang"),

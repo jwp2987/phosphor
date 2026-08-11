@@ -739,6 +739,122 @@ pub async fn run_push(_repo_path: &Path, _branch: &str, _path_env: Option<&str>)
     Err(anyhow!("Not supported on wasm"))
 }
 
+/// Fast-forward-only pull of `branch` from origin. Never merges: a
+/// non-fast-forward (diverged history) fails with git's own error rather than
+/// creating a merge commit or leaving conflict markers, so this never needs a
+/// conflict-resolution UX (Stage 1 of git-pull parity; merging pull is a
+/// separate, later item). `path_env` is forwarded so a post-merge hook (e.g.
+/// LFS) can find `git-lfs` on the user's `PATH`, mirroring [`run_push`].
+#[cfg(feature = "local_fs")]
+pub async fn run_pull(repo_path: &Path, branch: &str, path_env: Option<&str>) -> Result<String> {
+    run_git_command_with_env(
+        repo_path,
+        &["pull", "--ff-only", "origin", branch],
+        path_env,
+    )
+    .await
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub async fn run_pull(_repo_path: &Path, _branch: &str, _path_env: Option<&str>) -> Result<String> {
+    Err(anyhow!("Not supported on wasm"))
+}
+
+/// Creates `branch` and checks it out, from the current HEAD.
+///
+/// `git checkout -b` rather than `git switch -c` deliberately: `checkout` is
+/// available on every git version this app supports, and the rest of this
+/// module already speaks `checkout`/`restore`. Fails if the branch already
+/// exists, which is the behaviour a caller wants — silently switching to a
+/// pre-existing branch when the user asked to create one would be a data
+/// hazard, not a convenience.
+#[cfg(feature = "local_fs")]
+pub async fn run_create_branch(
+    repo_path: &Path,
+    branch: &str,
+    path_env: Option<&str>,
+) -> Result<String> {
+    run_git_command_with_env(repo_path, &["checkout", "-b", branch], path_env).await
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub async fn run_create_branch(
+    _repo_path: &Path,
+    _branch: &str,
+    _path_env: Option<&str>,
+) -> Result<String> {
+    Err(anyhow!("Not supported on wasm"))
+}
+
+/// Switches to an existing `branch`.
+///
+/// Deliberately NOT `--force`: git refuses to switch when the working tree has
+/// changes that would be overwritten, and that refusal is the safety property
+/// we want. The caller surfaces the error rather than discarding the user's
+/// uncommitted work.
+#[cfg(feature = "local_fs")]
+pub async fn run_switch_branch(
+    repo_path: &Path,
+    branch: &str,
+    path_env: Option<&str>,
+) -> Result<String> {
+    run_git_command_with_env(repo_path, &["checkout", branch], path_env).await
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub async fn run_switch_branch(
+    _repo_path: &Path,
+    _branch: &str,
+    _path_env: Option<&str>,
+) -> Result<String> {
+    Err(anyhow!("Not supported on wasm"))
+}
+
+/// Applies `patch` to the index only, leaving the working tree untouched —
+/// the primitive behind hunk-level staging. With `reverse`, un-stages instead.
+///
+/// The patch goes through a temp file because [`run_git_command_with_env`]
+/// gives the child no stdin; `git apply` is happy to read from a path.
+///
+/// `--cached` is what makes this hunk-level: whole-file staging elsewhere in
+/// this codebase uses `git restore --staged --worktree`, which cannot express
+/// "part of this file". `--unidiff-zero` is deliberately NOT passed — it
+/// disables git's context checking, which is the only thing that catches a
+/// patch reconstructed against a stale diff.
+#[cfg(feature = "local_fs")]
+pub async fn run_apply_patch_cached(
+    repo_path: &Path,
+    patch: &str,
+    reverse: bool,
+) -> Result<String> {
+    use std::io::Write as _;
+
+    let mut file = tempfile::NamedTempFile::new()
+        .map_err(|e| anyhow!("Failed to create temp file for patch: {e}"))?;
+    file.write_all(patch.as_bytes())
+        .map_err(|e| anyhow!("Failed to write patch to temp file: {e}"))?;
+    file.flush()
+        .map_err(|e| anyhow!("Failed to flush patch temp file: {e}"))?;
+
+    let patch_path = file.path().to_string_lossy().to_string();
+    let mut args: Vec<&str> = vec!["apply", "--cached"];
+    if reverse {
+        args.push("--reverse");
+    }
+    args.push(&patch_path);
+
+    run_git_command(repo_path, &args).await
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub async fn run_apply_patch_cached(
+    _repo_path: &Path,
+    _patch: &str,
+    _reverse: bool,
+) -> Result<String> {
+    Err(anyhow!("Not supported on wasm"))
+}
+
 /// What to run after the commit succeeds. Shared vocabulary for the commit
 /// chain, mirroring Warp's `CommitChainMode` (Warp keeps it on
 /// `code_review::diff_state`; the fork keeps it next to the git primitives it

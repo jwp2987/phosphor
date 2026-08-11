@@ -233,7 +233,7 @@ fn parse_file_outline(path: &Path) -> anyhow::Result<FileOutline> {
     if !is_file_parsable(path)? {
         return Err(anyhow!("File exceeds max file size limit for parsing"));
     }
-    let Some(language) = languages::language_by_filename(path) else {
+    let Some(language) = languages::language_by_local_filename(path) else {
         return Err(anyhow!("Language unsupported for file {:?}", path));
     };
     let content = fs::read_to_string(path)?;

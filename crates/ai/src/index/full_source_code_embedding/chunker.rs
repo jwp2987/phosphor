@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use string_offset::ByteOffset;
+#[cfg(not(target_family = "wasm"))]
+use warp_util::standardized_path::StandardizedPath;
 
 mod naive;
 #[cfg(not(target_family = "wasm"))]
@@ -99,12 +101,10 @@ pub fn chunk_code<'a>(code: &'a str, path: &'a Path) -> Vec<Fragment<'a>> {
 /// could not be chunked for any reason.
 #[cfg(not(target_family = "wasm"))]
 fn try_chunk_code_semantically<'a>(code: &'a str, path: &'a Path) -> Option<Vec<Fragment<'a>>> {
-    // Fork drift: the pin had `language_by_filename(&StandardizedPath)` plus a
-    // `language_by_local_filename(&Path)`; this fork collapsed the pair into a
-    // single `&Path` function, so the `StandardizedPath` round-trip the pin
-    // needed here is gone. It also removes a failure mode — a path that could
-    // not be standardized used to fall back to naive chunking.
-    let language = languages::language_by_filename(path)?;
+    // A path that cannot be standardized (not absolute, or not valid UTF-8)
+    // falls back to naive chunking rather than panicking or guessing.
+    let standardized_path = StandardizedPath::try_from_local(path).ok()?;
+    let language = languages::language_by_filename(&standardized_path)?;
     semantic::chunk_code(code, path, MAX_BYTES_PER_CHUNK, &language.grammar).ok()
 }
 

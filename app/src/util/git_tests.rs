@@ -7,7 +7,7 @@ use tempfile::TempDir;
 use super::{
     compute_unpushed_state, detect_current_branch, detect_current_branch_display,
     get_pr_for_branch, git_operation_in_progress, is_gh_auth_error, is_gh_missing_error,
-    run_commit_chain, CommitChainMode, PrInfo, RepositoryInfo,
+    run_commit_chain, run_pull, CommitChainMode, PrInfo, RepositoryInfo,
 };
 
 /// Helper: run a git command inside the given repo directory.
@@ -101,6 +101,107 @@ async fn add_bare_origin(repo: &Path) -> TempDir {
     // `-u` sets the upstream tracking ref (origin/<branch>).
     git(repo, &["push", "-u", "origin", "main"]).await;
     bare
+}
+
+/// Clones `bare_url` into a fresh temp dir and configures a test identity,
+/// simulating a second contributor working against the same origin as
+/// `add_bare_origin`'s caller. Returns `(dir_handle, repo_path)`.
+async fn clone_repo(bare_url: &str) -> (TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("failed to create clone dir");
+    let path = dir.path().to_path_buf();
+
+    Command::new("git")
+        .args(["clone", bare_url, "."])
+        .current_dir(&path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("failed to clone");
+    git(&path, &["config", "user.email", "other@test.com"]).await;
+    git(&path, &["config", "user.name", "Other"]).await;
+
+    (dir, path)
+}
+
+// ─── run_pull (git-pull Stage 1: fast-forward only, AGENTS.md task) ──────────
+//
+// Mirrors the style of the push-adjacent tests above (`add_bare_origin` +
+// `compute_unpushed_state_tracks_upstream_and_unpushed_commits`): a bare
+// origin plus a second clone stands in for "someone else pushed", since
+// there is no dedicated `run_push` unit test to mirror directly.
+
+#[tokio::test]
+async fn run_pull_fast_forwards_to_new_upstream_commit() {
+    let (_dir, repo) = init_repo().await;
+    let bare = add_bare_origin(&repo).await;
+
+    // A second clone of the same origin pushes a new commit — the local
+    // repo's `main` is now a strict ancestor of `origin/main`.
+    let bare_url = bare.path().to_string_lossy().to_string();
+    let (_other_dir, other) = clone_repo(&bare_url).await;
+    tokio::fs::write(other.join("new.txt"), "content\n")
+        .await
+        .expect("write file");
+    git(&other, &["add", "-A"]).await;
+    git(&other, &["commit", "-m", "new commit from elsewhere"]).await;
+    git(&other, &["push", "origin", "main"]).await;
+
+    let result = run_pull(&repo, "main", None).await;
+    assert!(
+        result.is_ok(),
+        "expected fast-forward pull to succeed: {result:?}"
+    );
+
+    assert!(
+        repo.join("new.txt").exists(),
+        "pulled file should now exist in the local working tree"
+    );
+    let subject = git(&repo, &["log", "-1", "--format=%s"]).await;
+    assert_eq!(subject, "new commit from elsewhere");
+}
+
+#[tokio::test]
+async fn run_pull_fails_without_merging_on_diverged_history() {
+    let (_dir, repo) = init_repo().await;
+    let bare = add_bare_origin(&repo).await;
+
+    // Origin gets a commit from elsewhere...
+    let bare_url = bare.path().to_string_lossy().to_string();
+    let (_other_dir, other) = clone_repo(&bare_url).await;
+    tokio::fs::write(other.join("remote.txt"), "remote\n")
+        .await
+        .expect("write file");
+    git(&other, &["add", "-A"]).await;
+    git(&other, &["commit", "-m", "remote-only commit"]).await;
+    git(&other, &["push", "origin", "main"]).await;
+
+    // ...while the local repo makes its own independent commit, so the two
+    // histories diverge and a fast-forward is impossible.
+    tokio::fs::write(repo.join("local.txt"), "local\n")
+        .await
+        .expect("write file");
+    git(&repo, &["add", "-A"]).await;
+    git(&repo, &["commit", "-m", "local-only commit"]).await;
+    let head_before = git(&repo, &["rev-parse", "HEAD"]).await;
+
+    let result = run_pull(&repo, "main", None).await;
+    assert!(
+        result.is_err(),
+        "ff-only pull must refuse a diverged history rather than merge it"
+    );
+
+    // Stage 1 is fast-forward only (AGENTS.md task): a failed pull must be a
+    // pure no-op, not a merge commit or conflict markers.
+    let head_after = git(&repo, &["rev-parse", "HEAD"]).await;
+    assert_eq!(
+        head_before, head_after,
+        "HEAD must not move on a failed ff-only pull"
+    );
+    assert!(
+        !repo.join("remote.txt").exists(),
+        "the remote-only file must not appear locally after a refused pull"
+    );
 }
 
 #[tokio::test]

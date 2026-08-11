@@ -166,6 +166,33 @@ pub enum AIAgentActionType {
     },
 }
 
+/// Execution mode for a user-invoked child-agent dispatch through
+/// `StartAgentExecutor` (`app/src/ai/blocklist/action_model/execute/start_agent.rs`).
+///
+/// Ported from the pin (`crates/ai/src/agent/action/mod.rs:274`, `02b53fcd8`),
+/// LOCAL half only. The pin's `Remote` variant only ever reaches Warp's
+/// server-hosted runner (`ServerApiProvider`, `RemoteChildLaunchConfig`,
+/// worker/credit accounting) -- declined cloud-runner orchestration, see
+/// `DECLINED.md`'s "Orchestration config-picker layer" row and #290.
+/// `is_remote_child` stays permanently false in this fork, and no code path
+/// here can ever construct a remote request, so the variant is omitted
+/// outright rather than kept as unreachable API surface.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum StartAgentExecutionMode {
+    Local {
+        /// `None` selects the native embedded local child-agent flow (not
+        /// yet built in this fork -- see `start_agent.rs`'s module doc for
+        /// why: the pin's only implementation routes through a
+        /// server-created task even in "local" mode). `Some(...)` selects a
+        /// third-party CLI harness ("claude", "codex", ...), matching the
+        /// harness names `local_harness_launch.rs` already recognizes.
+        harness_type: Option<String>,
+        /// `None` inherits the parent agent's preferred LLM. `Some(_)`
+        /// overrides the child's preferred LLM with the supplied model id.
+        model_id: Option<String>,
+    },
+}
+
 impl AIAgentActionType {
     pub fn is_request_command_output(&self) -> bool {
         matches!(self, Self::RequestCommandOutput { .. })

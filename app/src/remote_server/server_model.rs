@@ -18,14 +18,15 @@ use warp_util::file::FileId;
 
 use super::proto::{
     client_message, delete_file_response, discard_files_response, git_commit_chain_response,
-    git_create_pr_response, git_push_response, host_scoped_request, notification,
-    run_command_response, server_message, session_scoped_request, write_file_response, Abort,
-    Authenticate, ClientMessage, DeleteFile, DeleteFileResponse, DeleteFileSuccess,
-    DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse, DiscardFilesSuccess, ErrorCode,
-    ErrorResponse, FailedFileRead, FileContextProto, FileOperationError, GetBranches,
-    GetCommittedBranchFilesRequest, GetDiffState, GitCommitChainMode, GitCommitChainRequest,
-    GitCommitChainResponse, GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse,
-    GitOpDelta, GitOpError, GitPushRequest, GitPushResponse, HostScopedRequest, Initialize,
+    git_create_pr_response, git_pull_response, git_push_response, host_scoped_request,
+    notification, run_command_response, server_message, session_scoped_request,
+    write_file_response, Abort, Authenticate, ClientMessage, DeleteFile, DeleteFileResponse,
+    DeleteFileSuccess, DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse,
+    DiscardFilesSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
+    FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
+    GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
+    GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPullRequest,
+    GitPullResponse, GitPushRequest, GitPushResponse, HostScopedRequest, Initialize,
     InitializeResponse, NavigatedToDirectory, NavigatedToDirectoryResponse, Notification,
     ReadFileContextResponse, RipgrepSearchRequest, RunCommandError, RunCommandErrorCode,
     RunCommandRequest, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionBootstrapped,
@@ -1195,6 +1196,20 @@ impl ServerModel {
                     }
                     Some(host_scoped_request::Message::GitPush(req)) => {
                         self.handle_git_push(req, &request_id, conn_id, ctx)
+                    }
+                    // Git pull over SSH, Stage 1 (fast-forward only): mirrors
+                    // GitPush's shape and locking exactly. Unlike push, a pull
+                    // changes the daemon's working tree, but that doesn't need
+                    // any bespoke handling here — the daemon's per-repo
+                    // `DiffStateWatch` (diff_state_tracker.rs) is a real
+                    // filesystem watcher already relied on to catch working-tree
+                    // changes from *any* source (discard, an out-of-band `git
+                    // pull` in a terminal, etc.), so it picks up a daemon-run
+                    // pull's changed files the same way and pushes
+                    // DiffStateFileDelta/DiffStateSnapshot to subscribers
+                    // without this handler doing anything extra.
+                    Some(host_scoped_request::Message::GitPull(req)) => {
+                        self.handle_git_pull(req, &request_id, conn_id, ctx)
                     }
                     Some(host_scoped_request::Message::GitCreatePr(req)) => {
                         self.handle_create_pr(req, &request_id, conn_id, ctx)
@@ -2660,6 +2675,71 @@ impl ServerModel {
                     }
                     Err(e) => server_message::Message::GitPushResponse(GitPushResponse {
                         result: Some(git_push_response::Result::Error(GitOpError {
+                            message: format!("{e:#}"),
+                        })),
+                    }),
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    /// Handles `GitPullRequest` — runs `git pull --ff-only` on the daemon's
+    /// filesystem, then returns the refreshed unpushed/upstream delta. Stage 1
+    /// (fast-forward only): a diverged history comes back as `GitOpError`
+    /// rather than a merge, so there is no conflict payload to plumb through.
+    fn handle_git_pull(
+        &mut self,
+        msg: GitPullRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        let repo_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path))
+        {
+            Ok(p) => PathBuf::from(p.to_local_path_lossy()),
+            Err(e) => {
+                return HandlerOutcome::Sync(server_message::Message::GitPullResponse(
+                    GitPullResponse {
+                        result: Some(git_pull_response::Result::Error(GitOpError {
+                            message: format!("Invalid repo_path: {e}"),
+                        })),
+                    },
+                ));
+            }
+        };
+        let branch = msg.branch;
+
+        log::info!(
+            "Handling GitPull repo={} branch={branch} (request_id={request_id})",
+            msg.repo_path,
+        );
+
+        let request_id_for_response = request_id.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                guard_git_operation_in_progress(&repo_path)?;
+                crate::util::git::run_pull(&repo_path, &branch, None).await?;
+                anyhow::Ok(crate::util::git::compute_unpushed_state(&repo_path).await)
+            },
+            move |me, result, _ctx| {
+                let message = match result {
+                    Ok((commits, upstream_ref)) => {
+                        server_message::Message::GitPullResponse(GitPullResponse {
+                            result: Some(git_pull_response::Result::Success(GitOpDelta {
+                                unpushed_commits: commits
+                                    .iter()
+                                    .map(super::diff_state_proto::commit_to_proto)
+                                    .collect(),
+                                upstream_ref,
+                            })),
+                        })
+                    }
+                    Err(e) => server_message::Message::GitPullResponse(GitPullResponse {
+                        result: Some(git_pull_response::Result::Error(GitOpError {
                             message: format!("{e:#}"),
                         })),
                     }),

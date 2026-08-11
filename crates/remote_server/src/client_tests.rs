@@ -6,11 +6,11 @@ use crate::proto::{
     CodebaseIndexStatusesSnapshot, ErrorCode, FileSystemEntryKind, GetDiffState,
     GetDiffStateResponse, GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse,
     GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError,
-    GitPushRequest, GitPushResponse, HostScopedRequest, InitializeResponse, Notification,
+    GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse, HostScopedRequest, InitializeResponse, Notification,
     OpenBuffer, OpenBufferResponse, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess,
     ResolvePathResponse, ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage,
     SessionScopedRequest, WriteFileChunkResponse, WriteFileChunkSuccess, client_message,
-    git_commit_chain_response, git_create_pr_response, git_push_response, host_scoped_request,
+    git_commit_chain_response, git_create_pr_response, git_pull_response, git_push_response, host_scoped_request,
     notification, read_file_chunk_response, resolve_path_response, run_command_response,
     server_message, session_scoped_request, write_file_chunk_response,
 };
@@ -687,6 +687,74 @@ async fn git_push_round_trip() {
             assert_eq!(delta.upstream_ref.as_deref(), Some("origin/feature"));
         }
         other => panic!("Expected GitPush success, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn git_pull_round_trip() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
+        let req = match &msg.message {
+            Some(client_message::Message::HostScoped(HostScopedRequest {
+                message: Some(host_scoped_request::Message::GitPull(req)),
+            })) => req.clone(),
+            other => panic!("Expected GitPull, got {other:?}"),
+        };
+        assert_eq!(req.repo_path, "/remote/repo");
+        assert_eq!(req.branch, "feature");
+        server_message::Message::GitPullResponse(GitPullResponse {
+            result: Some(git_pull_response::Result::Success(GitOpDelta {
+                unpushed_commits: Vec::new(),
+                upstream_ref: Some("origin/feature".to_string()),
+            })),
+        })
+    });
+
+    let resp = client
+        .git_pull(GitPullRequest {
+            repo_path: "/remote/repo".to_string(),
+            branch: "feature".to_string(),
+        })
+        .await
+        .unwrap();
+    match resp.result {
+        Some(git_pull_response::Result::Success(delta)) => {
+            assert_eq!(delta.upstream_ref.as_deref(), Some("origin/feature"));
+        }
+        other => panic!("Expected GitPull success, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn git_pull_round_trip_error() {
+    // Mirrors how a diverged (non-fast-forward) history comes back: Stage 1
+    // never merges, so it's a `GitOpError`, not a conflict payload.
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
+        let req = match &msg.message {
+            Some(client_message::Message::HostScoped(HostScopedRequest {
+                message: Some(host_scoped_request::Message::GitPull(req)),
+            })) => req.clone(),
+            other => panic!("Expected GitPull, got {other:?}"),
+        };
+        assert_eq!(req.branch, "feature");
+        server_message::Message::GitPullResponse(GitPullResponse {
+            result: Some(git_pull_response::Result::Error(GitOpError {
+                message: "Not possible to fast-forward, aborting.".to_string(),
+            })),
+        })
+    });
+
+    let resp = client
+        .git_pull(GitPullRequest {
+            repo_path: "/remote/repo".to_string(),
+            branch: "feature".to_string(),
+        })
+        .await
+        .unwrap();
+    match resp.result {
+        Some(git_pull_response::Result::Error(e)) => {
+            assert_eq!(e.message, "Not possible to fast-forward, aborting.");
+        }
+        other => panic!("Expected GitPull error, got {other:?}"),
     }
 }
 

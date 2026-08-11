@@ -2136,3 +2136,115 @@ fn generic_shared_session_viewer_model_starts_view_pending() {
     ));
     assert!(model.shared_session_status().is_viewer());
 }
+
+/// Hex-encodes a JSON DCS hook payload the same way the shell bootstrap scripts do (see
+/// `warp_send_message` / `od -An -v -tx1` in `bash_body.sh`), for tests that need to drive
+/// `TerminalModel::process_bytes` with a real DCS-encoded hook rather than calling the handler
+/// method directly. Mirrors `hex_encoded_dcs_string` in `ansi/mod_test.rs`, duplicated here
+/// (rather than shared) because that helper is private to its own test module.
+fn hex_encoded_json_dcs(payload: &str) -> Vec<u8> {
+    const HEX_ENCODED_JSON_DCS_START: &[u8] = &[0x1b, 0x50, 0x24, 0x64];
+    const DCS_END: &[u8] = &[0x9c];
+    let encoded = hex::encode(payload).into_bytes();
+    [HEX_ENCODED_JSON_DCS_START, &encoded, DCS_END].concat()
+}
+
+// Ported from the pinned oracle (`02b53fcd8`, `app/src/terminal/model/terminal_model_tests.rs`).
+// Unchanged from the pin except that `CommandFinishedValue` here has no `session_id` field to
+// set to `None` -- see #532: unlike the pin, `CommandFinished` doesn't carry a `session_id` in
+// this fork yet (`DProtoHook::session_id()` returns `None` for it unconditionally), so there is
+// nothing to omit; the direct `command_finished` call below only exists to seed an active block
+// so the `pwd` assertions below are meaningful, and does not itself go through DCS validation.
+//
+// Exercises the real `TerminalModel::should_validate_dcs_hook_session_id` gate: for a *viewer*
+// (a session passively receiving another session's shared events), the pin's implementation
+// (`!self.shared_session_status().is_viewer()`) evaluates to `false`, so validation is skipped
+// and an unregistered session_id is accepted. This should pass unconditionally, since the fork's
+// current hardcoded `false` produces identical behavior for a viewer.
+#[test]
+fn viewer_processes_dcs_hook_with_unregistered_session_id() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.set_shared_session_status(SharedSessionStatus::reader());
+    terminal.start_command_execution();
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: BlockId::new(),
+        },
+    });
+
+    let bytes = hex_encoded_json_dcs(
+        r#"{
+                "hook": "Precmd",
+                "value": {
+                    "pwd": "/viewer",
+                    "session_id": 999
+                }
+            }"#,
+    );
+    terminal.process_bytes(bytes.as_slice());
+
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/viewer")
+    );
+}
+
+// Ported from the pinned oracle (`02b53fcd8`, `app/src/terminal/model/terminal_model_tests.rs`).
+// Same adaptation as `viewer_processes_dcs_hook_with_unregistered_session_id` above (no
+// `session_id` field on this fork's `CommandFinishedValue`).
+//
+// Exercises the real gate for a *sharer* (owns the PTY, would have registered its own session
+// ID): the pin's `!is_viewer()` evaluates to `true`, so an unregistered session_id must be
+// rejected.
+//
+// NOTE (#532): this assertion is written against the pin's real
+// `should_validate_dcs_hook_session_id` implementation, which this fork does NOT enable yet --
+// `should_validate_dcs_hook_session_id` stays hardcoded `false` in production (see the doc
+// comment on that function in `terminal_model.rs`), because most `DProtoHook` variants
+// (`CommandFinished`, `Preexec`, `Bootstrapped`, `SSH`, ...) don't carry a `session_id` yet, so
+// flipping the gate would reject those hooks for every ordinary session, not just this one. This
+// test is expected to FAIL against the current hardcoded-`false` gate (it would observe
+// `Some("/sharer")`, not `None`) until that gate is safely enabled. Written, unverified -- see
+// `docs/sweep/outcome-532-session-wiring.md`.
+#[test]
+#[ignore = "Blocked: DProtoHook::session_id() returns None for CommandFinished/Preexec/\
+Bootstrapped/InputBuffer/Clear and others, so enabling should_validate_dcs_hook_session_id \
+would reject those hooks for EVERY non-shared session (NotShared.is_viewer() == false), not \
+just shared ones. Registration is now wired (this commit); threading session_id through the \
+remaining hook variants is the remaining prerequisite. Un-ignore with that work, not before."]
+fn sharer_rejects_dcs_hook_with_unregistered_session_id() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.set_shared_session_status(SharedSessionStatus::ActiveSharer);
+    terminal.start_command_execution();
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: BlockId::new(),
+        },
+    });
+
+    let bytes = hex_encoded_json_dcs(
+        r#"{
+                "hook": "Precmd",
+                "value": {
+                    "pwd": "/sharer",
+                    "session_id": 999
+                }
+            }"#,
+    );
+    terminal.process_bytes(bytes.as_slice());
+
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        None
+    );
+}

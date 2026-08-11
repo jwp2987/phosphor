@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use uuid::Uuid;
 use warp_core::ui::appearance::Appearance;
+use warp_core::ui::theme::WarpTheme;
 use warp_core::ui::Icon;
 use warp_editor::render::element::VerticalExpansionBehavior;
 use warpui::clipboard::ClipboardContent;
@@ -75,6 +76,10 @@ use crate::{
     cmd_or_ctrl_shift,
     settings::{InputModeSettings, SelectionSettings},
     ui_components::blended_colors,
+};
+use crate::ui_components::json_tree::{
+    CopyJsonFn, JsonTreeColors, JsonTreeState, PathSegment, ToggleFn, ToggleStringFn,
+    render_json_tree,
 };
 
 use super::inline_action_icons::{self, icon_size};
@@ -171,6 +176,66 @@ pub fn init(app: &mut AppContext) {
     )]);
 }
 
+/// The normalized, renderable form of a `CallMCPToolResult`.
+pub(crate) enum McpRenderable {
+    Tree(serde_json::Value),
+    Error(String),
+    Cancelled,
+}
+
+/// Normalizes a `CallMCPToolResult` into a `McpRenderable` for display.
+///
+/// Prefers `structured_content` when present; otherwise tries to parse joined
+/// text content as JSON; falls back to wrapping the raw text as a JSON string
+/// value. This avoids ever rendering the raw `CallToolResult` wire struct
+/// (with its `content`/`is_error`/`meta` wrapper fields) directly to the user.
+pub(crate) fn mcp_result_to_renderable(result: &CallMCPToolResult) -> McpRenderable {
+    match result {
+        CallMCPToolResult::Success { result } => {
+            if let Some(v) = &result.structured_content {
+                return McpRenderable::Tree(v.clone());
+            }
+            let text = result
+                .content
+                .iter()
+                .filter_map(|c| {
+                    if let rmcp::model::RawContent::Text(t) = &c.raw {
+                        Some(t.text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                McpRenderable::Tree(v)
+            } else {
+                McpRenderable::Tree(serde_json::Value::String(text))
+            }
+        }
+        CallMCPToolResult::Error(e) => McpRenderable::Error(e.clone()),
+        CallMCPToolResult::Cancelled => McpRenderable::Cancelled,
+    }
+}
+
+/// Builds the plain-text fallback element used for MCP tool-call detail
+/// bodies that are not a structured JSON tree (errors, cancellation, or the
+/// as-yet-unfinished request text).
+fn mcp_response_text_element(
+    content_text: String,
+    appearance: &Appearance,
+    theme: &WarpTheme,
+) -> Box<dyn Element> {
+    Text::new(
+        content_text,
+        appearance.monospace_font_family(),
+        appearance.monospace_font_size(),
+    )
+    .with_color(blended_colors::text_main(theme, theme.background()))
+    .with_selectable(true)
+    .finish()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestedActionViewType {
     Command,
@@ -212,6 +277,17 @@ pub enum RequestedCommandViewAction {
     OpenActiveAgentProfileEditor,
     SelectText,
     CopyOnSelect(String),
+    /// Toggles expand/collapse for a container node in the MCP response JSON tree.
+    ToggleMcpResponseJsonNode {
+        path: Vec<PathSegment>,
+        depth: usize,
+    },
+    /// Toggles expand/collapse for a long string value in the MCP response JSON tree.
+    ToggleMcpResponseJsonString {
+        path: Vec<PathSegment>,
+    },
+    /// Copies a JSON value from the MCP response tree to the clipboard.
+    CopyMcpResponseJson(String),
 }
 
 pub struct RequestedCommandView {
@@ -267,6 +343,12 @@ pub struct RequestedCommandView {
     // The MCP tool name is kept separately from the formatted command text so
     // headers never need to parse a presentation label to recover identity.
     mcp_tool_name: Option<String>,
+
+    // Per-node expand/collapse state for the interactive JSON tree rendering
+    // of a finished MCP tool call's response (see `mcp_result_to_renderable`
+    // and `McpRenderable::Tree`). Persists across re-renders so a user's
+    // expand/collapse clicks stick.
+    mcp_result_tree_state: JsonTreeState,
 }
 
 impl RequestedCommandView {
@@ -503,6 +585,7 @@ impl RequestedCommandView {
             mcp_content_selected_text: Arc::new(std::sync::RwLock::new(None)),
             mcp_server_id: None,
             mcp_tool_name: None,
+            mcp_result_tree_state: Default::default(),
         }
     }
 
@@ -1484,38 +1567,101 @@ impl View for RequestedCommandView {
 
         if should_render_mcp_content {
             let command_text = self.command_text();
-            let content_text = if let Some(AIAgentActionResultType::CallMCPTool(result)) =
+
+            // If we have a finished result, normalize it via `mcp_result_to_renderable`
+            // rather than pretty-printing the raw `CallToolResult` wire struct (which
+            // exposes SDK plumbing like `content`/`is_error`/`meta` instead of the
+            // tool's actual output).
+            let mcp_result = if let Some(AIAgentActionResultType::CallMCPTool(result)) =
                 action_status
                     .as_ref()
                     .and_then(|status| status.finished_result().map(|result| &result.result))
             {
-                // If we have a result, show the JSON response.
-                let result_text = match result {
-                    CallMCPToolResult::Success { result } => serde_json::to_string_pretty(result)
-                        .unwrap_or_else(|_| "Error formatting JSON".to_string()),
-                    CallMCPToolResult::Error(error) => {
-                        format!("Error: {error}")
-                    }
-                    CallMCPToolResult::Cancelled => crate::t!("ai-tool-call-cancelled"),
-                };
-                format!("{command_text}\n\nResponse: {result_text}")
-            } else if self.is_header_expanded {
-                command_text.to_string()
+                Some(mcp_result_to_renderable(result))
             } else {
-                self.mcp_clean_tool_name()
+                None
             };
 
-            let text_element = Text::new(
-                content_text,
-                appearance.monospace_font_family(),
-                appearance.monospace_font_size(),
-            )
-            .with_color(blended_colors::text_main(theme, theme.background()))
-            .with_selectable(true)
-            .finish();
+            let body_element: Box<dyn Element> = match &mcp_result {
+                Some(McpRenderable::Tree(value)) => {
+                    // A structured/JSON-shaped response: keep the request text
+                    // (as before) but render the response as an interactive,
+                    // collapsible tree instead of flattening it into the same
+                    // text blob.
+                    let colors = JsonTreeColors::from_theme(theme);
+                    let tree_position_id_prefix =
+                        format!("{}-mcp-response", self.position_id_prefix);
+                    let on_toggle: Arc<ToggleFn> = Arc::new(|ctx, path, depth| {
+                        ctx.dispatch_typed_action(
+                            RequestedCommandViewAction::ToggleMcpResponseJsonNode { path, depth },
+                        );
+                    });
+                    let on_toggle_string: Arc<ToggleStringFn> = Arc::new(|ctx, path| {
+                        ctx.dispatch_typed_action(
+                            RequestedCommandViewAction::ToggleMcpResponseJsonString { path },
+                        );
+                    });
+                    let on_copy_json: Arc<CopyJsonFn> =
+                        Arc::new(|ctx, _path, value, _anchor_id| {
+                            let json_text =
+                                serde_json::to_string_pretty(&value).unwrap_or_default();
+                            ctx.dispatch_typed_action(
+                                RequestedCommandViewAction::CopyMcpResponseJson(json_text),
+                            );
+                        });
+                    let tree_element = render_json_tree(
+                        value,
+                        Some("Response"),
+                        &self.mcp_result_tree_state,
+                        &colors,
+                        &tree_position_id_prefix,
+                        on_toggle,
+                        on_toggle_string,
+                        on_copy_json,
+                        appearance,
+                    );
+
+                    let mut column =
+                        Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+                    if !command_text.is_empty() {
+                        column.add_child(
+                            Container::new(mcp_response_text_element(
+                                command_text.to_string(),
+                                appearance,
+                                theme,
+                            ))
+                            .with_padding_bottom(8.)
+                            .finish(),
+                        );
+                    }
+                    column.add_child(tree_element);
+                    column.finish()
+                }
+                Some(McpRenderable::Error(error)) => mcp_response_text_element(
+                    format!("{command_text}\n\nResponse: Error: {error}"),
+                    appearance,
+                    theme,
+                ),
+                Some(McpRenderable::Cancelled) => mcp_response_text_element(
+                    format!(
+                        "{command_text}\n\nResponse: {}",
+                        crate::t!("ai-tool-call-cancelled")
+                    ),
+                    appearance,
+                    theme,
+                ),
+                None => {
+                    let content_text = if self.is_header_expanded {
+                        command_text.to_string()
+                    } else {
+                        self.mcp_clean_tool_name()
+                    };
+                    mcp_response_text_element(content_text, appearance, theme)
+                }
+            };
 
             let mcp_selected_text = self.mcp_content_selected_text.clone();
-            let selectable_text = SelectableArea::new(
+            let selectable_content = SelectableArea::new(
                 self.mcp_content_selection_handle.clone(),
                 #[allow(clippy::unwrap_used)]
                 move |selection_args, ctx, _| {
@@ -1529,7 +1675,7 @@ impl View for RequestedCommandView {
                     }
                     *mcp_selected_text.write().unwrap() = selection;
                 },
-                text_element,
+                body_element,
             )
             .on_selection_updated(|ctx, _| {
                 ctx.dispatch_typed_action(RequestedCommandViewAction::SelectText);
@@ -1537,7 +1683,7 @@ impl View for RequestedCommandView {
             .finish();
 
             content.add_child(
-                Container::new(selectable_text)
+                Container::new(selectable_content)
                     .with_horizontal_padding(INLINE_ACTION_HORIZONTAL_PADDING)
                     .with_vertical_padding(REQUESTED_COMMAND_BODY_VERTICAL_PADDING)
                     .with_background(theme.background())
@@ -1678,6 +1824,18 @@ impl TypedActionView for RequestedCommandView {
             }
             RequestedCommandViewAction::CopyOnSelect(selection) => {
                 self.maybe_copy_on_select(selection.clone(), ctx);
+            }
+            RequestedCommandViewAction::ToggleMcpResponseJsonNode { path, depth } => {
+                self.mcp_result_tree_state.toggle(path, *depth);
+                ctx.notify();
+            }
+            RequestedCommandViewAction::ToggleMcpResponseJsonString { path } => {
+                self.mcp_result_tree_state.toggle_string(path);
+                ctx.notify();
+            }
+            RequestedCommandViewAction::CopyMcpResponseJson(json_text) => {
+                ctx.clipboard()
+                    .write(ClipboardContent::plain_text(json_text.clone()));
             }
         }
     }

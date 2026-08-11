@@ -12,6 +12,7 @@ pub(super) mod request_computer_use;
 pub(super) mod request_file_edits;
 pub(super) mod send_message;
 pub(super) mod shell_command;
+pub(super) mod start_agent;
 pub(super) mod suggest_new_conversation;
 pub(super) mod suggest_prompt;
 pub(super) mod use_computer;
@@ -41,6 +42,10 @@ pub use request_file_edits::{
 pub use send_message::SendMessageToAgentExecutor;
 use serde::{Deserialize, Serialize};
 pub use shell_command::{ShellCommandExecutor, ShellCommandExecutorEvent};
+pub use start_agent::{
+    StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome, StartAgentRequest,
+    StartAgentRequestId,
+};
 pub use suggest_new_conversation::NewConversationDecision;
 use suggest_new_conversation::SuggestNewConversationExecutor;
 pub use suggest_prompt::{PromptSuggestionExecutor, PromptSuggestionExecutorEvent};

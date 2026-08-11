@@ -101,6 +101,11 @@ message HostScopedRequest {
     // reason as the mutations above: the index belongs to the host, not to
     // one SSH connection.
     SearchRemoteCodebase search_remote_codebase = 22;
+    // Git write-ops over SSH, Stage 1 (fast-forward only, absent from the
+    // pin entirely — this fork has no pin classification to follow, so it's
+    // grouped with git_push/git_commit_chain for the same host-local
+    // git-subprocess reason). Next free slot in this oneof.
+    GitPullRequest git_pull = 23;
   }
 }
 
@@ -185,6 +190,7 @@ message ServerMessage {
     CodebaseIndexStatusUpdated codebase_index_status_updated = 13;
     GetFragmentMetadataFromHashResponse get_fragment_metadata_from_hash_response = 36;
     SearchRemoteCodebaseResponse search_remote_codebase_response = 37;
+    GitPullResponse git_pull_response = 38;
   }
 }
 
@@ -943,6 +949,23 @@ message GitPushRequest {
 }
 
 message GitPushResponse {
+  oneof result {
+    GitOpDelta success = 1;
+    GitOpError error = 2;
+  }
+}
+
+// Client → server: fast-forward-only pull of `branch` from origin (git-pull
+// Stage 1). Never merges — a non-fast-forward fails with `GitOpError` rather
+// than creating a merge commit, so this reuses `GitOpDelta`/`GitOpError`
+// exactly like `GitPushRequest`/`GitPushResponse` and needs no
+// conflict-resolution payload. Merging pull is a separate, later item.
+message GitPullRequest {
+  string repo_path = 1;
+  string branch = 2;
+}
+
+message GitPullResponse {
   oneof result {
     GitOpDelta success = 1;
     GitOpError error = 2;

@@ -1,6 +1,11 @@
 use std::path::Path;
 
-use crate::{language_by_filename, language_by_name, load_language, SUPPORTED_LANGUAGES};
+use warp_util::standardized_path::StandardizedPath;
+
+use crate::{
+    SUPPORTED_LANGUAGES, language_by_filename, language_by_local_filename, language_by_name,
+    load_language,
+};
 
 /// Validate that every supported language can be loaded successfully.
 /// This catches invalid node types, syntax errors, and other issues in .scm query files
@@ -31,7 +36,24 @@ fn all_supported_languages_load_successfully() {
 #[test]
 fn html_extensions_resolve_to_html() {
     for filename in ["index.html", "index.htm"] {
-        let language = language_by_filename(Path::new(filename))
+        let path = StandardizedPath::try_new(&format!("/tmp/{filename}"))
+            .expect("test path should be absolute");
+        let language = language_by_filename(&path)
+            .unwrap_or_else(|| panic!("expected {filename} to resolve to a language"));
+        assert_eq!(
+            language.display_name(),
+            "HTML",
+            "{filename} should resolve to HTML",
+        );
+    }
+}
+
+/// `language_by_local_filename` (the `&Path`-based sibling used when the path is
+/// known to originate from the local filesystem) should resolve identically.
+#[test]
+fn local_html_extensions_resolve_to_html() {
+    for filename in ["index.html", "index.htm"] {
+        let language = language_by_local_filename(Path::new(filename))
             .unwrap_or_else(|| panic!("expected {filename} to resolve to a language"));
         assert_eq!(
             language.display_name(),
@@ -47,13 +69,26 @@ fn html_extensions_resolve_to_html() {
 /// "Language support is unavailable for this file type" footer.
 #[test]
 fn command_extension_resolves_to_shell() {
-    let language = language_by_filename(Path::new("script.command"))
+    let path =
+        StandardizedPath::try_new("/tmp/script.command").expect("test path should be absolute");
+    let language =
+        language_by_filename(&path).expect("`.command` files should resolve to a language");
+    assert_eq!(language.display_name(), "Shell");
+}
+
+#[test]
+fn local_command_extension_resolves_to_shell() {
+    let language = language_by_local_filename(Path::new("script.command"))
         .expect("`.command` files should resolve to a language");
     assert_eq!(language.display_name(), "Shell");
 }
 
 /// Newly added languages should resolve from their canonical file extensions so
 /// that opening, e.g., a `.dart` file renders syntax highlighting.
+///
+/// These languages are a fork addition beyond the pin's `SUPPORTED_LANGUAGES`, so
+/// this test has no pin equivalent; it is kept (adapted to the new `_parts` split)
+/// to preserve the fork's own coverage.
 #[test]
 fn new_language_extensions_resolve() {
     for (filename, expected) in [
@@ -74,7 +109,7 @@ fn new_language_extensions_resolve() {
         ("config.cmake", "CMake"),
         ("CMakeLists.txt", "CMake"),
     ] {
-        let language = language_by_filename(Path::new(filename))
+        let language = language_by_local_filename(Path::new(filename))
             .unwrap_or_else(|| panic!("expected {filename} to resolve to a language"));
         assert_eq!(
             language.display_name(),
@@ -111,7 +146,9 @@ fn new_language_aliases_normalize() {
 #[test]
 fn markdown_extensions_resolve_to_markdown() {
     for filename in ["README.md", "notes.markdown"] {
-        let language = language_by_filename(Path::new(filename))
+        let path = StandardizedPath::try_new(&format!("/tmp/{filename}"))
+            .expect("test path should be absolute");
+        let language = language_by_filename(&path)
             .unwrap_or_else(|| panic!("expected {filename} to resolve to a language"));
         assert_eq!(
             language.display_name(),
@@ -119,4 +156,18 @@ fn markdown_extensions_resolve_to_markdown() {
             "{filename} should resolve to Markdown",
         );
     }
+}
+
+/// A Windows-encoded `StandardizedPath` (as produced for a remote SSH session
+/// whose host runs Windows, even while this process runs on a Unix host) must
+/// resolve by filename/extension the same way a local path would — this is
+/// the behavior `&Path`-based lookup could not express, since
+/// `std::path::Path` has no notion of a foreign (non-local-OS) path.
+#[test]
+fn foreign_encoded_path_resolves_language() {
+    let path = StandardizedPath::try_new(r"C:\Users\remote\project\main.rs")
+        .expect("windows-style absolute path should parse");
+    let language =
+        language_by_filename(&path).expect("foreign-encoded .rs path should still resolve to Rust");
+    assert_eq!(language.display_name(), "Rust");
 }

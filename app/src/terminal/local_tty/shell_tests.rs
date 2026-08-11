@@ -22,7 +22,8 @@ fn test_program_unknown_shell() {
 
 #[test]
 fn test_powershell_encoded_command_has_no_trailing_nul() {
-    let args = arguments_for_session_spawning_command("pwsh", ShellType::PowerShell);
+    let session_id = crate::terminal::bootstrap::generate_session_id();
+    let args = arguments_for_session_spawning_command("pwsh", ShellType::PowerShell, session_id);
     let encoded_index = args
         .iter()
         .position(|a| a == "-EncodedCommand")
@@ -51,7 +52,8 @@ fn test_powershell_encoded_command_has_no_trailing_nul() {
     );
 
     let decoded_script = String::from_utf16(&decoded_utf16).expect("should be valid UTF-16");
-    let expected_script = init_shell_script_for_shell(ShellType::PowerShell, &crate::ASSETS);
+    let expected_script =
+        init_shell_script_for_shell(ShellType::PowerShell, &crate::ASSETS, session_id);
     assert_eq!(decoded_script, expected_script);
 }
 

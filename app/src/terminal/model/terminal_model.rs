@@ -2687,15 +2687,32 @@ impl ansi::Handler for TerminalModel {
         self.registered_session_ids.contains(&session_id)
     }
 
-    /// Validation stays off in production for now: nothing yet calls
-    /// `register_session_id` at PTY-spawn time (the pin bakes a generated
-    /// session ID into the shell launch and registers it before the shell can
-    /// write anything back -- see `ShellStarter::session_id()` /
-    /// `local_tty/terminal_manager.rs` in the pin). Until that wiring lands,
-    /// flipping this to `true` would reject every real lifecycle hook
-    /// (`Preexec`, `CommandFinished`, ...) because `registered_session_ids`
-    /// would always be empty for a real session -- a regression, not a fix.
-    /// See #419's follow-up for the PTY-spawn wiring.
+    /// Validation stays off in production for now -- and this is a *deeper* gap than just
+    /// missing registration (see #532).
+    ///
+    /// PTY-spawn registration is now wired (`local_tty/terminal_manager.rs`'s
+    /// `on_shell_determined`, plus the equivalent remote-tty and subshell-spawn sites in
+    /// `remote_tty/event_loop.rs` and `view.rs`), matching the pin: a generated session ID is
+    /// baked into the shell launch and registered before the shell can write anything back.
+    ///
+    /// But flipping this to `!self.shared_session_status().is_viewer()` (the pin's
+    /// implementation) would STILL be unsafe, because `is_viewer()` is `false` for a normal,
+    /// non-shared session too -- so the gate would engage for every ordinary session, not just
+    /// screen-share sharers. And most `DProtoHook` variants don't carry a `session_id` at all
+    /// yet: `DProtoHook::session_id()` unconditionally returns `None` for `CommandFinished`,
+    /// `Preexec`, `Bootstrapped`, `PreInteractiveSSHSession`, `SSH`, `InputBuffer`, `Clear`,
+    /// `InitSubshell`, and `FinishUpdate` (see that function's doc comment in
+    /// `ansi/dcs_hooks.rs`). `validate_hook_session_id` in `ansi/mod.rs` rejects any hook whose
+    /// `requires_registered_session()` is `true` but whose `session_id()` is `None` -- which is
+    /// every one of those hook types. Flipping this gate today would reject `CommandFinished`
+    /// and `Preexec` (the exact hooks the original warning called out) for every real,
+    /// non-viewer session, breaking ordinary command-lifecycle tracking entirely.
+    ///
+    /// Only `InitShell`, `Precmd`, and `ExitShell` carry a real `session_id` right now, which is
+    /// why the PTY-spawn/remote-tty/subshell registration wiring above is real and correct for
+    /// those hooks, but not sufficient on its own to flip this gate. That needs `session_id`
+    /// threaded through the remaining `DProtoHook` variants and the shell-script code that emits
+    /// them (`bash_body.sh` / `zsh_body.sh` / `fish.sh` / `pwsh.ps1`) first. See #532.
     fn should_validate_dcs_hook_session_id(&self) -> bool {
         false
     }

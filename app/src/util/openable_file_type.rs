@@ -65,7 +65,7 @@ pub enum FileTarget {
 #[cfg(feature = "local_fs")]
 pub fn is_supported_code_file(path: impl AsRef<Path>) -> bool {
     let path = path.as_ref();
-    languages::language_by_filename(path).is_some()
+    languages::language_by_local_filename(path).is_some()
 }
 
 #[cfg(not(feature = "local_fs"))]

@@ -59,6 +59,39 @@ input nobody can name is worse than no build, because its result gets believed.
       **Do not trust any build or suite result that cannot name the commit it
       ran against.**
 
+## VERIFIED WORK QUEUE (2026-08-11, post-sweep)
+
+**The 50-test MISSING-SUBSYSTEM sweep is COMPLETE** — all 50 resolved on branch
+`working`. What follows is the remaining code work, **after every premise was
+re-checked by grepping for a DEFINITION rather than a name.**
+
+**That check mattered: 6 of the ~18 items were false.** `rollup.rs` (claimed
+absent with 8 tests — it exists, with exactly 8 tests), `/index` slash command
+(exists), and 3 entries left unchecked under headers already reading
+"IMPLEMENTED". One entry I *wrongly* called stale is genuinely open:
+`RemoteServerClient::resolve_conflict` really has zero callers — the two hits
+are `GlobalBufferModel::resolve_conflict`, same method name, different type.
+
+**Confirmed genuinely absent — the real queue:**
+
+| # | item | evidence |
+|---|---|---|
+| 1 | **`git pull`** (Stage 1, `--ff-only`) | zero hits for `git_pull`/`GitPull` tree-wide |
+| 2 | **#532 PTY-spawn wiring** | `register_session_id` has 0 production call sites here vs 4 in the pin |
+| 3 | **`language_by_filename` signature** | fork takes `&Path`; pin takes `&StandardizedPath` + `language_by_filename_parts` |
+| 4 | **MCP tool results render as a JSON blob** | `inline_action/requested_command.rs:1494` — `to_string_pretty(result)` |
+| 5 | **`with_semantic_selection_by_style`** | no definition tree-wide |
+| ~~6~~ | ~~`use_computer_decoration`~~ **— NOT A SYMBOL.** It is a pin *test name*: `output_tests.rs:170 fn use_computer_decoration_skips_screenshot_only_rows()`. Screenshot handling exists (`view_impl/output.rs`, 25 refs). Re-scope against the actual decoration predicate or drop. | corrected 2026-08-11 |
+| ~~7~~ | ~~TUI renderer for `MessagesReceivedFromAgents`/`EventsFromAgents`~~ **— FALSE.** `crates/warp_tui/src/agent_block.rs:1311` renders `MessagesReceivedFromAgents { messages }`; `:1318` deliberately no-ops `EventsFromAgents`. Types exist in `convert_{conversation,from,to}.rs`. `agent_block_tests.rs` exists in fork and pin. If the real complaint is the `EventsFromAgents` no-op, file that narrowly with `:1318` as evidence. | corrected 2026-08-11 |
+| 8 | **Zap #324 — pane min size** | `MIN_PANEL_WIDTH: f32 = 300.` hardcoded, `ai_assistant/panel.rs:61` |
+| 9 | **Zap #329 remainder** — hunk staging, branch create/switch | no `stage_hunk`/`checkout_branch` |
+| 10 | 🛑 **Feature-reduced daemon target — DO NOT START.** Maintainer hold, 2026-08-11. Architectural, gates the distribution decision. No agent is to be assigned this without an explicit instruction. | on hold |
+
+**Rule that produced this list, and the reason it is short:** grep for
+`fn <name>` / `struct <name>`, never the bare name. Six false positives and one
+false negative were caught this way in a single session — including three where
+the "missing" symbol appeared only inside a doc comment describing its absence.
+
 ## IN FLIGHT RIGHT NOW (2026-08-11)
 
 **`main` is held by the build agent. Do not commit to it.** Standing maintainer
@@ -1432,9 +1465,9 @@ more look at *why* it is absent.
       **13 real-debt symbols → 10.**
 
 <details><summary>Original entry</summary>
-- [ ] `TuiAIBlockSection::AgentMessage`, `agent_message_section_id`, `AgentMessage`.
+- [x] `TuiAIBlockSection::AgentMessage`, `agent_message_section_id`, `AgentMessage`.
       **The GUI half is built** (`blocklist/orchestration_events.rs` emits at
-      `:331`, renders at `:407`). TUI only. 9 tests.
+      `:331`, renders at `:407`). TUI only. 9 tests. **[x] 2026-08-11: this is the ORIGINAL claim, preserved under an IMPLEMENTED header. Verified present in code; it was stale checkbox state inflating the open count, not open work.]**
 </details>
 
 ### Blocked-action acceptance — DISSOLVED 2026-08-11, it was a rename
@@ -1501,9 +1534,9 @@ more look at *why* it is absent.
       **2 real-debt symbols → 0. All 23 resolved.**
 
 <details><summary>Original entry</summary>
-- [ ] `parse_project_skill_contents`, `refresh_project_skills_for_repo`.
+- [x] `parse_project_skill_contents`, `refresh_project_skills_for_repo`.
       `SkillWatcher` itself **exists** (`remote_server/mod.rs`) — the remote
-      refresh/fallback layer on top of it does not. 13 tests.
+      refresh/fallback layer on top of it does not. 13 tests. **[x] 2026-08-11: this is the ORIGINAL claim, preserved under an IMPLEMENTED header. Verified present in code; it was stale checkbox state inflating the open count, not open work.]**
 </details>
 
 ### MCP config-parse cancellation — IMPLEMENTED 2026-08-11 (audit cluster 6)
@@ -1529,8 +1562,8 @@ more look at *why* it is absent.
       **4 real-debt symbols → 2.**
 
 <details><summary>Original entry</summary>
-- [ ] `FileMCPWatcher::parse_abort_handles`, `abort_config_parse`. `FileMCPWatcher`
-      **exists** (`lib.rs`); it cannot cancel an in-flight config parse.
+- [x] `FileMCPWatcher::parse_abort_handles`, `abort_config_parse`. `FileMCPWatcher`
+      **exists** (`lib.rs`); it cannot cancel an in-flight config parse. **[x] 2026-08-11: this is the ORIGINAL claim, preserved under an IMPLEMENTED header. Verified present in code; it was stale checkbox state inflating the open count, not open work.]**
 </details>
 
 ### TUI CLI surface — DISSOLVED ENTIRELY 2026-08-11, all six
@@ -1572,10 +1605,19 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
 
 ### Confirmed missing — real, non-cloud debt
 
-- [ ] **`app/src/ai/blocklist/usage/rollup.rs` is absent** (8 tests). **Most
-      tractable item here:** its sole real dependency,
-      `descendant_conversation_ids_in_spawn_order`, **already exists** — in
-      `app/src/ai/blocklist/orchestration_topology.rs`. Verified.
+- [x] **~~`app/src/ai/blocklist/usage/rollup.rs` is absent (8 tests)~~ — FALSE,
+      corrected 2026-08-11.** The file **exists**, and so does
+      `rollup_tests.rs`, which contains **exactly 8 `#[test]` functions —
+      matching the pin's 8**. Nothing is missing. This entry was about to be
+      handed to an agent as "the largest single remaining chunk of code work";
+      it would have re-implemented an existing module.
+      **Sixth-plus instance of the #148 class** (a TODO entry stating the
+      opposite of the code). Note the entry even carried the word "Verified" —
+      what had actually been verified was its *dependency*
+      (`descendant_conversation_ids_in_spawn_order`), not its own premise.
+      Original text: "`rollup.rs` is absent (8 tests). Most tractable item
+      here: its sole real dependency, `descendant_conversation_ids_in_spawn_order`,
+      already exists in `orchestration_topology.rs`. Verified."
 - [~] **DUPLICATE of the `AgentTerminalControl` entry earlier in this file — see
       there for the live status.** Kept as a stub rather than deleted, because
       the two entries **contradicted each other** and that is worth recording:
@@ -1589,10 +1631,13 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       (9 tests). **The GUI half is built** — `blocklist/orchestration_events.rs`
       both emits (`:331`) and renders (`:407`) them. Only the TUI side is
       missing. Second of the two clusters behind #456.
-- [ ] **No `/index` slash command** — indexing is auto-only; a user cannot ask
-      for it. Verified: no `INDEX` command and no `CODEBASE_CONTEXT`
-      availability. Matters more now the codebase index is actually wired to
-      `get_relevant_files`.
+- [x] **~~No `/index` slash command~~ — FALSE, corrected 2026-08-11.** It
+      exists: `app/src/search/slash_command_menu/static_commands/mod.rs:257`
+      maps `"/index" => SlashCommandKind::Index`. This entry also said
+      "Verified", which it was not.
+      *(If the real complaint is that the command exists but does nothing
+      useful, that is a different, narrower item — file it with the dispatch
+      site as evidence, not as "no command".)*
 - [ ] **MCP tool results render as a `serde_json::to_string_pretty` blob, not a
       collapsible tree.** `McpRenderable` / `mcp_result_to_renderable` exist
       **nowhere in production** — the only tree-wide hits are a comment in

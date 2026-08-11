@@ -51,7 +51,8 @@ pub use crate::ai::agent::{
     AgentOutputMermaidDiagram, AgentOutputTable, AskUserQuestionResult, CancellationReason,
     FileGlobV2Result, GrepResult, ImageContext, MessageId, ReceivedMessageDisplay,
     RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared, ShellCommandDelay,
-    SuggestNewConversationResult, SummarizationType, TodoOperation, UserQueryMode,
+    StartAgentExecutionMode, SuggestNewConversationResult, SummarizationType, TodoOperation,
+    UserQueryMode,
 };
 pub use crate::ai::agent_conversations_model::{
     AgentConversationsModel, AgentConversationsModelEvent, AgentManagementFilters,
@@ -59,7 +60,8 @@ pub use crate::ai::agent_conversations_model::{
 };
 pub use crate::ai::blocklist::action_model::{
     AIActionStatus, BlocklistAIActionEvent, BlocklistAIActionModel, NewConversationDecision,
-    ShellCommandExecutor, ShellCommandExecutorEvent,
+    ShellCommandExecutor, ShellCommandExecutorEvent, StartAgentExecutor, StartAgentExecutorEvent,
+    StartAgentOutcome, StartAgentRequest, StartAgentRequestId,
 };
 pub use crate::ai::blocklist::agent_view::{
     AgentViewController, AgentViewDisplayMode, AgentViewEntryOrigin, AgentViewState,

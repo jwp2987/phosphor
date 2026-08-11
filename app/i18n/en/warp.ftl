@@ -73,6 +73,7 @@ common-undo = Undo
 common-commit = Commit
 common-push = Push
 common-publish = Publish
+common-pull = Pull
 common-create = Create
 common-configure = Configure
 common-dismiss = Dismiss

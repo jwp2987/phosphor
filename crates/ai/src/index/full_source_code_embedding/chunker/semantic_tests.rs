@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use languages::language_by_filename;
+use languages::language_by_local_filename;
 
 use super::*;
 
@@ -33,16 +33,13 @@ fn main() {
 "#;
 
     let max_chunk_size = 128;
-    // The pin looked the language up through a `StandardizedPath`; this fork
-    // collapsed that pair into a single `&Path` function, so the round-trip is
-    // gone (see the drift note on `try_chunk_code_semantically`).
     let language_path = Path::new("test.rs");
 
     let chunks = chunk_code(
         source_code,
         language_path,
         max_chunk_size,
-        &language_by_filename(language_path)
+        &language_by_local_filename(language_path)
             .expect("Rust language must exist")
             .grammar,
     )

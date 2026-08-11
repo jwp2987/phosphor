@@ -746,3 +746,82 @@ fn classify_repository_update_flags_a_locked_index_distinctly() {
 fn classify_repository_update_returns_none_for_an_empty_update() {
     assert!(classify_repository_update(repo_metadata::RepositoryUpdate::default()).is_none());
 }
+
+fn test_line(line_type: DiffLineType, text: &str) -> DiffLine {
+    DiffLine {
+        line_type,
+        old_line_number: None,
+        new_line_number: None,
+        text: text.to_string(),
+        no_trailing_newline: false,
+    }
+}
+
+fn test_hunk(lines: Vec<DiffLine>) -> DiffHunk {
+    DiffHunk {
+        old_start_line: 10,
+        old_line_count: 3,
+        new_start_line: 10,
+        new_line_count: 4,
+        lines,
+        unified_diff_start: 0,
+        unified_diff_end: 0,
+    }
+}
+
+#[test]
+fn hunk_to_patch_emits_an_appliable_unified_diff() {
+    let hunk = test_hunk(vec![
+        test_line(DiffLineType::Context, "unchanged"),
+        test_line(DiffLineType::Delete, "gone"),
+        test_line(DiffLineType::Add, "added"),
+        test_line(DiffLineType::Add, "also added"),
+    ]);
+    let patch = hunk_to_patch(Path::new("src/main.rs"), &hunk);
+
+    assert_eq!(
+        patch,
+        "diff --git a/src/main.rs b/src/main.rs\n\
+         --- a/src/main.rs\n\
+         +++ b/src/main.rs\n\
+         @@ -10,3 +10,4 @@\n\
+         \x20unchanged\n\
+         -gone\n\
+         +added\n\
+         +also added\n",
+        "patch must be a self-contained unified diff git apply can consume"
+    );
+}
+
+#[test]
+fn hunk_to_patch_skips_parsed_hunk_header_lines() {
+    // A parsed DiffHunk can carry the `@@` line as a body line. The header is
+    // rebuilt from the hunk's own counts, so emitting it again would produce a
+    // patch with two headers and git would reject it.
+    let hunk = test_hunk(vec![
+        test_line(DiffLineType::HunkHeader, "@@ -10,3 +10,4 @@"),
+        test_line(DiffLineType::Context, "kept"),
+    ]);
+    let patch = hunk_to_patch(Path::new("a.txt"), &hunk);
+
+    assert_eq!(
+        patch.matches("@@").count(),
+        2,
+        "exactly one @@ header line (two @@ tokens), not the parsed one as well"
+    );
+    assert!(patch.ends_with(" kept\n"));
+}
+
+#[test]
+fn hunk_to_patch_preserves_missing_trailing_newline() {
+    // Without git's `\ No newline at end of file` marker, applying the patch
+    // silently appends a newline the user never wrote.
+    let mut line = test_line(DiffLineType::Add, "no newline here");
+    line.no_trailing_newline = true;
+    let patch = hunk_to_patch(Path::new("a.txt"), &test_hunk(vec![line]));
+
+    assert!(
+        patch.contains("\\ No newline at end of file"),
+        "missing-newline marker must survive into the patch, got:\n{patch}"
+    );
+}
