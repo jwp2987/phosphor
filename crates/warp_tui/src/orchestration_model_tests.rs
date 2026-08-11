@@ -33,7 +33,7 @@ struct OrchestrationFixture {
 /// Boots the container + root + orchestration model wiring (no live PTYs).
 fn orchestration_fixture(app: &mut App) -> OrchestrationFixture {
     register_tui_session_view_test_singletons(app);
-    add_test_semantic_selection(app);
+    app.update(|ctx| add_test_semantic_selection(ctx));
     app.update(crate::autoupdate::TuiAutoupdater::register);
     let (window_id, _root) = app.update(|ctx| {
         ctx.add_tui_window(
@@ -65,7 +65,7 @@ fn add_dispatching_session(
     app.update(|ctx| {
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
             let conversation_id =
-                history.start_new_conversation(session_id.surface_id(), false, false, false, ctx);
+                history.start_new_conversation(session_id.surface_id(), false, false, ctx);
             history.set_active_conversation_id(conversation_id, session_id.surface_id(), ctx);
         });
     });

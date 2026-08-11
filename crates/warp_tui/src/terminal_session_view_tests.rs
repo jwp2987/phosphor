@@ -1672,7 +1672,8 @@ fn visible_startup_script_shows_no_interrupt_hint() {
             // ported even though every symbol they need already exists here.
             assert!(
                 !view
-                    .session_state(ctx)
+                    .session_state
+                    .resolve(ctx)
                     .expect("session state resolves")
                     .can_attach_agent_to_running_command()
             );
