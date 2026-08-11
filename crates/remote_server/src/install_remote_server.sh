@@ -2,9 +2,13 @@
 # Installs the Zap CLI binary on the remote host, used by remote-server-proxy.
 #
 # setup.rs replaces these placeholders at runtime:
-#   {download_base_url}     - e.g. https://github.com/zerx-lab/warp/releases/latest/download
+#   {download_base_url}     - e.g. https://github.com/jwp2987/phosphor/releases/latest/download
 #   {install_dir}           - e.g. ~/.zap/remote-server
-#   {binary_name}           - e.g. zap-oss
+#   {binary_name}           - e.g. zap-oss (the channel COMMAND name)
+#   {release_asset_prefix}  - e.g. phosphor-cli (the published ASSET name --
+#                             deliberately different from {binary_name}; they
+#                             drifted apart at the rebrand and the mismatch made
+#                             every remote install 404)
 #   {version_suffix}        - e.g. -v0.2026..., empty when there's no release tag
 #   {staging_tarball_path}  - pre-uploaded tarball path for the SCP fallback; empty for the normal download path
 #   {bundled_resources_dir_name}
@@ -50,7 +54,7 @@ if [ -n "$staging_tarball_path" ]; then
   esac
   mv "$staging_tarball_path" "$tmpdir/zap.tar.gz"
 else
-  url="{download_base_url}/zap-$os_name-$arch_name.tar.gz"
+  url="{download_base_url}/{release_asset_prefix}-$os_name-$arch_name.tar.gz"
   if command -v curl >/dev/null 2>&1; then
     curl -fSL --connect-timeout 15 "$url" -o "$tmpdir/zap.tar.gz"
   elif command -v wget >/dev/null 2>&1; then

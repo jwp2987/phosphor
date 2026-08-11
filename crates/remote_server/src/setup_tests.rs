@@ -257,10 +257,25 @@ fn oss_download_tarball_url_uses_github_release_asset() {
 
     assert_eq!(
         url,
-        "https://github.com/zerx-lab/warp/releases/latest/download/zap-linux-x86_64.tar.gz"
+        "https://github.com/jwp2987/phosphor/releases/latest/download/phosphor-cli-linux-x86_64.tar.gz"
     );
     assert!(!url.contains("app.warp.dev"));
     assert!(!url.contains("/download/cli"));
+
+    // The two halves of the 2026-08-11 bug, asserted separately so a
+    // regression names itself. Until then this URL pointed at `zerx-lab/warp`
+    // and asked for a `zap-` asset, so it 404'd for every user of this fork and
+    // remote-server setup over SSH could not succeed at all. The old test
+    // passed throughout, because it asserted the wrong string confidently.
+    assert!(
+        !url.contains("zerx-lab"),
+        "remote-server installs must not fetch from upstream Zap's releases: {url}"
+    );
+    assert!(
+        url.contains("/phosphor-cli-"),
+        "asset prefix must match what the release workflow publishes, not the \
+         channel command name (`zap-oss`): {url}"
+    );
 }
 
 #[test]

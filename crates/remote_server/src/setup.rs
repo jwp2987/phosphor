@@ -484,18 +484,44 @@ pub fn install_script(staging_tarball_path: Option<&str>) -> String {
         .replace("{download_base_url}", &download_url())
         .replace("{install_dir}", &remote_server_dir())
         .replace("{binary_name}", binary_name())
+        .replace("{release_asset_prefix}", RELEASE_ASSET_PREFIX)
         .replace("{version_suffix}", &version_suffix)
         .replace("{staging_tarball_path}", staging_tarball_path.unwrap_or(""))
         .replace("{bundled_resources_dir_name}", BUNDLED_RESOURCES_DIR_NAME)
 }
 
-/// Builds the download base URL for the Zap CLI release asset.
+/// Repository the remote-server CLI tarball is downloaded from.
+///
+/// This fork's, not upstream Zap's. It pointed at `zerx-lab/warp` until
+/// 2026-08-11, inherited unchanged through the rebrand, which meant every SSH
+/// remote-server install fetched (or rather, failed to fetch) a *different
+/// project's* binary. Combined with the asset prefix below, the URL 404'd for
+/// every user of this fork, so remote-server setup over SSH could not succeed
+/// at all.
+const RELEASE_REPO: &str = "jwp2987/phosphor";
+
+/// Filename prefix of the published CLI tarball, e.g.
+/// `phosphor-cli-linux-x86_64.tar.gz`.
+///
+/// Deliberately NOT `binary_name()`: that returns the channel's *command* name
+/// (`zap-oss` on the OSS channel), which is not what the release workflow names
+/// its assets. The two drifted apart at the rebrand and nothing caught it
+/// because no test asserted the URL against a real release.
+const RELEASE_ASSET_PREFIX: &str = "phosphor-cli";
+
+/// Builds the download base URL for the CLI release asset.
+///
+/// Note `latest/download` only resolves to a **non-prerelease**. Every release
+/// published so far is marked prerelease, so the `None` arm below is currently
+/// a 404 in practice; a build carrying `GIT_RELEASE_TAG` takes the `Some` arm
+/// and works. Recorded rather than papered over — the fix is to publish a
+/// non-prerelease, not to change this code.
 fn download_url() -> String {
     let release_path = match ChannelState::app_version() {
         Some(tag) => format!("download/{tag}"),
         None => "latest/download".to_string(),
     };
-    format!("https://github.com/zerx-lab/warp/releases/{release_path}")
+    format!("https://github.com/{RELEASE_REPO}/releases/{release_path}")
 }
 
 fn version_suffix() -> String {
