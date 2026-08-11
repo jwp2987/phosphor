@@ -1,5 +1,14 @@
 # Phosphor roadmap — post-parity-sweep
 
+> **SUPERSEDED 2026-08-11 — historical.** This was the tier-migration plan and is
+> an earlier form of what is now `TODO.md`. Do not plan from it; its status block
+> below ("Nothing is fixed, built, or removed yet") has been false since early
+> August. Kept for the reasoning, not the state. Track 1's issues are closed
+> (11 of 11 sampled across #3–#47), Track 3's SSH-manager removal landed in
+> `73e08968e` (2026-08-04), and Track 4's "exhaustive per-function test-gap
+> audit" is the sweep now recorded in `docs/sweep-verdict-ledger.tsv`.
+> For current position see `docs/STATE.md`; for current work see `TODO.md`.
+
 > **STATUS: PLANNING (2026-08-02).** The Warp test-parity sweep is complete: ~150
 > tests ported back, ~41 regressions filed, the #11 feature-gap ledger triaged +
 > BYOP-decided, and the SSH-manager removal scoped. **Nothing is fixed, built, or

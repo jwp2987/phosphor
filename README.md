@@ -139,13 +139,19 @@ intentionally deferred (only the branding has changed so far).
 
 ## Roadmap
 
-See [`specs/ROADMAP.md`](specs/ROADMAP.md) — Phosphor's post-parity-sweep plan.
+**There is no separate roadmap document.** Current work lives in
+[`TODO.md`](TODO.md); current position lives in [`docs/STATE.md`](docs/STATE.md),
+which is generated.
 
-(There used to be a second `docs/roadmap.md`. It was Zap's roadmap with the name
-find-replaced during the 2026-07-25 rebrand, and it described a direction this
-fork has not taken — a hosted agent runtime, shared identity across surfaces and
-shareable session links, much of which this fork has since explicitly declined.
-Removed 2026-08-11 rather than left to mislead.)
+Two former roadmaps are accounted for, so nobody hunts for them:
+
+- `docs/roadmap.md` was **Zap's** roadmap with the name find-replaced during the
+  2026-07-25 rebrand. It described a direction this fork has not taken — a hosted
+  agent runtime, shared identity across surfaces, shareable session links — much
+  of which has since been explicitly declined here. **Removed 2026-08-11.**
+- [`specs/ROADMAP.md`](specs/ROADMAP.md) was the 2026-08-02 tier-migration plan —
+  an **earlier form of `TODO.md`**, kept for its history. Superseded; do not plan
+  from it.
 
 ## Repository map — what each document is for
 
