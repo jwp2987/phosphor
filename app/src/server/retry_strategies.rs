@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use thiserror::Error;
+use warp_core::errors::ErrorExt;
+use warp_core::register_error;
 use warpui::r#async::Timer;
 use warpui::{duration_with_jitter, RetryOption};
 
@@ -49,6 +51,35 @@ pub const LISTENER_RETRY_STRATEGY: RetryOption = RetryOption::linear(
 pub(crate) struct HttpStatusError {
     pub status: u16,
     pub body: String,
+}
+
+/// Whether an [`HttpStatusError`] is worth alerting on (vs. expected noise).
+///
+/// 408 (timeout) and 429 (rate limited) are expected under normal load and
+/// resolve on their own, so they are not actionable. Every other status —
+/// including "permanent" 4xx like 400/404, which are actionable precisely
+/// *because* retrying alone can't fix them — is.
+impl ErrorExt for HttpStatusError {
+    fn is_actionable(&self) -> bool {
+        !matches!(self.status, 408 | 429)
+    }
+}
+register_error!(HttpStatusError);
+
+/// Classify an HTTP-backed error as an authentication failure (HTTP 401/403).
+///
+/// Used by bounded listeners to give up after a run of consecutive auth
+/// failures instead of retrying forever against permanently invalid
+/// credentials. Walks the error chain the same way [`is_transient_http_error`]
+/// does, since callers typically wrap the typed [`HttpStatusError`] cause with
+/// a `.context(...)` message.
+pub(crate) fn is_auth_error(e: &anyhow::Error) -> bool {
+    for cause in e.chain() {
+        if let Some(http_err) = cause.downcast_ref::<HttpStatusError>() {
+            return matches!(http_err.status, 401 | 403);
+        }
+    }
+    false
 }
 
 /// Classify an HTTP-backed error as transient (worth retrying) or permanent (fail fast).
