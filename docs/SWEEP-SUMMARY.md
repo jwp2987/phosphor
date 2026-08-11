@@ -84,14 +84,24 @@ an unenforceable rule presented as enforced is worse than none.
 
 ## Totals
 
+**Superseded 2026-08-11 by `docs/sweep-verdict-ledger.tsv`** (see TODO.md), and
+**re-derived 2026-08-10** after the MISSING-SUBSYSTEM re-adjudication pass
+below. The row counts here are a live snapshot of the ledger, not a fresh
+count — if they and the ledger ever disagree, the ledger wins.
+
 | bucket | count | share |
 |---|---:|---:|
-| CLOUD — needs dropped cloud plumbing | 1,204 | 65% |
-| DECLINED — an existing `DECLINED.md` decision covers it | 284 | 15% |
-| **MISSING-SUBSYSTEM — real non-cloud debt** | **209** | **11%** |
-| DIVERGENT — fork API genuinely differs | ~60 | 3% |
-| COVERED-ELSEWHERE — fork tests it under another name | ~26 | 1% |
-| **PORTED this sweep** | **19** | **1%** |
+| CLOUD — needs dropped cloud plumbing | 1,130 | 61% |
+| DECLINED — an existing `DECLINED.md` decision covers it | 417 | 23% |
+| DIVERGENT — fork API genuinely differs (BYOP-caused) | 65 | 4% |
+| PORTABLE — fixtures/APIs exist, not yet ported | 59 | 3% |
+| COVERED-ELSEWHERE — fork tests it under another name | 58 | 3% |
+| **MISSING-SUBSYSTEM — real non-cloud debt** | **50** | **3%** |
+| PORTED | 41 | 2% |
+| PORTABLE-OUT-OF-AREA | 15 | 1% |
+| UNPARSED | 5 | 0.3% |
+| DEFECT-FIXED | 2 | 0.1% |
+| MIXED | 1 | 0.05% |
 
 ## The headline: the mechanical estimate was wrong by an order of magnitude
 
@@ -153,30 +163,64 @@ compiler. Reported under AGENTS §5.11 rather than attempted blind.
    (`blocklist/agent_view/conversation_selection.rs:99`) despite the variant
    existing — missing predicate parameter.
 
-## The 209 MISSING-SUBSYSTEM — the real remaining debt
+## The 209 MISSING-SUBSYSTEM (now 50) — the real remaining debt
+
+**Re-adjudicated 2026-08-10.** All 195 rows that carried `MISSING-SUBSYSTEM`
+after the 23 blocking-symbol resolutions (8 renames, 3 cloud, 1 declined, 11
+implemented — see TODO.md) were individually re-checked against the pin and
+the current fork tree. Result: 50 stay `MISSING-SUBSYSTEM`, 59 became
+`PORTABLE` (fixtures/APIs exist, no fork test yet), 58 `COVERED-ELSEWHERE`
+(cited by fork test name), 39 `CLOUD` (the orchestration config-picker layer,
+29 tests, plus `share_modal`/`body.rs`, 5, plus 5 mis-bucketed singles), 12
+`DECLINED` (`ActiveAgentViewsModel`, 10, permanently deleted with the cloud
+management view — DECLINED.md #418; plus 2 singles), 4 `DIVERGENT`
+(BYOP-caused), 8 `PORTED` this pass (see below). Full per-test evidence is in
+`docs/sweep-verdict-ledger.tsv`; this list is now stale prose describing the
+pre-re-adjudication state and is kept for its still-accurate items only:
 
 Ranked by tractability, not size.
 
-- **`blocklist/usage/rollup.rs`** (8 tests) — its sole real dependency,
-  `descendant_conversation_ids_in_spawn_order`, **already exists in the fork.**
-  Closest thing to free work in the sweep.
+- ~~**`blocklist/usage/rollup.rs`** (8 tests)~~ **DONE 2026-08-10.** `rollup.rs`
+  now exists, using the already-present `descendant_conversation_ids_in_spawn_order`;
+  the fork's own `rollup_tests.rs` covers all 8 pin tests under identical names.
+  `COVERED-ELSEWHERE` in the ledger.
 - **Remote project rules have no `HostId` dimension**
   (`crates/ai/src/project_context/model.rs`) — `path_to_rules` /
   `ProjectRule::path` are host-blind, so project-rule resolution over SSH always
   returns `None` (6 tests). `global_rules.rs` (#575) **already solved the
   identical problem for global rules** — there is a working pattern in-tree.
+  **Re-verified 2026-08-10, still open** — genuinely the most tractable item
+  left here.
 - **`InputTypeAutoDetectionSource::AgentTerminalControl` + two hint strings**
   (15 tests, warp_tui) — "attach agent to running command" landed its mechanism
-  but not its supporting pieces.
-- **TUI renderer for `MessagesReceivedFromAgents` / `EventsFromAgents`**
-  (9 tests) — **the GUI already has one.**
-- **`skill_watcher.rs`** lacks the remote-project-skill refresh/fallback layer
-  (13 tests).
+  but not its supporting pieces. **Partially resolved 2026-08-10**: the
+  release-half bug (composer permanently AI-locked if a tagged-in command
+  finished on its own) is fixed, and 2 of `terminal_session_view_tests.rs`'s 6
+  MISSING-SUBSYSTEM rows ported/covered as a result. The `AgentTerminalControl`
+  autodetection-source variant and the "attach" hint string (mirroring
+  `RUNNING_COMMAND_DETACH_HINT`) are still genuinely absent — 3 rows stay
+  `MISSING-SUBSYSTEM`.
+- ~~**TUI renderer for `MessagesReceivedFromAgents` / `EventsFromAgents`**
+  (9 tests)~~ **DONE 2026-08-10.** New `crates/warp_tui/src/agent_message.rs`
+  landed; the fork's own `agent_message_tests.rs`/`agent_block_tests.rs` cover
+  all of these tests under identical names. `COVERED-ELSEWHERE` in the ledger.
+- ~~**`skill_watcher.rs`** lacks the remote-project-skill refresh/fallback layer
+  (13 tests)~~ **DONE 2026-08-10.** Remote project skills landed
+  (`RepoMetadataModel` standing-query design). 10 of 13 pin tests are already
+  covered by the fork's own `skill_watcher_tests.rs` under identical names; the
+  remaining 3 are `PORTABLE` (mechanism proven, scenario untested).
 - **The pin's `app/src/ai/orchestration/` config-picker layer** (39 tests).
   **CORRECTED 2026-08-11, maintainer: orchestration itself IS built here** — the
   sweep's "does not exist at all" phrasing was about the pin's *path*, and read
   as a claim about the subsystem, which was wrong and is the kind of error this
-  document exists to stop.
+  document exists to stop. **Re-adjudicated 2026-08-10: this layer is genuinely
+  `CLOUD`, not open local work** — see `DECLINED.md`'s "Orchestration
+  config-picker layer" row (#290, #325). `AuthSecretSelection` resolves through
+  a cloud managed-secrets client this fork wires to a disabled stub, and
+  `OrchestrationConfigState` is typed against the #325-declined
+  agent-invoked `RunAgents` family. Not "a missing configuration UI in front of
+  one that works" after all — the UI it would front cannot be built without
+  Warp's backend.
 
   What the fork has, and it is substantial: `blocklist/orchestration_topology.rs`
   (26 tests), `blocklist/orchestration_events.rs` (10),
@@ -188,12 +232,23 @@ Ranked by tractability, not size.
   `config_state.rs`, `edit_state.rs`, `providers.rs`, `remote_child.rs`,
   `snapshots.rs`, `validation.rs`. That is the surface for *choosing* harness /
   model / environment / host for a local orchestration run, not orchestration
-  itself. Tracked #310/#304. It is also the only reachable consumer of
-  `local_harness_setup.rs`'s `is_selectable` / `local_harness_is_product_enabled`,
-  which is why those two remain `#[allow(dead_code)]`.
+  itself. It is also the only reachable consumer of `local_harness_setup.rs`'s
+  `is_selectable` / `local_harness_is_product_enabled`, which is why those two
+  remain `#[allow(dead_code)]`.
 
-  Restated: **not a missing subsystem, a missing configuration UI in front of one
-  that works.**
+  ~~Restated: not a missing subsystem, a missing configuration UI in front of
+  one that works.~~ **CORRECTED again, 2026-08-10 — that restatement itself
+  turned out to be wrong.** #310/#304 were not "not yet built", they were
+  correctly not built: `AuthSecretSelection::Named` needs a live cloud
+  managed-secrets client, and `OrchestrationConfigState` is typed against the
+  cloud-only `RunAgentsExecutionMode`. There is no local configuration UI to
+  build in front of — the thing being configured (cloud-runner child spawning)
+  doesn't exist on this fork. `validation.rs`'s two locally-pure predicates are
+  the one part of this layer that isn't cloud-blocked, and even those have no
+  reachable UI (`/orchestrate` hardcodes `ORCHESTRATE_DEFAULT_HARNESS`) — one
+  test for that specific gap stays open, filed under `DECLINED.md`'s picker-layer
+  row rather than as fresh debt, since it's the same UI-surface gap the row
+  already covers.
 - **No `/index` slash command** — indexing is auto-only, a user cannot ask for
   it. Matters more now that the codebase index is actually wired to
   `get_relevant_files`.
@@ -207,6 +262,13 @@ Ranked by tractability, not size.
 
 Also relevant: **19 of `history_model_tests.rs`'s 27** mechanically-CLOUD tests
 are actually local-orchestration debt calling fork methods that already exist.
+**Re-adjudicated 2026-08-10**: confirmed test-by-test — 1 is `COVERED-ELSEWHERE`
+(`test_find_by_token_after_mark_conversations_historical_for_terminal_view`),
+17 are `PORTABLE` (the fork methods and persist-fixture pattern all exist; no
+fork test asserts them yet, and several need small new test-only helpers not
+yet built), and 1 stays genuinely `MISSING-SUBSYSTEM`
+(`prompt_history_candidates_seeds_from_snapshot_then_appends_session_prompts` —
+the live-session `append_session_prompt` path is deferred, tracked #336/#337/#331).
 
 ## Scoping answer for #456 (`warp_tui` "a generation behind")
 

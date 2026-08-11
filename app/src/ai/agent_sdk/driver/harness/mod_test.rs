@@ -1,21 +1,61 @@
 //! Tests ported from the pinned Warp oracle (`02b53fcd8`,
 //! `app/src/ai/agent_sdk/driver/harness/mod_tests.rs`).
 //!
-//! The oracle's other seven tests in this file exercise
-//! `ThirdPartyHarness::auth_check_command` / `auth_check_command_for` and
-//! `ThirdPartyHarness::runtime_error_patterns`, neither of which exists here.
-//! At the pin both are trait methods with trivial defaults (`None` / `&[]`), so
-//! porting the defaults alone would produce tests that pass while asserting
-//! nothing about the feature. They are tracked in issue #289 and should land
-//! with the per-harness overrides and `harness_output_monitor`, not before.
-//! Re-verified against the pin again in round 5 (2026-08-07): still a feature
-//! gap, still deliberately not stubbed.
+//! The oracle's four remaining un-ported tests in this file exercise
+//! `ThirdPartyHarness::auth_check_command` / `auth_check_command_for`, which
+//! does not exist here. At the pin it is a trait method with a trivial
+//! `None` default, so porting the default alone would produce a test that
+//! passes while asserting nothing about the feature. Tracked in issue #289,
+//! and should land with `harness_output_monitor`, not before.
+//!
+//! **`runtime_error_patterns` is no longer in that boat and was ported
+//! 2026-08-10**: `ClaudeHarness`/`CodexHarness` now have real per-harness
+//! overrides with literal CLI-output substrings (see `claude_code.rs`,
+//! `codex.rs`), so a smoke test on them exercises real, previously untested
+//! data rather than a shared default. `GeminiHarness` still uses the trait
+//! default (`&[]`) deliberately, mirroring the pin.
 
 use warp_cli::agent::Harness;
 
-use super::{harness_model_env_vars, validate_cli_installed};
+use super::claude_code::ClaudeHarness;
+use super::codex::CodexHarness;
+use super::gemini::GeminiHarness;
+use super::{ThirdPartyHarness, harness_model_env_vars, validate_cli_installed};
 use crate::ai::agent_sdk::driver::AgentDriverError;
 use crate::ai::ambient_agents::task::HarnessModelConfig;
+
+/// Ported from the pin (`02b53fcd8`) in spirit: a smoke test that the trait
+/// method is callable and returns real per-harness data now that
+/// `ClaudeHarness::runtime_error_patterns` has real entries (`claude_code.rs`),
+/// not just the trait's empty default.
+#[test]
+fn claude_runtime_error_patterns_returns_slice() {
+    let patterns: &[&str] = ClaudeHarness.runtime_error_patterns();
+    assert!(
+        !patterns.is_empty(),
+        "ClaudeHarness overrides runtime_error_patterns with real CLI-output substrings"
+    );
+}
+
+/// Ported from the pin (`02b53fcd8`) in spirit: same smoke test as
+/// `claude_runtime_error_patterns_returns_slice`, for `CodexHarness`'s
+/// override (`codex.rs`).
+#[test]
+fn codex_runtime_error_patterns_returns_slice() {
+    let patterns: &[&str] = CodexHarness.runtime_error_patterns();
+    assert!(
+        !patterns.is_empty(),
+        "CodexHarness overrides runtime_error_patterns with real CLI-output substrings"
+    );
+}
+
+/// Ported from the pin (`02b53fcd8`) verbatim: `GeminiHarness` does not
+/// override `runtime_error_patterns`, so it falls back to the trait's empty
+/// default -- distinct from, not an oversight relative to, Claude/Codex.
+#[test]
+fn gemini_runtime_error_patterns_is_empty_by_default() {
+    assert!(GeminiHarness.runtime_error_patterns().is_empty());
+}
 
 fn assert_harness_setup_failed(err: &AgentDriverError) -> (&str, &str) {
     match err {
