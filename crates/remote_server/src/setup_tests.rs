@@ -279,11 +279,19 @@ fn oss_download_tarball_url_uses_github_release_asset() {
 }
 
 #[test]
-fn install_script_uses_zap_asset_and_staging_placeholder() {
+fn install_script_uses_release_asset_prefix_and_staging_placeholder() {
     let script = install_script(Some("~/.zap/remote-server/zap-upload.tar.gz"));
 
     assert!(script.contains("staging_tarball_path=\"~/.zap/remote-server/zap-upload.tar.gz\""));
-    assert!(script.contains("zap-$os_name-$arch_name.tar.gz"));
+    assert!(script.contains("phosphor-cli-$os_name-$arch_name.tar.gz"));
+    // Deliberately changed on 2026-08-11: the script asked for a `zap-` asset,
+    // but the release workflow publishes `phosphor-cli-`, so every remote
+    // install 404'd. `zap-oss` is the channel COMMAND name, not the ASSET name.
+    assert!(
+        !script.contains("/zap-$os_name-$arch_name.tar.gz"),
+        "install script must ask for the published asset name, not the channel \
+         command name"
+    );
     assert!(!script.contains("app.warp.dev"));
     assert!(!script.contains("/download/cli"));
 }

@@ -534,10 +534,16 @@ fn version_suffix() -> String {
     }
 }
 
-/// Returns the Zap CLI tarball URL for the given remote platform.
+/// Returns the CLI tarball URL for the given remote platform.
+///
+/// Must use [`RELEASE_ASSET_PREFIX`], not a literal — this is the URL the SSH
+/// transport actually fetches (`ssh_transport::…`), so a prefix here that
+/// disagrees with the one the install script asks for is a silent 404 on the
+/// one path a user goes through. The prefix was threaded through the install
+/// template but missed here, leaving the 2026-08-11 fix half-applied.
 pub fn download_tarball_url(platform: &RemotePlatform) -> String {
     format!(
-        "{}/zap-{}-{}.tar.gz",
+        "{}/{RELEASE_ASSET_PREFIX}-{}-{}.tar.gz",
         download_url(),
         platform.os.as_str(),
         platform.arch.as_str(),
