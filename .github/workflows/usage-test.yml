@@ -12,6 +12,13 @@
 # resolved. BYOP agent-round-trip scenarios (`--include-byop`) need a real provider
 # key + network and are not run in CI.
 #
+# Runs on Linux, macOS AND Windows (matrix, fail-fast off) as of 2026-08-11.
+# Previously Linux-only, which meant the macOS and Windows code paths had no
+# runtime coverage anywhere -- the gap behind TODO.md's "compile-only, not
+# runtime-verified" entries. Only Linux needs the xvfb wrapper; macOS and
+# Windows runners have real desktop sessions. On Windows `shell: bash`
+# resolves to Git Bash, so the #!/bin/bash runner script works unmodified.
+#
 # Manual dispatch + nightly. PR validation stays in pr-check.yml (fast cargo check).
 name: Usage Test Suite
 
@@ -34,14 +41,42 @@ env:
 
 jobs:
   usage-test:
-    name: usage-test (Linux)
-    # ubuntu-22.04 (glibc 2.35) matches the release Linux job + pr-check.yml.
-    runs-on: ubuntu-22.04
+    name: usage-test (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    strategy:
+      # One platform failing must not cancel the others -- the whole point of
+      # running this on three OSes is to see WHICH ones break.
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu-22.04 (glibc 2.35) matches the release Linux job + pr-check.yml.
+          - os: linux
+            name: Linux
+            runner: ubuntu-22.04
+            target_os: linux
+            # Headless runner: the GUI scenarios create a real winit event
+            # loop, so they need a display. See the header.
+            display_wrapper: 'xvfb-run -a -s "-screen 0 1280x1024x24" '
+          - os: macos
+            name: macOS
+            runner: macos-latest
+            target_os: macos
+            # macOS runners have a real WindowServer session; no wrapper.
+            display_wrapper: ''
+          - os: windows
+            name: Windows
+            runner: windows-latest
+            target_os: windows
+            # Windows runners have a desktop session; no wrapper. `shell: bash`
+            # below resolves to Git Bash, which ships on the runner image, so
+            # script/usage-test (a #!/bin/bash script) runs unmodified.
+            display_wrapper: ''
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Free up disk space
+        if: matrix.os == 'linux'
         shell: bash
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
@@ -54,7 +89,7 @@ jobs:
       # see the xvfb-run wrapper on the suite steps below.
       - uses: ./.github/actions/prepare_environment
         with:
-          target_os: linux
+          target_os: ${{ matrix.target_os }}
           is_self_hosted: false
           install_test_deps: true
 
@@ -67,10 +102,10 @@ jobs:
 
       - name: Usage suite — TUI + reliable-here GUI
         shell: bash
-        run: xvfb-run -a -s "-screen 0 1280x1024x24" ./script/usage-test --surface both
+        run: ${{ matrix.display_wrapper }}./script/usage-test --surface both
 
       - name: Usage suite — real-shell (flaky, soft-fail)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_flaky }}
         continue-on-error: true
         shell: bash
-        run: xvfb-run -a -s "-screen 0 1280x1024x24" ./script/usage-test --include-flaky
+        run: ${{ matrix.display_wrapper }}./script/usage-test --include-flaky
