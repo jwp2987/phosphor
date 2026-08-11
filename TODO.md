@@ -937,7 +937,83 @@ Recorded so this ground is not re-swept:
       comment in `remote_server.proto:164`** claims no daemon sends
       `RemoteAgentContextSnapshot`. False — `server_model.rs:978` and `:996` both do.
 
-## MISSING SUBSYSTEMS — validated by hand 2026-08-11
+## MISSING SUBSYSTEMS — ALL 68 entries validated by hand 2026-08-11
+
+**Method, because the first attempt at this was wrong twice.** The sweep's
+per-area files carry 68 `MISSING-SUBSYSTEM` verdicts (36 app-ai, 16 warp_tui,
+7 app-terminal, 5 crates-ai, 4 settings-workspace). An earlier pass reported
+only the ~10 the agents had flagged as "highlights" and read as the whole set.
+
+All 211 symbols named across those 68 entries were then extracted and checked
+against the fork tree and against the pin's test-name index. Result:
+
+| | count |
+|---|---:|
+| named symbol is a **pin test name**, not a subsystem | 104 |
+| named symbol **is PRESENT** in the fork — claim wrong | 75 |
+| **confirmed absent** | **31** |
+| — of those, cloud (dropped on purpose, not debt) | 8 |
+| — **of those, real non-cloud debt** | **23** |
+
+**Roughly a third of missing-subsystem claims name something that exists.**
+The agents reasoned from pin-side reading and inferred fork absence instead of
+checking. Two rounds of validation each found more of this, so treat any
+un-rechecked sweep verdict as unverified.
+
+Confirmed-absent non-cloud symbols, grouped below. Each needs either
+implementation or a `DECLINED.md` row — none should be actioned without one
+more look at *why* it is absent.
+
+### Confirmed absent — TUI agent-control cluster (issue #456, cluster 1)
+- [ ] `AgentTerminalControl` / `InputTypeAutoDetectionSource::AgentTerminalControl`,
+      `RUNNING_COMMAND_DETACH_HINT`, `lock_for_agent_control`,
+      `reset_after_agent_control`. **`ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME`
+      IS present** — so "attach agent to running command" landed its binding and
+      not its mechanism. 15 tests.
+
+### Confirmed absent — TUI agent-message rendering (issue #456, cluster 2)
+- [ ] `TuiAIBlockSection::AgentMessage`, `agent_message_section_id`, `AgentMessage`.
+      **The GUI half is built** (`blocklist/orchestration_events.rs` emits at
+      `:331`, renders at `:407`). TUI only. 9 tests.
+
+### Confirmed absent — blocked-action acceptance
+- [ ] `AcceptBlockedTerminalUseAction`. Note `AllowBlockedLrcAction`,
+      `BlockingInputSource` and `ALLOW_BLOCKED_ACTION_KEY_BINDING` all **exist** —
+      another partial port, not a missing subsystem.
+
+### Confirmed absent — orchestration config-picker (see the correction below)
+- [ ] `OrchestrationConfigState`, `AuthSecretSelection`, `apply_execution_mode_change`.
+      The picker layer only. Orchestration itself is built. #310/#304.
+
+### Confirmed absent — remote project skills
+- [ ] `parse_project_skill_contents`, `refresh_project_skills_for_repo`.
+      `SkillWatcher` itself **exists** (`remote_server/mod.rs`) — the remote
+      refresh/fallback layer on top of it does not. 13 tests.
+
+### Confirmed absent — MCP config-parse cancellation
+- [ ] `FileMCPWatcher::parse_abort_handles`, `abort_config_parse`. `FileMCPWatcher`
+      **exists** (`lib.rs`); it cannot cancel an in-flight config parse.
+
+### Confirmed absent — TUI CLI surface
+- [ ] `tui_commands`, `tui_cli_shell_command`, `tui_resume_shell_command`,
+      `provider_api_key_shell_command`, `ProviderApiKeyOperation`, `phosphor_tui`.
+      Needs a look at whether these are pin-side naming this fork deliberately
+      renamed — `phosphor_tui` in particular smells like a rename artefact rather
+      than a gap.
+
+### Confirmed absent — computer use
+- [ ] `use_computer_decoration`. Block decoration for computer-use actions.
+      Computer use itself is built and sighted as of tonight.
+
+### Confirmed absent — CLOUD, no action (recorded so they are not re-raised)
+`CLOUD_MODE_V2_COMPOSER`, `CloudEnvironmentCatalog`, `CloudModeSetupV2`,
+`cloud_agent`, `cloud_mode_v2`, `not_cloud_agent`, `HandoffEntryPoint`,
+`session_sharing_protocol` (bare path; its `::common`, `::sharer`, `::viewer`
+sub-paths all exist).
+
+---
+
+### Earlier hand-validated set (10 items, still accurate)
 
 The pin-test sweep (`docs/SWEEP-SUMMARY.md`) bucketed 209 tests
 MISSING-SUBSYSTEM. **Each claim below was re-verified against the tree by the
