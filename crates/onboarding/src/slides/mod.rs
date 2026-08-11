@@ -1,3 +1,11 @@
+// Port audit against the pinned oracle (02b53fcd8, ORACLE.md), #2 sweep,
+// docs/sweep/warp-cli.md: the pin also has `offer_slide.rs` (module
+// `OfferSlide`/`OfferVariant`, 3 tests), the "You've got a head start" /
+// "Choose how to start" post-signup upsell slide -- its copy advertises
+// "expanded cloud agent access", "premium models" and an `account_class`
+// telemetry field, and it renders `upgrade_auth_prompt::render_upgrade_auth_
+// prompt_bar` (also absent). DECLINED per DECLINED.md's "Account-first
+// onboarding, billing, paid tiers" row (#11); not ported here.
 mod agent_slide;
 mod bottom_nav;
 mod customize_slide;

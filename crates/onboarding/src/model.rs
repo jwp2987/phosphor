@@ -1,8 +1,22 @@
+// Port audit against the pinned oracle (02b53fcd8, ORACLE.md), #2 sweep,
+// docs/sweep/warp-cli.md: the pin's `model_tests.rs` has 17 tests with no
+// fork equivalent (fork ships this source file but zero tests against it).
+// All 17 need APIs this fork's `OnboardingStateModel` does not have:
+// `AiSetupChoice`, `AiAccessChoice`, `OnboardingStep::{AiSetup,AiAccess,
+// PostAuthOffer}`, `OnboardingAuthState`, `NoAiConfirmationSource`,
+// `progress()`, `show_post_auth_offer`, `request_no_ai_confirmation`,
+// `confirm_no_ai`/`cancel_no_ai`/`dismiss_no_ai`, and the
+// `FeatureFlag::AccountFirstOnboarding` gate. That whole apparatus is the
+// "account-first onboarding" redesign (`OnboardingAuthState::{LoggedOut,
+// FreeUser,PayingUser}` is literally `account_class`/`is_paid`;
+// `AiAccessChoice::Subscription` is Warp's paid tier) -- DECLINED per
+// DECLINED.md's "Account-first onboarding, billing, paid tiers" row (#11).
+// Not a partial port: none of these types exist anywhere in this crate.
+use crate::OnboardingIntention;
 use crate::slides::{
     AgentAutonomy, AgentDevelopmentSettings, OnboardingModelInfo, ProjectOnboardingSettings,
 };
 use crate::telemetry::OnboardingEvent;
-use crate::OnboardingIntention;
 use ai::LLMId;
 use warp_core::send_telemetry_from_ctx;
 use warpui::{Entity, ModelContext};

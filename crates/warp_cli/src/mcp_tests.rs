@@ -1,3 +1,18 @@
+// Port audit against the pinned oracle (02b53fcd8, ORACLE.md), #2 sweep,
+// docs/sweep/warp-cli.md: the pin's `mcp_tests.rs` has 3 tests with no fork
+// equivalent -- `test_parse_well_known_integration_id`,
+// `test_bare_identifier_treated_as_well_known`,
+// `test_bare_identifier_treated_as_json_when_flag_disabled`. All three cover
+// `MCPSpec::WellKnown`, gated on `FeatureFlag::WellKnownMcpIds`: a bare
+// identifier (e.g. "linear") resolved to a real MCP server config by Warp's
+// *server* at run setup ("the server owns the set of recognized ids", per the
+// pin's own doc comment on `MCPSpec::WellKnown`). This fork's `MCPSpec` has
+// only `Uuid`/`Json` -- no `WellKnown` variant, no `WellKnownMcpIds` flag --
+// and the decision not to add them is already made and documented at
+// `app/src/ai/agent_sdk/mcp_config.rs`: "Do not port the well-known variant --
+// it would add a second spec the driver can construct but never resolve."
+// CLOUD, not test debt.
+
 use super::*;
 use clap::builder::TypedValueParser;
 use std::ffi::OsStr;

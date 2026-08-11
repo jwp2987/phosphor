@@ -1,3 +1,15 @@
+// Port audit against the pinned oracle (02b53fcd8, ORACLE.md), #2 sweep,
+// docs/sweep/warp-cli.md: the pin's `telemetry_tests.rs` has 6 tests with no
+// fork equivalent (fork ships this source file but zero tests against it).
+// All 6 assert on `OnboardingEvent::payload()` fields the pin adds for the
+// "account-first onboarding" redesign -- `ACCOUNT_FIRST_FLOW_VERSION`,
+// `account_class`, `OnboardingAuthCompleted`, `OnboardingUpgradeStarted`/
+// `Completed`, `OnboardingAction` -- none of which this crate's
+// `OnboardingEvent` has (it does not even implement the pin's
+// `TelemetryEvent`/`payload()` trait). DECLINED per DECLINED.md's
+// "Account-first onboarding, billing, paid tiers" row (#11); this is
+// distinct from the separate "Telemetry channel physically removed" row,
+// which is about whether events are ever sent, not this event shape.
 use serde::{Deserialize, Serialize};
 
 /// Telemetry events for the onboarding flow.
