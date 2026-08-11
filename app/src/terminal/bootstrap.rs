@@ -3,6 +3,8 @@ use std::borrow::Cow;
 use itertools::Itertools;
 use lazy_static::lazy_static;
 use memo_map::MemoMap;
+use rand::Rng as _;
+use warp_core::SessionId;
 use warpui::{AppContext, AssetProvider, SingletonEntity};
 
 use crate::{
@@ -187,18 +189,43 @@ pub fn script_for_shell(shell_type: ShellType, assets: &dyn AssetProvider) -> Co
         .into()
 }
 
+/// Generates a cryptographically random session ID for use as both a session
+/// identifier and an integrity token for DCS hook validation.
+///
+/// See #419 / #532: this ID is baked into the shell's init script (via
+/// [`SESSION_ID_PLACEHOLDER`]) before the shell can write anything back, and
+/// registered with the owning [`crate::terminal::model::TerminalModel`] at the
+/// same time, so a later DCS hook can be checked against it.
+pub fn generate_session_id() -> SessionId {
+    let mut rng = rand::thread_rng();
+    loop {
+        let session_id = rng.r#gen::<u64>();
+        if session_id != 0 {
+            return SessionId::from(session_id);
+        }
+    }
+}
+
+/// Placeholder in init shell scripts that gets replaced with the client-generated session ID.
+pub(crate) const SESSION_ID_PLACEHOLDER: &str = "@@WARP_SESSION_ID@@";
+
 /// Returns the init shell script for the given `shell_type` (e.g. the script that emits the
 /// InitShell DCS hook).
 ///
 /// The returned script is one line and, for shells that need it, has escaped single-quotes for the
 /// purposes of being passed as a single-quoted argument to 'eval'.
-pub fn init_shell_script_for_shell(shell_type: ShellType, assets: &dyn AssetProvider) -> String {
-    match shell_type {
+pub fn init_shell_script_for_shell(
+    shell_type: ShellType,
+    assets: &dyn AssetProvider,
+    session_id: SessionId,
+) -> String {
+    let script = match shell_type {
         ShellType::Zsh => load_and_escape_script("bundled/bootstrap/zsh_init_shell.sh", assets),
         ShellType::Bash => load_and_escape_script("bundled/bootstrap/bash_init_shell.sh", assets),
         ShellType::Fish => load_and_escape_script("bundled/bootstrap/fish_init_shell.sh", assets),
         ShellType::PowerShell => load_script("bundled/bootstrap/pwsh_init_shell.ps1", assets),
-    }
+    };
+    script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
 }
 
 /// Returns the command to be used to emit the InitShell hook for a new subshell session.
@@ -209,12 +236,13 @@ pub fn init_shell_script_for_shell(shell_type: ShellType, assets: &dyn AssetProv
 pub fn init_subshell_command(
     shell_type: Option<ShellType>,
     vars: &[EnvVar],
+    session_id: SessionId,
     ctx: &AppContext,
 ) -> String {
     match shell_type {
         Some(shell_type) => {
             let subshell_script =
-                init_subshell_script_for_shell(shell_type, &crate::ASSETS, vars, ctx);
+                init_subshell_script_for_shell(shell_type, &crate::ASSETS, vars, session_id, ctx);
             format!(r#" [ -z $WARP_BOOTSTRAPPED ] && eval '{subshell_script}'"#)
         }
         None => init_subshell_script_for_unknown_shell(&crate::ASSETS),
@@ -230,6 +258,7 @@ fn init_subshell_script_for_shell(
     shell_type: ShellType,
     assets: &dyn AssetProvider,
     env_vars: &[EnvVar],
+    session_id: SessionId,
     ctx: &AppContext,
 ) -> String {
     let honor_ps1 = *SessionSettings::as_ref(ctx).honor_ps1;
@@ -258,6 +287,8 @@ fn init_subshell_script_for_shell(
         // TODO(PLAT-750)
         ShellType::PowerShell => todo!(),
     };
+    let shell_init_script =
+        shell_init_script.replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string());
 
     // Combine the environment setup script with the shell-specific init script
     format!("{env_setup_script} {shell_init_script}")
@@ -267,6 +298,11 @@ fn init_subshell_script_for_shell(
 ///
 /// The returned script is one line and has escaped single-quotes for the purposes of being passed
 /// as a single-quoted argument to 'eval'.
+///
+/// NOTE: unlike [`init_subshell_script_for_shell`], this does not bake in a session ID -- the
+/// `InitSubshell` hook it emits does not (yet) carry a `session_id` field to validate against
+/// (see the `DProtoHook::session_id` doc comment in `ansi/dcs_hooks.rs`), so there is nothing for
+/// a baked-in ID to be checked against today.
 fn init_subshell_script_for_unknown_shell(assets: &dyn AssetProvider) -> String {
     // Load and escape the shell-specific init script
     load_and_escape_script("bundled/bootstrap/unknown_init_subshell.sh", assets)
@@ -284,6 +320,7 @@ fn init_subshell_script_for_unknown_shell(assets: &dyn AssetProvider) -> String 
 pub fn raw_init_shell_script_for_shell(
     shell_type: ShellType,
     assets: &dyn AssetProvider,
+    session_id: SessionId,
 ) -> String {
     let file = match shell_type {
         ShellType::Bash => "bundled/bootstrap/bash_init_shell.sh",
@@ -291,7 +328,9 @@ pub fn raw_init_shell_script_for_shell(
         ShellType::Fish => "bundled/bootstrap/fish_init_shell.sh",
         ShellType::PowerShell => "bundled/bootstrap/pwsh_init_shell.ps1",
     };
-    load_script(file, assets).replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string()))
+    load_script(file, assets)
+        .replace("@@USING_CON_PTY_BOOLEAN@@", &(cfg!(windows).to_string()))
+        .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
 }
 
 /// Returns the script in the file at `file_path` to be passed as a single-quoted argument in the
