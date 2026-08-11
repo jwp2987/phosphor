@@ -40,8 +40,10 @@ pub enum Tag {
     /// Drives a real PTY shell to command completion; subject to the
     /// shell-preexec race. Only runs with `--include-flaky`.
     NeedsRealShell,
-    /// Wants a real GPU window / pixel result. Always skipped by this
-    /// runner (documented-but-skipped, per SCOPE §4.1).
+    /// Wants a real window / pixel result. Skipped only when the host has no
+    /// desktop session — see `has_desktop_session()`. This was formerly an
+    /// unconditional skip, which became wrong once the suite ran on macOS and
+    /// Windows runners (and it was always wrong on a maintainer workstation).
     NeedsDesktop,
     /// Needs a real BYOP provider (key + network). Only runs with
     /// `--include-byop`.

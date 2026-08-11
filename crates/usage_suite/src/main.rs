@@ -141,9 +141,30 @@ fn is_selected(scenario: &Scenario, only: &Option<Vec<String>>) -> bool {
 
 /// Decides whether a tag-gated scenario should be skipped, returning the
 /// skip reason to report when it should not run. `None` means "run it".
+/// Whether this host actually has a desktop session a GPU-window scenario can
+/// use.
+///
+/// This used to be assumed absent and `NeedsDesktop` was hard-skipped
+/// everywhere. That was true only while Linux-headless was the sole runner;
+/// since 2026-08-11 the suite also runs on macOS and Windows CI runners, which
+/// have real desktop sessions, and it has always run on maintainer machines
+/// that do too. Hard-skipping there reported "skipped" for scenarios that
+/// would have run — a false negative that hides breakage.
+fn has_desktop_session() -> bool {
+    if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
+        // A logged-in macOS/Windows runner or workstation always has a window
+        // server; there is no env var to consult that means anything more.
+        return true;
+    }
+    // X11 or Wayland, including the `xvfb-run` wrapper CI uses on Linux —
+    // xvfb is a real X server, so a scenario that only needs a window (rather
+    // than a physical GPU) genuinely can run under it.
+    std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
 fn skip_reason(scenario: &Scenario, args: &Args) -> Option<String> {
-    if scenario.has_tag(Tag::NeedsDesktop) {
-        return Some("needs-desktop (no real GPU display in this runner)".into());
+    if scenario.has_tag(Tag::NeedsDesktop) && !has_desktop_session() {
+        return Some("needs-desktop (no DISPLAY/WAYLAND_DISPLAY on this host)".into());
     }
     if scenario.has_tag(Tag::NeedsRealShell) && !args.include_flaky {
         return Some("needs-real-shell (no --include-flaky)".into());
