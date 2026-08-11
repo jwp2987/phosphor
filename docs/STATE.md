@@ -27,17 +27,17 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 10026 |
-| Fork tests | 9717 |
-| Shared | 7776 |
-| Absent from fork | 2250 |
+| Fork tests | 9733 |
+| Shared | 7785 |
+| Absent from fork | 2241 |
 
-Of the absent, **1843 are adjudicated** in the ledger and 407 are not.
+Of the absent, **1843 are adjudicated** in the ledger and 398 are not.
 Cloud accounts for 1130 of the adjudicated; the unadjudicated remainder is
-*projected* at the same ratio (~157 non-cloud), so the figures below
+*projected* at the same ratio (~153 non-cloud), so the figures below
 carry that estimate.
 
-- **~89.9% of the pin's non-cloud tests exist here** (7776 of ~8646)
-- **~96.1% are present or deliberately resolved** (adding 417 declined, 65 divergent, 58 covered-elsewhere)
+- **~89.9% of the pin's non-cloud tests exist here** (7785 of ~8651)
+- **~96.2% are present or deliberately resolved** (adding 417 declined, 65 divergent, 58 covered-elsewhere)
 
 ## Ledger
 
