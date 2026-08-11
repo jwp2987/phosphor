@@ -508,3 +508,89 @@ jobs:
         run: |
           cargo nextest run -p warp --features gui --no-fail-fast \
             -E 'test(/login_item/) or test(/environment_tests/) or test(/encode_pwsh_command/) or test(/wsl_env/) or test(/pwsh/)'
+
+  # Same rationale as check-windows above, mirrored for `cfg(target_os =
+  # "macos")` code: `app/src/login_item/macos.rs` had zero `#[test]`
+  # functions until this job existed, so nothing ever executed the objc2 FFI
+  # calls it makes at runtime -- only whether they compiled.
+  #
+  # The "compile tests, then run them" two-step shape below (rather than a
+  # single `cargo nextest run`) is carried over from the pinned oracle's CI
+  # (`02b53fcd8:.github/workflows/ci.yml`, the `tests` job's "Compile tests"
+  # / "Run unit tests" steps): a compile break then reads as a compile
+  # failure, not a confusing "test failed".
+  #
+  # Deliberately narrower than the pin, though: the pin's macOS job runs the
+  # full workspace suite (`$WORKSPACE_TEST_ARGS --workspace`) on a larger
+  # self-hosted Mac runner. This job runs on generic `macos-latest` and,
+  # like check-windows above, is filtered to the platform-specific tests
+  # this fork actually added -- the Linux jobs already cover everything
+  # portable, and this fork doesn't have the pin's runner budget for a full
+  # macOS suite on every PR.
+  check-macos:
+    name: cargo check (macOS)
+    runs-on: macos-latest
+    # The pin budgets 25 minutes for a full-workspace compile+run on a
+    # larger self-hosted runner (see job comment above). This job instead
+    # does three separate `cargo check` invocations plus a filtered nextest
+    # compile+run on generic `macos-latest`, so it keeps check-windows's
+    # more generous budget rather than the pin's tighter one.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: macos
+          is_self_hosted: false
+
+      # Compile-checks the `cfg(target_os = "macos")` code the Linux and
+      # Windows jobs can't reach (SMAppService login-item registration, the
+      # dock tile plugin, default-terminal registration via Launch
+      # Services, etc.).
+      - name: cargo check -p warp --features gui
+        shell: bash
+        run: cargo check -p warp --features gui --lib --tests
+
+      - name: cargo check -p warp --features tui
+        shell: bash
+        run: cargo check -p warp --features tui
+
+      - name: cargo check -p warp_tui
+        shell: bash
+        run: cargo check -p warp_tui
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@9ba3ac3fd006a70c6e186a683577abc1ccf0ff3a # v2
+        with:
+          tool: nextest
+
+      # `--no-run` first, matching the pin's two-step shape described above:
+      # builds the test binary without running anything, so a compile break
+      # shows up as THIS step failing, not as a mysteriously-empty next one.
+      - name: Compile macOS-specific tests (not run them yet)
+        shell: bash
+        run: cargo nextest run -p warp --features gui --no-run -E 'test(/login_item/)'
+
+      # RUN them, don't just compile them -- the same gap this fork closed
+      # on the Windows side above: `login_item::macos` had 0 `#[test]`
+      # functions before this, so there was nothing here for even a passing
+      # `cargo check` to be silent about.
+      #
+      # These are real runtime checks, not compile checks:
+      #   login_item::macos::tests::sm_app_service_class_is_available
+      #     - a real objc2 `AnyClass::get` lookup of `SMAppService`, which
+      #       requires `ServiceManagement.framework` to actually be linked
+      #       into the process (see build.rs)
+      #   login_item::macos::tests::bundle_presence_check_does_not_crash
+      #     - a real `[NSBundle mainBundle]` msg_send call
+      #
+      # Both are read-only queries: this module's actual register/unregister
+      # calls are NOT exercised here. Unlike the Windows registry path,
+      # `SMAppService`'s identity is tied to the calling process's code
+      # signature / bundle identifier, which offers no scratch address a
+      # test can redirect to without either mutating real login-item state
+      # or silently no-op-ing. See docs/sweep/outcome-macos-login-item.md.
+      - name: Run macOS-specific tests (not just compile them)
+        shell: bash
+        run: cargo nextest run -p warp --features gui --no-fail-fast -E 'test(/login_item/)'

@@ -35,6 +35,14 @@ fn main() -> Result<()> {
     if target_os == "macos" && target_family != "wasm" {
         println!("cargo:rustc-link-lib=framework=MetalKit");
         println!("cargo:rustc-link-lib=framework=UserNotifications");
+        // `login_item::macos` looks up `SMAppService` via `objc2::runtime::
+        // AnyClass::get`, which only finds classes from frameworks actually
+        // mapped into the process -- it does not dlopen anything on its own.
+        // Nothing else in this crate references ServiceManagement.framework,
+        // so without this explicit link the lookup could silently return
+        // `None` and login-item registration would no-op forever, exactly
+        // like the "SMAppService not available" (pre-Ventura) fallback path.
+        println!("cargo:rustc-link-lib=framework=ServiceManagement");
 
         println!("cargo:rerun-if-changed=src/platform/mac/objc/app_bundle.h");
         println!("cargo:rerun-if-changed=src/platform/mac/objc/app_bundle.m");

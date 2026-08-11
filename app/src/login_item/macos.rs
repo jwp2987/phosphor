@@ -6,6 +6,8 @@
 //!
 //! Ported from Warp (`app/src/login_item/macos.rs`).
 
+use objc2::runtime::{AnyClass, AnyObject};
+use objc2::{class, msg_send};
 use settings::Setting as _;
 use warpui::{AppContext, SingletonEntity};
 
@@ -26,19 +28,15 @@ pub(super) fn maybe_register_app_as_login_item(ctx: &mut AppContext) {
         // This can be slow, so we run it in a background thread.
         ctx.spawn(
             async move {
-                use objc2::runtime::{AnyClass, AnyObject};
-                use objc2::{class, msg_send};
-
                 // `[NSBundle mainBundle]` is nil when we're not running from a
                 // bundle, so skip registration in that case.
-                let bundle: *mut AnyObject = unsafe { msg_send![class!(NSBundle), mainBundle] };
-                if bundle.is_null() {
+                if !bundle_is_present() {
                     log::debug!("Not running in a bundle, so not registering as a login item");
                     return false;
                 }
 
                 // Note this only works on macOS 13+ (Ventura and later) so we check for the presence of the class.
-                if let Some(sm_app_service_class) = AnyClass::get(c"SMAppService") {
+                if let Some(sm_app_service_class) = sm_app_service_class() {
                     let app_service: *mut AnyObject =
                         unsafe { msg_send![sm_app_service_class, mainAppService] };
                     let mut error: *mut AnyObject = std::ptr::null_mut();
@@ -72,3 +70,28 @@ pub(super) fn maybe_register_app_as_login_item(ctx: &mut AppContext) {
         );
     });
 }
+
+/// Whether `[NSBundle mainBundle]` resolves to a real bundle. `SMAppService`
+/// calls made from outside an app bundle are unreliable at best, so
+/// registration skips entirely when this is false.
+///
+/// Extracted (rather than left inline) so it can be exercised by a real,
+/// non-mocked runtime test — see `macos_tests.rs`.
+fn bundle_is_present() -> bool {
+    let bundle: *mut AnyObject = unsafe { msg_send![class!(NSBundle), mainBundle] };
+    !bundle.is_null()
+}
+
+/// Looks up the `SMAppService` class in the running process. It ships in
+/// `ServiceManagement.framework` and requires macOS 13 (Ventura) or later;
+/// when it isn't found, registration silently no-ops (see module docs).
+///
+/// Extracted (rather than left inline) so it can be exercised by a real,
+/// non-mocked runtime test — see `macos_tests.rs`.
+fn sm_app_service_class() -> Option<&'static AnyClass> {
+    AnyClass::get(c"SMAppService")
+}
+
+#[cfg(test)]
+#[path = "macos_tests.rs"]
+mod tests;
