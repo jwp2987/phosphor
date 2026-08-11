@@ -87,7 +87,7 @@ use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestions
 use crate::keybindings::{
     ATTACHMENTS_AVAILABLE_FLAG, CONTEXTUAL_PLAN_TOGGLE_BINDING_NAME,
     KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG, PLAN_TOGGLE_AVAILABLE_FLAG, PLAN_TOGGLE_BINDING_NAME,
-    TUI_BINDING_GROUP,
+    TUI_BINDING_GROUP, binding_hint,
 };
 use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
 use crate::orchestration_model::TuiOrchestrationModel;
@@ -793,10 +793,11 @@ pub(crate) struct TuiTerminalSessionView {
     /// Set while the composer's current AI lock was installed to give the
     /// agent a running command's input (manual attach, an auto-spawned CLI
     /// subagent, or a prompt sent to one) rather than by the user's own
-    /// Ctrl+Shift+I toggle. Gates [`Self::reset_after_agent_control`] so a
-    /// completing block only restores autodetection when this composer is
-    /// the one that locked it -- otherwise an unrelated block completing
-    /// elsewhere would clobber a genuine user-forced lock. Local stand-in for
+    /// Ctrl+Shift+I toggle -- installed via [`Self::lock_for_agent_control`].
+    /// Gates [`Self::reset_after_agent_control`] so a completing block only
+    /// restores autodetection when this composer is the one that locked it --
+    /// otherwise an unrelated block completing elsewhere would clobber a
+    /// genuine user-forced lock. Local stand-in for
     /// the pin's `InputTypeAutoDetectionSource::AgentTerminalControl`
     /// (`02b53fcd8`): this fork's shared `BlocklistAIInputModel` intentionally
     /// carries only one autodetection-source variant (`HistoryMatch`, see
@@ -1249,9 +1250,7 @@ impl TuiTerminalSessionView {
                     &self.terminal_model,
                     initial_requested_command_action_id.as_ref(),
                 );
-                self.input_view
-                    .update(ctx, |input, ctx| input.exit_shell_mode(ctx));
-                self.agent_terminal_control_lock = true;
+                self.lock_for_agent_control(ctx);
                 if let Some(target) = self
                     .cli_subagent_controller
                     .as_ref(ctx)
@@ -1393,14 +1392,28 @@ impl TuiTerminalSessionView {
         if !did_attach {
             return false;
         }
-        self.input_view.update(ctx, |input, ctx| {
-            input.clear(ctx);
-            input.exit_shell_mode(ctx);
-        });
-        self.agent_terminal_control_lock = true;
+        self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+        self.lock_for_agent_control(ctx);
         self.update_process_input_focus(ctx);
         ctx.notify();
         true
+    }
+
+    /// Locks the composer to Agent mode and records that this composer (not
+    /// the user's own Ctrl+Shift+I toggle) installed the lock -- see
+    /// [`Self::agent_terminal_control_lock`]'s doc comment for the full
+    /// rationale. Both call sites that give the agent control of a running
+    /// command (manual attach above, and `CLISubagentEvent::SpawnedSubagent`)
+    /// go through this so [`Self::reset_after_agent_control`] can restore
+    /// autodetection once that control ends. Local stand-in for the pin's
+    /// `TuiInputView::lock_for_agent_control` (`02b53fcd8`), which threads a
+    /// dedicated `InputTypeAutoDetectionSource::AgentTerminalControl` through
+    /// `BlocklistAIInputModel` instead of this view-local bool -- see this
+    /// field's doc comment for why that is out of scope (#399/#254 item d).
+    fn lock_for_agent_control(&mut self, ctx: &mut ViewContext<Self>) {
+        self.input_view
+            .update(ctx, |input, ctx| input.exit_shell_mode(ctx));
+        self.agent_terminal_control_lock = true;
     }
 
     /// Detaches the agent from the active running command, discarding any
@@ -3387,9 +3400,7 @@ impl TuiTerminalSessionView {
             return;
         }
         if self.send_terminal_use_prompt(&text, ctx) {
-            self.input_view
-                .update(ctx, |input, ctx| input.exit_shell_mode(ctx));
-            self.agent_terminal_control_lock = true;
+            self.lock_for_agent_control(ctx);
         } else if self.is_shell_mode(ctx) {
             self.execute_user_command(&text, ctx);
         } else {
@@ -4886,6 +4897,28 @@ impl TuiView for TuiTerminalSessionView {
                 terminal_content
             };
             let mut content = TuiFlex::column().flex_child(terminal_content.finish());
+            // A user-controlled full-screen app still advertises manual agent
+            // attachment, matching the non-alt-screen hint row below. Gated on
+            // the same user-controlled-command predicate: the composer isn't
+            // rendered here, so this is the only attach affordance visible
+            // while the alternate screen owns the pane. Mirrors the pin's
+            // alt-screen branch in this same function (`02b53fcd8`).
+            if input_target.pty_owns_input()
+                && user_owns_running_command
+                && let Some(hint) = self.running_command_hint(ctx)
+            {
+                content = content.child(
+                    TuiContainer::new(
+                        TuiText::new(hint)
+                            .with_style(builder.muted_text_style())
+                            .truncate()
+                            .finish(),
+                    )
+                    .with_padding_x(2)
+                    .with_padding_bottom(1)
+                    .finish(),
+                );
+            }
             // ...and only a user-driven app gets the WHOLE pane. When the agent is
             // driving the full-screen command the user still has to be able to talk
             // to it, so the alternate screen takes the output region and the normal
@@ -5032,16 +5065,19 @@ impl TuiView for TuiTerminalSessionView {
         }
         // While a user-controlled long-running command owns input, the input
         // box and footer stay hidden; a one-line ghosted hint row takes the
-        // input's slot so the interrupt affordance stays discoverable. Gated
-        // on the user-controlled-command predicate, not the broader PTY input
+        // input's slot when manual attachment is available. Gated on the
+        // user-controlled-command predicate, not the broader PTY input
         // target: visible startup-script execution also routes input to the
-        // PTY but is not a command the user should be told to interrupt.
-        // (Agent-driven terminal use keeps the composer, and its control
-        // hints come from the CLI-subagent status line.)
-        if !blocker_active && user_owns_running_command {
+        // PTY but does not support agent attachment. (Agent-driven terminal
+        // use keeps the composer, and its control hints come from the
+        // CLI-subagent status line.)
+        if !blocker_active
+            && user_owns_running_command
+            && let Some(hint) = self.running_command_hint(ctx)
+        {
             content = content.child(
                 TuiContainer::new(
-                    TuiText::new(input_hints::LONG_RUNNING_COMMAND_HINT)
+                    TuiText::new(hint)
                         .with_style(builder.muted_text_style())
                         .truncate()
                         .finish(),
@@ -5133,6 +5169,15 @@ impl TuiView for TuiTerminalSessionView {
 }
 
 impl TuiTerminalSessionView {
+    /// Ghosted hint advertising the live keybinding that manually attaches
+    /// the agent to a user-controlled long-running command. Ported from the
+    /// pin's `running_command_hint` (`02b53fcd8`).
+    fn running_command_hint(&self, ctx: &AppContext) -> Option<String> {
+        let context = self.keymap_context(ctx);
+        let attach_key = binding_hint(ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME, &context, ctx);
+        input_hints::long_running_command_hint(attach_key.as_deref())
+    }
+
     /// Appends the agent composer's chrome -- attachment bar, input box, footer --
     /// to `content`.
     ///

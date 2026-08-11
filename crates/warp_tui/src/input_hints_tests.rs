@@ -1,4 +1,7 @@
-use super::{ASK_AGENT_HINT, COMMANDS_HINT, CONVERSATIONS_HINT, SHELL_MODE_HINT, agent_input_hint};
+use super::{
+    ASK_AGENT_HINT, COMMANDS_HINT, CONVERSATIONS_HINT, SHELL_MODE_HINT, agent_input_hint,
+    long_running_command_hint,
+};
 
 #[test]
 fn transcript_state_selects_the_applicable_hint_segments() {
@@ -13,4 +16,13 @@ fn transcript_state_selects_the_applicable_hint_segments() {
     assert!(started.contains(SHELL_MODE_HINT));
     assert!(started.contains(COMMANDS_HINT));
     assert!(!started.contains(CONVERSATIONS_HINT));
+}
+
+#[test]
+fn long_running_command_hint_needs_a_bound_key() {
+    assert_eq!(long_running_command_hint(None), None);
+    assert_eq!(
+        long_running_command_hint(Some("Ctrl + Shift + \u{23ce}")),
+        Some("Ctrl + Shift + \u{23ce}  to use agent".to_owned())
+    );
 }

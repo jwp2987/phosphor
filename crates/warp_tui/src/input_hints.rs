@@ -20,9 +20,18 @@ const HINT_SEPARATOR: &str = " • ";
 pub(crate) const SHELL_HINT: &str = "Run a shell command • esc for agent mode";
 
 /// Ghosted hint row shown in the input's slot while a user-controlled
-/// long-running command owns input (the input box itself stays hidden).
-/// ctrl-c is the reserved interrupt key in both the TUI keymap and the PTY.
-pub(crate) const LONG_RUNNING_COMMAND_HINT: &str = "ctrl-c to interrupt";
+/// long-running command owns input (the input box itself stays hidden),
+/// advertising the live keybinding that manually attaches the agent to it.
+/// `None` when no key is bound, so callers hide the row instead of showing an
+/// unusable hint. Ported from the pin's `long_running_command_hint`
+/// (`02b53fcd8`), which built the same string from the live
+/// `AttachAgentToRunningCommand` binding rather than a fixed ctrl-c-to-interrupt
+/// string -- ctrl-c does still interrupt the command (see
+/// `TuiTerminalSessionView::handle_terminal_use_interrupt`), this is just the
+/// discoverability hint for the *other* affordance available here.
+pub(crate) fn long_running_command_hint(attach_key: Option<&str>) -> Option<String> {
+    attach_key.map(|key| format!("{key}  to use agent"))
+}
 
 /// The agent-mode placeholder hint for the current transcript and orchestration
 /// state.
