@@ -59,6 +59,39 @@ input nobody can name is worse than no build, because its result gets believed.
       **Do not trust any build or suite result that cannot name the commit it
       ran against.**
 
+## VERIFIED WORK QUEUE (2026-08-11, post-sweep)
+
+**The 50-test MISSING-SUBSYSTEM sweep is COMPLETE** — all 50 resolved on branch
+`working`. What follows is the remaining code work, **after every premise was
+re-checked by grepping for a DEFINITION rather than a name.**
+
+**That check mattered: 6 of the ~18 items were false.** `rollup.rs` (claimed
+absent with 8 tests — it exists, with exactly 8 tests), `/index` slash command
+(exists), and 3 entries left unchecked under headers already reading
+"IMPLEMENTED". One entry I *wrongly* called stale is genuinely open:
+`RemoteServerClient::resolve_conflict` really has zero callers — the two hits
+are `GlobalBufferModel::resolve_conflict`, same method name, different type.
+
+**Confirmed genuinely absent — the real queue:**
+
+| # | item | evidence |
+|---|---|---|
+| 1 | **`git pull`** (Stage 1, `--ff-only`) | zero hits for `git_pull`/`GitPull` tree-wide |
+| 2 | **#532 PTY-spawn wiring** | `register_session_id` has 0 production call sites here vs 4 in the pin |
+| 3 | **`language_by_filename` signature** | fork takes `&Path`; pin takes `&StandardizedPath` + `language_by_filename_parts` |
+| 4 | **MCP tool results render as a JSON blob** | `inline_action/requested_command.rs:1494` — `to_string_pretty(result)` |
+| 5 | **`with_semantic_selection_by_style`** | no definition tree-wide |
+| 6 | **`use_computer_decoration`** | no definition tree-wide |
+| 7 | **TUI renderer for `MessagesReceivedFromAgents`/`EventsFromAgents`** | both absent |
+| 8 | **Zap #324 — pane min size** | `MIN_PANEL_WIDTH: f32 = 300.` hardcoded, `ai_assistant/panel.rs:61` |
+| 9 | **Zap #329 remainder** — hunk staging, branch create/switch | no `stage_hunk`/`checkout_branch` |
+| 10 | **Feature-reduced daemon target** | architectural; gates the distribution decision |
+
+**Rule that produced this list, and the reason it is short:** grep for
+`fn <name>` / `struct <name>`, never the bare name. Six false positives and one
+false negative were caught this way in a single session — including three where
+the "missing" symbol appeared only inside a doc comment describing its absence.
+
 ## IN FLIGHT RIGHT NOW (2026-08-11)
 
 **`main` is held by the build agent. Do not commit to it.** Standing maintainer
