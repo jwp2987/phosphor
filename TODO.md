@@ -5,6 +5,95 @@ Added 2026-08-10 after a status report listed four in-flight items as unstarted:
 the assignment lived in the operator's head and not in this file. **Record the
 assignment here when you start work, not when you finish it.**
 
+## 🛑 BUILD FREEZE — in force from 2026-08-11 until the maintainer lifts it
+
+**No builds. Nothing that compiles.** Maintainer instruction, 2026-08-11:
+builds resume only on the explicit phrase **"Fucking go"** — not on inference,
+not on "this seems safe", not on a green-looking tree.
+
+Forbidden: `cargo` (`check`/`build`/`test`/`nextest`/`clippy`), `script/precheck`
+in any form including `--fast`, `rustc`, the previously-granted
+`lib/rust-genai --manifest-path` exception, and launching any agent that could
+run one.
+
+Still permitted: git, grep, reading, doc edits, `script/state`, and the
+`script/check_*` guards — all pure shell.
+
+**Why:** the freeze followed an hour-long suite run that turned out to be
+compiling three agents' mixed uncommitted work in a shared checkout that had
+been switched off `main`. See the hazard entry directly below. A build whose
+input nobody can name is worse than no build, because its result gets believed.
+
+## OPERATIONAL HAZARD — agents share ONE checkout (found 2026-08-11)
+
+- [ ] **Parallel agents work in the shared checkout `/cache/git/zap`, switch its
+      branch, and mix uncommitted work — and the build agent compiles whatever
+      that mixture happens to be.**
+      **Observed 2026-08-11, ~06:00.** Six sweep agents were launched with
+      "branch from local `main`". At least three edited the **shared working
+      tree** instead of a worktree. The checkout was left on
+      `sweep-tail-2026-08-11` (one agent's branch) holding, simultaneously:
+      | file | owner |
+      |---|---|
+      | `app/src/ai/agent_events/{driver,driver_tests,mod}.rs`, `app/src/server/retry_strategies.rs` | agent-events package |
+      | `crates/ai/src/project_context/{model,model_tests}.rs` | project-context package |
+      | `TODO.md`, `docs/STATE.md`, `script/state` | coordinator |
+
+      **Consequence, and the reason this is a hazard and not an annoyance: the
+      build agent runs `cargo`/`nextest` in this same tree.** Its results
+      describe a mixture no one authored, so a green run proves nothing and a
+      red run blames the wrong change. The hour-long suite run in progress when
+      this was found was invalid for that reason.
+
+      One agent (agent-sdk-harness) detected the collision itself, extracted a
+      patch, reverted the shared tree, and replayed onto a clean worktree. That
+      it *could* recover is luck, not design — it happened to notice.
+
+      **Fixes, in order of value:**
+      1. Every code agent gets `isolation: "worktree"`, not a shared checkout.
+         Doc-only agents may share.
+      2. The build agent must build a **named commit in its own worktree**,
+         never the shared tree, so its result is attributable.
+      3. Nothing should leave the shared checkout on a non-`main` branch.
+
+      **Do not trust any build or suite result that cannot name the commit it
+      ran against.**
+
+## IN FLIGHT RIGHT NOW (2026-08-11)
+
+**`main` is held by the build agent. Do not commit to it.** Standing maintainer
+instruction: no commits to `main` until the genai bump builds and the suite is
+green. Baseline to beat: **6,846 passing**.
+
+- [>] **Vendored genai 0.6.0-beta.18 → 0.7.0-beta.18 — COMPILES, SUITE
+      RUNNING.** `13603ac0f` re-ported the vendor tree, `02024ceaf` merged it.
+      **The merge landed before the app-side call sites were updated, which
+      broke `main` for ~40 minutes** — a sequencing error; it should have been
+      one commit, or a branch verified first. Repaired by `c05e2bd07`:
+      `cargo check --workspace --all-targets --features warp/gui` returns
+      **0 errors**. The suite has not yet reported; the bar is the 6,846
+      baseline. The four call-site fixes were: 
+
+      | file | change | why |
+      |---|---|---|
+      | `Cargo.toml:252` | pin `=0.7.0-beta.18` | version bump |
+      | `app/src/settings/ai.rs:1084` | `GE::None` → `GE::Zero` | 0.7 renamed the variant; `ReasoningEffort::None` no longer exists |
+      | `app/src/ai/agent_providers/chat_stream.rs:7631` | same rename, in a test | |
+      | `app/src/ai/agent_providers/oneshot.rs:214` | new `ChatStreamEvent::Heartbeat` match arm | 0.7 adds it (Anthropic keepalive); the match is exhaustive |
+      **Carried forward, must not be lost on the next bump:** the Vertex
+      `:streamRawPredict` fix and the Anthropic cache-breakpoint fix, both
+      recorded in `lib/rust-genai/CHANGES-PHOSPHOR.md`; upstream pin recorded in
+      `lib/rust-genai/UPSTREAM.md`.
+- [ ] **Upstream the Vertex `:streamRawPredict` fix** to
+      `jeremychone/rust-genai`. Every vendored fix we do not upstream is a
+      merge conflict we pay for at each bump — this one has now been carried
+      across two.
+- [ ] **Launch the app.** Nobody has since the freeze lifted. A green suite does
+      not discharge this: the startup crash of 2026-08-10 passed 6,000 tests.
+      See `docs/build/TRIAGE.md` § "Beyond the compiler" — singleton
+      registration order and prompt-cache breakpoint placement are both
+      invisible to `cargo check` and to `nextest`.
+
 ## WHAT DONE LOOKS LIKE (maintainer, 2026-08-11)
 
 > "Part of it is having **100% non-cloud parity with Warp**, through either
@@ -1700,11 +1789,43 @@ only reality and never looking at the branches:**
 - [x] #555 prompt/editor_modal: same-line-prompt toggle UI missing. Verified:
       `render_same_line_prompt_section` defined once at `app/src/prompt/editor_modal.rs:592`,
       never called.
-- [x] #532 CLOSED 2026-08-08: #419 has now landed (recovered from PR #538) and
-      `requires_registered_session`, `is_registered_session`, and
-      `should_validate_dcs_hook_session_id` are present in
-      `app/src/terminal/model/ansi/{dcs_hooks,mod}.rs` and `terminal_model.rs`. The
-      original premise ("its premise is false, #419 hasn't landed") is now moot.
+- [ ] **#532 — REOPENED 2026-08-11. The 2026-08-08 closure was wrong.** It is the
+      **fifth** entry in this file found stating the opposite of the code (#148 class).
+      Original closure text, kept verbatim as the evidence of how it failed:
+      > "#532 CLOSED 2026-08-08: #419 has now landed (recovered from PR #538) and
+      > `requires_registered_session`, `is_registered_session`, and
+      > `should_validate_dcs_hook_session_id` are present in
+      > `app/src/terminal/model/ansi/{dcs_hooks,mod}.rs` and `terminal_model.rs`."
+
+      **It closed on SYMBOL PRESENCE, not on the wiring those symbols exist to serve.**
+      All three symbols are present. `should_validate_dcs_hook_session_id` returns a
+      hardcoded `false` (`terminal_model.rs:2700`); the pin returns
+      `!self.shared_session_status().is_viewer()` (`02b53fcd8:…:2569`). Present and inert.
+
+      **Measured 2026-08-11** — `register_session_id` call sites:
+      | | pin | fork |
+      |---|---:|---:|
+      | total | 5 | 1 |
+      | production | **4** | **0** |
+
+      Pin's production sites: `terminal/local_tty/terminal_manager.rs:629` (PTY spawn),
+      `terminal/model/terminal_model.rs:3090` (remote session),
+      `terminal/remote_tty/event_loop.rs:175`, `terminal/view.rs:14988`.
+      The fork's single call is `terminal_model.rs:1091`, inside a
+      `#[cfg(any(test, feature = "test-util"))]` fixture with `session_id = 123`.
+
+      **The fork's own code already documented this**, 150 lines from the function:
+      `terminal_model.rs:2691` says *"nothing yet calls `register_session_id` at
+      PTY-spawn time … See #419's follow-up for the PTY-spawn wiring."* The closure
+      contradicted a comment in the same file.
+
+      **Scope is smaller than "missing subsystem":** both pin files that perform the
+      registration — `terminal/local_tty/terminal_manager.rs` and
+      `terminal/remote_tty/event_loop.rs` — **already exist here**. The calls were
+      never added. This is wiring into existing files.
+      Unblocks the 2 DCS tests in the MISSING-SUBSYSTEM bucket
+      (`sharer_rejects_dcs_hook_with_unregistered_session_id`,
+      `viewer_processes_dcs_hook_with_unregistered_session_id`).
 
 ### Tier 2 — small (~half a day each)
 - [x] #523 cmd-k: `try_clear_buffer_in_agent_view` still checks only `is_agent_monitoring`
