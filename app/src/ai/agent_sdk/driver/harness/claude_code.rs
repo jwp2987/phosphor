@@ -410,7 +410,11 @@ impl HarnessRunner for ClaudeHarnessRunner {
         {
             Ok(command_handle) => command_handle,
             Err(err) => {
-                self.cleanup_parent_bridge()
+                // The CLI command failed to spawn, so there is no session to
+                // wake later and nothing worth preserving: remove the bridge
+                // state. `PreserveState` is for runs that reached a wakeable
+                // point, which this one never did.
+                self.cleanup_parent_bridge(false)
                     .map_err(AgentDriverError::ConfigBuildFailed)?;
                 return Err(err);
             }

@@ -50,7 +50,10 @@
 //! [`resolve_error`]: StartAgentExecutor::resolve_error
 use std::collections::HashMap;
 
-use warpui::{Entity, ModelContext};
+// `SingletonEntity` is what provides `BlocklistAIHistoryModel::as_ref(ctx)`.
+// Without it in scope the compiler falls back to `AsRef` and reports the
+// confusing "trait bounds were not satisfied" rather than a missing import.
+use warpui::{Entity, ModelContext, SingletonEntity};
 
 use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
 use crate::ai::agent::{LifecycleEventType, StartAgentExecutionMode};
