@@ -1,3 +1,7 @@
+use std::ffi::OsString;
+use std::fs;
+
+use tempfile::TempDir;
 use warp_cli::agent::Harness;
 
 use super::{
@@ -7,6 +11,67 @@ use super::{
     validate_local_harness_shell,
 };
 use crate::terminal::shell::ShellType;
+
+/// Test-only guard that sets an environment variable for the duration of the
+/// guard and restores the previous value (or absence) on drop. Mirrors the
+/// pin's `EnvVarGuard` (`local_harness_launch_tests.rs:21-61`, `02b53fcd8`).
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl Into<OsString>) -> Self {
+        let original = std::env::var_os(key);
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var(key, value.into()) };
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(original) = &self.original {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var(self.key, original) };
+        } else {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var(self.key) };
+        }
+    }
+}
+
+/// Writes a no-op executable named `name` into `bin_dir` so `PATH`-based CLI
+/// presence checks (`validate_cli_installed`) succeed without a real install.
+/// Mirrors the pin's `write_fake_cli` (`local_harness_launch_tests.rs:63-86`,
+/// `02b53fcd8`). Being a no-op script also matters for
+/// `plugin_manager_for(..).install()`, which the Claude launch path invokes:
+/// the fake `claude` binary makes that call a harmless, instant no-op instead
+/// of a real plugin-marketplace network round trip.
+fn write_fake_cli(bin_dir: &std::path::Path, name: &str) {
+    let executable_name = if cfg!(windows) {
+        format!("{name}.cmd")
+    } else {
+        name.to_string()
+    };
+    let executable_path = bin_dir.join(executable_name);
+    let script = if cfg!(windows) {
+        "@echo off\r\n"
+    } else {
+        "#!/bin/sh\n"
+    };
+
+    fs::write(&executable_path, script).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&executable_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable_path, permissions).unwrap();
+    }
+}
 
 /// Adapted from the pin (`app/src/pane_group/pane/local_harness_launch_tests.rs:26-38`,
 /// `02b53fcd8`) for #323. The pin asserts `oz run message *`, a client for
@@ -166,4 +231,81 @@ fn compose_child_agent_prompt_is_a_verbatim_passthrough() {
     // on `compose_child_agent_prompt` for why.
     let task = "Refactor `foo.rs` to use the new API; keep tests green";
     assert_eq!(compose_child_agent_prompt(task), task);
+}
+
+/// Adapted from the pin (`local_harness_launch_tests.rs:320-375`, `02b53fcd8`),
+/// for the #2 sweep. Two drops from the pin version: no `ai_client` argument
+/// (this fork's `prepare_local_harness_child_launch` no longer creates a
+/// cloud agent task -- see `local_child_task_config`'s doc comment above and
+/// `local_harness_launch.rs`'s "no longer used" note -- so there is nothing
+/// to mock), and no assertion on the exact `run_id` value (the pin's mock
+/// returns a fixed uuid; this fork generates one locally with `Uuid::new_v4`,
+/// so only its shape is checked). The `ANTHROPIC_MODEL` merge behavior itself
+/// (`harness_model_env_vars`) is unchanged from the pin.
+#[tokio::test]
+#[serial_test::serial]
+async fn prepare_local_claude_child_merges_anthropic_model_env_var() {
+    let fake_home = TempDir::new().unwrap();
+    let fake_bin_dir = TempDir::new().unwrap();
+    let working_dir = fake_home.path().join("workspace");
+    fs::create_dir_all(&working_dir).unwrap();
+    write_fake_cli(fake_bin_dir.path(), "claude");
+
+    let _home = EnvVarGuard::set("HOME", fake_home.path().as_os_str().to_os_string());
+    let _path = EnvVarGuard::set("PATH", fake_bin_dir.path().as_os_str().to_os_string());
+
+    let prepared = prepare_local_harness_child_launch(
+        "hello world".to_string(),
+        "claude".to_string(),
+        Some("opus".to_string()),
+        Some("parent-run".to_string()),
+        Some(ShellType::Zsh),
+        Some(working_dir),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        prepared.env_vars.get(&OsString::from("ANTHROPIC_MODEL")),
+        Some(&OsString::from("opus"))
+    );
+    assert!(
+        prepared
+            .command
+            .contains("agent message send --sender-run-id")
+    );
+    assert!(prepared.command.contains("OZ_PARENT_RUN_ID"));
+    assert!(!prepared.run_id.is_empty());
+}
+
+/// Adapted from the pin (`local_harness_launch_tests.rs:377-417`, `02b53fcd8`)
+/// for the #2 sweep -- same `ai_client` drop as the test above.
+#[tokio::test]
+#[serial_test::serial]
+async fn prepare_local_claude_child_no_anthropic_model_when_empty() {
+    let fake_home = TempDir::new().unwrap();
+    let fake_bin_dir = TempDir::new().unwrap();
+    let working_dir = fake_home.path().join("workspace");
+    fs::create_dir_all(&working_dir).unwrap();
+    write_fake_cli(fake_bin_dir.path(), "claude");
+
+    let _home = EnvVarGuard::set("HOME", fake_home.path().as_os_str().to_os_string());
+    let _path = EnvVarGuard::set("PATH", fake_bin_dir.path().as_os_str().to_os_string());
+
+    let prepared = prepare_local_harness_child_launch(
+        "hello world".to_string(),
+        "claude".to_string(),
+        None,
+        Some("parent-run".to_string()),
+        Some(ShellType::Zsh),
+        Some(working_dir),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        !prepared
+            .env_vars
+            .contains_key(&OsString::from("ANTHROPIC_MODEL"))
+    );
 }
