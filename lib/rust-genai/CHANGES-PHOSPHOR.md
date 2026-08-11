@@ -131,7 +131,33 @@ pass-through list already covers all of them by name with the same
 
 | path | what differs | why |
 |---|---|---|
-| `Cargo.toml` | Adds `[workspace]` (isolates this crate from the parent Cargo workspace); adds the `socks` feature to the `reqwest` dependency (for BYOP SOCKS5 proxy support via `web_config.rs::set_proxy_settings`). Upstream 0.7 already adds its own `paste` dependency (for `adapter/macros/`) and switched `reqwest` to `default-features = false` with an explicit feature list (`json`, `stream`, `gzip`, `charset`, `http2`, `system-proxy`) — the fork's `socks` addition slots into that explicit list; no `[patch]` section needed since upstream doesn't gate `socks` behind anything. |
+| `Cargo.toml` | Adds `[workspace]` (isolates this crate from the parent Cargo workspace); adds the `socks` feature to the `reqwest` dependency (for BYOP SOCKS5 proxy support via `web_config.rs::set_proxy_settings`). Upstream 0.7 already adds its own `paste` dependency (for `adapter/macros/`) and switched `reqwest` to `default-features = false` with an explicit feature list (`json`, `stream`, `gzip`, `charset`, `http2`, `system-proxy`) — the fork's `socks` addition slots into that explicit list; no `[patch]` section needed since upstream doesn't gate `socks` behind anything. Also pins the `serial_test` dev-dependency down a major, `"4"` → `"3"` — see below. |
+
+### `serial_test` dev-dependency pinned to 3.x — revert when the toolchain moves
+
+Added 2026-08-11, and **not** a disagreement with upstream's choice: it is a
+collision between upstream's dev-dependency and this repo's pinned toolchain.
+
+Upstream asks for `serial_test = "4"`. The only non-yanked 4.x, `4.0.1`,
+declares `rust-version = 1.93.1`; `rust-toolchain.toml` pins `1.92.0`. Cargo
+enforces that at **resolution**, so `cargo test --manifest-path
+lib/rust-genai/Cargo.toml` fails before compiling a single file — which took
+out the `script/precheck` genai gate entirely. `4.0.0` is yanked, so there is
+no usable 4.x at this toolchain.
+
+Safe because it is narrow on every axis: `serial_test` is a dev-dependency
+used **only** in `tests/tests_p_*.rs` (live-API provider tests) and nowhere in
+`src/`, so nothing shipped links it; the sole attribute form these tests use is
+`#[serial(name)]`, stable across both majors; and 3.5.0's MSRV is 1.68, far
+under the pin. Lib tests: 202 passed, 0 failed — unchanged.
+
+Note `lib/rust-genai/Cargo.lock` is **gitignored**, so this failure is latent
+rather than reproducible-on-checkout: it appears only once a machine
+regenerates the lock and picks up 4.0.1. That is why a green run was reported
+before this one failed, on the same commit.
+
+**Restore to `"4"` when `rust-toolchain.toml` reaches 1.93.1.** That is the
+whole condition; nothing else about this pin needs revisiting.
 
 `README.md`, `CHANGELOG.md`, `BIG-THANKS.md`, `LICENSE-*`, `rustfmt.toml`,
 `.gitignore`, `docs/`, `dev/`, `examples/` are all byte-identical to

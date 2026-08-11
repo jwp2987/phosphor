@@ -158,6 +158,12 @@ unrelated to voice and is not declined — see the issue for its state.
 | **`unique_skills` dedup key — `(name, dir)`, not the pin's `(dir, content)`** | #2 | **RECORDED 2026-08-10 (the #2 sweep); the decision itself is older and lives in code.** The pin dedups discovered skills on a SipHash of `(dir_path, content)`, so a same-named skill with different content in two providers survives twice. This fork keys on `(descriptor.name, dir_path)` with a provider-priority-then-shortest-reference tie-break, which additionally collapses same-name/different-content across providers — the fork-original P0-3 prompt-cache-stability fix (`226dcccc6`, `fdcf37261`, `2e30ccd4b`), documented on `SkillDeduplicator` at `app/src/ai/skills/skill_utils.rs:26`. Consequence, and the reason this row exists: the pin's `test_unique_skills_does_not_dedupe_different_content` **would compile and then fail** here — it expects 2, this fork returns 1. It is the one test found in the #2 sweep with that property, so it is the one most likely to be picked up as easy debt and land red. Permanently not ported; `test_unique_skills_name_dedup_same_name_different_providers` is the authority. `test_unique_skills_does_not_dedupe_different_dirs` is a separate case and is *not* declined — it passes here, but it duplicates the existing `test_unique_skills_keeps_same_provider_skills_from_different_dirs`, so porting it adds nothing. <!-- markers: test:test_unique_skills_does_not_dedupe_different_content keep:test_unique_skills_name_dedup_same_name_different_providers --> |
 | **`FEATURE_INTROS` content (feature-intro popover)** | #404 | The pin's `OneTimeModalModel` grew a reusable "feature intro" popover mechanism (`app/src/workspace/view/feature_intro_modal/`) — a data-driven registry (`FEATURE_INTROS: &[FeatureIntro]`) plus a non-blocking popover view, model wiring, and per-id "seen" tracking on `AISettings`. The mechanism itself is generic and non-cloud, and is ported. Its only registered entry (`FeatureIntroId::CustomModelRouter`) is not: it promotes a Warp-hosted custom-model-router feature this fork does not have, using Warp-branded marketing copy ("Build a custom model router for the Warp Agent..."), the same category of content declined for the "Oz updates" zero-state section (#321). `FEATURE_INTROS` ships empty in this fork; `FeatureIntroId`'s only variant is a `#[cfg(test)]` fixture. Populate it again once there is a real, non-cloud Phosphor feature worth announcing this way — that is a content decision, not a mechanism gap. |
 
+## Shared-session heartbeat — declined 2026-08-11, it serves a dropped layer
+
+| what | issue | note |
+|---|---|---|
+| **`shared_session/network/heartbeat.rs`** (`Heartbeat`, `test_periodic_ping`, `test_idle_timeout`) | — | **Declined on review 2026-08-11 after an agent ported it.** The module itself is *not* cloud — its imports are `std::time::Duration`, `futures::stream::AbortHandle`, `warpui::r#async::Timer`, `warpui::{Entity, ModelContext}` — which is exactly why `check_cloud_boundary` would never have caught it. It is declined for a different reason: **nothing consumes it and its tests cannot run.** Verified: zero references to `Heartbeat` anywhere in the fork (the only matches are genai's unrelated `ChatStreamEvent::Heartbeat`), and **both pin tests carry `#[ignore = "Flakes in CI"]`**. `SCOPE-TERMINAL.md:154` had already reached the same conclusion — *"its only consumer is the dropped session-sharing websocket layer"* — which is the layer declined in the agent-session-sharing row above. Porting it would add 202 lines of unreachable code guarded by tests that never execute: no regression protection, and the precise shape `script/check_stub_coverage` exists to prevent. Re-port only alongside a real consumer. <!-- markers: path:app/src/terminal/shared_session/network/heartbeat.rs --> |
+
 ## Retired features (decision pending on some)
 
 | what | issue | note |
@@ -187,6 +193,37 @@ unrelated to voice and is not declined — see the issue for its state.
 | ~~**`SendMessageToAgent` executor (the cloud half)**~~ | #325 | **REVERSED 2026-08-09 — the executor now EXISTS and is local.** This row said the executor could not be ported because the pin's version posts through `ServerApiProvider`/`SendAgentMessageRequest` to Warp's GraphQL backend. True of the pin, but a local equivalent was built instead: a filesystem mailbox (`crates/warp_cli/src/agent_mailbox.rs`) under `state_dir()/oz/agent-mailbox/<run_id>/`, keyed on the existing `OZ_RUN_ID` identity, with `oz agent message send|list` added as a NEW subcommand under the existing `agent` surface. `SendMessageToAgentExecutor` writes through it in-process; `convert_from.rs` now constructs the action from `Tool::SendMessageToAgent` instead of hitting a catch-all, and `convert_conversation.rs` reconstructs the result on history restore. **The variant is no longer inert.** Two related findings recorded here so they are not re-derived: `oz run`/`run message` was removed as genuine cloud (the pin's `task.rs` filters by `creator`/`environment`/`schedule`/`execution_location`, server-assigned ids from Warp's hosted task registry — there is no local registry to be a client of), so `run_command_is_removed` asserts a PERMANENT absence and must not be reinstated; and `local_control`/`warpctrl` was evaluated and rejected as the transport — its `ActionKind` catalog has no message concept, and it is gated behind `Settings > Scripting` with a live GUI, which a headless spawned child cannot rely on. |
 
 ---
+
+## SSH connection management — the system owns it, not the app
+
+**Maintainer decision, reaffirmed 2026-08-11.** SSH hosts, keys and config are
+managed **on the system**, by `~/.ssh/config` and `ssh-agent`. Phosphor does not
+become a second source of truth for them, and does not write to a user's ssh
+config. Full removal scope: `specs/remove-ssh-manager/SCOPE.md` (fork-original
+code, so no Warp parity constraint — removal is a free call).
+
+The reasoning, in the maintainer's terms: *"that should just be done on the
+system itself, and the ssh manager in Zap only was read only. I don't like an
+app changing my ssh config."*
+
+**Verified, not assumed:** nothing in the tree writes `~/.ssh/config` — a grep
+for `ssh_config` / `.ssh/config` / `write_ssh` across `*.rs` returns zero
+write paths. The manager's parser is read-only, so the objection is to the
+*direction of travel* (an app that owns your ssh identity), not to a bug that
+exists today.
+
+This decision **declines two upstream Zap feature requests**, recorded here so
+neither is re-triaged as debt:
+
+| upstream request | why declined |
+|---|---|
+| **Zap #330** — SSH split-pane in the current tab; name tabs from the SSH manager; pick a connection from the SSH manager instead of a raw `ssh` command | Every part is built *on* the SSH manager. The split-pane half is separable and may be worth doing on its own terms — but as a **pane_group** feature, not an SSH-manager one. Do not implement the manager-coupled parts. |
+| **Zap #301** — let a new SSH config paste **private-key text** instead of a path | Directly contrary to the decision: it makes the app the custodian of key *material*, not merely a reader of config. This is the strongest form of the thing being declined. `~/.ssh/config` + `ssh-agent` already serve this. |
+
+**No `sym:`/`path:` markers yet, deliberately.** The removal has not landed —
+the code still exists — so a `path:` marker would fail
+`script/check_declined_collisions` immediately. Add the markers in the same PR
+that performs the removal, not before.
 
 ## Not declined — common false positives
 

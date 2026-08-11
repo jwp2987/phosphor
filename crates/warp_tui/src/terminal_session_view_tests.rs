@@ -55,6 +55,7 @@ use super::{
 };
 use crate::autoupdate::TuiAutoupdater;
 use crate::inline_menu::MAX_INLINE_MENU_ROWS;
+use crate::input_mode_policy::{AI_LOCKED_CONFIG, AI_UNLOCKED_CONFIG};
 use crate::input_suggestions_mode::TuiInputSuggestionsMode;
 use crate::keybindings::{
     CONTEXTUAL_PLAN_TOGGLE_BINDING_NAME, KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG,
@@ -1612,6 +1613,7 @@ fn submit_is_blocked_during_bootstrap_and_allowed_at_prompt() {
 #[test]
 fn long_running_command_keeps_input_hidden() {
     App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
         let fixture = focus_test_fixture(&mut app);
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
         view.update(&mut app, |view, _| {
@@ -1635,20 +1637,34 @@ fn long_running_command_keeps_input_hidden() {
             "LRC must keep the input editor hidden:\n{}",
             lines.join("\n")
         );
-        // The interrupt affordance renders as a ghosted row in the input's
-        // slot while the command owns input.
+        // Manual attachment renders as a ghosted row in the input's slot
+        // while the command owns input. Ported from the pin's
+        // `long_running_command_keeps_input_hidden` (`02b53fcd8`) -- the fork
+        // previously asserted a fixed "ctrl-c to interrupt" string here; that
+        // was superseded by the pin's keybinding-driven attach hint (this
+        // file's `running_command_hint`/`input_hints::long_running_command_hint`).
+        let hint = view.read(&app, |view, ctx| {
+            view.running_command_hint(ctx)
+                .expect("visible running command should have an attachment hint")
+        });
+        assert!(
+            lines.iter().any(|line| line.trim() == hint),
+            "LRC must render the attach hint row:\n{}",
+            lines.join("\n")
+        );
+        assert_eq!(hint, "Ctrl + Shift + \u{23ce}  to use agent");
         assert!(
             lines
                 .iter()
-                .any(|line| line.trim() == crate::input_hints::LONG_RUNNING_COMMAND_HINT),
-            "LRC must render the interrupt hint row:\n{}",
+                .all(|line| !line.contains(RUNNING_COMMAND_DETACH_HINT)),
+            "LRC must not show the detach hint before agent attachment:\n{}",
             lines.join("\n")
         );
     });
 }
 
 /// Visible startup-script execution also routes input to the PTY, but it is
-/// not a user-controlled command: the interrupt hint row must not appear.
+/// not a user-controlled command: the attach hint row must not appear.
 #[test]
 fn visible_startup_script_shows_no_interrupt_hint() {
     App::test((), |mut app| async move {
@@ -1695,10 +1711,54 @@ fn visible_startup_script_shows_no_interrupt_hint() {
 
         let lines = render_session(&mut app, &view, 80, 40);
         assert!(
-            !lines
-                .iter()
-                .any(|line| line.trim() == crate::input_hints::LONG_RUNNING_COMMAND_HINT),
-            "startup-script execution must not advertise the interrupt hint:\n{}",
+            !lines.iter().any(|line| line.contains("to use agent")),
+            "startup-script execution must not advertise agent attachment:\n{}",
+            lines.join("\n")
+        );
+    });
+}
+
+/// Ported from the pin's `zero_state_running_command_hint_shows_attachment`
+/// (`02b53fcd8`). A hidden long-running command's output stays out of the
+/// transcript (`should_hide_command_grid`, used for shell-init/startup-style
+/// commands), but the manual-attach hint still renders alongside the zero
+/// state so the user can reach the agent even before any visible output.
+#[test]
+fn zero_state_running_command_hint_shows_attachment() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            let mut terminal_model = view.terminal_model.lock();
+            terminal_model.simulate_long_running_block("cat", "");
+            terminal_model
+                .block_list_mut()
+                .active_block_mut()
+                .set_should_hide_command_grid(true);
+            drop(terminal_model);
+
+            assert!(
+                view.transcript.as_ref(ctx).is_empty(),
+                "hidden command without output should preserve zero state"
+            );
+            assert!(
+                view.session_state
+                    .resolve(ctx)
+                    .expect("session state resolves")
+                    .user_owns_running_command()
+            );
+        });
+
+        let lines = render_session(&mut app, &view, 80, 40);
+        assert!(
+            lines.iter().any(|line| line.contains("Warp Agent")),
+            "zero state should remain visible:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("to use agent")),
+            "zero state should preserve manual attachment:\n{}",
             lines.join("\n")
         );
     });
@@ -2935,6 +2995,58 @@ fn agent_controlled_alt_screen_keeps_output_and_composer_visible() {
     });
 }
 
+/// Ported from the pin's `user_controlled_alt_screen_keeps_full_session_input_on_the_pty`
+/// (`02b53fcd8`). The user-driven counterpart to
+/// `agent_controlled_alt_screen_keeps_output_and_composer_visible` above: a
+/// full-screen app the user is driving hands the whole pane to the alternate
+/// screen (no composer, no normal footer), but still advertises manual agent
+/// attachment via the same ghosted hint row the non-alt-screen LRC path uses.
+#[test]
+fn user_controlled_alt_screen_keeps_full_session_input_on_the_pty() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, _| {
+            let mut terminal_model = view.terminal_model.lock();
+            terminal_model.simulate_long_running_block("vim", "");
+            terminal_model.set_mode(Mode::SwapScreen {
+                save_cursor_and_clear_screen: true,
+            });
+            for character in "USER ALT SCREEN".chars() {
+                terminal_model.alt_screen_mut().input(character);
+            }
+        });
+
+        assert!(view.read(&app, |view, _| view.input_target().pty_owns_input()));
+        let lines = render_session(&mut app, &view, 80, 12);
+        let compact_output = lines
+            .iter()
+            .flat_map(|line| line.chars())
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(
+            compact_output.contains("USERALTSCREEN"),
+            "alternate-screen output should render:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains('┌')),
+            "user-controlled alternate screen should not render the agent composer:\n{}",
+            lines.join("\n")
+        );
+        let hint = view.read(&app, |view, ctx| {
+            view.running_command_hint(ctx)
+                .expect("alternate screen should have a running-command hint")
+        });
+        assert!(
+            lines.iter().any(|line| line.trim() == hint),
+            "user-controlled alternate screen should render the attach hint:\n{}",
+            lines.join("\n")
+        );
+    });
+}
+
 #[test]
 fn running_command_attachment_bindings_are_context_scoped() {
     App::test((), |mut app| async move {
@@ -3132,6 +3244,62 @@ fn running_command_completion_clears_agent_terminal_control_lock() {
             assert!(
                 !view.agent_terminal_control_lock,
                 "the completing block should clear the agent-control lock this composer installed"
+            );
+        });
+    });
+}
+
+/// Ported from the pin's `nld_reset_only_unlocks_after_agent_control_and_not_on_user_edit`
+/// (`02b53fcd8`), adapted to this fork's `agent_terminal_control_lock` bool
+/// and `TuiTerminalSessionView::{lock_for_agent_control, reset_after_agent_control}`
+/// instead of the pin's `InputTypeAutoDetectionSource::AgentTerminalControl` --
+/// see that field's doc comment for why threading a second autodetection-source
+/// variant through the shared `BlocklistAIInputModel` is separately tracked
+/// (#399/#254 item d) and out of scope here. The behavior under test --an
+/// explicit Agent lock survives a user edit, but a lock installed for agent
+/// terminal control resets once that control ends-- is unaffected by that
+/// architectural difference.
+#[test]
+fn nld_reset_only_unlocks_after_agent_control_and_not_on_user_edit() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .ai_autodetection_enabled_internal
+                    .set_value(true, ctx)
+                    .expect("test setting should update");
+            });
+            view.input_view.update(ctx, |input, ctx| {
+                input.exit_shell_mode(ctx);
+                input.set_text("git status", ctx);
+            });
+            assert_eq!(
+                view.ai_input_model.as_ref(ctx).input_config(),
+                AI_LOCKED_CONFIG,
+                "an explicit Agent lock should be retained while the user edits"
+            );
+
+            // User edits must not reinterpret an explicit Agent lock as stale
+            // agent-control state.
+            view.handle_input_content_changed(true, ctx);
+            assert_eq!(
+                view.ai_input_model.as_ref(ctx).input_config(),
+                AI_LOCKED_CONFIG,
+                "user edits must not unlock an explicit Agent lock"
+            );
+
+            // A lock installed for agent terminal control is reset when that
+            // control completes, which restores the first post-agent prompt to
+            // the setting-derived NLD state.
+            view.lock_for_agent_control(ctx);
+            view.reset_after_agent_control(ctx);
+            assert_eq!(
+                view.ai_input_model.as_ref(ctx).input_config(),
+                AI_UNLOCKED_CONFIG,
+                "agent-control completion should resume NLD"
             );
         });
     });

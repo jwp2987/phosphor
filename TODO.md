@@ -5,6 +5,95 @@ Added 2026-08-10 after a status report listed four in-flight items as unstarted:
 the assignment lived in the operator's head and not in this file. **Record the
 assignment here when you start work, not when you finish it.**
 
+## 🛑 BUILD FREEZE — in force from 2026-08-11 until the maintainer lifts it
+
+**No builds. Nothing that compiles.** Maintainer instruction, 2026-08-11:
+builds resume only on the explicit phrase **"Fucking go"** — not on inference,
+not on "this seems safe", not on a green-looking tree.
+
+Forbidden: `cargo` (`check`/`build`/`test`/`nextest`/`clippy`), `script/precheck`
+in any form including `--fast`, `rustc`, the previously-granted
+`lib/rust-genai --manifest-path` exception, and launching any agent that could
+run one.
+
+Still permitted: git, grep, reading, doc edits, `script/state`, and the
+`script/check_*` guards — all pure shell.
+
+**Why:** the freeze followed an hour-long suite run that turned out to be
+compiling three agents' mixed uncommitted work in a shared checkout that had
+been switched off `main`. See the hazard entry directly below. A build whose
+input nobody can name is worse than no build, because its result gets believed.
+
+## OPERATIONAL HAZARD — agents share ONE checkout (found 2026-08-11)
+
+- [ ] **Parallel agents work in the shared checkout `/cache/git/zap`, switch its
+      branch, and mix uncommitted work — and the build agent compiles whatever
+      that mixture happens to be.**
+      **Observed 2026-08-11, ~06:00.** Six sweep agents were launched with
+      "branch from local `main`". At least three edited the **shared working
+      tree** instead of a worktree. The checkout was left on
+      `sweep-tail-2026-08-11` (one agent's branch) holding, simultaneously:
+      | file | owner |
+      |---|---|
+      | `app/src/ai/agent_events/{driver,driver_tests,mod}.rs`, `app/src/server/retry_strategies.rs` | agent-events package |
+      | `crates/ai/src/project_context/{model,model_tests}.rs` | project-context package |
+      | `TODO.md`, `docs/STATE.md`, `script/state` | coordinator |
+
+      **Consequence, and the reason this is a hazard and not an annoyance: the
+      build agent runs `cargo`/`nextest` in this same tree.** Its results
+      describe a mixture no one authored, so a green run proves nothing and a
+      red run blames the wrong change. The hour-long suite run in progress when
+      this was found was invalid for that reason.
+
+      One agent (agent-sdk-harness) detected the collision itself, extracted a
+      patch, reverted the shared tree, and replayed onto a clean worktree. That
+      it *could* recover is luck, not design — it happened to notice.
+
+      **Fixes, in order of value:**
+      1. Every code agent gets `isolation: "worktree"`, not a shared checkout.
+         Doc-only agents may share.
+      2. The build agent must build a **named commit in its own worktree**,
+         never the shared tree, so its result is attributable.
+      3. Nothing should leave the shared checkout on a non-`main` branch.
+
+      **Do not trust any build or suite result that cannot name the commit it
+      ran against.**
+
+## IN FLIGHT RIGHT NOW (2026-08-11)
+
+**`main` is held by the build agent. Do not commit to it.** Standing maintainer
+instruction: no commits to `main` until the genai bump builds and the suite is
+green. Baseline to beat: **6,846 passing**.
+
+- [>] **Vendored genai 0.6.0-beta.18 → 0.7.0-beta.18 — COMPILES, SUITE
+      RUNNING.** `13603ac0f` re-ported the vendor tree, `02024ceaf` merged it.
+      **The merge landed before the app-side call sites were updated, which
+      broke `main` for ~40 minutes** — a sequencing error; it should have been
+      one commit, or a branch verified first. Repaired by `c05e2bd07`:
+      `cargo check --workspace --all-targets --features warp/gui` returns
+      **0 errors**. The suite has not yet reported; the bar is the 6,846
+      baseline. The four call-site fixes were: 
+
+      | file | change | why |
+      |---|---|---|
+      | `Cargo.toml:252` | pin `=0.7.0-beta.18` | version bump |
+      | `app/src/settings/ai.rs:1084` | `GE::None` → `GE::Zero` | 0.7 renamed the variant; `ReasoningEffort::None` no longer exists |
+      | `app/src/ai/agent_providers/chat_stream.rs:7631` | same rename, in a test | |
+      | `app/src/ai/agent_providers/oneshot.rs:214` | new `ChatStreamEvent::Heartbeat` match arm | 0.7 adds it (Anthropic keepalive); the match is exhaustive |
+      **Carried forward, must not be lost on the next bump:** the Vertex
+      `:streamRawPredict` fix and the Anthropic cache-breakpoint fix, both
+      recorded in `lib/rust-genai/CHANGES-PHOSPHOR.md`; upstream pin recorded in
+      `lib/rust-genai/UPSTREAM.md`.
+- [ ] **Upstream the Vertex `:streamRawPredict` fix** to
+      `jeremychone/rust-genai`. Every vendored fix we do not upstream is a
+      merge conflict we pay for at each bump — this one has now been carried
+      across two.
+- [ ] **Launch the app.** Nobody has since the freeze lifted. A green suite does
+      not discharge this: the startup crash of 2026-08-10 passed 6,000 tests.
+      See `docs/build/TRIAGE.md` § "Beyond the compiler" — singleton
+      registration order and prompt-cache breakpoint placement are both
+      invisible to `cargo check` and to `nextest`.
+
 ## WHAT DONE LOOKS LIKE (maintainer, 2026-08-11)
 
 > "Part of it is having **100% non-cloud parity with Warp**, through either
@@ -49,6 +138,39 @@ ledger's.
 
 Non-cloud universe: **752** of 1,843 (1,091 are CLOUD).
 **551 of 752 resolved — roughly 73%.**
+
+> ## ⚠ THE TABLE ABOVE IS STALE. DO NOT QUOTE IT.
+>
+> **`MISSING-SUBSYSTEM` is 50, not 195**, and the non-cloud universe is 713,
+> not 752. The re-adjudication that produced those numbers is in
+> **"Position as of 2026-08-10 — the 195 re-adjudicated"**, further down this
+> file, and `docs/STATE.md` (generated) is the authority over both.
+>
+> **Two traps here, both of which have now caught a reader:**
+> 1. **The stale table comes FIRST.** Anyone reading top-down hits 195 before
+>    50 and stops, because the table looks complete.
+> 2. **The dates run backwards.** This section says *08-11* and the section
+>    that supersedes it says *08-10* — because this one was written later from
+>    the six sweep docs' summary tables, which the ledger had already
+>    superseded. **Do not use the date to decide which is current; the ledger
+>    and `docs/STATE.md` are current, always.**
+>
+> Current, from `docs/sweep-verdict-ledger.tsv`: CLOUD 1,130 · DECLINED 417 ·
+> DIVERGENT 65 · PORTABLE 59 · COVERED-ELSEWHERE 58 · PORTED 41 ·
+> PORTABLE-OUT-OF-AREA 15 · **MISSING-SUBSYSTEM 50** · UNPARSED 5 ·
+> DEFECT-FIXED 2 · MIXED 1. **658 of 713 non-cloud resolved — 92%.**
+
+> **This 73% is NOT the parity figure, and reading it as one is a mistake this
+> file has already caused once.** It is *gap-adjudication progress*: the
+> denominator is only the non-cloud tests the fork is **missing**, so it
+> measures how far through the backlog we are — it excludes every test that
+> already passes here.
+>
+> **Parity is in `docs/STATE.md`: ~89.7% of the pin's non-cloud tests exist
+> here, ~96.0% present or deliberately resolved.** That denominator is the
+> whole non-cloud universe (~8,626), which is the one that answers "how close
+> to the pin are we". Quote STATE.md for parity; quote this number only for
+> "how much of the remaining backlog is triaged".
 
 ### What resolving the 23 symbols did, and did not, do
 
@@ -126,29 +248,153 @@ is in `docs/sweep-verdict-ledger.tsv`.
 **The 50 that are still genuinely open**, by file (see the ledger for exact
 test names and cited symbols):
 
-| file | tests | what's missing |
-|---|---:|---|
-| `app/src/ai/agent_events/driver_tests.rs` | 11 | `AgentEventDriverConfig::{auth_error_give_up_failures,max_retry_duration,permanent_error_backoff_steps}`, `HttpStatusError::is_actionable()`, `agent_event_failure_should_log_error()` |
-| `crates/ai/src/project_context/model_tests.rs` | 6 | `path_to_rules`/`ProjectRule::path` have no `HostId` dimension (pattern exists in `global_rules.rs` #575, unapplied) |
-| `app/src/ai/agent_sdk/driver/harness/claude_code_tests.rs` | 5 | `--resume` flag, `MessageBridgeCleanupDisposition`, parent-bridge event cursor persistence |
-| `crates/warp_tui/src/terminal_session_view_tests.rs` | 3 | `InputTypeAutoDetectionSource::AgentTerminalControl` + the "attach" hint string (mirrors `RUNNING_COMMAND_DETACH_HINT`) |
-| `app/src/ai/execution_profiles/config_tests.rs` | 3 | `ExecutionProfilesConfig`/`ExecutionProfileFile` — fork persists profiles via `GenericStoredObject`, not a file collection |
-| `app/src/ai/agent_sdk/driver/harness/mod_test.rs` | 4 | `auth_check_command`/`auth_check_command_for` — tracked #289, deliberately deferred |
-| `app/src/terminal/model/terminal_model_tests.rs` | 2 | `should_validate_dcs_hook_session_id` is hardcoded `false`, not role-conditional (#419) |
-| `app/src/pane_group/pane/local_harness_launch_tests.rs` | 1 | shell-validation/codex-precondition ordering is reversed vs. the pin |
-| `crates/warp_tui/src/orchestration_model_tests.rs` | 2 | `cleanup_failed_child`/`begin_local_oz_child_launch` — explicitly deferred per the module's own doc comment |
-| `app/src/terminal/view/ambient_agent/block/setup_command_text_tests.rs` | 2 | `setup_command_text.rs` doesn't exist |
-| `app/src/terminal/shared_session/network/heartbeat_tests.rs` | 2 | no `network/` dir under `shared_session/` |
-| `app/src/ai/conversation_details_panel_tests.rs` | 2 | `conversation_details_panel` doesn't exist |
-| everything else | 7 | one row each — see the ledger |
+> **These were a TABLE until 2026-08-11, and that is exactly how they went
+> unassigned for a day.** `script/state` counts `- [ ]` checkboxes, so a table
+> row is **invisible to the open-work count** — `docs/STATE.md` reported "37
+> open" while these 50 sat here untracked and unassignable (nothing to mark
+> `[>]`). Converted to checkboxes below. **Never record open work as a table
+> row in this file.**
+
+**STATUS 2026-08-11 06:xx — all work recovered onto branch `working`, 37 of 50
+resolved, 13 open.** The six parallel agents were killed after the
+shared-checkout collision (see the hazard entry above); their work was recovered
+commit-by-commit onto `working` and reviewed individually. **Nothing is built** —
+the freeze is in force; correctness below is review-verified, not compiler-verified.
+
+| package | tests | status | branch commit |
+|---|---:|---|---|
+| `outcome-verdicts` | 8 | ✅ **done** — 1 ported (real codex/shell ordering bug), 7 re-adjudicated | `64d8eef60` |
+| `outcome-agent-sdk-harness` | 10 | ✅ **done** — 5 ported, 5 re-adjudicated | `8ba03f47a` |
+| `outcome-tail` | 10 | ✅ **done** — 4 ported, 4 re-adjudicated, **2 REJECTED** | `6f7e9461f` |
+| `outcome-project-context` | 6 | ✅ **done** — all 6 ported (HostId dimension) | `721e4869d` |
+| `outcome-warp-tui` | 3 of 5 | ⚠️ **partial** — 3 ported + 1 bonus; the 2 `orchestration_model` tests were **never reached** | `edd9b31b6` |
+| `outcome-agent-events` | 0 of 11 | ⚠️ **WIP, incomplete** — agent killed mid-flight, work rescued but unfinished | `9b8307ec4` |
+
+**Two review decisions worth knowing about:**
+
+1. **Rejected the `shared_session/network/heartbeat.rs` port (2 tests).** Nothing
+   in the fork consumes `Heartbeat`, and **both pin tests carry
+   `#[ignore = "Flakes in CI"]`** so they can never run. `SCOPE-TERMINAL.md:154`
+   had already adjudicated it: *"its only consumer is the dropped session-sharing
+   websocket layer."* 202 lines of unreachable code guarded by tests that never
+   execute is the shape `check_stub_coverage` exists to prevent. **Needs a
+   `DECLINED.md` row.**
+2. **`check_cloud_boundary` failed on the rescued agent_events work** and was
+   fixed at the root rather than allowlisted — `app/src/server/retry_strategies.rs`
+   has zero cloud dependencies and zero importers, so it was moved to
+   `app/src/util/`. Allowlisting would have recorded a dependency that does not
+   exist. See `5f7c96883`.
+
+**Still open (13 tests):** `agent_events/driver_tests.rs` (11) and
+`orchestration_model_tests.rs` (2).
+
+**`orchestration_model_tests.rs` (2) — verdict RE-VERIFIED 2026-08-11, unchanged
+at MISSING-SUBSYSTEM, and it is REAL WANTED DEBT, not cloud.** Adjudicated by
+the coordinator rather than an agent. Chain of evidence:
+- `failed_launch_cleanup_preserves_other_sessions` and
+  `local_harness_children_fail_cleanly` need `StartAgentExecutor` /
+  `StartAgentRequest`, which live in the pin's
+  `app/src/ai/blocklist/action_model/execute/start_agent.rs`. **That file does
+  not exist in this fork** (verified `git cat-file` against both trees), nor
+  does its sibling `run_agents.rs`.
+- `orchestration_model.rs`'s own doc comment (`:1-23`) says exactly this and is
+  **correct** — checked, not assumed. *(Both `StartAgentExecutor` matches in the
+  fork are inside that doc comment. Grepping the symbol makes it look present.
+  This is the third comment-mention false positive of the night, after
+  `ActiveAgentViewsModel` and `create_branch_tooltip` — grep the definition,
+  never the name.)*
+- **Not cloud.** The pin test dispatches
+  `StartAgentExecutionMode::Local { harness_type: Some("codex") }`, and
+  `DECLINED.md:179` reversed the blanket orchestration decline: *"LOCAL
+  orchestration is back in scope … still declined: the cloud-runner half."*
+  Only #290's remote-runner path is declined; this is the local path.
+- **So the correct disposition is: keep open.** Closing it as CLOUD or DECLINED
+  would be wrong. Resolving it means building a TUI child-materialization path
+  — the module's own words, *"future work, not a mechanical trim"* — which is a
+  feature, not a test port. Size it as such before assigning it.
+
+Three packages are **verdict-first, not port-first** — `execution_profiles`
+(likely DIVERGENT), `mod_tests` `auth_check_command` (#289 deferral), and
+`orchestration_model` (cut as future work per its own doc comment). Porting
+those without re-adjudicating would manufacture debt from decisions.
+
+- [>] **`app/src/ai/agent_events/driver_tests.rs` — 11 tests.** Needs
+      `AgentEventDriverConfig::{auth_error_give_up_failures, max_retry_duration,
+      permanent_error_backoff_steps}`, `HttpStatusError::is_actionable()`,
+      `agent_event_failure_should_log_error()`. **Largest single cluster and the
+      best value-per-effort in the set** — two config fields plus an
+      error-classification fn, on the BYOP error path.
+- [>] **`crates/ai/src/project_context/model_tests.rs` — 6 tests.**
+      `path_to_rules`/`ProjectRule::path` have no `HostId` dimension.
+      **A working in-tree pattern already exists** — `global_rules.rs` (#575)
+      solved the identical host-keying problem and `HostId` is already imported
+      at `model.rs:5`. Cleanest port in the set; start here.
+- [>] **`app/src/ai/agent_sdk/driver/harness/claude_code_tests.rs` — 5 tests.**
+      `--resume` flag, `MessageBridgeCleanupDisposition`, parent-bridge event
+      cursor persistence.
+- [>] **`crates/warp_tui/src/terminal_session_view_tests.rs` — 3 tests.**
+      `InputTypeAutoDetectionSource::AgentTerminalControl` + the "attach" hint
+      string (mirrors `RUNNING_COMMAND_DETACH_HINT`).
+- [>] **`app/src/ai/execution_profiles/config_tests.rs` — 3 tests.**
+      **RE-ADJUDICATE BEFORE PORTING.** The fork persists profiles via
+      `GenericStoredObject`/`StringModel`, not a settings.toml-embeddable file
+      collection. That is a deliberate architectural difference, which under
+      this file's definition of done is **`DIVERGENT`, not missing**. Porting
+      these would mean adopting the pin's persistence model — a product
+      decision, not a test port.
+- [>] **`app/src/ai/agent_sdk/driver/harness/mod_test.rs` — 4 tests.**
+      `auth_check_command`/`auth_check_command_for`, **deliberately deferred
+      under #289** — the fork's own test header says so. Do not port without
+      reopening #289.
+- [>] **`app/src/terminal/model/terminal_model_tests.rs` — 2 tests.**
+      `should_validate_dcs_hook_session_id` is hardcoded `false`, not
+      role-conditional. Blocked on **#419** PTY-spawn registration wiring.
+- [>] **`crates/warp_tui/src/orchestration_model_tests.rs` — 2 tests.**
+      `cleanup_failed_child`/`begin_local_oz_child_launch` — explicitly deferred
+      per the module's own doc comment (`:1-23`).
+- [>] **`app/src/terminal/view/ambient_agent/block/setup_command_text_tests.rs` — 2 tests.**
+      `setup_command_text.rs` does not exist; nor does its sole consumer
+      `AmbientAgentViewModel`.
+- [>] **`app/src/terminal/shared_session/network/heartbeat_tests.rs` — 2 tests.**
+      No `network/` directory under `shared_session/`; `heartbeat.rs` absent.
+- [>] **`app/src/ai/conversation_details_panel_tests.rs` — 2 tests.**
+      `conversation_details_panel` does not exist — **this is the same absence
+      as the wasm latent break** recorded further down this file. Resolve them
+      together: whichever way that decision goes settles these two.
+- [>] **`app/src/pane_group/pane/local_harness_launch_tests.rs` — 1 test.**
+      Shell-validation/codex-precondition ordering is reversed vs. the pin.
+      Product-scope question, not a mechanical port.
+- [>] **Remaining 7 — one test each**, see `docs/sweep-verdict-ledger.tsv` for
+      exact names and cited symbols.
+
+**Sizing, honestly: this is ~36 tests of subsystem-building, not test-porting.**
+Only the `project_context` six and one `remote_search` test are ports in the
+ordinary sense. Seven more (`#289` four, `execution_profiles` three) should be
+re-labelled rather than ported. Calling the whole set "porting tests" makes it
+read about five times smaller than it is.
 
 None of these need a new blocking symbol resolved first (unlike the 22-symbol
 list above) — each is either a small, well-scoped addition or a genuine
 product-scope question (the ordering reversal, the DCS-hook role gate).
 
-## LSP TRACK — **[>] document lifecycle CODE-COMPLETE, UNBUILT** (verdict 2026-08-10: RESTORE)
+## LSP TRACK — **[x] document lifecycle BUILT AND TEST-GREEN, NEVER RUN** (verdict 2026-08-10: RESTORE)
 
-**Status: the functional gap is closed in code and has never been compiled.**
+**Corrected 2026-08-11.** This header read "CODE-COMPLETE, UNBUILT" until
+`lsp/document-lifecycle` was confirmed merged into `main` (it is an ancestor of
+`HEAD`, and all four marker symbols — `open_or_sync_document_with_lsp`,
+`handle_lsp_manager_events`, `notify_lsp_of_content_change`,
+`latest_buffer_version` — are present on `HEAD`). The 2026-08-10
+`cargo check --workspace --all-targets --features warp/gui` therefore compiled
+it, and it is inside the 6,846-test green run. **Twelfth in-tree document found
+contradicting the code.**
+
+**What remains true, and is the whole point of this track:** it has never been
+*exercised*. LSP is the canonical "looks finished, silently dead" subsystem —
+see the description below — and a green suite is exactly the evidence that
+failed to catch the last one. Discharged only by launching the app, opening a
+file in a language with a server installed, and seeing a diagnostic.
+
+**Status: the functional gap is closed in code and has never been run.**
 Everything above the document lifecycle was already merged and wired — the crate,
 the driver (install/spawn/detect), the shutdown scan, the real `footer.rs`,
 `try_connect_lsp_server` on buffer load, `format_and_save` on save, hover,
@@ -1146,11 +1392,25 @@ more look at *why* it is absent.
       **9 real-debt symbols → 4.**
 
 <details><summary>Original entry</summary>
-- [ ] `AgentTerminalControl` / `InputTypeAutoDetectionSource::AgentTerminalControl`,
+- [~] **PARTIAL 2026-08-11** — `lock_for_agent_control` /
+      `reset_after_agent_control` now exist and 4 tests landed (commit
+      `edd9b31b6` on `working`, unbuilt). **`InputTypeAutoDetectionSource::AgentTerminalControl`
+      was deliberately NOT added**: threading a second autodetection-source
+      variant through the shared `BlocklistAIInputModel` is tracked separately
+      as #399/#254 item d. A view-local `agent_terminal_control_lock` bool
+      achieves the same behaviour and both call sites that hand the agent
+      control of a running command go through it. Remaining tests in this
+      cluster are unported.
+      **DUPLICATE:** this entry and the "`InputTypeAutoDetectionSource::AgentTerminalControl`
+      does not exist (15 tests)" entry further down are the same work, and they
+      **stated opposite things** — this one said the binding landed but not the
+      mechanism; the other said the mechanism landed but not the supporting
+      pieces. Both are now corrected to the measured state.
+      Original text: `AgentTerminalControl` /
+      `InputTypeAutoDetectionSource::AgentTerminalControl`,
       `RUNNING_COMMAND_DETACH_HINT`, `lock_for_agent_control`,
-      `reset_after_agent_control`. **`ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME`
-      IS present** — so "attach agent to running command" landed its binding and
-      not its mechanism. 15 tests.
+      `reset_after_agent_control`. `ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME`
+      IS present. 15 tests.
 </details>
 
 ### TUI agent-message rendering — IMPLEMENTED 2026-08-11 (#456 cluster 2)
@@ -1316,10 +1576,15 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       tractable item here:** its sole real dependency,
       `descendant_conversation_ids_in_spawn_order`, **already exists** — in
       `app/src/ai/blocklist/orchestration_topology.rs`. Verified.
-- [ ] **`InputTypeAutoDetectionSource::AgentTerminalControl` does not exist**
-      (15 tests, `warp_tui`), plus two missing hint strings. "Attach agent to
-      running command" landed its mechanism but not its supporting pieces.
-      Verified absent tree-wide. One of the two clusters behind #456.
+- [~] **DUPLICATE of the `AgentTerminalControl` entry earlier in this file — see
+      there for the live status.** Kept as a stub rather than deleted, because
+      the two entries **contradicted each other** and that is worth recording:
+      this one said "landed its mechanism but not its supporting pieces", the
+      earlier one said "landed its binding and not its mechanism". Both were
+      written from partial reads. Measured state 2026-08-11: the hint strings
+      and `lock_for_agent_control`/`reset_after_agent_control` now exist
+      (`edd9b31b6`), the enum variant deliberately does not (#399/#254 item d).
+      Do not track this cluster in two places again.
 - [ ] **No TUI renderer for `MessagesReceivedFromAgents` / `EventsFromAgents`**
       (9 tests). **The GUI half is built** — `blocklist/orchestration_events.rs`
       both emits (`:331`) and renders (`:407`) them. Only the TUI side is
@@ -1345,14 +1610,20 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
 
 ### Partly confirmed — the fork is host-blind, but the scaffolding is there
 
-- [ ] **Remote project rules have no `HostId` dimension** (6 tests,
-      `crates/ai/src/project_context/model.rs`). `path_to_rules` is a
-      `HashMap<PathBuf, ProjectRules>` with no host key, so project-rule
-      resolution over SSH always resolves against the local host. Confirmed —
-      **and the file says so itself at `:272`: "Per-host scaffolding only —
-      this fork's `path_to_rules` has no ..."**. `HostId` is already imported
-      (`:5`). `global_rules.rs` (#575) solved the identical problem for global
-      rules, so there is a working pattern in-tree.
+- [x] **Remote project rules have no `HostId` dimension** (6 tests,
+      `crates/ai/src/project_context/model.rs`) — **DONE 2026-08-11**, commit
+      `721e4869d` on branch `working` (unbuilt; freeze in force). Adds
+      `remote_path_to_rules: HashMap<HostId, HashMap<PathBuf, ProjectRules>>`
+      alongside the local map rather than re-keying it, so local lookups are
+      untouched. Followed `global_rules.rs` (#575), which had solved the
+      identical problem. The `warp_util::host_id::HostId` vs `warp_core::HostId`
+      bridge is explicit and documented, mirroring
+      `buffer_location.rs::core_host_id_to_util`. Stale `:272`/`:617`/`:1081`
+      comments updated.
+      **Note: this was double-counted** — the same work is one of the 50
+      MISSING-SUBSYSTEM tests (`project_context/model_tests.rs`). The
+      symbol-axis entries in this section overlap the test-axis list above; see
+      the reconciliation note at the head of this section.
 
 ### CLAIMS THAT DID NOT SURVIVE VALIDATION — corrected, no work implied
 
@@ -1370,6 +1641,64 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       below the doc comment that claimed neither it nor its sibling existed.
       Comment corrected 2026-08-11. Only `with_semantic_selection_by_style` is
       genuinely absent. **Eleventh in-tree document found contradicting the code.**
+
+## REMOTE-SERVER DISTRIBUTION AND BINARY SIZE (opened 2026-08-11)
+
+Two items with one root cause, raised by the maintainer after the SSH-install
+supply-chain fix (`a4ebf6876`).
+
+### The root cause: the daemon is the whole application
+
+`app/Cargo.toml` declares one real bin, `zap-oss`.
+`LaunchMode::RemoteServerDaemon` is a **mode of that same binary**, so the
+"CLI"/remote-server artifact is the entire app. The release workflow copies it
+verbatim (`.github/workflows/phosphor_release.yml:671`):
+
+```
+cp "${bundle_cli.binary_path}" zap-oss
+tar czf phosphor-cli-linux-x86_64.tar.gz zap-oss resources
+```
+
+A remote host that only needs file reads, git ops and ripgrep therefore
+receives the wgpu renderer, font rasterisation, the terminal emulator,
+tree-sitter grammars, the AI stack, LSP and vendored libgit2.
+
+**It is not debug bloat — that was checked and ruled out.** The CLI artifact
+builds under `[profile.release-cli]` (`Cargo.toml:522`: inherits `release-lto`
+thin LTO, `opt-level = "s"`, `codegen-units = 1`), and
+`script/linux/bundle:285` runs `strip --strip-all` on production builds. The
+`debug = 1` in `[profile.release]` is stripped back out. Published tarballs:
+linux-x86_64 ~45 MB, macos-aarch64 ~52 MB, macos-x86_64 ~52 MB (~149 MB for all
+three, which is what kills the bundling option below).
+
+- [ ] **Build a feature-reduced daemon target.** Feature-gate the app crate so
+      the `RemoteServerDaemon` path compiles without the renderer and the GUI
+      stack, and ship *that* as `phosphor-cli`. Plausibly single-digit MB.
+      This is the enabling work for the distribution decision below — a small
+      daemon makes push-based install and in-package bundling both cheap.
+      Not started; the crate is not currently structured for it.
+
+### The distribution decision — NEEDS A MAINTAINER CALL
+
+- [ ] **Decide how the remote daemon reaches the host, and delete the fetch
+      path.** Maintainer's stated position: *"can't we just push it from the
+      terminal? This sounds like a supply chain attack waiting to happen"* —
+      preference is **push, or a manual install provided as part of the
+      package.** Options:
+      1. **Push over the existing SSH channel** — no network egress from the
+         remote host, no GitHub dependency, no trust in a release asset. Costs
+         one upload per host per version; needs the small daemon to be tolerable.
+      2. **Bundle all platforms in the package** — ~149 MB at current sizes.
+         Only viable after the feature-reduced daemon lands.
+      3. **Keep the fetch** — status quo, and the thing being objected to.
+      Current code (`crates/remote_server/src/setup.rs:504-541`,
+      `install_remote_server.sh:57`) does (3): the remote host curls
+      `https://github.com/jwp2987/phosphor/releases/...`.
+      **`a4ebf6876` only fixed *which* repo it fetches** (it was pointed at a
+      different project's releases and 404'd) — it did **not** address the
+      objection. The fetch path, `download_url()`, `RELEASE_ASSET_PREFIX` and
+      the `curl` in `install_remote_server.sh` all come out once (1) or (2) is
+      chosen.
 
 ## LATENT BREAK — the wasm target does not compile (found 2026-08-11)
 
@@ -1415,6 +1744,80 @@ other way.
       **Caveat: fixed in code, unproven on hardware** — see the open
       "NEEDS WINDOWS VERIFICATION" item in this file. Do not close that on the
       strength of this row.
+
+### Feature requests — triaged for what is ALREADY BUILT here
+
+- [x] **Zap #319 (model filter) and #320 (disable a provider without deleting
+      it) — BOTH ALREADY BUILT HERE.** Maintainer-confirmed 2026-08-11, then
+      verified in code.
+      **#320:** `AgentProvider.disabled` (`app/src/settings/ai.rs:1222`),
+      `effectively_disabled()` (`:1400`), and the collapsed *"Disabled
+      providers"* section in the settings UI. A provider stays enabled until
+      explicitly disabled; it never auto-flips.
+      **#319:** `model_search_query` / `set_model_search_query` /
+      `model_matches_search` (`app/src/settings_view/agent_providers_widget.rs:171-200`),
+      with render-time filtering at `:1585` and stale-query handling at `:1574`.
+      > **Method note — this pair was first reported ABSENT, wrongly.** The
+      > check grepped invented names (`provider_enabled`, `disable_provider`,
+      > `model_filter`, `hidden_models`), all of which return zero because the
+      > implementation uses different words. **A zero-hit grep on a guessed
+      > identifier is not evidence of absence** — it is the same failure as the
+      > `create_branch_tooltip` false *positive* recorded below, in the opposite
+      > direction. Grep the subsystem's real files before concluding anything.
+- [x] **Zap #293 — "executable size >300 MB on Linux" — EXPLAINED, no work for
+      this fork.** Almost certainly an unstripped `--release` build: `cargo
+      build --release` does not strip, and `[profile.release]` here sets
+      `debug = 1`. Phosphor's shipped artifact does not have this problem —
+      `[profile.release-cli]` is thin-LTO + `opt-level = "s"`, and
+      `script/linux/bundle:285` runs `strip --strip-all` for production. Our
+      tarball is ~45 MB, not 300 MB. The *remaining* size question here is a
+      different one and is tracked separately — see the remote-server
+      distribution section (the daemon is the whole application).
+
+
+- [ ] **Zap #329 — "Improve local Git workflow inside Zap"** (open, `enhancement`,
+      `lyfe2025`, 2026-07-28, marked *"1 (Nice to have)"*). Asks for a
+      lightweight Git panel — changed files, diffs, stage/unstage files **or
+      hunks**, commit with message, create/switch branches, pull/push, and the
+      assistant able to reference git status/diff as workspace context.
+      Explicitly scoped local-only: no account, no cloud sync, no hosted repo
+      management — so it is **in scope for this fork by construction**.
+
+      **Triage verdict: mostly already built here, inherited from Warp.**
+      Phosphor has the whole `app/src/code_review/` subsystem — `diff_state.rs`,
+      `git_status_update.rs`, `diff_selector.rs`, `code_review_view.rs`,
+      `git_dialog/{commit,push,pr}.rs`, and `commit_message_gen.rs` (which is
+      *better* than the ask: it drafts the commit message with the model). The
+      remote leg exists too — `GitCommitChain`, `GitPush`, `GitCreatePr`,
+      `GetBranches`, `DiscardFiles`, `GetCommittedBranchFiles` and the
+      `GitFileStatus*` enum are all in `remote_server.proto`, so this works over
+      SSH as well as locally.
+
+      | #329 asks for | status here |
+      |---|---|
+      | View changed files | **built** — `git_status_update.rs`, `code_review_view.rs` |
+      | View diffs | **built** — `diff_state.rs`, `diff_selector.rs` |
+      | Commit with a message | **built** — `git_dialog/commit.rs` (+ AI-drafted message) |
+      | Push | **built** — `git_dialog/push.rs`, `GitPush` |
+      | Agent sees git status/diff as context | **built** — `code_review/context.rs` |
+      | Stage / unstage **files** | **built** — `git restore --staged --worktree` in `diff_state.rs:916` |
+      | Stage / unstage **hunks** | **ABSENT** — no `stage_hunk`; staging is whole-file only |
+      | Create / switch branches | **ABSENT** — see the false positive below |
+      | **Pull** | **ABSENT** — zero hits for `git_pull`/`GitPull` in the tree |
+
+      **So the real work is three items, not a subsystem:** hunk-level staging,
+      branch create/switch, and pull. Each lands on an existing surface rather
+      than needing a new panel.
+
+      **False positive, recorded so it is not re-derived:**
+      `create_branch_tooltip` / `create_branch_name_element`
+      (`code_review_header/mod.rs:265-297`) do **not** create branches — they
+      render the current branch *name*. Grepping `create_branch` makes branch
+      management look present. It is not.
+
+      **Not filed upstream and not promised to anyone** — this is recorded as
+      Phosphor's own backlog item. Also note the `pull` gap interacts with
+      nothing else in this file, so it is a clean standalone starter task.
 
 ### Assigned 2026-08-10 — agent investigating whether these reproduce here
 
@@ -1700,13 +2103,93 @@ only reality and never looking at the branches:**
 - [x] #555 prompt/editor_modal: same-line-prompt toggle UI missing. Verified:
       `render_same_line_prompt_section` defined once at `app/src/prompt/editor_modal.rs:592`,
       never called.
-- [x] #532 CLOSED 2026-08-08: #419 has now landed (recovered from PR #538) and
-      `requires_registered_session`, `is_registered_session`, and
-      `should_validate_dcs_hook_session_id` are present in
-      `app/src/terminal/model/ansi/{dcs_hooks,mod}.rs` and `terminal_model.rs`. The
-      original premise ("its premise is false, #419 hasn't landed") is now moot.
+- [ ] **#532 — REOPENED 2026-08-11. The 2026-08-08 closure was wrong.** It is the
+      **fifth** entry in this file found stating the opposite of the code (#148 class).
+      Original closure text, kept verbatim as the evidence of how it failed:
+      > "#532 CLOSED 2026-08-08: #419 has now landed (recovered from PR #538) and
+      > `requires_registered_session`, `is_registered_session`, and
+      > `should_validate_dcs_hook_session_id` are present in
+      > `app/src/terminal/model/ansi/{dcs_hooks,mod}.rs` and `terminal_model.rs`."
+
+      **It closed on SYMBOL PRESENCE, not on the wiring those symbols exist to serve.**
+      All three symbols are present. `should_validate_dcs_hook_session_id` returns a
+      hardcoded `false` (`terminal_model.rs:2700`); the pin returns
+      `!self.shared_session_status().is_viewer()` (`02b53fcd8:…:2569`). Present and inert.
+
+      **Measured 2026-08-11** — `register_session_id` call sites:
+      | | pin | fork |
+      |---|---:|---:|
+      | total | 5 | 1 |
+      | production | **4** | **0** |
+
+      Pin's production sites: `terminal/local_tty/terminal_manager.rs:629` (PTY spawn),
+      `terminal/model/terminal_model.rs:3090` (remote session),
+      `terminal/remote_tty/event_loop.rs:175`, `terminal/view.rs:14988`.
+      The fork's single call is `terminal_model.rs:1091`, inside a
+      `#[cfg(any(test, feature = "test-util"))]` fixture with `session_id = 123`.
+
+      **The fork's own code already documented this**, 150 lines from the function:
+      `terminal_model.rs:2691` says *"nothing yet calls `register_session_id` at
+      PTY-spawn time … See #419's follow-up for the PTY-spawn wiring."* The closure
+      contradicted a comment in the same file.
+
+      **Scope is smaller than "missing subsystem":** both pin files that perform the
+      registration — `terminal/local_tty/terminal_manager.rs` and
+      `terminal/remote_tty/event_loop.rs` — **already exist here**. The calls were
+      never added. This is wiring into existing files.
+      Unblocks the 2 DCS tests in the MISSING-SUBSYSTEM bucket
+      (`sharer_rejects_dcs_hook_with_unregistered_session_id`,
+      `viewer_processes_dcs_hook_with_unregistered_session_id`).
 
 ### Tier 2 — small (~half a day each)
+- [ ] **Zap #324 — pane resize: drag feels slow, and the minimum panel size is
+      too large.** Two independent halves; the second is nearly free.
+      1. **Minimum size.** `MIN_PANEL_WIDTH: f32 = 300.`
+         (`app/src/ai_assistant/panel.rs:61`) is exactly the ~300px floor the
+         reporter hits; `workspace/view/vertical_tabs.rs:88` has its own `200.`.
+         Both are hardcoded consts. On a 1600px-high screen the floor costs real
+         estate for no reason. Lower them, or make the floor proportional to the
+         window — **check both consts, they are not shared.**
+      2. **Drag latency.** Not diagnosed. `pane_group/mod.rs:4819` already
+         special-cases `is_being_resized()`, so start by measuring whether the
+         drag re-lays-out the whole group per frame. **Do not guess at this
+         half — it needs the app running.**
+      Note the numbering trap: **Zap #324 is unrelated to Phosphor #334**, which
+      was this fork's own divider work (reset + double-click) and is already
+      done. Same subsystem, different issue, colliding numbers.
+- [ ] **`git pull` — the one Git verb the fork has no path for at all.**
+      Raised by Zap #329 (see the upstream-issues section for the full triage;
+      the other two gaps there are hunk staging and branch create/switch).
+      Zero hits for `git_pull`/`GitPull` in the tree — this is absence, not a
+      stub.
+
+      **Do it in two stages, because pull is NOT symmetric with push.** Push
+      never touches the working tree; pull does, and that is the entire
+      difficulty:
+
+      **Stage 1 — `git pull --ff-only` (this Tier 2 item).** A fast-forward
+      cannot conflict, so the hard half is designed out. Mirror `run_push`
+      exactly; every piece already exists:
+      | layer | mirror |
+      |---|---|
+      | local git | `util::git::run_push` → add `run_pull`; `run_git_command` is already generic |
+      | proto | `GitPushRequest/Response` → `GitPullRequest/Response`, reusing `GitOpDelta`/`GitOpError` (`remote_server.proto:940`) |
+      | daemon | `handle_git_push` (`server_model.rs:2613`) — including its `guard_git_operation_in_progress` lock |
+      | client | `client.git_push` → `git_pull` |
+      | UI | `git_dialog/push.rs` (440 lines, already has the local/remote split at `start_confirm_remote`) |
+      Working-tree changes must then be fed to `FileInvalidationTask`
+      (`code_review/file_invalidation_queue.rs`) or open buffers will render
+      stale content after a successful pull. **That is the step most likely to
+      be forgotten, because push never needed it.**
+
+      **Stage 2 — merging pull, i.e. conflicts. NOT Tier 2, do not bundle it.**
+      Needs a conflict-resolution UX. Note `crates/remote_server/src/client/mod.rs:898::resolve_conflict`
+      still has **zero non-test callers** (verified 2026-08-11 — the elsewhere
+      entry in this file is accurate); the only `resolve_conflict` callers are
+      `global_buffer_model.rs:2376` via `server_model.rs:4178`, which is the
+      *buffer* sync conflict path, **a different thing from a git merge
+      conflict**. Do not assume that path can be reused without reading it.
+
 - [x] #523 cmd-k: `try_clear_buffer_in_agent_view` still checks only `is_agent_monitoring`
       (`clear_buffer` was fixed; this one guard remains)
 - [x] #545 CLI-agent image paste: keystroke is still agent-agnostic. Pin sends `ESC v`

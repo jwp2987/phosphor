@@ -27,17 +27,17 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 10026 |
-| Fork tests | 9498 |
-| Shared | 7730 |
-| Absent from fork | 2296 |
+| Fork tests | 9710 |
+| Shared | 7773 |
+| Absent from fork | 2253 |
 
-Of the absent, **1843 are adjudicated** in the ledger and 453 are not.
+Of the absent, **1843 are adjudicated** in the ledger and 410 are not.
 Cloud accounts for 1130 of the adjudicated; the unadjudicated remainder is
-*projected* at the same ratio (~175 non-cloud), so the figures below
+*projected* at the same ratio (~158 non-cloud), so the figures below
 carry that estimate.
 
-- **~89.6% of the pin's non-cloud tests exist here** (7730 of ~8618)
-- **~95.9% are present or deliberately resolved** (adding 417 declined, 65 divergent, 58 covered-elsewhere)
+- **~89.9% of the pin's non-cloud tests exist here** (7773 of ~8644)
+- **~96.1% are present or deliberately resolved** (adding 417 declined, 65 divergent, 58 covered-elsewhere)
 
 ## Ledger
 
@@ -56,4 +56,14 @@ declined, covered elsewhere, or divergent *because* this fork is BYOP.
 
 ## Open work
 
-- `TODO.md`: **30 open**, 0 in flight
+**Read this section, not a percentage.** The parity figures above measure the
+part that is FINISHED, which is the wrong thing to lead a status with. These two
+counts are the work that is LEFT, and they come from different sources on
+purpose — if they disagree, the tracker is lying, not the ledger.
+
+| source | open work | authority |
+|---|---:|---|
+| `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **50 tests** | primary; a test is open until ported/declined/covered/divergent |
+| `TODO.md` checkboxes | **36 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
+
+> Ledger open bucket is represented in `TODO.md`'s tracked items.

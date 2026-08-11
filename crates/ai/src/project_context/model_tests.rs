@@ -1,71 +1,69 @@
 use super::*;
 use std::path::PathBuf;
 use warp_util::host_id::HostId;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
+use warp_util::standardized_path::StandardizedPath;
 
 // Measured against the pinned oracle (`02b53fcd8`, release `2026.07.29.09.05`
 // stable — see `ORACLE.md`), whose same-path `model_tests.rs` has 29 `#[test]`s.
-// 16 of those are now present above/below (the `test_find_applicable_rules_*`
-// group, plus the 5 global-rule tests ported below as part of #575); the
-// remaining 13 break down as:
+// 22 of those were already present (the `test_find_applicable_rules_*` group,
+// the 6 `test_merge_*` tests, and the 5 global-rule tests ported as part of
+// #575) before the remote-project-rules work below; the remaining 7 broke
+// down as:
 //
-//   7 portable — `test_no_rules_returns_none` (needs only
-//     `ProjectContextModel::default()` and `find_applicable_rules`, both
-//     already present) and the 6 `test_merge_*` tests, both ported at the
-//     bottom of this file. Issue #150 lists all 18 as blocked; these 7 are not.
-//
-//     `test_merge_*` needed `RulesDelta::merge`, ported alongside them in
-//     `model.rs`. At the pin `merge` is `#[cfg(test)]`-only — `model.rs` never
-//     calls it outside `model_tests.rs`
-//     (`git grep '\.merge(' 02b53fcd8 -- crates/ai/src/project_context/`
-//     matches only the pin's own test file) — so this fork's port keeps the
-//     same `#[cfg(test)]` gate rather than inventing a production call site
-//     that doesn't exist upstream either. This is a different situation from
-//     `ApiKeys::provider_key_count` in `crates/ai/src/api_keys_tests.rs`
-//     (#207): that method is dead in *every* build, test included, whereas
-//     `merge` is real, exercised pinned test code, just never called from
-//     non-test code at the pin.
-//
-//   5 UNBLOCKED by #575 — `test_global_rule_alone_no_project_rules`,
-//     `test_global_rule_layered_with_project_warp`,
-//     `test_global_rule_root_path_falls_back_to_parent`,
-//     `test_in_dir_warp_shadows_agents_with_global`,
-//     `test_multiple_global_rules_all_contribute`, ported below. #575 added
-//     `ProjectContextModel::global_rules` (a `GlobalRules`, fed by the new
-//     `project_context/global_rules.rs` watcher module) plus a *separate*
-//     `find_applicable_rules_with_globals` layering entry point — kept
-//     separate from the existing `find_applicable_rules` rather than folding
-//     globals into it, because `find_applicable_rules` has a project-only
-//     caller (`code_review_view.rs`'s "already initialized" hint) that must
-//     not regress when a stray `~/.agents/AGENTS.md` exists. Adapted from the
-//     pin's `model.find_applicable_rules(&local_path(...))` calls to this
-//     fork's `model.find_applicable_rules_with_globals(&PathBuf::from(...))`
-//     accordingly — same layering behavior, different (fork-specific) entry
-//     point name. The pin's 6th global-rule test,
-//     `test_remote_global_rules_only_layer_for_matching_remote_host`, is now
-//     split: its global-rules-layering-and-per-host-isolation half is adapted
-//     below as `test_remote_project_rules_layers_local_global_ahead_of_remote_global`
-//     (added once `ProjectContextModel::remote_project_rules` gave
-//     `remote_global_rules` an actual consumer — see that method's doc comment
-//     in `model.rs`); its remote *project*-rule half stays blocked alongside
-//     `test_remote_project_rules_require_matching_host` below, for the same
-//     reason.
-//
-//   2 blocked on `ProjectContextModel::reconcile_project_rules` —
-//     `test_missing_rule_content_preserves_cached_content_while_path_is_standing`
-//     and `test_rule_missing_from_standing_results_is_removed_from_cached_content`.
-//     Absent here, along with `ProjectRules::rule_paths`. Refs #150 item 2, #201.
-//
-//   3 blocked on remote (`LocalOrRemotePath`) *project* rules (as opposed to
-//     *global* rules, which now have a lookup — see above) —
-//     `test_remote_project_rules_require_matching_host`,
+//   6 blocked on `path_to_rules` having no host dimension —
+//     `test_missing_rule_content_preserves_cached_content_while_path_is_standing`,
+//     `test_rule_missing_from_standing_results_is_removed_from_cached_content`,
+//     `test_reconcile_project_rules_hydrates_local_and_remote_paths`,
 //     `test_remote_standing_results_preserve_host_qualified_rule_paths`,
-//     `test_reconcile_project_rules_hydrates_local_and_remote_paths`. This
-//     fork's `ProjectRule::path`, `ProjectRulePath` and `path_to_rules` are all
-//     keyed by `PathBuf`; `find_applicable_project_rules` explicitly returns
-//     `None` for every remote path, and porting these would mean giving
-//     `path_to_rules` a `HostId` dimension it doesn't have — a materially
-//     larger restructuring than adding the global-rules-only lookup above.
-//     Refs #150 item 2, #170.
+//     `test_remote_project_rules_require_matching_host`, and (in part; see
+//     below) `test_remote_global_rules_only_layer_for_matching_remote_host`.
+//     Refs #150 item 2, #170, #201. All 6 are now ported below, via:
+//
+//     - `ProjectContextModel::reconcile_project_rules` (`model.rs`), adapted
+//       to take `Vec<PathBuf>`/`Vec<(PathBuf, String)>` rather than the pin's
+//       `Vec<LocalOrRemotePath>`/`Vec<(LocalOrRemotePath, String)>` — see its
+//       doc comment for why a plain `PathBuf` is enough here. Unblocks
+//       `test_missing_rule_content_preserves_cached_content_while_path_is_standing`,
+//       `test_rule_missing_from_standing_results_is_removed_from_cached_content`
+//       and `test_reconcile_project_rules_hydrates_local_and_remote_paths`
+//       (the last one adapted: two `PathBuf`s standing in for the pin's
+//       `LocalOrRemotePath::Local`/`::Remote`, since this fork's
+//       `reconcile_project_rules` doesn't distinguish origin at the type
+//       level — see the test itself).
+//     - `standing_project_rule_paths` (`model.rs`), ported unchanged in
+//       shape from the pin, bridging `repo_metadata`'s `warp_core::HostId`
+//       to this module's `warp_util::host_id::HostId`. Unblocks
+//       `test_remote_standing_results_preserve_host_qualified_rule_paths`.
+//     - `remote_path_to_rules: HashMap<HostId, HashMap<PathBuf, ProjectRules>>`
+//       (`model.rs`), a new field — the *project*-scoped remote counterpart
+//       of `remote_global_rules`, added the same way (a parallel per-host
+//       map) rather than giving the existing local-only `path_to_rules` a
+//       host dimension, plus `ProjectContextModel::find_remote_project_rules`
+//       (consulted by the existing `find_applicable_project_rules`, whose
+//       `Remote` arm used to unconditionally return `None`) and
+//       `remote_project_rules_for_path` (a new, additive layered lookup —
+//       local global + remote global + remote project — since the existing
+//       `remote_project_rules(&HostId)` takes no path to layer project rules
+//       against). Unblocks `test_remote_project_rules_require_matching_host`
+//       and, via `remote_project_rules_for_path`,
+//       `test_remote_global_rules_only_layer_for_matching_remote_host` (see
+//       next paragraph for what "via" means here).
+//
+//   1 RE-ADJUDICATED, not a literal port —
+//     `test_remote_global_rules_only_layer_for_matching_remote_host`. The
+//     pin exercises this through its single `find_applicable_rules(&LocalOrRemotePath)`;
+//     this fork has no unified `LocalOrRemotePath`-typed entry point (it
+//     keeps `find_applicable_rules`/`find_applicable_rules_with_globals`
+//     local-`Path`-only, deliberately — see `find_applicable_rules_with_globals`'s
+//     doc comment). Ported below against the new
+//     `remote_project_rules_for_path` instead, asserting the same three
+//     behaviors the pin's test does (local-global applies to every host,
+//     remote-global is host-isolated, remote-project layers in last) —
+//     same coverage, different (fork-specific) entry-point name, matching
+//     how the 5 #575 global-rule tests were already adapted from
+//     `find_applicable_rules` to `find_applicable_rules_with_globals`.
 
 /// Scans, then drops directory stamps for ancestors outside `root`.
 ///
@@ -79,7 +77,9 @@ use warp_util::host_id::HostId;
 #[cfg(feature = "local_fs")]
 fn scan_fast_path_isolated(root: &Path) -> FastPathEntry {
     let mut entry = ProjectContextModel::scan_fast_path(root);
-    entry.walked_dir_stamps.retain(|(dir, _)| dir.starts_with(root));
+    entry
+        .walked_dir_stamps
+        .retain(|(dir, _)| dir.starts_with(root));
     entry
 }
 
@@ -355,7 +355,7 @@ fn fast_path_still_valid_when_nothing_changed() {
 #[cfg(feature = "local_fs")]
 #[test]
 fn fast_path_invalidated_when_rule_file_mtime_changes() {
-    use filetime::{set_file_mtime, FileTime};
+    use filetime::{FileTime, set_file_mtime};
 
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path().canonicalize().unwrap();
@@ -375,7 +375,7 @@ fn fast_path_invalidated_when_rule_file_mtime_changes() {
 #[cfg(feature = "local_fs")]
 #[test]
 fn fast_path_invalidated_when_new_rule_file_appears_in_walked_dir() {
-    use filetime::{set_file_mtime, FileTime};
+    use filetime::{FileTime, set_file_mtime};
 
     let tmp = tempfile::tempdir().unwrap();
     let cwd = tmp.path().canonicalize().unwrap();
@@ -412,7 +412,10 @@ fn fast_path_walk_depth_bounded() {
 
     let entry = ProjectContextModel::scan_fast_path(&deep);
     // Can't reach the top level, so no rule is found
-    assert!(entry.rules.is_empty(), "should not stat the top-level rule file once the depth limit is exceeded");
+    assert!(
+        entry.rules.is_empty(),
+        "should not stat the top-level rule file once the depth limit is exceeded"
+    );
     // walked_dir_stamps does not exceed MAX_WALK_DEPTH
     assert!(entry.walked_dir_stamps.len() <= 6);
 }
@@ -429,7 +432,11 @@ fn fast_path_finds_claude_md() {
     std::fs::write(cwd.join("CLAUDE.md"), "claude rules").unwrap();
 
     let entry = ProjectContextModel::scan_fast_path(&cwd);
-    assert_eq!(entry.rules.len(), 1, "CLAUDE.md should be recognized by default");
+    assert_eq!(
+        entry.rules.len(),
+        1,
+        "CLAUDE.md should be recognized by default"
+    );
     assert_eq!(entry.rules[0].content, "claude rules");
     assert_eq!(entry.rules[0].path, cwd.join("CLAUDE.md"));
 }
@@ -486,7 +493,11 @@ fn upsert_rule_priority_three_way() {
     let result = rules
         .find_active_or_applicable_rules(&PathBuf::from("/a/x.rs"))
         .active_rules;
-    assert_eq!(result.len(), 1, "only the highest-priority rule file is taken when multiple exist in the same directory");
+    assert_eq!(
+        result.len(),
+        1,
+        "only the highest-priority rule file is taken when multiple exist in the same directory"
+    );
     assert_eq!(result[0].path, PathBuf::from("/a/WARP.md"));
 }
 
@@ -887,6 +898,261 @@ fn test_remote_project_rules_layers_local_global_ahead_of_remote_global() {
             .map(|rule| rule.content.as_str())
             .collect::<Vec<_>>(),
         ["local_global"]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Remote project-rules tests — unblocked by `remote_path_to_rules` /
+// `reconcile_project_rules` / `standing_project_rule_paths` (see the
+// file-level comment above for what each unblocks and how it's adapted from
+// the pin).
+// ---------------------------------------------------------------------------
+
+/// Builds a `LocalOrRemotePath::Remote` for `host_id`/`path`, mirroring the
+/// pin's own `remote_path` test helper.
+fn remote_path(host_id: &str, path: &str) -> LocalOrRemotePath {
+    LocalOrRemotePath::Remote(RemotePath::new(
+        HostId::new(host_id.to_string()),
+        StandardizedPath::try_new(path).unwrap(),
+    ))
+}
+
+/// Test helper: inserts a rule directly into `remote_path_to_rules`,
+/// bypassing the fact that nothing in this fork's production wiring
+/// populates it yet (see that field's doc comment in `model.rs`) — the same
+/// "poke the private field directly" pattern `insert_project_rule` above
+/// already uses for `path_to_rules`.
+fn insert_remote_project_rule(
+    model: &mut ProjectContextModel,
+    host_id: &str,
+    project_root: &str,
+    rule_path: &str,
+    content: &str,
+) {
+    let rules = model
+        .remote_path_to_rules
+        .entry(HostId::new(host_id.to_string()))
+        .or_default()
+        .entry(PathBuf::from(project_root))
+        .or_default();
+    rules.upsert_rule(&PathBuf::from(rule_path), content.to_string());
+}
+
+#[test]
+fn test_missing_rule_content_preserves_cached_content_while_path_is_standing() {
+    let rule_path = PathBuf::from("/unavailable/project/WARP.md");
+    let mut existing_rules = ProjectRules::default();
+    existing_rules.upsert_rule(&rule_path, "cached content".to_string());
+
+    // The path is still "standing" (present in the standing-query result),
+    // but no fresh content was read for it this pass (empty
+    // `rule_contents`) — e.g. the read failed transiently, or hasn't
+    // completed yet. The cached content must survive.
+    let rules = ProjectContextModel::reconcile_project_rules(
+        vec![rule_path.clone()],
+        Vec::new(),
+        existing_rules,
+    );
+    let result =
+        rules.find_active_or_applicable_rules(&PathBuf::from("/unavailable/project/main.rs"));
+
+    assert_eq!(result.active_rules.len(), 1);
+    assert_eq!(result.active_rules[0].path, rule_path);
+    assert_eq!(result.active_rules[0].content, "cached content");
+}
+
+#[test]
+fn test_rule_missing_from_standing_results_is_removed_from_cached_content() {
+    let rule_path = PathBuf::from("/unavailable/project/WARP.md");
+    let mut existing_rules = ProjectRules::default();
+    existing_rules.upsert_rule(&rule_path, "cached content".to_string());
+
+    // The path is no longer in the standing-query result at all (the file
+    // was deleted, or the repo dropped out of scope) — the cached rule must
+    // be dropped, not merely left stale.
+    let rules =
+        ProjectContextModel::reconcile_project_rules(Vec::new(), Vec::new(), existing_rules);
+    assert!(rules.rule_paths().next().is_none());
+}
+
+#[test]
+fn test_reconcile_project_rules_hydrates_local_and_remote_paths() {
+    // Adapted from the pin: the pin's `reconcile_project_rules` takes
+    // `LocalOrRemotePath`s and this test passes one `Local` and one
+    // `Remote` path in the same call. This fork's `reconcile_project_rules`
+    // is `PathBuf`-only (see its doc comment — origin isolation lives at the
+    // `path_to_rules`/`remote_path_to_rules` map level, not inside a single
+    // reconcile call), so a local-shaped and a remote-shaped `PathBuf` stand
+    // in for the pin's two variants: the behavior under test — multiple
+    // standing roots hydrated correctly in one call, without cross-talk — is
+    // identical either way.
+    let local_rule_path = PathBuf::from("/local/WARP.md");
+    let remote_rule_path = PathBuf::from("/remote/AGENTS.md");
+
+    let rules = ProjectContextModel::reconcile_project_rules(
+        vec![local_rule_path.clone(), remote_rule_path.clone()],
+        vec![
+            (local_rule_path.clone(), "local content".to_string()),
+            (remote_rule_path.clone(), "remote content".to_string()),
+        ],
+        ProjectRules::default(),
+    );
+
+    let local_result = rules.find_active_or_applicable_rules(&PathBuf::from("/local/main.rs"));
+    assert_eq!(local_result.active_rules.len(), 1);
+    assert_eq!(local_result.active_rules[0].path, local_rule_path);
+    assert_eq!(local_result.active_rules[0].content, "local content");
+
+    let remote_result = rules.find_active_or_applicable_rules(&PathBuf::from("/remote/main.rs"));
+    assert_eq!(remote_result.active_rules.len(), 1);
+    assert_eq!(remote_result.active_rules[0].path, remote_rule_path);
+    assert_eq!(remote_result.active_rules[0].content, "remote content");
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_remote_standing_results_preserve_host_qualified_rule_paths() {
+    let host = warp_core::HostId::new("test-host".to_string());
+    let repo_id = repo_metadata::RepositoryIdentifier::Remote(
+        repo_metadata::RemoteRepositoryIdentifier::new(
+            host.clone(),
+            StandardizedPath::try_new("/repo").unwrap(),
+        ),
+    );
+    let rule_path = StandardizedPath::try_new("/repo/nested/WARP.md").unwrap();
+    let contents = [
+        repo_metadata::StandingQueryContent::file(rule_path.clone()),
+        repo_metadata::StandingQueryContent::directory(
+            StandardizedPath::try_new("/repo/nested").unwrap(),
+        ),
+    ];
+
+    assert_eq!(
+        standing_project_rule_paths(&repo_id, &contents),
+        vec![LocalOrRemotePath::Remote(RemotePath::new(
+            HostId::new(host.as_str().to_string()),
+            rule_path
+        ))]
+    );
+}
+
+#[test]
+fn test_remote_project_rules_require_matching_host() {
+    let mut model = ProjectContextModel::default();
+    insert_remote_project_rule(
+        &mut model,
+        "host-a",
+        "/repo",
+        "/repo/WARP.md",
+        "remote_project_rule",
+    );
+
+    let same_host = model
+        .find_applicable_project_rules(&remote_path("host-a", "/repo/src/main.rs"))
+        .expect("same-host remote rule should apply");
+    assert_eq!(same_host.root_path, PathBuf::from("/repo"));
+    assert_eq!(same_host.active_rules.len(), 1);
+    assert_eq!(same_host.active_rules[0].content, "remote_project_rule");
+
+    let other_host =
+        model.find_applicable_project_rules(&remote_path("host-b", "/repo/src/main.rs"));
+    assert!(other_host.is_none());
+}
+
+/// RE-ADJUDICATED from a literal port: the pin exercises this through its
+/// single `find_applicable_rules(&LocalOrRemotePath)`; this fork has no
+/// unified `LocalOrRemotePath`-typed entry point (see
+/// `find_applicable_rules_with_globals`'s doc comment in `model.rs`), so this
+/// is ported against the new `remote_project_rules_for_path` instead —
+/// same three behaviors under test (local-global applies to every host,
+/// remote-global is host-isolated, remote-project layers in last), adapted
+/// entry point.
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_remote_global_rules_only_layer_for_matching_remote_host() {
+    let mut model = ProjectContextModel::default();
+    insert_global_rule(
+        &mut model,
+        Path::new("/home/local/.agents/AGENTS.md"),
+        "local_global",
+    );
+    insert_remote_project_rule(
+        &mut model,
+        "host-a",
+        "/repo",
+        "/repo/WARP.md",
+        "remote_project",
+    );
+    let host_a = HostId::new("host-a".to_string());
+    model.set_remote_global_rules(
+        host_a.clone(),
+        vec![ProjectRule {
+            path: PathBuf::from("/home/remote/.agents/AGENTS.md"),
+            content: "remote_global".to_string(),
+        }],
+    );
+    model.set_remote_global_rules(
+        HostId::new("host-b".to_string()),
+        vec![ProjectRule {
+            path: PathBuf::from("/home/remote/.agents/AGENTS.md"),
+            content: "other_remote_global".to_string(),
+        }],
+    );
+
+    let remote = |host: &str, path: &str| {
+        RemotePath::new(
+            HostId::new(host.to_string()),
+            StandardizedPath::try_new(path).unwrap(),
+        )
+    };
+
+    let matching = model
+        .remote_project_rules_for_path(&remote("host-a", "/repo/src/main.rs"))
+        .unwrap();
+    assert_eq!(
+        matching
+            .active_rules
+            .iter()
+            .map(|rule| rule.content.as_str())
+            .collect::<Vec<_>>(),
+        ["local_global", "remote_global", "remote_project"]
+    );
+
+    let other_host = model
+        .remote_project_rules_for_path(&remote("host-b", "/repo/src/main.rs"))
+        .unwrap();
+    assert_eq!(
+        other_host
+            .active_rules
+            .iter()
+            .map(|rule| rule.content.as_str())
+            .collect::<Vec<_>>(),
+        ["local_global", "other_remote_global"]
+    );
+
+    // Local lookups are unaffected: still just the local global rule.
+    let local = model
+        .find_applicable_rules_with_globals(Path::new("/repo/src/main.rs"))
+        .unwrap();
+    assert_eq!(local.active_rules.len(), 1);
+    assert_eq!(local.active_rules[0].content, "local_global");
+
+    assert_eq!(
+        model.global_rule_paths().collect::<Vec<_>>(),
+        [PathBuf::from("/home/local/.agents/AGENTS.md")]
+    );
+
+    model.set_remote_global_rules(host_a, Vec::new());
+    let replaced = model
+        .remote_project_rules_for_path(&remote("host-a", "/repo/src/main.rs"))
+        .unwrap();
+    assert_eq!(
+        replaced
+            .active_rules
+            .iter()
+            .map(|rule| rule.content.as_str())
+            .collect::<Vec<_>>(),
+        ["local_global", "remote_project"]
     );
 }
 

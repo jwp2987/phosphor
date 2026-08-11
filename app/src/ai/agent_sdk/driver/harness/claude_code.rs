@@ -18,6 +18,7 @@ use crate::ai::agent_events::AgentEventStreamClient;
 use crate::ai::ambient_agents::task::HarnessModelConfig;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::mcp::{JSONMCPServer, JSONTransportType};
+use crate::terminal::cli_agent_sessions::CLIAgentSessionStatus;
 use crate::terminal::model::block::BlockId;
 use crate::terminal::model::session::ExecuteCommandOptions;
 use crate::terminal::CLIAgent;
@@ -26,23 +27,24 @@ use super::super::terminal::{CommandHandle, TerminalDriver};
 use super::super::{AgentDriver, AgentDriverError};
 use super::json_utils::{read_json_file_or_default, write_json_file};
 use super::{
-    write_temp_file, write_temp_file_with_suffix, HarnessRunner, ManagedSecretValue, SavePoint,
-    ThirdPartyHarness,
+    HarnessCleanupDisposition, HarnessRunner, ManagedSecretValue, SavePoint, ThirdPartyHarness,
+    write_temp_file, write_temp_file_with_suffix,
 };
 mod parent_bridge;
 
 #[cfg(test)]
 use super::super::OZ_MESSAGE_LISTENER_STATE_ROOT_ENV;
-use parent_bridge::MessageBridge;
 #[cfg(test)]
 use parent_bridge::{
+    MESSAGE_BRIDGE_CONTEXT_PREAMBLE, MessageBridgeHookOutput, MessageBridgeMessageRecord,
     acknowledge_parent_bridge_hook_output, ensure_parent_bridge_state_dir,
-    parent_bridge_char_count, parent_bridge_hook_output_ack_file, parent_bridge_hook_output_file,
-    parent_bridge_root, parent_bridge_staged_message_path, parent_bridge_surfaced_message_path,
-    prepare_parent_bridge_hook_output, render_parent_bridge_message_block,
-    stage_parent_bridge_message, MessageBridgeHookOutput, MessageBridgeMessageRecord,
-    MESSAGE_BRIDGE_CONTEXT_PREAMBLE,
+    parent_bridge_char_count, parent_bridge_event_cursor_file, parent_bridge_hook_output_ack_file,
+    parent_bridge_hook_output_file, parent_bridge_root, parent_bridge_staged_message_path,
+    parent_bridge_surfaced_message_path, prepare_parent_bridge_hook_output,
+    read_parent_bridge_event_cursor, render_parent_bridge_message_block,
+    stage_parent_bridge_message, write_parent_bridge_event_cursor,
 };
+use parent_bridge::{MessageBridge, MessageBridgeCleanupDisposition};
 
 pub(crate) struct ClaudeHarness;
 
@@ -146,17 +148,29 @@ const CLAUDE_EXIT_COMMAND: &str = "/exit";
 /// Build the shell command that launches the Claude CLI for a given session and
 /// prompt file.
 ///
-/// The CLI receives `--session-id <uuid>` to pin a fresh local session to that id.
-/// If `system_prompt_path` is provided, the CLI appends its contents to the base
-/// system prompt.
+/// When `resuming` is true we pass `--resume <uuid>` so Claude picks up the
+/// existing on-disk session; otherwise we pass `--session-id <uuid>` to pin a
+/// fresh session to that id. If `system_prompt_path` is provided, the CLI is
+/// told to append its contents to the base system prompt.
+///
+/// Ported from the pin (`02b53fcd8`, same file) for #252/#289: the `resuming`
+/// parameter and `--resume` branch are ported verbatim. `ClaudeHarnessRunner::new`
+/// (below, this fork's sole caller) always mints a fresh `Uuid::new_v4()` and
+/// passes `false` -- this fork's `build_runner` has no resume-payload plumbing to
+/// ever request an existing session (cloud-only at the pin: `fetch_resume_payload`
+/// fetches the prior transcript via `HarnessSupportClient`; see the equivalent cut
+/// documented in `codex.rs`'s module doc). The flag-selection logic itself is real,
+/// local, and CLI-contract-shaped, not gated on that missing plumbing.
 fn claude_command(
     cli_name: &str,
     session_id: &Uuid,
     prompt_path: &str,
     system_prompt_path: Option<&str>,
     mcp_config_path: Option<&str>,
+    resuming: bool,
 ) -> String {
-    let mut cmd = format!("{cli_name} --session-id {session_id} --dangerously-skip-permissions");
+    let flag = if resuming { "--resume" } else { "--session-id" };
+    let mut cmd = format!("{cli_name} {flag} {session_id} --dangerously-skip-permissions");
     if let Some(sp_path) = system_prompt_path {
         let _ = write!(cmd, " --append-system-prompt-file '{sp_path}'");
     }
@@ -246,6 +260,10 @@ impl ClaudeHarnessRunner {
                 &prompt_path,
                 system_prompt_path.as_deref(),
                 mcp_config_path.as_deref(),
+                // Always a fresh session: this fork has no resume-payload plumbing
+                // that could ever request `resuming: true`. See `claude_command`'s
+                // doc comment.
+                false,
             ),
             cli_name: cli_command.to_string(),
             _temp_prompt_file: temp_file,
@@ -326,9 +344,43 @@ impl ClaudeHarnessRunner {
             .await
     }
 
-    fn cleanup_parent_bridge(&self) -> Result<()> {
+    /// Whether the message-bridge state directory should survive cleanup.
+    ///
+    /// Ported from the pin (`02b53fcd8`, same file) for #252/#289. The pin also
+    /// consults a cloud dormant-wake feature here (`ClaudeHarness::wake_dormant_session`,
+    /// `claude_code/wake_driver.rs`) that this fork doesn't have (needs `ServerApi`) --
+    /// but the local half of the decision (did this run actually finish cleanly)
+    /// stands on its own and is what these tests exercise.
+    ///
+    /// Adaptation: this fork's `CLIAgentSessionStatus` has no `Failed` variant (the
+    /// pin's does), so the "don't preserve" set collapses to `InProgress` and
+    /// `Blocked` -- session states that mean the run is not actually finished.
+    async fn should_preserve_parent_bridge(
+        &self,
+        cleanup_disposition: HarnessCleanupDisposition,
+        foreground: &ModelSpawner<AgentDriver>,
+    ) -> bool {
+        if !matches!(
+            cleanup_disposition,
+            HarnessCleanupDisposition::PreserveResumptionStateIfSupported
+        ) {
+            return false;
+        }
+
+        !matches!(
+            super::cli_agent_session_status(&self.terminal_driver, foreground).await,
+            Some(CLIAgentSessionStatus::InProgress) | Some(CLIAgentSessionStatus::Blocked { .. })
+        )
+    }
+
+    fn cleanup_parent_bridge(&self, preserve_state: bool) -> Result<()> {
         if let Some(parent_bridge) = self.parent_bridge.as_ref() {
-            parent_bridge.cleanup()?;
+            let cleanup_disposition = if preserve_state {
+                MessageBridgeCleanupDisposition::PreserveState
+            } else {
+                MessageBridgeCleanupDisposition::RemoveState
+            };
+            parent_bridge.cleanup(cleanup_disposition)?;
         }
         Ok(())
     }
@@ -420,9 +472,16 @@ impl HarnessRunner for ClaudeHarnessRunner {
 
         Ok(())
     }
-    async fn cleanup(&self, _foreground: &ModelSpawner<AgentDriver>) -> Result<()> {
+    async fn cleanup(
+        &self,
+        disposition: HarnessCleanupDisposition,
+        foreground: &ModelSpawner<AgentDriver>,
+    ) -> Result<()> {
         self.flush_parent_bridge_acks().await?;
-        self.cleanup_parent_bridge()
+        let preserve_state = self
+            .should_preserve_parent_bridge(disposition, foreground)
+            .await;
+        self.cleanup_parent_bridge(preserve_state)
     }
 }
 

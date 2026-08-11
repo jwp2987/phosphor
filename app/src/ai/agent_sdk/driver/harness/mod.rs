@@ -324,6 +324,27 @@ pub(crate) enum SavePoint {
     PostTurn,
 }
 
+/// Controls how much harness-owned state should survive cleanup after the CLI
+/// exits.
+///
+/// Ported from the pin (`02b53fcd8`, `app/src/ai/agent_sdk/driver/harness/mod.rs`)
+/// for #252/#289's `MessageBridgeCleanupDisposition` tests. The pin's counterpart
+/// also gates a cloud "wake a dormant session" resume path that doesn't exist in
+/// this fork (`claude_code/wake_driver.rs`, needs `ServerApi`/`AgentTaskState`, see
+/// `DECLINED.md`), but the disposition itself -- whether to leave harness-owned
+/// mailbox/resume state on disk after a clean exit -- is decided entirely from
+/// local signals (final-save success, runtime-failure detection, exit code) and
+/// needs no cloud plumbing to be real. See `AgentDriver::run_harness`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HarnessCleanupDisposition {
+    /// Tear down all harness-owned resume and wake state.
+    DropResumptionState,
+    /// The harness exited cleanly and its final save completed, so wake/resume
+    /// state may be preserved if the harness-specific runtime also considers
+    /// the run complete.
+    PreserveResumptionStateIfSupported,
+}
+
 /// Stateful per-run representation of an external harness produced
 /// by [`ThirdPartyHarness::build_runner`].
 ///
@@ -360,7 +381,11 @@ pub(crate) trait HarnessRunner: Send + Sync {
     }
 
     /// Clean up any harness-owned background state after the harness exits.
-    async fn cleanup(&self, _foreground: &ModelSpawner<AgentDriver>) -> Result<()> {
+    async fn cleanup(
+        &self,
+        _disposition: HarnessCleanupDisposition,
+        _foreground: &ModelSpawner<AgentDriver>,
+    ) -> Result<()> {
         Ok(())
     }
 }
@@ -371,20 +396,33 @@ pub(crate) async fn has_running_cli_agent(
     terminal_driver: &ModelHandle<TerminalDriver>,
     foreground: &ModelSpawner<AgentDriver>,
 ) -> bool {
+    matches!(
+        cli_agent_session_status(terminal_driver, foreground).await,
+        Some(CLIAgentSessionStatus::InProgress)
+    )
+}
+
+/// Returns the tracked CLI agent session status for the terminal, if any.
+///
+/// Ported from the pin (`02b53fcd8`, same file) -- `has_running_cli_agent`'s body
+/// factored out so `claude_code.rs`'s cleanup-disposition logic can distinguish
+/// `InProgress`/`Blocked` from `Success`/untracked without duplicating the lookup.
+pub(crate) async fn cli_agent_session_status(
+    terminal_driver: &ModelHandle<TerminalDriver>,
+    foreground: &ModelSpawner<AgentDriver>,
+) -> Option<CLIAgentSessionStatus> {
     let driver = terminal_driver.clone();
-    let Ok(running) = foreground
+    foreground
         .spawn(move |_, ctx| {
             let terminal_view_id = driver.as_ref(ctx).terminal_view().id();
             CLIAgentSessionsModel::handle(ctx)
                 .as_ref(ctx)
                 .session(terminal_view_id)
-                .is_some_and(|s| s.status == CLIAgentSessionStatus::InProgress)
+                .map(|session| session.status.clone())
         })
         .await
-    else {
-        return false;
-    };
-    running
+        .ok()
+        .flatten()
 }
 
 /// Create a [`NamedTempFile`] with the given prefix and write `content` into it.
