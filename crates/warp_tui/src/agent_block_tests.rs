@@ -15,7 +15,7 @@ use warp::tui_export::{
     AIAgentOutputMessageType, AIAgentText, AIAgentTextSection, AIAgentTodo, AIAgentTodoList,
     AIBlockModel, AIBlockOutputStatus, AIConversationId, AIRequestType, AgentOutputImage,
     AgentOutputImageLayout, AgentOutputMermaidDiagram, AgentOutputTable, Appearance,
-    FailedOutputPresentation, LLMId, MessageId, OutputStatusUpdateCallback,
+    FailedOutputPresentation, LLMId, MessageId, OutputStatusUpdateCallback, ReceivedMessageDisplay,
     RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared, SummarizationType,
     TaskId, TerminalModel, TodoOperation, TodoStatus, UserQueryMode,
     should_show_failed_output_usage_notice,
@@ -41,6 +41,7 @@ use super::{
 use crate::agent_block_sections::{
     completed_todos_label, render_fallback_tool_call_section, render_todo_list_section,
 };
+use crate::agent_message::agent_message_section_id;
 use crate::test_fixtures::{TestHostView, add_test_action_model_and_events};
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_plan_view::TuiPlanViewAction;
@@ -1015,6 +1016,81 @@ fn agent_block_ignores_unsupported_message_variants() {
                 block.sections(app_ctx),
                 vec![rich_text("before"), rich_text("after"),]
             );
+        });
+    });
+}
+
+#[test]
+fn agent_block_preserves_received_messages_and_hides_lifecycle_ids() {
+    App::test((), |mut app| async move {
+        let first = received_message("run-1", "first", "Starting work");
+        let second = received_message("run-2", "second", "Reviewing changes");
+        let block = test_agent_block(
+            &mut app,
+            FakeAgentBlockModel {
+                inputs: Vec::new(),
+                status: complete_output_messages(vec![
+                    AIAgentOutputMessage::messages_received_from_agents(
+                        MessageId::new("messages-1".to_owned()),
+                        vec![first.clone(), second.clone()],
+                    ),
+                    AIAgentOutputMessage::events_from_agents(
+                        MessageId::new("events-1".to_owned()),
+                        vec!["event-1".to_owned(), "event-2".to_owned()],
+                    ),
+                ]),
+            },
+        );
+        app.read(|app_ctx| {
+            assert_eq!(
+                block.as_ref(app_ctx).sections(app_ctx),
+                vec![
+                    TuiAIBlockSection::AgentMessage(first),
+                    TuiAIBlockSection::AgentMessage(second),
+                ]
+            );
+        });
+    });
+}
+
+#[test]
+fn agent_message_defaults_collapsed_and_expands_through_block_state() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let received = received_message("run-1", "progress", "Starting work");
+        let message_id = agent_message_section_id(&received);
+        let block = test_agent_block(
+            &mut app,
+            FakeAgentBlockModel {
+                inputs: Vec::new(),
+                status: complete_output_messages(vec![
+                    AIAgentOutputMessage::messages_received_from_agents(
+                        MessageId::new("messages-1".to_owned()),
+                        vec![received],
+                    ),
+                ]),
+            },
+        );
+        app.read(|ctx| {
+            let lines = render_block_lines(block.as_ref(ctx), 40, ctx);
+            assert!(lines[0].ends_with(" ▸"));
+            assert!(lines.iter().all(|line| !line.contains("Starting work")));
+        });
+
+        app.update(|ctx| {
+            ctx.dispatch_typed_action_for_view(
+                block.window_id(ctx),
+                block.id(),
+                &TuiAIBlockAction::SetSectionCollapsed {
+                    message_id,
+                    collapsed: false,
+                },
+            );
+        });
+        app.read(|ctx| {
+            let lines = render_block_lines(block.as_ref(ctx), 40, ctx);
+            assert!(lines[0].ends_with(" ▾"));
+            assert_eq!(lines[1], "    Starting work");
         });
     });
 }
@@ -2060,6 +2136,17 @@ fn debug_output_message(id: &str, text: &str) -> AIAgentOutputMessage {
             text: text.to_owned(),
         },
         citations: Vec::new(),
+    }
+}
+
+/// Builds a received-message payload for orchestration message tests.
+fn received_message(sender: &str, subject: &str, body: &str) -> ReceivedMessageDisplay {
+    ReceivedMessageDisplay {
+        message_id: format!("message-{sender}"),
+        sender_agent_id: sender.to_owned(),
+        addresses: vec!["parent-run".to_owned()],
+        subject: subject.to_owned(),
+        message_body: body.to_owned(),
     }
 }
 

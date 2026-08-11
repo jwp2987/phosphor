@@ -22,6 +22,7 @@ fn init_i18n_for_warp_tui_tests() {
 mod report_error;
 mod agent_block;
 mod agent_block_sections;
+mod agent_message;
 mod alt_screen_view;
 mod attachment_bar;
 mod autoupdate;

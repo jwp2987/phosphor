@@ -20,7 +20,7 @@ use warp::tui_export::{
     AIBlockModelHelper, AIBlockOutputStatus, AIConversationId, BlockId, BlocklistAIActionEvent,
     BlocklistAIActionModel, BlocklistAIHistoryModel, CancellationReason,
     FAILED_OUTPUT_USAGE_NOTICE_TEXT, FailedOutputPresentation, MessageId, ModelEvent,
-    ModelEventDispatcher, SummarizationType, TerminalModel, TodoOperation,
+    ModelEventDispatcher, ReceivedMessageDisplay, SummarizationType, TerminalModel, TodoOperation,
     TodoStatus, failed_output_presentation, should_show_failed_output_usage_notice,
 };
 use warpui::SingletonEntity;
@@ -43,6 +43,7 @@ use crate::agent_block_sections::{
     render_completed_todos_section, render_fallback_tool_call_section, render_input_section,
     render_summarization_section, render_thinking_section, render_todo_list_section,
 };
+use crate::agent_message::render_agent_message;
 use crate::transcript_view::BLOCK_TOP_PADDING_ROWS;
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_cli_subagent_view::TuiCLISubagentView;
@@ -126,6 +127,8 @@ enum TuiAIBlockSection {
     CompletedTodos {
         completed: Vec<AIAgentTodo>,
     },
+    /// A message delivered by another agent in the orchestration.
+    AgentMessage(ReceivedMessageDisplay),
     Failure(FailedOutputPresentation),
     UsageNotice,
 }
@@ -1187,6 +1190,7 @@ impl TuiAIBlock {
                     app,
                 )
             }
+            TuiAIBlockSection::AgentMessage(_) => return None,
             TuiAIBlockSection::Failure(presentation) => render_failure_section(
                 presentation,
                 &self.compare_plans_hover_state,
@@ -1304,10 +1308,14 @@ impl TuiAIBlock {
                         TodoOperation::UpdateTodos { .. }
                         | TodoOperation::MarkAsCompleted { .. } => {}
                     },
-                    // Inter-agent messages/events are orchestration (cloud)
-                    // surfaces Zap does not render.
-                    AIAgentOutputMessageType::MessagesReceivedFromAgents { .. }
-                    | AIAgentOutputMessageType::EventsFromAgents { .. } => {}
+                    AIAgentOutputMessageType::MessagesReceivedFromAgents { messages } => {
+                        for received in messages {
+                            sections.push(TuiAIBlockSection::AgentMessage(received.clone()));
+                        }
+                    }
+                    // Event IDs contain no display detail. The sender's live
+                    // conversation status is shown on rich message rows.
+                    AIAgentOutputMessageType::EventsFromAgents { .. } => {}
                     // Other message kinds are not rendered by the TUI transcript yet.
                     AIAgentOutputMessageType::Summarization { .. }
                     | AIAgentOutputMessageType::Subagent(_)
@@ -1567,6 +1575,12 @@ impl TuiAIBlock {
                         app,
                     )
                 }
+                TuiAIBlockSection::AgentMessage(message) => render_agent_message(
+                    &self.collapsible_states,
+                    message,
+                    self.conversation_id,
+                    app,
+                ),
                 TuiAIBlockSection::Failure(presentation) => render_failure_section(
                     presentation,
                     &self.compare_plans_hover_state,
@@ -1637,7 +1651,8 @@ fn section_logical_text(section: &TuiAIBlockSection) -> Option<String> {
         | TuiAIBlockSection::Thinking { .. }
         | TuiAIBlockSection::Summarization { .. }
         | TuiAIBlockSection::TodoList { .. }
-        | TuiAIBlockSection::CompletedTodos { .. } => None,
+        | TuiAIBlockSection::CompletedTodos { .. }
+        | TuiAIBlockSection::AgentMessage(_) => None,
         TuiAIBlockSection::Failure(presentation) => Some(failure_text(presentation)),
         TuiAIBlockSection::UsageNotice => Some(FAILED_OUTPUT_USAGE_NOTICE_TEXT.to_owned()),
     }
