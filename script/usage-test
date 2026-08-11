@@ -42,4 +42,21 @@ fi
 
 ulimit -n 8192 2>/dev/null || true
 
-exec flock "${LOCK_FILE}" -c "cargo run -q -p usage_suite -- $(printf '%q ' "$@")"
+RUN_CMD="cargo run -q -p usage_suite -- $(printf '%q ' "$@")"
+
+# `flock` is util-linux: it does not exist on macOS, nor in the Git Bash that
+# GitHub's Windows runners provide. Since 2026-08-11 this suite runs on all
+# three platforms in CI, and an unconditional `exec flock` failed there with
+# "exec: flock: not found" (exit 127) before a single scenario ran.
+#
+# The lock exists to stop CONCURRENT cargo invocations fighting over one
+# target/ dir (AGENTS.md §5.8). That hazard is real on the shared build box
+# this default path points at; a CI runner is single-tenant and has no other
+# cargo to race with. So serialize where we can and run directly where we
+# cannot, rather than failing outright.
+if command -v flock >/dev/null 2>&1; then
+  exec flock "${LOCK_FILE}" -c "${RUN_CMD}"
+else
+  echo "note: flock unavailable on this platform; running without the shared cargo lock" >&2
+  exec bash -c "${RUN_CMD}"
+fi
