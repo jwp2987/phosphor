@@ -1064,7 +1064,14 @@ impl TuiInputView {
         });
     }
 
-    fn reset_to_default_agent_mode(&mut self, ctx: &mut ViewContext<Self>) {
+    /// Restores the setting-derived agent mode (autodetect-driven if enabled,
+    /// else the locked AI default), preserving the current input buffer.
+    /// Exposed to the crate so callers outside this view (e.g.
+    /// `TuiTerminalSessionView::reset_after_agent_control`) can restore the
+    /// default mode once an externally-installed AI lock -- attaching the
+    /// agent to a running command -- has ended, without going through
+    /// [`Self::clear`] and losing unrelated buffer contents.
+    pub(crate) fn reset_to_default_agent_mode(&mut self, ctx: &mut ViewContext<Self>) {
         let is_autodetection_enabled = self
             .input_mode
             .as_ref(ctx)

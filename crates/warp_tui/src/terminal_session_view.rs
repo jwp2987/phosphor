@@ -158,6 +158,12 @@ const AUTO_APPROVE_FEEDBACK_DURATION: Duration = Duration::from_secs(3);
 
 /// The footer hint shown while the ctrl-c exit confirmation is armed.
 const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
+/// The footer hint shown while the agent is manually tagged into a running
+/// command, telling the user how to give input back to the command. Ported
+/// from the pin (`02b53fcd8`, `RUNNING_COMMAND_DETACH_HINT`) as part of #390 --
+/// `handle_terminal_use_interrupt` below gives ctrl-c the same detach priority
+/// as the pin so the hint's wording stays accurate.
+const RUNNING_COMMAND_DETACH_HINT: &str = "ctrl-c to return to command";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
 /// How often a statusline date/time segment repaints itself.
 const STATUSLINE_DATETIME_REPAINT_INTERVAL: Duration = Duration::from_secs(60);
@@ -775,6 +781,20 @@ pub(crate) struct TuiTerminalSessionView {
     /// Whether keyboard focus is on the orchestration tabs rather than the
     /// session's normal input target.
     orchestration_tabs_focused: bool,
+    /// Set while the composer's current AI lock was installed to give the
+    /// agent a running command's input (manual attach, an auto-spawned CLI
+    /// subagent, or a prompt sent to one) rather than by the user's own
+    /// Ctrl+Shift+I toggle. Gates [`Self::reset_after_agent_control`] so a
+    /// completing block only restores autodetection when this composer is
+    /// the one that locked it -- otherwise an unrelated block completing
+    /// elsewhere would clobber a genuine user-forced lock. Local stand-in for
+    /// the pin's `InputTypeAutoDetectionSource::AgentTerminalControl`
+    /// (`02b53fcd8`): this fork's shared `BlocklistAIInputModel` intentionally
+    /// carries only one autodetection-source variant (`HistoryMatch`, see
+    /// `app/src/ai/blocklist/input_model.rs`), and threading a second variant
+    /// through `set_input_config` end-to-end is the much larger, separately
+    /// tracked #399/#254 item d, not this issue's scope.
+    agent_terminal_control_lock: bool,
 }
 
 /// Registers the session surface's keybindings. Called once at TUI startup
@@ -1181,6 +1201,21 @@ impl TuiTerminalSessionView {
         });
     }
 
+    /// Handles any block completing. Restores the composer's agent-control
+    /// lock (a no-op unless this composer installed one -- see
+    /// [`Self::agent_terminal_control_lock`]) before resuming an
+    /// agent-originated long-running command's conversation, so a manually
+    /// tagged-in command that simply finishes on its own -- never detached via
+    /// escape or ctrl-c -- still unlocks the composer instead of leaving it
+    /// stuck in AI mode. Ported from the pin's `handle_block_completed`
+    /// (`02b53fcd8`) for #390.
+    fn handle_block_completed(&mut self, block_id: &BlockId, ctx: &mut ViewContext<Self>) {
+        self.reset_after_agent_control(ctx);
+        self.resume_after_user_controlled_command(block_id, ctx);
+        self.update_process_input_focus(ctx);
+        ctx.notify();
+    }
+
     fn detach_cli_subagent_view(
         &mut self,
         block_id: &BlockId,
@@ -1207,6 +1242,7 @@ impl TuiTerminalSessionView {
                 );
                 self.input_view
                     .update(ctx, |input, ctx| input.exit_shell_mode(ctx));
+                self.agent_terminal_control_lock = true;
                 if let Some(target) = self
                     .cli_subagent_controller
                     .as_ref(ctx)
@@ -1244,6 +1280,12 @@ impl TuiTerminalSessionView {
                     initial_requested_command_action_id.as_ref(),
                     ctx,
                 );
+                // `SpawnedSubagent` locked the input to AI while the agent owned
+                // this terminal-use block; now that it's finished, restore the
+                // setting-derived state so the next prompt can resume
+                // autodetection. Mirrors the pin's `reset_after_agent_control`
+                // call at the same site (`02b53fcd8`).
+                self.reset_after_agent_control(ctx);
             }
             CLISubagentEvent::UpdatedControl { .. }
             | CLISubagentEvent::UpdatedInstruction { .. }
@@ -1261,6 +1303,16 @@ impl TuiTerminalSessionView {
     }
 
     fn handle_terminal_use_interrupt(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        // A manually tagged-in agent takes ctrl-c as "give input back to the
+        // command" ahead of any other interrupt handling, discarding whatever
+        // unsent prompt the composer holds. Matches the pin's priority order
+        // in `handle_terminal_use_interrupt` (`02b53fcd8`) -- without this,
+        // ctrl-c would fall through to the TUI's own exit-confirmation arm
+        // instead of detaching, which is also why `RUNNING_COMMAND_DETACH_HINT`
+        // advertises ctrl-c specifically.
+        if self.try_detach_agent_from_running_command(ctx) {
+            return true;
+        }
         let control_state = self
             .cli_subagent_controller
             .as_ref(ctx)
@@ -1336,6 +1388,7 @@ impl TuiTerminalSessionView {
             input.clear(ctx);
             input.exit_shell_mode(ctx);
         });
+        self.agent_terminal_control_lock = true;
         self.update_process_input_focus(ctx);
         ctx.notify();
         true
@@ -1358,10 +1411,33 @@ impl TuiTerminalSessionView {
         if !did_detach {
             return false;
         }
+        // `input.clear()` already resets to the setting-derived agent mode
+        // (`TuiInputView::clear` -> `reset_to_default_agent_mode`), so this
+        // just clears the bookkeeping that would otherwise make a later,
+        // unrelated block completion re-run that reset redundantly.
+        self.agent_terminal_control_lock = false;
         self.input_view.update(ctx, |input, ctx| input.clear(ctx));
         self.update_process_input_focus(ctx);
         ctx.notify();
         true
+    }
+
+    /// Restores the setting-derived agent mode once this composer's own
+    /// agent-terminal-control lock has ended, so the next prompt can resume
+    /// autodetection instead of staying hard-locked to AI forever. A no-op
+    /// when this composer never held that lock (e.g. an unrelated block
+    /// completed, or the user's own Ctrl+Shift+I toggle is in effect) --
+    /// [`Self::agent_terminal_control_lock`]'s doc comment has the full
+    /// rationale. Ported from the pin's `TuiInputView::reset_after_agent_control`
+    /// (`02b53fcd8`), adapted to this fork's local lock-provenance flag instead
+    /// of a `last_ai_autodetection_source` comparison.
+    fn reset_after_agent_control(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.agent_terminal_control_lock {
+            return;
+        }
+        self.agent_terminal_control_lock = false;
+        self.input_view
+            .update(ctx, |input, ctx| input.reset_to_default_agent_mode(ctx));
     }
 
     /// Builds the `/status` menu's content from live session data. Drops the
@@ -1969,9 +2045,7 @@ impl TuiTerminalSessionView {
         // PTY output redraws are driven by `wakeups_rx` below.
         ctx.subscribe_to_model(&model_events, |view, _, event, ctx| match event {
             ModelEvent::BlockCompleted(completed) => {
-                view.resume_after_user_controlled_command(&completed.block_id, ctx);
-                view.update_process_input_focus(ctx);
-                ctx.notify();
+                view.handle_block_completed(&completed.block_id, ctx);
             }
             ModelEvent::AfterBlockStarted { .. } => {
                 view.update_process_input_focus(ctx);
@@ -2157,6 +2231,7 @@ impl TuiTerminalSessionView {
             pending_history_command_workflow_data: None,
             orchestration_tab_bar,
             orchestration_tabs_focused: false,
+            agent_terminal_control_lock: false,
         };
         if let Some(failure) = initial_zero_state_load_failure {
             view.show_zero_state_ascii_load_failure(failure, ctx);
@@ -2936,6 +3011,24 @@ impl TuiTerminalSessionView {
                     .finish(),
             );
         }
+        // While the agent is manually tagged into a running command, the
+        // detach hint replaces the normal statusline the same way the hints
+        // above do. Ported from the pin's `footer_hint` priority order
+        // (`02b53fcd8`, `RUNNING_COMMAND_DETACH_HINT`) for #390.
+        if self
+            .terminal_model
+            .lock()
+            .block_list()
+            .active_block()
+            .is_agent_tagged_in()
+        {
+            return TuiFlex::row().child(
+                TuiText::new(RUNNING_COMMAND_DETACH_HINT)
+                    .with_style(muted)
+                    .truncate()
+                    .finish(),
+            );
+        }
         let shell_mode = self.is_shell_mode(ctx);
         let config = AISettings::as_ref(ctx).tui_statusline.normalized();
         let git_metadata = self.git_status_metadata(ctx);
@@ -3275,6 +3368,7 @@ impl TuiTerminalSessionView {
         if self.send_terminal_use_prompt(&text, ctx) {
             self.input_view
                 .update(ctx, |input, ctx| input.exit_shell_mode(ctx));
+            self.agent_terminal_control_lock = true;
         } else if self.is_shell_mode(ctx) {
             self.execute_user_command(&text, ctx);
         } else {
