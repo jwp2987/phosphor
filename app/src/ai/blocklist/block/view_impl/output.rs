@@ -8,6 +8,7 @@ use crate::ai::agent::{
     AIAgentInput, CreateDocumentsResult, EditDocumentsResult, ReadFilesResult, SubagentCall,
     SubagentType, TodoOperation,
 };
+use crate::ai::agent_providers::attachment_caps;
 use crate::util::truncation::truncate_from_end;
 use ai::agent::file_locations::group_file_contexts_for_display;
 
@@ -2846,6 +2847,82 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
     .finish()
 }
 
+/// Whether a `use_computer` block should tell the user their captured screenshot never
+/// reached the model.
+///
+/// The pin decorates this block with a *recording* footer instead
+/// (`should_decorate_recorded_use_computer` / `render_recording_footer` in the pin's
+/// `output.rs`, gated on `RecordingSpanInfo`): a `UseComputer` call whose actions are
+/// all no-ops is a screenshot-only capture, not a user-visible interaction, so the pin
+/// skips labeling it as "captured in a recording". That whole mechanism is a facet of
+/// session recording, which this fork has declined (`DECLINED.md`, "computer_use
+/// session recording", #350) -- there is no `RecordingSpanInfo`/recording controller
+/// here to decorate with, on purpose.
+///
+/// What this fork has instead, as of tonight, is a screenshot that may or may not
+/// reach the model at all (`ai::agent_providers::tools::computer::ScreenshotDelivery`):
+/// the "View screenshot" button below always shows the capture to the *user* once one
+/// exists, so without this decoration a blind-model turn and a sighted one render
+/// identically even though the agent could not see the screen. That is the one
+/// dimension the block can decorate honestly, so it replaces the pin's recording
+/// footer rather than porting it.
+///
+/// Deliberately one-sided: it only renders the case it can state with confidence.
+/// Whether an image-capable model's screenshot was actually attached on a *given* turn
+/// (vs. `ScreenshotDelivery::Superseded`/`Undeliverable`) is decided per-request in
+/// `chat_stream::plan_screenshot_attachments` and never persisted onto the action
+/// result, so the block has no reliable way to claim delivery succeeded -- only that it
+/// was structurally impossible. Saying nothing when unsure, rather than claiming
+/// "sent", is what keeps this from ever contradicting the model-facing
+/// `screenshot.delivery` field.
+fn should_decorate_blind_use_computer_screenshot(
+    has_screenshot: bool,
+    attachment_caps: Option<attachment_caps::AttachmentCaps>,
+) -> bool {
+    has_screenshot && attachment_caps.is_some_and(|caps| !caps.images)
+}
+
+/// The attachment caps of the model that produced this block's output, if resolvable.
+///
+/// Uses the same resolution `chat_stream`'s screenshot-attachment planning and the
+/// model-picker's vision chip both use -- `resolve_for_model` first, `caps_for` as the
+/// fallback when the model has dropped out of `provider.models` -- so this can only
+/// disagree with the runtime attachment decision if the model or provider changed out
+/// from under the conversation between actions. See `agent_providers/mod.rs`'s "UI
+/// display and runtime behavior always stay in sync" comment on the model-picker's use
+/// of the same pair of calls.
+fn attachment_caps_for_block(
+    model: &dyn AIBlockModel<View = AIBlock>,
+    app: &AppContext,
+) -> Option<attachment_caps::AttachmentCaps> {
+    let llm_id = model.model_id(app)?;
+    let (provider, _api_key, model_id) = crate::ai::agent_providers::lookup_byop(app, &llm_id)?;
+    Some(
+        provider
+            .models
+            .iter()
+            .find(|m| m.id == model_id)
+            .map(|m| attachment_caps::resolve_for_model(&provider.id, provider.api_type, m))
+            .unwrap_or_else(|| attachment_caps::caps_for(provider.api_type, &model_id)),
+    )
+}
+
+/// Footer telling the user a captured screenshot never reached the model.
+fn render_screenshot_not_delivered_footer(app: &AppContext) -> Box<dyn Element> {
+    let appearance = Appearance::as_ref(app);
+    let theme = appearance.theme();
+    Container::new(
+        Text::new(
+            "This screenshot wasn't sent to the model -- it can't accept image input here.",
+            appearance.ui_font_family(),
+            appearance.ui_font_size(),
+        )
+        .with_color(theme.sub_text_color(theme.surface_1()).into())
+        .finish(),
+    )
+    .finish()
+}
+
 fn render_use_computer(
     props: Props,
     action_id: &AIAgentActionId,
@@ -2872,6 +2949,14 @@ fn render_use_computer(
                 ) if action_result.screenshot.is_some()
             )
         });
+
+    if should_decorate_blind_use_computer_screenshot(
+        has_screenshot,
+        attachment_caps_for_block(props.model, app),
+    ) {
+        renderable_action =
+            renderable_action.with_footer(render_screenshot_not_delivered_footer(app));
+    }
 
     if has_screenshot {
         let action_id_clone = action_id.clone();

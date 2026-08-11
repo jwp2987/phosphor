@@ -4,8 +4,72 @@ use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::remote_path::RemotePath;
 use warp_util::standardized_path::StandardizedPath;
 
-use super::{parsed_skill_for_common_locations, read_skill_display_text};
+use super::{
+    attachment_caps::AttachmentCaps, parsed_skill_for_common_locations, read_skill_display_text,
+    should_decorate_blind_use_computer_screenshot,
+};
 use crate::ai::skills::SkillManager;
+
+fn sighted_caps() -> AttachmentCaps {
+    AttachmentCaps {
+        images: true,
+        pdf: true,
+        audio: false,
+    }
+}
+
+fn blind_caps() -> AttachmentCaps {
+    AttachmentCaps {
+        images: false,
+        pdf: false,
+        audio: false,
+    }
+}
+
+// Mirrors the pin's `use_computer_decoration_skips_screenshot_only_rows` in shape (a
+// pure predicate over a `use_computer` block's decoration), but not in subject: the
+// pin decorates recording status, which this fork has declined (DECLINED.md,
+// "computer_use session recording", #350). This decorates screenshot delivery status
+// instead -- see `should_decorate_blind_use_computer_screenshot`'s doc comment.
+
+#[test]
+fn use_computer_screenshot_decoration_shows_when_model_cannot_see_images() {
+    assert!(should_decorate_blind_use_computer_screenshot(
+        true,
+        Some(blind_caps()),
+    ));
+}
+
+#[test]
+fn use_computer_screenshot_decoration_hidden_when_model_can_see_images() {
+    // The model may or may not have actually received *this* screenshot --
+    // `ScreenshotDelivery::Superseded`/`Undeliverable` are real per-turn outcomes for
+    // an image-capable model -- but the block cannot know which without turn-local
+    // state it doesn't have. It must stay quiet rather than claim delivery.
+    assert!(!should_decorate_blind_use_computer_screenshot(
+        true,
+        Some(sighted_caps()),
+    ));
+}
+
+#[test]
+fn use_computer_screenshot_decoration_hidden_without_a_screenshot() {
+    // Nothing was captured, so there is nothing to say was or wasn't delivered --
+    // matches the pin's own "screenshot-only rows" exemption in spirit, just for the
+    // opposite direction (no actions vs. no screenshot).
+    assert!(!should_decorate_blind_use_computer_screenshot(
+        false,
+        Some(blind_caps()),
+    ));
+}
+
+#[test]
+fn use_computer_screenshot_decoration_hidden_when_caps_are_unresolvable() {
+    // `attachment_caps_for_block` returns `None` when the model/provider can't be
+    // resolved (e.g. deleted mid-conversation). Absence of proof the model is blind
+    // is not proof it can see -- so this stays quiet rather than guessing either way.
+    assert!(!should_decorate_blind_use_computer_screenshot(true, None));
+}
 
 fn make_skill(name: &str) -> ParsedSkill {
     ParsedSkill {
