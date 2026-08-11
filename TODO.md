@@ -941,20 +941,34 @@ it can be mechanised -- but only if the inputs are recorded WHILE the first pass
 happens. Retrofitting them afterwards costs as much as the pass itself.
 
 **Mechanisable, worth building:**
-- [ ] **Identical-to-pin manifest.** Per fork file, record whether it is
-      byte-identical to the pin. Files that are identical can be fast-forwarded
-      at the next re-pin with zero judgment. This single number tells us how
-      cheap re-pinning actually gets. Cheap to generate as a one-off measurement
-      (same method as the 2026-08-08 coverage measurement).
-- [ ] **Re-pin work queue generator.** `git diff <pin N> <pin N+1>` over
-      test-bearing files, bucketed by the existing `SCOPE-*.md` verdicts and
-      `script/check_cloud_boundary`, so cloud-touching changes drop out
-      automatically and what remains is a triaged list.
-- [ ] **Divergence-collision guard.** THE ONE TONIGHT PROVED WE NEED. Flag when
-      an incoming pin test collides with a deliberate fork divergence. Requires
-      `DECLINED.md` entries to carry machine-checkable markers (symbol names or
-      file paths), not just prose. Change how entries are written NOW, while they
-      are being created anyway.
+- [x] **Identical-to-pin manifest.** **DONE 2026-08-11** (`script/generate_pin_identity_manifest`
+      + `docs/PIN-IDENTITY-MANIFEST.md`). Compares git blob hashes (not
+      per-file `git show`) between the pin and fork HEAD for every `.rs` file
+      under `app/src`/`crates`. Current measurement: **572 identical (17%),
+      2334 differ, 460 fork-only** of 3366 fork files scanned. Regenerate with
+      the script; it is a snapshot, not a live gate.
+- [x] **Re-pin work queue generator.** **DONE 2026-08-11** (`script/generate_repin_queue
+      [<new-pin>] [<old-pin>]`). `git diff <pin N> <pin N+1>` over test-bearing
+      files, bucketed by inherited `SCOPE-*.md` verdicts (explicitly labelled a
+      verdict, not a fact) and a pin-source cloud-import check in the spirit of
+      `script/check_cloud_boundary`, plus a DECLINED.md-marker collision check.
+      Runnable now with no `<new-pin>` (self-diffs the current pin, trivially
+      empty) and demoed against `warp/master` (549 files changed, 177
+      test-bearing -> 11 declined-collision, 20 unclassified, 52 actionable, 50
+      low-priority, 44 cloud-dropped; math reconciles exactly).
+- [x] **Divergence-collision guard.** **DONE 2026-08-11** (`script/check_declined_collisions`,
+      wired into `script/precheck`'s guards step and the `pr-check.yml` `guards`
+      job). `DECLINED.md` rows now carry `<!-- markers: kind:value ... -->`
+      comments (`test:`/`sym:`/`path:`/`keep:` -- see DECLINED.md's new
+      "Machine-checkable markers" section for the convention and the false-
+      positive trap it documents, found live during the retrofit:
+      `VoiceInputLifecycle` looked markable and was not, because that exact
+      name is legitimately reused by `crates/voice_input`'s real audio-capture
+      state machine). 19 of ~33 active `DECLINED.md` rows retrofitted (37
+      individual markers); the rest name nothing exact enough to check safely
+      and were left unmarked on purpose. Runs clean on the current tree (0
+      findings, all 4 marker kinds verified to fire on injected true
+      positives, cleaned up afterward).
 - [x] **Gates that actually run.** DONE 2026-08-08: `script/precheck` now covers
       8,342 tests across 43 packages, up from 6,181 across 3.
 

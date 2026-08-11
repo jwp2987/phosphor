@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Regenerate docs/PIN-IDENTITY-MANIFEST.md: which fork .rs files are
+# byte-identical to the pinned oracle, and which have diverged.
+#
+# WHY THIS EXISTS
+# ----------------
+# At the next re-pin, a file that is still byte-identical to the OLD pin can be
+# fast-forwarded to the NEW pin's content with zero judgment -- there is no
+# fork-original code in it to reconcile. A file that has diverged needs a human
+# to look at the diff. This manifest is the count that says how many files fall
+# in each bucket, i.e. how cheap re-pinning actually is -- see the
+# "RE-PIN AUTOMATION" section of TODO.md.
+#
+# It is a one-off generated artefact (docs/PIN-IDENTITY-MANIFEST.md), not a
+# live gate: nothing in CI or precheck runs this. Regenerate it by hand after a
+# porting pass and when re-pinning.
+#
+# HOW IT WORKS
+# ------------
+# Compares git BLOB HASHES from `git ls-tree`, not file contents directly.
+# A blob hash is content-addressed (sha1 of "blob <size>\0<content>"), so two
+# paths with the same hash are byte-identical -- and this avoids invoking `git
+# show`/diff once per file (thousands of files; per-file git invocations would
+# make this slow enough that nobody would ever regenerate it).
+#
+# Scope is every `.rs` file under app/src and crates in the fork's HEAD tree,
+# matched by path against the pin's tree. Three buckets:
+#   IDENTICAL  -- same path, same blob hash. Fast-forwardable with zero
+#                 judgment at the next re-pin.
+#   DIFFERS    -- same path, different blob hash. Fork has touched this file
+#                 (port, adaptation, or a fork-original addition to it).
+#   FORK-ONLY  -- path does not exist at the pin at all (fork-original file,
+#                 or the pin's counterpart lives under a renamed/flattened
+#                 path -- see ORACLE.md's note that `*_tests.rs` -> `*_test.rs`
+#                 renaming defeats path matching; this script does NOT correct
+#                 for that, so a FORK-ONLY file may still be a rename, not a
+#                 wholly new one).
+# A fourth quantity, PIN-ONLY (paths the pin has that the fork tree lacks
+# entirely), is reported as a single count for context -- it is already
+# covered file-by-file by SCOPE-AI.md / SCOPE-TERMINAL.md / SCOPE-REST.md and
+# duplicating that here would just be a second, unmaintained copy of it.
+#
+# USAGE
+#     script/generate_pin_identity_manifest
+#         Regenerates docs/PIN-IDENTITY-MANIFEST.md and its companion raw list
+#         docs/PIN-IDENTITY-MANIFEST-files.tsv (path, bucket, pin hash, fork
+#         hash -- the full per-file evidence behind the summary counts).
+#
+# Skips cleanly (exit 0, no files touched) if the pin commit is not fetched,
+# same convention as script/check_stub_coverage.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+PIN="$(grep -oE '\*\*Commit\*\* \| `[0-9a-f]+`' ORACLE.md 2>/dev/null | grep -oE '[0-9a-f]{7,}' | head -1)"
+PIN="${PIN:-02b53fcd8}"
+
+if ! git cat-file -e "${PIN}^{commit}" 2>/dev/null; then
+    echo "pin identity manifest: skipped (pin ${PIN} not fetched; run 'git fetch warp ${PIN}')"
+    exit 0
+fi
+
+OUT_MD="docs/PIN-IDENTITY-MANIFEST.md"
+OUT_TSV="docs/PIN-IDENTITY-MANIFEST-files.tsv"
+FORK_REV="HEAD"
+FORK_SHORT="$(git rev-parse --short "$FORK_REV")"
+GENERATED="$(date -u +%Y-%m-%d)"
+
+pin_raw="$(mktemp)" fork_raw="$(mktemp)"
+pin_sorted="$(mktemp)" fork_sorted="$(mktemp)"
+joined="$(mktemp)"
+trap 'rm -f "$pin_raw" "$fork_raw" "$pin_sorted" "$fork_sorted" "$joined"' EXIT
+
+git ls-tree -r "$PIN" -- app/src crates 2>/dev/null > "$pin_raw"
+git ls-tree -r "$FORK_REV" -- app/src crates 2>/dev/null > "$fork_raw"
+
+# path\thash, .rs only, sorted by path for `join`.
+awk '$4 ~ /\.rs$/ {print $4"\t"$3}' "$pin_raw"  | sort -k1,1 > "$pin_sorted"
+awk '$4 ~ /\.rs$/ {print $4"\t"$3}' "$fork_raw" | sort -k1,1 > "$fork_sorted"
+
+# Full outer join on path: path, pin_hash(or -), fork_hash(or -).
+join -t $'\t' -a1 -a2 -e '-' -o '0,1.2,2.2' "$pin_sorted" "$fork_sorted" > "$joined"
+
+pin_only_count=$(awk -F'\t' '$3 == "-"' "$joined" | wc -l | tr -d ' ')
+
+{
+    printf 'path\tbucket\tpin_hash\tfork_hash\n'
+    awk -F'\t' '
+        $2 == "-"           { print $1"\tFORK-ONLY\t-\t"$3; next }
+        $3 == "-"           { next }  # PIN-ONLY: counted, not itemised (see SCOPE-*.md)
+        $2 == $3            { print $1"\tIDENTICAL\t"$2"\t"$3; next }
+        {                     print $1"\tDIFFERS\t"$2"\t"$3 }
+    ' "$joined"
+} > "$OUT_TSV"
+
+identical_count=$(awk -F'\t' '$2 == "IDENTICAL"' "$OUT_TSV" | wc -l | tr -d ' ')
+differs_count=$(awk -F'\t' '$2 == "DIFFERS"' "$OUT_TSV" | wc -l | tr -d ' ')
+forkonly_count=$(awk -F'\t' '$2 == "FORK-ONLY"' "$OUT_TSV" | wc -l | tr -d ' ')
+total_fork=$(( identical_count + differs_count + forkonly_count ))
+pct_identical=0 pct_differs=0 pct_forkonly=0
+if [[ "$total_fork" -gt 0 ]]; then
+    pct_identical=$(( identical_count * 100 / total_fork ))
+    pct_differs=$(( differs_count * 100 / total_fork ))
+    pct_forkonly=$(( forkonly_count * 100 / total_fork ))
+fi
+
+# Per-component breakdown: app/src/<first-subdir> or crates/<crate-name>.
+component_table="$(mktemp)"
+awk -F'\t' 'NR>1 {
+        n = split($1, parts, "/")
+        if (parts[1] == "app" && parts[2] == "src") {
+            # A bare top-level file (app/src/lib.rs, 3 parts total) is not a
+            # directory -- group it separately rather than one noisy
+            # one-file "component" per file.
+            comp = (n <= 3) ? "app/src/(root files)" : "app/src/"parts[3]
+        } else if (parts[1] == "crates") {
+            comp = (n <= 2) ? "crates/(root files)" : "crates/"parts[2]
+        } else comp = parts[1]
+        total[comp]++
+        if ($2 == "IDENTICAL") ident[comp]++
+        else if ($2 == "DIFFERS") diff[comp]++
+        else forkonly[comp]++
+    }
+    END {
+        for (c in total) {
+            printf "%s\t%d\t%d\t%d\t%d\n", c, total[c], ident[c]+0, diff[c]+0, forkonly[c]+0
+        }
+    }' "$OUT_TSV" | sort -t$'\t' -k2,2nr > "$component_table"
+
+{
+    cat <<EOF
+# Pin identity manifest
+
+Which fork \`.rs\` files under \`app/src\` and \`crates\` are byte-identical to
+the pinned oracle right now, versus touched (\`DIFFERS\`) or fork-original
+(\`FORK-ONLY\`). Identical files are the ones that can be fast-forwarded to the
+next pin with zero judgment -- see the "RE-PIN AUTOMATION" section of
+\`TODO.md\` for why this number matters and \`ORACLE.md\` for the pin policy.
+
+Generated **${GENERATED}**, pin \`${PIN}\`, fork \`${FORK_SHORT}\`.
+
+**To regenerate:** \`script/generate_pin_identity_manifest\`. It needs the pin
+commit fetched (\`git fetch warp ${PIN}\`) and writes this file plus the
+per-file evidence in \`docs/PIN-IDENTITY-MANIFEST-files.tsv\`. It is a
+generated snapshot, not a live gate -- nothing in CI runs it, so it drifts
+between runs; re-run it after a porting pass, and always at a re-pin.
+
+## Headline
+
+| bucket | files | % of fork |
+|---|---:|---:|
+| **IDENTICAL** — fast-forwardable, zero judgment | ${identical_count} | ${pct_identical}% |
+| **DIFFERS** — fork touched this file | ${differs_count} | ${pct_differs}% |
+| **FORK-ONLY** — no path match at the pin | ${forkonly_count} | ${pct_forkonly}% |
+| **total fork .rs files scanned** | ${total_fork} | 100% |
+
+**Pin-only** (a path the pin has that this scan found no fork counterpart
+for): **${pin_only_count}** files. Not itemised here — this is exactly what
+SCOPE-AI.md / SCOPE-TERMINAL.md / SCOPE-REST.md already classify file-by-file,
+with the caveats those files carry (read their staleness banners before
+treating either count as a fact rather than a verdict).
+
+**FORK-ONLY is not the same as "fork-original".** This is a raw path match:
+the fork's own \`*_tests.rs\` -> \`*_test.rs\` rename and \`a/b/c_tests.rs\` ->
+\`a/b_c_tests.rs\` flattening (documented in ORACLE.md) means some FORK-ONLY
+paths here are renamed pin files, not new ones. Cross-check against
+SCOPE-*.md before calling a FORK-ONLY file "ours".
+
+## By component
+
+Top-level \`app/src/<area>\` or \`crates/<crate>\`, sorted by file count.
+
+| component | files | identical | differs | fork-only |
+|---|---:|---:|---:|---:|
+EOF
+    awk -F'\t' '{printf "| `%s` | %d | %d | %d | %d |\n", $1, $2, $3, $4, $5}' "$component_table"
+    cat <<EOF
+
+## Raw data
+
+Full per-file list (path, bucket, pin blob hash, fork blob hash):
+\`docs/PIN-IDENTITY-MANIFEST-files.tsv\` (${total_fork} rows, tab-separated,
+header row included).
+EOF
+} > "$OUT_MD"
+
+rm -f "$component_table"
+
+echo "pin identity manifest: ok -- ${identical_count} identical, ${differs_count} differ, ${forkonly_count} fork-only (of ${total_fork} fork .rs files); wrote $OUT_MD and $OUT_TSV"

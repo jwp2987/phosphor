@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Build a triaged work queue for moving the oracle pin from N to N+1.
+#
+# WHY THIS EXISTS
+# ----------------
+# `git diff <pin N> <pin N+1>` over the whole Warp tree is thousands of files,
+# most of them cloud or already covered. What a human needs at re-pin time is
+# the much shorter list of test-bearing files that (a) changed upstream AND
+# (b) are not cloud AND (c) are not something the fork already has a verdict
+# on. This generates that list, so re-pinning starts from a triage instead of
+# a raw diff. See the "RE-PIN AUTOMATION" section of TODO.md.
+#
+# USAGE
+#     script/generate_repin_queue [<new-pin>] [<old-pin>]
+#
+#     <old-pin> defaults to the pin recorded in ORACLE.md (pin N).
+#     <new-pin> defaults to <old-pin> too -- so a bare invocation diffs the
+#     pin against itself and produces a trivially empty queue. This is
+#     DELIBERATE: a generator that only works once N+1 exists is a generator
+#     nobody can tell is broken until the day it matters. Pass a real
+#     candidate commit (e.g. a recent `warp/master` commit, or the actual next
+#     stable once ORACLE.md is updated) to exercise it for real before then.
+#
+# HOW IT WORKS
+# ------------
+# 1. `git diff --name-status <old> <new> -- '*.rs'` over the whole tree (this
+#    is Warp's own diff between two of its own commits -- nothing fork-side
+#    yet).
+# 2. Keep only files that are TEST-BEARING at whichever side of the diff
+#    still has them (a test-attribute grep, same four attributes SCOPE-*.md's
+#    own Method sections use: #[test], #[tokio::test], #[gpui::test],
+#    #[rstest]/#[test_case]).
+# 3. Bucket each survivor:
+#      DECLINED COLLISION -- the diff touches a name/path DECLINED.md marked
+#                             (see script/check_declined_collisions). Highest
+#                             priority: read the row before doing anything.
+#      CLOUD-DROPPED       -- the pin file's own `use` lines reach a cloud
+#                             module (crate::server::, cloud_object,
+#                             warp_graphql, ServerApiProvider, ...), the same
+#                             marker check_cloud_boundary and SCOPE-*.md use.
+#                             Counted, not listed -- nothing to do.
+#      REMOVED AT NEW PIN  -- the file existed at the old pin and does not at
+#                             the new one. Informational only.
+#      UNCLASSIFIED        -- no SCOPE-*.md row exists for this exact path at
+#                             the OLD pin. Nobody has judged it yet, so it
+#                             needs a first look, not a re-look.
+#      inherited verdict   -- SCOPE-*.md already has a row for this path; its
+#                             verdict letter (A/B/C/D/MIXED) is carried over,
+#                             clearly labelled a VERDICT, not a fact (see the
+#                             caveat below).
+#
+# WHY THE INHERITED VERDICT IS NOT TRUSTED SILENTLY
+# ---------------------------------------------------
+# CLAUDE.md and SCOPE-*.md's own staleness banners record two separate,
+# already-discovered overstatements of verdict A: MIXED files collapse to
+# their majority bucket, and (found later, docs/SWEEP-INVENTORY.md) a
+# same-named file is not necessarily the same module, and the pin's API under
+# test may no longer even exist in an otherwise-verdict-A file. A verdict
+# carried into this queue is exactly as reliable as it was in SCOPE-*.md --
+# this script does not re-derive it, and every place it prints one says so.
+#
+# Requires the two pin commits fetched. Skips cleanly (exit 0) if either is
+# missing, same convention as script/check_stub_coverage.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+OLD_PIN_DEFAULT="$(grep -oE '\*\*Commit\*\* \| `[0-9a-f]+`' ORACLE.md 2>/dev/null | grep -oE '[0-9a-f]{7,}' | head -1)"
+OLD_PIN_DEFAULT="${OLD_PIN_DEFAULT:-02b53fcd8}"
+
+NEW_PIN="${1:-$OLD_PIN_DEFAULT}"
+OLD_PIN="${2:-$OLD_PIN_DEFAULT}"
+
+for rev in "$OLD_PIN" "$NEW_PIN"; do
+    if ! git cat-file -e "${rev}^{commit}" 2>/dev/null; then
+        echo "repin queue: skipped (commit ${rev} not fetched; run 'git fetch warp ${rev}')"
+        exit 0
+    fi
+done
+
+TEST_ATTR_RE='#\[[[:space:]]*(test|tokio::test|gpui::test|rstest|test_case)'
+CLOUD_RE='crate::server::|cloud_object|warp_graphql|ServerApiProvider|warp_server_client|warp_server_auth|cloud_object_models|cloud_object_persistence'
+
+is_test_bearing() {
+    # $1 = rev, $2 = path
+    git show "$1:$2" 2>/dev/null | grep -qE "$TEST_ATTR_RE"
+}
+
+is_cloud_touching() {
+    # $1 = rev, $2 = path -- reads the pin's own imports, same first filter
+    # check_cloud_boundary and SCOPE-*.md both use.
+    git show "$1:$2" 2>/dev/null | grep -E '^\s*use ' | grep -qE "$CLOUD_RE"
+}
+
+scope_verdict_for() {
+    # Prints "FILE VERDICT" if any SCOPE-*.md has a row for this exact path,
+    # nothing otherwise. SCOPE rows start with "| `<path>` | <verdict> |".
+    local path="$1"
+    grep -hE "^\| \`${path}\` \|" SCOPE-AI.md SCOPE-TERMINAL.md SCOPE-REST.md 2>/dev/null \
+        | head -1 \
+        | awk -F'|' '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); print $3}'
+}
+
+declined_markers() {
+    # All marker values (any kind) recorded in DECLINED.md, one per line.
+    grep -oE '<!-- markers:[^>]*-->' DECLINED.md 2>/dev/null \
+        | sed -E 's/^<!-- markers:[[:space:]]*//; s/[[:space:]]*-->$//' \
+        | tr ' ' '\n' \
+        | grep -E '^(test|sym|path|keep):' \
+        | cut -d: -f2-
+}
+
+collision_hits="$(mktemp)" unclassified="$(mktemp)" actionable="$(mktemp)"
+lowprio="$(mktemp)" removed="$(mktemp)"
+cloud_count=0
+trap 'rm -f "$collision_hits" "$unclassified" "$actionable" "$lowprio" "$removed"' EXIT
+
+marker_values="$(declined_markers)"
+
+total_changed=0
+total_test_bearing=0
+
+while IFS=$'\t' read -r status path; do
+    [[ -z "$path" ]] && continue
+    total_changed=$((total_changed + 1))
+
+    if [[ "$status" == D* ]]; then
+        is_test_bearing "$OLD_PIN" "$path" || continue
+        total_test_bearing=$((total_test_bearing + 1))
+        echo "$path" >> "$removed"
+        continue
+    fi
+
+    is_test_bearing "$NEW_PIN" "$path" || continue
+    total_test_bearing=$((total_test_bearing + 1))
+
+    # Declined-collision check: does this file's diff mention a marked name?
+    if [[ -n "$marker_values" ]]; then
+        diff_text="$(git diff "$OLD_PIN" "$NEW_PIN" -- "$path" 2>/dev/null)"
+        hit=""
+        while IFS= read -r mv; do
+            [[ -z "$mv" ]] && continue
+            if printf '%s' "$diff_text" | grep -qF "$mv"; then
+                hit="$mv"
+                break
+            fi
+        done <<< "$marker_values"
+        if [[ -n "$hit" ]]; then
+            printf '%s  (touches DECLINED.md marker: %s)\n' "$path" "$hit" >> "$collision_hits"
+            continue
+        fi
+    fi
+
+    if is_cloud_touching "$NEW_PIN" "$path"; then
+        cloud_count=$((cloud_count + 1))
+        continue
+    fi
+
+    verdict="$(scope_verdict_for "$path")"
+    if [[ -z "$verdict" ]]; then
+        echo "$path" >> "$unclassified"
+    elif [[ "$verdict" == A* || "$verdict" == D* || "$verdict" == MIXED* ]]; then
+        printf '%s  (SCOPE verdict %s -- a VERDICT, not a fact; re-check before trusting it)\n' \
+            "$path" "$verdict" >> "$actionable"
+    else
+        printf '%s  (SCOPE verdict %s)\n' "$path" "$verdict" >> "$lowprio"
+    fi
+done < <(git diff --name-status "$OLD_PIN" "$NEW_PIN" -- '*.rs' 2>/dev/null)
+
+n_collision=$(wc -l < "$collision_hits" | tr -d ' ')
+n_unclassified=$(wc -l < "$unclassified" | tr -d ' ')
+n_actionable=$(wc -l < "$actionable" | tr -d ' ')
+n_lowprio=$(wc -l < "$lowprio" | tr -d ' ')
+n_removed=$(wc -l < "$removed" | tr -d ' ')
+
+echo "Re-pin work queue: ${OLD_PIN} -> ${NEW_PIN}"
+echo "================================================"
+echo
+echo "${total_changed} .rs file(s) changed upstream; ${total_test_bearing} are test-bearing."
+if [[ "$OLD_PIN" == "$NEW_PIN" ]]; then
+    echo "(old pin == new pin: this is the trivial self-diff case, exercised with"
+    echo " no real N+1 yet. Pass a candidate commit as \$1 to run this for real.)"
+fi
+echo
+
+print_section() {
+    local title="$1" count="$2" file="$3" show="$4"
+    echo "--- ${title} (${count}) ---"
+    if [[ "$count" -eq 0 ]]; then
+        echo "  (none)"
+    elif [[ "$show" == "list" ]]; then
+        sed 's/^/  /' "$file"
+    fi
+    echo
+}
+
+print_section "DECLINED COLLISIONS -- read DECLINED.md before touching these" "$n_collision" "$collision_hits" list
+print_section "UNCLASSIFIED -- no SCOPE-*.md verdict at the old pin, needs a first look" "$n_unclassified" "$unclassified" list
+print_section "ACTIONABLE -- inherited SCOPE verdict A/D/MIXED (work, pending re-check)" "$n_actionable" "$actionable" list
+print_section "LOW-PRIORITY -- inherited SCOPE verdict B/C (already covered / out of scope)" "$n_lowprio" "$lowprio" list
+print_section "REMOVED AT NEW PIN -- file no longer exists upstream" "$n_removed" "$removed" list
+echo "--- CLOUD-DROPPED -- pin file's own imports reach a cloud module (${cloud_count}) ---"
+echo "  (counted only, not listed -- nothing to do)"
+echo
+
+echo "Next step: DECLINED COLLISIONS and UNCLASSIFIED first -- nobody has"
+echo "judged them yet. Then ACTIONABLE, re-checking each inherited verdict"
+echo "against the file's actual pin-side imports before trusting it (see"
+echo "CLAUDE.md's verdict-A caveat and docs/SWEEP-INVENTORY.md's larger one)."
+echo "LOW-PRIORITY and CLOUD-DROPPED need no action unless you suspect the"
+echo "old verdict is now stale."

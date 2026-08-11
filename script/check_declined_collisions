@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Fail when the fork collides with a deliberate divergence recorded in DECLINED.md.
+#
+# WHY THIS EXISTS
+# ----------------
+# DECLINED.md records decisions NOT to match the pinned oracle. Until now those
+# decisions were prose only, so nothing stopped a future port from silently
+# undoing one -- porting a pin test the fork already decided never to port,
+# reintroducing a symbol that was deliberately deleted, or quietly dropping a
+# still-functional divergence while "simplifying". The agent doing the porting
+# usually has not read this file, gets a red test, and "fixes" it by weakening
+# the assertion -- which AGENTS.md 5.6 forbids and is worse than the original
+# gap, because it now reads as covered.
+#
+# This proved out three times after the re-pin-automation TODO entry that asked
+# for it: a perf branch based before a fix nearly re-introduced a startup crash
+# via a clean automatic merge; the Phosphor Drive removal had to be reverted
+# after a DECLINED.md row asserted "cloud" without evidence; and eight ledger
+# entries were found stating the opposite of the code. This guard cannot catch
+# all of those -- a wrong DECLINED.md row is a human error this script cannot
+# see -- but it catches the shape that IS mechanical: a marked symbol, test, or
+# path reappearing (or disappearing) in the tree.
+#
+# HOW IT WORKS
+# ------------
+# DECLINED.md rows carry `<!-- markers: kind:value ... -->` comments (see its
+# "Machine-checkable markers" section, which is the source of truth for the
+# format -- read it before changing this script). Four kinds:
+#
+#   test:<name>  -- a pinned test function that must NEVER be (re)defined here.
+#                    Fails if a function of that exact name is defined anywhere
+#                    under app/src or crates AND looks like a test (lives in a
+#                    *_test.rs / *_tests.rs file, or has a test attribute on one
+#                    of the 3 lines above it).
+#   sym:<name>   -- a symbol deliberately deleted / never ported; must stay
+#                    absent. Fails if `struct|enum|trait|fn <name>` is defined
+#                    again anywhere under app/src or crates.
+#   path:<path>  -- a file or directory deliberately removed; must stay
+#                    removed. Fails if the path exists again.
+#   keep:<name>  -- a symbol/test that IS the fork's deliberate, still
+#                    functional divergence -- "do not remove". Fails if the
+#                    name can no longer be found anywhere under app/src or
+#                    crates (i.e. it looks like it got silently dropped).
+#
+# WHY THIS IS CONSERVATIVE ON PURPOSE
+# ------------------------------------
+# False positives are the failure mode that kills a guard like this one --
+# a check people learn to ignore is worse than no check. So:
+#
+#   - Every marker is an EXACT name, never a pattern. `sym:`/`test:` matching
+#     requires the language's own definition syntax (`fn NAME(`, `struct
+#     NAME`, ...), not a bare textual grep, to keep incidental prose mentions
+#     (a comment, a docstring) from counting as a "reintroduction".
+#   - `test:` additionally requires the hit to look like a test (co-located in
+#     a `_test(s).rs` file, or a test attribute immediately above it) so that a
+#     same-named production helper function does not trip it -- the exact
+#     failure mode `script/check_stub_coverage` documents for its own
+#     comparable heuristic.
+#   - Retrofitting DECLINED.md for this script (2026-08-10) found a live
+#     example of the trap: the `/voice` row named `VoiceInputLifecycle` as
+#     "KEEP-DROPPED", but that exact name is reused by `crates/voice_input`'s
+#     real, legitimately-kept audio-capture state machine -- a different type
+#     in a different crate. It was left unmarked rather than risk exactly this
+#     collision. Anyone adding a new marker should grep first, the same way.
+#   - Every DECLINED.md row that names nothing exact enough to check was left
+#     unmarked, deliberately, rather than guessed at.
+#
+# This is therefore an UNDER-report by construction: many real divergences in
+# DECLINED.md have no marker and this script says nothing about them. That is
+# the intended trade -- see its "Machine-checkable markers" section.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+DECLINED_FILE="DECLINED.md"
+if [[ ! -f "$DECLINED_FILE" ]]; then
+    echo "error: $DECLINED_FILE is missing" >&2
+    exit 2
+fi
+
+SEARCH_DIRS=(app/src crates)
+FNDEF_PREFIX='^[[:space:]]*(pub(\([a-z]+\))? )?(async )?fn[[:space:]]+'
+TEST_ATTR='#\[[[:space:]]*(test|tokio::test|gpui::test|rstest|test_case)'
+
+findings="$(mktemp)"
+n_test=0 n_sym=0 n_path=0 n_keep=0
+trap 'rm -f "$findings"' EXIT
+
+# One line per marker token, e.g. "test:some_name". Restricted to the four
+# known lowercase kinds at extraction time -- this is also what keeps the
+# format documentation's own `KIND:VALUE` placeholder (in DECLINED.md's
+# "Machine-checkable markers" section, which necessarily matches the same
+# `<!-- markers: ... -->` shape it is documenting) from being read as data.
+tokens="$(grep -oE '<!-- markers:[^>]*-->' "$DECLINED_FILE" \
+    | sed -E 's/^<!-- markers:[[:space:]]*//; s/[[:space:]]*-->$//' \
+    | tr ' ' '\n' \
+    | grep -E '^(test|sym|path|keep):')"
+
+while IFS= read -r tok; do
+    [[ -z "$tok" ]] && continue
+    kind="${tok%%:*}"
+    name="${tok#*:}"
+    [[ -z "$kind" || -z "$name" || "$kind" == "$tok" ]] && continue
+
+    case "$kind" in
+    test)
+        n_test=$((n_test + 1))
+        hits="$(grep -rnE "${FNDEF_PREFIX}${name}\(" "${SEARCH_DIRS[@]}" --include='*.rs' 2>/dev/null)" || true
+        [[ -z "$hits" ]] && continue
+        while IFS= read -r hit; do
+            [[ -z "$hit" ]] && continue
+            file="${hit%%:*}"
+            rest="${hit#*:}"
+            lineno="${rest%%:*}"
+            is_test=0
+            [[ "$file" =~ _tests?\.rs$ ]] && is_test=1
+            if [[ "$is_test" -eq 0 && "$lineno" =~ ^[0-9]+$ && "$lineno" -gt 1 ]]; then
+                ctx_start=$((lineno > 3 ? lineno - 3 : 1))
+                if sed -n "${ctx_start},$((lineno - 1))p" "$file" 2>/dev/null | grep -qE "$TEST_ATTR"; then
+                    is_test=1
+                fi
+            fi
+            if [[ "$is_test" -eq 1 ]]; then
+                printf 'test:%s  DEFINED at %s:%s -- DECLINED.md says this pinned test must never be ported\n' \
+                    "$name" "$file" "$lineno" >> "$findings"
+            fi
+        done <<< "$hits"
+        ;;
+    sym)
+        n_sym=$((n_sym + 1))
+        hits="$(grep -rnE "^[[:space:]]*(pub(\([a-z]+\))? )?(struct|enum|trait|fn)[[:space:]]+${name}\b" "${SEARCH_DIRS[@]}" --include='*.rs' 2>/dev/null)" || true
+        [[ -z "$hits" ]] && continue
+        while IFS= read -r hit; do
+            [[ -z "$hit" ]] && continue
+            file="${hit%%:*}"
+            rest="${hit#*:}"
+            lineno="${rest%%:*}"
+            printf 'sym:%s  DEFINED at %s:%s -- DECLINED.md says this symbol was deliberately removed and must stay absent\n' \
+                "$name" "$file" "$lineno" >> "$findings"
+        done <<< "$hits"
+        ;;
+    path)
+        n_path=$((n_path + 1))
+        if [[ -e "$name" ]]; then
+            printf 'path:%s  EXISTS -- DECLINED.md says this path was deliberately removed and must stay absent\n' \
+                "$name" >> "$findings"
+        fi
+        ;;
+    keep)
+        n_keep=$((n_keep + 1))
+        hit="$(grep -rlE "\b${name}\b" "${SEARCH_DIRS[@]}" --include='*.rs' 2>/dev/null | head -1)" || true
+        if [[ -z "$hit" ]]; then
+            printf 'keep:%s  NOT FOUND anywhere under app/src or crates -- DECLINED.md says this must stay\n' \
+                "$name" >> "$findings"
+        fi
+        ;;
+    *)
+        echo "warning: DECLINED.md has an unrecognised marker kind '$kind' (token '$tok')" >&2
+        ;;
+    esac
+done <<< "$tokens"
+
+total=$((n_test + n_sym + n_path + n_keep))
+if [[ "$total" -eq 0 ]]; then
+    echo "warning: DECLINED.md has no <!-- markers: ... --> comments at all -- check the marker syntax" >&2
+fi
+
+if [[ -s "$findings" ]]; then
+    echo "error: fork state collides with a deliberate divergence in DECLINED.md:" >&2
+    sort -u "$findings" | sed 's/^/  /' >&2
+    cat >&2 <<'EOF'
+
+Read the matching DECLINED.md row before doing anything else -- it explains
+WHY this is a decision, not a gap. If you still believe it should change,
+reopen the issue it cites and argue there (AGENTS.md 5.10: any deviation from
+a recorded decision needs maintainer sign-off + a tracking issue). Do not
+"fix" this by deleting the test/symbol/path you just added, or by weakening
+what it asserts, without updating DECLINED.md in the same change -- that
+reintroduces exactly the silent-regression risk this file exists to prevent.
+EOF
+    exit 1
+fi
+
+echo "declined collisions: ok (${total} markers checked: ${n_test} test, ${n_sym} sym, ${n_path} path, ${n_keep} keep)"
+exit 0
