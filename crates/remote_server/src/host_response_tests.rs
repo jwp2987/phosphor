@@ -188,8 +188,9 @@ fn every_host_scoped_request_has_a_response_disposition() {
             M::IndexCodebase(_) => "manager::mutate_codebase_index (status via push)",
             M::ResyncCodebase(_) => "manager::resync_codebase (status via push)",
             M::DropCodebaseIndex(_) => "manager::drop_codebase_index (status via push)",
-            // The one codebase-index request that does answer directly.
+            // The codebase-index requests that answer directly.
             M::GetFragmentMetadataFromHash(_) => "manager::get_fragment_metadata_from_hash",
+            M::SearchRemoteCodebase(_) => "manager::search_remote_codebase",
         }
     }
 

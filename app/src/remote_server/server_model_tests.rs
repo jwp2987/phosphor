@@ -12,6 +12,18 @@ use super::super::protocol::RequestId;
 #[cfg(feature = "local_fs")]
 use super::super::server_buffer_tracker::ServerBufferTracker;
 use super::{ConnectionId, PendingFileOps, ServerModel};
+// SearchRemoteCodebase (TODO.md "UNWIRED-CODE AUDIT 2026-08-10" finding #5): the
+// event-bridge half of the daemon handler, and its pure message-building helpers.
+#[cfg(feature = "local_fs")]
+use super::super::proto::{
+    RemoteCodebaseSearchErrorCode, SearchRemoteCodebaseResponse, search_remote_codebase_response,
+};
+#[cfg(feature = "local_fs")]
+use super::PendingCodebaseRetrieval;
+#[cfg(feature = "local_fs")]
+use ::ai::index::full_source_code_embedding::RetrievalID;
+#[cfg(feature = "local_fs")]
+use ::ai::index::full_source_code_embedding::manager::RetrieveFileError;
 #[cfg(feature = "local_fs")]
 use warp_util::standardized_path::StandardizedPath;
 
@@ -55,6 +67,8 @@ fn test_model() -> ServerModel {
         // which is what keeps it from panicking here.
         #[cfg(feature = "local_fs")]
         codebase_indexing_available: false,
+        #[cfg(feature = "local_fs")]
+        pending_codebase_retrievals: HashMap::new(),
         #[cfg(feature = "local_fs")]
         diff_state_watches: HashMap::new(),
         // These tests exercise bookkeeping only, never a real watch; the
@@ -1012,4 +1026,156 @@ fn pending_open_buffer_connections_are_excluded_from_the_update_broadcast() {
             .pending_connections_for_open_buffer(&file_id)
             .is_empty()
     );
+}
+
+// ── SearchRemoteCodebase (TODO.md "UNWIRED-CODE AUDIT 2026-08-10" finding #5)
+// ─────────────────────────────────────────────────────────────────────────
+//
+// `handle_search_remote_codebase` and `resolve_pending_codebase_retrieval` both need a
+// real `CodebaseIndexManager` singleton and a `ModelContext` to exercise end to end --
+// `RetrievalID` has no public constructor outside the `ai` crate, so there is no way
+// to fabricate one here, only to receive one from a real `retrieve_relevant_files`
+// call. This mirrors why `handle_get_fragment_metadata_from_hash` has no direct test
+// in this file either (see `test_model`'s own "No app behind these tests" comment).
+// What *is* covered here, pure functions with no `ctx`: the response-message builders
+// and the `RetrieveFileError` → wire-error-code mapping, which is where a
+// copy-paste/off-by-one mistake in the new vocabulary would actually show up. The
+// dispatch path around them (`host_request_handle` → `send_host_request` → daemon)
+// is covered end to end by `search_remote_codebase_without_connected_host_resolves_
+// immediately` in `crates/remote_server/src/manager_tests.rs`.
+
+#[cfg(feature = "local_fs")]
+fn search_remote_codebase_success(response: SearchRemoteCodebaseResponse) -> Vec<String> {
+    match response.result {
+        Some(search_remote_codebase_response::Result::Success(success)) => success.ranked_paths,
+        other => panic!("expected a Success result, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "local_fs")]
+fn search_remote_codebase_error(
+    response: SearchRemoteCodebaseResponse,
+) -> (RemoteCodebaseSearchErrorCode, String) {
+    match response.result {
+        Some(search_remote_codebase_response::Result::Error(error)) => {
+            (error.code(), error.message)
+        }
+        other => panic!("expected an Error result, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "local_fs")]
+fn as_search_remote_codebase_response(
+    message: server_message::Message,
+) -> SearchRemoteCodebaseResponse {
+    match message {
+        server_message::Message::SearchRemoteCodebaseResponse(response) => response,
+        other => panic!("expected SearchRemoteCodebaseResponse, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn search_remote_codebase_success_message_carries_ranked_paths_in_order() {
+    let ranked_paths = vec![
+        std::path::PathBuf::from("/repo/src/best_match.rs"),
+        std::path::PathBuf::from("/repo/src/second.rs"),
+    ];
+    let response = as_search_remote_codebase_response(
+        super::search_remote_codebase_success_message(&ranked_paths),
+    );
+    assert_eq!(
+        search_remote_codebase_success(response),
+        vec![
+            "/repo/src/best_match.rs".to_string(),
+            "/repo/src/second.rs".to_string(),
+        ]
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn search_remote_codebase_error_message_carries_code_and_text() {
+    let response = as_search_remote_codebase_response(super::search_remote_codebase_error_message(
+        RemoteCodebaseSearchErrorCode::RetrievalFailed,
+        "boom".to_string(),
+    ));
+    assert_eq!(
+        search_remote_codebase_error(response),
+        (
+            RemoteCodebaseSearchErrorCode::RetrievalFailed,
+            "boom".to_string()
+        )
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn search_remote_codebase_error_response_from_error_classifies_every_retrieve_file_error() {
+    // Mirrors `app::ai::codebase_retrieval`'s `From<RetrieveFileError> for
+    // RetrievalFailure` classification -- the two must agree on what each
+    // `RetrieveFileError` variant means, one leg local, one wire-encoded.
+    let cases = [
+        (
+            RetrieveFileError::IndexNotFound,
+            RemoteCodebaseSearchErrorCode::IndexNotFound,
+        ),
+        (
+            RetrieveFileError::IndexSyncing,
+            RemoteCodebaseSearchErrorCode::IndexSyncing,
+        ),
+    ];
+    for (error, expected_code) in cases {
+        let response = as_search_remote_codebase_response(
+            super::search_remote_codebase_error_response_from_error(error).into_message(),
+        );
+        let (code, _message) = search_remote_codebase_error(response);
+        assert_eq!(code, expected_code);
+    }
+
+    // `IndexFailed` wraps a nested error type this test file has no easy way to
+    // construct; its classification is exercised via the client-side mirror test
+    // `app/src/ai/codebase_retrieval_tests.rs::remote_leg::
+    // remote_error_classification_mirrors_the_local_retrieve_file_error_mapping`,
+    // which covers the same `RemoteCodebaseSearchErrorCode::IndexFailed` ↔
+    // `RetrievalFailure::IndexUnavailable` pairing from the other side.
+}
+
+#[cfg(feature = "local_fs")]
+#[test]
+fn search_remote_codebase_not_enabled_response_uses_the_not_enabled_code() {
+    let response = as_search_remote_codebase_response(
+        super::search_remote_codebase_error_response(
+            RemoteCodebaseSearchErrorCode::NotEnabled,
+            "no embedding provider configured".to_string(),
+        )
+        .into_message(),
+    );
+    assert_eq!(
+        search_remote_codebase_error(response),
+        (
+            RemoteCodebaseSearchErrorCode::NotEnabled,
+            "no embedding provider configured".to_string()
+        )
+    );
+}
+
+/// `resolve_pending_codebase_retrieval` and the pending-map registration in
+/// `handle_search_remote_codebase` need a real `RetrievalID`, which cannot be
+/// fabricated here (see the module comment above) -- but the *shape* of that
+/// bridge (insert on request, remove-and-respond on event, no-op on an unknown id)
+/// is the same pattern `PendingFileOps` already uses and already has coverage for
+/// elsewhere in this file. `PendingCodebaseRetrieval` itself is exercised here as a
+/// plain value to lock its field shape against silent drift.
+#[cfg(feature = "local_fs")]
+#[test]
+fn pending_codebase_retrieval_carries_the_request_it_will_answer() {
+    let request_id = RequestId::new();
+    let conn_id: ConnectionId = uuid::Uuid::new_v4();
+    let pending = PendingCodebaseRetrieval {
+        request_id: request_id.clone(),
+        conn_id,
+    };
+    assert_eq!(pending.request_id, request_id);
+    assert_eq!(pending.conn_id, conn_id);
 }

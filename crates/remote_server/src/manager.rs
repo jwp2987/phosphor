@@ -2547,12 +2547,19 @@ impl RemoteServerManager {
 ///
 /// Obtain via [`RemoteServerManager::host_request_handle`].
 ///
-/// Deviation from the pin: only the `send` dispatch and a `read_file_context`
-/// convenience wrapper are ported (what `FileNotebookView::open_remote`
-/// needs). The pin's other typed convenience methods (`write_file`,
-/// `delete_file`, `save_buffer`, `open_buffer`, ...) aren't ported here —
-/// add them the same way (wrap [`Self::send`], match the response variant)
-/// when a caller needs them.
+/// Deviation from the pin: only `send` plus typed convenience wrappers for
+/// `read_file_context`, `get_fragment_metadata_from_hash` and
+/// `search_remote_codebase` are ported (what `FileNotebookView::open_remote`
+/// and the codebase-index retrieval consumers need). The pin's other typed
+/// convenience methods (`write_file`, `delete_file`, `save_buffer`,
+/// `open_buffer`, ...) aren't ported here — add them the same way (wrap
+/// [`Self::send`], match the response variant) when a caller needs them.
+///
+/// `Clone` so a caller (e.g. `app::ai::codebase_retrieval::
+/// CodebaseRetrievalHandle::Remote`) can hold one alongside a resolved repo
+/// path as a single sendable, request-scoped ticket, the same way the local
+/// retrieval leg holds a `ModelSpawner`.
+#[derive(Clone)]
 pub struct HostRequestHandle {
     spawner: ModelSpawner<RemoteServerManager>,
     host_id: HostId,
@@ -2599,6 +2606,33 @@ impl HostRequestHandle {
                 log::error!(
                     "Unexpected response variant for GetFragmentMetadataFromHash: {other:?}"
                 );
+                Err(HostRequestError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Asks the daemon owning this host to answer `get_relevant_files`
+    /// against its own private codebase index and return ranked file paths.
+    ///
+    /// Unlike [`Self::get_fragment_metadata_from_hash`] (a hash → path lookup
+    /// over data the client already found), the search itself must run on
+    /// the daemon: this fork's daemon vectors live in a private per-daemon
+    /// store the client cannot read (see `app::remote_server::
+    /// codebase_index_store`'s module doc), so there is nothing local to
+    /// search against. TODO.md "UNWIRED-CODE AUDIT 2026-08-10" finding #5.
+    pub async fn search_remote_codebase(
+        &self,
+        request: crate::proto::SearchRemoteCodebase,
+    ) -> Result<crate::proto::SearchRemoteCodebaseResponse, HostRequestError> {
+        let msg = self
+            .send(crate::proto::host_scoped_request::Message::SearchRemoteCodebase(request))
+            .await?;
+        match msg.message {
+            Some(crate::proto::server_message::Message::SearchRemoteCodebaseResponse(resp)) => {
+                Ok(resp)
+            }
+            other => {
+                log::error!("Unexpected response variant for SearchRemoteCodebase: {other:?}");
                 Err(HostRequestError::UnexpectedResponse)
             }
         }

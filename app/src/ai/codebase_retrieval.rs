@@ -99,6 +99,11 @@ pub enum RetrievalFailure {
     Superseded,
     /// The controller went away (the app is shutting down).
     Unavailable,
+    /// A remote retrieval could not reach the host: no live connection, or the
+    /// transport failed. The local leg has no equivalent -- the local index is always
+    /// "reachable" by definition -- so this variant only ever comes from
+    /// [`CodebaseRetrievalHandle::Remote`].
+    HostUnreachable,
 }
 
 impl RetrievalFailure {
@@ -111,6 +116,28 @@ impl RetrievalFailure {
             Self::Failed(_) => "retrieval_failed",
             Self::Superseded => "superseded",
             Self::Unavailable => "unavailable",
+            Self::HostUnreachable => "host_unreachable",
+        }
+    }
+}
+
+/// Maps a daemon-reported `SearchRemoteCodebase` failure onto the same vocabulary the
+/// local leg uses, so the tool result reads identically regardless of which leg
+/// answered. Mirrors `impl From<RetrieveFileError> for RetrievalFailure` above --
+/// `app::remote_server::server_model::search_remote_codebase_error_response_from_error`
+/// is the daemon-side half of this same mapping, encoding the same
+/// `RetrieveFileError` into the wire error code this reads back.
+#[cfg(not(target_family = "wasm"))]
+impl From<remote_server::proto::RemoteCodebaseSearchError> for RetrievalFailure {
+    fn from(error: remote_server::proto::RemoteCodebaseSearchError) -> Self {
+        use remote_server::proto::RemoteCodebaseSearchErrorCode as Code;
+        match error.code() {
+            Code::NotEnabled | Code::IndexFailed => Self::IndexUnavailable(error.message),
+            Code::IndexNotFound => Self::NoIndex,
+            Code::IndexSyncing => Self::Syncing,
+            Code::InvalidRepoPath | Code::RetrievalFailed | Code::Unspecified => {
+                Self::Failed(error.message)
+            }
         }
     }
 }
@@ -312,7 +339,6 @@ impl CodebaseRetrievalController {
         // which is the correct outcome and not worth logging.
         let _ = pending.responder.send(result);
     }
-
 }
 
 impl Entity for CodebaseRetrievalController {
@@ -321,53 +347,129 @@ impl Entity for CodebaseRetrievalController {
 
 impl SingletonEntity for CodebaseRetrievalController {}
 
-/// A sendable, request-scoped ticket for querying one repository's embedding index.
+/// A sendable, request-scoped ticket for querying one repository's codebase index --
+/// this process's own embedding index, or (TODO.md "UNWIRED-CODE AUDIT 2026-08-10"
+/// finding #5) a connected remote host's daemon-private index.
 ///
 /// Carried on `RequestParams` so the `chat_stream` tool interceptor — which is `async`
 /// and has no `AppContext` — can start a retrieval anyway. Cheap to clone; holds no
-/// strong reference to the controller.
+/// strong reference to either backend.
 #[derive(Clone)]
-pub struct CodebaseRetrievalHandle {
-    spawner: ModelSpawner<CodebaseRetrievalController>,
-    repo_root: Arc<PathBuf>,
+pub enum CodebaseRetrievalHandle {
+    /// Backed by this process's own `CodebaseIndexManager`.
+    Local {
+        spawner: ModelSpawner<CodebaseRetrievalController>,
+        repo_root: Arc<PathBuf>,
+    },
+    /// Backed by a connected remote host's daemon-private index, queried over
+    /// `SearchRemoteCodebase`. See `handle_for_remote_session` and the module doc on
+    /// `crate::remote_server::codebase_index_store` for why this cannot share the
+    /// `Local` branch's storage. Wasm-excluded because its resolution depends on
+    /// `RemoteCodebaseIndexModel`, which is not registered there (see
+    /// `app/src/lib.rs`'s singleton registration).
+    #[cfg(not(target_family = "wasm"))]
+    Remote {
+        host_request_handle: remote_server::manager::HostRequestHandle,
+        repo_path: Arc<PathBuf>,
+    },
 }
 
 impl std::fmt::Debug for CodebaseRetrievalHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `ModelSpawner` is not `Debug`, and `RequestParams` is.
-        f.debug_struct("CodebaseRetrievalHandle")
-            .field("repo_root", &self.repo_root)
-            .finish_non_exhaustive()
+        // `ModelSpawner` and `HostRequestHandle` are not `Debug`.
+        match self {
+            Self::Local { repo_root, .. } => f
+                .debug_struct("CodebaseRetrievalHandle::Local")
+                .field("repo_root", repo_root)
+                .finish_non_exhaustive(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote { repo_path, .. } => f
+                .debug_struct("CodebaseRetrievalHandle::Remote")
+                .field("repo_path", repo_path)
+                .finish_non_exhaustive(),
+        }
     }
 }
 
 impl CodebaseRetrievalHandle {
     /// The repository the index will be queried for. Retrieved paths are absolute and
-    /// live under this root.
+    /// live under this root (on the remote host's filesystem, for `Remote`).
     pub fn repo_root(&self) -> &Path {
-        self.repo_root.as_path()
+        match self {
+            Self::Local { repo_root, .. } => repo_root.as_path(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote { repo_path, .. } => repo_path.as_path(),
+        }
     }
 
-    /// Asks the embedding index which files are relevant to `query`.
+    /// Asks the codebase index which files are relevant to `query`.
     ///
-    /// Hops to the main thread, starts the retrieval, and awaits the answer. Awaiting
-    /// happens off the main thread, so the UI is not blocked; the turn is already
-    /// suspended on a tool call.
+    /// For `Local`, hops to the main thread, starts the retrieval, and awaits the
+    /// answer -- off the main thread, so the UI is not blocked; the turn is already
+    /// suspended on a tool call. For `Remote`, sends `SearchRemoteCodebase` and awaits
+    /// the daemon's response directly; there is no local event lifecycle to bridge,
+    /// because the daemon answers this RPC request/response rather than registering
+    /// work and reporting completion later the way the in-process manager does.
     pub async fn retrieve(&self, query: &str) -> RetrievalResult {
-        let repo_root = self.repo_root.as_ref().clone();
-        let query = query.to_owned();
+        match self {
+            Self::Local { spawner, repo_root } => {
+                let repo_root = repo_root.as_ref().clone();
+                let query = query.to_owned();
 
-        let started = self
-            .spawner
-            .spawn(move |controller, ctx| controller.start_retrieval(repo_root, query, ctx))
-            .await;
+                let started = spawner
+                    .spawn(move |controller, ctx| controller.start_retrieval(repo_root, query, ctx))
+                    .await;
 
-        match started {
-            // The controller was dropped before it could start anything.
-            Err(_) => Err(RetrievalFailure::Unavailable),
-            Ok(Err(failure)) => Err(failure),
-            // A dropped sender means the controller went away mid-flight.
-            Ok(Ok(receiver)) => receiver.await.unwrap_or(Err(RetrievalFailure::Unavailable)),
+                match started {
+                    // The controller was dropped before it could start anything.
+                    Err(_) => Err(RetrievalFailure::Unavailable),
+                    Ok(Err(failure)) => Err(failure),
+                    // A dropped sender means the controller went away mid-flight.
+                    Ok(Ok(receiver)) => {
+                        receiver.await.unwrap_or(Err(RetrievalFailure::Unavailable))
+                    }
+                }
+            }
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote {
+                host_request_handle,
+                repo_path,
+            } => {
+                let request = remote_server::proto::SearchRemoteCodebase {
+                    repo_path: repo_path.to_string_lossy().into_owned(),
+                    query: query.to_owned(),
+                };
+                match host_request_handle.search_remote_codebase(request).await {
+                    Ok(response) => match response.result {
+                        Some(
+                            remote_server::proto::search_remote_codebase_response::Result::Success(
+                                success,
+                            ),
+                        ) => Ok(Arc::new(
+                            success
+                                .ranked_paths
+                                .into_iter()
+                                .map(PathBuf::from)
+                                .collect(),
+                        )),
+                        Some(
+                            remote_server::proto::search_remote_codebase_response::Result::Error(
+                                error,
+                            ),
+                        ) => Err(RetrievalFailure::from(error)),
+                        None => Err(RetrievalFailure::Failed(
+                            "Empty SearchRemoteCodebase response".to_string(),
+                        )),
+                    },
+                    // Transport failure: no connected session for the host, the
+                    // request was aborted, or the daemon's response didn't decode.
+                    // None of these are "the index doesn't exist" or "still
+                    // syncing" -- the host itself could not be reached, which is
+                    // why this is its own status rather than folded into
+                    // `IndexUnavailable`/`Failed`.
+                    Err(_host_request_error) => Err(RetrievalFailure::HostUnreachable),
+                }
+            }
         }
     }
 }
@@ -378,8 +480,7 @@ impl CodebaseRetrievalHandle {
 /// `None` — the common case, and the default configuration — costs nothing and must
 /// stay that way: it is checked on every agent request. Returns `None` when the
 /// codebase-context setting is off (so an index would not be maintained anyway), or
-/// when no index covers `directory`, which includes remote sessions, since a remote
-/// repository is indexed on its host and not in this process's store.
+/// when no index covers `directory`.
 pub fn handle_for_directory(app: &AppContext, directory: &Path) -> Option<CodebaseRetrievalHandle> {
     if !crate::workspaces::user_workspaces::UserWorkspaces::as_ref(app)
         .is_codebase_context_enabled(app)
@@ -388,9 +489,79 @@ pub fn handle_for_directory(app: &AppContext, directory: &Path) -> Option<Codeba
     }
 
     let repo_root = indexed_root_for(app, directory)?;
-    Some(CodebaseRetrievalHandle {
+    Some(CodebaseRetrievalHandle::Local {
         spawner: CodebaseRetrievalController::as_ref(app).spawner.clone(),
         repo_root: Arc::new(repo_root),
+    })
+}
+
+/// A handle for querying the codebase index covering `session_context`'s active
+/// repository, whether that repository is local or lives on a connected remote host --
+/// or `None` when there is nothing to query.
+///
+/// The local/remote branch is decided once, here, by `session_context.is_remote()`; a
+/// caller never needs to ask separately. See `handle_for_directory` for the local
+/// contract and `handle_for_remote_session` for the remote one.
+pub fn handle_for_session(
+    app: &AppContext,
+    session_context: &crate::ai::blocklist::SessionContext,
+) -> Option<CodebaseRetrievalHandle> {
+    if session_context.is_remote() {
+        return handle_for_remote_session(app, session_context);
+    }
+
+    let directory = session_context.current_working_directory().as_ref()?;
+    handle_for_directory(app, Path::new(directory.as_str()))
+}
+
+/// Wasm has no `RemoteCodebaseIndexModel` (see `app/src/lib.rs`'s singleton
+/// registration) and, in practice, no remote SSH sessions to resolve one for.
+#[cfg(target_family = "wasm")]
+fn handle_for_remote_session(
+    _app: &AppContext,
+    _session_context: &crate::ai::blocklist::SessionContext,
+) -> Option<CodebaseRetrievalHandle> {
+    None
+}
+
+/// Resolves a retrieval handle for `session_context`'s active remote repository.
+///
+/// `None` when there is nothing to search: no connected host
+/// (`RemoteCodebaseSearchAvailability::NoConnectedHost`), or no repository has ever
+/// been reported as navigated-into or explicitly indexed for it
+/// (`NoActiveRepo`) -- mirroring `handle_for_directory`'s "returns `None` before any
+/// work happens" contract. `RemoteCodebaseIndexModel::active_repo_path` is a
+/// synchronous lookup over daemon state the client already has (pushed by
+/// `CodebaseIndexStatusesSnapshot`/`CodebaseIndexStatusUpdated`), so this costs
+/// nothing beyond that lookup -- no RPC is sent here.
+///
+/// Deliberately does **not** pre-classify `NotIndexed`/`Indexing`/`Unavailable` from
+/// that same pushed state: the daemon's own `SearchRemoteCodebase` response at query
+/// time (`CodebaseRetrievalHandle::Remote::retrieve`) is authoritative for those and
+/// cannot go stale the way a snapshot captured now (and read later, off the main
+/// thread) could.
+#[cfg(not(target_family = "wasm"))]
+fn handle_for_remote_session(
+    app: &AppContext,
+    session_context: &crate::ai::blocklist::SessionContext,
+) -> Option<CodebaseRetrievalHandle> {
+    use crate::ai::codebase_auto_indexing::{
+        CodebaseAutoIndexingSurface, should_use_codebase_indexing,
+    };
+    use crate::remote_server::codebase_index_model::RemoteCodebaseIndexModel;
+    use crate::remote_server::manager::RemoteServerManager;
+
+    if !should_use_codebase_indexing(CodebaseAutoIndexingSurface::Remote, app) {
+        return None;
+    }
+
+    let host_id = session_context.host_id()?;
+    let repo_path =
+        RemoteCodebaseIndexModel::as_ref(app).active_repo_path(session_context, None)?;
+
+    Some(CodebaseRetrievalHandle::Remote {
+        host_request_handle: RemoteServerManager::as_ref(app).host_request_handle(host_id),
+        repo_path: Arc::new(PathBuf::from(repo_path)),
     })
 }
 

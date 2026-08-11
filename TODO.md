@@ -468,9 +468,12 @@ findings only. Fixes the agent had staged were reverted off `main` and sit on
 
 **FOLLOW-UP 2026-08-10, branch `fix/unwired-audit-2026-08-10`:** #2, #4, #6, #7,
 #8, #9, #11, #13 and both documentation corrections are now fixed and ticked
-below. #3 is owned by the Drive-removal agent, #1/#5/#10/#12 still await a
-maintainer decision. Every fixed finding was re-verified against the tree first;
-none of them had gone stale.
+below. #3 is owned by the Drive-removal agent. Every fixed finding was
+re-verified against the tree first; none of them had gone stale.
+**Stale as of this note (2026-08-10, later same day): #1, #10 and #12 were also
+fixed and ticked below by other agents/commits without this summary line being
+updated** — #5 is now DONE too (see below), so every finding in this section is
+resolved except #3, which stays with the Drive-removal agent.
 
 Calibration for anyone continuing: two live examples found the same day were the
 Claude harness accepting `resolved_mcp_servers` and dropping it (fixed,
@@ -633,19 +636,75 @@ is not universal — check the caller chain each time.
       User impact: a background agent session that finished and filed a
       notification shows no tab indicator.
 
-- [ ] **[NOT STARTED 2026-08-10 — blocked on the same #1 decision.]
-      #5 The remote codebase-index *search* leg has no caller** (same root cause
-      as #1). `RemoteCodebaseIndexModel` is registered (`app/src/lib.rs:1572`) and
-      auto-indexes, but `active_repo_availability`
-      (`app/src/remote_server/codebase_index_model.rs:315`), `active_repo_path:331`
-      and `request_active_repo_index:341` have zero callers outside the module, and
-      `RemoteCodebaseSearchContext::is_stale` is computed at `:1068` and never read.
-      Consequently `RemoteServerManager::trigger_codebase_incremental_sync`
-      (`crates/remote_server/src/manager.rs:2187`) has zero production callers, and
-      `CodebaseResyncMode::Incremental` is fully handled by the daemon
-      (`server_model.rs:1846`) **for a message no client can send.** The module doc
-      says it *"resolves which remote repo a session's search should target"* —
-      nothing asks.
+- [x] **#5 The remote codebase-index *search* leg has no caller.**
+      **DONE 2026-08-10, partially — search itself is wired end to end; two
+      narrower manual/opportunistic pieces are explicitly NOT.**
+
+      The blocker named in the original finding (`active_repo_path` had zero
+      callers) was real but was not the *whole* story: the daemon-side search
+      RPC did not exist at all. The pin has no equivalent to port — at the pin
+      the client and daemon share one vector store, so the client resolves a
+      search by reading that store directly and only asks the daemon to map
+      hashes back to files (`GetFragmentMetadataFromHash`). This fork's daemon
+      has a private per-daemon SQLite store (see
+      `app/src/remote_server/codebase_index_store.rs`'s module doc), so the
+      search itself has to run on the daemon. Built, in order: proto
+      `SearchRemoteCodebase`/`SearchRemoteCodebaseResponse`
+      (`crates/remote_server/proto/remote_server.proto`, fields 22 and 37 —
+      fork-original, not a pin renumbering); the daemon handler
+      `handle_search_remote_codebase` beside `handle_get_fragment_metadata_from_hash`
+      (`app/src/remote_server/server_model.rs`), which bridges
+      `CodebaseIndexManager::retrieve_relevant_files`'s retrieval-id/event
+      lifecycle the same way `app/src/ai/codebase_retrieval.rs` already does for
+      the local leg (`pending_codebase_retrievals`, resolved from
+      `CodebaseIndexManagerEvent::RetrievalRequestCompleted`/`RetrievalRequestFailed`,
+      which the daemon previously discarded unconditionally);
+      `HostRequestHandle::search_remote_codebase`
+      (`crates/remote_server/src/manager.rs`, now `Clone` so it can be held
+      alongside a resolved repo path as a client-side ticket); and
+      `crate::ai::codebase_retrieval::CodebaseRetrievalHandle`, changed from a
+      local-only struct to a `Local`/`Remote` enum, with a new
+      `handle_for_session` entry point that branches on
+      `SessionContext::is_remote()` and replaces the old `handle_for_directory`
+      call in `RequestParams::new` (`app/src/ai/agent/api.rs`) — this is the
+      call site that finally uses `active_repo_path`
+      (`app/src/remote_server/codebase_index_model.rs:331`, previously the
+      finding's named zero-caller method). `get_relevant_files_runtime.rs` did
+      not need to change at all: it already took
+      `Option<&CodebaseRetrievalHandle>` and treats it opaquely.
+
+      **Distinguishing outcomes:** the client resolves only "is there a repo
+      to search at all" up front (`active_repo_path` returning `None` costs
+      nothing, mirroring the local leg's `handle_for_directory`); the finer
+      states — no index / still syncing / index unavailable / retrieval failed
+      after starting — are read back from the daemon's live
+      `SearchRemoteCodebase` response every query, not pre-classified from a
+      pushed status snapshot that could go stale between resolution and use.
+      A new `RetrievalFailure::HostUnreachable` variant (distinct status token
+      `"host_unreachable"`) covers the one state the local leg cannot have: no
+      live connection / transport failure. The daemon's
+      `RemoteCodebaseSearchErrorCode` and the client's `RetrievalFailure`
+      mirror each other one-to-one (`NotEnabled`/`IndexFailed` →
+      `IndexUnavailable`, `IndexNotFound` → `NoIndex`, `IndexSyncing` →
+      `Syncing`, `RetrievalFailed`/`InvalidRepoPath`/`Unspecified` → `Failed`),
+      so a "genuinely no matches" result (empty `ranked_paths`, not an error at
+      all) reaches `get_relevant_files_runtime`'s existing `"no_matches"`
+      status the same way the local leg's does.
+
+      **Explicitly NOT done, and why:** `request_active_repo_index`
+      (`codebase_index_model.rs:341`) and
+      `RemoteServerManager::trigger_codebase_incremental_sync`
+      (`crates/remote_server/src/manager.rs`) still have zero production
+      callers, and `CodebaseResyncMode::Incremental` is still daemon-handled
+      for a message no client sends. These are a manual "index this now"
+      action and an opportunistic "resync because the index looked stale"
+      trigger, respectively — genuinely separate from answering
+      `get_relevant_files`, and `RemoteCodebaseSearchContext::is_stale`
+      (`codebase_index_model.rs:1068`) is still unread for the same reason:
+      wiring "stale → trigger a background resync" needs a
+      `ModelContext`-bearing call site to mutate `RemoteServerManager`, and
+      `handle_for_remote_session` only has a read-only `&AppContext`. A
+      reasonable follow-up, not required for search to work correctly today.
 
 - [x] **#6 Right-clicking the vertical-tabs panel does nothing.**
       **[FIXED 2026-08-10 with `.with_defer_events_to_children()` and a dedicated
