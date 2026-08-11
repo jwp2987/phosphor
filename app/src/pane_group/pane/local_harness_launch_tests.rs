@@ -10,7 +10,9 @@ use super::{
     local_claude_child_prompt, normalize_local_child_harness, prepare_local_harness_child_launch,
     split_orchestrate_tasks, validate_local_harness_shell,
 };
-use crate::ai::local_harness_setup::LocalHarnessSetupState;
+use crate::ai::local_harness_setup::{
+    LOCAL_CODEX_HARNESS_DISABLED_MESSAGE, LocalHarnessSetupState,
+};
 use crate::terminal::shell::ShellType;
 
 /// Test-only guard that sets an environment variable for the duration of the
@@ -278,6 +280,38 @@ fn compose_child_agent_prompt_is_a_verbatim_passthrough() {
     // on `compose_child_agent_prompt` for why.
     let task = "Refactor `foo.rs` to use the new API; keep tests green";
     assert_eq!(compose_child_agent_prompt(task), task);
+}
+
+/// Adapted from the pin (`local_harness_launch_tests.rs:420-438`, `02b53fcd8`).
+/// Drops the pin's `ai_client` argument for the same reason as the tests
+/// below (this fork's `prepare_local_harness_child_launch` no longer creates
+/// a cloud agent task). Locks in the ordering fix that put the Codex
+/// product-disabled/missing-CLI precondition *before*
+/// `validate_local_harness_shell`, matching the pin -- `shell_type: None`
+/// here means a fork that checked shell support first would surface
+/// "your shell isn't supported" instead of the actually-operative
+/// "Codex is disabled" message. `FeatureFlag::LocalClaudeCodexChildHarnesses`
+/// is off by default, so no override is needed to hit the disabled path.
+#[tokio::test]
+async fn prepare_local_harness_child_launch_rejects_disabled_codex_before_shell_validation() {
+    let result = prepare_local_harness_child_launch(
+        "hello world".to_string(),
+        "codex".to_string(),
+        None,
+        Some("parent-run".to_string()),
+        None,
+        None,
+    )
+    .await;
+
+    match result {
+        Ok(_) => panic!("disabled local codex should be rejected"),
+        // `prepare_local_harness_child_launch` wraps `AgentDriverError::HarnessSetupFailed`'s
+        // Display output ("Harness 'codex' setup failed: {reason}") via `.to_string()`, so
+        // check for the reason as a substring rather than exact equality -- same idiom as
+        // `codex_launch_precondition_refuses_launch_when_product_disabled` above.
+        Err(err) => assert!(err.contains(LOCAL_CODEX_HARNESS_DISABLED_MESSAGE)),
+    }
 }
 
 /// Adapted from the pin (`local_harness_launch_tests.rs:320-375`, `02b53fcd8`),

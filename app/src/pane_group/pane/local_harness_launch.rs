@@ -215,6 +215,18 @@ pub(super) async fn prepare_local_harness_child_launch(
             format!("Unsupported local child harness '{harness_name}'.")
         });
     };
+    // Codex's product-disabled/missing-CLI precondition must be checked
+    // before shell validation, matching the pin's ordering
+    // (`local_harness_product_disabled_message` runs before
+    // `validate_local_harness_shell` there too) -- otherwise a user on an
+    // unsupported/undetected shell who tries a disabled Codex child sees
+    // "your shell isn't supported" instead of the actually-operative
+    // "Codex is disabled" message. See
+    // `prepare_local_harness_child_launch_rejects_disabled_codex_before_shell_validation`.
+    if harness == Harness::Codex {
+        codex_launch_precondition(local_harness_setup_state(harness))
+            .map_err(|error: AgentDriverError| error.to_string())?;
+    }
     validate_local_harness_shell(shell_type)?;
     let command = match harness {
         Harness::Oz => unreachable!("normalize_local_child_harness filters out Oz"),
@@ -285,8 +297,9 @@ pub(super) async fn prepare_local_harness_child_launch(
             // validate`, so callers of `prepare_local_harness_child_launch`
             // see one consistent error shape regardless of which check
             // rejected the harness.
-            codex_launch_precondition(local_harness_setup_state(harness))
-                .map_err(|error: AgentDriverError| error.to_string())?;
+            //
+            // The precondition itself already ran above, before
+            // `validate_local_harness_shell`, to match the pin's ordering.
             build_local_codex_child_command(&prompt)
         }
         Harness::Gemini => unreachable!("normalize_local_child_harness filters out Gemini"),
