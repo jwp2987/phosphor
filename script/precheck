@@ -351,6 +351,13 @@ fi
 #
 # Same lesson as the `persistence` note above: unrun is not the same as broken;
 # it just means nobody would know.
+step "docs/STATE.md is current"
+if ./script/state --check; then
+    ok "generated state matches the tree"
+else
+    fail "docs/STATE.md is stale -- run: script/state"
+fi
+
 step "vendored genai (separate workspace)"
 if "${CARGO_RUN[@]}" test --manifest-path lib/rust-genai/Cargo.toml --lib --quiet; then
     ok "genai lib tests pass"
@@ -359,6 +366,14 @@ else
 fi
 
 rm -f /tmp/precheck-check.$$ /tmp/precheck-unified.$$
+
+# Record the green run. `script/state` reads this to answer "is it verified?",
+# and without a marker it says "never" rather than "unknown" -- because
+# "unknown" invites optimism, and this repo spent a night with 70 unverified
+# commits on main while everyone assumed it was fine.
+if ((status == 0)); then
+    { git rev-parse HEAD; date '+%Y-%m-%d %H:%M'; } > .phosphor-last-verified 2>/dev/null || true
+fi
 
 printf '\n'
 if ((status == 0)); then

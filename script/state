@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# Generate docs/STATE.md -- the single answer to "where are we".
+#
+# WHY THIS IS GENERATED AND NOT WRITTEN
+# -------------------------------------
+# Four documents used to partly answer this question (TODO.md, HANDOFF.md,
+# SWEEP-SUMMARY.md, SCOPE-*.md) and they contradicted each other constantly.
+# On 2026-08-10 alone: twelve in-tree documents were found contradicting the
+# code, four ledger entries stated the opposite of the tree, the SCOPE-*.md
+# summary tables did not sum to their own per-file sections, and a section
+# headed "highlights" was read as a complete set.
+#
+# A hand-written status file drifts, and a drifted summary is worse than none
+# because people trust it. So every number here is derived at run time from a
+# primary source -- the verdict ledger, git, the checkbox counts, the guards --
+# and nothing is typed in by hand. If a number here is wrong, its SOURCE is
+# wrong, which is the property we want.
+#
+# What must NOT be added to this file: decisions (they belong in DECLINED.md,
+# where a guard can check them), lessons (HANDOFF.md), evidence (docs/sweep/).
+# The moment this file carries prose, it stops being regenerable and becomes
+# the thirteenth contradicting document.
+#
+# USAGE
+#     script/state              # write docs/STATE.md
+#     script/state --check      # exit 1 if docs/STATE.md is out of date
+#
+# The --check form is wired into script/precheck and pr-check.yml.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+CHECK=0
+[[ "${1:-}" == "--check" ]] && CHECK=1
+
+OUT="docs/STATE.md"
+TMP="$(mktemp)"
+trap 'rm -f "$TMP" "$TMP".pin "$TMP".fork' EXIT
+
+PIN="$(sed -n 's/.*\b\(02b53fcd8\)\b.*/\1/p' ORACLE.md | head -1)"
+[[ -z "$PIN" ]] && PIN=02b53fcd8
+LEDGER=docs/sweep-verdict-ledger.tsv
+
+# ---------------------------------------------------------------- parity
+# Test-name diff against the pin. This is a NAME comparison: a shared name is
+# not proof of a shared assertion, which is why the number is reported as an
+# approximation and why the ledger, not this, is the authority on any single
+# test.
+git grep -h -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' "$PIN" -- "*.rs" 2>/dev/null \
+    | grep -oE '\bfn [a-z0-9_]+' | sed 's/fn //' | sort -u > "$TMP".pin
+git grep -h -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' HEAD -- "*.rs" 2>/dev/null \
+    | grep -oE '\bfn [a-z0-9_]+' | sed 's/fn //' | sort -u > "$TMP".fork
+
+PIN_N=$(wc -l < "$TMP".pin)
+FORK_N=$(wc -l < "$TMP".fork)
+SHARED=$(comm -12 "$TMP".pin "$TMP".fork | wc -l)
+ABSENT=$(comm -23 "$TMP".pin "$TMP".fork | wc -l)
+
+# ---------------------------------------------------------------- ledger
+if [[ -f "$LEDGER" ]]; then
+    LED_ROWS=$(($(wc -l < "$LEDGER") - 1))
+    CLOUD=$(awk -F'\t' 'NR>1 && $4=="CLOUD"' "$LEDGER" | wc -l)
+    DECLINED=$(awk -F'\t' 'NR>1 && $4=="DECLINED"' "$LEDGER" | wc -l)
+    DIVERGENT=$(awk -F'\t' 'NR>1 && $4=="DIVERGENT"' "$LEDGER" | wc -l)
+    COVERED=$(awk -F'\t' 'NR>1 && $4=="COVERED-ELSEWHERE"' "$LEDGER" | wc -l)
+    MISSING=$(awk -F'\t' 'NR>1 && $4=="MISSING-SUBSYSTEM"' "$LEDGER" | wc -l)
+    UNPARSED=$(awk -F'\t' 'NR>1 && $4=="UNPARSED"' "$LEDGER" | wc -l)
+else
+    LED_ROWS=0; CLOUD=0; DECLINED=0; DIVERGENT=0; COVERED=0; MISSING=0; UNPARSED=0
+fi
+
+# Non-cloud universe. The ledger covers only the areas that were swept, so the
+# unadjudicated remainder is projected at the SAME cloud ratio the adjudicated
+# part showed. That projection is an estimate and is labelled as one below.
+UNADJ=$(( ABSENT - LED_ROWS ))
+(( UNADJ < 0 )) && UNADJ=0
+if (( LED_ROWS > 0 )); then
+    NONCLOUD_ADJ=$(( LED_ROWS - CLOUD ))
+    PROJ_NONCLOUD=$(( UNADJ * NONCLOUD_ADJ / LED_ROWS ))
+else
+    NONCLOUD_ADJ=0; PROJ_NONCLOUD=$UNADJ
+fi
+NONCLOUD_ABSENT=$(( NONCLOUD_ADJ + PROJ_NONCLOUD ))
+NONCLOUD_UNIVERSE=$(( SHARED + NONCLOUD_ABSENT ))
+RESOLVED_ABSENT=$(( DECLINED + DIVERGENT + COVERED ))
+pct() { (( $2 == 0 )) && { echo "n/a"; return; }; echo "scale=1; 100*$1/$2" | bc; }
+HAVE_PCT=$(pct "$SHARED" "$NONCLOUD_UNIVERSE")
+RESOLVED_PCT=$(pct "$(( SHARED + RESOLVED_ABSENT ))" "$NONCLOUD_UNIVERSE")
+
+# ------------------------------------------------------- verification state
+# script/precheck writes .phosphor-last-verified on a fully green run. Without
+# it we say "never", because "unknown" invites optimism.
+MARK=.phosphor-last-verified
+if [[ -f "$MARK" ]]; then
+    VSHA=$(head -1 "$MARK")
+    VWHEN=$(sed -n 2p "$MARK")
+    if git merge-base --is-ancestor "$VSHA" HEAD 2>/dev/null; then
+        UNVERIFIED=$(git rev-list --count "$VSHA"..HEAD)
+        VERIFIED_LINE="\`$VSHA\` ($VWHEN) — **$UNVERIFIED commit(s) since**"
+    else
+        VERIFIED_LINE="\`$VSHA\` is not an ancestor of HEAD — **branch diverged, treat as unverified**"
+    fi
+else
+    VERIFIED_LINE="**never** — no green \`script/precheck\` has been recorded"
+    UNVERIFIED=$(git rev-list --count HEAD 2>/dev/null | head -1)
+fi
+
+# ------------------------------------------------------------------ guards
+guard() { if [[ -x "$1" ]]; then "$1" >/dev/null 2>&1 && echo "ok" || echo "**FAIL**"; else echo "absent"; fi; }
+G_CLOUD=$(guard script/check_cloud_boundary)
+G_STUB=$(guard script/check_stub_coverage)
+G_DECL=$(guard script/check_declined_collisions)
+G_LEDG=$(guard script/check_sweep_ledger)
+
+# grep -c exits 1 on zero matches, so `|| echo 0` would append a SECOND zero.
+# Pipe through head instead of using a fallback.
+OPEN_TODO=$(grep -c '^\s*- \[ \]' TODO.md 2>/dev/null | head -1)
+INFLIGHT=$(grep -c '^\s*- \[>\]' TODO.md 2>/dev/null | head -1)
+: "${OPEN_TODO:=0}" "${INFLIGHT:=0}"
+
+# ------------------------------------------------------------------- emit
+{
+cat <<EOF
+# STATE — where Phosphor is right now
+
+**Generated by \`script/state\`. Do not edit by hand.** Every number here is
+derived from a primary source at run time; if one is wrong, its source is wrong.
+Decisions live in \`DECLINED.md\`, lessons in \`HANDOFF.md\`, evidence in
+\`docs/sweep/\`. See that script's header for why this is generated.
+
+Pin: \`$PIN\` (see \`ORACLE.md\` — never measure against \`warp/master\`).
+
+## Is it verified?
+
+Last fully green \`script/precheck\`: $VERIFIED_LINE
+
+| guard | |
+|---|---|
+| \`check_cloud_boundary\` | $G_CLOUD |
+| \`check_stub_coverage\` | $G_STUB |
+| \`check_declined_collisions\` | $G_DECL |
+| \`check_sweep_ledger\` | $G_LEDG |
+
+## Parity with the pin
+
+Test-name comparison. A shared *name* is not proof of a shared *assertion*, so
+treat these as approximate; \`docs/sweep-verdict-ledger.tsv\` is the authority on
+any individual test.
+
+| | count |
+|---|---:|
+| Pin tests | $PIN_N |
+| Fork tests | $FORK_N |
+| Shared | $SHARED |
+| Absent from fork | $ABSENT |
+
+Of the absent, **$LED_ROWS are adjudicated** in the ledger and $UNADJ are not.
+Cloud accounts for $CLOUD of the adjudicated; the unadjudicated remainder is
+*projected* at the same ratio (~$PROJ_NONCLOUD non-cloud), so the figures below
+carry that estimate.
+
+- **~${HAVE_PCT}% of the pin's non-cloud tests exist here** ($SHARED of ~$NONCLOUD_UNIVERSE)
+- **~${RESOLVED_PCT}% are present or deliberately resolved** (adding $DECLINED declined, $DIVERGENT divergent, $COVERED covered-elsewhere)
+
+## Ledger
+
+| verdict | tests |
+|---|---:|
+| CLOUD | $CLOUD |
+| DECLINED | $DECLINED |
+| MISSING-SUBSYSTEM | $MISSING |
+| DIVERGENT | $DIVERGENT |
+| COVERED-ELSEWHERE | $COVERED |
+| UNPARSED | $UNPARSED |
+
+Per \`TODO.md\`'s definition of done, a test is resolved when it is ported,
+declined, covered elsewhere, or divergent *because* this fork is BYOP.
+**MISSING-SUBSYSTEM is the open bucket.**
+
+## Open work
+
+- \`TODO.md\`: **$OPEN_TODO open**, $INFLIGHT in flight
+EOF
+} > "$TMP"
+
+if (( CHECK )); then
+    if [[ -f "$OUT" ]] && diff -q <(grep -v '^Generated ' "$TMP") <(grep -v '^Generated ' "$OUT") >/dev/null 2>&1; then
+        echo "state: ok (docs/STATE.md is current)"
+        exit 0
+    fi
+    echo "state: FAIL -- docs/STATE.md is out of date. Run: script/state" >&2
+    exit 1
+fi
+
+mv "$TMP" "$OUT"
+echo "state: wrote $OUT"
