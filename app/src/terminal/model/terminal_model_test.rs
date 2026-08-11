@@ -2212,6 +2212,11 @@ fn viewer_processes_dcs_hook_with_unregistered_session_id() {
 // `Some("/sharer")`, not `None`) until that gate is safely enabled. Written, unverified -- see
 // `docs/sweep/outcome-532-session-wiring.md`.
 #[test]
+#[ignore = "Blocked: DProtoHook::session_id() returns None for CommandFinished/Preexec/\
+Bootstrapped/InputBuffer/Clear and others, so enabling should_validate_dcs_hook_session_id \
+would reject those hooks for EVERY non-shared session (NotShared.is_viewer() == false), not \
+just shared ones. Registration is now wired (this commit); threading session_id through the \
+remaining hook variants is the remaining prerequisite. Un-ignore with that work, not before."]
 fn sharer_rejects_dcs_hook_with_unregistered_session_id() {
     let mut terminal = TerminalModel::mock(None, None);
     terminal.set_shared_session_status(SharedSessionStatus::ActiveSharer);
