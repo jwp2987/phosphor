@@ -139,8 +139,6 @@ fn is_selected(scenario: &Scenario, only: &Option<Vec<String>>) -> bool {
     }
 }
 
-/// Decides whether a tag-gated scenario should be skipped, returning the
-/// skip reason to report when it should not run. `None` means "run it".
 /// Whether this host actually has a desktop session a GPU-window scenario can
 /// use.
 ///
@@ -159,6 +157,13 @@ fn has_desktop_session() -> bool {
     // X11 or Wayland, including the `xvfb-run` wrapper CI uses on Linux —
     // xvfb is a real X server, so a scenario that only needs a window (rather
     // than a physical GPU) genuinely can run under it.
+    // KNOWN LIMIT: this checks that a display is CONFIGURED, not that it is
+    // LIVE. `DISPLAY=:0` on a host with no X server passes, and the scenario
+    // then fails rather than skipping. Deliberate: a set-but-broken DISPLAY is
+    // a misconfiguration worth surfacing, and probing liveness would mean
+    // opening a connection from a gate that has to stay cheap. CI is
+    // unaffected — `xvfb-run` sets a DISPLAY that works.
+    //
     // Non-EMPTY, not merely present: `DISPLAY=` exports an empty value, and
     // `var_os(..).is_some()` is true for it — which would report a desktop on
     // a host that has none. Caught by testing the negative case.
@@ -170,6 +175,8 @@ fn has_desktop_session() -> bool {
     set("DISPLAY") || set("WAYLAND_DISPLAY")
 }
 
+/// Decides whether a tag-gated scenario should be skipped, returning the
+/// skip reason to report when it should not run. `None` means "run it".
 fn skip_reason(scenario: &Scenario, args: &Args) -> Option<String> {
     if scenario.has_tag(Tag::NeedsDesktop) && !has_desktop_session() {
         return Some("needs-desktop (no DISPLAY/WAYLAND_DISPLAY on this host)".into());
