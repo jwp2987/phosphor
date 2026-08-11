@@ -3,12 +3,11 @@
 //! and `util::git`.
 //!
 //! The proto schema was ported faithfully from Warp's `diff_state.proto`, which
-//! carries a few fields the fork's domain types do not have yet (per-file
-//! `files` on `Commit` / `DiffMetadataAgainstBase`, `FileDiff.content_at_base`,
-//! and the `DIFF_SIZE_UNRENDERABLE_FILE_TOO_LARGE` size). Those are handled lossily here: dropped on decode, defaulted on
-//! encode. `content_at_base` is threaded explicitly rather than stored on the
-//! fork's plain `FileDiff` (the fork keeps base content in the separate
-//! `FileDiffAndContent`).
+//! carries a field the fork's domain types do not have yet: per-file `files`
+//! on `Commit` / `DiffMetadataAgainstBase`. That is handled lossily here:
+//! dropped on decode, defaulted on encode. `content_at_base` is threaded
+//! explicitly rather than stored on the fork's plain `FileDiff` (the fork
+//! keeps base content in the separate `FileDiffAndContent`).
 //!
 //! These live in `app` rather than the `remote_server` crate because the
 //! domain types are defined here and `remote_server` cannot depend on `app`.
@@ -16,7 +15,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::code_review::diff_size_limits::{DiffSize, MAX_DIFF_SIZE};
+use crate::code_review::diff_size_limits::{DiffSize, MAX_DIFF_SIZE, UnrenderableReason};
 use crate::code_review::diff_state::{
     DiffHunk, DiffLine, DiffLineType, DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState,
     DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo, GitDiffData, GitDiffWithBaseContent,
@@ -166,15 +165,23 @@ pub(super) fn diff_size_to_proto(size: &DiffSize) -> proto::DiffSize {
     match size {
         DiffSize::Normal => proto::DiffSize::Normal,
         DiffSize::Large => proto::DiffSize::Large,
-        DiffSize::Unrenderable => proto::DiffSize::UnrenderableDiffTooLarge,
+        DiffSize::Unrenderable(UnrenderableReason::DiffTooLarge) => {
+            proto::DiffSize::UnrenderableDiffTooLarge
+        }
+        DiffSize::Unrenderable(UnrenderableReason::FileTooLarge) => {
+            proto::DiffSize::UnrenderableFileTooLarge
+        }
     }
 }
 
 pub(super) fn proto_to_diff_size(size: i32) -> DiffSize {
     match proto::DiffSize::try_from(size).unwrap_or(proto::DiffSize::Unspecified) {
         proto::DiffSize::Large => DiffSize::Large,
-        proto::DiffSize::UnrenderableDiffTooLarge | proto::DiffSize::UnrenderableFileTooLarge => {
-            DiffSize::Unrenderable
+        proto::DiffSize::UnrenderableDiffTooLarge => {
+            DiffSize::Unrenderable(UnrenderableReason::DiffTooLarge)
+        }
+        proto::DiffSize::UnrenderableFileTooLarge => {
+            DiffSize::Unrenderable(UnrenderableReason::FileTooLarge)
         }
         // The fork has no Unspecified; treat it (and Normal) as Normal.
         proto::DiffSize::Normal | proto::DiffSize::Unspecified => DiffSize::Normal,
@@ -203,11 +210,12 @@ pub(super) fn file_diff_to_proto(
         .is_some_and(|c| c.len() > MAX_DIFF_SIZE)
     {
         // Base blob too large for the wire and won't be rendered by the
-        // client. The fork's `DiffSize` domain type has no separate
-        // file-too-large reason (see the module doc comment above), so this
-        // is encoded directly as the wire's file-too-large variant rather
-        // than round-tripped through `diff_size_to_proto`.
-        (proto::DiffSize::UnrenderableFileTooLarge, None)
+        // client, regardless of what the diff's own (locally-computed) size
+        // said.
+        (
+            diff_size_to_proto(&DiffSize::Unrenderable(UnrenderableReason::FileTooLarge)),
+            None,
+        )
     } else {
         (diff_size_to_proto(&diff.size), content_at_base)
     };

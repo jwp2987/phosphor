@@ -384,10 +384,14 @@ pub enum ModelEvent {
     },
     /// Writes one `workspace_metadata` row (insert-or-update on `repo_path`).
     ///
-    /// Keeps the pin's `…CodebaseIndexMetadata` name even though this fork has
-    /// no codebase indexing: the table it writes is still `workspace_metadata`,
-    /// and renaming it would make the diff against `02b53fcd8` harder to read
-    /// for whoever restores indexing.
+    /// Keeps the pin's `…CodebaseIndexMetadata` name even though this is
+    /// recently-navigated-workspace bookkeeping (`ai::workspace::WorkspaceMetadata`:
+    /// `path`/`navigated_ts`/`modified_ts`/`queried_ts`), not the embedding-based
+    /// codebase index — that index now exists too (`app/src/remote_server/codebase_index_model.rs`,
+    /// local/BYOP embeddings via the user's own provider), with its own separate
+    /// storage (`save_codebase_index_embeddings`, `save_codebase_index_nodes`).
+    /// Renaming this variant would make the diff against `02b53fcd8` harder to
+    /// read for no benefit, since the pin names it identically for the same reason.
     UpsertCodebaseIndexMetadata {
         index_metadata: Box<CodeWorkspaceMetadata>,
     },
