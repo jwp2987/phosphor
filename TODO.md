@@ -1392,11 +1392,25 @@ more look at *why* it is absent.
       **9 real-debt symbols → 4.**
 
 <details><summary>Original entry</summary>
-- [ ] `AgentTerminalControl` / `InputTypeAutoDetectionSource::AgentTerminalControl`,
+- [~] **PARTIAL 2026-08-11** — `lock_for_agent_control` /
+      `reset_after_agent_control` now exist and 4 tests landed (commit
+      `edd9b31b6` on `working`, unbuilt). **`InputTypeAutoDetectionSource::AgentTerminalControl`
+      was deliberately NOT added**: threading a second autodetection-source
+      variant through the shared `BlocklistAIInputModel` is tracked separately
+      as #399/#254 item d. A view-local `agent_terminal_control_lock` bool
+      achieves the same behaviour and both call sites that hand the agent
+      control of a running command go through it. Remaining tests in this
+      cluster are unported.
+      **DUPLICATE:** this entry and the "`InputTypeAutoDetectionSource::AgentTerminalControl`
+      does not exist (15 tests)" entry further down are the same work, and they
+      **stated opposite things** — this one said the binding landed but not the
+      mechanism; the other said the mechanism landed but not the supporting
+      pieces. Both are now corrected to the measured state.
+      Original text: `AgentTerminalControl` /
+      `InputTypeAutoDetectionSource::AgentTerminalControl`,
       `RUNNING_COMMAND_DETACH_HINT`, `lock_for_agent_control`,
-      `reset_after_agent_control`. **`ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME`
-      IS present** — so "attach agent to running command" landed its binding and
-      not its mechanism. 15 tests.
+      `reset_after_agent_control`. `ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME`
+      IS present. 15 tests.
 </details>
 
 ### TUI agent-message rendering — IMPLEMENTED 2026-08-11 (#456 cluster 2)
@@ -1562,10 +1576,15 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       tractable item here:** its sole real dependency,
       `descendant_conversation_ids_in_spawn_order`, **already exists** — in
       `app/src/ai/blocklist/orchestration_topology.rs`. Verified.
-- [ ] **`InputTypeAutoDetectionSource::AgentTerminalControl` does not exist**
-      (15 tests, `warp_tui`), plus two missing hint strings. "Attach agent to
-      running command" landed its mechanism but not its supporting pieces.
-      Verified absent tree-wide. One of the two clusters behind #456.
+- [~] **DUPLICATE of the `AgentTerminalControl` entry earlier in this file — see
+      there for the live status.** Kept as a stub rather than deleted, because
+      the two entries **contradicted each other** and that is worth recording:
+      this one said "landed its mechanism but not its supporting pieces", the
+      earlier one said "landed its binding and not its mechanism". Both were
+      written from partial reads. Measured state 2026-08-11: the hint strings
+      and `lock_for_agent_control`/`reset_after_agent_control` now exist
+      (`edd9b31b6`), the enum variant deliberately does not (#399/#254 item d).
+      Do not track this cluster in two places again.
 - [ ] **No TUI renderer for `MessagesReceivedFromAgents` / `EventsFromAgents`**
       (9 tests). **The GUI half is built** — `blocklist/orchestration_events.rs`
       both emits (`:331`) and renders (`:407`) them. Only the TUI side is
@@ -1591,14 +1610,20 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
 
 ### Partly confirmed — the fork is host-blind, but the scaffolding is there
 
-- [ ] **Remote project rules have no `HostId` dimension** (6 tests,
-      `crates/ai/src/project_context/model.rs`). `path_to_rules` is a
-      `HashMap<PathBuf, ProjectRules>` with no host key, so project-rule
-      resolution over SSH always resolves against the local host. Confirmed —
-      **and the file says so itself at `:272`: "Per-host scaffolding only —
-      this fork's `path_to_rules` has no ..."**. `HostId` is already imported
-      (`:5`). `global_rules.rs` (#575) solved the identical problem for global
-      rules, so there is a working pattern in-tree.
+- [x] **Remote project rules have no `HostId` dimension** (6 tests,
+      `crates/ai/src/project_context/model.rs`) — **DONE 2026-08-11**, commit
+      `721e4869d` on branch `working` (unbuilt; freeze in force). Adds
+      `remote_path_to_rules: HashMap<HostId, HashMap<PathBuf, ProjectRules>>`
+      alongside the local map rather than re-keying it, so local lookups are
+      untouched. Followed `global_rules.rs` (#575), which had solved the
+      identical problem. The `warp_util::host_id::HostId` vs `warp_core::HostId`
+      bridge is explicit and documented, mirroring
+      `buffer_location.rs::core_host_id_to_util`. Stale `:272`/`:617`/`:1081`
+      comments updated.
+      **Note: this was double-counted** — the same work is one of the 50
+      MISSING-SUBSYSTEM tests (`project_context/model_tests.rs`). The
+      symbol-axis entries in this section overlap the test-axis list above; see
+      the reconciliation note at the head of this section.
 
 ### CLAIMS THAT DID NOT SURVIVE VALIDATION — corrected, no work implied
 

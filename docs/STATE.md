@@ -64,6 +64,6 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 | source | open work | authority |
 |---|---:|---|
 | `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **50 tests** | primary; a test is open until ported/declined/covered/divergent |
-| `TODO.md` checkboxes | **39 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
+| `TODO.md` checkboxes | **36 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
 
 > Ledger open bucket is represented in `TODO.md`'s tracked items.
