@@ -85,7 +85,7 @@ are `GlobalBufferModel::resolve_conflict`, same method name, different type.
 | ~~7~~ | ~~TUI renderer for `MessagesReceivedFromAgents`/`EventsFromAgents`~~ **— FALSE.** `crates/warp_tui/src/agent_block.rs:1311` renders `MessagesReceivedFromAgents { messages }`; `:1318` deliberately no-ops `EventsFromAgents`. Types exist in `convert_{conversation,from,to}.rs`. `agent_block_tests.rs` exists in fork and pin. If the real complaint is the `EventsFromAgents` no-op, file that narrowly with `:1318` as evidence. | corrected 2026-08-11 |
 | 8 | **Zap #324 — pane min size** | `MIN_PANEL_WIDTH: f32 = 300.` hardcoded, `ai_assistant/panel.rs:61` |
 | 9 | **Zap #329 remainder** — hunk staging, branch create/switch | no `stage_hunk`/`checkout_branch` |
-| 10 | **Feature-reduced daemon target** | architectural; gates the distribution decision |
+| 10 | 🛑 **Feature-reduced daemon target — DO NOT START.** Maintainer hold, 2026-08-11. Architectural, gates the distribution decision. No agent is to be assigned this without an explicit instruction. | on hold |
 
 **Rule that produced this list, and the reason it is short:** grep for
 `fn <name>` / `struct <name>`, never the bare name. Six false positives and one
