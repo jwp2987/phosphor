@@ -1,5 +1,5 @@
+use super::parse_cache_creation_details;
 use crate::adapter::adapters::support::{StreamerCapturedData, StreamerOptions};
-use crate::adapter::anthropic::parse_cache_creation_details;
 use crate::adapter::inter_stream::{InterStreamEnd, InterStreamEvent};
 use crate::chat::{ChatOptionsSet, PromptTokensDetails, StopReason, ToolCall, Usage};
 use crate::webc::{Event, EventSourceStream};
@@ -180,7 +180,13 @@ impl futures::Stream for AnthropicStreamer {
 									let fn_arguments = if input.is_empty() {
 										Value::Object(Map::new())
 									} else {
-										serde_json::from_str(&input)?
+										serde_json::from_str(&input).unwrap_or_else(|e| {
+											tracing::warn!(
+												"Anthropic streamer: failed to parse tool-call input JSON ({} bytes): {e}",
+												input.len()
+											);
+											Value::String(input)
+										})
 									};
 
 									let tc = ToolCall {
@@ -238,8 +244,24 @@ impl futures::Stream for AnthropicStreamer {
 							return Poll::Ready(Some(Ok(InterStreamEvent::End(inter_stream_end))));
 						}
 
-						"ping" => continue, // Loop to the next event
-						other => tracing::warn!("UNKNOWN MESSAGE TYPE: {other}"),
+						"ping" => {
+							// Map ping events to Heartbeat events to indicate the stream is still active
+							return Poll::Ready(Some(Ok(InterStreamEvent::Heartbeat)));
+						}
+						"error" => {
+							// Anthropic may emit an `event: error` mid-stream (e.g. overloaded_error,
+							// rate_limit, internal_server_error). Propagate it as a typed error so the
+							// caller can surface the real cause instead of silently ending the stream.
+							tracing::warn!("Anthropic stream error event, data: {}", message.data);
+							let body: Value = serde_json::from_str(&message.data)
+								.unwrap_or_else(|_| Value::String(message.data.clone()));
+							self.done = true;
+							return Poll::Ready(Some(Err(Error::ChatResponse {
+								model_iden: self.options.model_iden.clone(),
+								body,
+							})));
+						}
+						other => tracing::warn!("UNKNOWN MESSAGE TYPE: {other}, data: {}", message.data),
 					}
 				}
 				Some(Err(err)) => {
@@ -298,17 +320,36 @@ impl AnthropicStreamer {
 				*val += output_tokens;
 			}
 
-			// -- Capture cache tokens (only present in message_start)
+			// -- Capture cache tokens.
+			// Standard Anthropic reports them in `message_start` (`/message/usage`).
+			// Some Anthropic-compatible gateways (e.g. Alibaba DashScope / Qwen) instead report
+			// them in `message_delta` (`/usage`), so fall back to that location when `message_start`
+			// did not carry them.
 			// NOTE: Anthropic's input_tokens does NOT include cached tokens, so we must add them.
 			// See also: AnthropicAdapter::into_usage() for non-streaming equivalent.
-			if message_type == "message_start" {
-				let cache_creation: i32 = data.x_get("/message/usage/cache_creation_input_tokens").unwrap_or(0);
-				let cache_read: i32 = data.x_get("/message/usage/cache_read_input_tokens").unwrap_or(0);
+			let cache_base = match message_type {
+				"message_start" => Some("/message/usage"),
+				// Fall back to message_delta only if message_start did not already provide cache details.
+				"message_delta"
+					if self
+						.captured_data
+						.usage
+						.as_ref()
+						.and_then(|u| u.prompt_tokens_details.as_ref())
+						.is_none() =>
+				{
+					Some("/usage")
+				}
+				_ => None,
+			};
+
+			if let Some(base) = cache_base {
+				let cache_creation: i32 = data.x_get(&format!("{base}/cache_creation_input_tokens")).unwrap_or(0);
+				let cache_read: i32 = data.x_get(&format!("{base}/cache_read_input_tokens")).unwrap_or(0);
 
 				// Parse cache_creation breakdown if present (TTL-specific breakdown)
-				// Use x_get with JSON pointer to navigate to /message/usage/cache_creation
 				let cache_creation_details = data
-					.x_get::<Value>("/message/usage/cache_creation")
+					.x_get::<Value>(&format!("{base}/cache_creation"))
 					.ok()
 					.as_ref()
 					.and_then(parse_cache_creation_details);
@@ -316,8 +357,12 @@ impl AnthropicStreamer {
 				if cache_creation > 0 || cache_read > 0 || cache_creation_details.is_some() {
 					let usage = self.captured_data.usage.get_or_insert(Usage::default());
 
-					// Add cache tokens to prompt_tokens (same as into_usage does)
-					if let Some(ref mut pt) = usage.prompt_tokens {
+					// Add cache tokens to prompt_tokens only for message_start, where Anthropic's
+					// input_tokens excludes them. For the message_delta fallback the token accounting
+					// is gateway-specific, so we only surface the breakdown to avoid double counting.
+					if message_type == "message_start"
+						&& let Some(ref mut pt) = usage.prompt_tokens
+					{
 						*pt += cache_creation + cache_read;
 					}
 

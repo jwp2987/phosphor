@@ -6,10 +6,16 @@
 
 // region:    --- Modules
 
+mod ant_model;
+mod ant_reasoning;
+mod ant_reasoning_legacy; // unused, until confident nothing to loss from older way
+
 mod adapter_impl;
+mod adapter_shared;
 mod streamer;
 
 pub use adapter_impl::*;
+pub(in crate::adapter::adapters) use adapter_shared::*;
 pub use streamer::*;
 
 // endregion: --- Modules

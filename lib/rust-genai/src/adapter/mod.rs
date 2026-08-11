@@ -9,14 +9,15 @@
 
 // region:    --- Modules
 
+mod macros;
+
 mod adapter_kind;
 mod adapter_types;
 mod adapters;
 mod dispatcher;
-mod dispatcher_macros;
 
 // -- Flatten (private, crate, public)
-use adapters::*;
+// use adapters::*;
 
 pub(crate) use adapter_types::*;
 pub(crate) use dispatcher::*;

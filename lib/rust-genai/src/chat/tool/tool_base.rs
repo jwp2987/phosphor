@@ -1,7 +1,3 @@
-// MODIFIED by the Phosphor fork relative to upstream genai.
-// Notice required by Apache-2.0 section 4(b); see lib/rust-genai/CHANGES-PHOSPHOR.md
-// for what changed here and why. Original: https://github.com/jeremychone/rust-genai
-
 use super::{ToolConfig, ToolName};
 use crate::chat::CacheControl;
 use serde::{Deserialize, Serialize};
@@ -42,9 +38,18 @@ pub struct Tool {
 	/// ```
 	pub schema: Option<Value>,
 
+	/// Provider-native freeform custom-tool format.
+	///
+	/// OpenAI Responses uses values such as
+	/// `{ "type": "grammar", "syntax": "lark", "definition": "..." }`.
+	/// When present, the OpenAI Responses adapter emits a `type: "custom"`
+	/// tool instead of a JSON-schema function tool.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub custom_format: Option<Value>,
+
 	/// When `true`, the provider enforces strict schema validation on tool-call arguments.
-	/// For OpenAI this sets `"strict": true` and auto-injects `"additionalProperties": false`
-	/// on every `"type": "object"` node in the schema.
+	/// For OpenAI and Anthropic this sets `"strict": true` and sanitizes the schema for
+	/// the provider's constrained-decoding dialect.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub strict: Option<bool>,
 
@@ -53,16 +58,16 @@ pub struct Tool {
 	/// Useful with embedded provider tools (e.g., Google Search for Gemini).
 	pub config: Option<ToolConfig>,
 
-	/// Optional per-tool cache control.
-	///
-	/// Currently only honored by the Anthropic adapter: when set on a `Tool`,
-	/// the adapter emits the corresponding `cache_control` field on that tool's
-	/// JSON object in the `tools` array. Use a 1h breakpoint on the last tool
-	/// to mark the static prefix (tools → system) as long-lived cache, then
-	/// short TTLs on later parts (messages tail) to satisfy Anthropic's
-	/// `tools → system → messages` TTL ordering requirement.
+	/// Optional cache control hint for prompt caching.
+	/// Anthropic: set on the last tool to cache the entire tool list prefix.
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub cache_control: Option<CacheControl>,
+
+	/// Anthropic fine-grained tool streaming (GA): when `true`, sets
+	/// `eager_input_streaming` on the tool so the provider streams tool-call
+	/// input without server-side JSON buffering (token-granular `input_json_delta`).
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub eager_input_streaming: Option<bool>,
 }
 
 /// Computed accessors
@@ -85,6 +90,11 @@ impl Tool {
 			.map(|s| serde_json::to_string(s).map(|j| j.len()).unwrap_or_default())
 			.unwrap_or_default();
 		size += self
+			.custom_format
+			.as_ref()
+			.map(|f| serde_json::to_string(f).map(|j| j.len()).unwrap_or_default())
+			.unwrap_or_default();
+		size += self
 			.config
 			.as_ref()
 			.map(|c| match c {
@@ -104,9 +114,11 @@ impl Tool {
 			name: name.into(),
 			description: None,
 			schema: None,
+			custom_format: None,
 			strict: None,
 			config: None,
 			cache_control: None,
+			eager_input_streaming: None,
 		}
 	}
 
@@ -131,8 +143,13 @@ impl Tool {
 		self
 	}
 
-	/// Enable strict schema validation for tool-call arguments.
-	/// When `true`, OpenAI enforces exact schema conformance.
+	/// Configure this as a provider-native freeform custom tool.
+	pub fn with_custom_format(mut self, format: Value) -> Self {
+		self.custom_format = Some(format);
+		self
+	}
+
+	/// Enable strict schema validation for tool-call arguments on providers that support it.
 	pub fn with_strict(mut self, strict: bool) -> Self {
 		self.strict = Some(strict);
 		self
@@ -144,10 +161,18 @@ impl Tool {
 		self
 	}
 
-	/// Attach a `cache_control` breakpoint to this tool. Currently honored only
-	/// by the Anthropic adapter (emitted on the tool JSON in the `tools` array).
+	/// Set cache control for prompt caching. Returns self for chaining.
+	/// On Anthropic, set this on the last tool to cache the entire tool list prefix.
 	pub fn with_cache_control(mut self, cache_control: impl Into<CacheControl>) -> Self {
 		self.cache_control = Some(cache_control.into());
+		self
+	}
+
+	/// Enable Anthropic fine-grained tool streaming (`eager_input_streaming`).
+	/// The provider streams tool-call input without buffering the full JSON —
+	/// useful for rendering tool arguments progressively as they arrive.
+	pub fn with_eager_input_streaming(mut self, eager: bool) -> Self {
+		self.eager_input_streaming = Some(eager);
 		self
 	}
 }

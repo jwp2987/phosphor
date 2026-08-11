@@ -29,12 +29,73 @@ missing pin.
 
 | | |
 |---|---|
-| **Version** | `0.6.0-beta.18` |
-| **Tag** | [`v0.6.0-beta.18`](https://github.com/jeremychone/rust-genai/releases/tag/v0.6.0-beta.18) |
-| **Commit** | `cb343d74c15fed24b926e63b9132a9eab100204f` |
-| **Vendored into this repo at** | `91a4be9b7` (2026-05-03, "fix(ci): commit lib/rust-genai local fork to fix the release build") |
+| **Version** | `0.7.0-beta.18` |
+| **Tag** | [`v0.7.0-beta.18`](https://github.com/jeremychone/rust-genai/releases/tag/v0.7.0-beta.18) |
+| **Commit** | `52379bf21b10a8f10312109267f83a2b3456b0f7` |
+| **Re-ported into this repo at** | this commit (a full re-port, not a rebase — see "Re-pin history" below) |
 | **Delta measured on** | 2026-08-10 |
-| **Modified files (src/)** | 18 (15 named in the original `CHANGES-PHOSPHOR.md`, plus 3 undocumented: `adapter/dispatcher.rs`, `adapter/mod.rs`, and a wholly new `adapter/dispatcher_macros.rs`) |
+| **Modified files (src/)** | 15 (down from the prior pin's 18 — see "Re-pin history": several delta files were dropped because upstream now does the same job) |
+
+## Re-pin history
+
+### `0.6.0-beta.18` → `0.7.0-beta.18` (this pin, 2026-08-10)
+
+This was a **re-port, not a rebase**: 0.7 reorganised the adapters directory
+behind `adapters/all_adapters.rs` + `adapter/macros/` (a generic
+`impl_pass_through_adapter!` macro that generates whole OpenAI/Anthropic
+-compatible adapter structs, not just dispatch — see "Dispatcher refactor"
+below), and split Anthropic's single `adapter_impl.rs` into
+`adapter_shared.rs` / `ant_model.rs` / `ant_reasoning.rs` /
+`ant_reasoning_legacy.rs` / `adapter_shared_tests.rs`. Essentially every file
+in the prior delta had moved or been restructured, so each Phosphor change
+was re-derived from a fresh diff and manually re-applied to its new home
+rather than merged.
+
+**Dispatcher refactor — dropped ours, took upstream's.** The prior pin
+carried an undocumented, licence-noncompliant local refactor:
+`adapter/dispatcher.rs` and `adapter/mod.rs` rewritten to route through a
+new `dispatch_adapter!` macro in a wholly-new `adapter/dispatcher_macros.rs`
+(see the old "Known gap" section, preserved below for history). Upstream 0.7
+independently did the same kind of refactor — its own
+`adapters/all_adapters.rs` + `adapter/macros/{dispatcher_macros,
+adapter_impl_macros, adapter_kind_macros}.rs` — and goes further, also
+macro-generating the ~15 pass-through OpenAI-compatible provider adapters
+(Aliyun, BigModel, DeepSeek, Groq, Mimo, Nebius, Together, Xai, ...) that the
+prior pin carried as individual per-provider directories. Since upstream's
+structure does the same job, **this pin drops the fork's parallel
+dispatcher refactor entirely and takes upstream's** — `dispatcher.rs`,
+`mod.rs`, and `adapter/macros/` are now byte-identical to pristine upstream,
+which also resolves the licence-compliance gap by elimination (nothing
+"modified" remains that would need a notice). The 8 now-unnecessary
+per-provider directories (`aliyun/`, `bigmodel/`, `deepseek/`, `groq/`,
+`mimo/`, `nebius/`, `together/`, `xai/`) were deleted along with them —
+upstream's `all_adapters.rs` pass-through list covers all of them by name.
+
+**Dropped, superseded by upstream** (see `CHANGES-PHOSPHOR.md` for detail):
+`chat/chat_options.rs`'s `extra_body` field and `chat/tool/tool_base.rs`'s
+`cache_control` field are both now upstream's own additions, with identical
+field names and semantics (upstream's tool `cache_control` goes further —
+it auto-applies a request-level breakpoint to the static tools+system
+prefix, which the fork's version didn't do). `adapter/adapters/gemini/
+openapi_schema.rs` no longer exists at all — Gemini forwards raw JSON
+Schema now (`responseJsonSchema`/`parametersJsonSchema`) instead of
+converting to an OpenAPI 3.0.3 subset, so the whole conversion function the
+fork's one-line test-rename patched is gone.
+
+**Carried forward, re-applied to the new file layout:** the Vertex
+streaming-URL fix (still lives in `adapter/adapters/vertex/adapter_impl.rs`,
+still a live upstream bug at `0.7.0-beta.18`), the 1M-context Anthropic beta
+header and the screenshot/cache_control-ordering fix (both now in
+`adapter/adapters/anthropic/adapter_shared.rs`, the new home for what
+`adapter_impl.rs` used to hold), the openai_resp reasoning-object gate
+(`adapter/adapters/openai_resp/adapter_impl.rs`, unchanged location), the
+BYOP gzip/proxy config (`client/web_config.rs`, `webc/web_client.rs`,
+byte-identical files between 0.6 and 0.7 pristine — ported with zero
+adjustment), and `chat/usage.rs`'s `extra` field (plus its "mechanical
+fallout" `extra: Default::default()` at every `Usage { .. }` construction
+site — now including two sites that didn't exist at the prior pin,
+`adapter/adapters/bedrock/{streamer,converse}.rs`, since Bedrock is new
+since `0.6.0-beta.18`).
 
 ### Why a commit *and* a tag
 
@@ -51,8 +112,8 @@ to `crates.io` does not (timed out / no response — untested why, but don't
 rely on it). Fetch upstream via the GitHub tag, not crates.io:
 
 ```
-gh api repos/jeremychone/rust-genai/tarball/v0.6.0-beta.18 > genai-0.6.0-beta.18.tar.gz
-gh api repos/jeremychone/rust-genai/git/refs/tags/v0.6.0-beta.18 --jq '.object.sha'
+gh api repos/jeremychone/rust-genai/tarball/v0.7.0-beta.18 > genai-0.7.0-beta.18.tar.gz
+gh api repos/jeremychone/rust-genai/git/refs/tags/v0.7.0-beta.18 --jq '.object.sha'
 ```
 
 Extract it, then diff the whole `lib/rust-genai/` tree against it (not just
@@ -63,32 +124,36 @@ real differences too):
 diff -rq <pristine-extract> lib/rust-genai -x .git -x target -x .github
 ```
 
-Do **not** diff against the vendoring commit `91a4be9b7` alone and call it the
-delta — that commit was already dirty when it landed (see "Known gap" below),
-so a diff against it understates the true change set. This is exactly the
-mistake the original `CHANGES-PHOSPHOR.md` made: it was derived from `git diff
-91a4be9b7..HEAD`, and its own text called itself "a lower bound" as a result.
-The corrected list in `CHANGES-PHOSPHOR.md` is the pristine-upstream diff, not
-the vendoring-commit diff.
+Do **not** diff against a vendoring/porting commit alone and call it the
+delta — measure against a fresh pristine extract of the pinned tag every
+time (see "Historical: the `91a4be9b7` vendoring gap" below for why this
+matters — it's exactly the mistake that produced a wrong, understated delta
+once already).
 
-## Known gap in the vendoring commit
+## Historical: the `91a4be9b7` vendoring gap (resolved at the `0.7.0-beta.18` re-pin)
 
-`91a4be9b7`'s vendored tree was not a clean upstream import — three files
-differ from pristine `v0.6.0-beta.18` without the delta being attributable to
-any later Phosphor commit:
+This section is kept for the record; the gap it describes no longer exists
+in the tree — see "Re-pin history" above.
 
-- `src/adapter/dispatcher.rs` and `src/adapter/mod.rs` were rewritten to route
-  through a new `dispatch_adapter!` macro (avoiding N-way repeated `match`
-  arms across every `AdapterKind` variant).
-- `src/adapter/dispatcher_macros.rs` (the macro itself, using the new `paste`
-  dependency) does not exist upstream at all.
+The crate was originally vendored at `91a4be9b7` (2026-05-03) from pristine
+`v0.6.0-beta.18`, and that vendored tree was not a clean import — three files
+differed from pristine without the delta being attributable to any later
+Phosphor commit: `src/adapter/dispatcher.rs` and `src/adapter/mod.rs` were
+rewritten to route through a new `dispatch_adapter!` macro (avoiding N-way
+repeated `match` arms across every `AdapterKind` variant), and
+`src/adapter/dispatcher_macros.rs` (the macro itself, using the `paste`
+dependency) didn't exist upstream at all. The refactor was
+behavior-preserving but undocumented: not in `CHANGES-PHOSPHOR.md`'s file
+list, and the three files carried no Apache-2.0 §4(b) modified-file notice,
+unlike every other file in the true delta — a licence-compliance gap, not
+just a documentation gap.
 
-The refactor is behavior-preserving — every `AdapterKind` variant maps to the
-same adapter struct before and after — but it was undocumented: not in
-`CHANGES-PHOSPHOR.md`'s file list, and **the three files carry no Apache-2.0
-§4(b) modified-file notice**, unlike every other file in the true delta. That
-is a licence-compliance gap, not just a documentation gap — see the note in
-`CHANGES-PHOSPHOR.md`.
+The `0.7.0-beta.18` re-pin resolved this **by elimination**: upstream 0.7
+independently ships the equivalent (and broader) macro-based refactor behind
+`adapters/all_adapters.rs` + `adapter/macros/`, so this pin drops the fork's
+parallel dispatcher rewrite entirely and takes upstream's structure instead.
+`dispatcher.rs` and `mod.rs` are now byte-identical to pristine upstream —
+nothing "modified" remains there that would need a notice.
 
 ## Re-pinning procedure
 

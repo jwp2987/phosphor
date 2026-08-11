@@ -2,7 +2,7 @@ use crate::adapter::{AdapterDispatcher, AdapterKind, ServiceType, WebRequestData
 use crate::chat::{ChatOptions, ChatOptionsSet, ChatRequest, ChatResponse, ChatStreamResponse};
 use crate::client::ModelSpec;
 use crate::embed::{EmbedOptions, EmbedOptionsSet, EmbedRequest, EmbedResponse};
-use crate::resolver::AuthData;
+use crate::resolver::{AuthData, ProviderConfig};
 use crate::{Client, Error, ModelIden, Result, ServiceTarget};
 
 /// High-level client APIs.
@@ -17,14 +17,42 @@ impl Client {
 	///
 	/// - May evolve to accept a custom endpoint.
 	///
+	/// - Accepts [`ProviderConfig`] or compatible values to override endpoint and auth.
+	///
 	/// - For most adapters, names also drive AdapterKind detection (see [`AdapterKind`]).
 	///
 	/// - Adapters should filter non-chat models until more skills are supported.
 	///   Future: `model_names(adapter_kind, Option<&[Skill]>)`.
-	pub async fn all_model_names(&self, adapter_kind: AdapterKind) -> Result<Vec<String>> {
-		let (auth, endpoint) = self.config().resolve_adapter_config(adapter_kind).await?;
-		let models = AdapterDispatcher::all_model_names(adapter_kind, endpoint, auth).await?;
+	pub async fn all_model_names(
+		&self,
+		adapter_kind: AdapterKind,
+		provider_config: impl Into<ProviderConfig>,
+	) -> Result<Vec<String>> {
+		let ProviderConfig { endpoint, auth } = provider_config.into();
+
+		let (auth, endpoint) = match (auth, endpoint) {
+			(Some(auth), Some(endpoint)) => (auth, endpoint),
+			(auth, endpoint) => {
+				let (default_auth, default_endpoint) = self.config().resolve_adapter_config(adapter_kind).await?;
+				(auth.unwrap_or(default_auth), endpoint.unwrap_or(default_endpoint))
+			}
+		};
+
+		let models = AdapterDispatcher::all_model_names(adapter_kind, endpoint, auth, self.web_client()).await?;
 		Ok(models)
+	}
+
+	/// Returns the bound [`AdapterKind`] for this Client, if any.
+	///
+	/// Set via [`ClientBuilder::with_adapter_kind`] at construction
+	/// time — `None` for Clients that did not opt into the bound
+	/// shape and still use per-call model-name inference. Useful for
+	/// callers that want to introspect a Client without tracking the
+	/// provider in parallel state.
+	///
+	/// [`ClientBuilder::with_adapter_kind`]: crate::ClientBuilder::with_adapter_kind
+	pub fn adapter_kind(&self) -> Option<AdapterKind> {
+		self.config().adapter_kind()
 	}
 
 	/// Builds a ModelIden by inferring AdapterKind from the model name.
@@ -73,55 +101,69 @@ impl Client {
 		let model = target.model.clone();
 		let auth_data = target.auth.clone();
 
-		let WebRequestData {
-			mut url,
-			mut headers,
-			payload,
-		} = AdapterDispatcher::to_web_request_data(target, ServiceType::Chat, chat_req, options_set.clone())?;
+		// -- OTel: create the `chat` span (borrows end before `target`/`chat_req` are consumed below).
+		#[cfg(feature = "otel")]
+		let otel_span = crate::otel::span::chat_request_span(&model, &target.endpoint, &options_set, &chat_req, false);
 
-		if let Some(extra_headers) = options.and_then(|o| o.extra_headers.as_ref()) {
-			headers.merge_with(extra_headers);
-		}
+		// The operation is wrapped so every error path (request shaping, web call, response
+		// parsing) flows through the OTel span recorder below.
+		let result = async {
+			let WebRequestData {
+				mut url,
+				mut headers,
+				payload,
+			} = AdapterDispatcher::to_web_request_data(target, ServiceType::Chat, chat_req, options_set.clone())?;
 
-		if let AuthData::RequestOverride {
-			url: override_url,
-			headers: override_headers,
-		} = auth_data
-		{
-			url = override_url;
-			headers = override_headers;
-		};
-
-		let web_res = self
-			.web_client()
-			.do_post(&url, &headers, &payload)
-			.await
-			.map_err(|webc_error| Error::WebModelCall {
-				model_iden: model.clone(),
-				webc_error,
-			})?;
-
-		// Note: here we capture/clone the raw body if set in the options_set
-		let captured_raw_body = options_set.capture_raw_body().unwrap_or_default().then(|| web_res.body.clone());
-
-		match AdapterDispatcher::to_chat_response(model.clone(), web_res, options_set) {
-			Ok(mut chat_res) => {
-				chat_res.captured_raw_body = captured_raw_body;
-				Ok(chat_res)
+			if let Some(extra_headers) = options.and_then(|o| o.extra_headers.as_ref()) {
+				headers.merge_with(extra_headers);
 			}
-			Err(err) => {
-				let response_body = captured_raw_body.unwrap_or_else(|| {
-					"Raw response not captured. Use the ChatOptions.capturre_raw_body flag to see raw response in this error".into()
-				});
-				let err = Error::ChatResponseGeneration {
-					model_iden: model,
-					request_payload: Box::new(payload),
-					response_body: Box::new(response_body),
-					cause: err.to_string(),
-				};
-				Err(err)
+
+			if let AuthData::RequestOverride {
+				url: override_url,
+				headers: override_headers,
+			} = auth_data
+			{
+				url = override_url;
+				headers = override_headers;
+			};
+
+			let web_res = self
+				.web_client()
+				.do_post(&url, &headers, &payload)
+				.await
+				.map_err(|webc_error| Error::WebModelCall {
+					model_iden: model.clone(),
+					webc_error,
+				})?;
+
+			// Note: here we capture/clone the raw body if set in the options_set
+			let captured_raw_body = options_set.capture_raw_body().unwrap_or_default().then(|| web_res.body.clone());
+
+			match AdapterDispatcher::to_chat_response(model.clone(), web_res, options_set) {
+				Ok(mut chat_res) => {
+					chat_res.captured_raw_body = captured_raw_body;
+					Ok(chat_res)
+				}
+				Err(err) => {
+					let response_body = captured_raw_body.unwrap_or_else(|| {
+						"Raw response not captured. Use the ChatOptions.capturre_raw_body flag to see raw response in this error".into()
+					});
+					let err = Error::ChatResponseGeneration {
+						model_iden: model,
+						request_payload: Box::new(payload),
+						response_body: Box::new(response_body),
+						cause: err.to_string(),
+					};
+					Err(err)
+				}
 			}
 		}
+		.await;
+
+		#[cfg(feature = "otel")]
+		let result = crate::otel::span::record_chat_result(&otel_span, result);
+
+		result
 	}
 
 	/// Streams a chat response.
@@ -144,39 +186,63 @@ impl Client {
 		let model = target.model.clone();
 		let auth_data = target.auth.clone();
 
-		let WebRequestData {
-			mut url,
-			mut headers,
-			payload,
-		} = AdapterDispatcher::to_web_request_data(target, ServiceType::ChatStream, chat_req, options_set.clone())?;
+		// -- OTel: create the streaming `chat` span (borrows end before `target`/`chat_req` are consumed).
+		#[cfg(feature = "otel")]
+		let otel_span = crate::otel::span::chat_request_span(&model, &target.endpoint, &options_set, &chat_req, true);
 
-		if let Some(extra_headers) = options.and_then(|o| o.extra_headers.as_ref()) {
-			headers.merge_with(extra_headers);
+		// Stream setup is synchronous; wrap it so setup errors are recorded on the span too.
+		let result = (move || {
+			let WebRequestData {
+				mut url,
+				mut headers,
+				payload,
+			} = AdapterDispatcher::to_web_request_data(target, ServiceType::ChatStream, chat_req, options_set.clone())?;
+
+			if let Some(extra_headers) = options.and_then(|o| o.extra_headers.as_ref()) {
+				headers.merge_with(extra_headers);
+			}
+
+			// TODO: Need to check this.
+			//       This was part of the 429c5cee2241dbef9f33699b9c91202233c22816 commit
+			//       But now it is missing in the the exec_chat(..) above, which is probably an issue.
+			if let AuthData::RequestOverride {
+				url: override_url,
+				headers: override_headers,
+			} = auth_data
+			{
+				url = override_url;
+				headers = override_headers;
+			};
+
+			let reqwest_builder =
+				self.web_client()
+					.new_req_builder(&url, &headers, &payload)
+					.map_err(|webc_error| Error::WebModelCall {
+						model_iden: model.clone(),
+						webc_error,
+					})?;
+
+			let res = AdapterDispatcher::to_chat_stream(model, reqwest_builder, options_set)?;
+
+			Ok(res)
+		})();
+
+		match result {
+			Ok(res) => {
+				// Hand the span to the stream so it stays open for the stream's lifetime.
+				#[cfg(feature = "otel")]
+				let res = ChatStreamResponse {
+					stream: res.stream.with_otel_span(otel_span),
+					..res
+				};
+				Ok(res)
+			}
+			Err(err) => {
+				#[cfg(feature = "otel")]
+				crate::otel::span::record_error(&otel_span, &err);
+				Err(err)
+			}
 		}
-
-		// TODO: Need to check this.
-		//       This was part of the 429c5cee2241dbef9f33699b9c91202233c22816 commit
-		//       But now it is missing in the the exec_chat(..) above, which is probably an issue.
-		if let AuthData::RequestOverride {
-			url: override_url,
-			headers: override_headers,
-		} = auth_data
-		{
-			url = override_url;
-			headers = override_headers;
-		};
-
-		let reqwest_builder = self
-			.web_client()
-			.new_req_builder(&url, &headers, &payload)
-			.map_err(|webc_error| Error::WebModelCall {
-				model_iden: model.clone(),
-				webc_error,
-			})?;
-
-		let res = AdapterDispatcher::to_chat_stream(model, reqwest_builder, options_set)?;
-
-		Ok(res)
 	}
 
 	/// Creates embeddings for a single input string.
@@ -224,20 +290,32 @@ impl Client {
 		let target = self.config().resolve_model_spec(model.into()).await?;
 		let model = target.model.clone();
 
-		let WebRequestData { headers, payload, url } =
-			AdapterDispatcher::to_embed_request_data(target, embed_req, options_set.clone())?;
+		// -- OTel: create the `embeddings` span (borrow ends before `target` is consumed below).
+		#[cfg(feature = "otel")]
+		let otel_span = crate::otel::span::embeddings_request_span(&model, &target.endpoint, &options_set);
 
-		let web_res = self
-			.web_client()
-			.do_post(&url, &headers, &payload)
-			.await
-			.map_err(|webc_error| Error::WebModelCall {
-				model_iden: model.clone(),
-				webc_error,
-			})?;
+		let result = async {
+			let WebRequestData { headers, payload, url } =
+				AdapterDispatcher::to_embed_request_data(target, embed_req, options_set.clone())?;
 
-		let res = AdapterDispatcher::to_embed_response(model, web_res, options_set)?;
+			let web_res = self
+				.web_client()
+				.do_post(&url, &headers, &payload)
+				.await
+				.map_err(|webc_error| Error::WebModelCall {
+					model_iden: model.clone(),
+					webc_error,
+				})?;
 
-		Ok(res)
+			let res = AdapterDispatcher::to_embed_response(model, web_res, options_set)?;
+
+			Ok(res)
+		}
+		.await;
+
+		#[cfg(feature = "otel")]
+		let result = crate::otel::span::record_embed_result(&otel_span, result);
+
+		result
 	}
 }

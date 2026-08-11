@@ -1,9 +1,9 @@
 use crate::ModelIden;
-use crate::adapter::openai::{OpenAIAdapter, ToWebRequestCustom};
+use crate::adapter::adapters::openai::{OpenAIAdapter, ToWebRequestDataOptions};
 use crate::adapter::{Adapter, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{ChatOptionsSet, ChatRequest, ChatResponse, ChatStreamResponse};
 use crate::resolver::{AuthData, Endpoint};
-use crate::webc::WebResponse;
+use crate::webc::{WebClient, WebResponse};
 use crate::{Result, ServiceTarget};
 use reqwest::RequestBuilder;
 
@@ -21,27 +21,28 @@ use reqwest::RequestBuilder;
 /// However, if the model name has a `/`, then it is assumed to be one recognized by the fireworks.ai service.
 pub struct FireworksAdapter;
 
-impl FireworksAdapter {
-	pub const API_KEY_DEFAULT_ENV_NAME: &str = "FIREWORKS_API_KEY";
-}
-
 impl Adapter for FireworksAdapter {
-	const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
+	const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some("FIREWORKS_API_KEY");
 
-	fn default_endpoint() -> Endpoint {
+	fn default_endpoint(_kind: AdapterKind) -> Endpoint {
 		const BASE_URL: &str = "https://api.fireworks.ai/inference/v1/";
 		Endpoint::from_static(BASE_URL)
 	}
 
-	fn default_auth() -> AuthData {
+	fn default_auth(_kind: AdapterKind) -> AuthData {
 		match Self::DEFAULT_API_KEY_ENV_NAME {
 			Some(env_name) => AuthData::from_env(env_name),
 			None => AuthData::None,
 		}
 	}
 
-	async fn all_model_names(kind: AdapterKind, endpoint: Endpoint, auth: AuthData) -> Result<Vec<String>> {
-		OpenAIAdapter::list_model_names_for_end_target(kind, endpoint, auth).await
+	async fn all_model_names(
+		kind: AdapterKind,
+		endpoint: Endpoint,
+		auth: AuthData,
+		web_client: &WebClient,
+	) -> Result<Vec<String>> {
+		OpenAIAdapter::list_model_names_for_end_target(kind, endpoint, auth, web_client).await
 	}
 
 	fn get_service_url(model: &ModelIden, service_type: ServiceType, endpoint: Endpoint) -> Result<String> {
@@ -67,14 +68,9 @@ impl Adapter for FireworksAdapter {
 		//       See: https://fireworks.ai/docs/faq-new/models-inference/what-are-the-maximum-completion-token-limits-for-models-and-can-they-be-increase
 		// NOTE: The `genai` strategy is to set a large max_tokens value, letting the model enforce its own lower limit by default to avoid unpleasant and confusing surprises.
 		//       Users can use [`ChatOptions`] to specify a specific max_tokens value.
-		// NOTE: As mentioned in the Fireworks FAQ above, typically, for Fireworks-hosted models the top max_tokens is equal to the context window.
-		//       Since, Qwen3 models are at 256k, so we will use this upper bound (without going to the 1M/10M of Llama 4) for non-streaming.
-		//       However, since anything over 5k requires streaming API, we cap the default to 5k for non-streaming here so that the request doesn't fail.
-		let custom = ToWebRequestCustom {
-			default_max_tokens: match service_type {
-				ServiceType::ChatStream => Some(256_000),
-				_ => Some(5_000),
-			},
+		let custom = ToWebRequestDataOptions {
+			default_max_tokens: Some(512_000), // large enough
+			..Default::default()
 		};
 
 		OpenAIAdapter::util_to_web_request_data(target, service_type, chat_req, chat_options, Some(custom))

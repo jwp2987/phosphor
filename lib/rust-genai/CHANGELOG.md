@@ -1,51 +1,134 @@
 `.` minor | `-` Fix | `+` Addition | `^` improvement | `!` Change | `>` Refactor
 
+## v0.7.0-beta.x (see [genai versions](https://crates.io/crates/genai/versions))
 
-## v0.6.0-beta WIP - [v0.6.0-alpha](https://github.com/jeremychone/rust-genai/compare/v0.5.3...HEAD)
+- `!` API CHANGE - `Tool` adds the public `custom_format: Option<Value>` field for provider-native freeform custom-tool formats. Downstream `Tool` struct literals must add `custom_format: None`, or preferably migrate to `Tool::new(...)` and builder methods. `Tool::with_custom_format(...)` is the new builder API.
+- `+` New Providers:
+  - AtlasCloud - default env: `ATLASCLOUD_API_KEY`, Adapter: OpenAI, endpoint: `https://api.atlascloud.ai/v1/` (activated on the `atlascloud::` namespace) (PR #259)
+  - Qwen Cloud - default env: `QWEN_CLOUD_API_KEY`, Adapter: OpenAI, endpoint: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1/` (activated on the `qwen_cloud::` namespace)
+  - Kimi - default env: `KIMI_API_KEY`, Adapter: OpenAI, endpoint: `https://api.moonshot.ai/v1/` (activated on the `kimi::` namespace or `kimi` model prefix, moonshot.ai)
+- Anthropic:
+  - `+` Expose streaming SSE ping messages as provider-neutral `ChatStreamEvent::Heartbeat` events, allowing callers to distinguish a live long-running stream from a stall. (PR #271)
+  - `+` Add prompt caching on tools via `Tool::with_cache_control`, and make request-level `ChatOptions::with_cache_control` automatically apply a cache breakpoint to the static (tools+system) prefix, which was previously ignored. `Ephemeral24h` is documented as clamped to Anthropic's max `1h` TTL.
+  - `+` Support the `extra_body` `ChatOptions` field, merging extra request body fields. ([#255](https://github.com/jeremychone/rust-genai/pull/255))
+  - `-` Capture streaming cache tokens from the `message_delta` fallback. (PR #258)
+  - `-` Fix: reuse Client WebClient for model listing. ([#249](https://github.com/jeremychone/rust-genai/pull/249))
+  - `+` Sanitize JSON Schema for structured responses and strict tools. (PR #263)
+  - `!` `ReasoningEffort::None` is renamed to `ReasoningEffort::Zero`, avoiding confusion with `Option::None`. `#[serde(alias = "None")]` keeps old JSON deserializable. The canonical keyword is now `"zero"` (was `"none"`), `as_keyword()` and `Display` emit `"zero"`, and `from_keyword()` still accepts `"none"` as a backward-compatible alias. (PR #253, #251)
+    - `Zero` now positively disables reasoning, whereas it previously triggered adaptive thinking.
+    - Sonnet 5 sends `thinking: {"type": "disabled"}`, because thinking is on by default.
+    - Other models omit `thinking` and `output_config.effort`.
+    - Fable and Mythos omit `thinking`, because it is always on and cannot be explicitly disabled.
+    - The Anthropic `-zero` model suffix is canonical, while `-none` remains a backward-compatible alias. Both map to `Zero` and are stripped.
+- OpenAI:
+  - `+` Support OpenAI Responses freeform custom tools with grammar-constrained raw-string input. Custom tools serialize as `type: "custom"`, custom tool-call input streams incrementally, and round-trips as `custom_tool_call` / `custom_tool_call_output` items. (PR #266)
+  - `^` Capture `cache_write_tokens` from prompt-cache usage and normalize it to `Usage.prompt_tokens_details.cache_creation_tokens` for Chat Completions and Responses API payloads.
+  - `^` GPT-5.6 and later now use cache opt-in only. Here is how to opt in: (see [PR #260](https://github.com/jeremychone/rust-genai/pull/260))
+    - Set a request-level cache intent with `ChatOptions::with_cache_control(...)` or provide a `prompt_cache_key`. OpenAI then uses `prompt_cache_options.mode = "implicit"` and manages cache placement without an invented content breakpoint.
+    - Set message-level cache control to use explicit mode and place one cache breakpoint on the last eligible content block. Chat Completions supports text, image, audio, file, and refusal blocks. Responses supports input text, input image, and input file blocks.
+    - Otherwise, when there is no request-level cache intent, `prompt_cache_key`, message-level cache control, or tool-level cache control, the mode is set to `"explicit"` with no breakpoint. Nothing is implicitly cached.
+    - Tool-level cache control is ignored by OpenAI because the supported protocols do not provide a valid tool-definition breakpoint representation. It does not change the cache mode, fail serialization, or emit an unsupported breakpoint field.
+    - Message-level cache placement is best effort. When a controlled message has no eligible content block, OpenAI omits the breakpoint and continues request serialization without failing.
+    - This policy applies only to native OpenAI Chat Completions and Responses requests for GPT-5.6 and later. Older OpenAI models retain legacy cache-retention behavior, and OpenAI-compatible adapters do not receive these OpenAI-specific fields.
+    - Existing normalized usage continues to expose cache reads through `cached_tokens` and cache writes through `cache_creation_tokens`.
+  - `+` Sanitize JSON Schema for structured responses and strict tools. (PR #263)
+  - `!` Apply the `ReasoningEffort::None` to `ReasoningEffort::Zero` rename mechanically, while preserving provider-specific keyword mappings.
+- Gemini:
+  - `^` Forward JSON Schema raw via `responseJsonSchema` and `parametersJsonSchema`. (PR #257)
+  - `!` Map `ReasoningEffort::Zero` to a budget of `0`, which might be rejected by the provider on some models.
+  - `-` Protect known model names such as `deepseek-r1-zero` from reasoning suffix stripping by using a whitelist in `from_model_name()`.
+- Bedrock:
+  - `!` Apply the `ReasoningEffort::None` to `ReasoningEffort::Zero` rename mechanically, with behavior unchanged.
+- Cross-provider adapters:
+  - `^` Move messages after tools in JSON payloads for better prompt cache utilization. (PR #262)
+- OpenTelemetry:
+  - `+` Add optional OpenTelemetry GenAI semantic-convention instrumentation behind the new `otel` feature, off by default, using a pure `tracing` bridge with no extra dependencies.
+    - Auto-instruments `exec_chat`, `exec_chat_stream`, and `exec_embed` as `gen_ai.*` spans, including operation, provider, request params, server address/port, usage tokens, finish reasons, response id/model, streaming time-to-first-chunk, and `error.type`. Prompt and response content capture is opt-in via `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`. Adds opt-in `genai::otel` helpers for agent, workflow, and tool spans, plus the evaluation-result event. Export by wiring `tracing-opentelemetry` in the application. See `docs/otel.md` and `examples/c12-otel.rs`.
 
+## 2026-06-06 [v0.6.5](https://github.com/jeremychone/rust-genai/compare/v0.6.4...v0.6.5)
 
-- `!` API CHANGE - `ContentPart::CustomPart.model_iden` is now `Option`
-- `!` API CHANGE - `all_model_names()` - now live (with AuthResolver support)
-- `!` openai_resp - gate `reasoning.encrypted_content` on `capture_reasoning_content`
-- `!` openai_resp - make `reasoning.summary` opt-in for `capture_reasoning_content`
-- `!` gemini - make `thinkingConfig/includeThoughts` opt-in for `capture_reasoning_content`
-- `!` groq - providers must be addressed via namespaced model (`groq::_model_name`)
-- `+` provider - add Google Vertex adapter with Gemini and Anthropic support
-- `+` anthropic - add JSON schema support
-- `+` API NEW - New `ModelSpec` to define custom endpoint, model, .. 
-- `+` API NEW - add openai resp stateful sessions — `previous_response_id`, `store`, `response_id` (PR #168)
-- `+` API NEW - Add `ContentPart::ReasoningContent` support
-- `+` API NEW - expose provider `stop_reason` in chat responses
-- `+` API NEW - add typed and normalized built-in tools, `ToolName`, `ToolConfig`, `WebSearch`, and related tool support
-- `+` API NEW - WebSearch builtin tool spport for Anthropic, OpenAI, Gemini
-- `+` tests - add yakbak Gemini streaming replay test
-- `+` tests - add yakbak HTTP record/replay integration test infrastructure
-- `+` provider - add Aliyun adapter, namespace only
-- `^` API NEW - chat-level prompt cache `CacheControl` with openai prompt_cache_key Support
-- `^` perf - enable HTTP optimizations, gzip, `TCP_NODELAY`, and HTTP/2 tuning
-- `^` API NEW - Add support for `ReasoningEffort::Max` (Anthropic) and `ReasoningEffort::XHigh` (OpenAI) 
-- `^` ollama - implement native API support (BIG)
-- `^` openai - route GPT-5 models through the OpenAI Responses API
-- `^` openai - now support prompt_cache_key in `ChatOptions` (and `prompt_cache_retention` via `CacheControl`)
-- `^` openai - add request-level prompt cache support and use `instructions` for Responses API system prompts
-- `^` anthropic - add support for adaptive thinking
-- `^` doc - sync llm api reference, spec rules, and tool spec
-- `^` anthropic - emit incremental `ToolCallChunk` events during streaming
-- `-` openai_resp - fix buffering of incomplete UTF-8 sequences across stream chunks
-- `-` openai - capture inline usage from `finish_reason` stream chunks
-- `-` anthropic - guard against null `tool_call` arguments in request serialization
-- `-` anthropic - implement missing prompt caching fixes, cache token capture and normalization, TTL support, and per-part cache control support
-- `-` gemini - support parallel tool calls in streaming adapter
-- `-` openai - fix streamer to emit delta content from `finish_reason` message
-- `-` gemini - fix JSON schema compatibility and usage-only stream tail handling
-- `-` openai - surface SSE error payloads in streaming
-- `-` openai - fix recursive issue on tool handling
-- `-` gemini - fix tool serialization to use `functionDeclarations` camelCase
-- `>` ModelName - add `Static` and `Shared` inner support
-- `>` adapter - update `Adapter` trait with `DEFAULT_API_KEY_ENV_NAME` and update implementations
-- `>` AuthData - add `None` variant
-- `>` openai - relayout adapter implementation and shared code
-- `>` examples - rename examples
+- `-` fix: capture OpenAI stream usage tail (PR #242)
+
+## 2026-06-01 [v0.6.4](https://github.com/jeremychone/rust-genai/compare/v0.6.3...v0.6.4)
+
+- `+` NEW PROVIDER: MiniMax ([https://platform.minimax.io/](platform.minimax.io/)) with `MiniMax` or `minimax` prefixes, or `minimax::` namespace.
+- `^` build - reqwest TLS is now selectable via cargo features: `rustls-tls` (default; rustls + aws-lc-rs + OS trust store) and `native-tls`. 
+  - reqwest switches to `default-features = false` with all previously-implicit features pinned explicitly; the default (`rustls-tls`) uses the same crypto backend as before, so HTTPS keeps working out of the box. BYO crypto provider / custom CA / mTLS via `ClientBuilder::with_reqwest`. Enabling both backends at once fails fast with a `compile_error!` instead of silently picking one.
+- `>` Refactored `Antrophic` adapter with `antropic_shared.rs` (internal)
+
+## 2026-05-29 - [v0.6.3](https://github.com/jeremychone/rust-genai/compare/v0.6.2...v0.6.3)
+
+- `^` use adaptive thinking for opus 4.7 (and above)
+
+## 2026-05-27 - [v0.6.2](https://github.com/jeremychone/rust-genai/compare/v0.6.1...v0.6.2)
+
+- `-` fix - openai_resp: tolerate response.completed events without `output` field (PR #236)
+- `^` adapter/openai - Fix ReasoningEffort::Max mapping to 'max' keyword
+
+## 2026-05-24 - [v0.6.1](https://github.com/jeremychone/rust-genai/compare/v0.6.0...v0.6.1)
+
+- `^` openai shared adapter - remove OpenAI only guard on reasoning suffix
+  - now all openai compatible adapters get the reasoning suffix resolved
+
+## 2026-05-22 - [v0.6.0](https://github.com/jeremychone/rust-genai/compare/v0.5.3...v0.6.0)
+
+- API changes:
+  - `+` API NEW - `all_model_names(adapter_kind, provider_config)` - added `ProviderConfig` for model listing (endpoint/auth overrides)
+  - `!` API CHANGE - `all_model_names()` - now live (with AuthResolver support)
+  - `+` API NEW - New `ModelSpec` to define custom endpoint, model, ..
+  - `+` API NEW - add openai resp stateful sessions — `previous_response_id`, `store`, `response_id` (PR #168)
+  - `+` API NEW - Add `ContentPart::ReasoningContent` support
+  - `+` API NEW - expose provider `stop_reason` in chat responses
+  - `+` API NEW - add typed and normalized built-in tools, `ToolName`, `ToolConfig`, `WebSearch`, and related tool support
+  - `+` API NEW - WebSearch builtin tool spport for Anthropic, OpenAI, Gemini
+  - `^` API NEW - chat-level prompt cache `CacheControl` with openai prompt_cache_key Support
+  - `^` API NEW - Add support for `ReasoningEffort::Max` (Anthropic) and `ReasoningEffort::XHigh` (OpenAI)
+  - `^` openai - now support prompt_cache_key in `ChatOptions` (and `prompt_cache_retention` via `CacheControl`)
+  - `!` openai_resp - gate `reasoning.encrypted_content` on `capture_reasoning_content`
+  - `!` openai_resp - make `reasoning.summary` opt-in for `capture_reasoning_content`
+  - `!` gemini - make `thinkingConfig/includeThoughts` opt-in for `capture_reasoning_content`
+  - `!` groq - providers must be addressed via namespaced model (`groq::_model_name`)
+  - `>` AuthData - add `None` variant
+- New Providers:
+    - AWS Bedrock (`bedrock_api` and `bedrock_sigv4` adapters)
+    - `open_router`
+    - `vertex` (with Gemini and Anthropic support)
+    - `github_copilot` (GitHub Models API)
+    - `opencode_go`
+    - `baidu`
+    - `aliyun`
+    - `moonshot`
+    - `aihubmix`
+    - `ollama_cloud` (Ollama Cloud)
+- Other additions & enhancements:
+  - `!` zai - now use `zai_coding` for the plan based (not `coding` anymore)
+  - `^` gemini - use provider-returned `call_id` for tool calls (PR #232)
+  - `+` anthropic - add JSON schema support
+  - `^` perf - enable HTTP optimizations, gzip, `TCP_NODELAY`, and HTTP/2 tuning
+  - `^` ollama - implement native API support (BIG)
+  - `^` openai - route GPT-5 models through the OpenAI Responses API
+  - `^` openai - add request-level prompt cache support and use `instructions` for Responses API system prompts
+  - `^` anthropic - add support for adaptive thinking
+  - `^` anthropic - emit incremental `ToolCallChunk` events during streaming
+- Others:
+  - `^` docs - comprehensive update of LLM API reference, README, and migration guide for v0.6.0
+  - `^` doc - sync llm api reference, spec rules, and tool spec
+  - `+` tests - add yakbak Gemini streaming replay test
+  - `+` tests - add yakbak HTTP record/replay integration test infrastructure
+  - `>` ModelName - add `Static` and `Shared` inner support
+  - `>` adapter - update `Adapter` trait with `DEFAULT_API_KEY_ENV_NAME` and update implementations
+  - `>` openai - relayout adapter implementation and shared code
+  - `>` examples - rename examples
+  - `-` openai_resp - fix buffering of incomplete UTF-8 sequences across stream chunks
+  - `-` openai - capture inline usage from `finish_reason` stream chunks
+  - `-` anthropic - guard against null `tool_call` arguments in request serialization
+  - `-` anthropic - implement missing prompt caching fixes, cache token capture and normalization, TTL support, and per-part cache control support
+  - `-` gemini - support parallel tool calls in streaming adapter
+  - `-` openai - fix streamer to emit delta content from `finish_reason` message
+  - `-` gemini - fix JSON schema compatibility and usage-only stream tail handling
+  - `-` openai - surface SSE error payloads in streaming
+  - `-` openai - fix recursive issue on tool handling
+  - `-` gemini - fix tool serialization to use `functionDeclarations` camelCase
 
 ## 2026-01-31 - [v0.5.3](https://github.com/jeremychone/rust-genai/compare/v0.5.2...v0.5.3)
 

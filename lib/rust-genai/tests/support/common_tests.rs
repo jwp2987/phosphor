@@ -1,7 +1,7 @@
 use crate::get_option_value;
 use crate::support::data::{
-	AUDIO_TEST_FILE_PATH, IMAGE_URL_JPG_DUCK, TEST_IMAGE_FILE_PATH, get_b64_audio, get_b64_duck, get_b64_pdf,
-	has_audio_file,
+	AUDIO_TEST_FILE_PATH, IMAGE_URL_JPG_DUCK, TEST_IMAGE_FILE_PATH, VIDEO_TEST_FILE_PATH, get_b64_audio, get_b64_duck,
+	get_b64_pdf, has_audio_file, has_video_file,
 };
 use crate::support::{
 	Check, StreamExtract, TestResult, assert_contains, assert_reasoning_content, assert_reasoning_usage,
@@ -73,7 +73,9 @@ pub async fn common_test_chat_reasoning_ok(
 		ChatMessage::system("Answer in one sentence. But make think hard to make sure it is not a trick question."),
 		ChatMessage::user("Why is the sky red?"),
 	]);
-	let options = ChatOptions::default().with_reasoning_effort(reasoning_effort);
+	let options = ChatOptions::default()
+		.with_reasoning_effort(reasoning_effort)
+		.with_capture_reasoning_content(true);
 
 	// -- Exec
 	let chat_res = client.exec_chat(model, chat_req, Some(&options)).await?;
@@ -437,6 +439,7 @@ pub async fn common_test_chat_cache_implicit_simple_ok(model: &str) -> TestResul
 pub async fn common_test_chat_cache_explicit_user_ok(model: &str) -> TestResult<()> {
 	// -- Setup & Fixtures
 	let client = Client::default();
+
 	let big_content = get_big_content()?;
 	let chat_req = ChatRequest::new(vec![
 		// -- Messages (deactivate to see the differences)
@@ -461,8 +464,8 @@ pub async fn common_test_chat_cache_explicit_user_ok(model: &str) -> TestResult<
 		.prompt_tokens_details
 		.as_ref()
 		.ok_or("Should have prompt_tokens_details")?;
-	let cache_creation_tokens = get_option_value!(prompt_tokens_details.cache_creation_tokens);
-	let cached_tokens = get_option_value!(prompt_tokens_details.cached_tokens);
+	let cache_creation_tokens = prompt_tokens_details.cache_creation_tokens.unwrap_or_default();
+	let cached_tokens = prompt_tokens_details.cached_tokens.unwrap_or_default();
 
 	assert!(
 		cache_creation_tokens > 0 || cached_tokens > 0,
@@ -574,10 +577,7 @@ pub async fn common_test_chat_stream_cache_explicit_1h_ttl_ok(model: &str) -> Te
 
 	// -- Extract Stream content
 	let StreamExtract {
-		stream_end,
-		content,
-		reasoning_content: _,
-		..
+		stream_end, content, ..
 	} = extract_stream_end(chat_res.stream).await?;
 	let content = content.ok_or("extract_stream_end SHOULD have extracted some content")?;
 
@@ -886,6 +886,36 @@ pub async fn common_test_chat_audio_b64_ok(model: &str) -> TestResult<()> {
 	Ok(())
 }
 
+pub async fn common_test_chat_video_b64_ok(model: &str) -> TestResult<()> {
+	if !has_video_file() {
+		println!("No test video file. Skipping this test.");
+		return Ok(());
+	}
+
+	// -- Setup
+	let client = Client::default();
+
+	// -- Build & Exec
+	// NOTE: Might not extract audio
+	let mut chat_req = ChatRequest::default().append_message(ChatMessage::user(
+		"Let what you see in the video, in order. What what you hear",
+	));
+	let cp_video = ContentPart::from_binary_file(VIDEO_TEST_FILE_PATH)?;
+
+	chat_req = chat_req.append_message(ChatMessage::user(vec![cp_video]));
+
+	let chat_res = client.exec_chat(model, chat_req, None).await?;
+
+	// -- Check
+	let res = chat_res.first_text().ok_or("Should have text result")?;
+
+	// NOTE: here we make the test a little loose as the point of this test is not to test the model accuracy
+	assert_contains(res, "person");
+	assert_contains(res, "camera");
+
+	Ok(())
+}
+
 pub async fn common_test_chat_pdf_b64_ok(model: &str) -> TestResult<()> {
 	// -- Setup
 	let client = Client::default();
@@ -1026,7 +1056,7 @@ pub async fn common_test_list_models(adapter_kind: AdapterKind, contains: &str) 
 	let client = Client::default();
 
 	// -- Exec
-	let models = client.all_model_names(adapter_kind).await?;
+	let models = client.all_model_names(adapter_kind, None).await?;
 
 	// -- Check
 	assert_contains(&models, contains);

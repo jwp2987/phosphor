@@ -1,21 +1,20 @@
 mod support;
 
-pub(super) mod aliyun;
+pub mod all_adapters;
+
 pub(super) mod anthropic;
-pub(super) mod bigmodel;
+pub(super) mod baidu;
+pub(super) mod bedrock;
 pub(super) mod cohere;
-pub(super) mod deepseek;
+pub(super) mod custom;
 pub(super) mod fireworks;
 pub(super) mod gemini;
 pub(super) mod github_copilot;
-pub(super) mod groq;
-pub(super) mod mimo;
-pub(super) mod nebius;
 pub(super) mod ollama;
 pub(super) mod ollama_cloud;
+pub(super) mod omlx;
 pub(super) mod openai;
 pub(super) mod openai_resp;
-pub(super) mod together;
+pub(super) mod opencode_go;
 pub(super) mod vertex;
-pub(super) mod xai;
 pub(super) mod zai;

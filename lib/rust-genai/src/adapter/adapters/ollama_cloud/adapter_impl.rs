@@ -6,7 +6,7 @@ use crate::adapter::{Adapter, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{ChatOptionsSet, ChatRequest, ChatResponse, ChatStreamResponse};
 use crate::embed::{EmbedOptionsSet, EmbedRequest, EmbedResponse};
 use crate::resolver::{AuthData, Endpoint};
-use crate::webc::WebResponse;
+use crate::webc::{WebClient, WebResponse};
 use crate::{ModelIden, Result, ServiceTarget};
 use reqwest::RequestBuilder;
 use serde_json::json;
@@ -21,19 +21,24 @@ impl OllamaCloudAdapter {
 impl Adapter for OllamaCloudAdapter {
 	const DEFAULT_API_KEY_ENV_NAME: Option<&'static str> = Some(Self::API_KEY_DEFAULT_ENV_NAME);
 
-	fn default_endpoint() -> Endpoint {
+	fn default_endpoint(_kind: AdapterKind) -> Endpoint {
 		const BASE_URL: &str = "https://ollama.com/";
 		Endpoint::from_static(BASE_URL)
 	}
 
-	fn default_auth() -> AuthData {
+	fn default_auth(_kind: AdapterKind) -> AuthData {
 		AuthData::from_env(Self::API_KEY_DEFAULT_ENV_NAME)
 	}
 
-	async fn all_model_names(adapter_kind: AdapterKind, endpoint: Endpoint, auth: AuthData) -> Result<Vec<String>> {
+	async fn all_model_names(
+		adapter_kind: AdapterKind,
+		endpoint: Endpoint,
+		auth: AuthData,
+		web_client: &WebClient,
+	) -> Result<Vec<String>> {
 		let api_key = get_api_key(auth, &ModelIden::new(adapter_kind, ""))?;
 		let headers = Headers::from(vec![("Authorization", format!("Bearer {api_key}"))]);
-		OllamaAdapter::list_model_names(adapter_kind, endpoint, headers).await
+		OllamaAdapter::list_model_names(adapter_kind, endpoint, headers, web_client).await
 	}
 
 	fn get_service_url(model: &ModelIden, service_type: ServiceType, endpoint: Endpoint) -> Result<String> {
@@ -75,7 +80,6 @@ impl Adapter for OllamaCloudAdapter {
 
 		let mut payload = json!({
 			"model": model_name,
-			"messages": messages,
 			"stream": stream,
 		});
 
@@ -83,9 +87,13 @@ impl Adapter for OllamaCloudAdapter {
 			payload.x_insert("options", options)?;
 		}
 
+		// -- Tools (before messages)
 		if let Some(tools) = tools {
 			payload.x_insert("tools", tools)?;
 		}
+
+		// -- Messages (after tools)
+		payload.x_insert("messages", messages)?;
 
 		if let Some(format) = chat_options.response_format()
 			&& matches!(format, crate::chat::ChatResponseFormat::JsonMode)
