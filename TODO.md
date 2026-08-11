@@ -5,6 +5,69 @@ Added 2026-08-10 after a status report listed four in-flight items as unstarted:
 the assignment lived in the operator's head and not in this file. **Record the
 assignment here when you start work, not when you finish it.**
 
+## WHAT DONE LOOKS LIKE (maintainer, 2026-08-11)
+
+> "Part of it is having **100% non-cloud parity with Warp**, through either
+> port, code, or declined." — and, on review, **divergent counts too, seeing as
+> we are a BYOP product.**
+
+That is the first stated definition of done for this project, and it is
+measurable. Recorded here because it changes what the sweep buckets *mean*.
+
+**A pin test is RESOLVED when it is one of:**
+
+| resolution | meaning |
+|---|---|
+| **PORTED** | the test runs here |
+| **COVERED-ELSEWHERE** | the fork tests the same behaviour under another name — **must cite the fork test** |
+| **DECLINED** | a deliberate decision, with a `DECLINED.md` row |
+| **DIVERGENT** | the fork's API or behaviour differs **because it is BYOP** — legitimate, not debt |
+| **CLOUD** | outside the definition entirely; the backend is gone and is not coming back |
+
+**Everything else is open work.** In practice that means the
+MISSING-SUBSYSTEM bucket, and nothing else.
+
+### Position as of 2026-08-11
+
+Of 1,841 absent pin tests, **1,204 are cloud** — outside the definition by
+construction. That leaves a **non-cloud universe of 637**:
+
+| | tests | resolved? |
+|---|---:|---|
+| DECLINED | 284 | yes |
+| DIVERGENT (BYOP) | ~60 | yes |
+| COVERED-ELSEWHERE | ~26 | yes, where cited |
+| PORTED | 19 | yes |
+| **MISSING-SUBSYSTEM** | **209** | **NO — the open work** |
+
+**≈ 389 of 637 resolved — roughly 61%**, and the entire remainder is the
+MISSING-SUBSYSTEM bucket, which hand validation reduced from 209 tests to
+**22 symbols** (see "MISSING SUBSYSTEMS" below; one of the original 23 dissolved
+as a rename).
+
+### The two honest caveats on that 61%
+
+1. **DIVERGENT must say *why*.** Divergence earned by being BYOP is a
+   resolution; divergence that is accidental drift is debt wearing the same
+   label. The bucket currently records *that* the APIs differ, not always
+   *that it is BYOP that made them differ*. Entries which cannot state the BYOP
+   reason should be re-examined rather than assumed resolved.
+2. **COVERED-ELSEWHERE mostly does not cite its covering test.** Until it does,
+   it is an assertion rather than a verification. ~26 tests.
+
+Neither is a reason to move the number; both are reasons not to trust it to the
+last percent.
+
+### What 100% requires
+
+- The **22 symbols** in the MISSING-SUBSYSTEM section — implemented, or declined
+  with a row. Eight agents were dispatched against them on 2026-08-11.
+- The two caveats above closed, so the resolved buckets are verified rather than
+  asserted.
+- The cloud boundary held — already enforced by `script/check_cloud_boundary`,
+  and a declined decision can no longer be silently reversed thanks to
+  `script/check_declined_collisions`.
+
 ## LSP TRACK — **[>] document lifecycle CODE-COMPLETE, UNBUILT** (verdict 2026-08-10: RESTORE)
 
 **Status: the functional gap is closed in code and has never been compiled.**
