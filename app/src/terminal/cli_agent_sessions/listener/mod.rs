@@ -1,6 +1,7 @@
 use warpui::{EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use super::{CLIAgentEvent, CLIAgentSession, CLIAgentSessionsModel};
+use crate::features::FeatureFlag;
 use crate::terminal::cli_agent_sessions::event::parse_event;
 use crate::terminal::cli_agent_sessions::event::{
     CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType,
@@ -151,9 +152,14 @@ impl CLIAgentSessionHandler for CodexSessionHandler {
         // JSON parser first (future-proofing in case Codex adds plugin
         // support later). A structured event that belongs to a different agent
         // is dropped rather than applied to this Codex session, and must not
-        // fall through to the OSC 9 plain-text path either.
+        // fall through to the OSC 9 plain-text path either. When the Codex
+        // plugin feature flag is off, Codex is expected to speak plain OSC 9
+        // only, so a structured event is dropped rather than trusted.
         if let Some(parsed) = parse_event(title, body) {
             if parsed.agent == CLIAgent::Codex {
+                if !FeatureFlag::CodexPlugin.is_enabled() {
+                    return None;
+                }
                 return Some(parsed);
             }
             return None;

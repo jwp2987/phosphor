@@ -1,7 +1,7 @@
-use settings::Setting;
+use settings::{Setting, SyncToCloud};
 use warpui::{App, SingletonEntity};
 
-use super::WarpifySettings;
+use super::{EnableSshWrapper, WarpifySettings};
 use crate::test_util::settings::initialize_settings_for_tests;
 
 #[cfg(windows)]
@@ -220,6 +220,32 @@ fn test_legacy_wrapper_migration_is_one_time_and_preserves_reenabled_warpificati
             );
         });
     });
+}
+
+/// Ported from the pin's `test_deprecated_ssh_wrapper_migration_triggers_are_not_synced`
+/// (`02b53fcd8`, `app/src/terminal/warpify/settings_tests.rs`), narrowed to the half that
+/// applies here. The pin also asserts `UseSshTmuxWrapper::sync_to_cloud() ==
+/// SyncToCloud::Never`, guarding against the same re-arm hazard for a one-time migration
+/// that resets `use_ssh_tmux_wrapper` and shows a tmux-deprecation notice. This fork does
+/// not have that migration at all -- `SshTmuxDeprecationNoticePending` and the deprecation
+/// notice do not exist here, because the fork keeps the tmux wrapper permanently rather
+/// than deprecating it (`DECLINED.md`, "SSH tmux wrapper -- kept, deprecation not ported",
+/// #322). With no migration to re-arm, `use_ssh_tmux_wrapper`'s sync setting has nothing
+/// to protect against, so that half of the pin test is not ported.
+///
+/// `enable_ssh_wrapper` is a different story: the one-time legacy-wrapper migration above
+/// (`test_enable_ssh_wrapper_false_migrates_to_enable_ssh_warpification_false`) is real and
+/// live here, and `settings.rs` already sets `sync_to_cloud: SyncToCloud::Never` on it with
+/// a comment citing the exact upstream bug (warpdotdev/Warp#13228) this guards against --
+/// but until now nothing pinned that value against an accidental future revert.
+#[test]
+fn enable_ssh_wrapper_migration_trigger_is_not_synced() {
+    assert_eq!(
+        EnableSshWrapper::sync_to_cloud(),
+        SyncToCloud::Never,
+        "enable_ssh_wrapper must not sync -- a stale synced value re-arms the one-time \
+         migration and re-disables enable_ssh_warpification (warpdotdev/Warp#13228)"
+    );
 }
 
 /// Verify that the default state (no legacy setting present) does not
