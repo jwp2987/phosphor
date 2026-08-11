@@ -137,6 +137,22 @@ fn abort_host_request_is_a_no_op_for_unknown_request_id() {
     });
 }
 
+/// Pin: `remote_agent_context_snapshot_is_a_host_scoped_manager_event`.
+#[test]
+fn remote_agent_context_snapshot_is_a_host_scoped_manager_event() {
+    let host_id = HostId::new("test-host".to_string());
+    let event = RemoteServerManagerEvent::RemoteAgentContextSnapshot {
+        host_id,
+        snapshot: crate::proto::RemoteAgentContextSnapshot {
+            revision: 1,
+            home_dir: "/home/user".to_string(),
+            skills: Vec::new(),
+            global_rules: Vec::new(),
+        },
+    };
+    assert!(event.session_id().is_none());
+}
+
 /// Builds a minimal `RemoteAgentContextSnapshot` with the given revision,
 /// for exercising `accept_remote_agent_context_snapshot`'s dedup logic
 /// without caring about skills/rules content.

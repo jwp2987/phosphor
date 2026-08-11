@@ -28,7 +28,8 @@ use crate::{
 };
 
 use super::{
-    decode_path, deduplicate_events, encode_path, read_sqlite_data, save_app_state, setup_database,
+    decode_path, deduplicate_events, encode_path, get_all_codebase_index_metadata,
+    read_sqlite_data, save_app_state, save_codebase_index_metadata, setup_database, start_writer,
 };
 
 #[test]
@@ -202,6 +203,91 @@ fn test_sqlite_round_trips_vertical_tabs_panel_open() {
             .collect::<Vec<_>>(),
         vec![false, true]
     );
+}
+
+fn test_workspace_metadata(path: &str) -> ai::workspace::WorkspaceMetadata {
+    ai::workspace::WorkspaceMetadata {
+        path: PathBuf::from(path),
+        navigated_ts: None,
+        modified_ts: None,
+        queried_ts: None,
+    }
+}
+
+/// Pin: `sqlite_read_restores_app_state_and_codebase_metadata`. The fork's
+/// `read_sqlite_data` has no `PersistedDataScope` parameter (there is no
+/// TUI/GUI database split -- see `PersistenceScope`/`PersistedDataScope` in
+/// `DECLINED.md`'s "TUI/GUI shared app id" row) and always returns the full
+/// data, so this drops that argument; everything else matches the pin.
+#[test]
+fn sqlite_read_restores_app_state_and_codebase_metadata() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let app_state = AppState {
+        windows: vec![test_terminal_window_snapshot(false)],
+        active_window_index: Some(0),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    let metadata = test_workspace_metadata("/tmp/remote-repo");
+    save_codebase_index_metadata(&mut conn, metadata.clone())
+        .expect("codebase index metadata should save");
+    let restored = read_sqlite_data(&mut conn, None).expect("persisted data should load");
+    assert_eq!(restored.app_state.windows.len(), 1);
+    assert_eq!(restored.codebase_indices.len(), 1);
+    assert_eq!(restored.codebase_indices[0].path, metadata.path);
+}
+
+/// Pin: `sqlite_writer_reuses_codebase_index_metadata_events`. Unlike
+/// `tui_database_in_tui_subdirectory_round_trips_data` (not ported -- same
+/// TUI/GUI database-split gap as above), this test never touches a `tui/`
+/// subdirectory or a data scope, so it needs no adaptation beyond the fork's
+/// plain `warp.sqlite` layout.
+#[test]
+fn sqlite_writer_reuses_codebase_index_metadata_events() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let conn = setup_database(&database_path).expect("database should initialize");
+
+    let writer = start_writer(conn, database_path.clone()).expect("writer should start");
+    let metadata = test_workspace_metadata("/tmp/writer-repo");
+    writer
+        .sender
+        .send(ModelEvent::UpsertCodebaseIndexMetadata {
+            index_metadata: Box::new(metadata.clone()),
+        })
+        .expect("upsert event should send");
+    writer
+        .sender
+        .send(ModelEvent::Terminate)
+        .expect("terminate event should send");
+    writer.handle.join().expect("writer should terminate");
+
+    let mut conn = setup_database(&database_path).expect("database should reopen");
+    let restored = get_all_codebase_index_metadata(&mut conn).expect("metadata should load");
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].path, metadata.path);
+
+    let writer = start_writer(conn, database_path.clone()).expect("writer should restart");
+    writer
+        .sender
+        .send(ModelEvent::DeleteCodebaseIndexMetadata {
+            repo_path: metadata.path,
+        })
+        .expect("delete event should send");
+    writer
+        .sender
+        .send(ModelEvent::Terminate)
+        .expect("terminate event should send");
+    writer.handle.join().expect("writer should terminate");
+
+    let mut conn = setup_database(&database_path).expect("database should reopen");
+    let restored = get_all_codebase_index_metadata(&mut conn).expect("metadata should load");
+    assert!(restored.is_empty());
 }
 
 #[test]

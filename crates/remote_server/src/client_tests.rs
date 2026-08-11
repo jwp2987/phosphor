@@ -2,15 +2,17 @@ use futures::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::proto::{
-    ClientMessage, ErrorCode, FileSystemEntryKind, GitCommitChainMode, GitCommitChainRequest,
-    GitCommitChainResponse, GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse,
-    GitOpDelta, GitOpError, GitPushRequest, GitPushResponse, HostScopedRequest, InitializeResponse,
-    Notification, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess, ResolvePathResponse,
-    ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionScopedRequest,
-    WriteFileChunkResponse, WriteFileChunkSuccess, client_message, git_commit_chain_response,
-    git_create_pr_response, git_push_response, host_scoped_request, notification,
-    read_file_chunk_response, resolve_path_response, run_command_response, server_message,
-    session_scoped_request, write_file_chunk_response,
+    ClientMessage, CodebaseIndexStatus, CodebaseIndexStatusState, CodebaseIndexStatusUpdated,
+    CodebaseIndexStatusesSnapshot, ErrorCode, FileSystemEntryKind, GetDiffState,
+    GetDiffStateResponse, GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse,
+    GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError,
+    GitPushRequest, GitPushResponse, HostScopedRequest, InitializeResponse, Notification,
+    OpenBuffer, OpenBufferResponse, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess,
+    ResolvePathResponse, ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage,
+    SessionScopedRequest, WriteFileChunkResponse, WriteFileChunkSuccess, client_message,
+    git_commit_chain_response, git_create_pr_response, git_push_response, host_scoped_request,
+    notification, read_file_chunk_response, resolve_path_response, run_command_response,
+    server_message, session_scoped_request, write_file_chunk_response,
 };
 use crate::protocol;
 use warp_core::SessionId;
@@ -41,6 +43,29 @@ async fn mock_server_with<F>(
             Err(protocol::ProtocolError::UnexpectedEof) => break,
             Err(e) => panic!("mock server error: {e}"),
         }
+    }
+}
+
+fn not_enabled_codebase_status(repo_path: &str) -> CodebaseIndexStatus {
+    CodebaseIndexStatus {
+        repo_path: repo_path.to_string(),
+        state: CodebaseIndexStatusState::NotEnabled.into(),
+        last_updated_epoch_millis: Some(123),
+        progress_completed: None,
+        progress_total: None,
+        failure_message: None,
+        root_hash: None,
+    }
+}
+
+/// Unwraps a `ClientMessage` sent as `SessionScoped`, panicking with a useful
+/// message otherwise.
+fn unwrap_session_scoped(msg: &ClientMessage) -> &session_scoped_request::Message {
+    match &msg.message {
+        Some(client_message::Message::SessionScoped(SessionScopedRequest { message: Some(m) })) => {
+            m
+        }
+        other => panic!("Expected SessionScoped, got {other:?}"),
     }
 }
 
@@ -696,5 +721,150 @@ async fn git_create_pr_round_trip_error() {
             assert_eq!(e.message, "branch has no upstream");
         }
         other => panic!("Expected GitCreatePr error, got {other:?}"),
+    }
+}
+
+// ── Ported from the pinned oracle (`02b53fcd8:crates/remote_server/src/client_tests.rs`) ──
+// The `SessionScoped`/`HostScoped` envelope split (issue #509) landed after these were
+// last measured absent, unblocking them. Adapted for two proto-shape differences from
+// the pin: `get_diff_state`/`open_buffer` take the request struct / a single path arg
+// respectively here rather than the pin's separate positional args, and `OpenBuffer`
+// has no `force_reload` field on this fork's wire (so there is nothing to assert there).
+
+#[tokio::test]
+async fn get_diff_state_round_trips_as_session_scoped() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
+        match unwrap_session_scoped(msg) {
+            session_scoped_request::Message::GetDiffState(req) => {
+                assert_eq!(req.repo_path, "/repo");
+            }
+            other => panic!("Expected GetDiffState, got {other:?}"),
+        }
+        server_message::Message::GetDiffStateResponse(GetDiffStateResponse { result: None })
+    });
+
+    let resp = client
+        .get_diff_state(GetDiffState {
+            repo_path: "/repo".to_string(),
+            mode: Some(crate::proto::DiffMode {
+                mode: Some(crate::proto::diff_mode::Mode::Head(
+                    crate::proto::DiffModeHead {},
+                )),
+            }),
+        })
+        .await
+        .expect("get_diff_state should succeed");
+    assert!(resp.result.is_none());
+}
+
+#[tokio::test]
+async fn open_buffer_round_trips_as_session_scoped() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
+        match unwrap_session_scoped(msg) {
+            session_scoped_request::Message::OpenBuffer(req) => {
+                assert_eq!(req.path, "/tmp/f.txt");
+            }
+            other => panic!("Expected OpenBuffer, got {other:?}"),
+        }
+        server_message::Message::OpenBufferResponse(OpenBufferResponse {
+            content: String::new(),
+            server_version: 0,
+        })
+    });
+
+    let resp = client
+        .open_buffer("/tmp/f.txt".to_string())
+        .await
+        .expect("open_buffer should succeed");
+    assert_eq!(resp.content, "");
+}
+
+/// A session-scoped request on a connection that has already dropped resolves
+/// promptly with a transport error (no hang), because `pending_requests` is
+/// cleared on disconnect.
+#[tokio::test]
+async fn get_diff_state_on_dead_connection_errors_promptly() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    drop(server_stream);
+
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let executor = executor::Background::default();
+    let (client, disconnect_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+
+    // Drain the Disconnected event so the reader-task teardown is observed.
+    let _ = disconnect_rx.recv().await;
+
+    let result = client
+        .get_diff_state(GetDiffState {
+            repo_path: "/repo".to_string(),
+            mode: Some(crate::proto::DiffMode {
+                mode: Some(crate::proto::diff_mode::Mode::Head(
+                    crate::proto::DiffModeHead {},
+                )),
+            }),
+        })
+        .await;
+    assert!(result.is_err());
+}
+
+/// Pin: `codebase_index_push_messages_become_client_events`. Unblocked by the
+/// D2 local/BYOP codebase-indexing port (`crates/remote_server/src/codebase_index_proto.rs`),
+/// which carries this proto and its `ClientEvent` variants unchanged from the
+/// pin. Adapted only for `RemoteServerClient::new`'s 3-tuple return here (no
+/// separate failure channel) and the domain-type conversion the fork's client
+/// applies to pushed statuses (`RemoteCodebaseIndexStatus`, same `repo_path` field).
+#[tokio::test]
+async fn codebase_index_push_messages_become_client_events() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    drop(server_read);
+
+    let executor = executor::Background::default();
+    let (_client, event_rx, _host_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+    let mut writer = server_write.compat_write();
+
+    protocol::write_server_message(
+        &mut writer,
+        &ServerMessage {
+            request_id: String::new(),
+            message: Some(server_message::Message::CodebaseIndexStatusesSnapshot(
+                CodebaseIndexStatusesSnapshot {
+                    statuses: vec![not_enabled_codebase_status("/repo")],
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    protocol::write_server_message(
+        &mut writer,
+        &ServerMessage {
+            request_id: String::new(),
+            message: Some(server_message::Message::CodebaseIndexStatusUpdated(
+                CodebaseIndexStatusUpdated {
+                    status: Some(not_enabled_codebase_status("/repo")),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    writer.flush().await.unwrap();
+
+    match event_rx.recv().await.unwrap() {
+        ClientEvent::CodebaseIndexStatusesSnapshotReceived { statuses } => {
+            assert_eq!(statuses.len(), 1);
+            assert_eq!(statuses[0].repo_path, "/repo");
+        }
+        other => panic!("Expected CodebaseIndexStatusesSnapshotReceived, got {other:?}"),
+    }
+    match event_rx.recv().await.unwrap() {
+        ClientEvent::CodebaseIndexStatusUpdated { status } => {
+            assert_eq!(status.repo_path, "/repo");
+        }
+        other => panic!("Expected CodebaseIndexStatusUpdated, got {other:?}"),
     }
 }

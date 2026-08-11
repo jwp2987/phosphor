@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::*;
-use crate::code_review::diff_size_limits::{DiffSize, MAX_DIFF_SIZE};
+use crate::code_review::diff_size_limits::{DiffSize, MAX_DIFF_SIZE, UnrenderableReason};
 use crate::code_review::diff_state::{
     DiffHunk, DiffLine, DiffLineType, DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState,
     DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo, GitDiffData, GitDiffWithBaseContent,
@@ -108,15 +108,39 @@ fn git_file_status_missing_oneof_defaults_to_modified() {
 
 #[test]
 fn diff_size_round_trips_and_maps_file_too_large() {
-    for size in [DiffSize::Normal, DiffSize::Large, DiffSize::Unrenderable] {
+    for size in [
+        DiffSize::Normal,
+        DiffSize::Large,
+        DiffSize::Unrenderable(UnrenderableReason::DiffTooLarge),
+        DiffSize::Unrenderable(UnrenderableReason::FileTooLarge),
+    ] {
         let back = proto_to_diff_size(diff_size_to_proto(&size) as i32);
         assert_eq!(size, back);
     }
-    // The fork lacks the file-too-large distinction; it collapses to Unrenderable.
     assert_eq!(
         proto_to_diff_size(proto::DiffSize::UnrenderableFileTooLarge as i32),
-        DiffSize::Unrenderable
+        DiffSize::Unrenderable(UnrenderableReason::FileTooLarge)
     );
+}
+
+/// Pin: `diff_size_round_trips_through_proto`. The fork has no `From`/`TryFrom`
+/// impls between `DiffSize` and `proto::DiffSize` (see module doc on
+/// `diff_state_proto.rs`) — it uses free functions instead, which this test
+/// exercises in place of the pin's trait calls. Covers the same four variants,
+/// including the `FileTooLarge` reason restored alongside this test (see the
+/// `UnrenderableReason` history in `diff_size_limits.rs`).
+#[test]
+fn diff_size_round_trips_through_proto() {
+    for size in [
+        DiffSize::Normal,
+        DiffSize::Large,
+        DiffSize::Unrenderable(UnrenderableReason::DiffTooLarge),
+        DiffSize::Unrenderable(UnrenderableReason::FileTooLarge),
+    ] {
+        let proto_size = diff_size_to_proto(&size);
+        let decoded = proto_to_diff_size(proto_size as i32);
+        assert_eq!(decoded, size);
+    }
 }
 
 #[test]

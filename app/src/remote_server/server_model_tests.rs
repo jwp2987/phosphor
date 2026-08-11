@@ -8,6 +8,11 @@ use super::super::proto::{
     ListDirectory, ReadFileChunk, ResolvePath, ServerMessage, WriteFileChunk, WriteFileResponse,
     WriteFileSuccess,
 };
+#[cfg(feature = "local_fs")]
+use super::super::proto::{
+    remote_skill_proto, BundledSkillMetadata, HomeSkillMetadata, RemoteContextFileProto,
+    RemoteSkillProto,
+};
 use super::super::protocol::RequestId;
 #[cfg(feature = "local_fs")]
 use super::super::server_buffer_tracker::ServerBufferTracker;
@@ -956,4 +961,82 @@ fn register_connection_sends_the_current_remote_agent_context_snapshot() {
         });
         assert!(rx2.try_recv().is_ok());
     });
+}
+
+#[cfg(feature = "local_fs")]
+fn test_bundled_skill_proto(id: &str) -> RemoteSkillProto {
+    RemoteSkillProto {
+        path: format!(
+            "/home/user/.warp/remote-server/bundled_resources/bundled/skills/{id}/SKILL.md"
+        ),
+        content: format!("# {id}"),
+        source: Some(remote_skill_proto::Source::Bundled(BundledSkillMetadata {
+            id: id.to_string(),
+            requires_mcp: None,
+        })),
+    }
+}
+
+/// Pin: `remote_agent_context_snapshot_broadcasts_replacements_and_initializes_once`.
+/// Adapted to this fork's synchronous `test_model()` (no `warpui::App::test`
+/// wrapper needed: `send_remote_agent_context_snapshot_to_connection` and
+/// `broadcast_remote_agent_context_snapshot` both take `&mut self` only).
+#[cfg(feature = "local_fs")]
+#[test]
+fn remote_agent_context_snapshot_broadcasts_replacements_and_initializes_once() {
+    let mut model = test_model();
+    let conn = uuid::Uuid::new_v4();
+    let (tx, rx) = async_channel::unbounded();
+    model.connection_senders.insert(conn, tx);
+
+    model.send_remote_agent_context_snapshot_to_connection(conn);
+    assert!(matches!(
+        rx.try_recv().map(|msg| msg.message),
+        Ok(Some(server_message::Message::RemoteAgentContextSnapshot(_)))
+    ));
+    model.send_remote_agent_context_snapshot_to_connection(conn);
+    assert!(rx.try_recv().is_err());
+
+    model.remote_agent_context_snapshot = super::super::proto::RemoteAgentContextSnapshot {
+        revision: 2,
+        home_dir: "/home/user".to_string(),
+        skills: vec![
+            test_bundled_skill_proto("test-skill"),
+            RemoteSkillProto {
+                path: "/home/user/.agents/skills/test/SKILL.md".to_string(),
+                content: "skill content".to_string(),
+                source: Some(remote_skill_proto::Source::Home(HomeSkillMetadata {})),
+            },
+        ],
+        global_rules: vec![RemoteContextFileProto {
+            path: "/home/user/.agents/AGENTS.md".to_string(),
+            content: "rule content".to_string(),
+        }],
+    };
+    model.broadcast_remote_agent_context_snapshot();
+
+    match rx
+        .try_recv()
+        .expect("remote Agent Mode context replacement")
+        .message
+    {
+        Some(server_message::Message::RemoteAgentContextSnapshot(snapshot)) => {
+            assert_eq!(snapshot.revision, 2);
+            assert_eq!(snapshot.skills.len(), 2);
+            assert_eq!(snapshot.skills[1].content, "skill content");
+            assert_eq!(snapshot.global_rules[0].content, "rule content");
+        }
+        other => panic!("expected RemoteAgentContextSnapshot, got {other:?}"),
+    }
+
+    let late_conn = uuid::Uuid::new_v4();
+    let (late_tx, late_rx) = async_channel::unbounded();
+    model.connection_senders.insert(late_conn, late_tx);
+    model.send_remote_agent_context_snapshot_to_connection(late_conn);
+    assert!(matches!(
+        late_rx.try_recv().map(|msg| msg.message),
+        Ok(Some(server_message::Message::RemoteAgentContextSnapshot(_)))
+    ));
+    model.send_remote_agent_context_snapshot_to_connection(late_conn);
+    assert!(late_rx.try_recv().is_err());
 }
