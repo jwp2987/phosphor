@@ -988,10 +988,23 @@ more look at *why* it is absent.
       **The GUI half is built** (`blocklist/orchestration_events.rs` emits at
       `:331`, renders at `:407`). TUI only. 9 tests.
 
-### Confirmed absent — blocked-action acceptance
-- [ ] `AcceptBlockedTerminalUseAction`. Note `AllowBlockedLrcAction`,
-      `BlockingInputSource` and `ALLOW_BLOCKED_ACTION_KEY_BINDING` all **exist** —
-      another partial port, not a missing subsystem.
+### Blocked-action acceptance — DISSOLVED 2026-08-11, it was a rename
+- [x] `AcceptBlockedTerminalUseAction` **is present as `AllowBlockedLrcAction`**
+      (and `RejectBlockedTerminalUseAction` as `RejectBlockedLrcAction`). Not a
+      gap at all. The pin's `accept_active_cli_subagent_action` is mirrored by
+      `terminal_session_view.rs:1450` `allow_blocked_lrc_action`, both routing to
+      the same shared `execute_blocked_action` / `cancel_blocked_action` free
+      functions in `tui_cli_subagent_view.rs:206,217` that the mouse
+      `[Allow]`/`[Reject]` affordance already used — so the keybinding is a real
+      keyboard path onto existing logic, not a stub. Test already exists:
+      `allow_and_reject_blocked_lrc_actions_are_wired_to_distinct_ctrl_bindings`
+      (`terminal_session_view_tests.rs:2327`).
+      The binding differs deliberately (`ctrl-o`/`ctrl-r`, not the pin's
+      `ctrl-enter`) and the fork documents why at `tui_cli_subagent_view.rs:31-42`.
+      All three blocking-input variants relevant here are accounted for:
+      LongRunningCommand/terminal-use via the above, `AskQuestion` and
+      `Permission` via `agent_block::TuiBlockingChild` (`state.rs:318-325`).
+      **23 real-debt symbols → 22.**
 
 ### Confirmed absent — orchestration config-picker (see the correction below)
 - [ ] `OrchestrationConfigState`, `AuthSecretSelection`, `apply_execution_mode_change`.
