@@ -288,6 +288,31 @@ the freeze is in force; correctness below is review-verified, not compiler-verif
 **Still open (13 tests):** `agent_events/driver_tests.rs` (11) and
 `orchestration_model_tests.rs` (2).
 
+**`orchestration_model_tests.rs` (2) — verdict RE-VERIFIED 2026-08-11, unchanged
+at MISSING-SUBSYSTEM, and it is REAL WANTED DEBT, not cloud.** Adjudicated by
+the coordinator rather than an agent. Chain of evidence:
+- `failed_launch_cleanup_preserves_other_sessions` and
+  `local_harness_children_fail_cleanly` need `StartAgentExecutor` /
+  `StartAgentRequest`, which live in the pin's
+  `app/src/ai/blocklist/action_model/execute/start_agent.rs`. **That file does
+  not exist in this fork** (verified `git cat-file` against both trees), nor
+  does its sibling `run_agents.rs`.
+- `orchestration_model.rs`'s own doc comment (`:1-23`) says exactly this and is
+  **correct** — checked, not assumed. *(Both `StartAgentExecutor` matches in the
+  fork are inside that doc comment. Grepping the symbol makes it look present.
+  This is the third comment-mention false positive of the night, after
+  `ActiveAgentViewsModel` and `create_branch_tooltip` — grep the definition,
+  never the name.)*
+- **Not cloud.** The pin test dispatches
+  `StartAgentExecutionMode::Local { harness_type: Some("codex") }`, and
+  `DECLINED.md:179` reversed the blanket orchestration decline: *"LOCAL
+  orchestration is back in scope … still declined: the cloud-runner half."*
+  Only #290's remote-runner path is declined; this is the local path.
+- **So the correct disposition is: keep open.** Closing it as CLOUD or DECLINED
+  would be wrong. Resolving it means building a TUI child-materialization path
+  — the module's own words, *"future work, not a mechanical trim"* — which is a
+  feature, not a test port. Size it as such before assigning it.
+
 Three packages are **verdict-first, not port-first** — `execution_profiles`
 (likely DIVERGENT), `mod_tests` `auth_check_command` (#289 deferral), and
 `orchestration_model` (cut as future work per its own doc comment). Porting
