@@ -687,14 +687,44 @@ where
             }
             usize::try_from(position.y - content_top).ok()?
         };
+        let col = u16::try_from(position.x.clamp(0, i32::from(size.width.saturating_sub(1))))
+            .unwrap_or_default();
+
+        // With trimmed line ends, a point in a row's trailing blank cells is
+        // not selectable at all — clicking there must not start a selection.
+        //
+        // This guard is the hit-test half of `with_trimmed_selection_line_ends`.
+        // The fork previously applied the trim only when EXTRACTING selected
+        // text (`selection_text`, via `row_text`), so trailing blanks were
+        // trimmed from what you copied but you could still anchor a selection
+        // out in them. `clamp_outside` is exempt: drag-beyond-the-end has to
+        // keep resolving to a point, or a drag off the row's end would stop
+        // updating the selection mid-gesture.
+        if self.trim_selection_line_ends && !clamp_outside {
+            let snapshot = self.selection_snapshot.borrow();
+            if let Some((resolved_snapshot, buffer)) = snapshot.as_ref() {
+                let absolute_row = resolved.window.scroll_top.saturating_add(row_in_view);
+                if let Some(row_in_snapshot) =
+                    absolute_row.checked_sub(resolved_snapshot.window.scroll_top)
+                    && row_in_snapshot < usize::from(buffer.area.height)
+                {
+                    let end_col =
+                        trimmed_selection_row_end(buffer, row_in_snapshot as u16, size.width)
+                            .unwrap_or_default();
+                    if col >= end_col {
+                        return None;
+                    }
+                }
+            }
+        }
+
         Some(TuiGridPoint {
             row: resolved
                 .window
                 .scroll_top
                 .saturating_add(row_in_view)
                 .min(resolved.content_height.saturating_sub(1)),
-            col: u16::try_from(position.x.clamp(0, i32::from(size.width.saturating_sub(1))))
-                .unwrap_or_default(),
+            col,
         })
     }
 
