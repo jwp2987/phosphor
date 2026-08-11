@@ -43,7 +43,8 @@ use super::{
     DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME, FooterSegment, FooterSegments,
     INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
     ORCHESTRATE_REQUIRES_CONVERSATION_HINT, ORCHESTRATE_REQUIRES_TASK_HINT,
-    ORCHESTRATION_TAB_BAR_FOCUSED_FLAG, SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
+    ORCHESTRATION_TAB_BAR_FOCUSED_FLAG, RUNNING_COMMAND_DETACH_HINT,
+    SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
     SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG, SHELL_MODE_HINT,
     THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin, TuiQueuedFollowUp,
     TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
@@ -2974,6 +2975,163 @@ fn running_command_attachment_bindings_are_context_scoped() {
                 .insert(SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG);
             assert!(!attach.in_context(&input_context));
             assert!(detach.in_context(&input_context));
+        });
+    });
+}
+
+/// Exercises the wired attach/detach mechanism behind
+/// `ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME` end-to-end -- the binding
+/// context test above only proves the keybinding is scoped correctly, not
+/// that anything happens when it fires. Covers both ways the pin lets a user
+/// give input back to the command: the dedicated escape-bound detach action,
+/// and ctrl-c through `handle_terminal_use_interrupt`'s detach-first priority
+/// (`02b53fcd8`, #390) -- without that priority, ctrl-c would instead arm the
+/// TUI's own exit confirmation.
+#[test]
+fn manual_attach_and_detach_switch_running_command_input_ownership() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let interrupt_count = Rc::new(RefCell::new(0));
+        let interrupt_count_for_events = interrupt_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if matches!(event, TuiTerminalSessionEvent::InterruptPty) {
+                    *interrupt_count_for_events.borrow_mut() += 1;
+                }
+            });
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.terminal_model
+                .lock()
+                .simulate_long_running_block("cat", "");
+
+            assert!(
+                view.keymap_context(ctx)
+                    .set
+                    .contains(SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG),
+                "an eligible user-controlled long-running command should advertise manual attach"
+            );
+
+            view.handle_action(&TuiTerminalSessionAction::AttachAgentToRunningCommand, ctx);
+
+            assert!(
+                view.terminal_model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_tagged_in(),
+                "attaching should tag the agent into the active block"
+            );
+            assert!(
+                view.agent_terminal_control_lock,
+                "attaching should record that this composer installed the AI lock"
+            );
+            assert!(
+                view.keymap_context(ctx)
+                    .set
+                    .contains(SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG)
+            );
+        });
+
+        let lines = render_session(&mut app, &view, 80, 40);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.trim() == RUNNING_COMMAND_DETACH_HINT),
+            "tagging in should replace the footer with the detach hint:\n{}",
+            lines.join("\n")
+        );
+
+        // ctrl-c detaches instead of arming the exit confirmation while tagged in.
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("unsent agent prompt", ctx);
+            });
+            view.handle_action(&TuiTerminalSessionAction::Interrupt, ctx);
+
+            assert!(
+                !view.exit_confirmation.is_armed(),
+                "detaching a tagged-in command via ctrl-c must not also arm TUI exit"
+            );
+            assert!(
+                !view
+                    .terminal_model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_tagged_in(),
+                "ctrl-c should have detached the agent"
+            );
+            assert!(
+                !view.agent_terminal_control_lock,
+                "detaching should clear the agent-control lock bookkeeping"
+            );
+            assert!(
+                !view.try_detach_agent_from_running_command(ctx),
+                "detaching an already-detached command should report no transition"
+            );
+        });
+        assert_eq!(
+            app.read(|ctx| input_text(&view, ctx)),
+            "",
+            "detaching must discard an unsent agent prompt"
+        );
+        assert_eq!(
+            *interrupt_count.borrow(),
+            0,
+            "leaving the tagged composer via ctrl-c must not send an interrupt to the running command"
+        );
+
+        let lines = render_session(&mut app, &view, 80, 40);
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains(RUNNING_COMMAND_DETACH_HINT)),
+            "detaching should remove the detach footer hint:\n{}",
+            lines.join("\n")
+        );
+    });
+}
+
+/// A manually attached agent whose command simply finishes -- never detached
+/// via escape or ctrl-c -- must still have its AI lock released, or the
+/// composer stays hard-locked to AI mode forever with no way back to
+/// autodetection. Ported from the pin's `running_command_completion_clears_transient_attachment_lock`
+/// (`02b53fcd8`) for #390, adapted to assert this fork's local
+/// `agent_terminal_control_lock` flag instead of the pin's
+/// `InputTypeAutoDetectionSource::AgentTerminalControl` (see that field's doc
+/// comment for why: threading a comparable source through this fork's shared
+/// `BlocklistAIInputModel::set_input_config` is out of scope here).
+#[test]
+fn running_command_completion_clears_agent_terminal_control_lock() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        let block_id = view.update(&mut app, |view, ctx| {
+            view.terminal_model
+                .lock()
+                .simulate_long_running_block("sleep 1", "");
+            view.handle_action(&TuiTerminalSessionAction::AttachAgentToRunningCommand, ctx);
+            assert!(
+                view.agent_terminal_control_lock,
+                "attaching should install the agent-control lock"
+            );
+
+            let mut terminal_model = view.terminal_model.lock();
+            let block_id = terminal_model.block_list().active_block().id().clone();
+            terminal_model.finish_block();
+            block_id
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_block_completed(&block_id, ctx);
+            assert!(
+                !view.agent_terminal_control_lock,
+                "the completing block should clear the agent-control lock this composer installed"
+            );
         });
     });
 }
