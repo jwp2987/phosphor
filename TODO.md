@@ -1069,7 +1069,21 @@ more look at *why* it is absent.
       `Permission` via `agent_block::TuiBlockingChild` (`state.rs:318-325`).
       **23 real-debt symbols → 22.**
 
-### Confirmed absent — orchestration config-picker (see the correction below)
+### Orchestration config-picker — DISSOLVED 2026-08-11 as CLOUD, see `DECLINED.md`
+- [x] **All three are cloud, and this corrects a standing mis-tracking.** The layer
+      was recorded as parity debt awaiting #310/#304; it cannot be built without
+      Warp's backend. `AuthSecretSelection` resolves through
+      `HarnessAvailabilityModel` → `ManagedSecretManager` + `ServerApiProvider`,
+      and this fork already wires that to `DisabledManagedSecretsClient`
+      (`lib.rs:1543`). `OrchestrationConfigState` / `apply_execution_mode_change`
+      are typed against `RunAgentsExecutionMode`, from the #325-declined
+      agent-invoked `run_agents` family — `crates/ai/src/agent/action/mod.rs:150`
+      says `AIAgentActionType::RunAgents` is deliberately absent. `remote_child.rs`
+      spawns children on Warp's servers and handles Warp credits.
+      **#310/#304 were not "not yet built" — they were correctly not built.**
+      **16 real-debt symbols → 13.**
+
+<details><summary>Original entry, kept for the evidence trail</summary>
 - [ ] `OrchestrationConfigState`, `AuthSecretSelection`, `apply_execution_mode_change`.
       The picker layer only. Orchestration itself is built. #310/#304.
       **`AuthSecretSelection` needs a cloud/non-cloud ruling before implementing.**
@@ -1078,6 +1092,7 @@ more look at *why* it is absent.
       secret" would mean a BYOP provider key, which is local; at the pin it may
       mean a Warp *managed* secret, which is declined. It sits in the same file
       as `ORCHESTRATION_WARP_WORKER_HOST`. Decide before building, not after.
+</details>
 
 ### Confirmed absent — remote project skills
 - [ ] `parse_project_skill_contents`, `refresh_project_skills_for_repo`.
