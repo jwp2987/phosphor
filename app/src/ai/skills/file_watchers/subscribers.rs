@@ -11,13 +11,21 @@ use warpui::ModelContext;
 pub enum SkillRepositoryMessage {
     /// Initial scan of a home skills directory (e.g., `~/.agents`).
     HomeInitialScan { skills: Vec<ParsedSkill> },
-    /// Incremental file system updates from either a home provider directory or a project skills directory.
-    RepositoryUpdate { update: RepositoryUpdate },
+    /// Incremental file system updates from a local project's fallback watcher. Only sent
+    /// while that project's repo-metadata indexing has failed; see
+    /// `SkillWatcher::fallback_to_local_project_watcher`. Successfully indexed repos (local
+    /// or remote) get their project skills from `RepoMetadataModel`'s standing-query results
+    /// instead, via `SkillWatcher::refresh_project_skills_for_repo`.
+    ProjectRepositoryUpdate { update: RepositoryUpdate },
+    /// Incremental file system updates from a home provider directory (e.g., `~/.agents`).
+    HomeRepositoryUpdate { update: RepositoryUpdate },
     /// File changes detected in a resolved symlink target directory.
     SymlinkTargetUpdate { update: RepositoryUpdate },
 }
 
-/// A repository subscriber for project directories that forwards file change events to [`SkillManager`].
+/// A repository subscriber for a local project's fallback watcher (active only once
+/// repo-metadata indexing has failed for that repo), forwarding file change events to
+/// [`SkillManager`].
 pub struct ProjectSkillSubscriber {
     pub message_tx: Sender<SkillRepositoryMessage>,
 }
@@ -45,7 +53,7 @@ impl RepositorySubscriber for ProjectSkillSubscriber {
 
         Box::pin(async move {
             let _ = tx
-                .send(SkillRepositoryMessage::RepositoryUpdate { update })
+                .send(SkillRepositoryMessage::ProjectRepositoryUpdate { update })
                 .await;
         })
     }
@@ -132,7 +140,7 @@ impl RepositorySubscriber for HomeSkillSubscriber {
 
         Box::pin(async move {
             let _ = tx
-                .send(SkillRepositoryMessage::RepositoryUpdate { update })
+                .send(SkillRepositoryMessage::HomeRepositoryUpdate { update })
                 .await;
         })
     }
