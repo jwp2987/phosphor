@@ -105,7 +105,18 @@ against) — reported here per AGENTS.md §5.11 for follow-up with build access.
 
 155 tests across roughly 30 files. The largest and most actionable:
 
-- **`app/src/ai/orchestration/` doesn't exist at all** (39 tests across
+- **CORRECTED 2026-08-11 (maintainer): orchestration IS built in this fork.**
+  The wording below describes the pin's *path* and reads as a claim about the
+  subsystem — that is wrong. The fork ships `blocklist/orchestration_topology.rs`
+  (26 tests), `blocklist/orchestration_events.rs` (10), the four
+  `agent_view/orchestration_*` modules, `block/view_impl/orchestration.rs`, and
+  `warp_tui/src/orchestration_{model,tab_bar}.rs`. What is genuinely absent is
+  only the pin's **config-picker layer** (`config_state`, `edit_state`,
+  `providers`, `remote_child`, `snapshots`, `validation`) — the UI for *choosing*
+  harness / model / environment / host, not orchestration itself. Read the
+  original text below with that correction applied.
+
+- **The pin's `app/src/ai/orchestration/` config-picker layer** (39 tests across
   `snapshots_tests.rs`, `edit_state_tests.rs`, `config_state_tests.rs`,
   `validation_tests.rs`, plus 13 of `snapshots_tests.rs`'s own tests are pure
   local data with no cloud symbol). This is the shared harness/model/
@@ -746,7 +757,7 @@ pin 18 · fork 0 · source `app/src/ai/orchestration/snapshots.rs` · fork ships
   - `host_snapshot_orders_default_warp_connected_recent`
   - `runner_snapshot_loading_reports_loading_status`
   - `runner_snapshot_puts_use_default_first_and_selects`
-- **MISSING-SUBSYSTEM** — app/src/ai/orchestration/ doesn't exist in the fork at all. 13 of these 18 (harness_snapshot_*, oz_model_snapshot_*/non_oz_model_snapshot_*, api_key_snapshot_*) are pure plain-data transforms with no cloud symbol in the test body -- real, now-in-scope local-orchestration debt (see DECLINED.md's 2026-08-08 reversal), not cloud. Refines my own earlier file-level MISSING-SUBSYSTEM verdict with this split.
+- **MISSING-SUBSYSTEM** — the pin's `app/src/ai/orchestration/` config-picker layer is absent (orchestration ITSELF is built here — see the correction at the top of this file). 13 of these 18 (harness_snapshot_*, oz_model_snapshot_*/non_oz_model_snapshot_*, api_key_snapshot_*) are pure plain-data transforms with no cloud symbol in the test body -- real, now-in-scope local-orchestration debt (see DECLINED.md's 2026-08-08 reversal), not cloud. Refines my own earlier file-level MISSING-SUBSYSTEM verdict with this split.
   - `api_key_snapshot_keeps_named_selection_while_loading`
   - `api_key_snapshot_lists_skip_then_names`
   - `api_key_snapshot_maps_inherit_and_unset_selection`
