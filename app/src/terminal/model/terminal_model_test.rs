@@ -10,6 +10,7 @@ use crate::terminal::model::bootstrap::BootstrapStage;
 use crate::terminal::model::grid::Dimensions as _;
 use crate::terminal::model::index::Side;
 use crate::terminal::model::selection::ExpandedSelectionRange;
+use crate::terminal::model::test_utils::block_size;
 use chrono::{DateTime, Local};
 use vec1::vec1;
 use warp_core::command::ExitCode;
@@ -954,6 +955,119 @@ fn precmd_with_completion_metadata_completion_recovery_is_disabled_by_default() 
     assert_eq!(terminal.block_list().active_block().pwd(), None);
 }
 
+// Ported from the pinned oracle (`02b53fcd8`,
+// `app/src/terminal/model/terminal_model_tests.rs`). Dropped from the pin: the assertion that
+// a `LifecycleRecovery` event fires with `completion_mismatch: true`. That event no longer
+// exists here -- telemetry sending is physically removed (see `lifecycle/telemetry.rs`'s module
+// doc), so the fork only `log::debug!`s the diagnostic record (`commit_lifecycle_transition`)
+// instead of forwarding it as an `Event`. Every other assertion -- the mismatched completion
+// does not corrupt the already-completed block's recorded exit code, the active block still
+// advances to the block the mismatched precmd names, and no `BlockCompleted` /
+// `CommandFinished` fires a second time -- is preserved unchanged.
+#[test]
+fn precmd_with_completion_metadata_records_completion_mismatch_without_overwriting_completed_block()
+{
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+
+    let completed_block_id = terminal.active_block_id().clone();
+    let next_block_id = BlockId::new();
+    terminal.start_command_execution();
+    terminal.preexec(PreexecValue {
+        command: "false".to_owned(),
+    });
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(7),
+            next_block_id: next_block_id.clone(),
+        },
+    });
+    while event_rx.try_recv().is_ok() {}
+
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(9),
+            next_block_id: next_block_id.clone(),
+        },
+        prompt_metadata: PromptMetadata::default(),
+    });
+
+    let completed_block = terminal
+        .block_list()
+        .block_with_id(&completed_block_id)
+        .expect("The completed block should remain in the block list.");
+    assert_eq!(completed_block.exit_code(), ExitCode::from(7));
+    assert_eq!(terminal.active_block_id(), &next_block_id);
+    let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event,
+            Event::BlockCompleted(_) | Event::Handler(HandlerEvent::CommandFinished { .. })
+        )
+    }));
+}
+
+// Ported from the pinned oracle (`02b53fcd8`,
+// `app/src/terminal/model/terminal_model_tests.rs`). Unchanged from the pin.
+#[test]
+fn precmd_with_completion_metadata_recovers_in_band_completion_and_reuses_cached_prompt() {
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    let mut terminal = TerminalModel::mock(None, None);
+    normal_command_finished_and_precmd(
+        &mut terminal,
+        PromptMetadata {
+            pwd: Some("/cached-prompt".to_owned()),
+            ..Default::default()
+        },
+    );
+    let completed_block_id = terminal.active_block_id().clone();
+    assert_eq!(
+        terminal.start_in_band_command_execution(),
+        StartCommandOutcome::Accepted
+    );
+    assert!(
+        terminal
+            .block_list()
+            .is_writing_or_executing_in_band_command()
+    );
+
+    let next_block_id = BlockId::new();
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(0),
+            next_block_id: next_block_id.clone(),
+        },
+        prompt_metadata: PromptMetadata {
+            is_after_in_band_command: true,
+            ..Default::default()
+        },
+    });
+
+    let completed_block = terminal
+        .block_list()
+        .block_with_id(&completed_block_id)
+        .expect("The recovered in-band block should remain in the block list.");
+    assert!(completed_block.is_in_band_command_block());
+    assert_eq!(completed_block.state(), BlockState::DoneWithExecution);
+    assert_eq!(terminal.active_block_id(), &next_block_id);
+    assert!(
+        !terminal
+            .block_list()
+            .is_writing_or_executing_in_band_command()
+    );
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/cached-prompt")
+    );
+}
+
 #[test]
 fn test_alt_screen_selection_tracks_scroll() {
     let mut terminal: TerminalModel = TerminalModel::mock(None, None);
@@ -1512,6 +1626,128 @@ fn command_finished_recovers_unknown_started_block_with_real_exit_code() {
     assert_eq!(terminal.active_block_id(), &next_block_id);
 }
 
+// Ported from the pinned oracle (`02b53fcd8`,
+// `app/src/terminal/model/terminal_model_tests.rs`). Unchanged from the pin except for
+// dropping the `Event::LifecycleRecovery` assertion cluster the pin also carries here --
+// that event no longer exists (see `lifecycle/telemetry.rs`'s module doc: telemetry sending
+// is physically removed, so lifecycle diagnostics are logged, not forwarded as an `Event`).
+// Every other assertion, including the recovery-enabled ignore behaviour for both a
+// same-active-block completion precmd and a bare prompt-only precmd, is preserved.
+#[test]
+fn repeated_precmd_with_completion_metadata_and_prompt_only_precmd_are_ignored() {
+    let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
+    let (event_tx, event_rx) = async_channel::unbounded();
+    let event_proxy = ChannelEventListener::builder_for_test()
+        .with_terminal_events_tx(event_tx)
+        .build();
+    let mut terminal = TerminalModel::mock(None, Some(event_proxy));
+    normal_command_finished_and_precmd(
+        &mut terminal,
+        PromptMetadata {
+            pwd: Some("/initial".to_owned()),
+            ps1: Some(hex::encode("$ ")),
+            honor_ps1: Some(true),
+            ..Default::default()
+        },
+    );
+    while event_rx.try_recv().is_ok() {}
+    terminal
+        .block_list_mut()
+        .active_block_for_test()
+        .init_command("typed");
+    terminal
+        .block_list_mut()
+        .active_block_for_test()
+        .move_backward(2);
+    let active_block_id = terminal.active_block_id().clone();
+    let active_block_count = terminal.block_list().blocks().len();
+    assert_eq!(
+        terminal.block_list().active_block().command_to_string(),
+        "typed"
+    );
+    let cursor_point = terminal
+        .block_list()
+        .active_block()
+        .grid_handler()
+        .cursor_point();
+
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata: CompletionMetadata {
+            exit_code: ExitCode::from(7),
+            next_block_id: active_block_id.clone(),
+        },
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/with-completion-metadata".to_owned()),
+            session_id: Some(123),
+            ..Default::default()
+        },
+    });
+
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(terminal.block_list().blocks().len(), active_block_count);
+    assert_eq!(
+        terminal.block_list().active_block().command_to_string(),
+        "typed"
+    );
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .grid_handler()
+            .cursor_point(),
+        cursor_point
+    );
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/initial")
+    );
+
+    let events: Vec<_> = std::iter::from_fn(|| event_rx.try_recv().ok()).collect();
+    assert!(!events.iter().any(|event| {
+        matches!(
+            event,
+            Event::BlockCompleted(_)
+                | Event::AfterBlockCompleted(_)
+                | Event::BlockMetadataReceived(_)
+                | Event::BlockWorkingDirectoryUpdated(_)
+                | Event::Handler(HandlerEvent::CommandFinished { .. })
+                | Event::Handler(HandlerEvent::Precmd { .. })
+        )
+    }));
+
+    terminal.prompt_only_precmd(PromptMetadata {
+        pwd: Some("/prompt-only".to_owned()),
+        session_id: Some(123),
+        ..Default::default()
+    });
+    assert_eq!(terminal.active_block_id(), &active_block_id);
+    assert_eq!(terminal.block_list().blocks().len(), active_block_count);
+    assert_eq!(
+        terminal.block_list().active_block().command_to_string(),
+        "typed"
+    );
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .grid_handler()
+            .cursor_point(),
+        cursor_point
+    );
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/initial")
+    );
+}
+
 #[test]
 fn repeated_precmd_with_completion_metadata_and_prompt_only_precmd_are_ignored_when_recovery_is_disabled(
 ) {
@@ -1823,4 +2059,80 @@ fn ignores_multipart_non_inline_iterm_file_payload_without_overwriting_cwd_file(
 
     assert_eq!(fs::read(&target_path).unwrap(), original_bytes);
     assert!(terminal.image_id_to_metadata.is_empty());
+}
+
+// Ported from the pinned oracle (`02b53fcd8`,
+// `app/src/terminal/model/terminal_model_tests.rs`). Renamed to match the fork's
+// "ambient agent" branding for what the pin calls "cloud mode" (`CLAUDE.md`/`HANDOFF.md`
+// document this rename throughout the shared-session viewer surface):
+// `new_for_cloud_mode_shared_session_viewer` -> `new_for_ambient_agent_shared_session_viewer`,
+// `is_dummy_cloud_mode_session` -> `is_dummy_ambient_agent_session`. Otherwise unchanged.
+#[test]
+fn ambient_agent_deferred_terminal_model_starts_view_pending() {
+    let mut model = TerminalModel::new_for_ambient_agent_shared_session_viewer(
+        block_size(),
+        color::List::from(&color::Colors::default()),
+        ChannelEventListener::new_for_test(),
+        Arc::new(Background::default()),
+        false,
+        false,
+        false,
+        ObfuscateSecrets::No,
+    );
+
+    assert!(matches!(
+        model.shared_session_status(),
+        SharedSessionStatus::ViewPending
+    ));
+    assert!(model.shared_session_status().is_viewer());
+    assert!(model.is_dummy_ambient_agent_session());
+    assert!(
+        !model
+            .block_list()
+            .is_executing_oz_environment_startup_commands()
+    );
+
+    let restored_block = SerializedBlock {
+        id: BlockId::new(),
+        stylized_command: str_to_byte_vec("setup-looking-command"),
+        stylized_output: str_to_byte_vec("output"),
+        did_execute: true,
+        start_ts: Some(Local::now()),
+        completed_ts: Some(Local::now()),
+        ..Default::default()
+    };
+    model
+        .block_list_mut()
+        .insert_restored_block(&restored_block);
+
+    let restored_command_block = model
+        .block_list()
+        .blocks()
+        .iter()
+        .find(|block| block.command_to_string() == "setup-looking-command")
+        .expect("restored command block should exist");
+    assert!(!restored_command_block.is_hidden());
+    assert!(!restored_command_block.is_oz_environment_startup_command());
+}
+
+// Ported from the pinned oracle (`02b53fcd8`,
+// `app/src/terminal/model/terminal_model_tests.rs`). Unchanged from the pin.
+#[test]
+fn generic_shared_session_viewer_model_starts_view_pending() {
+    let model = TerminalModel::new_for_shared_session_viewer(
+        block_size(),
+        color::List::from(&color::Colors::default()),
+        ChannelEventListener::new_for_test(),
+        Arc::new(Background::default()),
+        false,
+        false,
+        false,
+        ObfuscateSecrets::No,
+    );
+
+    assert!(matches!(
+        model.shared_session_status(),
+        SharedSessionStatus::ViewPending
+    ));
+    assert!(model.shared_session_status().is_viewer());
 }

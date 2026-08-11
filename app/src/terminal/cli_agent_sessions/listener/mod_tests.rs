@@ -76,12 +76,6 @@ fn codex_try_parse_ignores_other_structured_agents() {
 
 #[test]
 fn codex_try_parse_ignores_osc9_when_plugin_already_active() {
-    // Ported from the pin (`02b53fcd8`,
-    // `app/src/terminal/cli_agent_sessions/listener/mod_tests.rs`). The fork
-    // doesn't gate structured Codex event parsing on `FeatureFlag::CodexPlugin`
-    // (that's a separate, not-yet-wired concern -- see plugin_manager/codex.rs),
-    // so the guard here is a no-op that just keeps the test shape aligned with
-    // the oracle.
     let _guard = FeatureFlag::CodexPlugin.override_enabled(true);
     let mut handler = CodexSessionHandler;
     let body = r#"{"v":1,"agent":"codex","event":"permission_request","summary":"Approve?","tool_name":"Bash"}"#;
@@ -95,6 +89,29 @@ fn codex_try_parse_ignores_osc9_when_plugin_already_active() {
     assert!(handler
         .try_parse(None, "Agent turn complete", true)
         .is_none());
+}
+
+#[test]
+fn codex_try_parse_ignores_structured_event_without_codex_plugin() {
+    // Ported from the pin (`02b53fcd8`,
+    // `app/src/terminal/cli_agent_sessions/listener/mod_tests.rs`). Pins a real
+    // fix: `try_parse` used to return the parsed structured event unconditionally,
+    // without consulting `FeatureFlag::CodexPlugin` the way `plugin_manager/codex.rs`
+    // does everywhere else. With the plugin flag off, Codex is only supposed to
+    // speak plain OSC 9 (see the flag's doc comment in `crates/warp_features`), so a
+    // structured OSC 777 event must be dropped -- and, crucially, must NOT fall
+    // through to the OSC 9 plain-text path either, since the event did carry the
+    // structured sentinel.
+    let _guard = FeatureFlag::CodexPlugin.override_enabled(false);
+    let mut handler = CodexSessionHandler;
+    let body = r#"{"v":1,"agent":"codex","event":"permission_request","summary":"Approve?","tool_name":"Bash"}"#;
+
+    assert!(handler
+        .try_parse(Some(CLI_AGENT_NOTIFICATION_SENTINEL), body, false)
+        .is_none());
+    assert!(handler
+        .try_parse(None, "Agent turn complete", false)
+        .is_some());
 }
 
 #[test]
