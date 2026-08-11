@@ -580,14 +580,21 @@ tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", re
 # at the top level of the HTTP body.
 # The fork changes the check to `OpenAI | DeepSeek`, matching DeepSeek's
 # official thinking_mode docs.
-# Upstream also plans to send a PR (deepseek-reasoning-effort branch); once
-# merged, this patch can be reverted.
+# UPDATE (2026-08-10): superseded upstream. genai 0.6.1 removed the
+# OpenAI-only guard entirely (all OpenAI-compatible adapters now get the
+# reasoning suffix resolved), which is broader than this patch. This hunk
+# can be dropped once we're past 0.6.1 — see CHANGES-PHOSPHOR.md.
 #
 # NOTE: the paragraph above describes ONE of the fork's changes, not all of
-# them. At least 16 files under lib/rust-genai/src/ differ from upstream
-# (Anthropic mixed-TTL caching, gzip default, extra_body, Vertex support, …).
-# Each carries an Apache-2.0 section 4(b) change notice; the full list is in
-# lib/rust-genai/CHANGES-PHOSPHOR.md.
+# them. 19 files under lib/rust-genai/src/ differ from pristine upstream
+# 0.6.0-beta.18 (proxy/gzip config, extra_body, tool-level cache_control, a
+# relay-compat Anthropic header, a Vertex streaming-URL bugfix, a generic
+# Usage::extra field, and an undocumented dispatch-macro refactor — Vertex
+# support itself is upstream-native, not a fork addition). Each modified
+# file should carry an Apache-2.0 section 4(b) change notice (three do not
+# yet — a known gap); the full, corrected list, the pinned upstream version,
+# and the re-pin procedure are in lib/rust-genai/CHANGES-PHOSPHOR.md and
+# lib/rust-genai/UPSTREAM.md.
 genai = { path = "lib/rust-genai" }
 
 # The multi-agent proto API is pinned directly to upstream `warpdotdev` (see the
