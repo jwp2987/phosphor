@@ -190,6 +190,12 @@ byte-identical to the pin and can be fast-forwarded), and
 `script/check_declined_collisions` (flags an incoming pin change that collides
 with a recorded decision).
 
+**Build triage** — [`docs/build/TRIAGE.md`](docs/build/TRIAGE.md) collates every
+agent's ranked "what I am least sure compiles" into one list grouped by file, so
+a large batch of unbuilt work is worked through in a planned order. Predictions
+get marked hit/missed after the build, which measures how far unbuilt agent
+output can be trusted.
+
 **Guards** — run by `script/precheck` and CI, each with a header comment
 explaining what an earlier version got wrong: `check_cloud_boundary`,
 `check_stub_coverage`, `check_declined_collisions`, `check_sweep_ledger`,
