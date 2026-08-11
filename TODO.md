@@ -951,9 +951,21 @@ against the fork tree and against the pin's test-name index. Result:
 |---|---:|
 | named symbol is a **pin test name**, not a subsystem | 104 |
 | named symbol **is PRESENT** in the fork — claim wrong | 75 |
-| **confirmed absent** | **31** |
-| — of those, cloud (dropped on purpose, not debt) | 8 |
+| **confirmed absent** | **32** |
+| — of those, cloud (dropped on purpose, not debt) | 9 |
 | — **of those, real non-cloud debt** | **23** |
+
+Two arithmetic/judgement errors were made and corrected while producing this,
+both worth recording because they are the same class of mistake the sweep made:
+
+* The absent count was first published as 31. An exclusion regex had dropped
+  `session_sharing_protocol::sharer::InitPayload`, which was never actually
+  verified present. **32.**
+* `AgentMessage` was briefly called cloud on a marker count taken from
+  `app/src/ai/agent_events/driver.rs` — the wrong file, which merely contains a
+  *different* symbol (`AgentMessageEventMetadata`). The file that matters,
+  `crates/warp_tui/src/agent_block.rs` at the pin, has **zero** cloud markers and
+  the section carries a plain `ReceivedMessageDisplay`. It is real debt.
 
 **Roughly a third of missing-subsystem claims name something that exists.**
 The agents reasoned from pin-side reading and inferred fork absence instead of
@@ -984,6 +996,12 @@ more look at *why* it is absent.
 ### Confirmed absent — orchestration config-picker (see the correction below)
 - [ ] `OrchestrationConfigState`, `AuthSecretSelection`, `apply_execution_mode_change`.
       The picker layer only. Orchestration itself is built. #310/#304.
+      **`AuthSecretSelection` needs a cloud/non-cloud ruling before implementing.**
+      Its pin variants are `Named(name)` / `Inherit` / `CreatingNew` — a picker
+      for which auth secret an orchestration child uses. In this fork "auth
+      secret" would mean a BYOP provider key, which is local; at the pin it may
+      mean a Warp *managed* secret, which is declined. It sits in the same file
+      as `ORCHESTRATION_WARP_WORKER_HOST`. Decide before building, not after.
 
 ### Confirmed absent — remote project skills
 - [ ] `parse_project_skill_contents`, `refresh_project_skills_for_repo`.
@@ -1009,7 +1027,7 @@ more look at *why* it is absent.
 `CLOUD_MODE_V2_COMPOSER`, `CloudEnvironmentCatalog`, `CloudModeSetupV2`,
 `cloud_agent`, `cloud_mode_v2`, `not_cloud_agent`, `HandoffEntryPoint`,
 `session_sharing_protocol` (bare path; its `::common`, `::sharer`, `::viewer`
-sub-paths all exist).
+sub-paths all exist), and `session_sharing_protocol::sharer::InitPayload`.
 
 ---
 
