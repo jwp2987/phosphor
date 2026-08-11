@@ -14,10 +14,9 @@ use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
     AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryEvent,
-    BlocklistAIHistoryModel,
-    ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo,
-    SizeUpdate, TaskId, TuiUpArrowHistoryItemKind, export_conversation_markdown,
-    register_tui_session_view_test_singletons, slash_commands,
+    BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent,
+    PtyIntentEvent, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind,
+    export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -81,6 +80,17 @@ use crate::zero_state_animation::{
 struct FocusTestFixture {
     window_id: warpui_core::WindowId,
     sessions: ModelHandle<TuiSessions>,
+}
+
+/// Ported from the pinned oracle (`02b53fcd8`). Guards
+/// `super::attachment_focus_available`, the mutual-exclusion gate between the
+/// `FocusAttachments` and `TriggerCompletions` Tab bindings: shell mode always
+/// reserves Tab for completion, even while attachments would otherwise render.
+#[test]
+fn shell_mode_reserves_tab_even_when_attachments_render() {
+    assert!(super::attachment_focus_available(false, true));
+    assert!(!super::attachment_focus_available(true, true));
+    assert!(!super::attachment_focus_available(false, false));
 }
 
 #[test]
@@ -1643,14 +1653,38 @@ fn visible_startup_script_shows_no_interrupt_hint() {
     App::test((), |mut app| async move {
         let fixture = focus_test_fixture(&mut app);
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
-        view.update(&mut app, |view, _| {
-            let mut terminal_model = view.terminal_model.lock();
-            terminal_model.block_list_mut().reinit_shell();
-            terminal_model.update_blockheight_items(TRANSCRIPT_BLOCK_SPACING.block_padding, 0.0);
-            // Advance past WarpInput, then leave an unfinished startup-script
-            // block with visible output owning PTY input.
-            terminal_model.simulate_block("bootstrap", "");
-            terminal_model.simulate_long_running_block("shell init", "startup output\r\n");
+        view.update(&mut app, |view, ctx| {
+            {
+                let mut terminal_model = view.terminal_model.lock();
+                terminal_model.block_list_mut().reinit_shell();
+                terminal_model
+                    .update_blockheight_items(TRANSCRIPT_BLOCK_SPACING.block_padding, 0.0);
+                // Advance past WarpInput, then leave an unfinished startup-script
+                // block with visible output owning PTY input.
+                terminal_model.simulate_block("bootstrap", "");
+                terminal_model.simulate_long_running_block("shell init", "startup output\r\n");
+            }
+            // Startup-script input is not an attachable user long-running command:
+            // the manual-attach machinery must stay fully inert while it owns the PTY.
+            // Ported from the pin's `visible_startup_script_shows_no_running_command_hint`
+            // (`02b53fcd8`); these three assertions were dropped when this test was first
+            // ported even though every symbol they need already exists here.
+            assert!(
+                !view
+                    .session_state(ctx)
+                    .expect("session state resolves")
+                    .can_attach_agent_to_running_command()
+            );
+            assert!(
+                !view
+                    .keymap_context(ctx)
+                    .set
+                    .contains(SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG)
+            );
+            assert!(
+                !view.try_attach_agent_to_running_command(ctx),
+                "startup-script input is not an attachable user LRC"
+            );
         });
         assert!(
             view.read(&app, |view, _| view.input_target().pty_owns_input()),

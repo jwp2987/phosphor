@@ -39,6 +39,7 @@ use super::{
     INPUT_HANDLES_ESCAPE_FLAG, TuiInputAction, TuiInputView, TuiInputViewEvent,
     input_keymap_context,
 };
+use crate::completions_menu::TuiAcceptedCompletion;
 use crate::editor_element::{TuiEditorAction, TuiEditorElement};
 use crate::editor_interaction::TuiEditorCommand;
 use crate::inline_menu::{
@@ -1269,6 +1270,37 @@ fn move_left_on_non_empty_buffer_only_moves_cursor() {
     });
 }
 
+/// Left on an empty buffer with the shortcuts sheet open replaces it with the
+/// conversation menu rather than stacking both suggestions surfaces.
+///
+/// Ported from the pinned oracle (02b53fcd8),
+/// `crates/warp_tui/src/input/view_tests.rs`.
+#[test]
+fn move_left_from_shortcuts_replaces_it_with_conversation_menu() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let (view, menu_model, _) = build_view_with_conversation_menu(ctx);
+            type_str(&view, ctx, "?");
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts)
+            );
+
+            dispatch(
+                &view,
+                ctx,
+                &[TuiInputAction::EditorCommand(TuiEditorCommand::MoveLeft)],
+            );
+
+            assert!(menu_model.as_ref(ctx).is_open);
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ConversationMenu
+            );
+        });
+    });
+}
+
 /// The `!` shell prefix is not part of `plain_text`, so an empty shell command
 /// must not trip the empty-buffer Left branch: Left in shell mode stays a plain
 /// cursor move and never opens the conversation picker.
@@ -2219,6 +2251,70 @@ fn bang_at_start_enters_shell_mode() {
             type_str(&view, ctx, "!ls");
             assert!(view.as_ref(ctx).is_shell_mode(ctx));
             assert_eq!(text(&view, ctx), "ls", "the `!` must not be inserted");
+        });
+    });
+}
+
+/// `apply_shell_completion` replaces the accepted byte span in place, correctly
+/// converting a multi-byte-prefixed span to char offsets and preserving the
+/// text that follows the replaced token.
+///
+/// Ported from the pinned oracle (02b53fcd8),
+/// `crates/warp_tui/src/input/view_tests.rs`; renamed for this fork's
+/// `TuiAcceptedCompletion { span }` (`completions_menu.rs`) in place of the
+/// pin's `TuiCompletionAcceptance { replacement_range }`.
+#[test]
+fn completion_replaces_utf8_byte_span_and_preserves_following_text() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "!");
+            view.update(ctx, |view, ctx| view.set_text("écho --fi tail", ctx));
+            let input = text(&view, ctx);
+            let start = input.find("--fi").expect("test token exists");
+            let end = start + "--fi".len();
+
+            let applied = view.update(ctx, |view, ctx| {
+                view.apply_shell_completion(
+                    TuiAcceptedCompletion {
+                        replacement: "--file".to_owned(),
+                        span: start..end,
+                        append_space: false,
+                    },
+                    ctx,
+                )
+            });
+
+            assert!(applied);
+            assert_eq!(text(&view, ctx), "écho --file tail");
+        });
+    });
+}
+
+/// `apply_shell_completion` appends a trailing space at the end of the buffer
+/// when `append_space` is set.
+///
+/// Ported from the pinned oracle (02b53fcd8),
+/// `crates/warp_tui/src/input/view_tests.rs`; same rename as the test above.
+#[test]
+fn completion_can_append_a_space_at_buffer_end() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let view = build_view(ctx);
+            type_str(&view, ctx, "!ec");
+            let applied = view.update(ctx, |view, ctx| {
+                view.apply_shell_completion(
+                    TuiAcceptedCompletion {
+                        replacement: "echo".to_owned(),
+                        span: 0..2,
+                        append_space: true,
+                    },
+                    ctx,
+                )
+            });
+
+            assert!(applied);
+            assert_eq!(text(&view, ctx), "echo ");
         });
     });
 }

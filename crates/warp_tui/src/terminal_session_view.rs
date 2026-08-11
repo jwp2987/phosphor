@@ -297,6 +297,15 @@ fn log_bundle_success_message(path: &Path) -> String {
     format!("Log bundle saved to {}", path.display())
 }
 
+/// Whether Tab should focus the image-attachment bar instead of completing
+/// shell input under the cursor. Shell mode reserves Tab for completion even
+/// when attachments would otherwise render, so the two bindings stay mutually
+/// exclusive (see the `FOCUS_ATTACHMENTS_BINDING_NAME` / `TRIGGER_COMPLETIONS_BINDING_NAME`
+/// context predicates registered above, which key off `ATTACHMENTS_AVAILABLE_FLAG`).
+fn attachment_focus_available(is_shell_mode: bool, attachments_should_render: bool) -> bool {
+    !is_shell_mode && attachments_should_render
+}
+
 fn raw_prompt_if_not_blank(input: &str) -> Option<&str> {
     (!input.trim().is_empty()).then_some(input)
 }
@@ -4729,7 +4738,10 @@ impl TuiView for TuiTerminalSessionView {
             && !self.suggestions_mode.as_ref(ctx).mode().is_visible()
         {
             context.set.insert(SESSION_COMPOSER_OWNS_INPUT_FLAG);
-            if self.attachment_bar.as_ref(ctx).should_render(ctx) {
+            if attachment_focus_available(
+                self.is_shell_mode(ctx),
+                self.attachment_bar.as_ref(ctx).should_render(ctx),
+            ) {
                 context.set.insert(ATTACHMENTS_AVAILABLE_FLAG);
             }
         }

@@ -187,3 +187,7 @@ impl TuiOrchestrationModel {
         Some(session_id)
     }
 }
+
+#[cfg(test)]
+#[path = "orchestration_model_tests.rs"]
+mod tests;
