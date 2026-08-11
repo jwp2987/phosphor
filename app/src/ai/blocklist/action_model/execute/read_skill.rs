@@ -1,10 +1,12 @@
 use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
 #[cfg(feature = "local_fs")]
 use crate::ai::agent::AIAgentActionResultType;
+use crate::ai::blocklist::SessionContext;
 #[cfg(feature = "local_fs")]
 use crate::ai::skills::extract_skill_parent_directory;
 use crate::ai::skills::{SkillManager, SkillTelemetryEvent};
 use crate::send_telemetry_from_ctx;
+use crate::terminal::model::session::active_session::ActiveSession;
 use ai::agent::action_result::AnyFileContent;
 use ai::skills::SkillReference;
 #[cfg(feature = "local_fs")]
@@ -12,7 +14,7 @@ use ai::skills::parse_skill;
 use std::path::Path;
 #[cfg(feature = "local_fs")]
 use warp_util::local_or_remote_path::LocalOrRemotePath;
-use warpui::{ModelContext, SingletonEntity};
+use warpui::{ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::agent::AIAgentActionType;
 use crate::ai::agent::ReadSkillRequest;
@@ -21,11 +23,17 @@ use ai::agent::action_result::FileContext;
 use futures::future::{BoxFuture, FutureExt};
 use warpui::Entity;
 
-pub struct ReadSkillExecutor;
+pub struct ReadSkillExecutor {
+    /// The session this executor's actions run against. Used to resolve which
+    /// skill catalog (local, or a connected remote host's) a `BundledSkillId`
+    /// reference should be read from — see `execute`'s use of
+    /// `SessionContext::skill_path_origin`.
+    active_session: ModelHandle<ActiveSession>,
+}
 
 impl ReadSkillExecutor {
-    pub fn new() -> Self {
-        Self
+    pub fn new(active_session: ModelHandle<ActiveSession>) -> Self {
+        Self { active_session }
     }
 
     pub(super) fn should_autoexecute(
@@ -48,17 +56,29 @@ impl ReadSkillExecutor {
             return ActionExecution::InvalidAction;
         };
 
+        // Resolve which skill catalog a `BundledSkillId` reference should be read
+        // from: the local catalog for a local session, or the connected remote
+        // host's catalog for a warpified-remote (SSH) session. Without this, a
+        // remote session would silently read the client's own bundled-skill
+        // catalog instead of the host's.
+        let path_origin =
+            SessionContext::from_session(self.active_session.as_ref(ctx), ctx).skill_path_origin();
+
         let manager = SkillManager::as_ref(ctx);
 
         // Cache hit: the proto's `SkillReference::Path(p)` only matches here when p
         // is exactly the real SKILL.md absolute path in the index.
         //
-        // Uses `active_skill_by_reference` (not `skill_by_reference`) so a
-        // `BundledSkillId` reference is rejected once its activation condition is
+        // Uses `active_skill_by_reference_with_origin` (not `skill_by_reference`) so
+        // a `BundledSkillId` reference is rejected once its activation condition is
         // no longer met (a `tui_only` skill read from the GUI, a feature-gated
-        // skill whose flag flipped off, ...). Path-based user skills are
-        // unaffected: they have no activation condition to check. See issue #370.
-        if let Some(skill) = manager.active_skill_by_reference(skill_ref, ctx) {
+        // skill whose flag flipped off, ...), and is resolved against the session's
+        // host rather than always the local one. Path-based user skills are
+        // unaffected by the activation check: they have no activation condition to
+        // check. See issue #370.
+        if let Ok(skill) =
+            manager.active_skill_by_reference_with_origin(skill_ref, &path_origin, ctx)
+        {
             send_telemetry_from_ctx!(
                 SkillTelemetryEvent::Read {
                     reference: skill_ref.clone(),
