@@ -5,14 +5,51 @@ running `cargo`, and each was required to hand back a ranked list of what it
 doubted would compile. This file collates all of them, grouped by file, so the
 first build is worked through in a planned order rather than reactively.
 
-**Status: PREDICTIONS, not errors.** Nothing here has been compiled. When the
-build runs, mark each line hit/missed — the miss rate is itself worth knowing,
-because it tells us how much to trust unbuilt agent output next time.
+**Status: RESOLVED — the batch was built on 2026-08-10.** The predictions below
+are kept verbatim, with a verdict added to each. See "Result" immediately below
+for the scoring; the per-tier verdicts are inline.
 
-**How to use it.** Build once, capture the full error list, then match errors
-against the sections below. Anything matching a prediction has a suggested fix
-already. Anything *not* matching is the interesting case — it means the agents'
-self-assessment missed a class of problem.
+---
+
+## Result — what the first build actually found
+
+`cargo check --workspace --all-targets --features warp/gui`, from a warm cache:
+
+| | |
+|---|---:|
+| Predictions in this file | 16 |
+| Predictions that fired | **0** |
+| Distinct compile errors | **5** |
+| Errors any prediction anticipated | **0** |
+| Files correctly named as risky (wrong reason) | 2 |
+
+**Every prediction missed, and every error was unpredicted.** The two are not
+the same failure: the predictions were not merely low-yield, they had no overlap
+with reality at all. All 16 predicted shapes — the prost naming, every
+borrow-checker region, every type-resolution and deref-coercion question —
+compiled exactly as the agents reasoned they would.
+
+What actually broke was a single class the file never names:
+
+> **Calling a fork API through the pin's signature.** Four of five errors are a
+> test calling a function whose arity, receiver type, or member kind differs
+> here from `02b53fcd8`. Not one agent listed "the signature I copied might not
+> be this fork's signature" as a doubt.
+
+The fifth is the same shape one step removed: a test asking for `{:?}` on a type
+that had never needed `Debug` because nothing had ever printed it.
+
+**Direction of the error, and why the miss rate is not the lesson.** Agents were
+uncertain about the code they *wrote* and confident about the API they *called*.
+They had it backwards. Hand-tracing the hard thing worked — 16 for 16 — and the
+unexamined assumption was the cheap call site nobody thought to check. Next
+round, the ranked-doubt list is worth less than a mechanical diff of every
+pin-derived call site against this fork's signatures; the second is a grep, and
+it would have found four of these five before the build.
+
+The counterweight in "Known-good" below is therefore right on its own terms and
+still misleading: 5 errors across ~80 unbuilt commits is a low rate, but they
+clustered entirely in the one place nobody was watching.
 
 ---
 
@@ -31,6 +68,14 @@ mechanically.
 *Why tier 1:* single root cause, many call sites, and the only prediction in the
 batch that was explicitly reasoned-by-analogy rather than read.
 
+> **MISSED — the inference was exactly right.** The generated enum is
+> `Unspecified / NotEnabled / InvalidRepoPath / IndexNotFound / IndexSyncing /
+> IndexFailed / RetrievalFailed`, matching all 30-odd call sites across the three
+> files. Reasoning-by-analogy from `FragmentMetadataLookupErrorCode` was sound:
+> prost strips the SCREAMING_SNAKE enum-name prefix, and the proto had spelled
+> every variant with the full prefix. The highest-ranked risk in the batch cost
+> nothing.
+
 ### `crates/remote_server/src/manager.rs`
 **Prediction: `HostRequestHandle` gaining `#[derive(Clone)]`.** Depends on
 `ModelSpawner<M>`'s manual `impl<M> Clone` (verified unconditional) and
@@ -40,6 +85,9 @@ batch that was explicitly reasoned-by-analogy rather than read.
 **Prediction: `Text::new(..).with_color(..).soft_wrap(false).with_clip(ClipConfig::ellipsis()).finish()`.**
 Method names verified individually elsewhere; *this exact chain order* was not.
 
+> **MISSED (both tier-1 remainders).** `HostRequestHandle`'s `#[derive(Clone)]`
+> and the builder chain both compiled untouched.
+
 ---
 
 ## Tier 2 — borrow-checker shapes
@@ -47,6 +95,12 @@ Method names verified individually elsewhere; *this exact chain order* was not.
 These are the densest regions written blind. All were traced by hand against an
 existing identical pattern, which is why they are tier 2 and not tier 1 — but
 NLL surprises are exactly what hand-tracing misses.
+
+> **ALL SIX MISSED. Zero borrow-checker errors in the entire batch.** Including
+> `force_reload_server_local`, nominated as the densest borrow region written
+> blind. Hand-tracing a borrow region against an existing identical pattern is,
+> on this evidence, a reliable substitute for the compiler — it did not fail
+> once in six attempts at the hardest cases the agents could nominate.
 
 | file | shape |
 |---|---|
@@ -60,6 +114,12 @@ NLL surprises are exactly what hand-tracing misses.
 ---
 
 ## Tier 3 — type resolution and signatures
+
+> **ALL FIVE MISSED.** The `LLMId` re-export was the same type, the
+> `AgentDriverError` variant was public enough, `child_conversations_of`'s
+> lifetimes elided, `Arc<Vec<PathBuf>>` did coerce transitively to `&[PathBuf]`
+> without `.as_slice()`, and the `FileMCPWatcher::new` restructure — the largest
+> structural change to non-test code in the batch — compiled as written.
 
 | file | shape |
 |---|---|
@@ -76,6 +136,27 @@ NLL surprises are exactly what hand-tracing misses.
 
 Lower blast radius: a broken fixture fails one test file, not a crate. But they
 are numerous, and several agents flagged the same class.
+
+> **The only tier that scored, and only by accident.** Two of the seven files
+> below did contain errors, but neither for the reason given:
+>
+> - `orchestration_model_tests.rs` — flagged for being novel. It broke on two
+>   pin-vs-fork signature mismatches: `add_test_semantic_selection` takes
+>   `&mut AppContext`, not `&mut App`, and `start_new_conversation` takes four
+>   arguments here where the pin passes five.
+> - `terminal_session_view_tests.rs` — flagged for `simulate_long_running_block`
+>   producing a taggable block. That part was fine; the file broke because
+>   `session_state` is a *field* holding a `TuiTerminalSessionStateModel`, not a
+>   method, so resolving it goes through `.resolve(ctx)`.
+>
+> The remaining five compiled, including the two whose risk was semantic rather
+> than syntactic. `utils_tests.rs`'s assumed second parameter to
+> `FileMetadata::new` is `ignored: bool`, and `false` — "not gitignored", so the
+> skill file is discoverable — is what those tests want. A compiler could not
+> have caught that one; it was checked by reading the struct.
+>
+> Note the blast-radius model held: both failures were confined to one crate's
+> test target and neither touched shipping code.
 
 - `crates/warp_tui/src/orchestration_model_tests.rs` — new ~180-line file, the most novel test code in the batch.
 - `app/src/pane_group/pane/local_harness_launch_tests.rs` — fixture chains PATH lookup, home-dir config writes, and a plugin-install subprocess against a fake CLI.
@@ -115,3 +196,15 @@ green suite, and would be invisible again:
 Neither is a compile question. **Launching the app is a different act from
 building it**, and this batch touches `initialize_app` (codebase-retrieval
 wiring), the singleton graph, and the Anthropic request path.
+
+> **Checked by reading, not by running — still outstanding.** The singleton
+> graph was audited against this batch's two additions and both order
+> constraints hold, each with the reason recorded at the registration site:
+> `NotificationsModel` is registered after `BlocklistAIHistoryModel` and
+> `CLIAgentSessionsModel`, and `CodebaseRetrievalController` after
+> `CodebaseIndexManager`, which it subscribes to during construction on
+> `local_fs`.
+>
+> That is an argument, not evidence. **Nobody has launched the app since the
+> freeze lifted.** A green suite does not discharge this item — the startup
+> crash it describes passed 6,000 tests. Manual launch remains the open task.
