@@ -672,13 +672,13 @@ impl SkillManager {
         ctx.emit(SkillManagerEvent::InventoryChanged);
     }
 
-    fn handle_skills_deleted(&mut self, paths: Vec<PathBuf>, ctx: &mut ModelContext<Self>) {
+    fn handle_skills_deleted(&mut self, paths: Vec<LocalOrRemotePath>, ctx: &mut ModelContext<Self>) {
         if paths.is_empty() {
             return;
         }
 
-        for path in paths {
-            self.handle_path_deleted(&LocalOrRemotePath::Local(path));
+        for path in &paths {
+            self.handle_path_deleted(path);
         }
 
         ctx.emit(SkillManagerEvent::InventoryChanged);

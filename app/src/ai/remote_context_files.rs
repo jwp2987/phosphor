@@ -17,20 +17,21 @@
 //! `crate::code::buffer_location::util_host_id_to_core`, the existing helper
 //! for exactly this conversion direction.
 //!
-//! **Not yet wired to a caller on this branch.** The pin's two call sites are
-//! `app/src/ai/metadata_project_rules.rs` (remote project-rule content
-//! reading) and `app/src/ai/skills/file_watchers/skill_watcher.rs`'s
-//! `read_project_skill_contents` (remote project-skill content reading on
-//! file-watch events) -- neither exists on this fork; both are separate,
-//! comparably-sized features of their own (remote project-rule / -skill
-//! *discovery*, not just content reading), not part of #381's scope. This
-//! module is also **not** what populates `RemoteAgentContextSnapshot`'s
-//! `global_rules` field -- that value arrives pre-serialized in the
-//! snapshot proto (daemon-side, from `ProjectContextModel::global_rules()`,
-//! which this fork's `ProjectContextModel` does not have) and is consumed
-//! directly in `app/src/ai/remote_agent_context.rs` without any additional
-//! RPC. See that file's module doc comment for the real state of that gap.
-#![allow(dead_code)]
+//! **Now wired to one of the pin's two call sites.**
+//! `app/src/ai/skills/file_watchers/skill_watcher.rs`'s
+//! `read_project_skill_contents` calls [`read_remote_text_file_contents`] for
+//! remote project skills discovered via `RepoMetadataModel`'s standing-query
+//! results (`SkillWatcher::refresh_project_skills_for_repo`). The pin's other
+//! call site, `app/src/ai/metadata_project_rules.rs` (remote project-rule
+//! content reading), still does not exist on this fork -- remote project-rule
+//! *discovery* is a separate, comparably-sized feature of its own, not part
+//! of #381's scope. This module is also **not** what populates
+//! `RemoteAgentContextSnapshot`'s `global_rules` field -- that value arrives
+//! pre-serialized in the snapshot proto (daemon-side, from
+//! `ProjectContextModel::global_rules()`, which this fork's
+//! `ProjectContextModel` does not have) and is consumed directly in
+//! `app/src/ai/remote_agent_context.rs` without any additional RPC. See that
+//! file's module doc comment for the real state of that gap.
 
 use std::collections::HashMap;
 
