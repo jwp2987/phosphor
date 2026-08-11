@@ -2,8 +2,12 @@
 #
 # Runs `./script/usage-test` (see specs/usage-test-suite/SCOPE.md): the in-process
 # `warp_tui` view harness for the TUI surface, and the reliable-here GUI scenarios
-# via the `integration` binary (which boots the full app with a MOCK display — no
-# xvfb / GPU needed). Real-shell command-completion scenarios (the preexec race)
+# via the `integration` binary. The GUI scenarios DO create a real winit event
+# loop, so they need a display and are wrapped in `xvfb-run` — matching
+# pr-check.yml's `-p integration` job. (This header previously claimed a MOCK
+# display needing no xvfb; that was wrong, and every nightly GUI scenario failed
+# on "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set" until
+# 2026-08-11.) Real-shell command-completion scenarios (the preexec race)
 # are gated behind `--include-flaky` and allowed to soft-fail until that race is
 # resolved. BYOP agent-round-trip scenarios (`--include-byop`) need a real provider
 # key + network and are not run in CI.
@@ -44,10 +48,15 @@ jobs:
             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
           df -h /
 
+      # install_test_deps is what pulls in xvfb (and the X11/Wayland runtime
+      # libs). Without it the GUI usage scenarios die on
+      # "neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set" —
+      # see the xvfb-run wrapper on the suite steps below.
       - uses: ./.github/actions/prepare_environment
         with:
           target_os: linux
           is_self_hosted: false
+          install_test_deps: true
 
       # The runner shells out to `cargo nextest` for the TUI surface; install it.
       # (The runner degrades gracefully if it's missing, but CI should exercise TUI.)
@@ -58,10 +67,10 @@ jobs:
 
       - name: Usage suite — TUI + reliable-here GUI
         shell: bash
-        run: ./script/usage-test --surface both
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" ./script/usage-test --surface both
 
       - name: Usage suite — real-shell (flaky, soft-fail)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.include_flaky }}
         continue-on-error: true
         shell: bash
-        run: ./script/usage-test --include-flaky
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" ./script/usage-test --include-flaky
