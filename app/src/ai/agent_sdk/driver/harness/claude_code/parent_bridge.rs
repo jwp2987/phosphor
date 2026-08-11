@@ -34,6 +34,7 @@ use crate::ai::agent_sdk::driver::{AgentDriver, OZ_MESSAGE_LISTENER_STATE_ROOT_E
 const LEGACY_MESSAGE_LISTENER_STATE_ROOT_ENV: &str = "OZ_PARENT_STATE_ROOT";
 const PARENT_BRIDGE_DEFAULT_STATE_ROOT: &str = ".claude-code/oz-parent-bridge";
 const PARENT_BRIDGE_SURFACED_DIR_NAME: &str = "surfaced";
+const PARENT_BRIDGE_EVENT_CURSOR_FILE_NAME: &str = "event-cursor.json";
 const PARENT_BRIDGE_HOOK_OUTPUT_FILE_NAME: &str = "pending-hook-output.json";
 const PARENT_BRIDGE_HOOK_OUTPUT_ACK_FILE_NAME: &str = "pending-hook-output.ack";
 const PARENT_BRIDGE_MAX_CONTEXT_CHARS_ENV: &str = "OZ_PARENT_MAX_CONTEXT_CHARS";
@@ -48,6 +49,28 @@ pub(super) struct MessageBridge {
     runtime: Mutex<Option<MessageBridgeRuntime>>,
     state_lock: AsyncMutex<()>,
 }
+
+/// Controls whether [`MessageBridge::cleanup`] deletes the on-disk state
+/// directory.
+///
+/// Ported from the pin (`02b53fcd8`, same file) for #252/#289. The pin's
+/// `RemoveState` maps 1:1 here; `PreserveState` also maps 1:1 in shape, though
+/// this fork has no dormant-wake reader that would ever consume the preserved
+/// directory (`claude_code/wake_driver.rs` doesn't exist here -- see
+/// `DECLINED.md`). It's still real behavior: `ClaudeHarnessRunner::cleanup`
+/// decides between the two variants from local signals only (final-save
+/// success, no mid-run failure, clean exit, and the CLI session not still
+/// `InProgress`/`Blocked`), see `claude_code.rs::should_preserve_parent_bridge`.
+pub(super) enum MessageBridgeCleanupDisposition {
+    RemoveState,
+    PreserveState,
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct MessageBridgeEventCursor {
+    since_sequence: i64,
+}
+
 struct MessageBridgeRuntime {
     task: SpawnedFutureHandle,
 }
@@ -149,6 +172,18 @@ impl AgentEventConsumer for MessageBridgeEventConsumer {
         }
 
         Ok(AgentEventConsumerControlFlow::Continue)
+    }
+
+    /// Persist the event-stream cursor to local disk so a bridge restart (e.g.
+    /// after a process crash) resumes from the last-seen sequence instead of
+    /// replaying the whole run's message history.
+    ///
+    /// Ported from the pin (`02b53fcd8`, same file) for #252/#289, minus the
+    /// pin's `server_api.update_event_sequence_on_server` half: this fork has no
+    /// `ServerApi` (dropped, see `DECLINED.md`), so the local file is the only
+    /// durable cursor here rather than a same-machine fallback for one.
+    async fn persist_cursor(&mut self, sequence: i64) -> anyhow::Result<()> {
+        write_parent_bridge_event_cursor(&self.state_dir, sequence)
     }
 }
 
@@ -262,9 +297,12 @@ impl MessageBridge {
         acknowledge_parent_bridge_hook_output(&hydrator, &self.state_dir).await
     }
 
-    pub(super) fn cleanup(&self) -> Result<()> {
+    pub(super) fn cleanup(&self, disposition: MessageBridgeCleanupDisposition) -> Result<()> {
         if let Some(runtime) = self.runtime.lock().take() {
             runtime.task.abort();
+        }
+        if matches!(disposition, MessageBridgeCleanupDisposition::PreserveState) {
+            return Ok(());
         }
         match fs::remove_dir_all(&self.state_dir) {
             Ok(()) => {}
@@ -312,6 +350,10 @@ pub(super) fn parent_bridge_hook_output_ack_file(state_dir: &Path) -> PathBuf {
     state_dir.join(PARENT_BRIDGE_HOOK_OUTPUT_ACK_FILE_NAME)
 }
 
+pub(super) fn parent_bridge_event_cursor_file(state_dir: &Path) -> PathBuf {
+    state_dir.join(PARENT_BRIDGE_EVENT_CURSOR_FILE_NAME)
+}
+
 fn parent_bridge_message_path(dir: &Path, sequence: i64, message_id: &str) -> PathBuf {
     dir.join(format!("{sequence:020}-{message_id}.json"))
 }
@@ -338,6 +380,35 @@ pub(super) fn ensure_parent_bridge_state_dir(state_dir: &Path) -> Result<()> {
     fs::create_dir_all(parent_bridge_surfaced_dir(state_dir))
         .with_context(|| format!("Failed to create {}", state_dir.display()))?;
     Ok(())
+}
+
+/// Read the locally persisted event-stream cursor for `state_dir`, defaulting
+/// to `0` (start from the beginning) when no cursor file has been written yet.
+///
+/// Ported from the pin (`02b53fcd8`, same file) for #252/#289: pure local disk
+/// I/O, despite living in a module that also has cloud-tied code elsewhere
+/// (`MessageHydrator`'s server-backed hydration path, unrelated to this file).
+pub(super) fn read_parent_bridge_event_cursor(state_dir: &Path) -> Result<i64> {
+    let path = parent_bridge_event_cursor_file(state_dir);
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let cursor = serde_json::from_slice::<MessageBridgeEventCursor>(
+        &fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("Failed to parse {}", path.display()))?;
+    Ok(cursor.since_sequence)
+}
+
+/// Ported from the pin (`02b53fcd8`, same file) for #252/#289, verbatim.
+pub(super) fn write_parent_bridge_event_cursor(state_dir: &Path, sequence: i64) -> Result<()> {
+    write_parent_bridge_json_atomically(
+        &parent_bridge_event_cursor_file(state_dir),
+        &MessageBridgeEventCursor {
+            since_sequence: sequence,
+        },
+    )
 }
 
 pub(super) fn stage_parent_bridge_message(
@@ -633,9 +704,12 @@ async fn run_parent_bridge_forever(
 ) -> Result<()> {
     ensure_parent_bridge_state_dir(&state_dir)?;
     // The shared driver keeps `since_sequence` in memory across its own retry
-    // loop, which is all this per-session bridge needs because the state dir is
-    // not reused across sessions.
-    let config = AgentEventDriverConfig::retry_forever(vec![run_id.clone()], 0);
+    // loop, which covers reconnects within one bridge process's lifetime. The
+    // on-disk cursor (`read_parent_bridge_event_cursor`) additionally covers a
+    // full bridge restart (e.g. after a crash), so a fresh process resumes from
+    // the last persisted sequence instead of replaying the whole run's history.
+    let since_sequence = read_parent_bridge_event_cursor(&state_dir).unwrap_or(0);
+    let config = AgentEventDriverConfig::retry_forever(vec![run_id.clone()], since_sequence);
     let source = ProviderAgentEventSource::new(agent_event_stream_client);
     let mut consumer = MessageBridgeEventConsumer { run_id, state_dir };
     run_agent_event_driver(source, config, &mut consumer).await

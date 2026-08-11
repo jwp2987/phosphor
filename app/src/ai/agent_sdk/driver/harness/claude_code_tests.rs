@@ -49,7 +49,7 @@ fn write_surfaced_parent_bridge_message(state_dir: &Path, record: &MessageBridge
 #[test]
 fn claude_command_uses_session_id_when_not_resuming() {
     let uuid = Uuid::new_v4();
-    let cmd = claude_command("claude", &uuid, "/tmp/prompt.txt", None, None);
+    let cmd = claude_command("claude", &uuid, "/tmp/prompt.txt", None, None, false);
     assert!(
         cmd.contains(&format!("--session-id {uuid}")),
         "expected --session-id flag, got: {cmd}"
@@ -57,6 +57,25 @@ fn claude_command_uses_session_id_when_not_resuming() {
     assert!(
         !cmd.contains("--resume"),
         "command should not contain --resume, got: {cmd}"
+    );
+}
+
+// Ported from the pinned Warp oracle (`02b53fcd8`) for #252/#289: `claude_command`
+// now takes a `resuming` flag (see `claude_code.rs`). This fork's sole caller
+// (`ClaudeHarnessRunner::new`) always passes `false` -- there is no resume-payload
+// plumbing here to ever request `true` (cloud-only at the pin) -- but the flag's
+// own branching logic is real, local, and worth covering directly.
+#[test]
+fn claude_command_uses_resume_flag_when_resuming() {
+    let uuid = Uuid::new_v4();
+    let cmd = claude_command("claude", &uuid, "/tmp/prompt.txt", None, None, true);
+    assert!(
+        cmd.contains(&format!("--resume {uuid}")),
+        "expected --resume flag in resume command, got: {cmd}"
+    );
+    assert!(
+        !cmd.contains("--session-id"),
+        "resume command should not contain --session-id, got: {cmd}"
     );
 }
 
@@ -69,6 +88,7 @@ fn claude_command_passes_mcp_config_when_present() {
         "/tmp/prompt.txt",
         None,
         Some("/tmp/oz_mcp_config_abc.json"),
+        false,
     );
     assert!(
         cmd.contains("--mcp-config '/tmp/oz_mcp_config_abc.json'"),
@@ -79,14 +99,21 @@ fn claude_command_passes_mcp_config_when_present() {
 #[test]
 fn claude_command_omits_mcp_config_when_absent() {
     let uuid = Uuid::new_v4();
-    let cmd = claude_command("claude", &uuid, "/tmp/prompt.txt", None, None);
+    let cmd = claude_command("claude", &uuid, "/tmp/prompt.txt", None, None, false);
     assert!(!cmd.contains("--mcp-config"), "{cmd}");
 }
 
 #[test]
 fn claude_command_pipes_prompt_path() {
     let uuid = Uuid::new_v4();
-    let cmd = claude_command("claude", &uuid, "/tmp/prompt with spaces.txt", None, None);
+    let cmd = claude_command(
+        "claude",
+        &uuid,
+        "/tmp/prompt with spaces.txt",
+        None,
+        None,
+        false,
+    );
     assert!(
         cmd.contains("< '/tmp/prompt with spaces.txt'"),
         "expected single-quoted stdin redirect of the prompt path, got: {cmd}"
@@ -125,6 +152,91 @@ fn stage_parent_bridge_message_writes_message_record() {
     assert_eq!(staged_record.sequence, 42);
     assert_eq!(staged_record.message_id, "msg-123");
     assert!(staged_record.sender_run_id.is_empty());
+}
+
+// Ported from the pinned Warp oracle (`02b53fcd8`) for #252/#289: pure local disk
+// I/O, despite living in a module (`parent_bridge.rs`) that also has cloud-tied
+// code elsewhere (`MessageHydrator`'s server-backed hydration path).
+#[tokio::test]
+async fn parent_bridge_event_cursor_defaults_to_zero_when_missing() {
+    let tmp = TempDir::new().unwrap();
+    let state_dir = tmp.path().join("session-123");
+    ensure_parent_bridge_state_dir(&state_dir).unwrap();
+
+    assert_eq!(read_parent_bridge_event_cursor(&state_dir).unwrap(), 0);
+    assert!(!parent_bridge_event_cursor_file(&state_dir).exists());
+}
+
+#[tokio::test]
+async fn parent_bridge_event_cursor_round_trips() {
+    let tmp = TempDir::new().unwrap();
+    let state_dir = tmp.path().join("session-123");
+    ensure_parent_bridge_state_dir(&state_dir).unwrap();
+
+    write_parent_bridge_event_cursor(&state_dir, 42).unwrap();
+
+    assert_eq!(read_parent_bridge_event_cursor(&state_dir).unwrap(), 42);
+    assert!(parent_bridge_event_cursor_file(&state_dir).exists());
+}
+
+// Ported from the pinned Warp oracle (`02b53fcd8`) for #252/#289. Adaptation:
+// the pin also gates this on a cloud dormant-wake reader
+// (`ClaudeHarness::wake_dormant_session`) that doesn't exist in this fork (needs
+// `ServerApi`, see `DECLINED.md`) -- but `MessageBridge::cleanup` and its
+// disposition enum are real, local behavior in their own right (see
+// `parent_bridge.rs`'s doc comment on `MessageBridgeCleanupDisposition`), so
+// these tests exercise that directly rather than the missing wake path.
+#[test]
+#[serial_test::serial]
+fn message_bridge_cleanup_preserves_state_for_wakeable_runs() {
+    let tmp = TempDir::new().unwrap();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(OZ_MESSAGE_LISTENER_STATE_ROOT_ENV, tmp.path()) };
+
+    let session_id = Uuid::new_v4();
+    let bridge = MessageBridge::new("run-123".to_string(), session_id).unwrap();
+    let state_dir = tmp.path().join(session_id.to_string());
+    ensure_parent_bridge_state_dir(&state_dir).unwrap();
+    let record = sample_staged_parent_bridge_message(42, "msg-123");
+    stage_parent_bridge_message(&state_dir, &record).unwrap();
+    write_parent_bridge_event_cursor(&state_dir, 42).unwrap();
+
+    bridge
+        .cleanup(MessageBridgeCleanupDisposition::PreserveState)
+        .unwrap();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(OZ_MESSAGE_LISTENER_STATE_ROOT_ENV) };
+
+    assert!(state_dir.exists());
+    assert!(parent_bridge_staged_message_path(&state_dir, 42, "msg-123").exists());
+    assert_eq!(read_parent_bridge_event_cursor(&state_dir).unwrap(), 42);
+}
+
+#[test]
+#[serial_test::serial]
+fn message_bridge_cleanup_removes_state_for_non_wakeable_runs() {
+    let tmp = TempDir::new().unwrap();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var(OZ_MESSAGE_LISTENER_STATE_ROOT_ENV, tmp.path()) };
+
+    let session_id = Uuid::new_v4();
+    let bridge = MessageBridge::new("run-123".to_string(), session_id).unwrap();
+    let state_dir = tmp.path().join(session_id.to_string());
+    ensure_parent_bridge_state_dir(&state_dir).unwrap();
+    stage_parent_bridge_message(
+        &state_dir,
+        &sample_staged_parent_bridge_message(42, "msg-123"),
+    )
+    .unwrap();
+    write_parent_bridge_event_cursor(&state_dir, 42).unwrap();
+
+    bridge
+        .cleanup(MessageBridgeCleanupDisposition::RemoveState)
+        .unwrap();
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::remove_var(OZ_MESSAGE_LISTENER_STATE_ROOT_ENV) };
+
+    assert!(!state_dir.exists());
 }
 
 #[tokio::test]
@@ -580,13 +692,19 @@ fn prepare_claude_settings_merges_existing_settings() {
 // feature gap are no longer missing: `--mcp-config` is wired, so they are
 // ported below alongside the rest.
 //
-// - 6 are a genuine **feature gap**, non-cloud:
-//   2 need the parent-bridge event cursor (`read/write_parent_bridge_event_cursor`
-//   — pure local disk I/O, despite living in a `parent_bridge.rs` that also has
-//   cloud-tied code elsewhere), 2 need `MessageBridgeCleanupDisposition`
-//   (`MessageBridge::cleanup()` here takes no argument), 1 needs `--resume`
-//   support in `claude_command(, None)`, and 1 (`write_session_index_entry_creates_expected_entry`)
-//   needs the local `claude_transcript` module (#289).
+// **Round 6 (2026-08-11) closed the 5-test "feature gap" subset the sweep
+// package `outcome-agent-sdk-harness` was scoped to:** the parent-bridge event
+// cursor (`read/write_parent_bridge_event_cursor`, now wired into
+// `MessageBridgeEventConsumer::persist_cursor` and `run_parent_bridge_forever`'s
+// startup sequence -- not left as dead pure functions), `MessageBridgeCleanupDisposition`
+// (`MessageBridge::cleanup` now takes it; `ClaudeHarnessRunner::cleanup` computes
+// it from local signals via the new `harness::HarnessCleanupDisposition`, threaded
+// through `AgentDriver::run_harness` in `driver.rs`), and `--resume` support in
+// `claude_command`. None of this needed cloud plumbing -- see each new item's own
+// doc comment for why. The remaining 4 of the original 9 are still blocked:
+//
+// - 1 (`write_session_index_entry_creates_expected_entry`) needs the local
+//   `claude_transcript` module wired into this file (#289).
 // - 2 are **cloud**, not merely "local wake absent" as round 4 characterized them:
 //   `prepare_local_wake_command_rehydrates_transcript_with_self_managed_listener`
 //   calls `ServerApiProvider::new_for_test()` directly, and

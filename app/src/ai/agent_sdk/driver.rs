@@ -1259,12 +1259,25 @@ impl AgentDriver {
 
         // Final save after the command finishes.
         log::debug!("Triggering final save of harness conversation data");
-        report_if_error!(runner
+        let final_save_result = runner
             .save_conversation(SavePoint::Final, foreground)
             .await
-            .context("Failed to save harness conversation (final)"));
+            .context("Failed to save harness conversation (final)");
+        report_if_error!(final_save_result);
+        // Ported from the pin (`02b53fcd8`, `app/src/ai/agent_sdk/driver.rs`) for
+        // #252/#289: whether harness-owned resume/mailbox state survives cleanup is
+        // decided from local signals only (final-save success, no mid-run runtime
+        // failure, and a clean exit code) -- see `harness::HarnessCleanupDisposition`.
+        let cleanup_disposition = if final_save_result.is_ok()
+            && detected_runtime_failure.is_none()
+            && matches!(command_result.as_ref(), Ok(exit_code) if exit_code.was_successful())
+        {
+            harness::HarnessCleanupDisposition::PreserveResumptionStateIfSupported
+        } else {
+            harness::HarnessCleanupDisposition::DropResumptionState
+        };
         report_if_error!(runner
-            .cleanup(foreground)
+            .cleanup(cleanup_disposition, foreground)
             .await
             .context("Failed to clean up harness runtime state"));
 
