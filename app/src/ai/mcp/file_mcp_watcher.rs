@@ -1,5 +1,6 @@
 use async_channel::Sender;
 use futures::Future;
+use futures::stream::AbortHandle;
 use regex::Regex;
 use repo_metadata::{
     repositories::{DetectedRepositories, DetectedRepositoriesEvent, RepoDetectionSource},
@@ -15,14 +16,14 @@ use warp_core::safe_warn;
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 use watcher::HomeDirectoryWatcherEvent;
 
+use crate::HomeDirectoryWatcher;
 use crate::ai::mcp::{
-    home_config_file_path, parsing::normalize_codex_toml_to_json, MCPProvider,
-    ParsedTemplatableMCPServerResult,
+    MCPProvider, ParsedTemplatableMCPServerResult, home_config_file_path,
+    parsing::normalize_codex_toml_to_json,
 };
 use crate::warp_managed_paths_watcher::{
-    warp_managed_mcp_config_path, WarpManagedPathsWatcher, WarpManagedPathsWatcherEvent,
+    WarpManagedPathsWatcher, WarpManagedPathsWatcherEvent, warp_managed_mcp_config_path,
 };
-use crate::HomeDirectoryWatcher;
 use strum::IntoEnumIterator;
 
 static ENV_VAR_REGEX: LazyLock<Regex> =
@@ -122,6 +123,10 @@ impl RepositorySubscriber for FileMCPSubscriber {
 /// [`FileMCPWatcherEvent`]s.
 pub struct FileMCPWatcher {
     file_mcp_tx: Sender<FileMCPDetectionMessage>,
+    /// In-flight config parses keyed by `(config_path, provider)`. Starting a replacement parse
+    /// aborts the previous one first, so a superseded parse can never emit an event after a newer
+    /// one has already been applied.
+    parse_abort_handles: HashMap<(PathBuf, MCPProvider), AbortHandle>,
     /// Watcher handles for home provider subdirectories (e.g. `~/.codex`), keyed by subdir path.
     /// Used to cleanup watchers when the subdir is deleted at runtime.
     home_provider_watchers: HashMap<PathBuf, (ModelHandle<Repository>, SubscriberId)>,
@@ -163,13 +168,16 @@ impl FileMCPWatcher {
         });
 
         let mut home_provider_watchers = HashMap::new();
+        // Deferred until `Self` is constructed below, so the initial parses go through
+        // `update_servers_from_config_file` and get tracked in `parse_abort_handles` like every
+        // other parse (`&mut self` isn't available yet at this point in `new`).
+        let mut initial_config_parses = Vec::new();
         if let Some(mcp_config_path) = warp_managed_mcp_config_path() {
-            Self::spawn_config_parse(
+            initial_config_parses.push((
                 mcp_config_path.config_path,
                 mcp_config_path.root_path,
                 MCPProvider::Zap,
-                ctx,
-            );
+            ));
         }
 
         if let Some(home_dir) = dirs::home_dir() {
@@ -184,7 +192,7 @@ impl FileMCPWatcher {
                         let Some(config_path) = home_config_file_path(provider) else {
                             continue;
                         };
-                        Self::spawn_config_parse(config_path, home_dir.clone(), provider, ctx);
+                        initial_config_parses.push((config_path, home_dir.clone(), provider));
                     }
                     Some(subdir) => {
                         // For providers whose home config lives in a subdir (e.g. ~/.codex for Codex)
@@ -204,11 +212,16 @@ impl FileMCPWatcher {
             }
         }
 
-        Self {
+        let mut watcher = Self {
             file_mcp_tx,
+            parse_abort_handles: HashMap::new(),
             home_provider_watchers,
             project_repo_watchers: HashSet::new(),
+        };
+        for (config_path, root_path, provider) in initial_config_parses {
+            watcher.update_servers_from_config_file(&config_path, root_path, provider, ctx);
         }
+        watcher
     }
 
     /// Register a project repo for file-based MCP watching via DirectoryWatcher.
@@ -346,6 +359,7 @@ impl FileMCPWatcher {
                     let was_deleted = fs_event.deleted.contains(&config_path)
                         || fs_event.moved.values().any(|v| v == &config_path);
                     if was_deleted {
+                        self.abort_config_parse(&config_path, provider);
                         ctx.emit(FileMCPWatcherEvent::ConfigRemoved {
                             config_path: config_path.clone(),
                             root_path: home_dir.clone(),
@@ -392,6 +406,7 @@ impl FileMCPWatcher {
                             repo_handle.update(ctx, |repo, ctx| repo.stop_watching(id, ctx));
                         }
                         let config_path = home_dir.join(provider.home_config_path());
+                        self.abort_config_parse(&config_path, provider);
                         ctx.emit(FileMCPWatcherEvent::ConfigRemoved {
                             config_path,
                             root_path: home_dir.clone(),
@@ -514,6 +529,7 @@ impl FileMCPWatcher {
         ctx: &mut ModelContext<Self>,
     ) {
         if was_deleted {
+            self.abort_config_parse(&config_path, provider);
             ctx.emit(FileMCPWatcherEvent::ConfigRemoved {
                 config_path: config_path.clone(),
                 root_path: root_path.clone(),
@@ -525,24 +541,25 @@ impl FileMCPWatcher {
         }
     }
 
-    fn spawn_config_parse(
-        config_path: PathBuf,
-        root_path: PathBuf,
-        provider: MCPProvider,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let config_path_for_callback = config_path.clone();
-        let _ = ctx.spawn(
-            async move { parse_mcp_config_file(&config_path, provider).await },
-            move |_me, outcome, ctx| {
-                emit_parse_outcome(outcome, config_path_for_callback, root_path, provider, ctx);
-            },
-        );
+    /// Aborts the in-flight config parse for `(config_path, provider)`, if any. Called whenever
+    /// a config is confirmed gone or superseded, so a parse that was already in flight cannot
+    /// emit an event after a newer one (or a removal) has taken effect.
+    fn abort_config_parse(&mut self, config_path: &Path, provider: MCPProvider) {
+        if let Some(abort_handle) = self
+            .parse_abort_handles
+            .remove(&(config_path.to_path_buf(), provider))
+        {
+            abort_handle.abort();
+        }
     }
 
     /// Asynchronously reads and parses the MCP configuration file at `config_file_path`,
     /// then emits a [`FileMCPWatcherEvent::ConfigParsed`], [`FileMCPWatcherEvent::ConfigRemoved`]
     /// or [`FileMCPWatcherEvent::ConfigError`] event depending on the outcome.
+    ///
+    /// Aborts any previously in-flight parse for the same `(config_path, provider)` first, so
+    /// that only the most recently started parse can ever apply its result — a superseded parse
+    /// that was still running cannot resolve later and clobber the newer one.
     fn update_servers_from_config_file(
         &mut self,
         config_file_path: &Path,
@@ -551,13 +568,17 @@ impl FileMCPWatcher {
         ctx: &mut ModelContext<Self>,
     ) {
         let config_file_path = config_file_path.to_path_buf();
-        let config_path_for_callback = config_file_path.clone();
-        let _ = ctx.spawn(
+        let key = (config_file_path.clone(), provider);
+        let callback_key = key.clone();
+        self.abort_config_parse(&config_file_path, provider);
+        let parse = ctx.spawn(
             async move { parse_mcp_config_file(&config_file_path, provider).await },
-            move |_, outcome, ctx| {
-                emit_parse_outcome(outcome, config_path_for_callback, root_path, provider, ctx);
+            move |me, outcome, ctx| {
+                me.parse_abort_handles.remove(&callback_key);
+                emit_parse_outcome(outcome, callback_key.0.clone(), root_path, provider, ctx);
             },
         );
+        self.parse_abort_handles.insert(key, parse.abort_handle());
     }
 }
 
