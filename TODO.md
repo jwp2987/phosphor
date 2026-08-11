@@ -81,8 +81,8 @@ are `GlobalBufferModel::resolve_conflict`, same method name, different type.
 | 3 | **`language_by_filename` signature** | fork takes `&Path`; pin takes `&StandardizedPath` + `language_by_filename_parts` |
 | 4 | **MCP tool results render as a JSON blob** | `inline_action/requested_command.rs:1494` — `to_string_pretty(result)` |
 | 5 | **`with_semantic_selection_by_style`** | no definition tree-wide |
-| 6 | **`use_computer_decoration`** | no definition tree-wide |
-| 7 | **TUI renderer for `MessagesReceivedFromAgents`/`EventsFromAgents`** | both absent |
+| ~~6~~ | ~~`use_computer_decoration`~~ **— NOT A SYMBOL.** It is a pin *test name*: `output_tests.rs:170 fn use_computer_decoration_skips_screenshot_only_rows()`. Screenshot handling exists (`view_impl/output.rs`, 25 refs). Re-scope against the actual decoration predicate or drop. | corrected 2026-08-11 |
+| ~~7~~ | ~~TUI renderer for `MessagesReceivedFromAgents`/`EventsFromAgents`~~ **— FALSE.** `crates/warp_tui/src/agent_block.rs:1311` renders `MessagesReceivedFromAgents { messages }`; `:1318` deliberately no-ops `EventsFromAgents`. Types exist in `convert_{conversation,from,to}.rs`. `agent_block_tests.rs` exists in fork and pin. If the real complaint is the `EventsFromAgents` no-op, file that narrowly with `:1318` as evidence. | corrected 2026-08-11 |
 | 8 | **Zap #324 — pane min size** | `MIN_PANEL_WIDTH: f32 = 300.` hardcoded, `ai_assistant/panel.rs:61` |
 | 9 | **Zap #329 remainder** — hunk staging, branch create/switch | no `stage_hunk`/`checkout_branch` |
 | 10 | **Feature-reduced daemon target** | architectural; gates the distribution decision |
