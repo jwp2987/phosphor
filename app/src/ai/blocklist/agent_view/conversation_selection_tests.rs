@@ -1,31 +1,37 @@
 //! Ported from the pin (`app/src/ai/blocklist/agent_view/conversation_selection_tests.rs`,
-//! `02b53fcd8`) for #316, adapted to `classify_gui_list_entry`'s narrowed 4-arg signature (no
-//! `has_open_action` closure -- see `conversation_selection.rs`'s module doc for why) and to this
-//! fork's `AgentViewController::new`, which additionally takes an `AmbientAgentViewModel` handle
-//! (construction pattern taken from `context_model_test.rs`, which already builds one of these
-//! for a different test). `gui_list_policy_classifies_unavailable_entry` isn't ported: the
-//! adapted `classify_gui_list_entry` can no longer return `Unavailable` at all.
+//! `02b53fcd8`) for #316, adapted to `classify_gui_list_entry`'s signature (a `harness:
+//! Option<Harness>` parameter, not the pin's `has_open_action` closure -- see
+//! `conversation_selection.rs`'s module doc for why) and to this fork's `AgentViewController::new`,
+//! which additionally takes an `AmbientAgentViewModel` handle (construction pattern taken from
+//! `context_model_test.rs`, which already builds one of these for a different test).
+//!
+//! `gui_list_policy_classifies_unavailable_entry` previously wasn't ported, on the belief that
+//! the adapted `classify_gui_list_entry` could no longer return `Unavailable` at all. That was
+//! wrong: the four-parameter version really couldn't, but it was missing the harness predicate,
+//! not permanently incapable -- see the defect note on `classify_gui_list_entry` itself. Restored
+//! below with `harness` substituted for the pin's `has_open_action` closure.
 
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
+use warp_cli::agent::Harness;
 use warpui::r#async::executor::Background;
 use warpui::{App, EntityId, ModelHandle};
 
-use super::{classify_gui_list_entry, AgentViewConversationSelection};
+use super::{AgentViewConversationSelection, classify_gui_list_entry};
 use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::blocklist::BlocklistAIHistoryModel;
 use crate::ai::blocklist::agent_view::{
     AgentViewController, AgentViewEntryOrigin, EphemeralMessageModel,
 };
 use crate::ai::blocklist::conversation_selection::ConversationSelection;
-use crate::ai::blocklist::BlocklistAIHistoryModel;
 use crate::ai::conversation_entry::{AgentConversationEntryId, AgentConversationListEntryState};
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::cloud_object::update_manager::UpdateManager;
 use crate::terminal::color::{self, Colors};
 use crate::terminal::event_listener::ChannelEventListener;
-use crate::terminal::model::test_utils::block_size;
 use crate::terminal::model::TerminalModel;
+use crate::terminal::model::test_utils::block_size;
 use crate::terminal::view::ambient_agent::AmbientAgentViewModel;
 use crate::test_util::settings::initialize_settings_for_tests;
 
@@ -33,7 +39,13 @@ use crate::test_util::settings::initialize_settings_for_tests;
 fn gui_list_policy_classifies_selected_entry() {
     let entry_id = AgentConversationEntryId::Conversation(AIConversationId::new());
     assert_eq!(
-        classify_gui_list_entry(Some(entry_id), entry_id, Some(EntityId::new()), EntityId::new()),
+        classify_gui_list_entry(
+            Some(entry_id),
+            entry_id,
+            Some(EntityId::new()),
+            EntityId::new(),
+            Some(Harness::Oz),
+        ),
         AgentConversationListEntryState::Selected
     );
 }
@@ -42,7 +54,13 @@ fn gui_list_policy_classifies_selected_entry() {
 fn gui_list_policy_classifies_entry_open_elsewhere() {
     let entry_id = AgentConversationEntryId::Conversation(AIConversationId::new());
     assert_eq!(
-        classify_gui_list_entry(None, entry_id, Some(EntityId::new()), EntityId::new()),
+        classify_gui_list_entry(
+            None,
+            entry_id,
+            Some(EntityId::new()),
+            EntityId::new(),
+            Some(Harness::Oz),
+        ),
         AgentConversationListEntryState::OpenElsewhere
     );
 }
@@ -51,15 +69,44 @@ fn gui_list_policy_classifies_entry_open_elsewhere() {
 fn gui_list_policy_classifies_available_entry() {
     let entry_id = AgentConversationEntryId::Conversation(AIConversationId::new());
     // Not selected, and not open in a different terminal view (open in this same one, or not
-    // open anywhere): Available.
+    // open anywhere), and Oz-harness: Available.
     let this_view = EntityId::new();
     assert_eq!(
-        classify_gui_list_entry(None, entry_id, Some(this_view), this_view),
+        classify_gui_list_entry(
+            None,
+            entry_id,
+            Some(this_view),
+            this_view,
+            Some(Harness::Oz)
+        ),
         AgentConversationListEntryState::Available
     );
     assert_eq!(
-        classify_gui_list_entry(None, entry_id, None, this_view),
+        classify_gui_list_entry(None, entry_id, None, this_view, Some(Harness::Oz)),
         AgentConversationListEntryState::Available
+    );
+}
+
+/// Defect-fix regression test (found by the app/ai pin-test sweep,
+/// `docs/sweep/app-ai.md`): `classify_gui_list_entry` had no parameter that
+/// could ever produce `AgentConversationListEntryState::Unavailable`, even
+/// though the variant exists and is rendered. A non-Oz-harness entry (a
+/// CLI-subagent conversation) -- not selected, and not open elsewhere -- is
+/// `Unavailable`, not `Available`: entering Agent View on it doesn't make
+/// sense the way it does for a native Oz-harness conversation. Also covers
+/// the "no harness resolved at all" case (`None`), which should not be
+/// treated as the default-Oz case.
+#[test]
+fn gui_list_policy_classifies_unavailable_entry() {
+    let entry_id = AgentConversationEntryId::Conversation(AIConversationId::new());
+    let this_view = EntityId::new();
+    assert_eq!(
+        classify_gui_list_entry(None, entry_id, None, this_view, Some(Harness::Claude)),
+        AgentConversationListEntryState::Unavailable
+    );
+    assert_eq!(
+        classify_gui_list_entry(None, entry_id, None, this_view, None),
+        AgentConversationListEntryState::Unavailable
     );
 }
 
