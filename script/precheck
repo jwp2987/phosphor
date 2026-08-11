@@ -182,6 +182,10 @@ step "fork boundary guards"
     || fail "cloud boundary -- run ./script/check_cloud_boundary for detail"
 ./script/check_stub_coverage  >/dev/null 2>&1 && ok "stub coverage" \
     || fail "stub coverage -- run ./script/check_stub_coverage for detail"
+if [[ -x ./script/check_declined_collisions ]]; then
+    ./script/check_declined_collisions >/dev/null 2>&1 && ok "declined collisions" \
+        || fail "declined collisions -- run ./script/check_declined_collisions for detail"
+fi
 if [[ -x ./script/check_settings_registry ]]; then
     ./script/check_settings_registry >/dev/null 2>&1 && ok "settings registry" \
         || fail "settings registry -- run ./script/check_settings_registry for detail"
