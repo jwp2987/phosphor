@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# Validate docs/sweep-verdict-ledger.tsv: well-formed, every cited DECLINED.md
+# row exists, and no verdict cites a row DECLINED.md has since struck.
+#
+# WHY THIS EXISTS
+# ----------------
+# The ledger is 1,843 hand-adjudicated pin-test verdicts (see the header of
+# script/extract_sweep_ledger.py and docs/SWEEP-SUMMARY.md). Its entire value
+# is that a re-pin can trust it without re-deriving the reasoning -- but only
+# for as long as the ledger's own citations stay true. DECLINED.md rows get
+# reversed (struck through, not deleted -- see its "Machine-checkable
+# markers" section and the two rows currently marked REVERSED). A ledger row
+# still citing a struck DECLINED.md row is stale THE MOMENT the row is
+# struck, not just at the next re-pin -- so this is a continuous CI guard,
+# not only a re-pin-time check, and belongs in the same "guards" job as
+# script/check_declined_collisions.
+#
+# WHAT THIS DOES NOT DO
+# ----------------------
+# It does not re-derive whether a verdict is still CORRECT (a MISSING-SUBSYSTEM
+# row whose named symbol now exists in the fork, or a CLOUD verdict that
+# predates a cloud-boundary architecture change) -- that is
+# script/generate_repin_queue's job at actual re-pin time, using the same
+# ledger. This script only checks the ledger's internal consistency: is it
+# parseable, and does every cross-reference it makes still point at something
+# real.
+#
+# THE #325 CASE -- WHY "CITES A STRUCK ROW" IS ISSUE-NUMBER-AWARE, NOT
+# ISSUE-NUMBER-EXACT
+# ----------------------------------------------------------------------
+# DECLINED.md issue numbers are not 1:1 with rows: #325 appears on BOTH the
+# still-active "Agent-invoked agent spawning" row AND the struck
+# "`SendMessageToAgent` executor" row. A ledger row's declined_ref column
+# stores only the bare issue number, not which of #325's two rows was meant --
+# so this check flags an issue number as "struck" only when EVERY DECLINED.md
+# row citing it is struck. If even one active row shares the number, nothing
+# is flagged. This under-reports by construction (a real citation of the
+# struck row would slip through undetected if the active row shares its
+# number) -- deliberately, per this file's design constraint: a guard that
+# cries wolf gets ignored wholesale, so it is safer to occasionally miss a
+# genuine collision than to routinely flag #325 rows that are actually fine.
+# As of this writing 89 ledger rows cite #325, all legitimately the active
+# row -- verified by hand, not just by this script.
+#
+# USAGE
+#     script/check_sweep_ledger
+#
+# Exit non-zero on any failure.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+LEDGER="docs/sweep-verdict-ledger.tsv"
+DECLINED_FILE="DECLINED.md"
+
+if [[ ! -f "$LEDGER" ]]; then
+    echo "check_sweep_ledger: skipped ($LEDGER does not exist yet)"
+    exit 0
+fi
+if [[ ! -f "$DECLINED_FILE" ]]; then
+    echo "error: $DECLINED_FILE is missing" >&2
+    exit 2
+fi
+
+status=0
+fail() { printf 'error: %s\n' "$1" >&2; status=1; }
+
+# ------------------------------------------------------------- well-formed
+EXPECTED_HEADER=$'test\tpin_file\tarea\tverdict\tevidence\tdeclined_ref\tpin_commit\tsweep_date\tconfidence\tsource_doc'
+actual_header="$(head -1 "$LEDGER")"
+if [[ "$actual_header" != "$EXPECTED_HEADER" ]]; then
+    fail "$LEDGER header does not match the expected 10 columns (test, pin_file, area, verdict, evidence, declined_ref, pin_commit, sweep_date, confidence, source_doc)"
+fi
+
+n_rows=$(($(wc -l < "$LEDGER") - 1))
+if ((n_rows <= 0)); then
+    fail "$LEDGER has no data rows"
+fi
+
+# Single awk pass: column count, required-field emptiness, and both
+# controlled-vocabulary columns. Far cheaper than a bash per-row loop over
+# ~1,800 rows, and (unlike `read` with a tab IFS) actually fails on a row
+# with the wrong number of tab-separated fields instead of silently
+# reshuffling them.
+awk_report="$(awk -F'\t' '
+    BEGIN {
+        split("CLOUD DECLINED DIVERGENT MISSING-SUBSYSTEM COVERED-ELSEWHERE PORTABLE PORTABLE-OUT-OF-AREA PORTED DEFECT-FIXED MIXED UNPARSED", vs, " ")
+        for (i in vs) verdicts[vs[i]] = 1
+        split("clean judgement unparsed", cs, " ")
+        for (i in cs) confidences[cs[i]] = 1
+    }
+    NR == 1 { next }  # header, checked separately
+    NF != 10 { bad_cols++; next }
+    $1 == "" || $2 == "" || $3 == "" || $4 == "" || $7 == "" || $8 == "" || $9 == "" || $10 == "" { empty_field++ }
+    !($4 in verdicts) { bad_verdict++ }
+    !($9 in confidences) { bad_confidence++ }
+    END {
+        print (bad_cols + 0), (empty_field + 0), (bad_verdict + 0), (bad_confidence + 0)
+    }
+' "$LEDGER")"
+read -r bad_cols empty_field bad_verdict bad_confidence <<<"$awk_report"
+
+if ((bad_cols > 0)); then
+    fail "$bad_cols row(s) do not have exactly 10 tab-separated columns"
+fi
+if ((bad_verdict > 0)); then
+    fail "$bad_verdict row(s) have a verdict outside the known bucket set -- see this script's VALID_VERDICTS list"
+fi
+if ((bad_confidence > 0)); then
+    fail "$bad_confidence row(s) have a confidence value other than clean/judgement/unparsed"
+fi
+if ((empty_field > 0)); then
+    fail "$empty_field row(s) have an empty required field (test/pin_file/area/verdict/pin_commit/sweep_date/confidence/source_doc)"
+fi
+
+# --------------------------------------------- DECLINED.md row extraction
+# Parses each `| title | issue | note |` row PRECISELY by splitting on `|`
+# and reading field 2 (title) and field 3 (issue) only -- not a bare
+# `#[0-9]+` grep over the whole line, which would also match "#290" and
+# similar cross-references mentioned inside a NOTE's prose and wrongly
+# treat them as that row's own issue number. A cell can list several issue
+# numbers ("#304, #309, #310, #325, #329"); every one is extracted.
+# Emits "STRUCK\t#N" or "ACTIVE\t#N", one line per (row, issue) pair.
+row_issues="$(awk -F'\\|' '
+    /^\| / && $2 !~ /^ *what *$/ && $2 !~ /^ *kind *$/ {
+        title = $2
+        issues = $3
+        state = (title ~ /~~/) ? "STRUCK" : "ACTIVE"
+        while (match(issues, /#[0-9]+/)) {
+            print state "\t" substr(issues, RSTART, RLENGTH)
+            issues = substr(issues, RSTART + RLENGTH)
+        }
+    }
+' "$DECLINED_FILE")"
+
+all_declined_issues="$(awk -F'\t' '{print $2}' <<<"$row_issues" | sort -u)"
+
+# ------------------------------------------------- declined_ref existence
+refs_used="$(awk -F'\t' 'NR>1 && $6!="" {print $6}' "$LEDGER" | sort -u)"
+n_missing_issue=0
+missing_issue_list=""
+while IFS= read -r ref; do
+    [[ -z "$ref" ]] && continue
+    if ! grep -qxF "$ref" <<<"$all_declined_issues"; then
+        n_missing_issue=$((n_missing_issue + 1))
+        missing_issue_list+="  $ref"$'\n'
+    fi
+done <<<"$refs_used"
+if ((n_missing_issue > 0)); then
+    fail "$n_missing_issue declined_ref value(s) in $LEDGER do not appear as an issue number on any row of $DECLINED_FILE:"
+    printf '%s' "$missing_issue_list" >&2
+fi
+
+# --------------------------------------------------- struck-row collision
+# An issue number counts as "struck" here only when EVERY DECLINED.md row
+# citing it is struck -- see the #325 explanation in this file's header
+# comment for why (#325 is both a struck row's issue and a still-active
+# row's issue; only a number with ZERO active rows counts).
+struck_issues="$(awk -F'\t' '$1=="STRUCK"{print $2}' <<<"$row_issues" | sort -u)"
+active_issues="$(awk -F'\t' '$1=="ACTIVE"{print $2}' <<<"$row_issues" | sort -u)"
+
+fully_struck_issues=""
+while IFS= read -r issue; do
+    [[ -z "$issue" ]] && continue
+    if ! grep -qxF "$issue" <<<"$active_issues"; then
+        fully_struck_issues+="$issue"$'\n'
+    fi
+done <<<"$struck_issues"
+
+n_struck_collision=0
+struck_collision_list=""
+if [[ -n "$fully_struck_issues" ]]; then
+    while IFS= read -r issue; do
+        [[ -z "$issue" ]] && continue
+        hits="$(awk -F'\t' -v ref="$issue" '$6==ref {print $1"\t"$2}' "$LEDGER")"
+        if [[ -n "$hits" ]]; then
+            n_struck_collision=$((n_struck_collision + $(wc -l <<<"$hits")))
+            struck_collision_list+="  $issue (fully struck in $DECLINED_FILE):"$'\n'"$(sed 's/^/    /' <<<"$hits")"$'\n'
+        fi
+    done <<<"$fully_struck_issues"
+fi
+if ((n_struck_collision > 0)); then
+    fail "$n_struck_collision ledger row(s) cite a DECLINED.md issue number every one of whose rows is now struck through -- the verdict needs re-examination, not silent trust:"
+    printf '%s' "$struck_collision_list" >&2
+fi
+
+# ---------------------------------------------------------------- summary
+n_declined_refs=$(awk -F'\t' 'NR>1 && $4=="DECLINED" {c++} END{print c+0}' "$LEDGER")
+n_declined_with_ref=$(awk -F'\t' 'NR>1 && $4=="DECLINED" && $6!="" {c++} END{print c+0}' "$LEDGER")
+
+if ((status == 0)); then
+    echo "check_sweep_ledger: ok ($n_rows rows; $n_declined_with_ref/$n_declined_refs DECLINED rows carry an issue ref; 0 struck-row collisions)"
+else
+    echo "check_sweep_ledger: FAILED -- see errors above" >&2
+fi
+exit $status

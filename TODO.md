@@ -1015,6 +1015,38 @@ happens. Retrofitting them afterwards costs as much as the pass itself.
       empty) and demoed against `warp/master` (549 files changed, 177
       test-bearing -> 11 declined-collision, 20 unclassified, 52 actionable, 50
       low-priority, 44 cloud-dropped; math reconciles exactly).
+      **UPDATED 2026-08-11:** now also consumes `docs/sweep-verdict-ledger.tsv`
+      (see the next item) and splits a ledger-covered file's output into
+      three kinds instead of one -- carried forward (untouched, not printed
+      as work), RE-EXAMINE with a specific reason (three checkable
+      invalidation rules), or genuinely new. Demoed again against
+      `warp/master`: of 1,843 ledger rows, ~1,025-1,066 carried forward
+      untouched and ~62 files' worth (~813-818 tests) flagged RE-EXAMINE
+      because the pin file itself changed -- exact counts vary slightly
+      run-to-run in this environment (see the caveat below, not a bug in the
+      ledger logic: `total_test_bearing` itself varied by 1 file between
+      otherwise-identical invocations, traced to the pre-existing
+      `is_test_bearing`/`is_cloud_touching` `git show`-per-file calls against
+      a shallow `--depth=1` fetch of `warp/master`, not to anything this
+      change added -- worth a maintainer look, out of scope here).
+- [x] **Sweep-verdict ledger.** **DONE 2026-08-11** (`docs/sweep-verdict-ledger.tsv`,
+      built by `script/extract_sweep_ledger.py`, validated by
+      `script/check_sweep_ledger`). Extracts all 1,843 per-test verdicts from
+      the six `docs/sweep/*.md` prose files (1,841 per their own stated
+      totals; the ledger trusts each doc's per-file section headers over its
+      top-level totals table, which is what four of the six docs' own
+      arithmetic disagrees with itself about) into one TSV, cross-validated
+      against `docs/SWEEP-INVENTORY.md`'s per-file name registry so no
+      hallucinated test name can enter the ledger. 90% of rows extracted
+      cleanly (exact per-test citation), 10% by a documented, verified
+      inference, 0.3% left genuinely unresolved (the sweep itself declined to
+      bucket them). `script/check_sweep_ledger` is wired into
+      `script/precheck`'s guards step and `pr-check.yml`'s `guards` job,
+      continuously (not just at re-pin) -- a `DECLINED.md` row can be struck
+      at any time, and a ledger row still citing it is wrong from that
+      moment. See `docs/SWEEP-SUMMARY.md`'s new "The ledger" section for the
+      re-pin procedure and the four invalidation rules (two machine-checked,
+      one partially, one deliberately not).
 - [x] **Divergence-collision guard.** **DONE 2026-08-11** (`script/check_declined_collisions`,
       wired into `script/precheck`'s guards step and the `pr-check.yml` `guards`
       job). `DECLINED.md` rows now carry `<!-- markers: kind:value ... -->`

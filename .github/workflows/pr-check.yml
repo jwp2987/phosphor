@@ -28,7 +28,7 @@ jobs:
   # Fork-boundary guards. Pure grep/git -- no build -- so this job finishes in
   # under a minute and gives fast feedback ahead of the cargo jobs.
   #
-  # These exist because four classes of regression are invisible to the compiler:
+  # These exist because six classes of regression are invisible to the compiler:
   #   1. Cloud creep. The cloud *crates* were deleted, so the compiler blocks
   #      those. But app/src/server and app/src/cloud_object survive as stubs for
   #      retained call sites, and nothing stopped a port from reaching into them
@@ -47,11 +47,17 @@ jobs:
   #      port, or reintroducing a symbol/file that was deliberately removed --
   #      compiling and passing while quietly reopening a settled question. See
   #      DECLINED.md's "Machine-checkable markers" section.
-  #   4. Shell-to-Rust string drift. The packaging scripts write the per-channel
+  #   5. Shell-to-Rust string drift. The packaging scripts write the per-channel
   #      `oz` / `warpctrl` command names into the bundle, and the app looks them
   #      up BY NAME at runtime. Rename either side and everything still
   #      compiles; the failure only appears on a real bundle, as "bundled
   #      wrapper not found".
+  #   6. Stale sweep-ledger citations. docs/sweep-verdict-ledger.tsv records
+  #      1,843 hand-adjudicated pin-test verdicts, some citing a DECLINED.md
+  #      row by issue number. DECLINED.md rows get reversed (struck through,
+  #      not deleted) -- a ledger row still citing a row that has since been
+  #      struck is silently wrong the moment the strike lands, not just at the
+  #      next re-pin. See script/check_sweep_ledger's header comment.
   #
   # This job also runs the packaging scripts' own shell tests. They are bash,
   # need no toolchain, and had no runner at all before -- an unrun test is not
@@ -96,6 +102,10 @@ jobs:
       - name: Channel command names (packaging scripts match channel/mod.rs)
         shell: bash
         run: ./script/check_channel_command_names
+
+      - name: Sweep verdict ledger (well-formed, no stale DECLINED.md citation)
+        shell: bash
+        run: ./script/check_sweep_ledger
 
       # Pure bash; the wrapper's shell logic has nothing macOS-specific in it,
       # so it runs on the ubuntu runner.
