@@ -15,8 +15,9 @@ use crate::proto::{
     DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches, GetBranchesResponse,
     GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse, GetDiffState,
     GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest,
-    GitCreatePrResponse, GitPushRequest, GitPushResponse, Initialize, InitializeResponse,
-    ListDirectory, ListDirectoryResponse, LoadRepoMetadataDirectoryResponse,
+    GitCreatePrResponse, GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse,
+    Initialize, InitializeResponse, ListDirectory, ListDirectoryResponse,
+    LoadRepoMetadataDirectoryResponse,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
     ReadFileChunkResponse, ReadFileContextRequest, ReadFileContextResponse,
     RemoteAgentContextSnapshot, ResolveConflict, ResolveConflictResponse, ResolvePath,
@@ -569,6 +570,26 @@ impl RemoteServerClient {
             Some(server_message::Message::GitPushResponse(resp)) => Ok(resp),
             other => {
                 log::error!("Unexpected response variant for GitPush: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Fast-forward-only pulls `branch` from origin on the remote host
+    /// (git-pull Stage 1). Backs the code-review pull action over SSH; mirrors
+    /// [`git_push`](Self::git_push) exactly, since a non-fast-forward comes
+    /// back as `GitPullResponse`'s `GitOpError` rather than a merge.
+    pub async fn git_pull(&self, request: GitPullRequest) -> Result<GitPullResponse, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::GitPull(request),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GitPullResponse(resp)) => Ok(resp),
+            other => {
+                log::error!("Unexpected response variant for GitPull: {other:?}");
                 Err(ClientError::UnexpectedResponse)
             }
         }

@@ -739,6 +739,27 @@ pub async fn run_push(_repo_path: &Path, _branch: &str, _path_env: Option<&str>)
     Err(anyhow!("Not supported on wasm"))
 }
 
+/// Fast-forward-only pull of `branch` from origin. Never merges: a
+/// non-fast-forward (diverged history) fails with git's own error rather than
+/// creating a merge commit or leaving conflict markers, so this never needs a
+/// conflict-resolution UX (Stage 1 of git-pull parity; merging pull is a
+/// separate, later item). `path_env` is forwarded so a post-merge hook (e.g.
+/// LFS) can find `git-lfs` on the user's `PATH`, mirroring [`run_push`].
+#[cfg(feature = "local_fs")]
+pub async fn run_pull(repo_path: &Path, branch: &str, path_env: Option<&str>) -> Result<String> {
+    run_git_command_with_env(
+        repo_path,
+        &["pull", "--ff-only", "origin", branch],
+        path_env,
+    )
+    .await
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub async fn run_pull(_repo_path: &Path, _branch: &str, _path_env: Option<&str>) -> Result<String> {
+    Err(anyhow!("Not supported on wasm"))
+}
+
 /// What to run after the commit succeeds. Shared vocabulary for the commit
 /// chain, mirroring Warp's `CommitChainMode` (Warp keeps it on
 /// `code_review::diff_state`; the fork keeps it next to the git primitives it

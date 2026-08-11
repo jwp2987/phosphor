@@ -393,6 +393,7 @@ pub enum CodeReviewAction {
     /// reads the pending comment batch and repo path from view state, the same
     /// way the mouse path (`CommentListEvent::Submitted`) does.
     SubmitReviewComments,
+    OpenPullDialog,
 }
 
 pub struct FileState {
@@ -6525,6 +6526,9 @@ impl CodeReviewView {
                     )
                 })
             }
+            GitDialogKind::Pull => ctx.add_typed_action_view(|ctx| {
+                GitDialog::new_for_pull(repo_path, remote, diff_state_model, branch_name, ctx)
+            }),
         };
 
         ctx.subscribe_to_view(&dialog, move |me, _, event, ctx| {
@@ -6694,6 +6698,19 @@ impl CodeReviewView {
         }
     }
 
+    /// Returns the "Pull" dropdown item (git-pull Stage 1: fast-forward
+    /// only). Always enabled — unlike push/PR it has no local-state
+    /// precondition (a repo with an upstream can always attempt a pull; a
+    /// non-fast-forward simply comes back as an error toast, mirroring the
+    /// dedicated Pull dialog's own confirm-always-enabled behavior).
+    fn pull_menu_item(has_upstream: bool) -> MenuItem<CodeReviewAction> {
+        MenuItemFields::new(crate::t!("common-pull"))
+            .with_icon(Icon::ArrowDown)
+            .with_on_select_action(CodeReviewAction::OpenPullDialog)
+            .with_disabled(!has_upstream)
+            .into_item()
+    }
+
     /// Returns the PR dropdown item: "PR #N" linking to the existing PR, or
     /// "Create PR" to open the dialog. Create PR is disabled on main, when the
     /// branch has no upstream, or when the upstream is the same ref as main
@@ -6717,10 +6734,19 @@ impl CodeReviewView {
         }
     }
 
-    /// Items for the git operations dropdown (chevron button). All three
-    /// operations (Commit / Push / Create PR) are always listed so the
-    /// dropdown shape is stable across modes; the primary mode determines
-    /// which are enabled.
+    /// Items for the git operations dropdown (chevron button). Commit / Push
+    /// / Create PR / Pull are always listed so the dropdown shape is stable
+    /// across modes; the primary mode determines which are enabled. Pull
+    /// (git-pull Stage 1) is only reachable through this dropdown for now —
+    /// it never becomes the primary button, unlike Commit/Push/Publish.
+    ///
+    /// Known gap: the chevron itself is hidden entirely in the
+    /// `CreatePr`/`ViewPr`/`Publish` primary modes (see
+    /// `update_git_operations_ui`), so Pull has no entry point in those
+    /// states. Left as-is rather than changing that unrelated
+    /// chevron-visibility behavior — a repo with nothing to commit or push
+    /// can still open Code Review's header menu, or run `git pull` in the
+    /// terminal, in the meantime.
     fn git_operations_menu_items(&self, app: &AppContext) -> Vec<MenuItem<CodeReviewAction>> {
         let diff_state = self.diff_state_model.as_ref(app);
         let has_local_commits = !diff_state.unpushed_commits(app).is_empty();
@@ -6736,11 +6762,13 @@ impl CodeReviewView {
                 // upstream). Uncommitted changes don't block it: the PR is
                 // based on whatever's already been pushed.
                 self.pr_menu_item(app),
+                Self::pull_menu_item(has_upstream),
             ],
             PrimaryGitActionMode::Push => vec![
                 Self::commit_menu_item(true),
                 Self::push_or_publish_menu_item(has_upstream, false),
                 self.pr_menu_item(app),
+                Self::pull_menu_item(has_upstream),
             ],
             PrimaryGitActionMode::CreatePr
             | PrimaryGitActionMode::ViewPr
@@ -7486,6 +7514,9 @@ impl TypedActionView for CodeReviewView {
             }
             CodeReviewAction::OpenCreatePrDialog => {
                 self.open_git_dialog(GitDialogKind::CreatePr, ctx);
+            }
+            CodeReviewAction::OpenPullDialog => {
+                self.open_git_dialog(GitDialogKind::Pull, ctx);
             }
             CodeReviewAction::ViewPr(url) => {
                 ctx.open_url(url);

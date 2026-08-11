@@ -50,10 +50,12 @@ use crate::{
 
 pub(crate) mod commit;
 pub(crate) mod pr;
+pub(crate) mod pull;
 pub(crate) mod push;
 
 pub use commit::{CommitState, CommitSubAction};
 pub use pr::{PrState, PrSubAction};
+pub use pull::PullState;
 pub use push::{PushState, PushSubAction};
 
 /// Describes which kind of `GitDialog` to open. Passed to
@@ -64,6 +66,9 @@ pub enum GitDialogKind {
     Commit,
     Push { publish: bool },
     CreatePr,
+    /// Fast-forward-only pull (git-pull Stage 1). Merging pull is a separate,
+    /// later item — see the task doc comment on `pull::start_confirm`.
+    Pull,
 }
 
 pub fn init(ctx: &mut AppContext) {
@@ -487,6 +492,7 @@ pub enum GitDialogMode {
     Commit(CommitState),
     Push(PushState),
     CreatePr(PrState),
+    Pull(PullState),
 }
 
 pub struct GitDialog {
@@ -572,6 +578,30 @@ impl GitDialog {
             diff_state_model,
             branch_name,
             mode: GitDialogMode::Push(state),
+            loading: false,
+            confirm_button,
+            cancel_button,
+            close_button,
+        }
+    }
+
+    /// Fast-forward-only pull dialog (git-pull Stage 1).
+    pub fn new_for_pull(
+        repo_path: PathBuf,
+        remote: Option<RemotePath>,
+        diff_state_model: ModelHandle<DiffStateModel>,
+        branch_name: String,
+        ctx: &mut ViewContext<Self>,
+    ) -> Self {
+        let (confirm_button, cancel_button, close_button) =
+            Self::build_dialog_buttons(pull::confirm_label(), Some(pull::confirm_icon()), ctx);
+        let state = pull::new_state();
+        Self {
+            repo_path,
+            remote,
+            diff_state_model,
+            branch_name,
+            mode: GitDialogMode::Pull(state),
             loading: false,
             confirm_button,
             cancel_button,
@@ -723,6 +753,7 @@ impl GitDialog {
             ),
             GitDialogMode::Push(_) => (false, None),
             GitDialogMode::CreatePr(state) => (!pr::is_ready_to_confirm(state), None),
+            GitDialogMode::Pull(_) => (false, None),
         };
         self.confirm_button.update(ctx, |b, ctx| {
             b.set_disabled(disabled, ctx);
@@ -741,6 +772,7 @@ impl GitDialog {
                 }
             }
             GitDialogMode::CreatePr(_) => "Create pull request",
+            GitDialogMode::Pull(_) => "Pull changes",
         }
     }
 
@@ -755,6 +787,7 @@ impl GitDialog {
                 }
             }
             GitDialogMode::CreatePr(_) => Icon::Github,
+            GitDialogMode::Pull(_) => Icon::ArrowDown,
         }
     }
 
@@ -764,6 +797,7 @@ impl GitDialog {
             GitDialogMode::Commit(state) => commit::render_body(state, &self.branch_name, app),
             GitDialogMode::Push(state) => push::render_body(state, &self.branch_name, appearance),
             GitDialogMode::CreatePr(state) => pr::render_body(state, &self.branch_name, appearance),
+            GitDialogMode::Pull(_) => pull::render_body(&self.branch_name, appearance),
         }
     }
 
@@ -853,7 +887,7 @@ impl View for GitDialog {
         }
         match &self.mode {
             GitDialogMode::Commit(state) => commit::on_focus(state, ctx),
-            GitDialogMode::Push(_) | GitDialogMode::CreatePr(_) => {}
+            GitDialogMode::Push(_) | GitDialogMode::CreatePr(_) | GitDialogMode::Pull(_) => {}
         }
     }
 
@@ -886,6 +920,7 @@ impl TypedActionView for GitDialog {
                     GitDialogMode::Commit(_) => commit::start_confirm(self, ctx),
                     GitDialogMode::Push(_) => push::start_confirm(self, ctx),
                     GitDialogMode::CreatePr(_) => pr::start_confirm(self, ctx),
+                    GitDialogMode::Pull(_) => pull::start_confirm(self, ctx),
                 }
             }
             GitDialogAction::Commit(sub) => commit::handle_sub_action(self, sub, ctx),
