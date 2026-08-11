@@ -159,7 +159,15 @@ fn has_desktop_session() -> bool {
     // X11 or Wayland, including the `xvfb-run` wrapper CI uses on Linux —
     // xvfb is a real X server, so a scenario that only needs a window (rather
     // than a physical GPU) genuinely can run under it.
-    std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+    // Non-EMPTY, not merely present: `DISPLAY=` exports an empty value, and
+    // `var_os(..).is_some()` is true for it — which would report a desktop on
+    // a host that has none. Caught by testing the negative case.
+    let set = |k: &str| {
+        std::env::var_os(k)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    };
+    set("DISPLAY") || set("WAYLAND_DISPLAY")
 }
 
 fn skip_reason(scenario: &Scenario, args: &Args) -> Option<String> {
