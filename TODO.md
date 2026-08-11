@@ -937,6 +937,74 @@ Recorded so this ground is not re-swept:
       comment in `remote_server.proto:164`** claims no daemon sends
       `RemoteAgentContextSnapshot`. False — `server_model.rs:978` and `:996` both do.
 
+## MISSING SUBSYSTEMS — validated by hand 2026-08-11
+
+The pin-test sweep (`docs/SWEEP-SUMMARY.md`) bucketed 209 tests
+MISSING-SUBSYSTEM. **Each claim below was re-verified against the tree by the
+operator**, because the largest one turned out to be wrong. Three of ten were
+wrong or half wrong. Do not act on a sweep verdict without this kind of check.
+
+### Confirmed missing — real, non-cloud debt
+
+- [ ] **`app/src/ai/blocklist/usage/rollup.rs` is absent** (8 tests). **Most
+      tractable item here:** its sole real dependency,
+      `descendant_conversation_ids_in_spawn_order`, **already exists** — in
+      `app/src/ai/blocklist/orchestration_topology.rs`. Verified.
+- [ ] **`InputTypeAutoDetectionSource::AgentTerminalControl` does not exist**
+      (15 tests, `warp_tui`), plus two missing hint strings. "Attach agent to
+      running command" landed its mechanism but not its supporting pieces.
+      Verified absent tree-wide. One of the two clusters behind #456.
+- [ ] **No TUI renderer for `MessagesReceivedFromAgents` / `EventsFromAgents`**
+      (9 tests). **The GUI half is built** — `blocklist/orchestration_events.rs`
+      both emits (`:331`) and renders (`:407`) them. Only the TUI side is
+      missing. Second of the two clusters behind #456.
+- [ ] **No `/index` slash command** — indexing is auto-only; a user cannot ask
+      for it. Verified: no `INDEX` command and no `CODEBASE_CONTEXT`
+      availability. Matters more now the codebase index is actually wired to
+      `get_relevant_files`.
+- [ ] **MCP tool results render as a `serde_json::to_string_pretty` blob, not a
+      collapsible tree.** `McpRenderable` / `mcp_result_to_renderable` exist
+      **nowhere in production** — the only tree-wide hits are a comment in
+      `ui_components/json_tree_tests.rs` noting the pin has 5 tests for them.
+- [ ] **`TuiSelectable::with_semantic_selection_by_style` does not exist** —
+      double-click cannot select a whole styled span. Verified: no definition
+      anywhere. **Note the correction below: its sibling DOES exist.**
+- [ ] **`skill_watcher.rs` lacks the remote-project-skill refresh/fallback
+      layer** (13 tests).
+- [ ] **`languages::language_by_filename` has no `StandardizedPath` overload** —
+      remote files resolve their language through a host-local `Path`. This is a
+      deliberate fork simplification (documented on
+      `try_chunk_code_semantically`), so it may belong in `DECLINED.md` rather
+      than here — needs a maintainer call.
+
+### Partly confirmed — the fork is host-blind, but the scaffolding is there
+
+- [ ] **Remote project rules have no `HostId` dimension** (6 tests,
+      `crates/ai/src/project_context/model.rs`). `path_to_rules` is a
+      `HashMap<PathBuf, ProjectRules>` with no host key, so project-rule
+      resolution over SSH always resolves against the local host. Confirmed —
+      **and the file says so itself at `:272`: "Per-host scaffolding only —
+      this fork's `path_to_rules` has no ..."**. `HostId` is already imported
+      (`:5`). `global_rules.rs` (#575) solved the identical problem for global
+      rules, so there is a working pattern in-tree.
+
+### CLAIMS THAT DID NOT SURVIVE VALIDATION — corrected, no work implied
+
+- [x] **`app/src/ai/orchestration/` "doesn't exist at all" (39 tests) — WRONG.**
+      Orchestration IS built here: `orchestration_topology.rs` (26 tests),
+      `orchestration_events.rs` (10), four `agent_view/orchestration_*` modules,
+      `block/view_impl/orchestration.rs`, `warp_tui/orchestration_{model,tab_bar}.rs`.
+      Only the pin's **config-picker layer** is absent
+      (`config_state`/`edit_state`/`providers`/`remote_child`/`snapshots`/`validation`)
+      — the UI for *choosing* harness/model/environment/host. Tracked #310/#304.
+      Corrected in `docs/SWEEP-SUMMARY.md` and `docs/sweep/app-ai.md`.
+- [x] **`with_trimmed_selection_line_ends` "does not exist" — WRONG.** It exists
+      at `crates/warpui_core/src/elements/tui/viewported_list.rs:471` **and is
+      called at `crates/warp_tui/src/read_only_menu.rs:221`** — about 40 lines
+      below the doc comment that claimed neither it nor its sibling existed.
+      Comment corrected 2026-08-11. Only `with_semantic_selection_by_style` is
+      genuinely absent. **Eleventh in-tree document found contradicting the code.**
+
 ## UPSTREAM ZAP ISSUES — triaged against this fork 2026-08-10
 
 Read-only triage of open issues on `zerx-lab/zap` (this fork's lineage: Phosphor

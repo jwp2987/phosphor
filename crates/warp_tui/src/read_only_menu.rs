@@ -175,9 +175,14 @@ impl TuiReadOnlyMenu {
     /// Renders the menu as a selectable, copyable list.
     ///
     /// Unlike the oracle, this does not call
-    /// `TuiSelectable::with_semantic_selection_by_style` or
-    /// `TuiViewportedList::with_trimmed_selection_line_ends` — neither exists
-    /// in this fork's `warpui_core` yet. Selection still works with the
+    /// `TuiSelectable::with_semantic_selection_by_style`, which does not exist
+    /// in this fork's `warpui_core`.
+    ///
+    /// (This comment used to say `TuiViewportedList::with_trimmed_selection_line_ends`
+    /// did not exist either. It does — `warpui_core/src/elements/tui/viewported_list.rs:471`
+    /// — and this very function calls it about 40 lines below. Corrected
+    /// 2026-08-11 while validating the pin-test sweep's missing-subsystem
+    /// claims; see `docs/SWEEP-SUMMARY.md`.) Selection still works with the
     /// default word-boundary policy; it just won't double-click-select a
     /// whole styled span, and a drag can extend into a row's trailing
     /// background padding instead of stopping at the visible text.
