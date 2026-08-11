@@ -1,16 +1,6 @@
 //! Shared presentation and lifecycle types for stateless read-only menus.
 //!
-//! Ported from the pinned Warp oracle (`02b53fcd8`) for issue #389. Two
-//! selection refinements the oracle's version relies on are not yet available
-//! in this fork's `warpui_core` and are intentionally omitted here (see the
-//! doc comment on [`TuiReadOnlyMenu::render`]):
-//! - `TuiSelectable::with_semantic_selection_by_style` (whole-styled-span
-//!   double-click selection)
-//! - `TuiViewportedList::with_trimmed_selection_line_ends` (selection does not
-//!   extend into a row's trailing background padding)
-//!
-//! Both are cosmetic selection/copy refinements, not menu behavior, so their
-//! absence does not block porting the component. Tracked as a follow-up.
+//! Ported from the pinned Warp oracle (`02b53fcd8`) for issue #389.
 
 use warpui_core::AppContext;
 use warpui_core::elements::CrossAxisAlignment;
@@ -173,19 +163,6 @@ impl TuiReadOnlyMenu {
     }
 
     /// Renders the menu as a selectable, copyable list.
-    ///
-    /// Unlike the oracle, this does not call
-    /// `TuiSelectable::with_semantic_selection_by_style`, which does not exist
-    /// in this fork's `warpui_core`.
-    ///
-    /// (This comment used to say `TuiViewportedList::with_trimmed_selection_line_ends`
-    /// did not exist either. It does — `warpui_core/src/elements/tui/viewported_list.rs:471`
-    /// — and this very function calls it about 40 lines below. Corrected
-    /// 2026-08-11 while validating the pin-test sweep's missing-subsystem
-    /// claims; see `docs/SWEEP-SUMMARY.md`.) Selection still works with the
-    /// default word-boundary policy; it just won't double-click-select a
-    /// whole styled span, and a drag can extend into a row's trailing
-    /// background padding instead of stopping at the visible text.
     pub(crate) fn render(
         self,
         selection: TuiSelectionHandle,
@@ -225,6 +202,7 @@ impl TuiReadOnlyMenu {
         // list) should not drag in trailing blank cells past each row's real content.
         .with_trimmed_selection_line_ends();
         let selectable = TuiSelectable::new(selection, viewport)
+            .with_semantic_selection_by_style()
             .on_selection_start(on_selection_start)
             .on_copy(on_copy);
         let content = TuiFlex::column()

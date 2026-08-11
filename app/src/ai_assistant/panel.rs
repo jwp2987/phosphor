@@ -58,7 +58,14 @@ pub const HEXAGON_ALERT_SVG_PATH: &str = "bundled/svg/alert-hexagon.svg";
 
 const EDITOR_SAVE_POSITION_ID: &str = "ai_assistant::editor";
 
-const MIN_PANEL_WIDTH: f32 = 300.;
+// Kept in line with `DETAIL_SIDECAR_MIN_WIDTH` in
+// `app/src/workspace/view/vertical_tabs.rs` -- the narrowest width this
+// codebase already treats as usable for a text-and-controls side panel.
+// Previously 300, which a user on a smaller/narrower display reported as
+// wasting real estate relative to the terminal it shares the window with
+// (#324). `vertical_tabs.rs`'s own `MIN_PANEL_WIDTH` is a *different* const
+// (200, for the tab sidebar) -- the two are not shared.
+const MIN_PANEL_WIDTH: f32 = 240.;
 const MIN_REMAINING_WINDOW_SIZE: f32 = 200.;
 const MAX_EDITOR_HEIGHT: f32 = 300.;
 const MAX_INPUT_SUGGESTIONS_HEIGHT: f32 = 200.;
@@ -1171,11 +1178,24 @@ impl View for AIAssistantPanelView {
         .on_resize(move |ctx, _| ctx.notify())
         .with_dragbar_side(DragBarSide::Left)
         .with_bounds_callback(Box::new(|window_bounds| {
-            (
-                MIN_PANEL_WIDTH,
-                (window_bounds.x() - MIN_REMAINING_WINDOW_SIZE).max(MIN_PANEL_WIDTH),
-            )
+            panel_width_bounds(window_bounds.x())
         }))
         .finish()
     }
 }
+
+/// Resolves the `(min, max)` drag bounds for the AI assistant panel's width
+/// given the window's current width.
+///
+/// Pulled out of the `with_bounds_callback` closure so it has a name and can
+/// be unit tested directly instead of only through a running window.
+fn panel_width_bounds(window_width: f32) -> (f32, f32) {
+    (
+        MIN_PANEL_WIDTH,
+        (window_width - MIN_REMAINING_WINDOW_SIZE).max(MIN_PANEL_WIDTH),
+    )
+}
+
+#[cfg(test)]
+#[path = "panel_tests.rs"]
+mod panel_tests;

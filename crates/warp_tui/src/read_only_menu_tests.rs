@@ -1,10 +1,4 @@
-//! Tests ported from the pinned Warp oracle (`02b53fcd8`). Two oracle tests —
-//! `selection_stops_at_trailing_whitespace` and
-//! `double_click_selects_complete_styled_text` — are not ported: they assert
-//! on `TuiViewportedList::with_trimmed_selection_line_ends` and
-//! `TuiSelectable::with_semantic_selection_by_style`, neither of which exists
-//! in this fork's `warpui_core` yet (see the doc comment on
-//! [`super::TuiReadOnlyMenu::render`]).
+//! Tests ported from the pinned Warp oracle (`02b53fcd8`).
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -74,6 +68,15 @@ fn left_down(x: u16, y: u16) -> TuiEvent {
         position: TuiPoint::new(x, y),
         modifiers: ModifiersState::default(),
         click_count: 1,
+        is_first_mouse: false,
+    }
+}
+
+fn left_down_with_click_count(x: u16, y: u16, click_count: u32) -> TuiEvent {
+    TuiEvent::LeftMouseDown {
+        position: TuiPoint::new(x, y),
+        modifiers: ModifiersState::default(),
+        click_count,
         is_first_mouse: false,
     }
 }
@@ -235,5 +238,119 @@ fn selection_spans_section_titles_and_rows() {
 
         assert_eq!(starts.get(), 1);
         assert_eq!(copies.borrow().as_slice(), ["Status\nVersion"]);
+    });
+}
+
+#[test]
+fn selection_stops_at_trailing_whitespace() {
+    App::test((), |app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let starts = Rc::new(Cell::new(0));
+        let copies = Rc::new(RefCell::new(Vec::new()));
+        let starts_for_callback = starts.clone();
+        let copies_for_callback = copies.clone();
+        let (mut element, selection_style) = app.read(|ctx| {
+            let builder = TuiUiBuilder::from_app(ctx);
+            let row = TuiReadOnlyMenuRow::new([TuiReadOnlyMenuText::new([
+                (format!("{:<19}", "Email"), builder.dim_text_style()),
+                ("moira@example.com".to_owned(), builder.primary_text_style()),
+            ])]);
+            (
+                TuiReadOnlyMenu::new(vec![TuiReadOnlyMenuSection::new("Status", vec![row])])
+                    .render(
+                        TuiSelectionHandle::default(),
+                        &builder,
+                        move |_, _| starts_for_callback.set(starts_for_callback.get() + 1),
+                        move |text, _, _| copies_for_callback.borrow_mut().push(text),
+                    ),
+                builder.selection_style(),
+            )
+        });
+        let size = TuiSize::new(40, 2);
+
+        let _ = render(&app, element.as_mut(), size);
+        assert!(!dispatch_mouse(
+            &app,
+            element.as_mut(),
+            size,
+            left_down(38, 1)
+        ));
+        assert_eq!(starts.get(), 0);
+
+        assert!(dispatch_mouse(
+            &app,
+            element.as_mut(),
+            size,
+            left_down(20, 1)
+        ));
+        assert!(dispatch_mouse(
+            &app,
+            element.as_mut(),
+            size,
+            left_drag(38, 1)
+        ));
+        let buffer = render(&app, element.as_mut(), size);
+        assert_eq!(buffer[(36, 1)].style().bg, selection_style.bg);
+        assert_ne!(buffer[(37, 1)].style().bg, selection_style.bg);
+        assert!(dispatch_mouse(&app, element.as_mut(), size, left_up(38, 1)));
+
+        assert_eq!(copies.borrow().as_slice(), ["moira@example.com"]);
+    });
+}
+
+#[test]
+fn double_click_selects_complete_styled_text() {
+    App::test((), |app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let copies = Rc::new(RefCell::new(Vec::new()));
+        let copies_for_callback = copies.clone();
+        let mut element = app.read(|ctx| {
+            let builder = TuiUiBuilder::from_app(ctx);
+            let field_row = |label: &str, value: &str| {
+                TuiReadOnlyMenuRow::new([TuiReadOnlyMenuText::new([
+                    (format!("{label:<19}"), builder.dim_text_style()),
+                    (value.to_owned(), builder.primary_text_style()),
+                ])])
+            };
+            let rows = vec![
+                field_row("Conversation ID", "018f47ac-7e9c-78f4-b816-44e68487ba15"),
+                field_row("Email", "moira@example.com"),
+                TuiReadOnlyMenuRow::new([TuiReadOnlyMenuText::new([
+                    ("Ctrl-P ".to_owned(), builder.link_text_style()),
+                    (
+                        "Select previous block".to_owned(),
+                        builder.primary_text_style(),
+                    ),
+                ])]),
+            ];
+            TuiReadOnlyMenu::new(vec![TuiReadOnlyMenuSection::new("Status", rows)]).render(
+                TuiSelectionHandle::default(),
+                &builder,
+                |_, _| {},
+                move |text, _, _| copies_for_callback.borrow_mut().push(text),
+            )
+        });
+        let size = TuiSize::new(80, 4);
+        let selections = [
+            (25, 1, "018f47ac-7e9c-78f4-b816-44e68487ba15"),
+            (26, 2, "moira@example.com"),
+            (16, 3, "Select previous block"),
+        ];
+
+        let _ = render(&app, element.as_mut(), size);
+        for (x, y, _) in selections {
+            assert!(dispatch_mouse(
+                &app,
+                element.as_mut(),
+                size,
+                left_down_with_click_count(x, y, 2)
+            ));
+            assert!(dispatch_mouse(&app, element.as_mut(), size, left_up(x, y)));
+        }
+
+        assert_eq!(
+            copies.borrow().as_slice(),
+            selections.map(|(_, _, expected)| expected)
+        );
     });
 }
