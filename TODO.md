@@ -1432,9 +1432,9 @@ more look at *why* it is absent.
       **13 real-debt symbols → 10.**
 
 <details><summary>Original entry</summary>
-- [ ] `TuiAIBlockSection::AgentMessage`, `agent_message_section_id`, `AgentMessage`.
+- [x] `TuiAIBlockSection::AgentMessage`, `agent_message_section_id`, `AgentMessage`.
       **The GUI half is built** (`blocklist/orchestration_events.rs` emits at
-      `:331`, renders at `:407`). TUI only. 9 tests.
+      `:331`, renders at `:407`). TUI only. 9 tests. **[x] 2026-08-11: this is the ORIGINAL claim, preserved under an IMPLEMENTED header. Verified present in code; it was stale checkbox state inflating the open count, not open work.]**
 </details>
 
 ### Blocked-action acceptance — DISSOLVED 2026-08-11, it was a rename
@@ -1501,9 +1501,9 @@ more look at *why* it is absent.
       **2 real-debt symbols → 0. All 23 resolved.**
 
 <details><summary>Original entry</summary>
-- [ ] `parse_project_skill_contents`, `refresh_project_skills_for_repo`.
+- [x] `parse_project_skill_contents`, `refresh_project_skills_for_repo`.
       `SkillWatcher` itself **exists** (`remote_server/mod.rs`) — the remote
-      refresh/fallback layer on top of it does not. 13 tests.
+      refresh/fallback layer on top of it does not. 13 tests. **[x] 2026-08-11: this is the ORIGINAL claim, preserved under an IMPLEMENTED header. Verified present in code; it was stale checkbox state inflating the open count, not open work.]**
 </details>
 
 ### MCP config-parse cancellation — IMPLEMENTED 2026-08-11 (audit cluster 6)
@@ -1529,8 +1529,8 @@ more look at *why* it is absent.
       **4 real-debt symbols → 2.**
 
 <details><summary>Original entry</summary>
-- [ ] `FileMCPWatcher::parse_abort_handles`, `abort_config_parse`. `FileMCPWatcher`
-      **exists** (`lib.rs`); it cannot cancel an in-flight config parse.
+- [x] `FileMCPWatcher::parse_abort_handles`, `abort_config_parse`. `FileMCPWatcher`
+      **exists** (`lib.rs`); it cannot cancel an in-flight config parse. **[x] 2026-08-11: this is the ORIGINAL claim, preserved under an IMPLEMENTED header. Verified present in code; it was stale checkbox state inflating the open count, not open work.]**
 </details>
 
 ### TUI CLI surface — DISSOLVED ENTIRELY 2026-08-11, all six
@@ -1572,10 +1572,19 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
 
 ### Confirmed missing — real, non-cloud debt
 
-- [ ] **`app/src/ai/blocklist/usage/rollup.rs` is absent** (8 tests). **Most
-      tractable item here:** its sole real dependency,
-      `descendant_conversation_ids_in_spawn_order`, **already exists** — in
-      `app/src/ai/blocklist/orchestration_topology.rs`. Verified.
+- [x] **~~`app/src/ai/blocklist/usage/rollup.rs` is absent (8 tests)~~ — FALSE,
+      corrected 2026-08-11.** The file **exists**, and so does
+      `rollup_tests.rs`, which contains **exactly 8 `#[test]` functions —
+      matching the pin's 8**. Nothing is missing. This entry was about to be
+      handed to an agent as "the largest single remaining chunk of code work";
+      it would have re-implemented an existing module.
+      **Sixth-plus instance of the #148 class** (a TODO entry stating the
+      opposite of the code). Note the entry even carried the word "Verified" —
+      what had actually been verified was its *dependency*
+      (`descendant_conversation_ids_in_spawn_order`), not its own premise.
+      Original text: "`rollup.rs` is absent (8 tests). Most tractable item
+      here: its sole real dependency, `descendant_conversation_ids_in_spawn_order`,
+      already exists in `orchestration_topology.rs`. Verified."
 - [~] **DUPLICATE of the `AgentTerminalControl` entry earlier in this file — see
       there for the live status.** Kept as a stub rather than deleted, because
       the two entries **contradicted each other** and that is worth recording:
@@ -1589,10 +1598,13 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       (9 tests). **The GUI half is built** — `blocklist/orchestration_events.rs`
       both emits (`:331`) and renders (`:407`) them. Only the TUI side is
       missing. Second of the two clusters behind #456.
-- [ ] **No `/index` slash command** — indexing is auto-only; a user cannot ask
-      for it. Verified: no `INDEX` command and no `CODEBASE_CONTEXT`
-      availability. Matters more now the codebase index is actually wired to
-      `get_relevant_files`.
+- [x] **~~No `/index` slash command~~ — FALSE, corrected 2026-08-11.** It
+      exists: `app/src/search/slash_command_menu/static_commands/mod.rs:257`
+      maps `"/index" => SlashCommandKind::Index`. This entry also said
+      "Verified", which it was not.
+      *(If the real complaint is that the command exists but does nothing
+      useful, that is a different, narrower item — file it with the dispatch
+      site as evidence, not as "no command".)*
 - [ ] **MCP tool results render as a `serde_json::to_string_pretty` blob, not a
       collapsible tree.** `McpRenderable` / `mcp_result_to_renderable` exist
       **nowhere in production** — the only tree-wide hits are a comment in
