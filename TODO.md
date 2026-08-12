@@ -59,36 +59,54 @@ input nobody can name is worse than no build, because its result gets believed.
       **Do not trust any build or suite result that cannot name the commit it
       ran against.**
 
-## WINDOWS SMOKE SUITE IS 0/13 (found 2026-08-11, first ever run)
+## WINDOWS SMOKE SUITE — running, 5/19, GUI bootstrap is the blocker
 
-- [ ] **Every usage/smoke scenario fails on Windows — GUI *and* TUI.**
-      The suite ran on Windows for the first time on 2026-08-11 (run
-      `31546754185`). Result: **19 total, 0 passed, 13 failed, 6 skipped**,
-      against Linux 12/0 and macOS **13/0**.
+**Status 2026-08-12 (run `31549580850`): 19 total, 5 passed, 8 failed, 6 skipped.**
+Linux 12/0 and macOS 13/0 are green.
 
-      **Systemic, not per-scenario.** All 6 TUI scenarios fail too, and those
-      are in-process `nextest` runs with no GUI window — so this is not a
-      windowing or display problem.
+The earlier "0 passed / 13 failed" reading was a REPORTING artefact, since
+fixed: the TUI surface runs as one batched nextest invocation and its single
+outcome was stamped onto every scenario. Per-test attribution now parses
+nextest's own PASS/FAIL lines.
 
-      **First concrete lead:** the captured terminal stream contains PowerShell
-      **CLIXML** markup (`#< CLIXML` + `<Objs …>` envelopes) interleaved with
-      the DCS hook payloads. pwsh serializes its non-stdout streams as CLIXML
-      when they are redirected, and that markup is reaching the terminal
-      emulator as if it were shell output.
+| surface | Windows result |
+|---|---|
+| **TUI** | **5 of 6 PASS** — only `usage_tui_transcript_render` fails |
+| **GUI** | **0 of 7** — every scenario fails at bootstrap |
 
-      **Encouraging detail in the same log:** the DCS payload decodes to
-      `{"hook":"InitShell","value":{…,"shell":"pwsh","session_id":7519507896035157563}}`
-      — a real, non-zero `session_id`, which means tonight's #532 PTY-spawn
-      registration work IS functioning on Windows.
+- [ ] **GUI bootstrap fails on Windows: the pwsh child exits immediately.**
+      Log evidence from `usage_launch_bootstrap`:
+      ```
+      [ChildExitWatcher] shell pty child exited: exit_code=0 (0x00000000)
+      Block finished with new state DoneWithNoExecution
+      Assertion 'no block executing' timed out ... Block output is: <empty>
+      Test step 'Wait for bootstrapping' failed after 1 attempts
+      ```
+      pwsh starts, **emits its InitShell hook, then exits cleanly** — the
+      behaviour of a non-interactive shell that ran its init and had no REPL to
+      enter. The terminal then waits forever for a bootstrap that cannot come.
 
-      **Do not treat this as 13 separate bugs.** Find the one systemic cause
-      first; the per-scenario failures are almost certainly downstream of it.
-      Start from the CLIXML contamination and from whether the app bootstraps
-      at all on that runner.
+      **RULED OUT — not tonight's #532 session-ID work.** The `@@WARP_SESSION_ID@@`
+      substitution is applied to all four shells including PowerShell
+      (`bootstrap.rs:228` covers the whole match result), and the captured hook
+      carries a real value:
+      `{"hook":"InitShell",...,"shell":"pwsh","session_id":7519507896035157563}`.
+      So session-ID registration WORKS on Windows; this is a separate, older
+      problem that had simply never been exercised.
 
-      This is exactly what adding Windows to the matrix was for. Linux and
-      macOS are green; Windows has never had runtime coverage of any kind, and
-      now we know why that mattered.
+      **Second signal:** PowerShell **CLIXML** envelopes (`#< CLIXML`, `<Objs …>`)
+      are interleaved with the DCS payloads in the captured stream. pwsh emits
+      CLIXML when its non-stdout streams are redirected. Worth establishing
+      whether that redirection is also what denies it a REPL.
+
+      **Not a CI defect.** The workflow, the runner and the reporting are all
+      working — this is a real Windows product bug that three platforms of CI
+      finally made visible.
+
+- [ ] **`usage_tui_transcript_render` fails on Windows** (the other 5 TUI
+      scenarios pass). Almost certainly a line-ending or width difference in a
+      rendered-transcript assertion; needs the per-test detail pulled from a
+      run, which the batched failure_detail currently truncates.
 
 ## VERIFIED WORK QUEUE (2026-08-11, post-sweep)
 
