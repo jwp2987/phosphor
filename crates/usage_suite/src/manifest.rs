@@ -37,8 +37,11 @@ pub enum Tag {
     /// In-process, no shell/provider — trustworthy in this sandbox. Runs by
     /// default.
     ReliableHere,
-    /// Drives a real PTY shell to command completion; subject to the
-    /// shell-preexec race. Only runs with `--include-flaky`.
+    /// Drives a real PTY shell to command completion. Runs by DEFAULT since
+    /// 2026-08-12 — measured across CI, all five such scenarios pass cleanly
+    /// in ~3.5s each. The shell-preexec race that once gated them is a
+    /// property of the maintainer's sandbox; `--exclude-real-shell` opts out
+    /// there.
     NeedsRealShell,
     /// Wants a real window / pixel result. Skipped only when the host has no
     /// desktop session — see `has_desktop_session()`. This was formerly an

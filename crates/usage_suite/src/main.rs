@@ -55,11 +55,24 @@ struct Args {
     #[arg(long, value_enum, default_value = "both")]
     surface: SurfaceArg,
 
-    /// Also run `needs-real-shell` scenarios (drives a real PTY shell to
-    /// command completion; subject to the sandbox's shell-preexec race —
-    /// auto-retried via the integration binary's RERUN_EXIT_CODE loop).
+    /// Deprecated no-op: real-shell scenarios now run by DEFAULT. Kept so
+    /// existing invocations and CI workflows keep working.
     #[arg(long)]
     include_flaky: bool,
+
+    /// Skip `needs-real-shell` scenarios (they drive a real PTY shell to
+    /// command completion).
+    ///
+    /// These were opt-in until 2026-08-12 because of a shell-preexec race.
+    /// Measured across CI on that date: all five pass cleanly in ~3.5s each,
+    /// no retries needed — the race is a property of the maintainer's sandbox,
+    /// not of the scenarios. Gating them meant the DEFAULT suite for a
+    /// terminal emulator never once ran a shell command, which is the single
+    /// most fundamental thing it does. Now default-on, with this escape hatch
+    /// for hosts where the race does bite (the integration binary's
+    /// RERUN_EXIT_CODE loop already retries up to 10 times before failing).
+    #[arg(long)]
+    exclude_real_shell: bool,
 
     /// Also run `needs-byop-provider` scenarios (a real agent round-trip;
     /// requires a real provider key + network).
@@ -181,8 +194,8 @@ fn skip_reason(scenario: &Scenario, args: &Args) -> Option<String> {
     if scenario.has_tag(Tag::NeedsDesktop) && !has_desktop_session() {
         return Some("needs-desktop (no DISPLAY/WAYLAND_DISPLAY on this host)".into());
     }
-    if scenario.has_tag(Tag::NeedsRealShell) && !args.include_flaky {
-        return Some("needs-real-shell (no --include-flaky)".into());
+    if scenario.has_tag(Tag::NeedsRealShell) && args.exclude_real_shell {
+        return Some("needs-real-shell (--exclude-real-shell)".into());
     }
     if scenario.has_tag(Tag::NeedsByopProvider) && !args.include_byop {
         return Some("needs-byop-provider (no --include-byop)".into());
