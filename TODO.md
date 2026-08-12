@@ -59,6 +59,37 @@ input nobody can name is worse than no build, because its result gets believed.
       **Do not trust any build or suite result that cannot name the commit it
       ran against.**
 
+## WINDOWS SMOKE SUITE IS 0/13 (found 2026-08-11, first ever run)
+
+- [ ] **Every usage/smoke scenario fails on Windows — GUI *and* TUI.**
+      The suite ran on Windows for the first time on 2026-08-11 (run
+      `31546754185`). Result: **19 total, 0 passed, 13 failed, 6 skipped**,
+      against Linux 12/0 and macOS **13/0**.
+
+      **Systemic, not per-scenario.** All 6 TUI scenarios fail too, and those
+      are in-process `nextest` runs with no GUI window — so this is not a
+      windowing or display problem.
+
+      **First concrete lead:** the captured terminal stream contains PowerShell
+      **CLIXML** markup (`#< CLIXML` + `<Objs …>` envelopes) interleaved with
+      the DCS hook payloads. pwsh serializes its non-stdout streams as CLIXML
+      when they are redirected, and that markup is reaching the terminal
+      emulator as if it were shell output.
+
+      **Encouraging detail in the same log:** the DCS payload decodes to
+      `{"hook":"InitShell","value":{…,"shell":"pwsh","session_id":7519507896035157563}}`
+      — a real, non-zero `session_id`, which means tonight's #532 PTY-spawn
+      registration work IS functioning on Windows.
+
+      **Do not treat this as 13 separate bugs.** Find the one systemic cause
+      first; the per-scenario failures are almost certainly downstream of it.
+      Start from the CLIXML contamination and from whether the app bootstraps
+      at all on that runner.
+
+      This is exactly what adding Windows to the matrix was for. Linux and
+      macOS are green; Windows has never had runtime coverage of any kind, and
+      now we know why that mattered.
+
 ## VERIFIED WORK QUEUE (2026-08-11, post-sweep)
 
 **The 50-test MISSING-SUBSYSTEM sweep is COMPLETE** — all 50 resolved on branch
