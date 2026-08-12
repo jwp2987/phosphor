@@ -17,6 +17,7 @@ pub mod text {
             ReadFilesResult, ReadMCPResourceResult, RequestCommandOutputResult,
             RequestFileEditsResult, SuggestNewConversationResult, SuggestPromptResult,
             TodoOperation, WebFetchStatus, WebSearchStatus, WriteToLongRunningShellCommandResult,
+            rejected_tool_call_text,
         },
         AIAgentActionResultType,
     };
@@ -439,6 +440,9 @@ pub mod text {
                 AIAgentOutputMessageType::EventsFromAgents { event_ids } => {
                     writeln!(w, "Received {} agent events", event_ids.len())?;
                 }
+                AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
+                    writeln!(w, "{}", rejected_tool_call_text(tool.as_deref(), detail))?;
+                }
             }
         }
 
@@ -504,7 +508,7 @@ pub mod json {
             FileContext, FileGlobResult, FileGlobV2Result, GrepResult, ReadFilesFailedFile,
             ReadFilesResult, ReadMCPResourceResult, RequestCommandOutputResult,
             RequestFileEditsResult, SubagentCall, TodoOperation,
-            WriteToLongRunningShellCommandResult,
+            WriteToLongRunningShellCommandResult, rejected_tool_call_text,
         },
         AIAgentActionResultType,
     };
@@ -1038,6 +1042,11 @@ pub mod json {
                 }
                 AIAgentOutputMessageType::MessagesReceivedFromAgents { .. }
                 | AIAgentOutputMessageType::EventsFromAgents { .. } => None,
+                AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
+                    Some(JsonMessage::ToolError {
+                        error: Cow::Owned(rejected_tool_call_text(tool.as_deref(), detail)),
+                    })
+                }
             }
         }
     }

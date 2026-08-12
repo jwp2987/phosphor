@@ -17,7 +17,7 @@ use warp::tui_export::{
     AgentOutputImageLayout, AgentOutputMermaidDiagram, AgentOutputTable, Appearance,
     FailedOutputPresentation, LLMId, MessageId, OutputStatusUpdateCallback, ReceivedMessageDisplay,
     RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared, SummarizationType,
-    TaskId, TerminalModel, TodoOperation, TodoStatus, UserQueryMode,
+    TaskId, TerminalModel, TodoOperation, TodoStatus, UserQueryMode, rejected_tool_call_text,
     should_show_failed_output_usage_notice,
 };
 use warp_core::ui::color::blend::Blend;
@@ -89,6 +89,74 @@ fn agent_block_renders_generic_failure_after_partial_output() {
                 .iter()
                 .position(|line| line.contains("couldn't complete"))
                 .expect("failure row");
+            let red: Color = CoreFill::from(ThemeFill::from(
+                Appearance::as_ref(ctx).theme().terminal_colors().normal.red,
+            ))
+            .into();
+            assert_eq!(frame.buffer[(0, failure_row as u16)].fg, red);
+        });
+    });
+}
+
+/// A rejected tool call (the model sent arguments that failed to parse) must render as a
+/// genuine failure element — reusing the same `Failure`/red-styled affordance as any other
+/// failed exchange — not as an ordinary text paragraph a user could mistake for prose. This
+/// is the TUI half of the fix; `convert_from_tests.rs` covers the conversion that produces
+/// the `RejectedToolCall` message in the first place.
+#[test]
+fn agent_block_renders_rejected_tool_call_as_a_failure_section() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let block = test_agent_block(
+            &mut app,
+            FakeAgentBlockModel {
+                inputs: vec![query_input("please edit hi.txt")],
+                status: complete_output_messages(vec![rejected_tool_call_message(
+                    "message-1",
+                    Some("apply_file_diffs"),
+                    "missing field `operations`",
+                )]),
+            },
+        );
+
+        app.read(|ctx| {
+            // Structural assertion: the message converts to the same `Failure` section kind
+            // used elsewhere for a failed exchange, carrying the shared rendering text —
+            // not a `RichText` paragraph, which is what a plain-prose regression would produce.
+            let expected_text =
+                rejected_tool_call_text(Some("apply_file_diffs"), "missing field `operations`");
+            assert_eq!(
+                block.as_ref(ctx).sections(ctx),
+                vec![TuiAIBlockSection::Failure(
+                    FailedOutputPresentation::Message(expected_text)
+                )]
+            );
+
+            // Visible assertion: it actually renders, says "rejected", names the tool, and
+            // carries the detail — with the same red error styling as any other failure row.
+            let lines = render_block_lines(block.as_ref(ctx), 80, ctx);
+            let full_text = lines.join("\n");
+            assert!(
+                full_text.contains("Tool call rejected: apply_file_diffs"),
+                "{full_text}"
+            );
+            assert!(
+                full_text.contains("missing field `operations`"),
+                "{full_text}"
+            );
+
+            let mut presenter = TuiPresenter::new();
+            let frame = presenter.present_element(
+                block.as_ref(ctx).render_element(ctx),
+                TuiRect::new(0, 0, 80, 12),
+                ctx,
+            );
+            let failure_row = frame
+                .buffer
+                .to_lines()
+                .iter()
+                .position(|line| line.contains("Tool call rejected"))
+                .expect("rejected-tool-call row");
             let red: Color = CoreFill::from(ThemeFill::from(
                 Appearance::as_ref(ctx).theme().terminal_colors().normal.red,
             ))
@@ -2134,6 +2202,19 @@ fn debug_output_message(id: &str, text: &str) -> AIAgentOutputMessage {
         id: MessageId::new(id.to_owned()),
         message: AIAgentOutputMessageType::DebugOutput {
             text: text.to_owned(),
+        },
+        citations: Vec::new(),
+    }
+}
+
+/// Builds a rejected-tool-call output message, as `convert_from.rs` produces when a model's
+/// tool call fails to parse.
+fn rejected_tool_call_message(id: &str, tool: Option<&str>, detail: &str) -> AIAgentOutputMessage {
+    AIAgentOutputMessage {
+        id: MessageId::new(id.to_owned()),
+        message: AIAgentOutputMessageType::RejectedToolCall {
+            tool: tool.map(str::to_owned),
+            detail: detail.to_owned(),
         },
         citations: Vec::new(),
     }

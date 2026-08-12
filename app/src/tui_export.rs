@@ -52,7 +52,7 @@ pub use crate::ai::agent::{
     FileGlobV2Result, GrepResult, ImageContext, MessageId, ReceivedMessageDisplay,
     RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared, ShellCommandDelay,
     StartAgentExecutionMode, SuggestNewConversationResult, SummarizationType, TodoOperation,
-    UserQueryMode,
+    UserQueryMode, rejected_tool_call_text,
 };
 pub use crate::ai::agent_conversations_model::{
     AgentConversationsModel, AgentConversationsModelEvent, AgentManagementFilters,

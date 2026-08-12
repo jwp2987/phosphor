@@ -101,7 +101,8 @@ use crate::ai::blocklist::block::TextLocation;
 use crate::util::link_detection::{detect_links, DetectedLinksState};
 
 use crate::ai::agent::icons::yellow_stop_icon;
-use crate::ai::blocklist::inline_action::inline_action_icons::icon_size;
+use crate::ai::blocklist::inline_action::inline_action_icons::{self, icon_size};
+use crate::ai::blocklist::inline_action::requested_action::RenderableAction;
 
 use super::cli_controller::{CLISubagentController, CLISubagentEvent, UserTakeOverReason};
 use super::model::AIBlockModelHelper;
@@ -1732,6 +1733,35 @@ impl View for CLISubagentView {
                                 conversation_items.add_child(
                                     render_framed_container(FramedContainerProps {
                                         child: render_web_search(query.clone(), app),
+                                        background_color: internal_colors::neutral_2(
+                                            appearance.theme(),
+                                        ),
+                                        border: Some(
+                                            Border::all(1.).with_border_fill(
+                                                internal_colors::neutral_3(theme),
+                                            ),
+                                        ),
+                                    })
+                                    .with_margin_bottom(8.)
+                                    .finish(),
+                                );
+                            }
+                        }
+                        // Same failed-action affordance (red-X `RenderableAction`) as the
+                        // main block renderer's handling of this message kind.
+                        AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
+                            if is_latest_model && !should_hide_responses {
+                                let text = crate::ai::agent::rejected_tool_call_text(
+                                    tool.as_deref(),
+                                    detail,
+                                );
+                                let rendered = RenderableAction::new(&text, app)
+                                    .with_icon(inline_action_icons::red_x_icon(appearance).finish())
+                                    .render(app)
+                                    .finish();
+                                conversation_items.add_child(
+                                    render_framed_container(FramedContainerProps {
+                                        child: rendered,
                                         background_color: internal_colors::neutral_2(
                                             appearance.theme(),
                                         ),

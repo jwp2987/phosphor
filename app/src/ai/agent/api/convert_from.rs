@@ -510,13 +510,17 @@ impl ConvertAPIMessageToClientOutputMessage for api::Message {
             // Zap BYOP: most `ToolCallResult`s don't need a client representation of their
             // own (the result gets attached to the action that requested it, elsewhere).
             // The one exception is chat_stream's synthetic `invalid_arguments` marker (see
-            // `invalid_arguments_display_text`) — a real rejected tool call that today has
-            // no visible trace at all, which is the silent-failure this branch fixes.
+            // `invalid_arguments_rejected_tool_call`) — a real rejected tool call that today
+            // has no visible trace at all, which is the silent-failure this branch fixes.
             api::message::Message::ToolCallResult(_) => {
-                match invalid_arguments_display_text(&self.server_message_data) {
-                    Some(text) => Ok(MaybeAIAgentOutputMessage::Message(
-                        AIAgentOutputMessage::text(MessageId::new(self.id), text)
-                            .with_citations(citations),
+                match invalid_arguments_rejected_tool_call(&self.server_message_data) {
+                    Some((tool, detail)) => Ok(MaybeAIAgentOutputMessage::Message(
+                        AIAgentOutputMessage::rejected_tool_call(
+                            MessageId::new(self.id),
+                            tool,
+                            detail,
+                        )
+                        .with_citations(citations),
                     )),
                     None => Ok(MaybeAIAgentOutputMessage::NoClientRepresentation),
                 }
@@ -536,8 +540,8 @@ impl ConvertAPIMessageToClientOutputMessage for api::Message {
     }
 }
 
-/// Recognizes chat_stream's synthetic `invalid_arguments` marker and turns it into a short
-/// user-facing sentence.
+/// Recognizes chat_stream's synthetic `invalid_arguments` marker and extracts the tool name
+/// (if any) and a human-readable rejection detail from it.
 ///
 /// Background: when a model's tool call fails to parse (missing/malformed fields —
 /// `from_args` returned `Err`), `chat_stream::parse_incoming_tool_call`'s error arm emits a
@@ -550,11 +554,19 @@ impl ConvertAPIMessageToClientOutputMessage for api::Message {
 /// rejected. This is the second report of that exact silent-failure shape (see `edit.rs`'s
 /// `summary` field for the first), so it gets a real fix rather than another one-off patch.
 ///
+/// The caller turns the result into an `AIAgentOutputMessageType::RejectedToolCall` — a
+/// genuine failure element, not an ordinary text paragraph. See that variant's doc comment
+/// (`app/src/ai/agent/mod.rs`) for why this can't honestly reuse the `Action` pipeline: no
+/// typed `AIAgentActionType` was ever built for a call whose arguments didn't parse, and no
+/// action id was registered with the action model for a result to attach to.
+///
 /// Returns `None` for any other `server_message_data` shape (including the unrelated
 /// `{"status":"cancelled",...}` payload used for a user-interrupted command), so those keep
 /// falling through to `NoClientRepresentation` exactly as before — only the specific
-/// `invalid_arguments` marker gets a visible message.
-fn invalid_arguments_display_text(server_message_data: &str) -> Option<AIAgentText> {
+/// `invalid_arguments` marker produces a visible message.
+fn invalid_arguments_rejected_tool_call(
+    server_message_data: &str,
+) -> Option<(Option<String>, String)> {
     let payload: serde_json::Value = serde_json::from_str(server_message_data).ok()?;
     if payload.get("error").and_then(serde_json::Value::as_str) != Some("invalid_arguments") {
         return None;
@@ -563,18 +575,14 @@ fn invalid_arguments_display_text(server_message_data: &str) -> Option<AIAgentTe
         .get("tool")
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
-        .unwrap_or("tool call");
+        .map(str::to_owned);
     let detail = payload
         .get("detail")
         .and_then(serde_json::Value::as_str)
         .filter(|s| !s.is_empty())
-        .unwrap_or("its arguments did not match the tool's expected format");
-    let markdown = format!(
-        "**Tool call rejected: `{tool}`**\n\n{detail}\n\n_Asking the model to retry with corrected arguments._"
-    );
-    Some(AIAgentText {
-        sections: parse_markdown_into_text_and_code_sections(&markdown),
-    })
+        .unwrap_or("its arguments did not match the tool's expected format")
+        .to_owned();
+    Some((tool, detail))
 }
 
 impl From<api::message::AgentOutput> for AIAgentText {

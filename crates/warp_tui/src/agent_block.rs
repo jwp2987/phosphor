@@ -21,7 +21,8 @@ use warp::tui_export::{
     BlocklistAIActionModel, BlocklistAIHistoryModel, CancellationReason,
     FAILED_OUTPUT_USAGE_NOTICE_TEXT, FailedOutputPresentation, MessageId, ModelEvent,
     ModelEventDispatcher, ReceivedMessageDisplay, SummarizationType, TerminalModel, TodoOperation,
-    TodoStatus, failed_output_presentation, should_show_failed_output_usage_notice,
+    TodoStatus, failed_output_presentation, rejected_tool_call_text,
+    should_show_failed_output_usage_notice,
 };
 use warpui::SingletonEntity;
 use warpui_core::elements::MouseStateHandle;
@@ -808,7 +809,8 @@ impl TuiAIBlock {
                     | AIAgentOutputMessageType::ArtifactCreated(_)
                     | AIAgentOutputMessageType::SkillInvoked(_)
                     | AIAgentOutputMessageType::MessagesReceivedFromAgents { .. }
-                    | AIAgentOutputMessageType::EventsFromAgents { .. } => None,
+                    | AIAgentOutputMessageType::EventsFromAgents { .. }
+                    | AIAgentOutputMessageType::RejectedToolCall { .. } => None,
                 };
                 let Some(text) = text else {
                     continue;
@@ -1316,6 +1318,17 @@ impl TuiAIBlock {
                     // Event IDs contain no display detail. The sender's live
                     // conversation status is shown on rich message rows.
                     AIAgentOutputMessageType::EventsFromAgents { .. } => {}
+                    // A rejected tool call is a genuine failure, not ordinary output — it
+                    // reuses the same `Failure` section (and error styling) as a failed
+                    // exchange, rather than a bespoke rendering path for one message kind.
+                    AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
+                        sections.push(TuiAIBlockSection::Failure(
+                            FailedOutputPresentation::Message(rejected_tool_call_text(
+                                tool.as_deref(),
+                                detail,
+                            )),
+                        ));
+                    }
                     // Other message kinds are not rendered by the TUI transcript yet.
                     AIAgentOutputMessageType::Summarization { .. }
                     | AIAgentOutputMessageType::Subagent(_)

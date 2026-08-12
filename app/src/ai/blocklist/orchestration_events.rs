@@ -429,7 +429,8 @@ impl OrchestrationEventService {
                     | AIAgentOutputMessageType::CommentsAddressed { .. }
                     | AIAgentOutputMessageType::DebugOutput { .. }
                     | AIAgentOutputMessageType::ArtifactCreated(_)
-                    | AIAgentOutputMessageType::SkillInvoked(_) => {}
+                    | AIAgentOutputMessageType::SkillInvoked(_)
+                    | AIAgentOutputMessageType::RejectedToolCall { .. } => {}
                 }
             }
         }

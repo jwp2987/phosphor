@@ -205,33 +205,27 @@ fn tool_call_result_message(server_message_data: &str) -> api::Message {
     }
 }
 
-fn extract_text(output: MaybeAIAgentOutputMessage) -> String {
+/// Extracts the `(tool, detail)` pair from an `AIAgentOutputMessageType::RejectedToolCall`,
+/// panicking if the conversion produced anything else. Used to assert the new failure
+/// representation's actual shape, not just that some text rendered.
+fn extract_rejected_tool_call(output: MaybeAIAgentOutputMessage) -> (Option<String>, String) {
     let MaybeAIAgentOutputMessage::Message(output_message) = output else {
         panic!("expected an output message, got NoClientRepresentation");
     };
-    let text = match output_message.message {
-        AIAgentOutputMessageType::Text(text) => text,
-        other => panic!("expected a Text output message, got {other:?}"),
-    };
-    text.sections
-        .iter()
-        .filter_map(|section| match section {
-            crate::ai::agent::AIAgentTextSection::PlainText { text } => {
-                Some(text.text().to_owned())
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    match output_message.message {
+        AIAgentOutputMessageType::RejectedToolCall { tool, detail } => (tool, detail),
+        other => panic!("expected a RejectedToolCall output message, got {other:?}"),
+    }
 }
 
 /// A `from_args` parse failure previously vanished with no trace: `chat_stream` emitted a
 /// carrier `ToolCall(tool: None)` plus this synthetic `ToolCallResult(result: None)` — both of
 /// which mapped to `NoClientRepresentation`, so the model got the retry signal but the user saw
 /// nothing at all (the same silent-failure class as `edit.rs`'s `summary` bug). This is the
-/// fix: the synthetic `invalid_arguments` marker must now produce a visible message.
+/// fix: the synthetic `invalid_arguments` marker must now produce a visible
+/// `RejectedToolCall` message — a genuine failure element, not an ordinary text paragraph.
 #[test]
-fn invalid_arguments_tool_call_result_becomes_a_visible_error_message() {
+fn invalid_arguments_tool_call_result_becomes_a_rejected_tool_call_message() {
     let task_id = TaskId::new("task".to_string());
     // Mirrors the payload chat_stream::parse_incoming_tool_call's `Err` arm builds when
     // `from_args` rejects a malformed call.
@@ -254,13 +248,48 @@ fn invalid_arguments_tool_call_result_becomes_a_visible_error_message() {
         })
         .expect("conversion should succeed");
 
-    let text = extract_text(converted);
-    assert!(text.contains("apply_file_diffs"), "{text}");
-    assert!(text.contains("missing field `operations`"), "{text}");
-    assert!(
-        text.to_lowercase().contains("rejected"),
-        "the message must say the call was rejected, not just relay the raw detail: {text}"
+    let (tool, detail) = extract_rejected_tool_call(converted);
+    assert_eq!(
+        tool.as_deref(),
+        Some("apply_file_diffs"),
+        "the tool name must be carried structurally, not just embedded in prose"
     );
+    assert!(detail.contains("missing field `operations`"), "{detail}");
+
+    // The shared rendering text (what GUI/TUI/copy/SDK all actually show the user) must
+    // still say the call was rejected, not just relay the raw detail.
+    let rendered = crate::ai::agent::rejected_tool_call_text(tool.as_deref(), &detail);
+    assert!(
+        rendered.to_lowercase().contains("rejected"),
+        "the message must say the call was rejected, not just relay the raw detail: {rendered}"
+    );
+}
+
+/// A `tool` field missing from the marker (should never happen in practice, but the parser
+/// must not panic on it) must still produce a `RejectedToolCall` with `tool: None` — the
+/// renderers fall back to a tool-agnostic phrasing rather than showing an empty name.
+#[test]
+fn invalid_arguments_without_a_tool_name_still_produces_a_rejected_tool_call() {
+    let task_id = TaskId::new("task".to_string());
+    let payload = serde_json::json!({
+        "error": "invalid_arguments",
+        "detail": "missing field `operations`",
+    })
+    .to_string();
+    let message = tool_call_result_message(&payload);
+
+    let converted = message
+        .to_client_output_message(ConversionParams {
+            task_id: &task_id,
+            current_todo_list: None,
+            active_code_review: None,
+            skill_path_origin: &SkillPathOrigin::Local,
+        })
+        .expect("conversion should succeed");
+
+    let (tool, detail) = extract_rejected_tool_call(converted);
+    assert_eq!(tool, None);
+    assert!(detail.contains("missing field `operations`"), "{detail}");
 }
 
 /// A genuinely different `result: None` payload — the cancellation marker

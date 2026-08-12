@@ -94,23 +94,57 @@ first being `hi.txt`).
   constructor. Model-facing behavior is unchanged — the JSON still goes back to the
   model for the retry exactly as before; this is additive.
 
-**Why `Text` instead of the block-level `RenderableAction` + red-X-icon widget used
-for other failed actions** (found at `app/src/ai/blocklist/block/view_impl/output.rs`,
-e.g. the "Failed to read files" case around line 456, and the generic `action_icon`
-function around line 3036): that pattern is driven by a real `AIAgentAction` with an
-id registered in `action_model`/`AIAgentActionResult` — exactly the pipeline our
-carrier deliberately never enters (per the existing `NoClientRepresentation` comment,
-entering it would reject the whole conversation update). Wiring a new visible variant
-into `AIAgentOutputMessageType` would touch at least 4 more exhaustively-matched
-`match` sites across `mod.rs`, `agent_sdk/driver/output.rs`, and
-`orchestration_events.rs` that were found by grepping for the enum's last variants
-— editing all of them correctly without being able to run `cargo check` was judged
-too risky for a build-freeze change. Reusing the already-fully-wired `Text` variant
-(and the existing `AIAgentOutputMessage::text` constructor) gets the rejection
-visibly in front of the user with no new enum surface and no risk of an unhandled
-match arm. **Left for the maintainer**: if pixel parity with the red-X action-card
-style is wanted, that requires adding a new `AIAgentOutputMessageType` variant and
-updating every exhaustive match on it — doable, but needs `cargo check` to do safely.
+**Update (follow-up task, same build-freeze discipline): this styling gap is now
+closed.** A rejected tool call no longer renders as a `Text` paragraph — it's a new
+`AIAgentOutputMessageType::RejectedToolCall { tool: Option<String>, detail: String }`
+variant (`app/src/ai/agent/mod.rs`), produced by `convert_from.rs`'s
+`invalid_arguments_rejected_tool_call` (renamed from `invalid_arguments_display_text`,
+same recognition logic, now returns the raw `(tool, detail)` pair instead of
+pre-rendered markdown) via the new `AIAgentOutputMessage::rejected_tool_call`
+constructor.
+
+*Reuse vs. new variant, decided explicitly*: every existing "failed action" affordance
+in the codebase (`AIAgentActionType`/`AIAgentActionResultType` and all their per-tool
+UI copy, e.g. "Calling X MCP tool...") is tied to a *specific, successfully-parsed*
+tool call with a real action id registered in `action_model` — exactly what our
+carrier never has (parsing failed before any of that existed). Reusing one of those
+variants (`CallMCPTool` was the closest candidate — generic name+JSON, but its UI
+literally says "MCP tool", which would misdescribe a native BYOP tool) would have
+meant contorting an existing variant to mean something it doesn't. `RenderableAIError`
+was also rejected: it's a conversation-*terminal* failure, and a rejected tool call
+isn't terminal — the model is still expected to retry. No honest reuse existed at the
+data-model level, so a new variant was added — but its *rendering* reuses existing
+failure-styled primitives rather than inventing new widgets: the GUI renders it via
+`RenderableAction` + `inline_action_icons::red_x_icon` (the same red-X row already used
+for other failed actions in `output.rs`, e.g. "Failed to read files"), and the TUI
+converts it straight into `TuiAIBlockSection::Failure(FailedOutputPresentation::Message(...))`
+— the exact section type and error styling `crates/warp_tui/src/agent_block.rs` already
+uses for a failed exchange. A shared `rejected_tool_call_text(tool, detail) -> String`
+helper (`app/src/ai/agent/mod.rs`) keeps the phrasing identical across every
+renderer/serializer of the variant.
+
+Match sites updated (7 were compile-mandatory — exhaustive matches on
+`AIAgentOutputMessageType` with no wildcard arm; 2 more were edited for real behavior
+even though a `_ => ()`/`_ => (false)` wildcard would have compiled without them):
+`app/src/ai/agent/mod.rs` (`format_for_copy`, `Display for AIAgentOutputMessage`, plus
+the new constructor), `app/src/ai/agent_sdk/driver/output.rs` (`format_output` in
+`pub mod text`, `from_output_message` in `pub mod json` — the latter maps it onto the
+pre-existing `JsonMessage::ToolError` shape, another honest reuse), and
+`app/src/ai/blocklist/orchestration_events.rs` (no-op arm — this message never
+originates from another agent). The two non-mandatory renderers touched:
+`app/src/ai/blocklist/block/view_impl/output.rs` (main GUI renderer) and
+`app/src/ai/blocklist/block/cli.rs` (the CLI-subagent status panel — a secondary
+renderer that mirrors the main one). `app/src/tui_export.rs` re-exports
+`rejected_tool_call_text` to `warp_tui`.
+
+*Persistence*: confirmed safe. `AIAgentOutputMessageType`/`AIAgentOutput` never derive
+`Serialize`/`Deserialize` and are never round-tripped through disk — conversations
+persist as the raw `api::Task` protobuf (`crates/persistence/src/agent.rs`), and
+`AIAgentOutputMessageType` is rebuilt fresh on every load via the same
+`to_client_output_message` conversion used for live streaming
+(`app/src/ai/agent/task.rs`'s `into_exchanges` → `convert_from.rs`). A conversation
+saved by one build loads fine in another regardless of which build recognizes this
+variant, because the variant itself is never what's on disk.
 
 A toast (`ToastStack`/`DismissibleToast`, per the alternative the task allowed) was
 considered and not used: `BlocklistAIController::handle_response_stream_event` (the
@@ -134,12 +168,23 @@ like more incidental surface area than the block-text approach for the same resu
   the same shape of tests for `action_summary` (missing/blank/multi-action
   fallback/provided) and `task_summary` (missing/provided), plus confirming
   `actions` and genuinely malformed JSON still fail to parse.
-- `app/src/ai/agent/api/convert_from_tests.rs` (existing file, new tests): the
-  `invalid_arguments` marker converts to a visible `Text` message containing the
-  tool name, the detail string, and the word "rejected"; the unrelated
-  `{"status":"cancelled",...}` `result: None` payload still converts to
-  `NoClientRepresentation` (no false positive); and non-JSON `server_message_data`
+- `app/src/ai/agent/api/convert_from_tests.rs` (existing file, tests extended/added
+  in the follow-up styling task): the `invalid_arguments` marker converts to an
+  `AIAgentOutputMessageType::RejectedToolCall` carrying the tool name and detail
+  structurally (not just embedded in prose), and the shared `rejected_tool_call_text`
+  rendering still says "rejected"; a marker missing a `tool` field produces
+  `tool: None` rather than panicking; the unrelated `{"status":"cancelled",...}`
+  `result: None` payload still converts to `NoClientRepresentation` (no false
+  positive, re-verified against the new variant); and non-JSON `server_message_data`
   doesn't panic the conversion and also stays invisible.
+- `crates/warp_tui/src/agent_block_tests.rs` (new test,
+  `agent_block_renders_rejected_tool_call_as_a_failure_section`): asserts the
+  structural shape (`sections()` produces exactly
+  `TuiAIBlockSection::Failure(FailedOutputPresentation::Message(rejected_tool_call_text(...)))`,
+  not a `RichText` paragraph) and the visible rendering (the tool name and detail
+  appear in the rendered lines, and the row carries the same red error color as
+  `agent_block_renders_generic_failure_after_partial_output`'s exchange-level
+  failure).
 
 ## Checks run
 
@@ -163,8 +208,11 @@ like more incidental surface area than the block-text approach for the same resu
 ## Unfinished / left for the maintainer
 
 - `documents.rs`'s `NewDoc::title` (borderline case — see the audit table).
-- Pixel-parity block rendering (red-X `RenderableAction` card) for the rejected
-  tool call, instead of the current plain `Text` message — needs `cargo check` to
-  wire safely given how widely `AIAgentOutputMessageType` is matched.
-- No compilation or test run was performed (build freeze). All of the above is
-  "written, unverified."
+- Pixel-parity block rendering for the rejected tool call **landed** in the
+  follow-up styling task (see "Update" above) — `RejectedToolCall` +
+  `RenderableAction`/red-X icon in the GUI, `TuiAIBlockSection::Failure` in the TUI.
+  Every exhaustive match on `AIAgentOutputMessageType` was found by grep (24 files
+  reference the enum; 7 sites were exhaustive matches with no wildcard arm, all
+  updated) and cross-checked again after the edits — no `match` sites were missed.
+  Still build-freeze discipline throughout: no compilation or test run was
+  performed for that task either. All of the above remains "written, unverified."
